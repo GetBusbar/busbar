@@ -9,7 +9,15 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-
+use crate::auth::AuthMiddleware;
+use crate::preflight::{
+    build_secret_resolver, plugin_fetch_downloader, plugins_preflight, resolve_admin_token,
+    resolve_signing_key, validate_secret_refs,
+};
+use crate::proto::ProtocolRegistry;
+use crate::router::project_auth_scope_caps;
+use crate::state::{App, Lane, WeightedLane};
+use crate::store::{HealthState, LaneData};
 #[allow(unused_imports)]
 use crate::{
     a2a, admin, audit, auth, auth_cache, billing, breaker, catalogue, config, config_validate,
@@ -18,17 +26,6 @@ use crate::{
     oauth_as, observability, operation, plane, plugin_routes, profile, proto, proxy, sigv4, state,
     store, telemetry, tls, transport, trust,
 };
-use crate::auth::AuthMiddleware;
-use crate::preflight::{
-    build_secret_resolver, plugin_fetch_downloader, plugins_preflight, resolve_admin_token,
-    resolve_signing_key, validate_secret_refs,
-};
-use crate::router::project_auth_scope_caps;
-use crate::proto::ProtocolRegistry;
-use crate::state::{App, Lane, WeightedLane};
-use crate::store::{HealthState, LaneData};
-
-
 
 // The upstream-request timeout, pool-idle, and request-body caps that used to live here as `const`s
 // are now operator-tunable (`limits.upstream_request_timeout_secs` / `pool_max_idle_per_host` /
@@ -41,10 +38,8 @@ use crate::store::{HealthState, LaneData};
 /// [`providers_override_from_env`]).
 pub const ENV_PROVIDERS: &str = "BUSBAR_PROVIDERS";
 
-
 /// Environment variable name for the config.yaml path — the one irreducible bootstrap env var.
 pub const ENV_CONFIG: &str = "BUSBAR_CONFIG";
-
 
 /// Default path to the deployment config file.
 ///
@@ -58,8 +53,6 @@ pub const ENV_CONFIG: &str = "BUSBAR_CONFIG";
 /// "which file is my config" is the one question that must never have a platform-dependent answer
 /// nobody was told about. Documented for operators in `docs/operations.md`.
 pub const DEFAULT_CONFIG_PATH: &str = "/etc/busbar/config.yaml";
-
-
 
 /// Return the open-relay banner to emit when the auth chain is EMPTY (open front door), or `None`
 /// when an auth module is engaged. `chain_empty` = the resolved `auth.chain` is empty. `auth_present`
@@ -75,8 +68,6 @@ pub fn open_relay_banner(chain_empty: bool, auth_present: bool) -> Option<&'stat
         "auth is DISABLED: no `auth:` block in config — busbar is running as an OPEN RELAY (anyone can use it). Add `auth:` with `chain: [keys]` (and mint virtual keys via the admin API) before exposing it; do not run this in production"
     })
 }
-
-
 
 /// Return the INERT-KEYS banner to emit when a DURABLE governance store still holds virtual keys
 /// from a prior run but the running `auth.chain` does NOT name the `keys` verifier. Enforcement of a
@@ -103,8 +94,6 @@ pub fn inert_durable_keys_banner(
         None
     }
 }
-
-
 
 /// Resolve each model's single `context_max` from the pool members that reference it.
 ///
@@ -147,8 +136,6 @@ pub fn resolve_model_context_max(
     Ok(resolved)
 }
 
-
-
 /// Resolve a boot-time boolean upstream knob under the env→config migration precedence: the DEPRECATED
 /// env var, when SET, wins (honored for one release) — `"0"` or empty means OFF, anything else ON; when
 /// UNSET, the config value (`advanced.upstream_*`, carried on `cfg.limits`) stands. The deprecation
@@ -160,8 +147,6 @@ pub fn upstream_bool_env_override(env: Option<std::ffi::OsString>, config_val: b
         None => config_val,
     }
 }
-
-
 
 /// Everything the DISK half of configuration produces, shared by boot and runtime reload.
 pub struct LoadedConfig {
@@ -193,8 +178,6 @@ pub struct LoadedConfig {
     /// under Lenient (--validate), where it becomes the "set these at runtime" note.
     pub unset_env_vars: Vec<String>,
 }
-
-
 
 /// `providers_override`: the DEPRECATED `BUSBAR_PROVIDERS` path (Some ⇒ set), or the live
 /// providers path a runtime reload wants to re-use. When `None`, the catalog path is resolved from
@@ -345,14 +328,10 @@ pub fn load_config_from_disk(
     })
 }
 
-
-
 /// A queued-but-not-yet-applied governance credential rotation: `build_app_from_config` resolves it
 /// but does NOT invoke it (see the call site below for why). `Send` because it is carried across the
 /// `spawn_blocking` boundary the admin transaction (`txn.rs`) applies it on.
 pub type GovCredentialRotation = Box<dyn FnOnce() + Send>;
-
-
 
 pub fn build_app_from_config(
     cfg: config::RootCfg,

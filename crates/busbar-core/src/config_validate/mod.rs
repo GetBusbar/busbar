@@ -44,10 +44,7 @@ pub(crate) fn validate(cfg: &RootCfg) -> Result<(), Vec<String>> {
 /// scheme-less placeholder and would false-positive the https / SSRF checks. Such a value is validated
 /// for real at boot (where an unset var is a hard error), so `--validate` skips the URL-format checks
 /// for it here.
-pub fn validate_with_unset(
-    cfg: &RootCfg,
-    unset_env_vars: &[String],
-) -> Result<(), Vec<String>> {
+pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(), Vec<String>> {
     // A URL value that contains an unset env-var NAME is a not-yet-resolved `${VAR}` placeholder in this
     // Lenient load (unset `${VAR}` is spliced in as the bare name, which has NO url scheme). Require the
     // value to LACK a `://` scheme before treating a var-name substring match as a placeholder, so a REAL

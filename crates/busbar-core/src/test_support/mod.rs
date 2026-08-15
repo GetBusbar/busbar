@@ -1717,7 +1717,6 @@ pub(crate) mod plugin_store;
 #[path = "tests/tests.rs"]
 mod tests;
 
-
 /// Panic-safe process-env restore for a test that must temporarily override a `std::env` var (e.g.
 /// `BUSBAR_CONFIG`). A bare "set, assert, manually restore" sequence leaks the override to every
 /// later test in the same binary the instant an `assert!`/`assert_eq!` in between fails: the panic
@@ -1729,7 +1728,6 @@ pub struct EnvVarGuard {
     prior: Option<std::ffi::OsString>,
 }
 
-
 impl EnvVarGuard {
     /// Snapshot `key`'s current value (restored on drop). Does not itself set anything — callers
     /// `std::env::set_var` afterward.
@@ -1740,7 +1738,6 @@ impl EnvVarGuard {
         }
     }
 }
-
 
 impl Drop for EnvVarGuard {
     fn drop(&mut self) {

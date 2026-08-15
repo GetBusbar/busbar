@@ -25,12 +25,11 @@ use crate::router::{
     server_timing_dur_ms, AXUM_BODY_LIMIT_413_MARKER, HEADER_SERVER_TIMING, NO_UPSTREAM_RTT,
 };
 #[allow(unused_imports)]
-use std::collections::HashMap;
-#[allow(unused_imports)]
 use axum::Router;
+#[allow(unused_imports)]
+use std::collections::HashMap;
 
 use crate::config::{PoolCfg, PoolMember};
-
 
 /// The inbound-concurrency cap is added as a layer ONLY when `max_inbound_concurrent > 0`. This
 /// drives `apply_inbound_concurrency_limit` over a minimal router whose handler PARKS on a barrier of
@@ -113,7 +112,6 @@ async fn test_inbound_concurrency_layer_added_only_when_positive() {
     );
 }
 
-
 /// Bug 4 — `limits.max_inbound_concurrent` must SHED excess inbound requests with a 503, not queue
 /// them behind the cap. With cap = 1 and one request in-flight holding the only admission permit, a
 /// second concurrent request must return 503 + Retry-After IMMEDIATELY — not block until the first
@@ -187,7 +185,6 @@ async fn test_inbound_over_capacity_sheds_503_not_queued() {
     server.abort();
 }
 
-
 fn pool(members: Vec<PoolMember>) -> PoolCfg {
     PoolCfg {
         upstream_credentials: None,
@@ -202,7 +199,6 @@ fn pool(members: Vec<PoolMember>) -> PoolCfg {
     }
 }
 
-
 fn member(model: &str, context_max: Option<usize>) -> PoolMember {
     PoolMember {
         reasoning: None,
@@ -215,7 +211,6 @@ fn member(model: &str, context_max: Option<usize>) -> PoolMember {
     }
 }
 
-
 #[test]
 fn test_resolve_model_context_max_explicit_wins_over_none() {
     // The same model in pool A with Some(128000) and pool B with None must resolve to the
@@ -227,7 +222,6 @@ fn test_resolve_model_context_max_explicit_wins_over_none() {
     assert_eq!(resolved.get("m"), Some(&Some(128_000)));
 }
 
-
 #[test]
 fn test_resolve_model_context_max_identical_values_ok() {
     // The same explicit limit repeated across pools is consistent, not a conflict.
@@ -237,7 +231,6 @@ fn test_resolve_model_context_max_identical_values_ok() {
     let resolved = resolve_model_context_max(&pools).expect("identical values must not conflict");
     assert_eq!(resolved.get("m"), Some(&Some(64_000)));
 }
-
 
 #[test]
 fn test_resolve_model_context_max_conflict_is_loud() {
@@ -256,7 +249,6 @@ fn test_resolve_model_context_max_conflict_is_loud() {
     );
 }
 
-
 #[test]
 fn test_resolve_model_context_max_none_everywhere() {
     let mut pools = HashMap::new();
@@ -265,7 +257,6 @@ fn test_resolve_model_context_max_none_everywhere() {
     let resolved = resolve_model_context_max(&pools).expect("all-None resolves to None");
     assert_eq!(resolved.get("m"), Some(&None));
 }
-
 
 #[test]
 fn test_open_relay_banner_distinguishes_absent_vs_explicit_none() {
@@ -283,13 +274,11 @@ fn test_open_relay_banner_distinguishes_absent_vs_explicit_none() {
     );
 }
 
-
 #[test]
 fn test_open_relay_banner_silent_when_auth_engaged() {
     // A non-empty chain emits nothing — the banner is exclusively for the open-relay state.
     assert!(open_relay_banner(false, true).is_none());
 }
-
 
 /// INERT-KEYS BOOT GUARD (bypass-edge): since 1.5.2 virtual-key enforcement is driven by the CHAIN
 /// SHAPE, not the admin token. A DURABLE store carrying keys while `auth.chain` does NOT name the
@@ -325,7 +314,6 @@ fn test_inert_durable_keys_banner_fires_only_for_durable_keyed_no_token() {
     );
 }
 
-
 /// A MEMORY store can never REACH the inert-with-keys state in practice: keys are only minted
 /// through the admin API, which is gated by the admin token — so a keyed engine implies an admin
 /// token, and a RAM store starts empty every boot. This pins that invariant end-to-end: a fresh
@@ -352,20 +340,17 @@ fn test_memory_store_cannot_reach_inert_with_keys() {
     assert!(gov2.admin_token_hash().is_some(), "admin token → active");
 }
 
-
 /// A deployment with NO plane mounted: every path resolves through the resolver's residual arm,
 /// which is the arm these vendor-envelope assertions are about.
 fn residual_planes() -> crate::plane::PlaneDispatch {
     crate::plane::PlaneDispatch::default()
 }
 
-
 /// The dialect a 404/405/413 is shaped in for `path` on a residual-only deployment — read through
 /// the ONE resolver the fallback handlers read, so this table cannot drift from what they answer.
 fn residual_dialect(path: &str) -> &'static str {
     crate::ingress::native::envelope_dialect(residual_planes().ingress_of(path))
 }
-
 
 /// The fallback handlers resolve the ingress from the request path so a 404/405 is shaped in the
 /// client's own dialect, not a bare axum body.
@@ -419,7 +404,6 @@ fn test_residual_dialect_inference() {
     assert_eq!(residual_dialect("/totally/unknown"), "openai");
 }
 
-
 // (The test that pinned `main.rs::proto_for_path` against the canonical `proto::proto_for_path`
 // is GONE WITH ITS SUBJECT: there is no second classifier left for it to agree with. ONE resolver
 // — `plane::PlaneDispatch::ingress_of` — answers for the fallback handlers, the 413 reshape and the
@@ -454,7 +438,6 @@ fn test_fallback_bedrock_404_is_native_envelope_with_amzn_headers() {
         "bedrock fallback must carry x-amzn-errortype"
     );
 }
-
 
 /// A 404 fallback on the OpenAI path is shaped as the OpenAI error envelope (no amzn headers).
 #[tokio::test]
@@ -495,7 +478,6 @@ async fn test_fallback_openai_404_is_json_no_amzn_headers() {
         "non-bedrock fallback must NOT carry x-amzn-* headers"
     );
 }
-
 
 /// SPLIT-LISTENER NO-DOUBLE-EXPOSURE: with a separate admin listener the admin surface must live
 /// ONLY on the admin router. `build_split_routers_with_limits` must yield an admin router that
@@ -563,7 +545,6 @@ async fn split_admin_listener_no_double_exposure() {
     assert_eq!(get(data_router, "/healthz", None).await, 200);
 }
 
-
 /// `Server-Timing` reports Busbar's OWN processing time = total − upstream RTT, with the
 /// no-upstream sentinel reporting the full time and clock skew saturating to zero (never a
 /// huge underflowed value).
@@ -576,7 +557,6 @@ fn test_server_timing_dur_ms() {
     // Clock skew (upstream measured ≥ total) saturates to 0, never underflows.
     assert_eq!(server_timing_dur_ms(500, 800), 0.0);
 }
-
 
 /// REGRESSION: axum's `DefaultBodyLimit` rejects an
 /// oversized body with a bare `text/plain` 413 (`"length limit exceeded"`) — a router/proxy
@@ -626,7 +606,6 @@ async fn test_oversized_body_413_reshaped_to_json_not_plain_text() {
     );
 }
 
-
 /// REGRESSION: a Bedrock-inferred oversized-body 413 must carry the native AWS
 /// `__type` envelope AND the `x-amzn-*` headers, indistinguishable from a real Bedrock reject.
 #[tokio::test]
@@ -675,7 +654,6 @@ async fn test_oversized_body_413_bedrock_native_envelope_with_amzn_headers() {
     );
 }
 
-
 /// A non-413 response (or a 413 a handler already shaped as JSON) must pass through
 /// `reshape_oversized_413` untouched — the layer only rewrites the bare-text body-limit reject.
 #[tokio::test]
@@ -713,7 +691,6 @@ async fn test_reshape_oversized_413_passthrough() {
         "an already-JSON 413 must be passed through, not re-wrapped"
     );
 }
-
 
 /// REGRESSION: a forward-path-relayed UPSTREAM 413 with a NON-JSON content-type (e.g.
 /// an upstream that itself answers 413 with a `text/plain`/`text/html` body that is NOT axum's
@@ -759,7 +736,6 @@ async fn test_relayed_upstream_413_not_reshaped() {
     );
 }
 
-
 /// The sentinel gate must be exact: a non-JSON 413 whose body equals axum's
 /// [`AXUM_BODY_LIMIT_413_MARKER`] IS reshaped (it is axum's own reject), confirming the
 /// passthrough above is driven by the body content and not merely the content-type.
@@ -793,7 +769,6 @@ async fn test_axum_marker_413_is_reshaped_even_as_plain_text() {
         serde_json::from_slice(&bytes).expect("reshaped 413 body must be valid JSON");
     assert!(v.get("error").is_some());
 }
-
 
 /// Helpers for the plugin pre-flight regression tests: a fresh temp plugins dir and an in-memory
 /// signed/unsigned tarball builder.
@@ -829,7 +804,6 @@ pub(crate) fn tmp_plugin_dir(tag: &str) -> std::path::PathBuf {
     dir
 }
 
-
 pub(crate) fn plugin_manifest(
     name: &str,
     alias: &str,
@@ -857,13 +831,11 @@ pub(crate) fn plugin_manifest(
     }
 }
 
-
 /// An UNSIGNED (but structurally valid) tarball: sha256 set, signature empty.
 pub(crate) fn unsigned_tarball(mut m: busbar_plugin_sign::Manifest, lib: &[u8]) -> Vec<u8> {
     m.sha256 = busbar_plugin_sign::sha256_hex(lib);
     busbar_plugin_loader::tarball::package(&m, "lib.so", lib).unwrap()
 }
-
 
 fn plugins_cfg(dir: &std::path::Path, enabled: bool) -> crate::config::PluginsCfg {
     crate::config::PluginsCfg {
@@ -873,14 +845,12 @@ fn plugins_cfg(dir: &std::path::Path, enabled: bool) -> crate::config::PluginsCf
     }
 }
 
-
 fn gov_with_store(store: &str) -> crate::config::StoreCfg {
     crate::config::StoreCfg {
         module: store.to_string(),
         ..Default::default()
     }
 }
-
 
 /// FAIL-CLOSED (hard requirement 1): `governance.store: <plugin>` with `plugins.enabled: false`
 /// (or the block absent) is a BOOT ERROR that NAMES the flag — the drop-is-inert failsafe.
@@ -912,7 +882,6 @@ fn store_plugin_with_plugins_disabled_is_boot_error_naming_the_flag() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-
 /// DROP-IS-INERT: plugins present in the directory but `plugins.enabled: false` (store: memory) —
 /// boot succeeds with an EMPTY registry; nothing in the dir is even considered.
 #[test]
@@ -934,7 +903,6 @@ fn disabled_plugins_are_inert_even_when_present() {
     assert!(reg.loadable().is_empty() && reg.skipped().is_empty());
     let _ = std::fs::remove_dir_all(&dir);
 }
-
 
 /// SECURITY: if the CONFIGURED governance store resolves to a plugin that is UNTRUSTED and NOT
 /// opted-in, boot must FAIL with a clear error that NAMES the plugin and carries the exact trust
@@ -998,7 +966,6 @@ fn configured_store_with_untrusted_plugin_fails_boot_with_naming_error() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-
 /// An UNKNOWN `governance.store` name (no plugin matches by alias or name) is a clear boot error
 /// listing what IS available.
 #[test]
@@ -1024,7 +991,6 @@ fn unknown_store_name_is_a_clear_boot_error() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
-
 
 /// FAIL-CLOSED (hard requirement 1): ANY invalid tarball/manifest in an ENABLED plugins dir aborts
 /// preflight (and therefore boot) with the file + reason named — never a partial boot, even when
@@ -1064,7 +1030,6 @@ fn invalid_manifest_in_enabled_dir_fails_boot() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-
 /// CONFLICT (hard requirement 3): two loadable plugins claiming the same alias abort boot naming
 /// BOTH — "you can't use valkey and a third-party valkey".
 #[test]
@@ -1096,7 +1061,6 @@ fn alias_conflict_fails_boot_naming_both() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-
 // ── secrets: block validation + alias/name canonicalization ──────────────────────────────────────
 
 /// A `kind: secret` manifest with the correct secret ABI (the store default from `plugin_manifest`
@@ -1110,7 +1074,6 @@ fn secret_manifest(name: &str, alias: &str) -> busbar_plugin_sign::Manifest {
         .expect("secret abi");
     m
 }
-
 
 /// A registry loaded from an unsigned `kind: secret` tarball (name `acme-secret-vault`, alias
 /// `vault`), for exercising the `secrets:` block resolution.
@@ -1132,7 +1095,6 @@ fn secret_registry(tag: &str) -> (std::path::PathBuf, busbar_plugin_loader::Plug
     (dir, reg)
 }
 
-
 /// A `secrets:` entry naming a reserved BUILT-IN resolver (`env` / `file`) as a
 /// module is rejected — the built-ins take no module-level open() config, so such an entry is an
 /// operator error, not a silent no-op.
@@ -1148,7 +1110,6 @@ fn secrets_block_rejects_builtin_resolver_names() {
     }
 }
 
-
 /// A `secrets:` entry that resolves to NO loadable plugin is a hard error (not a silent `{}` open) —
 /// this is the failure that pairs with the alias/name mismatch below.
 #[test]
@@ -1160,7 +1121,6 @@ fn secrets_block_rejects_unknown_module() {
         "unknown module named in the error: {err}"
     );
 }
-
 
 /// The `secrets:` block key canonicalizes through the SAME by_name/by_alias
 /// resolution the registry uses — a block keyed on the ALIAS and a block keyed on the CANONICAL name
@@ -1180,7 +1140,6 @@ fn secrets_block_canonicalizes_alias_and_name_to_the_same_key() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
-
 
 /// A `secrets:` entry naming a plugin whose kind is NOT `secret` is rejected (only a kind: secret
 /// plugin can back a `secrets:` block entry).
@@ -1208,7 +1167,6 @@ fn secrets_block_rejects_non_secret_kind() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
-
 
 /// A minimal `RootCfg` whose SOLE provider's `api_key` is the given secret reference — the smallest
 /// config that exercises `config_validate::secret_refs` (and thus `validate_secret_refs`).
@@ -1267,7 +1225,6 @@ fn cfg_with_provider_api_key(api_key: crate::config::SecretRef) -> crate::config
     }
 }
 
-
 /// The marquee 1.5.0 "secrets are plugins" feature — a provider
 /// `api_key: { module: acme-vault, … }` (TLS cert/key, `auth.signing_key`, and the admin token are
 /// the same shape) — must PASS validation when the `kind: secret` plugin is loaded + trusted. The
@@ -1296,7 +1253,6 @@ fn secret_ref_plugin_backed_module_passes_when_plugin_present() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-
 /// A GENUINE typo — a secret module that is neither a built-in
 /// (`env`/`file`) nor a loaded plugin — must still FAIL, so the deferral does not weaken the check.
 #[test]
@@ -1323,7 +1279,6 @@ fn secret_ref_typo_module_still_fails_at_preflight() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-
 /// The built-in `env`/`file` modules always pass the registry
 /// pre-flight (they are resolved inline, never through a plugin), even with an EMPTY registry.
 #[test]
@@ -1335,7 +1290,6 @@ fn secret_ref_builtin_modules_pass_with_empty_registry() {
         "a built-in env ref must pass the pre-flight with no plugins loaded"
     );
 }
-
 
 /// A secret ref naming a plugin of the WRONG kind (a store plugin,
 /// not `kind: secret`) fails the pre-flight — the same wrong-kind guard the `secrets:` block gets.
@@ -1367,7 +1321,6 @@ fn secret_ref_wrong_kind_plugin_fails_at_preflight() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
-
 
 // ── CREDENTIAL SecretRefs RE-RESOLVE ON APPLY/RELOAD ──────────────────────
 //
@@ -1405,7 +1358,6 @@ fn cfg_with_credentials(
     cfg
 }
 
-
 fn build_once(
     cfg: crate::config::RootCfg,
     prior: Option<&crate::state::App>,
@@ -1427,7 +1379,6 @@ fn build_once(
     }
     Ok(app)
 }
-
 
 /// An unchanged lane set must CARRY the probe schedule (same `Arc`) across a rebuild —
 /// otherwise a mutation cadence faster than the probe interval (`/config/settings` metered at
@@ -1481,7 +1432,6 @@ fn a_rebuild_carries_the_probe_schedule() {
     );
 }
 
-
 /// Rotating the admin-token secret on disk and RE-APPLYING changes the credential the process
 /// accepts. RED without the re-resolution: the digest stays on `tok-v1` forever.
 #[cfg(feature = "auth-admin-tokens")]
@@ -1524,7 +1474,6 @@ fn admin_token_secret_ref_re_resolves_on_apply() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
-
 
 /// The same for `auth.signing_key`: after rotating the key material and re-applying, a token minted
 /// under the OLD key no longer verifies and a freshly-minted one does. A resolution FAILURE on
@@ -1590,7 +1539,6 @@ fn signing_key_secret_ref_re_resolves_on_apply_and_fails_closed() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-
 /// #37: a `token:` secret ref that resolves to EMPTY or WHITESPACE must refuse to start. The
 /// documented boot guard for this was lost when the admin token became a SecretRef, and the
 /// consequence is worse than "the admin API is silently locked": the digest is taken over the blank
@@ -1643,7 +1591,6 @@ fn blank_admin_token_refuses_to_start() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-
 /// #39: a `secrets:` block written under BOTH a plugin's ALIAS and its CANONICAL name resolves to
 /// one module, and the second entry used to silently overwrite the first — one block's configured
 /// address/token/CA just vanished while the module loaded happily on the survivor. Ambiguous by
@@ -1686,7 +1633,6 @@ fn secrets_block_rejects_alias_and_canonical_for_one_module() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
-
 
 /// A REJECTED CONFIG MUST NOT LEAVE ITS LIMITS INSTALLED.
 ///
@@ -1734,7 +1680,6 @@ fn a_rejected_config_leaves_no_limits_behind() {
          live SigV4 and cross-protocol translate body caps"
     );
 }
-
 
 /// THE 413 RESHAPE MUST FIRE ON A REAL OVERSIZED REQUEST.
 ///
@@ -1795,7 +1740,6 @@ async fn oversized_request_413_is_reshaped_on_the_live_stack() {
     server.abort();
 }
 
-
 // ── THE MOUNT-AWARE RESOLVER, read off the wire ──────────────────────────────────────────────────
 //
 // One resolver answers "which plane, and in which dialect, is this path spoken", and an oversized
@@ -1832,7 +1776,6 @@ async fn oversized_413_body(app: std::sync::Arc<state::App>, path: &str) -> serd
         .unwrap_or_else(|e| panic!("the 413 body must be JSON ({e}): {body}"))
 }
 
-
 /// An MCP resource mounted at `/mcp`, from the same `mcp:` config shape an operator writes.
 fn mcp_cfg_at(canonical: &str) -> crate::mcp::McpCfg {
     crate::mcp::McpCfg {
@@ -1842,7 +1785,6 @@ fn mcp_cfg_at(canonical: &str) -> crate::mcp::McpCfg {
         allowed_origins: Vec::new(),
     }
 }
-
 
 /// THE SHIPPED DEFECT: an oversized POST to a MOUNTED MCP plane was answered with an
 /// **OpenAI** error envelope — `{"error":{"message","type","code"}}` — because the error-shaping
@@ -1876,7 +1818,6 @@ async fn oversized_post_to_a_mounted_mcp_plane_is_refused_in_the_planes_own_dial
     );
 }
 
-
 /// THE SEGMENT BOUNDARY, IN BOTH DIRECTIONS. A mount at `/mcp` claims `/mcp` and everything
 /// beneath it at a segment boundary, and claims `/mcpx` not at all. A sibling path must inherit
 /// neither the plane's grants nor its refusals, so `/mcpx` keeps the residual plane's answer.
@@ -1908,7 +1849,6 @@ async fn a_mount_claims_its_own_segment_and_not_its_sibling() {
     );
 }
 
-
 /// A PLANE CLAIMS A PATH ONLY WHEN THE OPERATOR MOUNTED IT. With no `mcp:` section there is no MCP
 /// plane, so `/mcp` is an ordinary unclaimed path on the residual and is answered as one. The merge
 /// must not turn an unmounted plane into one that claims paths by URL shape.
@@ -1929,7 +1869,6 @@ async fn an_unmounted_plane_claims_no_path_by_url_shape() {
         "the residual plane answers the widely-understood envelope; got {v}"
     );
 }
-
 
 // ── response-header consolidation (default OFF, opt-in via `advanced.response_headers`) ──────────
 //
@@ -1994,7 +1933,6 @@ async fn server_timing_header_absent_by_default_present_when_enabled() {
     );
 }
 
-
 /// GREEN: `x-busbar-route-policy` / `x-busbar-route-target` are ABSENT by default on a real request
 /// through the real stack — `advanced.response_headers.route_policy` defaults `false`, and nothing in
 /// this test process ever calls `proxy::configure_route_policy_headers(true)`
@@ -2029,7 +1967,6 @@ async fn route_policy_headers_absent_by_default_on_the_live_stack() {
     );
     server.abort();
 }
-
 
 // ── real boot-time legacy-config refusal / migration (end to end) ────────────────────────────────
 //
@@ -2066,7 +2003,6 @@ pools:
       - { target: claude, weight: 1 }
 "#;
 
-
 /// A fresh temp dir holding `config.yaml` (given content) + an empty `providers.yaml`, so
 /// `load_config_from_disk` has real files to read.
 fn boot_config_dir(
@@ -2086,7 +2022,6 @@ fn boot_config_dir(
     std::fs::write(&config_path, config_yaml).unwrap();
     (dir, config_path, providers_path)
 }
-
 
 /// THE BOOT PATH ITSELF must refuse a real 1.x config file on disk, loudly and by name — never a
 /// silent load with 1.5.0 semantics, never a bare unknown-field parse error that doesn't say what's
@@ -2121,7 +2056,6 @@ fn load_config_from_disk_refuses_a_real_legacy_config_file_loudly() {
 
     std::fs::remove_dir_all(&dir).ok();
 }
-
 
 /// The `--migrate-config` output, written to a REAL file and fed back through the REAL boot entry
 /// point, must boot cleanly — the recovery half of the same promise: an operator who migrates ends
@@ -2162,7 +2096,6 @@ fn migrate_config_then_load_config_from_disk_boots_the_real_migrated_file() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-
 /// `upstream_bool_env_override`: the env→config migration precedence for the boot-time upstream
 /// booleans. When the deprecated env var is UNSET, the config value stands; when SET, it wins (`"0"`
 /// or empty = off, anything else = on). Dropping the `None => config_val` arm (so the
@@ -2194,7 +2127,6 @@ fn upstream_bool_env_override_precedence() {
     );
 }
 
-
 /// Proves the restore survives a PANIC between
 /// `set_var` and the end of scope, not just the happy path. Before introducing the `Drop` guard, a
 /// failed assertion in `worker_threads_from_config_reads_a_real_file` would unwind past its manual
@@ -2223,7 +2155,6 @@ fn env_var_guard_restores_on_panic() {
     std::env::remove_var(KEY);
 }
 
-
 /// `is_real_auth_plugin_ref`: `keys` is always exempt (engine-handled, never a plugin).
 /// `test-groups-module` is exempt ONLY when `is_test_build` is true — in a release build it must
 /// be treated as a real (unresolvable) plugin ref, so `--validate` fails it the same way real boot
@@ -2247,7 +2178,6 @@ fn is_real_auth_plugin_ref_exempts_keys_always_and_test_groups_module_only_in_te
     assert!(is_real_auth_plugin_ref("oidc", false));
 }
 
-
 /// `is_audit_restore_read_hiccup`: exactly the "audit restore read failed" prefix routes to the
 /// hiccup (warn) path; a chain-verification failure message (or anything else) does not, even if
 /// it shares a substring or near-miss prefix — the distinction is load-bearing (tamper evidence
@@ -2266,7 +2196,6 @@ fn audit_restore_read_hiccup_matches_only_its_own_prefix() {
         "something else entirely audit restore read failed"
     ));
 }
-
 
 /// `plugins.fetch` (resource/DoS finding): a mistyped or compromised fetch URL serving an
 /// oversized body must be rejected under a size cap, never buffered whole into memory via
@@ -2370,7 +2299,6 @@ async fn plugin_fetch_downloader_rejects_an_oversized_body() {
     }
 }
 
-
 /// Boot RUNS `plugins.fetch` before preflight, and a PIN-CACHED entry skips the
 /// network (the URL is unreachable — if boot tried to fetch it, this would fail). Proves the fetch
 /// step is wired into `build_app_from_config`'s boot path and that cache-by-pin means no-network.
@@ -2417,7 +2345,6 @@ fn fetch_cached_pin_boots_without_network() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-
 /// Source review of the boot-logging matrix: the enabled/disabled boot lines and
 /// the two-part referenced-but-missing diagnosis are present in `plugins_preflight`. Guards the
 /// observability wording against silent removal.
@@ -2445,11 +2372,9 @@ fn plugins_boot_logging_wording_present() {
     );
 }
 
-
 /// A minimal but structurally VALID 1.5.x config (parses into `DeployCfg`; `load_config_from_disk`
 /// does not resolve, so empty maps are fine).
 const BOOT_MINIMAL_CONFIG: &str = "providers: {}\nmodels: {}\n";
-
 
 /// 1.5.3 durable-by-default at the BOOT path: with NO `config:` section and NO `BUSBAR_CONFIG_OVERLAY`,
 /// `load_config_from_disk` resolves a writable overlay next to config.yaml and reports the config
@@ -2468,7 +2393,6 @@ fn boot_default_config_resolves_a_durable_overlay_next_to_config() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
-
 
 /// 1.5.3 BOOT INVARIANT: a mutable config that explicitly disables the overlay REFUSES TO BOOT, with an
 /// actionable message (writable overlay OR `config.locked: true`). Pre-1.5.3 nothing
@@ -2494,7 +2418,6 @@ fn boot_mutable_with_overlay_disabled_refuses_to_boot() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-
 /// 1.5.3: a LOCKED config boots with NO overlay backend (mutations are refused at runtime).
 #[test]
 fn boot_locked_config_has_no_overlay() {
@@ -2506,7 +2429,6 @@ fn boot_locked_config_has_no_overlay() {
     assert!(loaded.overlay_path.is_none(), "locked ⇒ no overlay backend");
     let _ = std::fs::remove_dir_all(&dir);
 }
-
 
 /// 1.5.3 providers migration (`BUSBAR_PROVIDERS` → `providers_file:`): the top-level `providers_file:`
 /// pointer names the catalog (resolved relative to config.yaml), honored with NO env var; and an
@@ -2557,7 +2479,6 @@ fn boot_providers_file_pointer_is_honored_and_override_wins() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
-
 
 /// `App.auth_scope_caps` is keyed by PROVIDER NAME, not by the backing plugin MODULE.
 ///

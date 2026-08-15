@@ -7,7 +7,6 @@
 use super::*;
 use busbar_core::test_support::EnvVarGuard;
 
-
 /// `worker_threads_from_env`: an unset var returns None (the normal default path, no warning); a
 /// valid positive integer returns Some(n); zero/negative/non-numeric returns None WITH a warning
 /// printed (not silently ignored, see the function's own doc comment). Uses a
@@ -43,7 +42,6 @@ fn worker_threads_from_env_parses_valid_rejects_invalid() {
     }
 }
 
-
 /// `validate_worker_threads_config`: a config-supplied `advanced.worker_threads: 0` is DIAGNOSED
 /// (`Err`, so the caller warns) rather than silently dropped — matching `worker_threads_from_env`'s
 /// treatment of an invalid env value. A positive count or an unset value passes through as `Ok`.
@@ -58,7 +56,6 @@ fn validate_worker_threads_config_diagnoses_zero() {
     assert_eq!(validate_worker_threads_config(Some(4)), Ok(Some(4)));
     assert_eq!(validate_worker_threads_config(None), Ok(None));
 }
-
 
 /// `worker_threads_from_config`: END-TO-END from a real config.yaml (not just a parse). A positive
 /// `advanced.worker_threads` is read back from the file the `BUSBAR_CONFIG` env var names; a `0` is
@@ -116,7 +113,6 @@ fn worker_threads_from_config_reads_a_real_file() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-
 /// `safe_mode_requested`: true iff `--safe-mode` is literally present among the args; absent, a
 /// near-miss, or an empty arg list must all return false.
 #[test]
@@ -132,7 +128,6 @@ fn safe_mode_requested_matches_the_exact_flag_only() {
     ));
     assert!(!safe_mode_requested(std::iter::empty()));
 }
-
 
 /// `recv_shutdown`: a `-> ()` mutant would resolve immediately regardless of the channel — the
 /// real function must genuinely BLOCK until something is sent (or the sender is dropped), then
@@ -156,7 +151,6 @@ async fn recv_shutdown_blocks_until_a_send_then_resolves() {
         .unwrap();
 }
 
-
 /// `shutdown_signal`: a `-> ()` mutant would resolve immediately — the real function must genuinely
 /// block (nothing sends SIGINT/SIGTERM in this test), never completing within a bounded wait.
 #[tokio::test]
@@ -168,7 +162,6 @@ async fn shutdown_signal_blocks_when_no_signal_is_delivered() {
         "shutdown_signal must still be pending with no real signal delivered, not resolve as a no-op"
     );
 }
-
 
 /// `serve_listener`: a `-> ()` mutant would never actually accept connections. Bind a real
 /// listener, serve a trivial router through `serve_listener`, and confirm a real HTTP request
@@ -204,7 +197,6 @@ async fn serve_listener_actually_serves_real_http_traffic() {
         .expect("serve_listener must actually stop once shutdown fires")
         .unwrap();
 }
-
 
 /// SECURITY (signing-key stdout-only contract): `--generate-signing-key` prints the secret ONLY on
 /// stdout; the stderr guidance must be secret-free so a stderr capture (systemd journal, CI/build log,

@@ -25,7 +25,6 @@
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
-
 pub mod a2a;
 pub mod admin;
 /// THE APPEND-ONLY HASH CHAIN, in core. One append, one digest, one verifier, for every stream of
@@ -90,19 +89,23 @@ pub mod trust;
 // `busbar_core::X` path resolving unchanged, and each item's crate-root VISIBILITY is exactly what
 // the lib/bin seam demanded — nothing widened for convenience.
 pub mod appbuild;
+pub mod preflight;
+pub mod router;
 #[cfg(test)]
 #[path = "tests/tests.rs"]
 mod tests;
-pub mod preflight;
-pub mod router;
 
 pub use appbuild::{
     build_app_from_config, inert_durable_keys_banner, load_config_from_disk, open_relay_banner,
     resolve_model_context_max, upstream_bool_env_override, GovCredentialRotation, LoadedConfig,
     DEFAULT_CONFIG_PATH, ENV_CONFIG, ENV_PROVIDERS,
 };
-pub use preflight::{plugins_preflight, preflight_plugins_and_secrets, validate_builtin_secrets_resolve};
-pub use router::{build_router, build_split_routers_with_limits, fallback_error_response, REQUEST_ACTIVITY_TICKS};
+pub use preflight::{
+    plugins_preflight, preflight_plugins_and_secrets, validate_builtin_secrets_resolve,
+};
+pub use router::{
+    build_router, build_split_routers_with_limits, fallback_error_response, REQUEST_ACTIVITY_TICKS,
+};
 // Referenced as `crate::...` only from the test trees (`#[cfg(test)]`), so the production lib
 // build sees them as unused — allowed, with the reason written down rather than widened away.
 #[allow(unused_imports)]

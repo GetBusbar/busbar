@@ -5010,7 +5010,12 @@ fn an_empty_protocol_set_refuses_every_provider_naming_the_build() {
 
     // The populated set still takes the unknown-protocol arm — the two refusals stay distinct.
     let mut errors = Vec::new();
-    super::validate_provider_protocol_with(&["anthropic", "openai_chat"], "prov-c", "nope", &mut errors);
+    super::validate_provider_protocol_with(
+        &["anthropic", "openai_chat"],
+        "prov-c",
+        "nope",
+        &mut errors,
+    );
     assert_eq!(errors.len(), 1);
     assert!(
         errors[0].contains("must be one of: anthropic, openai_chat"),

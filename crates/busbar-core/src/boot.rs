@@ -192,7 +192,6 @@ pub fn hydrate_all(app: &Arc<crate::state::App>) {
             ),
         }
     }
-
 }
 
 /// THE A2A RE-VERIFICATION JOB. Spawned only when `agents:` defines a plane; resolves the outbound
@@ -272,9 +271,8 @@ pub fn spawn_a2a_reverify(
 /// hex chars. The signer type and `DEFAULT_KID` stay `pub(crate)`; the CLI needs a hex string, not
 /// a `TokenSigner`.
 pub fn generate_signing_key_hex() -> Result<String, String> {
-    let signer = crate::governance::signing::TokenSigner::generate(
-        crate::governance::signing::DEFAULT_KID,
-    )
-    .map_err(|e| e.to_string())?;
+    let signer =
+        crate::governance::signing::TokenSigner::generate(crate::governance::signing::DEFAULT_KID)
+            .map_err(|e| e.to_string())?;
     Ok(hex::encode(signer.secret_bytes()))
 }

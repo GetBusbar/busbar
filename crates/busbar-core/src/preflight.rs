@@ -7,7 +7,6 @@
 
 use std::sync::Arc;
 
-
 #[allow(unused_imports)]
 use crate::{
     a2a, admin, audit, auth, auth_cache, billing, breaker, catalogue, config, config_validate,
@@ -16,8 +15,6 @@ use crate::{
     oauth_as, observability, operation, plane, plugin_routes, profile, proto, proxy, sigv4, state,
     store, telemetry, tls, transport, trust,
 };
-
-
 
 /// Build a complete `App` from a RESOLVED config — the ONE construction path shared by boot
 /// (`prior = None`) and the config plane's apply/reload (`prior = Some(current)`). On apply,
@@ -430,8 +427,6 @@ pub fn plugins_preflight(
     Ok(registry)
 }
 
-
-
 /// Resolve the operator ADMIN credential — the `admin-tokens` chain entry's `token:` secret ref —
 /// with the BLANK-TOKEN guard. Shared by boot and the apply/reload path so the two cannot drift.
 ///
@@ -466,8 +461,6 @@ pub(crate) fn resolve_admin_token(
     Ok(Some(busbar_api::Redacted::new(token)))
 }
 
-
-
 /// Parse resolved bytes into a 32-byte ed25519 secret: accept RAW 32 bytes or 64 hex chars. Shared
 /// by the signing-key resolver and the `--generate-signing-key` self-check.
 pub(crate) fn parse_signing_secret(bytes: &[u8]) -> Result<[u8; 32], String> {
@@ -492,8 +485,6 @@ pub(crate) fn parse_signing_secret(bytes: &[u8]) -> Result<[u8; 32], String> {
             .to_string(),
     )
 }
-
-
 
 /// Resolve the KEY-SIGNING key. `auth.signing_key` is a reference to an EXISTING secret
 /// (env/file/plugin) resolving to the ed25519 secret material (32 raw bytes, or 64 hex chars) busbar
@@ -533,8 +524,6 @@ pub(crate) fn resolve_signing_key(
     Ok(Some(TokenSigner::from_secret_bytes(&secret, DEFAULT_KID)))
 }
 
-
-
 /// Validate ONE `secrets:` block key against the plugin registry and return the plugin's CANONICAL
 /// name. Fail-closed (an `Err`) when the key names a reserved built-in resolver (`env`/`file`, which
 /// take no module-level config), when no loadable plugin is named or aliased by it, or when the
@@ -567,8 +556,6 @@ pub(crate) fn validate_secret_module(
     }
 }
 
-
-
 /// THE POST-RESOLVE HALF OF `--validate`, in one place.
 ///
 /// `config_validate::validate` is only part of what makes a config valid: the plugin pre-flight
@@ -594,8 +581,6 @@ pub(crate) fn is_real_auth_plugin_ref(m: &str, is_test_build: bool) -> bool {
     m != config::KEYS_MODULE && !(is_test_build && m == "test-groups-module")
 }
 
-
-
 /// The DEFINITION-side twin of [`is_real_auth_plugin_ref`]: whether an
 /// `identity-providers.<name>.module:` is a REAL `kind: auth` plugin reference that must resolve
 /// against the registry, as opposed to a built-in the engine handles inline
@@ -612,12 +597,12 @@ pub(crate) fn is_real_identity_provider_plugin_ref(m: &str, is_test_build: bool)
         && !(is_test_build && matches!(m, "test-groups-module" | "test-scope-module"))
 }
 
-
-
 /// The human list of every module an `identity-providers.<name>.module:` may legally name RIGHT NOW:
 /// the built-ins, plus every loaded `kind: auth` plugin. Named as a SET, never counted — the same
 /// "name the whole valid vocabulary" discipline the `export.<n>.streams:` diagnostic follows.
-pub(crate) fn valid_identity_provider_modules(registry: &busbar_plugin_loader::PluginRegistry) -> String {
+pub(crate) fn valid_identity_provider_modules(
+    registry: &busbar_plugin_loader::PluginRegistry,
+) -> String {
     let mut names: Vec<String> = config::BUILTIN_IDENTITY_PROVIDERS
         .iter()
         .map(|s| (*s).to_string())
@@ -631,8 +616,6 @@ pub(crate) fn valid_identity_provider_modules(registry: &busbar_plugin_loader::P
     );
     names.join(" | ")
 }
-
-
 
 /// Manifest-only, like the pre-flight it wraps: nothing is `dlopen`ed and no store is opened, so it
 /// is safe on the admin read path.
@@ -653,8 +636,6 @@ pub fn preflight_plugins_and_secrets(
     Ok(registry)
 }
 
-
-
 /// Validate EVERY `secrets:` block entry against the registry (the `--validate` counterpart of the
 /// per-entry check `build_secret_resolver` runs at boot). Returns the FIRST offending entry's error.
 pub(crate) fn validate_secret_modules(
@@ -666,8 +647,6 @@ pub(crate) fn validate_secret_modules(
     }
     Ok(())
 }
-
-
 
 /// Validate every SECRET REFERENCE's module against the plugin registry — the deferred half of the
 /// secret-reference check `config_validate` cannot do (it runs before the registry exists). The
@@ -710,8 +689,6 @@ pub(crate) fn validate_secret_refs(
     Ok(())
 }
 
-
-
 /// RESOLVE every built-in (`env` / `file`) secret reference, for `--validate` ONLY.
 ///
 /// `config_validate` proves a reference is well-FORMED; it cannot prove the variable is set or the
@@ -740,8 +717,6 @@ pub fn validate_builtin_secrets_resolve(cfg: &config::RootCfg) -> Result<(), Str
     }
     Ok(())
 }
-
-
 
 /// Build the [`config::secret::SecretResolver`] the engine resolves every secret reference through:
 /// the built-in `env`/`file` modules inline, and any OTHER module name via a loaded `kind: secret`
@@ -828,19 +803,17 @@ pub(crate) fn build_secret_resolver(
     )))
 }
 
-
-
 /// The `plugins.fetch` download closure the engine hands to `busbar_plugin_loader::fetch_plugins`.
 /// Enforces the SAME cloud-metadata SSRF denylist provider URLs face (fetch is off-box, key-adjacent
 /// I/O) and requires https for a public host, then performs the GET. The GET runs on a DEDICATED
 /// std::thread with its own current-thread runtime, so it is safe whether the caller sits on a tokio
 /// worker (boot) or a `spawn_blocking` thread (reload) — a nested `block_on` on a runtime thread would
 /// otherwise panic. The loader owns cache/verify/atomic-write; this owns network + SSRF.
-pub(crate) fn plugin_fetch_downloader(blocked: &[String]) -> impl Fn(&str) -> Result<Vec<u8>, String> {
+pub(crate) fn plugin_fetch_downloader(
+    blocked: &[String],
+) -> impl Fn(&str) -> Result<Vec<u8>, String> {
     plugin_fetch_downloader_with_cap(blocked, config::DEFAULT_PLUGIN_FETCH_MAX_BYTES)
 }
-
-
 
 /// Same as [`plugin_fetch_downloader`] with an explicit download-size cap — split out so a test can
 /// exercise the over-cap rejection path against a small in-memory server without actually moving

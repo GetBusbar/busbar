@@ -4,7 +4,6 @@
 //! wiring in ONE file is what makes that registration a one-file change in core plus one call in
 //! the binary's composition root.
 
-
 use axum::Router;
 
 #[allow(unused_imports)]
@@ -16,18 +15,14 @@ use crate::{
     store, telemetry, tls, transport, trust,
 };
 
-
 /// Response header name for the W3C Server-Timing field.
 pub(crate) const HEADER_SERVER_TIMING: &str = "server-timing";
-
 
 /// Sentinel value stored in the `UPSTREAM_RTT_US` task-local when NO upstream hop was dispatched
 /// (admin / health / early error). `server_timing_dur_ms` treats this as "report the full request
 /// time" rather than subtracting a nonexistent RTT. Only this exact u64::MAX meaning is replaced
 /// with the const; overflow/conversion fallbacks that happen to produce u64::MAX are NOT this.
 pub(crate) const NO_UPSTREAM_RTT: u64 = u64::MAX;
-
-
 
 /// Render a native ingress error envelope (`application/json`) for the fallback handlers, in the
 /// dialect the path is spoken in — attaching the `x-amzn-*` headers when that dialect is Bedrock,
@@ -67,8 +62,6 @@ pub fn fallback_error_response(
     crate::ingress::native::native_error(planes.ingress_of(path), status, kind, message)
 }
 
-
-
 // NOTE: the 404 fallback handler is superseded by `ingress::protocol_dispatch`, which owns the
 // catch-all and reproduces the same native-envelope 404 shaping for non-protocol paths.
 
@@ -87,8 +80,6 @@ pub(crate) async fn method_not_allowed_handler(
         "method not allowed for this resource",
     )
 }
-
-
 
 /// The SENTINEL substring in the `text/plain` body axum's `DefaultBodyLimit` emits when a request
 /// exceeds the limit — used to distinguish axum's OWN body-limit 413 from a forward-path-relayed
@@ -115,8 +106,6 @@ pub(crate) async fn method_not_allowed_handler(
 /// through the real layer stack, so the next time axum changes its prose the build goes red instead
 /// of the reshape silently switching itself off.
 pub(crate) const AXUM_BODY_LIMIT_413_MARKER: &[u8] = b"length limit exceeded";
-
-
 
 /// Reshape an oversized-body rejection into a protocol-native error. axum's `DefaultBodyLimit`
 /// rejects a too-large request with HTTP 413 and a bare `text/plain` body (`"length limit
@@ -146,14 +135,11 @@ pub(crate) async fn reshape_body_limit_413(
     reshape_oversized_413(&handle.load().planes, &path, resp).await
 }
 
-
-
 /// Per-process count of requests that entered the middleware stack — the idleness signal for the
 /// jemalloc idle-purge fallback (bumped once per request in `server_timing`, read every sweep tick
 /// by the purge thread). Wraps harmlessly (only equality-across-a-window is compared).
-pub static REQUEST_ACTIVITY_TICKS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
-
+pub static REQUEST_ACTIVITY_TICKS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
 
 /// Compute the `Server-Timing` `dur` value (milliseconds) for a request: Busbar's own processing
 /// time = total request wall-clock minus the upstream round-trip. `upstream_us == u64::MAX` means
@@ -168,8 +154,6 @@ pub(crate) fn server_timing_dur_ms(total_us: u64, upstream_us: u64) -> f64 {
     internal_us as f64 / 1000.0
 }
 
-
-
 /// Always-installed OUTERMOST-ISH middleware: bumps the jemalloc idle-purge activity ticker (see
 /// `spawn_jemalloc_idle_purge_fallback`) on every request. Split out of `server_timing`
 /// so the ticker keeps incrementing regardless of whether `advanced.response_headers.server_timing`
@@ -183,8 +167,6 @@ pub(crate) async fn request_activity_tick(
     REQUEST_ACTIVITY_TICKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     next.run(req).await
 }
-
-
 
 /// Outermost middleware: stamps a standard `Server-Timing: busbar;dur=<ms>` response header
 /// reporting the latency Busbar itself added — total request wall-clock MINUS the upstream
@@ -219,8 +201,6 @@ pub(crate) async fn server_timing(
     }
     resp
 }
-
-
 
 /// Pure reshaping step of [`reshape_body_limit_413`], split out so it is unit-testable without
 /// constructing a `Next`. Returns `resp` unchanged unless it is axum's OWN body-limit 413 —
@@ -277,8 +257,6 @@ pub(crate) async fn reshape_oversized_413(
     )
 }
 
-
-
 /// Build the busbar HTTP router for a given `App` state with default limits. Factored out so the
 /// full route table + auth middleware can be exercised end-to-end in tests; production (`main`) calls
 /// `build_router_with_limits` with the operator-configured values, so this convenience wrapper is
@@ -297,8 +275,6 @@ pub fn build_router(app: std::sync::Arc<state::App>) -> Router {
     )
     .0
 }
-
-
 
 /// Router builder with EXPLICIT limits, building the COMBINED router (admin mounted on the data
 /// routes). Used only by the test harness (`build_router`) to exercise the full route table + auth
@@ -346,8 +322,6 @@ pub(crate) fn build_router_with_limits(
         handle,
     )
 }
-
-
 
 /// The DATA-plane route table — protocols, discovery, and health/metrics/stats — WITHOUT the admin
 /// surface. Pre-state (`Router<Arc<AppHandle>>`); the admin API is mounted separately (onto this
@@ -530,8 +504,6 @@ pub(crate) fn base_data_router(
         .into_parts()
 }
 
-
-
 /// Apply the shared middleware stack — auth chain, request-body cap, 413 reshaping, server-timing —
 /// and bind the swappable `AppHandle` state. Identical for the single-listener router and each
 /// split-plane router, so both planes get the SAME auth + limit posture and both see config-apply
@@ -598,8 +570,6 @@ pub(crate) fn apply_common_layers(
     router.with_state(handle.clone())
 }
 
-
-
 /// Build SEPARATE data-plane and admin-plane routers sharing ONE `AppHandle`, for the split-listener
 /// deployment (`admin_listen` set). The admin surface is mounted ONLY on the admin router — it is
 /// absent from the data router, so the data listener physically cannot serve `/api/v1/admin/*` (no
@@ -659,8 +629,6 @@ pub fn build_split_routers_with_limits(
     (data, admin, handle)
 }
 
-
-
 /// OUTERMOST inbound-concurrency cap. `max_inbound_concurrent == 0` disables the layer entirely (a
 /// true no-op) — but `0` is NOT the default; `DEFAULT_MAX_INBOUND_CONCURRENT` is `8192`, so the layer
 /// IS installed out of the box and an operator opts OUT with `0`, not in. When `> 0` (including the
@@ -682,7 +650,9 @@ pub fn build_split_routers_with_limits(
 /// `read-only`, silently ignoring an operator's explicit `max_admin_scope: full`), but a config in
 /// which one provider's NAME equals a DIFFERENT provider's MODULE handed the first provider's
 /// ceiling to the second — an escalation. Name-keying closes both.
-pub(crate) fn project_auth_scope_caps(a: &config::AuthCfg) -> std::collections::HashMap<String, String> {
+pub(crate) fn project_auth_scope_caps(
+    a: &config::AuthCfg,
+) -> std::collections::HashMap<String, String> {
     a.chain
         .iter()
         .chain(a.admin_auth.iter())
@@ -694,9 +664,10 @@ pub(crate) fn project_auth_scope_caps(a: &config::AuthCfg) -> std::collections::
         .collect()
 }
 
-
-
-pub(crate) fn apply_inbound_concurrency_limit(router: Router, max_inbound_concurrent: usize) -> Router {
+pub(crate) fn apply_inbound_concurrency_limit(
+    router: Router,
+    max_inbound_concurrent: usize,
+) -> Router {
     if max_inbound_concurrent > 0 {
         router.layer(limits::admission::InboundAdmissionLayer::new(
             max_inbound_concurrent,

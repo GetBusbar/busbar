@@ -37,7 +37,6 @@
 // introduces an `unsafe` block fails to build rather than slipping in unreviewed.
 #![forbid(unsafe_code)]
 
-
 // Global allocator: jemalloc. The request hot path allocates and frees the request body a few times
 // per request (raw bytes → parsed JSON → re-serialized outbound), so RSS under load tracks
 // (peak concurrency × payload size). glibc's allocator almost never returns freed pages to the OS,
@@ -63,10 +62,9 @@ use axum::Router;
 use busbar_core::{admin, config, config_validate, export, health, metrics, observability, tls};
 use busbar_core::{
     build_app_from_config, build_split_routers_with_limits, load_config_from_disk,
-    preflight_plugins_and_secrets, validate_builtin_secrets_resolve, LoadedConfig, DEFAULT_CONFIG_PATH,
-    ENV_CONFIG, ENV_PROVIDERS, REQUEST_ACTIVITY_TICKS,
+    preflight_plugins_and_secrets, validate_builtin_secrets_resolve, LoadedConfig,
+    DEFAULT_CONFIG_PATH, ENV_CONFIG, ENV_PROVIDERS, REQUEST_ACTIVITY_TICKS,
 };
-
 
 /// Handle CLI flags before any environment or file access, so they work without a configured
 /// deployment. Returns `Some(exit_code)` when the process should exit (after printing), `None` to
@@ -195,7 +193,6 @@ Docs: https://getbusbar.com   ·   Source: https://github.com/GetBusbar/busbar",
     }
 }
 
-
 /// `--validate`: parse, resolve, and semantically validate the config WITHOUT booting. Runs the exact
 /// same load -> resolve -> validate the gateway runs at boot (so a clean `--validate` means a clean
 /// boot), but never binds a listener, writes state, spawns a task, opens TLS, or makes a network call,
@@ -304,7 +301,6 @@ fn validate_config_command() -> i32 {
     0
 }
 
-
 /// `--list-plugins`: MANIFEST-ONLY inventory of every plugin tarball in `plugins.dir` — name,
 /// alias, kind, version, signature verdict, and load status (including the exact skip/invalid
 /// reason and which one `store.module` selects). NEVER `dlopen`s anything, so an untrusted
@@ -393,14 +389,12 @@ fn list_plugins_command() -> i32 {
     0
 }
 
-
 /// Print a clean startup error to stderr and exit non-zero. Used for misconfiguration and other
 /// boot-time failures so the operator sees a one-line message instead of a Rust panic backtrace.
 fn die(msg: impl std::fmt::Display) -> ! {
     eprintln!("[error] {msg}");
     std::process::exit(1);
 }
-
 
 /// Whether `--safe-mode` was passed: quarantines the persisted overlay entirely (both
 /// `validate_config_command` and `run()` read this the same way, so it's factored once here rather
@@ -410,12 +404,9 @@ fn safe_mode_requested(mut args: impl Iterator<Item = String>) -> bool {
     args.any(|a| a == "--safe-mode")
 }
 
-
-
 /// Cap on `BUSBAR_WORKER_THREADS`/`TOKIO_WORKER_THREADS` (see the `.min(MAX_WORKER_THREADS)` call in
 /// `main()` for why this exists).
 const MAX_WORKER_THREADS: usize = 128;
-
 
 /// Resolve a worker-thread-count env var, warning on an EXPLICITLY-SET but invalid value rather than
 /// silently ignoring it — an unset var is not warned (the normal default path). Module-level (not
@@ -435,7 +426,6 @@ fn worker_threads_from_env(name: &str) -> Option<usize> {
         Err(_) => None, // unset — normal default path, no warning
     }
 }
-
 
 /// Best-effort early read of `advanced.worker_threads` from config.yaml (1.5.3). Runs in `main()`
 /// BEFORE the tokio runtime is built, so it re-reads the config file (the authoritative load, with
@@ -461,7 +451,6 @@ fn worker_threads_from_config() -> Option<usize> {
     }
 }
 
-
 /// Validate a config-supplied `advanced.worker_threads`. `Some(0)` is invalid — a Tokio runtime needs
 /// at least one worker — and yields `Err(message)` so the caller can WARN consistently with
 /// `worker_threads_from_env`'s invalid-value diagnostic instead of silently dropping the operator's
@@ -477,7 +466,6 @@ fn validate_worker_threads_config(wt: Option<usize>) -> Result<Option<usize>, St
         other => Ok(other),
     }
 }
-
 
 fn main() {
     // CLI flags first — BEFORE building any runtime. They must work without a configured deployment,
@@ -599,7 +587,6 @@ fn main() {
         .expect("failed to build the tokio runtime")
         .block_on(run());
 }
-
 
 async fn run() {
     // Metrics are configured AFTER the config loads (below, via `metrics::configure`) because they
@@ -888,8 +875,7 @@ async fn run() {
     // stay crate-private in core (the widened surface is exactly where a plane-shaped API
     // could grow; see the split plan §4.3). Fatal if an outbound client identity does not
     // resolve, exactly as before — the refusal text is the boot function's.
-    busbar_core::boot::spawn_a2a_reverify(&app_handle, &shutdown_tx)
-        .unwrap_or_else(|e| die(e));
+    busbar_core::boot::spawn_a2a_reverify(&app_handle, &shutdown_tx).unwrap_or_else(|e| die(e));
     // Data plane on `listen`, admin plane on its own `admin_listen`, served concurrently — each with
     // its own TLS/mTLS. `tokio::join!` returns only once BOTH have drained.
     let data_listener = bind_listener(&listen).await;
@@ -931,7 +917,6 @@ async fn run() {
     observability::shutdown_tracing();
 }
 
-
 /// Bind a TCP listener or `die` with a clear, address-named message. Shared by the data and admin
 /// listeners so both fail fast and identically on a bad bind.
 async fn bind_listener(addr: &str) -> tokio::net::TcpListener {
@@ -940,13 +925,11 @@ async fn bind_listener(addr: &str) -> tokio::net::TcpListener {
         .unwrap_or_else(|e| die(format!("cannot bind listen address '{addr}': {e}")))
 }
 
-
 /// One shutdown-broadcast subscription resolved into a plain future. Any receive outcome — a send,
 /// or a closed/lagged channel — means "shut down now", so every arm resolves the future.
 async fn recv_shutdown(mut rx: tokio::sync::broadcast::Receiver<()>) {
     let _ = rx.recv().await;
 }
-
 
 /// Serve one listener (data OR admin plane) to graceful shutdown. Picks plain-HTTP vs native TLS/mTLS
 /// from `tls_cfg` exactly as the single-listener path always has: `None` ⇒ plain HTTP over the shared
@@ -985,7 +968,6 @@ async fn serve_listener(
         }
     }
 }
-
 
 /// Resolve when the process receives a shutdown signal: SIGINT/ctrl_c everywhere, plus SIGTERM on
 /// unix and CTRL_CLOSE/CTRL_SHUTDOWN on Windows (the events an orderly non-interactive stop
@@ -1068,13 +1050,11 @@ async fn shutdown_signal() {
     tracing::info!("shutdown signal received; draining in-flight requests");
 }
 
-
 /// How often the idle-purge fallback wakes to check for idleness (and how long a request-free window
 /// must be before it purges). 15 s keeps "RSS returns to idle within ~60 s of load stopping" with
 /// plenty of margin while never firing under any sustained traffic.
 #[cfg(not(target_env = "msvc"))]
 const IDLE_PURGE_SWEEP_SECS: u64 = 15;
-
 
 /// FALLBACK idle purge for targets where jemalloc's background purge threads are unavailable
 /// (static-musl release builds compile them out; macOS lacks them). jemalloc's decay purge is
@@ -1139,7 +1119,6 @@ fn spawn_jemalloc_idle_purge_fallback() {
         eprintln!("[warn] could not spawn the jemalloc idle-purge fallback thread ({e})");
     }
 }
-
 
 /// The disk-load pipeline: read providers.yaml + config.yaml, env-interpolate (from the process's
 /// boot-time environment — a live reload cannot see edited env files; documented), capture the
@@ -1211,7 +1190,6 @@ Review the output, then run `busbar --validate` on it before deploying.         
     }
 }
 
-
 /// Resolve the DEPRECATED `BUSBAR_PROVIDERS` override, warning once when it is set. `None` ⇒ let
 /// [`load_config_from_disk`] resolve the catalog from `config.providers_file` or the default
 /// (`providers.yaml` next to config.yaml). One-release back-compat for the env→config migration.
@@ -1225,7 +1203,6 @@ fn providers_override_from_env() -> Option<std::path::PathBuf> {
     );
     Some(std::path::PathBuf::from(v))
 }
-
 
 /// `--generate-signing-key`: mint a fresh ed25519 signing secret from the OS RNG and PRINT it (as 64
 /// hex chars) plus a paste-ready `auth.signing_key` snippet + a fleet note. ZERO side effects - like
@@ -1251,7 +1228,6 @@ fn generate_signing_key_command() -> i32 {
     eprintln!("{guidance}");
     0
 }
-
 
 /// Split the `--generate-signing-key` output into (STDOUT secret line, STDERR guidance). The secret
 /// `hex` appears ONLY in the stdout line; the stderr guidance uses a NON-SECRET placeholder that points
@@ -1281,7 +1257,6 @@ fn signing_key_command_output(hex: &str) -> (String, String) {
         .to_string();
     (secret_line, guidance)
 }
-
 
 #[cfg(test)]
 #[path = "tests/tests.rs"]
