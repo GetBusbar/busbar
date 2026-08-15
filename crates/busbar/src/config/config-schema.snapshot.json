@@ -974,6 +974,10 @@
           "optional": true,
           "type": "Vec<RootCfg>"
         },
+        "sampling": {
+          "optional": true,
+          "type": "SamplingCfg"
+        },
         "timeout": {
           "optional": true,
           "type": "String"
@@ -1869,6 +1873,25 @@
         "default_policy_timeout_ms": {
           "optional": true,
           "type": "u64"
+        }
+      },
+      "kind": "struct",
+      "transparent": false
+    },
+    "SamplingCfg": {
+      "deny_unknown_fields": true,
+      "fields": {
+        "max_requests_per_minute": {
+          "optional": false,
+          "type": "u32"
+        },
+        "max_tokens": {
+          "optional": false,
+          "type": "u32"
+        },
+        "model": {
+          "optional": false,
+          "type": "String"
         }
       },
       "kind": "struct",
