@@ -21,6 +21,64 @@ file says they should.
 
 ---
 
+## The 21 untested MUSTs — recorded 2026-08-14, not waivers, TCK-coverage impossibilities for anyone
+
+**These 21 are not a busbar waiver. They are requirements the pinned TCK itself never tests, for
+any implementation.** The denominator this file's own PUSH-DELIVER entry and every other document
+in this repo quotes — **93, not 114** — is 114 minus exactly these:
+
+```
+AUTH-INTASK-001  AUTH-INTASK-002  AUTH-INTASK-003  AUTH-INTASK-004
+AUTH-SCOPE-001   AUTH-SCOPE-002   AUTH-SCOPE-003
+AUTH-SERVER-002
+AUTH-TLS-001
+BIND-EQUIV-001   BIND-EQUIV-002   BIND-EQUIV-003   BIND-EQUIV-004
+CARD-SIGN-001    CARD-SIGN-002    CARD-SIGN-003    CARD-SIGN-004
+VER-CLIENT-001   VER-CLIENT-002
+VER-SERVER-001
+GRPC-SVC-003
+```
+
+**METHOD.** `grep -rl` over the pinned TCK's own `tests/` tree (`5996b79f9cefa6fc390980e383e358a66fb9e49e`)
+returns nothing for any of the 21: `test_ids: []`, `transports: {}` in the requirement's own entry.
+The suite's summary table counts them among the FAILED requirements; its JSON report calls them
+`NOT TESTED`. Those two readings disagree about the same 21 rows, which is how the gap was found
+rather than assumed.
+
+**CONTROL-SUITE EVIDENCE, so this is not read as a busbar defect.** The identical 21 come back
+`NOT TESTED` against the publisher's own reference implementation, `a2a-go` v2.4.0, on both bindings
+this repo pins:
+
+```
+a2a-go v2.4.0 / jsonrpc     NOT TESTED: 26    PASS 50  FAIL 28  SKIPPED 25
+a2a-go v2.4.0 / http-json   NOT TESTED: 27    PASS 46  FAIL 27  SKIPPED 29
+```
+
+The same families come back untested against the A2A project's own Python SDK agent too. The
+suite's own backlog admits the gap: three open `coverage-gap` tasks, all status **To Do** —
+`task-27` (`AUTH-*`, 13 requirements), `task-28` (`BIND-EQUIV-*`, 4), `task-29` (`CARD-SIGN-*`, 4).
+`testing/a2a-supplement/` covers all 21 with busbar-authored checks (reported separately, never
+added to the TCK's own number — see `testing/a2a-supplement/README.md`), and 17 of the 21 discriminate
+against at least one control there.
+
+**WHY THIS IS NOT A WAIVER.** A waiver excuses busbar from a requirement busbar could in principle be
+tested against. These 21 cannot be tested against **anyone** through this pin — there is no green or
+red to waive, only an absent measurement. Recording them here is the same discipline as a waiver
+(named, dated, with evidence) applied to a different failure mode: a suite that never ran, not a
+control that fired.
+
+**DENOMINATOR.** `114 − 21 = 93`. That is the achievable ceiling on this pin, and the target is 100%
+of it. 3 of the 93 (`PUSH-DELIVER-001/002/003`, below) are a deliberate security refusal — busbar
+never accepts a plaintext webhook callback — waived-red permanently, never a gap. Public claim:
+**83/93** until higher.
+
+**WHAT WOULD RETIRE THIS ENTRY.** The pinned TCK growing a second credential (for the `AUTH-*`/scoping
+families) and an upstream vantage point (for `VER-CLIENT-*`) — see "Upstreaming" in
+`testing/a2a-supplement/README.md` — and re-pinning at a commit that carries tests for these 21.
+Until then this is a property of the suite, not of busbar, and is recorded rather than chased.
+
+---
+
 ## `PUSH-DELIVER-001` / `PUSH-DELIVER-002` / `PUSH-DELIVER-003` — waived 2026-08-12
 
 **METHOD.** `scripts/a2a-subject/boot.sh --tck` against a busbar built from this commit, TCK pinned
