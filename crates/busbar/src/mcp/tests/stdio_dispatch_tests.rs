@@ -73,6 +73,7 @@ fn stdio_server(script: &str) -> McpServerDefCfg {
         resource_templates_allow: Default::default(),
         aud: None,
         grants: ServerRequestGrants::default(),
+        roots: Vec::new(),
         allow_private: false,
         token_exchange: None,
         max_input_required_rounds: None,

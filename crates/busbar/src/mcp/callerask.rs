@@ -291,6 +291,10 @@ pub(crate) struct Bind<'a> {
     pub(crate) generation: u64,
     /// Unix seconds.
     pub(crate) now: u64,
+    /// The principal's LIVE roots epoch — what a received `notifications/roots/list_changed` moves.
+    /// Sealed into state exactly when the exchange includes a `roots/list` ask, and compared on
+    /// redemption; see [`crate::mcp::roots`].
+    pub(crate) roots_epoch: u64,
 }
 
 /// THE APPROVAL MACHINERY: what mints continuation state, and what remembers it was spent.
@@ -369,6 +373,19 @@ pub(crate) fn decide(
                 bind.generation,
             ) {
                 return AskDecision::Refuse(Refusal::StateRejected(e));
+            }
+            // THE ROOTS EPOCH, compared only on state that carries one — which is only state minted
+            // for an exchange that asks for roots. The caller's own
+            // `notifications/roots/list_changed` moved the live value, so a roots answer sealed
+            // before it is an answer the caller has disavowed, and redeeming it would dispatch on
+            // stale roots inside the very TTL window the seal polices. Checked AFTER `matches`, so
+            // it can only ever refuse the legitimate holder — see `Rejected::StaleRoots` on why
+            // that ordering is what makes its distinct message safe to say.
+            if opened
+                .roots_epoch
+                .is_some_and(|sealed| sealed != bind.roots_epoch)
+            {
+                return AskDecision::Refuse(Refusal::StateRejected(askstate::Rejected::StaleRoots));
             }
             presented = Some((
                 opened.nonce.clone(),
@@ -470,6 +487,14 @@ pub(crate) fn decide(
             capability: bind.capability.to_string(),
         });
     };
+    // Does ANY configured round of this exchange ask for roots? Judged over the whole exchange
+    // rather than this round alone, because an earlier round's roots answer feeds the final
+    // dispatch exactly as a later one's does — a multi-round exchange whose first round gathered
+    // roots is stale from the first round on.
+    let exchange_asks_roots = rounds
+        .iter()
+        .flat_map(|round| round.values())
+        .any(|cfg| cfg.method == ROOTS);
     let request_state = sealer.mint(&AskState {
         principal: bind.principal.to_string(),
         method: bind.method.to_string(),
@@ -480,6 +505,9 @@ pub(crate) fn decide(
         nonce,
         issued_at: bind.now,
         ttl_secs: askstate::DEFAULT_TTL_SECS,
+        // Present exactly when the exchange includes a roots ask, so a roots announcement cannot
+        // invalidate a caller's unrelated confirmations. See `crate::mcp::roots`.
+        roots_epoch: exchange_asks_roots.then_some(bind.roots_epoch),
     });
     AskDecision::Ask {
         asks,

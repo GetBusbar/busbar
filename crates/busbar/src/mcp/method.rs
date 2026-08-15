@@ -1401,8 +1401,14 @@ async fn tools_call(
         // The JSON-RPC id busbar puts on the OUTBOUND request is the round number, not the inbound
         // caller's id. An id chosen by the caller and echoed onto an upstream is a caller-controlled
         // value crossing a trust boundary for no reason.
-        |round, _satisfaction| {
-            super::upstream::call(pool, &authorised, &arguments, u64::from(round))
+        |round, satisfaction| {
+            super::upstream::call(
+                pool,
+                &authorised,
+                &arguments,
+                u64::from(round),
+                satisfaction,
+            )
         },
         // THE GRANT, RE-READ LIVE ON EVERY ROUND. There is no handshake to authorise once and then
         // trust, so a revocation between rounds has to bite on the next one — which is the only
@@ -1415,18 +1421,24 @@ async fn tools_call(
                 .map(|s| s.grants)
                 .unwrap_or_default()
         },
-        // SATISFYING an ask is a separate unit from making the call. A granted `sampling` becomes a
-        // real LLM request on busbar's own pools and budget, an `elicitation` needs a human, and
-        // `roots` needs a filesystem policy; none of the three is built, and saying so is NOT the
-        // same as refusing the grant — `Unsatisfiable` and `Ungranted` are different answers with
-        // different operator remedies, which is why they are different arms. The ask still
-        // TERMINATES here either way: the caller is told busbar declined, never handed the ask.
+        // SATISFYING an ask is a separate unit from making the call. A granted `roots` ask IS
+        // satisfied, from the operator's own `tools.<server>.roots` declaration re-read LIVE off
+        // the same snapshot the grant was (see `super::roots::satisfy_upstream_ask`). A granted
+        // `sampling` would be a real LLM request on busbar's own pools with no per-upstream budget
+        // to charge it to, and an `elicitation` needs a human busbar does not have — both keep
+        // their refusal, and saying so is NOT the same as refusing the grant: `Unsatisfiable` and
+        // `Ungranted` are different answers with different operator remedies, which is why they
+        // are different arms. The ask still TERMINATES here either way: the caller is told what
+        // busbar decided, never handed the ask.
         |ask| {
-            Err(format!(
-                "busbar holds the `{}` grant for this server but has no satisfier for that ask in \
-                 this release; the ask terminates here and is not proxied to you",
-                ask.kind
-            ))
+            let roots = ctx
+                .handle
+                .load()
+                .mcp_catalogue
+                .server(&server_id)
+                .map(|s| s.roots.clone())
+                .unwrap_or_default();
+            super::roots::satisfy_upstream_ask(ask, &server_id, &roots)
         },
         |rec| charge_round(ctx, &selected.namespaced, rec, &mut holds),
     )
@@ -2224,21 +2236,28 @@ fn caller_ask_decision(
                 .and_then(|p| p.get("requestState"))
                 .and_then(|v| v.as_str()),
         },
-        Bind {
-            // The AUTHENTICATED PRINCIPAL (`mrtr.mdx:235`), which is the key's stable id and not the
-            // actor string: the actor is for reading, the key id is what a grant is bound to. With
-            // governance disabled there is no key, and the constant below is honest about that —
-            // such a deployment has one principal, so binding to it is a true statement rather than
-            // a fake distinction.
-            principal: ctx
+        {
+            // The AUTHENTICATED PRINCIPAL (`mrtr.mdx:235`), which is the key's stable id and not
+            // the actor string: the actor is for reading, the key id is what a grant is bound to.
+            // With governance disabled there is no key, and the constant below is honest about
+            // that — such a deployment has one principal, so binding to it is a true statement
+            // rather than a fake distinction.
+            let principal = ctx
                 .gov
                 .key
                 .as_ref()
-                .map_or("<ungoverned>", |k| k.id.as_str()),
-            method,
-            capability,
-            generation,
-            now: crate::store::now(),
+                .map_or("<ungoverned>", |k| k.id.as_str());
+            Bind {
+                principal,
+                method,
+                capability,
+                generation,
+                now: crate::store::now(),
+                // The live roots epoch for THIS principal — the value a received
+                // `notifications/roots/list_changed` moves, read under the same name the seal
+                // binds. See `crate::mcp::roots`.
+                roots_epoch: ctx.app.mcp_roots_epochs.current(principal),
+            }
         },
         &super::askstate::digest_arguments(arguments),
         callerask::Approvals {

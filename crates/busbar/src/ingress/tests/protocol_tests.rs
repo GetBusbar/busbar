@@ -134,6 +134,9 @@ async fn zeta(present: bool, origin: Option<&str>, body: &[u8]) -> Response {
             wire_refusal: None,
             body,
         },
+        // zeta observes no notification; the hook is core's seam and this fixture passes the
+        // no-op every plane without one passes.
+        |_, _| {},
         zeta_dispatch,
     )
     .await

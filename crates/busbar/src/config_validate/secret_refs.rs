@@ -204,6 +204,10 @@ pub(crate) fn secret_refs(cfg: &RootCfg) -> Vec<(String, &crate::config::SecretR
             transport: _,
             aud: _,
             grants: _,
+            // The filesystem roots busbar may disclose to this server on a granted `roots/list`
+            // ask. Operator-authored `file://` URIs and display names — locations, never
+            // credentials, so there is nothing here for `--validate` to resolve.
+            roots: _,
             max_input_required_rounds: _,
             max_caller_ask_rounds: _,
             upstream_credentials: _,

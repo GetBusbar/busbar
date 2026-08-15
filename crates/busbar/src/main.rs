@@ -4127,6 +4127,13 @@ pub(crate) fn build_app_from_config(
             || Arc::new(crate::mcp::askstate::SpentAskStates::new()),
             |p| p.mcp_spent_approvals.clone(),
         ),
+        // CARRIED ACROSS THE APPLY, same class again: an epoch bump is a caller's own announcement
+        // that its roots changed, and an apply that reset it would re-validate roots answers the
+        // caller disavowed — inside the very TTL window the seal exists to police.
+        mcp_roots_epochs: prior.map_or_else(
+            || Arc::new(crate::mcp::roots::RootsEpochs::new()),
+            |p| p.mcp_roots_epochs.clone(),
+        ),
         // CARRIED ACROSS THE APPLY, and here the reason is sharper than for the two above: the
         // durable sink is attached to this instance once at boot, so rebuilding it on an apply would
         // silently detach it and every later quarantine would stop being written down.

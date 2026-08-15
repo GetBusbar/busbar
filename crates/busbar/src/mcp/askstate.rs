@@ -114,6 +114,12 @@ pub(crate) struct AskState {
     /// Seconds of validity from `issued_at`.
     #[serde(rename = "t")]
     pub(crate) ttl_secs: u64,
+    /// The principal's ROOTS EPOCH at mint — present exactly when the exchange this state
+    /// continues includes a `roots/list` ask, absent otherwise so unrelated confirmations cannot
+    /// be invalidated by a roots announcement. See [`crate::mcp::roots`] for the mechanism and
+    /// [`Rejected::StaleRoots`] for the refusal a mismatch produces.
+    #[serde(rename = "e", default, skip_serializing_if = "Option::is_none")]
+    pub(crate) roots_epoch: Option<u64>,
 }
 
 /// Why a presented `requestState` was refused. Every arm is a REFUSAL — there is no arm that means
@@ -137,6 +143,10 @@ pub(crate) enum Rejected {
     /// ALREADY REDEEMED. Perfectly valid, for this caller, for this request, inside its window — and
     /// already spent on the call it was minted to approve. See [`SpentAskStates`].
     AlreadySpent,
+    /// SEALED UNDER A ROOTS EPOCH THE CALLER ITSELF HAS SINCE MOVED. The state carried a roots
+    /// answer, and the caller sent `notifications/roots/list_changed` after it was minted — so
+    /// redeeming it would dispatch on roots the caller just disavowed. See [`crate::mcp::roots`].
+    StaleRoots,
 }
 
 impl Rejected {
@@ -150,21 +160,38 @@ impl Rejected {
             Rejected::WrongRequest => "state_wrong_request",
             Rejected::WrongGeneration => "state_wrong_generation",
             Rejected::AlreadySpent => "state_already_spent",
+            Rejected::StaleRoots => "state_stale_roots",
         }
     }
 }
 
 impl std::fmt::Display for Rejected {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // ONE message for every arm, deliberately. The distinctions above exist for the audit row;
-        // telling a caller WHICH check its forged state failed is an oracle for forging a better
-        // one, and `mrtr.mdx:269-272` names the caller as the attacker for exactly this field.
-        f.write_str(
-            "`requestState` failed integrity verification and was refused. It is an opaque value \
-             minted by this server for one caller, one request and a short window; it cannot be \
-             modified, reused by another caller, replayed after it lapses, or presented on a \
-             different request.",
-        )
+        // ONE message for every arm that a FORGER can reach, deliberately. The distinctions above
+        // exist for the audit row; telling a caller WHICH check its forged state failed is an
+        // oracle for forging a better one, and `mrtr.mdx:269-272` names the caller as the attacker
+        // for exactly this field.
+        //
+        // `StaleRoots` is the one deliberate exception, and the oracle argument is why it is safe:
+        // the epoch is compared only AFTER the MAC verified, so the only party that can ever read
+        // this message is the caller busbar genuinely minted the state for — and the trigger was
+        // that caller's own `notifications/roots/list_changed`. It learns nothing it did not
+        // announce itself, and it needs the distinct remedy: restart the exchange, answer with
+        // current roots. The unified message's remedy (there is none) would be wrong.
+        match self {
+            Rejected::StaleRoots => f.write_str(
+                "`requestState` was minted before you sent `notifications/roots/list_changed`, and \
+                 the exchange it continues includes a `roots/list` answer — which your notification \
+                 declared stale. Retry the request without `requestState` to restart the exchange \
+                 and answer with your current roots.",
+            ),
+            _ => f.write_str(
+                "`requestState` failed integrity verification and was refused. It is an opaque \
+                 value minted by this server for one caller, one request and a short window; it \
+                 cannot be modified, reused by another caller, replayed after it lapses, or \
+                 presented on a different request.",
+            ),
+        }
     }
 }
 

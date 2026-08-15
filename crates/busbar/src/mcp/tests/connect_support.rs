@@ -245,6 +245,7 @@ pub(crate) fn server_cfg(
         transport: None,
         aud: None,
         grants: crate::mcp::config::ServerRequestGrants::default(),
+        roots: Vec::new(),
         max_input_required_rounds: None,
         max_caller_ask_rounds: None,
         // The peer is on loopback, which every fail-closed default refuses until an operator says
@@ -268,6 +269,13 @@ pub(crate) fn mcp_cfg() -> crate::mcp::McpCfg {
 
 /// A `GovCtx` holding a key granted exactly `pairs`.
 pub(crate) fn gov_with_scopes(pairs: &[(&str, &str)]) -> crate::governance::GovCtx {
+    gov_with_key("k-connect", pairs)
+}
+
+/// The same, with the KEY ID chosen by the caller — for the batteries whose subject is a
+/// per-principal fact (the roots epoch, the per-principal call chain) and whose negative control
+/// is therefore a SECOND principal.
+pub(crate) fn gov_with_key(id: &str, pairs: &[(&str, &str)]) -> crate::governance::GovCtx {
     let scopes = pairs
         .iter()
         .map(|(kind, value)| busbar_api::ScopeRef {
@@ -277,8 +285,8 @@ pub(crate) fn gov_with_scopes(pairs: &[(&str, &str)]) -> crate::governance::GovC
         .collect();
     crate::governance::GovCtx {
         key: Some(std::sync::Arc::new(busbar_api::VirtualKey {
-            id: "k-connect".to_string(),
-            name: "k-connect".to_string(),
+            id: id.to_string(),
+            name: id.to_string(),
             generation_hash: String::new(),
             enabled: true,
             allowed_scopes: Some(scopes),

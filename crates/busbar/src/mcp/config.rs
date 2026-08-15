@@ -556,6 +556,27 @@ impl ServerRequestGrants {
     }
 }
 
+/// `tools.<server>.roots[<n>]` — ONE filesystem root busbar will disclose to THIS upstream when it
+/// asks `roots/list`.
+///
+/// OPERATOR-DECLARED, per registration, and that is the design rather than a shortcut. busbar's own
+/// container filesystem is not the customer's workspace, so a `roots/list` satisfied from it would
+/// tell an upstream about busbar's deployment instead of about anything the customer meant — which
+/// is why the ask used to be flatly unsatisfiable on this leg. What was missing was not a
+/// filesystem; it was a POLICY, and this is it: the operator writes down, next to the grant that
+/// admits the ask, exactly which roots that server may be told about. No declaration ⇒ the ask
+/// stays unsatisfiable, with a refusal naming this key.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RootCfg {
+    /// The root's URI. `file://` only, per the MCP specification's own restriction on roots — a
+    /// root under another scheme is not a filesystem root, and validation refuses it at boot.
+    pub(crate) uri: String,
+    /// The optional human-readable name the protocol allows beside the URI.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) name: Option<String>,
+}
+
 /// The DEFAULT cap on input-required rounds per logical dispatch.
 ///
 /// A hard cap, refused past it, not a warning. Three is chosen because it is enough for a real
@@ -693,6 +714,11 @@ pub(crate) struct McpServerDefCfg {
     /// The server-initiated request grants. Absent ⇒ all denied.
     #[serde(default)]
     pub(crate) grants: ServerRequestGrants,
+    /// The filesystem roots busbar will disclose to THIS upstream when it asks `roots/list` — the
+    /// SATISFIER the `grants.roots` gate admits an ask to. Absent ⇒ a granted roots ask is still
+    /// refused as unsatisfiable, with a refusal naming this key. See [`RootCfg`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) roots: Vec<RootCfg>,
     /// Whether this ONE upstream may live on a private / loopback / CGNAT address.
     ///
     /// Per server rather than plane-wide, because the answer genuinely differs per registration: an
@@ -1183,6 +1209,29 @@ pub(crate) fn validate_server(name: &str, def: &McpServerDefCfg) -> Result<(), S
                  time out holds a concurrency slot for as long as the upstream chooses."
             ));
         }
+    }
+
+    // THE ROOTS POLICY, vetted at boot so the failure lands on the operator who wrote it. Two
+    // rules: a root must be a `file://` URI (the specification's own restriction — anything else is
+    // not a filesystem root), and a declaration on a server whose `grants.roots` is false is
+    // refused rather than silently unreachable — the grant gate runs before the satisfier, so such
+    // a list would never be disclosed and the operator who wrote it plainly meant it to be.
+    for (i, root) in def.roots.iter().enumerate() {
+        if !root.uri.starts_with("file://") || root.uri.len() <= "file://".len() {
+            return Err(format!(
+                "{at}: `roots[{i}].uri: {:?}` must be a non-empty `file://` URI. MCP roots are \
+                 filesystem roots; a root under another scheme is a different claim wearing this \
+                 key's name.",
+                root.uri
+            ));
+        }
+    }
+    if !def.roots.is_empty() && !def.grants.roots {
+        return Err(format!(
+            "{at}: `roots:` declares what busbar may disclose when this server asks `roots/list`, \
+             and `grants.roots` is false, so the ask is refused before the list is ever read. \
+             Set `grants.roots: true`, or delete the list."
+        ));
     }
 
     for (tool, allow) in &def.tools_allow {

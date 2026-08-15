@@ -59,6 +59,9 @@ fn bind() -> Bind<'static> {
         capability: CAP,
         generation: 1,
         now: NOW,
+        // The live roots epoch. Zero is a principal that has never announced a change, which is
+        // this battery's fixture; the epoch's own behaviour is judged in `roots_changed_tests.rs`.
+        roots_epoch: 0,
     }
 }
 

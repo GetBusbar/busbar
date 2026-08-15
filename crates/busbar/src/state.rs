@@ -506,6 +506,14 @@ pub(crate) struct App {
     /// like it rebuilt. See [`crate::mcp::askstate::SpentAskStates`] for what a RESTART does to it
     /// and why that trade was taken.
     pub(crate) mcp_spent_approvals: Arc<crate::mcp::askstate::SpentAskStates>,
+    /// EACH PRINCIPAL'S ROOTS EPOCH — what a received `notifications/roots/list_changed` moves, and
+    /// what a roots-bearing `requestState` is sealed against.
+    ///
+    /// Arc-shared across config applies for the same reason as the two fields beside it: a bump is
+    /// what a CALLER announced, not what the operator configured, and an apply that rebuilt this
+    /// would silently re-validate every roots answer a caller had just disavowed. See
+    /// [`crate::mcp::roots`].
+    pub(crate) mcp_roots_epochs: Arc<crate::mcp::roots::RootsEpochs>,
     /// DEMOTIONS THAT OUTLIVE THE PROCESS THAT TOOK THEM — the write side of the durable quarantine
     /// record, and the reason a restart no longer hands a demoted upstream its approval back.
     ///

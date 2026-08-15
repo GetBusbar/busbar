@@ -774,6 +774,9 @@ async fn invoke_inner(
             wire_refusal,
             body: &body,
         },
+        // A2A carries no notification this plane observes: JSON-RPC notifications on this dialect
+        // are answered `202` and nothing in the deployment moves.
+        |_, _| {},
         |envelope, rpc_id, _method| async move {
             Some(
                 admitted(
