@@ -602,16 +602,35 @@ async fn run(task: Arc<McpTask>, runner: Runner) {
             }
         },
         // The SAME satisfier as the synchronous path, for the same reason both run one loop: an
-        // upstream's roots ask from inside a task is the identical decision, judged from the
-        // identical live snapshot. See `super::roots::satisfy_upstream_ask`.
+        // upstream's roots or sampling ask from inside a task is the identical decision, judged
+        // from the identical live snapshot. The governance context is rebuilt from the principal
+        // this task was AUTHORISED as — the runner is detached from the inbound request, and the
+        // caller bound at creation is the only principal a completion made on its behalf may be
+        // admitted and charged under (bounded by `TASK_TTL_MS`, like everything else the runner
+        // carries). See `super::roots::satisfy_upstream_ask` / `super::sampling`.
         |ask| {
-            let roots = handle
-                .load()
-                .mcp_catalogue
-                .server(&server_id)
-                .map(|s| s.roots.clone())
-                .unwrap_or_default();
-            super::roots::satisfy_upstream_ask(ask, &server_id, &roots)
+            let live = handle.load();
+            let entry = live.mcp_catalogue.server(&server_id);
+            let roots = entry.map(|s| s.roots.clone()).unwrap_or_default();
+            let sampling = entry.and_then(|s| s.sampling.clone());
+            let gov = crate::governance::GovCtx {
+                key: Some(Arc::new(runner.authorised.caller.clone())),
+            };
+            let server = server_id.clone();
+            async move {
+                if ask.kind == "sampling" {
+                    super::sampling::satisfy_upstream_ask(
+                        &live,
+                        &gov,
+                        &ask,
+                        &server,
+                        sampling.as_ref(),
+                    )
+                    .await
+                } else {
+                    super::roots::satisfy_upstream_ask(&ask, &server, &roots)
+                }
+            }
         },
         // NOT CHARGED PER ROUND, and this is the one place the task path deliberately differs from
         // the synchronous one. The caller's budget was charged ONCE, synchronously, at task

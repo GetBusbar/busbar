@@ -514,6 +514,15 @@ pub(crate) struct App {
     /// would silently re-validate every roots answer a caller had just disavowed. See
     /// [`crate::mcp::roots`].
     pub(crate) mcp_roots_epochs: Arc<crate::mcp::roots::RootsEpochs>,
+    /// PER-UPSTREAM SAMPLING SPEND — what each registered upstream has already induced busbar to
+    /// complete in the current budget window, the counter `tools.<server>.sampling.
+    /// max_requests_per_minute` is enforced against.
+    ///
+    /// Arc-shared across config applies for the same reason its three neighbours are: spend that
+    /// happened is ACCUMULATED evidence, not intent, and an apply that rebuilt it would refill
+    /// every upstream's budget the moment an operator touched an unrelated section — which is the
+    /// moment an upstream mid-runaway would like it refilled. See [`crate::mcp::sampling`].
+    pub(crate) mcp_sampling_spend: Arc<crate::mcp::sampling::SamplingSpend>,
     /// DEMOTIONS THAT OUTLIVE THE PROCESS THAT TOOK THEM — the write side of the durable quarantine
     /// record, and the reason a restart no longer hands a demoted upstream its approval back.
     ///

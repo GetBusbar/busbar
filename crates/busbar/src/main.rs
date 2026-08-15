@@ -4134,6 +4134,13 @@ pub(crate) fn build_app_from_config(
             || Arc::new(crate::mcp::roots::RootsEpochs::new()),
             |p| p.mcp_roots_epochs.clone(),
         ),
+        // CARRIED ACROSS THE APPLY, same class: spend that already happened is evidence, not
+        // intent, and an apply that rebuilt this would hand every registered upstream a fresh
+        // sampling budget the moment an operator touched an unrelated section of config.
+        mcp_sampling_spend: prior.map_or_else(
+            || Arc::new(crate::mcp::sampling::SamplingSpend::new()),
+            |p| p.mcp_sampling_spend.clone(),
+        ),
         // CARRIED ACROSS THE APPLY, and here the reason is sharper than for the two above: the
         // durable sink is attached to this instance once at boot, so rebuilding it on an apply would
         // silently detach it and every later quarantine would stop being written down.

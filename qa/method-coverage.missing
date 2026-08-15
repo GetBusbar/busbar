@@ -36,6 +36,14 @@
 # mcp|streamable-http|server|server|notifications/resources/updated, an upstream-events relay onto
 # subscriptions/listen's narrowed category.
 #
+# 2026-08-15: queue item (2) LANDED -- mcp|streamable-http|client|server|sampling/createMessage is
+# the `tools.<server>.sampling` policy (model + max_tokens + max_requests_per_minute, boot-vetted,
+# refused behind a closed grant) satisfying a granted ask through the SAME governed pipeline an
+# arriving chat request rides (`ingress::operation_resolved`, the caller's key/budget/pool-ACL/
+# hooks), capped by the per-upstream budget the old waiver said was missing. Claimed in the status
+# file on `mcp/tests/sampling_satisfy_tests.rs`. Item (3), notifications/resources/updated, is the
+# next cell off this queue.
+#
 a2a|grpc|client|client|GetExtendedAgentCard
 a2a|http+json|client|client|GetExtendedAgentCard
 a2a|jsonrpc|client|client|GetExtendedAgentCard
@@ -75,5 +83,4 @@ mcp|stdio|server|server|notifications/tools/list_changed
 mcp|stdio|server|server|ping
 mcp|stdio|server|server|roots/list
 mcp|stdio|server|server|sampling/createMessage
-mcp|streamable-http|client|server|sampling/createMessage
 mcp|streamable-http|server|server|notifications/resources/updated

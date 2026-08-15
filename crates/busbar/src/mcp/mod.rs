@@ -180,6 +180,9 @@ pub(crate) mod method;
 pub(crate) mod outputschema;
 pub(crate) mod resource;
 pub(crate) mod roots;
+/// The `sampling/createMessage` SATISFIER and the per-upstream budget it spends — the other
+/// operator-declared answer to an upstream's ask, beside `roots`.
+pub(crate) mod sampling;
 pub(crate) mod sanitize;
 /// THE POST's SSE RESPONSE FRAMING and the `notifications/message` records that ride it. This
 /// revision removed the GET stream, not Server-Sent Events — see the module header.

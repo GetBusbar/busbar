@@ -1436,24 +1436,37 @@ async fn tools_call(
                 .map(|s| s.grants)
                 .unwrap_or_default()
         },
-        // SATISFYING an ask is a separate unit from making the call. A granted `roots` ask IS
-        // satisfied, from the operator's own `tools.<server>.roots` declaration re-read LIVE off
-        // the same snapshot the grant was (see `super::roots::satisfy_upstream_ask`). A granted
-        // `sampling` would be a real LLM request on busbar's own pools with no per-upstream budget
-        // to charge it to, and an `elicitation` needs a human busbar does not have — both keep
-        // their refusal, and saying so is NOT the same as refusing the grant: `Unsatisfiable` and
-        // `Ungranted` are different answers with different operator remedies, which is why they
-        // are different arms. The ask still TERMINATES here either way: the caller is told what
-        // busbar decided, never handed the ask.
+        // SATISFYING an ask is a separate unit from making the call. A granted `roots` ask is
+        // satisfied from the operator's own `tools.<server>.roots` declaration, and a granted
+        // `sampling` ask from the operator's own `tools.<server>.sampling` policy — one governed
+        // completion on the declared model, under THIS caller's key, budget and hooks, within the
+        // per-upstream budget (see `super::sampling`). Both declarations are re-read LIVE off the
+        // same snapshot the grant was. An `elicitation` needs a human busbar does not have and
+        // keeps its refusal — and saying so is NOT the same as refusing the grant: `Unsatisfiable`
+        // and `Ungranted` are different answers with different operator remedies, which is why
+        // they are different arms. The ask still TERMINATES here in every arm: the caller is told
+        // what busbar decided, never handed the ask.
         |ask| {
-            let roots = ctx
-                .handle
-                .load()
-                .mcp_catalogue
-                .server(&server_id)
-                .map(|s| s.roots.clone())
-                .unwrap_or_default();
-            super::roots::satisfy_upstream_ask(ask, &server_id, &roots)
+            let live = ctx.handle.load();
+            let entry = live.mcp_catalogue.server(&server_id);
+            let roots = entry.map(|s| s.roots.clone()).unwrap_or_default();
+            let sampling = entry.and_then(|s| s.sampling.clone());
+            let gov = ctx.gov.clone();
+            let server = server_id.clone();
+            async move {
+                if ask.kind == "sampling" {
+                    super::sampling::satisfy_upstream_ask(
+                        &live,
+                        &gov,
+                        &ask,
+                        &server,
+                        sampling.as_ref(),
+                    )
+                    .await
+                } else {
+                    super::roots::satisfy_upstream_ask(&ask, &server, &roots)
+                }
+            }
         },
         |rec| charge_round(ctx, &selected.namespaced, rec, &mut holds),
     )

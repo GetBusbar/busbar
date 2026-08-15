@@ -122,6 +122,11 @@ pub(super) enum Behaviour {
     /// `mrtr.mdx:126-180`. A fixture that mints a shape no conformant server emits proves only that
     /// the parser agrees with the fixture.
     AsksForSampling,
+    /// The same conformant sampling ask with TWO map entries — the shape that proves the
+    /// per-upstream budget is spent PER COMPLETION, not per round: a cap of one admits the first
+    /// entry and refuses the whole ask on the second, deterministically, because one ask's budget
+    /// is judged at one instant.
+    AsksForSamplingPair,
     /// The confused-deputy laundering attempt, in the exact form a conformant upstream can mount it:
     /// a credential-harvesting `elicitation/create` addressed to BUSBAR'S CALLER, so the caller sees
     /// a demand for its password arriving from the party it trusts.
@@ -272,14 +277,71 @@ async fn mcp_endpoint(
             "jsonrpc": "2.0", "id": id,
             "result": { "content": [{ "type": "text", "text": "UPSTREAM RESULT" }] },
         }),
-        Behaviour::AsksForSampling => serde_json::json!({
+        Behaviour::AsksForSampling => {
+            // A CONFORMANT ask, and then the tool result — cooperative in exactly the way
+            // `AsksForRoots` is, so the granted satisfier has a peer to finish with. A request
+            // carrying `inputResponses` is answered with a result that echoes what the peer was
+            // told, so the test reads busbar's completion off the peer's own transcript; an
+            // ungranted dispatch never retries, so every refusing test still sees only the ask.
+            let answered = state
+                .log
+                .lock()
+                .unwrap()
+                .mcp
+                .last()
+                .map(|r| r.json().pointer("/params/inputResponses").is_some())
+                .unwrap_or(false);
+            if answered {
+                serde_json::json!({
+                    "jsonrpc": "2.0", "id": id,
+                    "result": { "content": [{ "type": "text", "text": "SAMPLING RECEIVED" }] },
+                })
+            } else {
+                serde_json::json!({
+                    "jsonrpc": "2.0", "id": id,
+                    "result": {
+                        "resultType": "input_required",
+                        "inputRequests": {
+                            "draft": {
+                                "method": "sampling/createMessage",
+                                "params": {
+                                    "messages": [
+                                        {
+                                            "role": "user",
+                                            "content": {
+                                                "type": "text",
+                                                "text": "Draft a one-line summary of the diff."
+                                            },
+                                        },
+                                    ],
+                                    "systemPrompt": "You are a terse release-notes writer.",
+                                    "maxTokens": 4096,
+                                },
+                            },
+                        },
+                        "requestState": "upstream-opaque-state-blob",
+                    },
+                })
+            }
+        }
+        Behaviour::AsksForSamplingPair => serde_json::json!({
             "jsonrpc": "2.0", "id": id,
             "result": {
                 "resultType": "input_required",
                 "inputRequests": {
                     "draft": {
                         "method": "sampling/createMessage",
-                        "params": { "messages": [], "maxTokens": 4096 },
+                        "params": {
+                            "messages": [{ "role": "user", "content": { "type": "text", "text": "Draft it." } }],
+                            "maxTokens": 32,
+                        },
+                    },
+                    "title": {
+                        "method": "sampling/createMessage",
+                        "params": {
+                            "messages": [{ "role": "user", "content": { "type": "text", "text": "Title it." } }],
+                            "maxTokens": 32,
+                        },
                     },
                 },
                 "requestState": "upstream-opaque-state-blob",
@@ -455,6 +517,7 @@ pub(super) fn exchanging_server(
         aud: Some(peer.mcp_url()),
         grants: ServerRequestGrants::default(),
         roots: Vec::new(),
+        sampling: None,
         max_input_required_rounds: None,
         max_caller_ask_rounds: None,
         // Loopback: the peer is on 127.0.0.1, which every fail-closed default refuses until the

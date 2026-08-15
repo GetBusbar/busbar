@@ -35,7 +35,7 @@ fn the_outbound_name_is_the_un_namespaced_tool() {
         &serde_json::json!({"path": "/tmp/x"}),
         1,
         None,
-        false,
+        Default::default(),
         None,
     );
     let body = body_of(&req);
@@ -75,7 +75,7 @@ fn the_mirrored_headers_agree_with_the_body_they_mirror() {
         &serde_json::json!({}),
         9,
         Some("tok"),
-        false,
+        Default::default(),
         None,
     );
     let body = body_of(&req);
@@ -106,7 +106,7 @@ fn there_is_no_session_header_on_any_request() {
             &serde_json::json!({}),
             2,
             Some("t"),
-            false,
+            Default::default(),
             None,
         ),
     ] {

@@ -109,6 +109,7 @@ fn poisoned_server(id: &str, tool: &str) -> McpServerDefCfg {
         aud: None,
         grants: ServerRequestGrants::default(),
         roots: Vec::new(),
+        sampling: None,
         allow_private: false,
         token_exchange: None,
         max_input_required_rounds: None,

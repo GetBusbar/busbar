@@ -242,24 +242,29 @@ pub(crate) struct RoundRecord {
 ///   hostile upstream spend past the cap by exactly the amount of one unbounded loop, which is the
 ///   entire failure mode.
 ///
-/// `call` is ASYNC and the others are not, and that split is the honest one: the upstream leg is the
-/// only step here that reaches a network. Making the whole driver async would have said the gate,
-/// the bound and the charge were I/O too, and a reader would then have to check whether any of them
-/// could be awaited past — which is exactly the kind of question a per-round check must not raise.
-/// The satisfaction is passed BY VALUE rather than by reference so the returned future borrows
-/// nothing from the loop's own state, which is what keeps `call` a plain `FnMut` rather than
-/// something only a boxed, higher-ranked signature could express.
-pub(crate) async fn drive<C, F>(
+/// `call` and `satisfy` are ASYNC and the other two are not, and that split is the honest one:
+/// those are the two steps that can reach past this process. `call` is the upstream network leg
+/// always; `satisfy` became I/O the day a granted `sampling` ask stopped being refused — satisfying
+/// one is a real LLM dispatch through busbar's own governed pipeline, and pretending that is a
+/// synchronous table lookup would only have moved the await somewhere a reader cannot see it. The
+/// gate (`grants`) and the meter (`charge`) stay synchronous, so the questions a per-round check
+/// must not raise — could the grant read or the charge be awaited past? — still cannot arise.
+/// The satisfaction and the ask are passed BY VALUE rather than by reference so each returned
+/// future borrows nothing from the loop's own state, which is what keeps both closures plain
+/// `FnMut`s rather than something only a boxed, higher-ranked signature could express.
+pub(crate) async fn drive<C, F, S, SF>(
     server: &str,
     cap: u32,
     mut call: C,
     grants: impl Fn() -> super::config::ServerRequestGrants,
-    mut satisfy: impl FnMut(&Ask) -> Result<serde_json::Value, String>,
+    mut satisfy: S,
     mut charge: impl FnMut(&RoundRecord) -> Result<(), String>,
 ) -> Outcome
 where
     C: FnMut(u32, Option<serde_json::Value>) -> F,
     F: std::future::Future<Output = Result<Round, String>>,
+    S: FnMut(Ask) -> SF,
+    SF: std::future::Future<Output = Result<serde_json::Value, String>>,
 {
     let mut round: u32 = 0;
     let mut satisfaction: Option<serde_json::Value> = None;
@@ -305,16 +310,20 @@ where
             });
         }
 
-        match satisfy(&ask) {
+        // The kind survives the move: the ask itself is consumed by the satisfier's future (see
+        // the by-value note above), and both the refusal and the next round's meter record need to
+        // name what was being satisfied.
+        let kind = ask.kind.clone();
+        match satisfy(ask).await {
             Ok(value) => {
                 satisfaction = Some(value);
-                satisfied_kind = Some(ask.kind);
+                satisfied_kind = Some(kind);
                 round += 1;
             }
             Err(reason) => {
                 return Outcome::Refused(Refusal::Unsatisfiable {
                     server: server.to_string(),
-                    kind: ask.kind,
+                    kind,
                     reason,
                 })
             }

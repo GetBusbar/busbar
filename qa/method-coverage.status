@@ -351,7 +351,8 @@ mcp|streamable-http|server|server|notifications/progress = implemented
 # fresh request carrying `inputResponses` and the sealed `requestState`.
 #
 # `sampling/createMessage` IN THIS DIRECTION IS DELIBERATE AND IS NOT THE SAME QUESTION AS THE
-# CLIENT-DIRECTION ONE, which is waived below. Here busbar asks the CALLER's model to run a
+# CLIENT-DIRECTION ONE, which is claimed further down on its own instrument (the 2026-08-15
+# per-upstream-budget unit). Here busbar asks the CALLER's model to run a
 # completion on the CALLER's budget, in busbar's own name, from text an OPERATOR wrote — absent
 # unless the operator opted in, per capability, literal, and refused outright if filtering by the
 # caller's declared capabilities would empty the round (an ask that a caller could strip by
@@ -424,6 +425,40 @@ mcp|streamable-http|client|client|tools/list = implemented
 # Watched red first: with the satisfier short-circuited to its old refusal the central case fails
 # on "the satisfied exchange must complete".
 mcp|streamable-http|client|server|roots/list = implemented
+
+# ── `sampling/createMessage`, ASKED BY AN UPSTREAM AND ANSWERED (2026-08-15) ────────────────────
+#
+# The queue's own text named the block: "a per-upstream sampling budget an operator can cap." There
+# is now: `tools.<server>.sampling` -- per registration, the roots policy's shape on the other
+# grant, vetted at boot, refused at boot if declared behind a closed `grants.sampling` gate or with
+# a zero on either ceiling. Its three required fields are the three axes of the spend: `model` (the
+# OPERATOR'S pool, never the ask's `modelPreferences` -- the payload is attacker-controlled and must
+# not pick which provider to spend on), `max_tokens` (the ask's own number is clamped to it, which
+# the protocol permits), and `max_requests_per_minute` (the per-upstream budget, spent BEFORE the
+# model leg and carried across config applies on App, so an apply cannot refill a runaway).
+#
+# A granted, declared ask is satisfied by ONE governed completion PER MAP ENTRY through
+# `ingress::operation_resolved` -- the SAME resolved core every arriving chat request enters, under
+# the INBOUND caller's own key, budget, pool ACL and hooks; there is no thinner side channel, and
+# the pool-ACL half is asserted (a caller whose key does not reach the declared pool is refused at
+# admission with the provider untouched). The retry carries the protocol's `CreateMessageResult`
+# under MRTR's `inputResponses`/`requestState` continuation, with the `sampling` client capability
+# declared from the FIRST request exactly when the deployment can honour it. Deny-by-default did
+# not move: no grant refuses naming the grant, a grant with no policy refuses naming the key, the
+# budget past its cap refuses naming the budget key, and the ask terminates at busbar in every arm.
+#
+# INSTRUMENT: `crates/busbar/src/mcp/tests/sampling_satisfy_tests.rs`, judged at the RECEIVING end
+# of a real loopback peer AND a real recording fake provider --
+#   a_granted_sampling_ask_is_completed_on_the_operators_model_and_answered,
+#   the_per_upstream_budget_refuses_the_completion_past_the_cap_before_it_runs,
+#   an_ungranted_sampling_ask_is_still_refused_and_spends_nothing,
+#   a_granted_ask_with_no_policy_refuses_and_names_the_key,
+#   a_caller_whose_key_does_not_reach_the_pool_cannot_be_spent_through,
+#   the_sampling_policy_is_refused_at_boot_when_it_cannot_mean_what_it_says;
+# plus `mcp/tests/sampling_spend_tests.rs` on the budget in isolation. Watched red first: with the
+# satisfier dispatch short-circuited to its old refusal the central case fails on "the satisfied
+# exchange must complete" (403 `ask_unsatisfiable` where 200 is owed).
+mcp|streamable-http|client|server|sampling/createMessage = implemented
 
 # ── THE STREAMABLE-HTTP CLIENT COLUMN, ISSUED (1.6.0) ───────────────────────────────────────────
 #

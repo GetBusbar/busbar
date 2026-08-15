@@ -13,6 +13,15 @@ use super::{drive, Ask, Outcome, Refusal, Round, RoundRecord};
 use crate::mcp::config::ServerRequestGrants;
 use std::cell::RefCell;
 
+/// A satisfier answer as the concrete future `drive`'s async `satisfy` seam now takes. Named so a
+/// panicking satisfier can still spell a return type — a closure whose body diverges has no
+/// expression to infer one from.
+type Satisfied = std::future::Ready<Result<serde_json::Value, String>>;
+
+fn satisfied(value: serde_json::Value) -> Satisfied {
+    std::future::ready(Ok(value))
+}
+
 fn ask(kind: &str) -> Round {
     Round::InputRequired(Ask {
         kind: kind.to_string(),
@@ -31,7 +40,9 @@ async fn an_ungranted_ask_is_refused_and_nothing_is_satisfied() {
             3,
             |_r, _s| async move { Ok(ask(kind)) },
             ServerRequestGrants::default, // deny-by-default, spelled as the type's Default
-            |_a| panic!("deny-by-default was breached: `{kind}` reached the satisfier"),
+            |_a| -> Satisfied {
+                panic!("deny-by-default was breached: `{kind}` reached the satisfier")
+            },
             |_r| Ok(()),
         )
         .await;
@@ -60,7 +71,7 @@ async fn an_unrecognised_ask_kind_is_refused_even_when_everything_else_is_grante
         3,
         |_r, _s| async move { Ok(ask("filesystem/write")) },
         move || everything,
-        |_a| panic!("an unknown ask kind reached the satisfier"),
+        |_a| -> Satisfied { panic!("an unknown ask kind reached the satisfier") },
         |_r| Ok(()),
     )
     .await;
@@ -95,7 +106,7 @@ async fn the_grant_is_re_read_on_every_retry_so_a_revocation_bites_on_the_next_o
         },
         |_a| {
             *satisfied.borrow_mut() += 1;
-            Ok(serde_json::json!({ "ok": true }))
+            self::satisfied(serde_json::json!({ "ok": true }))
         },
         |_r| Ok(()),
     )
@@ -148,7 +159,7 @@ async fn an_infinitely_asking_upstream_is_stopped_by_the_hard_round_cap() {
                 sampling: true,
                 ..Default::default()
             },
-            |_a| Ok(serde_json::json!({})),
+            |_a| satisfied(serde_json::json!({})),
             |_r| Ok(()),
         )
         .await;
@@ -194,7 +205,7 @@ async fn a_runaway_loop_is_stopped_by_the_callers_budget_and_the_refused_round_n
             sampling: true,
             ..Default::default()
         },
-        |_a| Ok(serde_json::json!({})),
+        |_a| satisfied(serde_json::json!({})),
         |_r| {
             let mut n = charges.borrow_mut();
             *n += 1;
@@ -244,7 +255,7 @@ async fn every_round_including_the_first_is_charged_exactly_once() {
             elicitation: true,
             ..Default::default()
         },
-        |_a| Ok(serde_json::json!({ "answer": "yes" })),
+        |_a| satisfied(serde_json::json!({ "answer": "yes" })),
         |r| {
             seen.borrow_mut().push(r.clone());
             Ok(())
@@ -296,7 +307,7 @@ async fn an_upstream_ask_terminates_at_busbar_and_is_never_proxied_outward() {
         3,
         |_r, _s| async move { Ok(ask("sampling")) },
         ServerRequestGrants::default,
-        |_a| unreachable!(),
+        |_a| -> Satisfied { unreachable!() },
         |_r| Ok(()),
     )
     .await;
@@ -336,7 +347,7 @@ async fn a_granted_but_unsatisfiable_ask_is_its_own_refusal() {
             sampling: true,
             ..Default::default()
         },
-        |_a| Err("no client direction".to_string()),
+        |_a| std::future::ready(Err("no client direction".to_string())),
         |_r| Ok(()),
     )
     .await;

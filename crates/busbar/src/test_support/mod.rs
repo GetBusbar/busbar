@@ -1374,6 +1374,7 @@ impl TestApp {
             mcp_sightings: self.mcp_sightings.clone().unwrap_or_default(),
             mcp_spent_approvals: Default::default(),
             mcp_roots_epochs: Default::default(),
+            mcp_sampling_spend: Default::default(),
             mcp_demotions: Default::default(),
             credential_cache: std::sync::Arc::new(crate::auth_cache::CredentialCache::new()),
             auth_scope_caps: std::collections::HashMap::new(),
