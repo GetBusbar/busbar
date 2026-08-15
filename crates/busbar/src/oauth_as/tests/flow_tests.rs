@@ -250,7 +250,7 @@ async fn serve() -> (String, Arc<crate::state::App>) {
         issuer: origin.clone(),
         signing_key: None,
         key_id: None,
-        dynamic_registration: false,
+        dynamic_registration: None,
         default_grant: vec![SCOPE.to_string()],
         access_token_ttl_secs: None,
     };
@@ -358,7 +358,7 @@ fn the_session_cookie_carries_exactly_the_attributes_it_should() {
             issuer: issuer.to_string(),
             signing_key: None,
             key_id: None,
-            dynamic_registration: false,
+            dynamic_registration: None,
             default_grant: Vec::new(),
             access_token_ttl_secs: None,
         };
@@ -584,6 +584,210 @@ async fn the_authorization_code_flow_mints_and_exchanges_a_code() {
         "/consent",
         "a spent approval must not authorise a second request"
     );
+}
+
+// ── all three registration mechanisms, end to end ───────────────────────────────────────────────
+//
+// The ruling this plane ships under is ALL THREE ON, NO TOGGLES, and a mounted endpoint is not an
+// admitted client. So each mechanism is driven over the same real socket to the same end state — an
+// access token the server introspects for that client — with the flow itself shared, because three
+// hand-rolled copies of the hops would let one mechanism's proof drift from another's.
+//
+// * pre-registered: `the_authorization_code_flow_mints_and_exchanges_a_code` above (the fixture's
+//   client is provisioned by `register_client`, which IS pre-registration).
+// * DCR:  `dynamic_client_registration_admits_a_client_end_to_end`.
+// * CIMD: `a_client_id_metadata_document_admits_a_client_end_to_end`, over a stub document host —
+//   the fetch seam exists so the SSRF guard's loopback refusal does not sit between this test and
+//   the property under test. The guard has its own suites; the document VALIDATION has `cimd_tests`.
+
+/// Drive authorize → consent → approval → code → token for `client_id`, asserting every hop, and
+/// hand back the access token.
+async fn mint_access_token(origin: &str, client_id: &str) -> String {
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("client");
+    let mut jar = Jar::new(false);
+
+    let authorize = format!(
+        "{origin}/authorize?response_type=code&client_id={}\
+         &redirect_uri=http%3A%2F%2F127.0.0.1%3A9999%2Fcb&state=s1&scope={SCOPE}\
+         &code_challenge={CHALLENGE}&code_challenge_method=S256",
+        encode_component(client_id)
+    );
+
+    let (status, headers, body) =
+        send(&client, &mut jar, reqwest::Method::GET, &authorize, None).await;
+    assert_eq!(status, 302, "authorize must redirect to consent: {body}");
+    let consent = location(&headers, origin);
+
+    let (status, _headers, body) =
+        send(&client, &mut jar, reqwest::Method::GET, &consent, None).await;
+    assert_eq!(status, 200, "the consent screen must render: {body}");
+
+    let return_to =
+        query_param(&consent, "return").expect("the screen carries the pending request");
+    let return_to = percent_decode(&return_to);
+    let (status, headers, body) = send(
+        &client,
+        &mut jar,
+        reqwest::Method::POST,
+        &format!("{origin}/consent"),
+        Some(&[("return", return_to.as_str())]),
+    )
+    .await;
+    assert_eq!(status, 302, "an approval must redirect back: {body}");
+    let back = location(&headers, origin);
+
+    let (status, headers, body) = send(&client, &mut jar, reqwest::Method::GET, &back, None).await;
+    assert_eq!(status, 302, "the approved request must redirect: {body}");
+    let redirect = location(&headers, origin);
+    assert!(
+        redirect.starts_with(REDIRECT_URI),
+        "an approved request goes to the client's redirect URI: {redirect}"
+    );
+    let code = query_param(&redirect, "code")
+        .unwrap_or_else(|| panic!("the approved request must carry a code: {redirect}"));
+
+    let (status, _headers, body) = send(
+        &client,
+        &mut jar,
+        reqwest::Method::POST,
+        &format!("{origin}/token"),
+        Some(&[
+            ("grant_type", "authorization_code"),
+            ("code", code.as_str()),
+            ("client_id", client_id),
+            ("redirect_uri", REDIRECT_URI),
+            ("code_verifier", VERIFIER),
+        ]),
+    )
+    .await;
+    assert_eq!(status, 200, "the code must be exchangeable: {body}");
+    let token: serde_json::Value = serde_json::from_str(&body).expect("a token response is JSON");
+    token["access_token"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no access_token: {body}"))
+        .to_string()
+}
+
+/// RFC 3986 percent-encoding for one query VALUE, so a `client_id` that is itself a URL survives
+/// the trip through the authorization request's query string byte-for-byte.
+fn encode_component(s: &str) -> String {
+    s.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                char::from(b).to_string()
+            }
+            other => format!("%{other:02X}"),
+        })
+        .collect()
+}
+
+/// DCR, END TO END: an anonymous POST to the always-mounted `/register` mints a `client_id`, and
+/// that client completes the whole flow to a token the server knows.
+#[tokio::test]
+async fn dynamic_client_registration_admits_a_client_end_to_end() {
+    let (origin, app) = serve().await;
+
+    let resp = reqwest::Client::new()
+        .post(format!("{origin}/register"))
+        .json(&serde_json::json!({
+            "redirect_uris": [REDIRECT_URI],
+            "token_endpoint_auth_method": "none",
+            "response_types": ["code"],
+            "grant_types": ["authorization_code", "refresh_token"],
+            "client_name": "an agent",
+            "scope": SCOPE,
+        }))
+        .send()
+        .await
+        .expect("register");
+    assert_eq!(
+        resp.status(),
+        201,
+        "RFC 7591 §3.2.1: a registration is 201 Created; the endpoint mounts with the plane, \
+         unconditionally"
+    );
+    let registration: serde_json::Value = resp.json().await.expect("a registration response");
+    let client_id = registration["client_id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no client_id in {registration}"))
+        .to_string();
+
+    let access = mint_access_token(&origin, &client_id).await;
+    let record = app
+        .oauth_as
+        .as_ref()
+        .expect("configured")
+        .server()
+        .introspect(&access)
+        .await
+        .expect("introspection must not fail")
+        .expect("the freshly minted token must be live");
+    assert_eq!(record.client_id.as_str(), client_id);
+    assert_eq!(record.scope.to_string(), SCOPE);
+}
+
+/// The metadata document URL that IS the client id on the CIMD path.
+const CIMD_CLIENT_ID: &str = "https://client.example/oauth-client";
+
+/// The stub document host behind the fetch seam: answers the one URL with the document, and
+/// anything else with a refusal — so the test also shows the fallback is keyed to the exact
+/// `client_id` and not to "any HTTPS URL fetches something".
+struct StubDocumentHost(serde_json::Value);
+
+impl crate::oauth_as::cimd::CimdFetch for StubDocumentHost {
+    fn fetch<'a>(
+        &'a self,
+        url: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<u8>, String>> + Send + 'a>>
+    {
+        Box::pin(async move {
+            if url == CIMD_CLIENT_ID {
+                Ok(serde_json::to_vec(&self.0).expect("the stub document serialises"))
+            } else {
+                Err(format!("no document at `{url}`"))
+            }
+        })
+    }
+}
+
+/// CIMD, END TO END: a `client_id` that is an HTTPS URL, never registered anywhere, completes the
+/// whole flow to a token the server introspects FOR THAT URL. The client exists only as its
+/// document — nothing was written to the store before, during or after.
+#[tokio::test]
+async fn a_client_id_metadata_document_admits_a_client_end_to_end() {
+    let (origin, app) = serve().await;
+    app.oauth_as
+        .as_ref()
+        .expect("configured")
+        .server()
+        .store()
+        .set_fetcher(Arc::new(StubDocumentHost(serde_json::json!({
+            "client_id": CIMD_CLIENT_ID,
+            "redirect_uris": [REDIRECT_URI],
+            "token_endpoint_auth_method": "none",
+            "client_name": "an agent",
+            "scope": SCOPE,
+        }))));
+
+    let access = mint_access_token(&origin, CIMD_CLIENT_ID).await;
+    let record = app
+        .oauth_as
+        .as_ref()
+        .expect("configured")
+        .server()
+        .introspect(&access)
+        .await
+        .expect("introspection must not fail")
+        .expect("the freshly minted token must be live");
+    assert_eq!(
+        record.client_id.as_str(),
+        CIMD_CLIENT_ID,
+        "the URL is the client's identity, verbatim"
+    );
+    assert_eq!(record.scope.to_string(), SCOPE);
 }
 
 /// Percent-decoding for the one value this file reads back out of a URL it was handed.

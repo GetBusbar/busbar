@@ -21,13 +21,14 @@ use oauth_as::registration::{ClientMetadata, RegistrationFailure};
 use crate::oauth_as::config::{AsIdentity, OauthAsCfg};
 use crate::oauth_as::plane::AsPlane;
 
-/// A plane with dynamic registration ON and the operator's ceiling set to `grant`.
+/// A plane with the operator's ceiling set to `grant`. Registration needs no turning on: the
+/// 1.6.0 ruling is that it is on whenever the plane is.
 fn plane(grant: &[&str]) -> AsPlane {
     let cfg = OauthAsCfg {
         issuer: "https://gw.example.com".to_string(),
         signing_key: None,
         key_id: None,
-        dynamic_registration: true,
+        dynamic_registration: None,
         default_grant: grant.iter().map(|s| (*s).to_string()).collect(),
         access_token_ttl_secs: None,
     };
@@ -151,36 +152,38 @@ async fn a_client_that_names_itself_after_the_deployment_is_refused() {
     assert!(matches!(refusal, RegistrationFailure::Unauthorized));
 }
 
-/// REGISTRATION IS ABSENT, NOT MERELY REFUSING, WHEN THE OPERATOR DID NOT TURN IT ON.
-///
-/// `oauth-as` derives its route table from the metadata document, so an unadvertised
-/// `registration_endpoint` is an unrouted path — which is the difference between "this deployment
-/// does not do dynamic registration" and "this deployment has an endpoint that says no".
+/// REGISTRATION IS ON WHENEVER THE PLANE IS. THE FLIPPED PROOF: this test used to pin the
+/// opposite — registration absent-not-refusing when the operator left the toggle off — and the
+/// 1.6.0 ruling deleted the toggle, so the same three layers are now pinned in the ON direction:
+/// the derived path exists, the metadata document advertises the endpoint (`oauth-as` routes from
+/// that document, so an unadvertised endpoint would be an unrouted path), and a registration with
+/// no asked-for scope is ADMITTED under an untouched (empty-by-default is exercised above) ceiling.
 #[tokio::test]
-async fn registration_is_off_by_default() {
+async fn registration_is_on_whenever_the_plane_is() {
     let cfg = OauthAsCfg {
         issuer: "https://gw.example.com".to_string(),
         signing_key: None,
         key_id: None,
-        dynamic_registration: false,
+        dynamic_registration: None,
         default_grant: vec!["mcp:read".to_string()],
         access_token_ttl_secs: None,
     };
     let identity = AsIdentity::from_cfg(&cfg).expect("valid");
-    assert!(
-        identity.register_path().is_none(),
-        "an unconfigured deployment derived a registration path"
+    assert_eq!(
+        identity.register_path(),
+        "/register",
+        "every validated identity derives the registration path; there is nothing to switch"
     );
     let plane =
         AsPlane::build(identity, None, vec!["https://gw.example.com/mcp".into()]).expect("builds");
-    assert!(
-        plane.server().metadata().registration_endpoint.is_none(),
-        "the metadata document advertises a registration endpoint nobody asked for"
+    assert_eq!(
+        plane.server().metadata().registration_endpoint.as_deref(),
+        Some("https://gw.example.com/register"),
+        "the metadata document must advertise the endpoint, or `oauth-as` will not route it"
     );
-    let refusal = plane
+    plane
         .server()
         .register_dynamic_client(&attempt(None, None), None)
         .await
-        .expect_err("registration answered while disabled");
-    assert!(matches!(refusal, RegistrationFailure::Disabled));
+        .expect("registration is one of the three always-on mechanisms and must admit a client");
 }

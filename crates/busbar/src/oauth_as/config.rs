@@ -45,17 +45,25 @@ pub(crate) struct OauthAsCfg {
     #[serde(default)]
     pub(crate) key_id: Option<String>,
 
-    /// RFC 7591 DYNAMIC CLIENT REGISTRATION. OFF BY DEFAULT.
+    /// THE REMOVED TOGGLE, kept as GRAMMAR and nothing else. NOT A SWITCH: no value of this field
+    /// turns anything off or on.
     ///
-    /// The `2026-07-28` MCP revision marks DCR *deprecated, retained for backwards compatibility*.
-    /// It is here because the clients shipping today — Codex, ChatGPT, Claude.ai — speak it, and a
-    /// gateway that cannot be registered with cannot be connected to. It is OFF by default because
-    /// RFC 7591 section 5 is about an anonymous client-minting endpoint on the internet, and turning
-    /// one on should be a line somebody wrote and a reviewer can find.
+    /// The 1.6.0 ruling is that client registration ships ALL THREE ways a client obtains a
+    /// `client_id` — pre-registration, Client ID Metadata Documents, and RFC 7591 Dynamic Client
+    /// Registration — with no switches. Writing `oauth_as:` at all is the decision a reviewer can
+    /// find; what makes an always-on anonymous registration endpoint safe is that registration
+    /// confers no authority (see `policy`): the `default_grant` ceiling below is the whole of what
+    /// a self-registered client gets, and it is EMPTY until an operator widens it.
+    ///
+    /// The KEY stays parseable because the config grammar is FROZEN additive-only after 1.5.3
+    /// (`config-stability-gate`); the TOGGLE is gone because the ruling says so. The two meet
+    /// here: `true` parses and is INERT (registration was on, is on); `false` is a BOOT REFUSAL
+    /// naming the ruling, because an operator who wrote it is owed the sentence "this no longer
+    /// turns registration off" at boot rather than an open `/register` they believe is closed.
     #[serde(default)]
-    pub(crate) dynamic_registration: bool,
+    pub(crate) dynamic_registration: Option<bool>,
 
-    /// THE CEILING. What a client that registered itself — by either mechanism — is allowed to ask
+    /// THE CEILING. What a client that registered itself — by any mechanism — is allowed to ask
     /// for, and it is the whole of what it gets.
     ///
     /// EMPTY BY DEFAULT, which means a self-registered client may request no scope at all and any
@@ -87,6 +95,8 @@ pub(crate) enum AsCfgError {
     IssuerHasTrailingSlash(String),
     /// `default_grant` names a scope that is not a legal RFC 6749 §3.3 scope token.
     ScopeNotAToken(String),
+    /// `dynamic_registration: false` is written, and there is nothing for it to turn off any more.
+    RegistrationToggleRemoved,
 }
 
 impl std::fmt::Display for AsCfgError {
@@ -119,6 +129,14 @@ impl std::fmt::Display for AsCfgError {
                 "oauth_as.default_grant entry `{v}` is not a scope token. RFC 6749 section 3.3 \
                  allows printable ASCII except space, double quote and backslash."
             ),
+            AsCfgError::RegistrationToggleRemoved => f.write_str(
+                "oauth_as.dynamic_registration no longer turns registration off: as of 1.6.0, \
+                 all three client registration mechanisms (pre-registration, client ID metadata \
+                 documents, RFC 7591 dynamic registration) are ON whenever `oauth_as:` is \
+                 configured. What a self-registered client GETS is still bounded by \
+                 `default_grant`, which is empty until you widen it. Delete the \
+                 `dynamic_registration:` line."
+            ),
         }
     }
 }
@@ -143,11 +161,12 @@ pub(crate) struct AsIdentity {
     pub(crate) metadata_path: String,
     pub(crate) authorize_path: String,
     pub(crate) token_path: String,
-    pub(crate) register_path: Option<String>,
+    /// The RFC 7591 registration endpoint's path. Always derived, never optional: registration is
+    /// one of the three always-on ways a client obtains a `client_id` on this plane.
+    pub(crate) register_path: String,
     pub(crate) jwks_path: String,
     pub(crate) consent_path: String,
     pub(crate) default_grant: Vec<String>,
-    pub(crate) dynamic_registration: bool,
     pub(crate) access_token_ttl: std::time::Duration,
     pub(crate) key_id: String,
     /// The operator's `signing_key:` reference, carried VERBATIM and unresolved.
@@ -173,6 +192,12 @@ impl AsIdentity {
     /// Validate and derive. Every refusal is at BOOT rather than at first request: an operator finds
     /// out from a process that will not start, not from an agent that cannot log in.
     pub(crate) fn from_cfg(cfg: &OauthAsCfg) -> Result<Self, AsCfgError> {
+        // The removed toggle, first: `false` is refused BEFORE anything is derived, because the
+        // operator who wrote it believes registration is off and must not get a booted server
+        // whose `/register` answers. `true` and absent are the same fact — registration is on.
+        if cfg.dynamic_registration == Some(false) {
+            return Err(AsCfgError::RegistrationToggleRemoved);
+        }
         let issuer = cfg.issuer.trim();
         if issuer.is_empty() {
             return Err(AsCfgError::MissingIssuer);
@@ -201,12 +226,11 @@ impl AsIdentity {
             metadata_path: format!("{AS_WELL_KNOWN}{issuer_path}"),
             authorize_path: under("authorize"),
             token_path: under("token"),
-            register_path: cfg.dynamic_registration.then(|| under("register")),
+            register_path: under("register"),
             jwks_path: under("jwks"),
             consent_path: under("consent"),
             issuer_path,
             default_grant: cfg.default_grant.clone(),
-            dynamic_registration: cfg.dynamic_registration,
             access_token_ttl: cfg
                 .access_token_ttl_secs
                 .map_or(DEFAULT_ACCESS_TOKEN_TTL, std::time::Duration::from_secs),
@@ -227,8 +251,8 @@ impl AsIdentity {
     pub(crate) fn token_path(&self) -> &str {
         &self.token_path
     }
-    pub(crate) fn register_path(&self) -> Option<&str> {
-        self.register_path.as_deref()
+    pub(crate) fn register_path(&self) -> &str {
+        &self.register_path
     }
     pub(crate) fn jwks_path(&self) -> &str {
         &self.jwks_path
@@ -250,9 +274,6 @@ impl AsIdentity {
     }
     pub(crate) fn default_grant(&self) -> &[String] {
         &self.default_grant
-    }
-    pub(crate) fn dynamic_registration(&self) -> bool {
-        self.dynamic_registration
     }
     pub(crate) fn access_token_ttl(&self) -> std::time::Duration {
         self.access_token_ttl

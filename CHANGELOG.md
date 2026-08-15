@@ -6,6 +6,32 @@ All notable changes to Busbar are documented here. The format is based on
 
 ## [Unreleased]
 
+### Changed
+
+- **Client registration on the authorization server is ALL THREE ON, NO TOGGLES.** The
+  `oauth_as.dynamic_registration` switch is DELETED: with `oauth_as:` configured, all three ways
+  the `2026-07-28` MCP revision lets a client obtain a `client_id` are served — pre-registration
+  (the host provisions the client), RFC 7591 Dynamic Client Registration (`{issuer}/register`,
+  mounted unconditionally and advertised in the RFC 8414 document), and **Client ID Metadata
+  Documents**, which are NEW in this change: a `client_id` that is an HTTPS URL and is not in the
+  store is fetched through the core SSRF guard (resolve-then-pin, unconditional cloud-metadata
+  refusal, 5 KB body cap, 10 s, no redirects), validated (the document's `client_id` must equal
+  the URL byte-for-byte, redirect URIs come from the document, secret-bearing auth methods and
+  privilege-escalating grants are refused, the deployment-impersonation refusal applies), and
+  materialised as an EPHEMERAL public client — never stored, re-judged on every request. What
+  keeps always-on self-registration safe is unchanged and is the point: registration confers
+  nothing beyond the `default_grant` ceiling, which is empty until the operator widens it, and
+  BOTH self-registration mechanisms land on that one ceiling by construction. Every CIMD failure
+  answers as an unknown client, never as an error an attacker can mint into an oracle. The old
+  `dynamic_registration:` key remains parseable — the config grammar is frozen additive-only after
+  1.5.3 — but is no longer a switch: `true` is inert, and `false` is a boot refusal that names
+  this ruling, because an operator who wrote it believes registration is off and must not get a
+  booted server whose `/register` answers. The document validation is busbar's own for
+  now: the tree pins `oauth-as` 0.9.1, which has no CIMD validator; the handover to the 0.9.2
+  `cimd` feature's validator is a marked TODO tied to `chore/1.6.0-oauth-as-0.9.2` and replaces
+  one call, not the seam. Proven end to end, per mechanism: all three now drive
+  authorize → consent → code → token over a real socket to an introspectable token.
+
 ### Fixed
 
 - **Every published cross-protocol gap is closed.** `docs/protocols.md` carried a section headed

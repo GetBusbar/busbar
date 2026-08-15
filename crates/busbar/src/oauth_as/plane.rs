@@ -27,12 +27,16 @@ use oauth_as::store::MemoryStorage;
 use super::config::AsIdentity;
 use super::signer::{RingEs256Key, RingEs256Verifier};
 
+/// The store this plane runs on: [`MemoryStorage`] behind the ONE changed read that serves Client
+/// ID Metadata Documents. See [`super::cimd::CimdStore`].
+pub(crate) type AsStore = super::cimd::CimdStore;
+
 /// The concrete server type, named once so the three places that hold it agree by construction
 /// rather than by three matching turbofishes.
-pub(crate) type AsServer = AuthorizationServer<MemoryStorage, SystemClock>;
+pub(crate) type AsServer = AuthorizationServer<AsStore, SystemClock>;
 
 /// The HTTP service over [`AsServer`]: `http::Request` in, `http::Response` out, no framework.
-pub(crate) type AsService = oauth_as::http::AuthorizationService<MemoryStorage, SystemClock>;
+pub(crate) type AsService = oauth_as::http::AuthorizationService<AsStore, SystemClock>;
 
 /// EVERYTHING THIS PLANE ALLOCATES. Absent unless `oauth_as:` is configured.
 pub(crate) struct AsPlane {
@@ -108,7 +112,7 @@ impl AsPlane {
         config.authorization_endpoint = Some(format!("{}/authorize", identity.issuer()));
         config.token_endpoint = Some(format!("{}/token", identity.issuer()));
         config.jwks_uri = Some(identity.jwks_uri());
-        config.registration = super::policy::registration_config(&identity);
+        config.registration = Some(super::policy::registration_config(&identity));
         config.access_token_ttl = identity.access_token_ttl();
         config.scopes_supported =
             (!identity.default_grant().is_empty()).then(|| identity.default_grant().to_vec());
@@ -144,8 +148,16 @@ impl AsPlane {
             oauth_as::jwt::JwtConfig::new(key, audience).with_jwks_uri(identity.jwks_uri()),
         ));
 
+        // The store: `MemoryStorage` behind the CIMD read. The ceiling handed to it is the SAME
+        // `default_grant_scopes` the registration config above is built from, so a client arriving
+        // by document and one arriving by registration land under one ceiling by construction.
+        let store = super::cimd::CimdStore::new(
+            MemoryStorage::new(),
+            super::policy::default_grant_scopes(&identity),
+            Arc::new(super::cimd::GuardedFetch),
+        );
         let server = Arc::new(
-            AuthorizationServer::new(config, MemoryStorage::new())
+            AuthorizationServer::new(config, store)
                 // Installed even though nothing on this plane verifies a client signature today:
                 // `oauth-as` refuses every signed credential when no verifier is installed, and the
                 // day `dpop` or `client-assertion` is switched on, a MISSING verifier would be a

@@ -42,7 +42,7 @@ pub(crate) fn mount(router: CoreRouter, plane: Option<&Arc<super::plane::AsPlane
         return router;
     };
     let id = plane.identity();
-    let router = router
+    router
         .route(
             id.metadata_path().to_string(),
             RouteMethod::Get,
@@ -78,20 +78,17 @@ pub(crate) fn mount(router: CoreRouter, plane: Option<&Arc<super::plane::AsPlane
             RouteMethod::Post,
             RouteAuth::Admin,
             consent_submit,
-        );
-    // RFC 7591 registration is mounted only when the operator turned it on. Absent rather than
-    // present-and-refusing, because `oauth-as` derives its own route table from the metadata
-    // document: an unadvertised `registration_endpoint` is one the library does not route either, so
-    // a mounted-but-unadvertised path would 404 from underneath and read as a busbar bug.
-    match id.register_path() {
-        None => router,
-        Some(path) => router.route(
-            path.to_string(),
+        )
+        // RFC 7591 registration, mounted UNCONDITIONALLY: the 1.6.0 ruling is that all three
+        // registration mechanisms are on whenever the plane is, with no toggles. The advertised
+        // `registration_endpoint` in `policy::registration_config` is likewise unconditional, so
+        // the metadata document and the route table cannot disagree about this path.
+        .route(
+            id.register_path().to_string(),
             RouteMethod::Post,
             RouteAuth::None,
             forward,
-        ),
-    }
+        )
 }
 
 /// Hand one request to `oauth-as` and return what it answers, unchanged.

@@ -164,10 +164,9 @@ pub(crate) fn secret_refs(cfg: &RootCfg) -> Vec<(String, &crate::config::SecretR
             register_path: _,
             jwks_path: _,
             consent_path: _,
-            // Policy, not credential: the scope ceiling, whether registration is open, the token
-            // lifetime, and the advisory `kid` that appears in every published JWKS entry.
+            // Policy, not credential: the scope ceiling, the token lifetime, and the advisory
+            // `kid` that appears in every published JWKS entry.
             default_grant: _,
-            dynamic_registration: _,
             access_token_ttl: _,
             key_id: _,
         } = identity;
