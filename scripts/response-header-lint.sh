@@ -107,7 +107,7 @@ scan_rule() {
 # CODE (comments/tests already excluded); `what` is the printed violation label; `allow` is the
 # comma-separated list of the header's ONE sanctioned definition/emission file(s).
 # Core/bin split roots (step 3.7): CORE is the engine library root, BIN the thin binary root.
-CORE="crates/busbar/src"
+CORE="crates/busbar-core/src"
 BIN="crates/busbar/src"
 SRC_DIR="$CORE"
 HDR_ROUTE_POLICY_FILE="${SRC_DIR}/proxy/mod.rs"

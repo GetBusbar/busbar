@@ -248,7 +248,23 @@ impl Plane {
     /// from the format list it is a RULE, and the day MCP speaks a second dialect the boundary
     /// stops labelling it and the rule says so rather than a stale literal quietly lying.
     pub(crate) fn sole_wire_format(self) -> Option<&'static str> {
-        match self.wire_format_names() {
+        Self::sole_of(self.wire_format_names())
+    }
+
+    /// The `sole_wire_format` DERIVATION, split from the registry read so the ZERO-dialect case is
+    /// a case a test can drive. The LLM plane's list is `known_protocols()`, and the core split
+    /// (step 3.7) is what makes an EMPTY registry reachable — from step 4 a protocol is a
+    /// dependency edge, and a build with every LLM edge removed is a legal build the deletion gate
+    /// constructs on purpose. Before this arm existed, empty fell into the same `_ => None` as
+    /// "several", so the plane silently stopped being labelled at the ingress boundary with no
+    /// statement that anyone had decided that. The answer is STILL `None` — a plane with no
+    /// dialect has nothing to label a request with — but it is now a signed decision with a test
+    /// (`plane/tests/`), not a match arm's accident. Same for `has_superset_ir` below: zero wire
+    /// formats have earned nothing, so `superset_of(0)` is `false` BY DECISION.
+    pub(crate) fn sole_of(names: &'static [&'static str]) -> Option<&'static str> {
+        match names {
+            // ZERO dialects: nothing can be labelled, deliberately — see the doc comment.
+            [] => None,
             [only] => Some(only),
             _ => None,
         }
@@ -257,7 +273,13 @@ impl Plane {
     /// Whether this plane has EARNED a superset intermediate representation. See the module header:
     /// the threshold is two wire formats, and nothing else.
     pub(crate) fn has_superset_ir(self) -> bool {
-        self.wire_formats() >= 2
+        Self::superset_of(self.wire_formats())
+    }
+
+    /// The `has_superset_ir` derivation, split out for the same zero-dialect reason as
+    /// [`Plane::sole_of`].
+    pub(crate) fn superset_of(wire_formats: usize) -> bool {
+        wire_formats >= 2
     }
 }
 

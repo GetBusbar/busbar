@@ -502,7 +502,7 @@ fn pinned_missing_set_is_exact() {
 /// Run it: `cargo test -p busbar --test method_coverage -- --ignored`
 /// Remove the `#[ignore]` when it passes. Do not remove it any other way.
 #[test]
-#[ignore = "RED BY DESIGN until 1.6.0: cells are still MISSING because crates/busbar/src/{mcp,a2a}/ \
+#[ignore = "RED BY DESIGN until 1.6.0: cells are still MISSING because crates/busbar-core/src/{mcp,a2a}/ \
             are being deleted and rebuilt cell by cell. The current list is pinned in \
             qa/method-coverage.missing and is the release's work queue. Run with --ignored; do not \
             weaken this test to make it green."]

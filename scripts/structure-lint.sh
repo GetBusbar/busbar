@@ -16,7 +16,7 @@ cd "$(dirname "$0")/.."
 # `boot-starts-the-quarantine-sweep` census row and the grandfathered `main.rs` are the two that
 # stay on $BIN: their whole job is to watch the binary. Census and axis rows whose subject is "the
 # tree" scope over BOTH roots as a comma-separated list.
-CORE=crates/busbar/src
+CORE=crates/busbar-core/src
 BIN=crates/busbar/src
 
 # Impl files target ~1,500 lines; the hard ceiling forbids genuine MONSTER files (the thing that
@@ -949,7 +949,6 @@ GRANDFATHERED_OVERSIZED="
 ${CORE}/admin/v1/json/handlers.rs
 ${CORE}/config/mod.rs
 ${CORE}/proxy/engine/mod.rs
-${BIN}/main.rs
 "
 # There is no grandfathered list for test locality. There was one, of 7 files, and it was deleted
 # rather than shrunk: the rule it was suspending is "tests in their own file always", every entry on

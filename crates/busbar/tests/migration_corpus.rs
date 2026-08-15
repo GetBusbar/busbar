@@ -285,7 +285,7 @@ fn every_shipped_config_migrates_to_a_valid_current_config() {
         "{} of {} shipped configs do not migrate to a valid current config.\n\n{}\n\nEach block \
          above names the corpus file, what the validator said, and the command to reproduce it. A \
          failure here means an operator upgrading from that release cannot migrate mechanically \
-         — fix the migrator (crates/busbar/src/config/migrate.rs), not the corpus.",
+         — fix the migrator (crates/busbar-core/src/config/migrate.rs), not the corpus.",
         failures.len(),
         files.len(),
         failures.join("\n\n========================================\n\n")

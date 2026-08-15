@@ -204,7 +204,7 @@ hdr "no engine type reaching an admin read carries a raw operator settings bag"
 # handed, and that type may be declared anywhere in the crate (see the scan-root note in the header).
 CANDIDATES=()
 # Core/bin split roots (step 3.7): the engine library and the thin binary are scanned together.
-CORE="crates/busbar/src"
+CORE="crates/busbar-core/src"
 BIN="crates/busbar/src"
 while IFS= read -r f; do CANDIDATES+=("$f"); done < <(find "$CORE" "$BIN" -name '*.rs' -not -path '*/tests/*' | sort -u)
 

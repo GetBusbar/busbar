@@ -312,7 +312,7 @@ if [ "${1:-}" = "--selftest" ]; then run_selftest; exit $?; fi
 hdr "no synchronous plugin FFI is called inline from an async fn"
 CANDIDATES=()
 # Core/bin split roots (step 3.7): the engine library and the thin binary are scanned together.
-CORE="crates/busbar/src"
+CORE="crates/busbar-core/src"
 BIN="crates/busbar/src"
 while IFS= read -r f; do CANDIDATES+=("$f"); done < <(find "$CORE" "$BIN" -name '*.rs' -not -path '*/tests/*' | sort -u)
 

@@ -51,7 +51,7 @@ GEN="scripts/config-schema.py"
 # fingerprint covered. A gate whose reach is a directory glob covers where types live, not what they
 # are, and both of those types moved out from under it.
 # Core split (step 3.7): the config grammar lives in the engine library crate.
-CORE="crates/busbar/src"
+CORE="crates/busbar-core/src"
 SNAPSHOT="${CORE}/config/config-schema.snapshot.json"
 # The per-path break-waiver file (see config-schema.py load_waivers). A COMMITTED file, deliberately
 # not an env var: every excused break is a reviewable line in the PR diff. Empty by default.

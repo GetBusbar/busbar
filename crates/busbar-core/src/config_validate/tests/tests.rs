@@ -4973,3 +4973,48 @@ fn test_key_ttl_validates_duration() {
         "missing key_ttl error: {errs:?}"
     );
 }
+
+/// THE FAIL-OPEN'S OWN TEST, watched RED before the arm it pins existed (against a contains-only
+/// `validate_provider_protocol_with`, `errors` stayed EMPTY for both providers — every provider
+/// validated against a protocol set that could not match anything, which is the fail-OPEN answer).
+///
+/// The registry's own test asserts `known_protocols()` is non-empty, i.e. that the refusal arm is
+/// unreachable TODAY — which means this arm had never once been seen to fire. Per the standing
+/// rule ("a gate that has never been seen red is not evidence"), this drives the validator against
+/// an EMPTY known-set — the state step 4's protocol extraction makes reachable with a one-line
+/// Cargo.toml edit — and asserts exactly ONE error per provider, naming the BUILD as the cause
+/// rather than scolding each provider for an "unknown" protocol with an empty must-be-one-of tail.
+#[test]
+fn an_empty_protocol_set_refuses_every_provider_naming_the_build() {
+    let mut errors = Vec::new();
+    super::validate_provider_protocol_with(&[], "prov-a", "anthropic", &mut errors);
+    super::validate_provider_protocol_with(&[], "prov-b", "no-such-protocol", &mut errors);
+
+    assert_eq!(
+        errors.len(),
+        2,
+        "an empty protocol set must refuse EVERY provider (one error each), got: {errors:?}"
+    );
+    for (err, prov) in errors.iter().zip(["prov-a", "prov-b"]) {
+        assert!(err.contains(prov), "the refusal names the provider: {err}");
+        assert!(
+            err.contains("NO protocol") && err.contains("compiled in"),
+            "the refusal must name the BUILD as the cause (no protocol compiled in), not call the \
+             protocol unknown against an empty list: {err}"
+        );
+        assert!(
+            !err.contains("must be one of"),
+            "the empty set must NOT render the unknown-protocol arm with an empty tail: {err}"
+        );
+    }
+
+    // The populated set still takes the unknown-protocol arm — the two refusals stay distinct.
+    let mut errors = Vec::new();
+    super::validate_provider_protocol_with(&["anthropic", "openai_chat"], "prov-c", "nope", &mut errors);
+    assert_eq!(errors.len(), 1);
+    assert!(
+        errors[0].contains("must be one of: anthropic, openai_chat"),
+        "the populated set names the choices: {}",
+        errors[0]
+    );
+}

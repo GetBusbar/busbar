@@ -269,21 +269,12 @@ pub fn validate_with_unset(
         // confusing error per provider, none of them naming the actual cause. It is still a refusal
         // (a proxy with no protocol cannot serve a provider lane, and accepting the config would be
         // the fail-OPEN answer), but it refuses ONCE and says why.
-        let known = crate::proto::known_protocols();
-        if known.is_empty() {
-            errors.push(format!(
-                "provider '{provider_name}' names protocol '{}', but this build has NO protocol \
-                 with a wire codec compiled in, so no provider lane can be served",
-                provider_cfg.protocol
-            ));
-        } else if !known.contains(&provider_cfg.protocol.as_str()) {
-            errors.push(format!(
-                "provider '{}' has unknown protocol '{}': must be one of: {}",
-                provider_name,
-                provider_cfg.protocol,
-                known.join(", ")
-            ));
-        }
+        validate_provider_protocol_with(
+            crate::proto::known_protocols(),
+            provider_name,
+            &provider_cfg.protocol,
+            &mut errors,
+        );
 
         // Per-provider active-health-probe settings. `interval_secs`/`timeout_secs` are floored at 1
         // by the prober at use, but a literal 0 in config signals operator confusion (a 0 interval/
@@ -2333,6 +2324,40 @@ fn expand_alternate_ipv4(host: &str) -> Option<std::net::Ipv4Addr> {
 /// checks the source against) and because `mod.rs` is at the structure-lint size ceiling.
 mod secret_refs;
 pub(crate) use secret_refs::secret_refs;
+
+/// The provider-protocol arm of `validate`, PARAMETERISED on the known-protocol set — by argument
+/// rather than by feature-gating the registry, because a feature that empties the registry would be
+/// a SECOND way to have no protocols, and this project's whole objection is to second ways.
+///
+/// THE EMPTY SET IS THE LOAD-BEARING CASE. `known_protocols()` is derived from the registry, and
+/// the core split (step 3.7) makes emptying it a one-line `Cargo.toml` edit by someone who is not
+/// thinking about this module: from step 4 on, a protocol is a dependency edge, and removing an
+/// edge is exactly what the deletion gate does per protocol in CI. `!known.contains(p)` alone is
+/// the classic vacuous gate — with `known` empty, `contains` is false for NOTHING, every provider
+/// validates, and the config that names a protocol this build cannot speak boots to a dead lane.
+/// So zero is its OWN refusal: once, naming the build, per provider. The empty-set test in
+/// `tests/tests.rs` (`an_empty_protocol_set_refuses_every_provider_naming_the_build`) was watched
+/// RED against the contains-only body before this arm existed; do not fold the arms back together.
+fn validate_provider_protocol_with(
+    known: &'static [&'static str],
+    provider_name: &str,
+    protocol: &str,
+    errors: &mut Vec<String>,
+) {
+    if known.is_empty() {
+        errors.push(format!(
+            "provider '{provider_name}' names protocol '{protocol}', but this build has NO protocol \
+             with a wire codec compiled in, so no provider lane can be served"
+        ));
+    } else if !known.contains(&protocol) {
+        errors.push(format!(
+            "provider '{}' has unknown protocol '{}': must be one of: {}",
+            provider_name,
+            protocol,
+            known.join(", ")
+        ));
+    }
+}
 
 #[cfg(test)]
 #[path = "tests/tests.rs"]

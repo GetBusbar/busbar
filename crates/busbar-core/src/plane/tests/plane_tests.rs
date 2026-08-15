@@ -475,3 +475,28 @@ fn only_a_mounted_plane_claims_a_path_and_the_two_readings_agree() {
     // request attributed to it.
     assert_eq!(PlaneDispatch::default().mounted_plane_of("/mcp"), None);
 }
+
+/// THE ZERO-DIALECT PLANE, pinned. `Plane::Llm`'s wire-format list is `known_protocols()`, and the
+/// core split makes an empty registry a legal build (a protocol becomes a dependency edge; the
+/// deletion gate removes edges on purpose). Before `sole_of`/`superset_of` were split out, zero
+/// fell into the same arms as "several", so the plane silently stopped being labelled and silently
+/// answered "no superset IR" with nothing recording that anyone had decided either. This test IS
+/// that record: on zero dialects the boundary labels nothing (`None`) and nothing has earned an
+/// IR (`false`) — by decision, not by a match arm's accident. If either answer is ever wrong for
+/// a zero-protocol build, this is the test that forces the argument.
+#[test]
+fn a_plane_with_zero_wire_formats_is_labelless_and_irless_by_decision() {
+    assert_eq!(
+        Plane::sole_of(&[]),
+        None,
+        "zero dialects: the ingress boundary has nothing to label a request with"
+    );
+    assert!(
+        !Plane::superset_of(0),
+        "zero wire formats have earned no superset IR (the threshold is two)"
+    );
+    // The neighbours, so the empty arm cannot drift into either: one dialect labels, two earn.
+    assert_eq!(Plane::sole_of(&["jsonrpc"]), Some("jsonrpc"));
+    assert_eq!(Plane::sole_of(&["a", "b"]), None);
+    assert!(Plane::superset_of(2));
+}

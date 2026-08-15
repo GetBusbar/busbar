@@ -66,7 +66,7 @@ from pathlib import Path
 # exist is a HARD ERROR, never a skip: a source silently dropping out of the set would silently
 # un-freeze its grammar, which is the exact failure this gate exists to prevent.
 # Core split (step 3.7): every tracked grammar source lives in the engine library crate root.
-CORE = "crates/busbar/src"
+CORE = "crates/busbar-core/src"
 
 SOURCES = [
     f"{CORE}/config",

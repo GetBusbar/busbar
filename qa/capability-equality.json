@@ -56,7 +56,7 @@
       "capability": "breaker-trip",
       "plane": "llm",
       "state": "proven",
-      "test": "crates/busbar/src/proxy/tests/forward_once_pool_cell_tests.rs::test_forward_once_fallback_transport_error_opens_pool_cell"
+      "test": "crates/busbar-core/src/proxy/tests/forward_once_pool_cell_tests.rs::test_forward_once_fallback_transport_error_opens_pool_cell"
     },
     {
       "capability": "breaker-trip",
@@ -86,7 +86,7 @@
       "capability": "breaker-fastfail",
       "plane": "llm",
       "state": "proven",
-      "test": "crates/busbar/src/proxy/tests/ordered_walk_tests.rs::ordered_walk_skips_tripped_preferred_to_next"
+      "test": "crates/busbar-core/src/proxy/tests/ordered_walk_tests.rs::ordered_walk_skips_tripped_preferred_to_next"
     },
     {
       "capability": "breaker-fastfail",
@@ -116,7 +116,7 @@
       "capability": "failover-reroute",
       "plane": "llm",
       "state": "proven",
-      "test": "crates/busbar/src/proxy/tests/forward_once_pool_cell_tests.rs::test_forward_once_fallback_2xx_closes_pool_cell_not_default"
+      "test": "crates/busbar-core/src/proxy/tests/forward_once_pool_cell_tests.rs::test_forward_once_fallback_2xx_closes_pool_cell_not_default"
     },
     {
       "capability": "failover-reroute",
@@ -146,7 +146,7 @@
       "capability": "hooks-tap",
       "plane": "llm",
       "state": "proven",
-      "test": "crates/busbar/src/proxy/tests/usage_tap_tests.rs::apply_global_rewrites_chains_in_order"
+      "test": "crates/busbar-core/src/proxy/tests/usage_tap_tests.rs::apply_global_rewrites_chains_in_order"
     },
     {
       "capability": "hooks-tap",
@@ -176,20 +176,20 @@
       "capability": "hooks-gate",
       "plane": "llm",
       "state": "proven",
-      "test": "crates/busbar/src/proxy/tests/hook_seam_tests.rs::global_gate_reject_short_circuits_the_request"
+      "test": "crates/busbar-core/src/proxy/tests/hook_seam_tests.rs::global_gate_reject_short_circuits_the_request"
     },
     {
       "capability": "hooks-gate",
       "plane": "mcp-client",
       "state": "proven",
-      "test": "crates/busbar/src/mcp/tests/hook_gate_tests.rs::tools_hooks_reject_all_rejects_a_tools_call",
+      "test": "crates/busbar-core/src/mcp/tests/hook_gate_tests.rs::tools_hooks_reject_all_rejects_a_tools_call",
       "note": "the gate sits at the method layer (mcp/method.rs) BEFORE the upstream leg; there is no ungated production entry to the client leg, so one battery covers both directions."
     },
     {
       "capability": "hooks-gate",
       "plane": "mcp-server",
       "state": "proven",
-      "test": "crates/busbar/src/mcp/tests/hook_gate_tests.rs::tools_hooks_reject_all_rejects_a_tools_call"
+      "test": "crates/busbar-core/src/mcp/tests/hook_gate_tests.rs::tools_hooks_reject_all_rejects_a_tools_call"
     },
     {
       "capability": "hooks-gate",
@@ -201,7 +201,7 @@
       "capability": "hooks-gate",
       "plane": "a2a-server",
       "state": "proven",
-      "test": "crates/busbar/src/a2a/tests/hook_gate_tests.rs::agents_hooks_reject_all_rejects_a_message_send"
+      "test": "crates/busbar-core/src/a2a/tests/hook_gate_tests.rs::agents_hooks_reject_all_rejects_a_message_send"
     },
     {
       "capability": "audit-chain",
@@ -219,7 +219,7 @@
       "capability": "audit-chain",
       "plane": "mcp-server",
       "state": "proven",
-      "test": "crates/busbar/src/mcp/tests/calllog_dispatch_tests.rs::a_dispatched_tools_call_lands_a_durable_record_through_a_real_dlopened_store_plugin"
+      "test": "crates/busbar-core/src/mcp/tests/calllog_dispatch_tests.rs::a_dispatched_tools_call_lands_a_durable_record_through_a_real_dlopened_store_plugin"
     },
     {
       "capability": "audit-chain",
@@ -231,13 +231,13 @@
       "capability": "audit-chain",
       "plane": "a2a-server",
       "state": "proven",
-      "test": "crates/busbar/src/a2a/tests/provenance_tests.rs::an_untouched_chain_verifies_and_its_links_are_actual_links"
+      "test": "crates/busbar-core/src/a2a/tests/provenance_tests.rs::an_untouched_chain_verifies_and_its_links_are_actual_links"
     },
     {
       "capability": "governance-budget",
       "plane": "llm",
       "state": "proven",
-      "test": "crates/busbar/src/proxy/tests/forward_once_pool_cell_tests.rs::test_forward_once_untranslatable_2xx_refunds_budget_and_trips_breaker"
+      "test": "crates/busbar-core/src/proxy/tests/forward_once_pool_cell_tests.rs::test_forward_once_untranslatable_2xx_refunds_budget_and_trips_breaker"
     },
     {
       "capability": "governance-budget",
@@ -249,25 +249,25 @@
       "capability": "governance-budget",
       "plane": "mcp-server",
       "state": "proven",
-      "test": "crates/busbar/src/mcp/tests/method_tests.rs::a_tool_call_is_charged_metered_and_audited_on_the_ordinary_budget_plane"
+      "test": "crates/busbar-core/src/mcp/tests/method_tests.rs::a_tool_call_is_charged_metered_and_audited_on_the_ordinary_budget_plane"
     },
     {
       "capability": "governance-budget",
       "plane": "a2a-client",
       "state": "proven",
-      "test": "crates/busbar/src/a2a/tests/meter_tests.rs::a_delegation_bills_the_initiating_key_for_the_hop_and_claims_nothing_beyond_it"
+      "test": "crates/busbar-core/src/a2a/tests/meter_tests.rs::a_delegation_bills_the_initiating_key_for_the_hop_and_claims_nothing_beyond_it"
     },
     {
       "capability": "governance-budget",
       "plane": "a2a-server",
       "state": "proven",
-      "test": "crates/busbar/src/a2a/tests/meter_tests.rs::reaching_the_limit_is_over_it_and_the_refusal_carries_a_retry_after"
+      "test": "crates/busbar-core/src/a2a/tests/meter_tests.rs::reaching_the_limit_is_over_it_and_the_refusal_carries_a_retry_after"
     },
     {
       "capability": "disposition",
       "plane": "llm",
       "state": "proven",
-      "test": "crates/busbar/src/tests/breaker_tests.rs::test_structured_type_drives_error_map"
+      "test": "crates/busbar-core/src/tests/breaker_tests.rs::test_structured_type_drives_error_map"
     },
     {
       "capability": "disposition",
@@ -297,7 +297,7 @@
       "capability": "metrics",
       "plane": "llm",
       "state": "proven",
-      "test": "crates/busbar/src/plane/tests/metrics_tests.rs::mcp_and_a2a_traffic_appear_on_a_real_metrics_scrape",
+      "test": "crates/busbar-core/src/plane/tests/metrics_tests.rs::mcp_and_a2a_traffic_appear_on_a_real_metrics_scrape",
       "note": "despite its name the test drives all three planes and asserts the llm, mcp and a2a series labels on one real scrape."
     },
     {
@@ -310,7 +310,7 @@
       "capability": "metrics",
       "plane": "mcp-server",
       "state": "proven",
-      "test": "crates/busbar/src/plane/tests/metrics_tests.rs::mcp_and_a2a_traffic_appear_on_a_real_metrics_scrape"
+      "test": "crates/busbar-core/src/plane/tests/metrics_tests.rs::mcp_and_a2a_traffic_appear_on_a_real_metrics_scrape"
     },
     {
       "capability": "metrics",
@@ -322,7 +322,7 @@
       "capability": "metrics",
       "plane": "a2a-server",
       "state": "proven",
-      "test": "crates/busbar/src/plane/tests/metrics_tests.rs::mcp_and_a2a_traffic_appear_on_a_real_metrics_scrape"
+      "test": "crates/busbar-core/src/plane/tests/metrics_tests.rs::mcp_and_a2a_traffic_appear_on_a_real_metrics_scrape"
     },
     {
       "capability": "trust-pinning",
@@ -334,25 +334,25 @@
       "capability": "trust-pinning",
       "plane": "mcp-client",
       "state": "proven",
-      "test": "crates/busbar/src/mcp/client/tests/rugpull_tests.rs::a_changed_schema_under_a_live_cache_is_detected_demoted_and_refused"
+      "test": "crates/busbar-core/src/mcp/client/tests/rugpull_tests.rs::a_changed_schema_under_a_live_cache_is_detected_demoted_and_refused"
     },
     {
       "capability": "trust-pinning",
       "plane": "mcp-server",
       "state": "proven",
-      "test": "crates/busbar/src/mcp/tests/trust_gate_tests.rs::the_routed_gate_answers_exactly_what_the_deleted_inline_decision_answered"
+      "test": "crates/busbar-core/src/mcp/tests/trust_gate_tests.rs::the_routed_gate_answers_exactly_what_the_deleted_inline_decision_answered"
     },
     {
       "capability": "trust-pinning",
       "plane": "a2a-client",
       "state": "proven",
-      "test": "crates/busbar/src/a2a/tests/transport_pin_tests.rs::the_pin_read_off_a_real_handshake_is_the_leaf_keys_own_spki_hash"
+      "test": "crates/busbar-core/src/a2a/tests/transport_pin_tests.rs::the_pin_read_off_a_real_handshake_is_the_leaf_keys_own_spki_hash"
     },
     {
       "capability": "trust-pinning",
       "plane": "a2a-server",
       "state": "proven",
-      "test": "crates/busbar/src/a2a/tests/pin_tests.rs::an_unpinned_registration_is_capturable_and_never_approvable"
+      "test": "crates/busbar-core/src/a2a/tests/pin_tests.rs::an_unpinned_registration_is_capturable_and_never_approvable"
     },
     {
       "capability": "net-guard",
@@ -364,7 +364,7 @@
       "capability": "net-guard",
       "plane": "mcp-client",
       "state": "proven",
-      "test": "crates/busbar/src/mcp/client/tests/ssrf_tests.rs::plaintext_http_to_a_public_host_is_refused_because_the_credential_rides_the_request"
+      "test": "crates/busbar-core/src/mcp/client/tests/ssrf_tests.rs::plaintext_http_to_a_public_host_is_refused_because_the_credential_rides_the_request"
     },
     {
       "capability": "net-guard",
@@ -376,26 +376,26 @@
       "capability": "net-guard",
       "plane": "a2a-client",
       "state": "proven",
-      "test": "crates/busbar/src/a2a/tests/fetch_tests.rs::a_rebinding_host_is_refused_outright_once_it_answers_the_metadata_address"
+      "test": "crates/busbar-core/src/a2a/tests/fetch_tests.rs::a_rebinding_host_is_refused_outright_once_it_answers_the_metadata_address"
     },
     {
       "capability": "net-guard",
       "plane": "a2a-server",
       "state": "proven",
-      "test": "crates/busbar/src/a2a/tests/pushdeliver_tests.rs::a_callback_that_became_internal_after_registration_is_refused_at_delivery",
+      "test": "crates/busbar-core/src/a2a/tests/pushdeliver_tests.rs::a_callback_that_became_internal_after_registration_is_refused_at_delivery",
       "note": "this role's own outbound is webhook push delivery, and it is guarded -- the PUSH-DELIVER TCK waivers exist because this guard correctly wins over the conformance score."
     },
     {
       "capability": "egress-auth",
       "plane": "llm",
       "state": "proven",
-      "test": "crates/busbar/src/proxy/tests/auth_style_tests.rs::test_api_key_auth_sends_api_key_header"
+      "test": "crates/busbar-core/src/proxy/tests/auth_style_tests.rs::test_api_key_auth_sends_api_key_header"
     },
     {
       "capability": "egress-auth",
       "plane": "mcp-client",
       "state": "proven",
-      "test": "crates/busbar/src/mcp/client/tests/egress_tests.rs::each_upstream_gets_a_token_bound_to_its_own_resource"
+      "test": "crates/busbar-core/src/mcp/client/tests/egress_tests.rs::each_upstream_gets_a_token_bound_to_its_own_resource"
     },
     {
       "capability": "egress-auth",
@@ -407,43 +407,43 @@
       "capability": "egress-auth",
       "plane": "a2a-client",
       "state": "proven",
-      "test": "crates/busbar/src/a2a/tests/creds_tests.rs::a_minted_lease_carries_the_secret_only_through_the_header_it_was_placed_at"
+      "test": "crates/busbar-core/src/a2a/tests/creds_tests.rs::a_minted_lease_carries_the_secret_only_through_the_header_it_was_placed_at"
     },
     {
       "capability": "egress-auth",
       "plane": "a2a-server",
       "state": "proven",
-      "test": "crates/busbar/src/a2a/tests/pushdeliver_tests.rs::the_callers_own_webhook_credential_is_presented_on_the_delivery"
+      "test": "crates/busbar-core/src/a2a/tests/pushdeliver_tests.rs::the_callers_own_webhook_credential_is_presented_on_the_delivery"
     },
     {
       "capability": "catalogue",
       "plane": "llm",
       "state": "proven",
-      "test": "crates/busbar/src/tests/endpoints_tests.rs::test_v1_models_restricted_key_sees_only_reachable_names"
+      "test": "crates/busbar-core/src/tests/endpoints_tests.rs::test_v1_models_restricted_key_sees_only_reachable_names"
     },
     {
       "capability": "catalogue",
       "plane": "mcp-client",
       "state": "proven",
-      "test": "crates/busbar/src/mcp/client/tests/catalogue_tests.rs::a_registered_server_serves_nothing_until_it_is_approved"
+      "test": "crates/busbar-core/src/mcp/client/tests/catalogue_tests.rs::a_registered_server_serves_nothing_until_it_is_approved"
     },
     {
       "capability": "catalogue",
       "plane": "mcp-server",
       "state": "proven",
-      "test": "crates/busbar/src/mcp/tests/catalogue_tests.rs::two_grants_see_two_different_catalogues_and_a_third_sees_none"
+      "test": "crates/busbar-core/src/mcp/tests/catalogue_tests.rs::two_grants_see_two_different_catalogues_and_a_third_sees_none"
     },
     {
       "capability": "catalogue",
       "plane": "a2a-client",
       "state": "proven",
-      "test": "crates/busbar/src/a2a/tests/registry_tests.rs::a_fresh_registration_is_pending_and_delegable_to_nobody"
+      "test": "crates/busbar-core/src/a2a/tests/registry_tests.rs::a_fresh_registration_is_pending_and_delegable_to_nobody"
     },
     {
       "capability": "catalogue",
       "plane": "a2a-server",
       "state": "proven",
-      "test": "crates/busbar/src/a2a/tests/catalogue_tests.rs::scope_decides_visibility_and_a_pool_only_key_sees_nothing"
+      "test": "crates/busbar-core/src/a2a/tests/catalogue_tests.rs::scope_decides_visibility_and_a_pool_only_key_sees_nothing"
     }
   ]
 }
