@@ -326,6 +326,39 @@ mcp|streamable-http|server|server|notifications/tools/list_changed = implemented
 mcp|streamable-http|server|server|notifications/prompts/list_changed = implemented
 mcp|streamable-http|server|server|notifications/resources/list_changed = implemented
 
+# ── `notifications/resources/updated`, EMITTED — the upstream-events relay (2026-08-15) ─────────
+#
+# The last queue item of the waivers-to-zero unit: "an upstream-events relay onto
+# subscriptions/listen's narrowed category." The category (`resourceSubscriptions`) was narrowed
+# away on the sentence "busbar fronts that upstream and is told nothing when a resource's contents
+# change", and that sentence stopped being true the day the client leg learned to read a peer's
+# `notifications/resources/updated` — busbar IS told, by the upstream's own announcement, with no
+# polling imposed on anybody. The two halves now meet on one bounded structure
+# (`mcp::client::pool::ResourceUpdates`): the HTTP and stdio client legs record `(server, uri)` —
+# the ONE payload field an untrusted peer's message gets to carry, length-capped and believed
+# nowhere — and every open listen stream reads it by its own cursor and relays.
+#
+# THREE GATES on every delivered event, each load-bearing: the subscriber ASKED for the uri (the
+# accepted list, itself narrowed at open to what the caller can see, so an acknowledgement never
+# confirms another tenant's inventory); the uri resolves under the subscriber's LIVE grant
+# (re-derived per poll, so a narrowed grant bites mid-stream); and the resolved resource belongs
+# to THE SERVER THAT ANNOUNCED it (an upstream cannot speak for another registration's inventory
+# by spelling its uri). `server/discover` flips `resources.subscribe` to `true` in the same
+# commit, because a declaration and a delivery must keep agreeing in both directions.
+#
+# INSTRUMENT: `crates/busbar/src/mcp/tests/subscribe_tests.rs` --
+#   an_upstream_resource_update_is_relayed_to_a_subscribed_stream (over a real socket),
+#   the_relay_filters_unasked_uris_and_refuses_another_servers_announcement,
+#   a_recorded_update_is_not_delivered_to_a_caller_whose_grant_does_not_reach_it (with control),
+#   an_unreachable_resource_subscription_is_narrowed_away_in_the_acknowledgement;
+# the client-leg recording halves are judged at THEIR carriers:
+#   http_peer_tests::only_the_catalogue_notifications_move_the_catalogue (exactly one of the nine
+#   notifications records, and it records the registered server id, not a peer-chosen name) and
+#   stdio_client_leg_tests::a_peer_signal_brings_one_refresh_forward_and_is_then_rate_limited.
+# Watched red first: with the relay short-circuited the central case fails on "the upstream
+# announced an update and the open subscription was not told".
+mcp|streamable-http|server|server|notifications/resources/updated = implemented
+
 # ── THE NOTIFICATIONS THAT RIDE A REQUEST'S OWN RESPONSE STREAM ────────────────────────────────
 #
 # Neither of these needs a subscription, and that is the revision's design rather than a shortcut:

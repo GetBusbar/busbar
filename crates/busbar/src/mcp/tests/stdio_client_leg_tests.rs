@@ -584,6 +584,18 @@ async fn a_peer_signal_brings_one_refresh_forward_and_is_then_rate_limited() {
          is nowhere in it to put a tool definition, which is the rule made structural"
     );
 
+    // And the ONE notification with a recorded field did its second job on this carrier too: the
+    // child's `resources/updated` announcement is in the relay ring as (registered server id,
+    // announced uri), which is what `subscriptions/listen`'s `resourceSubscriptions` category
+    // delivers from. See `mcp::client::pool::ResourceUpdates` for why this is the one payload
+    // field an untrusted peer's message gets to carry.
+    let (announced, _) = app.mcp_pool.updates.since(0);
+    assert_eq!(
+        announced,
+        vec![("fs".to_string(), "file:///a".to_string())],
+        "the child's resources/updated announcement is recorded for the server-leg relay"
+    );
+
     // FOUR notifications, ONE accepted trigger: the other three were inside the floor interval. A
     // peer that emits one notification per tool per change cannot turn one edit into a fetch storm.
     assert!(

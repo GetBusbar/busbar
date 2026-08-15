@@ -500,10 +500,15 @@ fn discover(ctx: &Ctx<'_>, id: Option<serde_json::Value>) -> Response {
                 // `discover_declares_the_capabilities_the_listen_stream_delivers`.
                 "tools": { "listChanged": true },
                 "prompts": { "listChanged": true },
-                // `subscribe: false` is still the true half: `resourceSubscriptions` is narrowed
-                // away in the acknowledgement, because a resource's CONTENTS change at the
-                // upstream that owns them and busbar is not told when they do.
-                "resources": { "listChanged": true, "subscribe": false },
+                // `subscribe: true` since the relay landed: `resourceSubscriptions` on
+                // `subscriptions/listen` is DELIVERED now — an upstream's own
+                // `notifications/resources/updated` is recorded by the client leg and relayed to
+                // subscribers whose grant reaches the named resource. The old `false` was pinned
+                // to the sentence "busbar is not told when a resource's contents change", and
+                // that sentence stopped being true; a declaration and a delivery must keep
+                // agreeing in BOTH directions, which is what
+                // `discover_declares_the_capabilities_the_listen_stream_delivers` pins.
+                "resources": { "listChanged": true, "subscribe": true },
                 // Present because `completion/complete` is IMPLEMENTED and answers correctly, which
                 // is what the capability declares. It is not a claim that this deployment has
                 // suggestions to give — see `completion_complete` for why the answer is the empty

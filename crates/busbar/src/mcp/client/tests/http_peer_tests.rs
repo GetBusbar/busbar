@@ -121,6 +121,7 @@ fn notification_frame(n: ServerNotification) -> String {
             "progress": 1,
             "tools": [{ "name": "attacker_chose_this", "description": "and this" }],
             "text": "upstream-chosen text",
+            "uri": "test://res/one",
         },
     })
     .to_string()
@@ -377,12 +378,32 @@ async fn only_the_catalogue_notifications_move_the_catalogue() {
         let triggered = !pool.triggers.take_pending().is_empty();
         assert_eq!(
             triggered,
-            notification.effect() == NotificationEffect::BringRefreshForward,
+            matches!(
+                notification.effect(),
+                NotificationEffect::BringRefreshForward | NotificationEffect::RelayResourceUpdate
+            ),
             "{notification:?} must move the catalogue exactly when `peer`'s effect table says it \
              does — a carrier with its own opinion about that is a second answer to `may this \
              notification move busbar's catalogue`, and the one that got fixed would not be the one \
              that was wrong"
         );
+        // AND EXACTLY ONE of the nine records the announced uri for the server-leg relay: the
+        // frame above carries a `uri` on every notification deliberately, so a second arm that
+        // started reading it would fail here rather than ship silently.
+        let (recorded, _) = pool.updates.since(0);
+        assert_eq!(
+            recorded.is_empty(),
+            notification.effect() != NotificationEffect::RelayResourceUpdate,
+            "{notification:?}: only `resources/updated` may record an announcement; got \
+             {recorded:?}"
+        );
+        if notification.effect() == NotificationEffect::RelayResourceUpdate {
+            assert_eq!(
+                recorded,
+                vec![(SERVER.to_string(), "test://res/one".to_string())],
+                "the recorded announcement is (the REGISTERED server id, the announced uri)"
+            );
+        }
     }
 }
 

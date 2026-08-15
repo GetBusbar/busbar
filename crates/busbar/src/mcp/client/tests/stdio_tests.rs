@@ -31,12 +31,13 @@ use std::time::Duration;
 /// another test's.
 #[cfg(unix)]
 fn bare_policy(
-    triggers: &crate::mcp::client::pool::RefreshTriggers,
+    pool: &crate::mcp::client::pool::McpConnectionPool,
 ) -> crate::mcp::client::stdio::PeerPolicy<'_> {
     crate::mcp::client::stdio::PeerPolicy {
         server: "fixture",
         grants: Default::default(),
-        triggers,
+        triggers: &pool.triggers,
+        updates: &pool.updates,
     }
 }
 

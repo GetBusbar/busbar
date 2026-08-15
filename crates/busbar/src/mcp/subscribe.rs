@@ -26,14 +26,19 @@
 //! reason the message has a body: a server that echoed the request back would tell a client it was
 //! subscribed to things that will never arrive, and the client would wait rather than fall back.
 //!
-//! busbar therefore accepts exactly what it can deliver, which is the three list-changed categories
-//! and nothing else. `resourceSubscriptions` is REFUSED — narrowed away in the acknowledgement — and
-//! that is a statement about what busbar can observe rather than about effort. A resource's CONTENTS
-//! change at the upstream that owns it; busbar fronts that upstream and is told nothing when it
-//! happens, so the only way to emit `notifications/resources/updated` truthfully would be to poll
-//! every subscribed resource on every registered upstream, which is a load busbar would be imposing
-//! on somebody else's server on a client's say-so. Advertising it and delivering nothing would be
-//! worse than narrowing it away, because a narrowed category is one a client can see it did not get.
+//! busbar accepts the three list-changed categories, and — since the relay landed —
+//! `resourceSubscriptions`, NARROWED PER URI to what this caller is entitled to see. The category
+//! was refused outright for as long as the sentence "busbar fronts that upstream and is told
+//! nothing when a resource's contents change" was true, and that sentence stopped being true the
+//! day the client leg learned to read a peer's `notifications/resources/updated`
+//! ([`crate::mcp::client::peer::ServerNotification::ResourcesUpdated`]): busbar IS told, by the
+//! upstream's own announcement, with no polling imposed on anybody. The announcement is recorded —
+//! `(server, uri)`, bounded, the uri believed nowhere — in
+//! [`crate::mcp::client::pool::ResourceUpdates`], and this stream relays it to a subscriber only
+//! when the uri resolves, under THE SUBSCRIBER'S OWN grant re-derived on the poll, to an
+//! operator-declared resource of the SAME server that announced it. A uri the caller cannot see is
+//! narrowed out of the acknowledgement at open and out of the delivery on every poll — the same
+//! tenant boundary the change keys hold for the list-changed categories.
 //!
 //! ## WHAT COUNTS AS A CHANGE, AND WHOSE CHANGE IT IS
 //!
@@ -88,9 +93,9 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use rmcp::model::{
     ConstString, PromptListChangedNotificationMethod, ResourceListChangedNotificationMethod,
-    SubscriptionFilter, SubscriptionsAcknowledgedNotificationMethod,
-    SubscriptionsListenRequestMethod, SubscriptionsListenResult, SubscriptionsListenResultMeta,
-    ToolListChangedNotificationMethod,
+    ResourceUpdatedNotificationMethod, SubscriptionFilter,
+    SubscriptionsAcknowledgedNotificationMethod, SubscriptionsListenRequestMethod,
+    SubscriptionsListenResult, SubscriptionsListenResultMeta, ToolListChangedNotificationMethod,
 };
 
 /// The wire name of this method, off the SDK's own const-string type rather than spelled again.
@@ -120,10 +125,13 @@ const MAX_LIFETIME: Duration = Duration::from_secs(300);
 /// idle proxy between busbar and its caller from reclaiming a connection that is working correctly.
 const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(15);
 
-/// The catalogue kinds busbar can observe changing, and the notification each one becomes.
+/// The catalogue kinds busbar can observe changing BY COMPARISON, and the notification each one
+/// becomes.
 ///
-/// A closed set, and it is closed on what is OBSERVABLE rather than on what is nameable — see the
-/// module header on `resourceSubscriptions`.
+/// A closed set of the change-key categories. `resourceSubscriptions` is deliberately not a
+/// fourth arm: it is uri-scoped rather than boolean, and its changes arrive as recorded upstream
+/// EVENTS rather than as a catalogue slice to compare — the relay in [`Listen::step`]'s watch arm
+/// is its whole delivery path, and a `Kind` for it would be a boolean that means nothing.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Kind {
     Tools,
@@ -155,21 +163,37 @@ impl Kind {
     }
 }
 
-/// Narrow a requested filter to what busbar will actually deliver.
+/// Narrow a requested filter to what busbar will actually deliver FOR THIS CALLER.
 ///
 /// Written as an explicit construction rather than as `SubscriptionFilter::intersection` with a
 /// constant, because what busbar can deliver is not a fixed value to intersect against: it is a
-/// statement per category, and `resourceSubscriptions` is dropped for a different reason than an
+/// statement per category, and `resourceSubscriptions` is narrowed for a different reason than an
 /// unrequested list-changed is. Two reasons that read the same in a diff is how one of them gets
 /// quietly changed.
-fn accept(requested: &SubscriptionFilter) -> SubscriptionFilter {
+///
+/// `entitled` answers "does THIS caller's grant reach a resource at this uri" — the same ordered
+/// gate `resources/read` asks, threaded in as a predicate because the answer needs the catalogue
+/// and the caller, and this function deliberately holds neither. A uri the caller cannot see is
+/// dropped HERE, at open, so the acknowledgement never names another tenant's inventory — and the
+/// entitlement is re-asked per poll at delivery, so a grant that narrows mid-stream bites there
+/// too. The narrowed list is left `None` when nothing survives rather than set to an empty list:
+/// an empty list is "you subscribed to no resources", which is a different statement from "this
+/// category has nothing for you".
+fn accept(requested: &SubscriptionFilter, entitled: impl Fn(&str) -> bool) -> SubscriptionFilter {
     let mut accepted = SubscriptionFilter::new();
     accepted.tools_list_changed = requested.tools_list_changed.filter(|v| *v);
     accepted.prompts_list_changed = requested.prompts_list_changed.filter(|v| *v);
     accepted.resources_list_changed = requested.resources_list_changed.filter(|v| *v);
-    // `resourceSubscriptions` is narrowed away unconditionally — see the module header. It is left
-    // `None` rather than set to an empty list: an empty list is "you subscribed to no resources",
-    // which is a different statement from "this server does not deliver that category at all".
+    accepted.resource_subscriptions = requested
+        .resource_subscriptions
+        .as_ref()
+        .map(|uris| {
+            uris.iter()
+                .filter(|u| entitled(u))
+                .cloned()
+                .collect::<Vec<_>>()
+        })
+        .filter(|kept| !kept.is_empty());
     accepted
 }
 
@@ -287,6 +311,11 @@ struct Listen {
     id: serde_json::Value,
     phase: Phase,
     last_write: Instant,
+    /// This stream's position in [`crate::mcp::client::pool::ResourceUpdates`] — the newest
+    /// sequence at OPEN, so a subscription relays what upstreams announce AFTER it exists rather
+    /// than replaying a history it never asked for. Each stream holds its own, which is why the
+    /// ring is read by cursor rather than drained.
+    cursor: u64,
 }
 
 /// The grant predicate, rebuilt per poll from the key RE-RESOLVED for that poll.
@@ -430,6 +459,37 @@ impl Listen {
                     }
                     *seen = fresh;
                 }
+                // THE RESOURCE-UPDATE RELAY — upstream announcements recorded by the client leg,
+                // delivered onto this stream's `resourceSubscriptions` category. Judged per event,
+                // per poll, against THREE facts at once, each of which is load-bearing: the
+                // subscriber ASKED for this uri (the accepted list), the uri resolves under the
+                // subscriber's LIVE grant to an operator-declared resource (the same ordered gate
+                // `resources/read` asks, re-derived this poll so a narrowed grant bites here), and
+                // the resolved resource belongs to THE SERVER THAT ANNOUNCED it — an upstream
+                // cannot speak for another registration's inventory. The cursor moves whether or
+                // not anything matched: an event judged and refused is an event handled, not one
+                // to re-judge for ever.
+                if let Some(uris) = &self.accepted.resource_subscriptions {
+                    let (events, latest) = app.mcp_pool.updates.since(self.cursor);
+                    self.cursor = latest;
+                    for (server, uri) in events {
+                        if !uris.iter().any(|u| u == &uri) {
+                            continue;
+                        }
+                        let entitled = matches!(
+                            catalogue.resource_by_uri(&caller, &uri),
+                            super::catalogue::ResourceLookup::One(entry) if entry.server == server
+                        );
+                        if !entitled {
+                            continue;
+                        }
+                        out.push_str(&event(&notification(
+                            ResourceUpdatedNotificationMethod::VALUE,
+                            &self.meta,
+                            serde_json::json!({ "uri": uri }),
+                        )));
+                    }
+                }
                 if !out.is_empty() {
                     self.last_write = now;
                     return Some(out);
@@ -478,8 +538,22 @@ pub(crate) fn listen(
         .cloned()
         .and_then(|v| serde_json::from_value(v).ok())
         .unwrap_or_default();
-    let accepted = accept(&requested);
-    if !Kind::ALL.into_iter().any(|k| k.wanted(&accepted)) {
+    // The entitlement AT OPEN, for the acknowledgement's narrowing: the same ordered gate
+    // `resources/read` asks, under this caller's grant against the live snapshot. Re-asked per
+    // poll at delivery — this read only decides what the acknowledgement may NAME.
+    let accepted = {
+        let catalogue = &ctx.app.mcp_catalogue;
+        let caller = caller_of(ctx.gov.key.as_ref(), catalogue.generation());
+        accept(&requested, |uri| {
+            matches!(
+                catalogue.resource_by_uri(&caller, uri),
+                super::catalogue::ResourceLookup::One(_)
+            )
+        })
+    };
+    if !Kind::ALL.into_iter().any(|k| k.wanted(&accepted))
+        && accepted.resource_subscriptions.is_none()
+    {
         // A STREAM THAT CAN DELIVER NOTHING IS NOT A NARROWER STREAM, it is a connection held open
         // to say nothing, and a client waiting on one waits for ever. Refusing is the answer that
         // lets it fall back; acknowledging an empty filter and then going silent is the answer that
@@ -488,10 +562,10 @@ pub(crate) fn listen(
             StatusCode::BAD_REQUEST,
             id,
             super::envelope::code::INVALID_PARAMS,
-            "`params.notifications` opts in to no category this server delivers. busbar delivers \
-             `toolsListChanged`, `promptsListChanged` and `resourcesListChanged`; \
-             `resourceSubscriptions` is not delivered, because a resource's contents change at the \
-             upstream that owns it and busbar is not told when they do.",
+            "`params.notifications` opts in to no category this server delivers for you. busbar \
+             delivers `toolsListChanged`, `promptsListChanged`, `resourcesListChanged`, and \
+             `resourceSubscriptions` for uris your grant reaches — a subscription naming only \
+             resources you cannot read is a stream with nothing to say.",
             None,
         );
     }
@@ -518,6 +592,8 @@ pub(crate) fn listen(
         id,
         phase: Phase::Acknowledge,
         last_write: now,
+        // From NOW: announcements recorded before this subscription existed are not replayed.
+        cursor: ctx.app.mcp_pool.updates.latest(),
     };
     // THE FIRST CHUNK IS PRODUCED BEFORE THE RESPONSE IS BUILT, so the acknowledgement is on the
     // wire the instant the headers are. A stream whose first frame is computed lazily is a stream

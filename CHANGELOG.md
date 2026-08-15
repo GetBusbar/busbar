@@ -37,6 +37,27 @@ All notable changes to Busbar are documented here. The format is based on
 
 ### Added
 
+- **An upstream MCP server's `sampling/createMessage` ask can now be satisfied — under an
+  operator-capped, per-upstream budget.** The ask was refused as unsatisfiable ("no per-upstream
+  budget to spend against"), and the budget now exists: `tools.<server>.sampling` declares the
+  model the completion runs on (the operator's pool, never the ask's `modelPreferences`), a
+  `max_tokens` ceiling the ask's own number is clamped to, and `max_requests_per_minute`, spent
+  before the model leg so a refused completion costs nothing. A granted, declared ask is answered
+  by a real completion through the same governed pipeline every arriving chat request rides — the
+  inbound caller's key, budget, pool ACL and hooks all apply, so an upstream cannot induce a
+  completion its caller could not have asked for itself. Deny-by-default did not move: no grant
+  refuses naming the grant, a grant with no policy refuses naming the key, and the ask still
+  terminates at busbar in every arm.
+
+- **An upstream's `notifications/resources/updated` is now relayed to subscribed clients.** The
+  `resourceSubscriptions` category on `subscriptions/listen` used to be narrowed away on the
+  sentence "busbar is not told when a resource's contents change" — and busbar IS told, by the
+  upstream's own announcement on the client leg. That announcement is recorded (bounded, the uri
+  believed nowhere) and delivered onto open listen streams gated three ways per event: the
+  subscriber asked for the uri, the subscriber's live grant reaches the resource, and the resource
+  belongs to the server that announced it. `server/discover` now declares
+  `resources.subscribe: true`, because a declaration and a delivery must agree.
+
 - **A push notification now arrives when the agent finishes, not only when busbar happens to be
   looking.** A2A tasks are asynchronous by design, and busbar answers the push-notification config
   verbs itself — so a backend was never told anything, and busbar delivered only on a transition it
