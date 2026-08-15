@@ -140,7 +140,10 @@ metrics-util = { version = "0.20.4", default-features = false }
 #                      not ask the user anything is not an authorization endpoint.
 #   resource-metadata  RFC 9728 §4 `protected_resources` on the AS metadata document, which is the
 #                      AS half of the discovery loop busbar's resource half already publishes.
-oauth-as = { version = "0.9.1", features = [
+#
+# The feature list is UNCHANGED at 0.9.3. That release adds no features (it closes Gate 4, a full
+# mutation sweep) and busbar turns on the same four it always has.
+oauth-as = { version = "0.9.3", features = [
     "http",
     "jwt",
     "consent",
