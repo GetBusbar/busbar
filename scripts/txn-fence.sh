@@ -14,7 +14,9 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 echo "== txn compile fence (this build MUST fail) =="
-out=$(cargo check -p busbar --features txn-fence-red 2>&1) && status=0 || status=$?
+# Both packages: the fence module rides the core split (step 3.7) into busbar-core; naming both
+# sides keeps this a fence in either state of the tree.
+out=$(cargo check -p busbar -p busbar-core --features txn-fence-red 2>&1) && status=0 || status=$?
 
 if [ "$status" -eq 0 ]; then
   echo "  FENCE BREACHED: crates/busbar/src/admin/v1/json/tests/txn_fence.rs COMPILED."

@@ -58,7 +58,7 @@ jobs:
           cargo update -p busbar --precise "$V"
 
       - name: Regenerate committed OpenAPI schema
-        run: UPDATE_OPENAPI=1 cargo test -p busbar --features openapi-schema openapi_json_matches_committed_file
+        run: UPDATE_OPENAPI=1 cargo test -p busbar -p busbar-core --features openapi-schema openapi_json_matches_committed_file
 
       - name: Roll the CHANGELOG
         run: python3 .github/scripts/roll_changelog.py "$V" CHANGELOG.md
@@ -72,7 +72,7 @@ jobs:
           # `openapi_json_matches_committed_file` and this step — the last gate before the release is
           # tagged — goes green having run no test at all, and we tag a stale committed openapi.json
           # that the runtime then serves. Asserting the test actually ran is the whole point.
-          out="$(cargo test -p busbar --features openapi-schema \
+          out="$(cargo test -p busbar -p busbar-core --features openapi-schema \
                    openapi_json_matches_committed_file 2>&1 | tee /dev/stderr)"
           echo "$out" | grep -qE 'test result: ok\. [1-9][0-9]* passed' || {
             echo "::error::the OpenAPI drift test did not run (renamed, moved, or filtered to zero)."

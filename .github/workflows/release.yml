@@ -629,7 +629,7 @@ jobs:
         # `openapi_json_matches_committed_file` test in ci.yml).
         env:
           BUSBAR_EMIT_OPENAPI: ${{ github.workspace }}/busbar-openapi-${{ needs.plan.outputs.tag }}.json
-        run: cargo test -p busbar --bin busbar --features openapi-schema emit_openapi_artifact -- --nocapture
+        run: cargo test -p busbar -p busbar-core --bins --lib --features openapi-schema emit_openapi_artifact -- --nocapture
       - name: Validate it is a well-formed OpenAPI 3.1 document
         run: |
           doc="${GITHUB_WORKSPACE}/busbar-openapi-${TAG}.json"

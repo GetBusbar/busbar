@@ -87,8 +87,8 @@ declare -a CARGO_LOCAL=(
   "cargo clippy --no-default-features --locked -- -D warnings"
   "cargo build --no-default-features --locked"
   "cargo test --no-default-features --locked"
-  "cargo clippy -p busbar --all-targets --features openapi-schema --locked -- -D warnings"
-  "cargo test -p busbar --features openapi-schema --locked openapi -- --nocapture"
+  "cargo clippy -p busbar -p busbar-core --all-targets --features openapi-schema --locked -- -D warnings"
+  "cargo test -p busbar -p busbar-core --features openapi-schema --locked openapi -- --nocapture"
   "cargo build --locked --bin busbar"
   "cargo test -p busbar --test migration_corpus --locked -- --nocapture"
 )
