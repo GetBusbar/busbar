@@ -8,6 +8,23 @@ All notable changes to Busbar are documented here. The format is based on
 
 ### Changed
 
+- **The engine is a library.** `crates/busbar` is split into `busbar-core` (the engine: protocol
+  registry and dialects, the MCP/A2A planes, the admin plane, config load/validate, the proxy
+  engine, auth, governance, trust, audit, the durability sink, hooks, ingress, the IR, TLS and
+  the router builders) and a thin `busbar` binary (argument parsing, config location, process
+  lifecycle, the jemalloc global allocator). No behaviour changes: the shipped binary is built
+  from the same code with the same default features. What the seam buys: a protocol crate has a
+  compilation unit it can link against, "deleting a protocol" becomes a dependency edge removed
+  from one `Cargo.toml` rather than a feature flag inside one compilation unit, and the engine
+  crate cannot name a protocol crate (the edge runs the other way; registration belongs to the
+  binary, which is a composition root and is allowed to know the protocol set). Security-relevant
+  internals — the audit chain's sink, the token signer, the durable-state statics, the trust
+  sweeper — stay crate-private behind one `boot::*` entry point each rather than becoming public
+  API. The config-validate provider/protocol check is now parameterised on the known-protocol
+  set and carries the test that drives it against an EMPTY set (a build with no protocol compiled
+  in refuses every provider once, naming the build) — the fail-open this split makes reachable,
+  converted before it can fire.
+
 - **Client registration on the authorization server is ALL THREE ON, NO TOGGLES.** The
   `oauth_as.dynamic_registration` switch is DELETED: with `oauth_as:` configured, all three ways
   the `2026-07-28` MCP revision lets a client obtain a `client_id` are served — pre-registration
