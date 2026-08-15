@@ -45,16 +45,15 @@ use crate::test_support::TestApp;
 /// would make these tests fail for that reason instead of their own.
 const ISSUER: &str = "https://as.example.com";
 
-/// An `oauth_as:` block as an operator would write it. `dynamic_registration` is a parameter because
-/// it is the one field that changes the MOUNTED SET rather than the behaviour behind it, and a
-/// gating proof that only ever ran with it off would leave `/register` — the single most dangerous
-/// path on this plane — outside every assertion below.
-fn cfg(dynamic_registration: bool) -> OauthAsCfg {
+/// An `oauth_as:` block as an operator would write it. There is deliberately nothing to vary:
+/// the 1.6.0 ruling removed the `dynamic_registration` toggle, so ONE config produces the whole
+/// mounted set — `/register` included, unconditionally.
+fn cfg() -> OauthAsCfg {
     OauthAsCfg {
         issuer: ISSUER.to_string(),
         signing_key: None,
         key_id: None,
-        dynamic_registration,
+        dynamic_registration: None,
         default_grant: Vec::new(),
         access_token_ttl_secs: None,
     }
@@ -73,30 +72,28 @@ fn inventory(id: &AsIdentity) -> Vec<String> {
         token_path,
         jwks_path,
         consent_path,
-        // Mounted only when the operator turned RFC 7591 registration on, which is why both values
-        // of `dynamic_registration` are exercised below rather than just the default.
+        // Mounted UNCONDITIONALLY: registration is one of the three always-on mechanisms, so the
+        // single most dangerous path on this plane is inside every assertion below by construction.
         register_path,
         // ── NOT PATHS: identity, policy and key material. None of these adds a route. ──
         issuer: _,
-        // The path COMPONENT of the issuer, which is a prefix the five paths above already carry;
+        // The path COMPONENT of the issuer, which is a prefix the six paths above already carry;
         // it is not itself served.
         issuer_path: _,
         default_grant: _,
-        dynamic_registration: _,
         access_token_ttl: _,
         key_id: _,
         signing_key: _,
     } = id;
 
-    let mut paths = vec![
+    vec![
         metadata_path.clone(),
         authorize_path.clone(),
         token_path.clone(),
         jwks_path.clone(),
         consent_path.clone(),
-    ];
-    paths.extend(register_path.clone());
-    paths
+        register_path.clone(),
+    ]
 }
 
 /// The CORE ROUTE TABLE of the served router, built by the same function production builds it with.
@@ -133,18 +130,14 @@ fn without_the_config_block_the_plane_serves_nothing() {
     );
     let served = served_paths(&app);
 
-    // Both registration modes, because `/register` exists in only one of them and it is exactly the
-    // path whose accidental presence would matter most.
-    for dynamic_registration in [false, true] {
-        let id = AsIdentity::from_cfg(&cfg(dynamic_registration)).expect("valid");
-        for path in inventory(&id) {
-            assert!(
-                !served.contains(&path),
-                "`oauth_as:` is absent, so `{path}` must not be mounted. A deployment that did not \
-                 ask to be an authorization server is not one, and this is the property the whole \
-                 built-in placement rests on."
-            );
-        }
+    let id = AsIdentity::from_cfg(&cfg()).expect("valid");
+    for path in inventory(&id) {
+        assert!(
+            !served.contains(&path),
+            "`oauth_as:` is absent, so `{path}` must not be mounted. A deployment that did not \
+             ask to be an authorization server is not one, and this is the property the whole \
+             built-in placement rests on."
+        );
     }
 
     // The well-known document by PREFIX as well as by exact path, because it is the one route a
@@ -169,44 +162,44 @@ fn the_inventory_is_exactly_what_the_mount_registers() {
     crate::metrics::init();
     let without = served_paths(&TestApp::new().build());
 
-    for dynamic_registration in [false, true] {
-        let block = cfg(dynamic_registration);
-        let app = TestApp::new().oauth_as(&block).build();
-        assert!(
-            app.oauth_as.is_some(),
-            "the config block was given, so the plane must exist"
-        );
-        let with = served_paths(&app);
+    let block = cfg();
+    let app = TestApp::new().oauth_as(&block).build();
+    assert!(
+        app.oauth_as.is_some(),
+        "the config block was given, so the plane must exist"
+    );
+    let with = served_paths(&app);
 
-        let added: std::collections::BTreeSet<String> =
-            with.difference(&without).cloned().collect();
-        let expected: std::collections::BTreeSet<String> =
-            inventory(&AsIdentity::from_cfg(&block).expect("valid"))
-                .into_iter()
-                .collect();
+    let added: std::collections::BTreeSet<String> = with.difference(&without).cloned().collect();
+    let expected: std::collections::BTreeSet<String> =
+        inventory(&AsIdentity::from_cfg(&block).expect("valid"))
+            .into_iter()
+            .collect();
 
-        assert_eq!(
-            added, expected,
-            "with dynamic_registration={dynamic_registration}, the routes `oauth_as:` adds must be \
-             exactly the inventory this file gates on. A path in `added` and not `expected` is a \
-             route the gating test above never looks for; a path in `expected` and not `added` is a \
-             mount that no longer happens."
-        );
-        assert!(
-            !expected.is_empty(),
-            "an empty inventory would make the gating test pass by asserting nothing"
-        );
-        assert_eq!(
-            expected.contains("/register"),
-            dynamic_registration,
-            "`/register` is mounted if and only if the operator turned RFC 7591 registration on"
-        );
-        assert!(
-            without.is_subset(&with),
-            "turning `oauth_as:` on must ADD routes and remove none: the plane is additive, and a \
-             route it displaced would be an existing surface it silently took over"
-        );
-    }
+    assert_eq!(
+        added, expected,
+        "the routes `oauth_as:` adds must be exactly the inventory this file gates on. A path in \
+         `added` and not `expected` is a route the gating test above never looks for; a path in \
+         `expected` and not `added` is a mount that no longer happens."
+    );
+    assert!(
+        !expected.is_empty(),
+        "an empty inventory would make the gating test pass by asserting nothing"
+    );
+    // THE FLIPPED ASSERTION. This line used to pin `/register` to the operator's
+    // `dynamic_registration` toggle; the 1.6.0 ruling deleted the toggle, so the same line now
+    // pins the UNCONDITIONAL mount: an AS plane without its registration endpoint is a shortfall
+    // this test names, exactly as its accidental presence used to be.
+    assert!(
+        expected.contains("/register"),
+        "`/register` is mounted whenever the plane is: registration is one of the three always-on \
+         mechanisms, with no toggle"
+    );
+    assert!(
+        without.is_subset(&with),
+        "turning `oauth_as:` on must ADD routes and remove none: the plane is additive, and a \
+         route it displaced would be an existing surface it silently took over"
+    );
 }
 
 /// The layer where this property actually dies. Nothing can mount a plane that was never built, so
@@ -248,7 +241,7 @@ fn an_absent_block_resolves_to_no_authorization_server() {
 #[test]
 fn the_mounted_surface_and_the_app_state_cannot_disagree() {
     crate::metrics::init();
-    let app = TestApp::new().oauth_as(&cfg(true)).build();
+    let app = TestApp::new().oauth_as(&cfg()).build();
     let plane: &Arc<crate::oauth_as::plane::AsPlane> =
         app.oauth_as.as_ref().expect("configured, so present");
     let served = served_paths(&app);

@@ -32,26 +32,29 @@
 //! mount was deleted. What that leaves outside the type system is the linked bytes, which is a
 //! measurement rather than a test — see the release notes.
 //!
-//! ## The three registration mechanisms, and why busbar serves two of them
+//! ## The three registration mechanisms: ALL THREE ON, NO TOGGLES
 //!
 //! The `2026-07-28` MCP revision lists three ways a client obtains a `client_id`, in the order a
 //! client should prefer them: pre-registration, **Client ID Metadata Documents**, and **Dynamic
 //! Client Registration** — the last of which it marks *deprecated, retained for backwards
-//! compatibility*. busbar serves both of the two that need a server:
+//! compatibility*. The 1.6.0 ruling is that busbar serves ALL THREE whenever `oauth_as:` is
+//! configured, with no per-mechanism switches — the decision a reviewer can find is the config
+//! block itself, and what makes always-on self-registration safe is that registration confers no
+//! authority (the [`policy`] ceiling):
 //!
-//! * **DCR** ([`policy`]) because it is what the clients shipping today actually speak. IMPLEMENTED
-//!   HERE, off by default, and confined by a ceiling the registrant cannot move.
-//! * **CIMD** — the `SHOULD`, and **NOT IMPLEMENTED IN THIS CHANGE**. Said here rather than left to
-//!   be discovered, because a plane that serves the deprecated mechanism and not its replacement is
-//!   a gap somebody has to know about. `oauth-as` 0.9.2 added a CIMD *validator* behind an
-//!   off-by-default `cimd` feature busbar does not enable, and it is a validator ONLY: the library
-//!   does not fetch, and it still exposes no client-resolution hook — so the shape below is
-//!   unchanged by that release or by 0.9.3, and what the feature would save is the validation, not
-//!   the seam. That seam is `Storage::get_client`: a `client_id` that parses as an HTTPS URL and is
-//!   absent from the store is fetched, validated (`client_id` equal to the URL, `redirect_uris`
-//!   matched against the request) and materialised as an ephemeral [`oauth_as::client::Client`]
-//!   under the SAME [`policy::default_grant_scopes`] ceiling registration uses. That fetch is an
-//!   SSRF surface by construction — the URL is attacker-supplied — and it goes through
+//! * **Pre-registration**: the host provisions a [`oauth_as::client::Client`] into the store
+//!   directly ([`plane::AsServer::register_client`]).
+//! * **DCR** ([`policy`]) because it is what the clients shipping today actually speak. Mounted
+//!   UNCONDITIONALLY at `{issuer}/register`, and confined by a ceiling the registrant cannot move.
+//! * **CIMD** ([`cimd`]) — the `SHOULD`. The seam is `Storage::get_client`: a `client_id` that
+//!   parses as an HTTPS URL and is absent from the store is fetched, validated (`client_id` equal
+//!   to the URL, `redirect_uris` taken from the document and exact-matched against the request by
+//!   `oauth-as`) and materialised as an ephemeral [`oauth_as::client::Client`] under the SAME
+//!   [`policy::default_grant_scopes`] ceiling registration uses. The document VALIDATION is
+//!   busbar's own for now: `oauth-as` ships a CIMD validator behind an off-by-default `cimd`
+//!   feature this tree does not enable — the handover is a marked TODO in [`cimd`] tied to
+//!   `chore/1.6.0-oauth-as-0.9.3`, and it replaces one call, not the seam. That
+//!   fetch is an SSRF surface by construction — the URL is attacker-supplied — and it goes through
 //!   [`crate::net_guard`]'s resolve-then-pin guard rather than a second copy of it; a drifted copy
 //!   of exactly that guard was a live cloud-metadata bypass on the MCP plane.
 //!
@@ -64,6 +67,7 @@
 //!   the same resolve-then-pin, the same unconditional cloud-metadata refusal and the same
 //!   re-guarded redirect chain as every other guarded fetch in the tree.
 
+pub(crate) mod cimd;
 pub(crate) mod config;
 pub(crate) mod consent;
 pub(crate) mod plane;

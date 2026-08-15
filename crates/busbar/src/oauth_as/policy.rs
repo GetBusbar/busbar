@@ -30,8 +30,9 @@
 
 use oauth_as::registration::{RegistrationAttempt, RegistrationDecision, RegistrationPolicy};
 
-/// The policy for a deployment that has turned `dynamic_registration: true` on: anyone may register,
-/// and registering buys exactly the operator's `default_grant`.
+/// The policy for every deployment that configured `oauth_as:`: anyone may register, and
+/// registering buys exactly the operator's `default_grant`. There is no toggle — the 1.6.0 ruling
+/// is that all three registration mechanisms are ON whenever the plane is.
 ///
 /// "Anyone may register" is the honest reading of what the operator asked for — the clients this
 /// mechanism exists for (Codex, ChatGPT, Claude.ai) have no prior relationship with the deployment
@@ -64,28 +65,27 @@ impl RegistrationPolicy for OpenRegistration {
 /// Case-insensitive and substring-based, which is deliberately blunt: the cost of a false positive
 /// is that a client picks a different name, and the cost of a false negative is a consent screen
 /// that lies to a user about who is asking.
-fn name_impersonates_the_deployment(name: &str) -> bool {
+///
+/// `pub(super)` because [`super::cimd`] applies the SAME refusal to a metadata document's
+/// `client_name`: a client that arrives by the replacement mechanism must not be able to say the
+/// word the deprecated one is refused for.
+pub(super) fn name_impersonates_the_deployment(name: &str) -> bool {
     name.to_ascii_lowercase().contains("busbar")
 }
 
 /// The RFC 7591 configuration: the CEILING, built from the operator's `default_grant`.
 ///
-/// Returns `None` when `dynamic_registration` is off, which is what makes the endpoint absent rather
-/// than present-and-refusing: `oauth-as` derives its route table from the metadata document, so an
-/// unadvertised `registration_endpoint` is an unmounted route.
+/// UNCONDITIONAL. Registration mounts whenever the plane does — `oauth-as` derives its route table
+/// from the metadata document, so the always-advertised `registration_endpoint` here and the
+/// always-mounted `/register` in `routes::mount` are two views of the same ruling and must agree.
 pub(crate) fn registration_config(
     identity: &super::config::AsIdentity,
-) -> Option<Box<oauth_as::registration::RegistrationConfig>> {
-    if !identity.dynamic_registration() {
-        return None;
-    }
+) -> Box<oauth_as::registration::RegistrationConfig> {
     let mut config = oauth_as::registration::RegistrationConfig::new();
-    config.registration_endpoint = identity.register_path().map(|_| {
-        // Derived from the issuer rather than from the path, because this member is an absolute URL
-        // and the path is what the router matched. Two spellings of one endpoint is how an
-        // advertised endpoint and a served one drift apart.
-        format!("{}/register", identity.issuer())
-    });
+    // Derived from the issuer rather than from the path, because this member is an absolute URL
+    // and the path is what the router matched. Two spellings of one endpoint is how an
+    // advertised endpoint and a served one drift apart.
+    config.registration_endpoint = Some(format!("{}/register", identity.issuer()));
     config.allowed_scopes = default_grant_scopes(identity);
     // THE GRANTS A SELF-REGISTERED CLIENT MAY USE. `client_credentials` is deliberately absent: it
     // mints a token with no resource owner in the loop, so a client that could register itself into
@@ -100,7 +100,7 @@ pub(crate) fn registration_config(
     // way to change what a user consented to without asking them again, and nothing in the MCP
     // client population uses it.
     config.management_enabled = false;
-    Some(Box::new(config))
+    Box::new(config)
 }
 
 /// The operator's `default_grant` as a `ScopeSet`.
