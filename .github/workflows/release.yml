@@ -1288,14 +1288,38 @@ jobs:
 
   # ── Fan out an instant "a real release just happened" signal to every downstream repo that
   #    self-heals off busbar's releases (Homebrew tap, Helm chart, and whatever else gets added to
-  #    .github/release-notify-targets.txt). Each target already has its OWN daily-poll workflow as
-  #    the durable fallback (so a missed/failed dispatch here is never a silent miss, just a same-day
-  #    catch-up) — this job only makes the common case instant instead of up-to-24h-later. Adding a
-  #    new downstream consumer to the fan-out is a one-line addition to that text file.
+  #    .github/release-notify-targets.txt). Each target already has its OWN daily-poll workflow
+  #    (`schedule:` cron, staggered per repo) as the durable BACKUP SWEEP — belt and braces: the cron
+  #    catches anything this job misses (a dispatch that fails, a repo added to the list before its
+  #    workflow exists, an outage), the dispatch below is what kills the overnight wait. Neither
+  #    replaces the other. Adding a new downstream consumer to the fan-out is a one-line addition to
+  #    that text file.
   #
   #    IT NOW FIRES ONLY AFTER A PROVEN-GOOD PROMOTE. It used to hang off the build jobs, so a fan-out
   #    could tell nineteen repos to go and consume a release that did not work. There is nothing to
-  #    fan out about until the release is real, so `promote-release` is its only dependency.
+  #    fan out about until the release is real, so `promote-release` is its only dependency — this job
+  #    NEVER runs before the release is public and verified, and a red run here (a bad token, a repo
+  #    that 404s) cannot un-publish anything that already went out.
+  #
+  #    WHY THIS WAS STILL A 24H WAIT FOR v1.5.4. Owner, 2026-08-15: "next time we push 1.5.x we dont
+  #    wait til overnight to kickoff". At v1.5.4 this job was already written to dispatch
+  #    `repository_dispatch` events exactly as below, but it hung off the OLD pre-promotion-train
+  #    shape of this file, where the per-target build matrix and the fan-out were siblings under one
+  #    umbrella rather than fan-out depending on a verified publish. Three of five build legs failed
+  #    on that run (`gh run view 31818177469 --repo GetBusbar/busbar`), so `notify-downstream` was
+  #    SKIPPED outright by default `needs:` semantics — never ran, never went red, no signal anywhere
+  #    that the fleet had not been told. The only thing that noticed was each repo's own overnight
+  #    cron. That failure mode is closed structurally now: fan-out hangs off `promote-release`, which
+  #    only succeeds once the release is public and re-verified from outside, so a build failure
+  #    upstream stops the release before fan-out is ever reached — it cannot silently skip past a
+  #    broken release the way it did here, and once promote succeeds, fan-out either fires and reports
+  #    per-repo, or goes loudly red; it does not quietly no-op again.
+  #
+  #    THE OTHER HALF OF THE v1.5.4 GAP: `RELEASE_DISPATCH_TOKEN` (org secret, visibility "all") is
+  #    now provisioned — confirmed present via `gh api orgs/GetBusbar/actions/secrets` on 2026-08-15.
+  #    The guard below is kept anyway, deliberately: if that secret is ever revoked or scoped down to
+  #    a subset of repos, this job must go RED and NAME the gap, not silently fall back to "the cron
+  #    will catch it eventually" the way a bare `if:` skip would.
   notify-downstream:
     needs: [plan, promote-release]
     runs-on: ubuntu-latest
@@ -1305,10 +1329,10 @@ jobs:
         env:
           # A fine-grained PAT (or GitHub App installation token) with Contents:read + Actions:write
           # on every repo listed in release-notify-targets.txt. NOT the default GITHUB_TOKEN — that
-          # token cannot dispatch to OTHER repos, only this one. TODO(release-dispatch): provision
-          # this secret (org-level, so every downstream repo's own workflow can also use it if
-          # needed) before this job can do anything; until then it fails loudly rather than
-          # silently no-op'ing, so a missing token can't masquerade as "nothing to notify."
+          # token cannot dispatch to OTHER repos, only this one. Provisioned as an org-level secret
+          # (visibility "all") so every downstream repo's own workflow can also use it — verified
+          # present via `gh api orgs/GetBusbar/actions/secrets`. The guard below stays regardless: a
+          # missing/revoked token must fail loudly, never silently no-op.
           GH_TOKEN: ${{ secrets.RELEASE_DISPATCH_TOKEN }}
           DISPATCH_TOKEN: ${{ secrets.RELEASE_DISPATCH_TOKEN }}
           TAG: ${{ needs.plan.outputs.tag }}
