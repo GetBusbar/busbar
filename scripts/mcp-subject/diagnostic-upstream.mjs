@@ -565,6 +565,15 @@ const server = createServer((req, res) => {
 // subject's pooled client -- Node's five-second default made a reused connection race the FIN and
 // fail with `error sending request` before any byte reached this process.
 server.keepAliveTimeout = 0;
+// AND THE HEADER TIMEOUT, which is the OTHER idle reaper: with the keep-alive timeout
+// disabled, Node still closes a connection that has carried no request HEADERS for
+// `headersTimeout` (60s default) since the previous request ended -- so a subject whose pool
+// reuses a connection idle for just over a minute (boot-time arming, then a quiet suite
+// phase) hit a FIN mid-send and failed with `error sending request` before a byte reached
+// this process. Zero disables it; `requestTimeout` likewise, so a deliberately stalled
+// request is ended by the SUBJECT's own deadline, which is the thing under test.
+server.headersTimeout = 0;
+server.requestTimeout = 0;
 server.listen(PORT, "127.0.0.1", () => {
   console.log(`diagnostic upstream listening on 127.0.0.1:${PORT}`);
 });

@@ -213,7 +213,15 @@ fn build_pinned_client(
         .connect_timeout(super::ssrf::DISPATCH_CONNECT_TIMEOUT)
         .timeout(timeout)
         .tcp_nodelay(true)
-        .pool_idle_timeout(Duration::from_secs(90))
+        // FOUR SECONDS, because the peer decides how long an idle connection lives and the most
+        // common server default is FIVE (Node's `keepAliveTimeout`; nginx and friends are longer
+        // but five is the ecosystem floor). A pool that idles connections for 90 seconds reuses
+        // sockets most upstreams closed a minute ago, and the reuse race surfaces as an
+        // `error sending request` on the FIRST call after a quiet spell — a non-idempotent POST
+        // hyper will not retry. Staying under the shortest common peer timeout means an idle
+        // connection is dropped by US before the peer can close it under us; the cost is a fresh
+        // TCP handshake on loopback-or-LAN scale after four quiet seconds.
+        .pool_idle_timeout(Duration::from_secs(4))
         .build()
         .map_err(|e| SsrfRefusal::Unresolvable {
             host: target.host().to_string(),

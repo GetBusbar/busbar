@@ -378,7 +378,16 @@ jobs:
         if: always()
         with:
           name: mcp-battery-subject
-          path: testing/mcp-conformance/reports/
+          # The RUN'S OWN EVIDENCE beside its verdicts: busbar's log and the seam peer's log are
+          # where a harness-side failure (a refused upstream contact, a quarantine, a dead fake)
+          # is visible, and without them a red on this leg could only be diagnosed by reproducing
+          # it locally — which is exactly how the seam vacuity survived as long as it did.
+          path: |
+            testing/mcp-conformance/reports/
+            .mcp-conformance/battery-subject-run/busbar.log
+            .mcp-conformance/battery-subject-run/upstream.log
+            .mcp-conformance/battery-subject-run/credential-shim.log
+            .mcp-conformance/battery-seam/seam-upstream.log
           if-no-files-found: ignore
 
   fixture-absence:

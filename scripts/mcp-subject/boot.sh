@@ -166,9 +166,9 @@ tools:
   # reason the header of this file gives for it.
   json:
     # A PATH OF ITS OWN. Each registration is answered exactly the tool set it approves
-    # (`SUBSETS` in diagnostic-upstream.mjs): eight registrations sharing one flat list
-    # meant every honest observation carried 20-odd `added` tools, which is DRIFT, which
-    # is a quarantine on the first unattended sweep tick. See `dg` below.
+    # (SUBSETS in diagnostic-upstream.mjs): eight registrations sharing one flat list
+    # meant every honest observation carried 20-odd 'added' tools, which is DRIFT, which
+    # is a quarantine on the first unattended sweep tick. See dg() above.
     url: "http://127.0.0.1:$upstream_port/mcp/json"
     allow_private: true
     pin:
@@ -214,9 +214,9 @@ tools:
 
   test:
     # A PATH OF ITS OWN. Each registration is answered exactly the tool set it approves
-    # (`SUBSETS` in diagnostic-upstream.mjs): eight registrations sharing one flat list
-    # meant every honest observation carried 20-odd `added` tools, which is DRIFT, which
-    # is a quarantine on the first unattended sweep tick. See `dg` below.
+    # (SUBSETS in diagnostic-upstream.mjs): eight registrations sharing one flat list
+    # meant every honest observation carried 20-odd 'added' tools, which is DRIFT, which
+    # is a quarantine on the first unattended sweep tick. See dg() above.
     url: "http://127.0.0.1:$upstream_port/mcp/test"
     # The upstream is on loopback and speaks plaintext. allow_private is what an operator must say
     # out loud to permit that, and saying it here is honest rather than convenient: the SSRF guard
@@ -642,9 +642,9 @@ tools:
   # that contains no separator, so no server id composes it — see \`greeter:\` below.
   slow:
     # A PATH OF ITS OWN. Each registration is answered exactly the tool set it approves
-    # (`SUBSETS` in diagnostic-upstream.mjs): eight registrations sharing one flat list
-    # meant every honest observation carried 20-odd `added` tools, which is DRIFT, which
-    # is a quarantine on the first unattended sweep tick. See `dg` below.
+    # (SUBSETS in diagnostic-upstream.mjs): eight registrations sharing one flat list
+    # meant every honest observation carried 20-odd 'added' tools, which is DRIFT, which
+    # is a quarantine on the first unattended sweep tick. See dg() above.
     url: "http://127.0.0.1:$upstream_port/mcp/slow"
     allow_private: true
     pin:
@@ -672,9 +672,9 @@ tools:
 
   failing:
     # A PATH OF ITS OWN. Each registration is answered exactly the tool set it approves
-    # (`SUBSETS` in diagnostic-upstream.mjs): eight registrations sharing one flat list
-    # meant every honest observation carried 20-odd `added` tools, which is DRIFT, which
-    # is a quarantine on the first unattended sweep tick. See `dg` below.
+    # (SUBSETS in diagnostic-upstream.mjs): eight registrations sharing one flat list
+    # meant every honest observation carried 20-odd 'added' tools, which is DRIFT, which
+    # is a quarantine on the first unattended sweep tick. See dg() above.
     url: "http://127.0.0.1:$upstream_port/mcp/failing"
     allow_private: true
     pin:
@@ -697,9 +697,9 @@ tools:
 
   protocol:
     # A PATH OF ITS OWN. Each registration is answered exactly the tool set it approves
-    # (`SUBSETS` in diagnostic-upstream.mjs): eight registrations sharing one flat list
-    # meant every honest observation carried 20-odd `added` tools, which is DRIFT, which
-    # is a quarantine on the first unattended sweep tick. See `dg` below.
+    # (SUBSETS in diagnostic-upstream.mjs): eight registrations sharing one flat list
+    # meant every honest observation carried 20-odd 'added' tools, which is DRIFT, which
+    # is a quarantine on the first unattended sweep tick. See dg() above.
     url: "http://127.0.0.1:$upstream_port/mcp/protocol"
     allow_private: true
     pin:
@@ -716,9 +716,9 @@ tools:
 
   confirm:
     # A PATH OF ITS OWN. Each registration is answered exactly the tool set it approves
-    # (`SUBSETS` in diagnostic-upstream.mjs): eight registrations sharing one flat list
-    # meant every honest observation carried 20-odd `added` tools, which is DRIFT, which
-    # is a quarantine on the first unattended sweep tick. See `dg` below.
+    # (SUBSETS in diagnostic-upstream.mjs): eight registrations sharing one flat list
+    # meant every honest observation carried 20-odd 'added' tools, which is DRIFT, which
+    # is a quarantine on the first unattended sweep tick. See dg() above.
     url: "http://127.0.0.1:$upstream_port/mcp/confirm"
     allow_private: true
     pin:
@@ -757,9 +757,9 @@ tools:
 
   multi:
     # A PATH OF ITS OWN. Each registration is answered exactly the tool set it approves
-    # (`SUBSETS` in diagnostic-upstream.mjs): eight registrations sharing one flat list
-    # meant every honest observation carried 20-odd `added` tools, which is DRIFT, which
-    # is a quarantine on the first unattended sweep tick. See `dg` below.
+    # (SUBSETS in diagnostic-upstream.mjs): eight registrations sharing one flat list
+    # meant every honest observation carried 20-odd 'added' tools, which is DRIFT, which
+    # is a quarantine on the first unattended sweep tick. See dg() above.
     url: "http://127.0.0.1:$upstream_port/mcp/multi"
     allow_private: true
     pin:
@@ -821,9 +821,9 @@ tools:
   # been \`greeter_greet\` and that \`publish_as\` is what makes it \`greet\`.
   greeter:
     # A PATH OF ITS OWN. Each registration is answered exactly the tool set it approves
-    # (`SUBSETS` in diagnostic-upstream.mjs): eight registrations sharing one flat list
-    # meant every honest observation carried 20-odd `added` tools, which is DRIFT, which
-    # is a quarantine on the first unattended sweep tick. See `dg` below.
+    # (SUBSETS in diagnostic-upstream.mjs): eight registrations sharing one flat list
+    # meant every honest observation carried 20-odd 'added' tools, which is DRIFT, which
+    # is a quarantine on the first unattended sweep tick. See dg() above.
     url: "http://127.0.0.1:$upstream_port/mcp/greeter"
     allow_private: true
     pin:

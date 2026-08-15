@@ -329,10 +329,22 @@ test({
   role: 'client', area: 'conformance', tier: 'pr', peer: 'fake',
   catches: 'A client that hard-rejects results without caching hints, breaking against every older or minimal server.',
   run: async (ctx) => {
-    const withHints = await driveClient(ctx, 'honest');
-    const without = await driveClient(ctx, 'no-cache-hints');
+    // A LONGER FAILSAFE THAN THE DEFAULT, for this scenario alone. Driving a listing out of a
+    // gateway-shaped client is an operator's verb, and operator verbs sit behind a per-minute
+    // mutation budget the driver may legitimately have to wait out (its own stderr says when it
+    // is doing so). The failsafe is a ceiling on waiting for the driver to EXIT, not a slackening
+    // of anything asserted: the transcript judged below is still only what genuinely reached the
+    // peer.
+    const withHints = await driveClient(ctx, 'honest', { failsafeMs: 120000 });
+    const without = await driveClient(ctx, 'no-cache-hints', { failsafeMs: 120000 });
     const listedWithHints = withHints.fromClient.some((m) => m.method === 'tools/list');
-    if (!listedWithHints) ctx.skip('client did not call tools/list even against an honest server');
+    // The driver's stderr rides the skip, because this skip is a GATE FAILURE under MCP_NO_SKIPS
+    // and "did not call" has two very different causes — a client that genuinely never lists, and
+    // a driver whose listing leg failed — distinguishable only by what the driver printed.
+    if (!listedWithHints) {
+      ctx.skip('client did not call tools/list even against an honest server; driver stderr: '
+        + JSON.stringify(String(withHints.stderr || '').slice(-800)));
+    }
 
     // The spec is explicit that clients SHOULD default an absent ttlMs to 0
     // rather than treating it as an error, precisely so newer clients keep
