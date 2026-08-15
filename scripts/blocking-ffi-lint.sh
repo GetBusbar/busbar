@@ -31,7 +31,7 @@
 #     unauthenticated caller.
 # A sixth will be written the same way; this makes it fail the build instead.
 #
-# WHAT IT SCANS: `crates/busbar/src/**/*.rs` — the whole engine crate, minus test trees (named-
+# WHAT IT SCANS: `crates/busbar-core/src/**/*.rs` — the whole engine crate, minus test trees (named-
 # navigated and exempt exactly the way structure-lint.sh / settings-leak-lint.sh treat them). The
 # engine crate is the boundary that holds: `plugin-loader` DEFINES the synchronous seams (they are
 # synchronous by contract — the C ABI has no futures) and `busbar` is the only crate that decides

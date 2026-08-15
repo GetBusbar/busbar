@@ -21,11 +21,11 @@
 # Every one of them was a NEW projection added later, by someone who had not read the previous
 # retraction. A fifth projection will be written the same way; this makes it fail the build instead.
 #
-# WHAT IT SCANS: `crates/busbar/src/**/*.rs` — the WHOLE ENGINE CRATE, minus test trees (named-
+# WHAT IT SCANS: `crates/busbar-core/src/**/*.rs` — the WHOLE ENGINE CRATE, minus test trees (named-
 # navigated and exempt exactly the way structure-lint.sh / response-header-lint.sh /
 # tracing-lint.sh treat them).
 #
-# THE SCAN ROOT USED TO BE `crates/busbar/src/admin/**` ALONE, and that was a COVERAGE CLAIM the lint
+# THE SCAN ROOT USED TO BE `crates/busbar-core/src/admin/**` ALONE, and that was a COVERAGE CLAIM the lint
 # could not back: an admin handler serializes whatever type it is handed, and nothing requires that
 # type to be DECLARED under `admin/`. A view struct born in `hooks/`, `governance/` or `config/` and
 # returned by an admin handler was invisible to this lint while being exactly the defect it exists

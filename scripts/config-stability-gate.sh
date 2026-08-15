@@ -46,7 +46,7 @@ cd "$(dirname "$0")/.."
 PY=python3
 GEN="scripts/config-schema.py"
 # The TRACKED SOURCE SET lives in ONE place — `SOURCES` in config-schema.py — so `gen` is called
-# with no path argument. It used to be a lone `crates/busbar/src/config` argument here, which is how
+# with no path argument. It used to be a lone `crates/busbar-core/src/config` argument here, which is how
 # `SecretRef` (its own crate) and `UpstreamCreds` (auth/mod.rs) came to be config grammar that no
 # fingerprint covered. A gate whose reach is a directory glob covers where types live, not what they
 # are, and both of those types moved out from under it.

@@ -873,7 +873,7 @@ async fn run() {
     // THE A2A RE-VERIFICATION JOB — hydration's sibling: spawned once, here, and folded into
     // `busbar_core::boot` so the sweeper, the live-fetch transport and the identity resolver
     // stay crate-private in core (the widened surface is exactly where a plane-shaped API
-    // could grow; see the split plan §4.3). Fatal if an outbound client identity does not
+    // could grow). Fatal if an outbound client identity does not
     // resolve, exactly as before — the refusal text is the boot function's.
     busbar_core::boot::spawn_a2a_reverify(&app_handle, &shutdown_tx).unwrap_or_else(|e| die(e));
     // Data plane on `listen`, admin plane on its own `admin_listen`, served concurrently — each with
@@ -1210,7 +1210,7 @@ fn providers_override_from_env() -> Option<std::path::PathBuf> {
 /// edits their config). Exit 0 on success, 1 if the OS entropy source is unavailable.
 fn generate_signing_key_command() -> i32 {
     // The mint lives behind `busbar_core::boot`: the CLI needs a hex string, not a `TokenSigner`,
-    // so the signer type and its default kid stay crate-private in core (split plan §4.3).
+    // so the signer type and its default kid stay crate-private in core.
     let hex = match busbar_core::boot::generate_signing_key_hex() {
         Ok(h) => h,
         Err(e) => {

@@ -163,7 +163,7 @@ impl ProtocolDecl {
 /// This is the whole of core's knowledge of which protocols exist. It is deliberately not a match,
 /// not a `#[cfg]`-gated arm, and not a constructor: it is a list of references to declarations that
 /// live in the protocols' own modules. When a protocol becomes a crate (step 4), its line here
-/// becomes `&busbar_proto_llm::DECL` and nothing else in core moves; when a protocol is LOADED, it
+/// becomes the `busbar-proto-llm` crate's `&DECL` and nothing else in core moves; when a protocol is LOADED, it
 /// never appears here at all and reaches [`Registry::new`] through the same iterator.
 static BUILTIN_DECLS: &[&ProtocolDecl] = &[
     // Order is the operator-visible order: it is the order `known_protocols()` reports, and

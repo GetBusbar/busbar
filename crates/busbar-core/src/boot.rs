@@ -1,7 +1,7 @@
 //! THE BOOT SEAM — the entry points `run()` in the `busbar` binary calls, one `pub fn` per boot
 //! action, so the internals each action composes stay `pub(crate)`.
 //!
-//! THE RULE (split plan §4.3): where the binary needs N internals to perform ONE boot action,
+//! THE RULE: where the binary needs N internals to perform ONE boot action,
 //! expose one function here and leave the N internals crate-private. The alternative — widening
 //! `admin::audit::AUDIT`, its `set_sink`/`restore_from_store`, the `a2a::taskstore::TASKS` and
 //! `mcp::calllog::CALLS` statics, `governance::signing::TokenSigner`, and the trust sweeper's
