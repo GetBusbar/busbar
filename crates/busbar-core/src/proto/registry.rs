@@ -35,10 +35,17 @@
 //! row scans this function and fails on an allocation appearing in it.
 //!
 //! WHAT IS NOT HERE YET, stated so its absence is not read as a claim. `ProtocolDecl` carries the
-//! facts core reads TODAY. `route`/`read`/`Decoded` (the ABI's per-request methods),
-//! `Dispatch::{Linked,Dlopen}` and the signed manifest arrive with the crate extraction and Tier B;
-//! [`ProtocolDecl::verbs`] carries operator-facing verb NAMES because `Verb { op, name }` lands
-//! with `Operation` 13 → 6, and this field is its destination.
+//! facts core reads TODAY. The crate extraction (step 4; `busbar-proto-anthropic` first) happened
+//! WITHOUT `route`/`read`/`Decoded` (the ABI design's per-request methods), deliberately: it moved
+//! the dialect behind the existing `ProtocolReader`/`ProtocolWriter` pair, the compiler-measured
+//! cheaper seam (`design/1.6.0-llm-extraction-plan.md` §2.1). `Dispatch::{Linked,Dlopen}` and the
+//! signed manifest arrive with Tier B, whose first real consumer is still ahead — the registry
+//! taking an ITERATOR of declarations (and [`install_protocols`] being the composition root's
+//! write into it) is what keeps that possible without a core edit. Protocols are a plugin KIND
+//! like store and auth: the extracted crates are its built-in members, registered by the binary
+//! the way built-in stores are, and a loaded member would reach [`Registry::new`] through the same
+//! constructor. [`ProtocolDecl::verbs`] now carries the `Verb { op, name }` PAIR — see its field
+//! doc for what still anchors the seven LLM consts in `operation.rs`.
 
 use super::Protocol;
 use crate::handlers::RequestHandler;
