@@ -210,6 +210,10 @@ mod forward_once_pool_cell_tests;
 mod ordered_walk_tests;
 
 #[cfg(test)]
+#[path = "tests/reroute_pool_tests.rs"]
+mod reroute_pool_tests;
+
+#[cfg(test)]
 #[path = "tests/lane_availability_proptest.rs"]
 mod lane_availability_proptest;
 
