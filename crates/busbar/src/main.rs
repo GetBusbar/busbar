@@ -422,15 +422,6 @@ fn mcp_stdio_requested(mut args: impl Iterator<Item = String>) -> bool {
     args.any(|a| a == "--mcp-stdio")
 }
 
-/// A store READ failure and a chain-VERIFICATION failure on audit restore are different events: the
-/// first is a hiccup, the second is tamper evidence. Reporting both as "chain verification" trains
-/// an operator to ignore the one that matters, so `run()`'s restore-error match keys on this to pick
-/// `tracing::warn!` vs `tracing::error!`. Module-level (not inlined in the match guard) so it's
-/// unit-testable; see `tests/tests.rs`.
-fn is_audit_restore_read_hiccup(e: &str) -> bool {
-    e.starts_with("audit restore read failed")
-}
-
 /// Cap on `BUSBAR_WORKER_THREADS`/`TOKIO_WORKER_THREADS` (see the `.min(MAX_WORKER_THREADS)` call in
 /// `main()` for why this exists).
 const MAX_WORKER_THREADS: usize = 128;
