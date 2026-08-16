@@ -13,6 +13,23 @@
 //! indirection, real verifier), real rkyv, and a real dlopen'd cdylib for the
 //! bare cross-DSO floor.
 //!
+//! ## WHAT THIS HARNESS DOES **NOT** MEASURE — read this before quoting a number
+//!
+//! The `fb`/`rkyv`/`L1 facts` columns time **VERIFY + READ ONLY**. The buffers
+//! are built OUTSIDE the timing loop, so no allocation, no `memcpy`, no free and
+//! no DSO transit is inside the measured region. **They are half a crossing.**
+//!
+//! The frozen transport contract is *plugin allocates -> host copies out -> host
+//! calls `busbar_free`*, and that copy is O(bytes) by construction no matter how
+//! little of the buffer the host then reads. `perf/1.6.0-plugin-abi-measurement`
+//! measures that half and puts it at ~0.03 ns/byte.
+//!
+//! So a flat column HERE does not mean a flat crossing. It means the read is
+//! bounded. Getting a flat CROSSING additionally requires borrow-not-copy
+//! transport -- see PART 3.10 of `docs/design/1.6.0-plane-abi-two-layer.md`.
+//! An earlier draft of that document quoted these figures as end-to-end crossing
+//! costs, and this comment exists so nobody does it again.
+//!
 //! EVERY NUMBER IS RELEASE PROFILE. Debug is ~16x and exists in no shipped build.
 
 #[allow(clippy::all, unused_imports, dead_code)]
@@ -322,7 +339,9 @@ fn main() {
     let dso = load_dso(&dso_path);
     let reps: usize = std::env::var("REPS").ok().and_then(|s| s.parse().ok()).unwrap_or(9);
 
-    println!("== PROTOCOL CROSSING COST — RELEASE PROFILE, lto=true, codegen-units=1 ==");
+    println!("== PROTOCOL VERIFY+READ COST — RELEASE PROFILE, lto=true, codegen-units=1 ==");
+    println!("NOTE: buffers are prebuilt OUTSIDE the loop. These are the READ HALF of a");
+    println!("      crossing: no alloc, no memcpy, no free, no DSO transit is timed.");
     println!("flatc {}, flatbuffers 25, rkyv 0.8", "25.12.19");
     println!("loadavg at start: {}", loadavg());
     println!("reps={reps}; each cell is  median [min-max]  ns/op\n");

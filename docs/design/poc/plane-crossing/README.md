@@ -16,12 +16,24 @@ first, but it flatters the result in two specific ways that change the conclusio
 
 This PoC removes both. It uses flatc-generated code, real rkyv, and a real `dlopen`'d cdylib.
 
-## The result it establishes
+## The result it establishes — and the one it does NOT
 
-Verifying the **whole IR** is LINEAR in payload bytes — so zero-copy alone does **not** meet the
-"nanoseconds not microseconds" bar. Verifying only the **Layer 1 facts**, with the body riding as an
-untraversed `[ubyte]` vector, is FLAT — sound *and* within the bar. The flatness comes from the
-layer split; zero-copy is how it is spent.
+**Establishes:** verifying the **whole IR** is LINEAR in payload bytes, so zero-copy alone does not
+bound the read. Verifying only the **Layer 1 facts**, with the body riding as an untraversed
+`[ubyte]` vector, is FLAT. **The bounded read comes from the layer split, not from the format.**
+
+**Does NOT establish, and an earlier draft of the design doc wrongly said it did:** that the
+end-to-end crossing is flat. **Every column here is VERIFY + READ ONLY** — the buffers are built
+outside the timing loop, so no allocation, `memcpy`, free or DSO transit is timed. These are half a
+crossing.
+
+The other half is the transport, and the frozen contract mandates *plugin allocates → host copies out
+→ host calls `busbar_free`*. That copy is O(bytes) **by construction**, indifferent to how little the
+host reads; `perf/1.6.0-plugin-abi-measurement` measures it at ~0.03 ns/byte. Flat + linear = linear.
+
+So a flat column here is **necessary and not sufficient** for the latency bar. Getting a flat crossing
+also requires borrow-not-copy transport — Part 3.10 of `../../1.6.0-plane-abi-two-layer.md`. That
+transport has **not** been built or measured by anyone yet.
 
 ## Deliberately outside the workspace
 
