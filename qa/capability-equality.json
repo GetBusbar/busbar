@@ -32,7 +32,7 @@
   "capabilities": {
     "breaker-trip": "a failing upstream target records into the ONE core breaker cell (LaneRuntime, (pool,lane)-keyed) and the cell opens",
     "breaker-fastfail": "a tripped target is refused before dispatch in milliseconds, not after the full timeout, via try_admit_breaker",
-    "failover-reroute": "a second interchangeable candidate is tried before the first byte, through the one selection loop (failover::walk)",
+    "failover-reroute": "a second interchangeable candidate is tried before the first byte. One breaker admission (LaneRuntime::try_admit_breaker) on every plane; candidate selection is failover::walk on the MCP/A2A planes and the engine's pool walk (proxy/engine/walk.rs) on the LLM plane, which predates the seam and carries SWRR/policy/queue semantics the seam deliberately does not",
     "hooks-tap": "observe/transform hooks (rewrite, usage projection) run over the plane's payloads",
     "hooks-gate": "hooks::gate::decide can refuse the plane's traffic before dispatch",
     "audit-chain": "the plane's dispatches and refusals land in a tamper-evident hash chain (crate::audit)",
