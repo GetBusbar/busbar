@@ -62,7 +62,7 @@
       "capability": "breaker-trip",
       "plane": "mcp-client",
       "state": "proven",
-      "test": "crates/busbar/src/mcp/tests/breaker_fastfail_tests.rs::a_hard_down_http_server_trips_and_the_second_call_fast_fails_without_touching_it"
+      "test": "crates/busbar-core/src/mcp/tests/breaker_fastfail_tests.rs::a_hard_down_http_server_trips_and_the_second_call_fast_fails_without_touching_it"
     },
     {
       "capability": "breaker-trip",
@@ -74,7 +74,7 @@
       "capability": "breaker-trip",
       "plane": "a2a-client",
       "state": "proven",
-      "test": "crates/busbar/src/a2a/tests/breaker_fastfail_tests.rs::a_backend_hard_down_opens_the_core_cell_and_the_second_hop_never_reaches_the_wire"
+      "test": "crates/busbar-core/src/a2a/tests/breaker_fastfail_tests.rs::a_backend_hard_down_opens_the_core_cell_and_the_second_hop_never_reaches_the_wire"
     },
     {
       "capability": "breaker-trip",
@@ -92,7 +92,7 @@
       "capability": "breaker-fastfail",
       "plane": "mcp-client",
       "state": "proven",
-      "test": "crates/busbar/src/mcp/tests/breaker_fastfail_tests.rs::a_dead_stdio_child_trips_the_same_core_cell_and_the_second_call_fast_fails"
+      "test": "crates/busbar-core/src/mcp/tests/breaker_fastfail_tests.rs::a_dead_stdio_child_trips_the_same_core_cell_and_the_second_call_fast_fails"
     },
     {
       "capability": "breaker-fastfail",
@@ -104,7 +104,7 @@
       "capability": "breaker-fastfail",
       "plane": "a2a-client",
       "state": "proven",
-      "test": "crates/busbar/src/a2a/tests/breaker_fastfail_tests.rs::a_tripped_agent_rejects_fresh_submissions_on_the_jsonrpc_binding"
+      "test": "crates/busbar-core/src/a2a/tests/breaker_fastfail_tests.rs::a_tripped_agent_rejects_fresh_submissions_on_the_jsonrpc_binding"
     },
     {
       "capability": "breaker-fastfail",
@@ -121,8 +121,8 @@
     {
       "capability": "failover-reroute",
       "plane": "mcp-client",
-      "state": "missing",
-      "note": "the seam (failover::walk) is built and proven against synthetic candidates but is cfg(dead_code) with NO production caller; tool_pools: is parsed and validated but read by nothing at dispatch."
+      "state": "proven",
+      "test": "crates/busbar-core/src/mcp/tests/reroute_pool_tests.rs::a_tripped_pool_primary_reroutes_the_next_tools_call_to_its_twin_and_stays_untouched"
     },
     {
       "capability": "failover-reroute",
@@ -133,8 +133,8 @@
     {
       "capability": "failover-reroute",
       "plane": "a2a-client",
-      "state": "missing",
-      "note": "agent_pools: parsed and validated, consumed by nothing; one registered backend per agent, one attempt. Task-scoped verbs on an accepted task are pinned to the member that accepted it by design; only fresh submissions are owed reroute, and they do not get it."
+      "state": "proven",
+      "test": "crates/busbar-core/src/a2a/tests/reroute_pool_tests.rs::a_tripped_pool_primary_reroutes_a_fresh_submission_to_the_twin_and_stays_untouched"
     },
     {
       "capability": "failover-reroute",
@@ -272,8 +272,8 @@
     {
       "capability": "disposition",
       "plane": "mcp-client",
-      "state": "missing",
-      "note": "no Stage-1 normalizer produces a CanonicalSignal from a JSON-RPC error or transport failure on this leg; mcp/client/jsonrpc.rs classifies for refusal rendering only, never into StatusClass."
+      "state": "proven",
+      "test": "crates/busbar-core/src/mcp/tests/reroute_pool_tests.rs::a_client_fault_answer_never_penalizes_the_member"
     },
     {
       "capability": "disposition",
@@ -284,8 +284,8 @@
     {
       "capability": "disposition",
       "plane": "a2a-client",
-      "state": "missing",
-      "note": "a2a/rpcerror.rs classifies for its own refusal rendering, not into StatusClass; RawUpstreamError producers are all LLM-dialect readers plus health.rs."
+      "state": "proven",
+      "test": "crates/busbar-core/src/a2a/tests/reroute_pool_tests.rs::a_client_fault_answer_never_penalizes_the_agent"
     },
     {
       "capability": "disposition",

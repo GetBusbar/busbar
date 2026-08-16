@@ -568,6 +568,17 @@ impl Catalogue {
         self.servers.is_empty()
     }
 
+    /// The entry for one BARE tool name on one server — the lookup the failover route builder
+    /// makes for a `tool_pools:` twin, where the caller named the tool on ONE member and the
+    /// candidate set needs each member's own entry (its own `namespaced` name, its own approved
+    /// digest). A linear scan: the map is keyed by published name, membership is bounded by
+    /// `MAX_POOL_MEMBERS`, and this runs once per routed dispatch, not per candidate walk step.
+    pub(crate) fn tool_on(&self, server: &str, bare: &str) -> Option<&ToolEntry> {
+        self.tools
+            .values()
+            .find(|t| t.server == server && t.tool == bare)
+    }
+
     pub(crate) fn server(&self, id: &str) -> Option<&ServerEntry> {
         self.servers.get(id)
     }

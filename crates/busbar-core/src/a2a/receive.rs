@@ -1182,8 +1182,28 @@ async fn admitted(
     // nothing, the ordinary path runs, and the backend answers about an id it does not hold.
     let addressed = addressed_task(&envelope, &admitted.dispatch.billed_key_id);
 
+    // ── THE POOL, if the caller-named agent is an `agent_pools:` member — resolved ONCE and read
+    //    by everything below: the resume lookup (a task the walk routed to the twin must still be
+    //    resumable through the name the caller knows), the fresh-submission walk, and the pinning
+    //    of task-scoped verbs to the member that accepted the task.
+    let pool = app
+        .agent_pools
+        .iter()
+        .find(|(_, cfg)| cfg.members.iter().any(|m| m == &admitted.dispatch.agent_id));
+
     let resumed = if addressed.is_some() || context_id.is_empty() {
         None
+    } else if let Some((_, cfg)) = pool {
+        // ANY member's interrupted task on this context resumes — and resumes AT that member (the
+        // pinning below reads the task's own `agent_id`). Most recent across members, exactly as
+        // the single-agent lookup takes the most recent of one member's.
+        let mut candidates: Vec<super::task::Task> = cfg
+            .members
+            .iter()
+            .filter_map(|m| resumable_task(&admitted.dispatch.billed_key_id, context_id, m))
+            .collect();
+        candidates.sort_by_key(|t| t.updated_at);
+        candidates.pop()
     } else {
         resumable_task(
             &admitted.dispatch.billed_key_id,
@@ -1214,6 +1234,172 @@ async fn admitted(
     };
     let request_id = task_id.clone();
 
+    // The plane, fetched ONCE for the member selection below and every later reader (the lease,
+    // the binding, the seam). The refusal is identical wherever it fires.
+    let Some(plane) = plane_of(&app) else {
+        return plane_absent();
+    };
+
+    // ── THE TARGET MEMBER — the failover seam, mounted at ADMISSION TIME (the audit's §3.3 row):
+    //    a FRESH submission to a pooled agent goes through the ONE selection loop
+    //    (`failover::walk` over the pool's members, pin-checked against the approved card
+    //    fingerprints, admitted through the one breaker), so a tripped primary reroutes to its
+    //    verified twin BEFORE anything reaches a socket and the caller never learns. An ADDRESSED
+    //    or RESUMED task is PINNED to the member that accepted it — the task id names state that
+    //    exists at exactly one backend, so failover on this plane is an admission-time choice,
+    //    NEVER a migration: a pinned member that is tripped refuses THE VERB (503 + Retry-After,
+    //    task state stays readable from busbar's own store) rather than dispatching to a twin.
+    let breakers = Arc::clone(&app.plane_breakers);
+    let mut walk_refusal: Option<super::relay::RelayRefusal> = None;
+    let mut pin_mismatch: Option<String> = None;
+    let mut route_admission: Option<crate::store::PlaneAdmission> = None;
+    let pinned_member: Option<String> = addressed
+        .as_ref()
+        .or(resumed.as_ref())
+        .map(|t| t.agent_id.clone());
+    let (target_agent, hop_breaker) = match (pool, &pinned_member) {
+        // Un-pooled: the degenerate single-member cell, byte-for-byte the breaker unit's
+        // behaviour. (A pinned task on a single registration is trivially pinned to it.)
+        (None, _) => (
+            admitted.dispatch.agent_id.clone(),
+            super::relay::RelayBreaker::degenerate(
+                &admitted.dispatch.agent_id,
+                Arc::clone(&breakers),
+            ),
+        ),
+        // Task-scoped verbs and resumes: PINNED. The member's own pool cell; `prepare` admits it
+        // (not pre-admitted), so a tripped member refuses the verb without ending the task.
+        (Some((pool_name, cfg)), Some(pinned)) => {
+            let breaker = match cfg.members.iter().position(|m| m == pinned) {
+                Some(lane) => super::relay::RelayBreaker {
+                    breakers: Arc::clone(&breakers),
+                    key: crate::store::PlaneBreakers::agent_key(pool_name),
+                    lane,
+                    pre_admitted: false,
+                },
+                // Dispatched before the pool existed, or a member since removed from it: the
+                // task stays pinned and the cell is the member's own degenerate one.
+                None => super::relay::RelayBreaker::degenerate(pinned, Arc::clone(&breakers)),
+            };
+            (pinned.clone(), breaker)
+        }
+        // Fresh submission to a pooled agent: THE WALK.
+        (Some((pool_name, cfg)), None) => {
+            let kind = credential_kind_of(&app);
+            let candidates: Vec<AgentCandidate> = plane.with_registrations(|regs| {
+                cfg.members
+                    .iter()
+                    .enumerate()
+                    .map(|(lane, member)| {
+                        // THE PIN is the approved canonical card fingerprint — the value busbar
+                        // already computed and locked; `None` (nothing approved) never matches, so
+                        // a pending registration cannot be failed over to or from.
+                        let pin = regs
+                            .iter()
+                            .find(|r| &r.agent_id == member)
+                            .and_then(|r| r.approval.pin())
+                            .and_then(|p| p.card_fingerprint())
+                            .map(str::to_string);
+                        // ELIGIBILITY is this caller's, judged per member with the same two gates
+                        // the named agent passed — inbound authorization and the egress grant. A
+                        // member this caller may not reach is pre-`tried`, never selected, and
+                        // never penalised: an authorization refusal is a fact about the caller.
+                        let eligible = super::inbound::authorize(
+                            key,
+                            kind,
+                            member,
+                            regs,
+                            admitted.generation,
+                            now,
+                        )
+                        .is_ok()
+                            && super::creds::authorise_egress(key, member, now).is_ok();
+                        AgentCandidate {
+                            name: member.clone(),
+                            lane,
+                            pin,
+                            eligible,
+                        }
+                    })
+                    .collect()
+            });
+            let pool_key = crate::store::PlaneBreakers::agent_key(pool_name);
+            let tried: Vec<usize> = candidates
+                .iter()
+                .filter(|c| !c.eligible)
+                .map(|c| c.lane)
+                .collect();
+            let attempt = crate::failover::Attempt {
+                tried: &tried,
+                stage: crate::failover::Stage::BeforeFirstByte,
+                repeatable: crate::failover::Repeatable::No,
+                operation: super::local::method_of(&envelope),
+            };
+            match crate::failover::walk(
+                breakers.runtime(),
+                &pool_key,
+                &candidates,
+                &attempt,
+                now,
+            ) {
+                Ok(adm) => {
+                    let lane = adm.candidate().lane;
+                    let chosen = adm.candidate().name.clone();
+                    // The probe hold, adopted RAII and held across the hop; the recorded outcome
+                    // consumes it and the drop after the hop is then a no-op.
+                    route_admission =
+                        Some(breakers.adopt(&pool_key, lane, adm.probe_epoch()));
+                    if lane != 0 {
+                        tracing::info!(
+                            pool = %pool_name,
+                            member = %chosen,
+                            "a2a reroute: the pool's primary is not admissible; this fresh \
+                             submission dispatches to the verified twin"
+                        );
+                    }
+                    (
+                        chosen,
+                        super::relay::RelayBreaker {
+                            breakers: Arc::clone(&breakers),
+                            key: pool_key,
+                            lane,
+                            pre_admitted: true,
+                        },
+                    )
+                }
+                Err(refusal) => {
+                    // Nothing admissible (or the operator's same-deployment claim failed the pin
+                    // check). The task row is still opened below so the caller keeps an id to
+                    // poll; the refusal fires after the row exists, through the same rendering
+                    // the degenerate breaker refusal uses.
+                    match &refusal {
+                        crate::failover::Refusal::NotInterchangeable { .. } => {
+                            pin_mismatch = Some(refusal.to_string());
+                        }
+                        _ => {
+                            let retry_after_secs = candidates
+                                .iter()
+                                .map(|c| breakers.retry_after_secs(&pool_key, c.lane))
+                                .min()
+                                .unwrap_or(1);
+                            walk_refusal = Some(super::relay::RelayRefusal::BreakerOpen {
+                                agent_id: pool_name.clone(),
+                                retry_after_secs,
+                            });
+                        }
+                    }
+                    (
+                        admitted.dispatch.agent_id.clone(),
+                        super::relay::RelayBreaker::degenerate(
+                            &admitted.dispatch.agent_id,
+                            Arc::clone(&breakers),
+                        ),
+                    )
+                }
+            }
+        }
+    };
+
     // WHO IS BILLED, recorded as this plane's own statement rather than inferred later. Receiving
     // covers the downstream L2 spend this call causes and never the callee's internal spend — a
     // distinction `Attribution` makes unconstructible rather than documented.
@@ -1233,7 +1419,10 @@ async fn admitted(
     let hop = super::meter::Attribution::delegating(
         &admitted.dispatch.billed_key_id,
         &agent_id,
-        &admitted.dispatch.agent_id,
+        // The member the hop ACTUALLY reaches — the walked twin on a rerouted fresh submission,
+        // the pinned member on a task-scoped verb. This is also what `record_dispatch` stamps on
+        // the task row, which is the pinning's whole mechanism.
+        &target_agent,
         &context_id,
         &task_id,
     );
@@ -1342,21 +1531,65 @@ async fn admitted(
     // counts seconds. Converted once, here, rather than at each of the call sites that would
     // otherwise each have to remember.
     let now_ms = now.saturating_mul(1_000);
-    let Some(plane) = plane_of(&app) else {
-        return plane_absent();
-    };
     let seam = plane.relay_seam();
     let gate: Arc<dyn super::relay::DelegationGate> =
         Arc::new(super::plane::LiveGate(Arc::clone(&plane)));
 
+    // THE TARGET MEMBER'S OWN FACTS. For the caller-named agent these are exactly the values
+    // admission resolved; a rerouted or pinned-elsewhere member re-reads its registration — its
+    // own backend URL and its own credential handle — and re-derives the egress grant FOR THAT
+    // MEMBER, so busbar's credential is never leased for a backend the caller's grant does not
+    // cover. (The walk already checked this for a rerouted member; the pinned path re-asks live.)
+    let (target_backend_url, target_cred) = if target_agent == admitted.dispatch.agent_id {
+        (
+            admitted.dispatch.backend_url.clone(),
+            admitted.outbound_cred.clone(),
+        )
+    } else {
+        let Some(facts) = plane.with_registrations(|regs| {
+            regs.iter()
+                .find(|r| r.agent_id == target_agent)
+                .map(|r| (r.backend_url.clone(), r.outbound_cred.clone()))
+        }) else {
+            // The pinned member's registration is gone: the task's state stays readable from
+            // busbar's own store; the hop cannot be made.
+            return fail_task(&seam, &rpc_id, &task_id, &request_id, now, 502);
+        };
+        facts
+    };
+    let grant = if target_agent == admitted.dispatch.agent_id {
+        grant
+    } else {
+        match super::creds::authorise_egress(key, &target_agent, now) {
+            Ok(g) => g,
+            Err(e) => {
+                crate::admin::audit::AUDIT.record_by(
+                    AUDIT_ACTION,
+                    &resource,
+                    crate::admin::audit::OUTCOME_REJECTED,
+                    &actor,
+                );
+                return (
+                    axum::http::StatusCode::FORBIDDEN,
+                    axum::Json(super::rpcerror::body(
+                        &rpc_id,
+                        super::rpcerror::A2aError::UnsupportedOperation,
+                        e.to_string(),
+                    )),
+                )
+                    .into_response();
+            }
+        }
+    };
+
     // BUSBAR'S OWN CREDENTIAL FOR THIS BACKEND, or none — and it can only be minted against the
     // grant obtained above. A configured credential that will not resolve is a REFUSAL and not a
     // quiet unauthenticated hop: an operator who configured one meant the backend to see one.
-    let lease = match admitted.outbound_cred.as_ref() {
+    let lease = match target_cred.as_ref() {
         Some(cred) => match super::creds::mint_from(&grant, cred, &app.secret_resolver, now_ms) {
             Ok(lease) => Some(lease),
             Err(e) => {
-                tracing::error!(agent = %admitted.dispatch.agent_id, error = %e, "a2a: the outbound credential could not be leased");
+                tracing::error!(agent = %target_agent, error = %e, "a2a: the outbound credential could not be leased");
                 return fail_task(&seam, &rpc_id, &task_id, &request_id, now, 502);
             }
         },
@@ -1371,7 +1604,7 @@ async fn admitted(
         plane
             .with_registrations(|regs| {
                 regs.iter()
-                    .find(|r| r.agent_id == admitted.dispatch.agent_id)
+                    .find(|r| r.agent_id == target_agent)
                     .and_then(|r| r.cached_card.clone())
             })
             .as_ref(),
@@ -1402,26 +1635,66 @@ async fn admitted(
     let hop_ctx = HopContext {
         seam: Arc::clone(&seam),
         framing,
-        agent_id: admitted.dispatch.agent_id.clone(),
+        agent_id: target_agent.clone(),
         addressed: addressed.is_some(),
-        backend_url: admitted.dispatch.backend_url.clone(),
+        backend_url: target_backend_url,
         // THE ONE READING OF THE OPERATOR'S `allow_private:` LINE, obtained where every other
         // caller obtains it. Reaching for `seam.policy()` inside the relay instead is the defect
         // `relay::RelayCall::policy` documents.
-        policy: plane.fetch_policy_for(&admitted.dispatch.agent_id),
+        policy: plane.fetch_policy_for(&target_agent),
         task_id: task_id.clone(),
         context_id: context_id.clone(),
         matched_skill: admitted.matched_skill.clone(),
         admitted_generation: admitted.generation,
         request_id,
         a2a_version,
-        breakers: Arc::clone(&app.plane_breakers),
+        breaker: hop_breaker,
         now,
         now_ms,
         // Established by the envelope reader at the top of this handler, where `null` and absent
         // were still distinguishable. It is a string or a number, never `null`.
         rpc_id,
     };
+
+    // ── THE WALK'S REFUSAL, fired AFTER the task row exists so the caller keeps an id to poll —
+    //    through the exact rendering the degenerate breaker refusal decided (`rejected` + 503 +
+    //    Retry-After naming the POOL, because the pool is the unit with nothing left).
+    if let Some(refusal) = walk_refusal {
+        return refuse_hop(&hop_ctx, &refusal);
+    }
+    // The pin mismatch: not an availability fact — the operator's same-deployment claim failed
+    // busbar's check — so it carries the walk's own wording and no Retry-After, but the task is
+    // equally NOT ACCEPTED and the id still resolves.
+    if let Some(reason) = pin_mismatch {
+        tracing::warn!(
+            task = %hop_ctx.task_id,
+            %reason,
+            "a2a: the pool's members are not interchangeable; the submission is not accepted"
+        );
+        if !hop_ctx.addressed {
+            match super::taskstore::TASKS.transition(
+                &hop_ctx.task_id,
+                super::task::TaskState::Rejected,
+                hop_ctx.now,
+                &hop_ctx.request_id,
+            ) {
+                Ok(task) => notify_push(&hop_ctx.seam, task),
+                Err(e) => {
+                    tracing::error!(task = %hop_ctx.task_id, error = %e, "a2a: a pin-refused task could not be recorded as rejected");
+                }
+            }
+        }
+        return (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            axum::Json(super::rpcerror::about_task(
+                &hop_ctx.rpc_id,
+                super::rpcerror::A2aError::UnsupportedOperation,
+                reason,
+                &hop_ctx.task_id,
+            )),
+        )
+            .into_response();
+    }
 
     // THE INVERSE OF THE IDENTITY SUBSTITUTION. busbar issues its own task ids and puts them in
     // every answer; a caller reading one and asking `GetTask` for it had that id forwarded, unchanged,
@@ -1439,10 +1712,39 @@ async fn admitted(
     let relayed_body = super::idmap::translate_request(&envelope, &admitted.dispatch.billed_key_id)
         .unwrap_or_else(|| body.to_vec());
 
-    if shape.requires_streaming {
+    let response = if shape.requires_streaming {
         stream_hop(hop_ctx, seam, gate, lease, relayed_body).await
     } else {
         unary_hop(hop_ctx, seam, gate, lease, relayed_body).await
+    };
+    // The walked selection's probe hold outlives the hop that recorded its outcome (a record makes
+    // this drop a no-op; an abandoned hop hands the probe back owner-checked).
+    drop(route_admission);
+    response
+}
+
+/// One `agent_pools:` member as the walk sees it — this plane's whole cost of inheriting the seam,
+/// exactly as the seam's module header promised ("a third plane costs a candidate type").
+struct AgentCandidate {
+    name: String,
+    lane: usize,
+    /// The approved canonical card fingerprint, or `None` when nothing is approved (which never
+    /// matches — a pending registration cannot be failed over to or from).
+    pin: Option<String>,
+    /// Whether THIS caller may reach the member at all (inbound authorization + egress grant).
+    /// Ineligible members are pre-`tried` and never selected or penalised.
+    eligible: bool,
+}
+
+impl crate::failover::Candidate for AgentCandidate {
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn lane(&self) -> usize {
+        self.lane
+    }
+    fn interchange_key(&self) -> Option<&str> {
+        self.pin.as_deref()
     }
 }
 
@@ -1481,9 +1783,9 @@ struct HopContext {
     /// binding one request goes out on. `&'static` because the three framings are stateless
     /// vtables, so carrying one costs a pointer and there is nothing to build.
     framing: &'static dyn super::relay::OutboundFraming,
-    /// The plane's breaker cells, cloned into each hop's `RelayCall` — the relay consults and
-    /// records; this context only carries the handle (and renders the tripped refusal).
-    breakers: Arc<crate::store::PlaneBreakers>,
+    /// The breaker cell this hop admits against and records into — plane-qualified key + pool
+    /// lane, resolved by the member selection above and cloned into each hop's `RelayCall`.
+    breaker: super::relay::RelayBreaker,
     now: u64,
     now_ms: u64,
     rpc_id: serde_json::Value,
@@ -1608,7 +1910,7 @@ async fn unary_hop(
     // backend IS this one — see `RelayCall::rpc_id`.
     let rpc_id = ctx.rpc_id.clone();
     let a2a_version = ctx.a2a_version;
-    let breakers = Arc::clone(&ctx.breakers);
+    let breaker = ctx.breaker.clone();
     let relayed = tokio::task::spawn_blocking(move || {
         super::relay::relay(
             &super::relay::RelayCall {
@@ -1622,7 +1924,7 @@ async fn unary_hop(
                 policy: &relay_policy,
                 a2a_version,
                 framing,
-                breakers: Some(breakers),
+                breakers: Some(breaker),
             },
             seam.as_ref(),
             now_ms,
@@ -1712,7 +2014,7 @@ async fn stream_hop(
     // see.
     let notify_seam = Arc::clone(&seam);
     let a2a_version = ctx.a2a_version;
-    let breakers = Arc::clone(&ctx.breakers);
+    let breaker = ctx.breaker.clone();
 
     // THE CURSOR RESUMES WHERE THE TASK LEFT OFF rather than at zero. On a resumed stream, starting
     // at zero would spend the first N advances re-asserting a position the store already holds —
@@ -1787,7 +2089,7 @@ async fn stream_hop(
                 policy: &relay_policy,
                 a2a_version,
                 framing,
-                breakers: Some(breakers),
+                breakers: Some(breaker),
             },
             seam.as_ref(),
             &task_id,

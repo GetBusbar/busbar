@@ -375,6 +375,50 @@ pub(super) fn credential_mode(server: &ServerEntry) -> Result<UpstreamCredential
     }))
 }
 
+/// ONE BREAKER CELL'S COORDINATES: the plane-qualified pool key and the member's lane. Degenerate
+/// (un-pooled) targets are `("tool:<server>", 0)`; a pooled member is `("tool:<pool>", position)`.
+/// A value rather than a re-derivation inside [`call`] so the selection (`failover::walk`) and the
+/// recording below are FORCED onto the same cell — the two deriving the key independently is how a
+/// trip lands somewhere the admission never looks.
+#[derive(Clone, Debug)]
+pub(crate) struct BreakerCell {
+    pub(crate) key: String,
+    pub(crate) lane: usize,
+}
+
+impl BreakerCell {
+    /// The degenerate single-member cell for an un-pooled server — lane 0, exactly the shape the
+    /// breaker unit landed.
+    pub(crate) fn degenerate(server: &str) -> Self {
+        BreakerCell {
+            key: crate::store::PlaneBreakers::tool_key(server),
+            lane: 0,
+        }
+    }
+}
+
+/// A failed upstream leg, still carrying the ONE structural fact the reroute decision needs: had
+/// anything left busbar when it failed? The `String` alone (which is all the caller used to get)
+/// cannot answer that, and re-parsing prose to decide whether a second dispatch duplicates work
+/// would be routing on a rendering.
+#[derive(Debug)]
+pub(crate) struct LegFailure {
+    pub(crate) message: String,
+    /// [`crate::failover::Stage::BeforeFirstByte`] iff the wire itself says nothing was
+    /// transmitted (a connect-class failure, or busbar's own pre-wire refusal). Everything
+    /// ambiguous is `AfterDispatch`.
+    pub(crate) stage: crate::failover::Stage,
+}
+
+impl LegFailure {
+    fn dispatched(message: String) -> Self {
+        LegFailure {
+            message,
+            stage: crate::failover::Stage::AfterDispatch,
+        }
+    }
+}
+
 /// ONE ROUND of the upstream leg: plan, mint, send, parse.
 ///
 /// The plan is re-derived here rather than carried from [`authorise`] because the caller's grant is
@@ -388,28 +432,50 @@ pub(super) fn credential_mode(server: &ServerEntry) -> Result<UpstreamCredential
 pub(crate) async fn call(
     pool: &McpConnectionPool,
     breakers: &crate::store::PlaneBreakers,
+    cell: &BreakerCell,
     auth: &Authorised,
     arguments: &serde_json::Value,
     request_id: u64,
     satisfaction: Option<serde_json::Value>,
-) -> Result<Round, String> {
+) -> Result<Round, LegFailure> {
     // A `tools/call` NAMES A TOOL, so this leg must carry one. The refusal is a `String` and not a
     // panic because `Authorised` is constructible for a server-scoped verb too, and the type cannot
     // yet say which shape a given value is — what it can say is that this path does not proceed
     // without a routing key, rather than inventing one.
     let key = auth.key.as_ref().ok_or_else(|| {
-        "a `tools/call` needs the tool's bound identity and this leg was authorised for a \
-         server-scoped verb, which names none"
-            .to_string()
+        // Busbar-side: no leg was even attempted, so a pooled caller may still select a member —
+        // though in practice this arm is unreachable from the routed path, which only builds
+        // tool-shaped candidates.
+        LegFailure {
+            message: "a `tools/call` needs the tool's bound identity and this leg was authorised \
+                      for a server-scoped verb, which names none"
+                .to_string(),
+            stage: crate::failover::Stage::BeforeFirstByte,
+        }
     })?;
-    let plan = plan_credential(&auth.server, &auth.credential, &auth.caller, None, key)
-        .map_err(|e| e.to_string())?;
+    let plan =
+        plan_credential(&auth.server, &auth.credential, &auth.caller, None, key).map_err(|e| {
+            // The grant/credential plan refused BEFORE any socket: nothing left busbar.
+            LegFailure {
+                message: e.to_string(),
+                stage: crate::failover::Stage::BeforeFirstByte,
+            }
+        })?;
     let bearer = match plan {
         CredentialPlan::None => None,
         CredentialPlan::Bearer(b) => Some(b.expose_secret().to_string()),
-        CredentialPlan::Exchange(req) => {
-            Some(exchange(pool, &req, auth.policy, auth.timeout).await?)
-        }
+        CredentialPlan::Exchange(req) => Some(
+            exchange(pool, &req, auth.policy, auth.timeout)
+                .await
+                // The exchange is a leg against busbar's OWN authorization server, not against the
+                // tool server: the TOOL CALL was never transmitted, whatever became of the
+                // exchange, so the stage is honest — and nothing is recorded against the tool
+                // server's cell for its AS being down.
+                .map_err(|message| LegFailure {
+                    message,
+                    stage: crate::failover::Stage::BeforeFirstByte,
+                })?,
+        ),
     };
     // The namespaced name is stripped to the bare tool inside the builder — the upstream has never
     // heard of busbar's namespacing and would answer `-32602` to it.
@@ -437,15 +503,19 @@ pub(crate) async fn call(
         grants: auth.grants,
     };
     // THE OUTCOME IS RECORDED WHERE THE STRUCTURE STILL EXISTS — the Stage-1 normalizer for this
-    // plane (the audit's closing design). One leg, one record, into the ONE core
-    // breaker's degenerate cell for this server; by the time this function's `Err(String)` reaches
-    // the caller the transport/status shape is gone, so classifying later would be guessing.
-    let breaker_key = crate::store::PlaneBreakers::tool_key(auth.server.as_str());
+    // plane (the audit's closing design). One leg, one record, into the ONE core breaker's cell
+    // for this target (the caller-supplied `cell`, so a pooled member records against its own
+    // `(pool, lane)` and a degenerate server against `("tool:<id>", 0)`); by the time this
+    // function's failure reaches the caller the transport/status shape is gone, so classifying
+    // later would be guessing.
     let response = match auth.transport.mcp_wire().send(&leg, &outbound).await {
         Ok(r) => r,
         Err(e) => {
-            record_wire_failure(breakers, &breaker_key, &e);
-            return Err(e.to_string());
+            let stage = record_wire_failure(breakers, cell, &e);
+            return Err(LegFailure {
+                message: e.to_string(),
+                stage,
+            });
         }
     };
     if !(200..300).contains(&response.status) {
@@ -454,7 +524,8 @@ pub(crate) async fn call(
         // Recording does NOT change what the caller is answered: the parse below renders exactly
         // what it always rendered.
         breakers.record_signal(
-            &breaker_key,
+            &cell.key,
+            cell.lane,
             &crate::breaker::normalize_raw_error(
                 &crate::breaker::RawUpstreamError::from_status(response.status),
                 &std::collections::HashMap::new(),
@@ -465,7 +536,7 @@ pub(crate) async fn call(
         // answering — protocol- or work-level, never availability — so the success is recorded
         // here, on the status, before the body is interpreted. This is what closes a half-open
         // probe and what keeps a caller's bad arguments from ever penalizing the upstream.
-        breakers.record_success(&breaker_key);
+        breakers.record_success(&cell.key, cell.lane);
     }
     // `request_id` AGAIN, and that is the point: the id that went out in the body is the id the
     // answer must name. Both uses are on the screen together so a reader can see that they are the
@@ -473,9 +544,9 @@ pub(crate) async fn call(
     // the correlation is a per-dispatch argument rather than a table of pending ids.
     match jsonrpc::parse_response(&response.body, request_id) {
         RpcOutcome::Result(value) => Ok(Round::Done(value)),
-        RpcOutcome::Error { code, message } => Err(format!(
+        RpcOutcome::Error { code, message } => Err(LegFailure::dispatched(format!(
             "MCP upstream answered JSON-RPC error {code}: {message}"
-        )),
+        ))),
         // The ask is handed back to the bounded, per-round-gated loop, which decides whether busbar
         // may satisfy it. It is NEVER returned to busbar's own caller — the loop's `Outcome` has no
         // arm that could carry it outward.
@@ -486,48 +557,69 @@ pub(crate) async fn call(
                 .and_then(|v| v.get("result").cloned())
                 .unwrap_or_else(|| serde_json::json!({})),
         })),
-        RpcOutcome::Malformed(reason) => Err(format!(
+        RpcOutcome::Malformed(reason) => Err(LegFailure::dispatched(format!(
             "MCP upstream returned HTTP {} and a body that is not a JSON-RPC response: {reason}",
             response.status
-        )),
+        ))),
         // A RESPONSE TO SOMETHING ELSE. The dispatch fails rather than adopting it: serving it
         // would answer this caller with whatever the upstream was actually replying to, and the
         // result is NOT logged into the error, because it is another conversation's payload.
-        RpcOutcome::Uncorrelated(reason) => Err(format!(
+        RpcOutcome::Uncorrelated(reason) => Err(LegFailure::dispatched(format!(
             "MCP upstream returned HTTP {} and a JSON-RPC response busbar cannot correlate to this \
              call: {reason}",
             response.status
-        )),
+        ))),
     }
 }
 
-/// The TRANSPORT half of this plane's Stage-1 normalizer: what one failed wire leg records.
+/// The TRANSPORT half of this plane's Stage-1 normalizer: what one failed wire leg records, and
+/// (for the reroute loop) the [`crate::failover::Stage`] the failure leaves the request at.
 ///
+/// - `Unreachable` — a connect-class failure: the destination never received a byte. Recorded as
+///   the same `Network` transient (a server that cannot be connected to is exactly what the
+///   breaker exists for), and the ONE wire failure reported `BeforeFirstByte`: a reroute of it
+///   duplicates nothing, by the transport's own testimony.
 /// - `Io` — the socket failed, the deadline expired, or a stdio child died mid-exchange: the
 ///   transient the breaker exists for. `Network` rather than a guessed `Timeout` split, because
 ///   both classify to the same `TransientUpstream` disposition and the wire does not distinguish
-///   them in structure.
+///   them in structure. `AfterDispatch`: the request may have landed.
 /// - `Supervision` — the stdio crash-loop supervisor refused (backoff, quarantine) and spawned
 ///   NOTHING. Recording it would be DOUBLE ACCOUNTING: the child crash that armed the supervisor
 ///   was already recorded here as the `Io` failure of the exchange it killed, and the supervisor's
 ///   refusal is busbar's own fast answer, not a new fact about the upstream. The two breakers
 ///   CO-EXIST and share no state — the core cell trips on the crashes, the supervisor guards the
-///   respawns — exactly the audit's stdio row.
+///   respawns — exactly the audit's stdio row. Nothing left busbar, so `BeforeFirstByte`.
 /// - `Refused` — busbar's OWN dispatch-time refusal (SSRF, a malformed target): nothing left
 ///   busbar and the upstream answered nothing, so nothing is recorded against it.
-fn record_wire_failure(breakers: &crate::store::PlaneBreakers, key: &str, err: &TransportError) {
-    let class = match err {
-        TransportError::Io(_) => crate::breaker::StatusClass::Network,
-        TransportError::Supervision(_) | TransportError::Refused(_) => return,
+///   `BeforeFirstByte` for the same reason.
+fn record_wire_failure(
+    breakers: &crate::store::PlaneBreakers,
+    cell: &BreakerCell,
+    err: &TransportError,
+) -> crate::failover::Stage {
+    let (class, stage) = match err {
+        TransportError::Unreachable(_) => (
+            crate::breaker::StatusClass::Network,
+            crate::failover::Stage::BeforeFirstByte,
+        ),
+        TransportError::Io(_) => (
+            crate::breaker::StatusClass::Network,
+            crate::failover::Stage::AfterDispatch,
+        ),
+        TransportError::Supervision(_) | TransportError::Refused(_) => {
+            return crate::failover::Stage::BeforeFirstByte
+        }
     };
     breakers.record_signal(
-        key,
+        &cell.key,
+        cell.lane,
         &crate::breaker::CanonicalSignal {
             class,
             provider_signal: None,
             retry_after: None,
         },
     );
+    stage
 }
 
 /// PERFORM the RFC 8693 exchange and return the access token.
@@ -638,6 +730,13 @@ mod deputy_pair_tests;
 #[cfg(test)]
 #[path = "tests/breaker_fastfail_tests.rs"]
 mod breaker_fastfail_tests;
+
+// KILL-THE-UPSTREAM-MID-POOL — the failover seam mounted on this plane: `tool_pools:` reroute
+// before first byte, the pin rule, the repeatable safety rule, and the client-fault disposition,
+// against TWO real fake peers. It hangs here for the same reason its sibling does.
+#[cfg(test)]
+#[path = "tests/reroute_pool_tests.rs"]
+mod reroute_pool_tests;
 
 // THE PER-CALL LOG'S WRITER, proven from the dispatcher outwards rather than from the log inwards.
 // It lives here, beside the upstream-leg batteries, because it needs the same real fake peer: the

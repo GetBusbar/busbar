@@ -111,6 +111,13 @@ impl HttpTransport {
             // re-deriving which one it was). The chain carries no URL: it is the transport layer's
             // own words about the socket.
             .map_err(|e| {
+                // A CONNECT-phase failure (refused, DNS, TLS handshake) means the request was
+                // never transmitted: nothing left busbar, so the failover seam may reroute it
+                // within a pool without duplicating anything. reqwest's own classifier is the
+                // source of truth for "the connection was never established"; every other error
+                // here (a timeout after connect, a reset mid-body) stays `Io`, because the peer
+                // may have received the request.
+                let pre_first_byte = e.is_connect();
                 let e = e.without_url();
                 let mut msg = e.to_string();
                 let mut source = std::error::Error::source(&e);
@@ -119,7 +126,11 @@ impl HttpTransport {
                     msg.push_str(&cause.to_string());
                     source = cause.source();
                 }
-                TransportError::Io(msg)
+                if pre_first_byte {
+                    TransportError::Unreachable(msg)
+                } else {
+                    TransportError::Io(msg)
+                }
             })?;
         let status = resp.status().as_u16();
         let location = resp

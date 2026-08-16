@@ -12,22 +12,23 @@
 //! second state machine here — every method below is a thin resolution of a plane-qualified key
 //! onto the one cell store, and the FSM transitions all run in `store::in_memory`.
 //!
-//! This is deliberately NOT failover and NOT pools. `failover::walk`, `tool_pools:` and
-//! `agent_pools:` stay exactly where the audit left them: the unification unit mounts the walk;
-//! this module is only "the audit's degenerate fast-fail cell", the half the owner called core
-//! functionality and the goal's D6 allows on the way ("transitional wiring only where the audit's
-//! degenerate fast-fail cell is genuinely cheap"). Accordingly nothing here selects among
-//! candidates, and a tripped target is REFUSED, never rerouted.
+//! This is deliberately NOT failover and NOT pools: nothing here SELECTS among candidates. The
+//! selection loop is [`crate::failover::walk`], which the reroute-parity unit mounts on both
+//! planes' dispatch paths; it reaches these same cells through [`PlaneBreakers::runtime`] and this
+//! module stays what it was — the plane's handle on the one cell store, plus the recording half of
+//! the disposition pipeline.
 //!
 //! ## The key, per the audit
 //!
 //! Cells are `(pool, lane)`-keyed strings-plus-index. The pool string is PLANE-QUALIFIED at this
-//! boundary — `"tool:<server-id>"` / `"agent:<agent-id>"` — which is the audit's own rule for the
-//! keyspace: LLM pools keep bare names, so a `tool_pools: search` can never collide with an LLM
-//! `pools: search`, and the two prefixes cannot collide with each other. The lane is ALWAYS 0: a
-//! degenerate pool has one member, and its index in the (one-element) member list is 0, exactly the
-//! allocation rule the audit fixes for the real pools later ("lane index = the member's position in
-//! the pool's ordered `members:` list").
+//! boundary — `"tool:<name>"` / `"agent:<name>"` — which is the audit's own rule for the keyspace:
+//! LLM pools keep bare names, so a `tool_pools: search` can never collide with an LLM
+//! `pools: search`, and the two prefixes cannot collide with each other. The NAME is a registered
+//! server/agent id for the degenerate single-member cell, or a `tool_pools:`/`agent_pools:` pool
+//! name for a pooled one — and config validation refuses a pool whose name collides with a
+//! registration id on its own plane, so the two spellings cannot alias one cell. The LANE is the
+//! member's position in the pool's ordered `members:` list (the audit's allocation rule); a
+//! degenerate cell's one member is position 0.
 //!
 //! ## Why a private single-lane [`HealthState`] rather than the LLM plane's store
 //!
@@ -51,9 +52,11 @@ use std::sync::Arc;
 /// Held on [`crate::state::App`] and carried across a config apply the way the LLM store is —
 /// learned reliability must survive a snapshot swap, or every apply un-trips every dead upstream.
 pub(crate) struct PlaneBreakers {
-    /// ONE lane, index 0, never dead, never budgeted, permits never consulted
-    /// (`try_admit_breaker` is the queue-shaped admission: breaker only, no permit acquisition).
-    /// All per-target state lives in the per-pool cells keyed by the plane-qualified strings.
+    /// [`MAX_POOL_MEMBERS`] identical lanes — one per possible member position — never dead, never
+    /// budgeted, permits never consulted (`try_admit_breaker` is the queue-shaped admission:
+    /// breaker only, no permit acquisition). All per-target state lives in the per-pool cells keyed
+    /// by the plane-qualified strings; the lane table exists only because the cell store's
+    /// lane-global gates index it, and every entry is the same inert placeholder.
     health: HealthState,
     /// The core defaults (ADR-0002): error-rate trip over a 30s window, 15s→120s cooldown backoff.
     /// Deliberately NOT operator-tunable per `tools:`/`agents:` — the audit's §3.4 keeps that
@@ -61,30 +64,52 @@ pub(crate) struct PlaneBreakers {
     cfg: BreakerCfg,
 }
 
+/// The CEILING on a `tool_pools:`/`agent_pools:` member list, enforced at config validation
+/// (`config::check_failover_pool`) so an admission can never index past the plane store's fixed
+/// lane table. A constant rather than a config-derived size because [`PlaneBreakers`] is
+/// PROCESS-LIFETIME (learned reliability survives every apply) while pool sizes are per-generation
+/// config — a table sized to one generation's pools would need rebuilding, and rebuilding is
+/// exactly the state loss the process-lifetime rule exists to prevent. Eight is generous for the
+/// canonical case (one deployment, registered a handful of times); raising it is a one-line change
+/// plus the validation message.
+pub(crate) const MAX_POOL_MEMBERS: usize = 8;
+
 impl PlaneBreakers {
     pub(crate) fn new() -> Self {
         Self {
-            health: HealthState::new(vec![LaneData {
-                model: "plane-target".to_string(),
-                provider: "plane".to_string(),
-                max: 1,
-                sem: Arc::new(tokio::sync::Semaphore::new(1)),
-                limited: false,
-                budget: -1,
-                cooldown_until: 0,
-                streak: 0,
-                dead: false,
-                dead_reason: String::new(),
-                ok: 0,
-                err: 0,
-                client_fault: 0,
-                upstream_model: None,
-                attempt_timeout_ms: None,
-                reasoning: false,
-                prompt_caching: false,
-            }]),
+            health: HealthState::new(
+                (0..MAX_POOL_MEMBERS)
+                    .map(|_| LaneData {
+                        model: "plane-target".to_string(),
+                        provider: "plane".to_string(),
+                        max: 1,
+                        sem: Arc::new(tokio::sync::Semaphore::new(1)),
+                        limited: false,
+                        budget: -1,
+                        cooldown_until: 0,
+                        streak: 0,
+                        dead: false,
+                        dead_reason: String::new(),
+                        ok: 0,
+                        err: 0,
+                        client_fault: 0,
+                        upstream_model: None,
+                        attempt_timeout_ms: None,
+                        reasoning: false,
+                        prompt_caching: false,
+                    })
+                    .collect(),
+            ),
             cfg: BreakerCfg::default(),
         }
+    }
+
+    /// The cell store as the [`LaneRuntime`] the failover seam's `walk` consults — the SAME object
+    /// every method below writes, so a selection admitted by `failover::walk` and an outcome
+    /// recorded by [`Self::record_signal`] meet on one cell. Exposed as the trait rather than the
+    /// concrete type so the walk cannot grow a plane-store-specific dependency.
+    pub(crate) fn runtime(&self) -> &dyn super::LaneRuntime {
+        &self.health
     }
 
     /// The MCP plane's key for one registered tool server. The `tool:` prefix is the audit's
@@ -99,13 +124,14 @@ impl PlaneBreakers {
     }
 
     /// ADMIT ONE DISPATCH against the target's cell — [`LaneRuntime::try_admit_breaker`], the same
-    /// admission the model plane's queue dispatch makes. `Ok` carries the single-flight probe owner
-    /// token; the dispatch MUST end in exactly one of `record_success` / `record_signal` /
-    /// [`Self::release`] or a won recovery probe is leaked and the cell wedges HalfOpen. Production
-    /// call sites use [`Self::admit`], whose RAII token cannot be leaked by a dropped future.
-    pub(crate) fn try_admit(&self, key: &str) -> Result<u64, Unavailable> {
+    /// admission the model plane's queue dispatch makes. `lane` is the member's position in its
+    /// pool (0 for a degenerate cell). `Ok` carries the single-flight probe owner token; the
+    /// dispatch MUST end in exactly one of `record_success` / `record_signal` / [`Self::release`]
+    /// or a won recovery probe is leaked and the cell wedges HalfOpen. Production call sites use
+    /// [`Self::admit`], whose RAII token cannot be leaked by a dropped future.
+    pub(crate) fn try_admit(&self, key: &str, lane: usize) -> Result<u64, Unavailable> {
         self.health
-            .try_admit_breaker(key, 0, HealthState::now_secs())
+            .try_admit_breaker(key, lane, HealthState::now_secs())
     }
 
     /// [`Self::try_admit`] as an RAII token. The owner-checked release runs on DROP, which is the
@@ -113,27 +139,41 @@ impl PlaneBreakers {
     /// admission and the wire, a caller that disconnected (axum drops the handler future), a task
     /// runner aborted by `tasks/cancel`. An explicit release call misses the dropped-future cases,
     /// and a missed release wedges the cell HalfOpen forever.
-    pub(crate) fn admit(self: &Arc<Self>, key: &str) -> Result<Admission, Unavailable> {
-        let epoch = self.try_admit(key)?;
+    pub(crate) fn admit(self: &Arc<Self>, key: &str, lane: usize) -> Result<Admission, Unavailable> {
+        let epoch = self.try_admit(key, lane)?;
         Ok(Admission {
             breakers: Arc::clone(self),
             key: key.to_string(),
+            lane,
             epoch,
         })
+    }
+
+    /// A probe token won OUTSIDE this module — by `failover::walk`, whose admission is the same
+    /// [`LaneRuntime::try_admit_breaker`] against the same cell — wrapped into the RAII
+    /// [`Admission`] so a walked selection inherits the identical cannot-be-leaked discipline the
+    /// degenerate path has.
+    pub(crate) fn adopt(self: &Arc<Self>, key: &str, lane: usize, epoch: u64) -> Admission {
+        Admission {
+            breakers: Arc::clone(self),
+            key: key.to_string(),
+            lane,
+            epoch,
+        }
     }
 
     /// OWNER-CHECKED release of the probe token [`Self::try_admit`] returned, for a dispatch that
     /// settles. Safe to call unconditionally after the outcome: a recorded success/failure has
     /// already consumed the HalfOpen state, so this is a no-op there and only reverts a probe the
     /// dispatch genuinely abandoned (refused before any leg went out).
-    pub(crate) fn release(&self, key: &str, probe_epoch: u64) {
-        self.health.release_probe_owned_in(key, 0, probe_epoch);
+    pub(crate) fn release(&self, key: &str, lane: usize, probe_epoch: u64) {
+        self.health.release_probe_owned_in(key, lane, probe_epoch);
     }
 
     /// The wire answered and busbar could serve it. Closes a half-open probe, dilutes the
     /// error-rate window — the success half of the one disposition pipeline.
-    pub(crate) fn record_success(&self, key: &str) {
-        self.health.record_success_in(key, 0);
+    pub(crate) fn record_success(&self, key: &str, lane: usize) {
+        self.health.record_success_in(key, lane);
     }
 
     /// RECORD ONE NORMALIZED FAILURE through the ONE classifier ([`crate::breaker::classify`],
@@ -144,16 +184,17 @@ impl PlaneBreakers {
     pub(crate) fn record_signal(
         &self,
         key: &str,
+        lane: usize,
         sig: &crate::breaker::CanonicalSignal,
     ) -> crate::breaker::Disposition {
         let disposition = crate::breaker::classify(sig);
         match disposition {
-            crate::breaker::Disposition::ClientFault => self.health.record_client_fault(0),
+            crate::breaker::Disposition::ClientFault => self.health.record_client_fault(lane),
             crate::breaker::Disposition::TransientUpstream => {
                 let tripped = if sig.class == crate::breaker::StatusClass::RateLimit {
                     self.health.record_rate_limit_in(
                         key,
-                        0,
+                        lane,
                         HealthState::now_secs(),
                         &self.cfg,
                         sig.retry_after,
@@ -161,7 +202,7 @@ impl PlaneBreakers {
                 } else {
                     self.health.record_transient_in(
                         key,
-                        0,
+                        lane,
                         sig.provider_signal.as_deref().unwrap_or("upstream"),
                         &self.cfg,
                         sig.retry_after,
@@ -182,7 +223,7 @@ impl PlaneBreakers {
             crate::breaker::Disposition::HardDown => {
                 self.health.record_hard_down_for(
                     key,
-                    0,
+                    lane,
                     sig.provider_signal.as_deref().unwrap_or("hard_down"),
                 );
                 tracing::warn!(
@@ -202,9 +243,9 @@ impl PlaneBreakers {
     /// populated from the cell's own `until` rather than guessed (the shape budget already uses
     /// with `429` + `Retry-After`). The floor covers `ProbeInFlight`, whose honest answer is "next
     /// tick" and whose remaining cooldown reads 0.
-    pub(crate) fn retry_after_secs(&self, key: &str) -> u64 {
+    pub(crate) fn retry_after_secs(&self, key: &str, lane: usize) -> u64 {
         self.health
-            .cooldown_remaining_in(key, 0, HealthState::now_secs())
+            .cooldown_remaining_in(key, lane, HealthState::now_secs())
             .max(1)
     }
 
@@ -212,7 +253,13 @@ impl PlaneBreakers {
     /// no probe CAS.
     #[cfg(test)]
     pub(crate) fn state(&self, key: &str) -> super::BreakerState {
-        self.health.breaker_state_snapshot_in(key, 0)
+        self.state_at(key, 0)
+    }
+
+    /// [`Self::state`] for a pooled member's cell.
+    #[cfg(test)]
+    pub(crate) fn state_at(&self, key: &str, lane: usize) -> super::BreakerState {
+        self.health.breaker_state_snapshot_in(key, lane)
     }
 
     /// FORCE one target's cell back to Closed with no pending cooldown — a TEST-ONLY bypass of the
@@ -231,6 +278,20 @@ impl PlaneBreakers {
         cell.probe_in_flight().store(false, Ordering::Release);
         cell.streak().store(0, Ordering::Release);
     }
+
+    /// FORCE one target's cell Open until `until` — the test-only inverse of [`Self::reset`], for
+    /// batteries whose subject is what a dispatch does when a member is ALREADY tripped (the pinned
+    /// A2A task refusal) without having to burn real failures to get there.
+    #[cfg(test)]
+    pub(crate) fn force_open(&self, key: &str, lane: usize, until: u64) {
+        use std::sync::atomic::Ordering;
+        let cell = self.health.cell(key, lane);
+        let _tx = crate::store::lock_recover(cell.transition_lock());
+        cell.cooldown_until().store(until, Ordering::Release);
+        cell.breaker_state()
+            .store(crate::store::ST_OPEN, Ordering::Release);
+        cell.probe_in_flight().store(false, Ordering::Release);
+    }
 }
 
 /// One admitted dispatch's hold on the single-flight recovery probe. See [`PlaneBreakers::admit`]:
@@ -240,12 +301,13 @@ impl PlaneBreakers {
 pub(crate) struct Admission {
     breakers: Arc<PlaneBreakers>,
     key: String,
+    lane: usize,
     epoch: u64,
 }
 
 impl Drop for Admission {
     fn drop(&mut self) {
-        self.breakers.release(&self.key, self.epoch);
+        self.breakers.release(&self.key, self.lane, self.epoch);
     }
 }
 

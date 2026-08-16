@@ -1387,6 +1387,18 @@ pub fn build_app_from_config(
         probe_schedule,
         lanes,
         store,
+        // The non-LLM planes' breaker cells: PROCESS-LIFETIME, reused across an apply/reload the
+        // way the HTTP client pool and governance state are — a config swap must not un-trip a
+        // dead tool server or agent. Boot starts fresh (reliability is never persisted; the
+        // store-or-RAM rule).
+        plane_breakers: prior.map_or_else(
+            || Arc::new(crate::store::PlaneBreakers::new()),
+            |p| Arc::clone(&p.plane_breakers),
+        ),
+        // The failover pools, resolved-verbatim per generation (the CELLS above are process-
+        // lifetime; the pool DECLARATIONS are config like any other).
+        tool_pools: cfg.tool_pools.clone(),
+        agent_pools: cfg.agent_pools.clone(),
         by_model,
         pools,
         client: upstream_client.clone(),

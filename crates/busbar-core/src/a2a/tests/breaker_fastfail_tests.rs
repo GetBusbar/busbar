@@ -126,7 +126,10 @@ fn a_call<'a>(
         policy,
         a2a_version: "0.3",
         framing: crate::a2a::relay::default_framing(),
-        breakers: Some(Arc::clone(breakers)),
+        breakers: Some(crate::a2a::relay::RelayBreaker::degenerate(
+            "planner",
+            Arc::clone(breakers),
+        )),
     }
 }
 

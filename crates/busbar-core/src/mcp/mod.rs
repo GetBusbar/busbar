@@ -178,6 +178,7 @@ pub(crate) mod method;
 /// structured results a MUST for the server that published it, and on this plane that server is
 /// busbar — while the value itself comes from an upstream that can return whatever it likes.
 pub(crate) mod outputschema;
+pub(crate) mod reroute;
 pub(crate) mod resource;
 pub(crate) mod roots;
 pub(crate) mod sanitize;
