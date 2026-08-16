@@ -509,6 +509,16 @@ impl Registry {
 pub(crate) struct Runner {
     pub(crate) pool: Arc<super::client::pool::McpConnectionPool>,
     pub(crate) handle: Arc<crate::state::AppHandle>,
+    /// The plane breaker cells `upstream::call` records this task's legs into — the same handle
+    /// `create_task` consulted for admission, carried so the runner cannot record into a different
+    /// generation's cells than it was admitted against.
+    pub(crate) breakers: Arc<crate::store::PlaneBreakers>,
+    /// The single-flight probe hold admission handed `create_task`. Releases owner-checked ON DROP
+    /// — which covers the runner being ABORTED by `tasks/cancel` as well as its normal end, the
+    /// case an explicit release call cannot reach. A recorded outcome makes the drop a no-op.
+    /// Never read: the field EXISTS to be dropped with the runner, which is what the allow says.
+    #[allow(dead_code)]
+    pub(crate) admission: crate::store::PlaneAdmission,
     /// THE CALLER'S PRINCIPAL IS FROZEN IN HERE, AND THAT IS BOUNDED RATHER THAN CLOSED. SAY SO.
     ///
     /// `Authorised::caller` is a `VirtualKey` resolved at ingress. `upstream::call` re-plans the
@@ -583,6 +593,7 @@ async fn run(task: Arc<McpTask>, runner: Runner) {
         |round, satisfaction| {
             super::upstream::call(
                 &runner.pool,
+                &runner.breakers,
                 &runner.authorised,
                 &arguments,
                 u64::from(round),
@@ -622,6 +633,8 @@ async fn run(task: Arc<McpTask>, runner: Runner) {
         |_| Ok(()),
     )
     .await;
+    // `runner.admission` (the probe hold) drops with the runner — on this function's normal end
+    // AND on an abort — releasing owner-checked; a recorded leg outcome makes that a no-op.
 
     // (4) SETTLE. A tool that ran is `completed` whatever it said about itself; a refusal is a
     // PROTOCOL error and is `failed`.

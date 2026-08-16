@@ -53,7 +53,7 @@ use super::client::identity::{ServerId, ToolKey};
 use super::client::jsonrpc::{self, RpcOutcome};
 use super::client::pool::McpConnectionPool;
 use super::client::ssrf::SsrfPolicy;
-use super::client::wire::WireLeg;
+use super::client::wire::{TransportError, WireLeg};
 use super::inputreq::{Ask, Round};
 use busbar_api::{Redacted, VirtualKey};
 use std::time::Duration;
@@ -387,6 +387,7 @@ pub(super) fn credential_mode(server: &ServerEntry) -> Result<UpstreamCredential
 /// `inputResponses`/`requestState` continuation.
 pub(crate) async fn call(
     pool: &McpConnectionPool,
+    breakers: &crate::store::PlaneBreakers,
     auth: &Authorised,
     arguments: &serde_json::Value,
     request_id: u64,
@@ -435,12 +436,37 @@ pub(crate) async fn call(
         command: auth.stdio.as_ref(),
         grants: auth.grants,
     };
-    let response = auth
-        .transport
-        .mcp_wire()
-        .send(&leg, &outbound)
-        .await
-        .map_err(|e| e.to_string())?;
+    // THE OUTCOME IS RECORDED WHERE THE STRUCTURE STILL EXISTS — the Stage-1 normalizer for this
+    // plane (the audit's closing design). One leg, one record, into the ONE core
+    // breaker's degenerate cell for this server; by the time this function's `Err(String)` reaches
+    // the caller the transport/status shape is gone, so classifying later would be guessing.
+    let breaker_key = crate::store::PlaneBreakers::tool_key(auth.server.as_str());
+    let response = match auth.transport.mcp_wire().send(&leg, &outbound).await {
+        Ok(r) => r,
+        Err(e) => {
+            record_wire_failure(breakers, &breaker_key, &e);
+            return Err(e.to_string());
+        }
+    };
+    if !(200..300).contains(&response.status) {
+        // The status alone, claiming no provider vocabulary — `classify` still places the failure
+        // (401/403 → Auth → hard down; 5xx → transient; true 4xx → ClientFault, never a penalty).
+        // Recording does NOT change what the caller is answered: the parse below renders exactly
+        // what it always rendered.
+        breakers.record_signal(
+            &breaker_key,
+            &crate::breaker::normalize_raw_error(
+                &crate::breaker::RawUpstreamError::from_status(response.status),
+                &std::collections::HashMap::new(),
+            ),
+        );
+    } else {
+        // THE WIRE WORKED. A JSON-RPC error or a tool-level `isError` inside a 2xx is the SERVER
+        // answering — protocol- or work-level, never availability — so the success is recorded
+        // here, on the status, before the body is interpreted. This is what closes a half-open
+        // probe and what keeps a caller's bad arguments from ever penalizing the upstream.
+        breakers.record_success(&breaker_key);
+    }
     // `request_id` AGAIN, and that is the point: the id that went out in the body is the id the
     // answer must name. Both uses are on the screen together so a reader can see that they are the
     // same value, and neither of them outlives this function — see `jsonrpc::parse_response` on why
@@ -473,6 +499,35 @@ pub(crate) async fn call(
             response.status
         )),
     }
+}
+
+/// The TRANSPORT half of this plane's Stage-1 normalizer: what one failed wire leg records.
+///
+/// - `Io` — the socket failed, the deadline expired, or a stdio child died mid-exchange: the
+///   transient the breaker exists for. `Network` rather than a guessed `Timeout` split, because
+///   both classify to the same `TransientUpstream` disposition and the wire does not distinguish
+///   them in structure.
+/// - `Supervision` — the stdio crash-loop supervisor refused (backoff, quarantine) and spawned
+///   NOTHING. Recording it would be DOUBLE ACCOUNTING: the child crash that armed the supervisor
+///   was already recorded here as the `Io` failure of the exchange it killed, and the supervisor's
+///   refusal is busbar's own fast answer, not a new fact about the upstream. The two breakers
+///   CO-EXIST and share no state — the core cell trips on the crashes, the supervisor guards the
+///   respawns — exactly the audit's stdio row.
+/// - `Refused` — busbar's OWN dispatch-time refusal (SSRF, a malformed target): nothing left
+///   busbar and the upstream answered nothing, so nothing is recorded against it.
+fn record_wire_failure(breakers: &crate::store::PlaneBreakers, key: &str, err: &TransportError) {
+    let class = match err {
+        TransportError::Io(_) => crate::breaker::StatusClass::Network,
+        TransportError::Supervision(_) | TransportError::Refused(_) => return,
+    };
+    breakers.record_signal(
+        key,
+        &crate::breaker::CanonicalSignal {
+            class,
+            provider_signal: None,
+            retry_after: None,
+        },
+    );
 }
 
 /// PERFORM the RFC 8693 exchange and return the access token.
@@ -577,6 +632,12 @@ mod stdio_client_leg_tests;
 #[cfg(test)]
 #[path = "tests/deputy_pair_tests.rs"]
 mod deputy_pair_tests;
+
+// KILL-THE-UPSTREAM — the breaker's trip + fast-fail on this plane, both transports, driven at the
+// same front door as everything above. It hangs here because the recording site is `call` below.
+#[cfg(test)]
+#[path = "tests/breaker_fastfail_tests.rs"]
+mod breaker_fastfail_tests;
 
 // THE PER-CALL LOG'S WRITER, proven from the dispatcher outwards rather than from the log inwards.
 // It lives here, beside the upstream-leg batteries, because it needs the same real fake peer: the

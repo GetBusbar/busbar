@@ -806,9 +806,10 @@ impl HealthState {
         ls.ok.fetch_add(1, Ordering::Relaxed);
     }
 
-    // Only the per-cell `record_hard_down`/`record_hard_down_in` trait wrappers call this, and those
-    // are test-only in release now (the all-cells primitive inlines the trip), so this is release-dead.
-    #[cfg_attr(not(test), allow(dead_code))]
+    // Production callers: the test-only `record_hard_down`/`record_hard_down_in` trait wrappers, and
+    // `store::planes::PlaneBreakers::record_signal` — the non-LLM planes' hard-down is PER CELL by
+    // design (their degenerate cells share one lane index, so the all-cells primitive would trip
+    // every other tool server and agent).
     pub(crate) fn record_hard_down_for(&self, pool: &str, lane: usize, reason: &str) {
         let ls = self.get_lane(lane);
         // Hard-down is RECOVERABLE — long sticky cooldown + Open, recovered via the half-open

@@ -258,6 +258,18 @@ done"#,
 ///
 /// Nothing is asserted about wall-clock duration, only about ORDER and REFUSAL TEXT: a test that
 /// asserted on timings would be asserting on the machine it ran on.
+///
+/// ## The core plane breaker is RESET between dispatches, and that is this test staying honest
+///
+/// The dispatch path now consults the ONE core breaker cell for this server BEFORE the wire (see
+/// `method.rs` (3b)), and each child crash records a transient into it — so in production the
+/// SECOND call inside the cooldown is refused by the core cell in milliseconds and the supervisor
+/// is never asked (`mcp/tests/breaker_fastfail_tests.rs` proves exactly that). This file's subject
+/// is the INNER arm — the supervisor's backoff and quarantine, which guard every spawn including
+/// the refresh sweep's — so each step clears the outer cell first (`PlaneBreakers::reset`, a
+/// test-only bypass) to reach it through the same front door as before. The supervisor's own
+/// refusals are NOT recorded into the core cell (that would double-account one crash), which is
+/// what keeps the two devices co-existing without either feeding the other.
 #[tokio::test]
 async fn a_crash_looping_child_backs_off_and_is_quarantined_through_the_dispatch_path() {
     crate::metrics::init();
@@ -268,6 +280,10 @@ async fn a_crash_looping_child_backs_off_and_is_quarantined_through_the_dispatch
         .build();
     let g = gov_with_scopes(&[("mcp_server", "fs"), ("mcp_tool", "fs_read")]);
     let params = serde_json::json!({ "name": "fs_read", "arguments": {} });
+    let reach_the_supervisor = || {
+        app.plane_breakers
+            .reset(&crate::store::PlaneBreakers::tool_key("fs"))
+    };
 
     let text = |b: &serde_json::Value| {
         b.pointer("/result/content/0/text")
@@ -297,44 +313,66 @@ async fn a_crash_looping_child_backs_off_and_is_quarantined_through_the_dispatch
         text(&first)
     );
 
-    // (2) THE BACKOFF, ON THE DISPATCH PATH. Immediately after the crash, the same call is refused
-    // by the supervisor and NOTHING IS SPAWNED. This is the assertion that could not have been
-    // written before the arm existed: the only way to reach it is through a real `tools/call`.
-    let (_, second) = call(&app, &g, "tools/call", params.clone()).await;
-    assert!(
-        text(&second).contains("restart backoff"),
-        "a dispatch inside the backoff window must be refused by the supervisor, not by a second \
-         fork: {}",
-        text(&second)
-    );
-
-    // (3) FOUR MORE CRASHES, each after its own backoff has elapsed. The default policy is 100ms
-    // doubling, so waiting out 100/200/400/800 is enough for crashes 2, 3, 4 and 5. The wait is
-    // generous rather than exact: this test is about the ORDER of the transitions.
-    for wait_ms in [120u64, 240, 480, 960] {
-        tokio::time::sleep(std::time::Duration::from_millis(wait_ms)).await;
+    // (2)+(3) THE BACKOFF AND THE CRASH COUNT, driven to quarantine BY ORDER rather than by wall
+    // clock. The old shape dispatched exactly once "immediately" after each crash and asserted it
+    // landed inside that crash's backoff window — a 100ms window on a machine running 4500 tests,
+    // which is an assertion about the scheduler, not about busbar (and it flaked exactly there
+    // under a full-gate load). So the sequence is now event-driven: after every observed CRASH the
+    // next dispatch goes out with no sleep at all — inside the (doubling) window on any sane
+    // scheduler, and if a pathological stall skips one window the crash simply counts toward the
+    // quarantine and a LATER, longer window catches the proof; after every observed BACKOFF a
+    // short sleep lets the window elapse so the next crash can happen. Every answer must still be
+    // one of exactly three things — a crash, the backoff refusal, or the quarantine — and by the
+    // time the quarantine lands the backoff arm MUST have been observed at least once, which is
+    // the same "reached through a real tools/call" claim as before, minus the stopwatch.
+    let mut saw_backoff = false;
+    let mut quarantined = None;
+    for _ in 0..40 {
+        reach_the_supervisor();
         let (_, body) = call(&app, &g, "tools/call", params.clone()).await;
         let t = text(&body);
+        if t.contains("quarantined") {
+            quarantined = Some(t);
+            break;
+        }
+        if t.contains("restart backoff") {
+            saw_backoff = true;
+            // Let this window elapse so the next dispatch produces the next crash. The waits stay
+            // generous-not-exact: the loop re-checks, it never counts sleeps.
+            tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+            continue;
+        }
         // "write to stdio MCP child" (Broken pipe) is the SAME crash noticed by the write syscall
         // instead of the read — see the phrasing note at (1). The supervisor counts it identically
-        // (any exchange failure calls `crashed()`), so the quarantine arithmetic at (4) holds.
+        // (any exchange failure calls `crashed()`), so the quarantine arithmetic below holds.
         assert!(
-            t.contains("closed its stdout")
-                || t.contains("restart backoff")
-                || t.contains("write to stdio MCP child"),
+            t.contains("closed its stdout") || t.contains("write to stdio MCP child"),
             "an unquarantined crash-looper either crashes again or is in backoff: {t}"
         );
     }
+    assert!(
+        saw_backoff,
+        "the BACKOFF must be observed on the dispatch path before the quarantine lands: a run that \
+         reached quarantine without one backoff refusal spawned a child on every single dispatch"
+    );
+    let t = quarantined.expect(
+        "five crashes in the window must QUARANTINE the child — an unbounded restart loop against \
+         a binary that always fails is a fork bomb with a config file behind it",
+    );
+    assert!(
+        !t.contains("restart backoff"),
+        "a tripped breaker is not a backoff: {t}"
+    );
 
-    // (4) THE QUARANTINE. Five crashes inside the sixty-second window trips the breaker, and it does
-    // not reopen with time — so no amount of waiting turns this back into a backoff.
+    // (4) THE QUARANTINE DOES NOT REOPEN WITH TIME — no amount of waiting turns it back into a
+    // backoff, and nothing is spawned to answer the refusal.
     tokio::time::sleep(std::time::Duration::from_millis(1_200)).await;
+    reach_the_supervisor();
     let (_, last) = call(&app, &g, "tools/call", params).await;
     let t = text(&last);
     assert!(
         t.contains("quarantined"),
-        "five crashes in the window must QUARANTINE the child — an unbounded restart loop against a \
-         binary that always fails is a fork bomb with a config file behind it: {t}"
+        "waiting must not reopen a quarantine: {t}"
     );
     assert!(
         !t.contains("restart backoff"),

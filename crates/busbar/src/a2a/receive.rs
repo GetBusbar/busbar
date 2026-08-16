@@ -1415,6 +1415,7 @@ async fn admitted(
         admitted_generation: admitted.generation,
         request_id,
         a2a_version,
+        breakers: Arc::clone(&app.plane_breakers),
         now,
         now_ms,
         // Established by the envelope reader at the top of this handler, where `null` and absent
@@ -1480,6 +1481,9 @@ struct HopContext {
     /// binding one request goes out on. `&'static` because the three framings are stateless
     /// vtables, so carrying one costs a pointer and there is nothing to build.
     framing: &'static dyn super::relay::OutboundFraming,
+    /// The plane's breaker cells, cloned into each hop's `RelayCall` — the relay consults and
+    /// records; this context only carries the handle (and renders the tripped refusal).
+    breakers: Arc<crate::store::PlaneBreakers>,
     now: u64,
     now_ms: u64,
     rpc_id: serde_json::Value,
@@ -1604,6 +1608,7 @@ async fn unary_hop(
     // backend IS this one — see `RelayCall::rpc_id`.
     let rpc_id = ctx.rpc_id.clone();
     let a2a_version = ctx.a2a_version;
+    let breakers = Arc::clone(&ctx.breakers);
     let relayed = tokio::task::spawn_blocking(move || {
         super::relay::relay(
             &super::relay::RelayCall {
@@ -1617,6 +1622,7 @@ async fn unary_hop(
                 policy: &relay_policy,
                 a2a_version,
                 framing,
+                breakers: Some(breakers),
             },
             seam.as_ref(),
             now_ms,
@@ -1706,6 +1712,7 @@ async fn stream_hop(
     // see.
     let notify_seam = Arc::clone(&seam);
     let a2a_version = ctx.a2a_version;
+    let breakers = Arc::clone(&ctx.breakers);
 
     // THE CURSOR RESUMES WHERE THE TASK LEFT OFF rather than at zero. On a resumed stream, starting
     // at zero would spend the first N advances re-asserting a position the store already holds —
@@ -1780,6 +1787,7 @@ async fn stream_hop(
                 policy: &relay_policy,
                 a2a_version,
                 framing,
+                breakers: Some(breakers),
             },
             seam.as_ref(),
             &task_id,
@@ -1980,6 +1988,46 @@ fn refuse_hop_early(rpc_id: &serde_json::Value, refusal: &super::relay::RelayRef
 
 fn refuse_hop(ctx: &HopContext, refusal: &super::relay::RelayRefusal) -> Response {
     tracing::warn!(agent = %ctx.agent_id, task = %ctx.task_id, error = %refusal, "a2a: the relayed task submission failed");
+    if let super::relay::RelayRefusal::BreakerOpen {
+        retry_after_secs, ..
+    } = refusal
+    {
+        // THE BREAKER REFUSED BEFORE THE SOCKET — the breaker-across-planes ruling, owner-
+        // decided: a FRESH submission yields `rejected`, the spec's own word for "we did not accept
+        // this work" (`failed` would claim busbar tried), and the caller keeps a task id to poll —
+        // the row predates the hop, so the id resolves. An ADDRESSED task is different: the task
+        // exists at exactly one backend and a tripped backend must not end it, so the verb gets the
+        // refusal and the row keeps its last-known state, readable from busbar's own store. Either
+        // way: `503` + an EXACT `Retry-After` from the cell's own deadline.
+        if !ctx.addressed {
+            match super::taskstore::TASKS.transition(
+                &ctx.task_id,
+                super::task::TaskState::Rejected,
+                ctx.now,
+                &ctx.request_id,
+            ) {
+                Ok(task) => notify_push(&ctx.seam, task),
+                Err(e) => {
+                    tracing::error!(task = %ctx.task_id, error = %e, "a2a: a breaker-refused task could not be recorded as rejected");
+                }
+            }
+        }
+        let mut resp = (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            axum::Json(super::rpcerror::about_task(
+                &ctx.rpc_id,
+                super::rpcerror::A2aError::UnsupportedOperation,
+                refusal.to_string(),
+                &ctx.task_id,
+            )),
+        )
+            .into_response();
+        if let Ok(v) = axum::http::HeaderValue::from_str(&retry_after_secs.to_string()) {
+            resp.headers_mut()
+                .insert(axum::http::header::RETRY_AFTER, v);
+        }
+        return resp;
+    }
     if ctx.addressed {
         // A FAILED READ IS NOT A FAILED TASK. The caller named a task that already exists and asked
         // about it; the hop failing says something about this request, not about that work. Ending

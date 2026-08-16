@@ -717,6 +717,9 @@ pub(crate) trait LaneRuntime: Send + Sync + 'static {
 mod in_memory;
 pub(crate) use in_memory::*;
 
+mod planes;
+pub(crate) use planes::{Admission as PlaneAdmission, PlaneBreakers};
+
 #[cfg(test)]
 #[path = "tests/tests.rs"]
 mod tests;
