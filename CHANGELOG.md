@@ -52,6 +52,23 @@ All notable changes to Busbar are documented here. The format is based on
 
 ### Fixed
 
+- **One blip no longer takes an MCP server or an A2A agent out for 15–120 seconds.** The breaker's
+  trip + fast-fail wiring on the MCP client leg and the A2A relay reused the LLM plane's cell FSM
+  whole, and that FSM arms an escalating cooldown on a transient failure *even when the failure did
+  not breach the trip threshold*. On the LLM plane that store is the deprioritisation half of
+  ADR-0002's `TransientUpstream` rule — "re-arm an exponential cooldown; **fail over** to the next
+  candidate" — and the failover half keeps the caller served while it lasts. These planes have no
+  failover (`docs/circuit-breaker.md` says so out loud: "a tripped target is refused, never
+  rerouted"), so the identical store meant *refuse every caller of that server*, bought with a
+  single upstream timeout or torn socket, on a cell whose own `should_trip` had just declined to
+  trip, and announced as `-32030 upstream_unavailable` … "its circuit breaker is open after repeated
+  failures" — a sentence that was not true. The MCP and A2A cells now refuse on a **trip** and
+  nothing less: the published predicate, `error_rate >= 0.5` over at least `min_requests` outcomes
+  in the 30-second window. An upstream's own `Retry-After` is still honoured, for exactly as long as
+  it asked for. The LLM plane is byte-unchanged. Caught by the in-house MCP conformance battery,
+  which had been red for five commits on six items with `retry_after_ms: 29000` in the payload — a
+  30-second outage minted by one stalled call in an earlier, unrelated scenario.
+
 - **Every published cross-protocol gap is closed.** `docs/protocols.md` carried a section headed
   "Known gaps in 1.6.0" whose own opening sentence called its contents *defects measured in the
   1.6.0 tree*. Publishing a list of your own defects next to a losslessness claim is the wrong

@@ -337,6 +337,8 @@ fn cooldown_never_zero_for_base_one() {
         base_cooldown_secs: 1,
         max_cooldown_secs: 1000,
         honor_retry_after: false,
+        // The LLM plane's pools fail over; see BreakerCfg::bench_below_trip_threshold.
+        bench_below_trip_threshold: true,
         trip: TripConfig {
             mode: TripMode::Consecutive,
             window_s: 30,
@@ -369,6 +371,8 @@ fn backoff_saturates_not_wraps_at_high_streak() {
         base_cooldown_secs: 10, // EVEN base — the wrap-to-0 case
         max_cooldown_secs: 3600,
         honor_retry_after: false,
+        // The LLM plane's pools fail over; see BreakerCfg::bench_below_trip_threshold.
+        bench_below_trip_threshold: true,
         trip: TripConfig {
             mode: TripMode::Consecutive,
             window_s: 30,
@@ -401,6 +405,8 @@ fn test_streak_bump_is_serialized_under_transition_lock() {
         base_cooldown_secs: 10,
         max_cooldown_secs: 1000,
         honor_retry_after: false,
+        // The LLM plane's pools fail over; see BreakerCfg::bench_below_trip_threshold.
+        bench_below_trip_threshold: true,
         trip: TripConfig {
             mode: TripMode::Consecutive,
             window_s: 30,
@@ -797,6 +803,8 @@ fn test_small_base_cooldown_still_jitters() {
         base_cooldown_secs: 4,
         max_cooldown_secs: 120,
         honor_retry_after: false,
+        // The LLM plane's pools fail over; see BreakerCfg::bench_below_trip_threshold.
+        bench_below_trip_threshold: true,
         trip: TripConfig::default(),
     };
     let mut seen = std::collections::BTreeSet::new();
@@ -1109,6 +1117,8 @@ fn test_probe_failure_honors_retry_after_floor() {
         base_cooldown_secs: 15,
         max_cooldown_secs: 120,
         honor_retry_after: true,
+        // The LLM plane's pools fail over; see BreakerCfg::bench_below_trip_threshold.
+        bench_below_trip_threshold: true,
         trip: TripConfig::default(),
     };
     // Put the default cell in HalfOpen so a SINGLE probe failure reopens it with the BASE
@@ -1256,6 +1266,8 @@ fn test_consecutive_trip_mode() {
         base_cooldown_secs: 15,
         max_cooldown_secs: 120,
         honor_retry_after: true,
+        // The LLM plane's pools fail over; see BreakerCfg::bench_below_trip_threshold.
+        bench_below_trip_threshold: true,
         trip: TripConfig {
             mode: TripMode::Consecutive,
             window_s: 30,
@@ -1294,6 +1306,8 @@ fn test_configured_consecutive_trip_fires_at_n() {
         base_cooldown_secs: 15,
         max_cooldown_secs: 120,
         honor_retry_after: true,
+        // The LLM plane's pools fail over; see BreakerCfg::bench_below_trip_threshold.
+        bench_below_trip_threshold: true,
         trip: TripConfig {
             mode: TripMode::Consecutive,
             window_s: 30,
@@ -1348,6 +1362,8 @@ fn test_configured_error_rate_trip_fires() {
         base_cooldown_secs: 15,
         max_cooldown_secs: 120,
         honor_retry_after: true,
+        // The LLM plane's pools fail over; see BreakerCfg::bench_below_trip_threshold.
+        bench_below_trip_threshold: true,
         trip: TripConfig {
             mode: TripMode::ErrorRate,
             window_s: 100,
@@ -1666,6 +1682,8 @@ fn test_pool_breaker_isolation() {
         base_cooldown_secs: 15,
         max_cooldown_secs: 120,
         honor_retry_after: true,
+        // The LLM plane's pools fail over; see BreakerCfg::bench_below_trip_threshold.
+        bench_below_trip_threshold: true,
         trip: TripConfig {
             mode: TripMode::Consecutive,
             window_s: 30,
@@ -2402,6 +2420,8 @@ fn test_concurrent_pool_isolation_stress() {
         base_cooldown_secs: 1,
         max_cooldown_secs: 1,
         honor_retry_after: false,
+        // The LLM plane's pools fail over; see BreakerCfg::bench_below_trip_threshold.
+        bench_below_trip_threshold: true,
         trip: TripConfig {
             mode: TripMode::ErrorRate,
             window_s: 1,
@@ -2464,6 +2484,8 @@ fn test_error_rate_ignores_stale_errors_outside_window() {
         base_cooldown_secs: 15,
         max_cooldown_secs: 120,
         honor_retry_after: true,
+        // The LLM plane's pools fail over; see BreakerCfg::bench_below_trip_threshold.
+        bench_below_trip_threshold: true,
         trip: TripConfig {
             mode: TripMode::ErrorRate,
             window_s: 30,
@@ -2506,6 +2528,8 @@ fn test_soft_cooldown_is_probeable_and_recoverable() {
         base_cooldown_secs: 15,
         max_cooldown_secs: 120,
         honor_retry_after: true,
+        // The LLM plane's pools fail over; see BreakerCfg::bench_below_trip_threshold.
+        bench_below_trip_threshold: true,
         trip: TripConfig {
             mode: TripMode::ErrorRate,
             window_s: 30,
@@ -2727,6 +2751,8 @@ fn test_retry_after_429_with_computed_backoff_lower() {
         base_cooldown_secs: 15,
         max_cooldown_secs: 120,
         honor_retry_after: true,
+        // The LLM plane's pools fail over; see BreakerCfg::bench_below_trip_threshold.
+        bench_below_trip_threshold: true,
         trip: TripConfig::default(),
     };
     store.open_state_with_retry_after(0, 70000, &cfg, Some(30));
@@ -2764,6 +2790,8 @@ fn test_retry_after_exceeds_max_cooldown() {
         base_cooldown_secs: 15,
         max_cooldown_secs: 120,
         honor_retry_after: true,
+        // The LLM plane's pools fail over; see BreakerCfg::bench_below_trip_threshold.
+        bench_below_trip_threshold: true,
         trip: TripConfig::default(),
     };
 
@@ -2799,6 +2827,8 @@ fn test_retry_after_absent_fallback_to_computed() {
         base_cooldown_secs: 15,
         max_cooldown_secs: 120,
         honor_retry_after: true,
+        // The LLM plane's pools fail over; see BreakerCfg::bench_below_trip_threshold.
+        bench_below_trip_threshold: true,
         trip: TripConfig::default(),
     };
     store.open_state_with_retry_after(0, 60000, &cfg, None);
@@ -2864,6 +2894,8 @@ fn test_retry_after_not_honored_ignores_server_value() {
         base_cooldown_secs: 15,
         max_cooldown_secs: 120,
         honor_retry_after: false, // do NOT honor
+        // The LLM plane's pools fail over; see BreakerCfg::bench_below_trip_threshold.
+        bench_below_trip_threshold: true,
         trip: TripConfig::default(),
     };
     // Server says Retry-After: 1, but not honoring → use computed backoff (15s for streak=0),
@@ -3377,6 +3409,8 @@ fn test_open_cell_probe_failures_do_not_inflate_streak() {
         base_cooldown_secs: 4,
         max_cooldown_secs: 100_000,
         honor_retry_after: false,
+        // The LLM plane's pools fail over; see BreakerCfg::bench_below_trip_threshold.
+        bench_below_trip_threshold: true,
         trip: TripConfig {
             mode: TripMode::Consecutive,
             window_s: 30,
@@ -3454,6 +3488,8 @@ fn test_streak_zero_base_cooldown_is_jittered_and_desynced() {
         base_cooldown_secs: 200,
         max_cooldown_secs: 100_000,
         honor_retry_after: false,
+        // The LLM plane's pools fail over; see BreakerCfg::bench_below_trip_threshold.
+        bench_below_trip_threshold: true,
         trip: TripConfig::default(),
     };
 

@@ -541,6 +541,23 @@ pub(crate) struct BreakerCfg {
     pub(crate) max_cooldown_secs: u64,
     pub(crate) honor_retry_after: bool,
     pub(crate) trip: TripConfig,
+    /// Whether a transient failure that did NOT breach the trip threshold still benches the cell
+    /// for a cooldown.
+    ///
+    /// ADR-0002 states the sub-threshold rule as one sentence with two halves: on
+    /// `TransientUpstream`, "drive trip evaluation ... and re-arm an exponential cooldown; **fail
+    /// over** to the next candidate". The cooldown is the DEPRIORITISATION half of a selection walk
+    /// — "prefer a sibling for a while" — and the failover half is what keeps the caller served
+    /// while it lasts. On a pool with siblings that is right, and this stays `true` there.
+    ///
+    /// A DEGENERATE SINGLE-MEMBER CELL HAS NO SIBLING, and on the MCP client leg and the A2A relay
+    /// there is no walk at all (`docs/circuit-breaker.md`: "on a live tool call or task submission
+    /// no second candidate is tried today — a tripped target is refused, never rerouted"). There,
+    /// the identical store means "refuse every caller of this server for the next 15-120s", handed
+    /// out after ONE blip and announced as "open after repeated failures" — a sentence the cell's
+    /// own `should_trip` had just refused to make true. So those cells set this `false` and refuse
+    /// only on a real trip, on the thresholds ADR-0002 and `docs/circuit-breaker.md` publish.
+    pub(crate) bench_below_trip_threshold: bool,
 }
 
 impl Default for BreakerCfg {
@@ -550,6 +567,8 @@ impl Default for BreakerCfg {
             max_cooldown_secs: 120,
             honor_retry_after: true, // default to honoring Retry-After header
             trip: TripConfig::default(),
+            // The LLM plane's pools, which is what every `Default` here builds, DO fail over.
+            bench_below_trip_threshold: true,
         }
     }
 }
@@ -578,6 +597,9 @@ impl From<&crate::config::BreakerCfg> for BreakerCfg {
             max_cooldown_secs: c.max_cooldown_secs,
             honor_retry_after: true,
             trip,
+            // `pools.<pool>.breaker:` is the LLM plane's only breaker surface, and that plane walks
+            // its members. The plane cells do not parse config (see `PlaneBreakers::new`).
+            bench_below_trip_threshold: true,
         }
     }
 }
