@@ -303,9 +303,14 @@ impl LlmRequestLog {
     pub(crate) fn record(&self, principal: &str, input: RequestInput) -> LlmRequestRecord {
         let record = {
             let mut chains = self.chains();
-            let chain = chains
-                .entry(principal.to_string())
-                .or_insert_with(RequestChain::new);
+            // `or_default()` IS SAFE HERE, and it is worth saying why because it is the same line
+            // that once opened a zero-based chain on the MCP call log. A DERIVED `Default` would
+            // give `next_seq: 0`, which is not a valid sequence; `crate::audit::Chain` therefore
+            // hand-writes its `Default` to be its `new`, and pins the two against each other
+            // (`the_default_chain_is_the_new_chain_because_a_derived_default_starts_at_zero`). The
+            // hazard is closed once, in core, for every stream — which is the whole argument for
+            // one mechanism. `mcp::calllog` reads identically.
+            let chain = chains.entry(principal.to_string()).or_default();
             chain.append(principal, input)
         };
         let mut ring = self.ring();

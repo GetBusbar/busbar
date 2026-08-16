@@ -144,7 +144,10 @@ async fn every_model_request_lands_on_the_presenting_keys_hash_chain_dispatch_an
     let (addr, handle, server, secret, key_id) = a_governed_deployment(1).await;
 
     let dispatched = call(addr, "A", &secret).await;
-    assert_eq!(dispatched, 200, "pool A is reachable and the key is allowed on it");
+    assert_eq!(
+        dispatched, 200,
+        "pool A is reachable and the key is allowed on it"
+    );
     let refused = call(addr, "B", &secret).await;
     assert_eq!(
         refused, 403,
@@ -218,7 +221,10 @@ async fn a_request_with_no_resolved_key_is_chained_under_the_sentinel_rather_tha
 
     let status = reqwest::Client::new()
         .post(format!("http://{addr}/v1/chat/completions"))
-        .body(json!({"model": "no-such-model", "messages": [{"role": "user", "content": "hi"}]}).to_string())
+        .body(
+            json!({"model": "no-such-model", "messages": [{"role": "user", "content": "hi"}]})
+                .to_string(),
+        )
         .send()
         .await
         .unwrap()
