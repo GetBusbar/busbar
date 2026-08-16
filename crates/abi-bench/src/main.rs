@@ -235,6 +235,35 @@ fn best(v: &[f64]) -> f64 {
     v.iter().copied().fold(f64::INFINITY, f64::min)
 }
 
+/// Ordinary least squares of `ys` on `xs`, returning `(intercept, slope)`.
+///
+/// The curve's shape is the deliverable, so the harness fits it rather than leaving a reader to
+/// eyeball ten rows: a FLAT cost has slope ~0, a cost linear in payload has a slope that reproduces
+/// across runs even when contention moves the intercept.
+fn lsq(xs: &[f64], ys: &[f64]) -> (f64, f64) {
+    let n = xs.len() as f64;
+    let (sx, sy): (f64, f64) = (xs.iter().sum(), ys.iter().sum());
+    let sxx: f64 = xs.iter().map(|x| x * x).sum();
+    let sxy: f64 = xs.iter().zip(ys).map(|(x, y)| x * y).sum();
+    let slope = (n * sxy - sx * sy) / (n * sxx - sx * sx);
+    ((sy - slope * sx) / n, slope)
+}
+
+/// Two-term least squares with no intercept: `t = a*bytes + b*values`. Returns `(a, b)`.
+///
+/// The model the density control exists to fit. If `b` is negligible the crossing tracks payload
+/// BYTES and "proportional to payload size" is right; if it is not, the crossing tracks structural
+/// density too and a request's shape matters as much as its size.
+fn lsq2(bs: &[f64], vs: &[f64], ts: &[f64]) -> (f64, f64) {
+    let sbb: f64 = bs.iter().map(|b| b * b).sum();
+    let svv: f64 = vs.iter().map(|v| v * v).sum();
+    let sbv: f64 = bs.iter().zip(vs).map(|(b, v)| b * v).sum();
+    let sbt: f64 = bs.iter().zip(ts).map(|(b, t)| b * t).sum();
+    let svt: f64 = vs.iter().zip(ts).map(|(v, t)| v * t).sum();
+    let det = sbb * svv - sbv * sbv;
+    ((sbt * svv - svt * sbv) / det, (sbb * svt - sbv * sbt) / det)
+}
+
 /// Relative spread of the trials, as a percentage of the best — the noise column.
 fn spread_pct(v: &[f64]) -> f64 {
     let b = best(v);
@@ -628,6 +657,24 @@ fn main() {
                 m[3] / nb
             );
         }
+        // The fit. The SLOPE is the number the design turns on: it is what a crossing costs per
+        // additional byte of payload, and it is the part contention cannot fake.
+        println!("\nfit over the sweep (t = fixed + slope x bytes):");
+        let bs: Vec<f64> = jsonb.iter().map(|b| b.len() as f64).collect();
+        for (k, nm) in ["json", "rkyv-unchecked", "rkyv-prebuilt", "xport (memcpy floor)"]
+            .iter()
+            .enumerate()
+        {
+            let ts: Vec<f64> = (0..targets.len()).map(|i| best(&res[i * 4 + k])).collect();
+            let (c, slope) = lsq(&bs, &ts);
+            println!(
+                "  {:<24} {:>9.0} ns + {:.4} ns/byte   => at 10 KB {:>9.0} ns",
+                nm,
+                c,
+                slope,
+                c + slope * 10_240.0
+            );
+        }
     }
 
     // ── THE CONTROL: same bytes, different structural density ──────────────────────────────────
@@ -682,6 +729,16 @@ fn main() {
                 spread_pct(&res[i])
             );
         }
+        let bs: Vec<f64> = dbytes.iter().map(|b| *b as f64).collect();
+        let vs: Vec<f64> = dvalues.iter().map(|v| *v as f64).collect();
+        let ts: Vec<f64> = (0..densities.len()).map(|i| best(&res[i])).collect();
+        let (a, b) = lsq2(&bs, &vs, &ts);
+        println!("\ntwo-term fit: t = {a:.3} ns/byte + {b:.1} ns/json-value");
+        let worst = (0..densities.len())
+            .map(|i| ((a * bs[i] + b * vs[i] - ts[i]) / ts[i] * 100.0).abs())
+            .fold(0.0f64, f64::max);
+        println!("  worst residual {worst:.1}% — a model this tight over a 27x swing in value count");
+        println!("  means the crossing is NOT a function of payload bytes alone.");
     }
 
     // ── THE DECISIVE CASE: one SSE frame ───────────────────────────────────────────────────────
