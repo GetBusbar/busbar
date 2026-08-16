@@ -11,7 +11,11 @@ pub(crate) const DECL: ProtocolDecl = ProtocolDecl {
     name: PROTO_COHERE,
     codec: Some(Protocol::cohere),
     handler: Some(&crate::handlers::cohere::CohereRequestHandler),
-    verbs: &["chat", "embeddings", "rerank"],
+    verbs: &[
+        crate::operation::Operation::CHAT,
+        crate::operation::Operation::EMBEDDINGS,
+        crate::operation::Operation::RERANK,
+    ],
     head_keys: LLM_HEAD_KEYS,
     streaming_content_type: Some(crate::proxy::TEXT_EVENT_STREAM),
     array_stream_shim_key: None,

@@ -15,7 +15,12 @@ pub(crate) const DECL: ProtocolDecl = ProtocolDecl {
     name: PROTO_BEDROCK,
     codec: Some(Protocol::bedrock),
     handler: Some(&crate::handlers::bedrock::BedrockRequestHandler),
-    verbs: &["chat", "embeddings", "image", "rerank"],
+    verbs: &[
+        crate::operation::Operation::CHAT,
+        crate::operation::Operation::EMBEDDINGS,
+        crate::operation::Operation::IMAGE,
+        crate::operation::Operation::RERANK,
+    ],
     head_keys: LLM_HEAD_KEYS,
     // Bedrock ingress expects a BINARY eventstream body, not SSE: mislabeling it breaks the SDK.
     streaming_content_type: Some(APPLICATION_VND_AMAZON_EVENTSTREAM),

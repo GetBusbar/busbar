@@ -462,7 +462,7 @@ pub(crate) fn op_for(
     transport: crate::transport::Transport,
 ) -> Option<Op> {
     let decl = crate::proto::decl_for(protocol)?;
-    if !decl.verbs.contains(&operation.name()) {
+    if !decl.verbs.contains(&operation) {
         return None;
     }
     decl.handler

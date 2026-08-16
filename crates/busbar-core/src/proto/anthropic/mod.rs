@@ -11,7 +11,7 @@ pub(crate) const DECL: ProtocolDecl = ProtocolDecl {
     name: PROTO_ANTHROPIC,
     codec: Some(Protocol::anthropic),
     handler: Some(&crate::handlers::anthropic::AnthropicRequestHandler),
-    verbs: &["chat"],
+    verbs: &[crate::operation::Operation::CHAT],
     head_keys: LLM_HEAD_KEYS,
     streaming_content_type: Some(crate::proxy::TEXT_EVENT_STREAM),
     array_stream_shim_key: None,

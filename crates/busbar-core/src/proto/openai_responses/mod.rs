@@ -17,7 +17,7 @@ pub(crate) const DECL: ProtocolDecl = ProtocolDecl {
     name: PROTO_RESPONSES,
     codec: Some(Protocol::responses),
     handler: Some(&crate::handlers::responses::ResponsesRequestHandler),
-    verbs: &["chat"],
+    verbs: &[crate::operation::Operation::CHAT],
     head_keys: LLM_HEAD_KEYS,
     streaming_content_type: Some(crate::proxy::TEXT_EVENT_STREAM),
     array_stream_shim_key: None,

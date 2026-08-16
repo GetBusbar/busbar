@@ -88,15 +88,22 @@ pub(crate) struct ProtocolDecl {
     /// in the tree today has one.
     pub(crate) handler: Option<&'static dyn RequestHandler>,
 
-    /// THE OPERATOR-FACING VERB NAMES this protocol serves — `Operation::name()` for each operation
-    /// its handler answers. Bounded at load and enumerable at boot (never request-derived), which is
-    /// what makes them safe as metric labels. `the_declared_verbs_are_the_verbs_the_handler_serves`
-    /// pins both directions, so a decl cannot claim a verb it does not serve or hide one it does.
+    /// THE VERBS this protocol serves — one [`crate::operation::Operation`] (`Verb { op, name }`
+    /// pair) per operation its handler answers. Bounded at load and enumerable at boot (never
+    /// request-derived), which is what makes their names safe as metric labels.
+    /// `the_declared_verbs_are_the_verbs_the_handler_serves` pins both directions, so a decl
+    /// cannot claim a verb it does not serve or hide one it does.
     ///
-    /// **THIS FIELD IS `Verb { op, name }`'s DESTINATION** (`design/protocol-plugin-abi.md` §4.4).
-    /// It is name-only while `Operation` still carries the seven LLM verbs as variants; when that
-    /// enum collapses 13 → 6 the pair lands here and core stops knowing the word `chat`.
-    pub(crate) verbs: &'static [&'static str],
+    /// **THIS FIELD IS `Verb { op, name }`'s DESTINATION, and the pair has landed**
+    /// (`design/protocol-plugin-abi.md` §4.4): the field carries the operation VALUES, not name
+    /// strings, and [`declared_verbs`] folds them into the process vocabulary — so the LLM verb
+    /// words reach the label surface from the declarations, not from a hardcoded core table
+    /// (`Operation::ALL` now lists only the six shape verbs the core itself owns). The seven LLM
+    /// `Operation` consts still live in `operation.rs` because `ir::variant`'s `IrReq`/`IrResp`
+    /// arms — core code until the LLM IR itself is extracted — construct them; what no longer
+    /// lives in core is the CLAIM that those verbs are served: that is now this field's, per
+    /// protocol, and it leaves with the protocol.
+    pub(crate) verbs: &'static [crate::operation::Operation],
 
     /// TOP-LEVEL body keys the pre-materialized path may point-read, DOM-free. Replaces the
     /// hardcoded four in `proxy::lazy_body::captured_head_keys()` — the sweep that reached back into
@@ -205,6 +212,15 @@ pub(crate) struct Registry {
     /// may name, and what `KNOWN_PROTOCOLS` used to state as a hand-maintained second list beside
     /// the constructors it had to agree with.
     codec_protocols: &'static [&'static str],
+    /// EVERY VERB ANY DECLARED PROTOCOL SERVES, in declaration order, deduped. The half of the
+    /// operation vocabulary that is DECLARED rather than owned by the core: `Operation::ALL` holds
+    /// the six shape verbs core itself defines, and this holds whatever the registered protocols
+    /// brought with them (the seven LLM words today). Deleting a protocol deletes its verbs from
+    /// this list with it — which is what makes the deletion test mean something at the vocabulary
+    /// level rather than compiling against a core table that still names the deleted family.
+    #[cfg_attr(not(test), allow(dead_code))]
+    // read by the vocabulary pins until a prod consumer lands
+    declared_verbs: &'static [crate::operation::Operation],
 }
 
 impl Registry {
@@ -217,6 +233,10 @@ impl Registry {
         let mut streaming_content_types: Vec<&'static str> = Vec::new();
         let mut array_stream_shim_keys: Vec<&'static str> = Vec::new();
         let mut codec_protocols: Vec<&'static str> = Vec::new();
+        // Declaration order, deduped BY VALUE (not sorted): the verb vocabulary is operator-visible
+        // the same way the protocol list is, so it keeps the deterministic order the declarations
+        // state rather than an alphabetical one nobody declared.
+        let mut declared_verbs: Vec<crate::operation::Operation> = Vec::new();
         for d in &decls {
             head_keys.extend_from_slice(d.head_keys);
             head_keys.extend(d.array_stream_shim_key);
@@ -224,6 +244,11 @@ impl Registry {
             array_stream_shim_keys.extend(d.array_stream_shim_key);
             if d.codec.is_some() {
                 codec_protocols.push(d.name);
+            }
+            for v in d.verbs {
+                if !declared_verbs.contains(v) {
+                    declared_verbs.push(*v);
+                }
             }
         }
         for v in [
@@ -254,6 +279,7 @@ impl Registry {
             streaming_content_types: streaming_content_types.leak(),
             array_stream_shim_keys: array_stream_shim_keys.leak(),
             codec_protocols: codec_protocols.leak(),
+            declared_verbs: declared_verbs.leak(),
         }
     }
 
@@ -287,6 +313,20 @@ impl Registry {
     pub(crate) fn codec_protocols(&self) -> &'static [&'static str] {
         self.codec_protocols
     }
+
+    /// Every verb any declared protocol serves, in declaration order, deduped. See the field doc.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn declared_verbs(&self) -> &'static [crate::operation::Operation] {
+        self.declared_verbs
+    }
+}
+
+/// THE VERBS THE REGISTERED PROTOCOLS DECLARE — the declared half of the operation vocabulary
+/// (`Operation::ALL`, the six shape verbs, is the core-owned half). Together they are the closed
+/// metric-label surface `operation.rs`'s header promises; separately they say WHO owns each word.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn declared_verbs() -> &'static [crate::operation::Operation] {
+    registry().declared_verbs()
 }
 
 /// The process registry, built on first read from the built-ins plus anything installed.

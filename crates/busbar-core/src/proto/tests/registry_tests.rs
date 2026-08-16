@@ -102,14 +102,25 @@ fn the_declared_verbs_are_the_verbs_the_handler_serves() {
         let handler = decl
             .handler
             .unwrap_or_else(|| panic!("{} declares no handler", decl.name));
-        // `Operation::ALL` is the closed table `operation.rs` publishes — the metric label surface
-        // itself — so this sweep cannot silently stop covering a verb that was added.
-        let served: Vec<&'static str> = Operation::ALL
+        // The candidate set is the WHOLE vocabulary — the core-owned shape verbs plus every verb
+        // ANY declaration serves (`declared_verbs()` folds them at boot) — so this sweep cannot
+        // silently stop covering a verb that was added, and a handler quietly serving a verb some
+        // OTHER protocol declared is caught the same as one serving its own undeclared verb.
+        let mut candidates: Vec<Operation> = Operation::ALL
+            .iter()
+            .chain(crate::proto::registry::declared_verbs())
+            .copied()
+            .collect();
+        // ALL and the declared half share the shape verbs (MCP declares `invoke`/`subscribe`);
+        // dedup by name so the served list counts each verb once.
+        candidates.sort_unstable_by_key(|op| op.name());
+        candidates.dedup_by_key(|op| op.name());
+        let served: Vec<&'static str> = candidates
             .iter()
             .filter(|op| handler.operation_handler(**op).is_some())
             .map(|op| op.name())
             .collect();
-        let mut declared = decl.verbs.to_vec();
+        let mut declared: Vec<&'static str> = decl.verbs.iter().map(|v| v.name()).collect();
         let mut served_sorted = served.clone();
         declared.sort_unstable();
         served_sorted.sort_unstable();
@@ -180,7 +191,7 @@ const TELEX_DECL: ProtocolDecl = ProtocolDecl {
     // A protocol with no cross-dialect codec — like MCP, and for the same reason: its IR is its own.
     codec: None,
     handler: Some(&TelexHandler),
-    verbs: &["subscribe"],
+    verbs: &[Operation::SUBSCRIBE],
     head_keys: &["dest"],
     streaming_content_type: None,
     array_stream_shim_key: None,
@@ -286,7 +297,7 @@ fn a_protocol_nobody_wrote_costs_a_declaration_and_nothing_else() {
         .expect("its own path resolves to its own operation");
     assert_eq!(op.name(), "subscribe");
     assert!(
-        d.verbs.contains(&op.name()),
+        d.verbs.contains(&op),
         "the verb it dispatches is the verb it declared"
     );
     let cell = handler

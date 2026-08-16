@@ -98,7 +98,10 @@ pub(crate) const DECL: crate::proto::ProtocolDecl = crate::proto::ProtocolDecl {
     name: "mcp",
     codec: None,
     handler: Some(&McpRequestHandler),
-    verbs: &["invoke", "subscribe"],
+    verbs: &[
+        crate::operation::Operation::INVOKE,
+        crate::operation::Operation::SUBSCRIBE,
+    ],
     head_keys: &[],
     streaming_content_type: None,
     array_stream_shim_key: None,
