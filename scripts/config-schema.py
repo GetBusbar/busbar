@@ -68,19 +68,58 @@ from pathlib import Path
 # Core split (step 3.7): every tracked grammar source lives in the engine library crate root.
 CORE = "crates/busbar-core/src"
 
+
+def plane_dir(plane: str) -> str:
+    """Locate a plane's source root wherever the tree currently keeps it.
+
+    1.6.0's owner ruling R-E makes MCP and A2A PLUGIN CRATES — a crate depending on `busbar-api`
+    alone, which `busbar-core` depends on — so `crates/busbar-core/src/{mcp,a2a}` is a fact about
+    today's tree, not a permanent address. The two plane entries in SOURCES are the ENTIRE grammar
+    of the `tools:` and `agents:` sections; a hardcoded path is a path that goes stale on the day
+    the plane moves, and this gate's own SOURCES comment already records what happens when a
+    grammar drops out of the set — it silently un-freezes.
+
+    So the root is FOUND, not spelled: the one directory named after the plane anywhere under
+    `crates/`. None is a hard error (the grammar left the set — the exact hole `resolve_sources`
+    refuses); more than one is also a hard error, because two directories claiming to be one plane
+    means the gate cannot say whose grammar it froze. Both are raised with the remedy in the
+    message. Nothing about WHICH files are tracked changes — only how their address is obtained.
+    """
+    roots = sorted(
+        str(p)
+        for p in Path("crates").glob(f"*/**/{plane}")
+        if p.is_dir() and "target" not in p.parts
+    )
+    if len(roots) == 1:
+        return roots[0]
+    if not roots:
+        raise SystemExit(
+            f"config-schema: no directory named {plane!r} under crates/. That plane's config "
+            "grammar is the whole of its config section and it has just left the tracked set. "
+            "Point plane_dir() at its new home; do not delete the SOURCES entries."
+        )
+    raise SystemExit(
+        f"config-schema: {plane!r} resolves to {len(roots)} directories ({', '.join(roots)}). "
+        "Two homes for one plane means this gate cannot say whose grammar it froze."
+    )
+
+
+MCP = plane_dir("mcp")
+A2A = plane_dir("a2a")
+
 SOURCES = [
     f"{CORE}/config",
     "crates/secret-ref/src/lib.rs",
     f"{CORE}/auth/mod.rs",
-    f"{CORE}/a2a/config.rs",
+    f"{A2A}/config.rs",
     # `oauth_as:` — the authorization server's grammar. Added WITH the block rather than after it,
     # because the alternative is the hole this list already closed once for `a2a/`: the type name
     # would appear in the snapshot as an opaque string and every field inside it — including the
     # `default_grant` CEILING that decides what a self-registered client may ever hold — would be
     # free to change without the additive-only gate noticing.
     f"{CORE}/oauth_as/config.rs",
-    f"{CORE}/a2a/creds.rs",
-    f"{CORE}/mcp/config.rs",
+    f"{A2A}/creds.rs",
+    f"{MCP}/config.rs",
     # `tool_pools:` / `agent_pools:` — the failover grammar, which is CORE's rather than either
     # plane's (one type, two sections). Added WITH the block for the reason stated for `oauth_as:`
     # above: `config/mod.rs` names the type, so without this line `CandidatePoolCfg` would appear in
@@ -325,6 +364,54 @@ def field_serde(attrs: str):
     )
     flatten = bool(re.search(r"#\[serde\([^)]*\bflatten\b", attrs))
     return rename, has_default, skip, flatten
+
+
+# An IN-TREE module path: `crate::…`, `super::…`, `self::…`, or a `busbar…` crate root. These are
+# the paths that MOVE when a type moves; `std::`, `indexmap::`, `serde_json::` and friends are
+# foreign and their qualification is part of their identity, so they are left exactly as written.
+IN_TREE_PATH = re.compile(
+    r"\b(?:crate|super|self|busbar[a-z0-9_]*)(?:::[A-Za-z_][A-Za-z0-9_]*)+\b"
+)
+
+
+def strip_in_tree_paths(t: str) -> str:
+    """Reduce every IN-TREE module path in a type expression to its final segment.
+
+    This is a COMPARISON aid for the classifier, never a change to what `gen` records. The snapshot
+    keeps the path exactly as the source writes it — that is what makes it readable and what the
+    drift guard freezes. What this function answers is a narrower question: are these two type
+    expressions THE SAME TYPE, differing only in where it lives?
+    """
+    return IN_TREE_PATH.sub(lambda m: m.group(0).rsplit("::", 1)[1], t)
+
+
+def relocated_only(before, after) -> bool:
+    """True when two type expressions name the same type and differ ONLY in module path.
+
+    WHY THE GATE NEEDS THIS. 1.6.0's owner ruling R-E makes the MCP and A2A planes plugin CRATES, at
+    which point `agents: crate::a2a::config::AgentsCfg` is written
+    `agents: busbar_proto_a2a::config::AgentsCfg` — the same type, the same fields, the same
+    operator-visible grammar, in a new crate. Read as a string that is a RETYPE, and the
+    additive-only gate would go RED on a change that alters no config grammar at all. A gate that
+    reds on a pure relocation teaches reviewers to wave it through, which is how a stability gate
+    dies; that is the failure this rule prevents, and it prevents it WITHOUT touching the snapshot,
+    so no artefact has to be laundered through a transition.
+
+    IT IS NOT A PASS, IT IS A THIRD VERDICT. A relocation is printed on its own line, loudly, every
+    run. The fingerprint's own type map is keyed by the BARE name already (see `extract`) and
+    `collide()` makes a duplicate bare name a HARD ERROR across the tracked set, so inside this gate
+    the bare name IS the type's identity — which is exactly why this comparison is sound and why
+    retyping `agents:` to any OTHER type still reads as BREAKING (the bare names differ).
+
+    NOTHING ELSE IS RELAXED: foreign paths are left alone, so
+    `std::collections::BTreeMap<String, CandidatePoolCfg>` -> `Vec<CandidatePoolCfg>` is still a
+    break; and `AgentsCfg`'s OWN fields are fingerprinted in their own right, by bare name, wherever
+    the file lives — `plane_dir()` above is what keeps that file inside the tracked set after the
+    move. So the grammar stays frozen; only its ADDRESS is allowed to change.
+    """
+    if not isinstance(before, str) or not isinstance(after, str) or before == after:
+        return False
+    return strip_in_tree_paths(before) == strip_in_tree_paths(after)
 
 
 def norm_type(t: str):
@@ -661,13 +748,24 @@ def field_findings(tname: str, bf: dict, ff: dict, findings: list):
             findings.append(("BREAKING", path, "field REMOVED (breaks a config that sets it)"))
             continue
         if bv.get("type") != fv.get("type"):
-            findings.append(
-                (
-                    "BREAKING",
-                    path,
-                    f"field RETYPED {bv.get('type')!r} -> {fv.get('type')!r} (shape change)",
+            if relocated_only(bv.get("type"), fv.get("type")):
+                findings.append(
+                    (
+                        "RELOCATED",
+                        path,
+                        f"field type MOVED {bv.get('type')!r} -> {fv.get('type')!r} "
+                        "(same type, new module path; the grammar it declares is unchanged and is "
+                        "fingerprinted in its own right)",
+                    )
                 )
-            )
+            else:
+                findings.append(
+                    (
+                        "BREAKING",
+                        path,
+                        f"field RETYPED {bv.get('type')!r} -> {fv.get('type')!r} (shape change)",
+                    )
+                )
         if bv.get("optional") and not fv.get("optional"):
             findings.append(
                 (
@@ -773,14 +871,24 @@ def classify(baseline: dict, fresh: dict):
             # retarget is a grammar change — `IndexMap<String, T>` -> `Vec<T>` turns a named map into
             # a list, which breaks every config that used the map form.
             if b.get("target") != f.get("target"):
-                findings.append(
-                    (
-                        "BREAKING",
-                        tname,
-                        f"type alias RETARGETED {b.get('target')!r} -> {f.get('target')!r} "
-                        "(the definition-map shape changed)",
+                if relocated_only(b.get("target"), f.get("target")):
+                    findings.append(
+                        (
+                            "RELOCATED",
+                            tname,
+                            f"alias target MOVED {b.get('target')!r} -> {f.get('target')!r} "
+                            "(same type, new module path; the map shape is unchanged)",
+                        )
                     )
-                )
+                else:
+                    findings.append(
+                        (
+                            "BREAKING",
+                            tname,
+                            f"type alias RETARGETED {b.get('target')!r} -> {f.get('target')!r} "
+                            "(the definition-map shape changed)",
+                        )
+                    )
             continue
         # The knobs that decide WHICH DOCUMENTS PARSE, on every kind that can carry them.
         container_flag_findings(tname, b, f, findings)
@@ -861,6 +969,11 @@ def cmd_classify(argv):
 
     findings = classify(baseline, fresh)
     additive = [x for x in findings if x[0] == "ADDITIVE"]
+    # A RELOCATION is not a pass and not a break: the same type in a new module path. It is printed
+    # on its own line every run so a reviewer sees the move and can ask whether it was intended;
+    # what it does NOT do is red the additive-only gate over a change that alters no grammar. See
+    # `relocated_only`.
+    relocated = [x for x in findings if x[0] == "RELOCATED"]
     raw_breaking = [x for x in findings if x[0] == "BREAKING"]
     # A waiver matches ONE exact path. Everything else stays RED.
     waived = [x for x in raw_breaking if x[1] in waivers]
@@ -868,6 +981,8 @@ def cmd_classify(argv):
 
     for _, path, reason in additive:
         print(f"  additive OK   {path}: {reason}")
+    for _, path, reason in relocated:
+        print(f"  RELOCATED     {path}: {reason}")
     for _, path, reason in waived:
         print(f"  WAIVED        {path}: {reason}  <- waived: {waivers[path]}")
     for _, path, reason in breaking:

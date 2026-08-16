@@ -206,7 +206,21 @@ CANDIDATES=()
 # Core/bin split roots (step 3.7): the engine library and the thin binary are scanned together.
 CORE="crates/busbar-core/src"
 BIN="crates/busbar/src"
-while IFS= read -r f; do CANDIDATES+=("$f"); done < <(find "$CORE" "$BIN" -name '*.rs' -not -path '*/tests/*' | sort -u)
+# ── THE PLANE ROOTS, FOUND RATHER THAN SPELLED (see scripts/plane-roots.sh for the whole argument).
+# 1.6.0's R-E makes the MCP and A2A planes plugin CRATES. They are 71 of the 238 files below and the
+# scan floor is 100, so if they leave `$CORE` the count falls to 167, CLEARS THE FLOOR, and this
+# lint goes on printing `ok` over a tree it no longer reads — and the raw settings bag this lint
+# exists to catch is exactly the shape a plane's upstream credential handling reaches for. The
+# floor catches a root that MOVED; only this catches a root that SPLIT.
+# shellcheck source=scripts/plane-roots.sh
+. "$(dirname "$0")/plane-roots.sh"
+if ! plane_roots_resolve mcp a2a; then
+  hdr "result"
+  note "settings-leak-lint FAILED — PLANE ROOT UNRESOLVED"
+  printf '%s' "$PLANE_ROOTS_ERR" | while IFS= read -r l; do note "$l"; done
+  exit 1
+fi
+while IFS= read -r f; do CANDIDATES+=("$f"); done < <(find "$CORE" "$BIN" "$PLANE_ROOT_mcp" "$PLANE_ROOT_a2a" -name '*.rs' -not -path '*/tests/*' | sort -u)
 
 # ── SCAN FLOOR — "for each file, assert no raw settings bag" is VACUOUSLY TRUE over zero files.
 # Rename `crates/busbar`, move the engine, or mistype the root and this lint reports `ok` forever
