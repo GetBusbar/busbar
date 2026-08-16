@@ -177,12 +177,13 @@ pub(crate) async fn issue(
         command: auth.stdio.as_ref(),
         grants: auth.grants,
     };
-    let wire = auth.transport.mcp_wire();
-
     // (2) THE SEND. A notification takes the one-way arm — see `super::wire::McpWire::notify` for
-    // why sending one down the request path desynchronises a child's stream permanently.
+    // why sending one down the request path desynchronises a child's stream permanently. Both arms
+    // go through `super::wire`'s counted seam rather than through `mcp_wire()` directly, so every
+    // verb busbar issues appears on `busbar_upstream_attempts_total` without this file remembering
+    // to say so.
     if verb.is_notification() {
-        return match wire.notify(&leg, &outbound).await {
+        return match super::wire::notify(auth.transport, &leg, &outbound).await {
             Ok(()) => {
                 record(OUTCOME_DISPATCHED, format!("{method} delivered"));
                 Ok(Issued::Delivered)
@@ -195,7 +196,7 @@ pub(crate) async fn issue(
         };
     }
 
-    let response = match wire.send(&leg, &outbound).await {
+    let response = match super::wire::send(auth.transport, &leg, &outbound).await {
         Ok(r) => r,
         Err(e) => {
             let reason = e.to_string();
