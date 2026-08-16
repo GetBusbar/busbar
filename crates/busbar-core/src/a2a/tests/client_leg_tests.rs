@@ -1013,3 +1013,246 @@ async fn a_list_with_no_open_task_of_this_callers_makes_no_hop() {
         h.sent()
     );
 }
+
+// ══ THE EQUALITY CELL `audit-chain × a2a-client` ═════════════════════════════════════════════════
+//
+// This module's own header claims every test here drives "the same audit chain". Until this test,
+// nothing in the file asserted it: every assertion above reads the recording seam — what busbar
+// asked to SEND — and a relay that made a perfect hop and chained nothing would pass all of them.
+// That is precisely the ledger's note for this cell ("no test proves originate or push-delivery
+// outcomes are chained"), and it is what the two tests below close for the DELEGATION HOP: the leg
+// busbar itself issues to a registered backend agent.
+
+/// A task-event sink for the process-global [`crate::a2a::taskstore::TASKS`].
+///
+/// The shipped `busbar-store-memory` implements NONE of the task methods — it is documented as
+/// genuinely ephemeral and the boot-restore path relies on that — so a sink is the only way to read
+/// the chain back from outside the engine. Every non-task method takes the trait's own default or
+/// delegates to the real `MemoryStore`; only the two task-event methods are backed, because those
+/// are the whole subject.
+///
+/// Reads are TASK-SCOPED (`list_task_events(task_id)`), which is what makes this safe against the
+/// global sink: a sibling test dispatching through `TASKS` at the same time writes rows for ITS
+/// task ids, and they cannot enter this test's assertions.
+struct ChainSink {
+    inner: busbar_store_memory::MemoryStore,
+    events: std::sync::Mutex<Vec<busbar_api::TaskEventRow>>,
+}
+
+impl ChainSink {
+    fn new() -> Self {
+        Self {
+            inner: busbar_store_memory::MemoryStore::new(),
+            events: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+}
+
+impl busbar_api::Store for ChainSink {
+    fn put_key(&self, key: &busbar_api::VirtualKey) -> busbar_api::StoreResult<()> {
+        self.inner.put_key(key)
+    }
+    fn get_key(&self, id: &str) -> busbar_api::StoreResult<Option<busbar_api::VirtualKey>> {
+        self.inner.get_key(id)
+    }
+    fn list_keys(&self) -> busbar_api::StoreResult<Vec<busbar_api::VirtualKey>> {
+        self.inner.list_keys()
+    }
+    fn delete_key(&self, id: &str) -> busbar_api::StoreResult<()> {
+        self.inner.delete_key(id)
+    }
+    fn get_usage(
+        &self,
+        bucket_id: &str,
+        window_start: u64,
+    ) -> busbar_api::StoreResult<busbar_api::UsageLedger> {
+        self.inner.get_usage(bucket_id, window_start)
+    }
+    fn put_usage(
+        &self,
+        bucket_id: &str,
+        window_start: u64,
+        ledger: &busbar_api::UsageLedger,
+    ) -> busbar_api::StoreResult<()> {
+        self.inner.put_usage(bucket_id, window_start, ledger)
+    }
+    fn add_metering(&self, delta: &busbar_api::MeteringDelta) -> busbar_api::StoreResult<()> {
+        self.inner.add_metering(delta)
+    }
+    fn list_metering(&self, bucket: u64) -> busbar_api::StoreResult<Vec<busbar_api::MeteringRow>> {
+        self.inner.list_metering(bucket)
+    }
+    fn append_task_event(&self, event: &busbar_api::TaskEventRow) -> busbar_api::StoreResult<()> {
+        self.events
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(event.clone());
+        Ok(())
+    }
+    fn list_task_events(
+        &self,
+        task_id: &str,
+    ) -> busbar_api::StoreResult<Vec<busbar_api::TaskEventRow>> {
+        Ok(self
+            .events
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .filter(|e| e.task_id == task_id)
+            .cloned()
+            .collect())
+    }
+}
+
+/// THE CELL. The hop busbar issues to a backend agent lands in the per-task tamper-evident chain,
+/// naming WHO delegated and TO WHICH registered agent — and it is recorded BEFORE the socket, so a
+/// hop that never comes back still left the record that it was made.
+///
+/// ## What would pass without this test, and must not
+///
+/// An engine that relayed perfectly and chained nothing. Every other test in this file reads the
+/// recording seam, which sees the request busbar composed; none of them can tell whether an
+/// investigator would afterwards find any record of the delegation at all.
+///
+/// ## Why the `task.delegated` event specifically, and not just "some events exist"
+///
+/// `task.submitted` is the INBOUND fact — the caller asked. It is written on the server plane's
+/// path and proves nothing about the client leg. The event that belongs to the leg busbar issued is
+/// `task.delegated`, whose whole purpose (`taskstore.rs`: "the single most important fact the
+/// delegating side's provenance has to carry: who delegated, to which registered agent") is the
+/// outbound hop. So the assertions below name that event, name the agent on it, and require it to
+/// sit in a chain that verifies.
+#[tokio::test]
+async fn the_delegation_hop_lands_in_the_per_task_chain_naming_the_agent_it_was_issued_to() {
+    let sink = std::sync::Arc::new(ChainSink::new());
+    crate::a2a::taskstore::TASKS.set_sink(sink.clone());
+
+    let h = harness_on(
+        Outcome::AnswersCorrelated(200, backend_ok()),
+        BINDING_JSONRPC,
+    )
+    .await;
+    let task_id = open_a_task(&h, &envelope()).await;
+
+    // THE LEG REALLY WENT OUT. Without this the chain assertions could be satisfied by an engine
+    // that recorded a delegation it never performed, which is a worse failure than recording none.
+    assert!(
+        !h.sent().is_empty(),
+        "no outbound hop was recorded, so there is no client leg for the chain to be about"
+    );
+
+    let events = busbar_api::Store::list_task_events(sink.as_ref(), &task_id)
+        .expect("the sink lists the events it was given");
+    assert!(
+        !events.is_empty(),
+        "the delegating side wrote NOTHING to the per-task chain for {task_id}. This is the \
+         `audit-chain × a2a-client` cell: busbar made an outbound hop and an investigator has no \
+         tamper-evident record that it happened."
+    );
+
+    let delegated: Vec<_> = events
+        .iter()
+        .filter(|e| e.kind == crate::a2a::provenance::EV_DELEGATED)
+        .collect();
+    assert_eq!(
+        delegated.len(),
+        1,
+        "exactly one `{}` event for one hop; got kinds {:?}",
+        crate::a2a::provenance::EV_DELEGATED,
+        events.iter().map(|e| &e.kind).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        delegated[0].agent_id, "planner",
+        "the chained hop must name WHICH registered agent busbar delegated to — a delegation \
+         record that does not say to whom answers the only question it exists to answer with \
+         nothing"
+    );
+    assert!(
+        !delegated[0].principal.is_empty(),
+        "and WHO delegated: an unattributed hop cannot be investigated"
+    );
+
+    // ── AND IT IS A CHAIN. The core verifier, over the rows the sink actually kept. ─────────────
+    crate::audit::verify_chain(&events)
+        .expect("the a2a-client leg's persisted chain must verify against its own hashes");
+    assert!(
+        events
+            .iter()
+            .any(|e| e.kind == crate::a2a::provenance::EV_SUBMITTED),
+        "the hop's record must sit in the SAME chain as the submission it serves, not a second \
+         log of its own: {:?}",
+        events.iter().map(|e| &e.kind).collect::<Vec<_>>()
+    );
+
+    crate::a2a::taskstore::TASKS
+        .set_sink(std::sync::Arc::new(busbar_store_memory::MemoryStore::new()));
+}
+
+/// THE OTHER HALF, and the one an operator cares about more: a hop that FAILED is chained too, and
+/// the chain carries the outcome rather than stopping at the optimistic record.
+///
+/// A chain that recorded only hops that worked would be an activity feed. The backend here refuses
+/// the hop, and the task must still end — terminally, in the same verified chain — so the record
+/// distinguishes "busbar asked and the backend failed" from "busbar never asked".
+#[tokio::test]
+async fn a_failed_hop_is_chained_too_and_the_chain_carries_its_terminal_outcome() {
+    let sink = std::sync::Arc::new(ChainSink::new());
+    crate::a2a::taskstore::TASKS.set_sink(sink.clone());
+
+    // A backend that answers a transport-level failure to the hop busbar issues.
+    let h = harness_on(
+        Outcome::Fails("the backend refused the hop".to_string()),
+        BINDING_JSONRPC,
+    )
+    .await;
+    let (status, answer) = call_agent(&h, "planner", &envelope()).await;
+    assert!(
+        !h.sent().is_empty(),
+        "the hop must have been attempted for this test to be about a failed hop: {status} {answer}"
+    );
+
+    // busbar's own task id, off the refusal that names it. The refusal carries it as a
+    // `google.rpc.ResourceInfo` detail — the same structured shape the gRPC binding puts in its
+    // trailer — so it is read out of the details array rather than guessed at a fixed index.
+    let task_id = answer
+        .pointer("/error/data")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|details| {
+            details
+                .iter()
+                .find_map(|d| d.get("resourceName").and_then(serde_json::Value::as_str))
+        })
+        .unwrap_or_default()
+        .to_string();
+    assert!(
+        !task_id.is_empty(),
+        "the refusal must name the task busbar opened, or the caller cannot correlate the failure \
+         with the record busbar kept: {answer}"
+    );
+
+    let events = busbar_api::Store::list_task_events(sink.as_ref(), &task_id)
+        .expect("the sink lists the events it was given");
+    assert!(
+        events
+            .iter()
+            .any(|e| e.kind == crate::a2a::provenance::EV_DELEGATED),
+        "the hop was ATTEMPTED, so it must be chained — the record is written before the socket \
+         precisely so a hop that fails is not invisible: {:?}",
+        events.iter().map(|e| &e.kind).collect::<Vec<_>>()
+    );
+    assert!(
+        events
+            .iter()
+            .any(|e| e.kind == crate::a2a::provenance::EV_TERMINAL),
+        "a failed hop must END the task in the chain rather than leave it open forever: {:?}",
+        events
+            .iter()
+            .map(|e| (&e.kind, &e.state))
+            .collect::<Vec<_>>()
+    );
+    crate::audit::verify_chain(&events)
+        .expect("the failed leg's persisted chain must verify against its own hashes");
+
+    crate::a2a::taskstore::TASKS
+        .set_sink(std::sync::Arc::new(busbar_store_memory::MemoryStore::new()));
+}

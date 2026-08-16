@@ -212,8 +212,9 @@
     {
       "capability": "audit-chain",
       "plane": "mcp-client",
-      "state": "missing",
-      "note": "the front-door call record covers relayed tools/call transactions (mcp-server cell), and upstream.rs uses audit vocab words for refusals, but no test proves a client-leg outcome lands in a chain of its own."
+      "state": "proven",
+      "test": "crates/busbar-core/src/mcp/tests/calllog_dispatch_tests.rs::the_client_legs_own_outcome_is_what_the_chain_records_success_and_failure_apart",
+      "note": "the outcome of the leg BUSBAR issues is what the chain carries: a leg that went out and came back badly is chained as `dispatched` + `upstream_failed`, a leg that worked as `dispatched` with an empty reason. Both are driven through one principal, one server and one tool differing only in the upstream's answer, so the pin cannot be satisfied by a constant. Watched red: deleting the reason token at method.rs's Outcome::UpstreamFailed arm fails it and leaves the two front-door tests green."
     },
     {
       "capability": "audit-chain",
@@ -224,8 +225,9 @@
     {
       "capability": "audit-chain",
       "plane": "a2a-client",
-      "state": "missing",
-      "note": "task provenance chains inbound task events (a2a-server cell); no test proves originate or push-delivery outcomes are chained."
+      "state": "proven",
+      "test": "crates/busbar-core/src/a2a/tests/client_leg_tests.rs::the_delegation_hop_lands_in_the_per_task_chain_naming_the_agent_it_was_issued_to",
+      "note": "the hop busbar ISSUES is chained: `task.delegated` naming who delegated and to which registered agent, appended BEFORE the socket, in the same per-task chain as the submission and verified by crate::audit::verify_chain. A failed hop is chained too and ends terminally (a_failed_hop_is_chained_too_and_the_chain_carries_its_terminal_outcome). Watched red: removing the record_dispatch call in a2a/receive.rs fails both. STILL OPEN on this plane's sibling: push-notification DELIVERY (a2a/pushdeliver.rs) chains nothing -- that is the a2a-server role's own outbound leg, tracked in the gap report, not claimed here."
     },
     {
       "capability": "audit-chain",
