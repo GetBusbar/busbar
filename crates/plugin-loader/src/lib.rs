@@ -34,6 +34,7 @@ use std::path::Path;
 pub mod auth;
 pub mod export;
 pub mod fetch;
+mod ffi_thread;
 pub mod hook;
 mod hostlog;
 pub mod registry;
@@ -83,6 +84,27 @@ pub(crate) fn intern_name(name: &str) -> &'static str {
     leaked
 }
 
+/// `dlopen` on a worker that never retires. Mapping an image RUNS ITS ELF `.init_array` — that is
+/// plugin code, on whatever thread called it, and it is as capable of arming the plugin's
+/// `pthread_key` TLS destructor as any ABI symbol. Routed for the same reason [`ffi_guard`] is.
+pub(crate) fn dlopen_on_worker(path: &std::ffi::OsStr) -> Result<Library, String> {
+    // SAFETY (unchanged from the direct call this replaces): loading an operator-placed library runs
+    // its init code, which is the same trust as compiling it in. Callers apply the trust gate first.
+    match ffi_thread::on_plugin_thread(|| unsafe { Library::new(path) }) {
+        Ok(r) => r.map_err(|e| e.to_string()),
+        // An init constructor that PANICKED into us. Vanishingly rare, but the rendezvous must
+        // produce a value rather than resume an unwind on a worker whose thread must not die.
+        Err(_) => Err("the library's initializer panicked while loading".to_string()),
+    }
+}
+
+/// `dlclose` on a worker that never retires. Unmapping runs the image's `.fini_array` — plugin code
+/// again — and doing it on a caller thread would hand that thread plugin TLS at the exact moment the
+/// image is going away, which is the crash in its purest form.
+pub(crate) fn dlclose_on_worker(lib: Library) {
+    let _ = ffi_thread::on_plugin_thread(move || drop(lib));
+}
+
 /// Run an FFI call `f` across the plugin ABI boundary under `catch_unwind`, converting a plugin panic
 /// into a fail-closed `Err` string instead of a process abort. EFFECTIVE only because the ABI fn
 /// pointers are `extern "C-unwind"` (see [`busbar_plugin_abi`]): a Rust plugin's panic unwinds as a
@@ -90,7 +112,13 @@ pub(crate) fn intern_name(name: &str) -> &'static str {
 /// plugin frame BEFORE returning. `op` names the crossing (`open`/`call`/`close`/`free`/`abi`/`kind`)
 /// for the diagnostic. Every host-side ABI call site routes through this so no crossing is unguarded.
 fn ffi_guard<R>(path: &str, op: &str, f: impl FnOnce() -> R) -> Result<R, String> {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).map_err(|_| {
+    // Runs `f` on a worker thread that NEVER retires, and blocks until it returns. That is the whole
+    // of the TLS-destructor fix: a thread which has run plugin code must never exit, or glibc calls
+    // the plugin's own `pthread_key` destructor after the image is gone. See `ffi_thread`.
+    //
+    // The `catch_unwind` this function used to perform now happens on the worker (it has to — a
+    // panic escaping there would hang the rendezvous), so the returned contract is unchanged.
+    ffi_thread::on_plugin_thread(f).map_err(|_| {
         format!("plugin '{path}' panicked across the ABI boundary in {op} (treated as failure)")
     })
 }
@@ -121,9 +149,10 @@ struct RawPlugin {
     close: CloseFn,
     /// The plugin name/path, for diagnostics.
     path: String,
-    /// The mapped library. Declared BEFORE `_backing` so it drops FIRST (fields drop in declaration
-    /// order, AFTER `Drop::drop` closes the handle) — the UNLOAD-then-REMOVE order Windows requires.
-    _lib: Library,
+    /// The mapped library. `Option` only so `Drop` can TAKE it and unload it on a plugin worker
+    /// (`dlclose` runs the image's `.fini_array`); it is always `Some` until then. Declared BEFORE
+    /// `_backing` so the unload still happens first — the UNLOAD-then-REMOVE order Windows requires.
+    _lib: Option<Library>,
     /// The staging backing (Linux memfd / private-temp file) for a from-bytes load; `None` for a path
     /// load. MUST drop after `_lib`.
     _backing: Option<stage::Staged>,
@@ -324,11 +353,18 @@ impl Drop for RawPlugin {
         // degrades to a logged warning + leaked handle instead of tearing down the whole gateway.
         let close = self.close;
         let handle = self.handle;
-        if ffi_guard(&self.path, "close", || unsafe { close(handle) }).is_err() {
+        if ffi_guard(&self.path, "close", move || unsafe { close(handle) }).is_err() {
             tracing::warn!(
                 plugin = %self.path,
                 "plugin busbar_close panicked during drop; leaking the handle to keep the engine alive"
             );
+        }
+        // UNLOAD ON A WORKER, and do it HERE rather than letting the field drop do it: `dlclose`
+        // runs the image's `.fini_array`, so on a caller thread it would hand that thread plugin TLS
+        // at the moment the image goes away. Taking `_lib` keeps the ordering the field declaration
+        // encodes — library first, staged backing (`_backing`, dropped after this returns) second.
+        if let Some(lib) = self._lib.take() {
+            dlclose_on_worker(lib);
         }
     }
 }
@@ -362,8 +398,12 @@ fn wire_up_raw(
     }
     impl Drop for LoadGuard {
         fn drop(&mut self) {
-            // Explicit UNLOAD-then-REMOVE: drop the library first, then the staged backing.
-            self.lib.take();
+            // Explicit UNLOAD-then-REMOVE: unload the library first, then release the staged
+            // backing. The unload goes to a plugin worker for the same reason `RawPlugin::drop`'s
+            // does — `dlclose` runs the image's `.fini_array`.
+            if let Some(lib) = self.lib.take() {
+                dlclose_on_worker(lib);
+            }
             self.backing.take();
         }
     }
@@ -450,11 +490,16 @@ fn wire_up_raw(
             // `&'static str` rather than `String`: the interned value already lives forever, so the
             // sink reads it as a `str` with no ownership question.
             // The host's own level, so the plugin filters BEFORE building a record. Sampled at load.
-            (*set_sink)(
-                hostlog::host_log_sink,
-                hostlog::intern_log_ctx(&display),
-                hostlog::host_max_level(),
-            );
+            // ON A PLUGIN WORKER, like every other crossing. This one was historically unguarded,
+            // and it is the LAST one that should be: it installs a `tracing` dispatcher INSIDE the
+            // plugin, which is about the most reliable way there is to touch a plugin-side
+            // thread-local with a destructor and arm the pthread key on whatever thread ran it.
+            let sink = *set_sink;
+            let ctx = hostlog::intern_log_ctx(&display);
+            let level = hostlog::host_max_level();
+            let _ = ffi_thread::on_plugin_thread(move || {
+                sink(hostlog::host_log_sink, ctx, level);
+            });
         }
     }
 
@@ -525,7 +570,7 @@ fn wire_up_raw(
         free,
         close,
         path: display,
-        _lib: lib,
+        _lib: Some(lib),
         _backing: backing,
     })
 }
@@ -1148,7 +1193,7 @@ pub fn load_store(lib_path: &Path, cfg_json: &str) -> Result<Box<dyn Store>, Str
     // SAFETY: loading an operator-placed library is inherently trusted (its init code runs), exactly
     // like the SQLite this replaces was trusted when compiled in. The path comes from config/the
     // plugins dir, not the request path.
-    let lib = unsafe { Library::new(lib_path) }
+    let lib = dlopen_on_worker(lib_path.as_os_str())
         .map_err(|e| format!("failed to load plugin '{display}': {e}"))?;
     // A bare path load has no signed manifest to cross-check; the seam's expected kind (`store`) is
     // the authority, so pass it as the manifest kind too (the exported-kind == expected-kind gate
@@ -1241,7 +1286,7 @@ pub fn validate_plugin(lib_path: &Path) -> Result<u32, String> {
     let display = lib_path.display().to_string();
     // SAFETY: loading runs the library's init code — the same trust as loading it to serve, which is
     // itself the trust of compiling it in. The path is operator/admin-supplied, never request data.
-    let lib = unsafe { Library::new(lib_path) }
+    let lib = dlopen_on_worker(lib_path.as_os_str())
         .map_err(|e| format!("failed to load plugin '{display}': {e}"))?;
     let transport = {
         let f = unsafe { lib.get::<busbar_plugin_abi::AbiFn>(symbol::ABI) }
