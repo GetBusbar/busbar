@@ -1204,7 +1204,7 @@ impl ProtocolReader for ResponsesReader {
                                         // deliberately not carried.
                                         let citations = block_item
                                             .get("annotations")
-                                            .map(crate::proto::openai_chat::read_url_annotations)
+                                            .map(crate::proto::openai_family::read_url_annotations)
                                             .unwrap_or_default();
                                         content.push(crate::ir::IrBlock::Text {
                                             text: text.to_string(),

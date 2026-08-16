@@ -5,7 +5,7 @@
 //! Both wire formats belong to the same provider family; items that are identical across them
 //! live here so they are single-sourced rather than copy-pasted (and risking drift).
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use axum::http::StatusCode;
 
 /// Machine-readable `code` field emitted in a bad-key 401 OpenAI-family error envelope.
@@ -16,21 +16,22 @@ pub(crate) const CODE_INVALID_API_KEY: &str = "invalid_api_key";
 
 /// Busbar-internal `provider_signal` label for a context-length result (the LANE label, not the
 /// OpenAI wire code). Distinct from `PROVIDER_CODE_CONTEXT_LENGTH` ("context_length_exceeded"),
-/// which is the provider-facing code extracted from the request body. `#[cfg(test)]` because its only
-/// referent, `openai_classify`, is itself a test-only single-source mirror of the production classifier.
-#[cfg(test)]
-pub(crate) const PROVIDER_SIGNAL_CONTEXT_LENGTH: &str = "context_length";
+/// which is the provider-facing code extracted from the request body. Gated the same as
+/// `openai_classify`, its only referent, a test-only single-source mirror of the production
+/// classifier — visible to a dependent crate's test builds too via the `test-support` feature.
+#[cfg(any(test, feature = "test-support"))]
+pub const PROVIDER_SIGNAL_CONTEXT_LENGTH: &str = "context_length";
 
 /// Fallback model name when a cross-protocol request carries none. The Chat-Completions and
 /// Responses writers are two wire formats of the SAME provider family, so this value is
 /// deliberately identical and MUST stay in lockstep — single-sourced here and referenced by both
 /// modules. If the two protocols ever genuinely diverge, split it back out at that point.
-pub(crate) const OPENAI_FAMILY_DEFAULT_MODEL: &str = "gpt-4o";
+pub const OPENAI_FAMILY_DEFAULT_MODEL: &str = "gpt-4o";
 
 /// DoS cap on concurrently-tracked open tool-call accumulators per stream. Matches OpenAI's
 /// documented parallel-tool-call limit (128). Single-sourced here so Chat Completions and
 /// Responses cannot drift.
-pub(crate) const OPENAI_FAMILY_MAX_OPEN_TOOLS: usize = 128;
+pub const OPENAI_FAMILY_MAX_OPEN_TOOLS: usize = 128;
 
 // CANONICAL error-kind vocabulary home. The forward-layer KIND_* bank (`proxy::KIND_*`), the
 // admin API's ERR_TYPE_NOT_FOUND/ERR_TYPE_INVALID_REQUEST, and the anthropic writer's private
@@ -48,9 +49,9 @@ pub const ERR_TYPE_NOT_FOUND: &str = "not_found_error";
 /// OpenAI error `type` for a rate-limit / throttle response.
 pub const ERR_TYPE_RATE_LIMIT: &str = "rate_limit_error";
 /// OpenAI error `type` for a transient upstream failure.
-pub(crate) const ERR_TYPE_SERVER_ERROR: &str = "server_error";
+pub const ERR_TYPE_SERVER_ERROR: &str = "server_error";
 /// OpenAI error `type` for a billing-quota exhaustion (HTTP 429).
-pub(crate) const ERR_TYPE_INSUFFICIENT_QUOTA: &str = "insufficient_quota";
+pub const ERR_TYPE_INSUFFICIENT_QUOTA: &str = "insufficient_quota";
 /// Anthropic/busbar internal kind for an overloaded upstream; mapped to `server_error` on the
 /// OpenAI wire (OpenAI has no `overloaded_error` type).
 pub const ERR_TYPE_OVERLOADED: &str = "overloaded_error";
@@ -69,7 +70,7 @@ pub const ERR_TYPE_REQUEST_TOO_LARGE: &str = "request_too_large";
 /// specifically with `context`/`token limit`. The caller supplies its own lowercased source
 /// (openai scans `error.message`; responses scans the whole body) and applies the
 /// `oversized_status` (400/413) GATE itself — that gate is NOT part of this helper.
-pub(crate) fn openai_context_length_prose_scan(text: &str) -> bool {
+pub fn openai_context_length_prose_scan(text: &str) -> bool {
     text.contains("maximum context length")
         || text.contains("context length exceeded")
         || text.contains("reduce the length")
@@ -85,7 +86,7 @@ pub(crate) fn openai_context_length_prose_scan(text: &str) -> bool {
 /// caller-supplied passthrough type, keeps `null`: the shape OpenAI uses when no machine-readable
 /// code applies. There is no `_ =>` catch-all hiding an unhandled case; the final arm binds `other`
 /// explicitly and emits `null`, the correct native value for those types.
-pub(crate) fn bearer_error_code(error_type: &str) -> serde_json::Value {
+pub fn bearer_error_code(error_type: &str) -> serde_json::Value {
     match error_type {
         crate::proxy::KIND_AUTHENTICATION => {
             serde_json::Value::String(CODE_INVALID_API_KEY.to_string())
@@ -118,8 +119,8 @@ pub(crate) fn bearer_error_code(error_type: &str) -> serde_json::Value {
 /// `ResponsesReader::classify` (the two were word-for-word identical). Both surfaces emit the same
 /// OpenAI error envelope, so the mapping — context-length-exceeded (fail over without penalty) first,
 /// then 429→RateLimit, 401/403→Auth, 5xx→ServerError, other 4xx→ClientError — is single-sourced here.
-#[cfg(test)]
-pub(crate) fn openai_classify(status: StatusCode, body: &[u8]) -> crate::breaker::CanonicalSignal {
+#[cfg(any(test, feature = "test-support"))]
+pub fn openai_classify(status: StatusCode, body: &[u8]) -> crate::breaker::CanonicalSignal {
     use crate::breaker::StatusClass;
     // context-length-exceeded — the lane is healthy; this must fail over (to a larger-context
     // model), not penalize the breaker. Detect by OpenAI code/message first.
@@ -184,6 +185,180 @@ pub(crate) fn openai_classify(status: StatusCode, body: &[u8]) -> crate::breaker
         class: StatusClass::ClientError,
         provider_signal: None,
         retry_after: None,
+    }
+}
+
+/// Busbar-internal `extra` key parking OpenAI Chat's per-message `messages[].name` (the optional
+/// participant name that disambiguates several speakers in one role).
+///
+/// WHY A SENTINEL AND NOT AN `IrMessage` FIELD: `name` has NO representation in ANY other protocol in
+/// the matrix — Anthropic, Gemini, Bedrock, Cohere and even Responses all model a turn as
+/// (role, content) with no participant name — so a first-class IR field would be a field only one
+/// dialect could ever read or write. It rides `extra` instead, which gives exactly the right scope:
+///
+/// * SAME-PROTOCOL (including a pool-alias route that re-serializes rather than forwarding bytes):
+///   the writer reads it back and re-emits `name` on each message, so a participant name no longer
+///   disappears the moment a route rewrites the model. That was a real same-protocol loss.
+/// * CROSS-PROTOCOL: `extra` is cleared at the seam and `ir/variant.rs` names this key in its
+///   dropped-keys warn, so the loss is signalled instead of silent.
+///
+/// Value shape: an object keyed by the message's index in `IrRequest.messages` (as a decimal string)
+/// → the name. Keyed by index rather than positional array so a request where only message 7 has a
+/// name costs one entry, and so the writer's lookup cannot be thrown off by a `null` hole.
+///
+/// LIVES HERE (not in `busbar-proto-openai-chat`) because core's `ir/variant.rs` names this key by
+/// its own const, not a duplicated string literal — a genuine core<->dialect crossing, unlike
+/// `MAX_COMPLETION_TOKENS_SENTINEL` (openai_chat-only, stays in that crate).
+pub const MESSAGE_NAMES_SENTINEL: &str = "__busbar_openai_message_names";
+
+// SHARED ACROSS THE OPENAI-FAMILY DIALECTS AND COHERE (tool-call argument stringification, url
+// citation projection) — these do NOT move into `busbar-proto-openai-chat`; cohere's and
+// openai_responses' writers/readers call them too, so they stay at this shared crossing rather
+// than becoming a cross-protocol-crate dependency once openai_chat is extracted.
+/// Render an IR ToolUse `input` value as the OpenAI `function.arguments` string.
+///
+/// OpenAI carries tool-call arguments as a *string* of JSON. The reader stores well-formed
+/// arguments as a parsed `Value`, but falls back to `Value::String(raw)` when the upstream sent
+/// arguments that are not valid JSON (a streaming-partial or malformed tool call). Re-serializing
+/// such a `Value::String` via `crate::json::to_string` would JSON-encode the string a second time —
+/// emitting an escaped, quoted blob on the wire (double-encoding). Emit a `Value::String` verbatim
+/// so the original argument text round-trips unchanged; any other `Value` is serialized normally.
+/// Build an OpenAI `annotations` array from the IR citations that annotate a span of assistant
+/// text. Shared by the Chat and Responses writers, which use the same `url_citation` shape.
+///
+/// `text` is the ONE block the citations annotate, and `base` is where that block starts inside the
+/// message's full content string — Chat joins every text block into one string, while Responses
+/// keeps one part per block and so always passes `0`. Both the carried offsets and the ones
+/// recovered from a quote are block-relative, so `base` applies uniformly to either.
+///
+/// The wire shape is `url_citation`, which requires `url`, `title`, `start_index` and `end_index`.
+/// The IR's sources do not all carry those: an Anthropic `web_search_result_location` has a url and
+/// a title but NO character offsets, and a Gemini `citationSources[]` entry has offsets but no
+/// title. So a faithful mapping has to choose what to do about the gaps, and the choice here is
+/// deliberate: **never invent a fact.**
+///
+/// - `url` is required outright. A citation without one is a document reference, which is a
+///   different wire shape (`file_citation`) keyed by a `file_id` the IR does not carry — so it is
+///   omitted rather than mis-shaped.
+/// - Offsets are taken from the citation when present, and otherwise RECOVERED by locating the
+///   quoted `cited_text` in the assembled text. A quote that does not appear, or appears more than
+///   once, is ambiguous — omitted rather than guessed.
+/// - `title` falls back to the url. That is the same datum re-presented, not a fabricated one, and
+///   it is what a client renders anyway when a source has no title.
+///
+/// The alternative — emitting `start_index: 0, end_index: 0` or a placeholder title — trades a
+/// silent drop for silent fabrication, which is worse for a translation layer whose claim is
+/// fidelity. What is dropped here is dropped because the source genuinely lacks it.
+pub fn url_annotations(
+    text: &str,
+    base: usize,
+    citations: &[crate::ir::IrCitation],
+) -> Vec<serde_json::Value> {
+    let mut out = Vec::new();
+    for c in citations {
+        let Some(url) = c.url.as_deref().filter(|u| !u.is_empty()) else {
+            continue;
+        };
+        let span = match (c.start_index, c.end_index) {
+            // `saturating_add` (not `+`): `s`/`e` are upstream-controlled `i64` (only sign-checked
+            // above), so `i64::MAX + base` would panic in debug / wrap in release — an
+            // upstream-triggered crash on the response path. Same cure `billable_tokens` already
+            // establishes for upstream-controlled counts (`ir/mod.rs`).
+            (Some(s), Some(e)) if s >= 0 && e >= s => {
+                Some((s.saturating_add(base as i64), e.saturating_add(base as i64)))
+            }
+            // Recover the span from the quote when the source carried no offsets, but only when it
+            // occurs exactly once — two matches make the anchor ambiguous.
+            _ => c
+                .cited_text
+                .as_deref()
+                .filter(|q| !q.is_empty())
+                .and_then(|q| {
+                    // `str::find` and `q.len()` are BYTE offsets/lengths; the IR contract is
+                    // CHARACTERS, not bytes (see `IrCitation::start_index`). `find` always returns
+                    // a char boundary, so the byte slice below stays valid — only the emitted span
+                    // needs converting.
+                    let first = text.find(q)?;
+                    if text[first + q.len()..].contains(q) {
+                        return None;
+                    }
+                    let start_ch = text[..first].chars().count();
+                    let len_ch = q.chars().count();
+                    Some(((base + start_ch) as i64, (base + start_ch + len_ch) as i64))
+                }),
+        };
+        let Some((start, end)) = span else {
+            continue;
+        };
+        out.push(serde_json::json!({
+            "type": "url_citation",
+            "url": url,
+            "title": c.title.as_deref().filter(|t| !t.is_empty()).unwrap_or(url),
+            "start_index": start,
+            "end_index": end,
+        }));
+    }
+    out
+}
+
+/// Read an OpenAI-family `annotations` array (`url_citation` entries) into IR citations. Shared by
+/// the Chat and Responses readers, mirroring `url_annotations` above in the write direction.
+///
+/// KNOWN LIMITATION — offsets are deliberately NOT carried. `IrCitation::start_index`/`end_index`
+/// are CHARACTER offsets by contract (`ir/mod.rs`), and OpenAI does not document whether its
+/// `start_index`/`end_index` count bytes or characters. Copying them across unconverted would
+/// silently assert one of the two, and on non-ASCII text that is a wrong span — the same class of
+/// defect the Gemini byte/char conversion (`gemini/mod.rs`) exists to prevent. Dropping an offset
+/// we cannot interpret is a gap; asserting a unit we cannot verify is a lie. Until the unit is
+/// established (one upstream response with a multi-byte character ahead of the cited span settles
+/// it), the url and title — which need no unit — are preserved and the span is left `None`, which
+/// every writer already treats as optional.
+pub fn read_url_annotations(annotations: &serde_json::Value) -> Vec<crate::ir::IrCitation> {
+    let mut out = Vec::new();
+    let Some(arr) = annotations.as_array() else {
+        return out;
+    };
+    for entry in arr {
+        if entry.get("type").and_then(|t| t.as_str()) != Some("url_citation") {
+            continue;
+        }
+        let Some(citation) = entry.get("url_citation") else {
+            continue;
+        };
+        // Never invent a fact: an entry with no usable url is skipped, symmetric with
+        // `url_annotations`' own rule in the write direction (a citation with no url is not
+        // emitted there either).
+        let Some(url) = citation
+            .get("url")
+            .and_then(|u| u.as_str())
+            .filter(|u| !u.is_empty())
+        else {
+            continue;
+        };
+        let title = citation
+            .get("title")
+            .and_then(|t| t.as_str())
+            .filter(|t| !t.is_empty())
+            .map(String::from);
+        out.push(crate::ir::IrCitation {
+            kind: Some("web_search_result_location".to_string()),
+            cited_text: None,
+            title,
+            url: Some(url.to_string()),
+            document_index: None,
+            start_index: None,
+            end_index: None,
+            encrypted_index: None,
+            raw: None,
+        });
+    }
+    out
+}
+
+pub fn tool_arguments_to_string(input: &serde_json::Value) -> String {
+    match input {
+        serde_json::Value::String(s) => s.clone(),
+        other => crate::json::to_string(other).unwrap_or_else(|_| "{}".to_string()),
     }
 }
 

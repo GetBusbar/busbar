@@ -325,6 +325,7 @@ dependencies = [
  "busbar-plugin-sign",
  "busbar-proto-anthropic",
  "busbar-proto-mcp",
+ "busbar-proto-openai-chat",
  "busbar-store-example-plugin",
  "bytes",
  "criterion",
@@ -554,6 +555,19 @@ dependencies = [
  "bytes",
  "rmcp",
  "serde_json",
+]
+
+[[package]]
+name = "busbar-proto-openai-chat"
+version = "1.6.0"
+dependencies = [
+ "axum",
+ "busbar-core",
+ "bytes",
+ "getrandom 0.3.4",
+ "serde_json",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

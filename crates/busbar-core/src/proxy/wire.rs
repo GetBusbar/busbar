@@ -128,12 +128,16 @@ fn maybe_attach_route_policy_gated(
 /// function (the migration is complete — they hold no private copies), so the degraded path, the main
 /// path, and the auth/route paths cannot diverge on error shape or headers.
 pub(crate) fn ingress_error(ingress: &str, status: StatusCode, kind: &str, msg: &str) -> Response {
-    // Resolve the ingress protocol's vtable ONCE (fall back to OpenAI's generic envelope for an
+    // Resolve the ingress protocol's vtable ONCE (fall back to Gemini's generic envelope for an
     // unknown name — unreachable for the 6 validated ingress protocols). All provider-specific error
     // shape (the body envelope AND any response headers) flows through trait methods on this writer,
-    // so the agnostic error path carries no `if ingress == "<name>"` branch.
+    // so the agnostic error path carries no `if ingress == "<name>"` branch. Gemini (not OpenAI) is
+    // the fallback dialect because OpenAI Chat is an extracted, feature-optional protocol crate
+    // (`busbar-proto-openai-chat`) as of the dialect-extraction line — this generic default must
+    // name a dialect core always compiles in. The LAST dialect's extraction (openai_responses)
+    // replaces this with a truly protocol-agnostic envelope once no dialect is guaranteed resident.
     let protocol =
-        crate::proto::protocol_for(ingress).unwrap_or_else(crate::proto::Protocol::openai);
+        crate::proto::protocol_for(ingress).unwrap_or_else(crate::proto::Protocol::gemini);
     let envelope = protocol.writer().write_error(status.as_u16(), kind, msg);
     let body = crate::json::to_string(&envelope).unwrap_or_else(|_| {
         // Envelope is built from serde_json::json! values and always serializes; this fallback only
@@ -764,14 +768,15 @@ pub(crate) fn mid_stream_error_bytes(
     message: &str,
 ) -> Vec<u8> {
     // The error is a mid-stream transport failure ≈ internal/5xx. Resolve the ingress protocol once;
-    // an unknown ingress falls back to the OpenAI writer (mirrors `ingress_error`).
+    // an unknown ingress falls back to the Gemini writer (mirrors `ingress_error`'s fallback choice
+    // and rationale — see that function's comment).
     let err = crate::proto::IrError {
         class: crate::breaker::StatusClass::ServerError,
         provider_signal: Some(message.to_string()),
         retry_after: None,
     };
     let proto =
-        crate::proto::protocol_for(ingress_protocol).unwrap_or_else(crate::proto::Protocol::openai);
+        crate::proto::protocol_for(ingress_protocol).unwrap_or_else(crate::proto::Protocol::gemini);
     if ingress_eventstream {
         // Binary eventstream client (a native AWS SDK): a mid-stream failure is a MODELED-EXCEPTION
         // frame, not an SSE event. The exception NAME comes from the ingress writer's vtable

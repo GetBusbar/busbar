@@ -5,7 +5,7 @@ impl ProtocolWriter for OpenAiWriter {
         PATH_UPSTREAM
     }
 
-    fn write_request(&self, req: &crate::ir::IrRequest) -> serde_json::Value {
+    fn write_request(&self, req: &busbar_core::ir::IrRequest) -> serde_json::Value {
         let mut messages_array: Vec<serde_json::Value> = Vec::new();
 
         // Prepend system message as first message if present. OpenAI system messages carry plain
@@ -17,13 +17,13 @@ impl ProtocolWriter for OpenAiWriter {
         // is exhaustive (no `_ =>` catch-all) so a future IrBlock variant forces a compile error.
         for block in &req.system {
             let text: &str = match block {
-                crate::ir::IrBlock::Text { text, .. } => text,
-                crate::ir::IrBlock::Thinking { text, .. } => text,
-                crate::ir::IrBlock::ToolUse { .. }
-                | crate::ir::IrBlock::ToolResult { .. }
-                | crate::ir::IrBlock::Image { .. }
-                | crate::ir::IrBlock::Media { .. }
-                | crate::ir::IrBlock::Json(_) => "",
+                busbar_core::ir::IrBlock::Text { text, .. } => text,
+                busbar_core::ir::IrBlock::Thinking { text, .. } => text,
+                busbar_core::ir::IrBlock::ToolUse { .. }
+                | busbar_core::ir::IrBlock::ToolResult { .. }
+                | busbar_core::ir::IrBlock::Image { .. }
+                | busbar_core::ir::IrBlock::Media { .. }
+                | busbar_core::ir::IrBlock::Json(_) => "",
             };
             messages_array.push(serde_json::json!({
                 "role": "system",
@@ -43,10 +43,10 @@ impl ProtocolWriter for OpenAiWriter {
         // Add regular messages
         for (msg_idx, msg) in req.messages.iter().enumerate() {
             let role_str = match msg.role {
-                crate::ir::IrRole::User => "user",
-                crate::ir::IrRole::Assistant => "assistant",
-                crate::ir::IrRole::Tool => "tool",
-                crate::ir::IrRole::System => "system",
+                busbar_core::ir::IrRole::User => "user",
+                busbar_core::ir::IrRole::Assistant => "assistant",
+                busbar_core::ir::IrRole::Tool => "tool",
+                busbar_core::ir::IrRole::System => "system",
             };
 
             let content_val: serde_json::Value = if msg.content.is_empty() {
@@ -56,15 +56,15 @@ impl ProtocolWriter for OpenAiWriter {
 
                 for block in &msg.content {
                     match block {
-                        crate::ir::IrBlock::Text { text, .. } => {
+                        busbar_core::ir::IrBlock::Text { text, .. } => {
                             content_arr.push(serde_json::json!({ "type": "text", "text": text }));
                         }
-                        crate::ir::IrBlock::Image { source, .. } => {
+                        busbar_core::ir::IrBlock::Image { source, .. } => {
                             // A URL is emitted verbatim, a base64 image re-wrapped as a data URI. A
                             // Responses `file_id` / Bedrock `s3Location` reference has no `image_url`
                             // projection (image_url_from_ir returns None) — SKIP it with a warn rather
                             // than corrupt the block.
-                            match super::image_url_from_ir(source) {
+                            match busbar_core::proto::image_url_from_ir(source) {
                                 Some(url) => content_arr.push(serde_json::json!({
                                     "type": "image_url",
                                     "image_url": { "url": url }
@@ -76,7 +76,7 @@ impl ProtocolWriter for OpenAiWriter {
                                 ),
                             }
                         }
-                        crate::ir::IrBlock::Media {
+                        busbar_core::ir::IrBlock::Media {
                             kind, source, name, ..
                         } => {
                             if let Some(part) =
@@ -85,21 +85,21 @@ impl ProtocolWriter for OpenAiWriter {
                                 content_arr.push(part);
                             }
                         }
-                        crate::ir::IrBlock::ToolUse { .. } => {
+                        busbar_core::ir::IrBlock::ToolUse { .. } => {
                             // ToolUse is not OpenAI message content; it is surfaced via the
                             // `tool_calls` array built for this message below (any role).
                         }
-                        crate::ir::IrBlock::ToolResult { .. } => {
+                        busbar_core::ir::IrBlock::ToolResult { .. } => {
                             // ToolResult is not OpenAI message *content*; for a Tool-role message it
                             // is rendered as a standalone `{"role":"tool","tool_call_id":...}` entry
                             // by the tool-result path below. On a non-tool message it has no OpenAI
                             // content representation, so it is intentionally not emitted here.
                         }
-                        crate::ir::IrBlock::Thinking { .. } => {
+                        busbar_core::ir::IrBlock::Thinking { .. } => {
                             // Lossy-by-necessity: OpenAI Chat Completions has no thinking/reasoning
                             // content block on request input, so a Thinking block is dropped here.
                         }
-                        crate::ir::IrBlock::Json(_) => {
+                        busbar_core::ir::IrBlock::Json(_) => {
                             // Structured-json (a Bedrock tool-result content member) has no OpenAI
                             // message-content shape; dropped here.
                         }
@@ -142,12 +142,13 @@ impl ProtocolWriter for OpenAiWriter {
             {
                 let mut tool_calls_arr: Vec<serde_json::Value> = Vec::new();
                 for block in &msg.content {
-                    if let crate::ir::IrBlock::ToolUse {
+                    if let busbar_core::ir::IrBlock::ToolUse {
                         id, name, input, ..
                     } = block
                     {
                         // Serialize input to JSON string
-                        let args_str = tool_arguments_to_string(input);
+                        let args_str =
+                            busbar_core::proto::openai_family::tool_arguments_to_string(input);
                         // Preserve the original tool_call id verbatim — it must round-trip so the
                         // assistant tool_call correlates with the tool-result `tool_call_id`.
                         tool_calls_arr.push(serde_json::json!({
@@ -177,11 +178,11 @@ impl ProtocolWriter for OpenAiWriter {
             let has_tool_result = msg
                 .content
                 .iter()
-                .any(|b| matches!(b, crate::ir::IrBlock::ToolResult { .. }));
+                .any(|b| matches!(b, busbar_core::ir::IrBlock::ToolResult { .. }));
             if has_tool_result {
                 let mut emitted_tool_result = false;
                 for block in &msg.content {
-                    if let crate::ir::IrBlock::ToolResult {
+                    if let busbar_core::ir::IrBlock::ToolResult {
                         tool_use_id,
                         content,
                         ..
@@ -203,7 +204,7 @@ impl ProtocolWriter for OpenAiWriter {
                             let text_parts: Vec<String> = content
                                 .iter()
                                 .filter_map(|b| {
-                                    if let crate::ir::IrBlock::Text { text, .. } = b {
+                                    if let busbar_core::ir::IrBlock::Text { text, .. } = b {
                                         Some(text.clone())
                                     } else {
                                         // A non-Text ToolResult block is a Bedrock json-tool-result
@@ -303,7 +304,7 @@ impl ProtocolWriter for OpenAiWriter {
         if !req.stop.is_empty() {
             out.insert(
                 "stop".to_string(),
-                serde_json::json!(crate::proto::clamp_stop(&req.stop, 4, "OpenAI")),
+                serde_json::json!(busbar_core::proto::clamp_stop(&req.stop, 4, "OpenAI")),
             );
         }
 
@@ -347,7 +348,7 @@ impl ProtocolWriter for OpenAiWriter {
         if let Some(ask) = req.reasoning {
             let table = req
                 .reasoning_budgets
-                .unwrap_or(crate::ir::REASONING_BUDGET_DEFAULTS);
+                .unwrap_or(busbar_core::ir::REASONING_BUDGET_DEFAULTS);
             out.insert(
                 "reasoning_effort".to_string(),
                 serde_json::json!(ask.to_effort(table).as_openai_reasoning_effort()),
@@ -434,10 +435,10 @@ impl ProtocolWriter for OpenAiWriter {
                 );
             } else {
                 let v = match tc {
-                    crate::ir::IrToolChoice::Auto => serde_json::json!("auto"),
-                    crate::ir::IrToolChoice::None => serde_json::json!("none"),
-                    crate::ir::IrToolChoice::Required => serde_json::json!("required"),
-                    crate::ir::IrToolChoice::Tool { name } => {
+                    busbar_core::ir::IrToolChoice::Auto => serde_json::json!("auto"),
+                    busbar_core::ir::IrToolChoice::None => serde_json::json!("none"),
+                    busbar_core::ir::IrToolChoice::Required => serde_json::json!("required"),
+                    busbar_core::ir::IrToolChoice::Tool { name } => {
                         serde_json::json!({"type": TOOL_TYPE_FUNCTION, "function": {"name": name}})
                     }
                 };
@@ -472,10 +473,10 @@ impl ProtocolWriter for OpenAiWriter {
                 ..
             } => {
                 let openai_role = match role {
-                    crate::ir::IrRole::Assistant => "assistant",
-                    crate::ir::IrRole::User
-                    | crate::ir::IrRole::System
-                    | crate::ir::IrRole::Tool => return None,
+                    busbar_core::ir::IrRole::Assistant => "assistant",
+                    busbar_core::ir::IrRole::User
+                    | busbar_core::ir::IrRole::System
+                    | busbar_core::ir::IrRole::Tool => return None,
                 };
                 let delta_obj = serde_json::json!({ "role": openai_role });
                 // The opening chunk carries the stream's identity (`id`, `created`, `model`); an
@@ -484,7 +485,7 @@ impl ProtocolWriter for OpenAiWriter {
                 // first chunk that supplies them. When the backend supplied none (cross-protocol),
                 // SYNTHESIZE a protocol-correct id/created so a native SDK accepts the stream.
                 let chunk_id = id.clone().unwrap_or_else(synth_completion_id);
-                let chunk_created = created.unwrap_or_else(crate::store::now);
+                let chunk_created = created.unwrap_or_else(busbar_core::store::now);
                 // `model` is REQUIRED and non-nullable in the OpenAI chunk schema. A cross-protocol
                 // backend (e.g. Bedrock) whose IR carries `model: None` must not yield a model-less
                 // first chunk — that fails strict SDK (Pydantic) deserialisation and is a proxy tell —
@@ -504,8 +505,8 @@ impl ProtocolWriter for OpenAiWriter {
                 Some(("".to_string(), chunk))
             }
             IrStreamEvent::BlockStart { index, block } => match block {
-                crate::ir::IrBlockMeta::Text => None,
-                crate::ir::IrBlockMeta::ToolUse { id, name } => {
+                busbar_core::ir::IrBlockMeta::Text => None,
+                busbar_core::ir::IrBlockMeta::ToolUse { id, name } => {
                     // Stamp the CANONICAL IR block index here so parallel tool calls keep distinct,
                     // stable keys and each call's BlockStart + BlockDeltas share ONE value. This is
                     // NOT necessarily 0-based (a source stream can open the first tool_use at a
@@ -534,10 +535,12 @@ impl ProtocolWriter for OpenAiWriter {
                     });
                     Some(("".to_string(), chunk_obj))
                 }
-                crate::ir::IrBlockMeta::Thinking | crate::ir::IrBlockMeta::Image => None,
+                busbar_core::ir::IrBlockMeta::Thinking | busbar_core::ir::IrBlockMeta::Image => {
+                    None
+                }
             },
             IrStreamEvent::BlockDelta { index, delta } => match delta {
-                crate::ir::IrDelta::TextDelta(text) => {
+                busbar_core::ir::IrDelta::TextDelta(text) => {
                     let delta_obj = serde_json::json!({ "content": text });
                     let chunk_obj = serde_json::json!({
                         "object": OBJ_CHUNK,
@@ -549,7 +552,7 @@ impl ProtocolWriter for OpenAiWriter {
                     });
                     Some(("".to_string(), chunk_obj))
                 }
-                crate::ir::IrDelta::InputJsonDelta(json) => {
+                busbar_core::ir::IrDelta::InputJsonDelta(json) => {
                     // Mirror the CANONICAL raw index emitted by the matching BlockStart so argument
                     // fragments route to the correct parallel tool call; the framing seam remaps this
                     // to the same 0-based ordinal it assigned the BlockStart.
@@ -569,16 +572,16 @@ impl ProtocolWriter for OpenAiWriter {
                     });
                     Some(("".to_string(), chunk_obj))
                 }
-                crate::ir::IrDelta::ThinkingDelta(_) => {
+                busbar_core::ir::IrDelta::ThinkingDelta(_) => {
                     // Lossy-by-necessity: OpenAI has no thinking stream equivalent.
                     None
                 }
-                crate::ir::IrDelta::SignatureDelta(_)
-                | crate::ir::IrDelta::RedactedReasoningDelta(_) => {
+                busbar_core::ir::IrDelta::SignatureDelta(_)
+                | busbar_core::ir::IrDelta::RedactedReasoningDelta(_) => {
                     // Lossy-by-necessity: OpenAI has no signature/redacted-reasoning stream analog.
                     None
                 }
-                crate::ir::IrDelta::CitationsDelta(cits) => {
+                busbar_core::ir::IrDelta::CitationsDelta(cits) => {
                     // A `chat.completion.chunk` DOES carry `choices[].delta.annotations` — it is the
                     // same `url_citation` shape the NON-stream writer builds at `message.annotations`
                     // (see `write_response`), which is the proof the shape exists: this arm used to
@@ -631,7 +634,7 @@ impl ProtocolWriter for OpenAiWriter {
                         }),
                     ))
                 }
-                crate::ir::IrDelta::LogprobsDelta(lps) => {
+                busbar_core::ir::IrDelta::LogprobsDelta(lps) => {
                     // Streamed logprobs (e.g. a Gemini backend's per-chunk `logprobsResult`) in
                     // OpenAI's native chunk shape: `choices[].logprobs.content[]` alongside an
                     // empty delta. The SDK accumulates logprobs from chunks independently of
@@ -755,8 +758,8 @@ impl ProtocolWriter for OpenAiWriter {
                 // detectable proxy tell. The match is exhaustive over StatusClass (no `_ =>`), so a
                 // new class forces an explicit decision; `server_error` is the safe fallback bucket.
                 let error_type = match err.class {
-                    crate::breaker::StatusClass::RateLimit => ERR_TYPE_RATE_LIMIT,
-                    crate::breaker::StatusClass::Auth => ERR_TYPE_AUTHENTICATION,
+                    busbar_core::breaker::StatusClass::RateLimit => ERR_TYPE_RATE_LIMIT,
+                    busbar_core::breaker::StatusClass::Auth => ERR_TYPE_AUTHENTICATION,
                     // Billing exhaustion is OpenAI's `insufficient_quota` (HTTP 429), NOT
                     // `permission_error`. Real OpenAI reserves `permission_error` for access-control
                     // denials (feature/org restrictions); an over-quota error carries
@@ -766,13 +769,13 @@ impl ProtocolWriter for OpenAiWriter {
                     // protocol tell. `bearer_error_code` pairs the matching `code` below. This mirrors
                     // the non-stream `write_error` path, which already maps the `"insufficient_quota"`
                     // kind to this type + code.
-                    crate::breaker::StatusClass::Billing => ERR_TYPE_INSUFFICIENT_QUOTA,
-                    crate::breaker::StatusClass::ContextLength
-                    | crate::breaker::StatusClass::ClientError => ERR_TYPE_INVALID_REQUEST,
-                    crate::breaker::StatusClass::Overloaded
-                    | crate::breaker::StatusClass::ServerError
-                    | crate::breaker::StatusClass::Timeout
-                    | crate::breaker::StatusClass::Network => ERR_TYPE_SERVER_ERROR,
+                    busbar_core::breaker::StatusClass::Billing => ERR_TYPE_INSUFFICIENT_QUOTA,
+                    busbar_core::breaker::StatusClass::ContextLength
+                    | busbar_core::breaker::StatusClass::ClientError => ERR_TYPE_INVALID_REQUEST,
+                    busbar_core::breaker::StatusClass::Overloaded
+                    | busbar_core::breaker::StatusClass::ServerError
+                    | busbar_core::breaker::StatusClass::Timeout
+                    | busbar_core::breaker::StatusClass::Network => ERR_TYPE_SERVER_ERROR,
                 };
                 // Include `code` and `param` as JSON null, matching BOTH the native OpenAI error
                 // shape and this writer's own non-stream `write_error` envelope. Omitting them made
@@ -793,7 +796,7 @@ impl ProtocolWriter for OpenAiWriter {
 
     fn egress_user_agent(&self) -> &'static str {
         // OpenAI Python SDK UA shape — pinned, see `EGRESS_UA_OPENAI` in proxy engine.
-        crate::proxy::EGRESS_UA_OPENAI
+        busbar_core::proxy::EGRESS_UA_OPENAI
     }
 
     fn emits_sse_done_terminator(&self) -> bool {
@@ -842,7 +845,7 @@ impl ProtocolWriter for OpenAiWriter {
             ERR_TYPE_SERVER_ERROR | "internal_error" | "internal_server_error" => {
                 ERR_TYPE_SERVER_ERROR
             }
-            crate::proxy::KIND_API_ERROR => crate::proxy::KIND_API_ERROR,
+            busbar_core::proxy::KIND_API_ERROR => busbar_core::proxy::KIND_API_ERROR,
             // Quota exhaustion is a first-class native OpenAI type (HTTP 429); preserve it so the
             // over-budget governance path keeps the real `insufficient_quota` type AND its matching
             // `code` (set in `bearer_error_code`).
@@ -853,7 +856,7 @@ impl ProtocolWriter for OpenAiWriter {
             // `server_error` — so emitting `type:"overloaded"` is both a conformance break (the
             // official SDK's typed-exception mapping fails on an unknown type) and a cross-protocol
             // vocabulary leak. Map every transient/unavailable spelling onto OpenAI's native 5xx type.
-            crate::proxy::KIND_OVERLOADED
+            busbar_core::proxy::KIND_OVERLOADED
             | ERR_TYPE_OVERLOADED
             | "service_unavailable"
             | "unavailable"
@@ -861,7 +864,7 @@ impl ProtocolWriter for OpenAiWriter {
             | "timeout"
             | "network"
             | "5xx" => ERR_TYPE_SERVER_ERROR,
-            crate::proxy::PROVIDER_CODE_CONTEXT_LENGTH => ERR_TYPE_INVALID_REQUEST,
+            busbar_core::proxy::PROVIDER_CODE_CONTEXT_LENGTH => ERR_TYPE_INVALID_REQUEST,
             // Empty kind: derive a valid OpenAI type from the HTTP status bucket rather than emitting
             // an empty `type`, so the SDK still sees a real error type.
             "" => {
@@ -888,7 +891,7 @@ impl ProtocolWriter for OpenAiWriter {
         })
     }
 
-    fn write_response(&self, resp: &crate::ir::IrResponse) -> serde_json::Value {
+    fn write_response(&self, resp: &busbar_core::ir::IrResponse) -> serde_json::Value {
         let mut obj = serde_json::Map::new();
 
         // Collect the assistant text parts exactly once: their presence decides whether
@@ -899,7 +902,7 @@ impl ProtocolWriter for OpenAiWriter {
             .content
             .iter()
             .filter_map(|b| match b {
-                crate::ir::IrBlock::Text { text, .. } => Some(text.as_str()),
+                busbar_core::ir::IrBlock::Text { text, .. } => Some(text.as_str()),
                 _ => None,
             })
             .collect();
@@ -907,12 +910,12 @@ impl ProtocolWriter for OpenAiWriter {
         // ToolUse blocks become tool_calls (not in content)
         let mut tool_calls_arr: Vec<serde_json::Value> = Vec::new();
         for block in &resp.content {
-            if let crate::ir::IrBlock::ToolUse {
+            if let busbar_core::ir::IrBlock::ToolUse {
                 id, name, input, ..
             } = block
             {
                 // Serialize input to JSON string
-                let args_str = tool_arguments_to_string(input);
+                let args_str = busbar_core::proto::openai_family::tool_arguments_to_string(input);
                 tool_calls_arr.push(serde_json::json!({
                     "type": TOOL_TYPE_FUNCTION,
                     "id": id,
@@ -948,11 +951,13 @@ impl ProtocolWriter for OpenAiWriter {
         let mut base = 0usize;
         let mut annotations: Vec<serde_json::Value> = Vec::new();
         for block in &resp.content {
-            if let crate::ir::IrBlock::Text {
+            if let busbar_core::ir::IrBlock::Text {
                 text, citations, ..
             } = block
             {
-                annotations.extend(super::url_annotations(text, base, citations));
+                annotations.extend(busbar_core::proto::openai_family::url_annotations(
+                    text, base, citations,
+                ));
                 // CHARACTERS, not bytes: the IR citation contract (`IrCitation::start_index`/
                 // `end_index`, `ir/mod.rs`) is characters. `text.len()` is a byte length — every
                 // citation in block 2+ would be shifted by that block's byte-vs-char delta on any
@@ -1000,7 +1005,7 @@ impl ProtocolWriter for OpenAiWriter {
         let id = resp.id.clone().unwrap_or_else(synth_completion_id);
         obj.insert("id".to_string(), serde_json::json!(id));
         obj.insert("object".to_string(), serde_json::json!(OBJ_COMPLETION));
-        let created = resp.created.unwrap_or_else(crate::store::now);
+        let created = resp.created.unwrap_or_else(busbar_core::store::now);
         obj.insert("created".to_string(), serde_json::json!(created));
         // model that served the response. `model` is a REQUIRED non-nullable string in the OpenAI
         // chat.completion schema; a cross-protocol backend whose `read_response` yields `model: None`

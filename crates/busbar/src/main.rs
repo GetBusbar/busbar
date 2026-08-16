@@ -502,6 +502,8 @@ fn register_protocols() {
         &busbar_proto_anthropic::DECL,
         #[cfg(feature = "proto-mcp")]
         &busbar_proto_mcp::DECL,
+        #[cfg(feature = "proto-openai-chat")]
+        &busbar_proto_openai_chat::DECL,
     ];
     busbar_core::proto::registry::install_protocols(INSTALLED);
 }

@@ -293,7 +293,7 @@ impl ProtocolWriter for CohereWriter {
                         // Emit a raw Value::String (unparseable/streaming-partial args) verbatim rather
                         // than JSON-encoding it a second time (double-encoding) — same as the OpenAI/
                         // Responses writers.
-                        let args_str = crate::proto::openai_chat::tool_arguments_to_string(input);
+                        let args_str = crate::proto::openai_family::tool_arguments_to_string(input);
                         tool_calls_arr.push(serde_json::json!({ "id": id, "type": "function", "function": { "name": name, "arguments": args_str }}));
                     }
                 }
@@ -778,7 +778,7 @@ impl ProtocolWriter for CohereWriter {
                     id, name, input, ..
                 } => {
                     // Verbatim for a raw Value::String (avoid double-encoding), same as OpenAI/Responses.
-                    let args_str = crate::proto::openai_chat::tool_arguments_to_string(input);
+                    let args_str = crate::proto::openai_family::tool_arguments_to_string(input);
                     // Accumulate every tool call. Inserting per-iteration would overwrite the
                     // key and silently drop all but the last call on parallel tool use.
                     tool_calls_arr.push(serde_json::json!({ "id": id, "type": "function", "function": { "name": name, "arguments": args_str }}));

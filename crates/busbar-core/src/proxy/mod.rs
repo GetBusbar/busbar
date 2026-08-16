@@ -77,7 +77,7 @@ pub(crate) const KIND_PERMISSION: &str = openai_family::ERR_TYPE_PERMISSION;
 pub(crate) const KIND_RATE_LIMIT: &str = openai_family::ERR_TYPE_RATE_LIMIT;
 pub(crate) const KIND_INVALID_REQUEST: &str = openai_family::ERR_TYPE_INVALID_REQUEST;
 pub(crate) const KIND_NOT_FOUND: &str = openai_family::ERR_TYPE_NOT_FOUND;
-pub(crate) const KIND_API_ERROR: &str = openai_family::ERR_TYPE_API_ERROR;
+pub const KIND_API_ERROR: &str = openai_family::ERR_TYPE_API_ERROR;
 /// Bare `overloaded` — DELIBERATELY distinct from `openai_family::ERR_TYPE_OVERLOADED`
 /// ("overloaded_error", the Anthropic wire spelling): this is busbar's own agnostic kind for a
 /// relayed upstream 503.

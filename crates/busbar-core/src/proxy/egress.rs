@@ -152,7 +152,7 @@ pub(crate) fn lane_auth_headers(
 // the User-Agent alone — the egress-UA tests now also assert the shared `<Title>/Python <ver>` grammar.
 pub const EGRESS_UA_ANTHROPIC: &str = "Anthropic/Python 0.39.0";
 // OpenAI Python SDK shape; the Responses API is served by the same SDK/UA.
-pub(crate) const EGRESS_UA_OPENAI: &str = "OpenAI/Python 1.54.0";
+pub const EGRESS_UA_OPENAI: &str = "OpenAI/Python 1.54.0";
 // Google GenAI SDK shape (generativelanguage.googleapis.com).
 pub(crate) const EGRESS_UA_GEMINI: &str = "google-genai-sdk/0.8.0 gl-python/3.11";
 // AWS Bedrock is reached via boto3/botocore.

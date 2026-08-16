@@ -405,7 +405,7 @@ fn clamp_temperature_for_anthropic(temperature: f64) -> (f64, bool) {
 }
 
 #[derive(Clone)]
-pub(crate) struct AnthropicReader;
+pub struct AnthropicReader;
 
 /// Map an Anthropic streaming `error.type` token to its breaker `StatusClass`, mirroring the HTTP
 /// classifier intent (`AnthropicReader::classify`) and the `write_error` error vocabulary so a
@@ -1547,7 +1547,7 @@ fn write_tool(tool: &busbar_core::ir::IrTool) -> serde_json::Value {
 
 /// Anthropic writer implementation.
 #[derive(Clone)]
-pub(crate) struct AnthropicWriter;
+pub struct AnthropicWriter;
 
 /// Which native credential scheme a credential maps to. Anthropic accepts exactly one scheme per
 /// request, and a native client presents exactly one: an API-key client sends `x-api-key` and no

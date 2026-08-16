@@ -79,7 +79,7 @@ fn write_recover<T>(m: &std::sync::RwLock<T>) -> std::sync::RwLockWriteGuard<'_,
 }
 
 /// Get current time in seconds since epoch.
-pub(crate) fn now() -> u64 {
+pub fn now() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

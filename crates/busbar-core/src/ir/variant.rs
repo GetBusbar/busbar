@@ -318,7 +318,7 @@ impl IrReq {
                 // this whole section exists to remove.
                 if let Some(n) = ir
                     .extra
-                    .get(crate::proto::openai_chat::MESSAGE_NAMES_SENTINEL)
+                    .get(crate::proto::openai_family::MESSAGE_NAMES_SENTINEL)
                     .and_then(|v| v.as_object())
                     .map(serde_json::Map::len)
                 {

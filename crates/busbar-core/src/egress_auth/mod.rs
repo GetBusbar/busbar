@@ -197,10 +197,15 @@ pub(crate) fn resolve(
             header: "x-goog-api-key",
         }),
         "bedrock" => Arc::new(SigV4),
-        // openai / cohere / responses and any other bearer-native protocol.
+        // cohere / responses and any other bearer-native protocol not yet extracted.
         "cohere" => Arc::new(StaticBearer { proto: "cohere" }),
         "responses" => Arc::new(StaticBearer { proto: "responses" }),
-        _ => Arc::new(StaticBearer { proto: "openai" }),
+        // Every dialect that reaches this match is named explicitly above, OR (anthropic, openai
+        // chat) supplies its own scheme via `ProtocolDecl::egress_auth_headers`, resolved and
+        // returned BEFORE this match runs. Config validation refuses an unknown protocol name
+        // before a lane ever reaches this resolver, so `_` is a defensive, fail-closed fallback —
+        // not a live scheme for any protocol this build actually serves.
+        _ => Arc::new(NoCredential),
     }
 }
 

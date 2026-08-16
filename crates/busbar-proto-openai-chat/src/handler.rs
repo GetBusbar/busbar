@@ -4,12 +4,14 @@
 //! OpenAI `RequestHandler` and its OperationHandlers. OperationHandlers are pure codecs — wire ↔ IR,
 //! both directions, nothing else: moderation, embeddings, images, audio, and chat each get one.
 
-use crate::handlers::{
+use busbar_core::handlers::{
     CodecError, EgressCtx, IngressReject, OperationHandler, RequestHandler, WireBody,
 };
-use crate::ir::moderation::{ModerationInput, ModerationReq, ModerationResp, ModerationResult};
-use crate::ir::variant::{IrReq, IrResp};
-use crate::operation::Operation;
+use busbar_core::ir::moderation::{
+    ModerationInput, ModerationReq, ModerationResp, ModerationResult,
+};
+use busbar_core::ir::variant::{IrReq, IrResp};
+use busbar_core::operation::Operation;
 use bytes::Bytes;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -28,7 +30,8 @@ const PATH_RERANK: &str = "/v1/rerank";
 pub(crate) struct OpenAiRequestHandler;
 /// This protocol's OWN chat instance — delete this line (and the registry arm) and this
 /// protocol's chat 404s via the standard no-handler path; everything else keeps working.
-static CHAT: crate::handlers::chat::ChatOperation = crate::handlers::chat::ChatOperation("openai");
+static CHAT: busbar_core::handlers::chat::ChatOperation =
+    busbar_core::handlers::chat::ChatOperation("openai");
 
 static MODERATION: OpenAiModeration = OpenAiModeration;
 static EMBEDDINGS: OpenAiEmbeddings = OpenAiEmbeddings;
@@ -40,7 +43,7 @@ static SPEECH: OpenAiSpeech = OpenAiSpeech;
 /// this table is the standard no-handler 404, which is what the enumerated `None` arm used to say:
 /// OpenAI ships no rerank surface, and the protocol-surface verbs are MCP's and A2A's, so the pair
 /// is unrepresentable rather than refused at runtime.
-static CELLS: &[crate::handlers::Cell] = &[
+static CELLS: &[busbar_core::handlers::Cell] = &[
     (Operation::CHAT, &CHAT),
     (Operation::MODERATION, &MODERATION),
     (Operation::EMBEDDINGS, &EMBEDDINGS),
@@ -65,12 +68,12 @@ impl RequestHandler for OpenAiRequestHandler {
         "openai"
     }
     fn operation_handler(&self, op: Operation) -> Option<&dyn OperationHandler> {
-        crate::handlers::cell_of(CELLS, op)
+        busbar_core::handlers::cell_of(CELLS, op)
     }
     fn upstream_path(&self, ctx: &EgressCtx) -> String {
         // The fallback is unreachable in practice: a verb with no cell above never reaches egress
         // here. It keeps the pre-1.6.0 answer verbatim rather than inventing a new one.
-        crate::handlers::path_of(PATHS, ctx.operation)
+        busbar_core::handlers::path_of(PATHS, ctx.operation)
             .unwrap_or(PATH_RERANK)
             .into()
     }
@@ -98,9 +101,9 @@ impl RequestHandler for OpenAiRequestHandler {
 
 // -------------------------------------------------- audio cells (real codecs, cross-protocol)
 
-use crate::billing::Billing;
-use crate::ir::audio::{SpeechReq, SpeechResp, TranscriptionReq, TranscriptionResp};
-use crate::media::{base64_decode, MediaBlob, MediaPayload};
+use busbar_core::billing::Billing;
+use busbar_core::ir::audio::{SpeechReq, SpeechResp, TranscriptionReq, TranscriptionResp};
+use busbar_core::media::{base64_decode, MediaBlob, MediaPayload};
 
 /// One decoded part of a `multipart/form-data` body (its value borrowed from the request bytes).
 struct MultipartField<'a> {
@@ -245,8 +248,8 @@ struct OpenAiTranscription;
 impl OperationHandler for OpenAiTranscription {
     /// This protocol's error envelope, shared by every operation it serves: the same
     /// vocabulary its chat cell reports, read from the same upstream.
-    fn extract_error(&self, status: u16, body: &[u8]) -> crate::breaker::RawUpstreamError {
-        crate::handlers::protocol_error("openai", status, body)
+    fn extract_error(&self, status: u16, body: &[u8]) -> busbar_core::breaker::RawUpstreamError {
+        busbar_core::handlers::protocol_error("openai", status, body)
     }
     fn egress_request_content_type(&self) -> &'static str {
         // write_request rebuilds the multipart form with this FIXED boundary.
@@ -382,7 +385,7 @@ fn parse_transcription_usage(u: &Value) -> Option<Billing> {
             .and_then(Value::as_f64)
             .map(|seconds| Billing::Duration { seconds }),
         _ => u.get("input_tokens").and_then(Value::as_u64).map(|input| {
-            Billing::Tokens(crate::billing::TokenUsage {
+            Billing::Tokens(busbar_core::billing::TokenUsage {
                 input,
                 output: u.get("output_tokens").and_then(Value::as_u64).unwrap_or(0),
                 ..Default::default()
@@ -397,8 +400,8 @@ struct OpenAiSpeech;
 impl OperationHandler for OpenAiSpeech {
     /// This protocol's error envelope, shared by every operation it serves: the same
     /// vocabulary its chat cell reports, read from the same upstream.
-    fn extract_error(&self, status: u16, body: &[u8]) -> crate::breaker::RawUpstreamError {
-        crate::handlers::protocol_error("openai", status, body)
+    fn extract_error(&self, status: u16, body: &[u8]) -> busbar_core::breaker::RawUpstreamError {
+        busbar_core::handlers::protocol_error("openai", status, body)
     }
     fn read_request(&self, body: &[u8], _content_type: &str) -> Result<IrReq, IngressReject> {
         let wire: Value =
@@ -471,7 +474,7 @@ impl OperationHandler for OpenAiSpeech {
 
 // -------------------------------------------------- embeddings OperationHandler (real codec, cross-protocol)
 
-use crate::ir::embeddings::{
+use busbar_core::ir::embeddings::{
     EmbInput, EmbeddingItem, EmbeddingsReq, EmbeddingsResp, EncFmt, VectorData,
 };
 
@@ -480,8 +483,8 @@ struct OpenAiEmbeddings;
 impl OperationHandler for OpenAiEmbeddings {
     /// This protocol's error envelope, shared by every operation it serves: the same
     /// vocabulary its chat cell reports, read from the same upstream.
-    fn extract_error(&self, status: u16, body: &[u8]) -> crate::breaker::RawUpstreamError {
-        crate::handlers::protocol_error("openai", status, body)
+    fn extract_error(&self, status: u16, body: &[u8]) -> busbar_core::breaker::RawUpstreamError {
+        busbar_core::handlers::protocol_error("openai", status, body)
     }
     // Token-metered: buffer the same-protocol non-stream 2xx body so the default
     // `extract_usage` can read the `usage` object and bill the virtual key's TPM/spend
@@ -607,7 +610,7 @@ impl OperationHandler for OpenAiEmbeddings {
                     .collect()
             })
             .unwrap_or_default();
-        let usage = v.get("usage").map(|u| crate::billing::TokenUsage {
+        let usage = v.get("usage").map(|u| busbar_core::billing::TokenUsage {
             input: u.get("prompt_tokens").and_then(Value::as_u64).unwrap_or(0),
             ..Default::default()
         });
@@ -653,16 +656,16 @@ impl OperationHandler for OpenAiEmbeddings {
 
 // ---------------------------------------------------------------- image OperationHandler (real, cross-protocol)
 
-use crate::ir::image::{ImageOp, ImageReq, ImageResp, ImageSize};
-use crate::media::ImageOutput;
+use busbar_core::ir::image::{ImageOp, ImageReq, ImageResp, ImageSize};
+use busbar_core::media::ImageOutput;
 
 struct OpenAiImage;
 
 impl OperationHandler for OpenAiImage {
     /// This protocol's error envelope, shared by every operation it serves: the same
     /// vocabulary its chat cell reports, read from the same upstream.
-    fn extract_error(&self, status: u16, body: &[u8]) -> crate::breaker::RawUpstreamError {
-        crate::handlers::protocol_error("openai", status, body)
+    fn extract_error(&self, status: u16, body: &[u8]) -> busbar_core::breaker::RawUpstreamError {
+        busbar_core::handlers::protocol_error("openai", status, body)
     }
     fn read_request(&self, body: &[u8], _content_type: &str) -> Result<IrReq, IngressReject> {
         let wire: Value =
@@ -822,8 +825,8 @@ struct OpenAiModeration;
 impl OperationHandler for OpenAiModeration {
     /// This protocol's error envelope, shared by every operation it serves: the same
     /// vocabulary its chat cell reports, read from the same upstream.
-    fn extract_error(&self, status: u16, body: &[u8]) -> crate::breaker::RawUpstreamError {
-        crate::handlers::protocol_error("openai", status, body)
+    fn extract_error(&self, status: u16, body: &[u8]) -> busbar_core::breaker::RawUpstreamError {
+        busbar_core::handlers::protocol_error("openai", status, body)
     }
     fn read_request(&self, body: &[u8], _content_type: &str) -> Result<IrReq, IngressReject> {
         let wire: Value =
@@ -979,5 +982,5 @@ fn map_strs(m: &BTreeMap<String, Vec<String>>) -> Value {
 }
 
 #[cfg(test)]
-#[path = "tests/openai_tests.rs"]
+#[path = "tests/handler_tests.rs"]
 mod tests;
