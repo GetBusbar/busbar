@@ -1,0 +1,26 @@
+[package]
+name = "busbar-abi-bench-plugin"
+version = "1.6.0"
+publish = false
+edition = "2021"
+rust-version = "1.97"
+description = "MEASUREMENT-ONLY: the cdylib on the far side of the plugin-ABI marshalling instrument's dlopen. Not shipped."
+license = "Apache-2.0"
+
+# `cdylib` + `rlib` for the reason `store-example-plugin` and `hook-test-plugin` both carry in their
+# manifests: with cdylib alone, a `cargo test` build emits a "0 tests" harness and NEVER writes the
+# .dylib/.so, so the harness dlopens nothing and silently measures a missing file.
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+busbar-abi-bench = { path = "../abi-bench" }
+# The REAL boundary. The plugin side of every arm routes through `busbar_plugin_sdk::boundary`'s
+# `call_boundary`/`open_boundary`/`close_boundary`/`free_boundary` — the identical code the shipped
+# `export_plugin!` macro emits — so the mandatory `catch_unwind`, the status map and the
+# alloc-after-check out-buffer publish are all charged to the number.
+busbar-plugin-sdk = { path = "../plugin-sdk" }
+busbar-plugin-abi = { path = "../plugin-abi" }
+serde_json = { workspace = true }
+rkyv = { workspace = true }
+postcard = { workspace = true }

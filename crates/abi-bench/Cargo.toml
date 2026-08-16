@@ -1,0 +1,34 @@
+[package]
+name = "busbar-abi-bench"
+version = "1.6.0"
+publish = false
+edition = "2021"
+rust-version = "1.97"
+description = "MEASUREMENT-ONLY: the plugin-ABI marshalling instrument. Not shipped."
+license = "Apache-2.0"
+
+# THE INSTRUMENT. A hand-rolled `main()` rather than a criterion bench target, for the reason
+# `wt-ffiperf`'s ffi_hop bench recorded: criterion runs cells sequentially for tens of seconds each,
+# and this machine's own drift between cells is larger than the effect under test. The only way to
+# read a sub-microsecond difference is to interleave the arms round-robin inside one trial so every
+# arm sees the same thermal/scheduling weather, then report the spread across trials.
+[[bin]]
+name = "abi-bench"
+path = "src/main.rs"
+
+[lib]
+name = "busbar_abi_bench"
+path = "src/lib.rs"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+rkyv = { workspace = true }
+postcard = { workspace = true }
+# The host side of the crossing, exactly as `plugin-loader` does it.
+libloading = { workspace = true }
+# The reference scale ONLY: the bench prints what a real dialect's own request parse costs
+# (`AnthropicReader::read_request` over a `serde_json::Value`), so a crossing figure can be read as
+# a fraction of the work the codec was going to do anyway rather than in a vacuum.
+busbar-core = { path = "../busbar-core" }
+busbar-proto-anthropic = { path = "../busbar-proto-anthropic" }
