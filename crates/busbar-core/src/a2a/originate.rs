@@ -156,6 +156,9 @@ fn issue_originated(
             policy: &at.policy,
             a2a_version: at.a2a_version,
             framing: at.framing,
+            // The originate direction is scoped OUT of the breaker unit (the audit's own table row);
+            // `None` admits everything and records nothing until unification mounts it.
+            breakers: None,
         },
         at.seam.as_ref(),
         at.now_ms,

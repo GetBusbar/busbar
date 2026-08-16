@@ -1288,6 +1288,7 @@ impl TestApp {
             probe_schedule: std::sync::Arc::new(crate::health::ProbeSchedule::new(lanes.len())),
             lanes,
             store: store.clone(),
+            plane_breakers: std::sync::Arc::new(crate::store::PlaneBreakers::new()),
             by_model,
             pools: self.pools,
             upstream_credentials: self.upstream_credentials,

@@ -61,8 +61,8 @@
     {
       "capability": "breaker-trip",
       "plane": "mcp-client",
-      "state": "missing",
-      "note": "a failed upstream leg is Err(String) relayed to the caller (mcp/upstream.rs); nothing writes any breaker cell. The stdio crash-loop breaker is process supervision, shares no state with LaneRuntime, and does not count."
+      "state": "proven",
+      "test": "crates/busbar/src/mcp/tests/breaker_fastfail_tests.rs::a_hard_down_http_server_trips_and_the_second_call_fast_fails_without_touching_it"
     },
     {
       "capability": "breaker-trip",
@@ -73,8 +73,8 @@
     {
       "capability": "breaker-trip",
       "plane": "a2a-client",
-      "state": "missing",
-      "note": "every backend failure is a RelayRefusal rendered as a busbar-attributed 502; nothing records health, on any of the three transports."
+      "state": "proven",
+      "test": "crates/busbar/src/a2a/tests/breaker_fastfail_tests.rs::a_backend_hard_down_opens_the_core_cell_and_the_second_hop_never_reaches_the_wire"
     },
     {
       "capability": "breaker-trip",
@@ -91,8 +91,8 @@
     {
       "capability": "breaker-fastfail",
       "plane": "mcp-client",
-      "state": "missing",
-      "note": "no admission call anywhere on the path; a hard-down server costs EVERY call the full timeout (30s default) and a concurrency slot, on both transports."
+      "state": "proven",
+      "test": "crates/busbar/src/mcp/tests/breaker_fastfail_tests.rs::a_dead_stdio_child_trips_the_same_core_cell_and_the_second_call_fast_fails"
     },
     {
       "capability": "breaker-fastfail",
@@ -103,8 +103,8 @@
     {
       "capability": "breaker-fastfail",
       "plane": "a2a-client",
-      "state": "missing",
-      "note": "the relay re-asks trust before the socket, never availability; a dead backend burns the full timeout per call and produces no operator trip signal."
+      "state": "proven",
+      "test": "crates/busbar/src/a2a/tests/breaker_fastfail_tests.rs::a_tripped_agent_rejects_fresh_submissions_on_the_jsonrpc_binding"
     },
     {
       "capability": "breaker-fastfail",

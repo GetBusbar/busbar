@@ -252,6 +252,12 @@ pub struct App {
     pub(crate) tslots: Arc<crate::telemetry::AppSlots>,
     pub(crate) lanes: Vec<Lane>,
     pub(crate) store: Arc<dyn LaneRuntime>,
+    /// THE NON-LLM PLANES' BREAKER CELLS — the degenerate single-member cell per registered MCP
+    /// server / A2A agent (the breaker-all-planes audit's closing design). Live state, shared by every
+    /// clone-derived snapshot and REUSED across `build_app_from_config` applies exactly like
+    /// `store`: learned reliability must survive a snapshot swap, or every apply un-trips every
+    /// dead upstream. See [`crate::store::PlaneBreakers`] for why it is not the LLM store itself.
+    pub(crate) plane_breakers: Arc<crate::store::PlaneBreakers>,
     /// The health-probe schedule, shared by every clone-derived snapshot of this lineage so a swap
     /// does not reset the probe phase. See [`crate::health::ProbeSchedule`].
     pub(crate) probe_schedule: Arc<crate::health::ProbeSchedule>,
