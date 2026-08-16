@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE MEMBER SELECTION for one admitted A2A call — the failover seam mounted at ADMISSION TIME
-//! (the audit's §3.3 row), factored out of `receive` whole: which `agent_pools:` member (if any) a
-//! hop targets, which breaker cell it admits against, and what the ingress renders when the walk
-//! refuses.
+//! THE MEMBER SELECTION for one admitted A2A call — the failover seam mounted at ADMISSION TIME,
+//! factored out of `receive` whole: which `agent_pools:` member (if any) a hop targets, which
+//! breaker cell it admits against, and what the ingress renders when the walk refuses.
 //!
 //! The rules, stated once here and inherited by `receive`:
 //!
