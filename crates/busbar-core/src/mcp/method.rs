@@ -1422,7 +1422,7 @@ async fn tools_call(
     );
     if let Err(refused) = route.admit(&breakers) {
         return log.refused(
-            REASON_UPSTREAM_UNAVAILABLE,
+            route_refusal_reason(&refused),
             refuse_route(id, &route, &refused),
         );
     }
@@ -1729,7 +1729,7 @@ async fn create_task(
     );
     if let Err(refused) = route.admit(&breakers) {
         return log.refused(
-            REASON_UPSTREAM_UNAVAILABLE,
+            route_refusal_reason(&refused),
             refuse_route(id, &route, &refused),
         );
     }
@@ -2109,6 +2109,16 @@ fn refuse_upstream_unavailable(
 /// failing busbar's check, so it carries the walk's own wording and its own reason token; 503 all
 /// the same, because from the caller's seat the named tool cannot currently be served and nothing
 /// was dispatched.
+/// The per-call log's reason token for a routed admission refusal — the walk's own vocabulary for
+/// a pin mismatch, the degenerate cell's established token for every availability shape (so the
+/// un-pooled path's records are byte-identical to the breaker unit's).
+fn route_refusal_reason(refused: &super::reroute::RouteRefused) -> &'static str {
+    match &refused.refusal {
+        crate::failover::Refusal::NotInterchangeable { .. } => refused.refusal.reason(),
+        _ => REASON_UPSTREAM_UNAVAILABLE,
+    }
+}
+
 fn refuse_route(
     id: Option<serde_json::Value>,
     route: &super::reroute::PoolRoute,
