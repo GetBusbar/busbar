@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The targeted loom model of the config-mutation swap invariant
-# (crates/busbar/src/admin/v1/json/tests/txn_loom.rs). Loom explores thread interleavings
+# (crates/busbar-core/src/admin/v1/json/tests/txn_loom.rs). Loom explores thread interleavings
 # exhaustively, so it is SLOW and deliberately NOT part of `cargo test --workspace`: the module sits
 # behind the optional `loom-model` feature and only this script turns it on.
 set -euo pipefail
@@ -23,4 +23,22 @@ cd "$(dirname "$0")/.."
 # gave up the tail of the state space. Unset means unbounded (loom's `preemption_bound: None`).
 # An explicit LOOM_MAX_PREEMPTIONS in the environment is still honoured, for bisecting a failure
 # down to its shallowest interleaving; it is a debugging aid, not the gate's setting.
-cargo test --release -p busbar --bin busbar --features loom-model txn_loom -- --nocapture "$@"
+# BOTH packages, unit targets of each (`--bins --lib`): the txn_loom module lives in
+# `admin/v1/json/tests/`, which the core split (step 3.7) moves into `busbar-core`'s lib. A
+# selector naming only the bin target would come back GREEN AND EMPTY on the far side of that
+# move — the classic vacuous gate — so the selector names both sides of the seam and the count
+# floor below refuses a run that executed zero models.
+out=$(cargo test --release -p busbar -p busbar-core --bins --lib --features loom-model txn_loom -- --nocapture "$@" 2>&1) && status=0 || status=$?
+printf '%s\n' "$out"
+[ "$status" -eq 0 ] || exit "$status"
+
+# ── THE COUNT FLOOR ── a filter that matches nothing still exits 0. The loom gate is only a gate
+# if at least one model actually ran; sum every harness's "N passed" and refuse zero.
+ran=$(printf '%s\n' "$out" | sed -n 's/^test result: ok\. \([0-9][0-9]*\) passed.*/\1/p' | awk '{s+=$1} END {print s+0}')
+if [ "${ran:-0}" -lt 1 ]; then
+  echo "loom gate VACUOUS: the txn_loom filter matched ${ran:-0} test(s) across busbar + busbar-core." >&2
+  echo "The models moved or were renamed; point this script at their new home. A green run that" >&2
+  echo "executed nothing is not a pass." >&2
+  exit 1
+fi
+echo "loom gate: ${ran} interleaving model(s) ran to completion"

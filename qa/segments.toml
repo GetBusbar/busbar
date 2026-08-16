@@ -67,7 +67,7 @@ id     = "export"
 status = "active"
 tier   = "fast"
 # The export coverage lives as in-crate unit tests rather than an integration target —
-# crates/busbar/src/export/tests/{projection,webhook,file,prometheus}_tests.rs plus the
+# crates/busbar-core/src/export/tests/{projection,webhook,file,prometheus}_tests.rs plus the
 # export surfaces outside that module (the admin export API, the config-migrate export rewrites, the
 # plugin-route export/metrics confinement). `busbar` is a BINARY-ONLY package (no [lib]), so its unit
 # tests run under `--bin busbar`.
@@ -75,12 +75,12 @@ tier   = "fast"
 # The filter is the module-and-name substring `export`, not an enumerated case list, deliberately:
 # a substring filter picks up newly added export tests automatically, whereas a written-out list is
 # one more thing that drifts quietly. The streams the projection tests exercise are named in
-# crates/busbar/src/export/tests/projection_tests.rs (produced streams, the refused `audit` stream,
+# crates/busbar-core/src/export/tests/projection_tests.rs (produced streams, the refused `audit` stream,
 # the unknown-stream vocabulary error, the producerless-stream boot error).
 #
 # The webhook/scrape rows that need a REAL receiver are not in this fast segment; they belong to the
 # live-mock cadence and are covered by core-data-plane's release-check soak.
-run    = "cargo test --release -p busbar --bin busbar -- export"
+run    = "cargo test --release -p busbar -p busbar-core --bins --lib -- export"
 
 [[segment]]
 id     = "hook-bindings"
@@ -107,7 +107,7 @@ tier   = "fast"
 #   hooks::* (the wire/plugin/scrape hook seam)
 #
 # Same reasoning as `export` for the substring filter over an enumerated list.
-run    = "cargo test --release -p busbar --bin busbar -- hook"
+run    = "cargo test --release -p busbar -p busbar-core --bins --lib -- hook"
 
 [[segment]]
 id     = "config-stability"

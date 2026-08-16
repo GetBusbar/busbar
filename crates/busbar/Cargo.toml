@@ -3,366 +3,76 @@ name = "busbar"
 version = "1.6.0"
 publish = false            # internal workspace crate; never goes to crates.io
 edition = "2021"
-# `governance.rs` uses `u32::is_multiple_of` (stabilized in Rust 1.87), and clippy's
-# `manual_is_multiple_of` lint rewrites `% N == 0` back to it, so 1.87 is the language-feature
-# floor. The declared version is higher (1.97): unlike this repo's CI, which floats on
-# `dtolnay/rust-toolchain@stable`, `rust-version` is a single pinned number, so it's set to what
-# CI actually verifies rather than the older, narrower feature floor — a build below either number
-# fails fast with a clear message instead of a cryptic "method not found", and MSRV-aware tooling
-# resolves compatible deps against the real number.
+# `rust-version` rationale: see busbar-core/Cargo.toml — one pinned number, set to what CI verifies.
 rust-version = "1.97"
 description = "Native-protocol LLM gateway: lossless cross-protocol translation, weighted pools, per-(pool,lane) circuit breaking, and governance — in one static Rust binary."
 license = "Apache-2.0"
 
+# THE THIN BINARY. Step 3.7 of 1.6.0: everything an operator's request touches lives in
+# `busbar-core`; this package is argument parsing, config LOCATION, process lifecycle (bind /
+# serve / shutdown / the jemalloc purge fallback), and — from step 4 — protocol registration.
+# The composition root is allowed to know the protocol set; nothing else is.
 [[bin]]
 name = "busbar"
 path = "src/main.rs"
 
 [dependencies]
-# NOTE: the jemalloc global allocator is a TARGET-SPECIFIC dependency (see the
-# `[target.'cfg(not(target_env = "msvc"))'.dependencies]` block below) — NOT unconditional. tikv-jemalloc-sys's
-# C build (`sh ./configure` + make) does not build under native windows-msvc `cl.exe`, so MSVC (a shipped
-# release target + CI gate) falls back to the system allocator; the `#[global_allocator]` and ctl call in
-# main.rs are cfg-gated to match.
-# The plugin CONTRACTS (auth-module trait, routing-policy trait, projections) — the one crate both
-# the engine and every plugin build against. See api/.
-busbar-api = { path = "../api" }
-busbar-store-memory = { path = "../store-memory" }
-# The durable SQLite store is NO LONGER compiled in — it is a dynamic-library plugin loaded at boot
-# from the plugins directory (see busbar-plugin-loader). Dropping the bundled rusqlite `bundled`
-# amalgamation (~4.7 MB of C) is what makes the default binary lean; `store: memory` needs nothing,
-# `store: sqlite` loads the dropped-in plugin.
+# The engine. `default-features = false` so the binary's OWN feature list is the single decision
+# point: each busbar feature forwards to the core feature of the same name below.
+busbar-core = { path = "../busbar-core", default-features = false }
+# Boot-time plugin listing (`--plugins`) reads the registry the loader builds.
 busbar-plugin-loader = { path = "../plugin-loader" }
-# Plugin signature VERIFICATION + trust posture (pure crypto/policy, no unsafe): verifies a plugin's
-# signed manifest against the configured trust policy at boot-load and admin-install.
-busbar-plugin-sign = { path = "../plugin-sign" }
-# The SecretRef reference type ({module, settings} + env/file sugar) — extracted out of this
-# crate's own config::secret module so busbar-plugin-pack (and future schema-generation tooling)
-# can derive the x-busbar-secret oneOf shape from the SAME type this engine deserializes, rather
-# than a hand-written parallel copy that can drift.
-busbar-secret-ref = { path = "../secret-ref" }
-# The built-in plugins, each its own workspace crate under auth/<name>/ or hooks/<name>/ — optional
-# so the matching feature (below) compiles each IN or OUT of the binary.
-busbar-auth-admin-tokens = { path = "../auth-admin-tokens", optional = true }
-busbar-hooks-ranking = { path = "../hooks-ranking", optional = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "io-util"] }
 axum = { workspace = true }
-# Already present transitively (axum's middleware stack). Pulled in directly for the `Layer`/`Service`
-# traits `limits::admission::InboundAdmissionLayer` implements by hand for the OUTERMOST
-# inbound-concurrency cap (applied when the operator sets `limits.max_inbound_concurrent > 0`; the `0`
-# default adds NO layer). No extra features needed — `Layer`/`Service` are in tower's default set;
-# the old `limit`/`load-shed` features (the prior `GlobalConcurrencyLimitLayer` + `LoadShedLayer`
-# stack) are gone now that admission is one hand-rolled `AdmissionGate`-backed service.
-tower = { workspace = true }
-# Only the subsystems busbar actually touches: the multi-thread runtime (#[tokio::main],
-# spawn/JoinHandle), macros (main/test), net (TcpListener), time (sleep/interval), sync
-# (Semaphore/OwnedSemaphorePermit), and signal (graceful-shutdown ctrl_c/SIGTERM, so OTLP spans
-# flush on exit). The "full" meta-feature additionally pulls fs/io-std/test-util — none referenced in
-# src/ — so it is NOT used; the slice below is hand-picked instead.
-#
-# `process` IS BACK, AND THE ARGUMENT FOR IT IS THE ONE THIS COMMENT USED TO DEMAND.
-#
-# It was enabled once for `mcp/client/stdio.rs`, a complete child-process supervisor that NOTHING
-# EVER CALLED — a `tools:` entry carrying a stdio transport had no dispatch arm, and
-# `transport: stdio` was refused at config validation. Unreachable security-relevant code that reads
-# as shipped is a false green, so the supervisor was DELETED and the feature went with it, precisely
-# so that re-introducing an unreachable one would fail to BUILD rather than pass review as another
-# quiet `#![allow(dead_code)]`.
-#
-# That gate did its job and is now satisfied rather than bypassed. `transport: stdio` is ACCEPTED at
-# config validation, `crate::transport::Transport::Stdio` is a real arm of the transport axis, and
-# `mcp/upstream.rs` dispatches `tools/call` down it through the wire vtable. The supervisor has a
-# production caller; the module carries no `allow(dead_code)`; and a test kills a child and watches
-# the backoff and the quarantine fire THROUGH that caller. If any of those three stops being true,
-# the honest move is the one this comment recorded last time: delete it and take the feature out
-# again.
-#
-# `io-util` stays for the reason it always did: the TLS and transport batteries read and write
-# sockets with `AsyncReadExt` / `AsyncWriteExt`, which is unrelated to child processes — though the
-# stdio wire now uses those traits on pipes as well.
-# `io-std` joined the slice for the MCP STDIO SERVE MODE (`--mcp-stdio`): the process's own
-# stdin/stdout ARE the transport there, so `tokio::io::{stdin, stdout}` is genuinely referenced.
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "io-util", "io-std", "process"] }
-reqwest = { workspace = true, features = ["http2"] }
-serde = { workspace = true }
-serde_json = { workspace = true }
-# Insertion-ordered map for `auth.methods` (the hosted-login method registry): operator order is the
-# login-page button order. Already resolved transitively in the graph (2.14) — the `serde` feature
-# adds no new crate (serde is present). Used only by the config surface.
-indexmap = { workspace = true }
-# CI-ONLY, feature-gated (`openapi-schema`). Derives JSON Schema from the admin-API response VIEW
-# types so `openapi_doc()` can emit typed `$ref` response bodies. Never compiled into the shipped
-# release binary — the live `GET /openapi.json` handler serves a committed static `openapi.json`
-# (regenerated + drift-checked in CI under this feature), so schemars is absent from
-# `cargo build -p busbar --release` and from the runtime dependency graph. `optional = true` +
-# `dep:schemars` keep it out of the default build entirely.
-schemars = { workspace = true, optional = true }
-# Exhaustive thread-interleaving model checker, used ONLY by the targeted model of the
-# config-mutation swap invariant (`admin/v1/json/tests/txn_loom.rs`, feature `loom-model`,
-# `scripts/loom.sh`). OPTIONAL, so a normal build/test never compiles it — and deliberately gated by
-# a cargo FEATURE rather than loom's usual `--cfg loom`, because RUSTFLAGS is global and
-# `--cfg loom` makes tokio compile out `tokio::net` (which the server needs).
-loom = { workspace = true, optional = true }
-# RS256 JWT signing for the `jwt-bearer` egress auth (OAuth 2.0 JWT-bearer grant, RFC 7523 — Vertex et
-# al.). Both crates are ALREADY in the graph (ring is reqwest's rustls crypto backend; base64 rides in
-# transitively), so promoting them to direct deps adds NO new external crate to the tree. `ring` does
-# the RS256 signature (`RsaKeyPair::from_pkcs8` + `RSA_PKCS1_SHA256`); `base64` does the PEM→DER decode
-# of the service-account private key and the JWT base64url segments.
-ring = { workspace = true }
-base64 = { workspace = true }
-# THE OAUTH 2.1 AUTHORIZATION SERVER. Feature selection and the reason for each lives once, in the
-# workspace table; what belongs here is why busbar takes the crate at all and what it costs when the
-# operator has not asked for it.
-#
-# It is a NORMAL dependency, not an optional one, and that is the design rather than an oversight.
-# `oauth_as:` is absent from almost every config, and the requirement is not "compiled out" but
-# "costs nothing when off": `App::oauth_as` is `Option<Arc<AsPlane>>`, `None` when unconfigured, so
-# no `AuthorizationService` is built, no `MemoryStorage` is allocated, no signing key is generated
-# and no route is mounted — exactly the posture `mcp:` already takes. A cargo feature would make the
-# shipped artifact depend on how it was built, which is the class of difference that ends with an
-# operator enabling a config block that the binary in front of them cannot serve.
-oauth-as = { workspace = true }
-# SIMD JSON (NEON on arm64, AVX2/SSE on x86): used for the hot request/response parse+serialize on
-# the translate path, where its SIMD escape-scanning is ~5× serde_json on the large string-heavy
-# bodies LLM traffic carries. `serde_json` is retained for the cold/config/error paths and as the
-# `Value` type; sonic-rs serializes/deserializes that same `serde_json::Value` at the hot boundaries.
-sonic-rs = { workspace = true }
-# Config parsing. The `serde_yaml` -> `serde_yaml_ng` package rename, and why, is stated once in
-# the workspace table; the call sites here read `serde_yaml::` either way.
-serde_yaml = { workspace = true }
-futures = { workspace = true }
-bytes = { workspace = true }
-# The `http_body::Body` trait, so the TLS/plain serve loops can wrap the inbound request body in a
-# per-frame read timeout (`tls::TimeoutBody`) - the slow-loris body defense the header-read timeout
-# does not cover. Already in the graph transitively (hyper/http-body-util); named directly here so we
-# can `impl Body`.
-http-body = { workspace = true }
-http-body-util = { workspace = true }
-metrics = { workspace = true }
-# busbar uses this purely as an in-process recorder: `PrometheusBuilder::new().install_recorder()`
-# plus `handle.render()` (src/metrics.rs), serving the text exposition from its own axum /metrics
-# admin route. The crate's `default` feature enables `http-listener` and `push-gateway`, which drag
-# in hyper/hyper-rustls/hyper-util/rustls (an HTTP server + push client busbar never invokes) and a
-# second crypto backend (aws-lc-rs). Dropped for the same reason tokio/reqwest/otlp are hand-trimmed:
-# shrink the request-path binary's compile + attack surface.
-metrics-exporter-prometheus = { workspace = true }
-# Only for `MetricKindMask`, naming which metric kinds the recorder's idle timeout may reap. Already
-# in the graph as the exporter's own dependency, so this adds no new external crate.
-metrics-util = { workspace = true }
-opentelemetry = { workspace = true }
-opentelemetry_sdk = { workspace = true }
-# Pin OTLP to the HTTP/proto trace path busbar uses (`SpanExporter::builder().with_http()`). The
-# default bundled client is dropped; busbar injects its OWN HTTP client via `with_http_client` (see
-# observability::build_otlp) so trace export shares busbar's hyper/rustls stack and — critically —
-# does NOT follow redirects (a redirect-following exporter is a runtime SSRF vector: a validated OTLP
-# endpoint that 3xx-redirects to an internal/metadata target would be followed). Dropping default
-# features also removes `reqwest-blocking-client` and the OTLP metrics/logs paths (busbar exports
-# metrics via Prometheus, not OTLP).
-#
-# SINGLE CLIENT STACK: by dropping the `reqwest-rustls` feature and supplying a hyper-based
-# `opentelemetry_http::HyperClient` over a hyper-rustls connector (all already in the graph for the
-# axum server), the SECOND reqwest major (0.13) that the bundled OTLP client used to pull is gone —
-# `cargo tree -d` no longer lists a duplicate reqwest. The request path's reqwest 0.12 is the only
-# reqwest major.
-opentelemetry-otlp = { workspace = true }
-opentelemetry-http = { workspace = true }
-# HTTPS connector for the OTLP HyperClient (rustls, http/1.1). Already in the graph via the server
-# stack; named directly so build_otlp can construct a redirect-free TLS client.
-hyper-rustls = { workspace = true }
 tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
-tracing-opentelemetry = { workspace = true }
-sha2 = { workspace = true }
-hmac = { workspace = true }
-hex = { workspace = true }
-getrandom = { workspace = true }
-# ed25519 for the busbar-signed virtual-key TOKENS: the same primitive the plugin-signing
-# path uses, already in the graph. Mint signs a compact `{sub, exp, kid}` token; verify checks the
-# signature statelessly. `rand_core` is pulled for keypair generation on first boot.
-ed25519-dalek = { workspace = true }
-# CRC32 for the AWS `application/vnd.amazon.eventstream` encoder (Bedrock ingress streaming): AWS
-# SDK clients validate both the prelude and message CRC32 on every frame, so the encoder needs a
-# correct, fast CRC32. `crc32fast` is small, dependency-light, and the de-facto standard.
-crc32fast = { workspace = true }
-# The pluggable routing-policy contract (`RoutingPolicy`) is an async trait so the webhook transport
-# can do I/O; native/socket policies return immediately. `async-trait` is the standard, zero-runtime
-# (compile-time desugar to boxed futures) way to express object-safe async traits on stable Rust. It
-# is only ever entered for NON-default pools — a `route: weighted` (default) pool never constructs a
-# `RoutingPolicy` and never touches this boxing, preserving the zero-cost default.
-async-trait = { workspace = true }
-# ── THE PROTOCOL VOCABULARY FOR MCP AND A2A ────────────────────────────────────────────────────
-# Landed AHEAD OF THEIR CALLERS, deliberately, and the same posture `plane/mod.rs` and
-# `OperationHandler::extract_error` already took: pin the capability first, on its own, so the
-# dependency review and the eleven-configuration gate run against a change that does nothing —
-# and the commit that first USES one of these is then a change of call sites rather than a
-# simultaneous argument about supply chain and design.
-#
-# Why these and not the frameworks beside them is stated once, in the workspace table. The short
-# version: these are the wire TYPES. The router stays `core_routes::CoreRouter`, the transport stays
-# busbar's resolve-then-pin, and the task store stays the one the plugin ABI and the per-principal
-# audit chain are built on. What the SDKs supply is PROTOCOL compliance; governance is busbar's and
-# always will be.
-#
-# Measured with `cargo tree -e normal` rather than by counting lock lines, because a build
-# dependency never enters the binary: +42 crate names in the lock, **+13 in the shipped artifact**.
-a2a-lf = { workspace = true }
-a2a-pb = { workspace = true }
-rmcp = { workspace = true }
-tonic = { workspace = true }
-# `google.rpc.{Status,ErrorInfo}` and the trailer that carries them. See the workspace table: taken
-# for A2A section 10.6's ErrorInfo-in-`grpc-status-details-bin` MUST and for nothing else.
-tonic-types = { workspace = true }
-# The protobuf runtime, for the gRPC binding in the DELEGATING direction. See the workspace table for
-# why it is named here rather than reached through tonic: busbar's outbound hop is its own
-# resolve-then-pin transport, so the length-prefixed frame is composed here.
-prost = { workspace = true }
-# Native inbound TLS termination (+ optional mTLS). `tokio-rustls` wraps the accepted TcpStream in a
-# rustls server handshake; it pins the `ring` crypto provider (already the only provider in the graph
-# via reqwest/hyper-rustls), so the process holds exactly one CryptoProvider — no aws-lc-rs.
-# `rustls-pki-types`' built-in PEM API parses the operator's PEM cert chain + private key
-# (PKCS#8 / PKCS#1 / SEC1). It's already in the graph via rustls/tokio-rustls; named here as a direct
-# dep so src/tls.rs can call its `PemObject` API (replacing the unmaintained `rustls-pemfile`).
-# axum 0.7's `serve` is hardwired to a `TcpListener` (the generic `Listener` trait only landed in
-# axum 0.8). To terminate TLS without bumping axum — which would churn the routing hot path's
-# Router/Service types this feature must NOT touch — the TLS branch drives hyper directly: it accepts
-# on the TcpListener, runs the rustls handshake, then serves each connection with hyper-util's
-# auto::Builder, mirroring exactly what `axum::serve` does internally. `GracefulShutdown` reproduces
-# `.with_graceful_shutdown(...)`'s drain semantics. Both crates are already in the graph (axum/server
-# stack); they're named here only to pull the `server-auto`/`server-graceful` surface directly.
-# Parses the HTTP-date form of `Retry-After` (RFC 9110 §10.2.3), which the integer-only parse used
-# to silently drop. Zero new supply-chain surface: already in the lock as a `hyper` dependency.
-httpdate = { workspace = true }
-hyper = { workspace = true }
-hyper-util = { workspace = true }
-tokio-rustls = { workspace = true }
-# `ServerConfig`/`WebPkiClientVerifier`/`crypto::ring` are referenced directly in src/tls.rs. Pinned
-# to the version already resolved in the graph (server stack) with only the `ring` provider feature,
-# so no second crypto backend is introduced.
-rustls = { workspace = true }
-rustls-pki-types = { workspace = true }
+metrics = { workspace = true }
+serde_yaml = { workspace = true }
 
-# Global allocator: jemalloc on EVERY target EXCEPT windows-msvc. The request hot path holds a few copies
-# of each in-flight body, so peak RSS tracks (concurrency × payload); glibc never returns those pages, so
-# RSS ratcheted at the peak. jemalloc + a background purge thread (enabled via the ctl crate in main.rs,
-# a safe wrapper — no unsafe under this crate's forbid(unsafe_code)) returns dirty pages after a short
-# decay, so memory PLATEAUS under load and falls back to idle. Gated off msvc because tikv-jemalloc-sys's
-# C build does not compile under native `cl.exe`; MSVC uses the system allocator (main.rs cfg matches).
+# Global allocator: jemalloc on EVERY target EXCEPT windows-msvc — a property of the BINARY (only
+# one crate in a link may declare a global allocator), which is why these stay here when everything
+# else moved to busbar-core. Full rationale in main.rs at the `#[global_allocator]` site.
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
 tikv-jemallocator = { workspace = true }
 tikv-jemalloc-ctl = { workspace = true }
 
-# On the SHIPPED static-musl (`FROM scratch`) binary, ALSO enable jemalloc's `disable_initial_exec_tls`:
-# jemalloc's default initial-exec TLS access model is unreliable on musl static builds and can fault at
-# startup. Unions with the not-msvc dep above, so only musl carries it (glibc / dev builds are unaffected).
 [target.'cfg(target_env = "musl")'.dependencies]
 tikv-jemallocator = { workspace = true, features = ["disable_initial_exec_tls"] }
 
 [features]
-# 1.5.0: the static-token allowlist module is REMOVED entirely - data-plane auth is the
-# built-in `keys` signed-token verifier plus IdP auth modules. Nothing static-token-shaped is
-# compiled into any build.
+# Pure forwards: every `#[cfg(feature = ...)]` site lives in busbar-core, so the binary's features
+# are one-line re-exports of the core feature with the same name. The binary keeps the SAME default
+# set the monolithic crate had, so `cargo build -p busbar` builds the same artifact as before.
 default = ["auth-admin-tokens", "hooks-ranking"]
-# The built-in `admin-tokens` ADMIN auth plugin (the single operator admin token) — same
-# default-on, removable, compliance-by-compilation stance. Removed, `admin_auth: [admin-tokens]`
-# (the default) boot-errors and an external admin module must be wired.
-auth-admin-tokens = ["dep:busbar-auth-admin-tokens"]
-# The built-in RANKING hooks (cheapest/fastest/least_busy/usage) are also a default-on, removable
-# feature. `--no-default-features` drops them; `weighted` stays (it's the engine's inline SWRR floor,
-# not a plugin). A pool `policy: cheapest` (etc.) is then a boot error.
-hooks-ranking = ["dep:busbar-hooks-ranking"]
-# CI-ONLY schema generation for the admin OpenAPI doc. Enables schemars + compiles the
-# schema-generating path of `openapi_doc()` (typed `$ref` response bodies) and the golden/drift
-# test. NOT in `default` — a normal or `--release` build never pulls schemars, and the runtime
-# `GET /openapi.json` handler serves the committed static file regardless of this feature.
-openapi-schema = ["dep:schemars"]
-# Compile + run the targeted loom model of the config-mutation swap ordering. Not in
-# `default`; `scripts/loom.sh` is the front door. Loom explores interleavings exhaustively, so this
-# is minutes of CPU and stays out of `cargo test --workspace`.
-loom-model = ["dep:loom"]
-# Compile the NEGATIVE compile-fence module (`admin/v1/json/tests/txn_fence.rs`), which must
-# FAIL to type-check. `scripts/txn-fence.sh` enables this and asserts the build is rejected — a
-# successful build under this feature is the test failing. Never in `default`.
-txn-fence-red = []
+auth-admin-tokens = ["busbar-core/auth-admin-tokens"]
+hooks-ranking = ["busbar-core/hooks-ranking"]
+openapi-schema = ["busbar-core/openapi-schema"]
+loom-model = ["busbar-core/loom-model"]
+txn-fence-red = ["busbar-core/txn-fence-red"]
 
 [dev-dependencies]
-# THE REAL `kind: store` PLUGIN CRATE, IN THIS PACKAGE'S BUILD GRAPH.
-#
-# CORRECTION, 2026-08-11: this edge was added believing it made the cdylib impossible to stale, on
-# the reasoning that the lib target declares `crate-type = ["cdylib", "rlib"]` so the one rustc
-# invocation would emit both. THAT IS FALSE. Cargo satisfies a dev-dependency with the RLIB and
-# never emits the cdylib, because nothing in the build graph consumes it — the test loads it by path
-# at runtime, which cargo cannot see. Verified: delete the cdylib, run `cargo test -p busbar
-# --no-run`, and the build completes with the cdylib still absent.
-#
-# The edge is KEPT — it makes the plugin compile against the current SDK and ABI on every run of
-# this package's tests, which is worth having. It simply is not the staleness guarantee. That guard
-# now lives in `mcp/tests/calllog_dispatch_tests.rs::example_store_cdylib`, which refuses to judge
-# an artifact older than the plugin, SDK or ABI sources, with a message that says STALE rather than
-# letting it read as a durability failure.
-#
-# `mcp/tests/calllog_dispatch_tests.rs` `dlopen`s this crate's built cdylib to prove that a real
-# `tools/call` lands a durable record ACROSS THE PLUGIN C ABI — the seam that once carried four store
-# methods while the trait carried ten, accepted every task and call-log write and kept none of them.
-# The test therefore has to load a cdylib built from the CURRENT tree.
-#
-# It is a dev-dependency purely to put the crate in this package's build graph: nothing in busbar's
-# `src/` names it.
-#
-# WHY STALENESS IS THE DANGEROUS CASE, and it is not hypothetical: a stale cdylib answers every write
-# `Ok(())` and every read empty, which is byte-for-byte the signature of the unrelayed ABI. The
-# sibling `store-sqlite` repo's over-the-ABI durability test failed exactly that way against an
-# artifact `cargo test` had not rebuilt, and the failure was indistinguishable from the real defect.
-# The mirror case is worse and is what the guard is really for: an artifact built BEFORE a
-# regression lands reports a PASS while the shipped ABI is broken.
-busbar-store-example-plugin = { path = "../store-example-plugin" }
-# The durable-audit tests exercise busbar-store-memory's append_audit/list_audit over a
-# simulated restart (a fresh AuditLog against the SAME Arc<dyn Store> handle, simulating "process 2"
-# restoring from where "process 1" left off) — busbar-store-memory is already a normal dependency
-# above (the built-in default store), so no separate dev-only entry is needed here.
-# `test-util` gives the health-schedule test a PAUSED clock, so it can drive 20 simulated seconds of
-# swap churn against a 10s probe interval without sleeping for 20 real ones.
+# The bin's own unit tests (src/tests/tests.rs, the ~14 boot/CLI helpers) build App fixtures
+# through core's test_support, which core exposes to dependents only behind this feature.
+busbar-core = { path = "../busbar-core", features = ["test-support"] }
+# The integration suite under tests/ (black-box: boots the binary / reads generated inventories).
 tokio = { workspace = true, features = ["test-util"] }
-# In-crate #[cfg(test)] harness needs reqwest's json feature + axum http1 server.
 reqwest = { workspace = true, features = ["json"] }
 axum = { workspace = true, features = ["http1"] }
 http-body-util = { workspace = true }
 futures = { workspace = true }
 bytes = { workspace = true }
-# `tests/method_coverage.rs` reads the GENERATED `qa/method-inventory.json` (the MCP/A2A method x
-# direction x transport matrix derived from rmcp's own model and a2a-pb's vendored proto). It is
-# already a normal dependency above, so this edge adds nothing to the build graph or the lock; it
-# exists because an integration test links the dev-dependency set, not the crate's own.
 serde_json = { workspace = true }
-# Generates self-signed server certs + a CA/leaf pair at test runtime so the TLS/mTLS integration
-# tests exercise a real rustls handshake without checked-in key material.
-rcgen = { workspace = true }
-# Property-based testing for the lane-availability invariant: generates a world
-# (topology × policy × cause) and asserts the STRENGTHENED disposition-matches-policy invariant + the
-# failover budget bound over the REAL selection + on_exhausted dispatch. Test-only; never in
-# the shipped binary. Config (cases/timeout) is set inline via `proptest!` `ProptestConfig`.
-proptest = { workspace = true }
-# The `Es256Signer`/`Es256Verifier` CONFORMANCE HARNESS and the `Storage` one, which live behind
-# `oauth-as`'s `test-util` feature. A dev-dependency, so resolver 2 keeps the feature out of
-# `cargo build --release` entirely: the shipped binary carries neither harness.
-#
-# WHY IT IS NOT OPTIONAL TO RUN IT: a broken `Es256Signer` fails SILENTLY. A signature that does not
-# verify is indistinguishable, at a resource server, from a tampered token, so the deployment learns
-# about it from its users. The harness carries the RFC 7515 appendix A.3 vector — a value neither
-# half of busbar produced — which is the only thing that can tell a verifier that is RIGHT from one
-# that merely agrees with our own signer.
-oauth-as = { workspace = true, features = ["test-util"] }
-# THE ADDED-LATENCY INSTRUMENT (`benches/hook_path.rs`). Before it there was NO microbenchmark
-# harness in this repository at all — no criterion anywhere, no `benches/`, no `[[bench]]` — so the
-# sub-100µs added-latency positioning had no instrument behind it in-tree. Dev-only: the shipped
-# binary's graph is untouched.
+# tests/method_coverage.rs et al. keep their rationale from the pre-split manifest (git history).
+busbar-store-example-plugin = { path = "../store-example-plugin" }
+# tests/cli_validate.rs builds signed plugin tarball fixtures.
+busbar-plugin-sign = { path = "../plugin-sign" }
+hex = { workspace = true }
+# THE ADDED-LATENCY INSTRUMENT (`benches/hook_path.rs`) — black-box, boots the shipped binary.
 criterion = { workspace = true }
 
-# ── THE HOOK-PATH BENCH ─────────────────────────────────────────────────────────────────────────
-# `harness = false` because criterion supplies its own `main`. Cells C1 (same-protocol, no hook —
-# the REGRESSION GATE) and C2 (same-protocol, one `prompt: ro` tap — the accepted cost). It is a
-# BLACK-BOX instrument that boots the shipped binary, and that is forced rather than chosen: this
-# package has no `[lib]`, so a bench target cannot reach `pub(crate)` internals. The reasoning, and
-# what it costs, is stated in full in the bench's own header.
+# ── THE HOOK-PATH BENCH ── `harness = false` because criterion supplies its own `main`. Still a
+# black-box instrument that boots the shipped binary (see the bench's own header). The split gives
+# it the OPTION of becoming a lib-level bench against busbar-core; taking that option is step 9's
+# business, not this unit's.
 [[bench]]
 name = "hook_path"
 harness = false
-

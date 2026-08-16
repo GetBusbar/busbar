@@ -106,20 +106,23 @@ scan_rule() {
 # One row per busbar-injected header (or header-writing idiom). `pattern` is an ERE matched against
 # CODE (comments/tests already excluded); `what` is the printed violation label; `allow` is the
 # comma-separated list of the header's ONE sanctioned definition/emission file(s).
-SRC_DIR="crates/busbar/src"
+# Core/bin split roots (step 3.7): CORE is the engine library root, BIN the thin binary root.
+CORE="crates/busbar-core/src"
+BIN="crates/busbar/src"
+SRC_DIR="$CORE"
 HDR_ROUTE_POLICY_FILE="${SRC_DIR}/proxy/mod.rs"
 HDR_ROUTE_WIRE_FILE="${SRC_DIR}/proxy/wire.rs"
-HDR_SERVER_TIMING_FILE="${SRC_DIR}/main.rs"
+HDR_SERVER_TIMING_FILE="${SRC_DIR}/router.rs"
 
 # Candidate set: every busbar .rs file except integration-test-only trees (`*/tests/*`, name-navigated
 # and exempt from every choke-point rule the same way structure-lint.sh treats them).
 CANDIDATES=()
-while IFS= read -r f; do CANDIDATES+=("$f"); done < <(find "$SRC_DIR" -name '*.rs' -not -path '*/tests/*' | sort)
+while IFS= read -r f; do CANDIDATES+=("$f"); done < <(find "$SRC_DIR" "$BIN" -name '*.rs' -not -path '*/tests/*' | sort -u)
 
 # ── SCAN FLOOR — every rule below is "for each candidate file, assert the header has ONE gated
 # site", which is VACUOUSLY TRUE over zero candidates: `scan_rule` with no file arguments does not
 # even scan the tree, it reads stdin (empty in CI), and every rule prints `ok`. Rename or move
-# `crates/busbar/src` and this lint passes forever having opened nothing. The floor is not `> 0`
+# `crates/busbar-core/src` and this lint passes forever having opened nothing. The floor is not `> 0`
 # — one surviving file is as vacuous as none — it tracks the real tree (123 files when written).
 SCAN_FLOOR=100
 if [ "${#CANDIDATES[@]}" -lt "$SCAN_FLOOR" ]; then

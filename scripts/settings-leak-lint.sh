@@ -21,11 +21,11 @@
 # Every one of them was a NEW projection added later, by someone who had not read the previous
 # retraction. A fifth projection will be written the same way; this makes it fail the build instead.
 #
-# WHAT IT SCANS: `crates/busbar/src/**/*.rs` — the WHOLE ENGINE CRATE, minus test trees (named-
+# WHAT IT SCANS: `crates/busbar-core/src/**/*.rs` — the WHOLE ENGINE CRATE, minus test trees (named-
 # navigated and exempt exactly the way structure-lint.sh / response-header-lint.sh /
 # tracing-lint.sh treat them).
 #
-# THE SCAN ROOT USED TO BE `crates/busbar/src/admin/**` ALONE, and that was a COVERAGE CLAIM the lint
+# THE SCAN ROOT USED TO BE `crates/busbar-core/src/admin/**` ALONE, and that was a COVERAGE CLAIM the lint
 # could not back: an admin handler serializes whatever type it is handed, and nothing requires that
 # type to be DECLARED under `admin/`. A view struct born in `hooks/`, `governance/` or `config/` and
 # returned by an admin handler was invisible to this lint while being exactly the defect it exists
@@ -203,7 +203,10 @@ hdr "no engine type reaching an admin read carries a raw operator settings bag"
 # The WHOLE engine crate, not just `admin/**`: an admin handler serializes whatever type it is
 # handed, and that type may be declared anywhere in the crate (see the scan-root note in the header).
 CANDIDATES=()
-while IFS= read -r f; do CANDIDATES+=("$f"); done < <(find crates/busbar/src -name '*.rs' -not -path '*/tests/*' | sort)
+# Core/bin split roots (step 3.7): the engine library and the thin binary are scanned together.
+CORE="crates/busbar-core/src"
+BIN="crates/busbar/src"
+while IFS= read -r f; do CANDIDATES+=("$f"); done < <(find "$CORE" "$BIN" -name '*.rs' -not -path '*/tests/*' | sort -u)
 
 # ── SCAN FLOOR — "for each file, assert no raw settings bag" is VACUOUSLY TRUE over zero files.
 # Rename `crates/busbar`, move the engine, or mistype the root and this lint reports `ok` forever
@@ -213,12 +216,12 @@ SCAN_FLOOR=100
 if [ "${#CANDIDATES[@]}" -lt "$SCAN_FLOOR" ]; then
   hdr "result"
   note "settings-leak-lint FAILED — SCAN ROOT EMPTY OR MOVED"
-  note "found ${#CANDIDATES[@]} non-test .rs files under crates/busbar/src, expected >= ${SCAN_FLOOR}."
+  note "found ${#CANDIDATES[@]} non-test .rs files under ${CORE}, expected >= ${SCAN_FLOOR}."
   note "This lint scanned (almost) nothing, so its verdict is meaningless — it is NOT a pass."
   note "If the engine crate legitimately moved, update the find root above AND this floor together."
   exit 1
 fi
-note "scan set: ${#CANDIDATES[@]} files under crates/busbar/src (floor ${SCAN_FLOOR})"
+note "scan set: ${#CANDIDATES[@]} files under ${CORE} (floor ${SCAN_FLOOR})"
 
 hits=""
 for f in "${CANDIDATES[@]}"; do

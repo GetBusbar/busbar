@@ -201,7 +201,7 @@ jobs:
       # (`Server-Timing: busbar;dur=`, `x-busbar-route-policy`/`-target`) must be emitted from its ONE
       # sanctioned, config-gated site — never a hand-rolled second emission that bypasses the
       # `advanced.response_headers` opt-in. Self-test runs FIRST (never trust the lint's verdict before
-      # proving the scanner still catches a real bypass), then it scans crates/busbar/src.
+      # proving the scanner still catches a real bypass), then it scans crates/busbar-core/src.
       - name: Response-header lint self-test
         run: scripts/response-header-lint.sh --selftest
       - name: Response-header lint
@@ -219,7 +219,7 @@ jobs:
       # where an operator's credentials legitimately live and the reads are READ-ONLY scope. Added
       # after the SAME defect was found in FOUR independent projections (see the script header).
       # Self-test runs FIRST (never trust the lint's verdict before proving the scanner still catches
-      # a real leak), then it scans crates/busbar/src/admin.
+      # a real leak), then it scans crates/busbar-core/src/admin.
       - name: Settings-leak lint self-test
         run: scripts/settings-leak-lint.sh --selftest
       - name: Settings-leak lint
@@ -230,7 +230,7 @@ jobs:
       # runtime polling anything, `/healthz` included. Added after the SAME defect was found in five
       # independent places, the last of them on the ANONYMOUSLY-reachable `/auth/token` (see the
       # script header). Self-test runs FIRST (never trust the lint's verdict before proving the
-      # scanner still catches a real inline call), then it scans crates/busbar/src.
+      # scanner still catches a real inline call), then it scans crates/busbar-core/src.
       - name: Blocking-FFI lint self-test
         run: scripts/blocking-ffi-lint.sh --selftest
       - name: Blocking-FFI lint
@@ -396,7 +396,7 @@ jobs:
   # if the committed `openapi.json` — the file the runtime serves via `include_str!` — no longer
   # matches what the code generates, and the COVERAGE LOCK proves every operation has a typed body.
   # Regenerate a stale file with:
-  #   UPDATE_OPENAPI=1 cargo test -p busbar --features openapi-schema openapi_json_matches_committed_file
+  #   UPDATE_OPENAPI=1 cargo test -p busbar -p busbar-core --features openapi-schema openapi_json_matches_committed_file
   openapi-schema:
     name: openapi-schema clippy · drift · coverage
     runs-on: ubuntu-latest
@@ -410,7 +410,7 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - name: Clippy (--features openapi-schema)
-        run: cargo clippy -p busbar --all-targets --features openapi-schema --locked -- -D warnings
+        run: cargo clippy -p busbar -p busbar-core --all-targets --features openapi-schema --locked -- -D warnings
       - name: OpenAPI tests (drift guard + coverage lock)
         run: |
           set -euo pipefail
@@ -418,7 +418,7 @@ jobs:
           # prints "running 0 tests / test result: ok" and EXITS 0. The floor is not 1 — this step
           # claims to run the drift guard AND the coverage lock AND their neighbours, so a filter
           # that quietly collapsed to a single surviving test would still be a coverage hole.
-          out="$(cargo test -p busbar --features openapi-schema --locked openapi -- --nocapture 2>&1 | tee /dev/stderr)"
+          out="$(cargo test -p busbar -p busbar-core --features openapi-schema --locked openapi -- --nocapture 2>&1 | tee /dev/stderr)"
           n="$(echo "$out" | sed -nE 's/^test result: ok\. ([0-9]+) passed.*/\1/p' | awk '{s+=$1} END{print s+0}')"
           if [ "$n" -lt 8 ]; then
             echo "::error::the OpenAPI suite ran only ${n} tests, expected >= 8."
@@ -705,7 +705,7 @@ jobs:
   # WHAT THIS JOB DOES NOT PROVE, stated so a green check is not over-read. The most
   # platform-sensitive subsystem in the tree is the stdio MCP transport (process spawn, pipes, child
   # teardown), and its tests are `#[cfg(unix)]` because the fixture children are `/bin/sh` scripts
-  # (see crates/busbar/src/mcp/client/tests/stdio_tests.rs). They therefore compile to NOTHING here:
+  # (see crates/busbar-core/src/mcp/client/tests/stdio_tests.rs). They therefore compile to NOTHING here:
   # this job is green while the spawn half is unexecuted on Windows. `cargo test` cannot notice that
   # — a test that does not exist cannot fail — so the gap is written down rather than inferred.
   # Closing it needs cmd.exe fixture children, which is real work and not a CI edit.

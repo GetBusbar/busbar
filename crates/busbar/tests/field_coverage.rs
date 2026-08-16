@@ -214,10 +214,14 @@ fn every_carried_claim_names_a_real_test() {
             wanted.insert(test.as_str());
         }
     }
-    // Scan the crate's sources once; a test function is `fn <name>(`.
+    // Scan the engine's sources once; a test function is `fn <name>(`. BOTH roots since the core
+    // split (step 3.7): the instruments live in busbar-core, and a scanner that read only the thin
+    // bin would call every claim a ghost — or, pointed the other way, would go green over nothing.
     let mut haystack = String::new();
-    let src = repo_root().join("crates/busbar/src");
-    let mut stack = vec![src];
+    let mut stack = vec![
+        repo_root().join("crates/busbar-core/src"),
+        repo_root().join("crates/busbar/src"),
+    ];
     while let Some(dir) = stack.pop() {
         let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;

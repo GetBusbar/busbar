@@ -37,7 +37,7 @@ from pathlib import Path
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
 # THE TRACKED SOURCE SET — every file whose serde surface IS config grammar.
 #
-# This list is the gate's reach, and it used to be a single `crates/busbar/src/config/*.rs` glob.
+# This list is the gate's reach, and it used to be a single `crates/busbar-core/src/config/*.rs` glob.
 # That glob is where a config type HAPPENS to live, not what a config type IS, and two of the most
 # load-bearing grammars in the product sat outside it with ZERO fingerprint:
 #
@@ -45,17 +45,17 @@ from pathlib import Path
 #     config: the canonical `{ module, settings }` form and the `{ env: … }` / `{ file: … }` sugar.
 #     It lives in its own crate precisely so plugins and schema tooling can reach it, which is what
 #     put it outside a glob anchored on the busbar crate's config module.
-#   * `UpstreamCreds` (crates/busbar/src/auth/mod.rs) is the `upstream_credentials:` key's value
+#   * `UpstreamCreds` (crates/busbar-core/src/auth/mod.rs) is the `upstream_credentials:` key's value
 #     grammar. It is deserialized straight out of the config document; it lives beside the
 #     middleware that consumes it.
-#   * `crates/busbar/src/a2a/` holds the ENTIRE `agents:` section grammar — the per-entry shape, the
+#   * `crates/busbar-core/src/a2a/` holds the ENTIRE `agents:` section grammar — the per-entry shape, the
 #     four pin mechanisms, and the leased outbound credential. It was outside the set for the same
 #     reason the two above were: it lives with the plane that consumes it rather than under the
 #     config module. The snapshot recorded `agents: crate::a2a::config::AgentsCfg` and stopped
 #     there, so every key an operator writes under an agent had NO fingerprint at all and a
 #     BREAKING change to that grammar passed the additive-only check silently. Only the two files
 #     that declare config types are tracked; the rest of the plane is runtime.
-#   * `crates/busbar/src/mcp/config.rs` is the ENTIRE `tools:` section grammar — every registered
+#   * `crates/busbar-core/src/mcp/config.rs` is the ENTIRE `tools:` section grammar — every registered
 #     MCP server's endpoint, its pin, its allowed tools/prompts/resources/templates, its token
 #     exchange, its request grants — and it was outside the set for the same reason `a2a/` was
 #     (#60). The snapshot recorded `tools: crate::mcp::config::ToolsCfg` and stopped, so retyping
@@ -65,26 +65,29 @@ from pathlib import Path
 # A path is a directory (every `*.rs` directly inside it) or a single file. A path that does not
 # exist is a HARD ERROR, never a skip: a source silently dropping out of the set would silently
 # un-freeze its grammar, which is the exact failure this gate exists to prevent.
+# Core split (step 3.7): every tracked grammar source lives in the engine library crate root.
+CORE = "crates/busbar-core/src"
+
 SOURCES = [
-    "crates/busbar/src/config",
+    f"{CORE}/config",
     "crates/secret-ref/src/lib.rs",
-    "crates/busbar/src/auth/mod.rs",
-    "crates/busbar/src/a2a/config.rs",
+    f"{CORE}/auth/mod.rs",
+    f"{CORE}/a2a/config.rs",
     # `oauth_as:` — the authorization server's grammar. Added WITH the block rather than after it,
     # because the alternative is the hole this list already closed once for `a2a/`: the type name
     # would appear in the snapshot as an opaque string and every field inside it — including the
     # `default_grant` CEILING that decides what a self-registered client may ever hold — would be
     # free to change without the additive-only gate noticing.
-    "crates/busbar/src/oauth_as/config.rs",
-    "crates/busbar/src/a2a/creds.rs",
-    "crates/busbar/src/mcp/config.rs",
+    f"{CORE}/oauth_as/config.rs",
+    f"{CORE}/a2a/creds.rs",
+    f"{CORE}/mcp/config.rs",
     # `tool_pools:` / `agent_pools:` — the failover grammar, which is CORE's rather than either
     # plane's (one type, two sections). Added WITH the block for the reason stated for `oauth_as:`
     # above: `config/mod.rs` names the type, so without this line `CandidatePoolCfg` would appear in
     # the snapshot as an opaque string and `members:`/`repeatable:` — the latter being the SAFETY
     # declaration that decides whether an operation with effects may be performed twice — would be
     # free to change without the additive-only gate noticing.
-    "crates/busbar/src/failover/mod.rs",
+    f"{CORE}/failover/mod.rs",
 ]
 
 
@@ -527,8 +530,8 @@ def extract(paths) -> dict:
 
         This used to be an unenforced comment — "config has no duplicate type names across the
         module" — which was true only while the tracked set was one directory. It stopped being true
-        the moment a SECOND plane's grammar was tracked: `crates/busbar/src/a2a/config.rs` and
-        `crates/busbar/src/mcp/config.rs` each declare a `PinMechanism`, with DIFFERENT variants
+        the moment a SECOND plane's grammar was tracked: `crates/busbar-core/src/a2a/config.rs` and
+        `crates/busbar-core/src/mcp/config.rs` each declare a `PinMechanism`, with DIFFERENT variants
         (`jws_issuer_key` vs `pinned_pubkey`). Sorted by path, MCP's is read second, so it replaced
         A2A's under the shared key and the classifier reported
         `PinMechanism::jws_issuer_key: enum variant REMOVED` — a break in a grammar nobody touched,
