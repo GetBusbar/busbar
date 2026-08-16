@@ -319,6 +319,7 @@ name = "busbar"
 version = "1.6.0"
 dependencies = [
  "axum",
+ "base64 0.23.1",
  "busbar-core",
  "busbar-plugin-loader",
  "busbar-plugin-sign",

@@ -59,6 +59,10 @@ reqwest = { workspace = true, features = ["json"] }
 axum = { workspace = true, features = ["http1"] }
 http-body-util = { workspace = true }
 futures = { workspace = true }
+# tests/mcp_stdio_serve.rs encodes the MRTR requestState fixtures it drives over the process's
+# own stdin/stdout the same way the engine does; the binary crate no longer pulls base64 as a
+# runtime dep after the core split, so the integration test needs its own copy.
+base64 = { workspace = true }
 bytes = { workspace = true }
 serde_json = { workspace = true }
 # tests/method_coverage.rs et al. keep their rationale from the pre-split manifest (git history).
