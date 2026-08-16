@@ -337,7 +337,15 @@ pub fn build_request_dense(target_bytes: usize, n_blocks: usize) -> WireRequest 
         extra_json: "{}".to_string(),
         ..Default::default()
     };
-    let per = target_bytes / n_blocks.max(1);
+    // Per-block JSON overhead (the role/type/content wrapper) that the text budget must absorb, so
+    // that TOTAL bytes stay put as the block count rises. Without this the "denser" rows are simply
+    // bigger rows and the experiment measures nothing.
+    const BLOCK_OVERHEAD: usize = 64;
+    let per = (target_bytes / n_blocks.max(1)).saturating_sub(BLOCK_OVERHEAD);
+    // Truncate rather than round up to a whole LOREM: rounding up is what silently turned the byte
+    // budget into a function of the block count. LOREM is ASCII, so a byte truncation is char-safe.
+    let mut text = LOREM.repeat(per / LOREM.len() + 1);
+    text.truncate(per);
     for i in 0..n_blocks {
         req.messages.push(WireMessage {
             role: if i % 2 == 0 {
@@ -346,7 +354,7 @@ pub fn build_request_dense(target_bytes: usize, n_blocks: usize) -> WireRequest 
                 WireRole::Assistant
             },
             content: vec![WireBlock::Text {
-                text: LOREM.repeat((per / LOREM.len()).max(1)),
+                text: text.clone(),
                 cache_control: None,
                 citations: Vec::new(),
             }],

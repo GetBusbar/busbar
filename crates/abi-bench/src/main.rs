@@ -516,58 +516,82 @@ fn main() {
             "xport ns",
             "ns/B"
         );
-        for target in [
+        // EVERY POINT IS AN ARM IN ONE INTERLEAVED TRIAL. Measuring each size in its own `measure()`
+        // call is the very mistake this harness's header warns about: consecutive calls are minutes
+        // apart, and on a machine running a build fleet the drift between them is larger than the
+        // slope being fitted. Interleaved, all 40 cells see the same weather, so the SHAPE of the
+        // curve survives contention even when the absolute level does not.
+        let targets = [
             1024usize, 2048, 4096, 8192, 16_384, 32_768, 65_536, 131_072, 262_144, 524_288,
-        ] {
-            let p = Plugin::open(&path, &target.to_string());
-            let req = busbar_abi_bench::build_request(target);
-            let json_bytes = serde_json::to_vec(&req).unwrap();
-            let rk_bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&req).unwrap();
-            let nb = json_bytes.len() as f64;
-            let rk_prebuilt = framed(op::RKYV_PREBUILT, &rk_bytes);
-            let echo = framed(op::ECHO_N, &(json_bytes.len() as u32).to_le_bytes());
-            // Keep total work per point roughly constant so big points do not dominate wall time.
-            let iters = (40_000_000 / target).clamp(200, 20_000);
-            let mut arms = vec![
-                Arm {
-                    name: "json",
-                    run: Box::new(|| {
-                        let enc = framed(op::JSON, &serde_json::to_vec(&req).unwrap());
-                        let resp = p.cross(&enc);
-                        serde_json::from_slice::<WireRequest>(&resp).unwrap().messages.len() as u64
-                    }),
-                },
-                Arm {
-                    name: "rkyv-unchecked",
-                    run: Box::new(|| {
-                        let enc = framed(
-                            op::RKYV_UNCHECKED,
-                            &rkyv::to_bytes::<rkyv::rancor::Error>(&req).unwrap(),
-                        );
-                        let resp = p.cross(&enc);
-                        let a = unsafe {
-                            rkyv::access_unchecked::<busbar_abi_bench::wire::ArchivedWireRequest>(
-                                &resp,
-                            )
-                        };
-                        a.messages.len() as u64
-                    }),
-                },
-                Arm {
-                    name: "rkyv-prebuilt",
-                    run: Box::new(|| p.cross(&rk_prebuilt).len() as u64),
-                },
-                Arm {
-                    name: "xport",
-                    run: Box::new(|| p.cross(&echo).len() as u64),
-                },
-            ];
-            let res = measure(&mut arms, iters, 10);
-            let m: Vec<f64> = res.iter().map(|t| median(t)).collect();
+        ];
+        let plugins: Vec<Plugin> = targets
+            .iter()
+            .map(|t| Plugin::open(&path, &t.to_string()))
+            .collect();
+        let reqs: Vec<WireRequest> = targets
+            .iter()
+            .map(|t| busbar_abi_bench::build_request(*t))
+            .collect();
+        let jsonb: Vec<Vec<u8>> = reqs.iter().map(|r| serde_json::to_vec(r).unwrap()).collect();
+        let rkb: Vec<rkyv::util::AlignedVec> = reqs
+            .iter()
+            .map(|r| rkyv::to_bytes::<rkyv::rancor::Error>(r).unwrap())
+            .collect();
+        let prebuilt: Vec<rkyv::util::AlignedVec> = rkb
+            .iter()
+            .map(|b| framed(op::RKYV_PREBUILT, b))
+            .collect();
+        let echo: Vec<rkyv::util::AlignedVec> = jsonb
+            .iter()
+            .map(|b| framed(op::ECHO_N, &(b.len() as u32).to_le_bytes()))
+            .collect();
+
+        let mut arms: Vec<Arm> = Vec::new();
+        for i in 0..targets.len() {
+            let (p, req) = (&plugins[i], &reqs[i]);
+            arms.push(Arm {
+                name: "json",
+                run: Box::new(move || {
+                    let enc = framed(op::JSON, &serde_json::to_vec(req).unwrap());
+                    let resp = p.cross(&enc);
+                    serde_json::from_slice::<WireRequest>(&resp).unwrap().messages.len() as u64
+                }),
+            });
+            arms.push(Arm {
+                name: "rkyv-unchecked",
+                run: Box::new(move || {
+                    let enc = framed(
+                        op::RKYV_UNCHECKED,
+                        &rkyv::to_bytes::<rkyv::rancor::Error>(req).unwrap(),
+                    );
+                    let resp = p.cross(&enc);
+                    let a = unsafe {
+                        rkyv::access_unchecked::<busbar_abi_bench::wire::ArchivedWireRequest>(&resp)
+                    };
+                    a.messages.len() as u64
+                }),
+            });
+            let pre = &prebuilt[i];
+            arms.push(Arm {
+                name: "rkyv-prebuilt",
+                run: Box::new(move || p.cross(pre).len() as u64),
+            });
+            let e = &echo[i];
+            arms.push(Arm {
+                name: "xport",
+                run: Box::new(move || p.cross(e).len() as u64),
+            });
+        }
+        // A modest per-arm iteration count: with 40 arms the trial is already long, and the
+        // round-robin is what buys precision here, not depth within a cell.
+        let res = measure(&mut arms, 600, 6);
+        for (i, target) in targets.iter().enumerate() {
+            let nb = jsonb[i].len() as f64;
+            let m: Vec<f64> = (0..4).map(|k| median(&res[i * 4 + k])).collect();
             println!(
                 "{:<10} {:>9} {:>11.1} {:>9.3} {:>11.1} {:>9.3} {:>11.1} {:>9.3} {:>11.1} {:>9.3}",
                 format!("{} KB", target / 1024),
-                json_bytes.len(),
+                jsonb[i].len(),
                 m[0],
                 m[0] / nb,
                 m[1],
@@ -584,34 +608,51 @@ fn main() {
     // If the crossing tracks BYTES, these rows are flat. If it tracks the number of JSON values,
     // they are not — and "proportional to payload size" is the wrong model.
     {
-        println!("\n### DENSITY CONTROL — ~16 KB held constant, structure varied (release)");
+        println!("\n### DENSITY CONTROL — ~32 KB held constant, structure varied (release)");
         println!(
             "{:<12} {:>9} {:>10} {:>11} {:>13} {:>13}",
             "blocks", "json B", "values", "json ns", "ns/byte", "ns/value"
         );
-        for n_blocks in [2usize, 8, 32, 128, 512] {
-            let req = busbar_abi_bench::build_request_dense(16_384, n_blocks);
-            let json_bytes = serde_json::to_vec(&req).unwrap();
-            let values = busbar_abi_bench::value_count(&req);
-            let p = Plugin::open(&path, "16384");
-            let mut arms = vec![Arm {
+        // Interleaved for the same reason the curve is: measured row-by-row, this table came back
+        // NON-MONOTONIC in the block count (a 64% jump between adjacent rows that then reversed),
+        // which is drift, not structure.
+        let densities = [2usize, 4, 8, 16, 32, 64, 128];
+        let p = Plugin::open(&path, "32768");
+        let dreqs: Vec<WireRequest> = densities
+            .iter()
+            .map(|n| busbar_abi_bench::build_request_dense(32_768, *n))
+            .collect();
+        let dbytes: Vec<usize> = dreqs
+            .iter()
+            .map(|r| serde_json::to_vec(r).unwrap().len())
+            .collect();
+        let dvalues: Vec<u64> = dreqs
+            .iter()
+            .map(busbar_abi_bench::value_count)
+            .collect();
+        let pr = &p;
+        let mut arms: Vec<Arm> = dreqs
+            .iter()
+            .map(|req| Arm {
                 name: "json",
-                run: Box::new(|| {
-                    let enc = framed(op::JSON, &serde_json::to_vec(&req).unwrap());
-                    let resp = p.cross(&enc);
+                run: Box::new(move || {
+                    let enc = framed(op::JSON, &serde_json::to_vec(req).unwrap());
+                    let resp = pr.cross(&enc);
                     serde_json::from_slice::<WireRequest>(&resp).unwrap().messages.len() as u64
                 }),
-            }];
-            let res = measure(&mut arms, 4_000, 10);
-            let m = median(&res[0]);
+            })
+            .collect();
+        let res = measure(&mut arms, 1_200, 6);
+        for (i, n_blocks) in densities.iter().enumerate() {
+            let m = median(&res[i]);
             println!(
                 "{:<12} {:>9} {:>10} {:>11.1} {:>13.3} {:>13.1}",
                 n_blocks,
-                json_bytes.len(),
-                values,
+                dbytes[i],
+                dvalues[i],
                 m,
-                m / json_bytes.len() as f64,
-                m / values as f64
+                m / dbytes[i] as f64,
+                m / dvalues[i] as f64
             );
         }
     }
