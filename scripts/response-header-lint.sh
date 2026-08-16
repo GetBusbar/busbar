@@ -117,7 +117,20 @@ HDR_SERVER_TIMING_FILE="${SRC_DIR}/router.rs"
 # Candidate set: every busbar .rs file except integration-test-only trees (`*/tests/*`, name-navigated
 # and exempt from every choke-point rule the same way structure-lint.sh treats them).
 CANDIDATES=()
-while IFS= read -r f; do CANDIDATES+=("$f"); done < <(find "$SRC_DIR" "$BIN" -name '*.rs' -not -path '*/tests/*' | sort -u)
+# ── THE PLANE ROOTS, FOUND RATHER THAN SPELLED (see scripts/plane-roots.sh for the whole argument).
+# 1.6.0's R-E makes the MCP and A2A planes plugin CRATES; they are 71 of the 238 files below against
+# a scan floor of 100, so their departure would leave the floor cleared and this lint reporting `ok`
+# over a tree it no longer reads. Both planes emit response headers on their own front doors, which
+# is precisely the population of "one gated definition site per header" this lint counts.
+# shellcheck source=scripts/plane-roots.sh
+. "$(dirname "$0")/plane-roots.sh"
+if ! plane_roots_resolve mcp a2a; then
+  hdr "result"
+  note "response-header-lint FAILED — PLANE ROOT UNRESOLVED"
+  printf '%s' "$PLANE_ROOTS_ERR" | while IFS= read -r l; do note "$l"; done
+  exit 1
+fi
+while IFS= read -r f; do CANDIDATES+=("$f"); done < <(find "$SRC_DIR" "$BIN" "$PLANE_ROOT_mcp" "$PLANE_ROOT_a2a" -name '*.rs' -not -path '*/tests/*' | sort -u)
 
 # ── SCAN FLOOR — every rule below is "for each candidate file, assert the header has ONE gated
 # site", which is VACUOUSLY TRUE over zero candidates: `scan_rule` with no file arguments does not

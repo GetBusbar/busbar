@@ -18,15 +18,24 @@ cd "$(dirname "$0")/.."
 # tree" scope over BOTH roots as a comma-separated list.
 CORE=crates/busbar-core/src
 BIN=crates/busbar/src
-# The extracted protocol crates (step 4 of 1.6.0; anthropic is the first). They are proto ARMS by
-# definition, so the axis rows scope over them WITH themselves in the allow list — the point of
-# scanning them is that the scan follows the files out of core rather than silently shrinking, and
-# a future non-arm file appearing in one of these crates still cannot branch on a foreign axis.
-PROTO_ANTHROPIC=crates/busbar-proto-anthropic/src
-# The second extracted protocol crate. Scanned on the same terms as the first: a protocol crate IS
-# the operation/transport axis's own arm, so the scan follows the files out of core rather than
-# losing the row the day a dialect stops being a core module.
-PROTO_MCP=crates/busbar-proto-mcp/src
+# The extracted protocol crates (step 4 of 1.6.0; anthropic was the first, mcp the second, and six
+# more dialects land behind them). They are proto ARMS by definition, so the axis rows scope over
+# them WITH themselves in the allow list — the point of scanning them is that the scan follows the
+# files out of core rather than silently shrinking, and a future non-arm file appearing in one of
+# these crates still cannot branch on a foreign axis.
+#
+# DERIVED, NOT SPELLED, for the same reason the plane roots below are: two constants here is two
+# things to remember on the day the third dialect lands, and the failure of forgetting is SILENT —
+# the row keeps saying `ok` over a crate it never opened. The rule is mechanical: every
+# `crates/busbar-proto-*/src` is a protocol crate. ZERO of them is a HARD FAILURE and not a skip,
+# by the argument this file makes everywhere else — a scan set nobody can locate is a scan set of
+# zero files, and zero is the passing answer to every ban below.
+PROTO_ROOTS=""
+for _pd in crates/busbar-proto-*/src; do
+  [ -d "$_pd" ] || continue
+  PROTO_ROOTS="${PROTO_ROOTS}${_pd}/,"
+done
+PROTO_ROOTS="${PROTO_ROOTS%,}"
 
 # Impl files target ~1,500 lines; the hard ceiling forbids genuine MONSTER files (the thing that
 # makes a codebase unnavigable) rather than micromanaging cohesive units. Test files are exempt from
@@ -37,6 +46,61 @@ fail=0
 
 note() { printf '  %s\n' "$1"; }
 hdr()  { printf '\n== %s ==\n' "$1"; }
+
+if [ -z "$PROTO_ROOTS" ]; then
+  note "PROTO-ROOTS-MISSING: no \`crates/busbar-proto-*/src\` directory exists. The operation and"
+  note "  transport axis bans are scoped over the protocol crates, so this is a ban scanning NOTHING,"
+  note "  and zero is the passing answer to a ban. If the protocol crates legitimately moved, fix the"
+  note "  search above — do not drop the scope."
+  fail=1
+fi
+
+# ── WHERE A PLANE LIVES ──────────────────────────────────────────────────────────────────────────
+# The SAME argument as the CORE/BIN seam above, one level down. 1.6.0's owner ruling R-E makes MCP
+# and A2A PLUGIN CRATES: a crate depending on `busbar-api` alone, which `busbar-core` in turn
+# depends on, exactly as it depends on `busbar-auth-admin-tokens` today. So `${CORE}/mcp` and
+# `${CORE}/a2a` are a CURRENT FACT, not a permanent one — and every row below that names a plane
+# path named it as a literal, which is 14 rows and 22 census/axis scopes that would have gone stale
+# on the day the planes moved.
+#
+# THE ROOT IS DERIVED, NOT DECLARED, and the derivation lives in ONE place: scripts/plane-roots.sh,
+# shared with the three scan-floor lints that had the same constant spelled the same wrong way. Its
+# rule is "the one directory named after the plane anywhere under crates/", with zero homes and two
+# homes both hard failures — a plane nothing can locate is a plane every rule here scans zero files
+# of, and zero is the passing answer to every ban in this file.
+#
+# The failure is folded into this run's `fail` rather than exiting, so a tree with an unresolved
+# plane still gets told everything else that is wrong with it in the same pass.
+#
+# Nothing here weakens a rule. It changes WHERE each rule looks from a constant into a fact about
+# the tree, so a rule that is armed today is armed after the move without a human remembering to
+# re-point it — and goes LOUD if the tree stops answering the question.
+# shellcheck source=scripts/plane-roots.sh
+. "$(dirname "$0")/plane-roots.sh"
+if ! plane_roots_resolve mcp a2a; then
+  printf '%s' "$PLANE_ROOTS_ERR" | while IFS= read -r l; do note "$l"; done
+  fail=1
+fi
+MCP="$PLANE_ROOT_mcp"
+A2A="$PLANE_ROOT_a2a"
+
+# The scan roots for every TREE-WIDE rule (the census and the axis ledger). It is `$CORE + $BIN`
+# plus the plane roots, and the plane roots are listed EXPLICITLY rather than assumed to be inside
+# `$CORE`: while they are, the extra prefixes are redundant and cost nothing (the scope match takes
+# the first prefix that hits and stops); the day a plane becomes its own crate they are the only
+# reason the MCP wire-word census rows and the two axis bans keep covering it. Without them a
+# census row over `"mcp-protocol-version"` would go from 1 to 0 the moment the constant left
+# `$CORE`, which reads as MISSING — loud, but loud AFTER the fact, and the fix would be this line
+# anyway.
+#
+# The extracted protocol crates are in `$TREE` for the same reason and by the same argument: the
+# axis rows scope over them (with themselves in the allow list) so the scan FOLLOWS the files out of
+# core rather than silently shrinking as step 4 proceeds. They are DERIVED by their own rule rather
+# than spelled, and they are a SEPARATE rule from the plane roots because a protocol crate is not a
+# plane: `busbar-proto-mcp` is MCP-the-PROTOCOL's declaration and `${CORE}/mcp` is the MCP PLANE,
+# and both exist at once on this tree — `plane_roots_resolve mcp` finding exactly one home is the
+# proof of that, not a coincidence.
+TREE="${CORE}/,${BIN}/,${MCP}/,${A2A}/,${PROTO_ROOTS}"
 
 # ══ THE ONE ANSWER TO "IS THIS LINE TEST CODE?" ══════════════════════════════════════════════════
 #
@@ -1082,7 +1146,7 @@ CHOKE_POINTS=(
   #         the hazard is a declaration, not a call somebody hand-rolls. The class test reads the
   #         plane's own production code and fails on any re-declaration of the machine's types or
   #         verbs.
-  'G-trust-parameterised|TRUST-MACHINE-FORK|'"$CORE"'/a2a/pin.rs (CardPin, the artifact, plus the one plane-specific refusal)|'"$CORE"'/a2a/tests/reuse_tests.rs::the_a2a_plane_declares_no_trust_state_of_its_own|supply an artifact implementing trust::PinnedArtifact; never re-declare TrustState, Drift, Approval or their verbs|-|two planes carrying two copies of one lifecycle disagree the first time either copy is fixed, and the disagreement surfaces as a registration dispatch serves while the operator view calls it quarantined'
+  'G-trust-parameterised|TRUST-MACHINE-FORK|'"$A2A"'/pin.rs (CardPin, the artifact, plus the one plane-specific refusal)|'"$A2A"'/tests/reuse_tests.rs::the_a2a_plane_declares_no_trust_state_of_its_own|supply an artifact implementing trust::PinnedArtifact; never re-declare TrustState, Drift, Approval or their verbs|-|two planes carrying two copies of one lifecycle disagree the first time either copy is fixed, and the disagreement surfaces as a registration dispatch serves while the operator view calls it quarantined'
 
   # ── H ── THE OPERATOR-AUTHORED ASK: one origin for the bytes busbar puts its own name to. This is
   #         the second half of a two-part control whose first half is in the TYPE SYSTEM, and neither
@@ -1102,7 +1166,7 @@ CHOKE_POINTS=(
   #         would reach `params` after half one closed every other door, and the resulting ask would
   #         be busbar demanding authority from its own caller in busbar's name, on an upstream's
   #         behalf. Construction is therefore allowed only in the module that defines it.
-  'H-operator-authored-ask|ASK-NOT-OPERATOR-AUTHORED|'"$CORE"'/mcp/config.rs (AskEntryCfg, deserialised from operator YAML) + '"$CORE"'/mcp/callerask.rs (the private `authored` module, sole constructor)|'"$CORE"'/mcp/tests/callerask_tests.rs::the_asks_params_are_the_operators_bytes_and_nothing_else|let the operator write the ask: an AskEntryCfg is deserialised, never assembled|AskEntryCfg[[:space:]]*\{>>an AskEntryCfg built in code rather than deserialised from operator configuration>>'"$CORE"'/mcp/config.rs|the text and schema a caller is shown when busbar asks it to confirm something must be bytes the operator wrote; the moment a value can flow from an upstream response into that ask, busbar is laundering an upstream demand for authority under its own name'
+  'H-operator-authored-ask|ASK-NOT-OPERATOR-AUTHORED|'"$MCP"'/config.rs (AskEntryCfg, deserialised from operator YAML) + '"$MCP"'/callerask.rs (the private `authored` module, sole constructor)|'"$MCP"'/tests/callerask_tests.rs::the_asks_params_are_the_operators_bytes_and_nothing_else|let the operator write the ask: an AskEntryCfg is deserialised, never assembled|AskEntryCfg[[:space:]]*\{>>an AskEntryCfg built in code rather than deserialised from operator configuration>>'"$MCP"'/config.rs|the text and schema a caller is shown when busbar asks it to confirm something must be bytes the operator wrote; the moment a value can flow from an upstream response into that ask, busbar is laundering an upstream demand for authority under its own name'
 
   # ── I ── THE ONE TRUST COMPARISON, negative half. `Approval::serves` is the single answer to "may
   #         this upstream serve this capability at this digest?" and invariant 9's census keeps it
@@ -1116,7 +1180,7 @@ CHOKE_POINTS=(
   #         either a second copy of the machine or a plane-local pin field pretending to be one.
   #         Both are the fail-OPEN divergence: one copy gets fixed and the other does not, and it
   #         surfaces as a call that served after the operator quarantined the upstream.
-  'I-trust-serve-derivation|TRUST-COMPARISON-BYPASS|'"$CORE"'/trust/mod.rs (Approval::serves)|'"$CORE"'/mcp/tests/trust_gate_tests.rs::the_routed_gate_answers_exactly_what_the_deleted_inline_decision_answered|ask crate::trust::Approval::serves; never re-derive the answer from the raw registration fields|schema_hash[[:space:]]*\.is_some>>an inline "is there an approved digest?" test;schema_hash[[:space:]]*\.is_none>>an inline "is there no approved digest?" test;\.pin[[:space:]]*\.is_some>>an inline "is this upstream pinned?" test>>'"$CORE"'/trust/mod.rs;\.pin[[:space:]]*\.is_none>>an inline "is this upstream unpinned?" test>>'"$CORE"'/trust/mod.rs|a second answer to "may this serve?" diverges from the first the moment either is fixed, and the divergence is discovered as an in-flight call that served after the operator revoked it'
+  'I-trust-serve-derivation|TRUST-COMPARISON-BYPASS|'"$CORE"'/trust/mod.rs (Approval::serves)|'"$MCP"'/tests/trust_gate_tests.rs::the_routed_gate_answers_exactly_what_the_deleted_inline_decision_answered|ask crate::trust::Approval::serves; never re-derive the answer from the raw registration fields|schema_hash[[:space:]]*\.is_some>>an inline "is there an approved digest?" test;schema_hash[[:space:]]*\.is_none>>an inline "is there no approved digest?" test;\.pin[[:space:]]*\.is_some>>an inline "is this upstream pinned?" test>>'"$CORE"'/trust/mod.rs;\.pin[[:space:]]*\.is_none>>an inline "is this upstream unpinned?" test>>'"$CORE"'/trust/mod.rs|a second answer to "may this serve?" diverges from the first the moment either is fixed, and the divergence is discovered as an in-flight call that served after the operator revoked it'
 
   # ── J ── A DECISION MADE AT OPEN AND TRUSTED WHILE OPEN. Enforced differently, and the reason is
   #         the reason F and G are: the hazard is a FIELD, not a call somebody hand-rolls. A
@@ -1349,9 +1413,9 @@ DECISION_INPUT=(
   # allowed to see. `resolve` maps a namespaced name to a bound identity, `revalidate` re-checks that
   # identity against the live snapshot immediately before the call goes out, and `visible_catalogue`
   # decides which capabilities a caller is shown. None of the three may consult free text.
-  'B10-routing-reads-no-description|DESCRIPTION-ON-ROUTING-PATH|'"$CORE"'/mcp/client/dispatch.rs|resolve|description>>a tool description read while deciding a route|route on the bound identity alone — registered server, namespaced tool, approved digest — and never on text the upstream authors|an upstream rewrites its own description at will, so a router that reads one is a router the upstream steers'
-  'B10-revalidate-reads-no-description|DESCRIPTION-ON-ROUTING-PATH|'"$CORE"'/mcp/client/dispatch.rs|revalidate|description>>a tool description read while re-validating a route|re-validate on the bound identity and the snapshot generation, never on text the upstream authors|the pre-dispatch re-check is the last gate an in-flight call passes; a hostile description reaching it would undo the resolve-time rule one line before the call goes out'
-  'B10-visibility-reads-no-description|DESCRIPTION-ON-ROUTING-PATH|'"$CORE"'/mcp/client/dispatch.rs|visible_catalogue|description>>a tool description read while deciding what a caller may see|filter the catalogue on the caller grant and the approval, never on text the upstream authors|what a caller is shown is an authorisation answer, and an upstream that could influence it would be choosing its own audience'
+  'B10-routing-reads-no-description|DESCRIPTION-ON-ROUTING-PATH|'"$MCP"'/client/dispatch.rs|resolve|description>>a tool description read while deciding a route|route on the bound identity alone — registered server, namespaced tool, approved digest — and never on text the upstream authors|an upstream rewrites its own description at will, so a router that reads one is a router the upstream steers'
+  'B10-revalidate-reads-no-description|DESCRIPTION-ON-ROUTING-PATH|'"$MCP"'/client/dispatch.rs|revalidate|description>>a tool description read while re-validating a route|re-validate on the bound identity and the snapshot generation, never on text the upstream authors|the pre-dispatch re-check is the last gate an in-flight call passes; a hostile description reaching it would undo the resolve-time rule one line before the call goes out'
+  'B10-visibility-reads-no-description|DESCRIPTION-ON-ROUTING-PATH|'"$MCP"'/client/dispatch.rs|visible_catalogue|description>>a tool description read while deciding what a caller may see|filter the catalogue on the caller grant and the approval, never on text the upstream authors|what a caller is shown is an authorisation answer, and an upstream that could influence it would be choosing its own audience'
 )
 
 hdr "decision-input purity (a routing decision never reads attacker-authored text)"
@@ -1398,7 +1462,13 @@ run_fn_scoped "decision-input invariant(s)" "${DECISION_INPUT[@]}"
 # duplication nobody noticed.
 #
 # Row format:  <symbol-or-module> | DEBT|DISTINCT | <concern id, or - for DISTINCT> | <note>
-PLANE_ROOTS="mcp=${CORE}/mcp a2a=${CORE}/a2a"
+# The two plane roots, RESOLVED (see `plane_home` at the top of this file) rather than spelled.
+# `plane_dup_table`/`plane_dup_modules` skip a root that is not a directory — which is right for the
+# self-test's fixture corpora and WRONG as a way to lose a plane, so the resolution above is what
+# guarantees both roots exist. If one ever does not, `plane_home` has already failed the run and
+# every ledger row below reports STALE-LEDGER as well: the ledger cannot be quietly emptied by
+# moving a plane out from under it.
+PLANE_ROOTS="mcp=${MCP} a2a=${A2A}"
 
 # The concerns, and where each one's single implementation should end up. `-` for an owner means
 # THERE IS NO SHARED HOME YET, which is itself the finding: the concern has only plane-local copies.
@@ -1613,8 +1683,8 @@ if [ "$pl" -eq 0 ]; then note "ok (no unledgered cross-plane duplication)"; fi
 # comparison left in the whole tree and it is inside a protocol arm. So the row costs no exemptions,
 # which is the bar the transport row set for itself.
 AXIS_BRANCH=(
-  'operation|OPERATION-BRANCH|'"$CORE"'/,'"$BIN"'/,'"$PROTO_ANTHROPIC"'/,'"$PROTO_MCP"'/|[Oo]peration(\(\))?[[:space:]]*==>>a comparison against an operation;[Oo]peration(\(\))?[[:space:]]*!=>>a comparison against an operation;match[[:space:]]+[A-Za-z0-9_.:]*[Oo]peration(\(\))?[[:space:]]*\{>>a match on the operation axis;match[[:space:]]+[A-Za-z0-9_.:]*shape\(\)[[:space:]]*\{>>a match on the operation axis'"'"'s shape;matches!\([^)]*OpShape::>>a matches! on an operation shape;if[[:space:]]+let[[:space:]]+[A-Za-z0-9_:]*OpShape::>>an if-let on an operation shape;matches!\([^)]*Operation::>>a matches! on an operation verb|'"$CORE"'/operation.rs,'"$CORE"'/proto/,'"$CORE"'/handlers/,'"$PROTO_ANTHROPIC"'/,'"$PROTO_MCP"'/|put the decision on the OperationHandler vtable, or ask the SHAPE a named question on `OpShape` (as `OpDispatch::wants_stream` asks `may_stream`); never ask an operation its identity in the agnostic core|`Operation` is the vocabulary the plugin ABI carries across a dlopen boundary, so a core that can compare one has learned a protocol'"'"'s method names and the deletion test fails on line one'
-  'transport|TRANSPORT-BRANCH|'"$CORE"'/,'"$BIN"'/,'"$PROTO_ANTHROPIC"'/,'"$PROTO_MCP"'/|[Tt]ransport(\(\))?[[:space:]]*==>>a comparison against a transport;[Tt]ransport(\(\))?[[:space:]]*!=>>a comparison against a transport;match[[:space:]]+[A-Za-z0-9_.:]*[Tt]ransport(\(\))?[[:space:]]*\{>>a match on the transport axis;matches!\([^)]*Transport::>>a matches! on a transport variant;if[[:space:]]+let[[:space:]]+[A-Za-z0-9_:]*Transport::>>an if-let on a transport variant|'"$CORE"'/transport.rs,'"$CORE"'/proto/,'"$CORE"'/handlers/,'"$PROTO_ANTHROPIC"'/,'"$PROTO_MCP"'/|put the decision on the codec/writer vtable and let the framing answer it, or take the branch inside the proto arm that owns the wire; never ask the transport its identity in the agnostic core|the six LLM protocols are six dialects over one transport and A2A is one dialect over three, so a core that can see the transport forks three ways the moment the second one arms'
+  'operation|OPERATION-BRANCH|'"$TREE"'|[Oo]peration(\(\))?[[:space:]]*==>>a comparison against an operation;[Oo]peration(\(\))?[[:space:]]*!=>>a comparison against an operation;match[[:space:]]+[A-Za-z0-9_.:]*[Oo]peration(\(\))?[[:space:]]*\{>>a match on the operation axis;match[[:space:]]+[A-Za-z0-9_.:]*shape\(\)[[:space:]]*\{>>a match on the operation axis'"'"'s shape;matches!\([^)]*OpShape::>>a matches! on an operation shape;if[[:space:]]+let[[:space:]]+[A-Za-z0-9_:]*OpShape::>>an if-let on an operation shape;matches!\([^)]*Operation::>>a matches! on an operation verb|'"$CORE"'/operation.rs,'"$CORE"'/proto/,'"$CORE"'/handlers/,'"$PROTO_ROOTS"'|put the decision on the OperationHandler vtable, or ask the SHAPE a named question on `OpShape` (as `OpDispatch::wants_stream` asks `may_stream`); never ask an operation its identity in the agnostic core|`Operation` is the vocabulary the plugin ABI carries across a dlopen boundary, so a core that can compare one has learned a protocol'"'"'s method names and the deletion test fails on line one'
+  'transport|TRANSPORT-BRANCH|'"$TREE"'|[Tt]ransport(\(\))?[[:space:]]*==>>a comparison against a transport;[Tt]ransport(\(\))?[[:space:]]*!=>>a comparison against a transport;match[[:space:]]+[A-Za-z0-9_.:]*[Tt]ransport(\(\))?[[:space:]]*\{>>a match on the transport axis;matches!\([^)]*Transport::>>a matches! on a transport variant;if[[:space:]]+let[[:space:]]+[A-Za-z0-9_:]*Transport::>>an if-let on a transport variant|'"$CORE"'/transport.rs,'"$CORE"'/proto/,'"$CORE"'/handlers/,'"$PROTO_ROOTS"'|put the decision on the codec/writer vtable and let the framing answer it, or take the branch inside the proto arm that owns the wire; never ask the transport its identity in the agnostic core|the six LLM protocols are six dialects over one transport and A2A is one dialect over three, so a core that can see the transport forks three ways the moment the second one arms'
 )
 
 # THE EXCEPTION LEDGER. Same two rules as PLANE_LEDGER, for the same reason: a row that no longer
@@ -1778,11 +1848,11 @@ DECLARATION_CENSUS=(
   #    direction no single-sided test can see — busbar refusing a request busbar sent. Zero
   #    occurrences means the word left the tree, which for a protocol constant is a rebuild that
   #    quietly stopped speaking the protocol.
-  'wire-word-meta-protocol-version|WIRE-WORD-RESPELT|"io\.modelcontextprotocol/protocolVersion"|1|'"$CORE"'/,'"$BIN"'/|the `_meta` protocol-version key must have exactly one spelling in the tree: the ingress REQUIRES it and the client EMITS it, and two copies disagree in the direction where each side is internally consistent with itself'
-  'wire-word-meta-client-capabilities|WIRE-WORD-RESPELT|"io\.modelcontextprotocol/clientCapabilities"|1|'"$CORE"'/,'"$BIN"'/|the `_meta` client-capabilities key is REQUIRED on the way in and written on the way out; a second copy is a request busbar would send and then refuse'
-  'wire-word-header-protocol-version|WIRE-WORD-RESPELT|"mcp-protocol-version"|1|'"$CORE"'/,'"$BIN"'/|the protocol-version header name is read by the ingress and written by the client from one constant; a second literal is the drift the deleted symmetry test existed to catch'
-  'wire-word-header-method|WIRE-WORD-RESPELT|"mcp-method"|1|'"$CORE"'/,'"$BIN"'/|the method-mirror header name is required inbound and emitted outbound from one constant'
-  'wire-word-header-name|WIRE-WORD-RESPELT|"mcp-name"|1|'"$CORE"'/,'"$BIN"'/|the target-name header is required inbound on the three addressed methods and emitted outbound from one constant'
+  'wire-word-meta-protocol-version|WIRE-WORD-RESPELT|"io\.modelcontextprotocol/protocolVersion"|1|'"$TREE"'|the `_meta` protocol-version key must have exactly one spelling in the tree: the ingress REQUIRES it and the client EMITS it, and two copies disagree in the direction where each side is internally consistent with itself'
+  'wire-word-meta-client-capabilities|WIRE-WORD-RESPELT|"io\.modelcontextprotocol/clientCapabilities"|1|'"$TREE"'|the `_meta` client-capabilities key is REQUIRED on the way in and written on the way out; a second copy is a request busbar would send and then refuse'
+  'wire-word-header-protocol-version|WIRE-WORD-RESPELT|"mcp-protocol-version"|1|'"$TREE"'|the protocol-version header name is read by the ingress and written by the client from one constant; a second literal is the drift the deleted symmetry test existed to catch'
+  'wire-word-header-method|WIRE-WORD-RESPELT|"mcp-method"|1|'"$TREE"'|the method-mirror header name is required inbound and emitted outbound from one constant'
+  'wire-word-header-name|WIRE-WORD-RESPELT|"mcp-name"|1|'"$TREE"'|the target-name header is required inbound on the three addressed methods and emitted outbound from one constant'
 
   # ── THE ONE TRUST COMPARISON. `Approval::serves` is the single answer to "may this upstream serve
   #    this capability at this digest?", and its fields (`pin`, `capabilities`, `suspension`) are
@@ -1791,7 +1861,7 @@ DECLARATION_CENSUS=(
   #    answer is silent drift in the fail-OPEN direction, discovered as an in-flight call that
   #    served after the operator quarantined it. Zero is the rebuild routing the gate somewhere
   #    else, which is what the deleted test's `assert_eq!(serves_calls, 1)` was watching for.
-  'trust-serve-decision|TRUST-DECISION-RESPELT|fn[[:space:]]+serves[[:space:]]*\(|1|'"$CORE"'/,'"$BIN"'/|there is exactly ONE may-this-serve comparison in busbar; a second is two answers to one question and they diverge the first time either is fixed, and zero means the dispatch gate was routed somewhere this row cannot see'
+  'trust-serve-decision|TRUST-DECISION-RESPELT|fn[[:space:]]+serves[[:space:]]*\(|1|'"$TREE"'|there is exactly ONE may-this-serve comparison in busbar; a second is two answers to one question and they diverge the first time either is fixed, and zero means the dispatch gate was routed somewhere this row cannot see'
 
   # ── THE BOOT PATH STARTS THE QUARANTINE SWEEP. Scoped to `main.rs` on purpose: the question is not
   #    "does this function exist" (a census over the whole tree would answer yes to a function
@@ -1821,10 +1891,10 @@ DECLARATION_CENSUS=(
   #    to the evidence rather than to whichever gate produced them — and the validator RE-EXPORTS.
   #    A string literal here is a definition wearing a re-export's clothes; zero means the word left
   #    the tree and every query written against it silently stopped matching.
-  'refusal-word-identity-not-live|REFUSAL-WORD-RESPELT|"identity_not_live"|1|'"$CORE"'/,'"$BIN"'/|the ordered validator'"'"'s identity refusal has one spelling, defined in crate::audit::vocab and re-exported; a second definition is two homes for one vocabulary, which is what this unit'"'"'s own merge conflict was'
-  'refusal-word-not-serving|REFUSAL-WORD-RESPELT|"not_serving"|1|'"$CORE"'/,'"$BIN"'/|the registration-level refusal has one spelling; a plane may render it more finely under its own words, but it may not respell this one'
-  'refusal-word-artifact-drifted|REFUSAL-WORD-RESPELT|"artifact_drifted"|1|'"$CORE"'/,'"$BIN"'/|the rug-pull refusal has one spelling: it is the one word that indicts the UPSTREAM rather than the config or the grant, and a second copy is two answers to who is at fault'
-  'refusal-word-generation-moved|REFUSAL-WORD-RESPELT|"generation_moved"|1|'"$CORE"'/,'"$BIN"'/|the lifecycle-race refusal has one spelling across both planes; two copies is the in-flight-outliving-an-approval story told two ways'
+  'refusal-word-identity-not-live|REFUSAL-WORD-RESPELT|"identity_not_live"|1|'"$TREE"'|the ordered validator'"'"'s identity refusal has one spelling, defined in crate::audit::vocab and re-exported; a second definition is two homes for one vocabulary, which is what this unit'"'"'s own merge conflict was'
+  'refusal-word-not-serving|REFUSAL-WORD-RESPELT|"not_serving"|1|'"$TREE"'|the registration-level refusal has one spelling; a plane may render it more finely under its own words, but it may not respell this one'
+  'refusal-word-artifact-drifted|REFUSAL-WORD-RESPELT|"artifact_drifted"|1|'"$TREE"'|the rug-pull refusal has one spelling: it is the one word that indicts the UPSTREAM rather than the config or the grant, and a second copy is two answers to who is at fault'
+  'refusal-word-generation-moved|REFUSAL-WORD-RESPELT|"generation_moved"|1|'"$TREE"'|the lifecycle-race refusal has one spelling across both planes; two copies is the in-flight-outliving-an-approval story told two ways'
 
   # ── THE FAILOVER SEAM'S REFUSAL WORDS, and they are here for the reason the four above are: the
   #    seam is CORE, so its words are core's, and a plane that renders a refusal must render THIS
@@ -1832,18 +1902,18 @@ DECLARATION_CENSUS=(
   #    `crate::audit::vocab`; `crate::failover` names the CONST. A second string literal is a second
   #    home for one vocabulary — the defect the validator's own merge conflict already was, once —
   #    and zero means the word left the tree and every query written against it stopped matching.
-  'refusal-word-no-upstream-left|REFUSAL-WORD-RESPELT|"no_upstream_left"|1|'"$CORE"'/,'"$BIN"'/|the nowhere-left-to-send refusal has one spelling across every plane that fails over; a second copy is one outage recorded under two words'
-  'refusal-word-not-interchangeable|REFUSAL-WORD-RESPELT|"not_interchangeable"|1|'"$CORE"'/,'"$BIN"'/|the pins-disagree refusal has one spelling: it is the one word that indicts the CONFIGURATION rather than the caller or the upstream, and a second copy is two answers to who is at fault'
-  'refusal-word-not-repeatable|REFUSAL-WORD-RESPELT|"not_repeatable"|1|'"$CORE"'/,'"$BIN"'/|the safety rule'"'"'s refusal has one spelling; it is the one outcome an operator may deliberately want to change, and a second copy is a change they would make in one place and not the other'
+  'refusal-word-no-upstream-left|REFUSAL-WORD-RESPELT|"no_upstream_left"|1|'"$TREE"'|the nowhere-left-to-send refusal has one spelling across every plane that fails over; a second copy is one outage recorded under two words'
+  'refusal-word-not-interchangeable|REFUSAL-WORD-RESPELT|"not_interchangeable"|1|'"$TREE"'|the pins-disagree refusal has one spelling: it is the one word that indicts the CONFIGURATION rather than the caller or the upstream, and a second copy is two answers to who is at fault'
+  'refusal-word-not-repeatable|REFUSAL-WORD-RESPELT|"not_repeatable"|1|'"$TREE"'|the safety rule'"'"'s refusal has one spelling; it is the one outcome an operator may deliberately want to change, and a second copy is a change they would make in one place and not the other'
 
-  'the-one-ordered-request-validator|VALIDATOR-RESPELT|fn[[:space:]]+validate_request[^a-zA-Z0-9_]|1|'"$CORE"'/,'"$BIN"'/|there is exactly ONE ordered request validator in busbar and every protocol reaches it; a second is a protocol that has acquired its own order, and zero means the order was inlined back into a plane where nothing owns it'
+  'the-one-ordered-request-validator|VALIDATOR-RESPELT|fn[[:space:]]+validate_request[^a-zA-Z0-9_]|1|'"$TREE"'|there is exactly ONE ordered request validator in busbar and every protocol reaches it; a second is a protocol that has acquired its own order, and zero means the order was inlined back into a plane where nothing owns it'
 
   # ── THE ONE GENERATION SOURCE. A generation only has to be DIFFERENT after a change, so a second
   #    counter buys nothing and adds a second thing to keep monotonic — and a plane that took its
   #    generations from a private counter would compare its own numbers against a shared one the day
   #    somebody unified them. Zero means no snapshot in the tree is versioned any more, which is the
   #    in-flight-outliving-the-approval window standing wide open with every test still green.
-  'the-one-generation-source|GENERATION-SOURCE-FORKED|fn[[:space:]]+next_generation[^a-zA-Z0-9_]|1|'"$CORE"'/,'"$BIN"'/|every versioned snapshot in the process takes its generation from one monotonic source; a second source is two numbering schemes that compare equal by accident, and zero means nothing is versioned'
+  'the-one-generation-source|GENERATION-SOURCE-FORKED|fn[[:space:]]+next_generation[^a-zA-Z0-9_]|1|'"$TREE"'|every versioned snapshot in the process takes its generation from one monotonic source; a second source is two numbering schemes that compare equal by accident, and zero means nothing is versioned'
 
   # ── THE THIRD CATALOGUE WALK, RECORDED BECAUSE PLANE_LEDGER STRUCTURALLY CANNOT HOLD IT.
   #    `crate::catalogue` unified the two INBOUND catalogues — walk an inventory, hand what each item
@@ -1870,7 +1940,7 @@ DECLARATION_CENSUS=(
   #    (`dispatch.rs` is `#![allow(dead_code)]`), so it is a third IMPLEMENTATION and not yet a third
   #    live answer. The second reason is why it is debt and not a defect; the first is why it is
   #    debt today.
-  'the-third-catalogue-walk|THIRD-CATALOGUE-WALK|fn[[:space:]]+visible_catalogue[^a-zA-Z0-9_]|1|'"$CORE"'/,'"$BIN"'/|the outbound client leg still walks its own catalogue instead of crate::catalogue, filtering through the egress gate rather than the ordered validator; this row is that debt, and the count is 1 until somebody routes it through the one walk and deletes the row'
+  'the-third-catalogue-walk|THIRD-CATALOGUE-WALK|fn[[:space:]]+visible_catalogue[^a-zA-Z0-9_]|1|'"$TREE"'|the outbound client leg still walks its own catalogue instead of crate::catalogue, filtering through the egress gate rather than the ordered validator; this row is that debt, and the count is 1 until somebody routes it through the one walk and deletes the row'
 
   'boot-starts-the-quarantine-sweep|SWEEP-NOT-SPAWNED|spawn_refresh_job\(|1|'"$BIN"'/main.rs|the sweep is the only thing that quarantines a drifted upstream with no operator present; if boot stops calling it the defence is still fully implemented, fully tested, and never runs'
 
@@ -1886,8 +1956,8 @@ DECLARATION_CENSUS=(
   #    NOT the same as `PlaneSections::resolve`'s `RefError::CrossPlane`, which is a SECOND,
   #    STRUCTURAL cross-plane refusal at RESOLVE time on a name that exists. Two checks, two
   #    moments; merging them would delete one rather than deduplicate it.
-  'one-parse-time-plane-boundary|PLANE-BOUNDARY-RULE-RESPELT|fn[[:space:]]+refuse_cross_plane_reference[[:space:]]*\(|1|'"$CORE"'/,'"$BIN"'/|there is exactly ONE parse-time answer to "does this hook reference reach onto another plane"; a second is two answers that drift the first time either is fixed, and zero means the rule left the tree and every dotted reference is now silently accepted'
-  'one-section-attach-validator|PLANE-BOUNDARY-RULE-RESPELT|fn[[:space:]]+validate_section_hooks[[:space:]]*\(|1|'"$CORE"'/,'"$BIN"'/|the SECTION-level attach list must be judged by the same rule one entry is; a second copy is the place a looser rule grows, and it is the list an operator uses to attach a control to everything'
+  'one-parse-time-plane-boundary|PLANE-BOUNDARY-RULE-RESPELT|fn[[:space:]]+refuse_cross_plane_reference[[:space:]]*\(|1|'"$TREE"'|there is exactly ONE parse-time answer to "does this hook reference reach onto another plane"; a second is two answers that drift the first time either is fixed, and zero means the rule left the tree and every dotted reference is now silently accepted'
+  'one-section-attach-validator|PLANE-BOUNDARY-RULE-RESPELT|fn[[:space:]]+validate_section_hooks[[:space:]]*\(|1|'"$TREE"'|the SECTION-level attach list must be judged by the same rule one entry is; a second copy is the place a looser rule grows, and it is the list an operator uses to attach a control to everything'
 
   # ── THE ONE BY-NAME PROTOCOL RESOLUTION. Before the registry there were THREE: `protocol_for`'"'"'s
   #    match, `handlers::request_handler`'"'"'s match, and `ProtocolRegistry::with_builtins`'"'"'s match,
@@ -1896,14 +1966,14 @@ DECLARATION_CENSUS=(
   #    protocol can be known, and the failure mode is a protocol that resolves for routing and not
   #    for dispatch (or the reverse), discovered as a 404 on a path that is mounted. Zero is the
   #    other failure: the lookup was renamed or inlined and every ban above it scans nothing.
-  'protocol-name-resolution|PROTOCOL-LOOKUP-RESPELT|fn[[:space:]]+decl_for[[:space:]]*\(|1|'"$CORE"'/,'"$BIN"'/|there is exactly ONE by-name protocol resolution in busbar, and a second one is a second answer to which protocols exist'
+  'protocol-name-resolution|PROTOCOL-LOOKUP-RESPELT|fn[[:space:]]+decl_for[[:space:]]*\(|1|'"$TREE"'|there is exactly ONE by-name protocol resolution in busbar, and a second one is a second answer to which protocols exist'
 
   # ── THE BUILT-IN DECLARATION TABLE. One slice, and it is DATA rather than a match — the whole
   #    point of the step (`design/protocol-plugin-abi.md` §8.1: a registry whose population is a
   #    match in core has not removed the match, it has moved it). A second table is a second answer
   #    to which protocols ship; zero means the table was inlined back into a constructor, which is
   #    how the match would return.
-  'protocol-builtin-table|PROTOCOL-TABLE-RESPELT|static[[:space:]]+BUILTIN_DECLS|1|'"$CORE"'/,'"$BIN"'/|the set of built-in protocols is declared in exactly one place, as data; a second table or none at all is the match coming back'
+  'protocol-builtin-table|PROTOCOL-TABLE-RESPELT|static[[:space:]]+BUILTIN_DECLS|1|'"$TREE"'|the set of built-in protocols is declared in exactly one place, as data; a second table or none at all is the match coming back'
 )
 
 hdr "declaration census (a shared decision, and each shared wire word, exists EXACTLY once)"

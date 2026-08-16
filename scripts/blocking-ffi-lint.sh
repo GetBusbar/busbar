@@ -314,7 +314,32 @@ CANDIDATES=()
 # Core/bin split roots (step 3.7): the engine library and the thin binary are scanned together.
 CORE="crates/busbar-core/src"
 BIN="crates/busbar/src"
-while IFS= read -r f; do CANDIDATES+=("$f"); done < <(find "$CORE" "$BIN" -name '*.rs' -not -path '*/tests/*' | sort -u)
+
+# ── THE PLANE ROOTS, FOUND RATHER THAN SPELLED ───────────────────────────────────────────────────
+# 1.6.0's owner ruling R-E makes the MCP and A2A planes PLUGIN CRATES. That matters HERE more than
+# almost anywhere else, and it matters SILENTLY: today the two planes are 71 of the 238 files below,
+# and the SCAN FLOOR is 100. Move them out and the count falls to 167 — still comfortably over the
+# floor, so this lint would go on printing `ok` while 71 files that call OUT TO PLUGINS (the MCP
+# upstream leg and the A2A relay leg both cross the hook/store seams from async code) stopped being
+# scanned at all. The floor catches a root that MOVED; nothing caught a root that SPLIT.
+#
+# So the plane roots are resolved from the tree, exactly as scripts/structure-lint.sh resolves them:
+# the one directory named after the plane anywhere under `crates/`. If a plane is inside `$CORE`
+# the extra root is redundant and `sort -u` drops the duplicates; if it is its own crate the root
+# is the only reason those files stay in the scan set. Zero or two homes is a hard failure — a
+# plane this lint cannot locate is a plane it is not scanning, which is the whole point of the
+# floor one paragraph up.
+# shellcheck source=scripts/plane-roots.sh
+. "$(dirname "$0")/plane-roots.sh"
+if ! plane_roots_resolve mcp a2a; then
+  hdr "result"
+  note "blocking-ffi-lint FAILED — PLANE ROOT UNRESOLVED"
+  printf '%s' "$PLANE_ROOTS_ERR" | while IFS= read -r l; do note "$l"; done
+  exit 1
+fi
+PLANE_ROOTS=("$PLANE_ROOT_mcp" "$PLANE_ROOT_a2a")
+
+while IFS= read -r f; do CANDIDATES+=("$f"); done < <(find "$CORE" "$BIN" "${PLANE_ROOTS[@]}" -name '*.rs' -not -path '*/tests/*' | sort -u)
 
 # ── SCAN FLOOR — the loop below is "for each file, assert no inline FFI", which is VACUOUSLY TRUE
 # over zero files. Rename `crates/busbar` (a normal refactor), move the engine, or mistype the root,
