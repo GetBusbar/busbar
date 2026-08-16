@@ -121,7 +121,7 @@ fn transcription_read_response_captures_input_and_output_token_counts() {
         panic!("expected IrResp::Transcription");
     };
     assert_eq!(r.text, "hello");
-    let Some(crate::billing::Billing::Tokens(usage)) = r.usage else {
+    let Some(busbar_core::billing::Billing::Tokens(usage)) = r.usage else {
         panic!("expected token usage");
     };
     assert_eq!(usage.input, 11);
@@ -306,7 +306,7 @@ fn image_read_response_captures_base64_image_bytes() {
 #[test]
 fn image_write_read_roundtrip_preserves_prompt() {
     // write_request emits instances[].prompt + parameters.sampleCount; read_request recovers.
-    let req = IrReq::Image(crate::ir::image::ImageReq {
+    let req = IrReq::Image(busbar_core::ir::image::ImageReq {
         prompt: Some("roundtrip fox".to_string()),
         n: Some(2),
         ..Default::default()
@@ -326,7 +326,7 @@ fn image_write_read_roundtrip_preserves_prompt() {
 fn embeddings_write_request_carries_dimensions_task_type_and_title() {
     // Gemini `:embedContent` supports these natively; dropping `outputDimensionality` returned
     // full-width vectors, and taskType/title steer retrieval quality.
-    let ir = IrReq::Embeddings(crate::ir::embeddings::EmbeddingsReq {
+    let ir = IrReq::Embeddings(busbar_core::ir::embeddings::EmbeddingsReq {
         input: EmbInput::Text(vec!["hi".into()]),
         dimensions: Some(256),
         task_type: Some("RETRIEVAL_DOCUMENT".into()),
@@ -400,10 +400,10 @@ fn embeddings_write_response_emits_the_float_vector() {
 
 #[test]
 fn embeddings_write_request_warns_on_dropped_non_text_input() {
-    use crate::test_support::warn_capture::WarnCapture;
+    use busbar_core::test_support::warn_capture::WarnCapture;
     use tracing_subscriber::layer::SubscriberExt as _;
 
-    let ir = IrReq::Embeddings(crate::ir::embeddings::EmbeddingsReq {
+    let ir = IrReq::Embeddings(busbar_core::ir::embeddings::EmbeddingsReq {
         input: EmbInput::Images(vec!["data:image/png;base64,AA==".into()]),
         ..Default::default()
     });
@@ -425,7 +425,7 @@ fn embeddings_write_request_warns_on_dropped_non_text_input() {
 fn image_write_request_carries_aspect_ratio_and_person_generation() {
     // Imagen generation controls must ride under `parameters`; dropping them fell back to
     // Imagen's defaults (1:1 aspect, default person-generation policy).
-    let ir = IrReq::Image(crate::ir::image::ImageReq {
+    let ir = IrReq::Image(busbar_core::ir::image::ImageReq {
         prompt: Some("a fox".into()),
         aspect_ratio: Some("16:9".into()),
         person_generation: Some("allow_adult".into()),
@@ -492,7 +492,7 @@ fn speech_write_request_prefixes_instructions_to_prompt_not_language_code() {
     // OpenAI-style free-text `instructions` steer Gemini TTS through the PROMPT, not the BCP-47
     // `speechConfig.languageCode` (the old, request-corrupting behavior). Assert the prefix lands
     // in parts[0].text as "<instr>: <input>" and no languageCode key is emitted.
-    let ir = IrReq::Speech(crate::ir::audio::SpeechReq {
+    let ir = IrReq::Speech(busbar_core::ir::audio::SpeechReq {
         input: "hello".into(),
         voice: "Kore".into(),
         instructions: Some("speak cheerfully".into()),

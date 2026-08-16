@@ -1,0 +1,36 @@
+# busbar-proto-gemini — the Gemini dialect as a PROTOCOL CRATE; the third
+# protocol extracted from the engine, stacked on the anthropic control. See the crate docs in
+# src/lib.rs: five files (declaration, reader, writer, handler, tests), everything consumed
+# through busbar-core's public surface, registered by the `busbar` binary (the composition root)
+# and by nothing else. Deleting this crate's dependency edge is a build the deletion gate makes on
+# purpose (scripts/proto-deletion-gate.sh).
+[package]
+name = "busbar-proto-gemini"
+version = "1.6.0"
+publish = false            # internal workspace crate; never goes to crates.io
+edition = "2021"
+# `rust-version` rationale: see busbar-core/Cargo.toml — one pinned number, set to what CI verifies.
+rust-version = "1.97"
+description = "Gemini dialect for busbar: wire codec, request handler and protocol declaration, linked and registered by the busbar binary."
+license = "Apache-2.0"
+
+[lib]
+name = "busbar_proto_gemini"
+path = "src/lib.rs"
+
+[dependencies]
+# The engine's public surface — the ONLY busbar crate this dialect may name. `default-features =
+# false` for the same reason the binary does it: the feature decisions are the composition root's.
+busbar-core = { path = "../busbar-core", default-features = false }
+axum = { workspace = true }
+bytes = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+getrandom = { workspace = true }
+
+[dev-dependencies]
+# The dialect's own tests drive the codec through core vocabulary (breaker signals, IR types) and
+# core's test_support (warn-capture), which core exposes to dependents behind this feature only.
+busbar-core = { path = "../busbar-core", features = ["test-support"] }
+serde_json = { workspace = true }
+tracing-subscriber = { workspace = true }

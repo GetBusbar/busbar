@@ -26,15 +26,15 @@
 //! TRANSPORT: a variant in `transport.rs` and an arrival that frames these same codecs — no codec
 //! changes, because a codec never learns which channel it is speaking over. Nothing else moves.
 
-// The Anthropic and OpenAI Chat handlers live in their extracted dialect crates
-// (`busbar-proto-anthropic`, `busbar-proto-openai-chat`, each own `src/handler.rs`) — reachable in
-// the builds that compile the dialect back in as `crate::proto::anthropic::handler` /
-// `crate::proto::openai_chat::handler`, and reachable in production only through the registry's
+// The Anthropic, OpenAI Chat and Gemini handlers live in their extracted dialect crates
+// (`busbar-proto-anthropic`, `busbar-proto-openai-chat`, `busbar-proto-gemini`, each own
+// `src/handler.rs`) — reachable in the builds that compile the dialect back in as
+// `crate::proto::anthropic::handler` / `crate::proto::openai_chat::handler` /
+// `crate::proto::gemini::handler`, and reachable in production only through the registry's
 // `ProtocolDecl::handler`, which is the point.
 pub(crate) mod bedrock;
 pub mod chat;
 pub(crate) mod cohere;
-pub(crate) mod gemini;
 /// THE EXTRACTED MCP DIALECT, compiled back in for TEST BUILDS ONLY. The sources live in
 /// `crates/busbar-proto-mcp` (the second protocol crate; the `busbar` binary registers its `DECL`
 /// through `crate::proto::registry::install_protocols`), and core's PRODUCTION build knows nothing
@@ -60,7 +60,7 @@ pub(crate) mod responses;
 /// `match protocol { "openai" => …, "mcp" => … }`, seven arms, each naming a protocol core had to
 /// have been edited to know about. It is now a read of `ProtocolDecl::handler` — the cell a protocol
 /// DECLARES, beside the codec, the verbs and the head keys it declares in the same struct.
-pub(crate) fn request_handler(protocol: &str) -> Option<&'static dyn RequestHandler> {
+pub fn request_handler(protocol: &str) -> Option<&'static dyn RequestHandler> {
     crate::proto::decl_for(protocol).and_then(|d| d.handler)
 }
 

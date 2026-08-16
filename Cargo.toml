@@ -4,6 +4,7 @@ members = [
     "crates/busbar",
     "crates/busbar-core",
     "crates/busbar-proto-anthropic",
+    "crates/busbar-proto-gemini",
     "crates/busbar-proto-mcp",
     "crates/busbar-proto-openai-chat",
     "crates/api",

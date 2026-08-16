@@ -817,7 +817,7 @@ pub(crate) use dispatch::operation_ingress;
 /// axum's `{*rest}` wildcard decoded before the route collapse, and hand it to this protocol's own
 /// ingress. Core no longer knows that Gemini keeps its model in the URL — it reads
 /// `ProtocolDecl::path_ingress` and calls what it finds.
-pub(crate) fn gemini_arrival(
+pub fn gemini_arrival(
     a: dispatch::Arrival,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Response> + Send>> {
     let rest = crate::observability::percent_decode(a.path.split("/models/").nth(1).unwrap_or(""));

@@ -324,6 +324,7 @@ dependencies = [
  "busbar-plugin-loader",
  "busbar-plugin-sign",
  "busbar-proto-anthropic",
+ "busbar-proto-gemini",
  "busbar-proto-mcp",
  "busbar-proto-openai-chat",
  "busbar-store-example-plugin",
@@ -541,6 +542,19 @@ version = "1.6.0"
 dependencies = [
  "axum",
  "busbar-core",
+ "getrandom 0.3.4",
+ "serde_json",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "busbar-proto-gemini"
+version = "1.6.0"
+dependencies = [
+ "axum",
+ "busbar-core",
+ "bytes",
  "getrandom 0.3.4",
  "serde_json",
  "tracing",

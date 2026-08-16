@@ -3,21 +3,22 @@
 
 //! Gemini `RequestHandler` + cells. Embeddings via `models/{id}:embedContent`.
 
-use crate::handlers::{
+use busbar_core::handlers::{
     CodecError, EgressCtx, IngressReject, OperationHandler, RequestHandler, WireBody,
 };
-use crate::ir::audio::{SpeechResp, TranscriptionResp};
-use crate::ir::embeddings::{EmbInput, EmbeddingItem, EmbeddingsResp, EncFmt, VectorData};
-use crate::ir::variant::{IrReq, IrResp};
-use crate::media::{base64_encode, MediaBlob, MediaPayload};
-use crate::operation::Operation;
+use busbar_core::ir::audio::{SpeechResp, TranscriptionResp};
+use busbar_core::ir::embeddings::{EmbInput, EmbeddingItem, EmbeddingsResp, EncFmt, VectorData};
+use busbar_core::ir::variant::{IrReq, IrResp};
+use busbar_core::media::{base64_encode, MediaBlob, MediaPayload};
+use busbar_core::operation::Operation;
 use bytes::Bytes;
 use serde_json::{json, Value};
 
 pub(crate) struct GeminiRequestHandler;
 /// This protocol's OWN chat instance — delete this line (and the registry arm) and this
 /// protocol's chat 404s via the standard no-handler path; everything else keeps working.
-static CHAT: crate::handlers::chat::ChatOperation = crate::handlers::chat::ChatOperation("gemini");
+static CHAT: busbar_core::handlers::chat::ChatOperation =
+    busbar_core::handlers::chat::ChatOperation("gemini");
 static EMB: GeminiEmbeddings = GeminiEmbeddings;
 static IMG: GeminiImage = GeminiImage;
 static TRANSCRIPTION: GeminiTranscription = GeminiTranscription;
@@ -25,7 +26,7 @@ static SPEECH: GeminiSpeech = GeminiSpeech;
 
 /// GEMINI'S ROW OF THE SUPPORT MATRIX — the verbs this protocol speaks, as data. A verb absent from
 /// it is the standard no-handler 404: Gemini has no moderation/rerank surface.
-static CELLS: &[crate::handlers::Cell] = &[
+static CELLS: &[busbar_core::handlers::Cell] = &[
     (Operation::CHAT, &CHAT),
     (Operation::EMBEDDINGS, &EMB),
     (Operation::IMAGE, &IMG),
@@ -46,7 +47,7 @@ impl RequestHandler for GeminiRequestHandler {
         "gemini"
     }
     fn operation_handler(&self, op: Operation) -> Option<&dyn OperationHandler> {
-        crate::handlers::cell_of(CELLS, op)
+        busbar_core::handlers::cell_of(CELLS, op)
     }
     fn upstream_path(&self, ctx: &EgressCtx) -> String {
         let m = ctx.model;
@@ -54,7 +55,7 @@ impl RequestHandler for GeminiRequestHandler {
         // override it via `path_base` (e.g. Vertex AI's `/v1/projects/{p}/locations/{l}/publishers/
         // google/models`). The `:verb` suffix and streaming selection are unchanged.
         let base = ctx.path_base.unwrap_or("/v1beta/models");
-        if let Some(action) = crate::handlers::path_of(ACTIONS, ctx.operation) {
+        if let Some(action) = busbar_core::handlers::path_of(ACTIONS, ctx.operation) {
             return format!("{base}/{m}:{action}");
         }
         // Chat + audio understanding/TTS all ride generateContent (stream-aware). So does every
@@ -141,8 +142,8 @@ struct GeminiTranscription;
 impl OperationHandler for GeminiTranscription {
     /// This protocol's error envelope, shared by every operation it serves: the same
     /// vocabulary its chat cell reports, read from the same upstream.
-    fn extract_error(&self, status: u16, body: &[u8]) -> crate::breaker::RawUpstreamError {
-        crate::handlers::protocol_error("gemini", status, body)
+    fn extract_error(&self, status: u16, body: &[u8]) -> busbar_core::breaker::RawUpstreamError {
+        busbar_core::handlers::protocol_error("gemini", status, body)
     }
     /// gemini `generateContent`-with-audio wire → IR (gemini as INGRESS): `inline_data` part is the
     /// audio, a text part (if any) is the instruction/prompt. Model rides the PATH.
@@ -163,7 +164,7 @@ impl OperationHandler for GeminiTranscription {
                         .and_then(Value::as_str)
                         .unwrap_or_default()
                         .to_string();
-                    if crate::media::base64_decode(&data).is_none() {
+                    if busbar_core::media::base64_decode(&data).is_none() {
                         return Err(IngressReject::BadRequest(
                             "inline_data.data is not valid base64".into(),
                         ));
@@ -188,11 +189,13 @@ impl OperationHandler for GeminiTranscription {
                 "transcription requires an inline_data audio part".into(),
             ));
         };
-        Ok(IrReq::Transcription(crate::ir::audio::TranscriptionReq {
-            audio: Some(audio),
-            prompt,
-            ..Default::default()
-        }))
+        Ok(IrReq::Transcription(
+            busbar_core::ir::audio::TranscriptionReq {
+                audio: Some(audio),
+                prompt,
+                ..Default::default()
+            },
+        ))
     }
     fn write_request(&self, ir: &IrReq) -> Bytes {
         let IrReq::Transcription(r) = ir else {
@@ -237,7 +240,7 @@ impl OperationHandler for GeminiTranscription {
             })
             .unwrap_or_default();
         let usage = v.get("usageMetadata").map(|u| {
-            crate::billing::Billing::Tokens(crate::billing::TokenUsage {
+            busbar_core::billing::Billing::Tokens(busbar_core::billing::TokenUsage {
                 input: u
                     .get("promptTokenCount")
                     .and_then(Value::as_u64)
@@ -266,7 +269,7 @@ impl OperationHandler for GeminiTranscription {
                 "finishReason": "STOP",
             }],
         });
-        if let Some(crate::billing::Billing::Tokens(t)) = &r.usage {
+        if let Some(busbar_core::billing::Billing::Tokens(t)) = &r.usage {
             body["usageMetadata"] = json!({
                 "promptTokenCount": t.input,
                 "candidatesTokenCount": t.output,
@@ -284,8 +287,8 @@ struct GeminiSpeech;
 impl OperationHandler for GeminiSpeech {
     /// This protocol's error envelope, shared by every operation it serves: the same
     /// vocabulary its chat cell reports, read from the same upstream.
-    fn extract_error(&self, status: u16, body: &[u8]) -> crate::breaker::RawUpstreamError {
-        crate::handlers::protocol_error("gemini", status, body)
+    fn extract_error(&self, status: u16, body: &[u8]) -> busbar_core::breaker::RawUpstreamError {
+        busbar_core::handlers::protocol_error("gemini", status, body)
     }
     /// gemini TTS wire → IR (gemini as INGRESS): text part is the input; voice from speechConfig.
     fn read_request(&self, body: &[u8], _content_type: &str) -> Result<IrReq, IngressReject> {
@@ -312,7 +315,7 @@ impl OperationHandler for GeminiSpeech {
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string();
-        Ok(IrReq::Speech(crate::ir::audio::SpeechReq {
+        Ok(IrReq::Speech(busbar_core::ir::audio::SpeechReq {
             input,
             voice,
             ..Default::default()
@@ -351,16 +354,18 @@ impl OperationHandler for GeminiSpeech {
                     .and_then(Value::as_str)
                     .unwrap_or("audio/L16;codec=pcm;rate=24000")
                     .to_string();
-                let pcm = mime.contains("pcm").then_some(crate::media::PcmParams {
-                    sample_rate: 24000,
-                    channels: 1,
-                    bit_depth: 16,
-                });
+                let pcm = mime
+                    .contains("pcm")
+                    .then_some(busbar_core::media::PcmParams {
+                        sample_rate: 24000,
+                        channels: 1,
+                        bit_depth: 16,
+                    });
                 // Validate the backend's base64 at this trust boundary: a corrupt payload must fail
                 // loud here (CodecError) rather than reach the egress writer, where a decode failure
                 // would silently become an empty 200 audio body. This is the response-side twin of
                 // the ingress inline_data validation.
-                if crate::media::base64_decode(data).is_none() {
+                if busbar_core::media::base64_decode(data).is_none() {
                     return Err(CodecError::Malformed(
                         "gemini speech inlineData.data is not valid base64".into(),
                     ));
@@ -416,15 +421,15 @@ struct GeminiImage;
 impl OperationHandler for GeminiImage {
     /// This protocol's error envelope, shared by every operation it serves: the same
     /// vocabulary its chat cell reports, read from the same upstream.
-    fn extract_error(&self, status: u16, body: &[u8]) -> crate::breaker::RawUpstreamError {
-        crate::handlers::protocol_error("gemini", status, body)
+    fn extract_error(&self, status: u16, body: &[u8]) -> busbar_core::breaker::RawUpstreamError {
+        busbar_core::handlers::protocol_error("gemini", status, body)
     }
     /// Imagen `:predict` wire → IR (gemini as INGRESS): `instances[].prompt` + `parameters`.
     fn read_request(&self, body: &[u8], _content_type: &str) -> Result<IrReq, IngressReject> {
         let wire: Value =
             serde_json::from_slice(body).map_err(|e| IngressReject::BadRequest(e.to_string()))?;
         let params = wire.get("parameters").cloned().unwrap_or_default();
-        Ok(IrReq::Image(crate::ir::image::ImageReq {
+        Ok(IrReq::Image(busbar_core::ir::image::ImageReq {
             prompt: wire
                 .pointer("/instances/0/prompt")
                 .and_then(Value::as_str)
@@ -471,7 +476,7 @@ impl OperationHandler for GeminiImage {
             .and_then(Value::as_array)
             .map(|arr| {
                 arr.iter()
-                    .map(|p| crate::media::ImageOutput {
+                    .map(|p| busbar_core::media::ImageOutput {
                         b64: p
                             .get("bytesBase64Encoded")
                             .and_then(Value::as_str)
@@ -485,7 +490,7 @@ impl OperationHandler for GeminiImage {
                     .collect()
             })
             .unwrap_or_default();
-        Ok(IrResp::Image(crate::ir::image::ImageResp {
+        Ok(IrResp::Image(busbar_core::ir::image::ImageResp {
             images,
             ..Default::default()
         }))
@@ -519,8 +524,8 @@ struct GeminiEmbeddings;
 impl OperationHandler for GeminiEmbeddings {
     /// This protocol's error envelope, shared by every operation it serves: the same
     /// vocabulary its chat cell reports, read from the same upstream.
-    fn extract_error(&self, status: u16, body: &[u8]) -> crate::breaker::RawUpstreamError {
-        crate::handlers::protocol_error("gemini", status, body)
+    fn extract_error(&self, status: u16, body: &[u8]) -> busbar_core::breaker::RawUpstreamError {
+        busbar_core::handlers::protocol_error("gemini", status, body)
     }
     // Token-metered: buffer the same-protocol non-stream 2xx body so the default
     // `extract_usage` can read the `usage` object and bill the virtual key's TPM/spend
@@ -549,23 +554,25 @@ impl OperationHandler for GeminiEmbeddings {
                 "embedContent requires `content.parts[].text`".into(),
             ));
         }
-        Ok(IrReq::Embeddings(crate::ir::embeddings::EmbeddingsReq {
-            input: EmbInput::Text(vec![text]),
-            task_type: wire
-                .get("taskType")
-                .and_then(Value::as_str)
-                .map(str::to_string),
-            title: wire
-                .get("title")
-                .and_then(Value::as_str)
-                .map(str::to_string),
-            dimensions: wire
-                .get("outputDimensionality")
-                .and_then(Value::as_u64)
-                .and_then(|d| u32::try_from(d).ok()),
-            encoding_formats: vec![EncFmt::Float],
-            ..Default::default()
-        }))
+        Ok(IrReq::Embeddings(
+            busbar_core::ir::embeddings::EmbeddingsReq {
+                input: EmbInput::Text(vec![text]),
+                task_type: wire
+                    .get("taskType")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                title: wire
+                    .get("title")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                dimensions: wire
+                    .get("outputDimensionality")
+                    .and_then(Value::as_u64)
+                    .and_then(|d| u32::try_from(d).ok()),
+                encoding_formats: vec![EncFmt::Float],
+                ..Default::default()
+            },
+        ))
     }
     fn write_request(&self, ir: &IrReq) -> Bytes {
         let IrReq::Embeddings(r) = ir else {
@@ -631,7 +638,7 @@ impl OperationHandler for GeminiEmbeddings {
             .get("usageMetadata")
             .and_then(|u| u.get("promptTokenCount"))
             .and_then(Value::as_u64)
-            .map(|n| crate::billing::TokenUsage {
+            .map(|n| busbar_core::billing::TokenUsage {
                 input: n,
                 ..Default::default()
             });
@@ -661,5 +668,5 @@ impl OperationHandler for GeminiEmbeddings {
 }
 
 #[cfg(test)]
-#[path = "tests/gemini_tests.rs"]
+#[path = "tests/handler_tests.rs"]
 mod tests;

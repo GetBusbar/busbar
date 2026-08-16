@@ -211,6 +211,9 @@ static BUILTIN_DECLS: &[&ProtocolDecl] = &[
     // anthropic row above: this row exists only in the builds that compile the dialect back in.
     #[cfg(any(test, feature = "test-support"))]
     &crate::proto::openai_chat::DECL,
+    // GEMINI IS AN EXTRACTED CRATE (`busbar-proto-gemini`) — same rationale as the anthropic row
+    // above: this row exists only in the builds that compile the dialect back in.
+    #[cfg(any(test, feature = "test-support"))]
     &crate::proto::gemini::DECL,
     &crate::proto::bedrock::DECL,
     &crate::proto::openai_responses::DECL,

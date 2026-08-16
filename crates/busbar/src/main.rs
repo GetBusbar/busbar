@@ -500,6 +500,8 @@ fn register_protocols() {
     static INSTALLED: &[&busbar_core::proto::ProtocolDecl] = &[
         #[cfg(feature = "proto-anthropic")]
         &busbar_proto_anthropic::DECL,
+        #[cfg(feature = "proto-gemini")]
+        &busbar_proto_gemini::DECL,
         #[cfg(feature = "proto-mcp")]
         &busbar_proto_mcp::DECL,
         #[cfg(feature = "proto-openai-chat")]

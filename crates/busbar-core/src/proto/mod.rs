@@ -431,7 +431,7 @@ pub struct SigningContext<'a> {
 /// plain-string content — the re-framing dialects cannot render that faithfully, so their
 /// [`ProtocolWriter::apply_rewrite_to_ingress_body`] aborts and leaves the body untouched rather
 /// than shipping a half-applied rewrite.
-pub(crate) fn rewrite_text_pairs(messages: &[serde_json::Value]) -> Option<Vec<(String, String)>> {
+pub fn rewrite_text_pairs(messages: &[serde_json::Value]) -> Option<Vec<(String, String)>> {
     messages
         .iter()
         .map(|m| {
@@ -1302,12 +1302,19 @@ impl Protocol {
     /// [`Protocol::anthropic`]: the dialect is an extracted crate (`busbar-proto-openai-chat`);
     /// production resolves it through the registry after the composition root installs its
     /// declaration.
-    #[cfg(test)]
-    pub(crate) fn openai() -> Self {
+    // `test-support`, not bare `cfg(test)`: a SIBLING dialect crate's own test build reaches this
+    // fixture shim (busbar-proto-gemini's logprobs carry tests translate gemini ↔ openai), and that
+    // build sees core through the `test-support` feature, not through core's `cfg(test)`.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn openai() -> Self {
         Self::new(PROTO_OPENAI, OpenAiReader, OpenAiWriter)
     }
 
-    /// Construct a Gemini protocol instance.
+    /// Construct a Gemini protocol instance — TEST FIXTURE SHIM, same rationale as
+    /// [`Protocol::anthropic`]: the dialect is an extracted crate (`busbar-proto-gemini`);
+    /// production resolves it through the registry after the composition root installs its
+    /// declaration.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn gemini() -> Self {
         Self::new(PROTO_GEMINI, GeminiReader, GeminiWriter)
     }
@@ -1551,7 +1558,7 @@ pub(crate) use stream::StreamTranslate;
 /// where `offset` is the byte index of the first terminator byte. Recognizes both the LF-LF (`\n\n`,
 /// 2 bytes) and the spec-legal CRLF (`\r\n\r\n`, 4 bytes) blank-line terminators per WHATWG SSE.
 /// Returns `None` if no complete terminator is present yet.
-pub(crate) fn find_frame_terminator(buf: &[u8]) -> Option<(usize, usize)> {
+pub fn find_frame_terminator(buf: &[u8]) -> Option<(usize, usize)> {
     let mut i = 0;
     while i < buf.len() {
         if buf[i] == b'\n' {
@@ -1582,7 +1589,7 @@ pub(crate) fn find_frame_terminator(buf: &[u8]) -> Option<(usize, usize)> {
 /// no `event:` line (OpenAI style). Multiple `data:` lines in a single frame are concatenated with
 /// `\n` per the SSE spec. Returns `None` if the frame carries no `data:` line (including a
 /// frame with only an `event:` line) or is invalid UTF-8.
-pub(crate) fn parse_sse_frame(frame: &[u8]) -> Option<(String, String)> {
+pub fn parse_sse_frame(frame: &[u8]) -> Option<(String, String)> {
     let text = std::str::from_utf8(frame).ok()?;
     let mut event_type = String::new();
     let mut data_lines: Vec<&str> = Vec::new();
@@ -1879,7 +1886,12 @@ pub(crate) mod bedrock;
 pub(crate) mod cohere;
 /// Wire-dialect detection: `protocol_id(path, headers)` sniffs which protocol a request speaks.
 pub(crate) mod detect;
-pub(crate) mod gemini;
+/// THE EXTRACTED GEMINI DIALECT, compiled back in for TEST BUILDS ONLY. Sources live in
+/// `crates/busbar-proto-gemini`; see the `mod anthropic` doc above for the full rationale — same
+/// mechanism, third dialect.
+#[cfg(any(test, feature = "test-support"))]
+#[path = "../../../busbar-proto-gemini/src/lib.rs"]
+pub mod gemini;
 /// THE EXTRACTED OPENAI CHAT DIALECT, compiled back in for TEST BUILDS ONLY. Sources live in
 /// `crates/busbar-proto-openai-chat`; see the `mod anthropic` doc above for the full rationale —
 /// same mechanism, second dialect.
@@ -1907,6 +1919,9 @@ use anthropic::{AnthropicReader, AnthropicWriter};
 use anthropic::synth_anthropic_request_id;
 use bedrock::{BedrockReader, BedrockWriter};
 use cohere::{CohereReader, CohereWriter};
+// The extracted Gemini dialect's codec structs, in scope for the same test surface that predates
+// the extraction. Present only in the builds that compile the dialect back in.
+#[cfg(any(test, feature = "test-support"))]
 use gemini::{GeminiReader, GeminiWriter};
 // `GeminiJsonArrayFramer` lives in `gemini.rs`; mod.rs references it only from its own test module
 // (production callers use `crate::proto::gemini::GeminiJsonArrayFramer`). Private, test-gated import
@@ -1914,8 +1929,10 @@ use gemini::{GeminiReader, GeminiWriter};
 #[cfg(test)]
 use gemini::GeminiJsonArrayFramer;
 // The extracted OpenAI Chat dialect's codec structs, in scope for the same test surface that
-// predates the extraction. Present only in the builds that compile the dialect back in.
-#[cfg(test)]
+// predates the extraction. Present only in the builds that compile the dialect back in — and on the
+// `test-support` gate, not bare `cfg(test)`, because `Protocol::openai()` (which names them) is on
+// that gate for a sibling dialect crate's test build.
+#[cfg(any(test, feature = "test-support"))]
 use openai_chat::{OpenAiReader, OpenAiWriter};
 use openai_responses::{ResponsesReader, ResponsesWriter};
 // The declaration vocabulary, re-exported at `crate::proto::…` so every protocol module (each of
@@ -1927,7 +1944,7 @@ pub use registry::{decl_for, IngressAuth, ProtocolDecl};
 /// cannot drift on a typo'd literal. Tests keep raw literals by convention (golden-value checks).
 pub const PROTO_ANTHROPIC: &str = "anthropic";
 pub const PROTO_OPENAI: &str = "openai";
-pub(crate) const PROTO_GEMINI: &str = "gemini";
+pub const PROTO_GEMINI: &str = "gemini";
 pub(crate) const PROTO_BEDROCK: &str = "bedrock";
 pub(crate) const PROTO_COHERE: &str = "cohere";
 pub(crate) const PROTO_RESPONSES: &str = "responses";

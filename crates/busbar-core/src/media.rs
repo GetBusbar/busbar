@@ -92,9 +92,9 @@ pub enum MediaPayload {
 /// the wire bytes carry no container header. `None` on `MediaBlob.pcm` for self-describing formats.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PcmParams {
-    pub(crate) sample_rate: u32,
-    pub(crate) channels: u8,
-    pub(crate) bit_depth: u8,
+    pub sample_rate: u32,
+    pub channels: u8,
+    pub bit_depth: u8,
 }
 
 /// A single audio payload (transcription input / speech output). One representation + its MIME type,

@@ -41,7 +41,7 @@
 /// here is willing to assemble can also be buffered to completion upstream — otherwise a frame
 /// between the two caps would be aborted before `drain_frames_checked` ever saw it. Keep `MAX_FRAME_BYTES`
 /// and `StreamTranslate::MAX_BUF` in sync.
-pub(crate) const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
+pub const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 
 /// Outcome of a [`drain_frames_checked`] pass: WHY the decoder stopped pulling frames from the
 /// buffer. This is the DISTINCT abandonment signal the egress reassembler (`StreamTranslate::feed`)

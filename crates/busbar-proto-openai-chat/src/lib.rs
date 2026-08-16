@@ -276,9 +276,7 @@ const BASE62: &[u8; 62] = busbar_core::proto::BASE62_ALPHABET;
 /// OpenAI's `logprobs` object (`{content: [{token, logprob, bytes, top_logprobs[]}]}`) → the
 /// neutral IR entries. `bytes` is preserved verbatim when present (a token can be a partial UTF-8
 /// fragment, so the byte array is the only faithful carrier).
-pub(crate) fn read_openai_logprobs(
-    v: Option<&serde_json::Value>,
-) -> Vec<busbar_core::ir::IrTokenLogprob> {
+pub fn read_openai_logprobs(v: Option<&serde_json::Value>) -> Vec<busbar_core::ir::IrTokenLogprob> {
     let entries = match v
         .and_then(|lp| lp.get("content"))
         .and_then(|c| c.as_array())
@@ -323,7 +321,7 @@ pub(crate) fn read_openai_logprobs(
 /// Neutral IR logprobs → OpenAI's `logprobs` object. `bytes` is synthesized from the token's UTF-8
 /// encoding when the source protocol (Gemini) carries none — the same value OpenAI itself returns
 /// for a whole-token UTF-8 string.
-pub(crate) fn write_openai_logprobs(lps: &[busbar_core::ir::IrTokenLogprob]) -> serde_json::Value {
+pub fn write_openai_logprobs(lps: &[busbar_core::ir::IrTokenLogprob]) -> serde_json::Value {
     let content: Vec<serde_json::Value> = lps
         .iter()
         .map(|lp| {

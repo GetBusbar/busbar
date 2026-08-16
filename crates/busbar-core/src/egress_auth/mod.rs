@@ -231,7 +231,7 @@ impl CredentialProvider for StaticBearer {
 
 /// Static custom header carrying the raw key (`api-key` or `x-goog-api-key`). An un-encodable key
 /// yields no header (upstream 401s). Free function so auth tests exercise the exact same code.
-pub(crate) fn api_key_headers(header: &'static str, key: &str) -> Vec<(HeaderName, HeaderValue)> {
+pub fn api_key_headers(header: &'static str, key: &str) -> Vec<(HeaderName, HeaderValue)> {
     match HeaderValue::from_str(key) {
         Ok(v) => vec![(HeaderName::from_static(header), v)],
         Err(_) => {

@@ -126,7 +126,7 @@ fn get() -> Option<LimitsResolved> {
 /// (`limits.request_body_max_bytes`) drives BOTH the inbound `DefaultBodyLimit` and this egress cap,
 /// so a body the gateway accepts inbound is always buffer-translatable on the cross-protocol egress
 /// path. When uninstalled, falls back to the historical 32 MiB.
-pub(crate) fn translate_body_max_bytes() -> usize {
+pub fn translate_body_max_bytes() -> usize {
     get()
         .map(|l| l.request_body_max_bytes)
         .unwrap_or(DEFAULT_REQUEST_BODY_MAX_BYTES)
