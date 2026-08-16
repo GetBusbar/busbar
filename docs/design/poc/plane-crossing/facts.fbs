@@ -1,0 +1,20 @@
+// LAYER 1 / the OPEN interface: exactly what core reads, and nothing else.
+// `verb` is a STRING, not an enum: that is the fix for IrReq being a closed
+// enum. A plugin names a verb core has never heard of and core still meters,
+// governs, audits and routes it.
+namespace zcfacts;
+
+table Facts {
+  verb:string;           // open vocabulary — no core `match` to edit
+  wants_stream:bool;
+  end_user:string;
+  shape:string;
+  model:string;
+  n_parts:uint;
+  // The BODY rides here as an untraversed byte vector. The verifier
+  // bounds-checks the range; it does not walk the elements. That is the
+  // difference between O(1) and O(n) at a trust boundary.
+  body:[ubyte];
+}
+
+root_type Facts;

@@ -1,0 +1,28 @@
+// The LLM-family IR, Layer 2, as a zero-copy schema.
+// Field IDs are explicit so added fields are additive-only (version tolerance).
+namespace zcir;
+
+table TextBlock { text:string; }
+
+table Message {
+  role:string;
+  content:[TextBlock];
+}
+
+table Tool {
+  name:string;
+  description:string;
+  input_schema:string;   // opaque JSON the host never parses
+}
+
+table ChatReq {
+  model:string;
+  max_tokens:uint;
+  stream:bool;
+  system:string;
+  messages:[Message];
+  tools:[Tool];
+  end_user:string;
+}
+
+root_type ChatReq;
