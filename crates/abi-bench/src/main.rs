@@ -166,7 +166,10 @@ struct Arm<'a> {
 fn measure(arms: &mut [Arm], iters: usize, blocks: usize) -> Vec<Vec<f64>> {
     let per_block = (iters / blocks).max(1);
     let mut out = vec![Vec::new(); arms.len()];
-    for trial in 0..6 {
+    // Nine passes: one discarded warm-up plus eight reported trials. Eight rather than five because
+    // the sweeps estimate the cost by the BEST trial (see `best`), and the odds that every one of
+    // eight passes was interrupted by a competing build fall off fast with the count.
+    for trial in 0..9 {
         let mut totals = vec![0u128; arms.len()];
         for _ in 0..blocks {
             for (i, arm) in arms.iter_mut().enumerate() {
@@ -218,6 +221,29 @@ fn median(v: &[f64]) -> f64 {
     let mut s = v.to_vec();
     s.sort_by(|a, b| a.partial_cmp(b).unwrap());
     s[s.len() / 2]
+}
+
+/// The BEST trial, which is the right estimator for the sweeps.
+///
+/// Contention is strictly additive noise: a competing build can only ever make a trial slower, never
+/// faster, so the distribution has a hard floor at the true cost and a long right tail. Under a
+/// build fleet the median sits somewhere in that tail and moves with the fleet's mood — the density
+/// table came back non-monotonic across two runs on medians while the curve's minima agreed to
+/// within a few percent. The minimum estimates the floor, which is the quantity the design decision
+/// needs. It is reported alongside the spread so a reader can see how much tail was discarded.
+fn best(v: &[f64]) -> f64 {
+    v.iter().copied().fold(f64::INFINITY, f64::min)
+}
+
+/// Relative spread of the trials, as a percentage of the best — the noise column.
+fn spread_pct(v: &[f64]) -> f64 {
+    let b = best(v);
+    let w = v.iter().copied().fold(0.0f64, f64::max);
+    if b > 0.0 {
+        (w - b) / b * 100.0
+    } else {
+        0.0
+    }
 }
 
 /// Locate the bench cdylib: a scoped `cargo build -p` writes only into `deps/`, a workspace build
@@ -587,7 +613,7 @@ fn main() {
         let res = measure(&mut arms, 600, 6);
         for (i, target) in targets.iter().enumerate() {
             let nb = jsonb[i].len() as f64;
-            let m: Vec<f64> = (0..4).map(|k| median(&res[i * 4 + k])).collect();
+            let m: Vec<f64> = (0..4).map(|k| best(&res[i * 4 + k])).collect();
             println!(
                 "{:<10} {:>9} {:>11.1} {:>9.3} {:>11.1} {:>9.3} {:>11.1} {:>9.3} {:>11.1} {:>9.3}",
                 format!("{} KB", target / 1024),
@@ -610,8 +636,8 @@ fn main() {
     {
         println!("\n### DENSITY CONTROL — ~32 KB held constant, structure varied (release)");
         println!(
-            "{:<12} {:>9} {:>10} {:>11} {:>13} {:>13}",
-            "blocks", "json B", "values", "json ns", "ns/byte", "ns/value"
+            "{:<12} {:>9} {:>10} {:>11} {:>13} {:>13} {:>9}",
+            "blocks", "json B", "values", "json ns", "ns/byte", "ns/value", "spread%"
         );
         // Interleaved for the same reason the curve is: measured row-by-row, this table came back
         // NON-MONOTONIC in the block count (a 64% jump between adjacent rows that then reversed),
@@ -644,15 +670,16 @@ fn main() {
             .collect();
         let res = measure(&mut arms, 1_200, 6);
         for (i, n_blocks) in densities.iter().enumerate() {
-            let m = median(&res[i]);
+            let m = best(&res[i]);
             println!(
-                "{:<12} {:>9} {:>10} {:>11.1} {:>13.3} {:>13.1}",
+                "{:<12} {:>9} {:>10} {:>11.1} {:>13.3} {:>13.1} {:>9.1}",
                 n_blocks,
                 dbytes[i],
                 dvalues[i],
                 m,
                 m / dbytes[i] as f64,
-                m / dvalues[i] as f64
+                m / dvalues[i] as f64,
+                spread_pct(&res[i])
             );
         }
     }
