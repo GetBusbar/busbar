@@ -374,8 +374,8 @@ on A2A. Three identities, one state machine:
 | plane | breaker target | live on the dispatch path? |
 |---|---|---|
 | LLM | a `(pool, lane)` cell | yes, and has been since the breaker landed |
-| MCP | one registered tool server | not yet: the seam exists, `mcp/client/dispatch.rs` does not call it |
-| A2A | one registered agent | not yet: same, for `a2a/relay.rs` |
+| MCP | one registered tool server | yes: the dispatch path walks the seam (`mcp/reroute.rs` → `failover::walk`) before every leg |
+| A2A | one registered agent | yes: the ingress walks it at submission admission (`a2a/route.rs` → `failover::walk`) |
 
 **One state machine, and one place to tune it.** `BreakerCfg` (the cooldown bounds and
 the `trip:` condition) is accepted under `pools:` and nowhere else. There is no
@@ -399,15 +399,22 @@ repeated only when the operation is named in `repeatable:`. See
 [circuit-breaker.md](circuit-breaker.md#failover-on-mcp-and-a2a-the-same-server-deployed-twice).
 
 **What the caller gets when a target is Open** is protocol-native on each plane, and
-the difference matters more than it looks. The LLM row is live; the MCP and A2A rows
-are the contract the dispatch-path wiring is being written to and are **not emitted
-today**, so do not test against them yet:
+the difference matters more than it looks. All three rows are live. On every plane a
+refusal is what the caller gets only once selection has run out of candidates: if the
+target sits in a pool, `crate::failover` walks to a verified twin first, and the caller
+sees the refusal only when no admissible candidate remains.
 
 | plane | refusal | live? |
 |---|---|---|
 | LLM | the pool's `on_exhausted` policy: failover to another member, a fallback pool, `least_bad`, or `503` + `Retry-After` | yes |
-| MCP | HTTP `503` with `Retry-After`, and a **JSON-RPC error** in busbar's implementation-defined `-320xx` band, with `data` carrying `reason`, `server` and `retry_after_ms` | not yet |
-| A2A | a task in state **`rejected`** (not `failed`), returned with its task id | not yet |
+| MCP | HTTP `503` with `Retry-After`, and a **JSON-RPC error** in busbar's implementation-defined `-320xx` band, with `data` carrying `reason`, `server` and `retry_after_ms` | yes |
+| A2A | a task in state **`rejected`** (not `failed`), returned with its task id | yes |
+
+On MCP and A2A that walk happens **before the first byte** — at dispatch for a
+`tools/call`, at admission for a fresh submission. After a dispatch has gone out only
+operator-listed `repeatable:` operations move, and an accepted A2A task is pinned to
+the member that accepted it: a tripped pin refuses the task-scoped verb rather than
+migrating live work to a twin.
 
 On MCP this is an error, **never a tool result with `isError: true`**. `isError` means
 the tool ran and failed; a tripped breaker means the call never happened. Reporting
