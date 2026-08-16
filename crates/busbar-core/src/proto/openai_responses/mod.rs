@@ -17,12 +17,15 @@ pub(crate) const DECL: ProtocolDecl = ProtocolDecl {
     name: PROTO_RESPONSES,
     codec: Some(Protocol::responses),
     handler: Some(&crate::handlers::responses::ResponsesRequestHandler),
-    verbs: &["chat"],
+    verbs: &[crate::operation::Operation::CHAT],
     head_keys: LLM_HEAD_KEYS,
     streaming_content_type: Some(crate::proxy::TEXT_EVENT_STREAM),
     array_stream_shim_key: None,
     native_tool_id_prefix: Some("call_"),
     ingress_auth: IngressAuth::Bearer,
+    // The shared bearer/api-key/SigV4 schemes stay in `egress_auth::resolve` until this
+    // dialect is extracted; see the field doc.
+    egress_auth_headers: None,
     // NO PATH INGRESS: this dialect keeps its model in the BODY, so the catch-all resolves the
     // operation through the `RequestHandler` and serves it on the universal ingress.
     path_ingress: None,
@@ -501,7 +504,7 @@ fn responses_modeled_keys() -> &'static std::collections::HashSet<&'static str> 
 }
 
 #[derive(Clone)]
-pub(crate) struct ResponsesReader;
+pub struct ResponsesReader;
 
 fn responses_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock, IrError> {
     let obj = block_val.as_object().ok_or(IrError {
@@ -842,7 +845,7 @@ fn read_cached_tokens(usage_val: &serde_json::Value) -> Option<u64> {
 /// so the counter is stream-scoped by construction and the increments are plain `&self` atomics on
 /// that one owned instance — no thread affinity, so the counter follows the stream across Tokio
 /// worker migrations.
-pub(crate) struct ResponsesWriter {
+pub struct ResponsesWriter {
     /// Per-stream `sequence_number` counter. Reset to 0 on the stream's opening `MessageStart`
     /// (`response.created`) and advanced once per emitted event for the rest of the stream.
     /// `AtomicU64` (not `Cell`) so the writer stays `Sync` as the `ProtocolWriter` trait requires;
@@ -997,7 +1000,7 @@ struct ToolCallAccum {
 /// wrong for this site and is suppressed deliberately.
 #[allow(non_upper_case_globals)]
 #[allow(clippy::declare_interior_mutable_const)]
-pub(crate) const ResponsesWriter: ResponsesWriter = ResponsesWriter {
+pub const ResponsesWriter: ResponsesWriter = ResponsesWriter {
     sequence: AtomicU64::new(0),
     response_id: std::sync::Mutex::new(None),
     created_at: std::sync::Mutex::new(None),

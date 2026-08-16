@@ -72,10 +72,14 @@
 //!
 //! [`Operation::name`] is the tracing/metrics `op` field and the `paths:` config key. An unbounded
 //! caller-supplied string reaching it is a cardinality explosion. Nothing constructs an `Operation`
-//! from the wire: [`Operation::ALL`] is the entire set of values that exist, every one of them is an
-//! associated `const` below, and a protocol's `resolve_operation` RETURNS one of these constants
-//! after matching the wire word — it never builds one out of the wire word. `Verb`'s fields are
-//! `pub(crate)` to this module's readers by pattern only; the constants are the constructors.
+//! from the wire: the entire set of values that exist is [`Operation::ALL`] (the six shape verbs
+//! the core owns) plus `proto::registry::declared_verbs()` (the verbs the registered protocols
+//! declare, folded at boot from `ProtocolDecl::verbs` — the seven LLM words arrive this way).
+//! Every one of them is an associated `const` — here for the shapes, in `operation.rs` still for
+//! the seven LLM verbs that `ir::variant` constructs — and a protocol's `resolve_operation`
+//! RETURNS one of these constants after matching the wire word; it never builds one out of the
+//! wire word. `Verb`'s fields are `pub(crate)` to this module's readers by pattern only; the
+//! constants are the constructors.
 
 /// THE SHAPE OF AN EXCHANGE — the closed tag the agnostic core is allowed to know about, and the
 /// half of [`Operation`] that survives a `dlopen` boundary as a discriminant rather than as a word.
@@ -85,7 +89,7 @@
 /// tree on this type, deliberately: a `_ =>` here would mean a shape arrived and nothing had to
 /// decide anything about it, which is the failure this tag exists to prevent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) enum OpShape {
+pub enum OpShape {
     /// A caller names a target and hands it arguments, and gets content or an error back. The only
     /// shape with a BILLING SUBJECT and the only one that can be answered incrementally: something
     /// ran, it took a measurable amount of work, and the answer can arrive in pieces.
@@ -185,7 +189,7 @@ impl OpShape {
 /// `op`, which is closed, and the word is carried through untouched. A protocol that adds a method
 /// adds a `const` in ITS OWN module; it does not touch this enum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) enum Operation {
+pub enum Operation {
     Verb {
         /// The shape the pipeline decides on.
         op: OpShape,
@@ -199,13 +203,13 @@ impl Operation {
     // ── THE LLM FAMILY'S SEVEN VERBS. All one shape (`Invoke`): name a model, hand it arguments,
     //    get content or an error back. They keep their published names to the letter, because those
     //    names are the metrics label and the `paths:` config key and a rename is a broken dashboard.
-    pub(crate) const CHAT: Operation = Operation::llm("chat");
-    pub(crate) const EMBEDDINGS: Operation = Operation::llm("embeddings");
-    pub(crate) const MODERATION: Operation = Operation::llm("moderation");
-    pub(crate) const IMAGE: Operation = Operation::llm("image");
-    pub(crate) const TRANSCRIPTION: Operation = Operation::llm("transcription");
-    pub(crate) const SPEECH: Operation = Operation::llm("speech");
-    pub(crate) const RERANK: Operation = Operation::llm("rerank");
+    pub const CHAT: Operation = Operation::llm("chat");
+    pub const EMBEDDINGS: Operation = Operation::llm("embeddings");
+    pub const MODERATION: Operation = Operation::llm("moderation");
+    pub const IMAGE: Operation = Operation::llm("image");
+    pub const TRANSCRIPTION: Operation = Operation::llm("transcription");
+    pub const SPEECH: Operation = Operation::llm("speech");
+    pub const RERANK: Operation = Operation::llm("rerank");
 
     // ── THE PROTOCOL SURFACE'S SIX. One verb per shape today, carrying the shape's own word: MCP
     //    and A2A both address these through their own method names, which the protocol's
@@ -223,17 +227,17 @@ impl Operation {
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) const CONTROL: Operation = Operation::of(OpShape::Control);
 
-    /// EVERY OPERATION THAT EXISTS. The closed table the module header promises: the metric label
-    /// surface is exactly `ALL.map(name)`, and nothing outside this file constructs an `Operation`.
+    /// EVERY OPERATION THE CORE ITSELF OWNS — the six protocol-surface verbs, one per shape. This
+    /// used to also list the seven LLM verbs, which made it a core table naming one family's
+    /// endpoints — exactly the coupling the module header calls out, and the reason the deletion
+    /// test passed "in the weakest sense": with every LLM protocol deleted, `ALL` still published
+    /// `chat`…`rerank` as if something served them. The LLM rows now reach the vocabulary from the
+    /// protocol DECLARATIONS instead (`proto::registry::declared_verbs()`, folded at boot from
+    /// `ProtocolDecl::verbs`), so a protocol's verbs leave when the protocol does. The closed
+    /// metric-label surface the header promises is `ALL ∪ declared_verbs()`: both halves are
+    /// `&'static` consts fixed at load, and nothing constructs an `Operation` from the wire.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) const ALL: &'static [Operation] = &[
-        Operation::CHAT,
-        Operation::EMBEDDINGS,
-        Operation::MODERATION,
-        Operation::IMAGE,
-        Operation::TRANSCRIPTION,
-        Operation::SPEECH,
-        Operation::RERANK,
         Operation::INVOKE,
         Operation::CATALOGUE,
         Operation::FETCH,

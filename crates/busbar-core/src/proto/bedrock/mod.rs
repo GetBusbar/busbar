@@ -15,7 +15,12 @@ pub(crate) const DECL: ProtocolDecl = ProtocolDecl {
     name: PROTO_BEDROCK,
     codec: Some(Protocol::bedrock),
     handler: Some(&crate::handlers::bedrock::BedrockRequestHandler),
-    verbs: &["chat", "embeddings", "image", "rerank"],
+    verbs: &[
+        crate::operation::Operation::CHAT,
+        crate::operation::Operation::EMBEDDINGS,
+        crate::operation::Operation::IMAGE,
+        crate::operation::Operation::RERANK,
+    ],
     head_keys: LLM_HEAD_KEYS,
     // Bedrock ingress expects a BINARY eventstream body, not SSE: mislabeling it breaks the SDK.
     streaming_content_type: Some(APPLICATION_VND_AMAZON_EVENTSTREAM),
@@ -23,6 +28,9 @@ pub(crate) const DECL: ProtocolDecl = ProtocolDecl {
     // `tooluse_…` is Bedrock's documented native tool-call id shape.
     native_tool_id_prefix: Some("tooluse_"),
     ingress_auth: IngressAuth::SigV4,
+    // The shared bearer/api-key/SigV4 schemes stay in `egress_auth::resolve` until this
+    // dialect is extracted; see the field doc.
+    egress_auth_headers: None,
     // THE MODEL IS IN THE URL: `/model/{model_id}/converse`, `/converse-stream` and `/invoke`, plus
     // the native 404 for anything else beneath it. All four were a name-matched arm in core.
     path_ingress: Some(crate::ingress::bedrock_arrival),

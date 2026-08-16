@@ -1710,7 +1710,7 @@ pub(crate) fn scratch_dir(name: &str) -> std::path::PathBuf {
     dir
 }
 
-pub(crate) mod warn_capture;
+pub mod warn_capture;
 
 /// The REAL `kind: store` plugin, loaded over the REAL C ABI: how a durability claim is judged.
 pub(crate) mod plugin_store;

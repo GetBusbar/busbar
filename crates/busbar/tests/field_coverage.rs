@@ -214,13 +214,16 @@ fn every_carried_claim_names_a_real_test() {
             wanted.insert(test.as_str());
         }
     }
-    // Scan the engine's sources once; a test function is `fn <name>(`. BOTH roots since the core
-    // split (step 3.7): the instruments live in busbar-core, and a scanner that read only the thin
-    // bin would call every claim a ghost — or, pointed the other way, would go green over nothing.
+    // Scan the engine's sources once; a test function is `fn <name>(`. BOTH seam roots since the
+    // core split (step 3.7) — the instruments live in busbar-core, and a scanner that read only
+    // the thin bin would call every claim a ghost — PLUS the extracted protocol crates (step 4;
+    // anthropic first): a dialect's instruments move out with its codec, and a claim carried by a
+    // moved test is still carried.
     let mut haystack = String::new();
     let mut stack = vec![
         repo_root().join("crates/busbar-core/src"),
         repo_root().join("crates/busbar/src"),
+        repo_root().join("crates/busbar-proto-anthropic/src"),
     ];
     while let Some(dir) = stack.pop() {
         let Ok(entries) = std::fs::read_dir(&dir) else {

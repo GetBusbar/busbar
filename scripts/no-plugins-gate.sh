@@ -141,11 +141,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         self.rfile.read(int(self.headers.get("Content-Length", 0)))
         body = json.dumps({
-            "id": "msg_no_plugins_gate", "type": "message", "role": "assistant",
+            "id": "chatcmpl-no-plugins-gate", "object": "chat.completion",
             "model": "test-model",
-            "content": [{"type": "text", "text": MARKER}],
-            "stop_reason": "end_turn",
-            "usage": {"input_tokens": 11, "output_tokens": 7},
+            "choices": [{"index": 0, "finish_reason": "stop",
+                         "message": {"role": "assistant", "content": MARKER}}],
+            "usage": {"prompt_tokens": 11, "completion_tokens": 7, "total_tokens": 18},
         }).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
@@ -176,9 +176,14 @@ print(d if d is not None else "")' "$1"; }
 # plugin subsystem is ON and finds nothing, which is the axis-2 premise stated in config.
 write_zero_plugin_config() {
   local work="$1" bin="$2" mock_port="$3" listen_port="$4" admin_port="$5" plugins_dir="$6"
+  # `openai` (engine-inline): `anthropic` is an EXTRACTED protocol crate since step 4 of 1.6.0 —
+  # a plugin by this very gate's mechanical definition — so the compiled-out axis genuinely does
+  # not speak it (scripts/proto-deletion-gate.sh proves that refusal separately). This gate probes
+  # the dialects that are still engine-inline; when the remaining five extract, its fixture moves
+  # to whatever the zero-plugin engine still serves (MCP), or gains the proto features explicitly.
   cat >"${work}/providers.yaml" <<EOF
 mock:
-  protocol: anthropic
+  protocol: openai
   base_url: "http://127.0.0.1:${mock_port}"
 EOF
   # The `keys` verifier requires an explicit signing key (busbar no longer auto-generates one); mint
@@ -324,13 +329,16 @@ except Exception: print("")')"
     axis_failed=1
   fi
 
-  body="$(curl -s "${D}/main/v1/messages" -H "Authorization: Bearer ${token}" \
+  # Cohere-format ingress (engine-inline) against the openai-protocol pool: A5's pool leg stays a
+  # real CROSS-PROTOCOL translation through the IR, which is what the anthropic-format leg proved
+  # before that dialect became an extracted crate.
+  body="$(curl -s "${D}/v2/chat" -H "Authorization: Bearer ${token}" \
             -H 'Content-Type: application/json' \
-            -d '{"model":"test-model","max_tokens":16,"messages":[{"role":"user","content":"hello"}]}')"
+            -d '{"model":"main","messages":[{"role":"user","content":"hello"}]}')"
   got="$(printf '%s' "$body" | python3 -c 'import sys,json
-try: print(json.load(sys.stdin)["content"][0]["text"])
+try: print(json.load(sys.stdin)["message"]["content"][0]["text"])
 except Exception: print("")')"
-  printf 'POST data/pool %s\n' "$(code "${D}/main/v1/messages" -H "Authorization: Bearer ${token}" -H 'Content-Type: application/json' -d '{"model":"test-model","max_tokens":16,"messages":[{"role":"user","content":"hello"}]}')" >>"${out}/probe.txt"
+  printf 'POST data/pool %s\n' "$(code "${D}/v2/chat" -H "Authorization: Bearer ${token}" -H 'Content-Type: application/json' -d '{"model":"main","messages":[{"role":"user","content":"hello"}]}')" >>"${out}/probe.txt"
   if [ "$got" = "$marker" ]; then
     ok "A5 ${label}: POOL route (hooks: [weighted], the inline SWRR floor) proxied end-to-end"
   else
@@ -406,10 +414,10 @@ UPSTREAM = re.search(r'base_url:\s*"([^"]+)"',
                      open(re.search(r'providers_file:\s*"([^"]+)"', cfg).group(1)).read()).group(1)
 
 def upstream_text():
-    req = urllib.request.Request(UPSTREAM + "/v1/messages", data=b"{}",
+    req = urllib.request.Request(UPSTREAM + "/v1/chat/completions", data=b"{}",
                                  headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=10) as r:
-        return json.load(r)["content"][0]["text"]
+        return json.load(r)["choices"][0]["message"]["content"]
 
 def reply(h, status, body):
     raw = json.dumps(body).encode()
@@ -429,8 +437,9 @@ class Data(http.server.BaseHTTPRequestHandler):
         if BREAK == "proxy":
             return reply(self, 502, {"error": "no upstream: ranking hook absent"})
         text = upstream_text()
-        if self.path.endswith("/v1/messages"):
-            return reply(self, 200, {"content": [{"type": "text", "text": text}]})
+        if self.path.endswith("/v2/chat"):
+            return reply(self, 200, {"message": {"role": "assistant",
+                                                 "content": [{"type": "text", "text": text}]}})
         reply(self, 200, {"choices": [{"message": {"content": text, "role": "assistant"}}]})
     def log_message(self, *a): pass
 

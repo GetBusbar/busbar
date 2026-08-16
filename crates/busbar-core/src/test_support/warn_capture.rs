@@ -19,11 +19,11 @@
 //! round-trip), or the capture comes back empty.
 
 #[derive(Clone, Default)]
-pub(crate) struct WarnCapture(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+pub struct WarnCapture(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
 
 impl WarnCapture {
     /// Every WARN message recorded so far, each as `"{message} {field}={value} ..."`.
-    pub(crate) fn messages(&self) -> Vec<String> {
+    pub fn messages(&self) -> Vec<String> {
         self.0.lock().map(|m| m.clone()).unwrap_or_default()
     }
 

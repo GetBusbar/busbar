@@ -5,8 +5,8 @@
 //! its non-chat operations stay `None` = no-handler 404. Chat dispatches through the same registry as
 //! every other operation.
 
-use crate::handlers::{EgressCtx, OperationHandler, RequestHandler};
-use crate::operation::Operation;
+use busbar_core::handlers::{EgressCtx, OperationHandler, RequestHandler};
+use busbar_core::operation::Operation;
 
 /// Endpoint paths — each appears on BOTH the egress side (`upstream_path`) and the ingress match
 /// (`resolve_operation`); single-sourced so the two sides cannot drift.
@@ -15,21 +15,21 @@ const PATH_MESSAGES: &str = "/v1/messages";
 pub(crate) struct AnthropicRequestHandler;
 /// This protocol's OWN chat instance — delete this line (and the registry arm) and this
 /// protocol's chat 404s via the standard no-handler path; everything else keeps working.
-static CHAT: crate::handlers::chat::ChatOperation =
-    crate::handlers::chat::ChatOperation("anthropic");
+static CHAT: busbar_core::handlers::chat::ChatOperation =
+    busbar_core::handlers::chat::ChatOperation("anthropic");
 
 /// ANTHROPIC'S ROW OF THE SUPPORT MATRIX — one verb. Every other verb is the standard no-handler
 /// 404, and it is the SAME answer for the LLM verbs Anthropic lacks and for the protocol-surface
 /// verbs that are MCP's and A2A's rather than a special case: a protocol that does not speak a verb
 /// has no cell, so the pair is unrepresentable rather than refused at runtime.
-static CELLS: &[crate::handlers::Cell] = &[(Operation::CHAT, &CHAT)];
+static CELLS: &[busbar_core::handlers::Cell] = &[(Operation::CHAT, &CHAT)];
 
 impl RequestHandler for AnthropicRequestHandler {
     fn protocol_name(&self) -> &'static str {
         "anthropic"
     }
     fn operation_handler(&self, op: Operation) -> Option<&dyn OperationHandler> {
-        crate::handlers::cell_of(CELLS, op)
+        busbar_core::handlers::cell_of(CELLS, op)
     }
     fn upstream_path(&self, ctx: &EgressCtx) -> String {
         match ctx.path_base {
@@ -54,5 +54,5 @@ impl RequestHandler for AnthropicRequestHandler {
 }
 
 #[cfg(test)]
-#[path = "tests/anthropic_tests.rs"]
+#[path = "tests/handler_tests.rs"]
 mod tests;

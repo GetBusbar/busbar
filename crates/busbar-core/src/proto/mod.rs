@@ -12,18 +12,22 @@ use std::sync::Arc;
 // The `CanonicalSignal` re-export is consumed only by the per-protocol `classify` test helpers (which
 // are themselves `#[cfg(test)]`), so it is gated to test builds to avoid an unused-import warning in
 // the 1.0 binary; production code refers to the canonical `crate::breaker::CanonicalSignal` directly.
-#[cfg(test)]
-pub(crate) use crate::breaker::CanonicalSignal;
+#[cfg(any(test, feature = "test-support"))]
+pub use crate::breaker::CanonicalSignal;
 pub(crate) use crate::breaker::StatusClass;
 
 // Import types needed for response/stream IR
-use crate::ir::{IrBlockMeta, IrDelta, IrStreamEvent, IrUsage};
+use crate::ir::{IrStreamEvent, IrUsage};
+// Consumed via `use super::*` by the proto test modules only, since the dialect that used them in
+// production moved out with the anthropic extraction.
+#[cfg(test)]
+use crate::ir::IrBlockMeta;
 
 /// Busbar-internal `provider_signal` label for an IR-parse failure (the LANE label the breaker/metrics
 /// layer reads to classify a translation/parse error). A busbar-internal signal, NOT a wire shape, so
 /// it lives in the agnostic proto layer; the per-protocol readers reference it rather than re-spelling
 /// the literal.
-pub(crate) const SIGNAL_IR_PARSE: &str = "ir_parse";
+pub const SIGNAL_IR_PARSE: &str = "ir_parse";
 
 /// The OpenAI-style SSE stream terminator sentinel (`data: [DONE]`). The bare token is matched by the
 /// cross-protocol streaming core and several readers; the full framed bytes are emitted on egress.
@@ -31,20 +35,12 @@ pub(crate) const SIGNAL_IR_PARSE: &str = "ir_parse";
 pub(crate) const SSE_DONE_SENTINEL: &str = "[DONE]";
 pub(crate) const SSE_DONE_FRAME: &[u8] = b"data: [DONE]\n\n";
 
-/// A native Anthropic stream emits `event: ping` immediately after `message_start` (and
-/// periodically thereafter); a translated cross-protocol stream never did, which is both a
-/// fingerprintable proxy tell and closes some of the idle-timeout gap a native stream survives.
-/// Injected once, right after the translated `message_start` frame, on any INGRESS-Anthropic
-/// cross-protocol stream (same-protocol Anthropic passthrough is byte-verbatim and already carries
-/// the upstream's own pings, so it never needs this).
-pub(crate) const ANTHROPIC_PING_SSE_FRAME: &[u8] = b"event: ping\ndata: {\"type\":\"ping\"}\n\n";
-
 /// The HTTP `Authorization` header name (lowercase, canonical). Emitted by the bearer/SigV4 auth-header
 /// builders across protocols; named once so no builder re-spells it.
-pub(crate) const HDR_AUTHORIZATION: &str = "authorization";
+pub const HDR_AUTHORIZATION: &str = "authorization";
 
 /// An IR-level error, currently an alias for `CanonicalSignal` (the normalized error signal).
-pub(crate) type IrError = crate::breaker::CanonicalSignal;
+pub type IrError = crate::breaker::CanonicalSignal;
 
 /// Build the `Authorization: Bearer <key>` header pair for the pure-Bearer protocol writers
 /// (OpenAI, `/v1/responses`, Gemini's `x-goog`… aside, Cohere). Shared so the warn+OMIT policy lives
@@ -118,14 +114,14 @@ pub(crate) fn image_url_from_ir(source: &crate::ir::IrImageSource) -> Option<Str
 /// that sees one must skip the image with a `tracing::warn!` instead of emitting a corrupt block. The
 /// PRODUCING protocol re-emits its own `Vendor` reference same-protocol and does NOT route through
 /// here (it matches its own `vendor` tag first).
-pub(crate) fn is_unresolvable_image_ref(source: &crate::ir::IrImageSource) -> bool {
+pub fn is_unresolvable_image_ref(source: &crate::ir::IrImageSource) -> bool {
     matches!(source, crate::ir::IrImageSource::Vendor { .. })
 }
 
 /// True when an IR block is a structured-json tool-result content block ([`crate::ir::IrBlock::Json`])
 /// rather than text/image — used by NON-Bedrock ToolResult writers to drop-with-warn it (there is no
 /// lossless cross-protocol projection of a Bedrock `{"json":…}` tool-result).
-pub(crate) fn is_json_tool_result_block(block: &crate::ir::IrBlock) -> bool {
+pub fn is_json_tool_result_block(block: &crate::ir::IrBlock) -> bool {
     matches!(block, crate::ir::IrBlock::Json(_))
 }
 
@@ -141,7 +137,7 @@ pub(crate) fn is_json_tool_result_block(block: &crate::ir::IrBlock) -> bool {
 ///
 /// Called by each writer that cannot express the flag; the writers that CAN (OpenAI Chat, Responses)
 /// emit it instead and never call this.
-pub(crate) fn warn_dropped_tool_strict(tools: &[crate::ir::IrTool], egress: &'static str) {
+pub fn warn_dropped_tool_strict(tools: &[crate::ir::IrTool], egress: &'static str) {
     let named: Vec<&str> = tools
         .iter()
         .filter(|t| t.strict.is_some())
@@ -226,9 +222,9 @@ pub(crate) const DEFAULT_MAX_TOKENS: u32 = 4096;
 /// of truth so the two id generators cannot drift on the character set or the bias-elimination cutoff
 /// — `REJECT_THRESHOLD` is the largest multiple of 62 that fits in a `u8` (62 × 4 = 248); a draw in
 /// `0..248` maps uniformly via `% 62`, a draw `>= 248` is rejected and redrawn.
-pub(crate) const BASE62_ALPHABET: &[u8; 62] =
+pub const BASE62_ALPHABET: &[u8; 62] =
     b"0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
-pub(crate) const BASE62_REJECT_THRESHOLD: u8 = 248;
+pub const BASE62_REJECT_THRESHOLD: u8 = 248;
 
 /// Client-visible detail string for a mid-stream abort (the upstream connection dropped or a
 /// translate step failed after first byte). Lives in the proto layer — the lowest common ancestor —
@@ -334,7 +330,7 @@ pub(crate) fn vendor_auth_failure_message(proto: &str) -> &'static str {
 
 /// ProtocolReader extracts signals from wire responses (Stage 1a + 1b).
 /// Methods are provider-specific normalizers that feed the breaker's Stage 2 classifier.
-pub(crate) trait ProtocolReader: Send + Sync {
+pub trait ProtocolReader: Send + Sync {
     /// Extract raw error info from HTTP response without classifying.
     fn extract_error(&self, status: StatusCode, body: &[u8]) -> crate::breaker::RawUpstreamError;
 
@@ -342,9 +338,20 @@ pub(crate) trait ProtocolReader: Send + Sync {
     /// `extract_error` + `normalize_raw_error`). The release path runs those two stages explicitly
     /// (so it can apply the lane's `error_map`); this all-in-one form has no production caller and
     /// exists solely to back the per-protocol classification unit tests, so it is compiled only
-    /// under `#[cfg(test)]` and kept out of the 1.0 binary.
-    #[cfg(test)]
-    fn classify(&self, status: StatusCode, body: &[u8]) -> CanonicalSignal;
+    /// under test builds (`test`, and `test-support` so an extracted dialect crate's own test
+    /// build — whose busbar-core dependency is not itself under `cfg(test)` — sees the same trait
+    /// member its classification tests drive) and kept out of the 1.0 binary.
+    /// DEFAULT provided (the two release-path stages with an empty `error_map`) so a dialect
+    /// whose own `classify` override is test-gated still satisfies the trait when it is compiled
+    /// as a production dependency inside a build where core's `test-support` feature happens to be
+    /// unified on.
+    #[cfg(any(test, feature = "test-support"))]
+    fn classify(&self, status: StatusCode, body: &[u8]) -> CanonicalSignal {
+        crate::breaker::normalize_raw_error(
+            &self.extract_error(status, body),
+            &std::collections::HashMap::new(),
+        )
+    }
 
     /// Read an IR request from wire JSON.
     fn read_request(&self, body: &serde_json::Value) -> Result<crate::ir::IrRequest, IrError>;
@@ -393,24 +400,24 @@ pub(crate) trait ProtocolReader: Send + Sync {
 
 /// Per-request signing context. Most protocols' `auth_headers` ignore this; protocols that
 /// sign the whole request (AWS SigV4 for Bedrock) need the method/host/path/body/time.
-pub(crate) struct SigningContext<'a> {
+pub struct SigningContext<'a> {
     /// Upstream host (no scheme), e.g. `bedrock-runtime.us-east-1.amazonaws.com`. Borrowed from the
     /// lane's precomputed `signing_host` on the forward path (no per-request allocation); only the
     /// Bedrock SigV4 writer reads it.
-    pub(crate) host: &'a str,
+    pub host: &'a str,
     /// URI-encoded request path (no query), e.g. `/model/anthropic.claude%3A0/converse`.
-    pub(crate) canonical_uri: String,
+    pub canonical_uri: String,
     /// The exact request body bytes that will be sent.
-    pub(crate) body: &'a [u8],
+    pub body: &'a [u8],
     /// Unix epoch seconds at signing time.
-    pub(crate) timestamp_epoch: u64,
+    pub timestamp_epoch: u64,
     /// The UPSTREAM-credential mode for this request. Lets a writer resolve a credential whose scheme
     /// is otherwise ambiguous (e.g. Anthropic's API-key-vs-Bearer choice) to the single native header
     /// the mode implies — `Passthrough` forwards the caller's Bearer token; `Own` presents the
     /// configured-key shape. Without it, an ambiguous credential must emit BOTH headers, which is an
     /// upstream-distinguishability tell no native client produces. (The upstream-credential concern,
     /// split out of the front-door auth mode in slice 2d.)
-    pub(crate) upstream_creds: crate::auth::UpstreamCreds,
+    pub upstream_creds: crate::auth::UpstreamCreds,
 }
 
 /// ProtocolWriter rewrites intents for the upstream wire format.
@@ -436,7 +443,7 @@ pub(crate) fn rewrite_text_pairs(messages: &[serde_json::Value]) -> Option<Vec<(
         .collect()
 }
 
-pub(crate) trait ProtocolWriter: Send + Sync {
+pub trait ProtocolWriter: Send + Sync {
     /// Returns the upstream path suffix (e.g., "/v1/messages").
     fn upstream_path(&self) -> &str;
 
@@ -1013,7 +1020,7 @@ pub(crate) trait ProtocolWriter: Send + Sync {
 /// `?alt=sse`). The trait exposes only the SUBSET of that type's API the agnostic core needs (`feed`,
 /// `finish_for_translate`, `finish_with_server_error`); the type's raw `finish` and its low-level
 /// `finish_with_error(code, status, …)` are absent, since the core never passes a wire status code.
-pub(crate) trait JsonArrayFramer: Send {
+pub trait JsonArrayFramer: Send {
     /// Feed a chunk of SSE bytes; return JSON-array bytes for whatever complete frames are now
     /// available (empty if only a partial frame is buffered).
     fn feed(&mut self, chunk: &[u8]) -> Vec<u8>;
@@ -1044,7 +1051,7 @@ pub(crate) trait JsonArrayFramer: Send {
 /// The translator keeps `emit_ir_event` as the emission primitive: the framing methods return WHAT to
 /// emit (mutating a chunk in place, or returning the IR events / trailing chunk to frame), and the
 /// translator does the actual framing. This preserves the exact byte-level emission order.
-pub(crate) trait StreamFraming: Send {
+pub trait StreamFraming: Send {
     /// EGRESS-CHUNK seam (OpenAI ingress). Called for every reframed SSE `chat.completion.chunk` body
     /// the ingress writer produced, just before it is framed. Does two things, BOTH byte-shape-critical:
     /// (a) replays the latched stream identity (`id`/`created`/`model`) onto `chunk` in place — the
@@ -1207,7 +1214,7 @@ struct PassthroughFraming;
 impl StreamFraming for PassthroughFraming {}
 
 /// Bundled Protocol with name + reader + writer.
-pub(crate) struct Protocol {
+pub struct Protocol {
     name: &'static str,
     reader: Box<dyn ProtocolReader>,
     writer: Box<dyn ProtocolWriter>,
@@ -1236,7 +1243,7 @@ impl Clone for Protocol {
 }
 
 impl Protocol {
-    pub(crate) fn new<R, W>(name: &'static str, reader: R, writer: W) -> Self
+    pub fn new<R, W>(name: &'static str, reader: R, writer: W) -> Self
     where
         R: ProtocolReader + 'static,
         W: ProtocolWriter + 'static,
@@ -1262,18 +1269,28 @@ impl Protocol {
     }
 
     /// Returns the reader for this protocol.
-    pub(crate) fn reader(&self) -> &dyn ProtocolReader {
+    pub fn reader(&self) -> &dyn ProtocolReader {
         self.reader.as_ref()
     }
 
     /// Returns the writer for this protocol.
-    pub(crate) fn writer(&self) -> &dyn ProtocolWriter {
+    pub fn writer(&self) -> &dyn ProtocolWriter {
         self.writer.as_ref()
     }
 
-    /// Construct an Anthropic protocol instance.
+    /// Construct an Anthropic protocol instance — TEST FIXTURE SHIM. The dialect is an extracted
+    /// crate (`busbar-proto-anthropic`); production resolves it through the registry after the
+    /// composition root installs its declaration, and core has no production path that could name
+    /// it. The pre-extraction fixture surface calls this constructor by name in hundreds of tests,
+    /// so it survives for the builds that compile the dialect back in (see the `mod anthropic`
+    /// decl) rather than rewriting every fixture to a registry lookup in the extraction commit.
+    #[cfg(test)]
     pub(crate) fn anthropic() -> Self {
-        Self::new(PROTO_ANTHROPIC, AnthropicReader, AnthropicWriter)
+        Self::new(
+            PROTO_ANTHROPIC,
+            anthropic::AnthropicReader,
+            anthropic::AnthropicWriter,
+        )
     }
 
     /// Construct an OpenAI protocol instance.
@@ -1282,12 +1299,12 @@ impl Protocol {
     }
 
     /// Construct a Gemini protocol instance.
-    pub(crate) fn gemini() -> Self {
+    pub fn gemini() -> Self {
         Self::new(PROTO_GEMINI, GeminiReader, GeminiWriter)
     }
 
     /// Construct an OpenAI Responses protocol instance.
-    pub(crate) fn responses() -> Self {
+    pub fn responses() -> Self {
         Self::new(PROTO_RESPONSES, ResponsesReader, ResponsesWriter)
     }
 
@@ -1837,23 +1854,37 @@ fn write_sse_frame(out: &mut Vec<u8>, event_type: &str, data: &serde_json::Value
     out.extend_from_slice(b"\n\n");
 }
 
-/// Anthropic reader implementation.
+/// THE EXTRACTED ANTHROPIC DIALECT, compiled back in for TEST BUILDS ONLY. The sources live in
+/// `crates/busbar-proto-anthropic` (the first protocol crate; the `busbar` binary registers its
+/// `DECL` through `registry::install_protocols`), and core's PRODUCTION build knows nothing of
+/// them — this decl exists so the pre-extraction fixture surface (the `Protocol::anthropic()`
+/// fixtures and `protocol: anthropic` configs across the core suite) keeps exercising the real
+/// codec from inside this crate's test binary, where an externally-linked copy could not reach the
+/// registry (its `ProtocolDecl` would be a different crate's type). The dialect's sources are
+/// written against `busbar_core::` paths, which the `extern crate self as busbar_core` alias in
+/// lib.rs resolves here.
+#[cfg(any(test, feature = "test-support"))]
+#[path = "../../../busbar-proto-anthropic/src/lib.rs"]
 pub(crate) mod anthropic;
 pub(crate) mod bedrock;
 pub(crate) mod cohere;
 /// Wire-dialect detection: `protocol_id(path, headers)` sniffs which protocol a request speaks.
 pub(crate) mod detect;
 pub(crate) mod gemini;
-pub(crate) mod openai_chat;
-pub(crate) mod openai_family;
-pub(crate) mod openai_responses;
+pub mod openai_chat;
+pub mod openai_family;
+pub mod openai_responses;
 /// THE REGISTRY: `ProtocolDecl`, the built-in declaration table, and the by-name lookup that
 /// replaced `protocol_for`'s match.
-pub(crate) mod registry;
+pub mod registry;
 
 // Private imports (NOT re-exports) for the symbols mod.rs references by bare name: the registry
 // constructs each Reader/Writer below, and a test synthesizes an Anthropic request id. Every other
 // caller references these at their owning module path (e.g. `crate::proto::bedrock::...`).
+// The extracted dialect's codec structs, in scope for the same test surface that predates the
+// extraction (the proto test modules construct them bare via `use super::*`). Present only in the
+// builds that compile the dialect back in; production core has no such names.
+#[cfg(test)]
 use anthropic::{AnthropicReader, AnthropicWriter};
 // `synth_anthropic_request_id` lives in `anthropic.rs`; mod.rs references it only from its own test
 // module (production callers use `crate::proto::anthropic::synth_anthropic_request_id`). Private,
@@ -1872,12 +1903,12 @@ use openai_chat::{OpenAiReader, OpenAiWriter};
 use openai_responses::{ResponsesReader, ResponsesWriter};
 // The declaration vocabulary, re-exported at `crate::proto::…` so every protocol module (each of
 // which does `use super::*`) can state its `DECL` without importing the registry by path.
-pub(crate) use registry::{decl_for, IngressAuth, ProtocolDecl};
+pub use registry::{decl_for, IngressAuth, ProtocolDecl};
 
 /// Canonical protocol-id vocabulary. Every PRODUCTION comparison / match arm / registry insertion on
 /// a protocol name goes through these consts so the router, dispatch, projections, and registry
 /// cannot drift on a typo'd literal. Tests keep raw literals by convention (golden-value checks).
-pub(crate) const PROTO_ANTHROPIC: &str = "anthropic";
+pub const PROTO_ANTHROPIC: &str = "anthropic";
 pub(crate) const PROTO_OPENAI: &str = "openai";
 pub(crate) const PROTO_GEMINI: &str = "gemini";
 pub(crate) const PROTO_BEDROCK: &str = "bedrock";
@@ -1890,7 +1921,7 @@ pub(crate) const PROTO_RESPONSES: &str = "responses";
 /// (chat's body affinity key). Declared ONCE and referenced by all six `ProtocolDecl`s rather than
 /// spelled six times: they are one shared fact about the chat body shape, and a protocol that reads
 /// a different set (MCP reads none) declares its own.
-pub(crate) const LLM_HEAD_KEYS: &[&str] = &["model", "stream", "stream_options", "system"];
+pub const LLM_HEAD_KEYS: &[&str] = &["model", "stream", "stream_options", "system"];
 
 /// Every protocol name busbar ships a wire CODEC for — the set a provider's `protocol:` may name,
 /// and what the config validator rejects against so an unknown protocol is COLLECTED with every

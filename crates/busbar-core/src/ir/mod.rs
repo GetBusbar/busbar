@@ -16,28 +16,28 @@ use serde_json::Value;
 
 // Per-operation IR variants. Chat is the `IrRequest`/`IrResponse` below; the other
 // operations live in submodules and are assembled into `enum IrReq`/`enum IrResp`.
-pub(crate) mod audio;
-pub(crate) mod embeddings;
+pub mod audio;
+pub mod embeddings;
 /// THE ONE PROJECTION — what the shared pipeline (hooks, governance, taps) is allowed to know about
 /// a request, read from the IR and from nothing else. Beside the IR rather than beside the hooks so
 /// that "a hook sees the IR" is a compile-time fact; see the module header.
-pub(crate) mod facts;
-pub(crate) mod image;
-pub(crate) mod invoke;
-pub(crate) mod moderation;
-pub(crate) mod rerank;
-pub(crate) mod subscribe;
-pub(crate) mod variant; // IrReq / IrResp enums + the operation-blind surface
+pub mod facts;
+pub mod image;
+pub mod invoke;
+pub mod moderation;
+pub mod rerank;
+pub mod subscribe;
+pub mod variant; // IrReq / IrResp enums + the operation-blind surface
 
 #[derive(Debug, Clone, PartialEq, Default)]
-pub(crate) struct IrRequest {
-    pub(crate) system: Vec<IrBlock>,
-    pub(crate) messages: Vec<IrMessage>,
-    pub(crate) tools: Vec<IrTool>,
-    pub(crate) max_tokens: Option<u32>,
+pub struct IrRequest {
+    pub system: Vec<IrBlock>,
+    pub messages: Vec<IrMessage>,
+    pub tools: Vec<IrTool>,
+    pub max_tokens: Option<u32>,
     // f64 (not ADR-0005's f32): JSON numbers are f64; an f32 round-trip silently mutates a
     // caller's temperature (0.7 → 0.699999988) — the exact lossiness busbar exists to avoid.
-    pub(crate) temperature: Option<f64>,
+    pub temperature: Option<f64>,
     /// Nucleus-sampling cutoff (`top_p`). A first-class IR field — NOT left in `extra` — because it
     /// is a UNIVERSALLY-modeled sampling control with a clean native shape in every protocol busbar
     /// speaks (OpenAI `top_p`, Anthropic `top_p`, Gemini `generationConfig.topP`, Bedrock
@@ -46,32 +46,32 @@ pub(crate) struct IrRequest {
     /// silently dropped on every cross-protocol hop. `f64` for the same lossless-number reason as
     /// `temperature`. `None` when the caller omitted it. Each reader populates it from its native
     /// shape; each writer emits it in its native shape when present.
-    pub(crate) top_p: Option<f64>,
+    pub top_p: Option<f64>,
     /// Top-k sampling cutoff (`top_k`). First-class for the same reason as `top_p`: it has a real
     /// cross-protocol mapping in the protocols that model it (Anthropic `top_k`, Gemini
     /// `generationConfig.topK`, Cohere `k`, Bedrock via `additionalModelRequestFields`). OpenAI has
     /// NO top_k knob, so the OpenAI writer omits it (and its reader never sets it) — a lossy-by-target
     /// omission, not a leak. `u32`: top_k is a non-negative integer count. `None` when omitted.
-    pub(crate) top_k: Option<u32>,
+    pub top_k: Option<u32>,
     /// Repetition penalty by token frequency (`frequency_penalty`). A cross-protocol-preserved
     /// sampling control: written only by protocols that natively model it (OpenAI/Responses/Cohere).
     /// `f64` for the same lossless-number reason as `temperature`. `None` == absent — never emitted.
-    pub(crate) frequency_penalty: Option<f64>,
+    pub frequency_penalty: Option<f64>,
     /// Repetition penalty by token presence (`presence_penalty`). A cross-protocol-preserved
     /// sampling control: written only by protocols that natively model it (OpenAI/Responses/Cohere).
     /// `f64` for the same lossless-number reason as `temperature`. `None` == absent — never emitted.
-    pub(crate) presence_penalty: Option<f64>,
+    pub presence_penalty: Option<f64>,
     /// Deterministic-sampling seed (`seed`). A cross-protocol-preserved sampling control: written
     /// only by protocols that natively model it (OpenAI/Responses, Gemini). `i64` to carry
     /// the full JSON integer range losslessly. `None` == absent — never emitted.
-    pub(crate) seed: Option<i64>,
+    pub seed: Option<i64>,
     /// Number of candidate completions to generate (`n`). A cross-protocol-preserved output control:
     /// written only by protocols that natively model it (OpenAI `n`, Gemini `candidateCount`). NOT
     /// Cohere: the v2 `/v2/chat` API has NO `num_generations`/`n` parameter (it was a v1 Generate-API
     /// field, removed in v2 — the documented way to get N candidates is to call chat N times), so the
     /// Cohere reader/writer correctly omit `n` (like Anthropic/Bedrock/Responses). `u32`: a
     /// non-negative count. `None` == absent — never emitted.
-    pub(crate) n: Option<u32>,
+    pub n: Option<u32>,
     /// The reasoning/thinking ASK, normalized: what the caller requested, in whichever spelling
     /// their protocol uses (OpenAI `reasoning_effort` word, Anthropic `thinking.budget_tokens`
     /// number, Gemini `thinkingConfig.thinkingBudget` number or -1 dynamic). Writers project it
@@ -81,32 +81,32 @@ pub(crate) struct IrRequest {
     /// capability, `prepare_for_egress` clears this with a warn, so a non-reasoning model never
     /// receives (and never 400s on) a thinking param. The response-side thinking CONTENT is carried
     /// by the Thinking blocks and is not gated. `None` == caller never asked.
-    pub(crate) reasoning: Option<IrReasoningAsk>,
+    pub reasoning: Option<IrReasoningAsk>,
     /// The resolved effort-word → token-budget table [minimal, low, medium, high], stamped by the
     /// egress seam from `limits.reasoning_effort_budgets` (operator-overridable; defaults
     /// 1024/4096/8192/16384). Writers use it to project effort words to numeric budgets and to
     /// bucketize numeric budgets back to words; when `None` (e.g. unit tests calling a writer
     /// directly) writers fall back to the same defaults.
-    pub(crate) reasoning_budgets: Option<[u32; 4]>,
+    pub reasoning_budgets: Option<[u32; 4]>,
     /// Per-token log-probability request (OpenAI `logprobs: bool`; Gemini
     /// `generationConfig.responseLogprobs`). First-class so the ask carries between the two
     /// protocols that model it; writers with no analog (Anthropic/Bedrock) never emit it. The
     /// RESPONSE data rides [`IrResponse::logprobs`] / [`IrDelta::LogprobsDelta`]. `None` == absent.
-    pub(crate) logprobs: Option<bool>,
+    pub logprobs: Option<bool>,
     /// How many top-alternative tokens to return per position (OpenAI `top_logprobs` 0–20; Gemini
     /// `generationConfig.logprobs`). `None` == absent.
-    pub(crate) top_logprobs: Option<u32>,
+    pub top_logprobs: Option<u32>,
     /// Structured-output / response-format directive — canonicalized into the typed
     /// [`IrResponseFormat`] on read (NOT a raw protocol-shaped `Value`), so a writer can only project
     /// it into its OWN native shape and can never echo a foreign one. `None` == absent, never emitted.
-    pub(crate) response_format: Option<IrResponseFormat>,
+    pub response_format: Option<IrResponseFormat>,
     /// Stop sequences (`stop`). First-class because every protocol models it (OpenAI `stop` —
     /// string OR array; Anthropic `stop_sequences`; Gemini `generationConfig.stopSequences`; Bedrock
     /// `inferenceConfig.stopSequences`; Cohere `stop_sequences`). Normalized to a `Vec<String>` (the
     /// common shape); a writer whose native form is a bare string for the single-element case still
     /// round-trips because the SDKs accept the array form. Empty `Vec` == omitted (no `stop` field
     /// emitted), so a request that never carried stops does not gain an empty array on translation.
-    pub(crate) stop: Vec<String>,
+    pub stop: Vec<String>,
     /// Tool-selection directive (`tool_choice`). First-class — NOT left in `extra` — because it is a
     /// load-bearing, behavior-changing control that EVERY protocol busbar speaks models, just in a
     /// different native shape (OpenAI `tool_choice`, Anthropic `tool_choice`, Gemini
@@ -117,20 +117,20 @@ pub(crate) struct IrRequest {
     /// this union; each writer re-emits the union in its native shape when present. `None` when the
     /// caller omitted it (no `tool_choice` emitted, so a request that never carried one does not gain
     /// a spurious `auto` on translation).
-    pub(crate) tool_choice: Option<IrToolChoice>,
+    pub tool_choice: Option<IrToolChoice>,
     /// End-user identifier for provider-side abuse tracking. Two protocols model it, in different
     /// places: OpenAI top-level `user`, Anthropic `metadata.user_id`. First-class so it CARRIES
     /// between those two instead of dying in `extra` at the cross-protocol seam; writers for
     /// protocols with no analog (Gemini/Bedrock/Cohere) simply never emit it. `None` == absent.
-    pub(crate) user: Option<String>,
+    pub user: Option<String>,
     /// Tool-call parallelism switch, normalized as "parallel allowed?". OpenAI models it as
     /// top-level `parallel_tool_calls` (default true); Anthropic as
     /// `tool_choice.disable_parallel_tool_use` (default false) — the SAME switch, inverted, in a
     /// different location, so it carries between the two. `None` == caller never said, nothing
     /// emitted (both defaults are "parallel allowed", so absence round-trips as absence).
-    pub(crate) parallel_tool_calls: Option<bool>,
-    pub(crate) stream: bool,
-    pub(crate) extra: serde_json::Map<String, serde_json::Value>,
+    pub parallel_tool_calls: Option<bool>,
+    pub stream: bool,
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 /// Normalized cross-protocol tool-selection directive (`tool_choice`). Models the union every wire
@@ -147,7 +147,7 @@ pub(crate) struct IrRequest {
 /// omitting `tool_choice`. A reader maps an unknown/novel native value to `Auto` (the safe default)
 /// rather than dropping the request.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum IrToolChoice {
+pub enum IrToolChoice {
     /// Model decides whether to call a tool. The universal default.
     Auto,
     /// Model must NOT call a tool (text only).
@@ -173,7 +173,7 @@ pub(crate) enum IrToolChoice {
 /// matches on it) and would otherwise leave a one-element vec that defeats the "empty `Vec` ==
 /// omitted" contract — a degenerate input of `""` or `[""]` collapses to an empty vec (== omitted)
 /// rather than emitting a spurious `stop: [""]` on translation.
-pub(crate) fn read_stop_sequences(val: Option<&Value>) -> Vec<String> {
+pub fn read_stop_sequences(val: Option<&Value>) -> Vec<String> {
     match val {
         Some(Value::String(s)) if !s.is_empty() => vec![s.clone()],
         Some(Value::Array(arr)) => arr
@@ -187,7 +187,7 @@ pub(crate) fn read_stop_sequences(val: Option<&Value>) -> Vec<String> {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) enum IrStreamEvent {
+pub enum IrStreamEvent {
     MessageStart {
         role: IrRole,
         usage: Option<IrUsage>,
@@ -250,7 +250,7 @@ pub(crate) enum IrStreamEvent {
 /// (NO String payload — nothing foreign can be carried), and every writer's match is EXHAUSTIVE, so a
 /// new protocol is FORCED by the compiler to map every variant to a value valid in its own enum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum IrStopReason {
+pub enum IrStopReason {
     /// Natural end of turn.
     EndTurn,
     /// A provided stop sequence was generated.
@@ -274,15 +274,15 @@ pub(crate) enum IrStopReason {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct IrResponse {
-    pub(crate) role: IrRole,
-    pub(crate) content: Vec<IrBlock>,
-    pub(crate) stop_reason: Option<IrStopReason>,
-    pub(crate) usage: IrUsage,
+pub struct IrResponse {
+    pub role: IrRole,
+    pub content: Vec<IrBlock>,
+    pub stop_reason: Option<IrStopReason>,
+    pub usage: IrUsage,
     /// The model that actually served the response, as reported by the upstream. Preserved across
     /// cross-protocol translation so a pool route's response still names the member that served it
     /// (same as a direct route). `None` if the upstream body carried no model field.
-    pub(crate) model: Option<String>,
+    pub model: Option<String>,
     /// Response identity, carried through from the egress backend's `read_response` so a writer can
     /// emit the SDK-required identity field a native response carries (OpenAI `id` =
     /// `"chatcmpl-..."`, Anthropic `id` = `"msg_..."`). Default `None`; populated per-protocol by
@@ -294,23 +294,23 @@ pub(crate) struct IrResponse {
     /// when `created` is `Some` (the cross-boundary signal) — so e.g. an OpenAI backend's
     /// `chatcmpl-…` id never reaches an Anthropic client. A same-protocol response preserves the
     /// native id verbatim.
-    pub(crate) id: Option<String>,
+    pub id: Option<String>,
     /// Unix epoch seconds for the response creation time (OpenAI `created`). Default `None`.
-    pub(crate) created: Option<u64>,
+    pub created: Option<u64>,
     /// OpenAI's `system_fingerprint` (opaque backend config marker). Default `None`.
-    pub(crate) system_fingerprint: Option<String>,
+    pub system_fingerprint: Option<String>,
     /// Anthropic's `stop_sequence` (the matched stop string, or `null`). Default `None`.
-    pub(crate) stop_sequence: Option<String>,
+    pub stop_sequence: Option<String>,
     /// Per-token log probabilities for the generated text, in generation order (OpenAI
     /// `choices[].logprobs.content`; Gemini `candidates[].logprobsResult`, chosen + top candidates
     /// zipped). Empty == the backend sent none (nothing emitted). Carried protocol-neutrally so a
     /// Gemini backend's logprobs reach an OpenAI-dialect caller in its own shape, and vice versa.
-    pub(crate) logprobs: Vec<IrTokenLogprob>,
+    pub logprobs: Vec<IrTokenLogprob>,
 }
 
 /// The normalized reasoning/thinking ask (see [`IrRequest::reasoning`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum IrReasoningAsk {
+pub enum IrReasoningAsk {
     /// A word-form ask (OpenAI `reasoning_effort` / Responses `reasoning.effort`).
     Effort(IrReasoningEffort),
     /// A numeric thinking-token budget (Anthropic `budget_tokens`, Gemini `thinkingBudget`).
@@ -323,7 +323,7 @@ pub(crate) enum IrReasoningAsk {
 
 /// The four effort words, ordered by ascending budget.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum IrReasoningEffort {
+pub enum IrReasoningEffort {
     Minimal,
     Low,
     Medium,
@@ -332,11 +332,11 @@ pub(crate) enum IrReasoningEffort {
 
 /// The compiled-in effort table (mirrors the config defaults) — the writer fallback when the seam
 /// did not stamp [`IrRequest::reasoning_budgets`].
-pub(crate) const REASONING_BUDGET_DEFAULTS: [u32; 4] = [1024, 4096, 8192, 16384];
+pub const REASONING_BUDGET_DEFAULTS: [u32; 4] = [1024, 4096, 8192, 16384];
 
 impl IrReasoningAsk {
     /// Project the ask to a NUMERIC budget using the effort table ([minimal, low, medium, high]).
-    pub(crate) fn to_budget(self, table: [u32; 4]) -> u32 {
+    pub fn to_budget(self, table: [u32; 4]) -> u32 {
         match self {
             IrReasoningAsk::Budget(n) => n,
             IrReasoningAsk::Effort(IrReasoningEffort::Minimal) => table[0],
@@ -350,7 +350,7 @@ impl IrReasoningAsk {
     /// Project the ask to a WORD using the same table as bucket thresholds (a numeric budget maps
     /// to the largest effort whose table entry it reaches), so word→number→word round-trips
     /// degrade predictably.
-    pub(crate) fn to_effort(self, table: [u32; 4]) -> IrReasoningEffort {
+    pub fn to_effort(self, table: [u32; 4]) -> IrReasoningEffort {
         match self {
             IrReasoningAsk::Effort(e) => e,
             IrReasoningAsk::Dynamic => IrReasoningEffort::Medium,
@@ -377,14 +377,14 @@ impl IrReasoningEffort {
     /// model is operator-declared, not known here — emitting the universally-valid `"low"` upholds
     /// the never-cause-a-400 translation invariant. (Same-protocol OpenAI is byte-exact and never
     /// reaches this projection.)
-    pub(crate) fn as_openai_reasoning_effort(self) -> &'static str {
+    pub fn as_openai_reasoning_effort(self) -> &'static str {
         match self {
             IrReasoningEffort::Minimal => "low",
             other => other.as_str(),
         }
     }
 
-    pub(crate) fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             IrReasoningEffort::Minimal => "minimal",
             IrReasoningEffort::Low => "low",
@@ -393,7 +393,7 @@ impl IrReasoningEffort {
         }
     }
 
-    pub(crate) fn parse(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         match s {
             "minimal" => Some(IrReasoningEffort::Minimal),
             "low" => Some(IrReasoningEffort::Low),
@@ -410,31 +410,31 @@ impl IrReasoningEffort {
 /// `bytes` is OpenAI-only fidelity (a token can be a partial UTF-8 fragment); a writer that needs
 /// bytes and has none synthesizes them from the token's UTF-8 encoding.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct IrTokenLogprob {
-    pub(crate) token: String,
-    pub(crate) logprob: f64,
-    pub(crate) bytes: Option<Vec<u8>>,
+pub struct IrTokenLogprob {
+    pub token: String,
+    pub logprob: f64,
+    pub bytes: Option<Vec<u8>>,
     /// Top alternative tokens at this position (may include the chosen token itself, per both
     /// vendors' semantics). Empty when the caller did not ask for alternatives.
-    pub(crate) top: Vec<IrTopLogprob>,
+    pub top: Vec<IrTopLogprob>,
 }
 
 /// One alternative token candidate inside [`IrTokenLogprob::top`].
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct IrTopLogprob {
-    pub(crate) token: String,
-    pub(crate) logprob: f64,
-    pub(crate) bytes: Option<Vec<u8>>,
+pub struct IrTopLogprob {
+    pub token: String,
+    pub logprob: f64,
+    pub bytes: Option<Vec<u8>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct IrMessage {
-    pub(crate) role: IrRole,
-    pub(crate) content: Vec<IrBlock>,
+pub struct IrMessage {
+    pub role: IrRole,
+    pub content: Vec<IrBlock>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum IrRole {
+pub enum IrRole {
     System,
     User,
     Assistant,
@@ -442,7 +442,7 @@ pub(crate) enum IrRole {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) enum IrBlock {
+pub enum IrBlock {
     Text {
         text: String,
         cache_control: Option<CacheControl>,
@@ -610,7 +610,7 @@ impl IrBlock {
     /// true, `text` is either empty (Responses) or the ciphertext ITSELF (Anthropic/Bedrock), so a
     /// consumer must check this BEFORE touching `text`, never after.
     #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn is_opaque(&self) -> bool {
+    pub fn is_opaque(&self) -> bool {
         match self {
             // `text` holds the opaque bytes (Anthropic `redacted_thinking`, Bedrock
             // `redactedContent`) — opaque by the flag the readers already set.
@@ -641,7 +641,7 @@ impl IrBlock {
 /// egress. Bedrock Converse, for instance, has a `document` block and a `video` block and NO audio
 /// block; OpenAI Chat has `input_audio` and `file` and no video part.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum IrMediaKind {
+pub enum IrMediaKind {
     /// PDF / CSV / DOCX / TXT / MD / HTML — something the model reads.
     Document,
     /// An audio clip (OpenAI `input_audio`, Gemini `inlineData` with an `audio/*` mime).
@@ -656,7 +656,7 @@ impl IrMediaKind {
     /// does not hand-roll the same three-way match. `image/*` is NOT a `Media` kind (it is
     /// [`IrBlock::Image`]), so callers must check for it first; anything else is a Document, which is
     /// the correct default for `application/pdf`, `text/csv` and every future document mime.
-    pub(crate) fn from_media_type(media_type: &str) -> Self {
+    pub fn from_media_type(media_type: &str) -> Self {
         let lower = media_type.to_ascii_lowercase();
         if lower.starts_with("audio/") {
             IrMediaKind::Audio
@@ -669,7 +669,7 @@ impl IrMediaKind {
 
     /// The field name to put in a drop `warn!`, so a log line names the caller's construct in the
     /// caller's own vocabulary rather than saying "media".
-    pub(crate) fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             IrMediaKind::Document => "document",
             IrMediaKind::Audio => "audio",
@@ -691,7 +691,7 @@ impl IrMediaKind {
 /// Returns `None` for a media type that is not a well-formed image mime or not in the accepted set,
 /// so the caller drops the block with a warn; `Some(subtype)` (lowercased, `jpg` normalized to
 /// `jpeg`) otherwise, which is also exactly what a writer needs to build a format token.
-pub(crate) fn image_subtype_if_supported(media_type: &str) -> Option<&'static str> {
+pub fn image_subtype_if_supported(media_type: &str) -> Option<&'static str> {
     let subtype = media_type.strip_prefix("image/").or_else(|| {
         // Tolerate a casing variant on the type half ("Image/PNG") without allocating in the
         // overwhelmingly common already-lowercase case.
@@ -720,7 +720,7 @@ pub(crate) fn image_subtype_if_supported(media_type: &str) -> Option<&'static st
 /// own `vendor` tag and re-emits `value` on a same-protocol egress, and any OTHER protocol's writer
 /// cannot represent it and drops it with a warn. So `ir.rs` names no vendor wire concept.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) enum IrImageSource {
+pub enum IrImageSource {
     /// Inline base64 image bytes with a real `image/<fmt>` media type.
     Base64 { media_type: String, data: String },
     /// A remote image URL reference (an `https://…` the OpenAI/Responses/Anthropic-url forms carry).
@@ -747,26 +747,26 @@ pub(crate) enum IrImageSource {
 /// native). The agnostic core never sees a foreign shape, so a writer cannot echo one — it has only
 /// typed fields to project. (Same reason [`IrToolChoice`], a typed enum, never had this bug.)
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct IrResponseFormat {
+pub struct IrResponseFormat {
     /// `false` ⇒ plain text (no structured-output constraint). `true` ⇒ the model must emit JSON.
-    pub(crate) json: bool,
+    pub json: bool,
     /// The JSON Schema the JSON output must conform to, if one was supplied (`None` ⇒ free-form JSON).
-    pub(crate) schema: Option<Value>,
+    pub schema: Option<Value>,
     /// Schema name (OpenAI/Responses `json_schema.name`), preserved when the source supplied it.
-    pub(crate) name: Option<String>,
+    pub name: Option<String>,
     /// Strict-schema flag (OpenAI/Responses `strict`), preserved when the source supplied it.
-    pub(crate) strict: Option<bool>,
+    pub strict: Option<bool>,
     /// Schema description (OpenAI/Responses `json_schema.description`), preserved when supplied.
-    pub(crate) description: Option<String>,
+    pub description: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct CacheControl {
-    pub(crate) kind: CacheKind,
+pub struct CacheControl {
+    pub kind: CacheKind,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum CacheKind {
+pub enum CacheKind {
     Ephemeral,
 }
 
@@ -791,52 +791,52 @@ pub(crate) enum CacheKind {
 /// Neutral fields are the intersection that travels cross-protocol: a human-readable `kind` tag plus
 /// the location/source coordinates both Anthropic and Gemini expose.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct IrCitation {
+pub struct IrCitation {
     /// Citation-type discriminator. For Anthropic this is the `type` tag verbatim (`char_location`,
     /// `page_location`, `content_block_location`, `web_search_result_location`); for a Gemini
     /// `citationSources[]` entry it is `web_search_result_location` (a grounding source is a URL
     /// reference). `None` only if a source carried no recognizable type.
-    pub(crate) kind: Option<String>,
+    pub kind: Option<String>,
     /// The quoted span of source text the citation refers to (Anthropic `cited_text`). Gemini
     /// `citationSources[]` carry no quoted text, so this is `None` for Gemini-sourced citations.
-    pub(crate) cited_text: Option<String>,
+    pub cited_text: Option<String>,
     /// Human title of the cited document / web result (Anthropic `document_title` for the document
     /// location variants, `title` for `web_search_result_location`; Gemini has no title field today —
     /// reserved for forward compat).
-    pub(crate) title: Option<String>,
+    pub title: Option<String>,
     /// Source URL — Anthropic `web_search_result_location.url`, Gemini `citationSources[].uri`.
-    pub(crate) url: Option<String>,
+    pub url: Option<String>,
     /// Index of the cited document in the request's `documents` array (Anthropic
     /// `document_index`, present on the three document-location variants). Gemini: `None`.
-    pub(crate) document_index: Option<i64>,
+    pub document_index: Option<i64>,
     /// Inclusive/exclusive start offset, interpreted per `kind`: char index (`char_location`), page
     /// number (`page_location`), or block index (`content_block_location`). For a Gemini
     /// `citationSources[]` this carries `startIndex` (a character offset into the response text).
-    pub(crate) start_index: Option<i64>,
+    pub start_index: Option<i64>,
     /// End offset, paired with `start_index` per `kind` (end char / end page / end block; Gemini
     /// `endIndex`).
-    pub(crate) end_index: Option<i64>,
+    pub end_index: Option<i64>,
     /// Anthropic web-search `encrypted_index` — an opaque cursor token. Carried so the web-search
     /// citation variant round-trips even on a cross-protocol synthesize-from-neutral path.
-    pub(crate) encrypted_index: Option<String>,
+    pub encrypted_index: Option<String>,
     /// VERBATIM source citation object, for byte-exact same-protocol re-emission. The Anthropic
     /// reader stores the original Anthropic citation here; the Anthropic writer re-emits it unchanged
     /// when present (the no-regression guarantee). The Gemini reader stores the original
     /// `citationSources[]` entry here so a same-protocol Gemini path could re-emit it faithfully.
     /// `None` for a citation synthesized purely from neutral fields.
-    pub(crate) raw: Option<Value>,
+    pub raw: Option<Value>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct IrTool {
-    pub(crate) name: String,
-    pub(crate) description: Option<String>,
-    pub(crate) input_schema: Value,
+pub struct IrTool {
+    pub name: String,
+    pub description: Option<String>,
+    pub input_schema: Value,
     /// Anthropic tool-definition cache breakpoint (`cache_control`). Anthropic lets a `cache_control`
     /// marker sit on a tool definition to cache the (often large) tool schemas as a prefix; that
     /// breakpoint was being dropped on every hop. First-class so it survives the seam. Only the
     /// Anthropic reader populates it / writer emits it; other protocols leave it `None`.
-    pub(crate) cache_control: Option<CacheControl>,
+    pub cache_control: Option<CacheControl>,
     /// HOSTED (built-in) tool passthrough spec. The OpenAI Responses API `tools` array
     /// mixes CUSTOM function tools with provider-HOSTED tools discriminated purely by a top-level
     /// `type` (`web_search`, `file_search`, `code_interpreter`, `computer_use_preview`, `mcp`, ...).
@@ -851,7 +851,7 @@ pub(crate) struct IrTool {
     /// silently ignored. To prevent that, `IrReq::prepare_for_egress` DROPS every hosted tool on the
     /// cross-protocol seam (drop-with-warn), so a hosted tool only ever reaches the Responses writer
     /// (same-protocol Responses->Responses, where the body is forwarded verbatim anyway).
-    pub(crate) hosted: Option<Value>,
+    pub hosted: Option<Value>,
     /// STRICT function-calling flag (OpenAI Chat `tools[].function.strict`, Responses
     /// `tools[].strict`) — "constrain the model's arguments to this schema exactly".
     ///
@@ -865,26 +865,26 @@ pub(crate) struct IrTool {
     /// Anthropic, Gemini, Bedrock and Cohere have no per-tool strict flag (Cohere's `strict_tools` is
     /// a REQUEST-level switch, not a per-tool one), so their writers drop it with a `warn!` naming
     /// the tools affected — a genuine target-protocol limit, signalled rather than silent.
-    pub(crate) strict: Option<bool>,
+    pub strict: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct IrUsage {
+pub struct IrUsage {
     /// UNCACHED input tokens. Readers NORMALIZE to this convention: providers whose wire
     /// `input/prompt` total already INCLUDES the cached prefix (OpenAI, Gemini, Responses) subtract
     /// the cached count here; providers whose cache fields are already ADDITIVE (Anthropic, Bedrock)
     /// store the wire value as-is. This makes `cache_read_input_tokens` and
     /// `cache_creation_input_tokens` uniformly ADDITIVE across all protocols, so
     /// [`IrUsage::billable_tokens`] can sum them provider-agnostically.
-    pub(crate) input_tokens: u64,
-    pub(crate) output_tokens: u64,
-    pub(crate) cache_creation_input_tokens: Option<u64>,
-    pub(crate) cache_read_input_tokens: Option<u64>,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_creation_input_tokens: Option<u64>,
+    pub cache_read_input_tokens: Option<u64>,
     /// Per-bucket ATTRIBUTION of the totals above. Grouped into its own `Default`-able struct rather
     /// than four more fields on `IrUsage`, because a sub-bucket is by construction optional
     /// (`None` = "this provider did not report it", which is NOT the same as `Some(0)`) and every
     /// existing construction site should keep saying nothing about buckets it knows nothing about.
-    pub(crate) detail: IrUsageDetail,
+    pub detail: IrUsageDetail,
 }
 
 /// Sub-bucket attribution for [`IrUsage`]. Every field is a SLICE OF a total in `IrUsage`, never an
@@ -894,7 +894,7 @@ pub(crate) struct IrUsage {
 /// It exists because the totals were already right and the ATTRIBUTION was not, and attribution is
 /// what a customer reconciles a bill against.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub(crate) struct IrUsageDetail {
+pub struct IrUsageDetail {
     /// Reasoning / thinking tokens, a SUB-BUCKET of `output_tokens` (never added to it — that would
     /// double-count and inflate the bill).
     ///
@@ -903,22 +903,22 @@ pub(crate) struct IrUsageDetail {
     /// this field the totals were right and the ATTRIBUTION was not: a customer reconciling a bill
     /// against `reasoning_tokens` got a hard `0` back from any cross-protocol reasoning call, which
     /// reads as "this model did no thinking" rather than "busbar did not carry the number".
-    pub(crate) reasoning_tokens: Option<u64>,
+    pub reasoning_tokens: Option<u64>,
     /// Anthropic's 5-minute-TTL slice of `cache_creation_input_tokens`
     /// (`usage.cache_creation.ephemeral_5m_input_tokens`).
     ///
     /// A SUB-BUCKET of `cache_creation_input_tokens`, not an addition to it. Split out because the
     /// two TTL tiers are PRICED DIFFERENTLY — collapsing them into one number makes a cache-write
     /// line item impossible to reconcile even though the total is correct.
-    pub(crate) cache_creation_5m_input_tokens: Option<u64>,
+    pub cache_creation_5m_input_tokens: Option<u64>,
     /// Anthropic's 1-hour-TTL slice of `cache_creation_input_tokens`
     /// (`usage.cache_creation.ephemeral_1h_input_tokens`). See the 5m field for why the split is
     /// carried.
-    pub(crate) cache_creation_1h_input_tokens: Option<u64>,
+    pub cache_creation_1h_input_tokens: Option<u64>,
     /// Cohere `usage.billed_units.search_units` — a SEPARATELY BILLED unit that is not a token count
     /// at all, so no token field can carry it and its loss is invisible in a token total that
     /// reconciles perfectly.
-    pub(crate) search_units: Option<u64>,
+    pub search_units: Option<u64>,
 }
 
 impl IrUsage {
@@ -933,7 +933,7 @@ impl IrUsage {
     // Production billing now ledgers the TIER SPLIT (`proxy::usage::tier_tokens`); this total
     // survives as the normalization contract's test surface (stream translate/fanout tests).
     #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn billable_tokens(&self) -> u64 {
+    pub fn billable_tokens(&self) -> u64 {
         self.input_tokens
             .saturating_add(self.cache_read_input_tokens.unwrap_or(0))
             .saturating_add(self.cache_creation_input_tokens.unwrap_or(0))
@@ -942,7 +942,7 @@ impl IrUsage {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) enum IrBlockMeta {
+pub enum IrBlockMeta {
     Text,
     Thinking,
     ToolUse { id: String, name: String },
@@ -955,7 +955,7 @@ pub(crate) enum IrBlockMeta {
 // them (see proto/{bedrock,gemini,cohere}.rs). The `enum_variant_names` allow stays because all
 // variants share the `Delta` suffix by design (they mirror the wire delta-event names).
 #[allow(clippy::enum_variant_names)]
-pub(crate) enum IrDelta {
+pub enum IrDelta {
     TextDelta(String),
     ThinkingDelta(String),
     InputJsonDelta(String),
@@ -990,16 +990,16 @@ pub(crate) enum IrDelta {
 /// IR's block boundaries (one chunk → 0..n events): whether MessageStart was emitted, whether
 /// the text/thinking blocks are open, and which OpenAI tool_call indices have been opened.
 #[derive(Debug, Clone, Default)]
-pub(crate) struct StreamDecodeState {
-    pub(crate) started: bool,
-    pub(crate) text_block_open: bool,
+pub struct StreamDecodeState {
+    pub started: bool,
+    pub text_block_open: bool,
     /// The IR block index the Gemini reader assigned to the text block, by order of FIRST appearance
     /// (not hardcoded 0). Gemini emits text and `functionCall` parts in any order across chunks; a
     /// block claims the next free index when it first opens, so text and tools never collide on an
     /// index regardless of arrival order (tool-only streams stay contiguous from 0; a tool that opens
     /// before text takes 0 and text takes the next slot). `None` until the text block opens. Gemini
     /// reader only; other readers leave it `None`.
-    pub(crate) text_index: Option<usize>,
+    pub text_index: Option<usize>,
     /// One-way latch: set true once the text content block has been CLOSED (via `content-end` or, for a
     /// leading tool-plan block, the first `tool-call-start`). A closed text block must never be reopened
     /// — a second `content-start`/`content-delta`/`tool-plan-delta` after the close would otherwise emit
@@ -1007,25 +1007,25 @@ pub(crate) struct StreamDecodeState {
     /// for one index) on an Anthropic egress. The open sites gate on `!text_block_closed` so an
     /// out-of-spec upstream that resumes text after tools is dropped rather than un-balancing the stream.
     /// Cohere reader only; other readers leave it false.
-    pub(crate) text_block_closed: bool,
-    pub(crate) open_tools: std::collections::BTreeSet<usize>,
+    pub text_block_closed: bool,
+    pub open_tools: std::collections::BTreeSet<usize>,
     /// Set once a reasoning (chain-of-thought) delta is seen on the stream. When true, the
     /// thinking block occupies IR index 0 and the text/tool block indices shift up by one so the
     /// thinking block precedes the answer (used by the OpenAI AND Gemini streaming readers).
-    pub(crate) reasoning_seen: bool,
+    pub reasoning_seen: bool,
     /// Whether the reasoning Thinking block (index 0) is currently open.
-    pub(crate) thinking_block_open: bool,
+    pub thinking_block_open: bool,
     /// Set once a `delta.refusal` chunk is seen. A refusal reports `finish_reason: "stop"`, so
     /// without this latch the terminal frame maps to `EndTurn` and the refusal SIGNAL is lost even
     /// though the text survived. OpenAI Chat reader only; other readers leave it false.
-    pub(crate) refusal_seen: bool,
+    pub refusal_seen: bool,
     /// Stop reason buffered across two Bedrock stream frames. Native Bedrock ConverseStream splits
     /// the stop reason (`messageStop` frame) from the token usage (a following `metadata` frame). To
     /// emit ONE combined `MessageDelta{stop_reason, usage}` (so a cross-protocol ingress sees the
     /// single `message_delta`/usage event a native non-Bedrock stream carries, not two) the Bedrock
     /// reader stashes the `messageStop` stop_reason here and pairs it with the usage when `metadata`
     /// arrives. Used by the Bedrock reader only; other protocols leave it `None`.
-    pub(crate) pending_stop_reason: Option<IrStopReason>,
+    pub pending_stop_reason: Option<IrStopReason>,
     /// Maps each opened tool-call wire index (the OpenAI reader's `oai_idx` / the Cohere reader's
     /// `frame_idx`) to the IR block index its `BlockStart` was emitted with, giving O(log n)
     /// lookup/insert instead of a linear scan over `open_tools`. Every key inserted here is also
@@ -1050,21 +1050,21 @@ pub(crate) struct StreamDecodeState {
     ///
     /// Empty for every other reader (which assign IR indices 1:1 or via `open_tools`/`text_index`
     /// directly and never need this lookup).
-    pub(crate) tool_ir_index: std::collections::BTreeMap<usize, usize>,
+    pub tool_ir_index: std::collections::BTreeMap<usize, usize>,
     /// Monotone next-free IR block index, for readers that allocate slots by ORDER OF FIRST
     /// APPEARANCE. NEVER reset for the life of the stream. The terminal branch's `mem::take` of
     /// `open_tools`/`tool_ir_index` (openai_chat reader) clears WHO IS OPEN — it must not also be
     /// read as clearing WHICH SLOTS ARE SPENT: a chunk arriving after a finish chunk would then
     /// re-claim an index the client already has content in, reintroducing a block-index collision
     /// on the post-terminal path. OpenAI Chat reader only; other readers leave it 0.
-    pub(crate) next_ir_index: usize,
+    pub next_ir_index: usize,
 }
 
 impl StreamDecodeState {
     /// Claim the next free IR block index. `reasoning_seen` reserves index 0 for the thinking block
     /// (the OpenAI reader emits that one with a hardcoded 0), so the first claim after reasoning
     /// starts at 1.
-    pub(crate) fn claim_ir_index(&mut self) -> usize {
+    pub fn claim_ir_index(&mut self) -> usize {
         let idx = self.next_ir_index.max(usize::from(self.reasoning_seen));
         self.next_ir_index = idx + 1;
         idx

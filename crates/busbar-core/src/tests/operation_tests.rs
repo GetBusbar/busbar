@@ -61,16 +61,21 @@ fn every_verb_is_pinned_to_its_shape() {
     }
 }
 
-/// `Operation::ALL` IS THE WHOLE VOCABULARY — the claim the module header makes about `name` being
-/// a bounded metric label rests on it, so the table above and the constant must agree exactly, in
-/// both directions.
+/// `Operation::ALL` IS THE CORE-OWNED HALF OF THE VOCABULARY — the six shape verbs, exactly the
+/// table's protocol-surface rows, in the same order. The LLM rows are deliberately NOT in it any
+/// more: they reach the vocabulary through `proto::registry::declared_verbs()` (the declarations),
+/// which `the_metric_label_surface_is_exactly_these_thirteen` below pins as the other half.
 #[test]
-fn all_holds_every_verb_and_nothing_else() {
-    let listed: Vec<Operation> = ALL.iter().map(|(o, _, _)| *o).collect();
+fn all_holds_every_core_owned_verb_and_nothing_else() {
+    let listed: Vec<Operation> = ALL
+        .iter()
+        .filter(|(_, _, n)| OpShape::ALL.iter().any(|s| s.as_str() == *n))
+        .map(|(o, _, _)| *o)
+        .collect();
     assert_eq!(
         Operation::ALL,
         listed.as_slice(),
-        "`Operation::ALL` and this file's table must be the same list in the same order"
+        "`Operation::ALL` and this file's shape-verb rows must be the same list in the same order"
     );
 }
 
@@ -78,10 +83,22 @@ fn all_holds_every_verb_and_nothing_else() {
 /// values it can take is the set of series an operator's dashboard can select. This is that set,
 /// spelled once, sorted, so any change to it is a visible diff in this file rather than a silently
 /// re-based series.
+///
+/// DERIVED FROM BOTH HALVES since the LLM rows left `Operation::ALL`: the core's six shape verbs
+/// plus whatever the registered protocol declarations serve. With the built-in protocols present
+/// this is the SAME thirteen labels the 1.5 era published — asserting that here is what proves the
+/// derivation re-based nothing — and in a build whose protocols are deleted the declared half
+/// genuinely shrinks, which is the vocabulary-level teeth the deletion test lacked while the seven
+/// words were a core table.
 #[test]
 fn the_metric_label_surface_is_exactly_these_thirteen() {
-    let mut labels: Vec<&str> = Operation::ALL.iter().map(|o| o.name()).collect();
+    let mut labels: Vec<&str> = Operation::ALL
+        .iter()
+        .chain(crate::proto::registry::declared_verbs())
+        .map(|o| o.name())
+        .collect();
     labels.sort_unstable();
+    labels.dedup();
     assert_eq!(
         labels,
         [

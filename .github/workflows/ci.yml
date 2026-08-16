@@ -613,6 +613,15 @@ jobs:
             echo "::error::A zero-test 'cargo test' prints 'ok' and exits 0. This is NOT a pass."
             exit 1
           fi
+      # THE PROTOCOL DELETION GATE (step 4 of 1.6.0; anthropic is the first extracted dialect).
+      # Builds the binary WITHOUT the anthropic protocol crate and proves the deletion at boot, not
+      # just at compile: the deleted binary must come up, answer its operator surface, refuse
+      # `protocol: anthropic` config with the unknown-protocol refusal naming the remaining five,
+      # and still validate the dialects that remain — "fewer protocols is a valid busbar" (owner
+      # ruling R-D), executed rather than asserted. Lives in this job because it is the same
+      # reduced-feature axis with the same toolchain + cache warm.
+      - name: Protocol deletion gate
+        run: scripts/proto-deletion-gate.sh
 
   # THE MECHANICAL DEFINITION OF "PLUGIN". Anything busbar calls a plugin must be 100% a plugin: make
   # it downloadable-only tomorrow, ship it uninstalled, and CORE MUST STILL WORK. If core stops

@@ -54,9 +54,11 @@ impl ProtocolWriter for AnthropicWriter {
             "not_found" => ERR_TYPE_NOT_FOUND,
             ERR_TYPE_REQUEST_TOO_LARGE | "payload_too_large" => ERR_TYPE_REQUEST_TOO_LARGE,
             "rate_limit" | "too_many_requests" => ERR_TYPE_RATE_LIMIT,
-            crate::proxy::KIND_OVERLOADED => ERR_TYPE_OVERLOADED,
-            crate::proxy::KIND_TIMEOUT => ERR_TYPE_TIMEOUT,
-            ERR_TYPE_API_ERROR | crate::proxy::KIND_SERVER_ERROR | "internal" => ERR_TYPE_API_ERROR,
+            busbar_core::proxy::KIND_OVERLOADED => ERR_TYPE_OVERLOADED,
+            busbar_core::proxy::KIND_TIMEOUT => ERR_TYPE_TIMEOUT,
+            ERR_TYPE_API_ERROR | busbar_core::proxy::KIND_SERVER_ERROR | "internal" => {
+                ERR_TYPE_API_ERROR
+            }
             // Already an Anthropic-native type (e.g. "invalid_request_error") or an unmapped value:
             // emit it unchanged rather than collapsing every unknown into one bucket.
             ERR_TYPE_INVALID_REQUEST
@@ -102,7 +104,7 @@ impl ProtocolWriter for AnthropicWriter {
     }
 
     fn frame_after_message_start(&self) -> Option<&'static [u8]> {
-        Some(crate::proto::ANTHROPIC_PING_SSE_FRAME)
+        Some(super::ANTHROPIC_PING_SSE_FRAME)
     }
 
     fn reshapes_body_at_path_base(&self) -> bool {
@@ -138,10 +140,10 @@ impl ProtocolWriter for AnthropicWriter {
 
     fn egress_user_agent(&self) -> &'static str {
         // Anthropic Python SDK UA shape — pinned, see `EGRESS_UA_ANTHROPIC` in proxy engine.
-        crate::proxy::EGRESS_UA_ANTHROPIC
+        busbar_core::proxy::EGRESS_UA_ANTHROPIC
     }
 
-    fn write_request(&self, req: &crate::ir::IrRequest) -> serde_json::Value {
+    fn write_request(&self, req: &busbar_core::ir::IrRequest) -> serde_json::Value {
         let mut out = serde_json::Map::new();
         // Anthropic's Messages API has NO `system` role inside `messages` — system content lives in
         // the top-level `system` field. Anthropic's OWN reader canonicalizes a wire `role:"system"`
@@ -151,9 +153,9 @@ impl ProtocolWriter for AnthropicWriter {
         // array here so `write_message` never receives a System role and can never emit the INVALID
         // `role:"system"` (which upstream rejects with a 400) — mirroring the gemini/bedrock writers,
         // which `continue` past an `IrRole::System` message in their request message loop.
-        let mut system_blocks: Vec<&crate::ir::IrBlock> = req.system.iter().collect();
+        let mut system_blocks: Vec<&busbar_core::ir::IrBlock> = req.system.iter().collect();
         for msg in &req.messages {
-            if msg.role == crate::ir::IrRole::System {
+            if msg.role == busbar_core::ir::IrRole::System {
                 system_blocks.extend(msg.content.iter());
             }
         }
@@ -176,7 +178,7 @@ impl ProtocolWriter for AnthropicWriter {
         let messages_array: Vec<_> = req
             .messages
             .iter()
-            .filter(|msg| msg.role != crate::ir::IrRole::System)
+            .filter(|msg| msg.role != busbar_core::ir::IrRole::System)
             .enumerate()
             .map(|(m, msg)| write_message(msg, m, unmodeled_sentinel))
             .collect();
@@ -184,7 +186,10 @@ impl ProtocolWriter for AnthropicWriter {
             "messages".to_string(),
             serde_json::Value::Array(messages_array),
         );
-        crate::proto::warn_dropped_tool_strict(&req.tools, crate::proto::PROTO_ANTHROPIC);
+        busbar_core::proto::warn_dropped_tool_strict(
+            &req.tools,
+            busbar_core::proto::PROTO_ANTHROPIC,
+        );
         if !req.tools.is_empty() {
             let tools_array: Vec<_> = req.tools.iter().map(write_tool).collect();
             out.insert("tools".to_string(), serde_json::Value::Array(tools_array));
@@ -245,8 +250,8 @@ impl ProtocolWriter for AnthropicWriter {
         if let Some(ask) = req.reasoning {
             let table = req
                 .reasoning_budgets
-                .unwrap_or(crate::ir::REASONING_BUDGET_DEFAULTS);
-            if matches!(ask, crate::ir::IrReasoningAsk::Dynamic) {
+                .unwrap_or(busbar_core::ir::REASONING_BUDGET_DEFAULTS);
+            if matches!(ask, busbar_core::ir::IrReasoningAsk::Dynamic) {
                 tracing::warn!(
                     "gemini dynamic thinking (-1) has no Anthropic analog; projecting as the \
                      'medium' effort budget"
@@ -406,8 +411,8 @@ impl ProtocolWriter for AnthropicWriter {
                 ..
             } => {
                 let role_str = match role {
-                    crate::ir::IrRole::User => "user",
-                    crate::ir::IrRole::Assistant => "assistant",
+                    busbar_core::ir::IrRole::User => "user",
+                    busbar_core::ir::IrRole::Assistant => "assistant",
                     _ => return None,
                 };
                 let mut msg_obj = serde_json::Map::new();
@@ -708,7 +713,7 @@ impl ProtocolWriter for AnthropicWriter {
         }
     }
 
-    fn write_response(&self, resp: &crate::ir::IrResponse) -> serde_json::Value {
+    fn write_response(&self, resp: &busbar_core::ir::IrResponse) -> serde_json::Value {
         let mut obj = serde_json::Map::new();
 
         // id: an official SDK's `Message.id` is a REQUIRED `"msg_<rand>"` string — the Python/TS SDK

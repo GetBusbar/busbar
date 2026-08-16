@@ -11,7 +11,11 @@ pub(crate) const DECL: ProtocolDecl = ProtocolDecl {
     name: PROTO_COHERE,
     codec: Some(Protocol::cohere),
     handler: Some(&crate::handlers::cohere::CohereRequestHandler),
-    verbs: &["chat", "embeddings", "rerank"],
+    verbs: &[
+        crate::operation::Operation::CHAT,
+        crate::operation::Operation::EMBEDDINGS,
+        crate::operation::Operation::RERANK,
+    ],
     head_keys: LLM_HEAD_KEYS,
     streaming_content_type: Some(crate::proxy::TEXT_EVENT_STREAM),
     array_stream_shim_key: None,
@@ -21,6 +25,9 @@ pub(crate) const DECL: ProtocolDecl = ProtocolDecl {
     // Cohere ids pass through verbatim and there is nothing to mis-decode on the echo.
     native_tool_id_prefix: None,
     ingress_auth: IngressAuth::Bearer,
+    // The shared bearer/api-key/SigV4 schemes stay in `egress_auth::resolve` until this
+    // dialect is extracted; see the field doc.
+    egress_auth_headers: None,
     // NO PATH INGRESS: this dialect keeps its model in the BODY, so the catch-all resolves the
     // operation through the `RequestHandler` and serves it on the universal ingress.
     path_ingress: None,

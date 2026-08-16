@@ -490,8 +490,28 @@ fn validate_worker_threads_config(wt: Option<usize>) -> Result<Option<usize>, St
     }
 }
 
+/// REGISTER THE LINKED PROTOCOL CRATES — the composition root's one write into the protocol axis
+/// (`busbar_core::proto::registry::install_protocols`). Each linked dialect contributes its `&DECL`
+/// here and nowhere else; core's own built-in table keeps the dialects that have not been extracted
+/// yet. Feature-gated per crate so a deletion build (`--no-default-features`, or default minus one
+/// `proto-*` feature) drops the dependency edge AND the registration line together — which is what
+/// makes `cargo build -p busbar` without a dialect a complete deletion, not a link error.
+fn register_protocols() {
+    static INSTALLED: &[&busbar_core::proto::ProtocolDecl] = &[
+        #[cfg(feature = "proto-anthropic")]
+        &busbar_proto_anthropic::DECL,
+    ];
+    busbar_core::proto::registry::install_protocols(INSTALLED);
+}
+
 fn main() {
-    // CLI flags first — BEFORE building any runtime. They must work without a configured deployment,
+    // PROTOCOL REGISTRATION FIRST — before the CLI flags, because `--validate` reads the protocol
+    // set. This is the composition root's whole knowledge of the protocol crates: one line per
+    // linked dialect, handed to the registry seam before anything reads it. A dialect absent from
+    // the build (its feature off) is simply never registered, and a config that names it gets the
+    // unknown-protocol refusal — the deletion test's runtime half (scripts/proto-deletion-gate.sh).
+    register_protocols();
+    // CLI flags next — BEFORE building any runtime. They must work without a configured deployment,
     // and `--version` / `--validate` should never spin up a thread pool.
     if let Some(code) = handle_cli_flags() {
         std::process::exit(code);

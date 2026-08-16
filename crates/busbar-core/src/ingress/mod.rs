@@ -794,7 +794,7 @@ pub(crate) mod native;
 /// The protocol catch-all. `pub(crate)` for one member: `dispatch::Arrival` is the type a
 /// path-model protocol's declared ingress receives, and a declaration in `proto/` has to be able
 /// to name it.
-pub(crate) mod dispatch;
+pub mod dispatch;
 pub(crate) use dispatch::{operation_resolved, protocol_dispatch};
 // The universal ingress entry — live callers sit inside `dispatch` itself; tests drive it directly.
 #[cfg(test)]

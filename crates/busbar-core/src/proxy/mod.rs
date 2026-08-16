@@ -64,7 +64,7 @@ pub(crate) const APPLICATION_JSON: &str = "application/json";
 /// Streaming MIME type for SSE (Server-Sent Events) responses — the `Content-Type` value that
 /// signals an open event-stream to the client. Placed next to `APPLICATION_JSON` so all
 /// protocol-boundary content-types are declared in one spot.
-pub(crate) const TEXT_EVENT_STREAM: &str = "text/event-stream";
+pub const TEXT_EVENT_STREAM: &str = "text/event-stream";
 
 /// Canonical error-KIND tokens: produced by `cross_protocol_error_kind` / passed to
 /// `ingress_error` as the `kind` argument. Each string is the protocol-agnostic discriminant that
@@ -81,11 +81,11 @@ pub(crate) const KIND_API_ERROR: &str = openai_family::ERR_TYPE_API_ERROR;
 /// Bare `overloaded` — DELIBERATELY distinct from `openai_family::ERR_TYPE_OVERLOADED`
 /// ("overloaded_error", the Anthropic wire spelling): this is busbar's own agnostic kind for a
 /// relayed upstream 503.
-pub(crate) const KIND_OVERLOADED: &str = "overloaded";
+pub const KIND_OVERLOADED: &str = "overloaded";
 /// Bare `timeout` — distinct from the Anthropic wire's `timeout_error` spelling.
-pub(crate) const KIND_TIMEOUT: &str = "timeout";
+pub const KIND_TIMEOUT: &str = "timeout";
 pub(crate) const KIND_INSUFFICIENT_QUOTA: &str = openai_family::ERR_TYPE_INSUFFICIENT_QUOTA;
-pub(crate) const KIND_SERVER_ERROR: &str = openai_family::ERR_TYPE_SERVER_ERROR;
+pub const KIND_SERVER_ERROR: &str = openai_family::ERR_TYPE_SERVER_ERROR;
 pub(crate) const KIND_REQUEST_TOO_LARGE: &str = openai_family::ERR_TYPE_REQUEST_TOO_LARGE;
 
 /// Network-transient `err_type` values passed to `record_transient_in`.  These are distinct from
@@ -112,7 +112,7 @@ pub(crate) const POOL_LABEL_UNRESOLVED: &str = "unresolved";
 /// Provider error-code token emitted when a request exceeds the model's context-window limit.
 /// Returned by `client_fault_kind` for `StatusClass::ContextLength` and drives the per-protocol
 /// writer to emit the native context-length error category.
-pub(crate) const PROVIDER_CODE_CONTEXT_LENGTH: &str = "context_length_exceeded";
+pub const PROVIDER_CODE_CONTEXT_LENGTH: &str = "context_length_exceeded";
 
 tokio::task_local! {
     /// Per-request slot the `server_timing` middleware reads to compute Busbar's INTERNAL
@@ -132,7 +132,7 @@ mod response_body;
 mod select;
 pub(crate) mod usage;
 mod wire;
-pub(crate) use egress::*;
+pub use egress::*;
 pub(crate) use engine::*;
 pub(crate) use hooks::*;
 pub(crate) use lazy_body::*;

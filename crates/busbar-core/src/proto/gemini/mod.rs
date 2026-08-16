@@ -16,7 +16,13 @@ pub(crate) const DECL: ProtocolDecl = ProtocolDecl {
     name: PROTO_GEMINI,
     codec: Some(Protocol::gemini),
     handler: Some(&crate::handlers::gemini::GeminiRequestHandler),
-    verbs: &["chat", "embeddings", "image", "transcription", "speech"],
+    verbs: &[
+        crate::operation::Operation::CHAT,
+        crate::operation::Operation::EMBEDDINGS,
+        crate::operation::Operation::IMAGE,
+        crate::operation::Operation::TRANSCRIPTION,
+        crate::operation::Operation::SPEECH,
+    ],
     head_keys: LLM_HEAD_KEYS,
     streaming_content_type: Some(crate::proxy::TEXT_EVENT_STREAM),
     array_stream_shim_key: Some(GEMINI_JSON_ARRAY_SHIM_KEY),
@@ -24,6 +30,9 @@ pub(crate) const DECL: ProtocolDecl = ProtocolDecl {
     // nothing to reshape and no risk of a foreign id leaking to a Gemini client.
     native_tool_id_prefix: None,
     ingress_auth: IngressAuth::Bearer,
+    // The shared bearer/api-key/SigV4 schemes stay in `egress_auth::resolve` until this
+    // dialect is extracted; see the field doc.
+    egress_auth_headers: None,
     // THE MODEL IS IN THE URL: `/v1beta/models/{model}:generateContent`. This declaration is what
     // core reads instead of comparing this protocol's NAME, and the tail parse it performs is this
     // dialect's own statement about its own URL space.

@@ -98,12 +98,18 @@ pub(crate) const DECL: crate::proto::ProtocolDecl = crate::proto::ProtocolDecl {
     name: "mcp",
     codec: None,
     handler: Some(&McpRequestHandler),
-    verbs: &["invoke", "subscribe"],
+    verbs: &[
+        crate::operation::Operation::INVOKE,
+        crate::operation::Operation::SUBSCRIBE,
+    ],
     head_keys: &[],
     streaming_content_type: None,
     array_stream_shim_key: None,
     native_tool_id_prefix: None,
     ingress_auth: crate::proto::IngressAuth::Bearer,
+    // The shared bearer/api-key/SigV4 schemes stay in `egress_auth::resolve` until this
+    // dialect is extracted; see the field doc.
+    egress_auth_headers: None,
     // NO PATH INGRESS: this dialect keeps its model in the BODY, so the catch-all resolves the
     // operation through the `RequestHandler` and serves it on the universal ingress.
     path_ingress: None,
