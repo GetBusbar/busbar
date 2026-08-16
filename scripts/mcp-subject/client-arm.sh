@@ -180,7 +180,34 @@ fi
 # peer at all. Every other answer, including every hostile mode's deliberate breakage, is taken as
 # it stands: those scenarios judge what DID cross, and a stall or a torn socket is the crossing.
 # A retry here can fake nothing -- the transcript the suite judges records only real arrivals.
-for call_attempt in 1 2 3; do
+#
+# ...AND THE SIGNATURE DID NOT SAY WHAT THE PARAGRAPH ABOVE MEANT. `error sending request` is the
+# PREFIX busbar puts on EVERY upstream transport error, so the guard matched the two hostile modes
+# whose whole contract is that the request breaks: `stall` answers
+# `error sending request: operation timed out` and `half-answer` answers `error sending request:
+# client error (SendRequest): connection closed before message completed`. Both were retried three
+# times. Two things followed, and both were read off one CI run rather than reasoned about:
+#
+#   1. THE FALSE OBSERVATION. `hostile.stall.clientExitedWithin25s` reported FALSE about a busbar
+#      that gives up in ten seconds, every time -- because this script then did it twice more and
+#      blew the suite's 25s failsafe. The scenario judges whether BUSBAR hangs; it was measuring
+#      this loop.
+#   2. THE TRIP. Each retry is a real dispatch and a real recorded upstream failure. Five failures
+#      landed on the `seam` cell inside eighteen seconds -- three of them retries of two tests --
+#      which is exactly ADR-0002's default trip predicate (`error_rate >= 0.5` over `min_requests:
+#      5` in 30s). The breaker opened, correctly, and fast-failed every later scenario that
+#      dispatched through the shared registration: one regression and five VACUOUS seam errors, the
+#      red this branch exists to clear. Without the retries those same two tests record two
+#      failures and nothing trips.
+#
+# So the retry is now gated on the MODE, which is what "every hostile mode's deliberate breakage is
+# taken as it stands" always meant. In a mode contracted to break the request, a retry cannot tell
+# the pooled-connection race from the attack -- it can only multiply the attack.
+case "$mode" in
+  stall|half-answer) call_attempt_limit=1 ;;
+  *) call_attempt_limit=3 ;;
+esac
+for call_attempt in $(seq 1 "$call_attempt_limit"); do
   answer=$(curl -s --max-time 45 -X POST "$url" \
     -H 'content-type: application/json' \
     -H 'accept: application/json, text/event-stream' \
