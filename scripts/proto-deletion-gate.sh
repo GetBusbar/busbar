@@ -57,22 +57,30 @@ note "level 2 build: ok ($DELETED_BIN)"
 # ── fixtures ─────────────────────────────────────────────────────────────────────────────────────
 FIX=$(mktemp -d "${TMPDIR:-/tmp}/proto-deletion-gate.XXXXXX")
 trap 'rm -rf "$FIX"; [ -n "${SRV_PID:-}" ] && kill "$SRV_PID" 2>/dev/null' EXIT
-mk_configs() { # $1 = protocol, $2 = listen
+# Two LITERAL provider fixtures (executable-config-lint extracts and validates heredocs, so the
+# protocol value must be a literal — and validating these against the DEFAULT engine is a free
+# extra check that the gate's fixtures are real configs). config.yaml is printf-composed because
+# its listen address is a per-run port, which no static validation could attribute to the text.
+mk_providers_anthropic() {
   cat > "$FIX/providers.yaml" <<EOF
 mock:
-  protocol: $1
+  protocol: anthropic
   base_url: "http://127.0.0.1:9"
   api_key_env: MOCK_KEY
 EOF
-  cat > "$FIX/config.yaml" <<EOF
-listen: "$2"
-providers:
-  mock:
-    api_key: { env: MOCK_KEY }
-models:
-  test-model:
-    provider: mock
+}
+mk_providers_openai() {
+  cat > "$FIX/providers.yaml" <<EOF
+mock:
+  protocol: openai
+  base_url: "http://127.0.0.1:9"
+  api_key_env: MOCK_KEY
 EOF
+}
+mk_config() { # $1 = listen, $2 = admin listen (the admin plane defaults to :8081, which a laptop
+  # or a concurrently running gate may already hold — the boot leg must not fail on a port squat)
+  printf 'listen: "%s"\nadmin_listen: "%s"\nproviders:\n  mock:\n    api_key: { env: MOCK_KEY }\nmodels:\n  test-model:\n    provider: mock\n' \
+    "$1" "$2" > "$FIX/config.yaml"
 }
 run_busbar() { # binary, args... ; env comes from the fixture
   MOCK_KEY=test-key BUSBAR_SIGNING_KEY=0000000000000000000000000000000000000000000000000000000000000001 \
@@ -80,7 +88,7 @@ run_busbar() { # binary, args... ; env comes from the fixture
 }
 
 # ── level 3a: the deleted binary refuses protocol: anthropic, naming the cause ───────────────────
-mk_configs anthropic "127.0.0.1:0"
+mk_providers_anthropic; mk_config "127.0.0.1:0" "127.0.0.1:0"
 OUT=$(run_busbar "$DELETED_BIN" --validate 2>&1); RC=$?
 if [ $RC -eq 0 ]; then
   die "the deleted binary ACCEPTED a config naming protocol: anthropic (the deletion changed nothing)"
@@ -92,13 +100,14 @@ echo "$OUT" | grep -q "must be one of: openai, gemini, bedrock, responses, coher
 note "level 3a refusal: 'unknown protocol anthropic — must be one of: openai, gemini, bedrock, responses, cohere' (exit $RC)"
 
 # ── level 3b: the remaining dialects still validate ──────────────────────────────────────────────
-mk_configs openai "127.0.0.1:0"
+mk_providers_openai; mk_config "127.0.0.1:0" "127.0.0.1:0"
 OUT=$(run_busbar "$DELETED_BIN" --validate 2>&1) || die "the deleted binary must accept an openai config; got: $OUT"
 note "level 3b remaining dialects: openai config validates clean"
 
 # ── level 3c: the deleted binary BOOTS and answers (R-D: fewer protocols is a valid busbar) ──────
 PORT=$(( (RANDOM % 20000) + 30000 ))
-mk_configs openai "127.0.0.1:$PORT"
+ADMIN_PORT=$(( PORT + 1 ))
+mk_providers_openai; mk_config "127.0.0.1:$PORT" "127.0.0.1:$ADMIN_PORT"
 run_busbar "$DELETED_BIN" >"$FIX/boot.log" 2>&1 &
 SRV_PID=$!
 up=""
@@ -120,7 +129,7 @@ note "level 3c boot: /healthz 200, /stats 200, anthropic-format ingress answers 
 # ── control: the default build (feature ON) accepts the anthropic config ─────────────────────────
 note "control: cargo build -p busbar (default features)"
 cargo build -q -p busbar || die "default build failed"
-mk_configs anthropic "127.0.0.1:0"
+mk_providers_anthropic; mk_config "127.0.0.1:0" "127.0.0.1:0"
 OUT=$(run_busbar target/debug/busbar --validate 2>&1) \
   || die "the DEFAULT build must accept protocol: anthropic (gate would be measuring a broken fixture); got: $OUT"
 note "control: default build accepts protocol: anthropic"
