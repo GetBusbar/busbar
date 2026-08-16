@@ -2252,6 +2252,15 @@ mod served_methods_tests;
 #[path = "tests/client_leg_tests.rs"]
 mod client_leg_tests;
 
+// THE FRONT DOOR'S AUDIT CHAIN, DRIVEN. Mounted here for the reason every block above is: it needs
+// `relay_harness`, because the claim is that A REAL INBOUND TASK leaves chained evidence, and only a
+// test that goes through `crate::build_router` can make it. The cell this closes was previously
+// green on a chain a test built in-process — evidence that would have survived the front door
+// chaining nothing at all.
+#[cfg(test)]
+#[path = "tests/front_door_chain_tests.rs"]
+mod front_door_chain_tests;
+
 // THE CALLBACK SUBSTITUTION — busbar registering ITS OWN callback with a backend, so the backend
 // never learns the caller's. Mounted here for the reason every block above is: the claim is about a
 // REQUEST ON THE WIRE (and, for the no-leak scan, about every byte of one), and only the shared

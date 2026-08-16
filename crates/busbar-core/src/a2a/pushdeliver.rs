@@ -52,10 +52,22 @@
 //! down, slow, refused by the guard, or answering 500 is the CALLER's infrastructure failing, and
 //! turning that into a failed task would let a caller destroy its own work by pointing at a broken
 //! URL. Every refusal is logged with the reason and the task id and goes no further.
+//!
+//! ## BEST-EFFORT IS NOT UNRECORDED, AND IT USED TO BE
+//!
+//! "Goes no further" was literally true: all three callers disposed of the outcome with a
+//! `tracing::warn!` and nothing reached any chain, so **a delivery refused by the delivery-time SSRF
+//! guard left no record**. A security control that fires silently is one nobody can audit after the
+//! fact — and this control fires precisely when a callback that was legitimate at registration has
+//! been re-pointed at something that is not, which is the event an incident review goes looking for.
+//! Every attempt now appends to the TASK's own provenance chain (`super::provenance`'s three
+//! `task.push_*` kinds), through the one mechanism in [`crate::audit`]. A log line is still emitted;
+//! it is no longer the only thing that happens.
 
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
+use super::provenance;
 use super::pushnotify::{self, PinnedCallback, PushNotifyError};
 use super::relay::RelaySeam;
 use super::task::Task;
@@ -299,12 +311,72 @@ pub(crate) fn notification_body(task: &Task) -> Vec<u8> {
     serde_json::to_vec(&doc).unwrap_or_default()
 }
 
-/// DELIVER ONE NOTIFICATION for `task`, re-running the full guard against a FRESH resolution first.
+/// DELIVER ONE NOTIFICATION for `task`, re-running the full guard against a FRESH resolution first,
+/// AND RECORD THE OUTCOME on the task's own provenance chain.
 ///
 /// Synchronous, because both seams it uses are: the resolver performs a real name lookup and the
 /// transport blocks a thread per hop. Callers run it on a blocking thread — see
 /// [`super::receive`] — for the same reason the relay does.
+///
+/// ## Why the chaining is HERE and not at the three call sites
+///
+/// `deliver` has three production callers — the unary hop's detached `notify_push`, the streaming
+/// sink's inline delivery, and the backend-push endpoint's onward delivery — and each of them
+/// disposed of the outcome with a `tracing::warn!`. A record written at the call sites would be
+/// three records to keep in step, and the fourth caller added later would silently be the one that
+/// wrote none. ONE APPEND, at the one place that knows what happened, is the same discipline the
+/// chain mechanism itself is under.
+///
+/// The record is written BEFORE the outcome is returned, so no caller can decide not to be audited.
 pub(crate) fn deliver(seam: &dyn RelaySeam, task: &Task) -> Result<(), PushRefusal> {
+    let outcome = attempt(seam, task);
+    record_attempt(task, &outcome);
+    outcome
+}
+
+/// APPEND THE DELIVERY'S OUTCOME to the task's chain, in the ONE mechanism (`crate::audit`, through
+/// the task registry that owns this task's chain position).
+///
+/// [`PushRefusal::NoCallback`] writes NOTHING, and that is not an exception to the rule: no delivery
+/// was attempted, no guard ran, and a record saying a task with no callback did not receive one
+/// would be a row per state change of every task in the deployment that never asked for push at all.
+///
+/// A failure to record is logged and goes no further. Delivery is best-effort by design ("a failure
+/// never touches the task"), and turning a bookkeeping problem into a failed task would be exactly
+/// the harm that posture exists to prevent — but it is logged at WARN rather than swallowed, because
+/// a missing audit record is itself the thing this file was changed to stop.
+fn record_attempt(task: &Task, outcome: &Result<(), PushRefusal>) {
+    let kind = match outcome {
+        Ok(()) => provenance::EV_PUSH_DELIVERED,
+        // NOTHING WENT OUT — busbar's own guard, the resolver, or the stored URL stopped it.
+        Err(PushRefusal::Guard(_) | PushRefusal::Unresolved(_) | PushRefusal::NotAUrl(_)) => {
+            provenance::EV_PUSH_REFUSED
+        }
+        // IT WENT OUT AND THE RECEIVER FAILED IT.
+        Err(PushRefusal::Transport(_) | PushRefusal::Status(_)) => provenance::EV_PUSH_FAILED,
+        Err(PushRefusal::NoCallback) => return,
+    };
+    if let Err(e) = super::taskstore::TASKS.record_push_delivery(
+        &task.task_id,
+        kind,
+        crate::store::now(),
+        // No inbound request originates a delivery; `request_id` is a join key and is excluded from
+        // the digest for exactly this reason (see `provenance::digest_fields`).
+        "",
+    ) {
+        tracing::warn!(
+            task = %task.task_id,
+            kind = kind,
+            error = %e,
+            "a2a: the push-notification delivery outcome could not be chained"
+        );
+    }
+}
+
+/// The delivery itself. Split out so that every `?` and every early return in it is still audited by
+/// [`deliver`] — an outcome that can be returned without passing the recorder is an outcome that
+/// will eventually be returned without passing the recorder.
+fn attempt(seam: &dyn RelaySeam, task: &Task) -> Result<(), PushRefusal> {
     let Some(url) = task.push_callback.as_deref() else {
         return Err(PushRefusal::NoCallback);
     };

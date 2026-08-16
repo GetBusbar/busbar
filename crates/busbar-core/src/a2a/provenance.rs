@@ -60,6 +60,41 @@ pub(crate) const EV_ARTIFACT: &str = "task.artifact";
 pub(crate) const EV_TERMINAL: &str = "task.terminal";
 pub(crate) const EV_REHYDRATED: &str = "task.rehydrated";
 
+// ── THE PUSH-NOTIFICATION DELIVERY EVENTS ───────────────────────────────────────────────────────
+//
+// WHAT WAS MISSING: `super::pushdeliver` connected to a caller's webhook, ran the full SSRF guard
+// against a FRESH resolution before every delivery, and then disposed of the outcome with a
+// `tracing::warn!` at each of its three call sites. So **a delivery refused by the SSRF guard left
+// no record at all** — a security control that fires silently is one nobody can audit after the
+// fact, and "the guard refused a delivery to 169.254.169.254 for this task" is precisely the line an
+// incident review needs. The task chain is where it belongs: the delivery is an event in that task's
+// life, it is scoped to that task, and the owner's ruling is that no plane supplies a second chain.
+//
+// THREE KINDS, NOT ONE, and the split is the `outcome`/`reason` split this vocabulary is built on:
+// `refused` means the request did not go out and `delivered`/`failed` mean it did. An operator
+// reading `push_refused` looks at busbar's guard and the callback's DNS; one reading `push_failed`
+// looks at the caller's own receiver. Collapsing them would send half of each population to the
+// wrong place. A NEW KIND IS SAFE TO ADD (unlike a new FIELD): the digest covers the kind's VALUE,
+// so events already on disk keep verifying against the same formula.
+
+/// The receiver ANSWERED 2xx. The notification is delivered and the caller has it.
+pub(crate) const EV_PUSH_DELIVERED: &str = "task.push_delivered";
+
+/// BUSBAR DECLINED TO CONNECT: the delivery-time SSRF guard refused the fresh resolution (a callback
+/// whose name now answers a private or metadata address, a wholesale move away from the pinned set),
+/// the host would not resolve at all, or the stored URL is not one. Nothing left the process.
+///
+/// This is the one the absence of a record was worst for. An attacker's nameserver waits out the gap
+/// between registration and delivery precisely because the row is durable and the DNS answer is not;
+/// the refusal firing is the control WORKING, and it left no evidence that it had.
+pub(crate) const EV_PUSH_REFUSED: &str = "task.push_refused";
+
+/// THE DELIVERY WENT OUT AND THE RECEIVER FAILED IT: the socket errored, or the webhook answered
+/// non-2xx. A statement about the CALLER's infrastructure, not about busbar's guard — which is why
+/// it is not [`EV_PUSH_REFUSED`], for the same reason `audit::vocab::REASON_UPSTREAM_FAILED` rides
+/// `dispatched` rather than `refused`.
+pub(crate) const EV_PUSH_FAILED: &str = "task.push_failed";
+
 /// The fields a caller supplies for one event. `seq`, `prev_hash` and `hash` are NOT here: they are
 /// the chain's own business and are supplied by [`crate::audit::Chain::append`], so no call site can
 /// supply a sequence number or a link of its own choosing.

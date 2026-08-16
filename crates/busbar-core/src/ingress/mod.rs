@@ -458,6 +458,7 @@ fn finish(
         charged_at,
         resp,
         true,
+        crate::proxy::reqlog::Terminal::Admitted,
     )
 }
 
@@ -485,6 +486,7 @@ fn finish_admitted(
         charged_at,
         resp,
         charged,
+        crate::proxy::reqlog::Terminal::Admitted,
     )
 }
 
@@ -514,6 +516,7 @@ fn finish_rejected(
         charged_at,
         resp,
         false,
+        crate::proxy::reqlog::Terminal::Rejected,
     )
 }
 
@@ -527,6 +530,7 @@ fn finish_inner(
     charged_at: u64,
     resp: Response,
     refund_on_non_2xx: bool,
+    terminal: crate::proxy::reqlog::Terminal,
 ) -> Response {
     // FINISH stage: metrics record + request-log gate + non-2xx refund check (zero cost unprofiled).
     let _fin = crate::profile::start(crate::profile::Stage::Finish);
@@ -572,6 +576,34 @@ fn finish_inner(
         });
     }
 
+    // THE PLANE'S EVIDENCE, on the ONE chain in `crate::audit` — the same mechanism `mcp::calllog`
+    // and `a2a::provenance` append to, with a record type of its own and nothing else of its own
+    // (`crate::proxy::reqlog`). Here, at the plane's single terminal, for the same reason the metric
+    // emit is here: every model request passes through this function exactly once, admitted or
+    // refused, so a record written here cannot be skipped by a path that forgot to write one — and
+    // the refusals are the half a log that only records successes cannot provide.
+    //
+    // The PRINCIPAL is the presenting key; an ungoverned request chains under the fixed sentinel
+    // rather than being dropped, because a chain that silently omits every anonymous request is a
+    // chain with a hole an attacker can choose. The POOL is the bounded label, never the raw
+    // caller-supplied model string.
+    let status = resp.status().as_u16();
+    let (audit_outcome, audit_reason) = crate::proxy::reqlog::outcome_of(terminal, status);
+    crate::proxy::reqlog::REQUESTS.record(
+        gov.key
+            .as_ref()
+            .map(|k| k.id.as_str())
+            .unwrap_or(crate::proxy::reqlog::PRINCIPAL_UNGOVERNED),
+        crate::proxy::reqlog::RequestInput {
+            ts: crate::store::now(),
+            ingress_protocol: ingress_protocol.to_string(),
+            pool: pool.to_string(),
+            outcome: audit_outcome,
+            reason: audit_reason,
+            status,
+        },
+    );
+
     // The flat per-request fee was charged ATOMICALLY at admission. REFUND it for a request
     // that produced no usable upstream result (non-2xx: router 503 exhaustion, upstream 5xx, 4xx
     // upstream errors, post-admission 404) so a key is never billed the flat fee for a failure
@@ -580,7 +612,7 @@ fn finish_inner(
     // refund bills against the SAME window the admission charge used (`charged_at`, the header-arrival
     // epoch), so a window-straddling request refunds where it charged (#29). `refund_on_non_2xx` is
     // false for governance-rejection finishes (those were never charged — nothing to refund).
-    let is_success = matches!(resp.status().as_u16(), 200..=299);
+    let is_success = matches!(status, 200..=299);
     if refund_on_non_2xx && !is_success {
         if let (Some(g), Some(key)) = (&app.governance, &gov.key) {
             g.refund_request(&app.cost, key, pool, charged_at);

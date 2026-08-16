@@ -206,8 +206,9 @@
     {
       "capability": "audit-chain",
       "plane": "llm",
-      "state": "missing",
-      "note": "grep crate::audit under proxy/: zero production hits. Model requests have billing/telemetry but land in NO tamper-evident chain; MCP (calllog) and A2A (provenance) both do. This is the doctrine inverted -- the flagship plane is the unproven one."
+      "state": "proven",
+      "test": "crates/busbar-core/src/proxy/tests/reqlog_dispatch_tests.rs::every_model_request_lands_on_the_presenting_keys_hash_chain_dispatch_and_refusal_alike",
+      "note": "closed by proxy/reqlog.rs -- a RECORD TYPE and nothing else, appended at the plane's one terminal (ingress::finish_inner) through the ONE mechanism in crate::audit. Scoped per principal like the MCP call log. The test drives a real request through build_router over a real socket and reads the chain back; deleting the append fails it and leaves the other 4,540 tests green. HONEST LIMIT: busbar_api::Store carries no model-request method, so this stream is a bounded in-memory window and a restart loses it -- adding durability is a plugin-ABI change fanned out to four store repos and is deliberately not made here. Nothing may call it durable until that method exists."
     },
     {
       "capability": "audit-chain",
@@ -233,7 +234,8 @@
       "capability": "audit-chain",
       "plane": "a2a-server",
       "state": "proven",
-      "test": "crates/busbar-core/src/a2a/tests/provenance_tests.rs::an_untouched_chain_verifies_and_its_links_are_actual_links"
+      "test": "crates/busbar-core/src/a2a/tests/front_door_chain_tests.rs::an_inbound_task_leaves_a_verifying_chain_in_the_store_the_front_door_wrote_it_to",
+      "note": "RE-POINTED. The previous pin (provenance_tests::an_untouched_chain_verifies_and_its_links_are_actual_links) builds a synthetic TaskChain in-process and would have passed unchanged if the front door chained nothing at all -- a cell green on evidence that never touches the plane. The new pin POSTs message/send at a real listener through build_router and reads the events back out of an attached store, so an empty read-back is a failure rather than a pass. This plane's own outbound webhook delivery is covered by the three task.push_* tests in pushdeliver_tests.rs, added with it: before them a delivery refused by the delivery-time SSRF guard left no record anywhere."
     },
     {
       "capability": "governance-budget",
