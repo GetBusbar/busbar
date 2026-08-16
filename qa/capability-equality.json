@@ -32,7 +32,7 @@
   "capabilities": {
     "breaker-trip": "a failing upstream target records into the ONE core breaker cell (LaneRuntime, (pool,lane)-keyed) and the cell opens",
     "breaker-fastfail": "a tripped target is refused before dispatch in milliseconds, not after the full timeout, via try_admit_breaker",
-    "failover-reroute": "a second interchangeable candidate is tried before the first byte. One breaker admission (LaneRuntime::try_admit_breaker) on every plane; candidate selection is failover::walk on the MCP/A2A planes and the engine's pool walk (proxy/engine/walk.rs) on the LLM plane, which predates the seam and carries SWRR/policy/queue semantics the seam deliberately does not",
+    "failover-reroute": "a second interchangeable candidate is tried before the first byte, through ONE selection loop on every plane: failover::walk_with. It owns the whole decision -- is there a candidate set, is this hop a repeat and is that allowed, do the candidates' pins agree, will the breaker admit, and what the refusal is. A plane supplies exactly two values and no loop: the ORDER (which candidate is asked next) and the ADMISSION. MCP and A2A reach it via failover::walk (operator members: order, LaneRuntime::try_admit_breaker); the model plane reaches it via proxy::select::pick_among (SWRR / routing-policy / session-affinity order, LaneRuntime::try_admit -- the SAME breaker FSM, cell and single-flight probe, plus that plane's concurrency permit). The model plane's on_exhausted machinery (503 / fallback_pool / least_bad / queue, proxy/engine/walk.rs) is NOT selection: it is what that plane does after the one loop finds nothing, and it dispatches only through the loop's admission or its own documented least-bad breaker bypass",
     "hooks-tap": "observe/transform hooks (rewrite, usage projection) run over the plane's payloads",
     "hooks-gate": "hooks::gate::decide can refuse the plane's traffic before dispatch",
     "audit-chain": "the plane's dispatches and refusals land in a tamper-evident hash chain (crate::audit)",
@@ -116,7 +116,7 @@
       "capability": "failover-reroute",
       "plane": "llm",
       "state": "proven",
-      "test": "crates/busbar-core/src/proxy/tests/forward_once_pool_cell_tests.rs::test_forward_once_fallback_2xx_closes_pool_cell_not_default"
+      "test": "crates/busbar-core/src/proxy/tests/reroute_pool_tests.rs::a_saturated_primary_is_passed_over_inside_the_one_loop_and_the_twin_serves"
     },
     {
       "capability": "failover-reroute",

@@ -21,11 +21,12 @@
 //! `(pool, lane)` — is good and is not rewritten here. This module is the seam that lets a plane
 //! reach it.
 //!
-//! **What core owns:** what a candidate SET is, the ORDER candidates are walked in, the
-//! interchangeability CHECK, the retry-safety RULE, the admission (through the one breaker), and the
-//! refusal it produces. **What a plane owns:** what a CANDIDATE is ([`Candidate`]) and what makes two
-//! of them interchangeable (the pin it hands back from
-//! [`Candidate::interchange_key`]). [`crate::egress_auth::gate`] is the precedent this copies rather
+//! **What core owns:** what a candidate SET is, the LOOP that walks it, the interchangeability
+//! CHECK, the retry-safety RULE, the admission (through the one breaker), and the refusal it
+//! produces. **What a plane owns:** what a CANDIDATE is ([`Candidate`]), what makes two of them
+//! interchangeable (the pin it hands back from [`Candidate::interchange_key`]), the ORDER they are
+//! offered in ([`Order`]) and which admission primitive its dispatch needs — and nothing else.
+//! [`crate::egress_auth::gate`] is the precedent this copies rather
 //! than a new idea: a plane supplies a grant kind and keeps its refusal wording; it does not keep its
 //! own decision. [`crate::audit`] is the nearer one still: core owns the mechanism, a stream supplies
 //! one record type.
@@ -85,6 +86,36 @@
 //! for a plane busbar does not have and shows it selects, admits, trips and reroutes with NO second
 //! breaker, NO second walk and NO error type written for it.
 
+// ## ONE SELECTION LOOP, ON ALL THREE PLANES (owner ruling R-I: "Unify now — R-B should be true on
+// ## selection too in 1.6.0")
+//
+// [`walk_with`] is that loop, and it is the only one. R-B was already true of the BREAKER — one FSM,
+// one `breaker::classify`, one disposition pipeline, no plane-local state machine — and this is what
+// made it true of SELECTION as well. Until it landed the model plane had its OWN admission loop in
+// `proxy::select::pick_among`, and this module's own definition of the capability said "the one
+// selection loop" while two existed. Both are now the same function.
+//
+// WHY THIS DIRECTION. The model plane's loop carried SWRR weighting, routing policy, session
+// affinity, queueing and `on_exhausted`, and the natural fear was that folding it in would drag all
+// of that into core. It did not, because those are not selection:
+//
+//   * WEIGHTING / ROUTING POLICY / AFFINITY are ORDER — they decide who is ASKED first, never who is
+//     ALLOWED. They are now an [`Order`] implementation on the model plane, and nothing they return
+//     can admit a candidate the breaker refused, because they perform no admission at all.
+//   * QUEUEING and `on_exhausted` (503 / `fallback_pool` / `least_bad` / `queue`) are what that plane
+//     does AFTER the loop finds nothing. `proxy::engine::walk`'s own header already said so: the
+//     queue wait "lives HERE in on_exhausted dispatch, never inside `pick_among` — selection stays
+//     non-blocking". They never moved and they were never a second selection.
+//   * The CONCURRENCY PERMIT is the one real difference, and it is a difference of one field:
+//     `try_admit` is `try_admit_breaker` plus a permit acquisition, over the same cell, the same
+//     verdict decoder and the same single-flight probe CAS. It rides in as the plane's ADMISSION.
+//
+// The opposite direction — making `pick_among` the one loop and moving MCP and A2A onto it — was
+// rejected on the code: it is welded to `App`, to `WeightedLane` and to lane indices into
+// `app.lanes`, which MCP servers and A2A agents are not members of (they run on `PlaneBreakers`'
+// own runtime); and it has neither the pin check nor the repeat-safety rule, so those two safety
+// rules would have had to be bolted onto it or lost on the two planes that need them most.
+//
 // MOUNTED. The reroute-parity unit (owner ruling R-B: "llm mcp a2a are identical") consumes this
 // seam on both non-LLM planes: `mcp::reroute` walks a `tool_pools:` candidate set before every
 // `tools/call` leg, and `a2a::receive` walks an `agent_pools:` set at submission admission. Both
@@ -312,33 +343,36 @@ impl std::fmt::Display for Refusal {
     }
 }
 
-/// A CANDIDATE THAT MAY BE DISPATCHED TO, and the probe it now owns.
+/// A CANDIDATE THAT MAY BE DISPATCHED TO, and the admission token it now owns.
 ///
-/// Only [`walk`] can build one, so a dispatch that skipped the breaker does not compile. `probe_epoch`
-/// is the owner token [`LaneRuntime::try_admit_breaker`] handed back — the caller releases it
-/// OWNER-CHECKED via `release_probe_owned_in` after recording an outcome, exactly the discipline the
-/// model plane's queue dispatch uses.
-pub(crate) struct Admitted<'a, C> {
+/// Only [`walk_with`] can build one, so a dispatch that skipped the breaker does not compile. `token`
+/// is whatever the plane's admission handed back: on the MCP/A2A planes that is the bare probe epoch
+/// from [`LaneRuntime::try_admit_breaker`]; on the model plane it is the [`crate::store::Admit`]
+/// carrying the probe epoch AND the concurrency permit that plane also needs. Both are the SAME
+/// breaker FSM and the SAME single-flight probe — the token differs only by whether a permit rides
+/// along (see `store::in_memory::availability`: `try_admit` is `try_admit_breaker` plus a permit
+/// acquisition, nothing else). The caller releases the probe OWNER-CHECKED via
+/// `release_probe_owned_in` after recording an outcome.
+pub(crate) struct Admitted<'a, C, T = u64> {
     candidate: &'a C,
     position: usize,
-    probe_epoch: u64,
+    token: T,
 }
 
 /// HAND-WRITTEN so the bound lands on [`Candidate`] and NOT on `Debug`. A derive would make every
 /// plane's candidate type `Debug` or lose `expect`/`unwrap` on the result — which is a second thing a
 /// third plane has to write, and the acceptance test for this seam is that there is no second thing.
 /// It prints the plane's own [`Candidate::name`], which is all an operator wants from it anyway.
-impl<C: Candidate> std::fmt::Debug for Admitted<'_, C> {
+impl<C: Candidate, T> std::fmt::Debug for Admitted<'_, C, T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Admitted")
             .field("candidate", &self.candidate.name())
             .field("position", &self.position)
-            .field("probe_epoch", &self.probe_epoch)
             .finish()
     }
 }
 
-impl<'a, C: Candidate> Admitted<'a, C> {
+impl<'a, C: Candidate, T> Admitted<'a, C, T> {
     /// The candidate this request may be sent to.
     pub(crate) fn candidate(&self) -> &'a C {
         self.candidate
@@ -347,10 +381,18 @@ impl<'a, C: Candidate> Admitted<'a, C> {
     pub(crate) fn position(&self) -> usize {
         self.position
     }
+    /// The plane's admission token — probe epoch (MCP/A2A) or `Admit` (the model plane's probe epoch
+    /// plus its concurrency permit). Consumed by value: an admission is used once.
+    pub(crate) fn into_token(self) -> T {
+        self.token
+    }
+}
+
+impl<'a, C: Candidate> Admitted<'a, C, u64> {
     /// The single-flight probe owner token, for the owner-checked release after the outcome is
-    /// recorded.
+    /// recorded. The MCP/A2A spelling of [`Admitted::into_token`].
     pub(crate) fn probe_epoch(&self) -> u64 {
-        self.probe_epoch
+        self.token
     }
 }
 
@@ -377,10 +419,72 @@ pub(crate) struct Attempt<'r> {
     pub(crate) operation: &'r str,
 }
 
+/// WHERE THE NEXT CANDIDATE COMES FROM — the one thing [`walk_with`] does NOT own.
+///
+/// The loop is one; the ORDER is a plane's. The MCP and A2A planes read `members:` in the order the
+/// operator wrote it ([`InOrder`]). The model plane's order is SMOOTH WEIGHTED ROUND ROBIN, which is
+/// STATEFUL — it cannot be handed over as a precomputed list because each pick mutates the SWRR
+/// accumulator and a refused pick must re-run the selection over the remaining set. So the order is
+/// asked for one candidate at a time, and `refused` reports what the walk did with the previous
+/// answer, which is exactly what a generator needs to advance.
+///
+/// This is the same division [`Candidate`] draws: core owns the mechanism, a plane supplies the one
+/// value only it can compute. Weighting, routing policy, session affinity and drain are ORDER — they
+/// decide who is asked first, never who is allowed. Nothing an implementation of this trait returns
+/// can admit a candidate the breaker refused, because it does not perform admission at all.
+pub(crate) trait Order {
+    /// The next position in `members` to CONSIDER, or `None` when this order is exhausted.
+    ///
+    /// `refused` is the position the previous call yielded and the walk then failed to admit
+    /// (`None` on the first call, and on every call after a successful admission — which never
+    /// happens, because the walk returns).
+    fn next(&mut self, refused: Option<usize>) -> Option<usize>;
+}
+
+/// THE OPERATOR'S ORDER: `members:` as written, skipping anything already `tried`.
+///
+/// The MCP and A2A order, and the one the seam's own [`walk`] uses. `members[0]` is the primary and
+/// the rest are its declared twins, so "first admissible in declaration order" is the whole policy —
+/// there is no weighting to apply because two deployments of ONE image are not a load-balancing
+/// decision, they are a same-or-nothing choice.
+pub(crate) struct InOrder<'a> {
+    tried: &'a [usize],
+    cursor: usize,
+    len: usize,
+}
+
+impl<'a> InOrder<'a> {
+    pub(crate) fn new(tried: &'a [usize], len: usize) -> Self {
+        Self {
+            tried,
+            cursor: 0,
+            len,
+        }
+    }
+}
+
+impl Order for InOrder<'_> {
+    fn next(&mut self, _refused: Option<usize>) -> Option<usize> {
+        // A refused position is never revisited because the cursor only moves forward — the walk's
+        // own `refused` bookkeeping is redundant here, which is why it is ignored rather than
+        // re-checked.
+        while self.cursor < self.len {
+            let position = self.cursor;
+            self.cursor += 1;
+            if !self.tried.contains(&position) {
+                return Some(position);
+            }
+        }
+        None
+    }
+}
+
 /// THE WALK: pick the next candidate in `members` that this request may be sent to, and admit it
 /// through THE circuit breaker.
 ///
-/// There is exactly ONE selection loop for these planes and this is it.
+/// There is exactly ONE selection loop and this is it. Every plane reaches it: MCP and A2A through
+/// [`walk`], the model plane through `proxy::select::pick_among`, which supplies an SWRR [`Order`]
+/// and the permit-carrying admission and owns NO loop of its own.
 ///
 /// The order of the checks is the contract, because the first failure is what the operator is told:
 ///
@@ -390,16 +494,33 @@ pub(crate) struct Attempt<'r> {
 ///    early on purpose: it is a statement about the REQUEST, and no upstream's health can change it.
 /// 3. **Do the pins agree?** Every hop after the primary must present the primary's exact
 ///    `interchange_key`. Checked before admission so a mismatched candidate is never given a probe.
-/// 4. **Will the breaker have it?** [`LaneRuntime::try_admit_breaker`] — the same call the model
-///    plane's queue dispatch makes, against the same `(pool, lane)` cell — walked in order until one
-///    admits.
-pub(crate) fn walk<'a, C: Candidate>(
-    store: &dyn LaneRuntime,
+/// 4. **Will the breaker have it?** The plane's `admit` — [`LaneRuntime::try_admit_breaker`] on the
+///    MCP/A2A planes, [`crate::store::LaneRuntime::try_admit`] (the same breaker plus a concurrency
+///    permit) on the model plane — walked in `order` until one admits.
+///
+/// `admit` is a hook and not a hardcoded call for ONE reason and it is not extensibility: the model
+/// plane must acquire its concurrency permit and win the breaker probe ATOMICALLY (see `try_admit`'s
+/// capacity-peek-before-probe-CAS argument — splitting them wedged a tripped-and-saturated lane
+/// forever). It is the SAME FSM, the SAME cell and the SAME single-flight probe either way; only the
+/// permit rides along. A plane cannot use this hook to admit a candidate the breaker refused,
+/// because every implementation of it is one of those two store methods and there are no others.
+///
+/// `passed_over` is filled with `(position, why)` for EVERY candidate this walk could not admit, in
+/// the order it considered them — on the success path as well as the refusal path, because a plane
+/// that reroutes still owes its operator the reasons the earlier members were skipped. It is an
+/// out-parameter rather than a field of the two results precisely because BOTH results need it: the
+/// model plane's `on_exhausted` disposition reads it to decide 503-vs-queue-vs-spill, and it needs
+/// the reasons whether the walk ended in a dispatch or in a shed. The walk CLEARS it first, so a
+/// caller reusing one buffer across failover hops reports this hop's exhaustion, never a stale one.
+pub(crate) fn walk_with<'a, C: Candidate, T>(
     pool: &str,
     members: &'a [C],
     attempt: &Attempt<'_>,
-    now: u64,
-) -> Result<Admitted<'a, C>, Refusal> {
+    order: &mut dyn Order,
+    passed_over: &mut Vec<(usize, Unavailable)>,
+    admit: &mut dyn FnMut(usize, &'a C) -> Result<T, Unavailable>,
+) -> Result<Admitted<'a, C, T>, Refusal> {
+    passed_over.clear();
     // 1. Nothing to select from.
     let Some(primary) = members.first() else {
         return Err(Refusal::Empty {
@@ -419,11 +540,14 @@ pub(crate) fn walk<'a, C: Candidate>(
         });
     }
 
-    let mut refused: Vec<(String, Unavailable)> = Vec::new();
-    for (position, member) in members.iter().enumerate() {
-        if attempt.tried.contains(&position) {
-            continue;
-        }
+    let mut last_refused: Option<usize> = None;
+    while let Some(position) = order.next(last_refused) {
+        let Some(member) = members.get(position) else {
+            // An order that names a position outside the pool has no candidate to admit. Treat it as
+            // the end of that order rather than panicking on a slice index: the walk's job is to
+            // refuse safely, never to trust an index.
+            break;
+        };
         // 3. THE PIN CHECK. The primary defines the pool's identity; every other member has to prove
         //    it is the same deployment. `None` never matches — not even another `None`, because two
         //    registrations that have each approved nothing are two unknowns, not one fact.
@@ -442,25 +566,64 @@ pub(crate) fn walk<'a, C: Candidate>(
                 });
             }
         }
-        // 4. THE ONE BREAKER. Not a second admission path, not a copy of one: this is
-        //    `LaneRuntime::try_admit_breaker`, the same method `proxy::engine::walk` calls on the
-        //    model plane, against the same per-(pool, lane) cell.
-        match store.try_admit_breaker(pool, member.lane(), now) {
-            Ok(probe_epoch) => {
+        // 4. THE ONE BREAKER. Not a second admission path, not a copy of one: `try_admit_breaker` and
+        //    `try_admit` are the same FSM over the same per-(pool, lane) cell.
+        match admit(position, member) {
+            Ok(token) => {
                 return Ok(Admitted {
                     candidate: member,
                     position,
-                    probe_epoch,
+                    token,
                 })
             }
-            Err(why) => refused.push((member.name().to_string(), why)),
+            Err(why) => {
+                passed_over.push((position, why));
+                last_refused = Some(position);
+            }
         }
     }
 
     Err(Refusal::NoneAdmissible {
         pool: pool.to_string(),
-        tried: refused,
+        tried: passed_over
+            .iter()
+            .map(|(position, why)| {
+                (
+                    members
+                        .get(*position)
+                        .map(|m| m.name().to_string())
+                        .unwrap_or_default(),
+                    *why,
+                )
+            })
+            .collect(),
     })
+}
+
+/// THE SEAM'S SPELLING OF [`walk_with`]: the operator's `members:` order, admitted breaker-only.
+///
+/// The MCP and A2A call sites' entry point. It adds NO selection logic — it names the two things
+/// those planes supply ([`InOrder`] and [`LaneRuntime::try_admit_breaker`]) and hands them to the one
+/// loop.
+pub(crate) fn walk<'a, C: Candidate>(
+    store: &dyn LaneRuntime,
+    pool: &str,
+    members: &'a [C],
+    attempt: &Attempt<'_>,
+    now: u64,
+) -> Result<Admitted<'a, C>, Refusal> {
+    let mut order = InOrder::new(attempt.tried, members.len());
+    // These planes render their refusal from `Refusal` itself (which already carries every reason by
+    // name), so the positional buffer is local and dropped here.
+    let mut passed_over = Vec::new();
+    walk_with(
+        pool,
+        members,
+        attempt,
+        &mut order,
+        &mut passed_over,
+        &mut |_position, member| store.try_admit_breaker(pool, member.lane(), now),
+    )
 }
 
 /// RECORD WHAT THE UPSTREAM DID, through the ONE classifier and onto the ONE breaker cell.

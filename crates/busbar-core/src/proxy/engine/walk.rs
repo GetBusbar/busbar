@@ -1,3 +1,12 @@
+//! ON_EXHAUSTED DISPOSITION — what the model plane does AFTER the one selection loop finds nowhere
+//! to send a request. This file is NOT a selection loop and, since the one-loop unification (owner
+//! ruling R-I), nothing here selects: `handle_fallback_pool` re-enters `pick_among` — which is the
+//! model plane's [`crate::failover::walk_with`] call site — for the spillover pool, `handle_queue`
+//! waits for a permit and then re-asks the SAME `try_admit_breaker` every plane asks, and
+//! `handle_least_bad` is the ONE documented breaker bypass in the tree (a last-resort degraded route
+//! that owns no probe and says so). The candidate ordering, the pin check, the repeat-safety rule
+//! and the admission all live in core, identically for llm, mcp and a2a.
+
 use super::*;
 // See `engine::mod`'s identical import for why this is a bare, unqualified import rather than a
 // `crate::observability::HOTPATH_LEVEL` path spelled out at the instrument site: `level = <path>`
