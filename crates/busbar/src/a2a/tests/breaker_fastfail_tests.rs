@@ -242,7 +242,8 @@ async fn battery(binding: &str, submission: serde_json::Value) {
         "the first submission must reach the transport"
     );
 
-    // Submission 2: the audit's timing claim plus the §5 rendering, all on outputs.
+    // Submission 2: fast-fail must be sub-second, carry `503` + `Retry-After`, and leave the
+    // recording transport untouched — all judged on outputs below.
     let t0 = Instant::now();
     let (s2, headers, b2) = call_with_headers(&h, &submission).await;
     let elapsed = t0.elapsed();

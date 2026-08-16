@@ -56,8 +56,8 @@ pub(crate) struct PlaneBreakers {
     /// All per-target state lives in the per-pool cells keyed by the plane-qualified strings.
     health: HealthState,
     /// The core defaults (ADR-0002): error-rate trip over a 30s window, 15s→120s cooldown backoff.
-    /// Deliberately NOT operator-tunable per `tools:`/`agents:` — the audit's §3.4 keeps that
-    /// absence until someone asks, as `docs/circuit-breaker.md` already discloses.
+    /// Deliberately NOT operator-tunable per `tools:`/`agents:` — that absence stays until someone
+    /// asks, as `docs/circuit-breaker.md` already discloses.
     cfg: BreakerCfg,
 }
 

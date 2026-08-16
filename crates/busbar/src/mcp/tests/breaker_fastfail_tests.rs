@@ -236,6 +236,7 @@ async fn a_dead_stdio_child_trips_the_same_core_cell_and_the_second_call_fast_fa
         max_caller_ask_rounds: None,
         upstream_credentials: None,
         hooks: Vec::new(),
+        sampling: None,
     };
     let app = TestApp::new()
         .mcp(&mcp_cfg(CANONICAL))
