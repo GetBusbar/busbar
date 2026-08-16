@@ -44,6 +44,7 @@
 //! organising principle: the plane supplies the payload, the core supplies the linkage.
 
 pub mod capability;
+pub mod facts;
 
 use std::pin::Pin;
 use std::sync::Arc;
@@ -51,8 +52,9 @@ use std::sync::Arc;
 pub use capability::{
     ChainVerdict, PlaneApprovals, PlaneAsk, PlaneCallLog, PlaneCatalogue, PlaneClock, PlaneEgress,
     PlaneEgressRequest, PlaneEgressResponse, PlaneGovernance, PlaneGrant, PlaneJournal,
-    PlaneMetrics, PlaneQuarantine, PlaneSecrets, PlaneTasks, PlaneVerdict,
+    PlaneMetering, PlaneMetrics, PlaneQuarantine, PlaneSecrets, PlaneTasks, PlaneVerdict,
 };
+pub use facts::{Magnitude, PlaneFacts, Screenable};
 
 /// The HTTP method a plane route declares. Mirrors `busbar_plugin_abi::http_endpoint::RouteMethod`
 /// token-for-token so a plane crate's declaration is portable between the linked and loaded forms.

@@ -28,6 +28,24 @@
 //!
 //! ## Reading the list
 //!
+//! ## LAYER 1 vs LAYER 2 — which of these a NON-LLM plane could use
+//!
+//! Owner: *"make the design robust enough to not just work with llm mcp and a2a today, but anything
+//! else we can design in future."* The IR is a PROTOCOL-FAMILY property (a request carrying messages
+//! and tools produces a response), not a PLANE property — so it must not be the contract's universal
+//! currency, or the contract can only ever express one family.
+//!
+//! **LAYER 1, universal and IR-free:** [`PlaneClock`], [`PlaneJournal`], [`PlaneTasks`],
+//! [`PlaneApprovals`], [`PlaneQuarantine`], [`PlaneGovernance`], [`PlaneMetering`],
+//! [`PlaneCatalogue`], [`PlaneSecrets`], [`PlaneMetrics`]. A session-oriented plane with no messages,
+//! no tools and no request/response framing uses only these.
+//!
+//! **LAYER 2, LLM/agentic family:** the IR itself, and [`PlaneEgress`]'s HTTP-shaped request — see
+//! that type's doc for why it is marked family-specific rather than quietly generalised.
+//!
+//! Each capability's doc states which layer it is in. Where something is deliberately
+//! family-specific it SAYS SO, so the next reader knows it was a decision rather than an oversight.
+//!
 //! Every capability is `Send + Sync`, object-safe, and scoped by core to the calling plane's
 //! [`super::PlaneDecl::key`] / [`super::PlaneDecl::audit_kind`]. None of them takes a scope
 //! parameter the plane could lie about: the scope is bound when core constructs the handle, so a
@@ -208,6 +226,13 @@ pub trait PlaneEgress: Send + Sync {
     fn call(&self, req: &PlaneEgressRequest) -> Result<PlaneEgressResponse, PlaneError>;
 }
 
+/// **LAYER 2 — LLM/agentic family, and this is a DECISION not an oversight.**
+///
+/// `{pool, method, path, headers, body}` is an HTTP request. A packet-oriented plane forwards
+/// packets and cannot use this shape at all; A2A's gRPC egress does not fit it comfortably either,
+/// so the limitation is not hypothetical. The Layer 1 primitive underneath is a byte-channel egress
+/// (`open_upstream(pool)`) with core applying the same SSRF guard, breaker and failover; this type is
+/// the convenience form built on it for planes that really are speaking HTTP.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlaneEgressRequest {
     /// The operator-configured pool this call routes through. A plane names a POOL, never a URL —
@@ -245,6 +270,26 @@ pub trait PlaneSecrets: Send + Sync {
     /// Resolve a config secret reference. The value is [`crate::Redacted`] so a plane cannot log it
     /// by accident — `Debug` and `Display` never print it.
     fn resolve(&self, reference: &str) -> Result<crate::Redacted<String>, PlaneError>;
+}
+
+/// METERING — report consumption against an admission.
+///
+/// **This capability exists because a VPN stress test found it missing, and MCP and A2A need it
+/// too.** The original design assumed core would charge from the RESPONSE, which is only true when
+/// there is a response — an LLM assumption baked in without noticing. A tool call charges per call, a
+/// task charges per task, and a session charges per byte and per second; none of those is "read the
+/// token count off the completion".
+///
+/// `unit` is the PLANE'S OWN vocabulary (`"tokens"`, `"bytes"`, `"seconds"`). Core owns the ledger,
+/// the budget and the refusal — the plane reports what it consumed and does not decide what that
+/// costs or whether it was affordable. Same division as everywhere else: the plane supplies the
+/// payload, the core supplies the linkage.
+///
+/// LAYER 1 (universal). Nothing here is family-specific.
+pub trait PlaneMetering: Send + Sync {
+    /// Report `amount` of `unit` consumed under `grant`. Called after the work, not before —
+    /// pre-admission budget refusal is [`PlaneGovernance::admit`]'s job.
+    fn charge(&self, grant: &PlaneGrant, unit: &str, amount: u64) -> Result<(), PlaneError>;
 }
 
 /// TELEMETRY, kind-stamped. Core prefixes every series with the plane's key, so a plane can neither
