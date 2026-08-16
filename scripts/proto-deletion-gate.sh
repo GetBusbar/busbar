@@ -24,6 +24,24 @@
 #                    served it is not in the build.
 #   CONTROL     — the DEFAULT build (feature on) accepts the anthropic config, proving the gate
 #                 measures the feature edge and not a broken fixture.
+#   4. MCP      — the SECOND extracted protocol crate (busbar-proto-mcp), on its own feature axis:
+#                 `default minus proto-mcp` must build and BOOT and SERVE. This is a distinct axis
+#                 from level 2's --no-default-features (which drops every optional feature at once),
+#                 and it is what proves the protocol crates are independently droppable rather than
+#                 droppable only as a set.
+#
+# WHAT THE MCP LEG DELIBERATELY DOES NOT CLAIM, so nobody later reads it as proving more:
+#   MCP's HTTP surface (`POST /mcp`) is served by the mcp/ PLANE in busbar-core — its own router
+#   mount, gated by the `tools:` config section — and NOT by this protocol crate's cells. The crate
+#   carries MCP the PROTOCOL (its ProtocolDecl and the tools/call + subscribe codecs); the plane did
+#   not travel with it, because a `&'static ProtocolDecl` carries no AppState/config/boot handle and
+#   there is no plane-kind seam in core yet. So dropping `proto-mcp` removes MCP from the protocol
+#   registry, and it does NOT change what `/mcp` answers. There is therefore no honest HTTP probe
+#   for this leg, and one is not invented here: the registry-level property is pinned by a unit test
+#   instead (proto/tests/registry_tests.rs::a_codec_less_declaration_does_not_move_the_operator_
+#   visible_list_when_it_is_folded_ahead, plus the crate's own suite, which runs in BOTH the crate
+#   build and core's dual-compiled build). When the plane-kind seam lands and the plane leaves core,
+#   THIS is the leg that grows the `/mcp` probe.
 #
 # WATCHED RED: run against the pre-extraction tree (anthropic still a core built-in), level 3a
 # fails — the featureless build still accepts `protocol: anthropic` — which is the red that makes
@@ -134,4 +152,55 @@ OUT=$(run_busbar target/debug/busbar --validate 2>&1) \
   || die "the DEFAULT build must accept protocol: anthropic (gate would be measuring a broken fixture); got: $OUT"
 note "control: default build accepts protocol: anthropic"
 
-echo "proto-deletion-gate: PASS (static 0, deleted build boots+serves, anthropic refused by name, five dialects remain, control green)"
+# ── level 4a: MCP THE PROTOCOL LIVES IN THE CRATE, NOT IN CORE (the leg that goes RED) ───────────
+# This is the discriminating half, and it is deliberately STATIC because the boot half below cannot
+# discriminate (see the header). On the pre-extraction tree these three assertions fail: the dialect
+# was a core built-in at crates/busbar-core/src/handlers/mcp.rs, there was no crate to declare it,
+# and the composition root had no feature-gated registration line for it.
+[ ! -e crates/busbar-core/src/handlers/mcp.rs ] \
+  || die "crates/busbar-core/src/handlers/mcp.rs still exists: MCP the protocol has not left core"
+grep -q 'name: "mcp"' crates/busbar-proto-mcp/src/lib.rs \
+  || die "crates/busbar-proto-mcp must declare the mcp protocol (name: \"mcp\")"
+grep -q 'feature = "proto-mcp"' crates/busbar/src/main.rs \
+  || die "the composition root must register busbar_proto_mcp::DECL behind the proto-mcp feature"
+note "level 4a static: mcp declared by the crate, absent from core, registered by the composition root"
+
+# ── level 4b: the MCP protocol crate is independently droppable, and the binary still SERVES ─────
+# `default minus proto-mcp` — a real, separate feature axis. Level 2 drops every optional feature at
+# once, which cannot distinguish "each protocol crate is droppable" from "they are droppable only
+# together". This leg is the per-crate BUILD+BOOT proof (R-D). It is NOT a behaviour discriminator
+# and is not presented as one: the header says why, and 4a above is what goes red without the move.
+MCP_TARGET="target/deletion-gate-mcp"
+note "level 4b build: cargo build -p busbar --no-default-features --features auth-admin-tokens,hooks-ranking,proto-anthropic (proto-mcp OFF)"
+CARGO_TARGET_DIR="$MCP_TARGET" cargo build -q -p busbar \
+  --no-default-features --features "auth-admin-tokens,hooks-ranking,proto-anthropic" \
+  || die "the busbar binary must build with the mcp protocol crate deleted and anthropic kept"
+MCP_DELETED_BIN="$MCP_TARGET/debug/busbar"
+[ -x "$MCP_DELETED_BIN" ] || die "mcp-deleted build binary not found at $MCP_DELETED_BIN"
+note "level 4b build: ok ($MCP_DELETED_BIN)"
+
+# The kept dialect still validates on this axis — so the leg is measuring the mcp edge specifically
+# and not a binary that lost every protocol.
+mk_providers_anthropic; mk_config "127.0.0.1:0" "127.0.0.1:0"
+OUT=$(run_busbar "$MCP_DELETED_BIN" --validate 2>&1) \
+  || die "the mcp-deleted binary must still accept protocol: anthropic; got: $OUT"
+note "level 4b kept dialect: anthropic config validates clean with proto-mcp off"
+
+# and it BOOTS and SERVES (R-D: fewer protocols is a valid busbar).
+PORT=$(( (RANDOM % 20000) + 30000 ))
+ADMIN_PORT=$(( PORT + 1 ))
+mk_providers_anthropic; mk_config "127.0.0.1:$PORT" "127.0.0.1:$ADMIN_PORT"
+run_busbar "$MCP_DELETED_BIN" >"$FIX/boot-mcp.log" 2>&1 &
+SRV_PID=$!
+up=""
+for _ in $(seq 1 60); do
+  if curl -fsS "http://127.0.0.1:$PORT/healthz" >/dev/null 2>&1; then up=1; break; fi
+  kill -0 "$SRV_PID" 2>/dev/null || break
+  sleep 0.5
+done
+[ -n "$up" ] || { cat "$FIX/boot-mcp.log"; die "the mcp-deleted binary did not come up on /healthz"; }
+curl -fsS "http://127.0.0.1:$PORT/stats" >/dev/null || die "/stats must answer on the mcp-deleted binary"
+kill "$SRV_PID" 2>/dev/null; wait "$SRV_PID" 2>/dev/null; SRV_PID=""
+note "level 4b boot: /healthz 200, /stats 200 with the mcp protocol crate deleted"
+
+echo "proto-deletion-gate: PASS (static 0, deleted build boots+serves, anthropic refused by name, five dialects remain, mcp independently droppable and still serving, control green)"

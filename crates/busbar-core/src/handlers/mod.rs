@@ -34,6 +34,20 @@ pub(crate) mod bedrock;
 pub mod chat;
 pub(crate) mod cohere;
 pub(crate) mod gemini;
+/// THE EXTRACTED MCP DIALECT, compiled back in for TEST BUILDS ONLY. The sources live in
+/// `crates/busbar-proto-mcp` (the second protocol crate; the `busbar` binary registers its `DECL`
+/// through `crate::proto::registry::install_protocols`), and core's PRODUCTION build knows nothing
+/// of them — this decl exists so the pre-extraction fixture surface (the `protocol: mcp` configs
+/// and the `(mcp, Invoke)`/`(mcp, Subscribe)` matrix fixtures across the core suite) keeps
+/// exercising the real codec from inside this crate's test binary, where an externally-linked copy
+/// could not reach the registry (its `ProtocolDecl` would be a different crate's type). The
+/// dialect's sources are written against `busbar_core::` paths, which the `extern crate self as
+/// busbar_core` alias in lib.rs resolves here.
+///
+/// NOTE THE SCOPE: this is MCP the PROTOCOL. The `mcp/` PLANE (`crate::mcp`) did not travel with
+/// it and is still core's — see the crate docs in `busbar-proto-mcp/src/lib.rs`.
+#[cfg(any(test, feature = "test-support"))]
+#[path = "../../../busbar-proto-mcp/src/lib.rs"]
 pub(crate) mod mcp;
 pub(crate) mod openai;
 pub(crate) mod responses;
@@ -107,7 +121,7 @@ pub struct WireBody {
 
 impl WireBody {
     /// JSON body — the common case.
-    pub(crate) fn json(bytes: Bytes) -> Self {
+    pub fn json(bytes: Bytes) -> Self {
         Self {
             bytes,
             content_type: axum::http::HeaderValue::from_static(crate::proxy::APPLICATION_JSON),

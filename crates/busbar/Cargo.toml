@@ -25,6 +25,7 @@ busbar-core = { path = "../busbar-core", default-features = false }
 # dialect and watch it refuse `protocol: anthropic` config rather than serve it
 # (scripts/proto-deletion-gate.sh). Default-on: the shipped binary speaks every dialect.
 busbar-proto-anthropic = { path = "../busbar-proto-anthropic", optional = true }
+busbar-proto-mcp = { path = "../busbar-proto-mcp", optional = true }
 # Boot-time plugin listing (`--plugins`) reads the registry the loader builds.
 busbar-plugin-loader = { path = "../plugin-loader" }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "io-util"] }
@@ -47,10 +48,11 @@ tikv-jemallocator = { workspace = true, features = ["disable_initial_exec_tls"] 
 # Pure forwards: every `#[cfg(feature = ...)]` site lives in busbar-core, so the binary's features
 # are one-line re-exports of the core feature with the same name. The binary keeps the SAME default
 # set the monolithic crate had, so `cargo build -p busbar` builds the same artifact as before.
-default = ["auth-admin-tokens", "hooks-ranking", "proto-anthropic"]
+default = ["auth-admin-tokens", "hooks-ranking", "proto-anthropic", "proto-mcp"]
 # A protocol crate: the dependency edge plus its registration line in main.rs. Dropping the
 # feature is the deletion test's level-1 build.
 proto-anthropic = ["dep:busbar-proto-anthropic"]
+proto-mcp = ["dep:busbar-proto-mcp"]
 auth-admin-tokens = ["busbar-core/auth-admin-tokens"]
 hooks-ranking = ["busbar-core/hooks-ranking"]
 openapi-schema = ["busbar-core/openapi-schema"]
