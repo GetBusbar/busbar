@@ -161,12 +161,19 @@ run_gate() {
 }
 
 # ── ANTHROPIC: every OTHER protocol crate stays ON so this run deletes ONLY anthropic ───────────
-run_gate "anthropic" "proto-anthropic" "proto-mcp,proto-openai-chat" \
-  "mcp, openai, gemini, bedrock, responses, cohere" "openai" "/v1/messages"
+run_gate "anthropic" "proto-anthropic" "proto-gemini,proto-mcp,proto-openai-chat" \
+  "gemini, openai, bedrock, responses, cohere" "openai" "/v1/messages"
 
 # ── OPENAI CHAT: every OTHER protocol crate stays ON so this run deletes ONLY openai chat ────────
-run_gate "openai" "proto-openai-chat" "proto-anthropic,proto-mcp" \
-  "anthropic, mcp, gemini, bedrock, responses, cohere" "anthropic" "/v1/chat/completions"
+run_gate "openai" "proto-openai-chat" "proto-anthropic,proto-gemini,proto-mcp" \
+  "anthropic, gemini, bedrock, responses, cohere" "anthropic" "/v1/chat/completions"
+
+# ── GEMINI: every OTHER protocol crate stays ON so this run deletes ONLY gemini ──────────────────
+# The deleted-ingress probe is gemini's own URL space (`/v1beta/models/{model}:{action}`), where the
+# MODEL rides in the path — the reason this dialect declares `path_ingress` at all.
+run_gate "gemini" "proto-gemini" "proto-anthropic,proto-mcp,proto-openai-chat" \
+  "anthropic, openai, bedrock, responses, cohere" "anthropic" \
+  "/v1beta/models/test-model:generateContent"
 
 # ── MCP: its own leg, NOT a run_gate call — see the header's "what the mcp leg does not claim". ──
 # MCP has no ingress path this gate can probe (the `/mcp` PLANE stays in core), so levels 3a/3c do
@@ -189,7 +196,7 @@ note "mcp-a static: mcp declared by the crate, absent from core, registered by t
 # (R-D). It is NOT a behaviour discriminator and is not presented as one: mcp-a above is what goes
 # red without the move.
 MCP_TARGET="target/deletion-gate-mcp"
-MCP_KEEP="auth-admin-tokens,hooks-ranking,proto-anthropic,proto-openai-chat"
+MCP_KEEP="auth-admin-tokens,hooks-ranking,proto-anthropic,proto-gemini,proto-openai-chat"
 note "mcp-b build: cargo build -p busbar --no-default-features --features $MCP_KEEP (proto-mcp OFF)"
 CARGO_TARGET_DIR="$MCP_TARGET" cargo build -q -p busbar \
   --no-default-features --features "$MCP_KEEP" \
@@ -222,4 +229,4 @@ curl -fsS "http://127.0.0.1:$PORT/stats" >/dev/null || die "/stats must answer o
 kill "$SRV_PID" 2>/dev/null; wait "$SRV_PID" 2>/dev/null; SRV_PID=""
 note "mcp-b boot: /healthz 200, /stats 200 with the mcp protocol crate deleted"
 
-echo "proto-deletion-gate: PASS (static 0; anthropic and openai-chat each delete independently, boot+serve, remaining dialects unaffected, control green; mcp independently droppable and still serving)"
+echo "proto-deletion-gate: PASS (static 0; anthropic, openai-chat and gemini each delete independently, boot+serve, remaining dialects unaffected, control green; mcp independently droppable and still serving)"

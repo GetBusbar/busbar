@@ -176,7 +176,7 @@ print(d if d is not None else "")' "$1"; }
 # plugin subsystem is ON and finds nothing, which is the axis-2 premise stated in config.
 write_zero_plugin_config() {
   local work="$1" bin="$2" mock_port="$3" listen_port="$4" admin_port="$5" plugins_dir="$6"
-  # `openai`: `anthropic` and `openai` (chat) are both EXTRACTED protocol crates as of 1.6.0's
+  # `openai`: `anthropic`, `openai` (chat) and `gemini` are all EXTRACTED protocol crates as of 1.6.0's
   # dialect-extraction line — plugins by this very gate's mechanical definition — so the
   # compiled-out axis no longer speaks either BY DEFAULT (scripts/proto-deletion-gate.sh proves
   # that refusal separately, per dialect). This gate's OWN probe methodology (the mock upstream's
@@ -185,7 +185,7 @@ write_zero_plugin_config() {
   # `proto-openai-chat` ON for axis 1 (`--features proto-openai-chat`) — axis 1 stays "every OTHER
   # plugin-kind capability compiled out" rather than "every protocol dialect compiled out", which
   # is a distinct claim scripts/proto-deletion-gate.sh already makes per dialect. When the
-  # remaining four dialects (gemini, bedrock, cohere, responses) extract, this fixture is
+  # remaining three dialects (bedrock, cohere, responses) extract, this fixture is
   # unaffected (openai chat stays linked on both axes here either way).
   cat >"${work}/providers.yaml" <<EOF
 mock:

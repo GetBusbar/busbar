@@ -613,8 +613,8 @@ jobs:
             echo "::error::A zero-test 'cargo test' prints 'ok' and exits 0. This is NOT a pass."
             exit 1
           fi
-      # THE PROTOCOL DELETION GATE (step 4 of 1.6.0; anthropic then openai-chat are the extracted
-      # dialects so far, each run independently). Builds the binary WITHOUT ONE extracted protocol
+      # THE PROTOCOL DELETION GATE (step 4 of 1.6.0; anthropic, openai-chat and gemini are the
+      # extracted dialects so far, each run independently, plus mcp on its own leg). Builds the binary WITHOUT ONE extracted protocol
       # crate at a time and proves the deletion at boot, not just at compile: the deleted binary
       # must come up, answer its operator surface, refuse that dialect's `protocol:` config with the
       # unknown-protocol refusal naming the remaining dialects, and still validate the dialects that
