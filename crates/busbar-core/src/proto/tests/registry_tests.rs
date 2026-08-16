@@ -335,3 +335,77 @@ fn a_protocol_nobody_wrote_costs_a_declaration_and_nothing_else() {
         "the built-in table was not touched"
     );
 }
+
+/// A minimal declaration for the boot-fold tests below: `merged_boot_decls` reads nothing but
+/// `name`, and giving it a handler or codec would drag two fixture impls into a test that is about
+/// LIST ORDER. Codec-less, handler-less declarations are representable on purpose (the field docs
+/// say what each `None` means), so the fixture states only what the function under test reads.
+const fn named_decl(name: &'static str) -> ProtocolDecl {
+    ProtocolDecl {
+        name,
+        codec: None,
+        handler: None,
+        verbs: &[],
+        head_keys: &[],
+        streaming_content_type: None,
+        array_stream_shim_key: None,
+        native_tool_id_prefix: None,
+        ingress_auth: IngressAuth::Bearer,
+        path_ingress: None,
+        stream_usage_requires_opt_in: false,
+    }
+}
+
+/// THE COMPOSITION ROOT'S DECLARATIONS COME FIRST. The protocol list is operator-visible —
+/// `known_protocols()` order is the dashboards' metric-family order and the config-error
+/// `must be one of:` order — and the first protocol to be extracted (`anthropic`) has led that
+/// list since 1.0. `install_protocols`' doc promises the shipped binary keeps the monolith's
+/// order on the day a protocol becomes a crate; this is that promise, pinned.
+#[test]
+fn installed_declarations_are_folded_ahead_of_the_builtins() {
+    static EXTRACTED: ProtocolDecl = named_decl("extracted");
+    static BUILTIN_A: ProtocolDecl = named_decl("builtin-a");
+    static BUILTIN_B: ProtocolDecl = named_decl("builtin-b");
+    let merged =
+        crate::proto::registry::merged_boot_decls(&[&EXTRACTED], &[&BUILTIN_A, &BUILTIN_B]);
+    let names: Vec<&str> = merged.iter().map(|d| d.name).collect();
+    assert_eq!(
+        names,
+        ["extracted", "builtin-a", "builtin-b"],
+        "installed declarations lead, built-ins follow, both in their stated order"
+    );
+}
+
+/// A LATER REGISTRATION OF AN ALREADY-DECLARED NAME IS SKIPPED, NOT MERGED AND NOT FATAL. Under
+/// `cargo test`'s feature unification the `test-support` build of core carries the extracted
+/// dialect as a built-in while the composition root still registers the crate's copy of the same
+/// protocol — identical code from two sources. The fold keeps the FIRST and drops the later one
+/// audibly; `Registry::new`'s duplicate-name assert stays armed for the case it exists for (two
+/// DIFFERENT protocols claiming one name in a single source list), which test
+/// `two_declarations_of_one_name_refuse_to_boot` below drives.
+#[test]
+fn a_later_registration_of_a_declared_name_is_skipped_keeping_the_first() {
+    static INSTALLED_COPY: ProtocolDecl = named_decl("anthro-like");
+    static BUILTIN_COPY: ProtocolDecl = named_decl("anthro-like");
+    static OTHER: ProtocolDecl = named_decl("other");
+    let merged =
+        crate::proto::registry::merged_boot_decls(&[&INSTALLED_COPY], &[&BUILTIN_COPY, &OTHER]);
+    assert_eq!(merged.len(), 2, "one entry per name");
+    assert!(
+        std::ptr::eq(merged[0], &INSTALLED_COPY),
+        "the FIRST registration (the composition root's) is the one that serves"
+    );
+    assert_eq!(merged[1].name, "other");
+}
+
+/// The duplicate-name assert `merged_boot_decls` deliberately does NOT relax: two different
+/// declarations claiming one name inside a single source list is a wiring bug, and `Registry::new`
+/// still refuses it. Watched here so the skip semantics above cannot be misread as "duplicates are
+/// fine now".
+#[test]
+#[should_panic(expected = "two protocol declarations claim the same name")]
+fn two_declarations_of_one_name_refuse_to_boot() {
+    static A: ProtocolDecl = named_decl("dup");
+    static B: ProtocolDecl = named_decl("dup");
+    let _ = Registry::new([&A, &B]);
+}

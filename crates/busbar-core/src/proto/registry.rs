@@ -332,9 +332,81 @@ pub(crate) fn declared_verbs() -> &'static [crate::operation::Operation] {
 /// The process registry, built on first read from the built-ins plus anything installed.
 static REGISTRY: std::sync::OnceLock<Registry> = std::sync::OnceLock::new();
 
+/// Declarations the COMPOSITION ROOT installed before the registry was first read — the protocol
+/// crates' entry point. Set once by [`install_protocols`]; folded ahead of the built-ins by
+/// [`registry`]'s initializer.
+static INSTALLED: std::sync::OnceLock<&'static [&'static ProtocolDecl]> =
+    std::sync::OnceLock::new();
+
+/// INSTALL PROTOCOL DECLARATIONS — the composition root's one write into the protocol axis, and
+/// the seam an extracted protocol crate registers through. The `busbar` binary calls this from
+/// `main`, before any config read, with the `&DECL` of every protocol crate it links; core itself
+/// never names a protocol crate (`git grep busbar_proto crates/busbar-core/src` is pinned at zero
+/// by the split), so this parameter is the ONLY way an extracted protocol reaches the registry.
+///
+/// ORDER: installed declarations are folded AHEAD of the built-ins. The protocol list is
+/// operator-visible (`known_protocols()` order is dashboards' metric-family order and the
+/// config-error `must be one of:` order), and the first extracted protocol is `anthropic`, which
+/// has led that list since 1.0 — prepending keeps the shipped binary's list byte-identical to the
+/// monolith's instead of demoting a protocol to the tail on the day it becomes a crate.
+///
+/// A NAME THE BUILT-INS ALREADY DECLARE IS SKIPPED, deliberately and audibly (`tracing::info`),
+/// not asserted on: under `cargo test`'s feature unification the `test-support` build of core
+/// compiles the extracted dialect back in as a built-in (so the test fixtures that predate the
+/// extraction still run) while the composition root still registers the crate's own copy — the
+/// same protocol from two identical sources. Refusing the whole boot for that would fail builds
+/// whose behavior is identical; letting both in would trip `Registry::new`'s duplicate-name
+/// assert. Skipping the later copy keeps the assert meaningful for the case it exists for: two
+/// DIFFERENT protocols claiming one name.
+///
+/// # Panics
+/// - if called twice: two composition roots is a wiring bug, not a merge to attempt.
+/// - if called after the registry was first read: a declaration installed after another layer
+///   resolved against the smaller set would mean two layers of one process disagree about which
+///   protocols exist — fail loudly at the boot line that got the order wrong.
+#[allow(dead_code)] // pub-widened and called by the busbar binary once the first protocol crate registers through it
+pub(crate) fn install_protocols(decls: &'static [&'static ProtocolDecl]) {
+    assert!(
+        INSTALLED.set(decls).is_ok(),
+        "install_protocols called twice: there is one composition root, and it registers once"
+    );
+    assert!(
+        REGISTRY.get().is_none(),
+        "install_protocols called after the protocol registry was first read; register in main \
+         before any config load or validation touches a protocol"
+    );
+}
+
+/// THE BOOT FOLD: installed declarations ahead of built-ins, one entry per NAME, later same-name
+/// registrations skipped audibly (see [`install_protocols`]' doc for why skipped rather than
+/// asserted). Split from [`registry`]'s `OnceLock` so its order and skip semantics are a function a
+/// test can drive — the process singleton can only ever be initialized once per test binary, which
+/// would leave these rules provable only by booting binaries.
+pub(crate) fn merged_boot_decls(
+    installed: &[&'static ProtocolDecl],
+    builtins: &[&'static ProtocolDecl],
+) -> Vec<&'static ProtocolDecl> {
+    let mut decls: Vec<&'static ProtocolDecl> = Vec::new();
+    for d in installed.iter().chain(builtins) {
+        if decls.iter().any(|p| p.name == d.name) {
+            tracing::info!(
+                protocol = d.name,
+                "skipping a later registration of an already-declared protocol \
+                 (composition-root copy and built-in copy of one dialect)"
+            );
+            continue;
+        }
+        decls.push(d);
+    }
+    decls
+}
+
 /// The process registry. One acquire-load once initialized.
 pub(crate) fn registry() -> &'static Registry {
-    REGISTRY.get_or_init(|| Registry::new(BUILTIN_DECLS.iter().copied()))
+    REGISTRY.get_or_init(|| {
+        let installed = INSTALLED.get().copied().unwrap_or(&[]);
+        Registry::new(merged_boot_decls(installed, BUILTIN_DECLS))
+    })
 }
 
 /// RESOLVE A PROTOCOL BY NAME — the one by-name protocol resolution in busbar, and the function the
