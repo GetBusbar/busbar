@@ -15,6 +15,9 @@
 //!   writes.
 //! - **secret** - the [`SecretModule`] trait a `kind: secret` plugin implements (a config secret
 //!   reference's `settings` map in, the secret bytes out; fail-closed).
+//! - **plane** - the [`plane::PlaneDecl`] a `kind: plane` plugin declares (config section, routes,
+//!   scope/audit vocabulary) and the [`plane::PlaneHandler`] that serves it. A plane DECLARES and
+//!   the core MOUNTS AND EXECUTES — the [`LoginHop`] shape, applied to the serving surface.
 //!
 //! Everything here is a CONTRACT, not machinery: no I/O, no engine state, no transport. A
 //! third-party plugin crate that depends only on `busbar-api` is architecturally identical to a
@@ -23,6 +26,7 @@
 mod auth;
 pub mod durable;
 mod hooks;
+pub mod plane;
 mod redacted;
 mod secret;
 mod signal;

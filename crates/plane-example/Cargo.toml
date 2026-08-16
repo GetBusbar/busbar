@@ -1,0 +1,25 @@
+# busbar-plane-example — A PLANE AS A PLUGIN, and the proof of the owner's bar.
+#
+# THE DECISIVE TEST: could this crate be downloaded and dropped in? Read the dependency list. It is
+# `busbar-api` and nothing else — no `busbar-core`, so there is no core internal it could name even
+# by accident, and therefore no widening it could ever require. It declares a config section, an
+# audit kind, scope kinds and two HTTP routes, and it serves them; core mounts what it declared and
+# refuses anything it did not.
+#
+# It is wired the way `busbar-auth-admin-tokens` is: an optional dependency of busbar-core, in
+# core's own `default` feature set. Dropping the feature is a build the plane-deletion gate makes on
+# purpose — core still compiles, still boots, and simply does not serve the routes.
+[package]
+name = "busbar-plane-example"
+version = "1.6.0"
+publish = false            # internal workspace crate; never goes to crates.io
+edition = "2021"
+# `rust-version` rationale: see busbar-core/Cargo.toml — one pinned number, set to what CI verifies.
+rust-version = "1.97"
+description = "The reference plane plugin for busbar: a config section, an audit kind and two HTTP routes, declared against busbar-api alone."
+license = "Apache-2.0"
+
+[dependencies]
+# THE ONLY BUSBAR CRATE THIS PLANE MAY NAME. If a second one ever appears here, the crate has
+# stopped being a plugin and the plane ABI has a hole this manifest is the first place to see it.
+busbar-api = { path = "../api" }

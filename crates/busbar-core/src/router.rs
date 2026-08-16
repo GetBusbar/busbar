@@ -417,6 +417,11 @@ pub(crate) fn base_data_router(
             RouteAuth::Key,
             ingress::adhoc,
         );
+    // THE PLANE PLUGINS' declared routes. Core mounts exactly what each installed `PlaneDecl`
+    // lists and knows the name of no plane: with nothing installed this is the identity function,
+    // which is what makes "core with no plugins compiles and runs, just does nothing" true on this
+    // axis by construction rather than by a feature flag.
+    let router = crate::plane_plugin::mount_plane_routes(router);
     // THE MCP PLANE, mounted only when `mcp:` is configured. A deployment that is not an MCP server
     // carries none of these routes: no ingress, no metadata document, nothing in the route table and
     // therefore nothing for the auth middleware to consult. That is the same posture the AS design

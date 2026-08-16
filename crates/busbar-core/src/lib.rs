@@ -69,6 +69,7 @@ pub mod oauth_as;
 pub mod observability;
 pub mod operation;
 pub mod plane;
+pub mod plane_plugin;
 pub mod plugin_routes;
 pub mod profile;
 pub mod proto;

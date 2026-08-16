@@ -381,6 +381,7 @@ dependencies = [
  "busbar-api",
  "busbar-auth-admin-tokens",
  "busbar-hooks-ranking",
+ "busbar-plane-example",
  "busbar-plugin-loader",
  "busbar-plugin-sign",
  "busbar-secret-ref",
@@ -459,6 +460,13 @@ dependencies = [
  "async-trait",
  "busbar-api",
  "tokio",
+]
+
+[[package]]
+name = "busbar-plane-example"
+version = "1.6.0"
+dependencies = [
+ "busbar-api",
 ]
 
 [[package]]

@@ -101,6 +101,12 @@ test-support = []
 
 [dev-dependencies]
 busbar-store-example-plugin = { path = "../store-example-plugin" }
+# THE REFERENCE PLANE PLUGIN — a DEV-dependency on purpose, and the purpose is the claim.
+# `plane_plugin.rs` mounts whatever declarations the composition root installs and names no plane;
+# core's PRODUCTION build therefore has no edge to any plane crate at all, which is what makes "core
+# with no plugins compiles and runs, just does nothing" structural rather than feature-gated. The
+# test needs a real plane to install, so the edge exists here and only here.
+busbar-plane-example = { path = "../plane-example" }
 tokio = { workspace = true, features = ["test-util"] }
 reqwest = { workspace = true, features = ["json"] }
 axum = { workspace = true, features = ["http1"] }
