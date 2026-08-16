@@ -109,9 +109,19 @@ function requireUpstreamWasReached(peer, entries) {
     throw new Error(
       `VACUOUS: the upstream transcript at ${peer.__transcript} recorded no request from the `
       + `subject in mode "${peer.__mode}", so every absence this test would otherwise report is `
-      + 'evidence of nothing — the seam was never crossed. Check that '
-      + 'MCP_SUBJECT_UPSTREAM_CONFIG_CMD mounts the fake server, and that the tool this test calls '
-      + 'resolves to it rather than being answered "unknown tool".',
+      + 'evidence of nothing — the seam was never crossed. TWO CAUSES HAVE PRODUCED THIS, and the '
+      + 'second one is the one that cost the most time, so check it FIRST:\n'
+      + '  1. THE SUBJECT REFUSED TO DIAL AT ALL. Its circuit breaker cell for this registration '
+      + 'was open, so the call was fast-failed before any socket was opened and nothing could '
+      + 'reach us. This is NOT a mount problem and no amount of checking the config will show it. '
+      + 'It is visible in the subject\'s own log as `-32030` / `upstream_unavailable` / '
+      + '`retry_after_ms`, and because the battery shares ONE registration across every scenario, '
+      + 'ONE earlier test that drove the cell open poisons every later one — look at what ran '
+      + 'BEFORE this test, not at this test. A retry loop in the arm script counts as several '
+      + 'failures and has tripped the cell on its own.\n'
+      + '  2. The tool never routed here: check that MCP_SUBJECT_UPSTREAM_CONFIG_CMD mounts the '
+      + 'fake server, and that the tool this test calls resolves to it rather than being answered '
+      + '"unknown tool".',
     );
   }
   return outbound;

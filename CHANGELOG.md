@@ -52,6 +52,41 @@ All notable changes to Busbar are documented here. The format is based on
 
 ### Fixed
 
+- **One blip no longer takes an MCP server or an A2A agent out for 15–120 seconds.** The breaker's
+  trip + fast-fail wiring on the MCP client leg and the A2A relay reused the LLM plane's cell FSM
+  whole, and that FSM arms an escalating cooldown on a transient failure *even when the failure did
+  not breach the trip threshold*. On the LLM plane that store is the deprioritisation half of
+  ADR-0002's `TransientUpstream` rule — "re-arm an exponential cooldown; **fail over** to the next
+  candidate" — and the failover half keeps the caller served while it lasts. These planes have no
+  failover (`docs/circuit-breaker.md` says so out loud: "a tripped target is refused, never
+  rerouted"), so the identical store meant *refuse every caller of that server*, bought with a
+  single upstream timeout or torn socket, on a cell whose own `should_trip` had just declined to
+  trip, and announced as `-32030 upstream_unavailable` … "its circuit breaker is open after repeated
+  failures" — a sentence that was not true. The MCP and A2A cells now refuse on a **trip** and
+  nothing less: the published predicate, `error_rate >= 0.5` over at least `min_requests` outcomes
+  in the 30-second window. An upstream's own `Retry-After` is still honoured, for exactly as long as
+  it asked for. The LLM plane is byte-unchanged. Caught by the in-house MCP conformance battery,
+  which had been red for five commits on six items with `retry_after_ms: 29000` in the payload — a
+  30-second outage minted by one stalled call in an earlier, unrelated scenario.
+
+  **THAT RED HAD TWO INDEPENDENTLY SUFFICIENT CAUSES, AND NEITHER FIX ALONE CLEARS IT.** This is
+  the fact most likely to be re-learned the hard way, so it is recorded here rather than left in a
+  commit message. The product defect above is one cause. The other is a rig defect — the conformance
+  driver retried the two hostile modes whose entire contract is that the request breaks (`stall`,
+  `half-answer`), which turned two upstream failures into six and crossed the *real* trip predicate.
+  Measured, by reverting one fix at a time and running the battery: **breaker fix alone → 57 pass /
+  1 fail / 5 error. Rig fix alone → 57 pass / 1 fail / 5 error. Both → 63 pass, 0 fail, 0 error, 0
+  skip.** Each cause on its own reproduces the identical tally, which is why two authors wrote
+  diagnoses that read as contradictory ("no trip ever occurs" vs "the breaker opened correctly") and
+  why anyone landing either fix by itself would have watched the battery stay red and concluded
+  their fix was wrong. Both are correct; each describes the mechanism live in its own configuration.
+
+  A related correction to the record: `CLI.HOSTILE.MRTR-UNDECLARED-CAPABILITY` was reported as an
+  independent regression. It is not. It carries no assertion at all — its only red path is
+  `ctx.skip('client sent no requests')`, promoted to a failure by `MCP_NO_SKIPS=1`. It is the same
+  "nothing crossed the seam" condition the five `SEAM.*` tests render as VACUOUS, in a different
+  rendering, and it went green with no change targeting it.
+
 - **Every published cross-protocol gap is closed.** `docs/protocols.md` carried a section headed
   "Known gaps in 1.6.0" whose own opening sentence called its contents *defects measured in the
   1.6.0 tree*. Publishing a list of your own defects next to a losslessness claim is the wrong

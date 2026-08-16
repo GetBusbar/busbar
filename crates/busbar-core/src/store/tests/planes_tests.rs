@@ -27,9 +27,11 @@ fn transient_failures_trip_and_fast_fail() {
     let b = PlaneBreakers::new();
     let key = PlaneBreakers::tool_key("fs");
     assert!(b.try_admit(&key).is_ok(), "a fresh cell admits");
-    // Recorded without interleaved admissions: from the second failure on, the escalating SOFT
-    // cooldown already refuses admission at this frozen instant — which is fast-fail working
-    // before the trip even lands. The fifth failure crosses the error-rate threshold and TRIPS.
+    // Recorded without interleaved admissions. The cell stays ADMITTING throughout the first four:
+    // on this plane a sub-threshold transient does not bench the only member (see
+    // `BreakerCfg::bench_below_trip_threshold` — the benching cooldown is the "prefer a sibling"
+    // half of a rule whose other half is a failover this plane does not have). The FIFTH failure
+    // crosses the error-rate threshold and TRIPS, which is the first thing that refuses anybody.
     for _ in 0..5 {
         b.record_signal(&key, &signal(StatusClass::ServerError));
     }
@@ -175,5 +177,29 @@ fn retry_after_is_the_exact_cooldown() {
     assert!(
         ra > 1_000,
         "hard-down cooldown must be the sticky one, got {ra}"
+    );
+}
+
+/// THE SUB-THRESHOLD RULE, AT THE CELL. A transient failure that did NOT breach the trip predicate
+/// leaves the cell Closed AND ADMITTING — the tightest statement of the defect that had the
+/// in-house MCP conformance battery red for five commits.
+///
+/// The LLM plane's identical FSM benches a lane here on purpose, because the walk then prefers a
+/// sibling and the caller is still served. This plane has no walk (`docs/circuit-breaker.md`: "a
+/// tripped target is refused, never rerouted"), so benching the only member is a 15-120s outage
+/// for every caller, bought with one blip and announced as "open after repeated failures".
+#[test]
+fn one_sub_threshold_transient_leaves_the_cell_admitting() {
+    set_now_for_test(2_000);
+    let b = PlaneBreakers::new();
+    let key = PlaneBreakers::tool_key("fs");
+    b.record_signal(&key, &signal(StatusClass::ServerError));
+    assert!(
+        matches!(b.state(&key), BreakerState::Closed),
+        "one transient cannot satisfy min_requests, so the cell must still read Closed"
+    );
+    assert!(
+        b.try_admit(&key).is_ok(),
+        "a cell that did not trip must not refuse the next caller"
     );
 }

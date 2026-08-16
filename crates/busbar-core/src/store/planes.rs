@@ -83,7 +83,22 @@ impl PlaneBreakers {
                 reasoning: false,
                 prompt_caching: false,
             }]),
-            cfg: BreakerCfg::default(),
+            cfg: BreakerCfg {
+                // THE ONE FIELD THIS PLANE DOES NOT TAKE FROM THE LLM DEFAULTS, and the reason is
+                // this module's whole premise: the cell is DEGENERATE — one member, no walk, no
+                // reroute (`docs/circuit-breaker.md`: "a tripped target is refused, never
+                // rerouted"). ADR-0002's sub-threshold cooldown is the "prefer a sibling" half of a
+                // rule whose other half is "fail over to the next candidate"; with no candidate to
+                // fail over to, benching the only member is not a preference, it is a 15-120s
+                // outage for every caller of that server, minted by ONE transient blip and rendered
+                // as `-32030 upstream_unavailable` ... "open after repeated failures".
+                //
+                // So these cells refuse on a TRIP and nothing less: error-rate >= 0.5 over >= 5
+                // outcomes in 30s, exactly the contract ADR-0002 and `docs/circuit-breaker.md`
+                // publish for this plane. An upstream's own `Retry-After` is still honoured.
+                bench_below_trip_threshold: false,
+                ..BreakerCfg::default()
+            },
         }
     }
 

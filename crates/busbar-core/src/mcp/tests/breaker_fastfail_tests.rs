@@ -32,6 +32,12 @@ const CANONICAL: &str = "https://gateway.example.com/mcp";
 const SUBJECT: &str = "busbar-own-subject-token-for-the-exchange";
 const ISSUED: &str = "downscoped-access-token-issued-by-the-as";
 
+/// `TripConfig::default().min_requests` — ADR-0002's floor, and the smallest number of all-error
+/// outcomes inside the 30s window that can satisfy the default `error_rate >= 0.5` predicate.
+/// Named once so a test that means "enough failures to trip" cannot drift away from the predicate
+/// it is naming.
+const TRIP_MIN_REQUESTS: usize = 5;
+
 fn app_for(peer: &Peer) -> Arc<crate::state::App> {
     TestApp::new()
         .mcp(&mcp_cfg(CANONICAL))
@@ -245,13 +251,43 @@ async fn a_dead_stdio_child_trips_the_same_core_cell_and_the_second_call_fast_fa
     let g = gov_with_scopes(&[("mcp_server", "sh"), ("mcp_tool", "sh_read")]);
     let args = serde_json::json!({ "name": "sh_read", "arguments": { "path": "/etc/hosts" } });
 
-    // CALL 1: the child dies, the leg fails, the failure lands in the core cell (a transient — the
-    // escalating cooldown suppresses the cell immediately).
-    let (s1, b1) = call(&app, &g, "tools/call", args.clone()).await;
-    assert_eq!(s1, 200, "the first failure is an upstream failure: {b1}");
+    // THE TRIP, DRIVEN THE WAY THE PUBLISHED CONTRACT SAYS IT IS DRIVEN. Every call reaches a child
+    // that dies, so every leg records a transient, and the cell opens on the trip predicate
+    // ADR-0002 publishes: error-rate >= 0.5 over >= `min_requests` (5) outcomes in the 30s window.
+    //
+    // This loop used to be ONE call. That worked because a sub-threshold transient benched the cell
+    // anyway — the LLM plane's "prefer a sibling" cooldown, arriving on a plane that has no sibling
+    // and therefore refuses the caller instead. That was the defect this file's subject leg was
+    // failing MCP conformance on; it is gone, and driving a REAL trip is what this test always
+    // meant to assert (the claim in its name is "the same core cell, the same rendering, on the
+    // stdio transport", not "one blip is enough").
+    // BOUNDED BY THE CELL'S STATE, NOT BY A CALL COUNT, and that is forced by the transport: the
+    // stdio supervisor's own restart backoff sits IN FRONT of the spawn, and a call it turns away is
+    // `TransportError::Supervision`, which `mcp::upstream`'s Stage-1 normalizer deliberately does
+    // NOT record against the core cell (the supervisor is doing process supervision; the upstream
+    // has not said anything). So a fixed loop of five calls buys fewer than five WIRE failures. This
+    // one keeps driving the front door, waiting each backoff out, until the cell has genuinely seen
+    // `min_requests` of them.
+    let key = crate::store::PlaneBreakers::tool_key("sh");
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !matches!(
+        app.plane_breakers.state(&key),
+        crate::store::BreakerState::Open { .. }
+    ) {
+        assert!(
+            Instant::now() < deadline,
+            "a child that dies on every spawn must trip the core cell within 20s"
+        );
+        let (s, b) = call(&app, &g, "tools/call", args.clone()).await;
+        assert_eq!(
+            s, 200,
+            "every pre-trip answer is a tool result, not a refusal: {b}"
+        );
+        tokio::time::sleep(Duration::from_millis(120)).await;
+    }
 
-    // CALL 2: refused at admission, in milliseconds, with the same 503 + JSON-RPC error the HTTP
-    // transport gets — one breaker, one rendering, two transports.
+    // THE CALL AFTER THE TRIP: refused at admission, in milliseconds, with the same 503 + JSON-RPC
+    // error the HTTP transport gets — one breaker, one rendering, two transports.
     let t0 = Instant::now();
     let (s2, headers, b2) = call_response(&app, &g, "test-principal", "tools/call", args).await;
     let elapsed = t0.elapsed();
@@ -264,4 +300,112 @@ async fn a_dead_stdio_child_trips_the_same_core_cell_and_the_second_call_fast_fa
     assert!(b2.get("result").is_none(), "never an isError result: {b2}");
     assert_eq!(b2["error"]["code"], serde_json::json!(-32030), "{b2}");
     assert_eq!(b2["error"]["data"]["server"], "sh", "{b2}");
+}
+
+/// ONE BLIP IS NOT A TRIP, AND THE CALLER AFTER IT IS STILL SERVED.
+///
+/// THE BUG THIS PINS, said plainly. ADR-0002's `TransientUpstream` rule is one sentence with two
+/// halves — "drive trip evaluation ... and re-arm an exponential cooldown; **fail over** to the
+/// next candidate" — and this plane ships only the first half: `docs/circuit-breaker.md` says out
+/// loud that on the MCP client leg "no second candidate is tried today — a tripped target is
+/// refused, never rerouted". So the sub-threshold cooldown, which on an LLM pool means "prefer a
+/// sibling for 15s", meant "refuse EVERY caller of this server for 15-120s" here — minted by ONE
+/// transient blip, on a cell whose own `should_trip` had just declined to trip, and announced to
+/// the caller as `-32030` ... "its circuit breaker is open after repeated failures".
+///
+/// It is not an abstraction. The in-house MCP conformance battery went red on it for five commits:
+/// one stalled upstream in an early hostile scenario refused every later scenario that dispatched
+/// through the same registration, `retry_after_ms: 29000` — a 30s outage bought with one timeout.
+///
+/// ASSERTED ON THE PEER'S OWN HIT COUNTER, not on busbar's intent: the second call must have
+/// REACHED the upstream. A 503 body proves nothing here (this peer answers 503 to everything);
+/// `mcp_hits() == 2` proves the call was dispatched rather than fast-failed.
+#[tokio::test]
+async fn one_transient_failure_does_not_refuse_the_next_caller() {
+    crate::metrics::init();
+    // 503 is `ServerError` → `TransientUpstream`: the disposition whose sub-threshold arm this is
+    // about. (401 is `Auth` → `HardDown`, which trips on the FIRST failure by design — see the
+    // first test in this file, which is unchanged.)
+    let peer = Peer::start(Behaviour::DeniesWithStatus(503), ISSUED).await;
+    let app = app_for(&peer);
+    let g = gov_with_scopes(&[("mcp_server", "fs"), ("mcp_tool", "fs_read")]);
+
+    let (s1, b1) = call(&app, &g, "tools/call", params()).await;
+    assert_eq!(
+        s1, 200,
+        "an upstream failure is a tool result, not a refusal: {b1}"
+    );
+    assert_eq!(peer.mcp_hits(), 1);
+
+    // THE CELL IS STILL CLOSED. One outcome cannot satisfy `min_requests: 5`, so `should_trip` is
+    // false — and a cell that did not trip must not behave as though it had.
+    assert!(
+        matches!(
+            app.plane_breakers
+                .state(&crate::store::PlaneBreakers::tool_key("fs")),
+            crate::store::BreakerState::Closed
+        ),
+        "one sub-threshold transient must leave the cell Closed and admitting, not benched"
+    );
+
+    let (s2, b2) = call(&app, &g, "tools/call", params()).await;
+    assert_eq!(
+        peer.mcp_hits(),
+        2,
+        "the caller after one blip must still be dispatched: it was refused before the socket"
+    );
+    assert_eq!(s2, 200, "{b2}");
+    assert!(
+        b2.get("error").is_none(),
+        "an untripped server must not answer -32030 upstream_unavailable: {b2}"
+    );
+}
+
+/// THE OTHER HALF OF THE SAME PROPERTY, so the fix above cannot be read as "the breaker was turned
+/// off": a server that genuinely breaches the published predicate still trips and still fast-fails
+/// with the decided rendering, and the dead peer stops being touched.
+#[tokio::test]
+async fn a_transient_server_that_breaches_the_error_rate_trips_and_then_fast_fails() {
+    crate::metrics::init();
+    let peer = Peer::start(Behaviour::DeniesWithStatus(503), ISSUED).await;
+    let app = app_for(&peer);
+    let g = gov_with_scopes(&[("mcp_server", "fs"), ("mcp_tool", "fs_read")]);
+
+    // `min_requests` all-error outcomes inside one 30s window: count = 5, errors = 5, rate = 1.0.
+    for i in 0..TRIP_MIN_REQUESTS {
+        let (s, b) = call(&app, &g, "tools/call", params()).await;
+        assert_eq!(
+            s, 200,
+            "failure {i} reaches the upstream and is a tool result: {b}"
+        );
+    }
+    assert_eq!(
+        peer.mcp_hits(),
+        TRIP_MIN_REQUESTS,
+        "every pre-trip call must have been dispatched"
+    );
+    assert!(
+        matches!(
+            app.plane_breakers
+                .state(&crate::store::PlaneBreakers::tool_key("fs")),
+            crate::store::BreakerState::Open { .. }
+        ),
+        "an all-error window at or above min_requests must trip the cell"
+    );
+
+    let t0 = Instant::now();
+    let (s, _headers, b) = call_response(&app, &g, "test-principal", "tools/call", params()).await;
+    assert!(
+        t0.elapsed() < Duration::from_secs(1),
+        "a tripped server refuses in milliseconds, not after the upstream leg"
+    );
+    assert_eq!(s, 503, "{b}");
+    assert!(b.get("result").is_none(), "never an isError result: {b}");
+    assert_eq!(b["error"]["code"], serde_json::json!(-32030), "{b}");
+    assert_eq!(b["error"]["data"]["reason"], "upstream_unavailable", "{b}");
+    assert_eq!(
+        peer.mcp_hits(),
+        TRIP_MIN_REQUESTS,
+        "the tripped peer must not be touched again"
+    );
 }

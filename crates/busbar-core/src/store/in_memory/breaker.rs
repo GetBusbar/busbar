@@ -711,6 +711,26 @@ impl HealthState {
                     );
                     // A genuine Closed→Open trip — the only path that should mint a BREAKER_TRIPS_TOTAL.
                     true
+                } else if !cfg.bench_below_trip_threshold {
+                    // NO WALK TO PREFER ANOTHER MEMBER, SO NOTHING TO PREFER IT TO — see
+                    // `BreakerCfg::bench_below_trip_threshold`. On a degenerate single-member cell
+                    // the store below is not a routing hint, it is a REFUSAL of the caller, and a
+                    // sub-threshold failure has not earned one: the cell is still Closed and
+                    // `should_trip` just said so.
+                    //
+                    // An upstream that ASKED to be left alone is a different fact, and it is still
+                    // honoured — but for exactly as long as it asked for, not for the escalating
+                    // backoff a real trip earns. That ceiling is `max_honored_retry_after_secs`,
+                    // the same one `compute_cooldown_with_retry_after` applies.
+                    if cfg.honor_retry_after {
+                        if let Some(asked) = retry_after {
+                            c.cooldown_until().store(
+                                now_time.saturating_add(asked.min(max_honored_retry_after_secs)),
+                                Ordering::Release,
+                            );
+                        }
+                    }
+                    false
                 } else {
                     let duration = Self::compute_cooldown_with_retry_after(
                         c,
