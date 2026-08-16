@@ -62,7 +62,7 @@
       "capability": "breaker-trip",
       "plane": "mcp-client",
       "state": "proven",
-      "test": "crates/busbar/src/mcp/tests/breaker_fastfail_tests.rs::a_hard_down_http_server_trips_and_the_second_call_fast_fails_without_touching_it"
+      "test": "crates/busbar-core/src/mcp/tests/breaker_fastfail_tests.rs::a_hard_down_http_server_trips_and_the_second_call_fast_fails_without_touching_it"
     },
     {
       "capability": "breaker-trip",
@@ -74,7 +74,7 @@
       "capability": "breaker-trip",
       "plane": "a2a-client",
       "state": "proven",
-      "test": "crates/busbar/src/a2a/tests/breaker_fastfail_tests.rs::a_backend_hard_down_opens_the_core_cell_and_the_second_hop_never_reaches_the_wire"
+      "test": "crates/busbar-core/src/a2a/tests/breaker_fastfail_tests.rs::a_backend_hard_down_opens_the_core_cell_and_the_second_hop_never_reaches_the_wire"
     },
     {
       "capability": "breaker-trip",
@@ -92,7 +92,7 @@
       "capability": "breaker-fastfail",
       "plane": "mcp-client",
       "state": "proven",
-      "test": "crates/busbar/src/mcp/tests/breaker_fastfail_tests.rs::a_dead_stdio_child_trips_the_same_core_cell_and_the_second_call_fast_fails"
+      "test": "crates/busbar-core/src/mcp/tests/breaker_fastfail_tests.rs::a_dead_stdio_child_trips_the_same_core_cell_and_the_second_call_fast_fails"
     },
     {
       "capability": "breaker-fastfail",
@@ -104,7 +104,7 @@
       "capability": "breaker-fastfail",
       "plane": "a2a-client",
       "state": "proven",
-      "test": "crates/busbar/src/a2a/tests/breaker_fastfail_tests.rs::a_tripped_agent_rejects_fresh_submissions_on_the_jsonrpc_binding"
+      "test": "crates/busbar-core/src/a2a/tests/breaker_fastfail_tests.rs::a_tripped_agent_rejects_fresh_submissions_on_the_jsonrpc_binding"
     },
     {
       "capability": "breaker-fastfail",
