@@ -187,7 +187,11 @@ async fn an_unreachable_primary_is_rerouted_before_first_byte_within_one_call() 
     let dead_url = peer_a.mcp_url();
     drop(peer_a); // the listener closes; the URL now refuses connections.
     let peer_b = Peer::start(Behaviour::Result, "unused").await;
-    let app = pooled_app(plain_server(&dead_url), plain_server(&peer_b.mcp_url()), &[]);
+    let app = pooled_app(
+        plain_server(&dead_url),
+        plain_server(&peer_b.mcp_url()),
+        &[],
+    );
     let g = gov();
 
     let (status, body) = call(&app, &g, "tools/call", params()).await;

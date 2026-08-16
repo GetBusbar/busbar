@@ -1402,13 +1402,21 @@ async fn admitted(
     // grant re-derived FOR THAT MEMBER when the hop was re-targeted; see `route::hop_facts` for
     // why busbar's credential is never leased for a backend the caller's grant does not cover.
     let (target_backend_url, target_cred, grant) = match super::route::hop_facts(
-        &plane, key, &admitted, &target_agent, grant, &rpc_id, &resource, &actor, now,
+        &plane,
+        key,
+        &admitted,
+        &target_agent,
+        grant,
+        &rpc_id,
+        &resource,
+        &actor,
+        now,
     ) {
         Ok(f) => f,
         Err(refusal) => {
-            return refusal.unwrap_or_else(|| {
-                fail_task(&seam, &rpc_id, &task_id, &request_id, now, 502)
-            })
+            return refusal
+                .map(|resp| *resp)
+                .unwrap_or_else(|| fail_task(&seam, &rpc_id, &task_id, &request_id, now, 502))
         }
     };
 
@@ -1579,7 +1587,6 @@ struct HopContext {
 pub(super) fn plane_of(app: &App) -> Option<Arc<super::plane::A2aPlane>> {
     app.a2a.as_ref().map(Arc::clone)
 }
-
 
 /// THE UNARY HOP: one submission, one answer.
 ///

@@ -1511,7 +1511,9 @@ fn prepare<'a>(
                 Err(_) => {
                     return Err(RelayRefusal::BreakerOpen {
                         agent_id: call.agent_id.to_string(),
-                        retry_after_secs: target.breakers.retry_after_secs(&target.key, target.lane),
+                        retry_after_secs: target
+                            .breakers
+                            .retry_after_secs(&target.key, target.lane),
                     })
                 }
             }

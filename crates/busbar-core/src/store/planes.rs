@@ -159,7 +159,11 @@ impl PlaneBreakers {
     /// admission and the wire, a caller that disconnected (axum drops the handler future), a task
     /// runner aborted by `tasks/cancel`. An explicit release call misses the dropped-future cases,
     /// and a missed release wedges the cell HalfOpen forever.
-    pub(crate) fn admit(self: &Arc<Self>, key: &str, lane: usize) -> Result<Admission, Unavailable> {
+    pub(crate) fn admit(
+        self: &Arc<Self>,
+        key: &str,
+        lane: usize,
+    ) -> Result<Admission, Unavailable> {
         let epoch = self.try_admit(key, lane)?;
         Ok(Admission {
             breakers: Arc::clone(self),
