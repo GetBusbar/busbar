@@ -83,6 +83,63 @@ pub(crate) fn intern_name(name: &str) -> &'static str {
     leaked
 }
 
+/// THE ONE `dlopen` IN THIS CRATE. On unix it adds `RTLD_NODELETE`, which is what makes unloading a
+/// plugin SAFE rather than an intermittent SIGSEGV.
+///
+/// A plugin cdylib statically links its OWN copy of Rust `std`. The first time plugin code touches a
+/// `thread_local!` that has a destructor, THAT copy of std arms its TLS-destructor guard by calling
+/// `pthread_key_create(&key, run)` — where `run` is a function INSIDE THE PLUGIN IMAGE. A POSIX TSD
+/// destructor carries no DSO handle (unlike `__cxa_thread_atexit_impl`, which pins the library that
+/// registered it), so glibc has no way to keep the image alive for it. If the plugin is then
+/// `dlclose`d while the thread that armed the key is still running, the key survives with a
+/// destructor pointing into unmapped memory, and the process dies the moment that thread exits:
+///
+/// ```text
+/// #0  0x0000e999284a2e84 in ?? ()                       <- unmapped; == the `destr` the plugin's
+/// #1  __GI___nptl_deallocate_tsd () at nptl_deallocate_tsd.c:73     copy of std passed to
+/// #2  start_thread () at pthread_create.c:453                       pthread_key_create
+/// #3  thread_start ()
+/// ```
+///
+/// That is not hypothetical and not specific to any one backend: it was captured from a core dump of
+/// `store-mysql`'s plugin e2e, and reproduced independently on `store-sqlite`'s at a HIGHER rate. It
+/// is intermittent only because it needs the last handle to drop (so the image really is unmapped)
+/// BEFORE the thread that ran plugin code exits — which is a race between unrelated worker threads.
+/// In the engine the same race is a hot-reload crash: every config reload, `push_configure`,
+/// `fetch_schema` and `/metrics/hooks` scrape drops a [`RawPlugin`], and any request-handling thread
+/// that has run plugin code and later retires is the one that dies.
+///
+/// There is no host-side way to un-register another image's TSD destructor, so the only sound fix is
+/// to never unmap a plugin image. `RTLD_NODELETE` says exactly that: `dlclose` still drops the
+/// reference (and `busbar_close` still runs first, so the plugin instance, its connections and its
+/// file handles are all released on schedule), but the mapping stays. A re-`dlopen` of the same file
+/// re-uses it; a REPLACED file is a different inode and gets a fresh mapping, so hot-upgrade is
+/// unaffected. The cost is bounded and one-way: one retained mapping per distinct plugin file ever
+/// loaded, which is what the plugins directory holds anyway.
+///
+/// WINDOWS IS DELIBERATELY UNCHANGED. It has no `RTLD_NODELETE`, and its nearest equivalent (pinning
+/// the module) would make the staged-file removal in [`stage`] impossible — a mapped DLL's file
+/// cannot be deleted, which is the whole reason this crate unloads before it removes. Windows
+/// carries the analogous `FlsAlloc`-callback hazard and needs its own treatment; see the follow-up
+/// note in the fix commit rather than a half-measure here.
+///
+/// # Safety
+/// Loading a library runs its initializer code. Callers must already have applied the trust gate.
+pub(crate) unsafe fn open_library(path: &std::ffi::OsStr) -> Result<Library, libloading::Error> {
+    #[cfg(unix)]
+    {
+        use libloading::os::unix as imp;
+        // Same flags `Library::new` uses (LAZY + LOCAL), plus NODELETE. LAZY is kept deliberately:
+        // switching to RTLD_NOW would change which plugins load at all, which is not this fix.
+        let flags = imp::RTLD_LAZY | imp::RTLD_LOCAL | libc::RTLD_NODELETE;
+        unsafe { imp::Library::open(Some(path), flags) }.map(Library::from)
+    }
+    #[cfg(not(unix))]
+    {
+        unsafe { Library::new(path) }
+    }
+}
+
 /// Run an FFI call `f` across the plugin ABI boundary under `catch_unwind`, converting a plugin panic
 /// into a fail-closed `Err` string instead of a process abort. EFFECTIVE only because the ABI fn
 /// pointers are `extern "C-unwind"` (see [`busbar_plugin_abi`]): a Rust plugin's panic unwinds as a
@@ -1148,7 +1205,7 @@ pub fn load_store(lib_path: &Path, cfg_json: &str) -> Result<Box<dyn Store>, Str
     // SAFETY: loading an operator-placed library is inherently trusted (its init code runs), exactly
     // like the SQLite this replaces was trusted when compiled in. The path comes from config/the
     // plugins dir, not the request path.
-    let lib = unsafe { Library::new(lib_path) }
+    let lib = unsafe { open_library(lib_path.as_os_str()) }
         .map_err(|e| format!("failed to load plugin '{display}': {e}"))?;
     // A bare path load has no signed manifest to cross-check; the seam's expected kind (`store`) is
     // the authority, so pass it as the manifest kind too (the exported-kind == expected-kind gate
@@ -1241,7 +1298,7 @@ pub fn validate_plugin(lib_path: &Path) -> Result<u32, String> {
     let display = lib_path.display().to_string();
     // SAFETY: loading runs the library's init code — the same trust as loading it to serve, which is
     // itself the trust of compiling it in. The path is operator/admin-supplied, never request data.
-    let lib = unsafe { Library::new(lib_path) }
+    let lib = unsafe { open_library(lib_path.as_os_str()) }
         .map_err(|e| format!("failed to load plugin '{display}': {e}"))?;
     let transport = {
         let f = unsafe { lib.get::<busbar_plugin_abi::AbiFn>(symbol::ABI) }

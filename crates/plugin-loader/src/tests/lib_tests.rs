@@ -1871,3 +1871,87 @@ fn event_free_probe() -> TaskEventRow {
         hash: "h".into(),
     }
 }
+
+/// EVERY LOADED PLUGIN IMAGE STAYS MAPPED FOR THE LIFE OF THE PROCESS. RED without `RTLD_NODELETE`.
+///
+/// This pins the invariant behind [`crate::open_library`], and it pins it as a MAPPING fact rather
+/// than as "the crash didn't happen", because the crash it prevents is a race and a green run
+/// proves nothing about a race.
+///
+/// The defect: a plugin cdylib carries its own copy of Rust `std`, and that copy arms its
+/// TLS-destructor guard with `pthread_key_create(&key, run)` the first time plugin code touches a
+/// `thread_local!` with a destructor — `run` being a function inside the plugin image. A POSIX TSD
+/// destructor pins nothing (that is the difference from `__cxa_thread_atexit_impl`), so a `dlclose`
+/// that unmaps the image leaves the key holding a pointer into a hole, and the thread that armed it
+/// dies the moment it exits:
+///
+/// ```text
+/// #0  0x0000e999284a2e84 in ?? ()                  <- unmapped, == the plugin's own `destr`
+/// #1  __GI___nptl_deallocate_tsd () at nptl_deallocate_tsd.c:73
+/// #2  start_thread ()
+/// ```
+///
+/// Captured from a real core dump of `store-mysql`'s plugin e2e (SIGSEGV, `--test-threads=8`), and
+/// reproduced on `store-sqlite`'s e2e at a higher rate — it is a property of this loader, not of any
+/// backend. In the engine the same shape is a hot-reload crash, since a plugin reload drops a
+/// `RawPlugin` while request threads that have run plugin code are still alive.
+///
+/// The library is COPIED to a path only this test uses: the invariant is "this image is still mapped
+/// after the last handle to it dropped", and a shared fixture path could be held mapped by a
+/// concurrently-running test in the same binary, which would make the assertion pass for the wrong
+/// reason. Linux-only because it reads `/proc/self/maps`; the flag itself is set on every unix.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_dropped_plugin_handle_never_unmaps_the_library() {
+    let Some(fixture) = store_example_plugin_path() else {
+        eprintln!("skip: store example plugin cdylib not built (run under --workspace)");
+        return;
+    };
+    fn is_mapped(needle: &str) -> bool {
+        std::fs::read_to_string("/proc/self/maps")
+            .expect("read /proc/self/maps")
+            .lines()
+            .any(|l| l.ends_with(needle))
+    }
+
+    let dir = std::env::temp_dir().join(format!(
+        "busbar-nodelete-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    std::fs::create_dir_all(&dir).expect("create the private copy dir");
+    let lib = dir.join(fixture.file_name().expect("fixture filename"));
+    std::fs::copy(&fixture, &lib).expect("copy the fixture cdylib to a path only this test loads");
+    let needle = lib.to_str().expect("utf-8 temp path").to_string();
+
+    assert!(
+        !is_mapped(&needle),
+        "precondition: {needle} must not be mapped before this test loads it"
+    );
+    {
+        let store = load_store(
+            &lib,
+            &serde_json::json!({ "durable_path": dir.join("state.json").to_string_lossy() })
+                .to_string(),
+        )
+        .expect("load the store example plugin over the real ABI");
+        // Touch the ABI so the plugin's own code (and therefore its own copy of std) actually runs
+        // on this thread — an image that was mapped but never entered would not arm the key that
+        // makes the unmap fatal, and the test would be pinning a weaker fact than it claims.
+        store.list_tasks().expect("list_tasks over the ABI");
+        assert!(
+            is_mapped(&needle),
+            "the plugin image must be mapped while a handle to it is alive"
+        );
+    } // `busbar_close` runs, then the `Library` drops -> `dlclose`.
+
+    assert!(
+        is_mapped(&needle),
+        "the plugin image at {needle} was UNMAPPED when the last handle dropped. Its copy of std \
+         may already have armed a pthread-key TLS destructor pointing into that image on this \
+         thread; glibc will call it when the thread exits, into memory that is no longer there. \
+         Load with RTLD_NODELETE (see open_library) — a plugin image must never be unmapped."
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
