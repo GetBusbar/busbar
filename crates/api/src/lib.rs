@@ -24,9 +24,12 @@
 //! built-in one.
 
 mod auth;
+pub mod breaker;
 pub mod durable;
 mod hooks;
+pub mod ir;
 pub mod plane;
+pub mod protocol;
 mod redacted;
 mod secret;
 mod signal;

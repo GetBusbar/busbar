@@ -1,4 +1,7 @@
 use super::*;
+// The IR types now live in `busbar-api`; core re-exports them through `super`. `Value` was
+// previously inherited from ir/mod.rs's own import, which the move retired.
+use serde_json::Value;
 
 #[test]
 fn reasoning_effort_parse_round_trips_and_rejects_unknown() {

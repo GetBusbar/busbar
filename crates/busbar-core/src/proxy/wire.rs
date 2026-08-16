@@ -128,12 +128,25 @@ fn maybe_attach_route_policy_gated(
 /// function (the migration is complete — they hold no private copies), so the degraded path, the main
 /// path, and the auth/route paths cannot diverge on error shape or headers.
 pub(crate) fn ingress_error(ingress: &str, status: StatusCode, kind: &str, msg: &str) -> Response {
-    // Resolve the ingress protocol's vtable ONCE (fall back to OpenAI's generic envelope for an
-    // unknown name — unreachable for the 6 validated ingress protocols). All provider-specific error
-    // shape (the body envelope AND any response headers) flows through trait methods on this writer,
-    // so the agnostic error path carries no `if ingress == "<name>"` branch.
-    let protocol =
-        crate::proto::protocol_for(ingress).unwrap_or_else(crate::proto::Protocol::openai);
+    // Resolve the ingress protocol's vtable ONCE. All provider-specific error shape (the body
+    // envelope AND any response headers) flows through trait methods on this writer, so the
+    // agnostic error path carries no `if ingress == "<name>"` branch.
+    //
+    // NO PROTOCOL RESOLVED ⇒ THE DIALECT-FREE ENVELOPE. This arm used to build a hardcoded dialect
+    // (`Protocol::openai`) purely to have *something* whose writer could render the refusal — which
+    // meant core needed a dialect linked in order to say "I do not speak that", and the dialect it
+    // named silently migrated with each extraction (openai → gemini → …) until there would have been
+    // none left to name. An error body is not a dialect's property. `busbar-api` owns this one, so a
+    // build with ZERO protocol plugins can still refuse a request. See
+    // `busbar_api::protocol::unresolved_ingress_error`.
+    let Some(protocol) = crate::proto::protocol_for(ingress) else {
+        let body = busbar_api::protocol::unresolved_ingress_error(status.as_u16(), msg);
+        return Response::builder()
+            .status(status)
+            .header(CONTENT_TYPE, APPLICATION_JSON)
+            .body(Body::from(body))
+            .unwrap_or_else(|_| status.into_response());
+    };
     let envelope = protocol.writer().write_error(status.as_u16(), kind, msg);
     let body = crate::json::to_string(&envelope).unwrap_or_else(|_| {
         // Envelope is built from serde_json::json! values and always serializes; this fallback only
@@ -770,8 +783,17 @@ pub(crate) fn mid_stream_error_bytes(
         provider_signal: Some(message.to_string()),
         retry_after: None,
     };
-    let proto =
-        crate::proto::protocol_for(ingress_protocol).unwrap_or_else(crate::proto::Protocol::openai);
+    // NO PROTOCOL RESOLVED ⇒ the dialect-free envelope, framed as a bare SSE `data:` event. Same
+    // reasoning as `ingress_error` above: core must be able to end a stream with a parseable error
+    // without a dialect linked in to phrase it.
+    let Some(proto) = crate::proto::protocol_for(ingress_protocol) else {
+        let mut out = b"data: ".to_vec();
+        out.extend_from_slice(&busbar_api::protocol::unresolved_ingress_error(
+            500, message,
+        ));
+        out.extend_from_slice(b"\n\n");
+        return out;
+    };
     if ingress_eventstream {
         // Binary eventstream client (a native AWS SDK): a mid-stream failure is a MODELED-EXCEPTION
         // frame, not an SSE event. The exception NAME comes from the ingress writer's vtable

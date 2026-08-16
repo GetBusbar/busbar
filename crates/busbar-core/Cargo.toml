@@ -85,10 +85,24 @@ rustls-pki-types = { workspace = true }
 # The `#[cfg(feature = ...)]` sites live in this crate, so this crate declares the features and
 # the `busbar` binary forwards them (busbar/<feature> = ["busbar-core/<feature>"]).
 #
-# NOTE (recorded so it is not forgotten): keeping `dep:busbar-auth-admin-tokens` here leaves the
-# `admin-tokens` match arm IN CORE — still a feature-gated arm inside the engine rather than a
-# dependency edge owned by the composition root. Moving that registration to the binary is the
-# protocol-extraction step's job; this split is what makes it possible. Do not "fix" it here.
+# NOTE — SUPERSEDED 2026-08-16 BY OWNER RULING R-H. PRESERVED, NOT DELETED, so the record of what
+# changed and why survives.
+#
+# WHAT IT SAID: keeping `dep:busbar-auth-admin-tokens` here leaves the `admin-tokens` match arm IN
+# CORE — a feature-gated arm inside the engine rather than a dependency edge owned by the
+# composition root — and moving that registration to the binary was "the protocol-extraction step's
+# job". The 1.6.0 plugin-ABI design proposed exactly that move.
+#
+# THE RULING: "i want plugins to be plugins and some are compiled in some are not. but whats in or
+# not doesnt matter to core. This should be as auth-tokens is today." The core-held optional
+# dependency IS the shape, on every plugin kind. The edge does NOT move to the binary.
+#
+# WHY IT IS SOUND, and what it obliges instead: the note's real concern was that core would end up
+# unable to build or boot without a given plugin. That concern is legitimate and is now discharged
+# by PROOF rather than by relocation — every plugin dependency here is optional, `default` is a
+# CHOICE and not a requirement, and the no-plugins gate builds and BOOTS core with the whole default
+# set switched off. The obligation this note transfers to: any new plugin edge added here must be
+# optional and must keep that gate green. Do not "fix" the core-held edge — it is the ruled shape.
 default = ["auth-admin-tokens", "hooks-ranking"]
 auth-admin-tokens = ["dep:busbar-auth-admin-tokens"]
 hooks-ranking = ["dep:busbar-hooks-ranking"]

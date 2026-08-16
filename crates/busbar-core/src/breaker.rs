@@ -12,34 +12,24 @@
 //!   Auth|Billing → HardDown
 //!   ClientError → ClientFault
 
+// ── THE FAULT VOCABULARY IS PART OF THE PROTOCOL ABI ────────────────────────────────────────────
+//
+// `ir::IrStreamEvent::Error` carries a `CanonicalSignal`, so the IR cannot be expressed without
+// these types and a protocol plugin must be able to name them. They live in `busbar-api` and are
+// re-exported here under their existing paths.
+//
+// WHAT DELIBERATELY DID NOT MOVE: `Disposition` and `normalize_raw_error` below. A plugin
+// CLASSIFIES (it reads its own upstream's error shape, which only it knows); the ENGINE SENTENCES
+// (what a class means for the breaker, the failover walk and the audit record). A plugin that could
+// name `Disposition` could declare its own failures harmless and opt out of circuit breaking, which
+// is exactly what "a protocol doesn't change breakers or failover or auditing" forbids.
+pub(crate) use busbar_api::breaker::{
+    status_class_from_str, CanonicalSignal, RawUpstreamError, StatusClass,
+};
+
 /// Anthropic non-standard 529 overload status — not in the IANA registry but
 /// documented by Anthropic as their server-overloaded signal (distinct from 503).
 const HTTP_OVERLOADED: u16 = 529;
-
-/// Protocol-neutral, dialect-normalized status class.
-/// Emitted by Stage 1 normalizer (the per-protocol classifier) in src/proto/.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum StatusClass {
-    /// Rate limit / slow down — transient, may recover with retry-after
-    RateLimit,
-    /// Overloaded server — transient
-    Overloaded,
-    /// Server error (5xx) — transient
-    ServerError,
-    /// Request timeout — transient
-    Timeout,
-    /// Network failure — transient
-    Network,
-    /// Authentication failure (401/403) — hard down, key invalid
-    Auth,
-    /// Billing / insufficient balance — hard down, account issue
-    Billing,
-    /// Client error (4xx other than 401/403) — client fault, do not penalize lane
-    ClientError,
-    /// Request exceeds this model's context window — the LANE is healthy; fail over (ideally to
-    /// a larger-context model) WITHOUT penalizing the breaker.
-    ContextLength,
-}
 
 /// Final disposition that drives the LaneRuntime write path.
 /// Per ADR-0002 +:
@@ -53,22 +43,6 @@ pub(crate) enum Disposition {
     TransientUpstream,
     HardDown,
     ContextLength,
-}
-
-/// Convert a string to StatusClass. Returns None for unknown values.
-pub(crate) fn status_class_from_str(s: &str) -> Option<StatusClass> {
-    match s {
-        "rate_limit" => Some(StatusClass::RateLimit),
-        "overloaded" => Some(StatusClass::Overloaded),
-        "server_error" => Some(StatusClass::ServerError),
-        "timeout" => Some(StatusClass::Timeout),
-        "network" => Some(StatusClass::Network),
-        "auth" => Some(StatusClass::Auth),
-        "billing" => Some(StatusClass::Billing),
-        "client_error" => Some(StatusClass::ClientError),
-        "context_length" => Some(StatusClass::ContextLength),
-        _ => None,
-    }
 }
 
 /// Warn (once per distinct value) that an operator `error_map` entry maps to a string that is not a
@@ -106,37 +80,6 @@ pub(crate) fn classify(sig: &CanonicalSignal) -> Disposition {
         StatusClass::Auth | StatusClass::Billing => Disposition::HardDown,
         StatusClass::ClientError => Disposition::ClientFault,
         StatusClass::ContextLength => Disposition::ContextLength,
-    }
-}
-
-/// Raw upstream error extracted from HTTP response (Stage 1a output).
-#[derive(Debug, Clone)]
-pub(crate) struct RawUpstreamError {
-    pub(crate) http_status: u16,
-    /// Provider-specific error *code* (e.g. a numeric `code` field), checked against `error_map`.
-    pub(crate) provider_code: Option<String>,
-    /// Provider-specific structured error *type* (e.g. a `type`/`error.type` string), checked
-    /// against `error_map` as a second signal when the code doesn't match.
-    pub(crate) structured_type: Option<String>,
-    /// Upstream `Retry-After` header value in whole seconds, when present. The per-protocol
-    /// `extract_error` methods only see the body (no headers), so the forwarding layer — which has
-    /// the response headers — parses and sets this after `extract_error` returns. `normalize_raw_error`
-    /// then propagates it into `CanonicalSignal.retry_after` so the cooldown floor is honored.
-    pub(crate) retry_after_secs: Option<u64>,
-}
-
-impl RawUpstreamError {
-    /// THE STATUS ALONE, claiming no provider vocabulary — what one outbound attempt reports when
-    /// nothing on the path could read its upstream's error shape. It is the most restrictive USEFUL
-    /// answer rather than the most restrictive possible one: `classify` still places the failure
-    /// from the status, which is strictly better than a non-2xx the breaker never hears about.
-    pub(crate) fn from_status(status: u16) -> Self {
-        Self {
-            http_status: status,
-            provider_code: None,
-            structured_type: None,
-            retry_after_secs: None,
-        }
     }
 }
 
@@ -278,15 +221,6 @@ pub(crate) fn normalize_raw_error(
         provider_signal,
         retry_after: raw.retry_after_secs,
     }
-}
-
-/// Canonical signal emitted by protocol normalizers.
-/// Stage 1 output → Stage 2 input.
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct CanonicalSignal {
-    pub(crate) class: StatusClass,
-    pub(crate) provider_signal: Option<String>,
-    pub(crate) retry_after: Option<u64>,
 }
 
 #[cfg(test)]
