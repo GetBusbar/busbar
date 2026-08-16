@@ -54,6 +54,19 @@ tools_allow:
   beta: {}
 "#;
 
+/// The same registration with a RESOURCE declared — the fixture for the `resourceSubscriptions`
+/// relay: a subscribable uri exists exactly because the operator wrote it.
+const ONE_TOOL_ONE_RESOURCE: &str = r#"
+url: "https://tools.example.com/mcp"
+pin: { mechanism: unpinned }
+tools_allow:
+  alpha: {}
+resources_allow:
+  "docs://guide":
+    name: "guide"
+    text: "hello"
+"#;
+
 /// The same registration with a PROMPT added. The tool list is untouched, so a stream that asked
 /// only for prompts must be woken and a stream that asked only for tools must not be.
 const ONE_TOOL_ONE_PROMPT: &str = r#"
@@ -229,14 +242,17 @@ async fn the_first_frame_is_the_acknowledgement_and_it_carries_the_subscription_
     );
 }
 
-/// The acknowledgement carries the ACCEPTED subset, and `resourceSubscriptions` is narrowed away.
+/// The acknowledgement carries the ACCEPTED subset, and a `resourceSubscriptions` uri that
+/// resolves to NO resource this caller can see is narrowed away.
 ///
-/// This is the honest half of the design and the one a client can act on: busbar cannot observe a
-/// resource's contents changing at the upstream that owns it, so a client that asked for that
-/// category learns here that it will not get it — rather than waiting for a notification that was
-/// never going to come.
+/// This is the honest half of the design and the one a client can act on: a subscription to a uri
+/// the deployment does not expose (or the caller's grant does not reach) is one no notification
+/// will ever be delivered for, so the client learns HERE that it will not get it — rather than
+/// waiting for a notification that was never going to come. On a multi-tenant gateway the
+/// narrowing is also the boundary: an acknowledgement must not confirm the existence of another
+/// tenant's inventory.
 #[tokio::test]
-async fn resource_subscriptions_are_narrowed_away_in_the_acknowledgement() {
+async fn an_unreachable_resource_subscription_is_narrowed_away_in_the_acknowledgement() {
     let (url, _h) = serve(ONE_TOOL).await;
     let response = listen(
         &url,
@@ -258,7 +274,7 @@ async fn resource_subscriptions_are_narrowed_away_in_the_acknowledgement() {
     );
     assert!(
         accepted.get("resourceSubscriptions").is_none(),
-        "busbar acknowledged a category it cannot deliver: {accepted}"
+        "busbar acknowledged a subscription it could never deliver a notification for: {accepted}"
     );
 }
 
@@ -375,6 +391,206 @@ async fn a_stream_delivers_only_what_it_acknowledged() {
     );
 }
 
+// ── The resource-update relay: the upstream's own announcement, delivered per subscriber ────────
+
+/// AN UPSTREAM'S `notifications/resources/updated` IS RELAYED to an open stream that subscribed to
+/// that uri — the coverage instrument's central case for
+/// `mcp|streamable-http|server|server|notifications/resources/updated`.
+///
+/// The event enters through the pool's own recording seam — the same
+/// [`crate::mcp::client::pool::ResourceUpdates::record`] the HTTP and stdio client legs call when
+/// a peer announces (proven at THEIR ends by `http_peer_tests` and `stdio_client_leg_tests`), so
+/// the two halves of the relay meet on one structure rather than each being tested against a
+/// double of the other.
+#[tokio::test]
+async fn an_upstream_resource_update_is_relayed_to_a_subscribed_stream() {
+    let (url, handle) = serve(ONE_TOOL_ONE_RESOURCE).await;
+    let response = listen(
+        &url,
+        serde_json::json!({ "resourceSubscriptions": ["docs://guide"] }),
+    )
+    .await;
+    assert_eq!(response.status().as_u16(), 200);
+    // The announcement is made while the stream is open, from a task of its own — after the open,
+    // because a subscription relays what upstreams announce AFTER it exists.
+    tokio::spawn({
+        let handle = handle.clone();
+        async move {
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            handle
+                .load()
+                .mcp_pool
+                .updates
+                .record("tools", "docs://guide");
+        }
+    });
+    let got = frames(response, 2, std::time::Duration::from_secs(5)).await;
+    let ack = got
+        .first()
+        .expect("the acknowledgement is still owed first");
+    assert_eq!(
+        method_of(ack),
+        "notifications/subscriptions/acknowledged",
+        "got {ack}"
+    );
+    assert_eq!(
+        ack.pointer("/params/notifications/resourceSubscriptions"),
+        Some(&serde_json::json!(["docs://guide"])),
+        "the acknowledgement names the uri it accepted, so the client knows it is subscribed: \
+         {ack}"
+    );
+    let updated = got
+        .iter()
+        .find(|f| method_of(f) == "notifications/resources/updated")
+        .unwrap_or_else(|| {
+            panic!(
+                "the upstream announced an update and the open subscription was not told: {got:?}"
+            )
+        });
+    assert_eq!(
+        updated.pointer("/params/uri"),
+        Some(&serde_json::json!("docs://guide")),
+        "the notification names the resource, which is the whole reason the category is uri-scoped"
+    );
+    assert_eq!(
+        updated
+            .pointer("/params/_meta")
+            .and_then(|m| m.get(META_SUBSCRIPTION_ID)),
+        Some(&serde_json::json!(7)),
+        "a listen-stream notification arrived untagged"
+    );
+}
+
+/// The relay delivers ONLY what was asked for, and only from the server that owns the resource.
+///
+/// Two refusals in one stream, each a different boundary: an announcement about a uri the
+/// subscriber did not name is FILTERED (the subscription is the client's only statement of what it
+/// wants), and an announcement about the subscribed uri from a DIFFERENT registration is refused
+/// because the resolved resource belongs to `tools` — an upstream must not be able to speak for
+/// another registration's inventory by spelling its uri.
+#[tokio::test]
+async fn the_relay_filters_unasked_uris_and_refuses_another_servers_announcement() {
+    let (url, handle) = serve(ONE_TOOL_ONE_RESOURCE).await;
+    let response = listen(
+        &url,
+        serde_json::json!({ "resourceSubscriptions": ["docs://guide"] }),
+    )
+    .await;
+    tokio::spawn({
+        let handle = handle.clone();
+        async move {
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            let updates = &handle.load().mcp_pool.updates;
+            // An uri the stream did not subscribe to…
+            updates.record("tools", "docs://other");
+            // …and the subscribed uri announced by a server that does not own it.
+            updates.record("someone-else", "docs://guide");
+        }
+    });
+    let got = frames(response, 3, std::time::Duration::from_secs(2)).await;
+    assert!(
+        !got.is_empty(),
+        "the stream produced no frames at all, not even its acknowledgement"
+    );
+    assert!(
+        !got.iter()
+            .any(|f| method_of(f) == "notifications/resources/updated"),
+        "an announcement outside the subscription (or outside the announcing server's own \
+         inventory) must not be delivered: {got:?}"
+    );
+}
+
+/// THE TENANT BOUNDARY ON DELIVERY: the entitlement is re-derived per poll under the SUBSCRIBER'S
+/// grant, so a caller whose key does not reach the resource receives nothing for an event a
+/// wildcard caller receives — same event, same stream shape, different grants.
+///
+/// Driven at the `Listen` unit seam like the revocation case above it, because the boundary under
+/// test is per-principal and the socket harness serves ungoverned. The accepted filter is built
+/// with the entitlement OPEN so the delivery-side check is the one being exercised — this is the
+/// mid-stream shape, a grant that was wide at open and narrow at the poll.
+#[test]
+fn a_recorded_update_is_not_delivered_to_a_caller_whose_grant_does_not_reach_it() {
+    let gov = std::sync::Arc::new(
+        crate::governance::GovState::new(
+            std::sync::Arc::new(crate::governance::MemoryStore::new()),
+            None,
+        )
+        .expect("a memory-backed registry constructs"),
+    );
+    let (wide, _s1) = gov
+        .create_key(
+            crate::governance::NewKeySpec {
+                name: "k-wide".to_string(),
+                allowed_pools: None, // the store's wildcard: every scope kind
+                group: None,
+                labels: Default::default(),
+            },
+            0,
+        )
+        .expect("mint");
+    let (narrow, _s2) = gov
+        .create_key(
+            crate::governance::NewKeySpec {
+                name: "k-narrow".to_string(),
+                allowed_pools: Some(vec![]), // exactly nothing
+                group: None,
+                labels: Default::default(),
+            },
+            0,
+        )
+        .expect("mint");
+
+    let handle = std::sync::Arc::new(crate::state::AppHandle::new(governed_app_with(
+        ONE_TOOL_ONE_RESOURCE,
+        &gov,
+    )));
+    let mut streams = [&wide, &narrow].map(|key| {
+        let id = serde_json::json!(7);
+        crate::mcp::subscribe::Listen {
+            handle: handle.clone(),
+            standing: crate::trust::validate::Standing::opened(
+                Some(key),
+                crate::trust::validate::Snapshot::Watching,
+                crate::mcp::subscribe::MAX_LIFETIME,
+            ),
+            accepted: crate::mcp::subscribe::accept(
+                &serde_json::from_value(
+                    serde_json::json!({ "resourceSubscriptions": ["docs://guide"] }),
+                )
+                .expect("the SDK filter type accepts the wire shape"),
+                |_| true,
+            ),
+            meta: crate::mcp::subscribe::subscription_meta(&id),
+            id,
+            phase: crate::mcp::subscribe::Phase::Acknowledge,
+            last_write: std::time::Instant::now(),
+            cursor: 0,
+        }
+    });
+    for stream in &mut streams {
+        let ack = stream.step().expect("the acknowledgement is owed first");
+        assert!(ack.contains("acknowledged"), "{ack}");
+    }
+
+    handle
+        .load()
+        .mcp_pool
+        .updates
+        .record("tools", "docs://guide");
+
+    let [wide_frame, narrow_frame] = streams.map(|mut s| s.step().expect("the stream is open"));
+    assert!(
+        wide_frame.contains("notifications/resources/updated")
+            && wide_frame.contains("docs://guide"),
+        "the control: a caller whose grant reaches the resource is told: {wide_frame}"
+    );
+    assert!(
+        !narrow_frame.contains("notifications/resources/updated"),
+        "the boundary: a caller whose grant does not reach the resource learns nothing from \
+         another tenant's update: {narrow_frame}"
+    );
+}
+
 /// `subscriptions/listen` is advertised by `server/discover`, and the two lists cannot disagree.
 ///
 /// The catalogue read and the dispatch table are the same slice by construction; this case is what
@@ -463,9 +679,9 @@ async fn discover_declares_the_capabilities_the_listen_stream_delivers() {
     }
     assert_eq!(
         caps.pointer("/resources/subscribe"),
-        Some(&serde_json::json!(false)),
-        "`resourceSubscriptions` is narrowed away by the stream, so declaring it here would \
-         promise a notification that never comes: {caps}"
+        Some(&serde_json::json!(true)),
+        "`resourceSubscriptions` IS delivered by the stream since the relay landed, and a \
+         capability the declaration hides is an undeclared surface no client will ever open: {caps}"
     );
 }
 
@@ -537,15 +753,18 @@ fn a_revoked_key_stops_being_served_on_the_next_poll() {
             crate::mcp::subscribe::MAX_LIFETIME,
         ),
         // Through the production narrowing rather than hand-built, so this fixture cannot ask for a
-        // category the served endpoint would have refused.
+        // category the served endpoint would have refused. No uri is requested, so the entitlement
+        // predicate is the honest constant.
         accepted: crate::mcp::subscribe::accept(
             &serde_json::from_value(serde_json::json!({ "toolsListChanged": true }))
                 .expect("the SDK filter type accepts the wire shape"),
+            |_| false,
         ),
         meta: crate::mcp::subscribe::subscription_meta(&id),
         id,
         phase: crate::mcp::subscribe::Phase::Acknowledge,
         last_write: std::time::Instant::now(),
+        cursor: 0,
     };
 
     let ack = state.step().expect("the acknowledgement is owed first");

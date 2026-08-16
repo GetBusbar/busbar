@@ -54,6 +54,7 @@ fn server(id: &str, tools: &[&str], pending: &[&str]) -> (String, McpServerDefCf
             aud: None,
             grants: Default::default(),
             roots: Vec::new(),
+            sampling: None,
             allow_private: false,
             token_exchange: None,
             max_input_required_rounds: None,

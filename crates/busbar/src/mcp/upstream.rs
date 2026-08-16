@@ -115,6 +115,9 @@ pub(crate) struct Authorised {
     /// `roots/list` — the satisfier behind `grants.roots`, lifted from the same snapshot the
     /// grants are. Empty on a server-scoped verb, which never enters the ask loop.
     pub(crate) roots: Vec<super::config::RootCfg>,
+    /// The operator-declared sampling policy — the satisfier behind `grants.sampling`, lifted from
+    /// the same snapshot for the same reason. `None` on a server-scoped verb.
+    pub(crate) sampling: Option<super::config::SamplingCfg>,
     /// The credential MODE this server is configured with.
     pub(crate) credential: UpstreamCredential,
     /// The INBOUND principal, carried through so the credential planner re-derives the same
@@ -234,6 +237,7 @@ pub(crate) fn authorise(
         policy,
         grants: server.grants,
         roots: server.roots.clone(),
+        sampling: server.sampling.clone(),
         credential,
         caller,
         timeout: server.upstream.timeout.unwrap_or(DEFAULT_UPSTREAM_TIMEOUT),
@@ -309,8 +313,10 @@ pub(crate) fn authorise_verb(
         },
         grants: server.grants,
         // A server-scoped verb never enters the ask loop, so there is nothing here for a
-        // satisfier to read; the empty list is the honest value rather than a lookup skipped.
+        // satisfier to read; the empty list and the absent policy are the honest values rather
+        // than lookups skipped.
         roots: Vec::new(),
+        sampling: None,
         credential,
         caller,
         timeout: server.upstream.timeout.unwrap_or(DEFAULT_UPSTREAM_TIMEOUT),
@@ -418,10 +424,13 @@ pub(crate) async fn call(
         arguments,
         request_id,
         bearer.as_deref(),
-        // The `roots` capability is declared exactly when this deployment can answer it for THIS
-        // server: the operator granted the ask AND declared what may be disclosed. See
-        // `jsonrpc::tools_call` for why declaring anything else would be dishonest either way.
-        auth.grants.roots && !auth.roots.is_empty(),
+        // Each capability is declared exactly when this deployment can answer it for THIS server:
+        // the operator granted the ask AND declared its satisfier. See `jsonrpc::tools_call` for
+        // why declaring anything else would be dishonest either way.
+        jsonrpc::AdvertisedCaps {
+            roots: auth.grants.roots && !auth.roots.is_empty(),
+            sampling: auth.grants.sampling && auth.sampling.is_some(),
+        },
         satisfaction.as_ref(),
     );
     // THE DISPATCH ARM, and it is a vtable lookup rather than a branch. `mcp_wire` is the only place
@@ -548,6 +557,14 @@ mod upstream_join_tests;
 #[cfg(test)]
 #[path = "tests/roots_satisfy_tests.rs"]
 mod roots_satisfy_tests;
+
+// A GRANTED, OPERATOR-DECLARED `sampling/createMessage` ask, satisfied through the governed LLM
+// pipeline within the per-upstream budget — the coverage instrument for
+// `mcp|streamable-http|client|server|sampling/createMessage`. Beside the roots battery because its
+// witnesses are the same recording peer plus a recording fake provider.
+#[cfg(test)]
+#[path = "tests/sampling_satisfy_tests.rs"]
+mod sampling_satisfy_tests;
 
 // THE STDIO ARM, driven through the same front door. It hangs here rather than under `client/`
 // because the claim is about the JOIN — an inbound `tools/call` reaching a child process — and the

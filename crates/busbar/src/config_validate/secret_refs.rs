@@ -207,6 +207,10 @@ pub(crate) fn secret_refs(cfg: &RootCfg) -> Vec<(String, &crate::config::SecretR
             // ask. Operator-authored `file://` URIs and display names — locations, never
             // credentials, so there is nothing here for `--validate` to resolve.
             roots: _,
+            // The sampling policy a granted `sampling/createMessage` ask spends against: a pool
+            // name and two ceilings. Operator-authored routing and budget numbers, never a
+            // credential, so there is nothing here for `--validate` to resolve.
+            sampling: _,
             max_input_required_rounds: _,
             max_caller_ask_rounds: _,
             upstream_credentials: _,

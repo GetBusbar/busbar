@@ -62,6 +62,8 @@ pub(crate) struct McpConnectionPool {
     pub(crate) children: super::stdio::StdioPool,
     /// PEER-SIGNALLED REFRESHES, rate-limited. See [`RefreshTriggers`].
     pub(crate) triggers: RefreshTriggers,
+    /// PEER-ANNOUNCED RESOURCE UPDATES, bounded. See [`ResourceUpdates`].
+    pub(crate) updates: ResourceUpdates,
 }
 
 /// EVERY `…/list_changed` A PEER HAS SIGNALLED SINCE THE LAST SWEEP READ THIS, rate-limited per
@@ -133,6 +135,90 @@ impl RefreshTriggers {
             Ok(mut p) => std::mem::take(&mut *p),
             Err(p) => std::mem::take(&mut *p.into_inner()),
         }
+    }
+}
+
+/// EVERY `notifications/resources/updated` A PEER HAS ANNOUNCED, as `(sequence, server, uri)` —
+/// the one peer message whose PAYLOAD is read, and the reading is one string field under two
+/// gates.
+///
+/// ## Why this one breaks the "names, never payloads" rule, and how far it breaks it
+///
+/// [`RefreshTriggers`]' rule is that an untrusted peer's message moves TIMING and never CONTENT,
+/// because the four list-changed names all mean "re-pull the authoritative list" and the list is
+/// re-fetched from scratch. `resources/updated` is different in kind: it names WHICH resource
+/// moved, and a relay that dropped the name would have nothing to relay — the whole point of the
+/// downstream category (`resourceSubscriptions` on `subscriptions/listen`) is that a subscriber
+/// asked about specific URIs. So exactly ONE field is read (`params.uri`, a string, length-capped
+/// here), and it is BELIEVED nowhere: the server-leg relay in `crate::mcp::subscribe` emits an
+/// event only when the recorded uri resolves, under the SUBSCRIBER'S OWN grant, to an
+/// operator-declared resource of the SAME server that announced it. An upstream can therefore
+/// choose the timing of a notification about a resource the operator declared on ITS registration,
+/// and nothing else — it cannot name another server's resource, invent a uri the operator never
+/// wrote, or reach a subscriber whose grant does not cover the resource.
+///
+/// ## Why a bounded ring with per-reader CURSORS, not a drained set
+///
+/// `take_pending` drains because ONE sweep acts on a trigger exactly once. An update has MANY
+/// readers — every open listen stream holds its own position — so draining would deliver each
+/// event to whichever stream polled first and silence to the rest. Readers keep a sequence cursor
+/// and ask for what they have not seen; the ring keeps [`MAX_RESOURCE_UPDATES`] events and evicts
+/// the oldest, so a slow stream misses old events rather than growing memory — a missed
+/// notification costs a client one re-read of a resource it can re-read at any time, which is the
+/// same trade the change-key hash makes.
+#[derive(Debug, Default)]
+pub(crate) struct ResourceUpdates {
+    events: Mutex<std::collections::VecDeque<(u64, String, String)>>,
+    next_seq: std::sync::atomic::AtomicU64,
+}
+
+/// The ring bound. Enough that a burst across a busy fleet reaches every 250ms poller; small
+/// enough that a hostile upstream writing one notification per millisecond evicts its OWN noise.
+const MAX_RESOURCE_UPDATES: usize = 256;
+
+/// The cap on one announced uri. A resource uri an operator actually declared fits here with room;
+/// a longer one is a payload wearing a uri's clothes, dropped before it is stored.
+const MAX_ANNOUNCED_URI_BYTES: usize = 2048;
+
+impl ResourceUpdates {
+    /// RECORD one announcement from `server` about `uri`. Oversized uris are dropped — they cannot
+    /// match any operator declaration, so storing them would spend the ring on noise.
+    pub(crate) fn record(&self, server: &str, uri: &str) {
+        if uri.is_empty() || uri.len() > MAX_ANNOUNCED_URI_BYTES {
+            return;
+        }
+        let seq = self
+            .next_seq
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            + 1;
+        let mut events = match self.events.lock() {
+            Ok(e) => e,
+            Err(p) => p.into_inner(),
+        };
+        if events.len() >= MAX_RESOURCE_UPDATES {
+            events.pop_front();
+        }
+        events.push_back((seq, server.to_string(), uri.to_string()));
+    }
+
+    /// The newest sequence number — where a fresh reader starts, so a subscription relays what
+    /// happens AFTER it was opened rather than replaying a history it never asked for.
+    pub(crate) fn latest(&self) -> u64 {
+        self.next_seq.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Every event newer than `cursor`, oldest first, plus the cursor the reader should hold next.
+    pub(crate) fn since(&self, cursor: u64) -> (Vec<(String, String)>, u64) {
+        let events = match self.events.lock() {
+            Ok(e) => e,
+            Err(p) => p.into_inner(),
+        };
+        let out = events
+            .iter()
+            .filter(|(seq, _, _)| *seq > cursor)
+            .map(|(_, server, uri)| (server.clone(), uri.clone()))
+            .collect();
+        (out, self.latest())
     }
 }
 

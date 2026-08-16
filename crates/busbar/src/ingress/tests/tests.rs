@@ -25,6 +25,7 @@ fn minimal_app() -> Arc<App> {
         mcp_sightings: Default::default(),
         mcp_spent_approvals: Default::default(),
         mcp_roots_epochs: Default::default(),
+        mcp_sampling_spend: Default::default(),
         mcp_demotions: Default::default(),
         mcp_pool: Default::default(),
         mcp_servers: Arc::new(Default::default()),

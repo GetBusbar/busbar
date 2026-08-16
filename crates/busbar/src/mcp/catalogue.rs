@@ -281,6 +281,10 @@ pub(crate) struct ServerEntry {
     /// `roots/list` — the satisfier behind `grants.roots`. Empty ⇒ a granted ask is refused as
     /// unsatisfiable, naming `tools.<server>.roots`.
     pub(crate) roots: Vec<super::config::RootCfg>,
+    /// The operator-declared sampling policy for THIS upstream — the satisfier behind
+    /// `grants.sampling`, as `roots` is the satisfier behind `grants.roots`. Absent ⇒ a granted
+    /// sampling ask is refused as unsatisfiable, naming `tools.<server>.sampling`.
+    pub(crate) sampling: Option<super::config::SamplingCfg>,
     /// The hard cap on input-required rounds per logical dispatch. An upstream that can ask
     /// indefinitely can amplify cost indefinitely, so the bound is a number, not a heuristic.
     pub(crate) max_input_required_rounds: u32,
@@ -1080,6 +1084,7 @@ fn server_entry(id: &str, def: &McpServerDefCfg) -> ServerEntry {
         approval,
         grants: def.grants,
         roots: def.roots.clone(),
+        sampling: def.sampling.clone(),
         max_input_required_rounds: def
             .max_input_required_rounds
             .unwrap_or(super::config::DEFAULT_MAX_INPUT_REQUIRED_ROUNDS),

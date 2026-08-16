@@ -130,6 +130,7 @@ fn build_with_hook_makes_an_mcp_attach_live() {
         aud: None,
         grants: Default::default(),
         roots: Vec::new(),
+        sampling: None,
         max_input_required_rounds: None,
         max_caller_ask_rounds: None,
         allow_private: false,

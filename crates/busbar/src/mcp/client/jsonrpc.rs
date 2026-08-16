@@ -100,6 +100,16 @@ impl OutboundRequest {
     }
 }
 
+/// WHICH client capabilities the outbound `_meta` declares — one flag per capability busbar can
+/// genuinely answer for THIS server. A struct rather than adjacent booleans, because two `bool`s
+/// in one signature are two arguments a call site can swap without the compiler noticing, and the
+/// swap would advertise an ask busbar then refuses.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct AdvertisedCaps {
+    pub(crate) roots: bool,
+    pub(crate) sampling: bool,
+}
+
 /// Build a `tools/call` for `key` against `url`.
 ///
 /// `authorization` is the ALREADY-PLANNED credential header value (see `super::egress`). It arrives
@@ -111,18 +121,19 @@ impl OutboundRequest {
 /// is MRTR's own continuation shape, the one busbar's ingress reads at
 /// `crate::mcp::method`'s `inputResponses` sites. `None` is every first round and every call whose
 /// upstream asked nothing, and produces a byte-identical request to what this builder always sent.
-/// `advertise_roots` declares the `roots` client capability in `_meta`. TRUE exactly when the
-/// registration holds a `grants.roots` AND an operator declared `tools.<server>.roots` — the two
-/// facts that make busbar genuinely able to answer, because MRTR forbids a server sending an ask
-/// the client has not declared, and declaring a capability busbar would then refuse invites an
-/// upstream to build a call sequence around a refusal.
+/// `advertise` declares the client capabilities in `_meta`. Each flag is TRUE exactly when the
+/// registration holds the matching grant AND the operator declared its satisfier
+/// (`tools.<server>.roots` / `tools.<server>.sampling`) — the two facts that make busbar genuinely
+/// able to answer, because MRTR forbids a server sending an ask the client has not declared, and
+/// declaring a capability busbar would then refuse invites an upstream to build a call sequence
+/// around a refusal.
 pub(crate) fn tools_call(
     url: &str,
     key: &ToolKey,
     arguments: &serde_json::Value,
     request_id: u64,
     authorization: Option<&str>,
-    advertise_roots: bool,
+    advertise: AdvertisedCaps,
     continuation: Option<&serde_json::Value>,
 ) -> OutboundRequest {
     // The UN-namespaced name: see the module header.
@@ -141,16 +152,19 @@ pub(crate) fn tools_call(
         })
         .ok()
         .flatten();
-    // busbar declares NO client capabilities BY DEFAULT. Sampling and elicitation are
-    // deny-by-default per server, and declaring a capability we then refuse to honour invites an
-    // upstream to build a call sequence around it. Declaring the empty set is the honest statement
-    // of a client that will not be answering — and `roots` joins it exactly when the operator made
-    // the statement true (see `advertise_roots` above).
-    let capabilities = if advertise_roots {
-        serde_json::json!({ "roots": {} })
-    } else {
-        serde_json::json!({})
-    };
+    // busbar declares NO client capabilities BY DEFAULT. Every ask kind is deny-by-default per
+    // server, and declaring a capability we then refuse to honour invites an upstream to build a
+    // call sequence around it. Declaring the empty set is the honest statement of a client that
+    // will not be answering — and each capability joins it exactly when the operator made the
+    // statement true (see `advertise` above).
+    let mut capabilities = serde_json::Map::new();
+    if advertise.roots {
+        capabilities.insert("roots".to_string(), serde_json::json!({}));
+    }
+    if advertise.sampling {
+        capabilities.insert("sampling".to_string(), serde_json::json!({}));
+    }
+    let capabilities = serde_json::Value::Object(capabilities);
     let mut body = serde_json::json!({
         "jsonrpc": "2.0",
         "id": request_id,

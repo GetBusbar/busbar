@@ -217,6 +217,21 @@ pub(crate) fn read_server_frames(leg: &WireLeg<'_>, raw: &[u8]) -> Vec<super::pe
                         "mcp http: peer signalled a catalogue change"
                     );
                 }
+                // `resources/updated`: the refresh trigger EXACTLY as above, plus the one field
+                // read — the announced uri, recorded for the server-leg relay and believed
+                // nowhere. See `super::pool::ResourceUpdates` for the bounds.
+                NotificationEffect::RelayResourceUpdate => {
+                    let accepted = leg.pool.triggers.signal(leg.server, crate::store::now_ms());
+                    if let Some(uri) = frame.pointer("/params/uri").and_then(|u| u.as_str()) {
+                        leg.pool.updates.record(leg.server, uri);
+                    }
+                    tracing::debug!(
+                        server = %leg.server,
+                        notification = ?n,
+                        accepted,
+                        "mcp http: peer announced a resource update"
+                    );
+                }
                 // THE WHOLE FRAME, and it is safe to relay verbatim for one reason only: this arm
                 // is reached ONLY for `notifications/progress`, which `super::peer`'s closed table
                 // decides. An arm that relayed whatever notification arrived would let an upstream

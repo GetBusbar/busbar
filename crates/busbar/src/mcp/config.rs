@@ -577,6 +577,44 @@ pub(crate) struct RootCfg {
     pub(crate) name: Option<String>,
 }
 
+/// `tools.<server>.sampling` — the OPERATOR'S SAMPLING POLICY for one upstream: what a granted
+/// `sampling/createMessage` ask may spend, and where.
+///
+/// OPERATOR-DECLARED, per registration, and the shape is the roots policy's shape on the other
+/// grant: `grants.sampling` ADMITS the ask, and this block is what the operator said may ANSWER it.
+/// Neither implies the other — a grant with no policy is refused as unsatisfiable naming this key,
+/// and a policy behind a closed grant is refused at boot as unreachable.
+///
+/// The three fields are the three axes of the spend, and all three are REQUIRED because each one
+/// left open is an unbounded axis an upstream chooses for itself:
+///
+/// - `model` says WHERE the completion runs — busbar's own pool/model name, under the inbound
+///   caller's grant. Never the upstream's `modelPreferences`: the ask's payload is
+///   attacker-controlled content, and letting it name the pool lets a hostile upstream pick which
+///   of the operator's providers to spend on.
+/// - `max_tokens` caps HOW BIG one completion may be. The ask's own `maxTokens` is honoured below
+///   this ceiling and clamped to it above — which the protocol permits, a sampling client may
+///   always sample fewer tokens than the server asked for.
+/// - `max_requests_per_minute` caps HOW OFTEN — the per-upstream budget, deployment-wide, spent
+///   before the model leg is entered so a refused completion costs nothing. This is the bound the
+///   old waiver named as missing ("no per-upstream budget to spend against"), and it is per
+///   UPSTREAM deliberately: the caller's own per-key budget and the round cap still apply, but
+///   neither of them is a statement about what THIS server may induce across all callers.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SamplingCfg {
+    /// The pool or model name the completion is dispatched to, on busbar's own catalogue, resolved
+    /// under the INBOUND caller's grant like any other LLM request.
+    pub(crate) model: String,
+    /// The ceiling on one completion's `max_tokens`. The ask's request above it is clamped, not
+    /// refused: sampling fewer tokens than asked is conformant, and a hard refusal would hand the
+    /// upstream a probe for the operator's number.
+    pub(crate) max_tokens: u32,
+    /// The per-upstream request budget, per minute, across every caller and dispatch. Exhausted ⇒
+    /// the ask is refused naming this key, before any model leg is entered.
+    pub(crate) max_requests_per_minute: u32,
+}
+
 /// The DEFAULT cap on input-required rounds per logical dispatch.
 ///
 /// A hard cap, refused past it, not a warning. Three is chosen because it is enough for a real
@@ -719,6 +757,12 @@ pub(crate) struct McpServerDefCfg {
     /// refused as unsatisfiable, with a refusal naming this key. See [`RootCfg`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) roots: Vec<RootCfg>,
+    /// The SAMPLING POLICY for THIS upstream — the SATISFIER the `grants.sampling` gate admits an
+    /// ask to, exactly as `roots:` is the satisfier behind `grants.roots`. Absent ⇒ a granted
+    /// sampling ask is still refused as unsatisfiable, with a refusal naming this key. See
+    /// [`SamplingCfg`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) sampling: Option<SamplingCfg>,
     /// Whether this ONE upstream may live on a private / loopback / CGNAT address.
     ///
     /// Per server rather than plane-wide, because the answer genuinely differs per registration: an
@@ -1232,6 +1276,43 @@ pub(crate) fn validate_server(name: &str, def: &McpServerDefCfg) -> Result<(), S
              and `grants.roots` is false, so the ask is refused before the list is ever read. \
              Set `grants.roots: true`, or delete the list."
         ));
+    }
+
+    // THE SAMPLING POLICY, vetted at boot by the same two-sided rule as the roots policy: a policy
+    // behind a closed grant is unreachable and the operator who wrote it plainly meant it to be
+    // reached, and a policy whose numbers cannot bound anything is a grant wearing a budget's
+    // clothes. Zero on either axis is refused rather than read as "unlimited" OR as "off": an
+    // operator who means off deletes the grant, and an operator who means unlimited does not get
+    // to mean it — the whole reason this block exists is that the spend must have a ceiling.
+    if let Some(sampling) = &def.sampling {
+        if !def.grants.sampling {
+            return Err(format!(
+                "{at}: `sampling:` declares what a granted `sampling/createMessage` ask may spend, \
+                 and `grants.sampling` is false, so the ask is refused before the policy is ever \
+                 read. Set `grants.sampling: true`, or delete the block."
+            ));
+        }
+        if sampling.model.trim().is_empty() {
+            return Err(format!(
+                "{at}: `sampling.model:` is empty. It names the pool or model on busbar's own \
+                 catalogue that a granted sampling ask runs on, and an empty name dispatches \
+                 nowhere. Name one, or delete the block."
+            ));
+        }
+        if sampling.max_tokens == 0 {
+            return Err(format!(
+                "{at}: `sampling.max_tokens: 0` caps every completion at nothing, which is the \
+                 grant withheld wearing a budget's clothes. Set a real ceiling, or delete the \
+                 `sampling:` block (and the grant) to refuse the ask honestly."
+            ));
+        }
+        if sampling.max_requests_per_minute == 0 {
+            return Err(format!(
+                "{at}: `sampling.max_requests_per_minute: 0` admits no request ever, which is the \
+                 grant withheld wearing a budget's clothes. Set a real budget, or delete the \
+                 `sampling:` block (and the grant) to refuse the ask honestly."
+            ));
+        }
     }
 
     for (tool, allow) in &def.tools_allow {

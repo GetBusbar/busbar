@@ -82,6 +82,7 @@ fn server_with_prompt() -> McpServerDefCfg {
         aud: None,
         grants: ServerRequestGrants::default(),
         roots: Vec::new(),
+        sampling: None,
         allow_private: false,
         token_exchange: None,
         max_input_required_rounds: None,

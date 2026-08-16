@@ -291,9 +291,22 @@ fn only_the_change_notifications_trigger_a_refresh() {
     );
     for (n, triggers) in expected {
         assert_eq!(
-            n.effect() == NotificationEffect::BringRefreshForward,
+            matches!(
+                n.effect(),
+                NotificationEffect::BringRefreshForward | NotificationEffect::RelayResourceUpdate
+            ),
             triggers,
             "{n:?} maps to the wrong effect"
+        );
+    }
+    // `ResourcesUpdated` is the ONE arm with a second, named effect — the recorded uri for the
+    // server-leg relay — and it must be exactly one: a second recording arm is a second reader of
+    // peer-chosen content.
+    for n in expected.map(|(n, _)| n) {
+        assert_eq!(
+            n.effect() == NotificationEffect::RelayResourceUpdate,
+            n == ServerNotification::ResourcesUpdated,
+            "{n:?}: only `resources/updated` records an announcement"
         );
     }
     assert_eq!(

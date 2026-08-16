@@ -335,6 +335,9 @@ pub(crate) struct PeerPolicy<'a> {
     /// Where an accepted `…/list_changed` goes. The NAME only — see
     /// [`super::pool::RefreshTriggers`].
     pub(crate) triggers: &'a super::pool::RefreshTriggers,
+    /// Where an announced `resources/updated` goes — the one notification with a recorded field.
+    /// See [`super::pool::ResourceUpdates`] for the bounds on what the recording can do.
+    pub(crate) updates: &'a super::pool::ResourceUpdates,
 }
 
 /// A LIVE stdio child: the process and its pipes.
@@ -543,6 +546,21 @@ impl StdioChild {
                             notification = ?n,
                             accepted,
                             "mcp stdio: peer signalled a catalogue change"
+                        );
+                    }
+                    // `resources/updated`: the refresh trigger EXACTLY as above, plus the one
+                    // field read — the announced uri, recorded for the server-leg relay and
+                    // believed nowhere. See `super::pool::ResourceUpdates` for the bounds.
+                    NotificationEffect::RelayResourceUpdate => {
+                        let accepted = policy.triggers.signal(policy.server, now_ms());
+                        if let Some(uri) = raw.pointer("/params/uri").and_then(|u| u.as_str()) {
+                            policy.updates.record(policy.server, uri);
+                        }
+                        tracing::debug!(
+                            server = %policy.server,
+                            notification = ?n,
+                            accepted,
+                            "mcp stdio: peer announced a resource update"
                         );
                     }
                     NotificationEffect::RelayProgress => {
@@ -870,6 +888,7 @@ fn peer_policy<'a>(leg: &WireLeg<'a>) -> PeerPolicy<'a> {
         server: leg.server,
         grants: leg.grants,
         triggers: &leg.pool.triggers,
+        updates: &leg.pool.updates,
     }
 }
 

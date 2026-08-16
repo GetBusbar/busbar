@@ -246,6 +246,7 @@ pub(crate) fn server_cfg(
         aud: None,
         grants: crate::mcp::config::ServerRequestGrants::default(),
         roots: Vec::new(),
+        sampling: None,
         max_input_required_rounds: None,
         max_caller_ask_rounds: None,
         // The peer is on loopback, which every fail-closed default refuses until an operator says

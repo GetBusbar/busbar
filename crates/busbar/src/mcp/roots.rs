@@ -98,9 +98,11 @@ impl RootsEpochs {
 /// the exact key in the refusal, because `Unsatisfiable`'s whole contract is that its message is
 /// the remedy.
 ///
-/// The `sampling` and `elicitation` kinds keep their standing refusal (worded as it always was):
-/// the first has no per-upstream budget to spend against and the second has no human to interrupt,
-/// and both decisions are recorded in `qa/WAIVERS.md` / the coverage queue rather than here.
+/// The `sampling` kind is dispatched to its own satisfier before this function is reached — see
+/// [`crate::mcp::sampling`], which is this policy's shape on the other grant. `elicitation` (and
+/// any kind this build has never heard of) falls through to the standing refusal below, worded as
+/// it always was: there is no human to interrupt, and that decision is recorded in `qa/WAIVERS.md`
+/// rather than here.
 ///
 /// ## The shape returned
 ///

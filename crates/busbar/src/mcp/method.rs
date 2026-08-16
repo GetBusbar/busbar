@@ -500,10 +500,15 @@ fn discover(ctx: &Ctx<'_>, id: Option<serde_json::Value>) -> Response {
                 // `discover_declares_the_capabilities_the_listen_stream_delivers`.
                 "tools": { "listChanged": true },
                 "prompts": { "listChanged": true },
-                // `subscribe: false` is still the true half: `resourceSubscriptions` is narrowed
-                // away in the acknowledgement, because a resource's CONTENTS change at the
-                // upstream that owns them and busbar is not told when they do.
-                "resources": { "listChanged": true, "subscribe": false },
+                // `subscribe: true` since the relay landed: `resourceSubscriptions` on
+                // `subscriptions/listen` is DELIVERED now — an upstream's own
+                // `notifications/resources/updated` is recorded by the client leg and relayed to
+                // subscribers whose grant reaches the named resource. The old `false` was pinned
+                // to the sentence "busbar is not told when a resource's contents change", and
+                // that sentence stopped being true; a declaration and a delivery must keep
+                // agreeing in BOTH directions, which is what
+                // `discover_declares_the_capabilities_the_listen_stream_delivers` pins.
+                "resources": { "listChanged": true, "subscribe": true },
                 // Present because `completion/complete` is IMPLEMENTED and answers correctly, which
                 // is what the capability declares. It is not a claim that this deployment has
                 // suggestions to give — see `completion_complete` for why the answer is the empty
@@ -1436,24 +1441,37 @@ async fn tools_call(
                 .map(|s| s.grants)
                 .unwrap_or_default()
         },
-        // SATISFYING an ask is a separate unit from making the call. A granted `roots` ask IS
-        // satisfied, from the operator's own `tools.<server>.roots` declaration re-read LIVE off
-        // the same snapshot the grant was (see `super::roots::satisfy_upstream_ask`). A granted
-        // `sampling` would be a real LLM request on busbar's own pools with no per-upstream budget
-        // to charge it to, and an `elicitation` needs a human busbar does not have — both keep
-        // their refusal, and saying so is NOT the same as refusing the grant: `Unsatisfiable` and
-        // `Ungranted` are different answers with different operator remedies, which is why they
-        // are different arms. The ask still TERMINATES here either way: the caller is told what
-        // busbar decided, never handed the ask.
+        // SATISFYING an ask is a separate unit from making the call. A granted `roots` ask is
+        // satisfied from the operator's own `tools.<server>.roots` declaration, and a granted
+        // `sampling` ask from the operator's own `tools.<server>.sampling` policy — one governed
+        // completion on the declared model, under THIS caller's key, budget and hooks, within the
+        // per-upstream budget (see `super::sampling`). Both declarations are re-read LIVE off the
+        // same snapshot the grant was. An `elicitation` needs a human busbar does not have and
+        // keeps its refusal — and saying so is NOT the same as refusing the grant: `Unsatisfiable`
+        // and `Ungranted` are different answers with different operator remedies, which is why
+        // they are different arms. The ask still TERMINATES here in every arm: the caller is told
+        // what busbar decided, never handed the ask.
         |ask| {
-            let roots = ctx
-                .handle
-                .load()
-                .mcp_catalogue
-                .server(&server_id)
-                .map(|s| s.roots.clone())
-                .unwrap_or_default();
-            super::roots::satisfy_upstream_ask(ask, &server_id, &roots)
+            let live = ctx.handle.load();
+            let entry = live.mcp_catalogue.server(&server_id);
+            let roots = entry.map(|s| s.roots.clone()).unwrap_or_default();
+            let sampling = entry.and_then(|s| s.sampling.clone());
+            let gov = ctx.gov.clone();
+            let server = server_id.clone();
+            async move {
+                if ask.kind == "sampling" {
+                    super::sampling::satisfy_upstream_ask(
+                        &live,
+                        &gov,
+                        &ask,
+                        &server,
+                        sampling.as_ref(),
+                    )
+                    .await
+                } else {
+                    super::roots::satisfy_upstream_ask(&ask, &server, &roots)
+                }
+            }
         },
         |rec| charge_round(ctx, &selected.namespaced, rec, &mut holds),
     )

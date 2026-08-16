@@ -171,6 +171,12 @@ pub(crate) enum NotificationEffect {
     /// Bring a `tools/list` re-pull forward, subject to [`super::catalogue::RefreshGate`]. The
     /// notification's CONTENTS are not read — see the module header.
     BringRefreshForward,
+    /// `notifications/resources/updated` — everything [`NotificationEffect::BringRefreshForward`]
+    /// does, PLUS record `(server, params.uri)` into [`super::pool::ResourceUpdates`] so the
+    /// server leg can relay the update onto `subscriptions/listen`'s `resourceSubscriptions`
+    /// category. The ONE effect that reads a field of a peer's notification, and the field is
+    /// believed nowhere — see that type's header for the exact bounds on what the reading can do.
+    RelayResourceUpdate,
     /// Relay to the caller's progress channel, if this dispatch has one.
     RelayProgress,
     /// Record it at the mapped log level and nothing else.
@@ -181,13 +187,15 @@ impl ServerNotification {
     /// The effect, exhaustive and with no wildcard.
     pub(crate) fn effect(self) -> NotificationEffect {
         match self {
-            // The four "the shape of what you can call has moved" triggers. A refresh re-pulls the
-            // authoritative list and re-hashes it, which is the ONLY way an upstream can influence
-            // busbar's catalogue — and it influences the TIMING, never the content.
+            // The three "the shape of what you can call has moved" triggers. A refresh re-pulls
+            // the authoritative list and re-hashes it, which is the ONLY way an upstream can
+            // influence busbar's catalogue — and it influences the TIMING, never the content.
             ServerNotification::ToolsListChanged
             | ServerNotification::PromptsListChanged
-            | ServerNotification::ResourcesListChanged
-            | ServerNotification::ResourcesUpdated => NotificationEffect::BringRefreshForward,
+            | ServerNotification::ResourcesListChanged => NotificationEffect::BringRefreshForward,
+            // The fourth trigger still brings the refresh forward AND is the one notification with
+            // a second, named effect: the announced uri is recorded for the server-leg relay.
+            ServerNotification::ResourcesUpdated => NotificationEffect::RelayResourceUpdate,
             ServerNotification::Progress => NotificationEffect::RelayProgress,
             // Cancelled, Message, SubscriptionsAcknowledged and Tasks are RECORDED and no more.
             // Acting on a peer's `cancelled` by aborting busbar's in-flight leg would hand a child
