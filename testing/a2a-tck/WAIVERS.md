@@ -205,11 +205,14 @@ Three independent blockers stand in front of these requirements, in this order:
    the only knob the suite exposes is `--webhook-host`, which substitutes the HOST. busbar refuses a
    plaintext webhook: `a2a::pushnotify::structural_check` tests the scheme first and returns
    `Scheme("http")` before the host is parsed for ranges, which the unit test
-   `plaintext_is_refused_unless_the_operator_opted_in` pins against a PUBLIC address. There is no
-   configuration path to `allow_plaintext` for this plane at all — `A2aPlane` builds
-   `FetchPolicy::default()` and only `allow_private` is lowered per registration by
-   `fetch_policy_for`, so no operator, and no rig, can turn this off. **A topology change cannot
-   reach this refusal.**
+   `plaintext_is_refused_and_there_is_no_argument_that_relaxes_it` pins against a PUBLIC address.
+   This refusal is now STRUCTURAL rather than defaulted: the `allow_plaintext` parameter that
+   `structural_check`, `validate` and `revalidate` used to take is DELETED, so there is no argument
+   through which any caller — let alone any config key — could relax it. (It never had a
+   configuration path either: `A2aPlane` built `FetchPolicy::default()` and only `allow_private` was
+   lowered per registration by `fetch_policy_for`. The parameter was an escape hatch nothing was
+   wired to, which is why removing it changes no behaviour and no count.) **A topology change cannot
+   reach this refusal, and neither can a configuration change.**
 2. ~~**The caller's credential is never stored, so it can never be echoed.**~~ **BUILT — blocker
    removed.** `PUSH-DELIVER-001` asserts the delivery carries `Authorization: <scheme>
    <credentials>` from the config's `authentication` member, and busbar used to drop that member at
