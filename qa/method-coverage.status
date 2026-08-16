@@ -642,6 +642,99 @@ mcp|stdio|client|client|tools/call = implemented
 # addressed to nowhere.
 mcp|stdio|client|client|tools/list = implemented
 
+# ── MCP, busbar as SERVER, over STDIO — the serve mode, 2026-08-15 (`busbar --mcp-stdio`) ──────
+#
+# THE WHOLE 36-CELL FAMILY, landed as the one unit its old waiver text said it was. busbar runs as
+# an MCP host's CHILD PROCESS: newline-delimited JSON-RPC on its own stdin/stdout, EOF is
+# shutdown, and NO listener is bound. ONE PATHWAY, enforced by construction: every frame runs
+# crate::ingress::protocol::serve with the SAME McpWords and the SAME envelope::rpc_dispatch the
+# HTTP endpoint runs — there is no stdio method table and no stdio refusal shaper, and the
+# mirrored routing headers are derived from the body exactly as the battery's own
+# stdio-http-bridge derives them, so a body defect stays a body defect. GOVERNANCE is a BOOT-TIME
+# credential (BUSBAR_MCP_STDIO_CREDENTIAL): the same audience pre-filter, the same auth chain and
+# the same verdict resolution (auth::resolve_data_plane_identity, now shared with the HTTP
+# middleware) bind the WHOLE session to one key, so budgets, audit attribution and hooks apply to
+# every frame; a configured chain with no credential, or a refused one, is a nonzero exit before a
+# single frame is served. The design argument in full: crates/busbar/src/mcp/stdio_serve.rs.
+#
+# WHAT THE PERSISTENT CHANNEL MAKES REAL, per direction. Client-direction: the HTTP table's twelve
+# catalogue/dispatch verbs plus subscriptions/listen unchanged; initialize (the dual-era trigger
+# the revision scopes to stdio, answered with the ONE revision this server speaks) with
+# notifications/initialized accepted silently; ping; logging/setLevel as a SESSION floor feeding
+# the per-request slot; resources/subscribe|unsubscribe with baselines taken at subscribe time;
+# notifications/cancelled aborting the in-flight dispatch (no further messages);
+# notifications/progress correlated to a pending busbar-originated ask; and SEP-1036's
+# notifications/elicitation/response, admissible HERE because the one authenticated single-caller
+# channel is the binding the HTTP waiver said was impossible. Server-direction: an operator's
+# ask_caller travels as LIVE elicitation/create / roots/list / sampling/createMessage REQUESTS
+# (the sealed requestState, capability filter and round charges all still run — the retry
+# re-enters the full sequence); response-stream frames (notifications/message, /progress, the
+# subscription acknowledgement and the three list_changed kinds) are unwrapped one JSON-RPC line
+# each; the idle subscription's keepalive becomes a server→client ping; an EARLY-closed
+# subscription is announced with notifications/cancelled (the one purpose the revision permits);
+# a subscribed resource's registration change is pushed as notifications/resources/updated; and a
+# task's registry transitions are pushed as notifications/tasks.
+#
+# INSTRUMENTS, each watched green — the real serve loop over real pipes, never a mock of it:
+#   in-process (mcp::stdio_serve::stdio_serve_tests — serve_io over duplex pipes, real Apps, a
+#   real fake upstream peer, a real GovState with a minted key in a one-request group):
+#     the_http_method_table_serves_the_stdio_channel_unchanged
+#     initialize_negotiates_the_one_revision_and_eof_ends_the_session
+#     logging_set_level_makes_the_sessions_records_ride_the_channel
+#     a_cancelled_request_is_aborted_and_never_answered
+#     a_caller_ask_is_driven_live_over_the_channel_and_the_call_completes
+#     each_of_the_three_asks_is_issued_as_its_own_request
+#     an_out_of_band_elicitation_response_redeems_the_pending_ask
+#     a_budgeted_key_is_refused_over_budget_through_the_stdio_binding
+#     subscriptions_and_resource_watches_ride_the_channel
+#     unsubscribe_stops_the_resource_updates
+#     an_early_closed_subscription_is_announced_with_cancelled
+#     a_tasks_transition_is_pushed_over_the_channel
+#     an_idle_subscriptions_keepalive_becomes_a_server_ping
+#   end-to-end, the REAL binary spawned as a child over real OS pipes
+#   (crates/busbar/tests/mcp_stdio_serve.rs):
+#     an_mcp_deployment_with_an_empty_chain_refuses_to_boot
+#     a_governed_deployment_refuses_an_uncredentialed_stdio_session
+#     a_governed_deployment_refuses_a_wrong_audience_credential
+#     a_budgeted_stdio_session_serves_within_budget_and_refuses_over_it
+#     a_roleless_session_serves_ungoverned_and_eof_with_a_live_subscription_exits_promptly
+mcp|stdio|server|client|completion/complete = implemented
+mcp|stdio|server|client|initialize = implemented
+mcp|stdio|server|client|logging/setLevel = implemented
+mcp|stdio|server|client|notifications/cancelled = implemented
+mcp|stdio|server|client|notifications/elicitation/response = implemented
+mcp|stdio|server|client|notifications/initialized = implemented
+mcp|stdio|server|client|notifications/progress = implemented
+mcp|stdio|server|client|notifications/roots/list_changed = implemented
+mcp|stdio|server|client|ping = implemented
+mcp|stdio|server|client|prompts/get = implemented
+mcp|stdio|server|client|prompts/list = implemented
+mcp|stdio|server|client|resources/list = implemented
+mcp|stdio|server|client|resources/read = implemented
+mcp|stdio|server|client|resources/subscribe = implemented
+mcp|stdio|server|client|resources/templates/list = implemented
+mcp|stdio|server|client|resources/unsubscribe = implemented
+mcp|stdio|server|client|server/discover = implemented
+mcp|stdio|server|client|subscriptions/listen = implemented
+mcp|stdio|server|client|tasks/cancel = implemented
+mcp|stdio|server|client|tasks/get = implemented
+mcp|stdio|server|client|tasks/update = implemented
+mcp|stdio|server|client|tools/call = implemented
+mcp|stdio|server|client|tools/list = implemented
+mcp|stdio|server|server|elicitation/create = implemented
+mcp|stdio|server|server|notifications/cancelled = implemented
+mcp|stdio|server|server|notifications/message = implemented
+mcp|stdio|server|server|notifications/progress = implemented
+mcp|stdio|server|server|notifications/prompts/list_changed = implemented
+mcp|stdio|server|server|notifications/resources/list_changed = implemented
+mcp|stdio|server|server|notifications/resources/updated = implemented
+mcp|stdio|server|server|notifications/subscriptions/acknowledged = implemented
+mcp|stdio|server|server|notifications/tasks = implemented
+mcp|stdio|server|server|notifications/tools/list_changed = implemented
+mcp|stdio|server|server|ping = implemented
+mcp|stdio|server|server|roots/list = implemented
+mcp|stdio|server|server|sampling/createMessage = implemented
+
 # ---------------------------------------------------------------------------
 # waived
 # ---------------------------------------------------------------------------
