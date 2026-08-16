@@ -32,27 +32,52 @@
 //! signature-verified load path, and it made in-place hot-upgrade serve pre-upgrade code forever.
 //! Both are silent, so both are worse than the crash. Do not reintroduce it.
 //!
-//! The crash does not actually require the image to stay mapped. It requires a thread that RAN
-//! PLUGIN CODE to exit AFTER the unmap. So the invariant is about threads, and it is enforced here:
+//! The crash does not actually require the image to stay mapped. It requires a thread that ARMED
+//! THE PLUGIN'S TLS KEY to exit AFTER the unmap. So the invariant is about threads:
 //!
-//! > Every crossing into plugin code runs on a worker owned by this module, and a worker is never
-//! > dropped, never joined, and never returns from its receive loop for the life of the process.
+//! > A crossing that can be the first to touch a plugin-side `thread_local!` with a destructor runs
+//! > on a worker owned by this module, and a worker is never dropped, never joined, and never
+//! > returns from its receive loop for the life of the process.
 //!
 //! Because the guarantee lives in the loader rather than in the host's threading policy, it holds
 //! for the engine, for `cargo test`'s libtest harness (which spawns and retires a thread per test —
 //! the shape that produced every observed crash), and for any third-party embedder, with no
 //! configuration and nothing for a caller to get wrong.
 //!
-//! # What "plugin code" means here — all four categories
+//! # Which crossings are confined, and why not all of them
 //!
-//! 1. `dlopen` — runs the image's ELF `.init_array`;
-//! 2. the six ABI symbols (`busbar_abi`/`busbar_plugin_kind`/`busbar_open`/`busbar_call`/
-//!    `busbar_close`/`busbar_free`), which reach this module through [`crate::ffi_guard`];
-//! 3. `busbar_set_log_sink`, which installs a `tracing` dispatcher inside the plugin and is
-//!    therefore a prime toucher of plugin-side thread-locals;
-//! 4. `dlclose` — runs the image's ELF `.fini_array`.
+//! Confining a crossing costs a synchronous thread handoff: ~41 us, against ~1 us for the same
+//! crossing inline (5 trials each, 2-vCPU aarch64 VM, warm-up discarded). That is nothing on a
+//! per-LOAD crossing and unacceptable on a per-REQUEST one, so the split follows the cost:
 //!
-//! Miss any one of them and a caller thread still gets plugin TLS, so all four are routed.
+//! | crossing | frequency | routed |
+//! |---|---|---|
+//! | `dlopen` (runs `.init_array`) | per load | yes |
+//! | `busbar_abi`, `busbar_plugin_kind` | per load | yes |
+//! | `busbar_open` (the plugin's constructor) | per load | yes |
+//! | `busbar_set_log_sink` (installs a `tracing` dispatcher INSIDE the plugin) | per load | yes |
+//! | `busbar_close` (the plugin's `Drop`) | per unload | yes |
+//! | `dlclose` (runs `.fini_array`) | per unload | yes |
+//! | `busbar_call` | **per request** | no — inline |
+//! | `busbar_free` | **per request** | no — inline |
+//!
+//! # THE RESIDUAL, stated plainly
+//!
+//! Leaving `busbar_call`/`busbar_free` inline is sound only while no plugin first touches a
+//! TLS-with-destructor there rather than in its constructor. That is measured, not assumed — the
+//! four first-party store backends never do (0/200 aarch64 and 0/150 x86_64 e2e runs against a
+//! 14/150 control) — but it is a property of THOSE plugins, not a guarantee this loader can enforce
+//! on an arbitrary dropped-in one.
+//!
+//! The concrete way a third-party plugin breaks it: statically linking a thread-caching allocator
+//! (jemalloc, mimalloc) puts a TLS destructor in the plugin image that is armed by the first
+//! ALLOCATION, which for many plugins happens inside `busbar_call` rather than `busbar_open`. This
+//! engine links `tikv-jemallocator` itself, so it is not a hypothetical.
+//!
+//! If that residual has to be closed, the cheap way is to confine calls PER PLUGIN rather than
+//! globally: `busbar_open` already runs on a worker, so the loader can sample the process's free
+//! `pthread_key` count around it and, for a plugin that consumed one, route that plugin's calls too
+//! — paying the handoff only for plugins that actually use thread-locals.
 
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
 use std::sync::{Mutex, OnceLock};

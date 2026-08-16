@@ -112,12 +112,23 @@ pub(crate) fn dlclose_on_worker(lib: Library) {
 /// plugin frame BEFORE returning. `op` names the crossing (`open`/`call`/`close`/`free`/`abi`/`kind`)
 /// for the diagnostic. Every host-side ABI call site routes through this so no crossing is unguarded.
 fn ffi_guard<R>(path: &str, op: &str, f: impl FnOnce() -> R) -> Result<R, String> {
-    // Runs `f` on a worker thread that NEVER retires, and blocks until it returns. That is the whole
-    // of the TLS-destructor fix: a thread which has run plugin code must never exit, or glibc calls
-    // the plugin's own `pthread_key` destructor after the image is gone. See `ffi_thread`.
-    //
-    // The `catch_unwind` this function used to perform now happens on the worker (it has to — a
-    // panic escaping there would hang the rendezvous), so the returned contract is unchanged.
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).map_err(|_| {
+        format!("plugin '{path}' panicked across the ABI boundary in {op} (treated as failure)")
+    })
+}
+
+/// [`ffi_guard`], but the crossing runs on a worker thread that NEVER retires.
+///
+/// THE COST MODEL, which is why this is a separate function rather than the default. Confining a
+/// crossing costs a synchronous thread handoff — measured at ~41 us against ~0.9 us inline on a
+/// 2-vCPU VM. That is irrelevant for a crossing that happens once per LOAD and unacceptable for one
+/// that happens once per REQUEST, so the rare crossings are confined and the hot ones are not.
+///
+/// A crossing belongs here when it can plausibly be the FIRST thing to touch a plugin-side
+/// `thread_local!` with a destructor on the calling thread, because that is what arms the plugin's
+/// `pthread_key` and puts a destructor inside the image on that thread. See `ffi_thread` for the
+/// full mechanism and `where_the_plugin_arms_its_tls_key` for the measurement that decided the split.
+fn ffi_guard_confined<R>(path: &str, op: &str, f: impl FnOnce() -> R) -> Result<R, String> {
     ffi_thread::on_plugin_thread(f).map_err(|_| {
         format!("plugin '{path}' panicked across the ABI boundary in {op} (treated as failure)")
     })
@@ -353,7 +364,7 @@ impl Drop for RawPlugin {
         // degrades to a logged warning + leaked handle instead of tearing down the whole gateway.
         let close = self.close;
         let handle = self.handle;
-        if ffi_guard(&self.path, "close", move || unsafe { close(handle) }).is_err() {
+        if ffi_guard_confined(&self.path, "close", move || unsafe { close(handle) }).is_err() {
             tracing::warn!(
                 plugin = %self.path,
                 "plugin busbar_close panicked during drop; leaking the handle to keep the engine alive"
@@ -418,7 +429,7 @@ fn wire_up_raw(
     let transport = {
         let f = unsafe { lib.get::<busbar_plugin_abi::AbiFn>(symbol::ABI) }
             .map_err(|_| format!("'{display}' is not a busbar plugin (no busbar_abi symbol)"))?;
-        ffi_guard(&display, "abi", || unsafe { (*f)() })?
+        ffi_guard_confined(&display, "abi", || unsafe { (*f)() })?
     };
     if transport != TRANSPORT_VERSION {
         return Err(format!(
@@ -510,7 +521,7 @@ fn wire_up_raw(
     let mut handle: *mut c_void = std::ptr::null_mut();
     let mut err: *mut u8 = std::ptr::null_mut();
     let mut err_len: usize = 0;
-    let status = match ffi_guard(&display, "open", || unsafe {
+    let status = match ffi_guard_confined(&display, "open", || unsafe {
         open(
             cfg_json.as_ptr(),
             cfg_json.len(),
@@ -581,7 +592,7 @@ fn read_plugin_kind(lib: &Library, display: &str) -> Result<String, String> {
         format!("'{display}' is not a busbar plugin (no busbar_plugin_kind symbol)")
     })?;
     // Guarded: `busbar_plugin_kind()` runs plugin code; a panic fails the load CLOSED, not an abort.
-    let ptr = ffi_guard(display, "kind", || unsafe { (*f)() })?;
+    let ptr = ffi_guard_confined(display, "kind", || unsafe { (*f)() })?;
     if ptr.is_null() {
         return Err(format!("plugin '{display}' returned a null kind string"));
     }
@@ -1291,7 +1302,7 @@ pub fn validate_plugin(lib_path: &Path) -> Result<u32, String> {
     let transport = {
         let f = unsafe { lib.get::<busbar_plugin_abi::AbiFn>(symbol::ABI) }
             .map_err(|_| format!("'{display}' is not a busbar plugin (no busbar_abi symbol)"))?;
-        ffi_guard(&display, "abi", || unsafe { (*f)() })?
+        ffi_guard_confined(&display, "abi", || unsafe { (*f)() })?
     };
     if transport != TRANSPORT_VERSION {
         return Err(format!(
