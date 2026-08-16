@@ -62,9 +62,7 @@ fn exceeds_max_depth(bytes: &[u8], max: usize) -> bool {
 /// malformed-body (400) path. Callers log via `parse_err_log(len)`, never the raw `Display`, so the
 /// substitute error's message is never surfaced.
 #[inline]
-pub(crate) fn parse<'de, T: serde::Deserialize<'de>>(
-    bytes: &'de [u8],
-) -> Result<T, sonic_rs::Error> {
+pub fn parse<'de, T: serde::Deserialize<'de>>(bytes: &'de [u8]) -> Result<T, sonic_rs::Error> {
     if exceeds_max_depth(bytes, MAX_JSON_DEPTH) {
         // Manufacture a real `sonic_rs::Error` of the right type without touching the deep input.
         return sonic_rs::from_slice::<T>(b"");
@@ -75,9 +73,7 @@ pub(crate) fn parse<'de, T: serde::Deserialize<'de>>(
 /// Parse a body `&str` into a document (e.g. an SSE `data:` payload). SIMD-accelerated. Same depth
 /// guard as [`parse`].
 #[inline]
-pub(crate) fn parse_str<'de, T: serde::Deserialize<'de>>(
-    s: &'de str,
-) -> Result<T, sonic_rs::Error> {
+pub fn parse_str<'de, T: serde::Deserialize<'de>>(s: &'de str) -> Result<T, sonic_rs::Error> {
     if exceeds_max_depth(s.as_bytes(), MAX_JSON_DEPTH) {
         return sonic_rs::from_slice::<T>(b"");
     }
@@ -86,7 +82,7 @@ pub(crate) fn parse_str<'de, T: serde::Deserialize<'de>>(
 
 /// Serialize a document to body bytes. SIMD-accelerated; the request/response hot-path serializer.
 #[inline]
-pub(crate) fn to_vec<T: serde::Serialize>(value: &T) -> Result<Vec<u8>, sonic_rs::Error> {
+pub fn to_vec<T: serde::Serialize>(value: &T) -> Result<Vec<u8>, sonic_rs::Error> {
     sonic_rs::to_vec(value)
 }
 
@@ -95,7 +91,7 @@ pub(crate) fn to_vec<T: serde::Serialize>(value: &T) -> Result<Vec<u8>, sonic_rs
 /// scans the bytes and returns the borrowed `&str`, then `into_owned()` allocates the `String`. This is
 /// a cold path (error envelopes and SSE data, not the per-chunk hot loop), so the extra copy is fine.
 #[inline]
-pub(crate) fn to_string<T: serde::Serialize>(value: &T) -> Result<String, sonic_rs::Error> {
+pub fn to_string<T: serde::Serialize>(value: &T) -> Result<String, sonic_rs::Error> {
     sonic_rs::to_vec(value).map(|v| String::from_utf8_lossy(&v).into_owned())
 }
 
@@ -103,7 +99,7 @@ pub(crate) fn to_string<T: serde::Serialize>(value: &T) -> Result<String, sonic_
 /// which (with sonic-rs) embeds a fragment of the offending input bytes. A malformed body can contain
 /// secrets/PII, so logs must not echo it; "<n> bytes" is enough to correlate without leaking content.
 #[inline]
-pub(crate) fn parse_err_log(bytes_len: usize) -> String {
+pub fn parse_err_log(bytes_len: usize) -> String {
     format!("invalid JSON ({bytes_len} bytes)")
 }
 

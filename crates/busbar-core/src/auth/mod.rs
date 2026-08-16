@@ -55,7 +55,7 @@ pub(crate) const DUMMY_SECRET: &str = "AWS4-DUMMY-SECRET-FOR-CONSTANT-TIME-REJEC
 // cannot be patched per field, only replaced wholesale.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum UpstreamCreds {
+pub enum UpstreamCreds {
     #[default]
     Own,
     Passthrough,

@@ -17,6 +17,14 @@
 // that introduces an `unsafe` block fails to build rather than slipping in unreviewed.
 #![forbid(unsafe_code)]
 
+// The crate's own name, aliased. The extracted protocol dialects are written against
+// `busbar_core::` paths so ONE set of sources compiles both as its own crate (the production
+// shape) and — under `cfg(any(test, feature = "test-support"))`, via a `#[path]` module decl in
+// `proto/mod.rs` — back INTO this crate, where the pre-extraction fixture surface (hundreds of
+// `Protocol::anthropic()` fixtures and `protocol: anthropic` test configs) still exercises it.
+// This alias is what makes those `busbar_core::` spellings resolve here too.
+extern crate self as busbar_core;
+
 // The telemetry recovery tests (src/tests/telemetry_tests.rs) measure per-thread jemalloc
 // counters, and the SHIPPED binary runs on jemalloc — so the lib's TEST binary declares the same
 // allocator, keeping those measurements real rather than vacuously zero. Test-only: the library

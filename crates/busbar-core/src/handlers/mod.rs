@@ -26,9 +26,12 @@
 //! TRANSPORT: a variant in `transport.rs` and an arrival that frames these same codecs — no codec
 //! changes, because a codec never learns which channel it is speaking over. Nothing else moves.
 
-pub(crate) mod anthropic;
+// The Anthropic handler lives in the extracted dialect crate (`busbar-proto-anthropic`,
+// src/handler.rs) — reachable in the builds that compile the dialect back in as
+// `crate::proto::anthropic::handler`, and reachable in production only through the registry's
+// `ProtocolDecl::handler`, which is the point.
 pub(crate) mod bedrock;
-pub(crate) mod chat;
+pub mod chat;
 pub(crate) mod cohere;
 pub(crate) mod gemini;
 pub(crate) mod mcp;
@@ -70,15 +73,12 @@ use serde_json::Value;
 /// A protocol's vocabulary now lives beside its codecs, so deleting a protocol deletes its verbs
 /// with it and no core type mentions them — which is the deletion test the plugin seam is measured
 /// by. A verb absent from a row is the no-handler 404, exactly as an arm returning `None` was.
-pub(crate) type Cell = (Operation, &'static dyn OperationHandler);
+pub type Cell = (Operation, &'static dyn OperationHandler);
 
 /// THE ROW LOOKUP every [`RequestHandler::operation_handler`] is — stated once so there are not
 /// seven copies of a linear scan. Rows are single-digit in length, so this is a handful of pointer
 /// comparisons and is not worth a map.
-pub(crate) fn cell_of(
-    cells: &'static [Cell],
-    op: Operation,
-) -> Option<&'static dyn OperationHandler> {
+pub fn cell_of(cells: &'static [Cell], op: Operation) -> Option<&'static dyn OperationHandler> {
     cells
         .iter()
         .find(|(candidate, _)| *candidate == op)
@@ -100,9 +100,9 @@ pub(crate) fn path_of(
 
 /// A serialized wire body plus the content-type the OperationHandler chose for it. The engine relays both without
 /// interpreting either — `application/json` for JSON ops, `audio/mpeg` etc. for a binary op like speech.
-pub(crate) struct WireBody {
-    pub(crate) bytes: Bytes,
-    pub(crate) content_type: axum::http::HeaderValue,
+pub struct WireBody {
+    pub bytes: Bytes,
+    pub content_type: axum::http::HeaderValue,
 }
 
 impl WireBody {
@@ -129,14 +129,14 @@ impl WireBody {
 /// (via the existing `proxy::ingress_error`). `UnsupportedSubOp` is the second 404 site
 /// (`ImageIr.op` unsupported for the model) — distinct from handler-absence, same terminal.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum IngressReject {
+pub enum IngressReject {
     BadRequest(String),
     UnsupportedSubOp { op: Operation, model: String },
 }
 
 /// An upstream response body this OperationHandler could not decode into its operation's IR.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum CodecError {
+pub enum CodecError {
     Malformed(String),
 }
 
@@ -144,26 +144,26 @@ pub(crate) enum CodecError {
 /// ONLY — never the `Lane` or a config handle: a codec/handler touching routing state is exactly the
 /// coupling this fixes. Grows a field (region, api-version, …) when a protocol needs more; the trait
 /// signature does not. Routing populates it from the lane and applies any `lane.path` override itself.
-pub(crate) struct EgressCtx<'a> {
+pub struct EgressCtx<'a> {
     /// Which operation's endpoint to render — the template selector.
-    pub(crate) operation: Operation,
+    pub operation: Operation,
     /// The resolved wire model id (routing calls `Lane::wire_model()`), for URL-model protocols
     /// (Gemini `models/{model}:…`, Bedrock `model/{model}/invoke`).
-    pub(crate) model: &'a str,
+    pub model: &'a str,
     /// Whether the caller asked to stream (chat/audio path variants); `false` for the JSON ops.
-    pub(crate) stream: bool,
+    pub stream: bool,
     /// Optional per-provider path-BASE override (the lane's `path_base`). For URL-model protocols
     /// (Gemini) it replaces the protocol's hardcoded base segment (e.g. `/v1beta/models`) so a
     /// provider can be pointed at a different layout — e.g. Vertex AI's
     /// `/v1/projects/{p}/locations/{l}/publishers/google/models`. `None` uses the protocol default.
     /// Distinct from the full-path `path` override, which is static and ignores the per-request model.
-    pub(crate) path_base: Option<&'a str>,
+    pub path_base: Option<&'a str>,
 }
 
 /// A pure per-(protocol × operation) codec. Feed it wire, assert the IR; feed it IR, assert the wire.
 /// That is the entire contract — the load-bearing discipline that makes the matrix scale. It knows
 /// NOTHING about routing: no `Lane`, no path, no model. The path is the `RequestHandler`'s concern.
-pub(crate) trait OperationHandler: Send + Sync {
+pub trait OperationHandler: Send + Sync {
     // OperationHandler capabilities: the operation-behavior surface the forward engine reads (never branching on
     // operation identity). Every default is the MOST RESTRICTIVE behavior — no streaming, no stream
     // intent, no affinity, no usage tap. Chat overrides them; the JSON ops keep the defaults. This is
@@ -283,7 +283,7 @@ pub(crate) trait OperationHandler: Send + Sync {
 }
 
 /// A protocol's dialect + its OperationHandlers (one impl per protocol).
-pub(crate) trait RequestHandler: Send + Sync {
+pub trait RequestHandler: Send + Sync {
     /// Stable protocol identity (matches `proto::Protocol::name()`). Called only from this crate's
     /// own tests (`contract_tests.rs`, `registry_tests.rs`) — it is the registry-key/impl-identity
     /// binding that `registry_tests.rs` asserts (`request_handler()` is a string-keyed registry;

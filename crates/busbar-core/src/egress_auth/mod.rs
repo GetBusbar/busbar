@@ -183,11 +183,19 @@ pub(crate) fn resolve(
         // material as a bearer.
         return Arc::new(NoCredential);
     }
+    // A protocol that DECLARED its native credential scheme (an extracted dialect: Anthropic's
+    // api-key-vs-Bearer disambiguation was the first) supplies the builder through its
+    // `ProtocolDecl`; the arms below are the shared schemes of the dialects still in-tree, and
+    // each leaves this match when its dialect is extracted.
+    if let Some(headers_for) =
+        crate::proto::decl_for(protocol_name).and_then(|d| d.egress_auth_headers)
+    {
+        return Arc::new(DeclaredCredential(headers_for));
+    }
     match protocol_name {
         "gemini" => Arc::new(ApiKeyHeader {
             header: "x-goog-api-key",
         }),
-        "anthropic" => Arc::new(AnthropicNative),
         "bedrock" => Arc::new(SigV4),
         // openai / cohere / responses and any other bearer-native protocol.
         "cohere" => Arc::new(StaticBearer { proto: "cohere" }),
@@ -241,12 +249,13 @@ impl CredentialProvider for ApiKeyHeader {
     }
 }
 
-/// Anthropic's api-key (`sk-ant-api…` → `x-api-key`) vs Bearer (`sk-ant-oat…` → `Authorization`)
-/// disambiguation, resolved against the `Own | Passthrough` mode for an ambiguous credential.
-struct AnthropicNative;
-impl CredentialProvider for AnthropicNative {
+/// A credential scheme a PROTOCOL DECLARED (`ProtocolDecl::egress_auth_headers`) — the extracted
+/// dialects' path into this layer. The builder is declared data; this wrapper is only the vtable
+/// shape `resolve` hands back for every scheme.
+struct DeclaredCredential(fn(&str, &SigningContext) -> Vec<(HeaderName, HeaderValue)>);
+impl CredentialProvider for DeclaredCredential {
     fn headers_for(&self, key: &str, ctx: &SigningContext) -> Vec<(HeaderName, HeaderValue)> {
-        crate::proto::anthropic::anthropic_auth_headers(key, Some(ctx.upstream_creds))
+        (self.0)(key, ctx)
     }
 }
 

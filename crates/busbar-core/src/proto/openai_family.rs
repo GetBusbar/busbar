@@ -38,28 +38,28 @@ pub(crate) const OPENAI_FAMILY_MAX_OPEN_TOOLS: usize = 128;
 // cannot drift. (`proxy::KIND_OVERLOADED` = "overloaded" and anthropic's "timeout_error" are
 // DELIBERATELY different values and stay defined at their own sites.)
 /// OpenAI error `type` for a malformed / bad-argument request.
-pub(crate) const ERR_TYPE_INVALID_REQUEST: &str = "invalid_request_error";
+pub const ERR_TYPE_INVALID_REQUEST: &str = "invalid_request_error";
 /// OpenAI error `type` for a missing or invalid API key.
-pub(crate) const ERR_TYPE_AUTHENTICATION: &str = "authentication_error";
+pub const ERR_TYPE_AUTHENTICATION: &str = "authentication_error";
 /// OpenAI error `type` for a permission / access-control denial.
-pub(crate) const ERR_TYPE_PERMISSION: &str = "permission_error";
+pub const ERR_TYPE_PERMISSION: &str = "permission_error";
 /// OpenAI error `type` for a resource that does not exist.
-pub(crate) const ERR_TYPE_NOT_FOUND: &str = "not_found_error";
+pub const ERR_TYPE_NOT_FOUND: &str = "not_found_error";
 /// OpenAI error `type` for a rate-limit / throttle response.
-pub(crate) const ERR_TYPE_RATE_LIMIT: &str = "rate_limit_error";
+pub const ERR_TYPE_RATE_LIMIT: &str = "rate_limit_error";
 /// OpenAI error `type` for a transient upstream failure.
 pub(crate) const ERR_TYPE_SERVER_ERROR: &str = "server_error";
 /// OpenAI error `type` for a billing-quota exhaustion (HTTP 429).
 pub(crate) const ERR_TYPE_INSUFFICIENT_QUOTA: &str = "insufficient_quota";
 /// Anthropic/busbar internal kind for an overloaded upstream; mapped to `server_error` on the
 /// OpenAI wire (OpenAI has no `overloaded_error` type).
-pub(crate) const ERR_TYPE_OVERLOADED: &str = "overloaded_error";
+pub const ERR_TYPE_OVERLOADED: &str = "overloaded_error";
 /// Anthropic-vocabulary error `type` for a generic upstream/API failure; also the agnostic
 /// forward-layer kind (`proxy::KIND_API_ERROR` aliases this).
-pub(crate) const ERR_TYPE_API_ERROR: &str = "api_error";
+pub const ERR_TYPE_API_ERROR: &str = "api_error";
 /// Error `type` for an oversized request (HTTP 413); shared by the forward KIND bank and the
 /// anthropic writer.
-pub(crate) const ERR_TYPE_REQUEST_TOO_LARGE: &str = "request_too_large";
+pub const ERR_TYPE_REQUEST_TOO_LARGE: &str = "request_too_large";
 
 /// Precise context-length prose scan shared by `OpenAiReader::extract_error` and
 /// `ResponsesReader::extract_error` — the message scan was duplicated. The scan must be PRECISE:

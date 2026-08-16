@@ -11,38 +11,38 @@ use std::collections::BTreeMap;
 
 /// A moderation input item — text or an image reference (omni-moderation accepts both).
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) enum ModerationInput {
+pub enum ModerationInput {
     Text(String),
     ImageUrl(String),
 }
 
 /// Moderation request IR.
 #[derive(Debug, Clone, PartialEq, Default)]
-pub(crate) struct ModerationReq {
-    pub(crate) model: String,
-    pub(crate) input: Vec<ModerationInput>,
+pub struct ModerationReq {
+    pub model: String,
+    pub input: Vec<ModerationInput>,
     /// Source-protocol-namespaced extras. Empty for OpenAI (the only provider), but present for
     /// uniformity so the codec pattern is identical across ops.
-    pub(crate) extra: SourceScopedExtra,
+    pub extra: SourceScopedExtra,
 }
 
 /// One per-input moderation verdict. Positional: `results[i]` corresponds to `input[i]`.
 #[derive(Debug, Clone, PartialEq, Default)]
-pub(crate) struct ModerationResult {
-    pub(crate) flagged: bool,
-    pub(crate) categories: BTreeMap<String, bool>,
-    pub(crate) category_scores: BTreeMap<String, f64>,
+pub struct ModerationResult {
+    pub flagged: bool,
+    pub categories: BTreeMap<String, bool>,
+    pub category_scores: BTreeMap<String, f64>,
     /// Per-category, which input modalities triggered it (omni-moderation: `["text"]` / `["image"]`).
-    pub(crate) applied_input_types: BTreeMap<String, Vec<String>>,
+    pub applied_input_types: BTreeMap<String, Vec<String>>,
 }
 
 /// Moderation response IR.
 #[derive(Debug, Clone, PartialEq, Default)]
-pub(crate) struct ModerationResp {
-    pub(crate) id: Option<String>,
-    pub(crate) model: Option<String>,
-    pub(crate) results: Vec<ModerationResult>,
-    pub(crate) extra: SourceScopedExtra,
+pub struct ModerationResp {
+    pub id: Option<String>,
+    pub model: Option<String>,
+    pub results: Vec<ModerationResult>,
+    pub extra: SourceScopedExtra,
 }
 
 #[cfg(test)]

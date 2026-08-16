@@ -100,7 +100,7 @@ pub(crate) struct PcmParams {
 /// A single audio payload (transcription input / speech output). One representation + its MIME type,
 /// plus PCM parameters iff the MIME type is headerless raw PCM.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct MediaBlob {
+pub struct MediaBlob {
     pub(crate) payload: MediaPayload,
     pub(crate) mime_type: String,
     pub(crate) pcm: Option<PcmParams>,
@@ -124,7 +124,7 @@ impl MediaBlob {
 /// kept. `b64` is the common path; `url`/`uri` are additive (dall-e URL, Vertex `gcsUri`). The other
 /// fields are provider-specific extras kept for lossless round-trip.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct ImageOutput {
+pub struct ImageOutput {
     pub(crate) b64: Option<String>,
     pub(crate) url: Option<String>,
     pub(crate) mime_type: Option<String>,

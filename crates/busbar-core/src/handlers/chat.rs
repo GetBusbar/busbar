@@ -25,7 +25,7 @@ use serde_json::Value;
 
 /// A protocol's chat operation. The field names the protocol whose `proto::` reader/writer are this
 /// instance's codec (resolved per call — `protocol_for` is a static match, no allocation).
-pub(crate) struct ChatOperation(pub(crate) &'static str);
+pub struct ChatOperation(pub &'static str);
 
 impl ChatOperation {
     fn proto(&self) -> Option<crate::proto::Protocol> {

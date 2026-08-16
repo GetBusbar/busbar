@@ -87,18 +87,18 @@ use std::borrow::Cow;
 /// The string is BYTE-IDENTICAL to the marker the raw-body projection substitutes today, and
 /// `opaque_marker_is_byte_identical_to_the_projection_it_replaces` pins that, so the cutover is not
 /// also a wire change for the one shape both implementations already agree on.
-pub(crate) const OPAQUE_CONTENT_MARKER: &str = "[busbar:redacted_reasoning]";
+pub const OPAQUE_CONTENT_MARKER: &str = "[busbar:redacted_reasoning]";
 
 /// Label for an opaque reasoning item. A stable, protocol-blind noun: three wire shapes across three
 /// dialects land here and the consumer must not be able to tell which.
-pub(crate) const LABEL_REASONING: &str = "reasoning";
+pub const LABEL_REASONING: &str = "reasoning";
 
 /// Label for a structured, non-prose content member — the shape a tool result carries when it
 /// answers with data rather than prose (one dialect's `{"json": …}` tool-result member reaches the
 /// IR as [`IrBlock::Json`]; NO BRANCH HERE, the reader already decided). Named rather than left
 /// empty so a screening hook can tell a JSON payload apart from a tool call's arguments without
 /// inspecting the value.
-pub(crate) const LABEL_JSON: &str = "json";
+pub const LABEL_JSON: &str = "json";
 
 /// WHERE a piece of content came from — the protocol dimension, carried as provenance.
 ///
@@ -111,7 +111,7 @@ pub(crate) const LABEL_JSON: &str = "json";
 /// own, so a consumer can attribute a tool call's arguments to the turn that made it — the
 /// attribution a guardrail needs and the flat text projection cannot express.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Slot {
+pub enum Slot {
     /// The request's system prompt, wherever the dialect put it.
     System,
     /// Ordinary content of the conversation turn at this index into `IrRequest::messages`.
@@ -127,7 +127,7 @@ pub(crate) enum Slot {
 impl Slot {
     /// The conversation turn this slot belongs to, or `None` for the system slot. The one place the
     /// "tool slots are attributed to their turn" rule is written, so no consumer re-derives it.
-    pub(crate) fn turn_index(self) -> Option<usize> {
+    pub fn turn_index(self) -> Option<usize> {
         match self {
             Slot::System => None,
             Slot::Turn(i) | Slot::ToolArgs(i) | Slot::ToolResult(i) => Some(i),
@@ -149,7 +149,7 @@ impl Slot {
 /// scrutinizes caller input strictly and trusts assistant output cannot make that distinction from a
 /// slot alone.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) enum ContentItem<'a> {
+pub enum ContentItem<'a> {
     /// Real, screenable text. Borrowed from the IR wherever the IR owns a `String`.
     Text {
         role: IrRole,
@@ -176,7 +176,7 @@ pub(crate) enum ContentItem<'a> {
 
 impl ContentItem<'_> {
     /// Who authored this content.
-    pub(crate) fn role(&self) -> IrRole {
+    pub fn role(&self) -> IrRole {
         match self {
             ContentItem::Text { role, .. }
             | ContentItem::Data { role, .. }
@@ -185,7 +185,7 @@ impl ContentItem<'_> {
     }
 
     /// Where this content came from.
-    pub(crate) fn slot(&self) -> Slot {
+    pub fn slot(&self) -> Slot {
         match self {
             ContentItem::Text { slot, .. }
             | ContentItem::Data { slot, .. }
@@ -201,7 +201,7 @@ impl ContentItem<'_> {
     /// `size_signal_and_projection_agree_on_reasoning`) exist because a size signal and a content
     /// projection were computed by two functions that could drift. Here [`Shape::text_chars`] is a
     /// sum over this method, so they cannot: there is nothing left for them to disagree about.
-    pub(crate) fn screenable_text(&self) -> Cow<'_, str> {
+    pub fn screenable_text(&self) -> Cow<'_, str> {
         match self {
             ContentItem::Text { text, .. } => Cow::Borrowed(text.as_ref()),
             ContentItem::Data { value, .. } => Cow::Owned(value.to_string()),
@@ -217,29 +217,29 @@ impl ContentItem<'_> {
 /// `max_tokens`), and no more: a speculative signal here is a wire key an operator will one day
 /// depend on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct Shape {
+pub struct Shape {
     /// Conversation turns, counted on the IR. **This is not the wire `messages.len()`** — every
     /// reader hoists system-role turns into the system slot, so a body that carries its system
     /// prompt in-band counts one lower here than it does on the wire. That difference is the
     /// divergence being fixed, and it is operator-visible.
-    pub(crate) turn_count: usize,
+    pub turn_count: usize,
     /// Did the caller declare any tools?
-    pub(crate) has_tools: bool,
+    pub has_tools: bool,
     /// How many tool definitions the caller declared, counted on the IR — so a dialect that spells
     /// its tool list differently counts the same as every other.
-    pub(crate) tool_count: usize,
+    pub tool_count: usize,
     /// Total chars of everything a content-granted hook would be shown, system slot included.
     /// Counts TEXT, never the separators a consumer joins items with — so a flattened rendering can
     /// be longer than this by one char per join, exactly as it is today.
-    pub(crate) text_chars: usize,
+    pub text_chars: usize,
     /// Chars of the SYSTEM slot alone, wherever the dialect put the system prompt. A subset of
     /// [`Shape::text_chars`] and summed in the SAME walk, so the two can never drift.
-    pub(crate) system_chars: usize,
+    pub system_chars: usize,
     /// The caller's output cap, normalized by the reader from whichever field its dialect spells it
     /// in. Reading this from the IR is a FIX, not merely a move: the raw-body projection is
     /// dialect-aware for exactly one dialect's spelling and returns `None` for a body that spells
     /// the cap in a nested config object, silently blinding any routing policy keyed on it.
-    pub(crate) max_tokens: Option<u32>,
+    pub max_tokens: Option<u32>,
 }
 
 impl Shape {
@@ -247,7 +247,7 @@ impl Shape {
     /// binary body, or one whose protocol has no reader registered. Named rather than
     /// `Default::default()`d so a consumer reads "nothing here" as a decision rather than as a
     /// zero-initialized accident.
-    pub(crate) const EMPTY: Shape = Shape {
+    pub const EMPTY: Shape = Shape {
         turn_count: 0,
         has_tools: false,
         tool_count: 0,
@@ -270,7 +270,7 @@ impl Shape {
 /// today is a stub returning `""` that every caller would have to know not to trust. A method that
 /// lies is worse than a method that is missing; it lands with the first implementer that actually
 /// knows the answer, additively.
-pub(crate) trait IrFacts {
+pub trait IrFacts {
     /// The semantic operation — the same closed vocabulary the metrics label and the `paths:` config
     /// key use, so a consumer that switches on it is switching on something already enumerated.
     ///
@@ -367,7 +367,7 @@ impl IrFacts for IrRequest {
 /// in the worst direction — it shows a hook an EMPTY turn for a request the provider receives in
 /// full, which is a policy-enforcement-point bypass and is the original bug restored.
 /// [`IrBlock::is_opaque`] is the one place that knows all three shapes, and it is asked first.
-pub(crate) fn project(req: &IrRequest) -> Vec<ContentItem<'_>> {
+pub fn project(req: &IrRequest) -> Vec<ContentItem<'_>> {
     let mut out = Vec::new();
     walk(&req.system, IrRole::System, None, Slot::System, &mut out);
     for (i, m) in req.messages.iter().enumerate() {

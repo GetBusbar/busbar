@@ -89,7 +89,7 @@
 /// tree on this type, deliberately: a `_ =>` here would mean a shape arrived and nothing had to
 /// decide anything about it, which is the failure this tag exists to prevent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) enum OpShape {
+pub enum OpShape {
     /// A caller names a target and hands it arguments, and gets content or an error back. The only
     /// shape with a BILLING SUBJECT and the only one that can be answered incrementally: something
     /// ran, it took a measurable amount of work, and the answer can arrive in pieces.
@@ -189,7 +189,7 @@ impl OpShape {
 /// `op`, which is closed, and the word is carried through untouched. A protocol that adds a method
 /// adds a `const` in ITS OWN module; it does not touch this enum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) enum Operation {
+pub enum Operation {
     Verb {
         /// The shape the pipeline decides on.
         op: OpShape,
@@ -203,13 +203,13 @@ impl Operation {
     // ── THE LLM FAMILY'S SEVEN VERBS. All one shape (`Invoke`): name a model, hand it arguments,
     //    get content or an error back. They keep their published names to the letter, because those
     //    names are the metrics label and the `paths:` config key and a rename is a broken dashboard.
-    pub(crate) const CHAT: Operation = Operation::llm("chat");
-    pub(crate) const EMBEDDINGS: Operation = Operation::llm("embeddings");
-    pub(crate) const MODERATION: Operation = Operation::llm("moderation");
-    pub(crate) const IMAGE: Operation = Operation::llm("image");
-    pub(crate) const TRANSCRIPTION: Operation = Operation::llm("transcription");
-    pub(crate) const SPEECH: Operation = Operation::llm("speech");
-    pub(crate) const RERANK: Operation = Operation::llm("rerank");
+    pub const CHAT: Operation = Operation::llm("chat");
+    pub const EMBEDDINGS: Operation = Operation::llm("embeddings");
+    pub const MODERATION: Operation = Operation::llm("moderation");
+    pub const IMAGE: Operation = Operation::llm("image");
+    pub const TRANSCRIPTION: Operation = Operation::llm("transcription");
+    pub const SPEECH: Operation = Operation::llm("speech");
+    pub const RERANK: Operation = Operation::llm("rerank");
 
     // ── THE PROTOCOL SURFACE'S SIX. One verb per shape today, carrying the shape's own word: MCP
     //    and A2A both address these through their own method names, which the protocol's

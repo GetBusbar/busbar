@@ -2,8 +2,8 @@
 //! `parallel_tool_calls` <-> `!tool_choice.disable_parallel_tool_use`. Same switch, different
 //! spelling/location — these must CROSS the seam instead of dying in `extra`.
 use super::{AnthropicReader, AnthropicWriter};
-use crate::proto::openai_chat::{OpenAiReader, OpenAiWriter};
-use crate::proto::{ProtocolReader, ProtocolWriter};
+use busbar_core::proto::openai_chat::{OpenAiReader, OpenAiWriter};
+use busbar_core::proto::{ProtocolReader, ProtocolWriter};
 
 fn tools_json() -> serde_json::Value {
     serde_json::json!([{
@@ -185,7 +185,7 @@ fn native_metadata_wins_over_promoted_user() {
 /// has no such parameter". Round-trips ingress read AND egress re-emit.
 #[test]
 fn responses_parallel_tool_calls_round_trips() {
-    use crate::proto::openai_responses::{ResponsesReader, ResponsesWriter};
+    use busbar_core::proto::openai_responses::{ResponsesReader, ResponsesWriter};
 
     let body = serde_json::json!({
         "model": "gpt-4o",

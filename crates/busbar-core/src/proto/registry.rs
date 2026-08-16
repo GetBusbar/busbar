@@ -43,6 +43,12 @@
 use super::Protocol;
 use crate::handlers::RequestHandler;
 
+/// A protocol's declared egress credential-header builder: the resolved per-request credential
+/// plus the signing context in, the header pairs to attach out. See
+/// [`ProtocolDecl::egress_auth_headers`].
+pub type EgressAuthHeaders =
+    fn(&str, &super::SigningContext) -> Vec<(axum::http::HeaderName, axum::http::HeaderValue)>;
+
 /// A path-model protocol's own ingress: one arrival in, one response out. See
 /// [`ProtocolDecl::path_ingress`].
 pub(crate) type PathIngress = fn(
@@ -57,7 +63,7 @@ pub(crate) type PathIngress = fn(
 /// fact answered through a vtable — and answering it through a vtable meant allocating a reader to
 /// ask a `&'static` question.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum IngressAuth {
+pub enum IngressAuth {
     /// A bearer token / API key in a header (every protocol but Bedrock).
     Bearer,
     /// An AWS SigV4 request signature (Bedrock's ingress shape).
@@ -69,11 +75,11 @@ pub(crate) enum IngressAuth {
 /// Core routes, mounts, labels and bounds from this and from nothing else. Each field replaces
 /// either a `match` on a protocol name or a vtable sweep that allocated to read a constant; the
 /// doc on each says which.
-pub(crate) struct ProtocolDecl {
+pub struct ProtocolDecl {
     /// The registry key, and the metrics label. **OPERATOR-VISIBLE:** a protocol name appears in
     /// dashboards and in `providers.*.protocol` config, so renaming one re-bases a metric series
     /// and invalidates a config file. Replaces the `match name` arm.
-    pub(crate) name: &'static str,
+    pub name: &'static str,
 
     /// How to build this protocol's wire CODEC (reader + writer), or `None` for a protocol that
     /// serves operations without a cross-dialect codec (MCP, whose IR is its own). A fresh instance
@@ -81,12 +87,12 @@ pub(crate) struct ProtocolDecl {
     /// per-STREAM mutable state — which is why this is a constructor rather than a `&'static
     /// Protocol`, and why the fact fields below exist: a caller that wants a constant must not have
     /// to build a codec to read one.
-    pub(crate) codec: Option<fn() -> Protocol>,
+    pub codec: Option<fn() -> Protocol>,
 
     /// The cell that serves one exchange on this protocol. Replaces `handlers::request_handler`'s
     /// match. `None` would be a protocol that declares itself and serves nothing; every declaration
     /// in the tree today has one.
-    pub(crate) handler: Option<&'static dyn RequestHandler>,
+    pub handler: Option<&'static dyn RequestHandler>,
 
     /// THE VERBS this protocol serves — one [`crate::operation::Operation`] (`Verb { op, name }`
     /// pair) per operation its handler answers. Bounded at load and enumerable at boot (never
@@ -103,32 +109,43 @@ pub(crate) struct ProtocolDecl {
     /// arms — core code until the LLM IR itself is extracted — construct them; what no longer
     /// lives in core is the CLAIM that those verbs are served: that is now this field's, per
     /// protocol, and it leaves with the protocol.
-    pub(crate) verbs: &'static [crate::operation::Operation],
+    pub verbs: &'static [crate::operation::Operation],
 
     /// TOP-LEVEL body keys the pre-materialized path may point-read, DOM-free. Replaces the
     /// hardcoded four in `proxy::lazy_body::captured_head_keys()` — the sweep that reached back into
     /// the protocol registry for the rest. The registry unions these with
     /// [`Self::array_stream_shim_key`] once, at boot.
-    pub(crate) head_keys: &'static [&'static str],
+    pub head_keys: &'static [&'static str],
 
     /// The `Content-Type` this protocol's writer emits on a STREAMING response, or `None` for a
     /// protocol that does not stream. Replaces `ProtocolWriter::streaming_content_type()` and the
     /// `OnceLock` sweep that read it off every protocol's freshly allocated writer.
-    pub(crate) streaming_content_type: Option<&'static str>,
+    pub streaming_content_type: Option<&'static str>,
 
     /// The router's array-stream shim key for this protocol (only Gemini has one: a marker injected
     /// into a non-`alt=sse` request body and stripped before egress). Replaces
     /// `ProtocolWriter::array_stream_shim_key()` and its `OnceLock` sweep.
-    pub(crate) array_stream_shim_key: Option<&'static str>,
+    pub array_stream_shim_key: Option<&'static str>,
 
     /// This protocol's NATIVE tool-call id prefix, or `None` when it carries no tool id on the wire
     /// (Gemini correlates by name) or uses free-form ids with no canonical prefix (Cohere). Replaces
     /// `proto::native_tool_id_prefix`'s match on the protocol name — the last one in `proto/mod.rs`.
-    pub(crate) native_tool_id_prefix: Option<&'static str>,
+    pub native_tool_id_prefix: Option<&'static str>,
 
     /// Which inbound auth scheme this protocol's clients present. Replaces
     /// `ProtocolReader::uses_sigv4_ingress_auth()`.
-    pub(crate) ingress_auth: IngressAuth,
+    pub ingress_auth: IngressAuth,
+
+    /// This protocol's NATIVE egress credential-header builder, or `None` for a protocol whose
+    /// scheme is one of the shared ones the auth layer keeps (`egress_auth::resolve`'s bearer /
+    /// api-key-header / SigV4 arms). Replaces the protocol-name match arm in `egress_auth::resolve`
+    /// for the dialects that own a bespoke scheme: Anthropic's api-key-vs-Bearer disambiguation
+    /// moved into its crate with this field, and the remaining name arms follow as their dialects
+    /// are extracted. The builder receives the resolved per-request credential and the
+    /// [`super::SigningContext`] (`Own | Passthrough` mode plus what a signer needs) and returns
+    /// the header pairs to attach — the exact `CredentialProvider::headers_for` shape, as declared
+    /// data instead of a core `match`.
+    pub egress_auth_headers: Option<EgressAuthHeaders>,
 
     /// THE ARRIVAL THIS PROTOCOL SERVES ITSELF, or `None` for a protocol whose operation the
     /// catch-all resolves from the body and serves through the universal ingress.
@@ -144,7 +161,7 @@ pub(crate) struct ProtocolDecl {
     /// `match` every arm's future is inlined into the dispatch coroutine's union, so a ~5.7 KB arm
     /// inflated the future every request carried regardless of dialect. A function pointer to a
     /// boxed future keeps that cost on the requests that take it.
-    pub(crate) path_ingress: Option<PathIngress>,
+    pub path_ingress: Option<PathIngress>,
 
     /// Whether a STREAMING response on this protocol reports token usage only when the request
     /// explicitly opted in (OpenAI Chat Completions' `stream_options.include_usage`). `false` — the
@@ -152,7 +169,7 @@ pub(crate) struct ProtocolDecl {
     /// the engine has nothing to inject. Replaces `egress_name == "openai"` in the forward engine:
     /// the injection is a fact about what THIS dialect does with a streaming request, and the engine
     /// only needed to know whether to do it.
-    pub(crate) stream_usage_requires_opt_in: bool,
+    pub stream_usage_requires_opt_in: bool,
 }
 
 impl ProtocolDecl {
@@ -175,6 +192,13 @@ impl ProtocolDecl {
 static BUILTIN_DECLS: &[&ProtocolDecl] = &[
     // Order is the operator-visible order: it is the order `known_protocols()` reports, and
     // `telemetry` indexes its per-protocol metric families by position in that list.
+    // ANTHROPIC IS AN EXTRACTED CRATE (`busbar-proto-anthropic`) and this row exists only in the
+    // builds that compile the dialect back in for the fixture surface (see the `mod anthropic`
+    // decl in proto/mod.rs). In the production binary the composition root installs the crate's
+    // own `DECL` through [`install_protocols`], folded AHEAD of this table — so the operator-
+    // visible protocol order is the same in both shapes, and `merged_boot_decls` skips whichever
+    // copy of this dialect registers second.
+    #[cfg(any(test, feature = "test-support"))]
     &crate::proto::anthropic::DECL,
     &crate::proto::openai_chat::DECL,
     &crate::proto::gemini::DECL,
@@ -341,8 +365,9 @@ static INSTALLED: std::sync::OnceLock<&'static [&'static ProtocolDecl]> =
 /// INSTALL PROTOCOL DECLARATIONS — the composition root's one write into the protocol axis, and
 /// the seam an extracted protocol crate registers through. The `busbar` binary calls this from
 /// `main`, before any config read, with the `&DECL` of every protocol crate it links; core itself
-/// never names a protocol crate (`git grep busbar_proto crates/busbar-core/src` is pinned at zero
-/// by the split), so this parameter is the ONLY way an extracted protocol reaches the registry.
+/// never names a protocol crate (the split's exit criterion pins the protocol-crate-name grep
+/// over this crate's sources at zero), so this parameter is the ONLY way an extracted protocol
+/// reaches the registry.
 ///
 /// ORDER: installed declarations are folded AHEAD of the built-ins. The protocol list is
 /// operator-visible (`known_protocols()` order is dashboards' metric-family order and the
@@ -365,7 +390,7 @@ static INSTALLED: std::sync::OnceLock<&'static [&'static ProtocolDecl]> =
 ///   resolved against the smaller set would mean two layers of one process disagree about which
 ///   protocols exist — fail loudly at the boot line that got the order wrong.
 #[allow(dead_code)] // pub-widened and called by the busbar binary once the first protocol crate registers through it
-pub(crate) fn install_protocols(decls: &'static [&'static ProtocolDecl]) {
+pub fn install_protocols(decls: &'static [&'static ProtocolDecl]) {
     assert!(
         INSTALLED.set(decls).is_ok(),
         "install_protocols called twice: there is one composition root, and it registers once"
@@ -412,6 +437,6 @@ pub(crate) fn registry() -> &'static Registry {
 /// RESOLVE A PROTOCOL BY NAME — the one by-name protocol resolution in busbar, and the function the
 /// `match` at `proto/mod.rs` became. Allocates nothing: everything a caller can read off the
 /// declaration is a `&'static` constant that was declared, not built.
-pub(crate) fn decl_for(name: &str) -> Option<&'static ProtocolDecl> {
+pub fn decl_for(name: &str) -> Option<&'static ProtocolDecl> {
     registry().decl(name)
 }

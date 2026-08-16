@@ -30,6 +30,9 @@ pub(crate) const DECL: ProtocolDecl = ProtocolDecl {
     // nothing to reshape and no risk of a foreign id leaking to a Gemini client.
     native_tool_id_prefix: None,
     ingress_auth: IngressAuth::Bearer,
+    // The shared bearer/api-key/SigV4 schemes stay in `egress_auth::resolve` until this
+    // dialect is extracted; see the field doc.
+    egress_auth_headers: None,
     // THE MODEL IS IN THE URL: `/v1beta/models/{model}:generateContent`. This declaration is what
     // core reads instead of comparing this protocol's NAME, and the tail parse it performs is this
     // dialect's own statement about its own URL space.

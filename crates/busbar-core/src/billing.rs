@@ -23,7 +23,7 @@
 /// `gpt-4o-transcribe`-style audio/text/image detail — without losing the chat cache convention. So
 /// one `Tokens` variant is lossless for chat (cache) and audio/image (modality) alike.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct TokenUsage {
+pub struct TokenUsage {
     /// Uncached input tokens (normalized; providers whose wire total includes the cache subtract it).
     pub(crate) input: u64,
     pub(crate) output: u64,
@@ -38,7 +38,7 @@ pub(crate) struct TokenUsage {
 
 /// The billable item produced for one response. Priced by the 1.3 engine via an exhaustive match.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) enum Billing {
+pub enum Billing {
     /// Token-metered (chat, embeddings, `gpt-image-1`, `gpt-4o-transcribe`/`-tts`, Gemini).
     Tokens(TokenUsage),
     /// Audio duration in seconds (`whisper-1` transcription: `usage.type == "duration"`).

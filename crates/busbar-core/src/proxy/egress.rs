@@ -150,7 +150,7 @@ pub(crate) fn lane_auth_headers(
 // NOT a `anthropic-sdk-python/<ver>` shape (which no released Anthropic SDK has ever sent). Emitting
 // the wrong shape was a wire tell that distinguished busbar-proxied traffic from a native client on
 // the User-Agent alone — the egress-UA tests now also assert the shared `<Title>/Python <ver>` grammar.
-pub(crate) const EGRESS_UA_ANTHROPIC: &str = "Anthropic/Python 0.39.0";
+pub const EGRESS_UA_ANTHROPIC: &str = "Anthropic/Python 0.39.0";
 // OpenAI Python SDK shape; the Responses API is served by the same SDK/UA.
 pub(crate) const EGRESS_UA_OPENAI: &str = "OpenAI/Python 1.54.0";
 // Google GenAI SDK shape (generativelanguage.googleapis.com).

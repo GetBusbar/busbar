@@ -32,11 +32,11 @@ use crate::operation::Operation;
 /// the backend then sees the base64 encoding of this string, not the string itself. busbar builds
 /// raw JSON directly (see `proto::gemini::writer`), so this is correct by construction; a typed
 /// representation would reintroduce the encoding hazard.
-pub(crate) const GEMINI_SKIP_THOUGHT_SIGNATURE: &str = "skip_thought_signature_validator";
+pub const GEMINI_SKIP_THOUGHT_SIGNATURE: &str = "skip_thought_signature_validator";
 
 /// Request-side IR — one variant per operation. `Chat` reuses the existing `IrRequest` verbatim.
 #[derive(Debug, Clone)]
-pub(crate) enum IrReq {
+pub enum IrReq {
     Chat(IrRequest),
     Embeddings(EmbeddingsReq),
     Moderation(ModerationReq),
@@ -62,7 +62,7 @@ impl IrReq {
     /// own tests today; kept for the exhaustive-match compile-time guarantee (adding an `IrReq`
     /// variant without a routing story is a compile error here).
     #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn operation(&self) -> Operation {
+    pub fn operation(&self) -> Operation {
         match self {
             IrReq::Chat(_) => Operation::CHAT,
             IrReq::Embeddings(_) => Operation::EMBEDDINGS,
@@ -79,7 +79,7 @@ impl IrReq {
     /// Did the caller ask to stream? Only chat and audio can (1.2); the JSON ops never stream.
     /// Called only from this module's own tests today; kept for the exhaustive-match guarantee.
     #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn wants_stream(&self) -> bool {
+    pub fn wants_stream(&self) -> bool {
         match self {
             IrReq::Chat(r) => r.stream,
             IrReq::Transcription(r) => r.stream,
@@ -103,7 +103,7 @@ impl IrReq {
     /// client-echoed tool ids back to the backend's originals, and clear source-only `extra` keys
     /// (the foreign-format leak guard). The other operations' extras are source-scoped by
     /// construction, so they need no clearing.
-    pub(crate) fn prepare_for_egress(&mut self, prep: &EgressPrep) {
+    pub fn prepare_for_egress(&mut self, prep: &EgressPrep) {
         match self {
             IrReq::Chat(ir) => {
                 if ir.max_tokens.is_none() && prep.egress_requires_max_tokens {
@@ -405,7 +405,7 @@ impl IrReq {
     /// empty body model and routing fills it), and the cross-protocol egress hop (the egress wire must
     /// carry the LANE's wire model, not the caller's busbar model name). Chat is a no-op: `IrRequest`
     /// carries no model field (chat's model lives at the routing/rewrite layer, as today).
-    pub(crate) fn set_model(&mut self, model: &str) {
+    pub fn set_model(&mut self, model: &str) {
         match self {
             IrReq::Chat(_) => {}
             IrReq::Embeddings(r) => r.model = model.to_string(),
@@ -429,7 +429,7 @@ impl IrReq {
 
 /// Response-side IR — one variant per operation. `Chat` reuses the existing `IrResponse` verbatim.
 #[derive(Debug, Clone)]
-pub(crate) enum IrResp {
+pub enum IrResp {
     Chat(IrResponse),
     Embeddings(EmbeddingsResp),
     Moderation(ModerationResp),
@@ -445,29 +445,29 @@ pub(crate) enum IrResp {
 }
 
 /// Resolved primitives for [`IrReq::prepare_for_egress`] — never a `Lane` or config handle.
-pub(crate) struct EgressPrep<'a> {
-    pub(crate) ingress_protocol: &'a str,
-    pub(crate) egress_requires_max_tokens: bool,
-    pub(crate) lane_default_max_tokens: Option<u32>,
-    pub(crate) global_default_max_tokens: u32,
+pub struct EgressPrep<'a> {
+    pub ingress_protocol: &'a str,
+    pub egress_requires_max_tokens: bool,
+    pub lane_default_max_tokens: Option<u32>,
+    pub global_default_max_tokens: u32,
     /// The per-lane reasoning capability gate: the effective `reasoning` flag for THIS attempt's
     /// lane (pool-member override wins over the model-level flag). When false and the request
     /// carries a reasoning ask, the ask is CLEARED here with a warn — the one place the gate
     /// lives, so no writer can ever send a thinking param to a lane that did not claim it.
-    pub(crate) reasoning_allowed: bool,
+    pub reasoning_allowed: bool,
     /// The resolved effort-word → budget table (limits.reasoning_effort_budgets), stamped onto the
     /// IR for writers to project words ↔ numbers with the operator's numbers.
-    pub(crate) reasoning_budgets: [u32; 4],
+    pub reasoning_budgets: [u32; 4],
     /// The prompt-cache gate: `lane.prompt_caching || !writer.cache_markers_model_gated()`,
     /// resolved by the caller. When false and the request carries `cache_control` breakpoints,
     /// they are CLEARED here with a warn — the one place the gate lives, so no writer can emit a
     /// model-gated cache marker (Bedrock `cachePoint`) to a lane that did not claim it.
-    pub(crate) prompt_caching_allowed: bool,
+    pub prompt_caching_allowed: bool,
     /// The egress writer's `max_cache_control_breakpoints()` (`Some(4)` for Anthropic, `None`
     /// elsewhere — see that method's doc for why Bedrock is deliberately excluded). Anthropic 400s
     /// past this count; the IR carries breakpoints unbounded, so a cross-protocol request can
     /// exceed it. `None` means "no cap to enforce here" — the cap walk below is a no-op.
-    pub(crate) cache_control_cap: Option<usize>,
+    pub cache_control_cap: Option<usize>,
     /// True only for a Gemini AI-Studio egress lane — NEVER for Vertex. When true, every
     /// `IrBlock::ToolUse` with no `thought_signature` gets Google's documented sentinel
     /// (`GEMINI_SKIP_THOUGHT_SIGNATURE`) injected so a cross-protocol `functionCall` part (whose
@@ -477,7 +477,7 @@ pub(crate) struct EgressPrep<'a> {
     /// requirement, not a nicety. The caller resolves this from lane config (protocol == Gemini AND
     /// no `path_base` override, i.e. not a Vertex-style URL-model lane) before constructing
     /// `EgressPrep`, matching how `reasoning_allowed`/`prompt_caching_allowed` are resolved.
-    pub(crate) thought_signature_fill: bool,
+    pub thought_signature_fill: bool,
 }
 
 impl IrResp {
@@ -488,7 +488,7 @@ impl IrResp {
     /// empty (the protocol-agnostic boundary signal identity-gating writers key on), and remap tool
     /// ids to the caller's native shape. The other operations' responses carry no cross-protocol
     /// identity to reshape.
-    pub(crate) fn prepare_for_ingress(&mut self, ingress_protocol: &str, now_epoch: u64) {
+    pub fn prepare_for_ingress(&mut self, ingress_protocol: &str, now_epoch: u64) {
         match self {
             IrResp::Chat(ir) => {
                 ir.id = None;
@@ -517,7 +517,7 @@ impl IrResp {
     /// Buffered-2xx-to-native-stream synthesis (bedrock ConverseStream answered by a non-SSE
     /// upstream): operations that can stream delegate to the ingress writer's frame synthesizer;
     /// the rest have no stream wire. Engine stays operation-blind.
-    pub(crate) fn wrap_buffered_as_stream(
+    pub fn wrap_buffered_as_stream(
         &self,
         writer: &dyn crate::proto::ProtocolWriter,
         elapsed_ms: Option<u64>,
@@ -542,7 +542,7 @@ impl IrResp {
 
     /// Called only from this module's own tests today; kept for the exhaustive-match guarantee.
     #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn operation(&self) -> Operation {
+    pub fn operation(&self) -> Operation {
         match self {
             IrResp::Chat(_) => Operation::CHAT,
             IrResp::Embeddings(_) => Operation::EMBEDDINGS,
@@ -559,7 +559,7 @@ impl IrResp {
     /// The billable item for this response. Chat maps the existing `IrUsage` into
     /// `Billing::Tokens` (preserving the uncached-input + additive-cache convention); moderation is
     /// flat; the rest project their own usage. Exhaustive match = the symmetry gate.
-    pub(crate) fn usage(&self) -> Option<Billing> {
+    pub fn usage(&self) -> Option<Billing> {
         match self {
             IrResp::Chat(r) => Some(Billing::Tokens(TokenUsage {
                 input: r.usage.input_tokens,
@@ -593,7 +593,7 @@ impl IrResp {
     /// same-protocol non-stream usage tap (`OperationHandler::extract_usage`) so a token-metered
     /// non-chat op (embeddings) bills its virtual key's TPM/spend the same way chat does — and the
     /// same way the cross-protocol path already bills. Flat/duration/character meters return `None`.
-    pub(crate) fn token_usage(&self) -> Option<crate::ir::IrUsage> {
+    pub fn token_usage(&self) -> Option<crate::ir::IrUsage> {
         match self.usage() {
             Some(Billing::Tokens(t)) => Some(crate::ir::IrUsage {
                 input_tokens: t.input,

@@ -13,35 +13,35 @@ use crate::lossless::SourceScopedExtra;
 
 /// Rerank request IR — the superset over both providers.
 #[derive(Debug, Clone, PartialEq, Default)]
-pub(crate) struct RerankReq {
-    pub(crate) model: String,
-    pub(crate) query: String,
-    pub(crate) documents: Vec<String>,
-    pub(crate) top_n: Option<u32>,
-    pub(crate) max_tokens_per_doc: Option<u32>, // Cohere
-    pub(crate) extra: SourceScopedExtra,
+pub struct RerankReq {
+    pub model: String,
+    pub query: String,
+    pub documents: Vec<String>,
+    pub top_n: Option<u32>,
+    pub max_tokens_per_doc: Option<u32>, // Cohere
+    pub extra: SourceScopedExtra,
 }
 
 /// One ranked hit: the index into the REQUEST's `documents` and its relevance.
 #[derive(Debug, Clone, PartialEq, Default)]
-pub(crate) struct RerankResult {
-    pub(crate) index: usize,
-    pub(crate) relevance_score: f64,
+pub struct RerankResult {
+    pub index: usize,
+    pub relevance_score: f64,
 }
 
 /// Rerank response IR.
 #[derive(Debug, Clone, PartialEq, Default)]
-pub(crate) struct RerankResp {
-    pub(crate) id: Option<String>,
-    pub(crate) results: Vec<RerankResult>,
-    pub(crate) search_units: Option<u64>, // Cohere meta.billed_units.search_units
-    pub(crate) extra: SourceScopedExtra,
+pub struct RerankResp {
+    pub id: Option<String>,
+    pub results: Vec<RerankResult>,
+    pub search_units: Option<u64>, // Cohere meta.billed_units.search_units
+    pub extra: SourceScopedExtra,
 }
 
 impl RerankResp {
     /// Billing projection: no token meter on either wire; flat until the 1.3 pricing engine
     /// prices search units.
-    pub(crate) fn billing(&self) -> Option<Billing> {
+    pub fn billing(&self) -> Option<Billing> {
         Some(Billing::Flat)
     }
 }

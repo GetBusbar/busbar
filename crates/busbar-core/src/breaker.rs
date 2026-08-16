@@ -19,7 +19,7 @@ const HTTP_OVERLOADED: u16 = 529;
 /// Protocol-neutral, dialect-normalized status class.
 /// Emitted by Stage 1 normalizer (the per-protocol classifier) in src/proto/.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum StatusClass {
+pub enum StatusClass {
     /// Rate limit / slow down — transient, may recover with retry-after
     RateLimit,
     /// Overloaded server — transient
@@ -48,7 +48,7 @@ pub(crate) enum StatusClass {
 ///   - HardDown: definitive signal → permanent dead state (with probe recovery)
 ///   - ContextLength: request too big for this model → fail over, record NOTHING (lane healthy)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Disposition {
+pub enum Disposition {
     ClientFault,
     TransientUpstream,
     HardDown,
@@ -56,7 +56,7 @@ pub(crate) enum Disposition {
 }
 
 /// Convert a string to StatusClass. Returns None for unknown values.
-pub(crate) fn status_class_from_str(s: &str) -> Option<StatusClass> {
+pub fn status_class_from_str(s: &str) -> Option<StatusClass> {
     match s {
         "rate_limit" => Some(StatusClass::RateLimit),
         "overloaded" => Some(StatusClass::Overloaded),
@@ -96,7 +96,7 @@ fn warn_unrecognized_error_map_value(value: &str) {
 /// Classify a CanonicalSignal into a disposition.
 /// EXHAUSTIVE match on StatusClass — NO `_ =>` allowed.
 /// Per ADR-0002: ClientFault never counted; HardDown immediate trip.
-pub(crate) fn classify(sig: &CanonicalSignal) -> Disposition {
+pub fn classify(sig: &CanonicalSignal) -> Disposition {
     match sig.class {
         StatusClass::RateLimit
         | StatusClass::Overloaded
@@ -111,18 +111,18 @@ pub(crate) fn classify(sig: &CanonicalSignal) -> Disposition {
 
 /// Raw upstream error extracted from HTTP response (Stage 1a output).
 #[derive(Debug, Clone)]
-pub(crate) struct RawUpstreamError {
-    pub(crate) http_status: u16,
+pub struct RawUpstreamError {
+    pub http_status: u16,
     /// Provider-specific error *code* (e.g. a numeric `code` field), checked against `error_map`.
-    pub(crate) provider_code: Option<String>,
+    pub provider_code: Option<String>,
     /// Provider-specific structured error *type* (e.g. a `type`/`error.type` string), checked
     /// against `error_map` as a second signal when the code doesn't match.
-    pub(crate) structured_type: Option<String>,
+    pub structured_type: Option<String>,
     /// Upstream `Retry-After` header value in whole seconds, when present. The per-protocol
     /// `extract_error` methods only see the body (no headers), so the forwarding layer — which has
     /// the response headers — parses and sets this after `extract_error` returns. `normalize_raw_error`
     /// then propagates it into `CanonicalSignal.retry_after` so the cooldown floor is honored.
-    pub(crate) retry_after_secs: Option<u64>,
+    pub retry_after_secs: Option<u64>,
 }
 
 impl RawUpstreamError {
@@ -130,7 +130,7 @@ impl RawUpstreamError {
     /// nothing on the path could read its upstream's error shape. It is the most restrictive USEFUL
     /// answer rather than the most restrictive possible one: `classify` still places the failure
     /// from the status, which is strictly better than a non-2xx the breaker never hears about.
-    pub(crate) fn from_status(status: u16) -> Self {
+    pub fn from_status(status: u16) -> Self {
         Self {
             http_status: status,
             provider_code: None,
@@ -144,7 +144,7 @@ impl RawUpstreamError {
 /// `delay-seconds / HTTP-date`; BOTH forms are normative and providers send both. Parsing only the
 /// integer form silently discards the provider's stated cooldown floor on every date-form response,
 /// leaving the breaker to guess.
-pub(crate) fn parse_retry_after(headers: &axum::http::HeaderMap) -> Option<u64> {
+pub fn parse_retry_after(headers: &axum::http::HeaderMap) -> Option<u64> {
     let s = headers
         .get(axum::http::header::RETRY_AFTER)?
         .to_str()
@@ -165,7 +165,7 @@ pub(crate) fn parse_retry_after(headers: &axum::http::HeaderMap) -> Option<u64> 
 
 /// Classify a raw upstream error into a canonical signal using an error_map.
 /// Stage 1b (provider normalizer): data-driven mapping from raw errors to StatusClass.
-pub(crate) fn normalize_raw_error(
+pub fn normalize_raw_error(
     raw: &RawUpstreamError,
     error_map: &std::collections::HashMap<String, String>,
 ) -> CanonicalSignal {
@@ -283,10 +283,10 @@ pub(crate) fn normalize_raw_error(
 /// Canonical signal emitted by protocol normalizers.
 /// Stage 1 output → Stage 2 input.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct CanonicalSignal {
-    pub(crate) class: StatusClass,
-    pub(crate) provider_signal: Option<String>,
-    pub(crate) retry_after: Option<u64>,
+pub struct CanonicalSignal {
+    pub class: StatusClass,
+    pub provider_signal: Option<String>,
+    pub retry_after: Option<u64>,
 }
 
 #[cfg(test)]

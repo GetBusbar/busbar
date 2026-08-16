@@ -2,9 +2,9 @@
 //! `IrReq::prepare_for_egress` (per-lane `reasoning` flag); these tests cover the codec halves
 //! (read the ask, project it) plus the gate itself, the clamp, and the sampling-knob omission.
 use super::{AnthropicReader, AnthropicWriter};
-use crate::ir::variant::{EgressPrep, IrReq};
-use crate::ir::{IrReasoningAsk, IrReasoningEffort};
-use crate::proto::{Protocol, ProtocolReader, ProtocolWriter};
+use busbar_core::ir::variant::{EgressPrep, IrReq};
+use busbar_core::ir::{IrReasoningAsk, IrReasoningEffort};
+use busbar_core::proto::{Protocol, ProtocolReader, ProtocolWriter};
 
 fn openai_effort_body(effort: &str) -> serde_json::Value {
     serde_json::json!({
@@ -18,7 +18,7 @@ fn openai_effort_body(effort: &str) -> serde_json::Value {
 /// OpenAI `reasoning_effort` word -> Anthropic `thinking` budget via the table.
 #[test]
 fn openai_effort_projects_to_anthropic_budget() {
-    let ir = crate::proto::openai_chat::OpenAiReader
+    let ir = busbar_core::proto::openai_chat::OpenAiReader
         .read_request(&openai_effort_body("high"))
         .expect("parses");
     assert_eq!(
@@ -78,7 +78,7 @@ fn budget_bucketizes_to_effort_words() {
         "thinking": {"type": "enabled", "budget_tokens": 6000}
     });
     let ir = AnthropicReader.read_request(&body).expect("parses");
-    let out = crate::proto::openai_chat::OpenAiWriter.write_request(&ir);
+    let out = busbar_core::proto::openai_chat::OpenAiWriter.write_request(&ir);
     // 6000 sits between low (4096) and medium (8192) -> "low" (largest entry reached).
     assert_eq!(out["reasoning_effort"], "low");
 }
@@ -90,7 +90,7 @@ fn anthropic_clamps_and_drops_by_max_tokens() {
     // Clamped: high (16384) under max_tokens 4096 -> 3072.
     let mut body = openai_effort_body("high");
     body["max_tokens"] = serde_json::json!(4096);
-    let ir = crate::proto::openai_chat::OpenAiReader
+    let ir = busbar_core::proto::openai_chat::OpenAiReader
         .read_request(&body)
         .expect("parses");
     let out = AnthropicWriter.write_request(&ir);
@@ -99,7 +99,7 @@ fn anthropic_clamps_and_drops_by_max_tokens() {
     // Dropped: max_tokens 1500 leaves <1024 of thinking -> no thinking key at all.
     let mut small = openai_effort_body("high");
     small["max_tokens"] = serde_json::json!(1500);
-    let ir2 = crate::proto::openai_chat::OpenAiReader
+    let ir2 = busbar_core::proto::openai_chat::OpenAiReader
         .read_request(&small)
         .expect("parses");
     let out2 = AnthropicWriter.write_request(&ir2);
@@ -116,7 +116,7 @@ fn thinking_omits_incompatible_sampling_knobs() {
     let mut body = openai_effort_body("low");
     body["temperature"] = serde_json::json!(0.5);
     body["top_p"] = serde_json::json!(0.9);
-    let ir = crate::proto::openai_chat::OpenAiReader
+    let ir = busbar_core::proto::openai_chat::OpenAiReader
         .read_request(&body)
         .expect("parses");
     let out = AnthropicWriter.write_request(&ir);
@@ -134,7 +134,7 @@ fn thinking_omits_incompatible_sampling_knobs() {
     let mut plain = openai_effort_body("low");
     plain.as_object_mut().unwrap().remove("reasoning_effort");
     plain["temperature"] = serde_json::json!(0.5);
-    let ir2 = crate::proto::openai_chat::OpenAiReader
+    let ir2 = busbar_core::proto::openai_chat::OpenAiReader
         .read_request(&plain)
         .expect("parses");
     let out2 = AnthropicWriter.write_request(&ir2);
@@ -193,7 +193,7 @@ fn seam_gate_clears_or_stamps() {
         prompt_caching_allowed: true,
         cache_control_cap: None,
     };
-    let ir = crate::proto::openai_chat::OpenAiReader
+    let ir = busbar_core::proto::openai_chat::OpenAiReader
         .read_request(&openai_effort_body("high"))
         .expect("parses");
 
@@ -228,7 +228,7 @@ fn seam_gate_clears_or_stamps() {
 fn gemini_cross_protocol_egress_requests_include_thoughts() {
     // openai reader -> IR carries a reasoning ask and NO native gemini generationConfig,
     // so the gemini writer takes the synthesized (cross-protocol) path.
-    let ir = crate::proto::openai_chat::OpenAiReader
+    let ir = busbar_core::proto::openai_chat::OpenAiReader
         .read_request(&openai_effort_body("high"))
         .expect("parses");
     let out = Protocol::gemini().writer().write_request(&ir);
@@ -277,7 +277,7 @@ fn small_budget_maps_to_low_not_minimal_on_openai() {
         "thinking": {"type": "enabled", "budget_tokens": 1500}  // below low (4096)
     });
     let ir = AnthropicReader.read_request(&body).expect("parses");
-    let out = crate::proto::openai_chat::OpenAiWriter.write_request(&ir);
+    let out = busbar_core::proto::openai_chat::OpenAiWriter.write_request(&ir);
     assert_eq!(
         out["reasoning_effort"], "low",
         "must not emit o-series-invalid 'minimal'"
