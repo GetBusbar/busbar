@@ -249,14 +249,18 @@ on:
     # freeze survived: nothing about our artifacts changed on the day it broke.
     - cron: "23 */3 * * *"
 
-# `issues: write` is for the `alert` job, which is the second half of "make a failure impossible to
-# miss": red on the release run, AND an issue that comes and finds a human. `actions: read` lets
-# that job read the FAILED job's own log through the API so the issue can quote the exact FAIL /
-# ::error:: lines (the failing check, expected, observed) rather than saying "something went wrong,
-# go read a log".
+# DELIBERATELY NO `issues: write`. This workflow used to open an issue against this repository when a
+# published release was broken; it no longer does, because a repository should not file issues against
+# itself. The failure is now expressed as a RED RUN plus a run summary, which is a strictly better
+# channel: it blocks, it is attached to the evidence that produced it, and it cannot go stale.
+# Withholding the permission is the enforcement — a future edit that reintroduces `gh issue create`
+# fails on the API call instead of quietly working.
+#
+# `actions: read` lets the `alert` job read the FAILED job's own log through the API so the summary
+# can quote the exact FAIL / ::error:: lines (the failing check, expected, observed) rather than
+# saying "something went wrong, go read a log".
 permissions:
   contents: read
-  issues: write
   actions: read
 
 jobs:
@@ -1857,12 +1861,16 @@ jobs:
   #
   # IDEMPOTENT, because a daily sweep plus a 3-hourly pointer sweep against a broken release would
   # otherwise file dozens of identical issues in a week and the pile would be ignored faster than
-  # the red square was. Exactly one open issue carries the `consumer-verification` label at a time:
-  # the first failure opens it, every subsequent failure RETITLES it to the current version, rewrites
-  # the body with the current findings, and adds a dated comment so the history of "still broken" is
-  # visible without a second issue. It closes itself when a later run passes.
+  # the red square was. THIS JOB NO LONGER FILES AN ISSUE, and that is deliberate. The repository
+  # must not open issues against itself: a self-filed issue is indistinguishable at a glance from a
+  # user's report, it accumulates in the same queue a human triages, and — because the filing step
+  # ended on an `echo` — it left the run GREEN, so the incident lived only in a place nobody was
+  # watching. The signal is not lost, it is moved to a louder channel: this job now writes the same
+  # findings to the RUN SUMMARY, emits the same `::error::` annotations, and then EXITS NONZERO so
+  # the workflow itself goes red. A red check on the release is a better channel than a self-filed
+  # issue — it blocks, it is attached to the run that produced it, and it cannot be triaged away.
   alert:
-    name: alert (open or update the release-broken issue)
+    name: alert (fail the run loudly — never file an issue)
     needs: [pointers, verify]
     # `always()` because `needs` on a failed job skips the dependent by default - the exact shape
     # that made release.yml's own `verify-assets` get skipped precisely when the release was broken.
@@ -1882,14 +1890,14 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: read
-      issues: write
+      # NO `issues: write`. The permission is withheld on purpose, so that a future edit which
+      # reintroduces a `gh issue create` here fails on the API call rather than quietly working.
       actions: read
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       REPO: ${{ github.repository }}
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
       VERSION: ${{ needs.verify.outputs.version || needs.pointers.outputs.version }}
-      LABEL: consumer-verification
     steps:
       - name: Collect the failing checks, expected vs observed, from the failed jobs' own logs
         id: collect
@@ -1950,22 +1958,24 @@ jobs:
           done
           echo "findings written:"; cat /tmp/findings.md
 
-      - name: Open or update the single open release-broken issue
+      - name: Report the breakage on the run itself, and FAIL
         run: |
-          set +e            # GitHub runs this as `bash -e {0}`; errexit is on before line 1.
+          # NOTE: no `set +e` here, and that is the point. The step this replaced began with
+          # `set +e` and ended on an `echo`, so it could not fail — the run stayed green while a
+          # published release was broken. This step ends on an explicit `exit 1`.
           set -uo pipefail
           V="${VERSION:-unknown}"
-          TITLE="[release-broken] Consumer verification FAILING for busbar v${V} -- users are getting a broken release"
-          # A stable marker so the body is unambiguously machine-written and safe to overwrite.
-          MARKER="<!-- consumer-verification-alert -->"
 
+          # THE RUN SUMMARY IS THE REPLACEMENT CHANNEL. It renders as markdown on the run page,
+          # it is attached to the evidence that produced it, and it cannot drift into a stale
+          # open issue that outlives the breakage it describes.
           {
-            echo "$MARKER"
+            echo "# :rotating_light: Consumer verification FAILING for busbar v${V}"
             echo
-            echo "**A published release does not work for a consumer.** This issue is opened and"
-            echo "maintained automatically by \`.github/workflows/verify-deploy.yml\`, which checks the"
-            echo "release the way a user experiences it: from the live registries, the live site, the"
-            echo "live tap and the published assets, never from this repository's working copy."
+            echo "**A published release does not work for a consumer.** This is checked by"
+            echo "\`.github/workflows/verify-deploy.yml\`, which reads the release the way a user"
+            echo "experiences it: from the live registries, the live site, the live tap and the"
+            echo "published assets, never from this repository's working copy."
             echo
             echo "This is **not a flaky test**. Every check below reads production."
             echo
@@ -1974,7 +1984,7 @@ jobs:
             echo "| version under test | \`v${V}\` |"
             echo "| failing run | ${RUN_URL} |"
             echo "| triggered by | \`${GITHUB_EVENT_NAME}\` |"
-            echo "| last checked | $(date -u '+%Y-%m-%d %H:%M UTC') |"
+            echo "| checked at | $(date -u '+%Y-%m-%d %H:%M UTC') |"
             echo
             echo "## What failed"
             echo
@@ -1986,71 +1996,28 @@ jobs:
             echo "2. Fix it at the source (the publishing workflow, the tap, the chart, the site), not here."
             echo "3. Re-run the verifier: \`gh workflow run verify-deploy.yml -f version=${V}\`."
             echo
-            echo "This issue is reused, not duplicated: every later failure retitles it, rewrites this"
-            echo "body and adds a comment. It closes itself when a run passes."
-          } > /tmp/issue-body.md
+            echo "_This run is red on purpose. This repository does not open issues against itself;"
+            echo "the failing check IS the notification, and it clears when a later run passes._"
+          } >> "${GITHUB_STEP_SUMMARY:-/dev/stdout}"
 
-          # The label is what makes reuse work, so create it if it is missing rather than assuming.
-          gh label create "$LABEL" --repo "$REPO" \
-            --color B60205 --description "A published release is broken for consumers (auto-filed)" \
-            >/dev/null 2>&1 || true
+          # The annotations, so the failure is legible from the checks list without opening the run.
+          echo "::error title=Release broken for consumers::Consumer verification is FAILING for busbar v${V}. See the run summary: ${RUN_URL}"
+          sed -E 's/^[[:space:]]+//' /tmp/findings.md \
+            | grep -E '^DIAGNOSIS: ' \
+            | head -20 \
+            | while IFS= read -r line; do echo "::error::${line}"; done
 
-          existing="$(gh issue list --repo "$REPO" --label "$LABEL" --state open \
-            --limit 1 --json number --jq '.[0].number // empty' 2>/dev/null || true)"
+          echo "Consumer verification FAILED for v${V}: failing this run instead of filing an issue."
+          exit 1
 
-          if [ -n "${existing:-}" ]; then
-            echo "Reusing open issue #${existing} (idempotent: the daily and 3-hourly sweeps must never file a second one)."
-            gh issue edit "$existing" --repo "$REPO" --title "$TITLE" --body-file /tmp/issue-body.md
-            gh issue comment "$existing" --repo "$REPO" \
-              --body "Still failing as of $(date -u '+%Y-%m-%d %H:%M UTC') -- ${RUN_URL}"
-            echo "::error::Consumer verification is FAILING for v${V}. Details in ${GITHUB_SERVER_URL}/${REPO}/issues/${existing}"
-          else
-            num="$(gh issue create --repo "$REPO" --title "$TITLE" --label "$LABEL" \
-              --body-file /tmp/issue-body.md 2>/dev/null | tail -1)"
-            echo "Opened ${num}"
-            echo "::error::Consumer verification is FAILING for v${V}. Opened ${num}"
-          fi
-
-  # THE OTHER HALF OF IDEMPOTENCY. Without this the issue is opened once and lives forever: a stale
-  # open "release is broken" issue is worse than none, because the next real breakage looks like the
-  # old one and gets ignored. A run in which everything passes closes it and says why.
-  resolved:
-    name: close the release-broken issue when everything passes
-    needs: [pointers, verify]
-    if: >-
-      ${{ always() &&
-          needs.pointers.result == 'success' &&
-          (needs.verify.result == 'success' || needs.verify.result == 'skipped') }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      contents: read
-      issues: write
-    env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      REPO: ${{ github.repository }}
-      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-      LABEL: consumer-verification
-    steps:
-      - name: Close any open release-broken issue
-        run: |
-          set +e            # GitHub runs this as `bash -e {0}`; errexit is on before line 1.
-          set -uo pipefail
-          # A pointer-only sweep (the 3-hourly cron, where `verify` is skipped) proves the pointers
-          # are healthy but says nothing about install.sh, brew, attestation or the quickstart. It
-          # must NOT close an issue that the full sweep opened, or the fast cron would keep wiping
-          # out the slow cron's findings and the issue would flap.
-          if [ "${{ needs.verify.result }}" = "skipped" ]; then
-            echo "Pointer-only sweep passed. Not closing anything: this run did not exercise install.sh, Homebrew, the attestation check or the quickstart, so it is not evidence that a full-sweep failure is fixed."
-            exit 0
-          fi
-          existing="$(gh issue list --repo "$REPO" --label "$LABEL" --state open \
-            --limit 1 --json number --jq '.[0].number // empty' 2>/dev/null || true)"
-          if [ -z "${existing:-}" ]; then
-            echo "No open ${LABEL} issue. Nothing to close."
-            exit 0
-          fi
-          gh issue comment "$existing" --repo "$REPO" \
-            --body "Consumer verification is GREEN again as of $(date -u '+%Y-%m-%d %H:%M UTC'): the full sweep (registries, release assets, install.sh, Homebrew, helm, Terraform, the SDK pointers, attestation and the documented quickstart) passed. Closing. Run: ${RUN_URL}"
-          gh issue close "$existing" --repo "$REPO" --reason completed
-          echo "Closed #${existing}."
+  # THE `resolved` JOB IS GONE, and its absence is the point. It existed only to close the issue the
+  # `alert` job used to file — the other half of an idempotency dance that only had to exist because
+  # the notification was a mutable, long-lived object living outside the run that produced it.
+  #
+  # A red check needs no closing. It is scoped to one run, it clears the moment a later run passes,
+  # and it cannot go stale: there is no state to reconcile, so there is no flapping to suppress and
+  # no reason for the fast pointer-only cron to have an opinion about the slow full sweep's
+  # findings. Deleting the filing deleted the need for the closing.
+  #
+  # If you are here to add issue-filing back: don't. Neither remaining job requests `issues: write`,
+  # so the API call would fail rather than silently succeed. Make the check red instead.

@@ -143,6 +143,18 @@ jobs:
         run: python3 scripts/release-order-lint.py --selftest
       - name: Release-order lint
         run: python3 scripts/release-order-lint.py --root .
+      # NO-SELF-FILED-ISSUES lint: this repository must not open issues against itself. It used to —
+      # verify-deploy.yml filed #51 when a published release was broken — and that was wrong three
+      # ways: a robot's issue is indistinguishable from a user's in the queue a human triages, the
+      # filing step ended on an `echo` so the run stayed GREEN while the release was broken, and a
+      # long-lived mutable issue needed a whole second job to close it again. The replacement is a
+      # red check plus a run summary. This lint stops the filing coming back. Self-test runs FIRST,
+      # and it includes a comment-only fixture because the workflows now EXPLAIN the ban in prose —
+      # a lint its own explanation fails is a lint people learn to skip.
+      - name: No-self-filed-issues lint self-test
+        run: scripts/no-self-filed-issues-lint.sh --selftest
+      - name: No-self-filed-issues lint
+        run: scripts/no-self-filed-issues-lint.sh
       # AND WATCH IT FAIL. `--prove` fails each job of the release graph in turn and asserts that no
       # name-minting job runs afterwards. It is the executable form of "a failure leaves nothing
       # public", so that property is re-proven on every push rather than argued once in a comment.
