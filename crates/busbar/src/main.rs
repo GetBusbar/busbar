@@ -63,8 +63,13 @@ use busbar_core::{admin, config, config_validate, export, health, metrics, obser
 use busbar_core::{
     build_app_from_config, build_split_routers_with_limits, load_config_from_disk,
     preflight_plugins_and_secrets, validate_builtin_secrets_resolve, LoadedConfig,
-    DEFAULT_CONFIG_PATH, ENV_CONFIG, ENV_PROVIDERS, REQUEST_ACTIVITY_TICKS,
+    DEFAULT_CONFIG_PATH, ENV_CONFIG, ENV_PROVIDERS,
 };
+// Read only by the jemalloc idle-purge fallback below, which is itself
+// `#[cfg(not(target_env = "msvc"))]` — windows-msvc has no jemalloc, so importing this
+// unconditionally is an unused-import error there under `-D warnings`.
+#[cfg(not(target_env = "msvc"))]
+use busbar_core::REQUEST_ACTIVITY_TICKS;
 
 /// Handle CLI flags before any environment or file access, so they work without a configured
 /// deployment. Returns `Some(exit_code)` when the process should exit (after printing), `None` to
