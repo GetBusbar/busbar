@@ -148,6 +148,18 @@ jobs:
       # public", so that property is re-proven on every push rather than argued once in a comment.
       - name: Release-order proof (a failure leaves nothing public)
         run: python3 scripts/release-order-lint.py --prove
+      # CHANGELOG lint: the newest entry carries a version AND a date, always. This has shipped
+      # wrong more than once and been reported more than once, which is what makes it a gate rather
+      # than a reminder. The specific fault was a headless blob at the top of the published page:
+      # the site's `## [Unreleased]` strip was terminated by `\Z`, which JavaScript has no anchor
+      # for — it matched the literal letter `z` under `/i`, cut the section mid-word, and left the
+      # remainder on the page with no heading, so no version and no date. That half is fixed in the
+      # site repo; this guards the source shape the site can only render what it is given. Self-test
+      # runs FIRST: never trust the lint's verdict before proving the lint still fires.
+      - name: Changelog lint self-test (every rule proven RED)
+        run: python3 scripts/changelog-lint.py --selftest
+      - name: Changelog lint
+        run: python3 scripts/changelog-lint.py --root .
       # WORKSPACE-DEPS lint: one version requirement per external dependency, written once in
       # [workspace.dependencies]. The table makes that POSSIBLE; only this lint makes it TRUE —
       # nothing in Cargo stops a member re-stating a version, and before the table `hex`, `sha2` and
