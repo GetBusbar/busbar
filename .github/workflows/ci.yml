@@ -235,6 +235,56 @@ jobs:
         run: scripts/blocking-ffi-lint.sh --selftest
       - name: Blocking-FFI lint
         run: scripts/blocking-ffi-lint.sh
+      # DOC-UNDERSTATEMENT gate (1.6.0): the documentation and the engine must make the SAME claim,
+      # in whichever tree they are read. `docs/circuit-breaker.md` exists in SIX versions across
+      # this fleet's 148 refs and they disagree about whether busbar can reroute an MCP tool call.
+      # On `dev` the page says failover is "not yet wired"; on the reroute branches it says it is
+      # live. BOTH sentences are true — of different trees. The page and the wiring are ONE change,
+      # which is why the only branches carrying the "it is live" text are the ones carrying the
+      # code. Split them in a merge or a release squash and somebody publishes a false sentence;
+      # which direction depends only on the accident of merge order.
+      #
+      # THE HAZARD IS BIDIRECTIONAL AND THE SECOND DIRECTION IS WORSE. Lose the wiring and keep the
+      # prose => a published FALSE CAPABILITY CLAIM (the failure the site's staged-claims mechanism
+      # exists to prevent; `/reliability/` and `/mcp/` already contradicted each other once this
+      # release over exactly this claim). Land the wiring and keep the caveat => the docs deny a
+      # capability busbar has, the same one-directional understatement the whole website audit
+      # found. A gate that only asked "does the page still say the good thing" would ACTIVELY CAUSE
+      # the worse of the two, by rewarding prose that runs ahead of the engine. So it is symmetric.
+      #
+      # The mitigation it replaces was "check the blob hash after the merge and again after the
+      # squash": a human remembering, twice, at the busiest moment of a release. A ruling is not a
+      # fix, and a caveat with no expiry condition preserves a false claim after the condition ends
+      # — which is how the published LiteLLM comparison came to argue against us. The expiry
+      # condition is mechanical here: the prose takes a position, the engine is asked whether that
+      # position is true, and disagreement is red in either direction.
+      #
+      # It gates the CLAIM, not the bytes. A pinned blob hash is identifier-shaped — the shape that
+      # produced four wrong conclusions this release — it reddens on the first legitimate typo fix,
+      # it can only ever know "different" rather than "wrong", and it is a fact about ONE tree, so
+      # the same pin is simultaneously right on one branch and wrong on another. That is precisely
+      # the situation here. Reading the claim works on every branch without being told which.
+      #
+      # The probes are a CENSUS, not a call-site list: a named call site is itself identifier-shaped
+      # and `mcp/reroute.rs` does not exist on `dev` at all. They ask who READS `tool_pools:` /
+      # `agent_pools:` at runtime — on `dev` every mention outside the config parser is a comment
+      # and the field never reaches `state.rs`, so it is parsed at boot and consumed by nothing.
+      #
+      # TWO CLAIMS, NOT ONE ATOM. On `dev` the trip/fast-fail half is genuinely LIVE on all three
+      # planes while ONLY failover is unwired, so the breaker and the reroute claims carry separate
+      # probes and separate vocabularies. Lumping them would demand the docs deny fast-fail — a
+      # false red, and a false red is how a gate gets switched off.
+      #
+      # SILENCE IS RED: a page whose section was dropped in a merge leaves no denial to catch, and
+      # understatement by deletion is still understatement. Self-test runs FIRST and drives all four
+      # quadrants, both silences, the breaker/failover split, the comment-vs-code distinction, and
+      # tense (a past-tense "produced nothing but slow calls" is true history and must stay legal;
+      # the present tense is the false claim). FAST tier: one python process reading files, and
+      # stale copy is wrong on every branch, not just main.
+      - name: Doc-understatement gate self-test
+        run: python3 scripts/doc-understatement-gate.py --selftest
+      - name: Doc-understatement gate
+        run: python3 scripts/doc-understatement-gate.py
       # THE REGISTRY GATE (plugins.yaml is the single source of truth for first-party plugins):
       # red when a registered plugin lacks coverage anywhere — no qa-gate checkout, no
       # release-check phase, no published release (or a phantom release with zero assets) — or

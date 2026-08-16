@@ -437,9 +437,10 @@ There is one place to configure it: `pools.<pool>.breaker:`. There is no `breake
 key under `tools:` or `agents:` (an earlier version of this page said there was, and a
 config written against it fails at boot, because both sections reject unknown keys).
 Omit the block and you get the defaults. On the MCP and A2A planes the breaker runs on
-those defaults through the shared selection seam, and **that seam is not yet wired into
-the tool-dispatch or agent-relay call sites**, so it does not fire on a live call today.
-Full detail, with worked YAML, is in
+those defaults through the shared selection seam, and **both call sites are wired**: the
+MCP tool-dispatch path walks its candidate set before every leg, and the A2A ingress walks
+its own at submission admission. A configured pool is validated at boot AND consulted at
+dispatch. Full detail, with worked YAML, is in
 [circuit-breaker.md](circuit-breaker.md#the-breaker-on-the-mcp-and-a2a-planes).
 
 **Why an operator cares.** With no breaker on a plane, an upstream that is hard down
@@ -449,11 +450,18 @@ is already in trouble. Worse, nothing says so. The first report comes from a use
 With the breaker, the target trips, subsequent calls are refused immediately, and the
 trip is a signal that names the server or the agent and the cause.
 
-**There is no failover on MCP or A2A**, and that is a design decision rather than a
-gap: a tool is namespaced to the server that exports it and an A2A task is addressed
-to a specific agent, so there is nothing to reroute to. `failover:` is not accepted
-under `tools:` or `agents:`. What the breaker gives these planes is failing *fast*
-instead of *slowly*, plus the signal.
+**Failover on these planes is opt-in, and it is `tool_pools:` / `agent_pools:`.** An
+earlier version of this page said there was no failover here, reasoning that a tool is
+namespaced to the server that exports it so there is nothing to reroute to. That reason
+holds for two *different vendors'* servers, and it was never the case operators actually
+run: nobody runs one instance of anything important. Name the same deployment twice and a
+tools/call whose primary is tripped is rerouted to its verified twin before the first
+byte; a fresh A2A submission is walked the same way at admission. Interchangeability is
+checked, not claimed — busbar moves a request between two candidates only when the
+approved schema digest (MCP) or card fingerprint (A2A) agree. There is still no
+`failover:` key under `tools:` or `agents:`; the pools are top-level sections. Say
+nothing and you get exactly the old behaviour: failing *fast* instead of *slowly*, plus
+the signal.
 
 **What a caller sees when a target is Open:**
 
