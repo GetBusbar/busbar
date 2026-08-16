@@ -151,6 +151,10 @@ pub(super) enum Behaviour {
     AsksForRoots,
     /// A JSON-RPC error.
     Errors,
+    /// A DYING UPSTREAM: every request is answered with this bare HTTP status (a 401 from a server
+    /// whose credentials rotted, a 503 from one that is drowning). The breaker batteries' fixture —
+    /// the recorded hit count is what proves a tripped server's SECOND caller never reached it.
+    DeniesWithStatus(u16),
 }
 
 /// The recorded traffic, shared with the test.
@@ -264,7 +268,8 @@ async fn mcp_endpoint(
     State(state): State<PeerState>,
     headers: HeaderMap,
     body: axum::body::Bytes,
-) -> axum::Json<serde_json::Value> {
+) -> axum::response::Response {
+    use axum::response::IntoResponse as _;
     let rec = record(&headers, &body);
     let id = rec
         .json()
@@ -272,6 +277,15 @@ async fn mcp_endpoint(
         .cloned()
         .unwrap_or(serde_json::json!(0));
     state.log.lock().unwrap().mcp.push(rec);
+    // The dying-upstream arm answers a bare status and no JSON-RPC document at all — the shape a
+    // reverse proxy in front of a dead server produces, and the one the status classifier reads.
+    if let Behaviour::DeniesWithStatus(status) = state.behaviour {
+        return (
+            axum::http::StatusCode::from_u16(status).expect("a real status"),
+            "the upstream is not serving",
+        )
+            .into_response();
+    }
     let value = match state.behaviour {
         Behaviour::Result => serde_json::json!({
             "jsonrpc": "2.0", "id": id,
@@ -425,8 +439,10 @@ async fn mcp_endpoint(
             "jsonrpc": "2.0", "id": id,
             "error": { "code": -32003, "message": "the upstream declined" },
         }),
+        // Answered above, before the JSON arms.
+        Behaviour::DeniesWithStatus(_) => unreachable!("handled before the JSON arms"),
     };
-    axum::Json(value)
+    axum::Json(value).into_response()
 }
 
 async fn token_endpoint(
@@ -598,23 +614,56 @@ pub(super) async fn call_as(
     method: &str,
     params: serde_json::Value,
 ) -> (u16, serde_json::Value) {
+    let (status, _, body) = call_response(app, gov, actor, method, params).await;
+    (status, body)
+}
+
+/// The same drive, keeping the RESPONSE HEADERS. The breaker battery asserts `Retry-After` — a
+/// header — and the (status, body) helpers above deliberately drop the header map.
+pub(super) async fn call_response(
+    app: &std::sync::Arc<crate::state::App>,
+    gov: &crate::governance::GovCtx,
+    actor: &str,
+    method: &str,
+    params: serde_json::Value,
+) -> (u16, axum::http::HeaderMap, serde_json::Value) {
+    call_response_caps(app, gov, actor, method, params, &ALL_CAPABILITIES).await
+}
+
+/// The same drive with the CALLER'S DECLARED CAPABILITIES chosen by the test — for the batteries
+/// whose subject needs the SEP-2663 tasks extension declared, which `ALL_CAPABILITIES`
+/// deliberately does not (see its comment: it declares the three ask capabilities and nothing
+/// about tasks, so the task-path filter keeps its own tests meaningful).
+pub(super) async fn call_response_caps(
+    app: &std::sync::Arc<crate::state::App>,
+    gov: &crate::governance::GovCtx,
+    actor: &str,
+    method: &str,
+    params: serde_json::Value,
+    capabilities: &serde_json::Value,
+) -> (u16, axum::http::HeaderMap, serde_json::Value) {
     let handle = std::sync::Arc::new(crate::state::AppHandle::new(app.clone()));
     let ctx = crate::mcp::method::Ctx {
         app,
         handle: &handle,
         gov,
         actor,
-        capabilities: &ALL_CAPABILITIES,
+        capabilities,
         headers: &NO_HEADERS,
     };
     let response = crate::mcp::method::dispatch(&ctx, method, Some(&params), Some(1.into()))
         .await
         .unwrap_or_else(|| panic!("`{method}` must be in the method table"));
     let status = response.status().as_u16();
+    let headers = response.headers().clone();
     let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
         .unwrap();
-    (status, serde_json::from_slice(&bytes).unwrap_or_default())
+    (
+        status,
+        headers,
+        serde_json::from_slice(&bytes).unwrap_or_default(),
+    )
 }
 
 /// The MCP resource config every test in this directory serves under.

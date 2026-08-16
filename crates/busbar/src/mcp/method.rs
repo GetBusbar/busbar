@@ -1407,6 +1407,30 @@ async fn tools_call(
             }
         };
 
+    // (3b) THE BREAKER — the ONE core breaker's degenerate cell for this server, consulted BEFORE
+    // the loop and before any socket, exactly where the LLM walk consults it before a lane
+    // (the audit's degenerate single-member cell). A tripped server is refused HERE, in
+    // milliseconds, as a JSON-RPC ERROR — the call never happened, so it is NEVER an `isError`
+    // tool result (that shape says the tool ran, and the model would reason from a lie). The
+    // outcome of the leg is recorded inside `upstream::call`, where the wire's structure still
+    // exists; the probe token is released after the loop so an abandoned recovery probe cannot
+    // wedge the cell.
+    let breakers = std::sync::Arc::clone(&ctx.app.plane_breakers);
+    let breaker_key = crate::store::PlaneBreakers::tool_key(&selected.server);
+    let _admission = match breakers.admit(&breaker_key) {
+        Ok(token) => token,
+        Err(_) => {
+            return log.refused(
+                REASON_UPSTREAM_UNAVAILABLE,
+                refuse_upstream_unavailable(
+                    id,
+                    &selected.server,
+                    breakers.retry_after_secs(&breaker_key),
+                ),
+            )
+        }
+    };
+
     // (4) THE BOUNDED, METERED, PER-ROUND-GATED LOOP.
     //
     // Every concurrency hold taken by `try_admit` is parked here so it lives exactly as long as the
@@ -1415,6 +1439,7 @@ async fn tools_call(
     let mut holds: Vec<crate::governance::AdmitGrant> = Vec::new();
     let server_id = selected.server.clone();
     let pool = ctx.app.mcp_pool.as_ref();
+    let breakers_ref = breakers.as_ref();
     let outcome = inputreq::drive(
         &server_id,
         server.max_input_required_rounds,
@@ -1424,6 +1449,7 @@ async fn tools_call(
         |round, satisfaction| {
             super::upstream::call(
                 pool,
+                breakers_ref,
                 &authorised,
                 &arguments,
                 u64::from(round),
@@ -1476,6 +1502,9 @@ async fn tools_call(
         |rec| charge_round(ctx, &selected.namespaced, rec, &mut holds),
     )
     .await;
+    // `_admission` (the single-flight probe hold) drops at the end of this function — or with the
+    // future, if the caller disconnected — releasing owner-checked either way. A recorded outcome
+    // has already consumed it and the drop is then a no-op.
 
     // (5) AUDIT the VALIDATED decision — the one that survived every check above, never a call that
     // got no further than a refusal.
@@ -1703,6 +1732,26 @@ async fn create_task(
             }
         };
 
+    // THE BREAKER, at the same pre-network position the synchronous path consults it — and BEFORE
+    // the task row is minted, because a tripped server must be a refusal the caller sees NOW, not
+    // a task id for work busbar already knows it will not dispatch. The probe token rides into the
+    // runner, which releases it after its loop settles (a recorded outcome makes that a no-op).
+    let breakers = std::sync::Arc::clone(&ctx.app.plane_breakers);
+    let breaker_key = crate::store::PlaneBreakers::tool_key(&selected.server);
+    let admission = match breakers.admit(&breaker_key) {
+        Ok(token) => token,
+        Err(_) => {
+            return log.refused(
+                REASON_UPSTREAM_UNAVAILABLE,
+                refuse_upstream_unavailable(
+                    id,
+                    &selected.server,
+                    breakers.retry_after_secs(&breaker_key),
+                ),
+            )
+        }
+    };
+
     // CHARGED ONCE, HERE, and this is the only moment at which a refusal can still be reported to
     // the caller as a refusal. Once the `CreateTaskResult` is on the wire the request has been
     // answered, so a later budget failure could only be expressed by failing the task — which
@@ -1717,6 +1766,8 @@ async fn create_task(
         },
         &mut holds,
     ) {
+        // The budget said no AFTER the breaker admitted: `admission` drops on this return, handing
+        // back a recovery probe this dispatch may have just won.
         let refusal =
             DispatchRefusal::NotGranted(format!("this task was refused by your budget: {reason}"));
         return log.refused(
@@ -1736,6 +1787,8 @@ async fn create_task(
         super::tasks::Runner {
             pool: std::sync::Arc::clone(&ctx.app.mcp_pool),
             handle: std::sync::Arc::clone(ctx.handle),
+            breakers,
+            admission,
             authorised,
             arguments,
             server_id: selected.server.clone(),
@@ -2014,6 +2067,47 @@ pub(super) const CODE_REFUSED: i64 = -32000;
 const CODE_MISSING_CLIENT_CAPABILITY: i64 = -32021;
 /// JSON-RPC standard: the params were structurally wrong.
 const CODE_INVALID_PARAMS: i64 = -32602;
+
+/// THE TRIPPED-UPSTREAM ERROR — the owner-agreed rendering for a tripped MCP upstream. In the
+/// implementation-defined `-32000..-32099` band beside busbar's other extensions, because every
+/// reserved code is wrong for a specific reason: `-32603` says busbar broke (it did not), `-32601`
+/// says the tool does not exist (it does), `-32602` blames the caller. The call NEVER HAPPENED, so
+/// this is a JSON-RPC error and never an `isError` tool result — see `refuse_upstream_unavailable`.
+const CODE_UPSTREAM_UNAVAILABLE: i64 = -32030;
+
+/// The call-log reason token for a breaker refusal. `refused` is exact here: the call did not go
+/// out, which is precisely what that disposition documents.
+const REASON_UPSTREAM_UNAVAILABLE: &str = "upstream_unavailable";
+
+/// The tripped-server refusal: `503` + `Retry-After` (EXACT — the cell knows `until`, the same
+/// shape budget uses with `429`) + [`CODE_UPSTREAM_UNAVAILABLE`], with structured `data` naming the
+/// server and the wait. A JSON-RPC ERROR, never an `isError` result: `isError` says the tool RAN
+/// and failed, and a model told that reasons from a lie.
+fn refuse_upstream_unavailable(
+    id: Option<serde_json::Value>,
+    server: &str,
+    retry_after_secs: u64,
+) -> Response {
+    let mut resp = error(
+        StatusCode::SERVICE_UNAVAILABLE,
+        id,
+        CODE_UPSTREAM_UNAVAILABLE,
+        &format!(
+            "MCP server `{server}` is unavailable: its circuit breaker is open after repeated \
+             failures; busbar did not dispatch this call. Retry after {retry_after_secs}s."
+        ),
+        Some(serde_json::json!({
+            "reason": REASON_UPSTREAM_UNAVAILABLE,
+            "server": server,
+            "retry_after_ms": retry_after_secs.saturating_mul(1000),
+        })),
+    );
+    if let Ok(v) = axum::http::HeaderValue::from_str(&retry_after_secs.to_string()) {
+        resp.headers_mut()
+            .insert(axum::http::header::RETRY_AFTER, v);
+    }
+    resp
+}
 
 fn string_param<'a>(params: Option<&'a serde_json::Value>, key: &str) -> Option<&'a str> {
     params.and_then(|p| p.get(key)).and_then(|v| v.as_str())

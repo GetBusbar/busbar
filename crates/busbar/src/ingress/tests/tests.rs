@@ -28,6 +28,7 @@ fn minimal_app() -> Arc<App> {
         mcp_sampling_spend: Default::default(),
         mcp_demotions: Default::default(),
         mcp_pool: Default::default(),
+        plane_breakers: Arc::new(crate::store::PlaneBreakers::new()),
         mcp_servers: Arc::new(Default::default()),
         // Not an MCP server: the plane is absent and the dispatch table empty, which is what every
         // path in this fixture is asserted against.

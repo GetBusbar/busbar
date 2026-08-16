@@ -265,6 +265,12 @@ pub(crate) struct RelayCall<'a> {
     /// hop below is ONE implementation and this is the only thing that varies across the three.
     /// See the `THE OUTBOUND BINDING` note further down for why re-framing is all that is owed.
     pub(crate) framing: &'a dyn OutboundFraming,
+    /// THE ONE CORE BREAKER's degenerate single-member cell for this agent — consulted in
+    /// [`prepare`] immediately after the demotion gate and before the socket,
+    /// so trust is still asked first and all three bindings inherit the admission by construction.
+    /// The hop's outcome is recorded against the same cell on the way out. `None` (the originate
+    /// direction, which the audit scopes out of this unit) admits everything and records nothing.
+    pub(crate) breakers: Option<std::sync::Arc<crate::store::PlaneBreakers>>,
 }
 
 /// THE REQUEST THE RELAY IS ABOUT TO SEND: everything, in one value.
@@ -372,6 +378,14 @@ pub(crate) enum RelayRefusal {
         method: String,
         reason: String,
     },
+    /// THE AGENT'S BREAKER IS OPEN: the backend has been failing and busbar refused to dispatch —
+    /// the call NEVER LEFT, which is why the ingress renders a fresh submission as the spec's own
+    /// `rejected` ("we did not accept this work"), never `failed` ("we tried and it broke").
+    /// `retry_after_secs` is the cell's EXACT remaining cooldown, not a guess.
+    BreakerOpen {
+        agent_id: String,
+        retry_after_secs: u64,
+    },
 }
 
 impl RelayRefusal {
@@ -382,7 +396,10 @@ impl RelayRefusal {
     /// between admission and the socket.
     pub(crate) fn status(&self) -> u16 {
         match self {
-            RelayRefusal::Demoted(_) => 503,
+            // Both are statements about the AGENT rather than about the hop — one from the trust
+            // axis, one from the availability axis — and a caller sees one answer for "this agent
+            // is not serving" whichever axis said so.
+            RelayRefusal::Demoted(_) | RelayRefusal::BreakerOpen { .. } => 503,
             _ => 502,
         }
     }
@@ -425,6 +442,15 @@ impl std::fmt::Display for RelayRefusal {
                 f,
                 "`{method}` could not be carried to this backend over its `{binding}` binding: \
                  {reason}"
+            ),
+            RelayRefusal::BreakerOpen {
+                agent_id,
+                retry_after_secs,
+            } => write!(
+                f,
+                "agent `{agent_id}` is unavailable: its circuit breaker is open after repeated \
+                 backend failures; busbar did not dispatch this request. Retry after \
+                 {retry_after_secs}s"
             ),
         }
     }
@@ -1345,6 +1371,63 @@ fn outbound_of(body: &[u8]) -> (String, serde_json::Value) {
     )
 }
 
+/// RECORD ONE HOP'S OUTCOME against the agent's breaker cell — this plane's Stage-1 normalizer
+/// (see docs/circuit-breaker.md's two-stage pipeline), Stage 2 being the one core `breaker::classify`
+/// inside `PlaneBreakers::record_signal`. `refusal: None` is a hop that produced an answer.
+///
+/// What records and what deliberately does not:
+/// - `Transport` → `Network`; `Status` → classified from the HTTP status (401/403 → hard down,
+///   5xx/429 → transient, true 4xx → ClientFault, never a penalty).
+/// - `BodyTooLarge` / `NotJson` / `Uncorrelated` → `ServerError`: the backend answered 2xx and the
+///   answer was unusable, which is the upstream misbehaving on the wire.
+/// - `BackendError` records a SUCCESS: the backend was reachable and answered a well-formed A2A
+///   error — a task-level failure from a backend that answered is the WORK failing, not the wire.
+/// - `Guard` / `Lease` / `Unframable` are busbar-side (nothing reached the backend); `Demoted` is
+///   TRUST, not health; `BreakerOpen` is the cell already speaking. None of them record.
+fn record_hop_outcome(call: &RelayCall<'_>, refusal: Option<&RelayRefusal>) {
+    let Some(breakers) = call.breakers.as_ref() else {
+        return;
+    };
+    let key = crate::store::PlaneBreakers::agent_key(call.agent_id);
+    let class = match refusal {
+        None | Some(RelayRefusal::BackendError { .. }) => {
+            breakers.record_success(&key);
+            return;
+        }
+        Some(RelayRefusal::Transport { .. }) => crate::breaker::StatusClass::Network,
+        Some(RelayRefusal::Status { status, .. }) => {
+            breakers.record_signal(
+                &key,
+                &crate::breaker::normalize_raw_error(
+                    &crate::breaker::RawUpstreamError::from_status(*status),
+                    &std::collections::HashMap::new(),
+                ),
+            );
+            return;
+        }
+        Some(
+            RelayRefusal::BodyTooLarge { .. }
+            | RelayRefusal::NotJson { .. }
+            | RelayRefusal::Uncorrelated { .. },
+        ) => crate::breaker::StatusClass::ServerError,
+        Some(
+            RelayRefusal::Guard(_)
+            | RelayRefusal::Demoted(_)
+            | RelayRefusal::Lease(_)
+            | RelayRefusal::Unframable { .. }
+            | RelayRefusal::BreakerOpen { .. },
+        ) => return,
+    };
+    breakers.record_signal(
+        &key,
+        &crate::breaker::CanonicalSignal {
+            class,
+            provider_signal: None,
+            retry_after: None,
+        },
+    );
+}
+
 /// THE PREAMBLE EVERY HOP SHARES: guard the target, re-ask the trust question, build the request.
 ///
 /// One function rather than two copies, because the ORDER is the design and a second copy is a
@@ -1355,6 +1438,7 @@ fn prepare<'a>(
     seam: &dyn RelaySeam,
     streaming: bool,
     now_ms: u64,
+    admission: &mut Option<crate::store::PlaneAdmission>,
 ) -> Result<(reqwest::Url, PinnedTarget, OutboundRelayRequest), RelayRefusal> {
     // ── THE GUARD. One resolution, every answered address judged, one pinned address out. It is
     //    `crate::net_guard`'s, reached through the card fetch's hop door, so a relayed submission
@@ -1369,6 +1453,25 @@ fn prepare<'a>(
     call.gate
         .still_delegable(call.agent_id, call.admitted_generation)
         .map_err(RelayRefusal::Demoted)?;
+
+    // ── THE BREAKER, immediately after the demotion gate and before the socket — trust first,
+    //    then availability, per the audit's ordering. One admission here covers JsonRpc, HttpJson
+    //    and Grpc by construction: this preamble is beneath the transport axis, the same argument
+    //    `transport.rs` already makes. On refusal the request NEVER LEFT busbar; the ingress
+    //    renders a fresh submission `rejected` with its task id. The probe hold rides out through
+    //    `admission` so the caller drops it AFTER the outcome is recorded.
+    if let Some(breakers) = call.breakers.as_ref() {
+        let key = crate::store::PlaneBreakers::agent_key(call.agent_id);
+        match breakers.admit(&key) {
+            Ok(token) => *admission = Some(token),
+            Err(_) => {
+                return Err(RelayRefusal::BreakerOpen {
+                    agent_id: call.agent_id.to_string(),
+                    retry_after_secs: breakers.retry_after_secs(&key),
+                })
+            }
+        }
+    }
 
     // ── THE FRAMING, and it is the ONLY thing that varies across A2A's three bindings. Everything
     //    above this line — the guard, the pin, the live trust decision — and everything below it in
@@ -1421,7 +1524,24 @@ pub(crate) fn relay(
     seam: &dyn RelaySeam,
     now_ms: u64,
 ) -> Result<RelayReply, RelayRefusal> {
-    let (url, pin, request) = prepare(call, seam, false, now_ms)?;
+    // Declared BEFORE `outcome` so it drops AFTER the record below (locals drop in reverse
+    // order): a recorded outcome consumes the probe and makes the drop a no-op; a refusal between
+    // admission and the wire genuinely abandons it and the drop hands it back.
+    let mut admission: Option<crate::store::PlaneAdmission> = None;
+    let outcome = relay_once(call, seam, now_ms, &mut admission);
+    record_hop_outcome(call, outcome.as_ref().err());
+    outcome
+}
+
+/// The unary hop's body, split out so [`relay`] can record the outcome on EVERY exit path — the
+/// `?`s below are the reason a wrapper exists rather than a record call per return.
+fn relay_once(
+    call: &RelayCall<'_>,
+    seam: &dyn RelaySeam,
+    now_ms: u64,
+    admission: &mut Option<crate::store::PlaneAdmission>,
+) -> Result<RelayReply, RelayRefusal> {
+    let (url, pin, request) = prepare(call, seam, false, now_ms, admission)?;
 
     // The PINNED ADDRESS goes to the transport beside the URL. The transport connects to the
     // address and sends the URL's host as `Host` and as TLS SNI; see `transport.rs`.
@@ -1935,7 +2055,35 @@ pub(crate) fn relay_stream(
     now_ms: u64,
     sink: &mut (dyn FnMut(RelayEvent) -> ChunkFlow + Send),
 ) -> Result<RelayStream, RelayRefusal> {
-    let (url, pin, request) = prepare(call, seam, true, now_ms)?;
+    // Same shape as [`relay`]: admission outlives the record, and every exit path records.
+    let mut admission: Option<crate::store::PlaneAdmission> = None;
+    let outcome = relay_stream_once(
+        call,
+        seam,
+        task_id,
+        context_id,
+        matched_skill,
+        now_ms,
+        sink,
+        &mut admission,
+    );
+    record_hop_outcome(call, outcome.as_ref().err());
+    outcome
+}
+
+/// [`relay_stream`]'s body; see [`relay_once`] for why the wrapper split exists.
+#[allow(clippy::too_many_arguments)] // the public fn's list plus the admission out-param.
+fn relay_stream_once(
+    call: &RelayCall<'_>,
+    seam: &dyn RelaySeam,
+    task_id: &str,
+    context_id: &str,
+    matched_skill: Option<&str>,
+    now_ms: u64,
+    sink: &mut (dyn FnMut(RelayEvent) -> ChunkFlow + Send),
+    admission: &mut Option<crate::store::PlaneAdmission>,
+) -> Result<RelayStream, RelayRefusal> {
+    let (url, pin, request) = prepare(call, seam, true, now_ms, admission)?;
     let cap = call.policy.max_body_bytes;
 
     // THE BINDING'S OWN FRAME READER. Whatever it reads — SSE with an envelope payload, SSE with a
@@ -2037,6 +2185,12 @@ mod relay_harness;
 #[cfg(test)]
 #[path = "tests/relay_tests.rs"]
 mod relay_tests;
+
+// KILL-THE-UPSTREAM — the breaker's trip + fast-fail on this plane, all three bindings, through
+// the same harness/router as the batteries above. It hangs here because the mount is `prepare`.
+#[cfg(test)]
+#[path = "tests/breaker_fastfail_tests.rs"]
+mod breaker_fastfail_tests;
 
 #[cfg(test)]
 #[path = "tests/relay_stream_tests.rs"]
