@@ -1,0 +1,102 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="512" viewBox="0 0 900 512" role="img" aria-label="One endpoint, every protocol, both directions">
+<rect width="900" height="512" rx="10" fill="#0d1117"/>
+<text x="28.0" y="42.0" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="22" font-weight="650" fill="#e6edf3" text-anchor="start">One endpoint, every protocol, both directions</text>
+<text x="28.0" y="66.0" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="14" font-weight="400" fill="#9198a1" text-anchor="start">Added latency p99 in microseconds, per ingress and upstream pair. Lower is better. 36 of 36 pairs served.</text>
+<text x="184.0" y="84.0" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="12" font-weight="700" fill="#6e7681" text-anchor="end">UPSTREAM</text>
+<text x="248.0" y="84.0" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="14" font-weight="600" fill="#9198a1" text-anchor="middle">OpenAI</text>
+<text x="360.0" y="84.0" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="14" font-weight="600" fill="#9198a1" text-anchor="middle">Responses</text>
+<text x="472.0" y="84.0" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="14" font-weight="600" fill="#9198a1" text-anchor="middle">Anthropic</text>
+<text x="584.0" y="84.0" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="14" font-weight="600" fill="#9198a1" text-anchor="middle">Gemini</text>
+<text x="696.0" y="84.0" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="14" font-weight="600" fill="#9198a1" text-anchor="middle">Cohere</text>
+<text x="808.0" y="84.0" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="14" font-weight="600" fill="#9198a1" text-anchor="middle">Bedrock</text>
+<g transform="translate(38,274) rotate(-90)"><text x="0.0" y="0.0" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="12" font-weight="700" fill="#6e7681" text-anchor="middle">INGRESS</text></g>
+<text x="180.0" y="144.0" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="14" font-weight="600" fill="#9198a1" text-anchor="end">OpenAI</text>
+<rect x="196.0" y="118.0" width="104.0" height="44.0" rx="7" fill="#3fb950"/>
+<text x="248.0" y="138.0" font-family="ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace" font-size="15" font-weight="700" fill="#0d1117" text-anchor="middle">82 µs</text>
+<text x="248.0" y="152.0" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="12" font-weight="600" fill="#0d1117" text-anchor="middle" opacity="0.85">your bytes</text>
+<rect x="308.0" y="118.0" width="104.0" height="44.0" rx="7" fill="#132d1d" stroke="#2ea043" stroke-width="1"/>
+<text x="360.0" y="145.0" font-family="ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace" font-size="15" font-weight="600" fill="#3fb950" text-anchor="middle">152 µs</text>
+<rect x="420.0" y="118.0" width="104.0" height="44.0" rx="7" fill="#132d1d" stroke="#2ea043" stroke-width="1"/>
+<text x="472.0" y="145.0" font-family="ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace" font-size="15" font-weight="600" fill="#3fb950" text-anchor="middle">105 µs</text>
+<rect x="532.0" y="118.0" width="104.0" height="44.0" rx="7" fill="#132d1d" stroke="#2ea043" stroke-width="1"/>
+<text x="584.0" y="145.0" font-family="ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace" font-size="15" font-weight="600" fill="#3fb950" text-anchor="middle">109 µs</text>
+<rect x="644.0" y="118.0" width="104.0" height="44.0" rx="7" fill="#132d1d" stroke="#2ea043" stroke-width="1"/>
+<text x="696.0" y="145.0" font-family="ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace" font-size="15" font-weight="600" fill="#3fb950" text-anchor="middle">102 µs</text>
+<rect x="756.0" y="118.0" width="104.0" height="44.0" rx="7" fill="#132d1d" stroke="#2ea043" stroke-width="1"/>
+<text x="808.0" y="145.0" font-family="ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace" font-size="15" font-weight="600" fill="#3fb950" text-anchor="middle">107 µs</text>
+<text x="180.0" y="196.0" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="14" font-weight="600" fill="#9198a1" text-anchor="end">Responses</text>
+<rect x="196.0" y="170.0" width="104.0" height="44.0" rx="7" fill="#132d1d" stroke="#2ea043" stroke-width="1"/>
+<text x="248.0" y="197.0" font-family="ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace" font-size="15" font-weight="600" fill="#3fb950" text-anchor="middle">104 µs</text>
+<rect x="308.0" y="170.0" width="104.0" height="44.0" rx="7" fill="#3fb950"/>
+<text x="360.0" y="190.0" font-family="ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace" font-size="15" font-weight="700" fill="#0d1117" text-anchor="middle">82 µs</text>
+<text x="360.0" y="204.0" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="12" font-weight="600" fill="#0d1117" text-anchor="middle" opacity="0.85">your bytes</text>
+<rect x="420.0" y="170.0" width="104.0" height="44.0" rx="7" fill="#132d1d" stroke="#2ea043" stroke-width="1"/>
+<text x="472.0" y="197.0" font-family="ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace" font-size="15" font-weight="600" fill="#3fb950" text-anchor="middle">106 µs</text>
+<rect x="532.0" y="170.0" width="104.0" height="44.0" rx="7" fill="#132d1d" stroke="#2ea043" stroke-width="1"/>
+<text x="584.0" y="197.0" font-family="ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace" font-size="15" font-weight="600" fill="#3fb950" text-anchor="middle">109 µs</text>
+<rect x="644.0" y="170.0" width="104.0" height="44.0" rx="7" fill="#132d1d" stroke="#2ea043" stroke-width="1"/>
+<text x="696.0" y="197.0" font-family="ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace" font-size="15" font-weight="600" fill="#3fb950" text-anchor="middle">103 µs</text>
+<rect x="756.0" y="170.0" width="104.0" height="44.0" rx="7" fill="#132d1d" stroke="#2ea043" stroke-width="1"/>
+<text x="808.0" y="197.0" font-family="ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace" font-size="15" font-weight="600" fill="#3fb950" text-anchor="middle">108 µs</text>
+<text x="180.0" y="248.0" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="14" font-weight="600" fill="#9198a1" text-anchor="end">Anthropic</text>
+<rect x="196.0" y="222.0" width="104.0" height="44.0" rx="7" fill="#132d1d" stroke="#2ea043" stroke-width="1"/>
+<text x="248.0" y="249.0" font-family="ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace" font-size="15" font-weight="600" fill="#3fb950" text-anchor="middle">108 µs</text>
+<rect x="308.0" y="222.0" width="104.0" height="44.0" rx="7" fill="#132d1d" stroke="#2ea043" stroke-width="1"/>
+<text x="360.0" y="249.0" font-family="ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace" font-size="15" font-weight="600" fill="#3fb950" text-anchor="middle">158 µs</text>
+<rect x="420.0" y="222.0" width="104.0" height="44.0" rx="7" fill="#3fb950"/>
+<text x="472.0" y="242.0" font-family="ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace" font-size="15" font-weight="700" fill="#0d1117" text-anchor="middle">87 µs</text>
+<text x="472.0" y="256.0" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="12" font-weight="600" fill="#0d1117" text-anchor="middle" opacity="0.85">your bytes</text>
+<rect x="532.0" y="222.0" width="104.0" height="44.0" rx="7" fill="#132d1d" stroke="#2ea043" stroke-width="1"/>
+<text x="584.0" y="249.0" font-family="ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace" font-size="15" font-weight="600" fill="#3fb950" text-anchor="middle">110 µs</text>
+<rect x="644.0" y="222.0" width="104.0" height="44.0" rx="7" fill="#132d1d" stroke="#2ea043" stroke-width="1"/>
+<text x="696.0" y="249.0" font-family="ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace" font-size="15" font-weight="600" fill="#3fb950" text-anchor="middle">105 µs</text>
+<rect x="756.0" y="222.0" width="104.0" height="44.0" rx="7" fill="#132d1d" stroke="#2ea043" stroke-width="1"/>
+<text x="808.0" y="249.0" font-family="ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace" font-size="15" font-weight="600" fill="#3fb950" text-anchor="middle">111 µs</text>
+<text x="180.0" y="300.0" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="14" font-weight="600" fill="#9198a1" text-anchor="end">Gemini</text>
+<rect x="196.0" y="274.0" width="104.0" height="44.0" rx="7" fill="#132d1d" stroke="#2ea043" stroke-width="1"/>
+<text x="248.0" y="301.0" font-family="ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace" font-size="15" font-weight="600" fill="#3fb950" text-anchor="middle">104 µs</text>
+<rect x="308.0" y="274.0" width="104.0" height="44.0" rx="7" fill="#132d1d" stroke="#2ea043" stroke-width="1"/>
+<text x="360.0" y="301.0" font-family="ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace" font-size="15" font-weight="600" fill="#3fb950" text-anchor="middle">157 µs</text>
+<rect x="420.0" y="274.0" width="104.0" height="44.0" rx="7" fill="#132d1d" stroke="#2ea043" stroke-width="1"/>
+<text x="472.0" y="301.0" font-family="ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace" font-size="15" font-weight="600" fill="#3fb950" text-anchor="middle">108 µs</text>
+<rect x="532.0" y="274.0" width="104.0" height="44.0" rx="7" fill="#3fb950"/>
+<text x="584.0" y="294.0" font-family="ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace" font-size="15" font-weight="700" fill="#0d1117" text-anchor="middle">91 µs</text>
+<text x="584.0" y="308.0" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="12" font-weight="600" fill="#0d1117" text-anchor="middle" opacity="0.85">your bytes</text>
+<rect x="644.0" y="274.0" width="104.0" height="44.0" rx="7" fill="#132d1d" stroke="#2ea043" stroke-width="1"/>
+<text x="696.0" y="301.0" font-family="ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace" font-size="15" font-weight="600" fill="#3fb950" text-anchor="middle">104 µs</text>
+<rect x="756.0" y="274.0" width="104.0" height="44.0" rx="7" fill="#132d1d" stroke="#2ea043" stroke-width="1"/>
+<text x="808.0" y="301.0" font-family="ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace" font-size="15" font-weight="600" fill="#3fb950" text-anchor="middle">108 µs</text>
+<text x="180.0" y="352.0" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="14" font-weight="600" fill="#9198a1" text-anchor="end">Cohere</text>
+<rect x="196.0" y="326.0" width="104.0" height="44.0" rx="7" fill="#132d1d" stroke="#2ea043" stroke-width="1"/>
+<text x="248.0" y="353.0" font-family="ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace" font-size="15" font-weight="600" fill="#3fb950" text-anchor="middle">102 µs</text>
+<rect x="308.0" y="326.0" width="104.0" height="44.0" rx="7" fill="#132d1d" stroke="#2ea043" stroke-width="1"/>
+<text x="360.0" y="353.0" font-family="ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace" font-size="15" font-weight="600" fill="#3fb950" text-anchor="middle">153 µs</text>
+<rect x="420.0" y="326.0" width="104.0" height="44.0" rx="7" fill="#132d1d" stroke="#2ea043" stroke-width="1"/>
+<text x="472.0" y="353.0" font-family="ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace" font-size="15" font-weight="600" fill="#3fb950" text-anchor="middle">103 µs</text>
+<rect x="532.0" y="326.0" width="104.0" height="44.0" rx="7" fill="#132d1d" stroke="#2ea043" stroke-width="1"/>
+<text x="584.0" y="353.0" font-family="ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace" font-size="15" font-weight="600" fill="#3fb950" text-anchor="middle">104 µs</text>
+<rect x="644.0" y="326.0" width="104.0" height="44.0" rx="7" fill="#3fb950"/>
+<text x="696.0" y="346.0" font-family="ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace" font-size="15" font-weight="700" fill="#0d1117" text-anchor="middle">83 µs</text>
+<text x="696.0" y="360.0" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="12" font-weight="600" fill="#0d1117" text-anchor="middle" opacity="0.85">your bytes</text>
+<rect x="756.0" y="326.0" width="104.0" height="44.0" rx="7" fill="#132d1d" stroke="#2ea043" stroke-width="1"/>
+<text x="808.0" y="353.0" font-family="ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace" font-size="15" font-weight="600" fill="#3fb950" text-anchor="middle">102 µs</text>
+<text x="180.0" y="404.0" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="14" font-weight="600" fill="#9198a1" text-anchor="end">Bedrock</text>
+<rect x="196.0" y="378.0" width="104.0" height="44.0" rx="7" fill="#132d1d" stroke="#2ea043" stroke-width="1"/>
+<text x="248.0" y="405.0" font-family="ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace" font-size="15" font-weight="600" fill="#3fb950" text-anchor="middle">134 µs</text>
+<rect x="308.0" y="378.0" width="104.0" height="44.0" rx="7" fill="#132d1d" stroke="#2ea043" stroke-width="1"/>
+<text x="360.0" y="405.0" font-family="ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace" font-size="15" font-weight="600" fill="#3fb950" text-anchor="middle">186 µs</text>
+<rect x="420.0" y="378.0" width="104.0" height="44.0" rx="7" fill="#132d1d" stroke="#2ea043" stroke-width="1"/>
+<text x="472.0" y="405.0" font-family="ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace" font-size="15" font-weight="600" fill="#3fb950" text-anchor="middle">132 µs</text>
+<rect x="532.0" y="378.0" width="104.0" height="44.0" rx="7" fill="#132d1d" stroke="#2ea043" stroke-width="1"/>
+<text x="584.0" y="405.0" font-family="ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace" font-size="15" font-weight="600" fill="#3fb950" text-anchor="middle">138 µs</text>
+<rect x="644.0" y="378.0" width="104.0" height="44.0" rx="7" fill="#132d1d" stroke="#2ea043" stroke-width="1"/>
+<text x="696.0" y="405.0" font-family="ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace" font-size="15" font-weight="600" fill="#3fb950" text-anchor="middle">125 µs</text>
+<rect x="756.0" y="378.0" width="104.0" height="44.0" rx="7" fill="#3fb950"/>
+<text x="808.0" y="398.0" font-family="ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace" font-size="15" font-weight="700" fill="#0d1117" text-anchor="middle">120 µs</text>
+<text x="808.0" y="412.0" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="12" font-weight="600" fill="#0d1117" text-anchor="middle" opacity="0.85">your bytes</text>
+<rect x="28.0" y="442.0" width="16.0" height="16.0" rx="4" fill="#3fb950"/>
+<text x="52.0" y="454.5" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="14" font-weight="400" fill="#9198a1" text-anchor="start">Same protocol: your original bytes, forwarded, not re-serialized</text>
+<rect x="28.0" y="468.0" width="16.0" height="16.0" rx="4" fill="#132d1d" stroke="#2ea043" stroke-width="1"/>
+<text x="52.0" y="480.5" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="14" font-weight="400" fill="#9198a1" text-anchor="start">Cross protocol: every modelled field arrives in the target's native shape</text>
+<text x="28.0" y="494.0" font-family="ui-sans-serif,-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="12" font-weight="400" fill="#6e7681" text-anchor="start">Busbar 1.5.1 on AWS m7g.4xlarge (Graviton3), 4-core pin, measured 2026-08-03, published at onthebench.ai</text>
+</svg>
