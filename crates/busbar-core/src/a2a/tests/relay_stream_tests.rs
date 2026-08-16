@@ -519,16 +519,37 @@ async fn a_push_callback_pointing_at_an_internal_address_is_refused_before_any_h
         h.sent().is_empty(),
         "a refused callback must not have already caused a hop"
     );
+}
 
-    // AND A PLAINTEXT CALLBACK IS REFUSED TOO: a callback carries task ids and caller attribution,
-    // and putting that on the wire in the clear by default would be busbar choosing convenience
-    // over the operator's data.
+/// **A PLAINTEXT PUSH REGISTRATION IS REFUSED, AND NOTHING CAN BE CONFIGURED TO ACCEPT IT.**
+///
+/// The behavioural pin for the HTTPS-only push rule, at the verb rather than at the guard: a caller
+/// that hands busbar an `http://` callback on a `message/send` gets a 400, no hop is made, and no
+/// task carries the callback. Split out of the internal-address test above and given its own name
+/// because it is its own claim — busbar publishes that no per-registration flag, no deployment
+/// setting and no exception relaxes this, and that sentence was true only because the
+/// `allow_plaintext` parameter the guard used to take had never been wired to a config key. The
+/// parameter is deleted; the sentence is now true by shape, and this is what goes red if the arm
+/// comes back.
+///
+/// The HOST is public and resolvable by the harness's resolver, so the refusal can only be the
+/// SCHEME — a loopback callback would be refused for a different reason and prove nothing here.
+#[tokio::test]
+async fn a_plaintext_push_callback_registration_is_refused() {
+    let h = harness(Outcome::Answers(200, backend_ok()), false).await;
     let mut env = envelope();
     env["params"]["configuration"] = serde_json::json!({
         "pushNotificationConfig": { "url": "http://hooks.example.test/cb" }
     });
     let (status, body) = call_agent(&h, "planner", &env).await;
-    assert_eq!(status, 400, "{body}");
+    assert_eq!(
+        status, 400,
+        "a plaintext callback is the caller's input and a hostile one is a 400: {body}"
+    );
+    assert!(
+        h.sent().is_empty(),
+        "a refused callback must not have already caused a hop"
+    );
 }
 
 /// A LEGITIMATE CALLBACK IS ACCEPTED AND PERSISTED ON THE TASK. The control for the test above:

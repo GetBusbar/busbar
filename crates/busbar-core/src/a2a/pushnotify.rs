@@ -53,7 +53,7 @@ use std::net::IpAddr;
 pub(crate) enum PushNotifyError {
     /// Not a URL this code can reason about.
     Malformed(String),
-    /// A scheme other than `https` (or `http`, when the deployment allows it).
+    /// A scheme other than `https`. There is no deployment in which another one is accepted.
     Scheme(String),
     /// No host at all.
     NoHost,
@@ -209,12 +209,13 @@ enum Structural {
 /// [`structural_refusal`] is a defence-in-depth check inside a synchronous store method that has no
 /// resolver seam and must not grow one; [`validate`] is the full guard and calls this first, so
 /// there is ONE implementation of the shared rules rather than two that agree today.
-fn structural_check(url: &str, allow_plaintext: bool) -> Result<Structural, PushNotifyError> {
+fn structural_check(url: &str) -> Result<Structural, PushNotifyError> {
     let (scheme, host) = split_url(url)?;
-    match scheme.as_str() {
-        "https" => {}
-        "http" if allow_plaintext => {}
-        other => return Err(PushNotifyError::Scheme(other.to_string())),
+    // `https` OR NOTHING, and there is no parameter here through which that could be relaxed. The
+    // scheme allowlist is by ABSENCE — `http:`, `file:`, `gopher:`, `data:` are refused because
+    // they are not named rather than because a blocklist remembered them.
+    if scheme != "https" {
+        return Err(PushNotifyError::Scheme(scheme));
     }
     if crate::net_guard::is_alternate_ipv4_encoding(&host) {
         return Err(PushNotifyError::ObfuscatedHost(host));
@@ -246,7 +247,7 @@ fn structural_check(url: &str, allow_plaintext: bool) -> Result<Structural, Push
 /// coincidence of call order — and a second caller, or a row rehydrated from a store somebody
 /// wrote to directly, had nothing standing between it and a delivery attempt.
 pub(crate) fn structural_refusal(url: &str) -> Option<PushNotifyError> {
-    structural_check(url, false).err()
+    structural_check(url).err()
 }
 
 /// VALIDATE a caller-supplied (or busbar-registered) callback URL against the addresses it resolves
@@ -256,16 +257,14 @@ pub(crate) fn structural_refusal(url: &str) -> Option<PushNotifyError> {
 /// test. The contract on the caller is the one thing that cannot be enforced from here and so is
 /// stated as loudly as possible: **connect to the returned `addrs`, never to `host` again.**
 ///
-/// `allow_plaintext` exists for the operator who terminates TLS at a sidecar on the same host. It
-/// defaults OFF at every call site: a callback carries task ids and caller attribution, and putting
-/// that on the wire in the clear by default would be busbar choosing convenience over the operator's
-/// data.
-pub(crate) fn validate(
-    url: &str,
-    resolved: &[IpAddr],
-    allow_plaintext: bool,
-) -> Result<PinnedCallback, PushNotifyError> {
-    let host = match structural_check(url, allow_plaintext)? {
+/// **`https` IS THE ONLY ACCEPTABLE SCHEME, AND THERE IS NO PARAMETER THAT CHANGES THAT.** A
+/// callback carries task ids and caller attribution, and busbar's own callers are told there is no
+/// per-registration flag, no deployment setting and no exception that relaxes this — so the guard
+/// takes no argument that could. This function once had an `allow_plaintext` parameter, nominally
+/// for an operator terminating TLS at a sidecar; that operator path was never built, no config key
+/// ever reached it, and a knob nothing can set is not a feature, it is a hole waiting for a caller.
+pub(crate) fn validate(url: &str, resolved: &[IpAddr]) -> Result<PinnedCallback, PushNotifyError> {
+    let host = match structural_check(url)? {
         Structural::Literal { host, addr } => {
             return Ok(PinnedCallback {
                 url: url.to_string(),
@@ -304,9 +303,8 @@ pub(crate) fn validate(
 pub(crate) fn revalidate(
     pinned: &PinnedCallback,
     fresh: &[IpAddr],
-    allow_plaintext: bool,
 ) -> Result<PinnedCallback, PushNotifyError> {
-    let revalidated = validate(&pinned.url, fresh, allow_plaintext)?;
+    let revalidated = validate(&pinned.url, fresh)?;
     if revalidated.addrs.iter().any(|a| pinned.addrs.contains(a)) {
         return Ok(revalidated);
     }

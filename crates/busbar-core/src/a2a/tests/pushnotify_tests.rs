@@ -20,7 +20,7 @@ const PUBLIC: fn() -> IpAddr = || IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34));
 /// use, because a caller that re-resolves has thrown the whole guarantee away.
 #[test]
 fn a_public_https_callback_is_accepted_and_its_addresses_are_pinned() {
-    let ok = validate("https://caller.example/cb", &[PUBLIC()], false).expect("accepted");
+    let ok = validate("https://caller.example/cb", &[PUBLIC()]).expect("accepted");
     assert_eq!(ok.url, "https://caller.example/cb");
     assert_eq!(ok.host, "caller.example");
     assert_eq!(
@@ -83,7 +83,7 @@ fn every_internal_range_is_refused() {
             "{what} ({ip}) must be classified internal"
         );
         assert_eq!(
-            validate("https://caller.example/cb", &[*ip], false),
+            validate("https://caller.example/cb", &[*ip]),
             Err(PushNotifyError::InternalAddress(*ip)),
             "{what} must be refused as a callback destination"
         );
@@ -100,7 +100,7 @@ fn every_internal_range_is_refused() {
 fn one_internal_address_among_several_refuses_the_whole_url() {
     let mixed = [PUBLIC(), v4(8, 8, 8, 8), v4(169, 254, 169, 254)];
     assert_eq!(
-        validate("https://caller.example/cb", &mixed, false),
+        validate("https://caller.example/cb", &mixed),
         Err(PushNotifyError::InternalAddress(v4(169, 254, 169, 254))),
         "there is no `prefer the public one`"
     );
@@ -110,7 +110,7 @@ fn one_internal_address_among_several_refuses_the_whole_url() {
 #[test]
 fn an_unresolved_host_is_refused_rather_than_allowed_by_default() {
     assert_eq!(
-        validate("https://caller.example/cb", &[], false),
+        validate("https://caller.example/cb", &[]),
         Err(PushNotifyError::Unresolved("caller.example".to_string()))
     );
 }
@@ -130,7 +130,7 @@ fn obfuscated_ipv4_hosts_are_refused_before_anything_is_resolved() {
         // Resolved deliberately supplied as a PUBLIC address: if the guard were consulting the
         // resolution instead of the host string, this would pass.
         assert_eq!(
-            validate(&url, &[PUBLIC()], false),
+            validate(&url, &[PUBLIC()]),
             Err(PushNotifyError::ObfuscatedHost(host.to_ascii_lowercase())),
             "`{host}` must be refused on its shape"
         );
@@ -142,44 +142,68 @@ fn obfuscated_ipv4_hosts_are_refused_before_anything_is_resolved() {
 #[test]
 fn an_ip_literal_is_judged_on_itself_not_on_the_supplied_resolution() {
     assert_eq!(
-        validate("https://127.0.0.1:8080/cb", &[PUBLIC()], false),
+        validate("https://127.0.0.1:8080/cb", &[PUBLIC()]),
         Err(PushNotifyError::InternalAddress(v4(127, 0, 0, 1))),
         "a supplied public resolution must not launder a loopback literal"
     );
-    let ok = validate("https://93.184.216.34/cb", &[], false).expect("a public literal is fine");
+    let ok = validate("https://93.184.216.34/cb", &[]).expect("a public literal is fine");
     assert_eq!(ok.addrs, vec![PUBLIC()]);
     // Bracketed IPv6, with and without a port.
     assert_eq!(
-        validate("https://[::1]/cb", &[], false),
+        validate("https://[::1]/cb", &[]),
         Err(PushNotifyError::InternalAddress(IpAddr::V6(
             Ipv6Addr::LOCALHOST
         )))
     );
     assert_eq!(
-        validate("https://[fd00::1]:9000/cb", &[], false),
+        validate("https://[fd00::1]:9000/cb", &[]),
         Err(PushNotifyError::InternalAddress(IpAddr::V6(
             "fd00::1".parse().unwrap()
         )))
     );
 }
 
-/// Plaintext is OFF by default: a callback carries task ids and caller attribution, and putting that
-/// on the wire in the clear by default would be busbar choosing convenience over the operator's data.
+/// PLAINTEXT IS REFUSED, FULL STOP — and the point of this test is the absence, not the refusal.
+///
+/// A callback carries task ids and caller attribution, and busbar publishes that no per-registration
+/// flag, no deployment setting and no exception relaxes the `https` rule. That sentence was true
+/// only because the `allow_plaintext` parameter this guard used to take was never wired to a config
+/// key; the parameter is gone, so it is now true by SHAPE. `validate` takes a URL and a resolution
+/// and nothing else — there is no third argument for a future caller to pass `true` to.
 #[test]
-fn plaintext_is_refused_unless_the_operator_opted_in() {
+fn plaintext_is_refused_and_there_is_no_argument_that_relaxes_it() {
     assert_eq!(
-        validate("http://caller.example/cb", &[PUBLIC()], false),
+        validate("http://caller.example/cb", &[PUBLIC()]),
         Err(PushNotifyError::Scheme("http".to_string()))
     );
-    assert!(validate("http://caller.example/cb", &[PUBLIC()], true).is_ok());
-    // And no other scheme is ever acceptable, opt-in or not.
+    // Loopback, private and public plaintext alike: the scheme decides before anything is resolved,
+    // so the "TLS terminates at a sidecar on the same host" case is refused with the rest.
+    for url in [
+        "http://127.0.0.1:9000/cb",
+        "http://localhost:9000/cb",
+        "http://caller.example:8080/cb",
+    ] {
+        assert_eq!(
+            validate(url, &[PUBLIC()]),
+            Err(PushNotifyError::Scheme("http".to_string())),
+            "`{url}` must be refused on its scheme"
+        );
+    }
+    // And no other scheme is ever acceptable either.
     for scheme in ["file", "gopher", "ftp", "ws"] {
         let url = format!("{scheme}://caller.example/cb");
         assert_eq!(
-            validate(&url, &[PUBLIC()], true),
+            validate(&url, &[PUBLIC()]),
             Err(PushNotifyError::Scheme(scheme.to_string()))
         );
     }
+    // The DEFENCE-IN-DEPTH half agrees, so a row that reaches the store by another path gets the
+    // same verdict as one that came through the verb.
+    assert_eq!(
+        structural_refusal("http://caller.example/cb"),
+        Some(PushNotifyError::Scheme("http".to_string()))
+    );
+    assert_eq!(structural_refusal("https://caller.example/cb"), None);
 }
 
 /// USERINFO is REFUSED, not stripped. `https://metadata.internal@example.com/` reads one way to a
@@ -188,7 +212,7 @@ fn plaintext_is_refused_unless_the_operator_opted_in() {
 fn a_url_with_userinfo_is_refused_rather_than_normalised() {
     let url = "https://169.254.169.254@caller.example/cb";
     assert_eq!(
-        validate(url, &[PUBLIC()], false),
+        validate(url, &[PUBLIC()]),
         Err(PushNotifyError::Malformed(url.to_string()))
     );
 }
@@ -199,7 +223,7 @@ fn a_url_with_userinfo_is_refused_rather_than_normalised() {
 fn malformed_urls_are_refused() {
     for url in ["not-a-url", "https:/caller.example", "https://", "://x"] {
         assert!(
-            validate(url, &[PUBLIC()], false).is_err(),
+            validate(url, &[PUBLIC()]).is_err(),
             "`{url}` must not be accepted"
         );
     }
@@ -210,17 +234,17 @@ fn malformed_urls_are_refused() {
 /// a different (still public) address set is held for an operator rather than followed.
 #[test]
 fn revalidation_defeats_a_rebind_and_reports_a_wholesale_move_separately() {
-    let pinned = validate("https://caller.example/cb", &[PUBLIC()], false).unwrap();
+    let pinned = validate("https://caller.example/cb", &[PUBLIC()]).unwrap();
 
     // The nameserver now answers with the metadata service — the rebind.
     assert_eq!(
-        revalidate(&pinned, &[v4(169, 254, 169, 254)], false),
+        revalidate(&pinned, &[v4(169, 254, 169, 254)]),
         Err(PushNotifyError::InternalAddress(v4(169, 254, 169, 254))),
         "a rebind to an internal address is refused across the restart boundary"
     );
 
     // A legitimate additional address alongside the pinned one is fine.
-    let widened = revalidate(&pinned, &[PUBLIC(), v4(93, 184, 216, 35)], false)
+    let widened = revalidate(&pinned, &[PUBLIC(), v4(93, 184, 216, 35)])
         .expect("an overlapping answer is a legitimate DNS change");
     assert_eq!(widened.addrs.len(), 2);
 
@@ -233,7 +257,7 @@ fn revalidation_defeats_a_rebind_and_reports_a_wholesale_move_separately() {
     // which is the tear-out doing exactly its job: a fixture that was only "public" by the standard
     // of the weaker table. Replaced with an address that is public by the standard of BOTH.
     assert_eq!(
-        revalidate(&pinned, &[v4(8, 8, 4, 4)], false),
+        revalidate(&pinned, &[v4(8, 8, 4, 4)]),
         Err(PushNotifyError::PinDrifted {
             host: "caller.example".to_string()
         })

@@ -23,7 +23,7 @@ use std::net::{IpAddr, Ipv4Addr};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use crate::a2a::fetch::{FetchPolicy, HttpResponse, Resolver};
+use crate::a2a::fetch::{HttpResponse, Resolver};
 use crate::a2a::registry::AgentRegistration;
 use crate::a2a::relay::{ChunkFlow, RelaySeam, RelayTransport, StreamHead};
 
@@ -313,7 +313,6 @@ fn correlated(reply: &str, request: &[u8]) -> String {
 pub(super) struct RecordingSeam {
     pub(super) resolver: RecordingResolver,
     pub(super) transport: RecordingTransport,
-    pub(super) policy: FetchPolicy,
 }
 
 impl RelaySeam for RecordingSeam {
@@ -322,9 +321,6 @@ impl RelaySeam for RecordingSeam {
     }
     fn transport(&self) -> &dyn RelayTransport {
         &self.transport
-    }
-    fn policy(&self) -> &FetchPolicy {
-        &self.policy
     }
 }
 
@@ -625,7 +621,6 @@ pub(super) async fn harness_gated(
             log: Arc::clone(&log),
             outcome,
         },
-        policy: FetchPolicy::default(),
     }));
 
     let router = crate::build_router(app);

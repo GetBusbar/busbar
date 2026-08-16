@@ -638,9 +638,6 @@ impl super::relay::RelaySeam for LiveCardFetch {
     fn transport(&self) -> &dyn RelayTransport {
         &self.transport
     }
-    fn policy(&self) -> &FetchPolicy {
-        &self.policy
-    }
 }
 
 /// THE PRODUCTION CARD-FETCH PLANE: the real resolver, the real transport and the operator's
@@ -732,6 +729,12 @@ impl LiveCardFetch {
         &self.transport
     }
 
+    /// The CARD-FETCH policy this bundle guards its own hops with.
+    ///
+    /// INHERENT, and deliberately NOT on [`super::relay::RelaySeam`] any more — see that trait for
+    /// why a seam is no longer askable for a policy at all. The card-fetch and re-verification
+    /// paths hold a concrete `LiveCardFetch` and legitimately need the policy they were built with;
+    /// the push-delivery path holds a `dyn RelaySeam` and must not be able to reach one.
     pub(crate) fn policy(&self) -> &FetchPolicy {
         &self.policy
     }

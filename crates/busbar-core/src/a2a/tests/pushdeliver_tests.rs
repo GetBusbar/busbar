@@ -26,7 +26,7 @@
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::{Arc, Mutex};
 
-use super::super::fetch::{FetchPolicy, HttpResponse, Resolver};
+use super::super::fetch::{HttpResponse, Resolver};
 use super::super::pushdeliver::{self, PushRefusal};
 use super::super::pushnotify::{self, PushNotifyError};
 use super::super::relay::{ChunkFlow, RelaySeam, RelayTransport, StreamHead};
@@ -102,10 +102,13 @@ impl RelayTransport for RecordingTransport {
     }
 }
 
+/// THE SEAM CARRIES NO POLICY, and that is the change this module is pinned against rather than a
+/// simplification. It used to hold a `FetchPolicy` purely so `pushdeliver` could read
+/// `allow_plaintext` off it; the delivery guard no longer takes that argument, so there is nothing
+/// for a seam to answer and no field here for a future caller to set.
 struct Seam {
     resolver: FixedResolver,
     transport: RecordingTransport,
-    policy: FetchPolicy,
 }
 
 impl RelaySeam for Seam {
@@ -114,9 +117,6 @@ impl RelaySeam for Seam {
     }
     fn transport(&self) -> &dyn RelayTransport {
         &self.transport
-    }
-    fn policy(&self) -> &FetchPolicy {
-        &self.policy
     }
 }
 
@@ -130,7 +130,6 @@ fn seam_answering(answers: &[IpAddr], status: u16) -> (Seam, Arc<Mutex<Vec<Sent>
                 log: Arc::clone(&log),
                 status,
             },
-            policy: FetchPolicy::default(),
         },
         log,
     )
@@ -150,9 +149,43 @@ fn task_with_callback(task_id: &str, state: TaskState) -> Task {
 /// REGISTER the callback the way `ingress::invoke` does: validate against the addresses it resolves to
 /// NOW, and keep the pin. Every test that starts here is testing a callback that was legitimate.
 fn register(task_id: &str) {
-    let pinned = pushnotify::validate(CALLBACK, &[AT_REGISTRATION], false)
+    let pinned = pushnotify::validate(CALLBACK, &[AT_REGISTRATION])
         .expect("the callback was legitimate when it was registered");
     pushdeliver::remember(task_id, &pinned);
+}
+
+// ══ HTTPS IS STRUCTURAL ══════════════════════════════════════════════════════════════════════════
+
+/// **A PLAINTEXT CALLBACK IS REFUSED, AND NO POLICY THIS SEAM COULD CARRY WOULD CHANGE THAT.**
+///
+/// busbar publishes, of the HTTPS-only push rule, that there is no configuration that relaxes it —
+/// no per-registration flag, no deployment setting, no exception. That sentence used to be true by
+/// ACCIDENT: `pushdeliver` read `seam.policy().allow_plaintext` and handed it to the guard, and the
+/// only reason no deployment could set it was that no config key had ever been wired to the field.
+///
+/// The parameter and the seam accessor are both gone, so the sentence is now true by SHAPE. Written
+/// as a test rather than only as a comment because the ARM would be trivial to restore, and this is
+/// the case that goes red when somebody does: the refusal must be the SCHEME, decided before the
+/// address check that would otherwise catch this URL for a different reason.
+#[test]
+fn a_plaintext_callback_is_refused_and_no_policy_reaches_the_delivery_guard() {
+    let id = "t-deliver-plaintext-policy";
+    let (seam, log) = seam_answering(&[AT_REGISTRATION], 200);
+    let mut task = task_with_callback(id, TaskState::Completed);
+    // A PUBLIC host that RESOLVES CLEANLY, so nothing but the scheme can be doing the refusing.
+    task.push_callback = Some("http://hook.caller.test/notify".to_string());
+
+    let err = pushdeliver::deliver(&seam, &task).expect_err("a plaintext callback must be refused");
+    assert_eq!(
+        err,
+        PushRefusal::Guard(PushNotifyError::Scheme("http".to_string())),
+        "the refusal must be the SCHEME, not something the address check happened to catch"
+    );
+    assert!(
+        log.lock().unwrap().is_empty(),
+        "a refused callback must not have reached the wire"
+    );
+    pushdeliver::forget(id);
 }
 
 // ══ THE DELIVERY HAPPENS AT ALL ══════════════════════════════════════════════════════════════════
@@ -436,8 +469,10 @@ fn a_name_that_resolves_to_nothing_at_delivery_time_is_refused() {
 }
 
 /// A PLAINTEXT CALLBACK is refused at delivery even if it somehow reached the row, because the
-/// notification carries the task id and the caller's attribution and this deployment did not opt
-/// into putting that on the wire in the clear.
+/// notification carries the task id and the caller's attribution and NO deployment puts that on the
+/// wire in the clear. The neighbour above proves the refusal does not depend on the seam's policy;
+/// this one is the ordinary path, and it is the one that would still catch a row that reached the
+/// store past the registration-time guard.
 #[test]
 fn a_plaintext_callback_is_refused_at_delivery() {
     let (seam, log) = seam_answering(&[AT_REGISTRATION], 200);
