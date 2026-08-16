@@ -1321,7 +1321,26 @@ async fn tools_call(
     // decided by its grants and by nothing else; a hook decides what a caller may DO.
     //
     // ZERO COST when nothing is attached: one hash lookup that misses.
-    if let Some(gates) = ctx.app.mcp_server_gates.get(&selected.server) {
+    //
+    // ## AND THE TAP, at the same point and off the same subject
+    //
+    // A global `kind: tap` hook is an OBSERVER of every request, and until this line it observed
+    // only the model plane — `.notify(` had two production call sites and both were under `proxy/`.
+    // That was the `hooks-tap x mcp-*` gap in `qa/capability-equality.json`, and it was never a
+    // payload-contract problem: the projection a tap gets is the one the gate three lines below has
+    // been getting since it landed, built by the same function from the same `IrFacts`.
+    //
+    // FIRED BEFORE THE VERDICT, deliberately: an audit tap must see the call that was REFUSED as
+    // well as the call that was served, and a tap placed after the gate would be an audit trail with
+    // every denial missing from it. It cannot affect the verdict — it is spawned detached and its
+    // reply is never read.
+    //
+    // ONE FIRING FOR BOTH MCP CELLS, for the reason the ledger's `hooks-gate x mcp-client` note
+    // already records about the gate: this is the last point at which the arguments are the
+    // arguments THAT GO UPSTREAM, and there is no ungated production entry to the client leg, so a
+    // tap here observes the outbound leg's payload as well as the inbound method's.
+    let attached_gates = ctx.app.mcp_server_gates.get(&selected.server);
+    if attached_gates.is_some() || !ctx.app.tap_hooks.is_empty() {
         // The IR this plane produces for an invocation, which is the ONLY thing the seam learns
         // about the request. The `arguments` clone is paid strictly behind an attached hook.
         let facts = crate::ir::invoke::InvokeReq {
@@ -1329,38 +1348,42 @@ async fn tools_call(
             arguments: arguments.clone(),
             extra: Default::default(),
         };
-        let verdict = crate::hooks::gate::decide(
-            gates,
-            &crate::hooks::gate::GateSubject {
-                facts: &facts,
-                container: &selected.server,
-                ingress_protocol: crate::plane::Plane::Mcp.key(),
-                // The SAME id the per-call record carries, re-read rather than re-minted: a second
-                // `next_request_id()` would hand the hook a number that joins to nothing.
-                request_id: log.request_id.parse().unwrap_or_default(),
-                key: ctx.gov.key.as_deref(),
-            },
-        )
-        .await;
-        if let crate::hooks::gate::GateVerdict::Reject {
-            status,
-            message,
-            hook,
-        } = verdict
-        {
-            crate::admin::audit::AUDIT.record_by(
-                "mcp_tool.call",
-                &format!("mcp_tool:{}", selected.namespaced),
-                crate::admin::audit::OUTCOME_REJECTED,
-                ctx.actor,
-            );
-            tracing::info!(
-                tool = %selected.namespaced,
-                hook,
+        let subject = crate::hooks::subject::RequestSubject {
+            facts: &facts,
+            container: &selected.server,
+            ingress_protocol: crate::plane::Plane::Mcp.key(),
+            // The SAME id the per-call record carries, re-read rather than re-minted: a second
+            // `next_request_id()` would hand the hook a number that joins to nothing.
+            request_id: log.request_id.parse().unwrap_or_default(),
+            key: ctx.gov.key.as_deref(),
+        };
+        crate::hooks::tap::fire(
+            &ctx.app.tap_hooks,
+            &subject,
+            ctx.gov.key.as_deref().and_then(|k| k.group.as_deref()),
+            &ctx.app.groups_registry,
+        );
+        if let Some(gates) = attached_gates {
+            let verdict = crate::hooks::gate::decide(gates, &subject).await;
+            if let crate::hooks::gate::GateVerdict::Reject {
                 status,
-                "mcp tools/call refused by a hook gate"
-            );
-            return log.refused(
+                message,
+                hook,
+            } = verdict
+            {
+                crate::admin::audit::AUDIT.record_by(
+                    "mcp_tool.call",
+                    &format!("mcp_tool:{}", selected.namespaced),
+                    crate::admin::audit::OUTCOME_REJECTED,
+                    ctx.actor,
+                );
+                tracing::info!(
+                    tool = %selected.namespaced,
+                    hook,
+                    status,
+                    "mcp tools/call refused by a hook gate"
+                );
+                return log.refused(
                 super::calllog::REASON_HOOK_REJECTED,
                 error(
                     StatusCode::from_u16(status).unwrap_or(StatusCode::FORBIDDEN),
@@ -1370,6 +1393,7 @@ async fn tools_call(
                     Some(serde_json::json!({ "reason": super::calllog::REASON_HOOK_REJECTED, "hook": hook })),
                 ),
             );
+            }
         }
     }
 

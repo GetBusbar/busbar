@@ -1715,6 +1715,102 @@ pub mod warn_capture;
 /// The REAL `kind: store` plugin, loaded over the REAL C ABI: how a durability claim is judged.
 pub(crate) mod plugin_store;
 
+// ══ THE TAP RECORDER ═════════════════════════════════════════════════════════════════════════════
+
+/// AN IN-PROCESS TAP that RECORDS what it was sent — the instrument the `hooks-tap x <plane>` cells
+/// are proven with.
+///
+/// It is a `RoutingPolicy` whose fire-and-forget `notify` keeps every delivered projection. The tap
+/// seam is transport-agnostic (webhook, socket and dlopen are three deliveries of one contract), so
+/// capturing `notify` exercises the SAME seam a real plugin sits behind — and, unlike a plugin's
+/// counter, it hands the test THE PAYLOAD, which is the difference between proving a tap FIRED and
+/// proving a tap SAW THE REQUEST. A counter cannot tell an empty projection from a full one, and an
+/// empty projection is worse than no tap at all: an audit trail that records nothing about the call.
+///
+/// Modelled on `proxy::tests::hook_seam_tests::CaptureTap`, which proves the model plane's stage
+/// taps the same way; it lives here because three planes now need it.
+pub(crate) struct RecordingTap {
+    seen: std::sync::Mutex<Vec<serde_json::Value>>,
+}
+
+impl RecordingTap {
+    /// The recorder plus the [`crate::hooks::TapEntry`] an `App` carries it as: a shape-only
+    /// (`prompt: no`) or content-granted (`prompt: ro`) tap in every caller group.
+    pub(crate) fn entry(send_prompt: bool) -> (std::sync::Arc<Self>, crate::hooks::TapEntry) {
+        let tap = std::sync::Arc::new(RecordingTap {
+            seen: std::sync::Mutex::new(Vec::new()),
+        });
+        let policy: std::sync::Arc<dyn crate::hooks::RoutingPolicy> = tap.clone();
+        (
+            tap,
+            (
+                std::time::Duration::from_secs(10),
+                send_prompt,
+                policy,
+                Vec::new(),
+            ),
+        )
+    }
+
+    /// Every projection delivered so far.
+    pub(crate) fn seen(&self) -> Vec<serde_json::Value> {
+        self.seen.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// Wait until at least `n` projections have been delivered, then hand them back.
+    ///
+    /// POLLED rather than awaited on a channel because a tap is DETACHED: the request it observes
+    /// has already been answered by the time the caller returns, so a test that read the recorder
+    /// immediately would be asserting against a race and would pass or fail on scheduling. The
+    /// timeout PANICS rather than returning what it has — "the tap never fired" is the finding.
+    pub(crate) async fn wait_for(&self, n: usize) -> Vec<serde_json::Value> {
+        for _ in 0..500 {
+            let seen = self.seen();
+            if seen.len() >= n {
+                return seen;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!(
+            "the tap was never delivered {n} projection(s); it has seen {}",
+            self.seen().len()
+        );
+    }
+
+    /// Every `request.messages[].text` across every delivered projection, joined — the content a
+    /// screening or auditing tap actually receives.
+    pub(crate) fn seen_text(&self) -> String {
+        self.seen()
+            .iter()
+            .filter_map(|p| p.get("request")?.get("messages")?.as_array().cloned())
+            .flatten()
+            .filter_map(|m| m.get("text")?.as_str().map(str::to_string))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::hooks::RoutingPolicy for RecordingTap {
+    async fn decide(
+        &self,
+        _req: &crate::hooks::RoutingRequest<'_>,
+        _cands: &[crate::hooks::Candidate<'_>],
+        _ctx: &crate::hooks::RoutingContext<'_>,
+        _budget: std::time::Duration,
+    ) -> crate::hooks::PolicyResult {
+        Ok(crate::hooks::RoutingDecision::Abstain)
+    }
+    fn name(&self) -> &'static str {
+        "recording-tap"
+    }
+    async fn notify(&self, projection: &[u8], _budget: std::time::Duration) {
+        let v: serde_json::Value =
+            serde_json::from_slice(projection).expect("a tap projection is JSON");
+        self.seen.lock().unwrap_or_else(|e| e.into_inner()).push(v);
+    }
+}
+
 #[cfg(test)]
 #[path = "tests/tests.rs"]
 mod tests;

@@ -511,6 +511,12 @@ pub(super) struct Gates {
     pub(super) env: crate::hooks::HookEnv,
     pub(super) hooks: Vec<(String, crate::config::HookCfg)>,
     pub(super) attach: Vec<String>,
+    /// The GLOBAL request-stage taps this deployment carries, installed on the built `App` exactly
+    /// as `main.rs` installs the resolved ones. Set on the App rather than resolved from a registry
+    /// entry because what the `hooks-tap` cells are evidence for is the FIRING SITE, and a recorder
+    /// hands the test the payload where a dlopen tap could only hand it a count — see
+    /// `test_support::RecordingTap`. The chain RESOLUTION is proven by `hooks/tests/tests.rs`.
+    pub(super) taps: Vec<crate::hooks::TapEntry>,
 }
 
 /// A harness whose caller is granted exactly `granted`. Two agents are always REGISTERED —
@@ -588,6 +594,7 @@ pub(super) async fn harness_gated(
         Some("external-agent-1"),
     );
 
+    let mut taps = Vec::new();
     let mut builder = crate::test_support::TestApp::new()
         .public_url(PUBLIC_URL)
         .agent_def("planner", agent_cfg(BACKEND, with_credential))
@@ -595,6 +602,7 @@ pub(super) async fn harness_gated(
         .keys_chain()
         .governance(Arc::clone(&gov));
     if let Some(g) = gates {
+        taps = g.taps;
         builder = builder
             .hook_env(g.env)
             .agents_hooks(&g.attach.iter().map(String::as_str).collect::<Vec<_>>());
@@ -602,7 +610,12 @@ pub(super) async fn harness_gated(
             builder = builder.hook(&name, cfg);
         }
     }
-    let app = builder.build();
+    let mut app = builder.build();
+    if !taps.is_empty() {
+        Arc::get_mut(&mut app)
+            .expect("the harness is the sole owner of the app it just built")
+            .tap_hooks = taps;
+    }
 
     let plane = app.a2a.as_ref().expect("the plane exists").clone();
     plane.with_registrations_mut(|regs| {

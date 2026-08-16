@@ -959,38 +959,8 @@ pub(crate) fn fire_stage_taps(
         let policy = hook.clone();
         let budget = *timeout;
         let proj = bytes.clone();
-        spawn_bounded_tap(async move { policy.notify(&proj, budget).await });
+        crate::hooks::tap::spawn_bounded_tap(async move { policy.notify(&proj, budget).await });
     }
-}
-
-/// Hard cap on concurrently in-flight fire-and-forget tap notifications. Taps fan out per stage x per
-/// tap hook x per request, so a slow/unreachable tap endpoint could otherwise accumulate unbounded
-/// Tokio tasks under load (OOM/DoS). Mirrors the bounded webhook-delivery guard in `observability`.
-const MAX_INFLIGHT_TAP_NOTIFICATIONS: usize = 1024;
-static TAP_INFLIGHT: std::sync::OnceLock<crate::limits::admission::AdmissionGate> =
-    std::sync::OnceLock::new();
-fn tap_inflight() -> &'static crate::limits::admission::AdmissionGate {
-    TAP_INFLIGHT.get_or_init(|| {
-        crate::limits::admission::AdmissionGate::new(MAX_INFLIGHT_TAP_NOTIFICATIONS, "tap")
-    })
-}
-
-/// Spawn a bounded fire-and-forget tap notification: at most MAX_INFLIGHT_TAP_NOTIFICATIONS run
-/// concurrently; when saturated the notification is dropped (metric) instead of accumulating tasks.
-/// The owned permit rides straight into the spawned task, so the slot is returned (by the permit's
-/// own `Drop`) even on a task panic.
-pub(crate) fn spawn_bounded_tap<F>(fut: F)
-where
-    F: std::future::Future<Output = ()> + Send + 'static,
-{
-    let Some(permit) = tap_inflight().try_enter() else {
-        metrics::counter!(crate::metrics::TAP_NOTIFICATIONS_DROPPED_TOTAL).increment(1);
-        return;
-    };
-    tokio::spawn(async move {
-        let _permit = permit;
-        fut.await;
-    });
 }
 
 /// Response-extension marker set by every GATE-produced rejection return, so the response-stage

@@ -671,3 +671,10 @@ mod calllog_dispatch_tests;
 #[cfg(test)]
 #[path = "tests/hook_gate_tests.rs"]
 mod hook_gate_tests;
+
+// THE TAP — the OBSERVE half of the same hook surface, mounted beside its gate for the same reason:
+// the claim that a tap SAW the call is only evidence next to a control that serves the identical
+// call untapped, and only the real fake peer can supply one.
+#[cfg(test)]
+#[path = "tests/hook_tap_tests.rs"]
+mod hook_tap_tests;

@@ -43,6 +43,10 @@ fn policy_timeout(timeout_ms: u64) -> std::time::Duration {
 pub(crate) mod gate;
 pub(crate) mod plugin;
 pub(crate) mod scrape;
+/// The request as a hook is shown it — one subject and one projection, shared by `gate` and `tap`.
+pub(crate) mod subject;
+/// The OBSERVE verb, fired from any protocol. The twin of [`gate`], over the same subject.
+pub(crate) mod tap;
 pub(crate) mod wire;
 
 // The HOOK CONTRACT — the `RoutingPolicy` trait and the read-only projections it is invoked with

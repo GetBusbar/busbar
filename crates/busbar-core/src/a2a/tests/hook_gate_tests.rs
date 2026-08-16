@@ -72,6 +72,7 @@ fn gates(name: &str, settings: serde_json::Value) -> Gates {
         env,
         hooks: vec![(name.to_string(), gate(settings))],
         attach: vec![name.to_string()],
+        taps: Vec::new(),
     }
 }
 

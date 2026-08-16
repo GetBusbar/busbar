@@ -9,7 +9,8 @@
 //! nothing about the field somebody adds next. Comparing the entire object means a new key cannot
 //! reach a hook without this file being edited, which is where the decision belongs.
 
-use crate::hooks::gate::{decide, GateSubject, GateVerdict};
+use crate::hooks::gate::{decide, GateVerdict};
+use crate::hooks::subject::RequestSubject;
 use crate::hooks::{
     Candidate, PolicyResult, ResolvedPolicy, RoutingContext, RoutingDecision, RoutingPolicy,
     RoutingRequest,
@@ -135,7 +136,7 @@ async fn an_invocation_is_projected_whole() {
     );
     let verdict = decide(
         &gates,
-        &GateSubject {
+        &RequestSubject {
             facts: &facts,
             container: "filesystem",
             ingress_protocol: "mcp",
@@ -197,7 +198,7 @@ async fn a_grantless_gate_sees_shape_and_no_content() {
     );
     let _ = decide(
         &gates,
-        &GateSubject {
+        &RequestSubject {
             facts: &facts,
             container: "filesystem",
             ingress_protocol: "mcp",
@@ -245,7 +246,7 @@ async fn a_reject_stops_the_request_with_a_clamped_status() {
         );
         match decide(
             &gates,
-            &GateSubject {
+            &RequestSubject {
                 facts: &facts,
                 container: "filesystem",
                 ingress_protocol: "mcp",
@@ -287,7 +288,7 @@ async fn a_broken_gate_applies_its_own_on_error() {
         false,
         false,
     );
-    let subject = GateSubject {
+    let subject = RequestSubject {
         facts: &facts,
         container: "filesystem",
         ingress_protocol: "mcp",
@@ -337,7 +338,7 @@ async fn no_attached_gate_builds_no_projection() {
     };
     let verdict = decide(
         &[],
-        &GateSubject {
+        &RequestSubject {
             facts: &facts,
             container: "filesystem",
             ingress_protocol: "mcp",

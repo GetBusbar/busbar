@@ -2589,9 +2589,7 @@ fn fire_global_taps(
         if let Some(proj) = proj {
             let policy = hook.clone();
             let budget = *timeout;
-            crate::proxy::hooks::spawn_bounded_tap(
-                async move { policy.notify(&proj, budget).await },
-            );
+            crate::hooks::tap::spawn_bounded_tap(async move { policy.notify(&proj, budget).await });
         }
     }
 }

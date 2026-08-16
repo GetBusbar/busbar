@@ -33,7 +33,8 @@
     "breaker-trip": "a failing upstream target records into the ONE core breaker cell (LaneRuntime, (pool,lane)-keyed) and the cell opens",
     "breaker-fastfail": "a tripped target is refused before dispatch in milliseconds, not after the full timeout, via try_admit_breaker",
     "failover-reroute": "a second interchangeable candidate is tried before the first byte, through the one selection loop (failover::walk)",
-    "hooks-tap": "observe/transform hooks (rewrite, usage projection) run over the plane's payloads",
+    "hooks-tap": "observe (tap) hooks are DELIVERED the plane's requests -- the projection a screening gate is shown, fire-and-forget, through hooks::tap::fire",
+    "hooks-rewrite": "transform (rewrite) hooks REPLACE the plane's request body before dispatch, fail-closed, via the RewriteReply the engine re-renders",
     "hooks-gate": "hooks::gate::decide can refuse the plane's traffic before dispatch",
     "audit-chain": "the plane's dispatches and refusals land in a tamper-evident hash chain (crate::audit)",
     "governance-budget": "spend on the plane is attributed to the presenting key and budget limits refuse with a Retry-After",
@@ -146,31 +147,65 @@
       "capability": "hooks-tap",
       "plane": "llm",
       "state": "proven",
+      "test": "crates/busbar-core/src/proxy/tests/hook_seam_tests.rs::global_request_stage_tap_fires_on_a_real_dispatched_request"
+    },
+    {
+      "capability": "hooks-rewrite",
+      "plane": "llm",
+      "state": "proven",
       "test": "crates/busbar-core/src/proxy/tests/usage_tap_tests.rs::apply_global_rewrites_chains_in_order"
     },
     {
       "capability": "hooks-tap",
       "plane": "mcp-client",
+      "state": "proven",
+      "test": "crates/busbar-core/src/mcp/tests/hook_tap_tests.rs::a_tools_call_reaches_a_global_tap_carrying_its_arguments",
+      "note": "one firing at the method layer covers both directions, the same argument this file already records for hooks-gate x mcp-client: the tap sees the arguments THAT GO UPSTREAM (post ask-merge, pre-leg) and there is no untapped production entry to the client leg."
+    },
+    {
+      "capability": "hooks-rewrite",
+      "plane": "mcp-client",
       "state": "missing",
-      "note": "grep transform under mcp/: zero production hits. The gate projects content to hooks, but there is no observe/transform (rewrite) path over the upstream leg's payloads."
+      "note": "OWED, NOT INAPPLICABLE, and the argument is the wire's rather than the plane's: RewriteReply is {messages, tools} -- a chat body -- and it cannot express 'replace this invocation's arguments'. The projection side is already plane-agnostic (hooks::subject over IrFacts, which is how the tap cell above closed with no contract change); what is missing is a reply arm for the invocation family plus its apply site. That is a hook-wire contract addition, so it is a named increment and not an n/a: an operator would legitimately want to redact a tool call's arguments."
     },
     {
       "capability": "hooks-tap",
       "plane": "mcp-server",
+      "state": "proven",
+      "test": "crates/busbar-core/src/mcp/tests/hook_tap_tests.rs::a_tools_call_reaches_a_global_tap_carrying_its_arguments",
+      "note": "the request-stage taps fire at the method layer over the same InvokeReq the gate is shown (mcp/method.rs), so a tap and a gate on this plane cannot disagree about what the request was."
+    },
+    {
+      "capability": "hooks-rewrite",
+      "plane": "mcp-server",
       "state": "missing",
-      "note": "the gate sees content (mcp/tests/hook_gate_tests.rs::mcp_content_reaches_the_gate) but no transform/rewrite path exists for MCP traffic; the tap half of the hook surface is LLM-only today."
+      "note": "OWED, NOT INAPPLICABLE, and the argument is the wire's rather than the plane's: RewriteReply is {messages, tools} -- a chat body -- and it cannot express 'replace this invocation's arguments'. The projection side is already plane-agnostic (hooks::subject over IrFacts, which is how the tap cell above closed with no contract change); what is missing is a reply arm for the invocation family plus its apply site. That is a hook-wire contract addition, so it is a named increment and not an n/a: an operator would legitimately want to redact a tool call's arguments."
     },
     {
       "capability": "hooks-tap",
       "plane": "a2a-client",
+      "state": "proven",
+      "test": "crates/busbar-core/src/a2a/tests/hook_tap_tests.rs::a_busbar_originated_hop_reaches_a_global_tap_carrying_the_document_busbar_composed",
+      "note": "busbar-ORIGINATED hops (a2a/originate.rs::issue_originated_through_the_hooks) are the leg receive.rs cannot cover: nothing a caller sent composed that document. The relayed leg is observed at the inbound firing site."
+    },
+    {
+      "capability": "hooks-rewrite",
+      "plane": "a2a-client",
       "state": "missing",
-      "note": "no observe/transform hook path over relay/originate payloads; grep transform under a2a/: zero production hits."
+      "note": "OWED, NOT INAPPLICABLE, and the argument is the wire's rather than the plane's: RewriteReply is {messages, tools} -- a chat body -- and it cannot express 'replace this invocation's arguments'. The projection side is already plane-agnostic (hooks::subject over IrFacts, which is how the tap cell above closed with no contract change); what is missing is a reply arm for the invocation family plus its apply site. That is a hook-wire contract addition, so it is a named increment and not an n/a: an operator would legitimately want to redact a tool call's arguments."
     },
     {
       "capability": "hooks-tap",
       "plane": "a2a-server",
+      "state": "proven",
+      "test": "crates/busbar-core/src/a2a/tests/hook_tap_tests.rs::an_inbound_submission_reaches_a_global_tap_carrying_the_callers_content",
+      "note": "the front door fires the taps over the same InvokeReq the agent gate is shown (a2a/receive.rs), before the verdict, so an audit tap records refused submissions as well as relayed ones."
+    },
+    {
+      "capability": "hooks-rewrite",
+      "plane": "a2a-server",
       "state": "missing",
-      "note": "the gate sees content (a2a/tests/hook_gate_tests.rs::a2a_content_reaches_the_gate) but there is no transform/rewrite path for inbound A2A payloads."
+      "note": "OWED, NOT INAPPLICABLE, and the argument is the wire's rather than the plane's: RewriteReply is {messages, tools} -- a chat body -- and it cannot express 'replace this invocation's arguments'. The projection side is already plane-agnostic (hooks::subject over IrFacts, which is how the tap cell above closed with no contract change); what is missing is a reply arm for the invocation family plus its apply site. That is a hook-wire contract addition, so it is a named increment and not an n/a: an operator would legitimately want to redact a tool call's arguments."
     },
     {
       "capability": "hooks-gate",
@@ -194,8 +229,9 @@
     {
       "capability": "hooks-gate",
       "plane": "a2a-client",
-      "state": "missing",
-      "note": "originate and push delivery have no hook gate (the '--' row). The relay inherits the inbound gate at receive.rs, but busbar-originated A2A traffic is ungated."
+      "state": "proven",
+      "note": "the relay leg inherits the inbound gate at receive.rs; busbar-ORIGINATED hops are gated at their one choke point (a2a/originate.rs::issue_originated_through_the_hooks), so a future originated verb is gated by construction. Push DELIVERY is this plane's other role's outbound (see the a2a-server plane definition) and is not this cell.",
+      "test": "crates/busbar-core/src/a2a/tests/hook_tap_tests.rs::a_hook_gate_refuses_a_busbar_originated_hop_and_the_caller_is_unaffected"
     },
     {
       "capability": "hooks-gate",

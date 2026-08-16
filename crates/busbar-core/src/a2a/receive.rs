@@ -885,7 +885,15 @@ async fn admitted(
     // EVERY VERB, not only `message/send`. A gate an operator attached to an agent is a statement
     // about that agent, and a plane that fired it for submissions but not for the task verbs would
     // be a plane where the control's scope depends on which method a caller happened to use.
-    if let Some(gates) = app.a2a_agent_gates.get(&admitted.dispatch.agent_id) {
+    // ── AND THE OPERATOR'S TAP, at the same point and off the same subject. ──────────────────────
+    //
+    // A global `kind: tap` hook observes EVERY request, and until this line it observed only the
+    // model plane (`hooks-tap x a2a-server`, then `missing`). That was never a payload-contract problem:
+    // a tap is shown the projection the gate below is shown, built by the same function from the
+    // same `IrFacts`. FIRED BEFORE THE VERDICT so an audit tap sees the submissions that were
+    // REFUSED as well as the ones that were relayed; it is spawned detached and can affect neither.
+    let attached_gates = app.a2a_agent_gates.get(&admitted.dispatch.agent_id);
+    if attached_gates.is_some() || !app.tap_hooks.is_empty() {
         // THE A2A SUBMISSION AS THE INVOKE IR: a caller names a target and hands it arguments,
         // which is what `ir::invoke` says it carries (`it carries A2A message/send alongside MCP
         // tools/call`). The target is the METHOD and the arguments are `params` — which is where a
@@ -899,51 +907,56 @@ async fn admitted(
                 .unwrap_or(serde_json::Value::Null),
             extra: Default::default(),
         };
-        let verdict = crate::hooks::gate::decide(
-            gates,
-            &crate::hooks::gate::GateSubject {
-                facts: &facts,
-                container: &admitted.dispatch.agent_id,
-                ingress_protocol: crate::plane::Plane::A2a.key(),
-                request_id: app.next_request_id(),
-                key: Some(key.as_ref()),
-            },
-        )
-        .await;
-        if let crate::hooks::gate::GateVerdict::Reject {
-            status,
-            message,
-            hook,
-        } = verdict
-        {
-            crate::admin::audit::AUDIT.record_by(
-                AUDIT_ACTION,
-                &resource,
-                crate::admin::audit::OUTCOME_REJECTED,
-                &actor,
-            );
-            tracing::info!(
-                agent = %admitted.dispatch.agent_id,
-                hook,
+        let subject = crate::hooks::subject::RequestSubject {
+            facts: &facts,
+            container: &admitted.dispatch.agent_id,
+            ingress_protocol: crate::plane::Plane::A2a.key(),
+            request_id: app.next_request_id(),
+            key: Some(key.as_ref()),
+        };
+        crate::hooks::tap::fire(
+            &app.tap_hooks,
+            &subject,
+            key.group.as_deref(),
+            &app.groups_registry,
+        );
+        if let Some(gates) = attached_gates {
+            let verdict = crate::hooks::gate::decide(gates, &subject).await;
+            if let crate::hooks::gate::GateVerdict::Reject {
                 status,
-                "a2a submission refused by a hook gate"
-            );
-            // THE HOOK'S STATUS, IN THIS PLANE'S ERROR VOCABULARY. A2A section 5.4 binds a JSON-RPC
-            // code and a ProtoJSON body to every refusal, and a body in another plane's shape is a
-            // body the TCK rejects by schema — so the code stays `UnsupportedOperation` (this
-            // plane's binding for "busbar will not do this for you") and carries the hook's own
-            // message, while the HTTP status is the gate's clamped one. Exactly what the egress
-            // gate below already does with its own refusal.
-            return (
-                axum::http::StatusCode::from_u16(status)
-                    .unwrap_or(axum::http::StatusCode::FORBIDDEN),
-                axum::Json(super::rpcerror::body(
-                    &rpc_id,
-                    super::rpcerror::A2aError::UnsupportedOperation,
-                    message,
-                )),
-            )
-                .into_response();
+                message,
+                hook,
+            } = verdict
+            {
+                crate::admin::audit::AUDIT.record_by(
+                    AUDIT_ACTION,
+                    &resource,
+                    crate::admin::audit::OUTCOME_REJECTED,
+                    &actor,
+                );
+                tracing::info!(
+                    agent = %admitted.dispatch.agent_id,
+                    hook,
+                    status,
+                    "a2a submission refused by a hook gate"
+                );
+                // THE HOOK'S STATUS, IN THIS PLANE'S ERROR VOCABULARY. A2A section 5.4 binds a JSON-RPC
+                // code and a ProtoJSON body to every refusal, and a body in another plane's shape is a
+                // body the TCK rejects by schema — so the code stays `UnsupportedOperation` (this
+                // plane's binding for "busbar will not do this for you") and carries the hook's own
+                // message, while the HTTP status is the gate's clamped one. Exactly what the egress
+                // gate below already does with its own refusal.
+                return (
+                    axum::http::StatusCode::from_u16(status)
+                        .unwrap_or(axum::http::StatusCode::FORBIDDEN),
+                    axum::Json(super::rpcerror::body(
+                        &rpc_id,
+                        super::rpcerror::A2aError::UnsupportedOperation,
+                        message,
+                    )),
+                )
+                    .into_response();
+            }
         }
     }
 

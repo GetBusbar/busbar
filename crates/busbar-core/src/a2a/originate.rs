@@ -34,6 +34,10 @@ use crate::state::App;
 struct Originated {
     seam: Arc<dyn super::relay::RelaySeam>,
     gate: Arc<dyn super::relay::DelegationGate>,
+    /// THE OPERATOR'S HOOK CHAIN FOR THIS AGENT, and the global taps, carried on the hop because a
+    /// hop busbar originates is still traffic an operator attached a control to. See
+    /// [`issue_originated_through_the_hooks`] for why this is not optional on a housekeeping hop.
+    hooks: OriginatedHooks,
     /// BUSBAR'S OWN credential for this backend, minted from the egress grant. The grant is the only
     /// way to construct one, so a call site that skipped the gate does not compile.
     lease: Option<super::creds::Lease>,
@@ -44,6 +48,29 @@ struct Originated {
     admitted_generation: u64,
     a2a_version: &'static str,
     now_ms: u64,
+}
+
+/// THE HOOK CONTROLS THAT APPLY TO A HOP BUSBAR ORIGINATES — the operator's `agents.hooks:` chain
+/// for this agent, plus the global request-stage taps, plus the caller-scoped facts the seam needs.
+///
+/// Carried on [`Originated`] rather than looked up at the firing site because [`originate`] is where
+/// the agent is known, and a second lookup somewhere else is a second place for the two to disagree.
+struct OriginatedHooks {
+    app: Arc<App>,
+    /// The chain attached to THIS agent, resolved by the same `resolve_container_gates` pass the
+    /// inbound front door reads. Cloned (it is a handful of `Arc`s) so the hop owns everything it
+    /// needs and nothing borrows the app across the blocking call.
+    gates: Vec<(u16, crate::hooks::ResolvedPolicy)>,
+    /// The caller whose request caused busbar to make this hop. It is still that caller's traffic —
+    /// a hook's `groups:` scope and its identity projection are answered from this key.
+    key: busbar_api::VirtualKey,
+}
+
+impl OriginatedHooks {
+    /// Nothing attached and nothing observing: the hop skips the whole seam.
+    fn idle(&self) -> bool {
+        self.gates.is_empty() && self.app.tap_hooks.is_empty()
+    }
 }
 
 /// ASK THE ONE EGRESS GATE, MINT THE LEASE, AND RESOLVE THE BINDING — or `None`, having said in the
@@ -107,6 +134,15 @@ fn originate(
     Some(Originated {
         seam: plane.relay_seam(),
         gate: Arc::new(super::plane::LiveGate(Arc::clone(plane))),
+        hooks: OriginatedHooks {
+            app: Arc::clone(app),
+            gates: app
+                .a2a_agent_gates
+                .get(&admitted.dispatch.agent_id)
+                .cloned()
+                .unwrap_or_default(),
+            key: key.clone(),
+        },
         lease,
         framing,
         policy: plane.fetch_policy_for(&admitted.dispatch.agent_id),
@@ -168,6 +204,84 @@ fn issue_originated(
 /// The `id` every busbar-originated hop carries. See [`issue_originated`].
 const ORIGINATED_RPC_ID: &str = "busbar-originated";
 
+/// THE ONE WAY AN ORIGINATED HOP LEAVES THIS MODULE — through the operator's hooks, then onto the
+/// wire. `None` when a gate refused it.
+///
+/// # Why a housekeeping hop is gated at all
+///
+/// Because the equality doctrine does not have a housekeeping exemption. `hooks-gate x a2a-client`
+/// was the ledger's last `missing` gate cell and its note said exactly what was wrong: *"the relay
+/// inherits the inbound gate at `receive.rs`, but busbar-originated A2A traffic is ungated."* An
+/// operator who attaches `agents.hooks: [screen]` to an agent has made a statement about EVERY
+/// request busbar sends that agent, and a plane where the control covered the hops a caller asked
+/// for but not the hops busbar decided to make on the caller's behalf is a plane whose control
+/// surface depends on which code path composed the document. The hops are small, but they carry
+/// busbar's own callback URL and a bearer capability for it to a third party — which is precisely
+/// the kind of egress an operator attaches a gate to see.
+///
+/// # Why HERE and not at each of the three call sites
+///
+/// [`issue_originated`] is the single choke point this module's own header claims it is — *"neither
+/// is a second path to a backend; both compose a document and hand it to the ONE relay"* — so a
+/// gate placed here is a gate a future originated verb inherits by construction. That is also why
+/// [`issue_originated`] stays private: the gated wrapper is the only way to reach it.
+///
+/// # What a refusal costs the caller: nothing, exactly as a refusal by any other gate here
+///
+/// `None` is what every other refusal on this path already answers, for the reason [`originate`]
+/// states — the caller's answer is already decided and already correct, and these hops are busbar's
+/// own housekeeping. A refused hop leaves the customer where they were before the hop existed.
+async fn issue_originated_through_the_hooks(
+    method: &'static str,
+    params: serde_json::Value,
+    at: &Arc<Originated>,
+) -> Option<Result<super::relay::RelayReply, super::relay::RelayRefusal>> {
+    if !at.hooks.idle() {
+        // THE ORIGINATED HOP AS THE INVOKE IR, spelled exactly as `receive.rs` spells a relayed one:
+        // the target is the METHOD and the arguments are the `params` busbar composed. A gate
+        // written for the front door reads this with no change, which is the whole point of the
+        // family-blind seam.
+        let facts = crate::ir::invoke::InvokeReq {
+            tool: method.to_string(),
+            arguments: params.clone(),
+            extra: Default::default(),
+        };
+        let subject = crate::hooks::subject::RequestSubject {
+            facts: &facts,
+            container: &at.agent_id,
+            ingress_protocol: crate::plane::Plane::A2a.key(),
+            request_id: at.hooks.app.next_request_id(),
+            key: Some(&at.hooks.key),
+        };
+        // OBSERVE FIRST, so a tap records the hop that was refused as well as the hop that went out.
+        crate::hooks::tap::fire(
+            &at.hooks.app.tap_hooks,
+            &subject,
+            at.hooks.key.group.as_deref(),
+            &at.hooks.app.groups_registry,
+        );
+        if let crate::hooks::gate::GateVerdict::Reject {
+            status,
+            message,
+            hook,
+        } = crate::hooks::gate::decide(&at.hooks.gates, &subject).await
+        {
+            tracing::info!(
+                agent = %at.agent_id, method, hook, status, %message,
+                "a2a: a hook gate refused a hop busbar originated, so it was not made"
+            );
+            return None;
+        }
+    }
+    let at = Arc::clone(at);
+    // BLOCKING, like every other hop on this plane: the seam is the card fetch's transport and it
+    // blocks a thread. A join failure is reported as no answer, which is what the callers already do
+    // with one.
+    tokio::task::spawn_blocking(move || issue_originated(method, params, &at))
+        .await
+        .ok()
+}
+
 /// MIRROR THE CALLER'S PUSH-CONFIG VERB ONTO BUSBAR'S OWN REGISTRATION AT THE BACKEND.
 ///
 /// One rule, four verbs: whatever the caller did to the config busbar holds for it, busbar does to
@@ -223,50 +337,64 @@ pub(super) async fn mirror_push_config(
         return;
     };
     let busbar_task = task.task_id.clone();
+    let at = Arc::new(at);
 
-    let _ = tokio::task::spawn_blocking(move || {
-        let create = super::pushback::create_params(&backend_task, &our_url, &token);
-        // ONE PARAMS SHAPE PER REQUEST SHAPE. See `pushback::list_params`: a `list` names the task
-        // and no config, and a spare member on a `GET` is a refusal on the HTTP+JSON leg.
-        let params = match method {
-            m if m == super::rest::method::CREATE_PUSH_CONFIG => create.clone(),
-            m if m == super::rest::method::LIST_PUSH_CONFIGS => {
-                super::pushback::list_params(&backend_task)
-            }
-            _ => super::pushback::config_params(&backend_task),
-        };
-        let outcome = issue_originated(method, params, &at);
-        // ── THE RECONCILIATION. A read that does not find busbar's own registration — because the
-        //    backend refused it, dropped it, or was restarted without it — is a read that has just
-        //    discovered the caller's callback armed at busbar and dead at the agent. Re-arming is
-        //    what makes issuing the read worth the hop.
-        let is_read = method == super::rest::method::GET_PUSH_CONFIG
-            || method == super::rest::method::LIST_PUSH_CONFIGS;
-        let drifted = match &outcome {
-            Ok(reply) => {
-                is_read
-                    && !reply
-                        .result
-                        .to_string()
-                        .contains(&super::pushback::config_id(&backend_task))
-            }
-            Err(e) => {
-                tracing::info!(
-                    agent = %at.agent_id, task = %busbar_task, method, error = %e,
-                    "a2a: busbar's own push registration at the agent did not answer"
-                );
-                is_read
-            }
-        };
-        if drifted {
-            tracing::info!(
-                agent = %at.agent_id, task = %busbar_task,
-                "a2a: busbar's own push registration was gone at the agent, and was re-made"
-            );
-            let _ = issue_originated(super::rest::method::CREATE_PUSH_CONFIG, create, &at);
+    let create = super::pushback::create_params(&backend_task, &our_url, &token);
+    // ONE PARAMS SHAPE PER REQUEST SHAPE. See `pushback::list_params`: a `list` names the task
+    // and no config, and a spare member on a `GET` is a refusal on the HTTP+JSON leg.
+    //
+    // COMPOSED HERE rather than inside the blocking hop, because the document is what the hook gate
+    // is shown: a gate cannot screen a payload that is built after it has answered.
+    let params = match method {
+        m if m == super::rest::method::CREATE_PUSH_CONFIG => create.clone(),
+        m if m == super::rest::method::LIST_PUSH_CONFIGS => {
+            super::pushback::list_params(&backend_task)
         }
-    })
-    .await;
+        _ => super::pushback::config_params(&backend_task),
+    };
+    let Some(outcome) = issue_originated_through_the_hooks(method, params, &at).await else {
+        // Refused by a gate, or the hop's thread did not join. Either way there is nothing to
+        // reconcile against and nothing owed to the caller.
+        return;
+    };
+    // ── THE RECONCILIATION. A read that does not find busbar's own registration — because the
+    //    backend refused it, dropped it, or was restarted without it — is a read that has just
+    //    discovered the caller's callback armed at busbar and dead at the agent. Re-arming is
+    //    what makes issuing the read worth the hop.
+    let is_read = method == super::rest::method::GET_PUSH_CONFIG
+        || method == super::rest::method::LIST_PUSH_CONFIGS;
+    let drifted = match &outcome {
+        Ok(reply) => {
+            is_read
+                && !reply
+                    .result
+                    .to_string()
+                    .contains(&super::pushback::config_id(&backend_task))
+        }
+        Err(e) => {
+            tracing::info!(
+                agent = %at.agent_id, task = %busbar_task, method, error = %e,
+                "a2a: busbar's own push registration at the agent did not answer"
+            );
+            is_read
+        }
+    };
+    if drifted {
+        tracing::info!(
+            agent = %at.agent_id, task = %busbar_task,
+            "a2a: busbar's own push registration was gone at the agent, and was re-made"
+        );
+        // THROUGH THE HOOKS AGAIN, not around them: the re-arm is a second hop carrying a document
+        // the gate has not been shown (the read it reconciles carried a different one), and a
+        // re-arm that skipped the screen would be the one originated hop an operator's control
+        // could not see.
+        let _ = issue_originated_through_the_hooks(
+            super::rest::method::CREATE_PUSH_CONFIG,
+            create,
+            &at,
+        )
+        .await;
+    }
 }
 
 /// REFRESH WHAT BUSBAR LAST SAW, FROM THE AGENT THAT IS DOING THE WORK — busbar's `ListTasks` as a
@@ -319,15 +447,18 @@ pub(super) async fn refresh_listed_tasks(
     // records is a transition like any other, and a transition on a task with a callback is a
     // delivery owed. A refresh that recorded the move and did not deliver it would be the same
     // silence this whole area exists to remove, one function further along.
+    let at = Arc::new(at);
     let seam = Arc::clone(&at.seam);
-    let reply = tokio::task::spawn_blocking(move || {
-        // NO PAGING MEMBERS. busbar is not paging the backend's list on the caller's behalf — the
-        // caller's own page is cut from busbar's rows by `local::list_tasks` — so this asks for the
-        // backend's default page and takes what it can match from it.
-        issue_originated(super::rest::method::LIST_TASKS, serde_json::json!({}), &at)
-    })
+    // NO PAGING MEMBERS. busbar is not paging the backend's list on the caller's behalf — the
+    // caller's own page is cut from busbar's rows by `local::list_tasks` — so this asks for the
+    // backend's default page and takes what it can match from it.
+    let reply = issue_originated_through_the_hooks(
+        super::rest::method::LIST_TASKS,
+        serde_json::json!({}),
+        &at,
+    )
     .await;
-    let Ok(Ok(reply)) = reply else {
+    let Some(Ok(reply)) = reply else {
         tracing::debug!(
             agent = %admitted.dispatch.agent_id,
             "a2a: the agent did not answer a task list, so busbar's own rows stand unrefreshed"

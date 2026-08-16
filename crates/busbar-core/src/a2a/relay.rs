@@ -2236,6 +2236,13 @@ mod wire_headers_tests;
 #[path = "tests/hook_gate_tests.rs"]
 mod hook_gate_tests;
 
+// THE TAP AND THE ORIGINATED-HOP GATE — the OBSERVE half of the same hook surface plus the one gate
+// cell the front-door battery above cannot reach. Mounted here for the identical reason: the claim
+// is about whether a hop was COMPOSED, and only the shared harness's recording seam can see that.
+#[cfg(test)]
+#[path = "tests/hook_tap_tests.rs"]
+mod hook_tap_tests;
+
 // THE SERVED HALF OF THE COVERAGE MATRIX — one test per `busbar-as-server` cell of
 // `qa/method-inventory.json`, on the binding whose cell it claims. Mounted here for the reason every
 // block above is: it needs `relay_harness`, and a second harness is a second thing that can stop
