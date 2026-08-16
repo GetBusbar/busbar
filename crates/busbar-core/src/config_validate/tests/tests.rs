@@ -5023,3 +5023,119 @@ fn an_empty_protocol_set_refuses_every_provider_naming_the_build() {
         errors[0]
     );
 }
+
+/// **D5 — THE FAIL-OPEN, DRIVEN THROUGH THE PRODUCTION SWEEP.**
+///
+/// [`an_empty_protocol_set_refuses_every_provider_naming_the_build`] above pins the protocol ARM.
+/// What it cannot see is its CALLER: with the arm parameterised but the loop not, someone restoring
+/// `if !known.contains(p)` inline in `validate_with_unset`'s provider loop would restore the
+/// fail-OPEN with the arm's own test still green — the same "the test does not drive the production
+/// path" trap D5 exists to catch, one level up. So the whole sweep now takes the known-set, and
+/// this drives THE SWEEP: the real loop, the real `RootCfg`, the real error collection and its
+/// ordering, against an empty set.
+///
+/// The fail-OPEN answer this refuses: with `known` empty and `contains` the only check, `contains`
+/// is false for NOTHING, so both providers below validate, the config that names protocols this
+/// build cannot speak boots, and the failure surfaces as a `die()` deep in lane construction.
+#[test]
+fn an_empty_protocol_set_refuses_every_provider_through_the_real_sweep() {
+    let mut providers = HashMap::new();
+    providers.insert(
+        "prov-a".to_string(),
+        make_provider("anthropic", "https://a.example.com", "KEY_A"),
+    );
+    providers.insert(
+        "prov-b".to_string(),
+        make_provider("no-such-protocol", "https://b.example.com", "KEY_B"),
+    );
+    let cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
+
+    let mut errors = Vec::new();
+    super::validate_providers_with(&[], &cfg, &[], &mut errors);
+
+    // Every provider is refused, and refused ONCE, and the refusal names the BUILD as the cause —
+    // not the provider for naming an "unknown" protocol against an empty must-be-one-of list. The
+    // named provider that IS shipped today (`anthropic`) is refused exactly like the bogus one:
+    // with no codec compiled in, no provider lane can be served, whatever it is called.
+    for prov in ["prov-a", "prov-b"] {
+        let hits: Vec<&String> = errors.iter().filter(|e| e.contains(prov)).collect();
+        assert_eq!(
+            hits.len(),
+            1,
+            "an empty protocol set must refuse '{prov}' exactly once, got: {hits:?}"
+        );
+        assert!(
+            hits[0].contains("NO protocol") && hits[0].contains("compiled in"),
+            "the refusal must name the BUILD as the cause: {}",
+            hits[0]
+        );
+    }
+    assert!(
+        !errors.iter().any(|e| e.contains("must be one of")),
+        "the empty set must never render the unknown-protocol arm with an empty tail: {errors:?}"
+    );
+
+    // THE CONTROL. The same sweep over the same config with a populated set takes the OTHER arm:
+    // the provider naming a protocol this build ships passes, the one naming a stranger is refused
+    // with the choices named. Without this half, a sweep that refused everything unconditionally
+    // would also satisfy the assertions above.
+    let mut errors = Vec::new();
+    super::validate_providers_with(&["anthropic", "openai"], &cfg, &[], &mut errors);
+    assert!(
+        !errors.iter().any(|e| e.contains("prov-a")),
+        "a provider naming a compiled-in protocol validates: {errors:?}"
+    );
+    let hits: Vec<&String> = errors.iter().filter(|e| e.contains("prov-b")).collect();
+    assert_eq!(hits.len(), 1, "one refusal for the stranger: {hits:?}");
+    assert!(
+        hits[0].contains("must be one of: anthropic, openai"),
+        "the populated set names the choices: {}",
+        hits[0]
+    );
+}
+
+/// **D5 — AND THE EMPTY SET IS ONE THE REGISTRY ITSELF PRODUCES.**
+///
+/// The two tests above hand the validator a literal `&[]`. That is only evidence if the registry
+/// can ever hand it the same thing — otherwise the refusal is pinned against an input that cannot
+/// occur, which is the vacuity D5 is about. So this one takes no literal: it builds a registry
+/// through the registry's OWN boot path with every protocol edge removed (see
+/// `registry_tests::a_registry_with_no_declarations_reports_no_protocols_at_all`), reads its
+/// codec-protocol list, and feeds THAT to the production sweep.
+///
+/// HONEST LIMIT, stated so nobody reads more into this than it says: the process-wide
+/// `known_protocols()` is a `OnceLock` over a `BUILTIN_DECLS` that is not empty in this build, so
+/// this drives the registry's empty state, not the process's. The zero-protocol BOOT proof closes
+/// with the last dialect extraction; this is the strongest proof available before it.
+#[test]
+fn the_empty_set_the_validator_refuses_is_the_one_an_empty_registry_produces() {
+    let empty_registry =
+        crate::proto::registry::Registry::new(crate::proto::registry::merged_boot_decls(&[], &[]));
+    let known: &'static [&'static str] = empty_registry.codec_protocols();
+    assert!(
+        known.is_empty(),
+        "the premise of this test: a registry with no declarations knows no protocols"
+    );
+
+    let mut providers = HashMap::new();
+    providers.insert(
+        "prov-a".to_string(),
+        make_provider("anthropic", "https://a.example.com", "KEY_A"),
+    );
+    let cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
+
+    let mut errors = Vec::new();
+    super::validate_providers_with(known, &cfg, &[], &mut errors);
+    assert_eq!(
+        errors.len(),
+        1,
+        "the registry-derived empty set refuses the provider, once: {errors:?}"
+    );
+    assert!(
+        errors[0].contains("prov-a")
+            && errors[0].contains("NO protocol")
+            && errors[0].contains("compiled in"),
+        "and names the build: {}",
+        errors[0]
+    );
+}

@@ -51,12 +51,6 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
     // URL that merely contains an unset var name as a substring is still fully https/SSRF-checked and never
     // over-suppressed (boot/reload use Strict subst, so this affects --validate
     // only). Empty list (the boot / default `validate` path) ⇒ this is always false.
-    let is_env_placeholder = |v: &str| {
-        !v.contains("://")
-            && unset_env_vars
-                .iter()
-                .any(|u| !u.is_empty() && v.contains(u.as_str()))
-    };
     let mut errors = Vec::new();
 
     // The metadata host-lists are matched by EXACT IP/hostname (see `host_matches_any`); a CIDR/slash
@@ -247,308 +241,16 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
         }
     }
 
-    // Rule 4: Validate error_map values on every provider. An EMPTY error_map is valid — a provider
-    // may have no provider-specific JSON error codes and rely on HTTP-status classification (the
-    // circuit breaker), exactly like the shipped `anthropic` catalog entry. Only the entries that
-    // ARE present must name a known StatusClass.
-    for (provider_name, provider_cfg) in &cfg.providers {
-        // The provider's `protocol` selects a declared `Protocol` from the registry at lane
-        // construction. An unknown protocol used to escape this multi-error collection entirely and
-        // surface as a lone `die()` deep in `main.rs` (lane build) — so an operator with several
-        // config mistakes saw only the first one. Validate it HERE against the single source of
-        // truth (`proto::known_protocols()`, DERIVED from the protocol declarations rather than
-        // maintained beside them) so a bad protocol is collected alongside every other error.
-        // `main.rs`'s `die()` remains a defensive (now unreachable) backstop.
-        //
-        // THE EMPTY LIST IS ITS OWN ERROR, and this arm is why. The list used to be a compile-time
-        // const that could not be empty; it is now derived, and a build with no protocol compiled in
-        // would otherwise reject EVERY provider with "must be one of: " and an empty tail — one
-        // confusing error per provider, none of them naming the actual cause. It is still a refusal
-        // (a proxy with no protocol cannot serve a provider lane, and accepting the config would be
-        // the fail-OPEN answer), but it refuses ONCE and says why.
-        validate_provider_protocol_with(
-            crate::proto::known_protocols(),
-            provider_name,
-            &provider_cfg.protocol,
-            &mut errors,
-        );
-
-        // Per-provider active-health-probe settings. `interval_secs`/`timeout_secs` are floored at 1
-        // by the prober at use, but a literal 0 in config signals operator confusion (a 0 interval/
-        // timeout is never what's intended); reject it at boot so the config is honest about what
-        // runs — mirroring the global health.default_probe_* checks in validate_limits.
-        if let Some(health) = &provider_cfg.health {
-            if health.interval_secs == Some(0) {
-                errors.push(format!(
-                    "provider '{}' health.interval_secs must be >= 1 (got 0)",
-                    provider_name
-                ));
-            }
-            if health.timeout_secs == Some(0) {
-                errors.push(format!(
-                    "provider '{}' health.timeout_secs must be >= 1 (got 0)",
-                    provider_name
-                ));
-            }
-        }
-
-        for (code, mapped_class) in &provider_cfg.error_map {
-            if crate::config::status_class_from_str(mapped_class).is_none() {
-                errors.push(format!(
-                    "provider '{}' error_map code '{}': invalid StatusClass '{}', must be one of: rate_limit, overloaded, server_error, timeout, network, auth, billing, client_error, context_length",
-                    provider_name, code, mapped_class
-                ));
-            }
-        }
-
-        // The optional auth-style override (`bearer` / `api-key`) is now a `ProviderAuth` enum, so an
-        // invalid spelling is rejected at deserialize time — no hand-check needed here.
-
-        // The resolved base_url is the actual upstream target for signed (API-key-bearing) calls.
-        // It is operator config (a client never chooses a provider URL — it picks a model NAME that
-        // maps through a pool to an operator URL), so there is no client-driven SSRF. Two startup
-        // rules apply:
-        //
-        // SCHEME — keyed off whether the host is PRIVATE/LOOPBACK, not off a flag. A PUBLIC host MUST
-        // use `https://` (cleartext would leak the API key on the wire to an off-box wiretap); a
-        // PRIVATE/LOOPBACK host (a local Ollama / vLLM / LM Studio on `localhost`, `127.0.0.1`,
-        // RFC-1918, or a Tailscale CGNAT address) MAY use plain `http://` — local models rarely
-        // terminate TLS and there is no off-box hop to wiretap. So `http://localhost:11434` and
-        // `http://10.0.0.5:8000` validate with NO flag, while `http://api.example.com` is rejected.
-        // The allow-overrides for THIS provider: the union of its own `allow_metadata_hosts` and the
-        // global `security.allow_metadata_hosts`. A host on the denylist is unblocked iff it appears
-        // in this union (or `allow_all_metadata` is set). Built once and passed to both the base_url
-        // and the path-override SSRF checks below so the two reason over the identical carve-out set.
-        reject_cidr_metadata_entries(
-            &format!("provider '{provider_name}' allow_metadata_hosts"),
-            &provider_cfg.allow_metadata_hosts,
-            &mut errors,
-        );
-        let allow_overrides: Vec<String> = provider_cfg
-            .allow_metadata_hosts
-            .iter()
-            .chain(cfg.allow_metadata_hosts.iter())
-            .cloned()
-            .collect();
-
-        let base_url = &provider_cfg.base_url;
-        let host_for_scheme = extract_normalized_host(base_url);
-        let host_is_local = host_for_scheme
-            .as_deref()
-            .map(host_is_private_or_loopback)
-            .unwrap_or(false);
-        // Case-INSENSITIVE scheme check (RFC 3986 §3.1) — a raw `starts_with("https://")` rejected
-        // the valid uppercase spelling reqwest would accept, and diverged from the webhook guard's
-        // `scheme_is`.
-        let scheme_ok = is_env_placeholder(base_url)
-            || scheme_is(base_url, "https")
-            || (host_is_local && scheme_is(base_url, "http"));
-        if !scheme_ok {
-            errors.push(if scheme_is(base_url, "http") {
-                // An http:// scheme that failed the check ⇒ the host is public (or unparseable):
-                // plaintext to a public host would leak the key.
-                format!(
-                    "provider '{}' base_url must use https for a public host (got '{}'); plaintext http is permitted only for a private/loopback local-model upstream",
-                    provider_name, base_url
-                )
-            } else {
-                format!(
-                    "provider '{}' base_url must use http or https (got '{}')",
-                    provider_name, base_url
-                )
-            });
-        } else if let Some(host) = ssrf_blocked_host(
-            base_url,
-            &allow_overrides,
-            cfg.allow_all_metadata,
-            &cfg.blocked_metadata_hosts,
-        ) {
-            // SSRF — block the cloud-metadata DENYLIST (hardcoded + operator additions). A passing
-            // scheme alone does not stop SSRF: `https://169.254.169.254/`, `http://100.100.100.200/`,
-            // `https://metadata.google.internal/`, etc. point busbar's key-bearing traffic at a
-            // credential-leaking metadata service. Everything NOT on the denylist (loopback, RFC-1918,
-            // CGNAT, public) is allowed — so local models just work. The three escape hatches (this
-            // provider's `allow_metadata_hosts`, the global `security.allow_metadata_hosts`, and the
-            // nuclear `security.allow_all_metadata`) carve exceptions (then `ssrf_blocked_host`
-            // returns None).
-            errors.push(format!(
-                "provider '{}' base_url '{}' targets a blocked cloud-metadata host '{}' (cloud-metadata/IMDS endpoints are denied; to override add the host to this provider's allow_metadata_hosts, or security.allow_metadata_hosts to unblock it for all providers, or set security.allow_all_metadata: true to disable the guard entirely — and security.blocked_metadata_hosts extends the denylist)",
-                provider_name, base_url, host
-            ));
-        }
-
-        // The `path` override is appended to `base_url` VERBATIM at request time
-        // (`format!("{base}{wire_path}")` in proxy engine), and the composed string is then parsed by
-        // reqwest's `url` crate to choose the connect host. base_url validation alone is therefore
-        // NOT sufficient: a `path` that does not begin with `/` FUSES into the authority — e.g.
-        // base_url `https://api.openai.com` + path `.evil.com/v1` yields
-        // `https://api.openai.com.evil.com/v1`, whose host is `api.openai.com.evil.com`, redirecting
-        // the lane's signed (API-key-bearing) traffic to an attacker host (credential-relay SSRF).
-        // Likewise a `path` smuggling a `@` / `//` / `\` could re-home the authority. Defend in two
-        // layers: (1) require a leading `/` so the override can only ever extend the PATH, never the
-        // authority; (2) re-run the COMPOSED url through the same ssrf_blocked_host guard so any host
-        // it could still introduce is caught with the identical internal/metadata block set as
-        // base_url. (The composed string is only checked when base_url is itself an accepted https
-        // URL — a bad base_url already errors above.)
-        if let Some(path) = &provider_cfg.path {
-            if !path.starts_with('/') {
-                errors.push(format!(
-                    "provider '{}' path '{}' must begin with '/': a path override is appended to base_url verbatim, so a path that does not start with '/' fuses into the host (e.g. base_url + '{}') and can redirect signed traffic to an attacker-controlled host",
-                    provider_name, path, path
-                ));
-            } else if scheme_ok {
-                let composed = format!("{}{}", provider_cfg.base_url, path);
-                if let Some(host) = ssrf_blocked_host(
-                    &composed,
-                    &allow_overrides,
-                    cfg.allow_all_metadata,
-                    &cfg.blocked_metadata_hosts,
-                ) {
-                    errors.push(format!(
-                        "provider '{}' base_url+path '{}' targets a blocked cloud-metadata host '{}' (cloud-metadata/IMDS endpoints are denied; to override add the host to this provider's allow_metadata_hosts, or security.allow_metadata_hosts, or set security.allow_all_metadata: true)",
-                        provider_name, composed, host
-                    ));
-                }
-            }
-        }
-        // Same guards for `path_base` (the URL-model base override, e.g. Vertex): it is prepended to
-        // the per-request `/{model}:verb` and appended to base_url, so it must begin with '/' and the
-        // composed host must not be a blocked metadata endpoint.
-        if let Some(path_base) = &provider_cfg.path_base {
-            if !path_base.starts_with('/') {
-                errors.push(format!(
-                    "provider '{}' path_base '{}' must begin with '/': it is appended to base_url verbatim, so a value that does not start with '/' fuses into the host and can redirect signed traffic to an attacker-controlled host",
-                    provider_name, path_base
-                ));
-            } else if scheme_ok {
-                let composed = format!("{}{}", provider_cfg.base_url, path_base);
-                if let Some(host) = ssrf_blocked_host(
-                    &composed,
-                    &allow_overrides,
-                    cfg.allow_all_metadata,
-                    &cfg.blocked_metadata_hosts,
-                ) {
-                    errors.push(format!(
-                        "provider '{}' base_url+path_base '{}' targets a blocked cloud-metadata host '{}' (cloud-metadata/IMDS endpoints are denied; to override add the host to this provider's allow_metadata_hosts, or security.allow_metadata_hosts, or set security.allow_all_metadata: true)",
-                        provider_name, composed, host
-                    ));
-                }
-            }
-        }
-        // `oauth-client-credentials` needs a token endpoint + scope to run the exchange; without them
-        // a lane would boot but never mint a token (every request 401s). Fail at validate time. The
-        // token_url carries the client_secret, so it must be https for a public host (loopback/private
-        // may use http, mirroring base_url).
-        if matches!(
-            provider_cfg.auth,
-            Some(crate::config::ProviderAuth::OAuthClientCredentials)
-        ) {
-            if provider_cfg
-                .token_url
-                .as_deref()
-                .unwrap_or("")
-                .trim()
-                .is_empty()
-            {
-                errors.push(format!(
-                    "provider '{}' uses auth: oauth-client-credentials but has no `token_url` (the OAuth token endpoint the client credentials are POSTed to)",
-                    provider_name
-                ));
-            } else if let Some(tu) = &provider_cfg.token_url {
-                // token_url carries the client secret in the POST body, so it gets the SAME two guards
-                // as base_url — not a lone scheme check: (1) case-INSENSITIVE https requirement (http
-                // permitted only for a private/loopback token endpoint; a raw `starts_with("http://")`
-                // let `HTTPS://`/scheme-less/`FTP://` bypass it, the exact base_url bug this mirrors),
-                // and (2) the SSRF/metadata denylist — an operator typo/template pointing token_url at
-                // IMDS or metadata.google.internal would POST the client secret straight to it.
-                let host_private = extract_normalized_host(tu)
-                    .as_deref()
-                    .map(host_is_private_or_loopback)
-                    .unwrap_or(false);
-                let tu_scheme_ok = is_env_placeholder(tu)
-                    || scheme_is(tu, "https")
-                    || (host_private && scheme_is(tu, "http"));
-                if !tu_scheme_ok {
-                    errors.push(if scheme_is(tu, "http") {
-                        format!(
-                            "provider '{}' token_url must use https for a public host (got '{}'); it carries the client secret, so plaintext http is permitted only for a private/loopback token endpoint",
-                            provider_name, tu
-                        )
-                    } else {
-                        format!(
-                            "provider '{}' token_url must use http or https (got '{}')",
-                            provider_name, tu
-                        )
-                    });
-                } else if let Some(host) = ssrf_blocked_host(
-                    tu,
-                    &allow_overrides,
-                    cfg.allow_all_metadata,
-                    &cfg.blocked_metadata_hosts,
-                ) {
-                    errors.push(format!(
-                        "provider '{}' token_url '{}' targets a blocked cloud-metadata host '{}' (the client secret is POSTed there; cloud-metadata/IMDS endpoints are denied — override via this provider's allow_metadata_hosts, security.allow_metadata_hosts, or security.allow_all_metadata)",
-                        provider_name, tu, host
-                    ));
-                }
-            }
-            if provider_cfg
-                .scope
-                .as_deref()
-                .unwrap_or("")
-                .trim()
-                .is_empty()
-            {
-                errors.push(format!(
-                    "provider '{}' uses auth: oauth-client-credentials but has no `scope`",
-                    provider_name
-                ));
-            }
-            // Dry-run credential-format check (parity with jwt-bearer below): the `client_id:client_secret`
-            // colon-split lives only in `build()`, which `--validate` never reaches, so a malformed
-            // credential otherwise passes validate and fails at boot/apply. Check it here when the env var
-            // resolves (an unset var can't be validated — caught at boot).
-            let cred = crate::config::secret::resolve_builtin_string(&provider_cfg.api_key)
-                .unwrap_or_default();
-            if !cred.trim().is_empty() {
-                if let Err(e) =
-                    crate::egress_auth::oauth_client_credentials::validate_credential(&cred)
-                {
-                    errors.push(format!(
-                        "provider '{provider_name}' oauth-client-credentials credential (from {}) is invalid: {e}",
-                        provider_cfg.api_key.describe()
-                    ));
-                }
-            }
-        }
-
-        // jwt-bearer: dry-run key validation. `build()` (SA-JSON parse + PKCS#8 key check + token_uri
-        // SSRF) does NOT run on the `--validate` path, so a malformed credential otherwise surfaces only
-        // at boot/apply. Validate it here IF the credential env var is actually set (an unset var can't
-        // be validated — it is checked at boot, where unset is a hard error).
-        if matches!(
-            provider_cfg.auth,
-            Some(crate::config::ProviderAuth::JwtBearer)
-        ) {
-            let cred = crate::config::secret::resolve_builtin_string(&provider_cfg.api_key)
-                .unwrap_or_default();
-            if !cred.trim().is_empty() {
-                // Pass the SAME operator metadata posture the boot path threads into jwt_bearer::build,
-                // so the token_uri SSRF check is identical at validate and apply time.
-                let ssrf = crate::egress_auth::MetadataSsrfPolicy {
-                    allow_overrides: &allow_overrides,
-                    allow_all: cfg.allow_all_metadata,
-                    blocked_hosts: &cfg.blocked_metadata_hosts,
-                };
-                if let Err(e) = crate::egress_auth::jwt_bearer::validate_credential(&cred, &ssrf) {
-                    errors.push(format!(
-                        "provider '{provider_name}' jwt-bearer credential (from {}) is invalid: {e}",
-                        provider_cfg.api_key.describe()
-                    ));
-                }
-            }
-        }
-    }
+    // Rule 4 and the provider sweep it leads: PARAMETERISED on the known-protocol set. The
+    // known-set is read HERE, at the single production reader, and passed down — so the whole
+    // provider sweep (not just its protocol arm) is a function a test can drive against an EMPTY
+    // set. See `validate_providers_with` for why the empty set is the load-bearing case.
+    validate_providers_with(
+        crate::proto::known_protocols(),
+        cfg,
+        unset_env_vars,
+        &mut errors,
+    );
 
     // Rule 2 & 3: Validate each pool's members
     for (pool_name, pool_cfg) in &cfg.pools {
@@ -2321,6 +2023,329 @@ fn expand_alternate_ipv4(host: &str) -> Option<std::net::Ipv4Addr> {
 /// checks the source against) and because `mod.rs` is at the structure-lint size ceiling.
 mod secret_refs;
 pub(crate) use secret_refs::secret_refs;
+
+/// THE PROVIDER SWEEP, PARAMETERISED ON THE KNOWN-PROTOCOL SET — by argument rather than by
+/// feature-gating the registry, because a feature that empties the registry would be a SECOND way
+/// to have no protocols, and this project's whole objection is to second ways.
+///
+/// WHY THE WHOLE SWEEP AND NOT JUST ITS PROTOCOL ARM. The arm below
+/// ([`validate_provider_protocol_with`]) was already parameterised and already had its empty-set
+/// test. What that test could NOT see is the production caller: a re-inlined `!known.contains(p)`
+/// in this loop would restore the fail-OPEN with the arm's own test still green, which is exactly
+/// the shape D5 exists to catch one level up. So the loop itself takes the set, `known_protocols()`
+/// is read at ONE site (`validate_with_unset`'s call to this function), and
+/// `an_empty_protocol_set_refuses_every_provider_through_the_real_sweep` drives this whole sweep —
+/// the production code path, error ordering and all — against an empty set.
+fn validate_providers_with(
+    known: &'static [&'static str],
+    cfg: &RootCfg,
+    unset_env_vars: &[String],
+    errors: &mut Vec<String>,
+) {
+    let is_env_placeholder = |v: &str| {
+        !v.contains("://")
+            && unset_env_vars
+                .iter()
+                .any(|u| !u.is_empty() && v.contains(u.as_str()))
+    };
+    // Rule 4: Validate error_map values on every provider. An EMPTY error_map is valid — a provider
+    // may have no provider-specific JSON error codes and rely on HTTP-status classification (the
+    // circuit breaker), exactly like the shipped `anthropic` catalog entry. Only the entries that
+    // ARE present must name a known StatusClass.
+    for (provider_name, provider_cfg) in &cfg.providers {
+        // The provider's `protocol` selects a declared `Protocol` from the registry at lane
+        // construction. An unknown protocol used to escape this multi-error collection entirely and
+        // surface as a lone `die()` deep in `main.rs` (lane build) — so an operator with several
+        // config mistakes saw only the first one. Validate it HERE against the single source of
+        // truth (`proto::known_protocols()`, DERIVED from the protocol declarations rather than
+        // maintained beside them) so a bad protocol is collected alongside every other error.
+        // `main.rs`'s `die()` remains a defensive (now unreachable) backstop.
+        //
+        // THE EMPTY LIST IS ITS OWN ERROR, and this arm is why. The list used to be a compile-time
+        // const that could not be empty; it is now derived, and a build with no protocol compiled in
+        // would otherwise reject EVERY provider with "must be one of: " and an empty tail — one
+        // confusing error per provider, none of them naming the actual cause. It is still a refusal
+        // (a proxy with no protocol cannot serve a provider lane, and accepting the config would be
+        // the fail-OPEN answer), but it refuses ONCE and says why.
+        validate_provider_protocol_with(known, provider_name, &provider_cfg.protocol, errors);
+
+        // Per-provider active-health-probe settings. `interval_secs`/`timeout_secs` are floored at 1
+        // by the prober at use, but a literal 0 in config signals operator confusion (a 0 interval/
+        // timeout is never what's intended); reject it at boot so the config is honest about what
+        // runs — mirroring the global health.default_probe_* checks in validate_limits.
+        if let Some(health) = &provider_cfg.health {
+            if health.interval_secs == Some(0) {
+                errors.push(format!(
+                    "provider '{}' health.interval_secs must be >= 1 (got 0)",
+                    provider_name
+                ));
+            }
+            if health.timeout_secs == Some(0) {
+                errors.push(format!(
+                    "provider '{}' health.timeout_secs must be >= 1 (got 0)",
+                    provider_name
+                ));
+            }
+        }
+
+        for (code, mapped_class) in &provider_cfg.error_map {
+            if crate::config::status_class_from_str(mapped_class).is_none() {
+                errors.push(format!(
+                    "provider '{}' error_map code '{}': invalid StatusClass '{}', must be one of: rate_limit, overloaded, server_error, timeout, network, auth, billing, client_error, context_length",
+                    provider_name, code, mapped_class
+                ));
+            }
+        }
+
+        // The optional auth-style override (`bearer` / `api-key`) is now a `ProviderAuth` enum, so an
+        // invalid spelling is rejected at deserialize time — no hand-check needed here.
+
+        // The resolved base_url is the actual upstream target for signed (API-key-bearing) calls.
+        // It is operator config (a client never chooses a provider URL — it picks a model NAME that
+        // maps through a pool to an operator URL), so there is no client-driven SSRF. Two startup
+        // rules apply:
+        //
+        // SCHEME — keyed off whether the host is PRIVATE/LOOPBACK, not off a flag. A PUBLIC host MUST
+        // use `https://` (cleartext would leak the API key on the wire to an off-box wiretap); a
+        // PRIVATE/LOOPBACK host (a local Ollama / vLLM / LM Studio on `localhost`, `127.0.0.1`,
+        // RFC-1918, or a Tailscale CGNAT address) MAY use plain `http://` — local models rarely
+        // terminate TLS and there is no off-box hop to wiretap. So `http://localhost:11434` and
+        // `http://10.0.0.5:8000` validate with NO flag, while `http://api.example.com` is rejected.
+        // The allow-overrides for THIS provider: the union of its own `allow_metadata_hosts` and the
+        // global `security.allow_metadata_hosts`. A host on the denylist is unblocked iff it appears
+        // in this union (or `allow_all_metadata` is set). Built once and passed to both the base_url
+        // and the path-override SSRF checks below so the two reason over the identical carve-out set.
+        reject_cidr_metadata_entries(
+            &format!("provider '{provider_name}' allow_metadata_hosts"),
+            &provider_cfg.allow_metadata_hosts,
+            errors,
+        );
+        let allow_overrides: Vec<String> = provider_cfg
+            .allow_metadata_hosts
+            .iter()
+            .chain(cfg.allow_metadata_hosts.iter())
+            .cloned()
+            .collect();
+
+        let base_url = &provider_cfg.base_url;
+        let host_for_scheme = extract_normalized_host(base_url);
+        let host_is_local = host_for_scheme
+            .as_deref()
+            .map(host_is_private_or_loopback)
+            .unwrap_or(false);
+        // Case-INSENSITIVE scheme check (RFC 3986 §3.1) — a raw `starts_with("https://")` rejected
+        // the valid uppercase spelling reqwest would accept, and diverged from the webhook guard's
+        // `scheme_is`.
+        let scheme_ok = is_env_placeholder(base_url)
+            || scheme_is(base_url, "https")
+            || (host_is_local && scheme_is(base_url, "http"));
+        if !scheme_ok {
+            errors.push(if scheme_is(base_url, "http") {
+                // An http:// scheme that failed the check ⇒ the host is public (or unparseable):
+                // plaintext to a public host would leak the key.
+                format!(
+                    "provider '{}' base_url must use https for a public host (got '{}'); plaintext http is permitted only for a private/loopback local-model upstream",
+                    provider_name, base_url
+                )
+            } else {
+                format!(
+                    "provider '{}' base_url must use http or https (got '{}')",
+                    provider_name, base_url
+                )
+            });
+        } else if let Some(host) = ssrf_blocked_host(
+            base_url,
+            &allow_overrides,
+            cfg.allow_all_metadata,
+            &cfg.blocked_metadata_hosts,
+        ) {
+            // SSRF — block the cloud-metadata DENYLIST (hardcoded + operator additions). A passing
+            // scheme alone does not stop SSRF: `https://169.254.169.254/`, `http://100.100.100.200/`,
+            // `https://metadata.google.internal/`, etc. point busbar's key-bearing traffic at a
+            // credential-leaking metadata service. Everything NOT on the denylist (loopback, RFC-1918,
+            // CGNAT, public) is allowed — so local models just work. The three escape hatches (this
+            // provider's `allow_metadata_hosts`, the global `security.allow_metadata_hosts`, and the
+            // nuclear `security.allow_all_metadata`) carve exceptions (then `ssrf_blocked_host`
+            // returns None).
+            errors.push(format!(
+                "provider '{}' base_url '{}' targets a blocked cloud-metadata host '{}' (cloud-metadata/IMDS endpoints are denied; to override add the host to this provider's allow_metadata_hosts, or security.allow_metadata_hosts to unblock it for all providers, or set security.allow_all_metadata: true to disable the guard entirely — and security.blocked_metadata_hosts extends the denylist)",
+                provider_name, base_url, host
+            ));
+        }
+
+        // The `path` override is appended to `base_url` VERBATIM at request time
+        // (`format!("{base}{wire_path}")` in proxy engine), and the composed string is then parsed by
+        // reqwest's `url` crate to choose the connect host. base_url validation alone is therefore
+        // NOT sufficient: a `path` that does not begin with `/` FUSES into the authority — e.g.
+        // base_url `https://api.openai.com` + path `.evil.com/v1` yields
+        // `https://api.openai.com.evil.com/v1`, whose host is `api.openai.com.evil.com`, redirecting
+        // the lane's signed (API-key-bearing) traffic to an attacker host (credential-relay SSRF).
+        // Likewise a `path` smuggling a `@` / `//` / `\` could re-home the authority. Defend in two
+        // layers: (1) require a leading `/` so the override can only ever extend the PATH, never the
+        // authority; (2) re-run the COMPOSED url through the same ssrf_blocked_host guard so any host
+        // it could still introduce is caught with the identical internal/metadata block set as
+        // base_url. (The composed string is only checked when base_url is itself an accepted https
+        // URL — a bad base_url already errors above.)
+        if let Some(path) = &provider_cfg.path {
+            if !path.starts_with('/') {
+                errors.push(format!(
+                    "provider '{}' path '{}' must begin with '/': a path override is appended to base_url verbatim, so a path that does not start with '/' fuses into the host (e.g. base_url + '{}') and can redirect signed traffic to an attacker-controlled host",
+                    provider_name, path, path
+                ));
+            } else if scheme_ok {
+                let composed = format!("{}{}", provider_cfg.base_url, path);
+                if let Some(host) = ssrf_blocked_host(
+                    &composed,
+                    &allow_overrides,
+                    cfg.allow_all_metadata,
+                    &cfg.blocked_metadata_hosts,
+                ) {
+                    errors.push(format!(
+                        "provider '{}' base_url+path '{}' targets a blocked cloud-metadata host '{}' (cloud-metadata/IMDS endpoints are denied; to override add the host to this provider's allow_metadata_hosts, or security.allow_metadata_hosts, or set security.allow_all_metadata: true)",
+                        provider_name, composed, host
+                    ));
+                }
+            }
+        }
+        // Same guards for `path_base` (the URL-model base override, e.g. Vertex): it is prepended to
+        // the per-request `/{model}:verb` and appended to base_url, so it must begin with '/' and the
+        // composed host must not be a blocked metadata endpoint.
+        if let Some(path_base) = &provider_cfg.path_base {
+            if !path_base.starts_with('/') {
+                errors.push(format!(
+                    "provider '{}' path_base '{}' must begin with '/': it is appended to base_url verbatim, so a value that does not start with '/' fuses into the host and can redirect signed traffic to an attacker-controlled host",
+                    provider_name, path_base
+                ));
+            } else if scheme_ok {
+                let composed = format!("{}{}", provider_cfg.base_url, path_base);
+                if let Some(host) = ssrf_blocked_host(
+                    &composed,
+                    &allow_overrides,
+                    cfg.allow_all_metadata,
+                    &cfg.blocked_metadata_hosts,
+                ) {
+                    errors.push(format!(
+                        "provider '{}' base_url+path_base '{}' targets a blocked cloud-metadata host '{}' (cloud-metadata/IMDS endpoints are denied; to override add the host to this provider's allow_metadata_hosts, or security.allow_metadata_hosts, or set security.allow_all_metadata: true)",
+                        provider_name, composed, host
+                    ));
+                }
+            }
+        }
+        // `oauth-client-credentials` needs a token endpoint + scope to run the exchange; without them
+        // a lane would boot but never mint a token (every request 401s). Fail at validate time. The
+        // token_url carries the client_secret, so it must be https for a public host (loopback/private
+        // may use http, mirroring base_url).
+        if matches!(
+            provider_cfg.auth,
+            Some(crate::config::ProviderAuth::OAuthClientCredentials)
+        ) {
+            if provider_cfg
+                .token_url
+                .as_deref()
+                .unwrap_or("")
+                .trim()
+                .is_empty()
+            {
+                errors.push(format!(
+                    "provider '{}' uses auth: oauth-client-credentials but has no `token_url` (the OAuth token endpoint the client credentials are POSTed to)",
+                    provider_name
+                ));
+            } else if let Some(tu) = &provider_cfg.token_url {
+                // token_url carries the client secret in the POST body, so it gets the SAME two guards
+                // as base_url — not a lone scheme check: (1) case-INSENSITIVE https requirement (http
+                // permitted only for a private/loopback token endpoint; a raw `starts_with("http://")`
+                // let `HTTPS://`/scheme-less/`FTP://` bypass it, the exact base_url bug this mirrors),
+                // and (2) the SSRF/metadata denylist — an operator typo/template pointing token_url at
+                // IMDS or metadata.google.internal would POST the client secret straight to it.
+                let host_private = extract_normalized_host(tu)
+                    .as_deref()
+                    .map(host_is_private_or_loopback)
+                    .unwrap_or(false);
+                let tu_scheme_ok = is_env_placeholder(tu)
+                    || scheme_is(tu, "https")
+                    || (host_private && scheme_is(tu, "http"));
+                if !tu_scheme_ok {
+                    errors.push(if scheme_is(tu, "http") {
+                        format!(
+                            "provider '{}' token_url must use https for a public host (got '{}'); it carries the client secret, so plaintext http is permitted only for a private/loopback token endpoint",
+                            provider_name, tu
+                        )
+                    } else {
+                        format!(
+                            "provider '{}' token_url must use http or https (got '{}')",
+                            provider_name, tu
+                        )
+                    });
+                } else if let Some(host) = ssrf_blocked_host(
+                    tu,
+                    &allow_overrides,
+                    cfg.allow_all_metadata,
+                    &cfg.blocked_metadata_hosts,
+                ) {
+                    errors.push(format!(
+                        "provider '{}' token_url '{}' targets a blocked cloud-metadata host '{}' (the client secret is POSTed there; cloud-metadata/IMDS endpoints are denied — override via this provider's allow_metadata_hosts, security.allow_metadata_hosts, or security.allow_all_metadata)",
+                        provider_name, tu, host
+                    ));
+                }
+            }
+            if provider_cfg
+                .scope
+                .as_deref()
+                .unwrap_or("")
+                .trim()
+                .is_empty()
+            {
+                errors.push(format!(
+                    "provider '{}' uses auth: oauth-client-credentials but has no `scope`",
+                    provider_name
+                ));
+            }
+            // Dry-run credential-format check (parity with jwt-bearer below): the `client_id:client_secret`
+            // colon-split lives only in `build()`, which `--validate` never reaches, so a malformed
+            // credential otherwise passes validate and fails at boot/apply. Check it here when the env var
+            // resolves (an unset var can't be validated — caught at boot).
+            let cred = crate::config::secret::resolve_builtin_string(&provider_cfg.api_key)
+                .unwrap_or_default();
+            if !cred.trim().is_empty() {
+                if let Err(e) =
+                    crate::egress_auth::oauth_client_credentials::validate_credential(&cred)
+                {
+                    errors.push(format!(
+                        "provider '{provider_name}' oauth-client-credentials credential (from {}) is invalid: {e}",
+                        provider_cfg.api_key.describe()
+                    ));
+                }
+            }
+        }
+
+        // jwt-bearer: dry-run key validation. `build()` (SA-JSON parse + PKCS#8 key check + token_uri
+        // SSRF) does NOT run on the `--validate` path, so a malformed credential otherwise surfaces only
+        // at boot/apply. Validate it here IF the credential env var is actually set (an unset var can't
+        // be validated — it is checked at boot, where unset is a hard error).
+        if matches!(
+            provider_cfg.auth,
+            Some(crate::config::ProviderAuth::JwtBearer)
+        ) {
+            let cred = crate::config::secret::resolve_builtin_string(&provider_cfg.api_key)
+                .unwrap_or_default();
+            if !cred.trim().is_empty() {
+                // Pass the SAME operator metadata posture the boot path threads into jwt_bearer::build,
+                // so the token_uri SSRF check is identical at validate and apply time.
+                let ssrf = crate::egress_auth::MetadataSsrfPolicy {
+                    allow_overrides: &allow_overrides,
+                    allow_all: cfg.allow_all_metadata,
+                    blocked_hosts: &cfg.blocked_metadata_hosts,
+                };
+                if let Err(e) = crate::egress_auth::jwt_bearer::validate_credential(&cred, &ssrf) {
+                    errors.push(format!(
+                        "provider '{provider_name}' jwt-bearer credential (from {}) is invalid: {e}",
+                        provider_cfg.api_key.describe()
+                    ));
+                }
+            }
+        }
+    }
+}
 
 /// The provider-protocol arm of `validate`, PARAMETERISED on the known-protocol set — by argument
 /// rather than by feature-gating the registry, because a feature that empties the registry would be

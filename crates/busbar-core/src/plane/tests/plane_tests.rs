@@ -264,6 +264,15 @@ fn sole_wire_format_answers_exactly_when_a_plane_speaks_one() {
             p.wire_format_names().len(),
             "{p:?}'s count must be DERIVED from its name list, never a second literal"
         );
+        // D5 NOTE, for whoever extracts the last dialect: this asserts the LLM plane's list is
+        // non-empty, i.e. that the zero-dialect case is unreachable IN THIS BUILD — the same
+        // statement `registry_tests::the_derived_protocol_list_is_not_empty` makes one layer down,
+        // and it will go red in the zero-protocol build the deletion gate constructs. That is
+        // correct for a build that ships protocols and is not a claim about the zero case; the zero
+        // case is pinned separately by
+        // `the_llm_planes_dialects_are_the_registrys_so_an_empty_registry_empties_the_plane` and
+        // `a_plane_with_zero_wire_formats_is_labelless_and_irless_by_decision`. When the last
+        // dialect leaves core, this line becomes "every MOUNTED plane", not a deletion.
         assert!(
             !p.wire_format_names().is_empty(),
             "{p:?} claims no wire format at all, which is not a plane"
@@ -499,4 +508,61 @@ fn a_plane_with_zero_wire_formats_is_labelless_and_irless_by_decision() {
     assert_eq!(Plane::sole_of(&["jsonrpc"]), Some("jsonrpc"));
     assert_eq!(Plane::sole_of(&["a", "b"]), None);
     assert!(Plane::superset_of(2));
+}
+
+/// **D5's SECOND READER — the LLM plane's dialect list IS the registry's, so the empty case is the
+/// registry's empty case and not a hypothetical.**
+///
+/// `plane/mod.rs`'s `Plane::Llm => crate::proto::known_protocols()` is the other reader of the list
+/// `config_validate` refuses on, and
+/// [`a_plane_with_zero_wire_formats_is_labelless_and_irless_by_decision`] pins what the derivations
+/// answer on zero. What neither pins is the JOIN: that the plane's list is the REGISTRY'S list, so
+/// that "the registry can be empty" and "zero dialects answers None/false" are two halves of one
+/// sentence. Re-hardcode the LLM arm to a literal dialect list and the zero case becomes
+/// unreachable through this plane while both existing tests stay green — the second reader's
+/// version of the same trap.
+///
+/// AUDIT NOTE, recorded here because this is where anyone will look. On this tree
+/// `sole_wire_format()` and `has_superset_ir()` have NO production consumer at all (they are read
+/// by these tests and cited in `transport.rs` / `ingress` / `plane::observe` prose); the production
+/// readers of `wire_format_names()` are `a2a::serve::servable_bindings` (the A2A plane's own list)
+/// and `Ingress::shaping_wire_format` (`Ingress::Mounted` only — and the LLM plane is the RESIDUAL,
+/// never mounted). So an empty LLM list cannot produce a wrong answer on any request path today:
+/// the hazard here is a rule going quietly vacuous, not a live fail-open. It is pinned rather than
+/// fixed because `None`/`false` are the right answers for a plane with no dialect.
+#[test]
+fn the_llm_planes_dialects_are_the_registrys_so_an_empty_registry_empties_the_plane() {
+    // BY IDENTITY, not by contents, and the difference is the whole assertion. This test was
+    // watched against a mutation that replaced the registry read with a literal spelling today's
+    // six dialects: an `assert_eq!` on CONTENTS passed it — the vacuous shape, in the test written
+    // to catch the vacuous shape. `ptr::eq` does not: a restated list is a different slice however
+    // it is spelled, so the only way to satisfy this is to actually read the registry.
+    assert!(
+        std::ptr::eq(
+            Plane::Llm.wire_format_names(),
+            crate::proto::known_protocols()
+        ),
+        "the LLM plane must READ the registry, not restate it: a second literal is how the plane \
+         keeps claiming dialects a build no longer compiles in (got {:?} vs {:?})",
+        Plane::Llm.wire_format_names(),
+        crate::proto::known_protocols()
+    );
+
+    // The registry's own empty state (its boot path, nothing installed and nothing built in — see
+    // `registry_tests::a_registry_with_no_declarations_reports_no_protocols_at_all`) driven through
+    // the plane's derivations. This is the zero-dialect LLM plane, one step short of the process
+    // boot proof that the last dialect extraction owes.
+    let empty =
+        crate::proto::registry::Registry::new(crate::proto::registry::merged_boot_decls(&[], &[]));
+    let names: &'static [&'static str] = empty.codec_protocols();
+    assert!(names.is_empty(), "premise: no declarations, no dialects");
+    assert_eq!(
+        Plane::sole_of(names),
+        None,
+        "a plane with no dialect has nothing to label a request with"
+    );
+    assert!(
+        !Plane::superset_of(names.len()),
+        "zero dialects have earned no superset IR (the threshold is two)"
+    );
 }

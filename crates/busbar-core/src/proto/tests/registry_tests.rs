@@ -464,3 +464,46 @@ fn two_declarations_of_one_name_refuse_to_boot() {
     static B: ProtocolDecl = named_decl("dup");
     let _ = Registry::new([&A, &B]);
 }
+
+/// **D5 — THE EMPTY REGISTRY IS CONSTRUCTIBLE, AND THIS IS THE PROOF IT IS NOT A STRAW MAN.**
+///
+/// [`the_derived_protocol_list_is_not_empty`] above asserts the shipped build's list is non-empty —
+/// i.e. that `config_validate`'s empty-list refusal arm is UNREACHABLE TODAY. Left alone that is
+/// exactly the shape the sign-off audit calls the breaker disease: a refusal whose input the suite
+/// asserts can never occur, so the refusal is never watched to fire and the tests that "cover" it
+/// prove nothing.
+///
+/// The two statements are both true and they are not in tension, and this test is what makes that
+/// legible: TODAY's built-in table has six codecs, and the registry's OWN BOOT PATH
+/// ([`merged_boot_decls`] + [`Registry::new`], the exact pair the process `OnceLock` runs) yields
+/// an EMPTY codec-protocol list when it is handed nothing — which is what a build with every
+/// protocol crate's dependency edge removed hands it, and what step 5's deletion gate constructs on
+/// purpose. So the empty set the validator refuses is a set this registry produces, not a slice a
+/// test invented.
+///
+/// WHAT IS STILL OWED: the process registry is a `OnceLock` over a non-empty `BUILTIN_DECLS`, so
+/// `known_protocols()` itself cannot be driven empty IN THIS PROCESS until the last dialect leaves
+/// core. This test is the closest honest proof available before that lands; the boot-proof belongs
+/// to the last extraction.
+#[test]
+fn a_registry_with_no_declarations_reports_no_protocols_at_all() {
+    // The boot fold with nothing installed AND nothing built in — a build with every protocol edge
+    // removed. Not a hand-written empty slice: the function the process registry initializes with.
+    let decls = crate::proto::registry::merged_boot_decls(&[], &[]);
+    assert!(decls.is_empty(), "no declarations in, no declarations out");
+
+    let empty = Registry::new(decls);
+    assert!(
+        empty.codec_protocols().is_empty(),
+        "a registry that declares no protocol must report no protocol — this is the input \
+         `config_validate`'s refusal arm and `Plane::sole_of`'s zero arm exist for"
+    );
+    assert!(empty.decls().is_empty());
+    assert!(empty.head_keys().is_empty());
+    assert!(empty.streaming_content_types().is_empty());
+    assert!(empty.array_stream_shim_keys().is_empty());
+    assert!(
+        empty.decl("anthropic").is_none(),
+        "an empty registry resolves NO name — including one the built-ins declare today"
+    );
+}
