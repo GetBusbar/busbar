@@ -344,6 +344,7 @@ name = "busbar-api"
 version = "1.5.0"
 dependencies = [
  "async-trait",
+ "futures-core",
  "hex",
  "serde",
  "serde_json",
@@ -466,7 +467,10 @@ dependencies = [
 name = "busbar-plane-example"
 version = "1.6.0"
 dependencies = [
+ "async-trait",
  "busbar-api",
+ "futures-core",
+ "tokio",
 ]
 
 [[package]]

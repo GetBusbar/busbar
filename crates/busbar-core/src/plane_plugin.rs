@@ -26,8 +26,8 @@
 //! store defaults. Wiring it to the audit chain is the follow-on unit.
 
 use busbar_api::plane::{
-    PlaneAuth, PlaneClock, PlaneCtx, PlaneDecl, PlaneError, PlaneJournal, PlaneMethod,
-    PlaneRequest, PlaneResponse,
+    ChainVerdict, PlaneAuth, PlaneBody, PlaneClock, PlaneCtx, PlaneDecl, PlaneError, PlaneJournal,
+    PlaneMethod, PlaneMetrics, PlaneRequest, PlaneResponse, RatifiedRoute,
 };
 use std::sync::Arc;
 
@@ -101,41 +101,73 @@ impl PlaneJournal for CoreJournal {
             "plane journal is not wired to the audit chain in this build",
         ))
     }
+    fn verify(&self, _subject: &str) -> Result<ChainVerdict, PlaneError> {
+        Err(PlaneError::new(
+            "unavailable",
+            "plane journal is not wired to the audit chain in this build",
+        ))
+    }
 }
 
-/// PLANE ROUTES RATIFIED AS UNAUTHENTICATED — the reviewed act, core-side.
+/// Telemetry, kind-stamped by core. Unwired in this slice like the journal, but a NO-OP rather than
+/// a refusal — dropping a metric degrades observability, where dropping a durable record silently
+/// loses evidence. The asymmetry is deliberate and is the reason they are two capabilities.
+struct CoreMetrics;
+impl PlaneMetrics for CoreMetrics {
+    fn counter(&self, _name: &str, _value: u64, _labels: &[(&str, &str)]) {}
+    fn histogram(&self, _name: &str, _value: f64, _labels: &[(&str, &str)]) {}
+}
+
+/// PLANE ROUTES CORE HAS RATIFIED — the reviewed act, core-side.
 ///
-/// Empty today, and its emptiness is the point. A route mounted `RouteAuth::None` answers everyone,
-/// so opening one must be a deliberate decision recorded HERE, in core, where it is reviewable —
-/// never a self-report a plugin makes about itself. The eventual real entry is MCP's RFC 9728
-/// protected-resource metadata document, which a caller with no token must be able to read because
-/// that caller is the entire population the document exists for.
-const RATIFIED_PUBLIC_PLANE_ROUTES: &[&str] = &[];
+/// Empty today, and its emptiness is the point. A route that does not go through core's auth chain
+/// answers on terms core did not set, so opening one must be a deliberate decision recorded HERE,
+/// where it is reviewable — never a self-report a plugin makes about itself.
+///
+/// BY PATTERN, NOT BY LITERAL PATH, and that is a v2 change the first migration forced: MCP's RFC
+/// 9728 metadata document sits under the operator's `canonical_uri`, so core cannot know the exact
+/// string until it has read YAML. Each entry still names ONE plane, ONE path shape and ONE bar, and
+/// the wildcard cannot cross a `/` — see `RatifiedRoute::ratifies`.
+///
+/// The two entries this will eventually hold, named so the next reader knows what belongs here:
+/// MCP's metadata document at `PlaneAuth::None` (its audience is by definition tokenless), and
+/// A2A's push callback at `PlaneAuth::PlaneVerified` (busbar minted the per-task HMAC capability the
+/// plane verifies in constant time). Neither is added until its migration lands with the evidence.
+const RATIFIED_PLANE_ROUTES: &[RatifiedRoute] = &[];
 
 /// Translate a declared [`PlaneAuth`] into the loader's route-auth vocabulary core's router already
-/// enforces. One conversion, in one place: a plane's declared bar and the bar the middleware
-/// applies cannot drift because there is no second statement of the mapping.
+/// enforces. One conversion, in one place: a plane's declared bar and the bar the middleware applies
+/// cannot drift because there is no second statement of the mapping.
 ///
 /// **A PLANE MAY NOT LOWER ITS OWN BAR.** `plugin_routes::confine` already refuses to let a plugin's
-/// self-report place a route outside its namespace; this is the same rule on the other axis, and the
-/// PoC discovered it the honest way — the example plane declared an unauthenticated route and core's
-/// plane-boundary ratchet (`auth/tests/tests.rs`'s `DECLARED_PUBLIC`) failed the build. A declared
-/// `None` that core has not ratified is raised to `Key`, loudly. Failing CLOSED (raising the bar)
-/// rather than refusing the mount keeps a misdeclared route from silently disappearing, which would
-/// be the harder failure to diagnose.
-fn route_auth_of(auth: PlaneAuth, path: &str) -> busbar_plugin_loader::RouteAuth {
+/// self-report place a route outside its namespace; this is the same rule on the admission axis, and
+/// the PoC discovered it the honest way — the example plane declared an unauthenticated route and
+/// core's plane-boundary ratchet (`auth/tests/tests.rs`'s `DECLARED_PUBLIC`) failed the build.
+///
+/// A bar that leaves core's auth chain (`None` or `PlaneVerified`) and that core has not ratified is
+/// RAISED to `Key`, loudly. Failing CLOSED — raising the bar rather than refusing the mount — keeps
+/// a misdeclared route from silently disappearing, which is the harder failure to diagnose.
+fn route_auth_of(plane: &str, auth: PlaneAuth, path: &str) -> busbar_plugin_loader::RouteAuth {
+    if auth.requires_ratification()
+        && !RATIFIED_PLANE_ROUTES
+            .iter()
+            .any(|r| r.ratifies(plane, path, auth))
+    {
+        tracing::warn!(
+            plane,
+            path,
+            ?auth,
+            "plane declared a bar outside core's auth chain that core has not ratified; \
+             serving it behind the data-plane bar instead"
+        );
+        return busbar_plugin_loader::RouteAuth::Key;
+    }
     match auth {
-        PlaneAuth::None if RATIFIED_PUBLIC_PLANE_ROUTES.contains(&path) => {
-            busbar_plugin_loader::RouteAuth::None
-        }
-        PlaneAuth::None => {
-            tracing::warn!(
-                path,
-                "plane declared an unauthenticated route that core has not ratified; \
-                 serving it behind the data-plane bar instead"
-            );
-            busbar_plugin_loader::RouteAuth::Key
-        }
+        PlaneAuth::None => busbar_plugin_loader::RouteAuth::None,
+        // A ratified self-verifying route is admitted WITHOUT core's chain, because the whole point
+        // is that core cannot judge the credential — it did not issue it as an identity. The
+        // ratification entry is what makes that a reviewed decision rather than a plugin's claim.
+        PlaneAuth::PlaneVerified => busbar_plugin_loader::RouteAuth::None,
         PlaneAuth::Key => busbar_plugin_loader::RouteAuth::Key,
         PlaneAuth::Admin => busbar_plugin_loader::RouteAuth::Admin,
     }
@@ -152,8 +184,16 @@ fn route_method_of(method: PlaneMethod) -> busbar_plugin_loader::RouteMethod {
 }
 
 /// Build the context granted to a plane for one request.
+///
+/// The GRANT LIST IS HERE, and reading it is how you audit what a plane can reach. This slice grants
+/// the clock and metrics unconditionally and the journal explicitly; the remaining capabilities
+/// (tasks, call log, quarantine, approvals, governance, egress, catalogue, secrets) are NOT granted
+/// until a migration justifies each one, because a capability nobody asked for is a capability
+/// nobody reviewed.
 fn ctx_for(config: Arc<str>) -> PlaneCtx {
-    PlaneCtx::new(config, Arc::new(CoreClock), Arc::new(CoreJournal))
+    PlaneCtx::builder(config, Arc::new(CoreClock), Arc::new(CoreMetrics))
+        .with_journal(Arc::new(CoreJournal))
+        .build()
 }
 
 /// The same context the mount grants, for a test that drives a plane directly.
@@ -170,19 +210,22 @@ pub(crate) fn test_ctx(config: Arc<str>) -> PlaneCtx {
 pub(crate) fn mounted_paths_for(
     decl: &'static PlaneDecl,
     section: Option<Arc<str>>,
-) -> Vec<&'static str> {
+) -> Vec<String> {
     // No section ⇒ the plane is off. Declared, not mounted.
-    if section.is_none() || decl.handler.is_none() {
+    let Some(config) = section else {
+        return Vec::new();
+    };
+    if decl.handler.is_none() {
         return Vec::new();
     }
-    decl.routes
-        .iter()
-        // A streaming route cannot be served through the unary adapter. Refusing beats buffering
-        // silently: a quietly-buffered stream looks correct in a test and hangs a client in
-        // production.
-        .filter(|r| !r.streaming)
-        .map(|r| r.path)
-        .collect()
+    // ROUTES ARE DERIVED FROM THE CONFIG. A plane's paths may depend on operator text (MCP's
+    // metadata document sits under `canonical_uri`), so the table cannot be read off a constant.
+    //
+    // Streaming routes ARE mounted now: v1 filtered them out, which meant a plane declaring one
+    // honestly served nothing. Core relays a `PlaneBody::Stream` when the plane is LINKED; the
+    // linked-only consequence is carried by `PlaneDecl::requires_linking`, checked at LOAD time,
+    // rather than by silently dropping the route at mount time.
+    (decl.routes)(&config).into_iter().map(|r| r.path).collect()
 }
 
 /// The header names forwarded to a plane. A BOUNDED ALLOWLIST, never the raw header map: core
@@ -225,7 +268,20 @@ pub(crate) fn to_axum_response(out: Result<PlaneResponse, PlaneError>) -> axum::
         Ok(r) => {
             let status = axum::http::StatusCode::from_u16(r.status)
                 .unwrap_or(axum::http::StatusCode::INTERNAL_SERVER_ERROR);
-            let mut resp = (status, r.body).into_response();
+            // THE STREAMING ARM. A `PlaneBody::Stream` is relayed chunk by chunk, which is what
+            // makes MCP's `subscriptions/listen` and A2A's relay expressible at all — v1 could only
+            // buffer, so an unbounded subscription would have been held in memory forever.
+            let mut resp = match r.body {
+                PlaneBody::Unary(bytes) => (status, bytes).into_response(),
+                PlaneBody::Stream(stream) => {
+                    let mapped = futures::StreamExt::map(stream, |chunk| {
+                        chunk
+                            .map(axum::body::Bytes::from)
+                            .map_err(|e| std::io::Error::other(e.to_string()))
+                    });
+                    (status, axum::body::Body::from_stream(mapped)).into_response()
+                }
+            };
             for (k, v) in r.headers {
                 if let (Ok(name), Ok(value)) = (
                     axum::http::HeaderName::try_from(k.as_str()),
@@ -259,22 +315,20 @@ pub(crate) fn mount_plane_routes(
         let section = section_for(decl);
         // ONE statement of the mounting rule, read here and asserted by the tests.
         let mounted = mounted_paths_for(decl, section.clone());
-        for route in decl.routes.iter().filter(|r| r.streaming) {
-            tracing::error!(
-                plane = decl.key,
-                path = route.path,
-                "plane declares a streaming route; the unary mount cannot serve it"
-            );
-        }
         let (Some(config), Some(handler)) = (section, decl.handler) else {
             continue;
         };
-        for route in decl.routes.iter().filter(|r| mounted.contains(&r.path)) {
+        for route in (decl.routes)(&config)
+            .into_iter()
+            .filter(|r| mounted.contains(&r.path))
+        {
             let config = Arc::clone(&config);
+            let plane = decl.key;
+            let auth = route_auth_of(plane, route.auth, &route.path);
             router = router.route(
-                route.path,
+                route.path.clone(),
                 route_method_of(route.method),
-                route_auth_of(route.auth, route.path),
+                auth,
                 move |method: axum::http::Method,
                       uri: axum::http::Uri,
                       headers: axum::http::HeaderMap,
@@ -282,7 +336,7 @@ pub(crate) fn mount_plane_routes(
                     let config = Arc::clone(&config);
                     async move {
                         let req = to_plane_request(&method, &uri, &headers, body).await;
-                        to_axum_response(handler.serve(&ctx_for(config), &req))
+                        to_axum_response(handler.serve(&ctx_for(config), &req).await)
                     }
                 },
             );

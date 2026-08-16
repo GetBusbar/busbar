@@ -54,3 +54,7 @@ pub use store::{
     StoreResult, TaskEventRow, TaskRow, TierTokens, TierTokensDelta, UsageDelta, UsageLedger,
     VirtualKey,
 };
+
+#[cfg(test)]
+#[path = "tests/marshal_cost_tests.rs"]
+mod marshal_cost_tests;

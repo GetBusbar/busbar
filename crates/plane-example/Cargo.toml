@@ -23,3 +23,14 @@ license = "Apache-2.0"
 # THE ONLY BUSBAR CRATE THIS PLANE MAY NAME. If a second one ever appears here, the crate has
 # stopped being a plugin and the plane ABI has a hole this manifest is the first place to see it.
 busbar-api = { path = "../api" }
+# The plane handler is async (a real plane does governed upstream round trips per request), so a
+# plane crate needs the same attribute macro the trait is declared with. Nothing else.
+async-trait = { workspace = true }
+futures-core = { workspace = true }
+
+[dev-dependencies]
+# The handler is async, so the plugin's OWN tests need an executor. A plugin picking its own runtime
+# here — rather than the ABI dictating one — is the point: `busbar-api` depends on `futures-core`
+# (the Stream trait only), never on tokio, so a plane author is not conscripted onto the engine's
+# runtime by the contract.
+tokio = { workspace = true, features = ["rt", "macros"] }

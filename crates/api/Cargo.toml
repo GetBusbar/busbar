@@ -19,3 +19,8 @@ zeroize = { workspace = true }
 # (nothing declared) path never touches the heap. Already a transitive dependency of the
 # workspace (pulled in via tokio et al.), so this adds no new crate to the tree.
 smallvec = { workspace = true }
+# The `Stream` trait, and nothing else. A plane that serves SSE or a long-lived session must be able
+# to RETURN a stream; expressing that needs the trait. `futures-core` is the trait-only crate (no
+# executor, no combinators, no runtime), so the plugin contract stays runtime-agnostic — a plugin
+# author is not forced onto tokio by the ABI.
+futures-core = { workspace = true }

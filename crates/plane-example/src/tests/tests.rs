@@ -7,6 +7,10 @@
 use super::*;
 use std::sync::Arc;
 
+/// The operator section these tests drive the plane with. Named once, because the route table is
+/// DERIVED from it.
+const CFG: &str = r#"{"greeting":"hei","base":"/example"}"#;
+
 struct FixedClock(u64);
 impl busbar_api::plane::PlaneClock for FixedClock {
     fn now_secs(&self) -> u64 {
@@ -22,14 +26,25 @@ impl busbar_api::plane::PlaneJournal for NoJournal {
     fn read(&self, _subject: &str, _limit: usize) -> Result<Vec<String>, PlaneError> {
         Ok(Vec::new())
     }
+    fn verify(&self, _subject: &str) -> Result<busbar_api::plane::ChainVerdict, PlaneError> {
+        Ok(busbar_api::plane::ChainVerdict::Absent)
+    }
+}
+
+struct NoMetrics;
+impl busbar_api::plane::PlaneMetrics for NoMetrics {
+    fn counter(&self, _n: &str, _v: u64, _l: &[(&str, &str)]) {}
+    fn histogram(&self, _n: &str, _v: f64, _l: &[(&str, &str)]) {}
 }
 
 fn ctx(config: &str) -> PlaneCtx {
-    PlaneCtx::new(
+    PlaneCtx::builder(
         Arc::from(config),
         Arc::new(FixedClock(1_700_000_000)),
-        Arc::new(NoJournal),
+        Arc::new(NoMetrics),
     )
+    .with_journal(Arc::new(NoJournal))
+    .build()
 }
 
 fn get(path: &str) -> PlaneRequest {
@@ -44,15 +59,16 @@ fn get(path: &str) -> PlaneRequest {
 
 /// THE PROPERTY THIS CRATE EXISTS TO SHOW: the config section is parsed into a type core does not
 /// know, and the answer reflects the operator's text. Core carried the bytes and named nothing.
-#[test]
-fn the_typed_config_section_is_parsed_by_the_plane_not_by_core() {
+#[tokio::test]
+async fn the_typed_config_section_is_parsed_by_the_plane_not_by_core() {
     let out = DECL
         .handler
         .unwrap()
-        .serve(&ctx(r#"{"greeting":"hei"}"#), &get("/example/hello"))
+        .serve(&ctx(CFG), &get("/example/hello"))
+        .await
         .expect("hello serves");
     assert_eq!(out.status, 200);
-    let body = String::from_utf8(out.body).unwrap();
+    let body = String::from_utf8(out.body.as_unary().expect("hello is unary").to_vec()).unwrap();
     // The operator's word, round-tripped through an opaque-text seam.
     assert!(body.contains("\"greeting\":\"hei\""), "body was {body}");
     // The clock came from the granted capability, not from a core module path.
@@ -61,12 +77,13 @@ fn the_typed_config_section_is_parsed_by_the_plane_not_by_core() {
 
 /// A section the operator got wrong is a REFUSAL, not a default. A plane quietly serving its own
 /// defaults over a misconfigured section is the failure mode a typed section exists to prevent.
-#[test]
-fn a_malformed_config_section_is_refused_rather_than_defaulted() {
+#[tokio::test]
+async fn a_malformed_config_section_is_refused_rather_than_defaulted() {
     let err = DECL
         .handler
         .unwrap()
         .serve(&ctx(r#"{"greetings":"hei"}"#), &get("/example/hello"))
+        .await
         .expect_err("a section with no `greeting` must refuse");
     assert_eq!(err.class, "invalid");
 }
@@ -75,18 +92,16 @@ fn a_malformed_config_section_is_refused_rather_than_defaulted() {
 /// is visible IN THAT TABLE — which is the point of declaring the bar rather than implementing it.
 #[test]
 fn the_declared_routes_carry_their_own_admission_bar() {
-    let hello = DECL
-        .routes
-        .iter()
+    let hello = (DECL.routes)(CFG)
+        .into_iter()
         .find(|r| r.path == "/example/hello")
         .expect("hello is declared");
     assert_eq!(hello.auth, PlaneAuth::None);
-    let echo = DECL
-        .routes
-        .iter()
+    let echo = (DECL.routes)(CFG)
+        .into_iter()
         .find(|r| r.path == "/example/echo")
         .expect("echo is declared");
     assert_eq!(echo.auth, PlaneAuth::Key);
     // Wholly unary ⇒ this plane could be dlopen'd as well as linked.
-    assert!(!DECL.requires_linking());
+    assert!(!DECL.requires_linking(CFG));
 }

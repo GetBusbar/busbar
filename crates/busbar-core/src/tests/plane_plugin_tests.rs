@@ -12,6 +12,11 @@
 use super::*;
 use busbar_plane_example::DECL as EXAMPLE;
 
+/// The operator section every test in this file drives the plane with. Named once, because the
+/// route table is now DERIVED from it and a second spelling would let the mount and the assertions
+/// disagree about what was configured.
+const CFG: &str = r#"{"greeting":"hei","base":"/example"}"#;
+
 /// Install once for the whole test binary — the seam is a `OnceLock` because there is one
 /// composition root, and a test binary is one process.
 fn install_once() {
@@ -19,10 +24,7 @@ fn install_once() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
         crate::plane_plugin::install_plane_plugins(DECLS);
-        crate::plane_plugin::install_plane_config(vec![(
-            "example",
-            std::sync::Arc::from(r#"{"greeting":"hei"}"#),
-        )]);
+        crate::plane_plugin::install_plane_config(vec![("example", std::sync::Arc::from(CFG))]);
     });
 }
 
@@ -38,7 +40,7 @@ fn install_once() {
 async fn a_plane_that_depends_only_on_busbar_api_answers_a_real_request() {
     install_once();
     let handler = EXAMPLE.handler.expect("the example plane serves");
-    let ctx = crate::plane_plugin::test_ctx(std::sync::Arc::from(r#"{"greeting":"hei"}"#));
+    let ctx = crate::plane_plugin::test_ctx(std::sync::Arc::from(CFG));
 
     let req = crate::plane_plugin::to_plane_request(
         &axum::http::Method::GET,
@@ -48,7 +50,7 @@ async fn a_plane_that_depends_only_on_busbar_api_answers_a_real_request() {
     )
     .await;
 
-    let resp = crate::plane_plugin::to_axum_response(handler.serve(&ctx, &req));
+    let resp = crate::plane_plugin::to_axum_response(handler.serve(&ctx, &req).await);
     assert_eq!(resp.status(), axum::http::StatusCode::OK);
     let body = axum::body::to_bytes(resp.into_body(), 64 * 1024)
         .await
@@ -83,9 +85,9 @@ fn core_mounts_exactly_the_routes_the_plane_declared_with_the_bar_it_declared() 
         .collect();
 
     // Every declared route is served...
-    for route in EXAMPLE.routes {
+    for route in (EXAMPLE.routes)(CFG) {
         assert!(
-            served.contains_key(route.path),
+            served.contains_key(&route.path),
             "core did not mount the declared route {}",
             route.path
         );
@@ -99,15 +101,23 @@ fn core_mounts_exactly_the_routes_the_plane_declared_with_the_bar_it_declared() 
     // on the admission axis. Were it absent, any dropped-in crate could open an unauthenticated
     // route on the data plane by declaring one.
     assert_eq!(
-        EXAMPLE
-            .routes
-            .iter()
+        (EXAMPLE.routes)(CFG)
+            .into_iter()
             .find(|r| r.path == "/example/hello")
             .unwrap()
             .auth,
         busbar_api::plane::PlaneAuth::None,
         "the plane asks for an unauthenticated route"
     );
+    // THIS ASSERTION IS THE PRIMARY PIN, and it is deterministic.
+    //
+    // Recorded honestly, because it changed between ABI v1 and v2: under v1 the mutation that
+    // bypasses ratification also reddened core's own `test_mcp_token_is_confined_to_the_mcp_plane`
+    // ratchet. Under v2 it does NOT, and the reason is test ORDERING rather than a weaker property —
+    // that ratchet only observes plane routes if a plane was installed before it built its router,
+    // and installation happens in this file. Production has one composition root at boot, so the
+    // ordering there is deterministic; the cross-test coverage was always incidental. Do not rely on
+    // it. The property is pinned HERE, and this is the assertion that must never be deleted.
     assert_eq!(
         served.get("/example/hello"),
         Some(&busbar_plugin_loader::RouteAuth::Key),
@@ -135,7 +145,6 @@ fn a_plane_with_no_config_section_mounts_nothing() {
     );
     // ...and with the section present, exactly the declared paths appear. Same function, one input
     // changed — so the emptiness above is a decision, not an accident of the fixture.
-    let mounted =
-        crate::plane_plugin::mounted_paths_for(&EXAMPLE, Some(std::sync::Arc::from("{}")));
+    let mounted = crate::plane_plugin::mounted_paths_for(&EXAMPLE, Some(std::sync::Arc::from(CFG)));
     assert_eq!(mounted, vec!["/example/hello", "/example/echo"]);
 }

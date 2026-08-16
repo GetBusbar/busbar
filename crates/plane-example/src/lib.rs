@@ -35,8 +35,20 @@ use busbar_api::plane::{
 /// its own business.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExampleCfg {
-    /// The greeting this plane answers `/example/hello` with.
+    /// The greeting this plane answers `<base>/hello` with.
     pub greeting: String,
+    /// The path prefix this plane mounts under — the stand-in for MCP's operator-set
+    /// `canonical_uri`, and the reason `routes` is a function of the config text.
+    pub base: String,
+}
+
+/// Pull `"key": "value"` out of the section text. Dependency-free on purpose — see `parse`.
+fn extract(text: &str, key: &str) -> Option<String> {
+    let start = text.find(key)?;
+    let rest = &text[start + key.len()..];
+    let after = &rest[rest.find(':')? + 1..];
+    let tail = &after[after.find('"')? + 1..];
+    Some(tail[..tail.find('"')?].to_string())
 }
 
 impl ExampleCfg {
@@ -61,8 +73,12 @@ impl ExampleCfg {
         let close = tail
             .find('"')
             .ok_or_else(|| PlaneError::new("invalid", "example: `greeting` is unterminated"))?;
+        // `base` is optional and defaults, because a plane may reasonably have both required and
+        // defaulted keys; `greeting` above is the required one and its absence is a refusal.
+        let base = extract(text, "\"base\"").unwrap_or_else(|| "/example".to_string());
         Ok(Self {
             greeting: tail[..close].to_string(),
+            base,
         })
     }
 }
@@ -70,34 +86,46 @@ impl ExampleCfg {
 /// The routes this plane serves. Both are unary (`streaming: false`), so this plane is loadable as
 /// well as linkable — [`PlaneDecl::requires_linking`] is `false` for it, and that fact is derived
 /// from this table rather than claimed beside it.
-static ROUTES: &[PlaneRoute] = &[
-    // Unauthenticated on purpose, and this table is where that decision is reviewable. The real
-    // instance of this shape is MCP's RFC 9728 protected-resource metadata document, which a client
-    // must be able to read BEFORE it holds a credential.
-    PlaneRoute {
-        path: "/example/hello",
-        method: PlaneMethod::Get,
-        auth: PlaneAuth::None,
-        streaming: false,
-    },
-    // The data-plane bar. Core runs the auth chain; this plane never sees a request that failed it.
-    PlaneRoute {
-        path: "/example/echo",
-        method: PlaneMethod::Post,
-        auth: PlaneAuth::Key,
-        streaming: false,
-    },
-];
+/// THE ROUTES, DERIVED FROM THE OPERATOR'S CONFIG. A function rather than a constant because a real
+/// plane's paths may depend on the config (MCP's metadata document sits under the operator's
+/// `canonical_uri`); this example exercises the same seam with a `base` key so the derivation is
+/// covered by a test rather than only by MCP's eventual migration.
+fn routes(config: &str) -> Vec<PlaneRoute> {
+    let base = ExampleCfg::parse(config)
+        .map(|c| c.base)
+        .unwrap_or_else(|_| "/example".to_string());
+    vec![
+        // Unauthenticated on purpose, and this table is where that decision is reviewable. The
+        // real instance of this shape is MCP's RFC 9728 metadata document, which a client must read
+        // BEFORE it holds a credential. Core RAISES this to `Key` unless it has ratified it — see
+        // the mount's ratchet.
+        PlaneRoute {
+            path: format!("{base}/hello"),
+            method: PlaneMethod::Get,
+            auth: PlaneAuth::None,
+            streaming: false,
+        },
+        // The data-plane bar. Core runs the auth chain; this plane never sees a request that
+        // failed it.
+        PlaneRoute {
+            path: format!("{base}/echo"),
+            method: PlaneMethod::Post,
+            auth: PlaneAuth::Key,
+            streaming: false,
+        },
+    ]
+}
 
 /// The serving half.
 struct ExamplePlane;
 
+#[async_trait::async_trait]
 impl PlaneHandler for ExamplePlane {
-    fn serve(&self, ctx: &PlaneCtx, req: &PlaneRequest) -> Result<PlaneResponse, PlaneError> {
-        match req.path.as_str() {
-            "/example/hello" => {
-                // The typed section, parsed HERE from the text core handed over.
-                let cfg = ExampleCfg::parse(&ctx.config)?;
+    async fn serve(&self, ctx: &PlaneCtx, req: &PlaneRequest) -> Result<PlaneResponse, PlaneError> {
+        // The typed section, parsed HERE from the text core handed over.
+        let cfg = ExampleCfg::parse(&ctx.config)?;
+        match req.path.strip_prefix(&cfg.base) {
+            Some("/hello") => {
                 // The clock as a granted capability, not a module import.
                 let at = ctx.clock.now_secs();
                 Ok(PlaneResponse::json(
@@ -105,14 +133,14 @@ impl PlaneHandler for ExamplePlane {
                     format!("{{\"greeting\":\"{}\",\"at\":{at}}}", cfg.greeting),
                 ))
             }
-            "/example/echo" => Ok(PlaneResponse::json(200, req.body.clone())),
+            Some("/echo") => Ok(PlaneResponse::json(200, req.body.clone())),
             // Core only dispatches paths this plane declared, so this arm is unreachable through
             // the seam. It is a refusal rather than a panic because "unreachable" is a claim about
             // core's behaviour, and a plugin should not stake its process on another crate's
             // invariant.
-            other => Err(PlaneError::new(
+            _ => Err(PlaneError::new(
                 "invalid",
-                format!("example: no such route {other}"),
+                format!("example: no such route {}", req.path),
             )),
         }
     }
@@ -130,7 +158,8 @@ pub static DECL: PlaneDecl = PlaneDecl {
     subject_noun: "example endpoint",
     audit_kind: "example",
     wire_format_names: || &["example/json"],
-    routes: ROUTES,
+    routes,
+    verified_headers: &[],
     handler: Some(&HANDLER),
 };
 

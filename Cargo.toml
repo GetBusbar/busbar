@@ -94,6 +94,9 @@ criterion = { version = "0.7", default-features = false, features = ["cargo_benc
 ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 futures = "0.3"
+# The `Stream` TRAIT ALONE (no executor, no combinators) — what `busbar-api` needs to express a
+# streaming plane response without taking a runtime dependency into the plugin contract.
+futures-core = "0.3"
 getrandom = "0.3"
 hex = "0.4.3"
 hmac = "0.13.0"
