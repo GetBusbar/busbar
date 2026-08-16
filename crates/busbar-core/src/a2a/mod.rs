@@ -92,6 +92,7 @@ pub(crate) mod pushnotify;
 pub(crate) mod receive;
 pub(crate) mod registry;
 pub(crate) mod relay;
+pub(crate) mod route;
 /// The plane's HTTP+JSON binding — the SECOND wire format, re-framed onto `ingress`'s one sequence.
 pub(crate) mod rest;
 pub(crate) mod rpcerror;
