@@ -220,7 +220,11 @@ impl PlaneBreakers {
     /// (the stdio supervisor's backoff/quarantine, reachable through dispatch only while the core
     /// cell admits). Production has no caller and must never grow one: an operator un-trip is a
     /// remedy decision that belongs to its own surface.
-    #[cfg(test)]
+    ///
+    /// `unix` in the gate, not just `test`: its one caller is `mcp/tests/stdio_dispatch_tests.rs`,
+    /// which is `#![cfg(unix)]` (the fixture spawns a real child process to crash-loop), so on a
+    /// Windows test build this method has no caller at all and `-D warnings` makes that dead code.
+    #[cfg(all(test, unix))]
     pub(crate) fn reset(&self, key: &str) {
         use std::sync::atomic::Ordering;
         let cell = self.health.cell(key, 0);
