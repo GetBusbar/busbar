@@ -165,8 +165,7 @@ pub(super) fn select_member(
                 repeatable: crate::failover::Repeatable::No,
                 operation: method,
             };
-            match crate::failover::walk(breakers.runtime(), &pool_key, &candidates, &attempt, now)
-            {
+            match crate::failover::walk(breakers.runtime(), &pool_key, &candidates, &attempt, now) {
                 Ok(adm) => {
                     let lane = adm.candidate().lane;
                     let chosen = adm.candidate().name.clone();
@@ -204,11 +203,10 @@ pub(super) fn select_member(
                                 .map(|c| breakers.retry_after_secs(&pool_key, c.lane))
                                 .min()
                                 .unwrap_or(1);
-                            selected.walk_refusal =
-                                Some(super::relay::RelayRefusal::BreakerOpen {
-                                    agent_id: pool_name.clone(),
-                                    retry_after_secs,
-                                });
+                            selected.walk_refusal = Some(super::relay::RelayRefusal::BreakerOpen {
+                                agent_id: pool_name.clone(),
+                                retry_after_secs,
+                            });
                         }
                     }
                 }
@@ -258,7 +256,7 @@ pub(super) fn hop_facts<'a>(
         Option<super::creds::OutboundCredential>,
         super::creds::EgressGrant<'a>,
     ),
-    Option<Response>,
+    Option<Box<Response>>,
 > {
     if target == admitted.dispatch.agent_id {
         return Ok((
@@ -279,7 +277,7 @@ pub(super) fn hop_facts<'a>(
                 crate::admin::audit::OUTCOME_REJECTED,
                 actor,
             );
-            Err(Some(
+            Err(Some(Box::new(
                 (
                     axum::http::StatusCode::FORBIDDEN,
                     axum::Json(super::rpcerror::body(
@@ -289,7 +287,7 @@ pub(super) fn hop_facts<'a>(
                     )),
                 )
                     .into_response(),
-            ))
+            )))
         }
     }
 }

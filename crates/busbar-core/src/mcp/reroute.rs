@@ -179,9 +179,9 @@ impl PoolRoute {
                     });
                 let pin = entry.and_then(|e| e.schema_hash.clone());
                 let auth = entry.and_then(|e| {
-                    app.mcp_catalogue.server(member).and_then(|s| {
-                        super::upstream::authorise(s, e, arguments, principal).ok()
-                    })
+                    app.mcp_catalogue
+                        .server(member)
+                        .and_then(|s| super::upstream::authorise(s, e, arguments, principal).ok())
                 });
                 if auth.is_none() {
                     tried.push(lane);
@@ -232,12 +232,14 @@ impl PoolRoute {
 
     /// ADMIT: run the walk and hold the admitted member's probe. The pre-socket gate — a refusal
     /// here cost no token exchange and no socket, and the rendering is the caller's 503.
-    pub(crate) fn admit(&self, breakers: &Arc<PlaneBreakers>) -> Result<(), RouteRefused> {
+    pub(crate) fn admit(&self, breakers: &Arc<PlaneBreakers>) -> Result<(), Box<RouteRefused>> {
         let mut s = lock(&self.state);
         self.select_locked(&mut s, Stage::BeforeFirstByte, breakers)
-            .map_err(|refusal| RouteRefused {
-                refusal,
-                retry_after_secs: self.soonest_retry(breakers),
+            .map_err(|refusal| {
+                Box::new(RouteRefused {
+                    refusal,
+                    retry_after_secs: self.soonest_retry(breakers),
+                })
             })
     }
 
@@ -343,10 +345,7 @@ impl PoolRoute {
                 // RE-ENTER THE ONE WALK. Its safety rule — not this file — decides whether the
                 // failure's stage and the operator's `repeatable:` allow another member; a refusal
                 // keeps the failure the caller was already owed.
-                if self
-                    .select_locked(&mut s, failure.stage, breakers)
-                    .is_err()
-                {
+                if self.select_locked(&mut s, failure.stage, breakers).is_err() {
                     s.pinned = true;
                     return Err(failure.message);
                 }

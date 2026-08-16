@@ -92,9 +92,9 @@ pub(crate) mod pushnotify;
 pub(crate) mod receive;
 pub(crate) mod registry;
 pub(crate) mod relay;
-pub(crate) mod route;
 /// The plane's HTTP+JSON binding — the SECOND wire format, re-framed onto `ingress`'s one sequence.
 pub(crate) mod rest;
+pub(crate) mod route;
 pub(crate) mod rpcerror;
 /// THIS PLANE'S REFUSAL VOCABULARY: `A2aWords`, the total match that gives every refusal
 /// `crate::ingress::protocol` decides a sentence in A2A's own error envelope, plus the three facts

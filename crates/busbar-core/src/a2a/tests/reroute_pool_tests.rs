@@ -227,11 +227,9 @@ async fn an_accepted_task_stays_pinned_to_its_member_and_a_tripped_pin_refuses_t
 
     // (b) Trip B (the pinned member) and ask again: the verb is REFUSED with the breaker's own
     // rendering — and NOT rerouted to A, whose recorder must not move.
-    h.app.plane_breakers.force_open(
-        "agent:planner",
-        1,
-        crate::store::now().saturating_add(600),
-    );
+    h.app
+        .plane_breakers
+        .force_open("agent:planner", 1, crate::store::now().saturating_add(600));
     let a_hits = hits(&h, "backend.agent.test");
     let b_hits = hits(&h, "backend-b.agent.test");
     let (sr, headers, br) = submit(&h, "planner-a", &get).await;
@@ -241,7 +239,11 @@ async fn an_accepted_task_stays_pinned_to_its_member_and_a_tripped_pin_refuses_t
         "the refusal carries Retry-After from the cell's own deadline"
     );
     assert_eq!(hits(&h, "backend.agent.test"), a_hits, "no migration to A");
-    assert_eq!(hits(&h, "backend-b.agent.test"), b_hits, "nothing dispatched");
+    assert_eq!(
+        hits(&h, "backend-b.agent.test"),
+        b_hits,
+        "nothing dispatched"
+    );
     // The task row survives the refusal: a failed READ must not end live work.
     let task = crate::a2a::taskstore::TASKS
         .get_unscoped(&task_id)
