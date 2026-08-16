@@ -27,7 +27,7 @@
 //!    operation in `repeatable:`. No new config, no local override.
 //! 3. **Pinning** — the first round that produces an outcome the loop will not reroute (success,
 //!    or a kept failure) pins the route to that member: the MRTR input-required continuation is a
-//!    conversation with ONE server, and moving it would hand round 2's `requestState` to a peer
+//!    conversation with ONE server, and moving it would hand a later round's `requestState` to a peer
 //!    that never issued it.
 
 use super::upstream::{Authorised, BreakerCell, LegFailure};

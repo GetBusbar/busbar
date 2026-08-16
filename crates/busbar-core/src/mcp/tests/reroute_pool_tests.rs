@@ -5,7 +5,7 @@
 //! (`tool_pools:` → `failover::walk` → `upstream::call`), proven at the same front door as every
 //! other battery in this directory, on OUTPUTS the caller and the two real fake peers can see.
 //!
-//! The claims are the audit's §3.6 pool rows plus the reroute-parity ruling's instrument:
+//! The claims, each an observable behaviour of this plane:
 //!
 //! 1. REROUTE ON TRIP: member A hard-down → the next call gets an answer FROM MEMBER B, with A's
 //!    trip recorded and A untouched on the second call (its own hit counter is the witness).

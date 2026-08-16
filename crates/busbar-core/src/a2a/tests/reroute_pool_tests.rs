@@ -5,7 +5,7 @@
 //! (`agent_pools:` → `failover::walk` in `receive`, ONE selection above the binding axis), proven
 //! through the REAL router against a recording seam fronting two backends.
 //!
-//! The claims are the audit's §3.3 A2A rows plus the reroute-parity ruling's instruments:
+//! The claims, each an observable behaviour of this plane:
 //!
 //! 1. REROUTE ON TRIP: member A hard-down → the next FRESH submission is served by member B, with
 //!    A's trip recorded and A untouched on the second call (the recorder's per-host log is the
@@ -118,7 +118,7 @@ async fn submit(
     )
 }
 
-/// One binding's whole reroute battery — the §1 instrument.
+/// One binding's whole reroute battery — the trip-then-reroute instrument (claim 1 above).
 async fn reroute_battery(h: Harness, submission: serde_json::Value) {
     // SUBMISSION 1 walks to the primary (lane 0), which answers a definitive 401: the hop fails
     // as it always did (busbar-attributed 502), and A's trip lands on the POOL cell at A's lane.

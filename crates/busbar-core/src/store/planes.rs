@@ -59,8 +59,8 @@ pub(crate) struct PlaneBreakers {
     /// lane-global gates index it, and every entry is the same inert placeholder.
     health: HealthState,
     /// The core defaults (ADR-0002): error-rate trip over a 30s window, 15s→120s cooldown backoff.
-    /// Deliberately NOT operator-tunable per `tools:`/`agents:` — the audit's §3.4 keeps that
-    /// absence until someone asks, as `docs/circuit-breaker.md` already discloses.
+    /// Deliberately NOT operator-tunable per `tools:`/`agents:`; that absence stands until
+    /// someone asks, as `docs/circuit-breaker.md` already discloses.
     cfg: BreakerCfg,
 }
 
