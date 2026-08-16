@@ -265,13 +265,54 @@ fi
 printf '== full gate: %d cargo gate(s) + %d script gate(s), %d + %d skipped with reason ==\n\n' \
   "${#CARGO_LOCAL[@]}" "${#RUN[@]}" "${#CARGO_CI_ONLY[@]}" "${#SKIP[@]}"
 
+# ── THE SCRATCH FILE, AND WHY IT IS CHECKED RATHER THAN ASSUMED ───────────────────────────────────
+# `if "$@" >FILE` makes the shell open FILE *before* running the command. If that open fails the
+# command never runs, the `if` takes its else branch, and this script printed FAILED and blamed the
+# gate. On 2026-08-16 a full disk turned that into a report of "8 passed, 35 FAILED" in which every
+# one of the 35 was `No space left on device` on this file, and three gate runs were spent before
+# anyone doubted the number. A gate runner that cannot tell "the gate failed" from "I could not
+# write my own temp file" produces exactly the wrong conclusion under exactly the conditions where
+# a correct one matters most: a red gate is believed, and the believer starts debugging the code.
+#
+# Two changes. The scratch file moves under the repo's own `target/` rather than `/tmp` (one
+# writability domain to reason about instead of two, and it dies with the tree), and an unwritable
+# scratch file is now an INFRASTRUCTURE abort with a distinct exit code, not a gate failure. It
+# aborts rather than continuing because once the disk is full every remaining gate is meaningless
+# too, and 40 more lines of false red is worse than one honest line of stop.
+GATE_TMPDIR="${GATE_TMPDIR:-target/full-gate}"
+mkdir -p "$GATE_TMPDIR" 2>/dev/null || true
+GATE_OUT="$GATE_TMPDIR/out.$$"
+
+gate_scratch_or_die() {
+  # Prove writability by writing, not by testing a permission bit: ENOSPC and a read-only mount both
+  # pass `[ -w ]` on a directory that cannot actually take a byte.
+  if ! : > "$GATE_OUT" 2>/dev/null; then
+    printf '\n'
+    printf 'INFRASTRUCTURE FAILURE, NOT A GATE FAILURE.\n'
+    printf 'Could not write the scratch file: %s\n' "$GATE_OUT"
+    printf 'Nothing below this line was measured. Do not read this run as a red gate.\n'
+    printf 'Most likely the disk is full. Free space:\n'
+    df -h . 2>/dev/null | sed 's/^/  /'
+    printf 'On macOS a local Time Machine snapshot can pin blocks you have already deleted:\n'
+    printf '  tmutil listlocalsnapshots /\n'
+    printf '  tmutil thinlocalsnapshots / 500000000000 4\n'
+    exit 3
+  fi
+}
+gate_scratch_or_die
+
 FAILED=(); PASSED=0
 run_one() {
   local label="$1"; shift
   printf '  %-58s ' "$label"
-  if "$@" >/tmp/full-gate-out.$$ 2>&1; then printf 'ok\n'; PASSED=$((PASSED+1));
-  else printf 'FAILED\n'; FAILED+=("$label"); sed 's/^/        /' /tmp/full-gate-out.$$ | tail -15; fi
-  rm -f /tmp/full-gate-out.$$
+  # Re-prove writability each time: the disk can fill *during* a run, and it did.
+  if ! : > "$GATE_OUT" 2>/dev/null; then
+    printf 'ABORT\n'
+    gate_scratch_or_die
+  fi
+  if "$@" >"$GATE_OUT" 2>&1; then printf 'ok\n'; PASSED=$((PASSED+1));
+  else printf 'FAILED\n'; FAILED+=("$label"); sed 's/^/        /' "$GATE_OUT" | tail -15; fi
+  rm -f "$GATE_OUT"
 }
 
 # The Rust gates first: they are the slowest and the most likely to fail, so failing early is kinder.
