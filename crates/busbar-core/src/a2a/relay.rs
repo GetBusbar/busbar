@@ -271,12 +271,46 @@ pub(crate) struct RelayCall<'a> {
     /// hop below is ONE implementation and this is the only thing that varies across the three.
     /// See the `THE OUTBOUND BINDING` note further down for why re-framing is all that is owed.
     pub(crate) framing: &'a dyn OutboundFraming,
-    /// THE ONE CORE BREAKER's degenerate single-member cell for this agent — consulted in
-    /// [`prepare`] immediately after the demotion gate and before the socket,
-    /// so trust is still asked first and all three bindings inherit the admission by construction.
-    /// The hop's outcome is recorded against the same cell on the way out. `None` (the originate
-    /// direction, which the audit scopes out of this unit) admits everything and records nothing.
-    pub(crate) breakers: Option<std::sync::Arc<crate::store::PlaneBreakers>>,
+    /// THE ONE CORE BREAKER's cell for THIS TARGET — consulted in [`prepare`] immediately after
+    /// the demotion gate and before the socket, so trust is still asked first and all three
+    /// bindings inherit the admission by construction. The hop's outcome is recorded against the
+    /// same cell on the way out. `None` (the originate direction, which the audit scopes out of
+    /// this unit) admits everything and records nothing.
+    pub(crate) breakers: Option<RelayBreaker>,
+}
+
+/// The breaker cell one relayed hop admits against and records into — plane-qualified key plus
+/// pool lane, carried as ONE value so the ingress's selection (`failover::walk` over
+/// `agent_pools:`) and the relay's recording cannot address two different cells.
+#[derive(Clone)]
+pub(crate) struct RelayBreaker {
+    pub(crate) breakers: std::sync::Arc<crate::store::PlaneBreakers>,
+    /// `"agent:<agent-id>"` for an un-pooled registration (the degenerate cell), `"agent:<pool>"`
+    /// for a pool member.
+    pub(crate) key: String,
+    /// The member's position in its pool's `members:` list; 0 degenerate.
+    pub(crate) lane: usize,
+    /// `true` when the INGRESS already admitted this dispatch (the pooled fresh-submission walk
+    /// holds the probe across the hop). [`prepare`] must then NOT admit again: a second admission
+    /// against a HalfOpen cell would lose the single-flight race to our own probe and refuse the
+    /// very dispatch the walk just selected.
+    pub(crate) pre_admitted: bool,
+}
+
+impl RelayBreaker {
+    /// The degenerate single-member cell for an un-pooled agent — the breaker unit's shape,
+    /// unchanged.
+    pub(crate) fn degenerate(
+        agent_id: &str,
+        breakers: std::sync::Arc<crate::store::PlaneBreakers>,
+    ) -> Self {
+        RelayBreaker {
+            key: crate::store::PlaneBreakers::agent_key(agent_id),
+            lane: 0,
+            breakers,
+            pre_admitted: false,
+        }
+    }
 }
 
 /// THE REQUEST THE RELAY IS ABOUT TO SEND: everything, in one value.
@@ -1391,19 +1425,19 @@ fn outbound_of(body: &[u8]) -> (String, serde_json::Value) {
 /// - `Guard` / `Lease` / `Unframable` are busbar-side (nothing reached the backend); `Demoted` is
 ///   TRUST, not health; `BreakerOpen` is the cell already speaking. None of them record.
 fn record_hop_outcome(call: &RelayCall<'_>, refusal: Option<&RelayRefusal>) {
-    let Some(breakers) = call.breakers.as_ref() else {
+    let Some(target) = call.breakers.as_ref() else {
         return;
     };
-    let key = crate::store::PlaneBreakers::agent_key(call.agent_id);
     let class = match refusal {
         None | Some(RelayRefusal::BackendError { .. }) => {
-            breakers.record_success(&key);
+            target.breakers.record_success(&target.key, target.lane);
             return;
         }
         Some(RelayRefusal::Transport { .. }) => crate::breaker::StatusClass::Network,
         Some(RelayRefusal::Status { status, .. }) => {
-            breakers.record_signal(
-                &key,
+            target.breakers.record_signal(
+                &target.key,
+                target.lane,
                 &crate::breaker::normalize_raw_error(
                     &crate::breaker::RawUpstreamError::from_status(*status),
                     &std::collections::HashMap::new(),
@@ -1424,8 +1458,9 @@ fn record_hop_outcome(call: &RelayCall<'_>, refusal: Option<&RelayRefusal>) {
             | RelayRefusal::BreakerOpen { .. },
         ) => return,
     };
-    breakers.record_signal(
-        &key,
+    target.breakers.record_signal(
+        &target.key,
+        target.lane,
         &crate::breaker::CanonicalSignal {
             class,
             provider_signal: None,
@@ -1465,16 +1500,20 @@ fn prepare<'a>(
     //    and Grpc by construction: this preamble is beneath the transport axis, the same argument
     //    `transport.rs` already makes. On refusal the request NEVER LEFT busbar; the ingress
     //    renders a fresh submission `rejected` with its task id. The probe hold rides out through
-    //    `admission` so the caller drops it AFTER the outcome is recorded.
-    if let Some(breakers) = call.breakers.as_ref() {
-        let key = crate::store::PlaneBreakers::agent_key(call.agent_id);
-        match breakers.admit(&key) {
-            Ok(token) => *admission = Some(token),
-            Err(_) => {
-                return Err(RelayRefusal::BreakerOpen {
-                    agent_id: call.agent_id.to_string(),
-                    retry_after_secs: breakers.retry_after_secs(&key),
-                })
+    //    `admission` so the caller drops it AFTER the outcome is recorded. A `pre_admitted` target
+    //    — a pooled fresh submission whose member `failover::walk` already selected AND admitted —
+    //    is not admitted a second time: the walk holds the probe, and re-admitting a HalfOpen cell
+    //    would lose the single-flight race to our own token.
+    if let Some(target) = call.breakers.as_ref() {
+        if !target.pre_admitted {
+            match target.breakers.admit(&target.key, target.lane) {
+                Ok(token) => *admission = Some(token),
+                Err(_) => {
+                    return Err(RelayRefusal::BreakerOpen {
+                        agent_id: call.agent_id.to_string(),
+                        retry_after_secs: target.breakers.retry_after_secs(&target.key, target.lane),
+                    })
+                }
             }
         }
     }
@@ -2197,6 +2236,13 @@ mod relay_tests;
 #[cfg(test)]
 #[path = "tests/breaker_fastfail_tests.rs"]
 mod breaker_fastfail_tests;
+
+// KILL-THE-UPSTREAM-MID-POOL — the failover seam mounted at admission time: `agent_pools:`
+// reroute of fresh submissions, task pinning, the card-fingerprint pin rule, and the client-fault
+// disposition, against twin recorded backends through the real router.
+#[cfg(test)]
+#[path = "tests/reroute_pool_tests.rs"]
+mod reroute_pool_tests;
 
 #[cfg(test)]
 #[path = "tests/relay_stream_tests.rs"]

@@ -437,8 +437,10 @@ There is one place to configure it: `pools.<pool>.breaker:`. There is no `breake
 key under `tools:` or `agents:` (an earlier version of this page said there was, and a
 config written against it fails at boot, because both sections reject unknown keys).
 Omit the block and you get the defaults. On the MCP and A2A planes the breaker runs on
-those defaults through the shared selection seam, and **that seam is not yet wired into
-the tool-dispatch or agent-relay call sites**, so it does not fire on a live call today.
+those defaults through the shared selection seam, and **that seam is wired into both the
+tool-dispatch and the agent-submission call sites**: a tripped target fast-fails, and a
+target an operator put in a `tool_pools:`/`agent_pools:` set is rerouted to a verified
+twin before the first byte.
 Full detail, with worked YAML, is in
 [circuit-breaker.md](circuit-breaker.md#the-breaker-on-the-mcp-and-a2a-planes).
 

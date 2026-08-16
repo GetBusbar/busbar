@@ -258,6 +258,15 @@ pub struct App {
     /// `store`: learned reliability must survive a snapshot swap, or every apply un-trips every
     /// dead upstream. See [`crate::store::PlaneBreakers`] for why it is not the LLM store itself.
     pub(crate) plane_breakers: Arc<crate::store::PlaneBreakers>,
+    /// The `tool_pools:` failover pools — operator-declared interchangeable MCP server sets,
+    /// carried resolved-verbatim onto the snapshot so the dispatch path's route builder
+    /// (`mcp::reroute`) reads the SAME generation the request was admitted on. Empty ⇒ every
+    /// server keeps its degenerate single-member cell and no reroute exists to be had.
+    pub(crate) tool_pools:
+        std::collections::BTreeMap<String, crate::failover::CandidatePoolCfg>,
+    /// The `agent_pools:` twin for the A2A relay. Same carriage, same reasoning.
+    pub(crate) agent_pools:
+        std::collections::BTreeMap<String, crate::failover::CandidatePoolCfg>,
     /// The health-probe schedule, shared by every clone-derived snapshot of this lineage so a swap
     /// does not reset the probe phase. See [`crate::health::ProbeSchedule`].
     pub(crate) probe_schedule: Arc<crate::health::ProbeSchedule>,

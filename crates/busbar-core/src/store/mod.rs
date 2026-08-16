@@ -718,7 +718,7 @@ mod in_memory;
 pub(crate) use in_memory::*;
 
 mod planes;
-pub(crate) use planes::{Admission as PlaneAdmission, PlaneBreakers};
+pub(crate) use planes::{Admission as PlaneAdmission, PlaneBreakers, MAX_POOL_MEMBERS};
 
 #[cfg(test)]
 #[path = "tests/tests.rs"]

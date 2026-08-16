@@ -85,14 +85,16 @@
 //! for a plane busbar does not have and shows it selects, admits, trips and reroutes with NO second
 //! breaker, NO second walk and NO error type written for it.
 
-// NOT MOUNTED ON A DISPATCH PATH YET, deliberately named rather than omitted — the same posture
-// `egress_auth/gate.rs` landed under and for the same reason. This unit lands the SEAM, its config
-// vocabulary and its proofs; the two call sites that will consume it (`mcp/client/dispatch.rs` and
-// `a2a/relay.rs`) are being edited by other units this cycle, and a dispatch-path edit landed blind
-// alongside them is a merge conflict wearing a feature's clothes. The seam is here first because the
-// VOCABULARY is the part the owner's ruling is about, and a plane that arrives later must find one
-// selection loop rather than invent a second. Exercised end-to-end by `tests/failover_tests.rs`.
-#![cfg_attr(not(test), allow(dead_code))]
+// MOUNTED. The reroute-parity unit (owner ruling R-B: "llm mcp a2a are identical") consumes this
+// seam on both non-LLM planes: `mcp::reroute` walks a `tool_pools:` candidate set before every
+// `tools/call` leg, and `a2a::receive` walks an `agent_pools:` set at submission admission. Both
+// call sites record outcomes through `store::PlaneBreakers::record_signal` — the same Stage-2
+// classifier this module's `record_outcome` wraps — rather than through `record_outcome` itself,
+// because the plane store's targets share a degenerate lane table and the all-cells hard-down
+// write in `record_outcome` would trip every OTHER pool's member at the same position (see
+// `store/planes.rs`'s module header for the full argument). `record_outcome`/`record_success`
+// remain the LLM-shaped halves, exercised by `tests/failover_tests.rs`, and keep a narrow
+// dead-code allow saying so.
 
 use crate::audit::vocab;
 use crate::store::{LaneRuntime, Unavailable};
@@ -261,6 +263,7 @@ impl Refusal {
     }
 
     /// The refused pool, for the audit `resource`. Every refusal names one.
+    #[cfg_attr(not(test), allow(dead_code))] // the plane renderings name the pool themselves.
     pub(crate) fn pool(&self) -> &str {
         match self {
             Refusal::Empty { pool }
@@ -470,6 +473,8 @@ pub(crate) fn walk<'a, C: Candidate>(
 ///
 /// Returns the [`crate::breaker::Disposition`] taken, so a plane can shape its own answer without
 /// re-deciding it.
+#[cfg_attr(not(test), allow(dead_code))] // see the module note: the plane call sites record via
+                                         // `PlaneBreakers::record_signal` (per-cell hard-down).
 pub(crate) fn record_outcome<C: Candidate>(
     store: &dyn LaneRuntime,
     pool: &str,
@@ -521,6 +526,7 @@ pub(crate) fn record_outcome<C: Candidate>(
 /// The success half of [`record_outcome`], kept separate for the same reason the model plane keeps it
 /// separate: a success closes a HalfOpen cell and resets its accumulator, and that is a different
 /// write from any failure.
+#[cfg_attr(not(test), allow(dead_code))] // twin of `record_outcome`'s allow, same argument.
 pub(crate) fn record_success<C: Candidate>(store: &dyn LaneRuntime, pool: &str, candidate: &C) {
     store.record_success_in(pool, candidate.lane());
 }

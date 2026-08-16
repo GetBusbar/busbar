@@ -45,7 +45,15 @@ pub(crate) struct TransportResponse {
 pub(crate) enum TransportError {
     /// The destination failed the dispatch-time SSRF check, or a redirect was refused.
     Refused(SsrfRefusal),
-    /// The connection failed, timed out, or the body could not be read whole.
+    /// The destination could not be REACHED AT ALL: a refused/reset connect, DNS failure, or a TLS
+    /// handshake that never completed. Distinct from [`TransportError::Io`] because NOTHING LEFT
+    /// BUSBAR — the peer never received a byte of the request — which is the one wire failure the
+    /// failover seam's `Stage::BeforeFirstByte` rule may reroute within a pool without any risk of
+    /// a duplicate effect. Everything ambiguous (a timeout after connect, a reset mid-response)
+    /// stays `Io`, deliberately: the request MAY have landed, so a reroute of it is a retry.
+    Unreachable(String),
+    /// The connection failed, timed out, or the body could not be read whole — AFTER the
+    /// destination was reached, so the request may have been received and acted on.
     Io(String),
     /// A SUPERVISED peer declined to be dispatched to: it is not up yet, it is in restart backoff,
     /// or it crash-looped and the breaker quarantined it. Distinct from [`TransportError::Io`]
@@ -59,6 +67,9 @@ impl std::fmt::Display for TransportError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             TransportError::Refused(r) => write!(f, "{r}"),
+            TransportError::Unreachable(m) => {
+                write!(f, "MCP upstream could not be reached: {m}")
+            }
             TransportError::Io(m) => write!(f, "MCP upstream transport error: {m}"),
             TransportError::Supervision(m) => write!(f, "MCP upstream is not serving: {m}"),
         }

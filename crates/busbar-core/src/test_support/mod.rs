@@ -769,6 +769,8 @@ pub(crate) struct TestApp {
     identity_providers: crate::config::IdentityProviders,
     export_defs: crate::config::ExportDefs,
     agent_defs: crate::a2a::config::AgentsCfg,
+    tool_pools: std::collections::BTreeMap<String, crate::failover::CandidatePoolCfg>,
+    agent_pools: std::collections::BTreeMap<String, crate::failover::CandidatePoolCfg>,
     overlay_path: Option<std::path::PathBuf>,
     /// 1.5.3: when `true`, build a LOCKED app (no overlay backend) — the only way to get
     /// `overlay_path: None` now that the default is durable. Without it, `build()` provides a writable
@@ -818,6 +820,8 @@ impl TestApp {
             identity_providers: Default::default(),
             export_defs: Default::default(),
             agent_defs: Default::default(),
+            tool_pools: Default::default(),
+            agent_pools: Default::default(),
             overlay_path: None,
             explicit_no_overlay: false,
             plugins_dir: None,
@@ -922,6 +926,29 @@ impl TestApp {
     /// [`TestApp::export_def`].
     pub(crate) fn agent_def(mut self, name: &str, cfg: crate::a2a::config::AgentDefCfg) -> Self {
         self.agent_defs.agents.insert(name.into(), cfg);
+        self
+    }
+    /// Declare a `tool_pools:` failover pool over already-seeded `mcp_server` registrations —
+    /// exactly the operator's grammar: ordered members, optional `repeatable:` operations.
+    pub(crate) fn tool_pool(mut self, name: &str, members: &[&str], repeatable: &[&str]) -> Self {
+        self.tool_pools.insert(
+            name.into(),
+            crate::failover::CandidatePoolCfg {
+                members: members.iter().map(|m| (*m).to_string()).collect(),
+                repeatable: repeatable.iter().map(|o| (*o).to_string()).collect(),
+            },
+        );
+        self
+    }
+    /// The `agent_pools:` twin of [`TestApp::tool_pool`], over `agent_def` registrations.
+    pub(crate) fn agent_pool(mut self, name: &str, members: &[&str]) -> Self {
+        self.agent_pools.insert(
+            name.into(),
+            crate::failover::CandidatePoolCfg {
+                members: members.iter().map(|m| (*m).to_string()).collect(),
+                repeatable: Vec::new(),
+            },
+        );
         self
     }
     /// Seed the WHOLE groups tree at once as RUNTIME (non-base) groups: populates the App's group
@@ -1289,6 +1316,8 @@ impl TestApp {
             lanes,
             store: store.clone(),
             plane_breakers: std::sync::Arc::new(crate::store::PlaneBreakers::new()),
+            tool_pools: self.tool_pools,
+            agent_pools: self.agent_pools,
             by_model,
             pools: self.pools,
             upstream_credentials: self.upstream_credentials,

@@ -26,21 +26,22 @@ fn transient_failures_trip_and_fast_fail() {
     set_now_for_test(1_000);
     let b = PlaneBreakers::new();
     let key = PlaneBreakers::tool_key("fs");
-    assert!(b.try_admit(&key).is_ok(), "a fresh cell admits");
+    assert!(b.try_admit(&key, 0).is_ok(), "a fresh cell admits");
     // Recorded without interleaved admissions. The cell stays ADMITTING throughout the first four:
-    // on this plane a sub-threshold transient does not bench the only member (see
+    // on this plane a sub-threshold transient does not bench the member (see
     // `BreakerCfg::bench_below_trip_threshold` — the benching cooldown is the "prefer a sibling"
-    // half of a rule whose other half is a failover this plane does not have). The FIFTH failure
-    // crosses the error-rate threshold and TRIPS, which is the first thing that refuses anybody.
+    // half of a rule whose other half is a failover an UNPOOLED target does not have). The FIFTH
+    // failure crosses the error-rate threshold and TRIPS, which is the first thing that refuses
+    // anybody.
     for _ in 0..5 {
-        b.record_signal(&key, &signal(StatusClass::ServerError));
+        b.record_signal(&key, 0, &signal(StatusClass::ServerError));
     }
     assert!(matches!(b.state(&key), BreakerState::Open { .. }));
-    match b.try_admit(&key) {
+    match b.try_admit(&key, 0) {
         Err(Unavailable::BreakerOpen { until }) => assert!(until > 1_000),
         other => panic!("a tripped cell must refuse admission, got {other:?}"),
     }
-    assert!(b.retry_after_secs(&key) >= 1);
+    assert!(b.retry_after_secs(&key, 0) >= 1);
 }
 
 /// An Auth signal (401/403) is a HARD DOWN: the cell trips on the FIRST failure — and ONLY that
@@ -54,15 +55,15 @@ fn hard_down_trips_immediately_and_only_its_own_cell() {
     let other_tool = PlaneBreakers::tool_key("search");
     let agent = PlaneBreakers::agent_key("planner");
 
-    let epoch = b.try_admit(&fs).expect("closed cell admits");
-    b.record_signal(&fs, &signal(StatusClass::Auth));
-    b.release(&fs, epoch);
+    let epoch = b.try_admit(&fs, 0).expect("closed cell admits");
+    b.record_signal(&fs, 0, &signal(StatusClass::Auth));
+    b.release(&fs, 0, epoch);
 
     assert!(matches!(b.state(&fs), BreakerState::Open { .. }));
-    assert!(b.try_admit(&fs).is_err(), "tripped target must refuse");
+    assert!(b.try_admit(&fs, 0).is_err(), "tripped target must refuse");
     // The neighbours are untouched — the keyspace isolation the plane-qualified keys exist for.
-    assert!(b.try_admit(&other_tool).is_ok());
-    assert!(b.try_admit(&agent).is_ok());
+    assert!(b.try_admit(&other_tool, 0).is_ok());
+    assert!(b.try_admit(&agent, 0).is_ok());
 }
 
 /// The two plane prefixes cannot collide: a tool server and an agent that happen to share a bare
@@ -74,11 +75,11 @@ fn tool_and_agent_keys_never_collide() {
     let tool = PlaneBreakers::tool_key("planner");
     let agent = PlaneBreakers::agent_key("planner");
     assert_ne!(tool, agent);
-    let epoch = b.try_admit(&tool).expect("admits");
-    b.record_signal(&tool, &signal(StatusClass::Auth));
-    b.release(&tool, epoch);
-    assert!(b.try_admit(&tool).is_err());
-    assert!(b.try_admit(&agent).is_ok(), "the agent cell is its own");
+    let epoch = b.try_admit(&tool, 0).expect("admits");
+    b.record_signal(&tool, 0, &signal(StatusClass::Auth));
+    b.release(&tool, 0, epoch);
+    assert!(b.try_admit(&tool, 0).is_err());
+    assert!(b.try_admit(&agent, 0).is_ok(), "the agent cell is its own");
 }
 
 /// RECOVERY IS A SINGLE-FLIGHT PROBE: once the cooldown expires exactly ONE caller is admitted
@@ -90,25 +91,25 @@ fn half_open_probe_is_single_flight_and_success_closes() {
     let b = PlaneBreakers::new();
     let key = PlaneBreakers::agent_key("planner");
     for _ in 0..5 {
-        b.record_signal(&key, &signal(StatusClass::ServerError));
+        b.record_signal(&key, 0, &signal(StatusClass::ServerError));
     }
     assert!(matches!(b.state(&key), BreakerState::Open { .. }));
 
     // Past every cooldown this cfg can compute (max_cooldown_secs = 120).
     set_now_for_test(10_000 + 3_600);
     let probe = b
-        .try_admit(&key)
+        .try_admit(&key, 0)
         .expect("the expired-Open cell admits ONE probe");
     assert!(matches!(b.state(&key), BreakerState::HalfOpen));
     assert!(
-        matches!(b.try_admit(&key), Err(Unavailable::ProbeInFlight)),
+        matches!(b.try_admit(&key, 0), Err(Unavailable::ProbeInFlight)),
         "a second caller must lose the single-flight race"
     );
-    b.record_success(&key);
-    b.release(&key, probe);
+    b.record_success(&key, 0);
+    b.release(&key, 0, probe);
     assert!(matches!(b.state(&key), BreakerState::Closed));
     assert!(
-        b.try_admit(&key).is_ok(),
+        b.try_admit(&key, 0).is_ok(),
         "a recovered cell serves everyone"
     );
 }
@@ -120,14 +121,14 @@ fn failed_probe_reopens() {
     let b = PlaneBreakers::new();
     let key = PlaneBreakers::tool_key("fs");
     for _ in 0..5 {
-        b.record_signal(&key, &signal(StatusClass::ServerError));
+        b.record_signal(&key, 0, &signal(StatusClass::ServerError));
     }
     set_now_for_test(20_000 + 3_600);
-    let probe = b.try_admit(&key).expect("probe admitted");
-    b.record_signal(&key, &signal(StatusClass::ServerError));
-    b.release(&key, probe);
+    let probe = b.try_admit(&key, 0).expect("probe admitted");
+    b.record_signal(&key, 0, &signal(StatusClass::ServerError));
+    b.release(&key, 0, probe);
     assert!(matches!(b.state(&key), BreakerState::Open { .. }));
-    assert!(b.try_admit(&key).is_err());
+    assert!(b.try_admit(&key, 0).is_err());
 }
 
 /// An ABANDONED probe — admitted, then the dispatch refused before any leg went out, so nothing was
@@ -139,14 +140,14 @@ fn abandoned_probe_release_unwedges_the_cell() {
     let b = PlaneBreakers::new();
     let key = PlaneBreakers::tool_key("fs");
     for _ in 0..5 {
-        b.record_signal(&key, &signal(StatusClass::ServerError));
+        b.record_signal(&key, 0, &signal(StatusClass::ServerError));
     }
     set_now_for_test(30_000 + 3_600);
-    let probe = b.try_admit(&key).expect("probe admitted");
+    let probe = b.try_admit(&key, 0).expect("probe admitted");
     // Nothing recorded: the dispatch was refused between admission and the wire.
-    b.release(&key, probe);
+    b.release(&key, 0, probe);
     assert!(
-        b.try_admit(&key).is_ok(),
+        b.try_admit(&key, 0).is_ok(),
         "the released probe must be re-winnable by the next caller"
     );
 }
@@ -159,10 +160,10 @@ fn client_fault_never_penalizes() {
     let b = PlaneBreakers::new();
     let key = PlaneBreakers::tool_key("fs");
     for _ in 0..20 {
-        b.record_signal(&key, &signal(StatusClass::ClientError));
+        b.record_signal(&key, 0, &signal(StatusClass::ClientError));
     }
     assert!(matches!(b.state(&key), BreakerState::Closed));
-    assert!(b.try_admit(&key).is_ok());
+    assert!(b.try_admit(&key, 0).is_ok());
 }
 
 /// `retry_after_secs` is the cell's own remaining cooldown, exact, not a guess.
@@ -171,9 +172,9 @@ fn retry_after_is_the_exact_cooldown() {
     set_now_for_test(50_000);
     let b = PlaneBreakers::new();
     let key = PlaneBreakers::agent_key("planner");
-    b.record_signal(&key, &signal(StatusClass::Auth));
+    b.record_signal(&key, 0, &signal(StatusClass::Auth));
     // Hard-down parks the cell with the sticky cooldown (default 1800s).
-    let ra = b.retry_after_secs(&key);
+    let ra = b.retry_after_secs(&key, 0);
     assert!(
         ra > 1_000,
         "hard-down cooldown must be the sticky one, got {ra}"

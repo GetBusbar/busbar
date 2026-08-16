@@ -29,6 +29,8 @@ fn minimal_app() -> Arc<App> {
         mcp_demotions: Default::default(),
         mcp_pool: Default::default(),
         plane_breakers: Arc::new(crate::store::PlaneBreakers::new()),
+        tool_pools: Default::default(),
+        agent_pools: Default::default(),
         mcp_servers: Arc::new(Default::default()),
         // Not an MCP server: the plane is absent and the dispatch table empty, which is what every
         // path in this fixture is asserted against.
