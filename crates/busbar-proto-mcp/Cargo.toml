@@ -1,0 +1,43 @@
+# busbar-proto-mcp — the MCP (Model Context Protocol) dialect as a PROTOCOL CRATE. The second
+# protocol extracted from the engine, on the seam the anthropic crate proved. See the crate docs in
+# src/lib.rs: five files (declaration, handler, the two operation cells, tests), everything consumed
+# through busbar-core's public surface, registered by the `busbar` binary (the composition root) and
+# by nothing else. Deleting this crate's dependency edge is a build the deletion gate makes on
+# purpose (scripts/proto-deletion-gate.sh).
+#
+# SCOPE, STATED SO THE NAME DOES NOT OVERPROMISE: this crate is MCP THE PROTOCOL — the registry
+# declaration, the JSON-RPC dialect and the two operation cells core resolves for it. It is NOT the
+# `mcp/` PLANE (crates/busbar-core/src/mcp), which is a separate ~18k-line surface wired into core
+# through AppState, the config sections, boot hydration, the router and the admin API. That surface
+# has no plugin-kind seam to leave through yet, and it stays in core. See src/lib.rs.
+[package]
+name = "busbar-proto-mcp"
+version = "1.6.0"
+publish = false            # internal workspace crate; never goes to crates.io
+edition = "2021"
+# `rust-version` rationale: see busbar-core/Cargo.toml — one pinned number, set to what CI verifies.
+rust-version = "1.97"
+description = "Model Context Protocol dialect for busbar: JSON-RPC codec, request handler and protocol declaration, linked and registered by the busbar binary."
+license = "Apache-2.0"
+
+[lib]
+name = "busbar_proto_mcp"
+path = "src/lib.rs"
+
+[dependencies]
+# The engine's public surface — the ONLY busbar crate this dialect may name. `default-features =
+# false` for the same reason the binary does it: the feature decisions are the composition root's.
+busbar-core = { path = "../busbar-core", default-features = false }
+# The specification authors' own crate, pinned narrow (see busbar-core/Cargo.toml's rationale): what
+# is taken from it is the protocol VOCABULARY — method names and parameter shapes — and nothing
+# else. A method name typed as a string literal here would be a second statement of what the
+# protocol calls something, and the two statements can disagree.
+rmcp = { workspace = true }
+bytes = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+# The dialect's own tests drive the codec through core vocabulary (the IR types), which core exposes
+# to dependents behind this feature only.
+busbar-core = { path = "../busbar-core", features = ["test-support"] }
+serde_json = { workspace = true }

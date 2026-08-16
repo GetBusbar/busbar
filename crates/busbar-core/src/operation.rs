@@ -216,16 +216,16 @@ impl Operation {
     //    `resolve_operation` maps onto these constants. When a cell needs to distinguish two verbs
     //    of one shape (`tools/list` from `prompts/list`), it adds a constant beside these with the
     //    SAME `op` and its own `name` — an addition in the protocol's vocabulary, not in the core's.
-    pub(crate) const INVOKE: Operation = Operation::of(OpShape::Invoke);
+    pub const INVOKE: Operation = Operation::of(OpShape::Invoke);
     #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) const CATALOGUE: Operation = Operation::of(OpShape::Catalogue);
+    pub const CATALOGUE: Operation = Operation::of(OpShape::Catalogue);
     #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) const FETCH: Operation = Operation::of(OpShape::Fetch);
+    pub const FETCH: Operation = Operation::of(OpShape::Fetch);
     #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) const TASK: Operation = Operation::of(OpShape::Task);
-    pub(crate) const SUBSCRIBE: Operation = Operation::of(OpShape::Subscribe);
+    pub const TASK: Operation = Operation::of(OpShape::Task);
+    pub const SUBSCRIBE: Operation = Operation::of(OpShape::Subscribe);
     #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) const CONTROL: Operation = Operation::of(OpShape::Control);
+    pub const CONTROL: Operation = Operation::of(OpShape::Control);
 
     /// EVERY OPERATION THE CORE ITSELF OWNS — the six protocol-surface verbs, one per shape. This
     /// used to also list the seven LLM verbs, which made it a core table naming one family's
@@ -283,7 +283,7 @@ impl Operation {
     ///
     /// BOUNDED BY CONSTRUCTION — see the module header. This returns a field, not a computation,
     /// and the field's only possible values are the constants above.
-    pub(crate) const fn name(self) -> &'static str {
+    pub const fn name(self) -> &'static str {
         match self {
             Operation::Verb { name, .. } => name,
         }

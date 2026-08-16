@@ -6,7 +6,15 @@
 //! tests, and nothing else. The notification tests are the same contract for a message that has no
 //! answer: write it, read it back, and assert it is what it was.
 
+use super::handler::McpRequestHandler;
+use super::invoke::InvokeOperation;
+use super::subscribe::SubscribeOperation;
 use super::*;
+use busbar_core::handlers::{OperationHandler, RequestHandler};
+use busbar_core::ir::invoke::InvokeResp;
+use busbar_core::ir::subscribe::SubscribeIntent;
+use busbar_core::ir::variant::{IrReq, IrResp};
+use busbar_core::operation::Operation;
 
 fn call_wire(params: serde_json::Value) -> Vec<u8> {
     serde_json::to_vec(&serde_json::json!({
@@ -21,7 +29,7 @@ fn a_tools_call_reads_into_the_invoke_ir() {
         "name": "fs_read", "arguments": { "path": "/etc/hosts" }
     }));
     let ir = InvokeOperation
-        .read_request(&wire, crate::proxy::APPLICATION_JSON)
+        .read_request(&wire, busbar_core::proxy::APPLICATION_JSON)
         .expect("a well-formed tools/call reads");
     let IrReq::Invoke(r) = ir else {
         panic!("a tools/call is an Invoke")
@@ -36,7 +44,7 @@ fn a_tools_call_reads_into_the_invoke_ir() {
 fn absent_arguments_are_an_empty_object_not_a_refusal() {
     let wire = call_wire(serde_json::json!({ "name": "ping" }));
     let ir = InvokeOperation
-        .read_request(&wire, crate::proxy::APPLICATION_JSON)
+        .read_request(&wire, busbar_core::proxy::APPLICATION_JSON)
         .expect("a tool with no arguments is a legal call");
     let IrReq::Invoke(r) = ir else {
         panic!("a tools/call is an Invoke")
@@ -49,7 +57,7 @@ fn a_call_that_names_no_tool_is_refused() {
     let wire = call_wire(serde_json::json!({ "arguments": {} }));
     assert!(
         InvokeOperation
-            .read_request(&wire, crate::proxy::APPLICATION_JSON)
+            .read_request(&wire, busbar_core::proxy::APPLICATION_JSON)
             .is_err(),
         "a tools/call with no `params.name` names no tool, so there is nothing to dispatch"
     );
@@ -84,7 +92,7 @@ fn the_request_round_trips_through_the_codec() {
         "name": "search", "arguments": { "q": "busbar" }
     }));
     let ir = InvokeOperation
-        .read_request(&wire, crate::proxy::APPLICATION_JSON)
+        .read_request(&wire, busbar_core::proxy::APPLICATION_JSON)
         .expect("reads");
     let out: serde_json::Value =
         serde_json::from_slice(&InvokeOperation.write_request(&ir)).expect("writes JSON");
@@ -245,7 +253,7 @@ fn both_subscription_verbs_read_into_one_operation_with_their_intent_intact() {
     ] {
         let wire = subscription_wire(method, serde_json::json!({ "uri": "file:///log.txt" }));
         let ir = SubscribeOperation
-            .read_request(&wire, crate::proxy::APPLICATION_JSON)
+            .read_request(&wire, busbar_core::proxy::APPLICATION_JSON)
             .expect("a well-formed subscription request reads");
         let IrReq::Subscribe(r) = ir else {
             panic!("a subscription request is a Subscribe")
@@ -283,7 +291,7 @@ fn a_subscription_that_names_no_target_is_refused() {
             SubscribeOperation
                 .read_request(
                     &subscription_wire("resources/subscribe", params.clone()),
-                    crate::proxy::APPLICATION_JSON
+                    busbar_core::proxy::APPLICATION_JSON
                 )
                 .is_err(),
             "a subscription request whose params are {params} names no target"
@@ -298,7 +306,7 @@ fn the_subscription_request_round_trips_through_the_codec() {
         serde_json::json!({ "uri": "file:///a" }),
     );
     let ir = SubscribeOperation
-        .read_request(&wire, crate::proxy::APPLICATION_JSON)
+        .read_request(&wire, busbar_core::proxy::APPLICATION_JSON)
         .expect("reads");
     let out: serde_json::Value =
         serde_json::from_slice(&SubscribeOperation.write_request(&ir)).expect("writes JSON");
@@ -368,12 +376,12 @@ fn a_registration_record_is_carried_through_untouched() {
 /// otherwise see it.
 #[test]
 fn a_subscription_is_flat_metered_rather_than_free() {
-    let ir = IrResp::Subscribe(crate::ir::subscribe::SubscribeResp {
+    let ir = IrResp::Subscribe(busbar_core::ir::subscribe::SubscribeResp {
         registration: None,
         extra: Default::default(),
     });
     assert!(
-        matches!(ir.usage(), Some(crate::billing::Billing::Flat)),
+        matches!(ir.usage(), Some(busbar_core::billing::Billing::Flat)),
         "a registration bills one unit, so it lands on the same budget tree as every other call"
     );
 }

@@ -4,6 +4,7 @@ members = [
     "crates/busbar",
     "crates/busbar-core",
     "crates/busbar-proto-anthropic",
+    "crates/busbar-proto-mcp",
     "crates/api",
     "crates/plugin-abi",
     "crates/plugin-sdk",

@@ -323,6 +323,7 @@ dependencies = [
  "busbar-plugin-loader",
  "busbar-plugin-sign",
  "busbar-proto-anthropic",
+ "busbar-proto-mcp",
  "busbar-store-example-plugin",
  "bytes",
  "criterion",
@@ -542,6 +543,16 @@ dependencies = [
  "serde_json",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "busbar-proto-mcp"
+version = "1.6.0"
+dependencies = [
+ "busbar-core",
+ "bytes",
+ "rmcp",
+ "serde_json",
 ]
 
 [[package]]

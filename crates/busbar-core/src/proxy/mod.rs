@@ -59,7 +59,7 @@ pub(crate) fn route_policy_headers_enabled() -> bool {
 
 /// The `application/json` media type — the default `Content-Type`/`Accept` for the JSON REST
 /// surfaces. Hoisted to one const so the literal isn't repeated across egress/health/observability.
-pub(crate) const APPLICATION_JSON: &str = "application/json";
+pub const APPLICATION_JSON: &str = "application/json";
 
 /// Streaming MIME type for SSE (Server-Sent Events) responses — the `Content-Type` value that
 /// signals an open event-stream to the client. Placed next to `APPLICATION_JSON` so all

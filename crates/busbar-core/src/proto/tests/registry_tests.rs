@@ -358,6 +358,59 @@ const fn named_decl(name: &'static str) -> ProtocolDecl {
     }
 }
 
+/// **THE FOLD-AHEAD RULE IS SAFE FOR A CODEC-LESS PROTOCOL, AND THIS IS WHY IT HAD TO BE PROVEN.**
+///
+/// `install_protocols` folds installed declarations AHEAD of the built-ins, and its doc justifies
+/// that by `anthropic` — a dialect that already LED the built-in table, so prepending reproduced the
+/// monolith's order exactly. `mcp` is the case that rule was not written for: it was the LAST row of
+/// `BUILTIN_DECLS`, and extracting it to `busbar-proto-mcp` moves it from the tail to the head of
+/// the production binary's declaration list. Nothing in core's own test build can catch that — the
+/// test build carries the dialect as a built-in and never calls `install_protocols` — so the
+/// question is settled here, on the derivation itself.
+///
+/// The answer is that it is invisible, and the reason is structural rather than lucky: the
+/// operator-visible list is `codec_protocols` (what `known_protocols()` returns — the metric-family
+/// order and the config-error `must be one of:` order), and it is built by SKIPPING every
+/// declaration whose `codec` is `None`. MCP declares no codec, so wherever it sits it contributes no
+/// entry and shifts no other entry's index.
+///
+/// This test states that as a property rather than as a claim about MCP: the same declarations, with
+/// a codec-less one at the TAIL (the monolith's shape) and at the HEAD (the extracted binary's
+/// shape), derive the identical operator-visible list.
+#[test]
+fn a_codec_less_declaration_does_not_move_the_operator_visible_list_when_it_is_folded_ahead() {
+    static CODEC_LESS: ProtocolDecl = named_decl("codec-less");
+    let with_codecs: Vec<&'static ProtocolDecl> = crate::proto::registry::builtin_decls()
+        .iter()
+        .copied()
+        .filter(|d| d.codec.is_some())
+        .collect();
+
+    let at_the_tail: Vec<&'static ProtocolDecl> = with_codecs
+        .iter()
+        .copied()
+        .chain(std::iter::once(&CODEC_LESS))
+        .collect();
+    let at_the_head: Vec<&'static ProtocolDecl> = std::iter::once(&CODEC_LESS as &ProtocolDecl)
+        .chain(with_codecs.iter().copied())
+        .collect();
+
+    // The fixture must be able to fail: if the tail/head lists were equal, this would prove nothing.
+    assert_ne!(
+        at_the_tail.iter().map(|d| d.name).collect::<Vec<_>>(),
+        at_the_head.iter().map(|d| d.name).collect::<Vec<_>>(),
+        "the two declaration orders must actually differ or the assertion below is vacuous"
+    );
+
+    assert_eq!(
+        Registry::new(at_the_tail).codec_protocols(),
+        Registry::new(at_the_head).codec_protocols(),
+        "a declaration that ships no wire codec contributes no entry to the operator-visible \
+         protocol list, so moving it to the head of the declaration order — which is what \
+         extracting it to a crate does — re-bases no dashboard and re-words no config refusal"
+    );
+}
+
 /// THE COMPOSITION ROOT'S DECLARATIONS COME FIRST. The protocol list is operator-visible —
 /// `known_protocols()` order is the dashboards' metric-family order and the config-error
 /// `must be one of:` order — and the first protocol to be extracted (`anthropic`) has led that

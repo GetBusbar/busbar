@@ -477,6 +477,8 @@ fn register_protocols() {
     static INSTALLED: &[&busbar_core::proto::ProtocolDecl] = &[
         #[cfg(feature = "proto-anthropic")]
         &busbar_proto_anthropic::DECL,
+        #[cfg(feature = "proto-mcp")]
+        &busbar_proto_mcp::DECL,
     ];
     busbar_core::proto::registry::install_protocols(INSTALLED);
 }

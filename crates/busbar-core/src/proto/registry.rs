@@ -215,6 +215,13 @@ static BUILTIN_DECLS: &[&ProtocolDecl] = &[
     // MCP declares a handler and NO codec: its IR is its own and there is no cross-dialect
     // translation into or out of it. That asymmetry is the point — the registry holds protocols,
     // not codecs, and a protocol that translates to nothing is still a protocol.
+    //
+    // MCP IS AN EXTRACTED CRATE (`busbar-proto-mcp`) on the same terms as anthropic above, and this
+    // row exists only in the builds that compile the dialect back in for the fixture surface (see
+    // the `mod mcp` decl in handlers/mod.rs). In the production binary the composition root
+    // installs the crate's own `DECL` through [`install_protocols`], folded AHEAD of this table.
+    // The `mcp/` PLANE is a different thing and is still core's — the crate carries the protocol.
+    #[cfg(any(test, feature = "test-support"))]
     &crate::handlers::mcp::DECL,
 ];
 
