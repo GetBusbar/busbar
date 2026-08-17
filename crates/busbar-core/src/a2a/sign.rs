@@ -55,7 +55,6 @@
 use base64::Engine as _;
 use ed25519_dalek::{Signer, SigningKey};
 use serde_json::{json, Map, Value};
-use sha2::{Digest, Sha256};
 
 use super::canonical::canonicalize;
 use super::card::{signing_payload, CardError};
@@ -178,19 +177,6 @@ impl CardSigner {
         );
         Ok(Value::Object(out))
     }
-}
-
-/// The domain-separated derivation itself, as a free function so it can be asserted on directly.
-///
-/// `SHA-256(context ‖ secret ‖ domain)`. The secret is a FIXED 32 bytes and sits in the middle, so
-/// the boundary between it and the domain string is unambiguous without a length prefix — two
-/// different domains cannot produce one pre-image by moving the boundary.
-pub(crate) fn subkey_seed(secret: &[u8; 32], domain: &str) -> [u8; 32] {
-    let mut h = Sha256::new();
-    h.update(b"busbar/subkey/v1");
-    h.update(secret);
-    h.update(domain.as_bytes());
-    h.finalize().into()
 }
 
 #[cfg(test)]

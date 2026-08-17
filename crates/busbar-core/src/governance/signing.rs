@@ -23,6 +23,7 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 /// The token prefix, so a busbar key is visually distinct from an opaque bearer and a quick
 /// structural pre-check can reject an obviously-non-busbar credential before any crypto.
@@ -178,7 +179,7 @@ impl TokenSigner {
     /// The secret NEVER leaves this method: callers get 32 derived bytes, not
     /// [`Self::secret_bytes`].
     pub(crate) fn derived_subkey_seed(&self, domain: &str) -> [u8; 32] {
-        crate::a2a::sign::subkey_seed(&self.key.to_bytes(), domain)
+        subkey_seed(&self.key.to_bytes(), domain)
     }
 
     /// Mint a signed token for `sub` expiring at `exp` (Unix seconds), stamped with the binding
@@ -315,6 +316,26 @@ impl TokenVerifier {
         }
         Ok(claims)
     }
+}
+
+/// The domain-separated derivation itself, as a free function so it can be asserted on directly.
+///
+/// `SHA-256(context ‖ secret ‖ domain)`. The secret is a FIXED 32 bytes and sits in the middle, so
+/// the boundary between it and the domain string is unambiguous without a length prefix — two
+/// different domains cannot produce one pre-image by moving the boundary.
+///
+/// This is generic busbar KEY HYGIENE, not the property of any one plane. It lives here, beside the
+/// root secret it derives from, because the planes that ask for a subkey are its CALLERS: a
+/// derivation that lived on one of them would make every other plane's subkey a dependency on that
+/// plane, for a function whose body mentions none of them. The context string is versioned, so
+/// changing this derivation is a new key rather than a silently different one under the same name —
+/// which is also why the bytes it emits are pinned by known-answer vectors in the tests below.
+fn subkey_seed(secret: &[u8; 32], domain: &str) -> [u8; 32] {
+    let mut h = Sha256::new();
+    h.update(b"busbar/subkey/v1");
+    h.update(secret);
+    h.update(domain.as_bytes());
+    h.finalize().into()
 }
 
 #[cfg(test)]

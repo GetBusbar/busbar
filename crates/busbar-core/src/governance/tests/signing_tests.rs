@@ -206,3 +206,86 @@ fn signer_debug_redacts_key() {
     assert!(dbg.contains("redacted"));
     assert!(!dbg.contains(&hex::encode([7u8; 32])));
 }
+
+// ── THE SUBKEY DERIVATION: KNOWN-ANSWER VECTORS ──────────────────────────────────────────────────
+
+/// THE BYTES ARE FROZEN. `subkey_seed` derives KEY MATERIAL, so a change to it is not a refactor
+/// with a test to update — it silently rotates every subkey in every existing deployment, and the
+/// symptom is signatures that stop verifying against what external callers already pinned. No
+/// property test can catch that (a different-but-still-deterministic, still-domain-separated
+/// derivation passes every property the neighbouring tests assert), so the bytes themselves are
+/// pinned here.
+///
+/// These vectors were captured from the implementation as it stood BEFORE the function moved out of
+/// the A2A plane into governance, and independently reproduced as
+/// `SHA-256("busbar/subkey/v1" ‖ secret ‖ domain)` outside this codebase — so they pin the
+/// construction, not merely whatever the current code happens to emit.
+///
+/// If one of these fails, do NOT re-baseline it. The context string is versioned precisely so that
+/// an intended change to the derivation is spelled as a new version, leaving these vectors intact.
+#[test]
+fn subkey_seed_derives_the_exact_pinned_bytes() {
+    for (secret, domain, expected) in [
+        (
+            [0u8; 32],
+            "",
+            "0b1c0a2d5c88dd84043ada4280656292b0b97260f89b9c099deebdae4dc24a6b",
+        ),
+        (
+            [0u8; 32],
+            "a2a/agent-card-signing/v1",
+            "0bf68ad180162cd1cef2d93c0714a0bbc8584f6039fb39a4690589d11e82ecb5",
+        ),
+        (
+            [7u8; 32],
+            "a2a/agent-card-signing/v1",
+            "9e3cc179e80446fc289701e3f0996a2305eedf7747bc082053f417f22bfbc14b",
+        ),
+        (
+            [7u8; 32],
+            "some/other/purpose/v1",
+            "c7e527e9bd89ac13380f2853fbebf85eed87f4bba9f8d76302d91268abd68fec",
+        ),
+        (
+            [0xffu8; 32],
+            "",
+            "77bf96146778130445d006dea40df5f2e76e92ed2f78df2b7d7ea167f7be51b1",
+        ),
+    ] {
+        assert_eq!(
+            hex::encode(subkey_seed(&secret, domain)),
+            expected,
+            "the derived subkey seed CHANGED for domain {domain:?} — every deployment's subkeys \
+             just rotated silently"
+        );
+    }
+
+    // A non-ASCII domain, pinned so the UTF-8 encoding of the domain string is part of the frozen
+    // construction rather than an implementation detail free to change under it.
+    let mut counting = [0u8; 32];
+    for (i, b) in counting.iter_mut().enumerate() {
+        *b = i as u8;
+    }
+    assert_eq!(
+        hex::encode(subkey_seed(&counting, "dømain/✓/v1")),
+        "a8d12c9765387d05e5147563df692d7b66b582e26d8879be61a74db65cad6bd2"
+    );
+}
+
+/// The method on the signer is the free function over the signer's own secret — the seam the A2A
+/// plane's `CardSigner` actually calls. Pinned end-to-end so the move cannot have changed what a
+/// caller holding a TokenSigner gets, only where the code lives.
+#[test]
+fn derived_subkey_seed_is_the_free_function_over_the_root_secret() {
+    let s = signer(); // secret [7u8; 32]
+    assert_eq!(
+        hex::encode(s.derived_subkey_seed("a2a/agent-card-signing/v1")),
+        "9e3cc179e80446fc289701e3f0996a2305eedf7747bc082053f417f22bfbc14b",
+        "the A2A card key derived off this signer must be byte-identical across the move"
+    );
+    assert_eq!(
+        s.derived_subkey_seed("a2a/agent-card-signing/v1"),
+        subkey_seed(&s.secret_bytes(), "a2a/agent-card-signing/v1"),
+        "the method must be exactly the free function over the root secret, with no second path"
+    );
+}
