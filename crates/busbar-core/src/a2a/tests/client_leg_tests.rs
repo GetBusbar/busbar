@@ -1124,6 +1124,11 @@ impl busbar_api::Store for ChainSink {
 /// sit in a chain that verifies.
 #[tokio::test]
 async fn the_delegation_hop_lands_in_the_per_task_chain_naming_the_agent_it_was_issued_to() {
+    // THE ONE LOCK EVERY TEST THAT ATTACHES A SINK TO THE PROCESS-WIDE `TASKS` TAKES. This test
+    // reads back what IT wrote, and the registry is process state, so a concurrent test swapping
+    // (or clearing) the sink mid-flight makes this one read an empty chain and fail for a reason
+    // that has nothing to do with the client leg. See `taskstore::TASKS_SINK_LOCK`.
+    let _sink_guard = crate::a2a::taskstore::TASKS_SINK_LOCK.lock().await;
     let sink = std::sync::Arc::new(ChainSink::new());
     crate::a2a::taskstore::TASKS.set_sink(sink.clone());
 
@@ -1196,6 +1201,11 @@ async fn the_delegation_hop_lands_in_the_per_task_chain_naming_the_agent_it_was_
 /// distinguishes "busbar asked and the backend failed" from "busbar never asked".
 #[tokio::test]
 async fn a_failed_hop_is_chained_too_and_the_chain_carries_its_terminal_outcome() {
+    // THE ONE LOCK EVERY TEST THAT ATTACHES A SINK TO THE PROCESS-WIDE `TASKS` TAKES. This test
+    // reads back what IT wrote, and the registry is process state, so a concurrent test swapping
+    // (or clearing) the sink mid-flight makes this one read an empty chain and fail for a reason
+    // that has nothing to do with the client leg. See `taskstore::TASKS_SINK_LOCK`.
+    let _sink_guard = crate::a2a::taskstore::TASKS_SINK_LOCK.lock().await;
     let sink = std::sync::Arc::new(ChainSink::new());
     crate::a2a::taskstore::TASKS.set_sink(sink.clone());
 
