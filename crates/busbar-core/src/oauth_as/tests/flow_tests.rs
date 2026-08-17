@@ -239,6 +239,16 @@ fn location(headers: &reqwest::header::HeaderMap, origin: &str) -> String {
 /// deliberately: the property under test is the cookie's reach, and an operator credential in the
 /// middle of it would only add a second way for the test to fail.
 async fn serve() -> (String, Arc<crate::state::App>) {
+    serve_with_admin_chain(Vec::new()).await
+}
+
+/// The same deployment with the admin chain named rather than assumed.
+///
+/// Split out for the one test whose property IS the credential: `RouteAuth::Admin` on the consent
+/// route only refuses when there is something to refuse, so a test of that refusal needs a chain
+/// that actually demands one. Every other test here passes an empty chain and gets the open posture
+/// described above.
+async fn serve_with_admin_chain(admin_chain: Vec<String>) -> (String, Arc<crate::state::App>) {
     crate::metrics::init();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -254,7 +264,10 @@ async fn serve() -> (String, Arc<crate::state::App>) {
         default_grant: vec![SCOPE.to_string()],
         access_token_ttl_secs: None,
     };
-    let app = TestApp::new().admin_chain(vec![]).oauth_as(&cfg).build();
+    let app = TestApp::new()
+        .admin_chain(admin_chain)
+        .oauth_as(&cfg)
+        .build();
 
     let scopes = ScopeSet::from_tokens([SCOPE]).expect("scope");
     app.oauth_as
@@ -814,4 +827,153 @@ fn percent_decode(s: &str) -> String {
         }
     }
     String::from_utf8(out).expect("the server produced UTF-8")
+}
+
+// ── the consent screen itself ────────────────────────────────────────────────────────────────────
+//
+// The flow tests above prove the screen is REACHABLE and that approving it mints a code. These two
+// prove what it SAYS and who it says it to, which is a different claim and the one the screen exists
+// for: it is this plane's only anti-phishing control, and a screen that renders for anyone or that
+// omits where the credential goes is a control in name only.
+
+/// A client whose callback is OFF this origin, so "the screen names the redirect host" is a claim
+/// about the redirect URI and not about the socket the test is talking to. `127.0.0.1` — the
+/// fixture client's host — is also the ORIGIN's host, so asserting on it would pass against a page
+/// that merely echoed its own address back.
+const OFFSITE_CLIENT_ID: &str = "offsite-callback-client";
+const OFFSITE_REDIRECT_URI: &str = "https://client.example/cb";
+
+/// THE SCREEN MUST NAME WHO IS ASKING AND WHERE THE CREDENTIAL GOES.
+///
+/// A consent screen that does not name the redirect host cannot tell an operator that approving
+/// hands a credential to `client.example` rather than to the client they think they are authorizing.
+/// That substitution — a registered client, an attacker's callback — is the exact attack the screen
+/// is the only control against, and until this test landed nothing in the tree asserted the screen's
+/// CONTENT at all.
+#[tokio::test]
+async fn the_consent_screen_names_the_client_and_the_redirect_host() {
+    let (origin, app) = serve().await;
+    let scopes = ScopeSet::from_tokens([SCOPE]).expect("scope");
+    app.oauth_as
+        .as_ref()
+        .expect("configured")
+        .server()
+        .register_client(Client {
+            client_id: ClientId::new(OFFSITE_CLIENT_ID),
+            auth: ClientAuth::Public,
+            grant_types: vec![GrantType::AuthorizationCode],
+            redirect_uris: vec![OFFSITE_REDIRECT_URI.to_string()],
+            allowed_scopes: scopes.clone(),
+            default_scopes: scopes,
+            name: None,
+            registration: None,
+        })
+        .await
+        .expect("register the offsite client");
+
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("client");
+    let mut jar = Jar::new(false);
+
+    let authorize = format!(
+        "{origin}/authorize?response_type=code&client_id={OFFSITE_CLIENT_ID}\
+         &redirect_uri=https%3A%2F%2Fclient.example%2Fcb&state=s1&scope={SCOPE}\
+         &code_challenge={CHALLENGE}&code_challenge_method=S256"
+    );
+    let (status, headers, body) =
+        send(&client, &mut jar, reqwest::Method::GET, &authorize, None).await;
+    assert_eq!(status, 302, "authorize must redirect to consent: {body}");
+    let consent = location(&headers, &origin);
+    let (status, _headers, page) =
+        send(&client, &mut jar, reqwest::Method::GET, &consent, None).await;
+    assert_eq!(status, 200, "the consent screen must render: {page}");
+
+    assert!(
+        page.contains(OFFSITE_CLIENT_ID),
+        "the screen must NAME the client asking for authorization: {page}"
+    );
+    assert!(
+        page.contains(SCOPE),
+        "the screen must name the scopes being requested: {page}"
+    );
+
+    // The host must be in what a HUMAN READS, not merely somewhere in the markup. The pending
+    // request is round-tripped through a hidden `<input name=return value="...">` whose value is the
+    // whole authorization request, `redirect_uri` included — so a bare `page.contains(...)` is
+    // satisfied by a field the operator never sees. That is the false green this assertion is shaped
+    // to avoid, so the hidden value is removed first.
+    let visible = strip_hidden_return(&page);
+    assert!(
+        visible.contains("client.example"),
+        "the consent screen must name the HOST the approval sends the credential to \
+         (client.example, from redirect_uri {OFFSITE_REDIRECT_URI}) somewhere the operator can READ \
+         it. Without it, an operator approving \"{OFFSITE_CLIENT_ID} for scope {SCOPE}\" cannot tell \
+         a legitimate registration from one pointing at an attacker's callback. Visible page, with \
+         the hidden `return` field removed:\n{visible}"
+    );
+}
+
+/// The consent page with the hidden `return` field's VALUE blanked — what is left is what the
+/// operator actually reads.
+fn strip_hidden_return(page: &str) -> String {
+    let marker = "name=return value=\"";
+    let Some(start) = page.find(marker) else {
+        return page.to_string();
+    };
+    let after = start + marker.len();
+    let Some(end) = page[after..].find('"') else {
+        return page.to_string();
+    };
+    format!("{}{}", &page[..after], &page[after + end..])
+}
+
+/// AN UNAUTHENTICATED VISITOR IS NEVER SHOWN WHAT THEY WOULD APPROVE.
+///
+/// An ORDERING property, not a cosmetic one. A consent screen that renders for an anonymous visitor
+/// is a phishing page this deployment hosts: an attacker links straight to it, the page names a
+/// client and a scope on busbar's own origin, and the visitor has no way to tell it from a screen
+/// they reached legitimately. Every other test in this file runs with an OPEN admin posture, so
+/// without this one the consent route's `RouteAuth::Admin` is never exercised against a chain that
+/// can actually refuse.
+#[tokio::test]
+async fn an_unauthenticated_visitor_is_never_shown_the_consent_screen() {
+    let (origin, _app) = serve_with_admin_chain(vec!["test-scope-module".to_string()]).await;
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("client");
+    let mut jar = Jar::new(false);
+
+    let authorize = format!(
+        "{origin}/authorize?response_type=code&client_id={CLIENT_ID}\
+         &redirect_uri=http%3A%2F%2F127.0.0.1%3A9999%2Fcb&state=s1&scope={SCOPE}\
+         &code_challenge={CHALLENGE}&code_challenge_method=S256"
+    );
+    let (status, headers, body) =
+        send(&client, &mut jar, reqwest::Method::GET, &authorize, None).await;
+    assert_eq!(
+        status, 302,
+        "the authorization endpoint must answer with a redirect, not with a page describing the \
+         request: {body}"
+    );
+    assert!(
+        !body.contains(CLIENT_ID),
+        "the redirect away from /authorize must not itself carry a body naming the client: {body}"
+    );
+
+    let consent = location(&headers, &origin);
+    let (status, _headers, page) =
+        send(&client, &mut jar, reqwest::Method::GET, &consent, None).await;
+    assert!(
+        status == 401 || status == 403,
+        "the consent screen is `RouteAuth::Admin`: an anonymous visitor must be refused, got \
+         {status}: {page}"
+    );
+    assert!(
+        !page.contains(CLIENT_ID),
+        "an anonymous visitor must NOT be told which client is asking — that page is the phishing \
+         surface: {page}"
+    );
 }

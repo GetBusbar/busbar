@@ -257,7 +257,10 @@ async fn consent_submit(
         )
             .into_response();
     };
-    if let Some((client_id, scope)) = client_and_scope_of(target) {
+    // The redirect host is rendered on the screen but deliberately NOT part of the stake key: the
+    // key has to match what the authorization endpoint compares when it spends the approval, and
+    // widening it here alone would make every approval unspendable.
+    if let Some((client_id, scope, _redirect_host)) = client_and_scope_of(target) {
         plane
             .sessions()
             .stake(&session, format!("{client_id}\u{1f}{scope}"));
@@ -308,18 +311,44 @@ fn is_local_path(value: &str) -> bool {
 ///
 /// Returns the RAW values: the approval key is compared against what `oauth-as` reports for the same
 /// request, so the two only agree if nothing normalised one of them on the way past.
-fn client_and_scope_of(target: &str) -> Option<(String, String)> {
+fn client_and_scope_of(target: &str) -> Option<(String, String, String)> {
     let query = target.split_once('?')?.1;
     let mut client_id = None;
     let mut scope = String::new();
+    let mut redirect_uri = String::new();
     for (name, value) in form_urlencoded_pairs(query) {
         match name.as_str() {
             "client_id" => client_id = Some(value),
             "scope" => scope = value,
+            "redirect_uri" => redirect_uri = value,
             _ => {}
         }
     }
-    Some((client_id?, scope))
+    Some((client_id?, scope, host_of(&redirect_uri)))
+}
+
+/// The host authority of an absolute `redirect_uri` — the part of it an operator can judge.
+///
+/// The consent screen names this rather than the whole URI: the host is what decides WHO receives
+/// the credential, and a full URI puts an attacker-chosen path and query on the screen next to it,
+/// which is room to write text that argues with the page around it.
+fn host_of(redirect_uri: &str) -> String {
+    let after_scheme = redirect_uri
+        .split_once("://")
+        .map(|(_, rest)| rest)
+        .unwrap_or(redirect_uri);
+    // Authority ends at the first `/`, `?` or `#`; userinfo before an `@` is stripped, so a
+    // `https://client.example@evil.example/cb` reads as `evil.example`, which is the host the
+    // browser will actually contact.
+    let authority = after_scheme
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or(after_scheme);
+    authority
+        .rsplit_once('@')
+        .map(|(_, host)| host)
+        .unwrap_or(authority)
+        .to_string()
 }
 
 /// `a=b&c=d` with `+` and `%xx` decoded. Hand-written because the one caller reads two names out of
@@ -430,24 +459,31 @@ const PAGE_NO_SESSION: &str = "<!doctype html><meta charset=utf-8><title>busbar<
 /// registration policy refuses a name impersonating this deployment as well, which is defence in
 /// depth rather than an alternative.
 fn consent_page(return_to: &str) -> String {
-    let (client_id, scope) =
-        client_and_scope_of(return_to).unwrap_or_else(|| ("(unnamed)".to_string(), String::new()));
+    let (client_id, scope, redirect_host) = client_and_scope_of(return_to)
+        .unwrap_or_else(|| ("(unnamed)".to_string(), String::new(), String::new()));
     let scope = if scope.is_empty() {
         "no scopes".to_string()
     } else {
         scope
+    };
+    let redirect_host = if redirect_host.is_empty() {
+        "(unnamed)".to_string()
+    } else {
+        redirect_host
     };
     format!(
         "<!doctype html><meta charset=utf-8><title>busbar — authorize</title>\
          <h1>Authorize this client?</h1>\
          <p>Client: <code>{client}</code></p>\
          <p>Requesting: <code>{scope}</code></p>\
+         <p>Sends the credential to: <code>{host}</code></p>\
          <form method=post>\
          <input type=hidden name=return value=\"{ret}\">\
          <button type=submit>Approve</button>\
          </form>",
         client = escape(&client_id),
         scope = escape(&scope),
+        host = escape(&redirect_host),
         ret = escape(return_to),
     )
 }
