@@ -28,7 +28,7 @@ impl WarnCapture {
     }
 
     /// True when some captured WARN message contains `needle`.
-    pub(crate) fn contains(&self, needle: &str) -> bool {
+    pub fn contains(&self, needle: &str) -> bool {
         self.messages().iter().any(|m| m.contains(needle))
     }
 }

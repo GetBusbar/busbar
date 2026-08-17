@@ -197,10 +197,15 @@ pub(crate) fn resolve(
             header: "x-goog-api-key",
         }),
         "bedrock" => Arc::new(SigV4),
-        // openai / cohere / responses and any other bearer-native protocol.
+        // cohere / responses and any other bearer-native protocol not yet extracted.
         "cohere" => Arc::new(StaticBearer { proto: "cohere" }),
         "responses" => Arc::new(StaticBearer { proto: "responses" }),
-        _ => Arc::new(StaticBearer { proto: "openai" }),
+        // Every dialect that reaches this match is named explicitly above, OR (anthropic, openai
+        // chat) supplies its own scheme via `ProtocolDecl::egress_auth_headers`, resolved and
+        // returned BEFORE this match runs. Config validation refuses an unknown protocol name
+        // before a lane ever reaches this resolver, so `_` is a defensive, fail-closed fallback —
+        // not a live scheme for any protocol this build actually serves.
+        _ => Arc::new(NoCredential),
     }
 }
 
@@ -226,7 +231,7 @@ impl CredentialProvider for StaticBearer {
 
 /// Static custom header carrying the raw key (`api-key` or `x-goog-api-key`). An un-encodable key
 /// yields no header (upstream 401s). Free function so auth tests exercise the exact same code.
-pub(crate) fn api_key_headers(header: &'static str, key: &str) -> Vec<(HeaderName, HeaderValue)> {
+pub fn api_key_headers(header: &'static str, key: &str) -> Vec<(HeaderName, HeaderValue)> {
     match HeaderValue::from_str(key) {
         Ok(v) => vec![(HeaderName::from_static(header), v)],
         Err(_) => {

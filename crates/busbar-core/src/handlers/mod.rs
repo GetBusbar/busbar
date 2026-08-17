@@ -26,14 +26,15 @@
 //! TRANSPORT: a variant in `transport.rs` and an arrival that frames these same codecs — no codec
 //! changes, because a codec never learns which channel it is speaking over. Nothing else moves.
 
-// The Anthropic handler lives in the extracted dialect crate (`busbar-proto-anthropic`,
-// src/handler.rs) — reachable in the builds that compile the dialect back in as
-// `crate::proto::anthropic::handler`, and reachable in production only through the registry's
+// The Anthropic, OpenAI Chat and Gemini handlers live in their extracted dialect crates
+// (`busbar-proto-anthropic`, `busbar-proto-openai-chat`, `busbar-proto-gemini`, each own
+// `src/handler.rs`) — reachable in the builds that compile the dialect back in as
+// `crate::proto::anthropic::handler` / `crate::proto::openai_chat::handler` /
+// `crate::proto::gemini::handler`, and reachable in production only through the registry's
 // `ProtocolDecl::handler`, which is the point.
 pub(crate) mod bedrock;
 pub mod chat;
 pub(crate) mod cohere;
-pub(crate) mod gemini;
 /// THE EXTRACTED MCP DIALECT, compiled back in for TEST BUILDS ONLY. The sources live in
 /// `crates/busbar-proto-mcp` (the second protocol crate; the `busbar` binary registers its `DECL`
 /// through `crate::proto::registry::install_protocols`), and core's PRODUCTION build knows nothing
@@ -49,7 +50,6 @@ pub(crate) mod gemini;
 #[cfg(any(test, feature = "test-support"))]
 #[path = "../../../busbar-proto-mcp/src/lib.rs"]
 pub(crate) mod mcp;
-pub(crate) mod openai;
 pub(crate) mod responses;
 
 /// The protocol's `RequestHandler`, by name (matches `router` / `proto::Protocol::name()`). A
@@ -60,7 +60,7 @@ pub(crate) mod responses;
 /// `match protocol { "openai" => …, "mcp" => … }`, seven arms, each naming a protocol core had to
 /// have been edited to know about. It is now a read of `ProtocolDecl::handler` — the cell a protocol
 /// DECLARES, beside the codec, the verbs and the head keys it declares in the same struct.
-pub(crate) fn request_handler(protocol: &str) -> Option<&'static dyn RequestHandler> {
+pub fn request_handler(protocol: &str) -> Option<&'static dyn RequestHandler> {
     crate::proto::decl_for(protocol).and_then(|d| d.handler)
 }
 
@@ -102,10 +102,7 @@ pub fn cell_of(cells: &'static [Cell], op: Operation) -> Option<&'static dyn Ope
 /// THE (verb → upstream path) LOOKUP, for the protocols whose egress paths are constants rather
 /// than templates. Same table shape, same reason it is data: `resolve_operation` reads these very
 /// constants on the ingress side, so the two directions cannot drift.
-pub(crate) fn path_of(
-    paths: &'static [(Operation, &'static str)],
-    op: Operation,
-) -> Option<&'static str> {
+pub fn path_of(paths: &'static [(Operation, &'static str)], op: Operation) -> Option<&'static str> {
     paths
         .iter()
         .find(|(candidate, _)| *candidate == op)
@@ -129,7 +126,7 @@ impl WireBody {
     }
     /// A body with an explicit content-type (e.g. audio speech). Falls back to octet-stream if the
     /// content-type string is not a valid header value.
-    pub(crate) fn typed(bytes: Bytes, content_type: &str) -> Self {
+    pub fn typed(bytes: Bytes, content_type: &str) -> Self {
         let content_type = axum::http::HeaderValue::from_str(content_type)
             .unwrap_or_else(|_| axum::http::HeaderValue::from_static("application/octet-stream"));
         Self {
@@ -495,7 +492,7 @@ pub(crate) fn op_for(
 ///
 /// Falls back to the status alone when the name resolves to no protocol: claiming a provider
 /// vocabulary busbar could not read would be worse than saying only what is known.
-pub(crate) fn protocol_error(
+pub fn protocol_error(
     protocol: &str,
     status: u16,
     body: &[u8],

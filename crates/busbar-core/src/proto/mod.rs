@@ -17,7 +17,12 @@ pub use crate::breaker::CanonicalSignal;
 pub(crate) use crate::breaker::StatusClass;
 
 // Import types needed for response/stream IR
-use crate::ir::{IrStreamEvent, IrUsage};
+use crate::ir::IrStreamEvent;
+// `IrUsage` is unused by this module's own (non-test) code; kept in scope here only because
+// `proto/bedrock/tests/tests.rs` reaches it via `use super::*`'s glob (bedrock's own tests, not
+// moved — bedrock is not yet an extracted dialect).
+#[cfg(test)]
+use crate::ir::IrUsage;
 // Consumed via `use super::*` by the proto test modules only, since the dialect that used them in
 // production moved out with the anthropic extraction.
 #[cfg(test)]
@@ -32,7 +37,7 @@ pub const SIGNAL_IR_PARSE: &str = "ir_parse";
 /// The OpenAI-style SSE stream terminator sentinel (`data: [DONE]`). The bare token is matched by the
 /// cross-protocol streaming core and several readers; the full framed bytes are emitted on egress.
 /// Shared here so no reader/writer re-spells either form.
-pub(crate) const SSE_DONE_SENTINEL: &str = "[DONE]";
+pub const SSE_DONE_SENTINEL: &str = "[DONE]";
 pub(crate) const SSE_DONE_FRAME: &[u8] = b"data: [DONE]\n\n";
 
 /// The HTTP `Authorization` header name (lowercase, canonical). Emitted by the bearer/SigV4 auth-header
@@ -55,7 +60,7 @@ pub type IrError = crate::breaker::CanonicalSignal;
 /// request is still sent (the trait can't refuse it here) and the upstream answers 401, but the warn
 /// line tells the operator the lane's credential bytes are invalid. The key is NEVER logged (it is the
 /// secret); only the protocol name and the fact that the bytes are malformed.
-pub(crate) fn bearer_auth_headers(proto: &str, key: &str) -> Vec<(HeaderName, HeaderValue)> {
+pub fn bearer_auth_headers(proto: &str, key: &str) -> Vec<(HeaderName, HeaderValue)> {
     match HeaderValue::from_str(&format!("Bearer {key}")) {
         Ok(value) => vec![(HeaderName::from_static(HDR_AUTHORIZATION), value)],
         Err(_) => {
@@ -77,7 +82,7 @@ pub(crate) fn bearer_auth_headers(proto: &str, key: &str) -> Vec<(HeaderName, He
 /// other URL (an https reference, or a data URI we cannot confidently split) is preserved verbatim in
 /// `data` with an "image_url" media_type sentinel so the writer can reconstruct the exact original
 /// `image_url` on a same-protocol round-trip rather than mangling it.
-pub(crate) fn parse_image_url(url: &str) -> crate::ir::IrImageSource {
+pub fn parse_image_url(url: &str) -> crate::ir::IrImageSource {
     if let Some(rest) = url.strip_prefix("data:") {
         if let Some((meta, payload)) = rest.split_once(',') {
             // meta is e.g. "image/png;base64" or "image/png" — keep only the MIME type.
@@ -99,7 +104,7 @@ pub(crate) fn parse_image_url(url: &str) -> crate::ir::IrImageSource {
 /// inverse of [`parse_image_url`]. A `Url` is emitted verbatim; a `Base64` is re-wrapped into a
 /// `data:<mime>;base64,<payload>` URI. A `Vendor` reference has no `image_url` projection, so
 /// returns `None` and the caller drops the block with a warn. Shared by `openai_chat.rs` and `openai_responses.rs`.
-pub(crate) fn image_url_from_ir(source: &crate::ir::IrImageSource) -> Option<String> {
+pub fn image_url_from_ir(source: &crate::ir::IrImageSource) -> Option<String> {
     match source {
         crate::ir::IrImageSource::Url(url) => Some(url.clone()),
         crate::ir::IrImageSource::Base64 { media_type, data } => {
@@ -426,7 +431,7 @@ pub struct SigningContext<'a> {
 /// plain-string content — the re-framing dialects cannot render that faithfully, so their
 /// [`ProtocolWriter::apply_rewrite_to_ingress_body`] aborts and leaves the body untouched rather
 /// than shipping a half-applied rewrite.
-pub(crate) fn rewrite_text_pairs(messages: &[serde_json::Value]) -> Option<Vec<(String, String)>> {
+pub fn rewrite_text_pairs(messages: &[serde_json::Value]) -> Option<Vec<(String, String)>> {
     messages
         .iter()
         .map(|m| {
@@ -1293,12 +1298,23 @@ impl Protocol {
         )
     }
 
-    /// Construct an OpenAI protocol instance.
-    pub(crate) fn openai() -> Self {
+    /// Construct an OpenAI protocol instance — TEST FIXTURE SHIM, same rationale as
+    /// [`Protocol::anthropic`]: the dialect is an extracted crate (`busbar-proto-openai-chat`);
+    /// production resolves it through the registry after the composition root installs its
+    /// declaration.
+    // `test-support`, not bare `cfg(test)`: a SIBLING dialect crate's own test build reaches this
+    // fixture shim (busbar-proto-gemini's logprobs carry tests translate gemini ↔ openai), and that
+    // build sees core through the `test-support` feature, not through core's `cfg(test)`.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn openai() -> Self {
         Self::new(PROTO_OPENAI, OpenAiReader, OpenAiWriter)
     }
 
-    /// Construct a Gemini protocol instance.
+    /// Construct a Gemini protocol instance — TEST FIXTURE SHIM, same rationale as
+    /// [`Protocol::anthropic`]: the dialect is an extracted crate (`busbar-proto-gemini`);
+    /// production resolves it through the registry after the composition root installs its
+    /// declaration.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn gemini() -> Self {
         Self::new(PROTO_GEMINI, GeminiReader, GeminiWriter)
     }
@@ -1542,7 +1558,7 @@ pub(crate) use stream::StreamTranslate;
 /// where `offset` is the byte index of the first terminator byte. Recognizes both the LF-LF (`\n\n`,
 /// 2 bytes) and the spec-legal CRLF (`\r\n\r\n`, 4 bytes) blank-line terminators per WHATWG SSE.
 /// Returns `None` if no complete terminator is present yet.
-pub(crate) fn find_frame_terminator(buf: &[u8]) -> Option<(usize, usize)> {
+pub fn find_frame_terminator(buf: &[u8]) -> Option<(usize, usize)> {
     let mut i = 0;
     while i < buf.len() {
         if buf[i] == b'\n' {
@@ -1573,7 +1589,7 @@ pub(crate) fn find_frame_terminator(buf: &[u8]) -> Option<(usize, usize)> {
 /// no `event:` line (OpenAI style). Multiple `data:` lines in a single frame are concatenated with
 /// `\n` per the SSE spec. Returns `None` if the frame carries no `data:` line (including a
 /// frame with only an `event:` line) or is invalid UTF-8.
-pub(crate) fn parse_sse_frame(frame: &[u8]) -> Option<(String, String)> {
+pub fn parse_sse_frame(frame: &[u8]) -> Option<(String, String)> {
     let text = std::str::from_utf8(frame).ok()?;
     let mut event_type = String::new();
     let mut data_lines: Vec<&str> = Vec::new();
@@ -1813,7 +1829,7 @@ fn scan_json_value_end(bytes: &[u8], start: usize) -> Option<usize> {
 /// ingress), so a cross-protocol request can always exceed a smaller target's cap. NON-SILENT:
 /// warns only when it actually truncates, naming `proto`, the cap, and how many sequences were
 /// dropped.
-pub(crate) fn clamp_stop(stop: &[String], cap: usize, proto: &'static str) -> Vec<String> {
+pub fn clamp_stop(stop: &[String], cap: usize, proto: &'static str) -> Vec<String> {
     if stop.len() <= cap {
         return stop.to_vec();
     }
@@ -1865,12 +1881,22 @@ fn write_sse_frame(out: &mut Vec<u8>, event_type: &str, data: &serde_json::Value
 /// lib.rs resolves here.
 #[cfg(any(test, feature = "test-support"))]
 #[path = "../../../busbar-proto-anthropic/src/lib.rs"]
-pub(crate) mod anthropic;
+pub mod anthropic;
 pub(crate) mod bedrock;
 pub(crate) mod cohere;
 /// Wire-dialect detection: `protocol_id(path, headers)` sniffs which protocol a request speaks.
 pub(crate) mod detect;
-pub(crate) mod gemini;
+/// THE EXTRACTED GEMINI DIALECT, compiled back in for TEST BUILDS ONLY. Sources live in
+/// `crates/busbar-proto-gemini`; see the `mod anthropic` doc above for the full rationale — same
+/// mechanism, third dialect.
+#[cfg(any(test, feature = "test-support"))]
+#[path = "../../../busbar-proto-gemini/src/lib.rs"]
+pub mod gemini;
+/// THE EXTRACTED OPENAI CHAT DIALECT, compiled back in for TEST BUILDS ONLY. Sources live in
+/// `crates/busbar-proto-openai-chat`; see the `mod anthropic` doc above for the full rationale —
+/// same mechanism, second dialect.
+#[cfg(any(test, feature = "test-support"))]
+#[path = "../../../busbar-proto-openai-chat/src/lib.rs"]
 pub mod openai_chat;
 pub mod openai_family;
 pub mod openai_responses;
@@ -1893,12 +1919,20 @@ use anthropic::{AnthropicReader, AnthropicWriter};
 use anthropic::synth_anthropic_request_id;
 use bedrock::{BedrockReader, BedrockWriter};
 use cohere::{CohereReader, CohereWriter};
+// The extracted Gemini dialect's codec structs, in scope for the same test surface that predates
+// the extraction. Present only in the builds that compile the dialect back in.
+#[cfg(any(test, feature = "test-support"))]
 use gemini::{GeminiReader, GeminiWriter};
 // `GeminiJsonArrayFramer` lives in `gemini.rs`; mod.rs references it only from its own test module
 // (production callers use `crate::proto::gemini::GeminiJsonArrayFramer`). Private, test-gated import
 // — NOT a re-export.
 #[cfg(test)]
 use gemini::GeminiJsonArrayFramer;
+// The extracted OpenAI Chat dialect's codec structs, in scope for the same test surface that
+// predates the extraction. Present only in the builds that compile the dialect back in — and on the
+// `test-support` gate, not bare `cfg(test)`, because `Protocol::openai()` (which names them) is on
+// that gate for a sibling dialect crate's test build.
+#[cfg(any(test, feature = "test-support"))]
 use openai_chat::{OpenAiReader, OpenAiWriter};
 use openai_responses::{ResponsesReader, ResponsesWriter};
 // The declaration vocabulary, re-exported at `crate::proto::…` so every protocol module (each of
@@ -1909,8 +1943,8 @@ pub use registry::{decl_for, IngressAuth, ProtocolDecl};
 /// a protocol name goes through these consts so the router, dispatch, projections, and registry
 /// cannot drift on a typo'd literal. Tests keep raw literals by convention (golden-value checks).
 pub const PROTO_ANTHROPIC: &str = "anthropic";
-pub(crate) const PROTO_OPENAI: &str = "openai";
-pub(crate) const PROTO_GEMINI: &str = "gemini";
+pub const PROTO_OPENAI: &str = "openai";
+pub const PROTO_GEMINI: &str = "gemini";
 pub(crate) const PROTO_BEDROCK: &str = "bedrock";
 pub(crate) const PROTO_COHERE: &str = "cohere";
 pub(crate) const PROTO_RESPONSES: &str = "responses";

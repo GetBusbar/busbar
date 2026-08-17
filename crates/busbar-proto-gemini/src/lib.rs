@@ -3,28 +3,42 @@
 
 //! Gemini protocol reader/writer implementation.
 
-use super::openai_family::{
+use axum::http::StatusCode;
+use busbar_core::breaker::StatusClass;
+use busbar_core::ir::IrStreamEvent;
+use busbar_core::proto::openai_family::{
     ERR_TYPE_AUTHENTICATION, ERR_TYPE_INVALID_REQUEST, ERR_TYPE_NOT_FOUND, ERR_TYPE_PERMISSION,
     ERR_TYPE_RATE_LIMIT,
 };
-use super::*;
+use busbar_core::proto::*;
+
+pub mod handler;
+mod reader;
+mod writer;
+
+/// Build this dialect's wire codec — the [`ProtocolDecl::codec`] constructor. A fresh instance per
+/// resolution, exactly as the registry's field doc requires. Mirrors
+/// `busbar_proto_anthropic::protocol`.
+pub fn protocol() -> Protocol {
+    Protocol::new(PROTO_GEMINI, GeminiReader, GeminiWriter)
+}
 
 /// GEMINI'S DECLARATION. The only protocol declaring an array-stream shim key, and the reason that
 /// key is a DECLARATION rather than a literal in the agnostic strip: `proxy` removes every declared
 /// shim key without naming one.
-pub(crate) const DECL: ProtocolDecl = ProtocolDecl {
+pub const DECL: ProtocolDecl = ProtocolDecl {
     name: PROTO_GEMINI,
-    codec: Some(Protocol::gemini),
-    handler: Some(&crate::handlers::gemini::GeminiRequestHandler),
+    codec: Some(protocol),
+    handler: Some(&handler::GeminiRequestHandler),
     verbs: &[
-        crate::operation::Operation::CHAT,
-        crate::operation::Operation::EMBEDDINGS,
-        crate::operation::Operation::IMAGE,
-        crate::operation::Operation::TRANSCRIPTION,
-        crate::operation::Operation::SPEECH,
+        busbar_core::operation::Operation::CHAT,
+        busbar_core::operation::Operation::EMBEDDINGS,
+        busbar_core::operation::Operation::IMAGE,
+        busbar_core::operation::Operation::TRANSCRIPTION,
+        busbar_core::operation::Operation::SPEECH,
     ],
     head_keys: LLM_HEAD_KEYS,
-    streaming_content_type: Some(crate::proxy::TEXT_EVENT_STREAM),
+    streaming_content_type: Some(busbar_core::proxy::TEXT_EVENT_STREAM),
     array_stream_shim_key: Some(GEMINI_JSON_ARRAY_SHIM_KEY),
     // Gemini carries NO tool id on the wire (it correlates `functionCall`s by name), so there is
     // nothing to reshape and no risk of a foreign id leaking to a Gemini client.
@@ -36,7 +50,7 @@ pub(crate) const DECL: ProtocolDecl = ProtocolDecl {
     // THE MODEL IS IN THE URL: `/v1beta/models/{model}:generateContent`. This declaration is what
     // core reads instead of comparing this protocol's NAME, and the tail parse it performs is this
     // dialect's own statement about its own URL space.
-    path_ingress: Some(crate::ingress::gemini_arrival),
+    path_ingress: Some(busbar_core::ingress::gemini_arrival),
     stream_usage_requires_opt_in: false,
 };
 
@@ -47,7 +61,7 @@ pub(crate) const DECL: ProtocolDecl = ProtocolDecl {
 /// (`proxy::strip_router_shim_keys`), and the Gemini reader's `modeled_keys` exclusion so it never
 /// reaches a backend on any path. A leading `__busbar` makes a collision with a real provider field
 /// impossible. Defined here and referenced at this owning path, so the route/forward sites reach it
-/// via `crate::proto::gemini::GEMINI_JSON_ARRAY_SHIM_KEY`.
+/// via `busbar_core::proto::gemini::GEMINI_JSON_ARRAY_SHIM_KEY`.
 pub(crate) const GEMINI_JSON_ARRAY_SHIM_KEY: &str = "__busbar_gemini_json_array";
 
 /// The canonical Gemini bad-API-key message text (`google.rpc.Status.message` a real Generative
@@ -134,7 +148,7 @@ const GRPC_NOT_FOUND: &str = "NOT_FOUND";
 /// google.rpc.Code name for an unimplemented / not-supported operation.
 const GRPC_UNIMPLEMENTED: &str = "UNIMPLEMENTED";
 /// Busbar/Anthropic internal error kind for an overloaded upstream (maps to GRPC_UNAVAILABLE).
-const ERR_TYPE_OVERLOADED: &str = super::openai_family::ERR_TYPE_OVERLOADED;
+const ERR_TYPE_OVERLOADED: &str = busbar_core::proto::openai_family::ERR_TYPE_OVERLOADED;
 
 // ── ErrorInfo tokens ──────────────────────────────────────────────────────────
 /// The machine-readable `reason` value carried in `google.rpc.ErrorInfo` for an invalid API key.
@@ -178,7 +192,7 @@ fn modeled_request_keys() -> &'static std::collections::HashSet<&'static str> {
             "tools",
             "systemInstruction",
             "model",
-            crate::proto::gemini::GEMINI_JSON_ARRAY_SHIM_KEY,
+            GEMINI_JSON_ARRAY_SHIM_KEY,
         ]
         .into_iter()
         .collect()
@@ -192,8 +206,8 @@ pub(crate) struct GeminiReader;
 /// Gemini `responseId` draws from (e.g. `PXmFaPzVMI…`). Carries no `-`/`_`, so no separator or
 /// hyphen leaks the synthetic boundary the old `{:x}-{:x}` form exposed.
 /// Base62 alphabet for the synthesized `responseId` — the shared single-source-of-truth atom (see
-/// `crate::proto::BASE62_ALPHABET`), aliased locally so the generator below reads naturally.
-const RESPONSE_ID_ALPHABET: &[u8; 62] = crate::proto::BASE62_ALPHABET;
+/// `busbar_core::proto::BASE62_ALPHABET`), aliased locally so the generator below reads naturally.
+const RESPONSE_ID_ALPHABET: &[u8; 62] = busbar_core::proto::BASE62_ALPHABET;
 
 /// Width of a synthesized Gemini `responseId`. Native Gemini bodies/streams carry a short opaque
 /// base64url-style token (~11–16 chars) with NO positional structure; 16 base62 chars stays in that
@@ -205,7 +219,7 @@ const RESPONSE_ID_TOKEN_LEN: usize = 16;
 /// of 62 that fits in a `u8` is `4 * 62 = 248`. Any random byte `>= 248` is in the partial final
 /// block (`248..=255` → residues `0..=7`) that would otherwise be over-represented by a bare
 /// `byte % 62`, so we reject and resample those to keep the symbol distribution uniform.
-const RESPONSE_ID_REJECT_THRESHOLD: u8 = crate::proto::BASE62_REJECT_THRESHOLD;
+const RESPONSE_ID_REJECT_THRESHOLD: u8 = busbar_core::proto::BASE62_REJECT_THRESHOLD;
 
 /// Mint a Gemini-shaped `responseId` for the cross-protocol path where the backend supplied none.
 ///
@@ -306,7 +320,7 @@ fn synth_tool_call_id(call_index: usize, function_name: &str, turn_salt: &str) -
 /// position i) and `topCandidates[i].candidates[]` (the alternatives at that position) — zipped
 /// into the neutral IR entries. Gemini carries no byte arrays (`bytes: None`; an OpenAI writer
 /// synthesizes them from UTF-8).
-fn read_gemini_logprobs(v: Option<&serde_json::Value>) -> Vec<crate::ir::IrTokenLogprob> {
+fn read_gemini_logprobs(v: Option<&serde_json::Value>) -> Vec<busbar_core::ir::IrTokenLogprob> {
     let chosen = match v
         .and_then(|lr| lr.get("chosenCandidates"))
         .and_then(|c| c.as_array())
@@ -321,7 +335,7 @@ fn read_gemini_logprobs(v: Option<&serde_json::Value>) -> Vec<crate::ir::IrToken
         .iter()
         .enumerate()
         .filter_map(|(i, c)| {
-            Some(crate::ir::IrTokenLogprob {
+            Some(busbar_core::ir::IrTokenLogprob {
                 token: c.get("token")?.as_str()?.to_string(),
                 logprob: c.get("logProbability")?.as_f64()?,
                 bytes: None,
@@ -332,7 +346,7 @@ fn read_gemini_logprobs(v: Option<&serde_json::Value>) -> Vec<crate::ir::IrToken
                     .map(|arr| {
                         arr.iter()
                             .filter_map(|t| {
-                                Some(crate::ir::IrTopLogprob {
+                                Some(busbar_core::ir::IrTopLogprob {
                                     token: t.get("token")?.as_str()?.to_string(),
                                     logprob: t.get("logProbability")?.as_f64()?,
                                     bytes: None,
@@ -349,7 +363,7 @@ fn read_gemini_logprobs(v: Option<&serde_json::Value>) -> Vec<crate::ir::IrToken
 /// Neutral IR logprobs → Gemini's `logprobsResult` (chosen + top parallel arrays). `topCandidates`
 /// is emitted only when at least one position carries alternatives, matching Gemini's own omission
 /// of the array when `logprobs` (the top-count) was not requested.
-fn write_gemini_logprobs_result(lps: &[crate::ir::IrTokenLogprob]) -> serde_json::Value {
+fn write_gemini_logprobs_result(lps: &[busbar_core::ir::IrTokenLogprob]) -> serde_json::Value {
     let chosen: Vec<serde_json::Value> = lps
         .iter()
         .map(|lp| serde_json::json!({"token": lp.token, "logProbability": lp.logprob}))
@@ -383,12 +397,12 @@ fn write_gemini_logprobs_result(lps: &[crate::ir::IrTokenLogprob]) -> serde_json
 /// whole `toolConfig` object so the caller can pass `obj.get("toolConfig")` directly.
 fn read_gemini_tool_choice(
     tool_config: Option<&serde_json::Value>,
-) -> Option<crate::ir::IrToolChoice> {
+) -> Option<busbar_core::ir::IrToolChoice> {
     let fcc = tool_config?.get("functionCallingConfig")?;
     let mode = fcc.get("mode").and_then(|m| m.as_str())?;
     match mode.to_uppercase().as_str() {
-        "AUTO" => Some(crate::ir::IrToolChoice::Auto),
-        "NONE" => Some(crate::ir::IrToolChoice::None),
+        "AUTO" => Some(busbar_core::ir::IrToolChoice::Auto),
+        "NONE" => Some(busbar_core::ir::IrToolChoice::None),
         "ANY" => {
             // `allowedFunctionNames` is a LIST in Gemini, but the IR's `Tool` variant models a
             // SINGLE targeted tool. The IR cannot express "call one of this SUBSET". A single name
@@ -404,13 +418,13 @@ fn read_gemini_tool_choice(
                         "gemini allowedFunctionNames subset restriction is not representable in the \
                          IR; relaxing to Required (call some tool)"
                     );
-                    Some(crate::ir::IrToolChoice::Required)
+                    Some(busbar_core::ir::IrToolChoice::Required)
                 }
                 _ => match names.and_then(|a| a.first()).and_then(|n| n.as_str()) {
-                    Some(name) => Some(crate::ir::IrToolChoice::Tool {
+                    Some(name) => Some(busbar_core::ir::IrToolChoice::Tool {
                         name: name.to_string(),
                     }),
-                    None => Some(crate::ir::IrToolChoice::Required),
+                    None => Some(busbar_core::ir::IrToolChoice::Required),
                 },
             }
         }
@@ -419,12 +433,12 @@ fn read_gemini_tool_choice(
 }
 
 /// Emit the IR `tool_choice` union as a Gemini `functionCallingConfig` object.
-fn write_gemini_tool_choice(tc: &crate::ir::IrToolChoice) -> serde_json::Value {
+fn write_gemini_tool_choice(tc: &busbar_core::ir::IrToolChoice) -> serde_json::Value {
     match tc {
-        crate::ir::IrToolChoice::Auto => serde_json::json!({"mode": "AUTO"}),
-        crate::ir::IrToolChoice::None => serde_json::json!({"mode": "NONE"}),
-        crate::ir::IrToolChoice::Required => serde_json::json!({"mode": "ANY"}),
-        crate::ir::IrToolChoice::Tool { name } => {
+        busbar_core::ir::IrToolChoice::Auto => serde_json::json!({"mode": "AUTO"}),
+        busbar_core::ir::IrToolChoice::None => serde_json::json!({"mode": "NONE"}),
+        busbar_core::ir::IrToolChoice::Required => serde_json::json!({"mode": "ANY"}),
+        busbar_core::ir::IrToolChoice::Tool { name } => {
             serde_json::json!({"mode": "ANY", "allowedFunctionNames": [name]})
         }
     }
@@ -460,7 +474,7 @@ fn coerce_tool_args(input: &serde_json::Value) -> serde_json::Value {
     // Resolve the candidate value: a string is a serialized payload — parse it, falling back to the
     // string itself (a scalar) when it does not parse as JSON. Any non-string value is used as-is.
     let candidate: serde_json::Value = match input.as_str() {
-        Some(s) => crate::json::parse_str(s).unwrap_or_else(|_| input.clone()),
+        Some(s) => busbar_core::json::parse_str(s).unwrap_or_else(|_| input.clone()),
         None => input.clone(),
     };
     if candidate.is_object() {
@@ -500,7 +514,7 @@ fn gemini_char_offset_to_byte(text: &str, char_idx: i64) -> i64 {
 }
 
 /// Map a Gemini candidate's `citationMetadata.citationSources[]` → neutral
-/// [`crate::ir::IrCitation`]s. A Gemini citation source is a grounding/web-search reference carrying
+/// [`busbar_core::ir::IrCitation`]s. A Gemini citation source is a grounding/web-search reference carrying
 /// `startIndex`/`endIndex` — measured in BYTES per Google's `CitationSource` reference, converted to
 /// CHARACTERS here since the IR's contract is characters — plus `uri`, `title`,
 /// and `license`. We project it onto the neutral fields (uri→url, indices→start/end, title→title)
@@ -518,7 +532,7 @@ fn gemini_char_offset_to_byte(text: &str, char_idx: i64) -> i64 {
 fn read_gemini_citations(
     candidate: &serde_json::Value,
     anchor_text: Option<&str>,
-) -> Vec<crate::ir::IrCitation> {
+) -> Vec<busbar_core::ir::IrCitation> {
     let sources = candidate
         .get("citationMetadata")
         .and_then(|m| m.get("citationSources"))
@@ -529,7 +543,7 @@ fn read_gemini_citations(
         // grounded answer's sources on the way to a foreign client).
         return read_gemini_grounding_citations(candidate, anchor_text);
     };
-    let mut out: Vec<crate::ir::IrCitation> = sources
+    let mut out: Vec<busbar_core::ir::IrCitation> = sources
         .iter()
         .map(|src| {
             let raw_start = src.get("startIndex").and_then(|v| v.as_i64());
@@ -543,7 +557,7 @@ fn read_gemini_citations(
                 // value (bytes) rather than silently mislabeling it as characters.
                 None => (raw_start, raw_end),
             };
-            crate::ir::IrCitation {
+            busbar_core::ir::IrCitation {
                 kind: Some("web_search_result_location".to_string()),
                 cited_text: None,
                 title: src
@@ -565,7 +579,7 @@ fn read_gemini_citations(
     out
 }
 
-/// Map a Gemini candidate's `groundingMetadata` → neutral [`crate::ir::IrCitation`]s.
+/// Map a Gemini candidate's `groundingMetadata` → neutral [`busbar_core::ir::IrCitation`]s.
 ///
 /// THE GAP THIS CLOSES: `groundingMetadata` is where a Google-Search-grounded Gemini answer puts its
 /// SOURCES (`citationMetadata` is the older, corpus-citation slot and is absent on a grounded
@@ -591,7 +605,7 @@ fn read_gemini_citations(
 fn read_gemini_grounding_citations(
     candidate: &serde_json::Value,
     anchor_text: Option<&str>,
-) -> Vec<crate::ir::IrCitation> {
+) -> Vec<busbar_core::ir::IrCitation> {
     let Some(gm) = candidate.get("groundingMetadata") else {
         return Vec::new();
     };
@@ -669,7 +683,7 @@ fn read_gemini_grounding_citations(
             if url.is_none() && title.is_none() {
                 continue;
             }
-            out.push(crate::ir::IrCitation {
+            out.push(busbar_core::ir::IrCitation {
                 kind: Some("web_search_result_location".to_string()),
                 cited_text: cited_text.clone(),
                 title,
@@ -689,7 +703,7 @@ fn read_gemini_grounding_citations(
             if url.is_none() && title.is_none() {
                 continue;
             }
-            out.push(crate::ir::IrCitation {
+            out.push(busbar_core::ir::IrCitation {
                 kind: Some("web_search_result_location".to_string()),
                 cited_text: None,
                 title,
@@ -727,20 +741,20 @@ fn read_gemini_grounding_citations(
 /// contract), then locate the Text block whose span (by cumulative char length) contains the
 /// citation's start, and re-express `start_index`/`end_index` RELATIVE TO THAT BLOCK — matching the
 /// per-block-relative contract Anthropic's own `char_location` variant already uses for
-/// [`crate::ir::IrCitation`] (see its doc comment: "char index (`char_location`)" is scoped to
+/// [`busbar_core::ir::IrCitation`] (see its doc comment: "char index (`char_location`)" is scoped to
 /// whichever content block the citation is attached to, not the whole message). A citation whose
 /// start lands past every block's end (an out-of-range upstream value) falls back to the LAST text
 /// block, mirroring [`gemini_byte_offset_to_char`]'s own clamp-to-end fallback.
 fn attach_gemini_citations_to_text_blocks(
     candidate: &serde_json::Value,
-    content: &mut [crate::ir::IrBlock],
+    content: &mut [busbar_core::ir::IrBlock],
 ) {
     // Every Text block's content-array index + its own text, in candidate order.
     let text_positions: Vec<(usize, String)> = content
         .iter()
         .enumerate()
         .filter_map(|(i, b)| match b {
-            crate::ir::IrBlock::Text { text, .. } => Some((i, text.clone())),
+            busbar_core::ir::IrBlock::Text { text, .. } => Some((i, text.clone())),
             _ => None,
         })
         .collect();
@@ -782,7 +796,7 @@ fn attach_gemini_citations_to_text_blocks(
         let mut relative = citation;
         relative.start_index = relative.start_index.map(|s| s - block_start);
         relative.end_index = relative.end_index.map(|e| e - block_start);
-        if let Some(crate::ir::IrBlock::Text {
+        if let Some(busbar_core::ir::IrBlock::Text {
             citations: block_citations,
             ..
         }) = content.get_mut(content_idx)
@@ -792,7 +806,7 @@ fn attach_gemini_citations_to_text_blocks(
     }
 }
 
-/// Map a neutral [`crate::ir::IrCitation`] → a Gemini `citationSources[]` entry.
+/// Map a neutral [`busbar_core::ir::IrCitation`] → a Gemini `citationSources[]` entry.
 ///
 /// SAME-PROTOCOL FIDELITY: when `raw` is present AND it is a Gemini citation source (has a `uri` or
 /// the Gemini index fields), re-emit it verbatim so a Gemini→IR→Gemini path is byte-exact — `raw`
@@ -812,7 +826,7 @@ fn attach_gemini_citations_to_text_blocks(
 /// again. Callers with no multi-part accumulation (single text block, or the streaming call site
 /// with no anchor at all) pass `0`.
 fn write_gemini_citation(
-    c: &crate::ir::IrCitation,
+    c: &busbar_core::ir::IrCitation,
     text: &str,
     byte_prefix: i64,
 ) -> serde_json::Value {
@@ -901,8 +915,8 @@ fn prompt_block_reason(data: &serde_json::Value) -> Option<&str> {
 /// `SAFETY`, so a Gemini `OTHER` stop round-trips OTHER→Other→OTHER unchanged; these stops are terminal
 /// — the body is not replayed. (Do NOT "simplify" the `_ => S::Other` arm to `S::EndTurn`: that would
 /// silently convert a Gemini→Gemini `OTHER` stop into `STOP`.)
-fn map_gemini_finish_reason(finish_reason: &str) -> crate::ir::IrStopReason {
-    use crate::ir::IrStopReason as S;
+fn map_gemini_finish_reason(finish_reason: &str) -> busbar_core::ir::IrStopReason {
+    use busbar_core::ir::IrStopReason as S;
     match finish_reason {
         GEMINI_FINISH_STOP => S::EndTurn,
         GEMINI_FINISH_MAX_TOKENS => S::MaxTokens,
@@ -923,8 +937,8 @@ fn map_gemini_finish_reason(finish_reason: &str) -> crate::ir::IrStopReason {
 /// content-policy refusal of the input, so it surfaces as `safety` (matching the candidate-level
 /// `finishReason: SAFETY` → `safety` mapping) for the well-known content-policy reasons; any other
 /// reason is lowercased so a novel block reason is still surfaced rather than dropped.
-fn prompt_block_stop_reason(block_reason: &str) -> crate::ir::IrStopReason {
-    use crate::ir::IrStopReason as S;
+fn prompt_block_stop_reason(block_reason: &str) -> busbar_core::ir::IrStopReason {
+    use busbar_core::ir::IrStopReason as S;
     match block_reason {
         // RECITATION maps to Safety at the candidate level (and per GEMINI_FINISH_RECITATION's own
         // doc); classify a prompt-level RECITATION block the same way, not Other.
@@ -936,12 +950,12 @@ fn prompt_block_stop_reason(block_reason: &str) -> crate::ir::IrStopReason {
     }
 }
 
-/// [`crate::ir::IrStopReason`] → Gemini native `finishReason`. EXHAUSTIVE: Gemini's enum has NO
+/// [`busbar_core::ir::IrStopReason`] → Gemini native `finishReason`. EXHAUSTIVE: Gemini's enum has NO
 /// TOOL_USE member (a tool-call turn ends with STOP), so EndTurn/StopSequence/ToolUse → STOP;
 /// MaxTokens → MAX_TOKENS; Safety → SAFETY; any other reason → the native `OTHER` member (a valid enum
 /// value that honestly signals an unenumerated stop, never an off-spec upper-cased token).
-fn write_gemini_stop_reason(reason: crate::ir::IrStopReason) -> &'static str {
-    use crate::ir::IrStopReason as S;
+fn write_gemini_stop_reason(reason: busbar_core::ir::IrStopReason) -> &'static str {
+    use busbar_core::ir::IrStopReason as S;
     match reason {
         S::EndTurn | S::StopSequence | S::ToolUse => GEMINI_FINISH_STOP,
         S::MaxTokens => GEMINI_FINISH_MAX_TOKENS,
@@ -951,20 +965,20 @@ fn write_gemini_stop_reason(reason: crate::ir::IrStopReason) -> &'static str {
 }
 
 /// Read Gemini's structured-output directive out of `generationConfig` into the protocol-agnostic
-/// [`crate::ir::IrResponseFormat`]. The ONLY code that knows Gemini's structured-output wire shape:
+/// [`busbar_core::ir::IrResponseFormat`]. The ONLY code that knows Gemini's structured-output wire shape:
 /// `generationConfig.responseMimeType` (e.g. `"application/json"`) plus an optional `responseSchema`
 /// — Gemini has no single `response_format` key. Returns `None` when NEITHER sub-field is present, so
 /// a plain request never gains a spurious directive.
 fn read_gemini_response_format(
     gen_config: Option<&serde_json::Value>,
-) -> Option<crate::ir::IrResponseFormat> {
+) -> Option<busbar_core::ir::IrResponseFormat> {
     let gc = gen_config?;
     let mime = gc.get(FIELD_RESPONSE_MIME_TYPE).and_then(|m| m.as_str());
     let schema = gc.get("responseSchema");
     if mime.is_none() && schema.is_none() {
         return None;
     }
-    Some(crate::ir::IrResponseFormat {
+    Some(busbar_core::ir::IrResponseFormat {
         json: schema.is_some() || mime == Some(MIME_APPLICATION_JSON),
         schema: schema.cloned(),
         name: None,
@@ -973,13 +987,13 @@ fn read_gemini_response_format(
     })
 }
 
-/// Project the agnostic [`crate::ir::IrResponseFormat`] into a Gemini `generationConfig` map. The ONLY
+/// Project the agnostic [`busbar_core::ir::IrResponseFormat`] into a Gemini `generationConfig` map. The ONLY
 /// code that builds Gemini's structured-output wire shape: a JSON directive emits
 /// `responseMimeType:"application/json"` plus the sanitized `responseSchema` (schema keywords Gemini
 /// rejects are stripped). A non-JSON directive emits nothing — Gemini's default is plain text.
 fn write_gemini_response_format(
     gen_config: &mut serde_json::Map<String, serde_json::Value>,
-    rf: &crate::ir::IrResponseFormat,
+    rf: &busbar_core::ir::IrResponseFormat,
 ) {
     if !rf.json {
         return;
@@ -1271,7 +1285,7 @@ fn resolve_gemini_schema_refs(schema: &serde_json::Value) -> serde_json::Value {
 /// `cache_read_input_tokens` — the SAME field Bedrock's `cacheReadInputTokens` and Anthropic's
 /// `cache_read_input_tokens` populate — so cached-prompt accounting survives the cross-protocol seam
 /// instead of being dropped. `None` when absent (no cache hit / older response).
-fn gemini_usage(data: &serde_json::Value) -> crate::ir::IrUsage {
+fn gemini_usage(data: &serde_json::Value) -> busbar_core::ir::IrUsage {
     let u = data.get(FIELD_USAGE_METADATA);
     let prompt = u
         .and_then(|u| u.get(FIELD_PROMPT_TOKEN_COUNT))
@@ -1280,7 +1294,7 @@ fn gemini_usage(data: &serde_json::Value) -> crate::ir::IrUsage {
     let cached = u
         .and_then(|u| u.get(FIELD_CACHED_CONTENT_TOKEN_COUNT))
         .and_then(|v| v.as_u64());
-    crate::ir::IrUsage {
+    busbar_core::ir::IrUsage {
         // NORMALIZE to the additive-cache convention: Gemini's `promptTokenCount` is a TOTAL that
         // already INCLUDES `cachedContentTokenCount`, so subtract the cached tokens to leave only
         // the uncached input. `saturating_sub` guards an odd upstream where cached > prompt.
@@ -1321,7 +1335,7 @@ fn gemini_usage(data: &serde_json::Value) -> crate::ir::IrUsage {
         // counts reasoning inside its output total), so this is pure ATTRIBUTION and changes no
         // total: it is what lets a Gemini-backed request answer "how many of those output tokens
         // were thinking?" on an OpenAI-dialect egress, which previously returned a hard 0.
-        detail: crate::ir::IrUsageDetail {
+        detail: busbar_core::ir::IrUsageDetail {
             reasoning_tokens: u
                 .and_then(|u| u.get(FIELD_THOUGHTS_TOKEN_COUNT))
                 .and_then(|v| v.as_u64()),
@@ -1513,7 +1527,7 @@ pub(crate) struct GeminiJsonArrayFramer {
 impl GeminiJsonArrayFramer {
     // `pub(crate)` so the framer's tests in `mod.rs` (which exercise the buffer-overflow abort path)
     // can size a payload off the cap; it stays an internal cap, not part of the wire surface.
-    pub(crate) const MAX_BUF: usize = crate::eventstream::MAX_FRAME_BYTES;
+    pub(crate) const MAX_BUF: usize = busbar_core::eventstream::MAX_FRAME_BYTES;
 
     pub(crate) fn new() -> Self {
         Self {
@@ -1555,12 +1569,13 @@ impl GeminiJsonArrayFramer {
                     let Some((_event_type, data_str)) = parse_sse_frame(frame) else {
                         continue; // no data: line — keepalive/comment frame
                     };
-                    if data_str.is_empty() || data_str == crate::proto::SSE_DONE_SENTINEL {
+                    if data_str.is_empty() || data_str == busbar_core::proto::SSE_DONE_SENTINEL {
                         continue; // egress terminator/keepalive — the array close is finish()'s job
                     }
                     // Validate the payload is JSON before forwarding so a malformed frame cannot
                     // corrupt the array; re-serialize from the parsed Value to normalize whitespace.
-                    let Ok(data) = crate::json::parse_str::<serde_json::Value>(&data_str) else {
+                    let Ok(data) = busbar_core::json::parse_str::<serde_json::Value>(&data_str)
+                    else {
                         continue;
                     };
                     if self.started {
@@ -1683,7 +1698,7 @@ impl GeminiJsonArrayFramer {
     }
 }
 
-impl crate::proto::JsonArrayFramer for GeminiJsonArrayFramer {
+impl busbar_core::proto::JsonArrayFramer for GeminiJsonArrayFramer {
     fn feed(&mut self, chunk: &[u8]) -> Vec<u8> {
         GeminiJsonArrayFramer::feed(self, chunk)
     }
@@ -1706,6 +1721,3 @@ mod tests;
 #[cfg(test)]
 #[path = "tests/logprobs_carry_tests.rs"]
 mod logprobs_carry_tests;
-
-mod reader;
-mod writer;

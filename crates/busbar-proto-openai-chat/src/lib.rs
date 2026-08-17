@@ -3,36 +3,58 @@
 
 //! OpenAI protocol reader/writer implementation.
 
-use super::openai_family::{
+use axum::http::{header::HeaderValue, HeaderName, StatusCode};
+use busbar_core::breaker::StatusClass;
+use busbar_core::ir::{IrStreamEvent, IrUsage};
+use busbar_core::proto::openai_family::{
     bearer_error_code, openai_context_length_prose_scan, ERR_TYPE_AUTHENTICATION,
     ERR_TYPE_INSUFFICIENT_QUOTA, ERR_TYPE_INVALID_REQUEST, ERR_TYPE_NOT_FOUND, ERR_TYPE_OVERLOADED,
     ERR_TYPE_PERMISSION, ERR_TYPE_RATE_LIMIT, ERR_TYPE_SERVER_ERROR, OPENAI_FAMILY_DEFAULT_MODEL,
     OPENAI_FAMILY_MAX_OPEN_TOOLS,
 };
-use super::*;
+use busbar_core::proto::*;
+
+pub mod handler;
+mod reader;
+mod writer;
+
+/// Build this dialect's wire codec — the [`ProtocolDecl::codec`] constructor. A fresh instance per
+/// resolution, exactly as the registry's field doc requires. Mirrors
+/// `busbar_proto_anthropic::protocol`.
+pub fn protocol() -> Protocol {
+    Protocol::new(PROTO_OPENAI, OpenAiReader, OpenAiWriter)
+}
+
+/// The [`ProtocolDecl::egress_auth_headers`] builder: OpenAI's native credential scheme is a plain
+/// `Authorization: Bearer <key>` header — no api-key/Bearer disambiguation (that's Anthropic's own
+/// wrinkle) and no signing context needed. Retires the `_ => StaticBearer{"openai"}` arm that used
+/// to be `egress_auth::resolve`'s catch-all default.
+fn egress_auth_headers(key: &str, _ctx: &SigningContext) -> Vec<(HeaderName, HeaderValue)> {
+    busbar_core::proto::bearer_auth_headers(PROTO_OPENAI, key)
+}
 
 /// OPENAI'S DECLARATION. See `proto::registry` for what each field replaces.
-pub(crate) const DECL: ProtocolDecl = ProtocolDecl {
+pub const DECL: ProtocolDecl = ProtocolDecl {
     name: PROTO_OPENAI,
-    codec: Some(Protocol::openai),
-    handler: Some(&crate::handlers::openai::OpenAiRequestHandler),
+    codec: Some(protocol),
+    handler: Some(&handler::OpenAiRequestHandler),
     verbs: &[
-        crate::operation::Operation::CHAT,
-        crate::operation::Operation::EMBEDDINGS,
-        crate::operation::Operation::MODERATION,
-        crate::operation::Operation::IMAGE,
-        crate::operation::Operation::TRANSCRIPTION,
-        crate::operation::Operation::SPEECH,
+        busbar_core::operation::Operation::CHAT,
+        busbar_core::operation::Operation::EMBEDDINGS,
+        busbar_core::operation::Operation::MODERATION,
+        busbar_core::operation::Operation::IMAGE,
+        busbar_core::operation::Operation::TRANSCRIPTION,
+        busbar_core::operation::Operation::SPEECH,
     ],
     head_keys: LLM_HEAD_KEYS,
-    streaming_content_type: Some(crate::proxy::TEXT_EVENT_STREAM),
+    streaming_content_type: Some(busbar_core::proxy::TEXT_EVENT_STREAM),
     array_stream_shim_key: None,
     // `call_…` is the documented native tool-call id shape for both OpenAI surfaces.
     native_tool_id_prefix: Some("call_"),
     ingress_auth: IngressAuth::Bearer,
-    // The shared bearer/api-key/SigV4 schemes stay in `egress_auth::resolve` until this
-    // dialect is extracted; see the field doc.
-    egress_auth_headers: None,
+    // OpenAI's native credential scheme (plain Bearer) is this dialect's own — declared here,
+    // the field that retired the `_` catch-all arm in core's `egress_auth::resolve`.
+    egress_auth_headers: Some(egress_auth_headers),
     // NO PATH INGRESS: this dialect keeps its model in the BODY, so the catch-all resolves the
     // operation through the `RequestHandler` and serves it on the universal ingress.
     path_ingress: None,
@@ -72,24 +94,11 @@ const DEFAULT_MODEL: &str = OPENAI_FAMILY_DEFAULT_MODEL;
 /// collides with a real OpenAI field, and the writer consumes (does not leak) it.
 const MAX_COMPLETION_TOKENS_SENTINEL: &str = "__busbar_max_completion_tokens";
 
-/// Busbar-internal `extra` key parking OpenAI's per-message `messages[].name` (the optional
-/// participant name that disambiguates several speakers in one role).
-///
-/// WHY A SENTINEL AND NOT AN `IrMessage` FIELD: `name` has NO representation in ANY other protocol in
-/// the matrix — Anthropic, Gemini, Bedrock, Cohere and even Responses all model a turn as
-/// (role, content) with no participant name — so a first-class IR field would be a field only one
-/// dialect could ever read or write. It rides `extra` instead, which gives exactly the right scope:
-///
-/// * SAME-PROTOCOL (including a pool-alias route that re-serializes rather than forwarding bytes):
-///   the writer reads it back and re-emits `name` on each message, so a participant name no longer
-///   disappears the moment a route rewrites the model. That was a real same-protocol loss.
-/// * CROSS-PROTOCOL: `extra` is cleared at the seam and `ir/variant.rs` names this key in its
-///   dropped-keys warn, so the loss is signalled instead of silent.
-///
-/// Value shape: an object keyed by the message's index in `IrRequest.messages` (as a decimal string)
-/// → the name. Keyed by index rather than positional array so a request where only message 7 has a
-/// name costs one entry, and so the writer's lookup cannot be thrown off by a `null` hole.
-pub(crate) const MESSAGE_NAMES_SENTINEL: &str = "__busbar_openai_message_names";
+// `MESSAGE_NAMES_SENTINEL` — the `extra` key parking OpenAI's per-message `messages[].name` —
+// lives in `busbar_core::proto::openai_family` (NOT here), because core's own `ir/variant.rs`
+// names it in the generic cross-protocol dropped-keys warn and core cannot name a protocol crate.
+// See that module for the full rationale.
+use busbar_core::proto::openai_family::MESSAGE_NAMES_SENTINEL;
 
 // ── OpenAI wire-format named constants ──────────────────────────────────────
 //
@@ -139,11 +148,11 @@ const PATH_UPSTREAM: &str = "/v1/chat/completions";
 /// that key on the message string still fire.
 const AUTH_FAILURE_MSG: &str = "Incorrect API key provided.";
 
-/// The `vendor` tag on an [`crate::ir::IrImageSource::Vendor`] this protocol produces — an OpenAI
+/// The `vendor` tag on an [`busbar_core::ir::IrImageSource::Vendor`] this protocol produces — an OpenAI
 /// `file.file_id`, an uploads-API handle with no neutral (base64/url) form. Only an OpenAI-family
 /// writer recognizes the tag and re-emits the reference; every other writer drops it with a warn
 /// rather than emitting a handle its own backend cannot resolve.
-const VENDOR_NAME: &str = crate::proto::PROTO_OPENAI;
+const VENDOR_NAME: &str = busbar_core::proto::PROTO_OPENAI;
 
 // ────────────────────────────────────────────────────────────────────────────
 
@@ -154,10 +163,10 @@ fn model_or_default(model: Option<&str>) -> &str {
     model.unwrap_or(DEFAULT_MODEL)
 }
 
-/// OpenAI native `finish_reason` token → canonical [`crate::ir::IrStopReason`]. The ONLY place that
+/// OpenAI native `finish_reason` token → canonical [`busbar_core::ir::IrStopReason`]. The ONLY place that
 /// knows OpenAI's finish vocabulary on the read side.
-fn read_openai_stop_reason(token: &str) -> crate::ir::IrStopReason {
-    use crate::ir::IrStopReason as S;
+fn read_openai_stop_reason(token: &str) -> busbar_core::ir::IrStopReason {
+    use busbar_core::ir::IrStopReason as S;
     match token {
         FINISH_STOP => S::EndTurn,
         FINISH_LENGTH => S::MaxTokens,
@@ -167,12 +176,12 @@ fn read_openai_stop_reason(token: &str) -> crate::ir::IrStopReason {
     }
 }
 
-/// [`crate::ir::IrStopReason`] → OpenAI native `finish_reason`. EXHAUSTIVE: OpenAI's enum is
+/// [`busbar_core::ir::IrStopReason`] → OpenAI native `finish_reason`. EXHAUSTIVE: OpenAI's enum is
 /// {stop,length,tool_calls,content_filter}; any reason with no OpenAI analog (`refusal`, `error`,
 /// `pause_turn`, `other`) degrades to the SDK-safe `stop` rather than leak an off-enum value a strict
 /// SDK rejects.
-fn write_openai_stop_reason(reason: crate::ir::IrStopReason) -> &'static str {
-    use crate::ir::IrStopReason as S;
+fn write_openai_stop_reason(reason: busbar_core::ir::IrStopReason) -> &'static str {
+    use busbar_core::ir::IrStopReason as S;
     match reason {
         S::EndTurn | S::StopSequence => FINISH_STOP,
         S::MaxTokens => FINISH_LENGTH,
@@ -183,13 +192,13 @@ fn write_openai_stop_reason(reason: crate::ir::IrStopReason) -> &'static str {
 }
 
 /// Read an OpenAI Chat Completions `response_format` object into the protocol-agnostic
-/// [`crate::ir::IrResponseFormat`]. This is the ONLY code that knows OpenAI's structured-output wire
+/// [`busbar_core::ir::IrResponseFormat`]. This is the ONLY code that knows OpenAI's structured-output wire
 /// shape (`{type:"json_schema", json_schema:{name,schema,strict,description}}` / `{type:"json_object"}`
 /// / `{type:"text"}`). Returns `None` for a non-object or absent directive.
-fn read_openai_response_format(v: &serde_json::Value) -> Option<crate::ir::IrResponseFormat> {
+fn read_openai_response_format(v: &serde_json::Value) -> Option<busbar_core::ir::IrResponseFormat> {
     let o = v.as_object()?;
     match o.get("type").and_then(|t| t.as_str()) {
-        Some(RESP_FORMAT_TEXT) => Some(crate::ir::IrResponseFormat {
+        Some(RESP_FORMAT_TEXT) => Some(busbar_core::ir::IrResponseFormat {
             json: false,
             schema: None,
             name: None,
@@ -198,7 +207,7 @@ fn read_openai_response_format(v: &serde_json::Value) -> Option<crate::ir::IrRes
         }),
         Some(RESP_FORMAT_JSON_SCHEMA) => {
             let js = o.get("json_schema");
-            Some(crate::ir::IrResponseFormat {
+            Some(busbar_core::ir::IrResponseFormat {
                 json: true,
                 schema: js.and_then(|j| j.get("schema")).cloned(),
                 name: js
@@ -214,7 +223,7 @@ fn read_openai_response_format(v: &serde_json::Value) -> Option<crate::ir::IrRes
         }
         // `json_object` carries no schema; an unrecognized `type` is treated as free-form JSON (the
         // safe non-rejecting default) rather than dropped.
-        Some(_) => Some(crate::ir::IrResponseFormat {
+        Some(_) => Some(busbar_core::ir::IrResponseFormat {
             json: true,
             schema: None,
             name: None,
@@ -225,9 +234,9 @@ fn read_openai_response_format(v: &serde_json::Value) -> Option<crate::ir::IrRes
     }
 }
 
-/// Project the agnostic [`crate::ir::IrResponseFormat`] into OpenAI's native `response_format`. The
+/// Project the agnostic [`busbar_core::ir::IrResponseFormat`] into OpenAI's native `response_format`. The
 /// ONLY code that builds OpenAI's structured-output wire shape.
-fn write_openai_response_format(rf: &crate::ir::IrResponseFormat) -> serde_json::Value {
+fn write_openai_response_format(rf: &busbar_core::ir::IrResponseFormat) -> serde_json::Value {
     if !rf.json {
         return serde_json::json!({"type": RESP_FORMAT_TEXT});
     }
@@ -260,16 +269,14 @@ fn write_openai_response_format(rf: &crate::ir::IrResponseFormat) -> serde_json:
 const COMPLETION_ID_TOKEN_LEN: usize = 24;
 
 /// Base62 alphabet native OpenAI completion ids draw their suffix from — the shared
-/// single-source-of-truth atom (see `crate::proto::BASE62_ALPHABET`), aliased locally. Used by
+/// single-source-of-truth atom (see `busbar_core::proto::BASE62_ALPHABET`), aliased locally. Used by
 /// [`synth_completion_id`].
-const BASE62: &[u8; 62] = crate::proto::BASE62_ALPHABET;
+const BASE62: &[u8; 62] = busbar_core::proto::BASE62_ALPHABET;
 
 /// OpenAI's `logprobs` object (`{content: [{token, logprob, bytes, top_logprobs[]}]}`) → the
 /// neutral IR entries. `bytes` is preserved verbatim when present (a token can be a partial UTF-8
 /// fragment, so the byte array is the only faithful carrier).
-pub(crate) fn read_openai_logprobs(
-    v: Option<&serde_json::Value>,
-) -> Vec<crate::ir::IrTokenLogprob> {
+pub fn read_openai_logprobs(v: Option<&serde_json::Value>) -> Vec<busbar_core::ir::IrTokenLogprob> {
     let entries = match v
         .and_then(|lp| lp.get("content"))
         .and_then(|c| c.as_array())
@@ -287,7 +294,7 @@ pub(crate) fn read_openai_logprobs(
     entries
         .iter()
         .filter_map(|e| {
-            Some(crate::ir::IrTokenLogprob {
+            Some(busbar_core::ir::IrTokenLogprob {
                 token: e.get("token")?.as_str()?.to_string(),
                 logprob: e.get("logprob")?.as_f64()?,
                 bytes: read_bytes(e),
@@ -297,7 +304,7 @@ pub(crate) fn read_openai_logprobs(
                     .map(|arr| {
                         arr.iter()
                             .filter_map(|t| {
-                                Some(crate::ir::IrTopLogprob {
+                                Some(busbar_core::ir::IrTopLogprob {
                                     token: t.get("token")?.as_str()?.to_string(),
                                     logprob: t.get("logprob")?.as_f64()?,
                                     bytes: read_bytes(t),
@@ -314,7 +321,7 @@ pub(crate) fn read_openai_logprobs(
 /// Neutral IR logprobs → OpenAI's `logprobs` object. `bytes` is synthesized from the token's UTF-8
 /// encoding when the source protocol (Gemini) carries none — the same value OpenAI itself returns
 /// for a whole-token UTF-8 string.
-pub(crate) fn write_openai_logprobs(lps: &[crate::ir::IrTokenLogprob]) -> serde_json::Value {
+pub fn write_openai_logprobs(lps: &[busbar_core::ir::IrTokenLogprob]) -> serde_json::Value {
     let content: Vec<serde_json::Value> = lps
         .iter()
         .map(|lp| {
@@ -374,7 +381,7 @@ pub(crate) fn write_openai_logprobs(lps: &[crate::ir::IrTokenLogprob]) -> serde_
 /// stops and the remaining slots keep their '0' fill, preserving the panic-free contract.
 fn synth_completion_id() -> String {
     // Largest multiple of 62 that fits in a u8; bytes >= this are rejected to keep the draw uniform.
-    const BASE62_REJECT_FLOOR: u8 = crate::proto::BASE62_REJECT_THRESHOLD; // 4 * 62
+    const BASE62_REJECT_FLOOR: u8 = busbar_core::proto::BASE62_REJECT_THRESHOLD; // 4 * 62
     let mut token = [b'0'; COMPLETION_ID_TOKEN_LEN];
     let mut filled = 0usize;
     // Pull entropy in batches and consume only the in-range bytes. If a batch yields too few usable
@@ -456,154 +463,7 @@ fn modeled_request_keys() -> &'static std::collections::HashSet<&'static str> {
 #[derive(Clone)]
 pub struct OpenAiReader;
 
-/// Render an IR ToolUse `input` value as the OpenAI `function.arguments` string.
-///
-/// OpenAI carries tool-call arguments as a *string* of JSON. The reader stores well-formed
-/// arguments as a parsed `Value`, but falls back to `Value::String(raw)` when the upstream sent
-/// arguments that are not valid JSON (a streaming-partial or malformed tool call). Re-serializing
-/// such a `Value::String` via `crate::json::to_string` would JSON-encode the string a second time —
-/// emitting an escaped, quoted blob on the wire (double-encoding). Emit a `Value::String` verbatim
-/// so the original argument text round-trips unchanged; any other `Value` is serialized normally.
-/// Build an OpenAI `annotations` array from the IR citations that annotate a span of assistant
-/// text. Shared by the Chat and Responses writers, which use the same `url_citation` shape.
-///
-/// `text` is the ONE block the citations annotate, and `base` is where that block starts inside the
-/// message's full content string — Chat joins every text block into one string, while Responses
-/// keeps one part per block and so always passes `0`. Both the carried offsets and the ones
-/// recovered from a quote are block-relative, so `base` applies uniformly to either.
-///
-/// The wire shape is `url_citation`, which requires `url`, `title`, `start_index` and `end_index`.
-/// The IR's sources do not all carry those: an Anthropic `web_search_result_location` has a url and
-/// a title but NO character offsets, and a Gemini `citationSources[]` entry has offsets but no
-/// title. So a faithful mapping has to choose what to do about the gaps, and the choice here is
-/// deliberate: **never invent a fact.**
-///
-/// - `url` is required outright. A citation without one is a document reference, which is a
-///   different wire shape (`file_citation`) keyed by a `file_id` the IR does not carry — so it is
-///   omitted rather than mis-shaped.
-/// - Offsets are taken from the citation when present, and otherwise RECOVERED by locating the
-///   quoted `cited_text` in the assembled text. A quote that does not appear, or appears more than
-///   once, is ambiguous — omitted rather than guessed.
-/// - `title` falls back to the url. That is the same datum re-presented, not a fabricated one, and
-///   it is what a client renders anyway when a source has no title.
-///
-/// The alternative — emitting `start_index: 0, end_index: 0` or a placeholder title — trades a
-/// silent drop for silent fabrication, which is worse for a translation layer whose claim is
-/// fidelity. What is dropped here is dropped because the source genuinely lacks it.
-pub(crate) fn url_annotations(
-    text: &str,
-    base: usize,
-    citations: &[crate::ir::IrCitation],
-) -> Vec<serde_json::Value> {
-    let mut out = Vec::new();
-    for c in citations {
-        let Some(url) = c.url.as_deref().filter(|u| !u.is_empty()) else {
-            continue;
-        };
-        let span = match (c.start_index, c.end_index) {
-            // `saturating_add` (not `+`): `s`/`e` are upstream-controlled `i64` (only sign-checked
-            // above), so `i64::MAX + base` would panic in debug / wrap in release — an
-            // upstream-triggered crash on the response path. Same cure `billable_tokens` already
-            // establishes for upstream-controlled counts (`ir/mod.rs`).
-            (Some(s), Some(e)) if s >= 0 && e >= s => {
-                Some((s.saturating_add(base as i64), e.saturating_add(base as i64)))
-            }
-            // Recover the span from the quote when the source carried no offsets, but only when it
-            // occurs exactly once — two matches make the anchor ambiguous.
-            _ => c
-                .cited_text
-                .as_deref()
-                .filter(|q| !q.is_empty())
-                .and_then(|q| {
-                    // `str::find` and `q.len()` are BYTE offsets/lengths; the IR contract is
-                    // CHARACTERS, not bytes (see `IrCitation::start_index`). `find` always returns
-                    // a char boundary, so the byte slice below stays valid — only the emitted span
-                    // needs converting.
-                    let first = text.find(q)?;
-                    if text[first + q.len()..].contains(q) {
-                        return None;
-                    }
-                    let start_ch = text[..first].chars().count();
-                    let len_ch = q.chars().count();
-                    Some(((base + start_ch) as i64, (base + start_ch + len_ch) as i64))
-                }),
-        };
-        let Some((start, end)) = span else {
-            continue;
-        };
-        out.push(serde_json::json!({
-            "type": "url_citation",
-            "url": url,
-            "title": c.title.as_deref().filter(|t| !t.is_empty()).unwrap_or(url),
-            "start_index": start,
-            "end_index": end,
-        }));
-    }
-    out
-}
-
-/// Read an OpenAI-family `annotations` array (`url_citation` entries) into IR citations. Shared by
-/// the Chat and Responses readers, mirroring `url_annotations` above in the write direction.
-///
-/// KNOWN LIMITATION — offsets are deliberately NOT carried. `IrCitation::start_index`/`end_index`
-/// are CHARACTER offsets by contract (`ir/mod.rs`), and OpenAI does not document whether its
-/// `start_index`/`end_index` count bytes or characters. Copying them across unconverted would
-/// silently assert one of the two, and on non-ASCII text that is a wrong span — the same class of
-/// defect the Gemini byte/char conversion (`gemini/mod.rs`) exists to prevent. Dropping an offset
-/// we cannot interpret is a gap; asserting a unit we cannot verify is a lie. Until the unit is
-/// established (one upstream response with a multi-byte character ahead of the cited span settles
-/// it), the url and title — which need no unit — are preserved and the span is left `None`, which
-/// every writer already treats as optional.
-pub(crate) fn read_url_annotations(annotations: &serde_json::Value) -> Vec<crate::ir::IrCitation> {
-    let mut out = Vec::new();
-    let Some(arr) = annotations.as_array() else {
-        return out;
-    };
-    for entry in arr {
-        if entry.get("type").and_then(|t| t.as_str()) != Some("url_citation") {
-            continue;
-        }
-        let Some(citation) = entry.get("url_citation") else {
-            continue;
-        };
-        // Never invent a fact: an entry with no usable url is skipped, symmetric with
-        // `url_annotations`' own rule in the write direction (a citation with no url is not
-        // emitted there either).
-        let Some(url) = citation
-            .get("url")
-            .and_then(|u| u.as_str())
-            .filter(|u| !u.is_empty())
-        else {
-            continue;
-        };
-        let title = citation
-            .get("title")
-            .and_then(|t| t.as_str())
-            .filter(|t| !t.is_empty())
-            .map(String::from);
-        out.push(crate::ir::IrCitation {
-            kind: Some("web_search_result_location".to_string()),
-            cited_text: None,
-            title,
-            url: Some(url.to_string()),
-            document_index: None,
-            start_index: None,
-            end_index: None,
-            encrypted_index: None,
-            raw: None,
-        });
-    }
-    out
-}
-
-pub(crate) fn tool_arguments_to_string(input: &serde_json::Value) -> String {
-    match input {
-        serde_json::Value::String(s) => s.clone(),
-        other => crate::json::to_string(other).unwrap_or_else(|_| "{}".to_string()),
-    }
-}
-
-/// Project an [`crate::ir::IrBlock::Media`] into the OpenAI Chat Completions content part that can
+/// Project an [`busbar_core::ir::IrBlock::Media`] into the OpenAI Chat Completions content part that can
 /// express it, or `None` when this dialect has no slot for it (the caller emits nothing).
 ///
 /// OpenAI Chat has exactly TWO attachment parts — `input_audio` (inline base64 + a bare format
@@ -618,11 +478,11 @@ pub(crate) fn tool_arguments_to_string(input: &serde_json::Value) -> String {
 ///   the silent one — indistinguishable, to the model and to the operator, from the caller having
 ///   attached nothing at all.
 fn media_part_from_ir(
-    kind: crate::ir::IrMediaKind,
-    source: &crate::ir::IrImageSource,
+    kind: busbar_core::ir::IrMediaKind,
+    source: &busbar_core::ir::IrImageSource,
     name: Option<&str>,
 ) -> Option<serde_json::Value> {
-    use crate::ir::{IrImageSource as S, IrMediaKind as K};
+    use busbar_core::ir::{IrImageSource as S, IrMediaKind as K};
     match (kind, source) {
         (K::Audio, S::Base64 { media_type, data }) => {
             // OpenAI wants the bare container token (`wav`, `mp3`), not the mime type.
@@ -667,10 +527,10 @@ fn media_part_from_ir(
 }
 
 /// Read an OpenAI-format block from JSON.
-fn read_openai_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock, IrError> {
+fn read_openai_block(block_val: &serde_json::Value) -> Result<busbar_core::ir::IrBlock, IrError> {
     let obj = block_val.as_object().ok_or(IrError {
         class: StatusClass::ClientError,
-        provider_signal: Some(crate::proto::SIGNAL_IR_PARSE.to_string()),
+        provider_signal: Some(busbar_core::proto::SIGNAL_IR_PARSE.to_string()),
         retry_after: None,
     })?;
 
@@ -680,7 +540,7 @@ fn read_openai_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock
         "text" => {
             let text_val = obj.get("text");
             let text = text_val.and_then(|t| t.as_str()).unwrap_or("").to_string();
-            Ok(crate::ir::IrBlock::Text {
+            Ok(busbar_core::ir::IrBlock::Text {
                 text,
                 cache_control: None,
                 citations: Vec::new(),
@@ -689,7 +549,7 @@ fn read_openai_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock
         "image_url" => {
             let image_obj = obj.get("image_url").ok_or(IrError {
                 class: StatusClass::ClientError,
-                provider_signal: Some(crate::proto::SIGNAL_IR_PARSE.to_string()),
+                provider_signal: Some(busbar_core::proto::SIGNAL_IR_PARSE.to_string()),
                 retry_after: None,
             })?;
             let url = image_obj.get("url").and_then(|v| v.as_str()).unwrap_or("");
@@ -715,8 +575,8 @@ fn read_openai_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock
                     );
                 }
             }
-            Ok(crate::ir::IrBlock::Image {
-                source: super::parse_image_url(url),
+            Ok(busbar_core::ir::IrBlock::Image {
+                source: busbar_core::proto::parse_image_url(url),
                 cache_control: None,
             })
         }
@@ -731,7 +591,7 @@ fn read_openai_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock
         "input_audio" => {
             let audio_obj = obj.get("input_audio").ok_or(IrError {
                 class: StatusClass::ClientError,
-                provider_signal: Some(crate::proto::SIGNAL_IR_PARSE.to_string()),
+                provider_signal: Some(busbar_core::proto::SIGNAL_IR_PARSE.to_string()),
                 retry_after: None,
             })?;
             let data = audio_obj
@@ -743,9 +603,9 @@ fn read_openai_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock
                 .get("format")
                 .and_then(|v| v.as_str())
                 .unwrap_or("wav");
-            Ok(crate::ir::IrBlock::Media {
-                kind: crate::ir::IrMediaKind::Audio,
-                source: crate::ir::IrImageSource::Base64 {
+            Ok(busbar_core::ir::IrBlock::Media {
+                kind: busbar_core::ir::IrMediaKind::Audio,
+                source: busbar_core::ir::IrImageSource::Base64 {
                     media_type: format!("audio/{format}"),
                     data,
                 },
@@ -763,7 +623,7 @@ fn read_openai_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock
         "file" => {
             let file_obj = obj.get("file").ok_or(IrError {
                 class: StatusClass::ClientError,
-                provider_signal: Some(crate::proto::SIGNAL_IR_PARSE.to_string()),
+                provider_signal: Some(busbar_core::proto::SIGNAL_IR_PARSE.to_string()),
                 retry_after: None,
             })?;
             let name = file_obj
@@ -776,14 +636,14 @@ fn read_openai_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock
                 .and_then(|v| v.as_str())
                 .filter(|s| !s.is_empty())
             {
-                Some(data_uri) => super::parse_image_url(data_uri),
+                Some(data_uri) => busbar_core::proto::parse_image_url(data_uri),
                 None => {
                     let file_id = file_obj
                         .get("file_id")
                         .and_then(|v| v.as_str())
                         .unwrap_or("")
                         .to_string();
-                    crate::ir::IrImageSource::Vendor {
+                    busbar_core::ir::IrImageSource::Vendor {
                         vendor: VENDOR_NAME,
                         value: serde_json::json!({ "file_id": file_id }),
                     }
@@ -792,12 +652,12 @@ fn read_openai_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock
             // The mime type, when the data URI carried one, is the ONLY signal of what kind of
             // attachment this is — an OpenAI `file` part is used for PDFs today but the mime decides.
             let kind = match &source {
-                crate::ir::IrImageSource::Base64 { media_type, .. } => {
-                    crate::ir::IrMediaKind::from_media_type(media_type)
+                busbar_core::ir::IrImageSource::Base64 { media_type, .. } => {
+                    busbar_core::ir::IrMediaKind::from_media_type(media_type)
                 }
-                _ => crate::ir::IrMediaKind::Document,
+                _ => busbar_core::ir::IrMediaKind::Document,
             };
-            Ok(crate::ir::IrBlock::Media {
+            Ok(busbar_core::ir::IrBlock::Media {
                 kind,
                 source,
                 name,
@@ -814,7 +674,7 @@ fn read_openai_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock
                 .and_then(|t| t.as_str())
                 .unwrap_or("")
                 .to_string();
-            Ok(crate::ir::IrBlock::Text {
+            Ok(busbar_core::ir::IrBlock::Text {
                 text,
                 cache_control: None,
                 citations: Vec::new(),
@@ -827,7 +687,7 @@ fn read_openai_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock
         // a disposition/breaker match, so a named graceful-degradation arm is correct here.
         other => {
             let _ = other;
-            Ok(crate::ir::IrBlock::Text {
+            Ok(busbar_core::ir::IrBlock::Text {
                 text: String::new(),
                 cache_control: None,
                 citations: Vec::new(),
@@ -837,10 +697,10 @@ fn read_openai_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock
 }
 
 /// Read an OpenAI-format tool from JSON.
-fn read_openai_tool(tool_val: &serde_json::Value) -> Result<crate::ir::IrTool, IrError> {
+fn read_openai_tool(tool_val: &serde_json::Value) -> Result<busbar_core::ir::IrTool, IrError> {
     let obj = tool_val.as_object().ok_or(IrError {
         class: StatusClass::ClientError,
-        provider_signal: Some(crate::proto::SIGNAL_IR_PARSE.to_string()),
+        provider_signal: Some(busbar_core::proto::SIGNAL_IR_PARSE.to_string()),
         retry_after: None,
     })?;
 
@@ -865,7 +725,7 @@ fn read_openai_tool(tool_val: &serde_json::Value) -> Result<crate::ir::IrTool, I
         .cloned()
         .unwrap_or(serde_json::Value::Null);
 
-    Ok(crate::ir::IrTool {
+    Ok(busbar_core::ir::IrTool {
         name,
         description,
         input_schema,
@@ -881,12 +741,14 @@ fn read_openai_tool(tool_val: &serde_json::Value) -> Result<crate::ir::IrTool, I
 /// Read an OpenAI-format `tool_choice` into the IR union. Shapes: the strings `"auto"` /
 /// `"none"` / `"required"`, or `{"type":"function","function":{"name":"X"}}` for a forced specific
 /// tool. Absent or any unrecognized shape yields `None` (the safe default — no directive emitted).
-fn read_openai_tool_choice(val: Option<&serde_json::Value>) -> Option<crate::ir::IrToolChoice> {
+fn read_openai_tool_choice(
+    val: Option<&serde_json::Value>,
+) -> Option<busbar_core::ir::IrToolChoice> {
     match val? {
         serde_json::Value::String(s) => match s.as_str() {
-            "auto" => Some(crate::ir::IrToolChoice::Auto),
-            "none" => Some(crate::ir::IrToolChoice::None),
-            "required" => Some(crate::ir::IrToolChoice::Required),
+            "auto" => Some(busbar_core::ir::IrToolChoice::Auto),
+            "none" => Some(busbar_core::ir::IrToolChoice::None),
+            "required" => Some(busbar_core::ir::IrToolChoice::Required),
             _ => None,
         },
         serde_json::Value::Object(o) => {
@@ -894,7 +756,7 @@ fn read_openai_tool_choice(val: Option<&serde_json::Value>) -> Option<crate::ir:
                 o.get("function")
                     .and_then(|f| f.get("name"))
                     .and_then(|n| n.as_str())
-                    .map(|name| crate::ir::IrToolChoice::Tool {
+                    .map(|name| busbar_core::ir::IrToolChoice::Tool {
                         name: name.to_string(),
                     })
             } else {
@@ -952,7 +814,7 @@ struct OpenAiStreamFraming {
     client_include_usage: bool,
 }
 
-impl super::StreamFraming for OpenAiStreamFraming {
+impl StreamFraming for OpenAiStreamFraming {
     fn on_egress_chunk(&mut self, chunk: &mut serde_json::Value) -> Option<serde_json::Value> {
         // (a) Identity replay, then (b) the 0-based tool-call index remap, then (c) the include_usage
         // handling — in this order, because the trailing chunk's identity is read off `chunk` AFTER the
@@ -1223,6 +1085,3 @@ pub struct OpenAiWriter;
 #[cfg(test)]
 #[path = "tests/tests.rs"]
 mod tests;
-
-mod reader;
-mod writer;

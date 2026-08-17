@@ -25,15 +25,15 @@
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TokenUsage {
     /// Uncached input tokens (normalized; providers whose wire total includes the cache subtract it).
-    pub(crate) input: u64,
-    pub(crate) output: u64,
+    pub input: u64,
+    pub output: u64,
     /// Additive cache accounting (Anthropic/Bedrock native; OpenAI-family normalized to additive).
-    pub(crate) cache_read: Option<u64>,
-    pub(crate) cache_creation: Option<u64>,
+    pub cache_read: Option<u64>,
+    pub cache_creation: Option<u64>,
     /// Per-modality input breakdown (gpt-4o-transcribe etc). When present, these partition `input`.
-    pub(crate) input_text: Option<u64>,
-    pub(crate) input_audio: Option<u64>,
-    pub(crate) input_image: Option<u64>,
+    pub input_text: Option<u64>,
+    pub input_audio: Option<u64>,
+    pub input_image: Option<u64>,
 }
 
 /// The billable item produced for one response. Priced by the 1.3 engine via an exhaustive match.

@@ -197,7 +197,7 @@ impl ProtocolWriter for ResponsesWriter {
                                 // Emit a raw `Value::String` (unparseable/streaming-partial args) verbatim
                                 // rather than JSON-encoding it a second time — same as the Chat writer.
                                 let args_str =
-                                    crate::proto::openai_chat::tool_arguments_to_string(input);
+                                    crate::proto::openai_family::tool_arguments_to_string(input);
                                 tool_items.push(serde_json::json!({
                                     "type": ITEM_TYPE_FUNCTION_CALL,
                                     "call_id": id,
@@ -872,7 +872,7 @@ impl ProtocolWriter for ResponsesWriter {
                     // empty content array.
                     let item_id = self.item_id_for(ITEM_ID_PREFIX_MSG, *index);
                     let text = self.take_text_accum(*index);
-                    let annotations = crate::proto::openai_chat::url_annotations(
+                    let annotations = crate::proto::openai_family::url_annotations(
                         &text,
                         0,
                         &self.take_citation_accum(*index),
@@ -1130,7 +1130,7 @@ impl ProtocolWriter for ResponsesWriter {
                         continue;
                     }
                     let annotations =
-                        crate::proto::openai_chat::url_annotations(text, 0, citations);
+                        crate::proto::openai_family::url_annotations(text, 0, citations);
                     // Match the native message-item shape the STREAMING `output_item.done` emits: an
                     // item-level `id` (`msg_…`), a `status`, and `annotations: []` on the `output_text`
                     // content part. Omitting them is a proxy tell — a typed SDK reading `item.id` /
@@ -1153,7 +1153,7 @@ impl ProtocolWriter for ResponsesWriter {
                     id, name, input, ..
                 } => {
                     // Verbatim for a raw `Value::String` (avoid double-encoding), same as the Chat writer.
-                    let args_str = crate::proto::openai_chat::tool_arguments_to_string(input);
+                    let args_str = crate::proto::openai_family::tool_arguments_to_string(input);
                     output_arr.push(serde_json::json!({
                         "type": ITEM_TYPE_FUNCTION_CALL,
                         // Native function_call items carry an item-level opaque `id` (`fc_…`) DISTINCT

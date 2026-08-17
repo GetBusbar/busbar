@@ -62,9 +62,9 @@ fn transcription_usage_duration_round_trips() {
 fn transcription_usage_tokens_round_trips() {
     // A cross-protocol transcript whose usage arrived as tokens (e.g. Gemini) → OpenAI token shape.
     let cell = OpenAiTranscription;
-    let ir = IrResp::Transcription(crate::ir::audio::TranscriptionResp {
+    let ir = IrResp::Transcription(busbar_core::ir::audio::TranscriptionResp {
         text: "hi".into(),
-        usage: Some(Billing::Tokens(crate::billing::TokenUsage {
+        usage: Some(Billing::Tokens(busbar_core::billing::TokenUsage {
             input: 11,
             output: 3,
             ..Default::default()
@@ -82,22 +82,24 @@ fn transcription_usage_tokens_round_trips() {
 fn embeddings_base64_encoding_format_survives_to_openai_egress() {
     // A base64 embeddings request must emit `encoding_format: "base64"` on OpenAI egress, or
     // the backend defaults to float and the caller silently gets the wrong encoding.
-    let ir = crate::ir::variant::IrReq::Embeddings(crate::ir::embeddings::EmbeddingsReq {
-        model: "text-embedding-3-small".into(),
-        input: crate::ir::embeddings::EmbInput::Text(vec!["hi".into()]),
-        encoding_formats: vec![crate::ir::embeddings::EncFmt::Base64],
-        ..Default::default()
-    });
+    let ir =
+        busbar_core::ir::variant::IrReq::Embeddings(busbar_core::ir::embeddings::EmbeddingsReq {
+            model: "text-embedding-3-small".into(),
+            input: busbar_core::ir::embeddings::EmbInput::Text(vec!["hi".into()]),
+            encoding_formats: vec![busbar_core::ir::embeddings::EncFmt::Base64],
+            ..Default::default()
+        });
     let out = OpenAiEmbeddings.write_request(&ir);
     let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
     assert_eq!(v["encoding_format"], "base64");
     // A plain (float) request must NOT gain a spurious encoding_format key.
-    let ir2 = crate::ir::variant::IrReq::Embeddings(crate::ir::embeddings::EmbeddingsReq {
-        model: "m".into(),
-        input: crate::ir::embeddings::EmbInput::Text(vec!["hi".into()]),
-        encoding_formats: vec![crate::ir::embeddings::EncFmt::Float],
-        ..Default::default()
-    });
+    let ir2 =
+        busbar_core::ir::variant::IrReq::Embeddings(busbar_core::ir::embeddings::EmbeddingsReq {
+            model: "m".into(),
+            input: busbar_core::ir::embeddings::EmbInput::Text(vec!["hi".into()]),
+            encoding_formats: vec![busbar_core::ir::embeddings::EncFmt::Float],
+            ..Default::default()
+        });
     let out2 = OpenAiEmbeddings.write_request(&ir2);
     let v2: serde_json::Value = serde_json::from_slice(&out2).unwrap();
     assert!(v2.get("encoding_format").is_none());
@@ -105,13 +107,14 @@ fn embeddings_base64_encoding_format_survives_to_openai_egress() {
 
 #[test]
 fn embeddings_write_request_warns_on_dropped_non_text_input() {
-    use crate::test_support::warn_capture::WarnCapture;
+    use busbar_core::test_support::warn_capture::WarnCapture;
     use tracing_subscriber::layer::SubscriberExt as _;
 
-    let ir = crate::ir::variant::IrReq::Embeddings(crate::ir::embeddings::EmbeddingsReq {
-        input: crate::ir::embeddings::EmbInput::Tokens(vec![vec![1, 2, 3]]),
-        ..Default::default()
-    });
+    let ir =
+        busbar_core::ir::variant::IrReq::Embeddings(busbar_core::ir::embeddings::EmbeddingsReq {
+            input: busbar_core::ir::embeddings::EmbInput::Tokens(vec![vec![1, 2, 3]]),
+            ..Default::default()
+        });
     let cap = WarnCapture::default();
     let subscriber = tracing_subscriber::registry().with(cap.clone());
     let out = tracing::subscriber::with_default(subscriber, || OpenAiEmbeddings.write_request(&ir));
@@ -132,15 +135,16 @@ fn egress_multipart_sanitizes_mime_from_any_ingress() {
     // parser) must not inject headers into the egress multipart. Build the transcription IR
     // directly with a CR/LF mime (as a gemini inline_data reader could) and assert the egress
     // bytes carry no injected header.
-    let ir = crate::ir::variant::IrReq::Transcription(crate::ir::audio::TranscriptionReq {
-        model: "whisper-1".into(),
-        audio: Some(crate::media::MediaBlob {
-            payload: crate::media::MediaPayload::Bytes(bytes::Bytes::from_static(b"x")),
-            mime_type: "audio/mp3\r\nX-Injected: evil".into(),
-            pcm: None,
-        }),
-        ..Default::default()
-    });
+    let ir =
+        busbar_core::ir::variant::IrReq::Transcription(busbar_core::ir::audio::TranscriptionReq {
+            model: "whisper-1".into(),
+            audio: Some(busbar_core::media::MediaBlob {
+                payload: busbar_core::media::MediaPayload::Bytes(bytes::Bytes::from_static(b"x")),
+                mime_type: "audio/mp3\r\nX-Injected: evil".into(),
+                pcm: None,
+            }),
+            ..Default::default()
+        });
     let out = OpenAiTranscription.write_request(&ir);
     let text = String::from_utf8_lossy(&out);
     assert!(
@@ -177,18 +181,20 @@ fn mime_type_sanitizer_strips_header_injection() {
 fn total_tokens_saturate_on_upstream_overflow() {
     // The three egress token sums must saturate (operands are upstream-controlled), matching
     // the billing.rs invariant — bare `+` would panic in debug / wrap to 0 in release.
-    use crate::billing::{Billing, TokenUsage};
+    use busbar_core::billing::{Billing, TokenUsage};
     let huge = TokenUsage {
         input: u64::MAX,
         output: 5,
         ..Default::default()
     };
     // openai transcription write path
-    let ir = crate::ir::variant::IrResp::Transcription(crate::ir::audio::TranscriptionResp {
-        text: "x".into(),
-        usage: Some(Billing::Tokens(huge.clone())),
-        ..Default::default()
-    });
+    let ir = busbar_core::ir::variant::IrResp::Transcription(
+        busbar_core::ir::audio::TranscriptionResp {
+            text: "x".into(),
+            usage: Some(Billing::Tokens(huge.clone())),
+            ..Default::default()
+        },
+    );
     let out = OpenAiTranscription.write_response(&ir);
     let v: serde_json::Value = serde_json::from_slice(&out.bytes).unwrap();
     assert_eq!(v["usage"]["total_tokens"], u64::MAX); // saturated, not panicked/wrapped
@@ -236,7 +242,7 @@ fn multipart_empty_boundary_is_rejected_not_amplified() {
 fn transcription_egress_carries_language_prompt_and_format() {
     // A cross-protocol transcription (e.g. Gemini ingress -> OpenAI egress) must not silently
     // drop the caller's language hint, prompt, or response_format on the multipart body.
-    let ir = IrReq::Transcription(crate::ir::audio::TranscriptionReq {
+    let ir = IrReq::Transcription(busbar_core::ir::audio::TranscriptionReq {
         model: "whisper-1".into(),
         source_language: Some("fr".into()),
         prompt: Some("Glossary: API, SDK".into()),
@@ -268,7 +274,7 @@ fn transcription_egress_carries_language_prompt_and_format() {
 fn transcription_egress_field_strips_crlf_injection() {
     // A CR/LF in any text field (here the operator-supplied model) must not terminate the part
     // and inject new MIME parts into the egress request.
-    let ir = IrReq::Transcription(crate::ir::audio::TranscriptionReq {
+    let ir = IrReq::Transcription(busbar_core::ir::audio::TranscriptionReq {
         model: "whisper-1\r\nContent-Disposition: form-data; name=\"evil\"\r\n\r\npwn".into(),
         audio: Some(MediaBlob {
             payload: MediaPayload::Bytes(Bytes::from_static(b"x")),
@@ -328,7 +334,7 @@ fn embeddings_integer_input_is_rejected_not_silently_emptied() {
 fn speech_write_request_carries_instructions_and_speed() {
     // gpt-4o-mini-tts style `instructions` and playback `speed` must survive to OpenAI egress;
     // dropping them made the synthesized audio ignore the request on a cross-protocol hop.
-    let ir = IrReq::Speech(crate::ir::audio::SpeechReq {
+    let ir = IrReq::Speech(busbar_core::ir::audio::SpeechReq {
         input: "hello world".into(),
         model: "gpt-4o-mini-tts".into(),
         voice: "alloy".into(),
@@ -362,7 +368,7 @@ fn speech_read_write_roundtrip_preserves_speed() {
 fn image_write_request_carries_quality_style_response_format_user_and_auto_size() {
     // The generation controls the reader captures must survive to egress; dropping them silently
     // downgraded the request (e.g. a `b64_json` ask fell back to URL, `hd` to standard).
-    let ir = IrReq::Image(crate::ir::image::ImageReq {
+    let ir = IrReq::Image(busbar_core::ir::image::ImageReq {
         op: ImageOp::Generate,
         model: "gpt-image-1".into(),
         prompt: Some("a fox".into()),
@@ -387,8 +393,8 @@ fn speech_write_response_decodes_b64_payload_to_raw_bytes() {
     // A Speech response whose audio rides as base64 must be decoded to the raw bytes on egress
     // (routed through decode_ir_b64), not emitted as the base64 string.
     let raw = b"\xff\xfb\x90\x00some-audio";
-    let b64 = crate::media::base64_encode(raw);
-    let ir = IrResp::Speech(crate::ir::audio::SpeechResp {
+    let b64 = busbar_core::media::base64_encode(raw);
+    let ir = IrResp::Speech(busbar_core::ir::audio::SpeechResp {
         audio: Some(MediaBlob {
             payload: MediaPayload::B64(b64),
             mime_type: "audio/mpeg".into(),

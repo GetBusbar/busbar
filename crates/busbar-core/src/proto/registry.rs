@@ -207,7 +207,13 @@ static BUILTIN_DECLS: &[&ProtocolDecl] = &[
     // copy of this dialect registers second.
     #[cfg(any(test, feature = "test-support"))]
     &crate::proto::anthropic::DECL,
+    // OPENAI CHAT IS AN EXTRACTED CRATE (`busbar-proto-openai-chat`) — same rationale as the
+    // anthropic row above: this row exists only in the builds that compile the dialect back in.
+    #[cfg(any(test, feature = "test-support"))]
     &crate::proto::openai_chat::DECL,
+    // GEMINI IS AN EXTRACTED CRATE (`busbar-proto-gemini`) — same rationale as the anthropic row
+    // above: this row exists only in the builds that compile the dialect back in.
+    #[cfg(any(test, feature = "test-support"))]
     &crate::proto::gemini::DECL,
     &crate::proto::bedrock::DECL,
     &crate::proto::openai_responses::DECL,

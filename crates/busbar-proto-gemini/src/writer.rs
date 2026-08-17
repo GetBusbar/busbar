@@ -8,11 +8,11 @@ use super::*;
 /// `fileData` example, and the audio/video generics are the standard container-agnostic types. This
 /// is a WRITE-side default, never a claim about the referenced bytes — a source that knows its real
 /// mime (every `Base64` one) never routes through here.
-fn gemini_mime_for_kind(kind: crate::ir::IrMediaKind) -> &'static str {
+fn gemini_mime_for_kind(kind: busbar_core::ir::IrMediaKind) -> &'static str {
     match kind {
-        crate::ir::IrMediaKind::Document => "application/pdf",
-        crate::ir::IrMediaKind::Audio => "audio/mpeg",
-        crate::ir::IrMediaKind::Video => "video/mp4",
+        busbar_core::ir::IrMediaKind::Document => "application/pdf",
+        busbar_core::ir::IrMediaKind::Audio => "audio/mpeg",
+        busbar_core::ir::IrMediaKind::Video => "video/mp4",
     }
 }
 
@@ -53,7 +53,7 @@ impl ProtocolWriter for GeminiWriter {
         if !obj.get("contents").is_some_and(serde_json::Value::is_array) {
             return false;
         }
-        let Some(pairs) = crate::proto::rewrite_text_pairs(messages) else {
+        let Some(pairs) = busbar_core::proto::rewrite_text_pairs(messages) else {
             return false;
         };
         let framed: Vec<serde_json::Value> = pairs
@@ -71,7 +71,7 @@ impl ProtocolWriter for GeminiWriter {
         true
     }
 
-    fn write_request(&self, req: &crate::ir::IrRequest) -> serde_json::Value {
+    fn write_request(&self, req: &busbar_core::ir::IrRequest) -> serde_json::Value {
         let mut out = serde_json::Map::new();
 
         // systemInstruction.parts[] from IrRequest.system
@@ -80,7 +80,7 @@ impl ProtocolWriter for GeminiWriter {
                 .system
                 .iter()
                 .filter_map(|block| match block {
-                    crate::ir::IrBlock::Text { text, .. } => {
+                    busbar_core::ir::IrBlock::Text { text, .. } => {
                         Some(serde_json::json!({ "text": text }))
                     }
                     // Gemini's systemInstruction.parts carries text only. Drop any non-Text system
@@ -123,7 +123,7 @@ impl ProtocolWriter for GeminiWriter {
             std::collections::HashMap::new();
         for msg in &req.messages {
             for block in &msg.content {
-                if let crate::ir::IrBlock::ToolUse { id, name, .. } = block {
+                if let busbar_core::ir::IrBlock::ToolUse { id, name, .. } = block {
                     if !id.is_empty() {
                         tool_name_by_id.insert(id.as_str(), name.as_str());
                     }
@@ -135,8 +135,8 @@ impl ProtocolWriter for GeminiWriter {
         let mut contents_arr: Vec<serde_json::Value> = Vec::new();
         for msg in &req.messages {
             let role_str = match msg.role {
-                crate::ir::IrRole::User => "user",
-                crate::ir::IrRole::Assistant => "model",
+                busbar_core::ir::IrRole::User => "user",
+                busbar_core::ir::IrRole::Assistant => "model",
                 // A Tool-role IR message carries `ToolResult` blocks, emitted below as Gemini
                 // `functionResponse` parts. In the native Gemini GenerateContentRequest schema a
                 // `functionResponse` MUST be sent under a `user`-side turn: the `model` role is
@@ -144,17 +144,17 @@ impl ProtocolWriter for GeminiWriter {
                 // `functionResponse`s). Emitting a `functionResponse` under `role:"model"` is a
                 // non-native shape the real Gemini API / google-genai SDK rejects. Map Tool →
                 // "user" (matching the Bedrock writer's `toolResult` handling).
-                crate::ir::IrRole::Tool => "user",
-                crate::ir::IrRole::System => continue, // Already in systemInstruction
+                busbar_core::ir::IrRole::Tool => "user",
+                busbar_core::ir::IrRole::System => continue, // Already in systemInstruction
             };
 
             let mut parts_arr: Vec<serde_json::Value> = Vec::new();
             for block in &msg.content {
                 match block {
-                    crate::ir::IrBlock::Text { text, .. } => {
+                    busbar_core::ir::IrBlock::Text { text, .. } => {
                         parts_arr.push(serde_json::json!({ "text": text }))
                     }
-                    crate::ir::IrBlock::ToolUse {
+                    busbar_core::ir::IrBlock::ToolUse {
                         id: _,
                         name,
                         input,
@@ -186,7 +186,7 @@ impl ProtocolWriter for GeminiWriter {
                         }
                         parts_arr.push(serde_json::Value::Object(part_obj))
                     }
-                    crate::ir::IrBlock::ToolResult {
+                    busbar_core::ir::IrBlock::ToolResult {
                         tool_use_id,
                         content,
                         ..
@@ -204,7 +204,7 @@ impl ProtocolWriter for GeminiWriter {
                         let response_text = content
                             .iter()
                             .filter_map(|b| match b {
-                                crate::ir::IrBlock::Text { text, .. } => Some(text.clone()),
+                                busbar_core::ir::IrBlock::Text { text, .. } => Some(text.clone()),
                                 // A non-Text ToolResult block is a Bedrock json-tool-result sentinel
                                 // with no Gemini analog. Drop WITH a warn (drop-with-warn convention)
                                 // instead of vanishing silently.
@@ -234,8 +234,9 @@ impl ProtocolWriter for GeminiWriter {
                         // the backend (400). Coerce any non-object parsed value into a valid Struct:
                         // `null` becomes `{}` (an empty-but-valid response), and any other non-object
                         // scalar/array is wrapped under `{"output": <value>}` so its content survives.
-                        let parsed: serde_json::Value = crate::json::parse_str(&response_text)
-                            .unwrap_or_else(|_| serde_json::json!({ "output": response_text }));
+                        let parsed: serde_json::Value =
+                            busbar_core::json::parse_str(&response_text)
+                                .unwrap_or_else(|_| serde_json::json!({ "output": response_text }));
                         let response_val: serde_json::Value = if parsed.is_object() {
                             parsed
                         } else if parsed.is_null() {
@@ -247,20 +248,21 @@ impl ProtocolWriter for GeminiWriter {
                             "functionResponse": { "name": name, "response": response_val }
                         }))
                     }
-                    crate::ir::IrBlock::Image { source, .. } => match source {
+                    busbar_core::ir::IrBlock::Image { source, .. } => match source {
                         // A remote URL → Gemini's native `fileData{fileUri}` (URL reference, not base64).
-                        crate::ir::IrImageSource::Url(uri) => parts_arr.push(serde_json::json!({
-                            "fileData": { "fileUri": uri }
-                        })),
-                        // Inline base64 → `inlineData{mimeType, data}`.
-                        crate::ir::IrImageSource::Base64 { media_type, data } => {
+                        busbar_core::ir::IrImageSource::Url(uri) => {
                             parts_arr.push(serde_json::json!({
-                                "inlineData": { "mimeType": media_type, "data": data }
+                                "fileData": { "fileUri": uri }
                             }))
                         }
+                        // Inline base64 → `inlineData{mimeType, data}`.
+                        busbar_core::ir::IrImageSource::Base64 { media_type, data } => parts_arr
+                            .push(serde_json::json!({
+                                "inlineData": { "mimeType": media_type, "data": data }
+                            })),
                         // A Responses `file_id` / Bedrock `s3Location` reference has no Gemini
                         // projection — emitting it would corrupt the part. Drop with a warn.
-                        crate::ir::IrImageSource::Vendor { .. } => {
+                        busbar_core::ir::IrImageSource::Vendor { .. } => {
                             tracing::warn!(
                                 "dropping unresolvable vendor-scoped image reference on Gemini \
                                  egress: a file_id / s3Location has no cross-vendor analog"
@@ -272,8 +274,8 @@ impl ProtocolWriter for GeminiWriter {
                     // carry a PDF, an audio clip and a video with no per-kind wire shape. So every
                     // `Media` kind projects natively here — this writer is why the attachment gap
                     // was never an untranslatable-concept problem, only an unmodelled-IR one.
-                    crate::ir::IrBlock::Media { kind, source, .. } => match source {
-                        crate::ir::IrImageSource::Url(uri) => {
+                    busbar_core::ir::IrBlock::Media { kind, source, .. } => match source {
+                        busbar_core::ir::IrImageSource::Url(uri) => {
                             // Re-emit the `mimeType` the reader used to route this block. A bare
                             // container guess is better than omitting it: Gemini uses `mimeType` to
                             // decide how to decode the referenced file.
@@ -281,12 +283,11 @@ impl ProtocolWriter for GeminiWriter {
                                 "fileData": { "fileUri": uri, "mimeType": gemini_mime_for_kind(*kind) }
                             }))
                         }
-                        crate::ir::IrImageSource::Base64 { media_type, data } => {
-                            parts_arr.push(serde_json::json!({
+                        busbar_core::ir::IrImageSource::Base64 { media_type, data } => parts_arr
+                            .push(serde_json::json!({
                                 "inlineData": { "mimeType": media_type, "data": data }
-                            }))
-                        }
-                        crate::ir::IrImageSource::Vendor { .. } => {
+                            })),
+                        busbar_core::ir::IrImageSource::Vendor { .. } => {
                             tracing::warn!(
                                 media_kind = kind.as_str(),
                                 "dropping attachment on Gemini egress: the source is a vendor-scoped \
@@ -295,13 +296,13 @@ impl ProtocolWriter for GeminiWriter {
                             );
                         }
                     },
-                    crate::ir::IrBlock::Json(_) => {
+                    busbar_core::ir::IrBlock::Json(_) => {
                         // Structured-json (Bedrock tool-result content) has no Gemini part shape.
                     }
                     // A REDACTED reasoning block holds opaque encrypted bytes with no Gemini analog —
                     // drop it (its `text` is not plaintext reasoning).
-                    crate::ir::IrBlock::Thinking { redacted: true, .. } => {}
-                    crate::ir::IrBlock::Thinking {
+                    busbar_core::ir::IrBlock::Thinking { redacted: true, .. } => {}
+                    busbar_core::ir::IrBlock::Thinking {
                         text, signature, ..
                     } => {
                         // Thinking → Gemini `{text, thought:true, thoughtSignature?}`. Gemini
@@ -343,7 +344,7 @@ impl ProtocolWriter for GeminiWriter {
         }
 
         // tools → tools[0].functionDeclarations[]
-        crate::proto::warn_dropped_tool_strict(&req.tools, crate::proto::PROTO_GEMINI);
+        busbar_core::proto::warn_dropped_tool_strict(&req.tools, busbar_core::proto::PROTO_GEMINI);
         if !req.tools.is_empty() {
             let func_decls: Vec<_> = req
                 .tools
@@ -457,7 +458,7 @@ impl ProtocolWriter for GeminiWriter {
         if !req.stop.is_empty() {
             gen_config.insert(
                 "stopSequences".to_string(),
-                serde_json::json!(crate::proto::clamp_stop(&req.stop, 5, "Gemini")),
+                serde_json::json!(busbar_core::proto::clamp_stop(&req.stop, 5, "Gemini")),
             );
         }
         // Promoted sampling controls in Gemini's native generationConfig shape (cross-protocol
@@ -505,9 +506,9 @@ impl ProtocolWriter for GeminiWriter {
         if let Some(ask) = req.reasoning {
             let table = req
                 .reasoning_budgets
-                .unwrap_or(crate::ir::REASONING_BUDGET_DEFAULTS);
+                .unwrap_or(busbar_core::ir::REASONING_BUDGET_DEFAULTS);
             let budget: i64 = match ask {
-                crate::ir::IrReasoningAsk::Dynamic => -1,
+                busbar_core::ir::IrReasoningAsk::Dynamic => -1,
                 other => i64::from(other.to_budget(table)),
             };
             // Only SYNTHESIZE a thinkingConfig when the request did not already carry a native
@@ -633,13 +634,15 @@ impl ProtocolWriter for GeminiWriter {
                 ERR_TYPE_RATE_LIMIT | "resource_exhausted" | "rate_limit" => {
                     Some(GRPC_RESOURCE_EXHAUSTED)
                 }
-                ERR_TYPE_OVERLOADED | crate::proxy::KIND_OVERLOADED | "unavailable" => {
+                ERR_TYPE_OVERLOADED | busbar_core::proxy::KIND_OVERLOADED | "unavailable" => {
                     Some(GRPC_UNAVAILABLE)
                 }
-                "deadline_exceeded" | crate::proxy::KIND_TIMEOUT => Some(GRPC_DEADLINE_EXCEEDED),
-                crate::proxy::KIND_API_ERROR | "internal" | crate::proxy::KIND_SERVER_ERROR => {
-                    Some(GRPC_INTERNAL)
+                "deadline_exceeded" | busbar_core::proxy::KIND_TIMEOUT => {
+                    Some(GRPC_DEADLINE_EXCEEDED)
                 }
+                busbar_core::proxy::KIND_API_ERROR
+                | "internal"
+                | busbar_core::proxy::KIND_SERVER_ERROR => Some(GRPC_INTERNAL),
                 "unimplemented" | "not_implemented" => Some(GRPC_UNIMPLEMENTED),
                 _ => None,
             }
@@ -778,7 +781,7 @@ impl ProtocolWriter for GeminiWriter {
             // BlockStarts are not strictly interleaved with their BlockStops) never clobber each
             // other. Text blocks have no Gemini block-start frame (inline parts) → None.
             IrStreamEvent::BlockStart { index, block } => match block {
-                crate::ir::IrBlockMeta::ToolUse { name, .. } => {
+                busbar_core::ir::IrBlockMeta::ToolUse { name, .. } => {
                     if let Ok(mut guard) = self.open_tools.lock() {
                         match guard.iter_mut().find(|(idx, _, _)| idx == index) {
                             Some(entry) => {
@@ -790,14 +793,14 @@ impl ProtocolWriter for GeminiWriter {
                     }
                     None
                 }
-                crate::ir::IrBlockMeta::Text
-                | crate::ir::IrBlockMeta::Thinking
-                | crate::ir::IrBlockMeta::Image => None,
+                busbar_core::ir::IrBlockMeta::Text
+                | busbar_core::ir::IrBlockMeta::Thinking
+                | busbar_core::ir::IrBlockMeta::Image => None,
             },
 
             // TextDelta → chunk with text part
             IrStreamEvent::BlockDelta { index, delta } => match delta {
-                crate::ir::IrDelta::TextDelta(text) => Some((
+                busbar_core::ir::IrDelta::TextDelta(text) => Some((
                     "".to_string(),
                     serde_json::json!({
                         "candidates": [{
@@ -826,7 +829,7 @@ impl ProtocolWriter for GeminiWriter {
                 // per-connection memory-amplification DoS distinct from `MAX_GEMINI_TOOL_FRAMES`, which
                 // only bounds the COUNT of distinct open blocks, not one block's accumulated size).
                 //
-                // The cap is `crate::limits::translate_body_max_bytes()` — the SAME operator-tunable,
+                // The cap is `busbar_core::limits::translate_body_max_bytes()` — the SAME operator-tunable,
                 // live-reconfigurable limit (default 32 MiB, coupled to `limits.request_body_max_bytes`)
                 // that already bounds a buffered cross-protocol NON-STREAM completion body elsewhere
                 // (`proxy::wire::max_translated_body_bytes`), whose own doc comment names "big tool-call
@@ -834,7 +837,7 @@ impl ProtocolWriter for GeminiWriter {
                 // new hardcoded constant — means an operator who raises the one knob to admit larger
                 // tool payloads gets that same headroom on this streaming path too, instead of the two
                 // paths silently diverging. A read per fragment is cheap (an uncontended `RwLock` read),
-                // matching every other `crate::limits` call site's per-use-site read.
+                // matching every other `busbar_core::limits` call site's per-use-site read.
                 //
                 // Once appending a fragment would cross the cap, that fragment (and every subsequent one
                 // for this block) is dropped whole rather than sliced at the boundary: the buffer is
@@ -844,12 +847,12 @@ impl ProtocolWriter for GeminiWriter {
                 // degrades to the pre-existing `args: {}` fallback there (established for ANY
                 // unparseable accumulation, cap-truncated or not) — the call is never lost and its name
                 // always survives, so this introduces no new failure mode.
-                crate::ir::IrDelta::InputJsonDelta(json_str) => {
+                busbar_core::ir::IrDelta::InputJsonDelta(json_str) => {
                     if let Ok(mut guard) = self.open_tools.lock() {
                         if let Some((_, _, args)) =
                             guard.iter_mut().find(|(idx, _, _)| idx == index)
                         {
-                            let cap = crate::limits::translate_body_max_bytes();
+                            let cap = busbar_core::limits::translate_body_max_bytes();
                             if args.len().saturating_add(json_str.len()) <= cap {
                                 args.push_str(json_str);
                             }
@@ -865,7 +868,7 @@ impl ProtocolWriter for GeminiWriter {
                 // the same per-chunk shape used for a `TextDelta`, just flagged `thought:true`. So we
                 // emit one chunk per fragment, mirroring the non-stream `{text, thought:true}` shape.
                 // Previously this returned None, silently dropping a cross-protocol reasoning stream.
-                crate::ir::IrDelta::ThinkingDelta(thinking) => Some((
+                busbar_core::ir::IrDelta::ThinkingDelta(thinking) => Some((
                     "".to_string(),
                     serde_json::json!({
                         "candidates": [{
@@ -883,7 +886,7 @@ impl ProtocolWriter for GeminiWriter {
                 // signature arrives as its own IR delta, so emit a minimal thought part bearing the
                 // signature (empty text, `thought:true`) — the closest faithful streamed form, since a
                 // bare signature has no accompanying incremental text. Previously dropped (None).
-                crate::ir::IrDelta::SignatureDelta(sig) => Some((
+                busbar_core::ir::IrDelta::SignatureDelta(sig) => Some((
                     "".to_string(),
                     serde_json::json!({
                         "candidates": [{
@@ -896,7 +899,7 @@ impl ProtocolWriter for GeminiWriter {
                 )),
                 // A streamed redacted-reasoning delta (opaque encrypted bytes) has no Gemini analog —
                 // drop it rather than emit a non-native part.
-                crate::ir::IrDelta::RedactedReasoningDelta(_) => None,
+                busbar_core::ir::IrDelta::RedactedReasoningDelta(_) => None,
 
                 // STREAMING citations → emit a candidate-level `citationMetadata.citationSources`
                 // chunk, mirroring the non-stream `read_response`/`write_response` shape (Gemini
@@ -906,7 +909,7 @@ impl ProtocolWriter for GeminiWriter {
                 // neutral fields otherwise (e.g. an Anthropic-sourced citation on an Anthropic→Gemini
                 // hop), so a foreign `raw` never leaks through this writer. An EMPTY citation vec
                 // carries nothing → emit no chunk (None) rather than a stray empty `citationMetadata`.
-                crate::ir::IrDelta::CitationsDelta(citations) => {
+                busbar_core::ir::IrDelta::CitationsDelta(citations) => {
                     if citations.is_empty() {
                         None
                     } else {
@@ -930,7 +933,7 @@ impl ProtocolWriter for GeminiWriter {
                         ))
                     }
                 }
-                crate::ir::IrDelta::LogprobsDelta(lps) => {
+                busbar_core::ir::IrDelta::LogprobsDelta(lps) => {
                     // Streamed logprobs (e.g. an OpenAI backend's per-chunk `logprobs.content[]`)
                     // in Gemini's native chunk shape: a candidate carrying only `logprobsResult`.
                     // An empty vec carries nothing and emits no frame.
@@ -976,7 +979,8 @@ impl ProtocolWriter for GeminiWriter {
                     let args: serde_json::Value = if args_str.is_empty() {
                         serde_json::json!({})
                     } else {
-                        crate::json::parse_str(&args_str).unwrap_or_else(|_| serde_json::json!({}))
+                        busbar_core::json::parse_str(&args_str)
+                            .unwrap_or_else(|_| serde_json::json!({}))
                     };
                     let mut fc_obj = serde_json::Map::new();
                     fc_obj.insert("name".to_string(), serde_json::json!(name));
@@ -1095,7 +1099,7 @@ impl ProtocolWriter for GeminiWriter {
         }
     }
 
-    fn write_response(&self, resp: &crate::ir::IrResponse) -> serde_json::Value {
+    fn write_response(&self, resp: &busbar_core::ir::IrResponse) -> serde_json::Value {
         // Build candidates array (Gemini whole-response format)
         let mut parts_arr: Vec<serde_json::Value> = Vec::new();
 
@@ -1111,7 +1115,7 @@ impl ProtocolWriter for GeminiWriter {
 
         for block in &resp.content {
             match block {
-                crate::ir::IrBlock::Text {
+                busbar_core::ir::IrBlock::Text {
                     text, citations, ..
                 } => {
                     for c in citations {
@@ -1126,7 +1130,7 @@ impl ProtocolWriter for GeminiWriter {
                 // ToolUse → functionCall{name, args}. `args` MUST be a JSON OBJECT (Gemini Struct);
                 // coerce any non-object input (array/scalar/null/unparseable string) the same way
                 // `write_request` does.
-                crate::ir::IrBlock::ToolUse {
+                busbar_core::ir::IrBlock::ToolUse {
                     id: _,
                     name,
                     input,
@@ -1159,8 +1163,8 @@ impl ProtocolWriter for GeminiWriter {
                 // path instead of being dropped.
                 // A REDACTED reasoning block holds opaque encrypted bytes with no Gemini analog —
                 // drop it (emitting its `text` would leak the encrypted bytes as visible reasoning).
-                crate::ir::IrBlock::Thinking { redacted: true, .. } => {}
-                crate::ir::IrBlock::Thinking {
+                busbar_core::ir::IrBlock::Thinking { redacted: true, .. } => {}
+                busbar_core::ir::IrBlock::Thinking {
                     text, signature, ..
                 } => {
                     let mut part = serde_json::Map::new();
@@ -1174,10 +1178,10 @@ impl ProtocolWriter for GeminiWriter {
 
                 // Image/Media/ToolResult not supported in response OUTPUT (a model does not emit
                 // an attachment back on this surface), so nothing is lost by omitting them here.
-                crate::ir::IrBlock::Image { .. }
-                | crate::ir::IrBlock::Media { .. }
-                | crate::ir::IrBlock::ToolResult { .. }
-                | crate::ir::IrBlock::Json(_) => {}
+                busbar_core::ir::IrBlock::Image { .. }
+                | busbar_core::ir::IrBlock::Media { .. }
+                | busbar_core::ir::IrBlock::ToolResult { .. }
+                | busbar_core::ir::IrBlock::Json(_) => {}
             }
         }
 
@@ -1313,7 +1317,7 @@ impl ProtocolWriter for GeminiWriter {
 
     fn egress_user_agent(&self) -> &'static str {
         // Google GenAI SDK UA shape — pinned, see `EGRESS_UA_GEMINI` in proxy engine.
-        crate::proxy::EGRESS_UA_GEMINI
+        busbar_core::proxy::EGRESS_UA_GEMINI
     }
 
     fn has_model_in_url(&self) -> bool {
@@ -1342,7 +1346,7 @@ impl ProtocolWriter for GeminiWriter {
         true
     }
 
-    fn make_array_stream_framer(&self) -> Option<Box<dyn crate::proto::JsonArrayFramer>> {
+    fn make_array_stream_framer(&self) -> Option<Box<dyn busbar_core::proto::JsonArrayFramer>> {
         // Gemini `:streamGenerateContent` WITHOUT `?alt=sse` expects a JSON-array streamed body; this
         // builds the framer that reframes the (gemini-shape) SSE bytes into that array. The forward
         // path engages it only when `uses_array_stream_shim()` AND `wants_array_stream(body)` hold.
