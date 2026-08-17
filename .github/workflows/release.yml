@@ -80,7 +80,9 @@ permissions:
   id-token: write      # OIDC identity for keyless Sigstore signing (provenance)
   attestations: write  # record the build-provenance attestation
   actions: read
-  issues: write
+  # No `issues: write`: verify-deploy.yml no longer files an issue when a release is broken for
+  # consumers, it fails its own run and writes the findings to the run summary. Nothing this
+  # workflow calls needs the permission any more.
 
 jobs:
   # -- PLAN: what version is this, and is it safe to mint that name at all? -------------------------
@@ -1115,7 +1117,6 @@ jobs:
       image_ref: getbusbar/busbar:${{ needs.plan.outputs.staging_tag }}
     permissions:
       contents: read
-      issues: write
       actions: read
     secrets: inherit
 
@@ -1397,11 +1398,11 @@ jobs:
     with:
       version: ${{ needs.plan.outputs.version }}
     # Job-level permissions REPLACE the workflow-level block for a called workflow, and a called
-    # workflow can never exceed what it is granted here. `issues: write` is what lets the alert job
-    # file the issue; `actions: read` is what lets it read the failed job's log to quote the exact
-    # expected/observed values.
+    # workflow can never exceed what it is granted here. `actions: read` is what lets the alert job
+    # read the failed job's log to quote the exact expected/observed values into the run summary.
+    # `issues: write` is deliberately NOT granted: the alert job fails the run instead of filing an
+    # issue, so withholding it means a reintroduced `gh issue create` errors rather than working.
     permissions:
       contents: read
-      issues: write
       actions: read
     secrets: inherit
