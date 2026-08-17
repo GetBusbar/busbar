@@ -95,7 +95,6 @@ impl RelayTransport for CountingDenier {
 }
 
 struct Seam<'a> {
-    policy: FetchPolicy,
     transport: &'a CountingDenier,
 }
 impl RelaySeam for Seam<'_> {
@@ -104,9 +103,6 @@ impl RelaySeam for Seam<'_> {
     }
     fn transport(&self) -> &dyn RelayTransport {
         self.transport
-    }
-    fn policy(&self) -> &FetchPolicy {
-        &self.policy
     }
 }
 
@@ -141,7 +137,6 @@ fn a_backend_hard_down_opens_the_core_cell_and_the_second_hop_never_reaches_the_
         hits: AtomicUsize::new(0),
     };
     let seam = Seam {
-        policy: FetchPolicy::default(),
         transport: &transport,
     };
     let rpc_id = serde_json::json!(1);

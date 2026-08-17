@@ -320,7 +320,7 @@ async fn subscribing_to_an_unknown_or_foreign_task_is_task_not_found() {
 
 /// The seam a create needs, answering one public address so the SSRF guard has something to pass.
 fn seam() -> std::sync::Arc<dyn super::super::relay::RelaySeam> {
-    use super::super::fetch::{FetchPolicy, HttpResponse, Resolver};
+    use super::super::fetch::{HttpResponse, Resolver};
     use super::super::relay::{ChunkFlow, RelaySeam, RelayTransport, StreamHead};
     use std::net::{IpAddr, Ipv4Addr};
 
@@ -353,7 +353,7 @@ fn seam() -> std::sync::Arc<dyn super::super::relay::RelaySeam> {
             Err("this test opens no socket".to_string())
         }
     }
-    struct Seam(FetchPolicy);
+    struct Seam;
     impl RelaySeam for Seam {
         fn resolver(&self) -> &dyn Resolver {
             &PublicResolver
@@ -361,11 +361,8 @@ fn seam() -> std::sync::Arc<dyn super::super::relay::RelaySeam> {
         fn transport(&self) -> &dyn RelayTransport {
             &NoTransport
         }
-        fn policy(&self) -> &FetchPolicy {
-            &self.0
-        }
     }
-    std::sync::Arc::new(Seam(FetchPolicy::default()))
+    std::sync::Arc::new(Seam)
 }
 
 const HOOK: &str = "https://hook.caller.test/notify";

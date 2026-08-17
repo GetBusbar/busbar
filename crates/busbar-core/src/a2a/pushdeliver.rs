@@ -308,7 +308,6 @@ pub(crate) fn deliver(seam: &dyn RelaySeam, task: &Task) -> Result<(), PushRefus
     let Some(url) = task.push_callback.as_deref() else {
         return Err(PushRefusal::NoCallback);
     };
-    let allow_plaintext = seam.policy().allow_plaintext;
 
     // ── 1. RE-RESOLVE. The stored answer is not reused; that is the entire reason this is here. ──
     let host = pushnotify::host_of(url).map_err(PushRefusal::Guard)?;
@@ -334,11 +333,11 @@ pub(crate) fn deliver(seam: &dyn RelaySeam, task: &Task) -> Result<(), PushRefus
     let pinned = match previous {
         // The stronger check: pass the guard AND still overlap what was pinned before.
         Some(prev) if prev.url == url => {
-            pushnotify::revalidate(&prev, &fresh, allow_plaintext).map_err(PushRefusal::Guard)?
+            pushnotify::revalidate(&prev, &fresh).map_err(PushRefusal::Guard)?
         }
         // No pin for this task in this process — a restart, or the first delivery. The full guard
         // still runs; only the overlap requirement is unavailable.
-        _ => pushnotify::validate(url, &fresh, allow_plaintext).map_err(PushRefusal::Guard)?,
+        _ => pushnotify::validate(url, &fresh).map_err(PushRefusal::Guard)?,
     };
 
     // ── 3. CONNECT, to an address that just passed, and to nothing else. ──

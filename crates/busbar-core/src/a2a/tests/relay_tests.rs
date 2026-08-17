@@ -599,7 +599,7 @@ async fn a_registration_demoted_between_admission_and_the_socket_is_not_reached(
             panic!("a demoted registration must never be reached");
         }
     }
-    struct Seam(std::sync::Arc<crate::a2a::plane::A2aPlane>, FetchPolicy);
+    struct Seam(std::sync::Arc<crate::a2a::plane::A2aPlane>);
     impl crate::a2a::relay::RelaySeam for Seam {
         fn resolver(&self) -> &dyn Resolver {
             // Leaked once, for the life of a test process. A `Box::leak` rather than a field
@@ -609,12 +609,8 @@ async fn a_registration_demoted_between_admission_and_the_socket_is_not_reached(
         fn transport(&self) -> &dyn crate::a2a::relay::RelayTransport {
             &NeverPosts
         }
-        fn policy(&self) -> &FetchPolicy {
-            &self.1
-        }
     }
-    h.plane
-        .set_relay_seam(std::sync::Arc::new(Seam(plane, FetchPolicy::default())));
+    h.plane.set_relay_seam(std::sync::Arc::new(Seam(plane)));
 
     let (status, body) = call(&h).await;
     assert_eq!(
@@ -864,16 +860,13 @@ fn the_relay_refuses_an_internal_backend_through_the_same_ssrf_guard() {
             panic!("the transport must never be reached for a refused target");
         }
     }
-    struct Seam(FetchPolicy);
+    struct Seam;
     impl crate::a2a::relay::RelaySeam for Seam {
         fn resolver(&self) -> &dyn Resolver {
             &Internal
         }
         fn transport(&self) -> &dyn crate::a2a::relay::RelayTransport {
             &NeverCalled
-        }
-        fn policy(&self) -> &FetchPolicy {
-            &self.0
         }
     }
 
@@ -891,7 +884,7 @@ fn the_relay_refuses_an_internal_backend_through_the_same_ssrf_guard() {
             framing: crate::a2a::relay::default_framing(),
             breakers: None,
         },
-        &Seam(FetchPolicy::default()),
+        &Seam,
         1_000,
     );
     assert!(
@@ -1004,6 +997,12 @@ async fn a_backend_code_the_specification_does_not_define_is_not_passed_through(
 ///
 /// Both directions are asserted, because a relay that simply stopped guarding would also pass the
 /// first half.
+///
+/// THE COUNTERFACTUAL IS NOW STRUCTURAL RATHER THAN ASSERTED. This test used to hand the seam a
+/// PERMISSIVE policy and require the relay to ignore it. `RelaySeam::policy()` has since been
+/// deleted — its last caller was the push-delivery path's `allow_plaintext` read, and that knob is
+/// gone — so a seam cannot carry a policy for the relay to wrongly read. What remains asserted is
+/// the half that is still falsifiable: the registration's own policy decides, in both directions.
 #[test]
 fn the_relay_guards_with_the_registrations_policy_and_not_the_planes_default() {
     struct Loopback;
@@ -1041,16 +1040,13 @@ fn the_relay_guards_with_the_registrations_policy_and_not_the_planes_default() {
             unreachable!("this test does not stream")
         }
     }
-    struct Seam(FetchPolicy);
+    struct Seam;
     impl crate::a2a::relay::RelaySeam for Seam {
         fn resolver(&self) -> &dyn Resolver {
             &Loopback
         }
         fn transport(&self) -> &dyn crate::a2a::relay::RelayTransport {
             &Reached
-        }
-        fn policy(&self) -> &FetchPolicy {
-            &self.0
         }
     }
 
@@ -1080,7 +1076,7 @@ fn the_relay_guards_with_the_registrations_policy_and_not_the_planes_default() {
             framing: crate::a2a::relay::default_framing(),
             breakers: None,
         },
-        &Seam(plane_default.clone()),
+        &Seam,
         1_000,
     );
     assert!(
@@ -1105,7 +1101,7 @@ fn the_relay_guards_with_the_registrations_policy_and_not_the_planes_default() {
             framing: crate::a2a::relay::default_framing(),
             breakers: None,
         },
-        &Seam(registration_policy.clone()),
+        &Seam,
         1_000,
     );
     assert!(

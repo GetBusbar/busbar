@@ -160,10 +160,16 @@ pub(crate) struct StreamHead {
 /// holding its own two: a caller that picked up a resolver and a transport from different places
 /// could pair a real transport with a fixture resolver, which is the one combination that would
 /// look tested and connect wherever the client felt like.
+///
+/// THERE IS NO `policy()` HERE, AND ITS ABSENCE IS LOAD-BEARING. This trait used to hand out the
+/// plane's [`super::fetch::FetchPolicy`], and the ONE caller that ever asked was `pushdeliver`,
+/// reading `allow_plaintext` off it to decide whether a push callback had to be `https`. That knob
+/// is gone — HTTPS-only for push callbacks is structural, not defaulted — and with it the only
+/// reason a seam had to expose a policy at all. A seam that cannot be asked for a policy is a
+/// delivery path that cannot be told to relax one.
 pub(crate) trait RelaySeam: Send + Sync {
     fn resolver(&self) -> &dyn Resolver;
     fn transport(&self) -> &dyn RelayTransport;
-    fn policy(&self) -> &FetchPolicy;
 }
 
 /// THE LIVE TRUST DECISION, as a seam, asked immediately before the socket.

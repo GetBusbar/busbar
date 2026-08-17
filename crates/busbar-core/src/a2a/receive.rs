@@ -2248,7 +2248,7 @@ pub(crate) async fn validate_callback(
         } else {
             seam.resolver().resolve(&host).unwrap_or_default()
         };
-        super::pushnotify::validate(&url, &resolved, false).map_err(|e| e.to_string())
+        super::pushnotify::validate(&url, &resolved).map_err(|e| e.to_string())
     })
     .await
     .unwrap_or_else(|_| Err("the push callback could not be validated".to_string()))

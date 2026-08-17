@@ -653,7 +653,7 @@ fn an_illegal_transition_writes_neither_a_row_nor_an_event() {
 fn red_demo_the_store_accepts_a_url_the_guard_refuses() {
     use crate::a2a::pushnotify;
     let hostile = "https://169.254.169.254/hook";
-    let refusal = pushnotify::validate(hostile, &[], false).expect_err("the guard refuses it");
+    let refusal = pushnotify::validate(hostile, &[]).expect_err("the guard refuses it");
 
     let store = durable();
     let handle: Arc<dyn busbar_api::Store> = store.clone();
