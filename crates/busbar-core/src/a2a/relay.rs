@@ -1512,7 +1512,42 @@ fn prepare<'a>(
     let framed_url = framed.url.clone();
     let request = build_request(framed, call.agent_id, call.lease, call.a2a_version, now_ms)
         .map_err(RelayRefusal::Lease)?;
+    // THE LEG IS ABOUT TO HAPPEN, so it is counted here: everything above this line is busbar's own
+    // refusal (the guard, the live trust decision, an unframable method, a lease that would not
+    // build) and none of it reaches a backend, so counting an attempt for one of those would report
+    // traffic at an agent busbar never contacted. See `count_leg_failure` for the other half.
+    crate::telemetry::upstream_attempt_on(call.agent_id, framed_leg(call.framing));
     Ok((framed_url, pin, request))
+}
+
+/// COUNT ONE FAILED RELAY LEG on `busbar_upstream_failures_total`, and hand the refusal straight
+/// back — a pass-through so the two hops can count without either of them growing a branch.
+///
+/// ## Why this family and not one of its own
+///
+/// These are the two series the MODEL plane's client leg has always emitted (`proxy::engine`), and
+/// until this function existed the A2A relay leg emitted NOTHING. An operator watching `/metrics`
+/// saw every task arriving at busbar's A2A door and had no signal at all about the hops busbar
+/// itself originated: a backend agent that had stopped answering was invisible. `pool` is the
+/// operator's own `agent_def` id and `lane` is the binding word off the closed transport axis —
+/// both bounded by the config file, neither caller-supplied.
+///
+/// ## Only [`RelayRefusal::Transport`]
+///
+/// That is the socket failing or the deadline expiring: availability, which is what this family
+/// means on the model plane. `Status` is a backend that ANSWERED (it is reachable, and a task it
+/// refuses is work-level), `BodyTooLarge` and `Unframable` are busbar's own reading of an answer
+/// that arrived, and `Guard`/`Demoted`/`Lease` never reach a socket at all — the same rule
+/// `crate::mcp::client::wire::send` applies to its own three transport-error variants.
+fn count_leg_failure(call: &RelayCall<'_>, refusal: RelayRefusal) -> RelayRefusal {
+    if matches!(refusal, RelayRefusal::Transport { .. }) {
+        crate::telemetry::upstream_failure_on(
+            call.agent_id,
+            framed_leg(call.framing),
+            crate::proxy::DISPOSITION_TRANSIENT,
+        );
+    }
+    refusal
 }
 
 /// The axis label for one framing. A one-line helper so the `tracing` call above reads as a label
@@ -1560,9 +1595,14 @@ fn relay_once(
             &request.headers,
             &request.body,
         )
-        .map_err(|err| RelayRefusal::Transport {
-            url: url.to_string(),
-            err,
+        .map_err(|err| {
+            count_leg_failure(
+                call,
+                RelayRefusal::Transport {
+                    url: url.to_string(),
+                    err,
+                },
+            )
         })?;
 
     if !(200..300).contains(&resp.status) {
@@ -2136,9 +2176,14 @@ fn relay_stream_once(
                 &request.body,
                 &mut on_chunk,
             )
-            .map_err(|err| RelayRefusal::Transport {
-                url: url.to_string(),
-                err,
+            .map_err(|err| {
+                count_leg_failure(
+                    call,
+                    RelayRefusal::Transport {
+                        url: url.to_string(),
+                        err,
+                    },
+                )
             })?
     };
 
@@ -2201,6 +2246,13 @@ mod breaker_fastfail_tests;
 #[cfg(test)]
 #[path = "tests/relay_stream_tests.rs"]
 mod relay_stream_tests;
+
+// THIS PLANE'S CLIENT LEG ON `/metrics`. Mounted here for the same reason the blocks below are: it
+// needs `relay_harness`, because the claim is about a hop that went out through the production
+// ingress and a series emitted with no backend to reach would prove only that a macro increments.
+#[cfg(test)]
+#[path = "tests/relay_leg_metrics_tests.rs"]
+mod relay_leg_metrics_tests;
 
 // THE `id` MEMBER on the receiving plane. Mounted HERE rather than from `ingress.rs`, where it
 // belongs by subject, for the one reason that outweighs tidiness: it needs `relay_harness`, and the

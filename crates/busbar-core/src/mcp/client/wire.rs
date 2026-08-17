@@ -133,3 +133,83 @@ pub(crate) trait McpWire: Send + Sync {
     #[allow(dead_code)]
     async fn notify(&self, leg: &WireLeg<'_>, req: &OutboundRequest) -> Result<(), TransportError>;
 }
+
+/// SEND ONE LEG AND COUNT IT — the client direction's observability seam, and the ONLY way this
+/// tree reaches [`McpWire::send`].
+///
+/// ## Why the count lives here and not at each caller
+///
+/// `busbar_upstream_attempts_total` and `busbar_upstream_failures_total` are the families the MODEL
+/// plane's client leg has always emitted (`proxy::engine`), and until this function existed the MCP
+/// client leg emitted NOTHING — not an under-labelled series, no series. An operator could see every
+/// request arriving at busbar's MCP door and had no signal whatever about the upstream calls busbar
+/// itself originated: a registered server that had stopped answering was invisible on `/metrics`.
+///
+/// The same argument `crate::plane::observe` makes for putting the ingress count on the MOUNT rather
+/// than in each handler applies to the egress: there are two callers today (`mcp::upstream::call`
+/// and `mcp::client::issue::issue`) and a count at each of them is two sites that have to stay in
+/// agreement, plus a third the next verb author forgets. So the seam is the wire, the two callers
+/// stop naming `mcp_wire()` themselves, and a leg that is not counted is a leg that did not happen.
+///
+/// ## The label pair, and why it is the model plane's and not a new one
+///
+/// `pool` is the operator's REGISTRATION ID (`leg.server`) and `lane` is the transport axis's own
+/// word (`crate::transport::Transport::name()`) — both operator-configured, neither caller-supplied,
+/// so the series count is bounded by the config file exactly as `pool` is on the model plane. A
+/// registration is one upstream, so its pool has one lane, and naming the CHANNEL there is what makes
+/// `busbar_upstream_failures_total{pool="fs"}` distinguishable between a child process that keeps
+/// dying and an HTTPS peer that keeps timing out.
+///
+/// ## Which failures are counted, and why not all of them
+///
+/// Only [`TransportError::Io`] — the socket failed, the deadline expired, or a child died
+/// mid-exchange. That is availability, which is what this family means on the model plane too.
+///
+/// * [`TransportError::Refused`] is busbar's OWN dispatch-time refusal (the SSRF guard, a malformed
+///   target). Nothing left busbar and the upstream answered nothing, so counting it would report an
+///   outage at a peer that was never contacted.
+/// * [`TransportError::Supervision`] is busbar's own fast answer from the crash-loop supervisor, and
+///   the crash that armed the supervisor was already counted here as the `Io` failure of the
+///   exchange it killed. Counting the refusal too is double accounting.
+///
+/// A JSON-RPC error inside a 2xx is not counted either: an upstream that answered `-32601` is
+/// reachable and healthy, which is the distinction [`TransportError`]'s own note is about.
+pub(crate) async fn send(
+    transport: crate::transport::Transport,
+    leg: &WireLeg<'_>,
+    req: &OutboundRequest,
+) -> Result<TransportResponse, TransportError> {
+    crate::telemetry::upstream_attempt_on(leg.server, transport.name());
+    let out = transport.mcp_wire().send(leg, req).await;
+    if let Err(TransportError::Io(_)) = &out {
+        crate::telemetry::upstream_failure_on(
+            leg.server,
+            transport.name(),
+            crate::proxy::DISPOSITION_TRANSIENT,
+        );
+    }
+    out
+}
+
+/// DELIVER ONE NOTIFICATION AND COUNT IT — [`send`]'s one-way sibling, counted by the same rule.
+///
+/// A notification is a leg busbar originated and a peer that cannot be written to is a peer that is
+/// down, so it belongs on the same two series. Nothing is read back, so there is no answer to
+/// classify beyond the transport's own verdict.
+#[allow(dead_code)]
+pub(crate) async fn notify(
+    transport: crate::transport::Transport,
+    leg: &WireLeg<'_>,
+    req: &OutboundRequest,
+) -> Result<(), TransportError> {
+    crate::telemetry::upstream_attempt_on(leg.server, transport.name());
+    let out = transport.mcp_wire().notify(leg, req).await;
+    if let Err(TransportError::Io(_)) = &out {
+        crate::telemetry::upstream_failure_on(
+            leg.server,
+            transport.name(),
+            crate::proxy::DISPOSITION_TRANSIENT,
+        );
+    }
+    out
+}

@@ -449,8 +449,14 @@ pub(crate) async fn call(
     // plane (the audit's closing design). One leg, one record, into the ONE core
     // breaker's degenerate cell for this server; by the time this function's `Err(String)` reaches
     // the caller the transport/status shape is gone, so classifying later would be guessing.
+    //
+    // `wire::send`, not `mcp_wire().send`: the client leg's `busbar_upstream_attempts_total` /
+    // `busbar_upstream_failures_total` count lives on that seam so a leg that is not counted is a
+    // leg that did not happen. See `super::client::wire::send`. The breaker record and the counter
+    // are DIFFERENT observers of the same leg and both belong here — the breaker decides whether the
+    // next call is attempted, the counter tells an operator which registration is the one failing.
     let breaker_key = crate::store::PlaneBreakers::tool_key(auth.server.as_str());
-    let response = match auth.transport.mcp_wire().send(&leg, &outbound).await {
+    let response = match crate::mcp::client::wire::send(auth.transport, &leg, &outbound).await {
         Ok(r) => r,
         Err(e) => {
             record_wire_failure(breakers, &breaker_key, &e);
@@ -671,3 +677,10 @@ mod calllog_dispatch_tests;
 #[cfg(test)]
 #[path = "tests/hook_gate_tests.rs"]
 mod hook_gate_tests;
+
+// THIS PLANE'S CLIENT LEG ON `/metrics`. Beside the other upstream-leg batteries for the same
+// reason they are all here: the claim is about a leg that REACHED a peer, and a series emitted with
+// no upstream to reach would prove only that a macro increments.
+#[cfg(test)]
+#[path = "tests/client_leg_metrics_tests.rs"]
+mod client_leg_metrics_tests;

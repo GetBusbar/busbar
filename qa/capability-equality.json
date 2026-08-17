@@ -244,8 +244,9 @@
     {
       "capability": "governance-budget",
       "plane": "mcp-client",
-      "state": "missing",
-      "note": "the transaction is charged at the front door (mcp-server cell); no test proves the upstream leg's spend is separately attributed or limited when busbar itself originates the leg."
+      "state": "proven",
+      "test": "crates/busbar-core/src/mcp/tests/sampling_satisfy_tests.rs::the_per_upstream_budget_refuses_the_completion_past_the_cap_before_it_runs",
+      "note": "the per-upstream sampling budget, charged BEFORE the model leg in mcp::sampling::satisfy_upstream_ask when busbar itself originates the completion. Red-proven by deleting the try_spend call from the production path: this test failed and the other five sampling_satisfy tests plus all three sampling_spend unit tests stayed green."
     },
     {
       "capability": "governance-budget",
@@ -305,8 +306,9 @@
     {
       "capability": "metrics",
       "plane": "mcp-client",
-      "state": "missing",
-      "note": "the plane-label series is driven by inbound traffic; no test proves a client-leg-specific series (upstream latency, per-server outcome) exists."
+      "state": "proven",
+      "test": "crates/busbar-core/src/mcp/tests/client_leg_metrics_tests.rs::a_tool_call_counts_an_upstream_attempt_naming_the_registration_it_was_issued_to",
+      "note": "the MODEL PLANE'S OWN client-leg families -- busbar_upstream_attempts_total / busbar_upstream_failures_total, same label keys, same disposition vocabulary -- emitted from the one counted wire seam (mcp::client::wire::send), so the plane label is no longer front-door-only. Its twin an_upstream_that_cannot_be_reached_is_counted_as_a_transient_failure_beside_its_attempt covers the failure half."
     },
     {
       "capability": "metrics",
@@ -317,8 +319,9 @@
     {
       "capability": "metrics",
       "plane": "a2a-client",
-      "state": "missing",
-      "note": "the plane-label series is driven by inbound traffic; no test proves a relay/originate-leg series (backend latency, per-agent outcome) exists."
+      "state": "proven",
+      "test": "crates/busbar-core/src/a2a/tests/relay_leg_metrics_tests.rs::a_relayed_task_counts_an_upstream_attempt_naming_the_agent_it_was_issued_to",
+      "note": "the same two client-leg families, emitted from a2a::relay::prepare and count_leg_failure, labelled with the operator's agent_def id and the binding word off the closed transport axis. Its twin a_backend_that_cannot_be_reached_is_counted_as_a_transient_upstream_failure covers the failure half."
     },
     {
       "capability": "metrics",
