@@ -25,9 +25,18 @@ use super::on_plugin_thread;
 /// here is that the obvious "fix" is to weaken the assertion to "some worker ran it", which would
 /// delete the only check that the pool reuses threads at all.
 ///
-/// The lock is deliberately NOT taken by `work_never_runs_on_the_callers_thread` or
-/// `workers_are_named_for_what_they_are`: those hold under any scheduling, and serialising them
-/// would hide a regression that only appears under contention.
+/// EVERY test in this file takes the lock, including the two whose own assertions are
+/// scheduling-independent. The first attempt exempted them on the reasoning that they hold under
+/// any scheduling, which is true of what they ASSERT and irrelevant to what they DO: they call
+/// `on_plugin_thread` too, so they take a worker, and a worker taken between the identity test's
+/// two calls is exactly the failure. That version still failed under `cargo test --workspace`
+/// (ThreadId(21) vs ThreadId(22) — adjacent ids, so the pool really did hand out a different
+/// worker). Exempting a test from a lock because of what it asserts, rather than what it touches,
+/// is the mistake; the shared resource does not care why you touched it.
+///
+/// This does NOT weaken them. Neither test is about contention: one asserts plugin work is off the
+/// caller's thread, the other asserts the workers are named. Both hold just as strongly when run
+/// alone, so serialising costs nothing but four sequential tests.
 static IDENTITY: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Poisoning is irrelevant here: the guard protects scheduling, not data, so a panicking sibling
@@ -44,6 +53,7 @@ fn identity_lock() -> std::sync::MutexGuard<'static, ()> {
 /// image when that thread exits. The whole fix is this one fact.
 #[test]
 fn work_never_runs_on_the_callers_thread() {
+    let _serial = identity_lock();
     let caller = std::thread::current().id();
     let ran_on = on_plugin_thread(|| std::thread::current().id()).expect("no panic");
     assert_ne!(
@@ -57,6 +67,7 @@ fn work_never_runs_on_the_callers_thread() {
 /// plainly whose threads these are.
 #[test]
 fn workers_are_named_for_what_they_are() {
+    let _serial = identity_lock();
     let name =
         on_plugin_thread(|| std::thread::current().name().map(str::to_string)).expect("no panic");
     assert_eq!(name.as_deref(), Some("busbar-plugin-ffi"));
@@ -100,6 +111,7 @@ fn a_panicking_job_is_caught_and_the_worker_survives() {
 /// here, and a hung gateway is not an improvement on a crashing one.
 #[test]
 fn a_nested_call_takes_a_second_worker_and_does_not_deadlock() {
+    let _serial = identity_lock();
     let (outer, inner) = on_plugin_thread(|| {
         let outer = std::thread::current().id();
         let inner = on_plugin_thread(|| std::thread::current().id()).expect("no panic");
@@ -116,6 +128,7 @@ fn a_nested_call_takes_a_second_worker_and_does_not_deadlock() {
 /// the caller blocking for the whole window, not the types.
 #[test]
 fn non_send_values_cross_the_rendezvous_in_both_directions() {
+    let _serial = identity_lock();
     let borrowed = String::from("borrowed by the closure, never moved");
     let ptr: *const u8 = borrowed.as_ptr();
     let expected_len = borrowed.len();
@@ -132,6 +145,7 @@ fn non_send_values_cross_the_rendezvous_in_both_directions() {
 /// grows on demand, so making plugin calls thread-confined does not make them single-threaded.
 #[test]
 fn concurrent_callers_get_distinct_workers() {
+    let _serial = identity_lock();
     use std::sync::{Arc, Barrier};
     let n = 4;
     let barrier = Arc::new(Barrier::new(n));
