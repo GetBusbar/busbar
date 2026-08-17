@@ -5,7 +5,7 @@
 # no-self-filed-issues-lint.sh — THE REPOSITORY DOES NOT FILE ISSUES AGAINST ITSELF.
 #
 # WHY THIS EXISTS, and it is not style. `verify-deploy.yml` used to open an issue when a published
-# release was broken for consumers. Issue #51 is one it filed. Three things were wrong with that:
+# release was broken for consumers, and it did so at least once. Three things were wrong with that:
 #
 #   1. A SELF-FILED ISSUE IS INDISTINGUISHABLE FROM A USER'S. It lands in the same queue a human
 #      triages, wearing the same clothes as a real report, and it costs the same attention to

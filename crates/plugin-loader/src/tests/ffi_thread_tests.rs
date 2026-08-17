@@ -11,6 +11,31 @@
 
 use super::on_plugin_thread;
 
+/// SERIALISES THE TESTS THAT ASSERT WORKER *IDENTITY*, and it is not belt-and-braces.
+///
+/// `libtest` runs the tests in this file on parallel threads against ONE shared pool. Two of them
+/// below assert that a specific worker is handed the next job, which is only true if no sibling
+/// takes that idle worker in between. Nothing in the pool promises otherwise: handing an idle
+/// worker to whoever asks first is the correct behaviour, so the flake was in the assertion, not
+/// in the code under test.
+///
+/// Measured before this lock: `a_worker_is_reused_across_sequential_calls` failed roughly one run
+/// in three under `cargo test -p busbar-plugin-loader --lib`, and passed 5 times out of 5 when run
+/// alone. That is the signature of a test that needs exclusivity, and the reason it must be stated
+/// here is that the obvious "fix" is to weaken the assertion to "some worker ran it", which would
+/// delete the only check that the pool reuses threads at all.
+///
+/// The lock is deliberately NOT taken by `work_never_runs_on_the_callers_thread` or
+/// `workers_are_named_for_what_they_are`: those hold under any scheduling, and serialising them
+/// would hide a regression that only appears under contention.
+static IDENTITY: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Poisoning is irrelevant here: the guard protects scheduling, not data, so a panicking sibling
+/// leaves nothing inconsistent behind.
+fn identity_lock() -> std::sync::MutexGuard<'static, ()> {
+    IDENTITY.lock().unwrap_or_else(|p| p.into_inner())
+}
+
 /// The load-bearing one: work handed to this module runs on a DIFFERENT thread from the caller's.
 ///
 /// If this regresses — if `on_plugin_thread` ever runs `f` inline as a "fast path" — then a libtest
@@ -41,6 +66,7 @@ fn workers_are_named_for_what_they_are() {
 /// handed work again after it has already run some, which is what "never retires" buys.
 #[test]
 fn a_worker_is_reused_across_sequential_calls() {
+    let _serial = identity_lock();
     let first = on_plugin_thread(|| std::thread::current().id()).expect("no panic");
     let second = on_plugin_thread(|| std::thread::current().id()).expect("no panic");
     assert_eq!(
@@ -54,6 +80,7 @@ fn a_worker_is_reused_across_sequential_calls() {
 /// would reintroduce the exact crash on the panic path.
 #[test]
 fn a_panicking_job_is_caught_and_the_worker_survives() {
+    let _serial = identity_lock();
     let before = on_plugin_thread(|| std::thread::current().id()).expect("no panic");
     let err = on_plugin_thread(|| panic!("plugin blew up"));
     assert!(
