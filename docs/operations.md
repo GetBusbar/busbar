@@ -451,11 +451,18 @@ is already in trouble. Worse, nothing says so. The first report comes from a use
 With the breaker, the target trips, subsequent calls are refused immediately, and the
 trip is a signal that names the server or the agent and the cause.
 
-**There is no failover on MCP or A2A**, and that is a design decision rather than a
-gap: a tool is namespaced to the server that exports it and an A2A task is addressed
-to a specific agent, so there is nothing to reroute to. `failover:` is not accepted
-under `tools:` or `agents:`. What the breaker gives these planes is failing *fast*
-instead of *slowly*, plus the signal.
+**Failover on MCP and A2A is opt-in, and it is declared as a pool rather than a
+per-registration key.** A tool is namespaced to the server that exports it and an A2A
+task is addressed to a specific agent, so busbar will not guess at a substitute: you
+name the verified twins yourself, in a top-level `tool_pools:` or `agent_pools:` map.
+`failover:` is still not accepted under `tools:` or `agents:` — declare the pool
+instead. Given a pool, a tripped or unreachable primary is rerouted to its verified twin
+before the first byte on an MCP `tools/call`, and a fresh A2A submission is walked the same
+way at admission. Two limits are deliberate and are not gaps: once a dispatch has gone
+out only the operations you listed in `repeatable:` may move, and an **accepted A2A
+task is pinned to the member that accepted it** — failover there is an admission-time
+choice, never a migration. For a registration with no pool, what the breaker gives
+these planes is failing *fast* instead of *slowly*, plus the signal.
 
 **What a caller sees when a target is Open:**
 

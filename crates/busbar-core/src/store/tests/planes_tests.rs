@@ -186,21 +186,24 @@ fn retry_after_is_the_exact_cooldown() {
 /// in-house MCP conformance battery red for five commits.
 ///
 /// The LLM plane's identical FSM benches a lane here on purpose, because the walk then prefers a
-/// sibling and the caller is still served. This plane has no walk (`docs/circuit-breaker.md`: "a
-/// tripped target is refused, never rerouted"), so benching the only member is a 15-120s outage
-/// for every caller, bought with one blip and announced as "open after repeated failures".
+/// sibling and the caller is still served. On this plane the walk only has somewhere to go when the
+/// operator declared a `tool_pools:`/`agent_pools:` set, and the UNPOOLED single registration is
+/// the canonical case — so benching the only member is a 15-120s outage for every caller, bought
+/// with one blip and announced as "open after repeated failures". `bench_below_trip_threshold` is
+/// a per-breaker setting, so a pooled cell inherits the conservative answer and is routed around on
+/// a TRIP instead.
 #[test]
 fn one_sub_threshold_transient_leaves_the_cell_admitting() {
     set_now_for_test(2_000);
     let b = PlaneBreakers::new();
     let key = PlaneBreakers::tool_key("fs");
-    b.record_signal(&key, &signal(StatusClass::ServerError));
+    b.record_signal(&key, 0, &signal(StatusClass::ServerError));
     assert!(
         matches!(b.state(&key), BreakerState::Closed),
         "one transient cannot satisfy min_requests, so the cell must still read Closed"
     );
     assert!(
-        b.try_admit(&key).is_ok(),
+        b.try_admit(&key, 0).is_ok(),
         "a cell that did not trip must not refuse the next caller"
     );
 }

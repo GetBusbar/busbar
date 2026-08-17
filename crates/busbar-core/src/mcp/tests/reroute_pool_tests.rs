@@ -52,6 +52,7 @@ fn plain_server(url: &str) -> crate::mcp::config::McpServerDefCfg {
     );
     McpServerDefCfg {
         command: None,
+        sampling: None,
         args: Vec::new(),
         env: Default::default(),
         cwd: None,
