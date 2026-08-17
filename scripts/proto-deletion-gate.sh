@@ -77,6 +77,47 @@ mk_providers() { # $1 = protocol name
   printf 'mock:\n  protocol: %s\n  base_url: "http://127.0.0.1:9"\n  api_key_env: MOCK_KEY\n' \
     "$1" > "$FIX/providers.yaml"
 }
+# ── PICKING A PORT THAT IS ACTUALLY FREE ────────────────────────────────────────────────────────
+# This gate boots a real binary on a real socket twice, and it used to pick the port with
+# `(RANDOM % 20000) + 30000` and hope. Under a fleet that hope fails: on 2026-08-17 a sibling
+# agent's run of this same gate held the number this one drew, the boot died on
+# `Address already in use (os error 48)`, and the gate reported FAIL. A gate that reports a
+# protocol-deletion defect when the real fault is a port clash is worse than a slow gate, because
+# the reader goes looking for the defect.
+#
+# `free_port` proves a port pair is bindable instead of guessing. The first attempt at this asked
+# for :0 and read the number back, which does not work here for two reasons, both found by running
+# it: macOS answers :0 from the EPHEMERAL range (49152+), the same pool an outgoing connection can
+# take back between the check and busbar's own bind; and :0 says nothing about port+1, which the
+# admin plane needs. So it binds BOTH ports explicitly, low in the range, and holds them until the
+# moment it prints.
+free_port() {
+  # Ask Python to find a CONSECUTIVE PAIR it can actually bind, low in the range. Binding :0 is not
+  # enough on macOS: the OS answers from the ephemeral range (49152+), which is the same pool an
+  # outgoing connection can take between our check and busbar's bind, and it tells us nothing about
+  # port+1, which the admin plane needs. So we bind both explicitly and keep them held until the
+  # moment we print, which is the shortest TOCTOU window a shell script can get.
+  python3 - <<'PYEOF' 2>/dev/null
+import socket, random
+for _ in range(200):
+    base = random.randrange(30000, 45000, 2)
+    socks = []
+    try:
+        for port in (base, base + 1):
+            s = socket.socket()
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 0)
+            s.bind(("127.0.0.1", port))
+            socks.append(s)
+        print(base)
+        break
+    except OSError:
+        continue
+    finally:
+        for s in socks:
+            s.close()
+PYEOF
+}
+
 mk_config() { # $1 = listen, $2 = admin listen (the admin plane defaults to :8081, which a laptop
   # or a concurrently running gate may already hold — the boot leg must not fail on a port squat)
   printf 'listen: "%s"\nadmin_listen: "%s"\nproviders:\n  mock:\n    api_key: { env: MOCK_KEY }\nmodels:\n  test-model:\n    provider: mock\n' \
@@ -129,7 +170,7 @@ run_gate() {
   note "level 3b remaining dialects: $control_proto config validates clean"
 
   # ── level 3c: the deleted binary BOOTS and answers (R-D: fewer protocols is a valid busbar) ────
-  local port=$(( (RANDOM % 20000) + 30000 ))
+  local port; port=$(free_port) || die "could not find a free port pair for the deletion boot"
   local admin_port=$(( port + 1 ))
   mk_providers "$control_proto"; mk_config "127.0.0.1:$port" "127.0.0.1:$admin_port"
   run_busbar "$deleted_bin" >"$FIX/boot-${proto}.log" 2>&1 &
@@ -213,7 +254,7 @@ OUT=$(run_busbar "$MCP_DELETED_BIN" --validate 2>&1) \
 note "mcp-b kept dialect: anthropic config validates clean with proto-mcp off"
 
 # and it BOOTS and SERVES (R-D: fewer protocols is a valid busbar).
-PORT=$(( (RANDOM % 20000) + 30000 ))
+PORT=$(free_port) || die "could not find a free port pair for the mcp-deleted boot"
 ADMIN_PORT=$(( PORT + 1 ))
 mk_providers "anthropic"; mk_config "127.0.0.1:$PORT" "127.0.0.1:$ADMIN_PORT"
 run_busbar "$MCP_DELETED_BIN" >"$FIX/boot-mcp.log" 2>&1 &
