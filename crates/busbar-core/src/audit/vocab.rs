@@ -69,6 +69,17 @@ pub(crate) const REASON_CALLER_ASK_PENDING: &str = "caller_ask_pending";
 /// it, what it named, and that it became task work.
 pub(crate) const REASON_TASK_CREATED: &str = "task_created";
 
+/// A GOVERNANCE BUCKET REFUSED THE REQUEST: a rate, concurrency or budget limit the presenting key
+/// is bound to was already at its ceiling, so nothing was dispatched.
+///
+/// Its own word rather than [`REASON_NOT_GRANTED`], because the two send an operator to different
+/// places and the remedies are different objects: `not_granted` means this caller may never reach
+/// this thing and the remedy is a scope, while this means the caller is entitled and has spent its
+/// allowance — the remedy is a quota, or waiting for the window to roll. Flattening them would make
+/// an operator audit the grant matrix for a decision the grant matrix did not take, which is the
+/// exact failure this vocabulary exists to prevent.
+pub(crate) const REASON_LIMIT_EXCEEDED: &str = "limit_exceeded";
+
 /// The request's parameters were missing or malformed. RECORDED rather than dropped: the caller is
 /// already AUTHENTICATED at this point, and a chain that silently omits every malformed request from
 /// a principal is a chain with a hole an attacker can choose.

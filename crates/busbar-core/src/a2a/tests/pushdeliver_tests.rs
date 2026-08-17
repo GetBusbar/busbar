@@ -27,6 +27,7 @@ use std::net::{IpAddr, Ipv4Addr};
 use std::sync::{Arc, Mutex};
 
 use super::super::fetch::{HttpResponse, Resolver};
+use super::super::provenance;
 use super::super::pushdeliver::{self, PushRefusal};
 use super::super::pushnotify::{self, PushNotifyError};
 use super::super::relay::{ChunkFlow, RelaySeam, RelayTransport, StreamHead};
@@ -614,5 +615,138 @@ fn the_push_notification_body_is_a_stream_response_carrying_the_task_and_not_a_j
     assert!(
         doc.pointer("/task/contextId").is_some() && doc.pointer("/task/status/state").is_some(),
         "{doc}"
+    );
+}
+
+// ══ THE DELIVERY IS AUDITED ══════════════════════════════════════════════════════════════════════
+//
+// Every test above proves what goes on the wire. NONE of them could see what this path RECORDED,
+// because it recorded nothing: all three production callers disposed of the outcome with a
+// `tracing::warn!`, so a delivery refused by the delivery-time SSRF guard — the strongest check on
+// this path, and the one that fires exactly when a caller's callback has been re-pointed at
+// something it should not reach — left no evidence an auditor could ever find. The three tests
+// below drive the same production `deliver` the rest of this file drives, and then read the task's
+// own provenance chain back out of a store.
+
+/// Put `task` in the process-wide registry so it has a chain to be recorded on, exactly as the front
+/// door does before any delivery is attempted, and hand back the sink the chain is written to.
+///
+/// The `TASKS_SINK_LOCK` guard the caller holds is what keeps two of these from interleaving on the
+/// process-wide registry; see the lock's own note.
+async fn a_task_in_the_registry(
+    task_id: &str,
+    state: TaskState,
+) -> (
+    Task,
+    Arc<crate::a2a::taskstore::event_ledger::EventLedger>,
+    tokio::sync::MutexGuard<'static, ()>,
+) {
+    let guard = crate::a2a::taskstore::TASKS_SINK_LOCK.lock().await;
+    let ledger = Arc::new(crate::a2a::taskstore::event_ledger::EventLedger::new());
+    crate::a2a::taskstore::TASKS.set_sink(ledger.clone());
+    let task = task_with_callback(task_id, state);
+    crate::a2a::taskstore::TASKS
+        .submit(&task, "req-1")
+        .expect("the task is admitted");
+    (task, ledger, guard)
+}
+
+/// The kinds on a task's chain, oldest first, read back out of the store.
+fn kinds_of(
+    ledger: &crate::a2a::taskstore::event_ledger::EventLedger,
+    task_id: &str,
+) -> Vec<String> {
+    let events = ledger.events_for(task_id);
+    crate::audit::verify_chain(&events).expect("the per-task chain verifies after a delivery");
+    events.into_iter().map(|e| e.kind).collect()
+}
+
+/// *** A DELIVERY REFUSED BY THE SSRF GUARD LEAVES A RECORD. ***
+///
+/// The callback was legitimate when it was registered and its name now answers the cloud metadata
+/// address — the exact attack the delivery-time guard exists to stop, and until this test the
+/// control fired in total silence. A security control nobody can audit after the fact is one whose
+/// firing is indistinguishable from its absence.
+#[tokio::test]
+async fn a_delivery_the_ssrf_guard_refuses_lands_a_refusal_on_the_tasks_own_chain() {
+    let id = "t-chain-refused";
+    let (task, ledger, _guard) = a_task_in_the_registry(id, TaskState::Working).await;
+    register(id);
+    let (seam, log) = seam_answering(&[METADATA], 200);
+
+    let refusal = pushdeliver::deliver(&seam, &task).expect_err("the guard must refuse");
+    assert!(
+        matches!(refusal, PushRefusal::Guard(_)),
+        "this must be the GUARD refusing, not some other failure: {refusal}"
+    );
+    assert!(
+        log.lock().unwrap().is_empty(),
+        "nothing may reach the wire when the guard refuses"
+    );
+
+    let kinds = kinds_of(&ledger, id);
+    crate::a2a::taskstore::TASKS.clear_sink_for_test();
+    pushdeliver::forget(id);
+    assert!(
+        kinds.contains(&provenance::EV_PUSH_REFUSED.to_string()),
+        "the refusal left NO record on the task's chain — the whole point of the control is that \
+         somebody can find out afterwards that it fired: {kinds:?}"
+    );
+    assert!(
+        !kinds.contains(&provenance::EV_PUSH_DELIVERED.to_string()),
+        "a refused delivery must never be recorded as delivered: {kinds:?}"
+    );
+}
+
+/// The positive twin: a delivery that goes out is recorded as delivered, and the chain that now
+/// carries both a submission and a delivery still recomputes.
+///
+/// Without it the refusal test above would be satisfied by a path that records `push_refused`
+/// unconditionally.
+#[tokio::test]
+async fn a_delivered_notification_lands_a_delivered_record_on_the_tasks_own_chain() {
+    let id = "t-chain-delivered";
+    let (task, ledger, _guard) = a_task_in_the_registry(id, TaskState::Working).await;
+    register(id);
+    let (seam, log) = seam_answering(&[AT_REGISTRATION], 200);
+
+    pushdeliver::deliver(&seam, &task).expect("the delivery succeeds");
+    assert_eq!(log.lock().unwrap().len(), 1, "the notification went out");
+
+    let kinds = kinds_of(&ledger, id);
+    crate::a2a::taskstore::TASKS.clear_sink_for_test();
+    pushdeliver::forget(id);
+    assert_eq!(
+        kinds,
+        vec![
+            provenance::EV_SUBMITTED.to_string(),
+            provenance::EV_PUSH_DELIVERED.to_string()
+        ],
+        "the task's chain carries the submission that opened it and the delivery that went out, \
+         in that order and with nothing invented in between"
+    );
+}
+
+/// THE RECEIVER'S OWN FAILURE IS NOT BUSBAR'S REFUSAL. A webhook that answers 500 got the delivery;
+/// recording that as `push_refused` would send an operator to audit busbar's guard for an incident
+/// that happened inside the caller's infrastructure.
+#[tokio::test]
+async fn a_receiver_that_answers_non_2xx_is_recorded_as_failed_and_not_as_refused() {
+    let id = "t-chain-failed";
+    let (task, ledger, _guard) = a_task_in_the_registry(id, TaskState::Working).await;
+    register(id);
+    let (seam, _log) = seam_answering(&[AT_REGISTRATION], 500);
+
+    let refusal = pushdeliver::deliver(&seam, &task).expect_err("a 500 is not a delivery");
+    assert!(matches!(refusal, PushRefusal::Status(500)), "{refusal}");
+
+    let kinds = kinds_of(&ledger, id);
+    crate::a2a::taskstore::TASKS.clear_sink_for_test();
+    pushdeliver::forget(id);
+    assert!(
+        kinds.contains(&provenance::EV_PUSH_FAILED.to_string())
+            && !kinds.contains(&provenance::EV_PUSH_REFUSED.to_string()),
+        "the delivery WENT OUT and the receiver failed it; the two populations must stay \
+         distinguishable: {kinds:?}"
     );
 }

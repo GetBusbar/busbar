@@ -103,6 +103,22 @@ pub(crate) struct TaskRegistry {
 pub(crate) static TASKS: std::sync::LazyLock<TaskRegistry> =
     std::sync::LazyLock::new(TaskRegistry::new);
 
+/// TEST ONLY: the one lock every test that attaches a sink to the process-wide [`TASKS`] takes.
+///
+/// The registry is process state (see [`TASKS`]), so two tests attaching different sinks to it
+/// concurrently would interleave and each would read the other's writes. This is the same measure,
+/// for the same reason, as `mcp/tests/calllog_dispatch_tests.rs`'s `CALLS_GLOBAL`, and it is an
+/// ASYNC mutex for the reason that file states: the guard is held across `.await` points (a real
+/// listener is served and a real request is driven), and a blocking guard held across an await parks
+/// a runtime worker on a lock another task must run to release. `tokio::sync::Mutex` also has no
+/// poisoning, so a panicking test cannot wedge the ones after it.
+///
+/// It lives here rather than in either test file because the two batteries that need it — the A2A
+/// front door's and the push-delivery path's — are mounted from different modules, and two locks
+/// over one global is the same thing as no lock.
+#[cfg(test)]
+pub(crate) static TASKS_SINK_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// What went wrong servicing a task mutation.
 #[derive(Debug)]
 pub(crate) enum TaskStoreError {
@@ -156,6 +172,15 @@ impl TaskRegistry {
     /// RAM cache and nothing survives a restart, which is the documented `store: memory` behaviour.
     pub(crate) fn set_sink(&self, store: Arc<dyn Store>) {
         *self.sink.lock().unwrap_or_else(|e| e.into_inner()) = Some(store);
+    }
+
+    /// TEST ONLY: drop the sink again, so a test that attached one to the process-wide [`TASKS`]
+    /// leaves the registry as it found it. There is no production caller and there must not be:
+    /// detaching a live deployment's durable sink mid-run would silently stop persisting task
+    /// evidence, which is the failure this whole module exists to prevent.
+    #[cfg(test)]
+    pub(crate) fn clear_sink_for_test(&self) {
+        *self.sink.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
 
     /// BOOT REHYDRATE. Reads every persisted task, loads the ACTIVE ones into the working set, and
@@ -341,6 +366,54 @@ impl TaskRegistry {
         entry.task = candidate.clone();
         entry.chain = chain;
         Ok(candidate)
+    }
+
+    /// RECORD ONE PUSH-NOTIFICATION DELIVERY OUTCOME on the task's own chain.
+    ///
+    /// Not a transition and not a dispatch: the task's state and its agent are both unchanged by a
+    /// webhook attempt, so this appends an event and touches nothing else on the row. It exists
+    /// because the delivery path — including its delivery-time SSRF guard, the strongest check on
+    /// that path — disposed of every outcome with a log line, so **a refused delivery left no record
+    /// an auditor could ever find**. See `provenance::EV_PUSH_REFUSED`.
+    ///
+    /// A task the working set does not hold gets no event and says so: the caller (`pushdeliver`) is
+    /// already on a best-effort path and must not be given a reason to fail a caller's task over
+    /// bookkeeping. That is the same posture the rest of this path takes, and the error is returned
+    /// rather than swallowed here so the decision stays with the caller.
+    pub(crate) fn record_push_delivery(
+        &self,
+        task_id: &str,
+        kind: &'static str,
+        now: u64,
+        request_id: &str,
+    ) -> Result<(), TaskStoreError> {
+        let mut tasks = self.tasks();
+        let entry = tasks
+            .get_mut(task_id)
+            .ok_or_else(|| TaskStoreError::NoSuchTask(task_id.to_string()))?;
+        let mut chain = entry.chain.clone();
+        let ev = chain.append(
+            task_id,
+            EventInput {
+                kind,
+                context_id: entry.task.context_id.clone(),
+                principal: entry.task.principal.clone(),
+                agent_id: entry.task.agent_id.clone(),
+                // The state the task was in when the notification carrying it was attempted — the
+                // notification body is built from exactly this, so the record says what the receiver
+                // was told, not merely that it was told something.
+                state: entry.task.state.as_str().to_string(),
+                request_id: request_id.to_string(),
+                ts: now,
+            },
+        );
+        if let Some(store) = self.sink() {
+            store
+                .append_task_event(&ev)
+                .map_err(TaskStoreError::Store)?;
+        }
+        entry.chain = chain;
+        Ok(())
     }
 
     /// ADVANCE THE ARTIFACT CURSOR — how many artifact chunks have been durably relayed.
@@ -545,3 +618,11 @@ impl TaskRegistry {
 #[cfg(test)]
 #[path = "tests/taskstore_tests.rs"]
 mod taskstore_tests;
+
+// THE READ-BACK HALF, shared by every battery that asserts on this chain. Mounted here, beside the
+// registry whose sink it stands in for, so the two batteries that attach it to the process-wide
+// `TASKS` (the front door's and the push-delivery path's) use ONE double — a second double is a
+// second thing that can stop matching what a real backend does.
+#[cfg(test)]
+#[path = "tests/event_ledger.rs"]
+pub(crate) mod event_ledger;

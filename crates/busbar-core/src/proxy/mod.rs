@@ -128,6 +128,10 @@ mod egress;
 mod engine;
 mod hooks;
 mod lazy_body;
+// THE MODEL PLANE'S CONTRIBUTION TO THE ONE AUDIT CHAIN — a record type, nothing more. `pub(crate)`
+// because the append happens at the plane's single terminal (`ingress::finish_inner`), which is
+// where the plane's metrics and its refund decision are already made.
+pub(crate) mod reqlog;
 mod response_body;
 mod select;
 pub(crate) mod usage;
@@ -140,6 +144,15 @@ pub(crate) use response_body::*;
 pub(crate) use select::*;
 pub(crate) use usage::*;
 pub(crate) use wire::*;
+
+// THE PLANE'S AUDIT CHAIN, DRIVEN THROUGH THE REAL ROUTER. Mounted from the plane rather than from
+// `reqlog.rs` (which has its own record-level battery) for the reason the file's header gives: the
+// claim is that a CUSTOMER'S REQUEST reaches the chain, and only a test that goes through
+// `crate::build_router` and a real socket can see that. A record-level test would pass just as
+// happily against a log with no production call site — which is the state this plane was in.
+#[cfg(test)]
+#[path = "tests/reqlog_dispatch_tests.rs"]
+mod reqlog_dispatch_tests;
 
 #[cfg(test)]
 #[path = "tests/usage_tap_tests.rs"]
