@@ -43,7 +43,7 @@ use super::upstream_support::{
     call_as, exchanging_server, gov_with_scopes, mcp_cfg, Behaviour, Peer,
 };
 use crate::audit::verify_chain;
-use crate::mcp::calllog::{CALLS, OUTCOME_DISPATCHED, OUTCOME_REFUSED};
+use crate::mcp::calllog::{CALLS, OUTCOME_DISPATCHED, OUTCOME_REFUSED, REASON_UPSTREAM_FAILED};
 use crate::test_support::TestApp;
 use busbar_api::{McpCallRecord, Store};
 use std::path::PathBuf;
@@ -438,5 +438,141 @@ async fn with_no_durable_sink_the_call_still_serves_and_nothing_is_kept() {
             .is_empty(),
         "nothing was configured to persist, so nothing may be found — a durability test that has \
          never seen a NON-durable store has proven nothing"
+    );
+}
+
+/// THE EQUALITY CELL `audit-chain × mcp-client`: the outcome of the leg BUSBAR ITSELF made — the
+/// outbound call to a registered MCP server — is what the tamper-evident chain records, and the
+/// chain distinguishes a leg that went out and came back badly from a leg that went out and worked.
+///
+/// ## Why this is a different claim from the two tests above, and not a third durability test
+///
+/// `a_dispatched_tools_call_lands_a_durable_record_...` proves the FRONT DOOR writes a row, and
+/// `a_refused_tools_call_...` proves busbar's OWN refusal is written. Neither says anything about
+/// the client leg: both would pass unchanged against an engine that made the outbound call, threw
+/// its outcome away, and recorded `dispatched` unconditionally. That engine is exactly what the
+/// ledger's `audit-chain × mcp-client` note describes — "no test proves a client-leg outcome lands
+/// in a chain of its own" — and it is what this test refuses to accept.
+///
+/// ## The control is load-bearing, and it is the whole test
+///
+/// A single assertion that a failing leg records `upstream_failed` passes against a hard-coded
+/// reason string. So BOTH outcomes are driven through the SAME principal, the SAME server and the
+/// SAME tool, differing ONLY in what the upstream answered, and the two rows are asserted to differ
+/// in exactly that field. The chain can only satisfy both if it is reading the real client leg.
+///
+/// `dispatched` + `upstream_failed` (rather than `refused`) is itself the engine's claim — see
+/// `method.rs`'s `Outcome::UpstreamFailed` arm: "the record now says `dispatched` with the reason
+/// token `upstream_failed`, so the chain distinguishes a call busbar blocked from a call that was
+/// made and came back badly". If that distinction regressed to `refused`, or to an empty reason,
+/// this test fails.
+#[tokio::test]
+async fn the_client_legs_own_outcome_is_what_the_chain_records_success_and_failure_apart() {
+    let _serial = CALLS_GLOBAL.lock().await;
+    crate::metrics::init();
+    let (file, cfg) = durable_cfg("clientleg");
+    let principal = "calllog-clientleg-principal";
+    let g = gov_with_scopes(&[("mcp_server", "fs"), ("mcp_tool", "fs_read")]);
+
+    {
+        let store = open_plugin(&cfg);
+        CALLS.set_sink(store);
+    }
+
+    // ── LEG 1: THE UPSTREAM ANSWERS BADLY. A JSON-RPC error from the registered server. ──────────
+    // Not a transport failure: the socket worked, the exchange worked, busbar's admission passed,
+    // and the ONLY thing that went wrong is the answer the far end gave. Nothing on busbar's side
+    // of the leg can be blamed, so a chain that records this as a refusal is lying about who failed.
+    let failing = Peer::start(Behaviour::Errors, ISSUED).await;
+    let app = TestApp::new()
+        .mcp(&mcp_cfg(CANONICAL))
+        .mcp_server("fs", exchanging_server(&failing, SUBJECT))
+        .build();
+    let (status, body) = call_as(
+        &app,
+        &g,
+        principal,
+        "tools/call",
+        serde_json::json!({ "name": "fs_read", "arguments": { "path": "/etc/hosts" } }),
+    )
+    .await;
+    assert_eq!(
+        status, 200,
+        "the tool failed; busbar did not refuse — the leg is the subject, not the admission: {body}"
+    );
+    assert_eq!(
+        failing.mcp_hits(),
+        1,
+        "THE LEG MUST HAVE GONE OUT. A record about a client leg that was never made is a record \
+         about nothing, and every assertion below would be vacuous."
+    );
+
+    // ── LEG 2: THE CONTROL. The identical call, the identical principal, a working upstream. ─────
+    let working = Peer::start(Behaviour::Result, ISSUED).await;
+    let app_ok = TestApp::new()
+        .mcp(&mcp_cfg(CANONICAL))
+        .mcp_server("fs", exchanging_server(&working, SUBJECT))
+        .build();
+    let (status, body) = call_as(
+        &app_ok,
+        &g,
+        principal,
+        "tools/call",
+        serde_json::json!({ "name": "fs_read", "arguments": { "path": "/etc/hosts" } }),
+    )
+    .await;
+    assert_eq!(status, 200, "the control call must succeed: {body}");
+    assert_eq!(working.mcp_hits(), 1, "the control leg really went out");
+
+    // Detach before the read-back, for the reason the headline test states: siblings in this binary
+    // dispatch through the process-global `CALLS` without taking the serialising lock.
+    CALLS.set_sink(Arc::new(busbar_store_memory::MemoryStore::new()));
+
+    let reopened = open_plugin(&cfg);
+    let records = reopened
+        .list_mcp_calls(principal)
+        .expect("list_mcp_calls over the ABI after the restart");
+    assert_eq!(
+        records.len(),
+        2,
+        "one row per leg, in the order the legs were made. The durable ledger at {} holds: {}",
+        file.display(),
+        std::fs::read_to_string(&file).unwrap_or_else(|_| "<no file at all>".into())
+    );
+
+    // ── THE CLAIM. Both legs are `dispatched` — both went out — and the REASON is the only thing
+    // that differs, because the reason is the only place the client leg's own outcome is carried.
+    assert_eq!(
+        records[0].outcome, OUTCOME_DISPATCHED,
+        "a leg that went out and came back badly is still a leg that WENT OUT; recording it as a \
+         refusal would attribute the upstream's failure to busbar's admission"
+    );
+    assert_eq!(
+        records[0].reason, REASON_UPSTREAM_FAILED,
+        "the failing leg's outcome must reach the chain as its own token. An empty reason here is \
+         the defect this cell names: the outbound call was made, it failed, and the chain an \
+         investigator reads cannot tell"
+    );
+    assert_eq!(
+        records[1].outcome, OUTCOME_DISPATCHED,
+        "the control leg went out and worked"
+    );
+    assert!(
+        records[1].reason.is_empty(),
+        "THE CONTROL. A successful leg carries NO reason token — so the assertion above is about \
+         the upstream's actual answer and not about a constant the engine always writes. Got {:?}",
+        records[1].reason
+    );
+
+    // ── AND IT IS A CHAIN, not a list. The two legs are linked, so neither row can be edited,
+    // reordered or dropped without the verifier saying so.
+    verify_chain(&records)
+        .expect("the persisted client-leg chain must verify against its own hashes");
+    assert_eq!(records[0].seq, 1);
+    assert_eq!(records[1].seq, 2);
+    assert!(
+        records[0].prev_hash.is_empty() && records[1].prev_hash == records[0].hash,
+        "the second leg's record must link to the first: a tamper-evident chain is what makes this \
+         capability the audit capability rather than a log"
     );
 }
