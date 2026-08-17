@@ -776,11 +776,39 @@ fn linux_from_bytes_load_touches_no_disk() {
 // `list_denylist` → `transport_call_status` → classification path runs end to end). We swap ONLY the
 // `call` fn pointer; the real `open`/`free`/`close`/handle from the loaded store fixture stay valid.
 
-use std::cell::Cell;
-thread_local! {
-    /// (status, body) the fake `busbar_call` returns for the NEXT call on this thread.
-    static FAKE_CALL: Cell<(i32, &'static [u8])> = const { Cell::new((STATUS_OK, b"")) };
+/// (status, body) the fake `busbar_call` returns for the NEXT call.
+///
+/// PROCESS-GLOBAL, not `thread_local!`, and that is a correctness requirement rather than a style
+/// choice: `busbar_call` runs on a loader-owned worker thread (see `ffi_thread`), never on the
+/// caller's, so a thread-local set by the test would be invisible to the fake and it would answer
+/// `(STATUS_OK, b"")` — decoding as "EOF while parsing a value", which is how this fixture failed
+/// when the worker pool landed. A real plugin may not assume caller-thread affinity either, so the
+/// fake should not model one.
+///
+/// The `Mutex` also serializes the tests that use it. They already could not run concurrently (they
+/// share one global fake), and the loader test binary runs them in parallel, so the lock is what
+/// makes "set, then call" atomic per test rather than a race between two tests' setups.
+static FAKE_CALL: std::sync::Mutex<(i32, &'static [u8])> = std::sync::Mutex::new((STATUS_OK, b""));
+
+/// Set the answer the fake `busbar_call` gives next. Named `with`-style so the call sites that used
+/// the `thread_local!` API read the same.
+struct FakeCall;
+impl FakeCall {
+    fn with<R>(&self, f: impl FnOnce(&FakeCallCell) -> R) -> R {
+        f(&FakeCallCell)
+    }
 }
+struct FakeCallCell;
+impl FakeCallCell {
+    fn set(&self, v: (i32, &'static [u8])) {
+        *FAKE_CALL.lock().unwrap_or_else(|p| p.into_inner()) = v;
+    }
+    fn get(&self) -> (i32, &'static [u8]) {
+        *FAKE_CALL.lock().unwrap_or_else(|p| p.into_inner())
+    }
+}
+#[allow(non_upper_case_globals)]
+const FAKE_CALL_HANDLE: FakeCall = FakeCall;
 
 /// A fake `busbar_call`: allocate a buffer holding the thread-local body and return the
 /// thread-local status. Mimics the plugin side (plugin allocates, engine frees via `busbar_free`).
@@ -791,7 +819,7 @@ unsafe extern "C-unwind" fn fake_call(
     out: *mut *mut u8,
     out_len: *mut usize,
 ) -> i32 {
-    let (status, body) = FAKE_CALL.with(|c| c.get());
+    let (status, body) = FAKE_CALL_HANDLE.with(|c| c.get());
     if body.is_empty() {
         *out = std::ptr::null_mut();
         *out_len = 0;
@@ -850,7 +878,7 @@ fn denylist_unsupported_status_falls_back_empty() {
         eprintln!("skip: store-sqlite-plugin cdylib not built (run `cargo build --release -p busbar-store-sqlite-plugin` in a sibling ../store-sqlite checkout)");
         return;
     };
-    FAKE_CALL.with(|c| {
+    FAKE_CALL_HANDLE.with(|c| {
         c.set((
             STATUS_UNSUPPORTED,
             b"malformed request JSON: unknown variant `ListDenylist`",
@@ -873,7 +901,7 @@ fn denylist_legacy_v1_decode_failure_falls_back_empty() {
         eprintln!("skip: store-sqlite-plugin cdylib not built (run `cargo build --release -p busbar-store-sqlite-plugin` in a sibling ../store-sqlite checkout)");
         return;
     };
-    FAKE_CALL.with(|c| {
+    FAKE_CALL_HANDLE.with(|c| {
         c.set((
             STATUS_PROTOCOL,
             b"malformed request JSON: unknown variant `ListDenylist`, expected one of `PutKey`",
@@ -924,17 +952,17 @@ fn no_plugin_crash_shape_can_empty_the_denylist() {
         (99, b"novel status", "a status this engine has never seen"),
     ];
     for (status, body, what) in crashes {
-        FAKE_CALL.with(|c| c.set((*status, body)));
+        FAKE_CALL_HANDLE.with(|c| c.set((*status, body)));
         assert!(
             store.list_denylist().is_err(),
             "{what}: must fail CLOSED, never hydrate an empty denylist"
         );
-        FAKE_CALL.with(|c| c.set((*status, body)));
+        FAKE_CALL_HANDLE.with(|c| c.set((*status, body)));
         assert!(
             store.list_audit_tail(8).is_err(),
             "{what}: must not silently degrade the audit tail"
         );
-        FAKE_CALL.with(|c| c.set((*status, body)));
+        FAKE_CALL_HANDLE.with(|c| c.set((*status, body)));
         assert!(
             store.append_audit(&audit_fixture()).is_err(),
             "{what}: must not be swallowed as 'this store has no durable audit'"
@@ -950,7 +978,7 @@ fn no_plugin_crash_shape_can_empty_the_denylist() {
             "legacy v1",
         ),
     ] {
-        FAKE_CALL.with(|c| c.set((status, body)));
+        FAKE_CALL_HANDLE.with(|c| c.set((status, body)));
         assert_eq!(
             store
                 .list_denylist()
@@ -996,7 +1024,7 @@ fn denylist_backend_error_with_unknown_variant_text_propagates() {
         return;
     };
     // A crafted / coincidental backend error: STATUS_ERR, but the body contains "unknown variant".
-    FAKE_CALL.with(|c| {
+    FAKE_CALL_HANDLE.with(|c| {
         c.set((
             busbar_plugin_abi::STATUS_ERR,
             b"backend read failed: table 'denylist' reported unknown variant of corruption",
@@ -1022,7 +1050,7 @@ fn audit_tail_backend_error_propagates_not_masked_by_fallback() {
         eprintln!("skip: store-sqlite-plugin cdylib not built (run `cargo build --release -p busbar-store-sqlite-plugin` in a sibling ../store-sqlite checkout)");
         return;
     };
-    FAKE_CALL.with(|c| {
+    FAKE_CALL_HANDLE.with(|c| {
         c.set((
             busbar_plugin_abi::STATUS_ERR,
             b"backend read failed: audit table I/O error",
@@ -1054,7 +1082,7 @@ fn panic_in_list_denylist_fails_closed_not_empty() {
         eprintln!("skip: store-sqlite-plugin cdylib not built (run `cargo build --release -p busbar-store-sqlite-plugin` in a sibling ../store-sqlite checkout)");
         return;
     };
-    FAKE_CALL.with(|c| {
+    FAKE_CALL_HANDLE.with(|c| {
         c.set((
             STATUS_PANIC,
             b"plugin panicked (caught at the export boundary)",
@@ -1077,16 +1105,16 @@ fn denylist_status_matrix() {
         eprintln!("skip: store-sqlite-plugin cdylib not built (run `cargo build --release -p busbar-store-sqlite-plugin` in a sibling ../store-sqlite checkout)");
         return;
     };
-    FAKE_CALL.with(|c| c.set((STATUS_UNSUPPORTED, b"unsupported variant")));
+    FAKE_CALL_HANDLE.with(|c| c.set((STATUS_UNSUPPORTED, b"unsupported variant")));
     assert_eq!(
         store.list_denylist().expect("unsupported → empty"),
         Vec::<String>::new()
     );
 
-    FAKE_CALL.with(|c| c.set((STATUS_PANIC, b"panicked")));
+    FAKE_CALL_HANDLE.with(|c| c.set((STATUS_PANIC, b"panicked")));
     assert!(store.list_denylist().is_err(), "panic → fail closed");
 
-    FAKE_CALL.with(|c| c.set((STATUS_PROTOCOL, b"null handle")));
+    FAKE_CALL_HANDLE.with(|c| c.set((STATUS_PROTOCOL, b"null handle")));
     assert!(
         store.list_denylist().is_err(),
         "protocol-with-message → propagate (a caller violation, not old-SDK)"
@@ -1111,12 +1139,12 @@ fn append_audit_status_matrix() {
         prev_hash: String::new(),
         hash: "h".into(),
     };
-    FAKE_CALL.with(|c| c.set((STATUS_UNSUPPORTED, b"no durable audit")));
+    FAKE_CALL_HANDLE.with(|c| c.set((STATUS_UNSUPPORTED, b"no durable audit")));
     store
         .append_audit(&rec)
         .expect("unsupported → best-effort Ok(())");
 
-    FAKE_CALL.with(|c| c.set((STATUS_PANIC, b"panicked")));
+    FAKE_CALL_HANDLE.with(|c| c.set((STATUS_PANIC, b"panicked")));
     assert!(
         store.append_audit(&rec).is_err(),
         "a panic on audit-write must surface, never be swallowed as unsupported"
@@ -1711,7 +1739,7 @@ fn under_old_plugin_shapes<T: std::fmt::Debug + PartialEq>(
         ),
     ];
     for (status, body, who) in shapes {
-        FAKE_CALL.with(|c| c.set((*status, *body)));
+        FAKE_CALL_HANDLE.with(|c| c.set((*status, *body)));
         let out = op(store).unwrap_or_else(|e| {
             panic!(
                 "`{what}` against {who} returned an ERROR ({e:?}). An already-signed plugin that \
@@ -1825,29 +1853,29 @@ fn no_plugin_failure_shape_can_launder_a_dropped_task_into_success() {
         (99, b"", "an unknown status from a future or broken plugin"),
     ];
     for (status, body, what) in failures {
-        FAKE_CALL.with(|c| c.set((*status, *body)));
+        FAKE_CALL_HANDLE.with(|c| c.set((*status, *body)));
         assert!(
             store.put_task(&task).is_err(),
             "`put_task` must FAIL on {what}: silently returning Ok is the exact defect these \
              variants were added to close"
         );
-        FAKE_CALL.with(|c| c.set((*status, *body)));
+        FAKE_CALL_HANDLE.with(|c| c.set((*status, *body)));
         assert!(
             store.get_task("task-err").is_err(),
             "`get_task` must FAIL on {what}, never answer `None` — 'the task is gone' and 'the \
              backend is broken' are different answers"
         );
-        FAKE_CALL.with(|c| c.set((*status, *body)));
+        FAKE_CALL_HANDLE.with(|c| c.set((*status, *body)));
         assert!(
             store.append_task_event(&event_free_probe()).is_err(),
             "`append_task_event` must FAIL on {what}"
         );
-        FAKE_CALL.with(|c| c.set((*status, *body)));
+        FAKE_CALL_HANDLE.with(|c| c.set((*status, *body)));
         assert!(
             store.list_task_events("task-err").is_err(),
             "`list_task_events` must FAIL on {what}"
         );
-        FAKE_CALL.with(|c| c.set((*status, *body)));
+        FAKE_CALL_HANDLE.with(|c| c.set((*status, *body)));
         assert!(
             store.purge_tasks_before(9).is_err(),
             "`purge_tasks_before` must FAIL on {what}, never report 0 purged"

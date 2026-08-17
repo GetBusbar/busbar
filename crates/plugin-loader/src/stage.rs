@@ -214,7 +214,7 @@ pub(crate) fn load_library_from_bytes(
     let path = stage_temp_file(bytes)?;
     // SAFETY: running an operator-trusted plugin's init code - the same trust as compiling it in.
     // The file was created by us, in a directory we created 0700, from already-verified bytes.
-    let lib = unsafe { Library::new(&path) }.map_err(|e| {
+    let lib = crate::dlopen_on_worker(std::ffi::OsStr::new(&path)).map_err(|e| {
         let msg = format!("failed to load plugin '{display}': {e}");
         // `stage_temp_file` already did `state.live += 1`, but no `Staged::TempFile` is
         // constructed on this error path, so `release_temp_file` (the only decrementer) would never
@@ -268,7 +268,7 @@ fn load_via_memfd(bytes: &[u8], display: &str) -> Result<(Library, Staged), Stri
     let path = format!("/proc/self/fd/{}", fd.as_raw_fd());
     // SAFETY: same operator-trust as any plugin load; the fd content is exactly the verified bytes
     // and is not reachable by path from any other process's namespace.
-    let lib = unsafe { Library::new(&path) }
+    let lib = crate::dlopen_on_worker(std::ffi::OsStr::new(&path))
         .map_err(|e| format!("failed to load plugin '{display}' from memfd: {e}"))?;
     Ok((lib, Staged::Memfd { _fd: fd }))
 }
