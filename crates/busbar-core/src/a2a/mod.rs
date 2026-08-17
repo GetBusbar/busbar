@@ -95,6 +95,9 @@ pub(crate) mod relay;
 /// The plane's HTTP+JSON binding — the SECOND wire format, re-framed onto `ingress`'s one sequence.
 pub(crate) mod rest;
 pub(crate) mod rpcerror;
+/// THE FRONT DOOR'S HOOK SCREENING — the operator's tap and gate over one inbound submission, off
+/// ONE subject so the two controls cannot disagree about what the request was.
+pub(crate) mod screen;
 /// THIS PLANE'S REFUSAL VOCABULARY: `A2aWords`, the total match that gives every refusal
 /// `crate::ingress::protocol` decides a sentence in A2A's own error envelope, plus the three facts
 /// of its RFC 9728 document.
