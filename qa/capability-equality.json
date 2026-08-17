@@ -33,7 +33,7 @@
     "breaker-trip": "a failing upstream target records into the ONE core breaker cell (LaneRuntime, (pool,lane)-keyed) and the cell opens",
     "breaker-fastfail": "a tripped target is refused before dispatch in milliseconds, not after the full timeout, via try_admit_breaker",
     "failover-reroute": "a second interchangeable candidate is tried before the first byte, through the one selection loop (failover::walk)",
-    "hooks-tap": "observe (tap) hooks are DELIVERED the plane's requests -- the projection a screening gate is shown, fire-and-forget, through hooks::tap::fire",
+    "hooks-tap": "observe (tap) hooks are DELIVERED the plane's requests -- the projection a screening gate is shown -- fire-and-forget through the ONE bounded delivery, hooks::tap::spawn_bounded_tap (the invocation planes project and fire through hooks::tap::fire; the llm plane projects at its own stage seam and hands to the same delivery)",
     "hooks-rewrite": "transform (rewrite) hooks REPLACE the plane's request body before dispatch, fail-closed, via the RewriteReply the engine re-renders",
     "hooks-gate": "hooks::gate::decide can refuse the plane's traffic before dispatch",
     "audit-chain": "the plane's dispatches and refusals land in a tamper-evident hash chain (crate::audit)",
