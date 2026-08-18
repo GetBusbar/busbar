@@ -1579,7 +1579,11 @@ fn prepare<'a>(
 /// means on the model plane. `Status` is a backend that ANSWERED (it is reachable, and a task it
 /// refuses is work-level), `BodyTooLarge` and `Unframable` are busbar's own reading of an answer
 /// that arrived, and `Guard`/`Demoted`/`Lease` never reach a socket at all — the same rule
-/// `crate::mcp::client::wire::send` applies to its own three transport-error variants.
+/// `crate::mcp::client::wire::send` applies to its own transport-error variants. Note in
+/// particular the half of that rule this plane inherits without having the vocabulary for it: a
+/// hop that could not reach the backend AT ALL is availability and IS counted, even though it is
+/// the one failure the reroute seam is allowed to move; not-yet-sent means safe to move, never
+/// healthy.
 fn count_leg_failure(call: &RelayCall<'_>, refusal: RelayRefusal) -> RelayRefusal {
     if matches!(refusal, RelayRefusal::Transport { .. }) {
         crate::telemetry::upstream_failure_on(
