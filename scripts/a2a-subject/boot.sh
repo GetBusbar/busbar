@@ -111,9 +111,13 @@
 #
 #   * THE DELEGATING DIRECTION. busbar's A2A client side is driven by a relay this rig does not
 #     drive from the far end, so `--battery` still runs `--role server`.
-#   * THE HTTP+JSON BINDING. busbar's card advertises `JSONRPC` and `GRPC`, so the TCK arms both and
-#     skips HTTP+JSON, whose requirements still report as untested rather than as failures busbar has
-#     been given a chance to pass. The gRPC leg IS armed: busbar serves `/lf.a2a.v1.A2AService/*` on
+#   * THE HTTP+JSON BINDING. The TCK is not driven against it here, so its requirements report as
+#     untested rather than as failures busbar has been given a chance to pass. That is a gap in THIS
+#     RIG and not in the card: `serve::servable_bindings` is the plane's own wire-format list
+#     upper-cased, so busbar's own card advertises all three, HTTP+JSON included. (A FRONTED AGENT'S
+#     card is narrower -- `JSONRPC` only -- because `/a2a/agents/{id}` mounts a JSON-RPC reader and
+#     nothing else; see `serve::agent_address_bindings`. An earlier version of this note read the
+#     narrower list as the plane's and gave the wrong reason for the gap.) The gRPC leg IS armed: busbar serves `/lf.a2a.v1.A2AService/*` on
 #     its own listener over h2c, the card publishes that binding's authority, and the shim in front
 #     carries the credential on that connection as well as on the HTTP one.
 #   * PUSH DELIVERY. `PUSH-DELIVER-001/002/003` are RED and are WAIVED with the reason recorded in

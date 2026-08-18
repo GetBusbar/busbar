@@ -10,11 +10,11 @@ Busbar speaks two more protocols. It is now an MCP server and a governed gateway
 MCP tool estate, and it serves A2A over all three of that specification's bindings. Everything a
 model-plane request already got — the caller's key, its grants, its budget, hooks and the audit
 chain — applies to a tool call and an agent task unchanged. A deployment with no `mcp:` and no
-`agents:` block gains no endpoint and no route.
+`agents:` block gains no endpoint and no route. Each plane has a full operator reference: [the MCP
+guide](docs/mcp.md) and [the A2A guide](docs/a2a.md).
 
-If you run dashboards, read the two metrics breaking changes first: both request families gained a
-`plane` label, and one operation label was renamed. See [the observability
-guide](docs/observability.md).
+If you run dashboards, read the metrics breaking change first: both request families gained a
+`plane` label. See [the observability guide](docs/observability.md).
 
 ### Breaking changes
 
@@ -23,9 +23,6 @@ guide](docs/observability.md).
   counters restart from zero and a `rate()` window spanning the upgrade reads low once. Add
   `plane="llm"` to a panel's selector to keep it describing exactly what it described before;
   queries that only aggregate are unaffected.
-- **The `operation` label reads `invoke`, not `tool_call`.** The same string is the `paths:`
-  configuration key, so re-key any `paths:` entry keyed `tool_call` to `invoke`. The operations
-  alongside it are `catalogue`, `fetch`, `task`, `subscribe` and `control`.
 - **An `mcp:` block with an empty `auth.chain` now refuses to start.** An anonymous MCP request
   is never narrowed by a key, so it would run with wildcard grants over every registered server.
   Close the data-plane chain, or drop the `mcp:` block.
@@ -35,9 +32,10 @@ guide](docs/observability.md).
 - **Hooks now fire on the normalized IR**, the same representation the upstream request is built
   from, so a screening hook can no longer be shown a different payload than the provider receives.
   A client's in-band `{role: "system"}` turn now arrives in `system`, so **`message_count` is one
-  lower** than the client's array length for such a body; tool-call arguments are now projected to
-  a `full`-scope hook; and a request body Busbar cannot read is rejected with a `400` rather than
-  forwarded. See [the hooks guide](docs/hooks.md).
+  lower** than the client's array length for such a body; tool-call arguments are now projected into
+  the content a hook holding a `prompt: ro` or `prompt: rw` grant is shown, so a gate written to
+  screen a prompt screens them through the field it already reads; and a request body Busbar cannot
+  read is rejected with a `400` rather than forwarded. See [the hooks guide](docs/hooks.md).
 
 ### Added
 
@@ -48,8 +46,9 @@ guide](docs/observability.md).
   happens.
 - **Busbar is a governed gateway in front of your MCP tool estate.** Register upstream servers
   under `tools:` and Busbar serves `server/discover`, `tools/list`, `tools/call`, `prompts/list`,
-  `prompts/get`, `resources/list`, `resources/templates/list`, `resources/read` and
-  `completion/complete`. What a caller sees and what it may call are one decision taken from that
+  `prompts/get`, `resources/list`, `resources/templates/list`, `resources/read`,
+  `completion/complete`, the SEP-2663 task methods (`tasks/get`, `tasks/update`, `tasks/cancel`)
+  and `subscriptions/listen`. What a caller sees and what it may call are one decision taken from that
   caller's own key grants, so two callers get two different catalogues from one deployment.
 - **`transport: stdio` fronts a local MCP server that has no URL** — a filesystem, database or git
   server that an agent launches rather than dials. A registration takes `command:` (absolute path,
@@ -70,7 +69,9 @@ guide](docs/observability.md).
   the upstream serving what you approved clears it.
 - **An approval for a `ask_caller` confirm-once tool is redeemed once per deployment, not once per
   node.** Two nodes sharing a signing key previously redeemed the same approval once each, so a
-  single operator confirmation could execute a money-moving tool twice behind a load balancer.
+  single operator confirmation could execute a money-moving tool twice behind a load balancer. This
+  needs a durable governance store: with the default `store: memory` the ledger is still the
+  in-process one, so the guarantee is single-use per node, exactly as before.
 - **An upstream's `sampling/createMessage` ask can be satisfied under an operator-capped budget.**
   `tools.<server>.sampling` declares the model the completion runs on, a `max_tokens` ceiling and
   `max_requests_per_minute`. Deny-by-default is unchanged: with no grant, the ask is refused.
@@ -97,9 +98,10 @@ guide](docs/observability.md).
 - **Documents, audio and video now cross protocols** instead of being converted to an empty text
   block with no warning. Every dialect reads and writes attachments in its own native slot. Where a
   target genuinely cannot express one it is dropped with a `warn!` naming it.
-- **`limits.hook_content_max_bytes` bounds what a content-granted hook is shown** (default 65536;
-  `0` disables). Over-cap content is omitted whole rather than truncated, and
-  `busbar_hook_content_truncated_total` counts it.
+- **`limits.hook_content_max_bytes` bounds the model-plane content a content-granted hook is
+  shown** (default 65536; `0` disables). Over-cap content is omitted whole rather than truncated,
+  and `busbar_hook_content_truncated_total` counts it. The cap is applied on the model plane's two
+  projections and not yet on the MCP/A2A gate projection.
 - **Client ID Metadata Documents are accepted**, so a `client_id` that is an HTTPS URL is fetched
   through the SSRF guard, validated, and used as an ephemeral public client that is never stored.
   Registration still confers nothing beyond the `default_grant` ceiling, which is empty until you

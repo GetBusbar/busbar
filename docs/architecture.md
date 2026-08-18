@@ -17,6 +17,9 @@ process.
 | **MCP** | `/mcp`, an MCP server your agents log in to | the MCP tool servers you register |
 | **A2A** | `/a2a/agents/{id}`, the agents you front | the backend agent a task is relayed to |
 
+Each plane has its own operator reference: this page for the LLM plane's request path,
+[MCP](/docs/mcp/) and [A2A](/docs/a2a/) for the other two.
+
 Each plane is bidirectional, and that is the whole claim: a caller speaks to
 Busbar, and Busbar speaks onward under its own identity.
 
