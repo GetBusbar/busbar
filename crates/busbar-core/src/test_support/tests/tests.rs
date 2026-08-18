@@ -5857,6 +5857,15 @@ async fn test_429_retry_after_header_sets_cooldown_floor() {
         .build();
 
     let req_body = serde_json::to_vec(&json!({"model": "test-model", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 50})).unwrap();
+    // Sampled BEFORE the request, not after. The store arms the cooldown as
+    // `trip_instant + retry_after` against a WHOLE-SECOND clock (`store::now`), so
+    // `cooldown_remaining_in(now_after_the_request)` is `45 - (time spent in forward())` — it
+    // reads 44 the moment a single wall-clock second boundary falls anywhere between the trip and
+    // the read. That is elapsed time, not the property under test, and it is exactly what turned
+    // this test red on a loaded CI runner while it stayed green on an idle laptop.
+    // `t0 <= trip_instant` always, so measuring the remaining cooldown from `t0` asserts the
+    // invariant that actually holds: the armed cooldown is at least the header's 45s.
+    let t0 = now();
     let resp = forward_with_pool(
         app.clone(),
         vec![crate::state::WeightedLane {
@@ -5877,8 +5886,7 @@ async fn test_429_retry_after_header_sets_cooldown_floor() {
     // Only lane was rate-limited → 503 exhaustion.
     assert_eq!(resp.status().as_u16(), 503);
 
-    let t = now();
-    let remaining = app.store.cooldown_remaining_in("default", 0, t);
+    let remaining = app.store.cooldown_remaining_in("default", 0, t0);
     assert!(
         remaining >= 45,
         "the upstream Retry-After: 45 must set a cooldown floor of >= 45s (got {remaining}s)"
