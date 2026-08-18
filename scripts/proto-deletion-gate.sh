@@ -68,7 +68,26 @@ note "level 1 static: core names no protocol crate (grep count 0)"
 
 # ── fixtures ─────────────────────────────────────────────────────────────────────────────────────
 FIX=$(mktemp -d "${TMPDIR:-/tmp}/proto-deletion-gate.XXXXXX")
-trap 'rm -rf "$FIX"; [ -n "${SRV_PID:-}" ] && kill "$SRV_PID" 2>/dev/null' EXIT
+SRV_PID=""
+# Reap the subject on EVERY exit path, including a signal. Two things this gate got wrong before:
+#   * the EXIT trap alone does not run when the shell is killed by SIGINT/SIGTERM (bash dies from the
+#     signal without running it), so a Ctrl-C mid-boot orphaned the subject;
+#   * `$!` was the pid of the SUBSHELL bash forks for a backgrounded FUNCTION, not of busbar — see
+#     `run_busbar_bg`. Killing that pid left busbar alive, reparented to init, still holding its
+#     port. Four such orphans were found on a dev box.
+# `kill 0` is deliberately NOT used (it would signal this script's whole process group, i.e. the
+# parent gate runner too); the subject is exec'd so its own pid is enough.
+cleanup() {
+  if [ -n "${SRV_PID:-}" ]; then
+    kill "$SRV_PID" 2>/dev/null
+    wait "$SRV_PID" 2>/dev/null
+    SRV_PID=""
+  fi
+  rm -rf "$FIX"
+}
+trap cleanup EXIT
+trap 'cleanup; exit 130' INT
+trap 'cleanup; exit 143' TERM HUP
 mk_providers() { # $1 = protocol name
   # printf, not a heredoc: `executable-config-lint.py` extracts every `<<DELIM` heredoc verbatim and
   # requires a LITERAL `protocol:` value (it validates the extracted text against the real engine,
@@ -128,6 +147,14 @@ run_busbar() { # binary, args... ; env comes from the fixture
   BUSBAR_CONFIG="$FIX/config.yaml" BUSBAR_PROVIDERS="$FIX/providers.yaml" "$@"
 }
 
+# The same, for BACKGROUNDED boots — `exec`, so the subshell bash forks for `run_busbar_bg ... &` is
+# REPLACED by the binary and `$!` is the binary's own pid. Without the exec, `$!` names a wrapper
+# shell whose death leaves busbar running with PPID 1, listening on its port forever.
+run_busbar_bg() { # binary, args... ; caller supplies the redirections and the trailing `&`
+  MOCK_KEY=test-key BUSBAR_SIGNING_KEY=0000000000000000000000000000000000000000000000000000000000000001 \
+  BUSBAR_CONFIG="$FIX/config.yaml" BUSBAR_PROVIDERS="$FIX/providers.yaml" exec "$@"
+}
+
 # ── run_gate: levels 2/3 + control, for ONE extracted dialect ───────────────────────────────────
 # $1 = dialect name (config `protocol:` value, e.g. "anthropic")
 # $2 = its Cargo feature name (e.g. "proto-anthropic")
@@ -173,7 +200,7 @@ run_gate() {
   local port; port=$(free_port) || die "could not find a free port pair for the deletion boot"
   local admin_port=$(( port + 1 ))
   mk_providers "$control_proto"; mk_config "127.0.0.1:$port" "127.0.0.1:$admin_port"
-  run_busbar "$deleted_bin" >"$FIX/boot-${proto}.log" 2>&1 &
+  run_busbar_bg "$deleted_bin" >"$FIX/boot-${proto}.log" 2>&1 &
   SRV_PID=$!
   local up=""
   for _ in $(seq 1 60); do
@@ -257,7 +284,7 @@ note "mcp-b kept dialect: anthropic config validates clean with proto-mcp off"
 PORT=$(free_port) || die "could not find a free port pair for the mcp-deleted boot"
 ADMIN_PORT=$(( PORT + 1 ))
 mk_providers "anthropic"; mk_config "127.0.0.1:$PORT" "127.0.0.1:$ADMIN_PORT"
-run_busbar "$MCP_DELETED_BIN" >"$FIX/boot-mcp.log" 2>&1 &
+run_busbar_bg "$MCP_DELETED_BIN" >"$FIX/boot-mcp.log" 2>&1 &
 SRV_PID=$!
 up=""
 for _ in $(seq 1 60); do
