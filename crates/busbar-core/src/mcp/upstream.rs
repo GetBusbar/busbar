@@ -517,7 +517,16 @@ pub(crate) async fn call(
     // `(pool, lane)` and a degenerate server against `("tool:<id>", 0)`); by the time this
     // function's failure reaches the caller the transport/status shape is gone, so classifying
     // later would be guessing.
-    let response = match auth.transport.mcp_wire().send(&leg, &outbound).await {
+    //
+    // `wire::send`, not `mcp_wire().send`: the client leg's `busbar_upstream_attempts_total` /
+    // `busbar_upstream_failures_total` count lives on that seam so a leg that is not counted is a
+    // leg that did not happen. See `super::client::wire::send`. The breaker record and the counter
+    // are DIFFERENT observers of the same leg and both belong here — the breaker decides whether the
+    // next call is attempted, the counter tells an operator which registration is the one failing.
+    // They are also keyed differently ON PURPOSE: the counter labels the operator's REGISTRATION
+    // (`leg.server`), which is the thing an operator restarts, while the breaker records the POOL
+    // MEMBER (`cell`), which is the thing the reroute walk selects past.
+    let response = match crate::mcp::client::wire::send(auth.transport, &leg, &outbound).await {
         Ok(r) => r,
         Err(e) => {
             let stage = record_wire_failure(breakers, cell, &e);
@@ -770,3 +779,10 @@ mod calllog_dispatch_tests;
 #[cfg(test)]
 #[path = "tests/hook_gate_tests.rs"]
 mod hook_gate_tests;
+
+// THIS PLANE'S CLIENT LEG ON `/metrics`. Beside the other upstream-leg batteries for the same
+// reason they are all here: the claim is about a leg that REACHED a peer, and a series emitted with
+// no upstream to reach would prove only that a macro increments.
+#[cfg(test)]
+#[path = "tests/client_leg_metrics_tests.rs"]
+mod client_leg_metrics_tests;
