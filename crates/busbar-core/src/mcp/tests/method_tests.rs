@@ -553,7 +553,19 @@ async fn a_tool_call_is_charged_metered_and_audited_on_the_ordinary_budget_plane
         key: Some(Arc::new(key.clone())),
     };
 
-    let before = crate::admin::audit::AUDIT.export().len();
+    // THE HIGH-WATER SEQ, not the ring's LENGTH. The audit ring is a process-global bounded at
+    // `MAX_AUDIT_ENTRIES`, and this binary runs its tests in parallel: once the whole run has
+    // produced that many entries `len()` saturates and "the ring grew" stops being observable
+    // however loudly this call audits. `seq` is monotonic for the process lifetime and never
+    // saturates, so "an entry appeared AFTER this point" stays a fact about THIS call — and it is
+    // the same value that scopes the row lookup below to our own dispatch rather than to whichever
+    // sibling most recently wrote an `mcp_tool.call`.
+    let before = crate::admin::audit::AUDIT
+        .export()
+        .iter()
+        .map(|e| e.seq)
+        .max()
+        .unwrap_or(0);
     let (status, body) = call(
         &app,
         &gov,
@@ -608,12 +620,11 @@ async fn a_tool_call_is_charged_metered_and_audited_on_the_ordinary_budget_plane
     // THE AUDIT: the VALIDATED decision, attributed, recorded as a REJECTION because that is
     // what it was — never as a successful route.
     let entries = crate::admin::audit::AUDIT.export();
-    assert!(entries.len() > before, "the call must have audited");
     let row = entries
         .iter()
         .rev()
-        .find(|e| e.action == "mcp_tool.call")
-        .expect("an `mcp_tool.call` audit row");
+        .find(|e| e.action == "mcp_tool.call" && e.seq > before)
+        .expect("the call must have audited an `mcp_tool.call` row of its own");
     assert_eq!(row.resource, "mcp_tool:fs_read");
     assert_eq!(row.outcome, crate::admin::audit::OUTCOME_REJECTED);
     assert_eq!(row.principal, "test-principal");
