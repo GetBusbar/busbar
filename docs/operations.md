@@ -455,13 +455,17 @@ trip is a signal that names the server or the agent and the cause.
 its own that two registrations are interchangeable: you say so by listing them in
 `tool_pools:` / `agent_pools:`, and busbar then verifies that claim against the
 fingerprints it already computed — the approved tool schema digest on MCP, the approved
-canonical card fingerprint on A2A — before it moves anything. Members whose pins
-disagree are refused with both digests named, not defaulted. With a pool configured, a
-`tools/call` to a server whose primary is tripped, or that cannot even be connected to,
-is rerouted to its verified twin **before the first byte**, and a fresh A2A submission
-to a pooled agent is walked the same way at admission. There is no `failover:` key
-under `tools:` or `agents:`; the two pool sections are the whole vocabulary, and an
+canonical card fingerprint on A2A — before it will move anything. Members whose pins
+disagree are refused with both digests named, not defaulted. There is no `failover:`
+key under `tools:` or `agents:`; the two pool sections are the whole vocabulary, and an
 absent section is exactly the old behaviour.
+
+**On this build the two pool sections are validated at boot and not yet consulted at
+dispatch.** The grammar parses and every boot refusal fires; the selection walk that
+would send a `tools/call` past a tripped primary to its verified twin lives in
+`crate::failover` and is not mounted on either dispatch path, so a tripped target is
+refused rather than rerouted. Configure the pools if you want the boot-time check on
+your topology; do not yet plan capacity on the reroute.
 
 **What stays deliberately narrower than the LLM plane** is everything after a dispatch
 has gone out. Once a call has left Busbar, moving it repeats work the upstream may
