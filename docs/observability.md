@@ -2,7 +2,7 @@
 
 Busbar exposes its liveness, per-lane topology, and Prometheus metrics on three endpoints. This page documents each, plus the signals worth alerting on.
 
-Cross-references: [Circuit breaker](/docs/circuit-breaker/) · [In-flight failover](/docs/failover/) · [Configuration](/docs/configuration/#export).
+Cross-references: [Circuit breaker](/docs/circuit-breaker/) · [In-flight failover](/docs/failover/) · [Configuration](/docs/configuration/#export) · [MCP](/docs/mcp/) and [A2A](/docs/a2a/) (what each of the other two planes emits).
 
 ## /healthz
 
@@ -94,8 +94,20 @@ Scraping is not required for correctness. A gateway with metrics enabled and not
 `busbar_request_duration_seconds` carry a `plane` label (`llm`, `mcp`, `a2a`), so model traffic,
 tool calls and agent tasks are compared with one query rather than three vocabularies. On the `mcp`
 and `a2a` planes `pool` currently reads `unresolved` (the plane's door counts the request before
-its routing target is resolved) and `ingress_protocol` reads `jsonrpc`, which is the one wire
-format each of those planes speaks.
+its routing target is resolved).
+
+`ingress_protocol` reads `jsonrpc` on the `mcp` plane, because JSON-RPC 2.0 is the one wire format
+that plane speaks — a transport is not a wire format, and MCP over streamable HTTP and MCP over
+stdio are the same message shape. **On the `a2a` plane it names the binding leg the request
+actually arrived on**: `jsonrpc`, `http+json` or `grpc`. That plane declares three wire formats and
+labels its own requests from inside the reader, because two of the three are spoken at the same
+door and only the reader knows which one spoke, so `sum by (ingress_protocol)
+(rate(busbar_requests_total{plane="a2a"}[5m]))` compares the three bindings against each other
+directly. The one exception is a refusal issued *before* any A2A handler runs — an audience-bound
+`401`, a `413`, a `404` — which carries the binding the **door** declares: `jsonrpc` for everything
+under the `/a2a` mount (including the HTTP+JSON rows, which live under it), and `grpc` for the
+`/lf.a2a.v1.A2AService/*` mount, which is claimed separately precisely so it has an audience and a
+label of its own.
 
 A refusal issued before a plane's handler runs is counted too: a `401` on an audience-bound MCP
 endpoint appears as `busbar_requests_total{plane="mcp",outcome="client_error"}`. That is deliberate,
