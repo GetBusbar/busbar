@@ -12,7 +12,7 @@ Cross-references: [Circuit breaker](/docs/circuit-breaker/) (the one FSM, on all
 
 Busbar sits on both sides of MCP at once, and the two directions are configured by two different sections.
 
-**Busbar as the MCP server** is the `mcp:` block. Its presence mounts an MCP endpoint, an RFC 9728 protected-resource metadata document, and nothing else. Busbar answers `server/discover`, `tools/list`, `tools/call`, `prompts/list`, `prompts/get`, `resources/list`, `resources/templates/list`, `resources/read`, `completion/complete`, the SEP-2663 task methods (`tasks/get`, `tasks/update`, `tasks/cancel`) and `subscriptions/listen` (`crates/busbar-core/src/mcp/method.rs:66-87`). Anything else answers `404` with JSON-RPC `-32601`.
+**Busbar as the MCP server** is the `mcp:` block. Its presence mounts an MCP endpoint, an RFC 9728 protected-resource metadata document, and nothing else. Busbar answers `server/discover`, `tools/list`, `tools/call`, `prompts/list`, `prompts/get`, `resources/list`, `resources/templates/list`, `resources/read`, `completion/complete`, the SEP-2663 task methods (`tasks/get`, `tasks/update`, `tasks/cancel`) and `subscriptions/listen` (`crates/busbar-core/src/mcp/method.rs:67-89`). Anything else answers `404` with JSON-RPC `-32601`.
 
 **Busbar as an MCP client** is the `tools:` section. Each entry registers one upstream tool server: where it is, what authenticity root it is pinned to, which of its tools you have approved, and what credential Busbar spends to reach it.
 
@@ -24,7 +24,9 @@ This is a property of the boot path rather than a claim about defaults. `App::pl
 
 - no ingress route and no metadata route exist in the route table, so a `POST /mcp` is an ordinary unclaimed path that falls through to the residual LLM plane;
 - `PlaneDispatch` claims no path for MCP, so `admission_for` answers `None` and the RFC 8707 audience check costs one `Option` test;
-- the tool-list refresh job is not spawned (`crates/busbar-core/src/mcp/connect.rs:708-710` returns `None` on an empty catalogue).
+- nothing inbound can reach a `tools:` registration, because nothing inbound is mounted.
+
+**One thing an absent `mcp:` block does NOT switch off: the outbound sweep.** The tool-list refresh job is keyed on the *registry*, not on the plane. `spawn_refresh_job` returns `None` only when the catalogue is empty (`crates/busbar-core/src/mcp/connect.rs:708-710`), the catalogue is built unconditionally from `tools:` (`crates/busbar-core/src/appbuild.rs:1500`), and the spawn is unconditional (`crates/busbar/src/main.rs:922`). So a deployment that writes `tools:` and no `mcp:` block still reaches those upstreams on their `refresh_ttl:` — outbound, and on the sweep's own clock. If you want no traffic to a registration at all, remove the registration; an absent `mcp:` block only closes the door in one direction.
 
 A plane exists because it is configured, not because its name appears in a path (`crates/busbar-core/src/plane/mod.rs:505-509`).
 
@@ -34,16 +36,16 @@ A plane exists because it is configured, not because its name appears in a path 
 
 ### The `mcp:` block
 
-`deny_unknown_fields`: a typo'd key fails boot (`crates/busbar-core/src/mcp/mod.rs:211`).
+`deny_unknown_fields`: a typo'd key fails boot (`crates/busbar-core/src/mcp/mod.rs:221`).
 
 | Key | Type | Required | Default | What it is |
 |---|---|---|---|---|
 | `canonical_uri` | string | **yes** | — | The RFC 8707 resource indicator: the absolute URI naming this deployment's MCP endpoint. It is the exact `aud` every inbound token must carry, **and** the path the endpoint mounts at. |
 | `authorization_servers` | list of strings | **yes**, non-empty | `[]` (refused) | RFC 9728 `authorization_servers`: the issuer identifiers permitted to mint tokens for this resource. This list is the entire content of the answer a credential-less client came for. |
-| `scopes_supported` | list of strings | no | `[]` | RFC 9728 `scopes_supported`. **Advisory metadata only** — authorization is decided by the caller's grant, never by this list (`crates/busbar-core/src/mcp/mod.rs:230-233`). |
+| `scopes_supported` | list of strings | no | `[]` | RFC 9728 `scopes_supported`. **Advisory metadata only** — authorization is decided by the caller's grant, never by this list (`crates/busbar-core/src/mcp/mod.rs:240-243`). |
 | `allowed_origins` | list of strings | no | `[]` | Browser origins accepted on the ingress, for the `2026-07-28` `Origin` MUST. Empty means no browser origin is accepted; a request carrying no `Origin` (every non-browser client) is unaffected. |
 
-The **mount path is derived** from `canonical_uri`, never configured separately, so the path a client posts to and the identifier its token is bound to cannot drift apart (`crates/busbar-core/src/mcp/mod.rs:220-222`). `https://gateway.example.com/mcp` mounts at `/mcp`.
+The **mount path is derived** from `canonical_uri`, never configured separately, so the path a client posts to and the identifier its token is bound to cannot drift apart (`crates/busbar-core/src/mcp/mod.rs:230-232`). `https://gateway.example.com/mcp` mounts at `/mcp`.
 
 ```yaml
 mcp:
@@ -54,7 +56,7 @@ mcp:
   allowed_origins: []
 ```
 
-That mounts exactly three route entries (`crates/busbar-core/src/router.rs:436-468`):
+That mounts four route entries over two paths (`crates/busbar-core/src/router.rs:430-469`) — `GET` and `DELETE` are separate entries sharing one row here because they share one answer:
 
 | Route | Auth | What it is |
 |---|---|---|
@@ -62,7 +64,7 @@ That mounts exactly three route entries (`crates/busbar-core/src/router.rs:436-4
 | `POST /mcp` | key | The endpoint. JSON-RPC 2.0. |
 | `GET /mcp`, `DELETE /mcp` | key | `405`. This revision has no GET stream and no sessions. Behind the key so an anonymous caller gets the `401` challenge instead of a description of the surface. |
 
-The metadata path is the well-known prefix with the resource's path appended **after** it, per RFC 9728's path-insertion rule (`crates/busbar-core/src/mcp/mod.rs:256-262`). Getting that backwards 404s every compliant client's discovery. The document Busbar renders carries `resource`, `authorization_servers`, `scopes_supported` (each omitted when empty) and `bearer_methods_supported: ["header"]`, with `Cache-Control: public, max-age=3600` (`crates/busbar-core/src/ingress/protocol.rs:344-372`). `bearer_methods_supported` is not configurable: Busbar accepts a bearer in the `Authorization` header and nowhere else, on every plane.
+The metadata path is the well-known prefix with the resource's path appended **after** it, per RFC 9728's path-insertion rule (`crates/busbar-core/src/mcp/mod.rs:266-272`). Getting that backwards 404s every compliant client's discovery. The document Busbar renders carries `resource` always, `authorization_servers` and `scopes_supported` when non-empty, and `bearer_methods_supported: ["header"]`, with `Cache-Control: public, max-age=3600` (`crates/busbar-core/src/ingress/protocol.rs:344-372`). `bearer_methods_supported` is not configurable: Busbar accepts a bearer in the `Authorization` header and nowhere else, on every plane.
 
 ### Boot refusals: the `mcp:` block
 
@@ -70,12 +72,12 @@ Every one of these stops the process. An MCP plane that is half-configured is wo
 
 | Refusal | Condition | `crates/busbar-core/src/…` |
 |---|---|---|
-| `mcp.canonical_uri is required` | absent or empty | `mcp/mod.rs:341-344` |
-| `… is not an absolute http(s) URI` | not `http://` / `https://` with a non-empty authority | `mcp/mod.rs:345-346`, `mcp/mod.rs:438-451` |
-| `… carries a query or fragment` | a `?` or `#` anywhere | `mcp/mod.rs:347-349` |
-| `… has no path` | path is empty or `/` — mounting at `/` would claim every path in the deployment | `mcp/mod.rs:350-353` |
-| `mcp.authorization_servers must list at least one issuer` | empty list | `mcp/mod.rs:354-356` |
-| `… entry is not an absolute http(s) URI` | any entry | `mcp/mod.rs:357-361` |
+| `mcp.canonical_uri is required` | absent or empty | `mcp/mod.rs:351-354` |
+| `… is not an absolute http(s) URI` | not `http://` / `https://` with a non-empty authority | `mcp/mod.rs:355-356`, `mcp/mod.rs:448-461` |
+| `… carries a query or fragment` | a `?` or `#` in the **path**, or a `#` in the **origin**. A `?` inside the authority is not tested by this arm — `split_absolute` cuts at the first `/`, so it lands in the origin, and `https://gateway.example.com?x/mcp` boots with that whole string as the audience and `/mcp` as the mount (`mcp/mod.rs:448-460`) | `mcp/mod.rs:357-359` |
+| `… has no path` | path is empty or `/` — mounting at `/` would claim every path in the deployment | `mcp/mod.rs:360-363` |
+| `mcp.authorization_servers must list at least one issuer` | empty list | `mcp/mod.rs:364-366` |
+| `… entry is not an absolute http(s) URI` | any entry | `mcp/mod.rs:367-371` |
 | **`mcp: is configured but auth.chain is empty`** | `mcp:` present and `auth.chain` absent or `[]` | `config_validate/mod.rs:945-956` |
 
 **The empty-`auth.chain` refusal is the one to understand.** With an empty chain the auth middleware admits with no principal at all. The plane's entire authorization model is that a caller sees and may call only what its key's grant permits — and a request that carries no key is never *narrowed* by one, so the grant predicate answers `true` for every `(kind, value)` pair it is asked. That is not "no access", it is wildcard access to every registered server and every approved tool, for anyone who can reach the port. The second half is transitive: `upstream::authorise` binds the outbound credential Busbar spends to the inbound principal's grant, and with no inbound principal there is nothing to bind to, so Busbar spends its own upstream credentials on behalf of an anonymous caller. Both properties go vacuous at once and neither failure is visible from outside — the deployment answers every request perfectly. Close the chain (`auth: { chain: [keys] }`, or an IdP auth plugin), or drop the `mcp:` block.
@@ -215,15 +217,17 @@ All of these are checked by `validate_server` / `validate_endpoint`, which is ca
 
 Two more refusals run over the **whole** effective registry (file base + admin overlay), in `config::resolve`:
 
-- **Published-name uniqueness.** Two tools that would both be published as one wire name refuse boot, naming both claimants. The check compares every published name against every other, *including* an override against another server's default — the collision a naive overrides-only check misses (`crates/busbar-core/src/mcp/config.rs:1486-1546`, called from `config/mod.rs:4494-4496`). A collision is refused rather than resolved, because the published name is what an `mcp_tool:` grant names, so resolving it would silently move an authorization decision.
+- **Published-name uniqueness.** Two tools that would both be published as one wire name refuse boot, naming both claimants. The check compares every published name against every other, *including* an override against another server's default — the collision a naive overrides-only check misses (`crates/busbar-core/src/mcp/config.rs:1486-1546`, called from `config/mod.rs:4498`). A collision is refused rather than resolved, because the published name is what an `mcp_tool:` grant names, so resolving it would silently move an authorization decision.
 - **Dangling hook references.** A hook a `tools:` entry names must exist in the one top-level `hooks:` map (`crates/busbar-core/src/config/mod.rs:4477-4486`). A dropped reference is an operator believing a control is attached that is not.
 
 ### Failover pools: `tool_pools:`
 
 <!-- POST-MERGE: requires feat/1.6.0-reroute-parity -->
-An MCP registration is one destination. `tool_pools:` is how you tell Busbar that two registrations are **the same server deployed twice** — one image in two regions, a hosted instance beside a self-hosted twin — so that a request the breaker would otherwise refuse can be sent to the other one instead.
+An MCP registration is one destination. `tool_pools:` is how you tell Busbar that two registrations are **the same server deployed twice** — one image in two regions, a hosted instance beside a self-hosted twin. That declaration is what a selection walk needs in order to send a request the breaker would otherwise refuse to the other member instead.
 
 It is **opt-in and the absent section is exactly today's behaviour**: one registration, one destination, nothing to reason about (`crates/busbar-core/src/failover/mod.rs:119-127`).
+
+> **What is live on this build, stated plainly.** The `tool_pools:` **grammar** is live: the section parses and every boot refusal in the table below fires today (`crates/busbar-core/src/config/mod.rs:1585-1639`). The **selection walk** is landed as a seam in `crate::failover` — the interchangeability rule, the repeat rule and their proofs are all in it — and it is **not mounted on a dispatch path**: `failover::walk` has no non-test caller (`crates/busbar-core/src/failover/mod.rs:88-95`). So a configured pool is validated at boot and is not yet consulted when a call is dispatched, and a tripped server is refused rather than rerouted, exactly as [What a tripped upstream returns](#what-a-tripped-upstream-returns) describes. The three rules below are the rules that seam enforces; none of them moves a request on this build. This is written down rather than omitted because a page that describes a path before it is wired is how a reader learns something false.
 
 | Key | Type | Required | Default | Notes |
 |---|---|---|---|---|
@@ -254,13 +258,13 @@ Boot refusals, all in `crates/busbar-core/src/config/mod.rs:1585-1639`:
 | `repeatable:` holds an empty entry | an empty entry names nothing |
 
 <!-- POST-MERGE: requires feat/1.6.0-reroute-parity -->
-**Naming two servers in a pool is not what makes them interchangeable.** Busbar compares the approved schema digest it already computed for each candidate and moves a request only when they agree; a candidate whose digest differs, or that has nothing approved yet, is refused with both digests named (`crates/busbar-core/src/failover/mod.rs:33-57`, `:168-186`). Same image in two regions ⇒ same schemas ⇒ same digest ⇒ provably interchangeable. Two different vendors' `search` tools ⇒ different digests ⇒ refused. You are asserting only *"these names are the same deployment"*, and that claim is checked before a single request moves.
+**Naming two servers in a pool is not what makes them interchangeable.** The walk compares the approved schema digest Busbar already computed for each candidate and will move a request only when they agree; a candidate whose digest differs, or that has nothing approved yet, is refused with both digests named (`crates/busbar-core/src/failover/mod.rs:33-57`, `:168-186`). Same image in two regions ⇒ same schemas ⇒ same digest ⇒ provably interchangeable. Two different vendors' `search` tools ⇒ different digests ⇒ refused. You are asserting only *"these names are the same deployment"*, and that claim is checked before a single request moves.
 
 <!-- POST-MERGE: requires feat/1.6.0-reroute-parity -->
-**A reroute is not a retry.** When the primary's breaker is Open the request never left Busbar, so sending it to an equivalent deployment duplicates nothing: that movement is allowed by default. Once a call has gone out, moving it is a genuine repeat of work the upstream may already have done, and it is refused unless the operation is named in `repeatable:` (`crates/busbar-core/src/failover/mod.rs:60-80`). `send_email` is not repeated. `charge_card` is not repeated. There is no switch that turns the rule off wholesale. The two rules compose: **repeat a call only when the digests match AND the operation is declared safe to repeat.**
+**A reroute is not a retry**, and the seam draws the line there. When the primary's breaker is Open the request never left Busbar, so sending it to an equivalent deployment duplicates nothing: that movement is the one the rule allows by default. Once a call has gone out, moving it is a genuine repeat of work the upstream may already have done, and the rule refuses it unless the operation is named in `repeatable:` (`crates/busbar-core/src/failover/mod.rs:60-80`). `send_email` is not repeated. `charge_card` is not repeated. There is no switch that turns the rule off wholesale. The two rules compose: **repeat a call only when the digests match AND the operation is declared safe to repeat.**
 
 <!-- POST-MERGE: requires feat/1.6.0-reroute-parity -->
-Reroute never means Busbar found somewhere else to send a call on its own. It means the selection walk chose a different member of a pool you declared, whose fingerprint Busbar verified matches.
+Reroute will never mean Busbar found somewhere else to send a call on its own. It means the selection walk chose a different member of a pool you declared, whose fingerprint Busbar verified matches. There is no discovery, and no member you did not write down.
 
 ---
 
@@ -268,9 +272,9 @@ Reroute never means Busbar found somewhere else to send a call on its own. It me
 
 ### The discovery loop
 
-An MCP client arrives with no credential. It gets `401` with an RFC 6750 `WWW-Authenticate: Bearer` challenge carrying a `resource_metadata` parameter — the **absolute** URL of this deployment's protected-resource document, because a client with no credential also has no reason to trust its own reconstruction of your origin (`crates/busbar-core/src/mcp/mod.rs:261-263`, `crates/busbar-core/src/auth/challenge.rs:73-91`). It reads that document, finds `authorization_servers`, does ordinary OAuth against your IdP, and comes back with a token.
+An MCP client arrives with no credential. It gets `401` with an RFC 6750 `WWW-Authenticate: Bearer` challenge carrying a `resource_metadata` parameter — the **absolute** URL of this deployment's protected-resource document, because a client with no credential also has no reason to trust its own reconstruction of your origin (`crates/busbar-core/src/mcp/mod.rs:271-273`, `crates/busbar-core/src/auth/challenge.rs:73-91`). It reads that document, finds `authorization_servers`, does ordinary OAuth against your IdP, and comes back with a token.
 
-The challenge distinguishes two cases and clients branch on the difference: `error="invalid_request"`-class *absent* (no credential presented at all) and `error="invalid_token"` (one was presented and failed) are not collapsed (`crates/busbar-core/src/auth/mod.rs:1650-1668`). A principal that authenticates but carries no grant on this resource gets `insufficient_scope`.
+The challenge distinguishes two cases and clients branch on the difference. No credential presented at all earns a **bare** challenge with no `error` parameter — RFC 6750 §3.1 is explicit that this case omits it, because the bare challenge means *authenticate* — while a credential that was presented and failed earns `error="invalid_token"`. They are not collapsed (`crates/busbar-core/src/auth/challenge.rs:38-61`, `crates/busbar-core/src/auth/mod.rs:1650-1668`). A principal that authenticates but carries no grant on this resource gets `insufficient_scope`.
 
 ### What Busbar issues, and what it does not
 
@@ -278,7 +282,7 @@ The challenge distinguishes two cases and clients branch on the difference: `err
 
 Two consequences that bite operators:
 
-- **A Busbar virtual key does not work on the MCP endpoint.** Busbar's own signed `bbk_…` tokens carry an optional audience claim, and the verifier enforces the plane boundary in both directions: a token with no audience is admissible only on the plain data plane, and a token presented on an audience-checked ingress must carry exactly that audience (`crates/busbar-core/src/governance/signing.rs:306-320`). Every key minted through the admin API or `/auth/token` is minted with `aud: None` (`crates/busbar-core/src/governance/signing.rs:194`), so it is refused here with an audience mismatch. There is no surface today that mints an audience-bound `bbk_` token: `mint_for_audience` (`governance/signing.rs:208`) exists and has no production caller.
+- **A Busbar virtual key does not work on the MCP endpoint.** Busbar's own signed `bbk_…` tokens carry an optional audience claim, and the verifier enforces the plane boundary in both directions: a token with no audience is admissible only on the plain data plane, and a token presented on an audience-checked ingress must carry exactly that audience (`crates/busbar-core/src/governance/signing.rs:306-320`). Every key minted through the admin API or `/auth/token` is minted with `aud: None` (`crates/busbar-core/src/governance/signing.rs:194`), so it is refused here with an audience mismatch. There is no surface today that mints an audience-bound `bbk_` token: `mint_for_audience` is `#[cfg(test)]` and therefore is not in a release build at all (`governance/signing.rs:207-209`).
 - **An opaque bearer is refused.** An IdP that issues opaque reference tokens presents a credential with no readable claims, so Busbar cannot establish that it was minted for Busbar. The honest answer to "I cannot tell" on a confused-deputy defence is refusal (`crates/busbar-core/src/auth/audience.rs:38-47`, `mod.rs:1618-1625`). Until token introspection exists, an IdP that issues opaque tokens cannot serve this plane — and you find that out from a clear refusal rather than from an audience check that silently was not happening.
 
 If you do not have an IdP you can register clients in, the separate **`oauth_as:` block** makes Busbar an authorization server as well, serving pre-registration, Client ID Metadata Documents and dynamic client registration, and issuing RFC 9068 `at+jwt` access tokens whose `aud` is one of Busbar's own protected resources (`crates/busbar-core/src/oauth_as/mod.rs:1-70`, `oauth_as/plane.rs:119-149`). That is a different plane with its own configuration and is out of scope here.
@@ -295,7 +299,7 @@ The check lives beside the **mount**, not in a handler, so every path behind tha
 
 ### `Origin` and DNS rebinding
 
-`2026-07-28` makes `Origin` validation a MUST. Busbar refuses a request carrying an `Origin` that is not in `mcp.allowed_origins` with `403`; a request carrying no `Origin` — which is every non-browser client — is unaffected, and loopback is admitted unconditionally by the shared rule (`crates/busbar-core/src/mcp/mod.rs:234-242`, `crates/busbar-core/src/mcp/mod.rs:406-419`). The threat is a page on an attacker's origin resolving a name to Busbar's loopback address and driving the tool plane with the user's ambient credentials.
+`2026-07-28` makes `Origin` validation a MUST. Busbar refuses a request carrying an `Origin` that is not in `mcp.allowed_origins` with `403`; a request carrying no `Origin` — which is every non-browser client — is unaffected, and loopback is admitted unconditionally by the shared rule (`crates/busbar-core/src/mcp/mod.rs:244-252`, `crates/busbar-core/src/mcp/mod.rs:416-429`). The threat is a page on an attacker's origin resolving a name to Busbar's loopback address and driving the tool plane with the user's ambient credentials.
 
 ---
 
@@ -319,7 +323,7 @@ allowed_scopes:
 
 ### Listed and served are two different answers
 
-The **listing** (`tools/list`, `prompts/list`, `resources/list`, `resources/templates/list`) asks identity and grant, and deliberately not the artifact step: a tool with no approved hash and a server with no locked pin both *appear*, so the approval queue is visible (`crates/busbar-core/src/mcp/catalogue.rs:1169-1180`, `:472-478`). What they do not get is a dispatch.
+The **listing** (`tools/list`, `prompts/list`, `resources/list`, `resources/templates/list`) asks identity and grant, and deliberately not the artifact step: a tool with no approved hash and a server with no locked pin both *appear*, so the approval queue is visible (`crates/busbar-core/src/mcp/catalogue.rs:1169-1180`, `:467-471`). What they do not get is a dispatch.
 
 The **dispatch** (`tools/call`) asks the full ordered gate — identity, grants, the trust artifact comparison, and the catalogue generation — in `Catalogue::resolve` (`crates/busbar-core/src/mcp/catalogue.rs:749-810`). It refuses a call with:
 
@@ -330,9 +334,9 @@ The **dispatch** (`tools/call`) asks the full ordered gate — identity, grants,
 | `NotApproved` | registered, but no schema hash approved: pending | `403` | `not_approved` |
 | `NotPinned` | the server has no locked identity pin | `403` | `not_pinned` |
 | `Quarantined` | the upstream's current tool list no longer matches what was approved | `403` | `quarantined` |
-| `GenerationMoved` | the registry changed between admission and dispatch | — | `generation_moved` |
+| `GenerationMoved` | the registry changed between admission and dispatch | `409` | `generation_moved` |
 
-Statuses: `crates/busbar-core/src/mcp/method.rs:2036-2047`; wording: `mcp/catalogue.rs:404-435`; audit words: `mcp/catalogue.rs:449-462`. A quarantine is `403` and not `404` on purpose: the tool exists and this caller may see it — what changed is the upstream.
+Statuses: `crates/busbar-core/src/mcp/method.rs:2034-2047`; wording: `mcp/catalogue.rs:404-435`; audit words: `mcp/catalogue.rs:449-462`. A quarantine is `403` and not `404` on purpose: the tool exists and this caller may see it — what changed is the upstream.
 
 `GenerationMoved` is the swap guard. The catalogue is an immutable snapshot carrying a monotonic generation, taken fresh on every config apply *including one that changes nothing about `tools:`*; a call admitted under generation N is refused under N+1 (`crates/busbar-core/src/mcp/catalogue.rs:8-23`). An in-flight call cannot outlive the approval it was admitted under. Retry.
 
@@ -350,7 +354,7 @@ A transport is not a wire format. Every MCP transport carries the same JSON-RPC 
 
 ### Inbound: streamable HTTP
 
-`POST` to the mount path. This is the `2026-07-28` stateless shape (SEP-2243/SEP-2575), and it is a breaking redesign rather than an increment (`crates/busbar-core/src/mcp/mod.rs:34-55`):
+`POST` to the mount path. This is the `2026-07-28` stateless shape (SEP-2243/SEP-2575), and it is a breaking redesign rather than an increment (`crates/busbar-core/src/mcp/mod.rs:44-65`):
 
 - **No `initialize` handshake and no protocol sessions.** Every request is self-describing, carrying its protocol version and the client's capabilities in `params._meta`. There is no `Mcp-Session-Id` to mint, honour or invalidate.
 - **The GET stream is gone**, and with it resumability. `GET` and `DELETE` answer `405`. The server-to-client channel moved onto a method: `subscriptions/listen` is an ordinary POST whose response is a long-lived stream of notifications (`crates/busbar-core/src/mcp/subscribe.rs:1-21`).
@@ -373,7 +377,7 @@ The identity is **frozen for the life of the session**: a key revoked mid-sessio
 
 Because stdout is the MCP channel, logging moves to stderr in this mode (`crates/busbar/src/main.rs:723-727`).
 
-`--mcp-stdio` requires the `mcp:` block. Two live asks and one round cap are transport-local belts: a 30-second timeout on one live ask, and a cap of 8 live MRTR rounds per request on top of the operator's own `max_caller_ask_rounds` (`crates/busbar-core/src/mcp/stdio_serve.rs:114-125`).
+`--mcp-stdio` requires the `mcp:` block. Two live asks and one round cap are transport-local belts: a 30-second timeout on one live ask, and a cap of 8 live MRTR rounds per request on top of the operator's own `max_caller_ask_rounds` (`crates/busbar-core/src/mcp/stdio_serve.rs:109-118`).
 
 ### Outbound: `transport: streamable_http`
 
@@ -468,7 +472,7 @@ A tripped server answers:
 **These cells refuse on a trip and nothing less.** The MCP cell is built with `bench_below_trip_threshold: false` — the one field it does not take from the LLM defaults (`crates/busbar-core/src/store/planes.rs:81-98`). On an LLM pool, a sub-threshold failure arms a short cooldown meaning "prefer a sibling for a while", and failover is what keeps the caller served while it lasts. On a single MCP registration with no pool there is no sibling, so the same cooldown would mean "refuse *every* caller of this server for the next 15–120 seconds" after one transient blip, on a cell whose own trip predicate had just declined to trip. So the predicate is the published one and nothing weaker: **error rate ≥ 0.5 over at least 5 outcomes in a 30-second window**, cooldown 15 s escalating to 120 s (`crates/busbar-core/src/store/in_memory/mod.rs:563-574`, `:629-639`). An upstream's own `Retry-After` is still honoured, for as long as the upstream asked for — that is the upstream's backpressure, not Busbar inventing an outage.
 
 <!-- POST-MERGE: requires feat/1.6.0-reroute-parity -->
-When the tripped server is a member of a `tool_pools:` pool, the selection walk tries the next member whose approved digest matches the primary's, before any refusal is composed. If every member refuses admission, the caller gets the `503` above naming the pool's exhaustion rather than one server's.
+**A tripped server is refused on this build even when it is a member of a `tool_pools:` pool.** The dispatch path consults the breaker and composes the `503` above; it does not consult the pool, because the selection walk is not mounted here yet (`crates/busbar-core/src/failover/mod.rs:88-95`). Once it is, the walk will try the next member whose approved digest matches the primary's before any refusal is composed, and the `503` will name the pool's exhaustion rather than one server's.
 
 **Timeouts are a bound the upstream cannot lengthen by choosing to be slow.** `timeout:` is per server, default 30 s, and there is deliberately no spelling for "unlimited": a leg that cannot time out holds a concurrency slot for as long as the upstream chooses (`crates/busbar-core/src/mcp/config.rs:706-727`).
 
@@ -478,8 +482,8 @@ When the tripped server is a member of a `tool_pools:` pool, the selection walk 
 |---|---|---|
 | `-32000` | varies | A governance refusal: well-formed request, method exists, server declined by policy (`mcp/method.rs:2056-2062`). |
 | `-32020` | `400` | A mirrored routing header disagrees with the body (`mcp/envelope.rs:134`). |
-| `-32021` | — | The caller did not declare a client capability a `task_support: required` tool needs; `data.requiredCapabilities` names it (`mcp/method.rs:2064-2068`). |
-| `-32022` | — | Unsupported protocol version (`mcp/envelope.rs:137`). |
+| `-32021` | `400` | The caller did not declare a client capability a `task_support: required` tool needs; `data.requiredCapabilities` names it. The status is fixed by the spec, not chosen (`mcp/method.rs:268-282`, `:2294-2303`). |
+| `-32022` | `400` | Unsupported protocol version; `data` carries `requested` and `supported` (`mcp/envelope.rs:136-139`). |
 | `-32030` | `503` | The upstream's breaker is open. |
 | `-32601` | `404` | Unknown method — never a `200` carrying an error object. |
 | `-32602` | `400` | Structurally wrong params, including an absent or incomplete `params._meta`. |
@@ -503,7 +507,7 @@ The MCP plane emits on **the same two request families the model plane does**, w
 
 The client leg lands on the shared upstream families, which are emitted on every plane rather than only the model one (`crates/busbar-core/src/telemetry.rs:788-815`): `busbar_upstream_attempts_total{pool,lane}`, `busbar_upstream_failures_total{pool,lane,disposition}`. Both labels are operator-configured and therefore bounded.
 
-**There is no `operation` metric label, on this plane or any other.** `Operation::name()` — `invoke`, `catalogue`, `fetch`, `task`, `subscribe`, `control` — is a closed internal vocabulary describing the *shape* of an exchange (`crates/busbar-core/src/operation.rs:174-183`, `:240-247`). Its one operator-visible appearance today is the `op` field on the **LLM** proxy engine's tracing span, where the values are the seven LLM verbs (`crates/busbar-core/src/proxy/engine/mod.rs:124`). No metric family carries it (`crates/busbar-core/src/metrics.rs:147-153`), and there is no `paths:` configuration key in the tree. See [observability.md](/docs/observability/) for the full metric table.
+**There is no `operation` metric label, on this plane or any other.** `OpShape::as_str()` — `invoke`, `catalogue`, `fetch`, `task`, `subscribe`, `control` — is a closed internal vocabulary describing the *shape* of an exchange (`crates/busbar-core/src/operation.rs:174-183`). `Operation::name()` is a different thing: the word the wire calls a verb (`operation.rs:286-290`). Its one operator-visible appearance today is the `op` field on the **LLM** proxy engine's tracing span, where the values are the seven LLM verbs (`crates/busbar-core/src/proxy/engine/mod.rs:124`). No metric family carries it (`crates/busbar-core/src/metrics.rs:147-153`), and there is no `paths:` configuration key in the tree. See [observability.md](/docs/observability/) for the full metric table.
 
 Metrics are opt-in: with no `module: prometheus` instance under `export:`, Busbar installs no recorder and mounts no `/metrics`.
 
@@ -529,11 +533,11 @@ The claim is **tamper-evidence, not tamper-prevention.** A chain detects an alte
 
 `store: memory` implements none of these methods, so nothing persists and the restore reports zero. That zero is the truth being reported, not a bug.
 
-**Upstream credentials are bound to the inbound caller.** `upstream::authorise` selects the credential Busbar spends under the *inbound* caller's grant — that binding is the confused-deputy defence for the client direction, and it is what the whole plane's authorization model rests on (`crates/busbar-core/src/mcp/mod.rs:70-78`). The RFC 8693 exchange asks for a scope **derived from the caller's own `mcp_tool` grants on that server**, intersected with the server, sorted and deduped (`crates/busbar-core/src/mcp/client/egress.rs:361-375`) — never a configured static list, which would be a second place the authority is written down.
+**Upstream credentials are bound to the inbound caller.** `upstream::authorise` selects the credential Busbar spends under the *inbound* caller's grant — that binding is the confused-deputy defence for the client direction, and it is what the whole plane's authorization model rests on (`crates/busbar-core/src/mcp/mod.rs:80-88`). The RFC 8693 exchange asks for a scope **derived from the caller's own `mcp_tool` grants on that server**, intersected with the server, sorted and deduped (`crates/busbar-core/src/mcp/client/egress.rs:361-375`) — never a configured static list, which would be a second place the authority is written down.
 
 **What an upstream may ask for, it must be granted AND satisfied.** A server-initiated ask arrives as an `input_required` result of a call Busbar made; `grants.{sampling,elicitation,roots}` admits it and the matching `sampling:` / `roots:` block answers it. Neither implies the other: a grant with no satisfier is refused as unsatisfiable naming the missing key, and a satisfier behind a closed grant refuses boot as unreachable. Grants are consulted on **every** retry, because there is no handshake to consult them once and a revocation has to bite on the next retry (`crates/busbar-core/src/mcp/config.rs:521-528`).
 
-**An upstream's ask never reaches Busbar's caller.** It terminates at Busbar: either satisfied under the grant the operator gave that server, or the call fails. Proxying one would ask the caller to grant, on the upstream's behalf, authority Busbar has just declined to spend. The asks Busbar *does* make of its own caller are the operator-authored `ask_caller:` rounds and nothing else — there is no `From` between the two types, none constructible, and the module that composes a caller-facing ask is scanned at test time for so much as the *name* of the modules an upstream's values live in (`crates/busbar-core/src/mcp/mod.rs:80-105`).
+**An upstream's ask never reaches Busbar's caller.** It terminates at Busbar: either satisfied under the grant the operator gave that server, or the call fails. Proxying one would ask the caller to grant, on the upstream's behalf, authority Busbar has just declined to spend. The asks Busbar *does* make of its own caller are the operator-authored `ask_caller:` rounds and nothing else — there is no `From` between the two types, none constructible, and the module that composes a caller-facing ask is scanned at test time for so much as the *name* of the modules an upstream's values live in (`crates/busbar-core/src/mcp/mod.rs:90-115`).
 
 ---
 
