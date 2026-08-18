@@ -4,7 +4,7 @@ Busbar attributes every upstream failure to a cause, benches only the target at 
 
 The breaker runs on **all three planes**: a pool member on the LLM plane, an MCP tool server, an A2A agent. Most of this page is written in the LLM plane's vocabulary (pools, lanes and cells) because that is where member selection lives; [the breaker on the MCP and A2A planes](#the-breaker-on-the-mcp-and-a2a-planes) covers what is the same (everything about health) and what is deliberately different (there is no failover).
 
-Cross-references: [Pools](/docs/pools/) (structure) · [In-flight failover](/docs/failover/) (what happens when a lane trips) · [Configuration](/docs/configuration/) (field reference).
+Cross-references: [Pools](/docs/pools/) (structure) · [In-flight failover](/docs/failover/) (what happens when a lane trips) · [Configuration](/docs/configuration/) (field reference) · [MCP](/docs/mcp/) and [A2A](/docs/a2a/) (the two other planes this breaker runs on, and what each returns when a target is tripped).
 
 ## Concepts: pools, lanes, and cells
 

@@ -10,7 +10,8 @@ Busbar speaks two more protocols. It is now an MCP server and a governed gateway
 MCP tool estate, and it serves A2A over all three of that specification's bindings. Everything a
 model-plane request already got — the caller's key, its grants, its budget, hooks and the audit
 chain — applies to a tool call and an agent task unchanged. A deployment with no `mcp:` and no
-`agents:` block gains no endpoint and no route.
+`agents:` block gains no endpoint and no route. Each plane has a full operator reference: [the MCP
+guide](docs/mcp.md) and [the A2A guide](docs/a2a.md).
 
 If you run dashboards, read the two metrics breaking changes first: both request families gained a
 `plane` label, and one operation label was renamed. See [the observability

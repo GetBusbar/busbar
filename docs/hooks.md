@@ -126,6 +126,9 @@ projects identity on **gate decision payloads only**; tap and transform payloads
 
 ## The other two planes: MCP tool calls and A2A submissions (1.6.0)
 
+The full operator reference for each of those planes is its own page: [MCP](/docs/mcp/) and
+[A2A](/docs/a2a/). This section is the hook-shaped slice of both.
+
 **A hook is a decision about one request, and it does not matter which protocol carried it.** The
 same `hooks:` definitions attach to a registered MCP server and to a registered A2A agent, by the
 same bare-name lists, with the same additive combine:

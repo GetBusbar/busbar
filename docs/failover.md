@@ -4,6 +4,8 @@ When a lane fails, Busbar reroutes the request to another pool member before you
 
 Cross-references: [Circuit breaker](/docs/circuit-breaker/) (how lanes trip) · [Pools](/docs/pools/) (structure) · [Configuration](/docs/configuration/) (field reference).
 
+This page is the **LLM plane's** failover. The MCP and A2A planes have their own pool grammar, `tool_pools:` and `agent_pools:`, and their own answer when a target is tripped — see [MCP](/docs/mcp/#failover-pools-tool_pools) and [A2A](/docs/a2a/#failover-pools-agent_pools).
+
 ## The first-byte boundary
 
 <svg viewBox="0 0 760 210" role="img" aria-label="A timeline split at the first byte reaching the client: before it, Busbar can transparently reroute connect errors, timeouts, 429s, and 5xxs; after it, no failover is possible because the client already holds tokens." style="width:100%;height:auto;max-width:760px;font-family:ui-sans-serif,system-ui,sans-serif;">
