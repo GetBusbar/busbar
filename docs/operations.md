@@ -437,8 +437,10 @@ There is one place to configure it: `pools.<pool>.breaker:`. There is no `breake
 key under `tools:` or `agents:` (an earlier version of this page said there was, and a
 config written against it fails at boot, because both sections reject unknown keys).
 Omit the block and you get the defaults. On the MCP and A2A planes the breaker runs on
-those defaults through the shared selection seam, and **that seam is wired into both
-the tool-dispatch and the agent-relay call sites**, so it fires on live calls.
+those defaults through the shared selection seam, and **that seam is wired into the
+tool-dispatch, the agent-submission and the agent-relay call sites**, so it fires on
+live calls: a tripped target fast-fails, and a target an operator put in a
+`tool_pools:`/`agent_pools:` set is rerouted to a verified twin before the first byte.
 Full detail, with worked YAML, is in
 [circuit-breaker.md](circuit-breaker.md#the-breaker-on-the-mcp-and-a2a-planes).
 
@@ -449,17 +451,19 @@ is already in trouble. Worse, nothing says so. The first report comes from a use
 With the breaker, the target trips, subsequent calls are refused immediately, and the
 trip is a signal that names the server or the agent and the cause.
 
-**Failover on MCP and A2A is opt-in and operator-declared.** Busbar does not decide on
-its own that two registrations are interchangeable: you say so by listing them in
-`tool_pools:` / `agent_pools:`, and busbar then verifies that claim against the
-fingerprints it already computed — the approved tool schema digest on MCP, the approved
-canonical card fingerprint on A2A — before it moves anything. Members whose pins
-disagree are refused with both digests named, not defaulted. With a pool configured, a
-`tools/call` to a server whose primary is tripped, or that cannot even be connected to,
-is rerouted to its verified twin **before the first byte**, and a fresh A2A submission
-to a pooled agent is walked the same way at admission. There is no `failover:` key
-under `tools:` or `agents:`; the two pool sections are the whole vocabulary, and an
-absent section is exactly the old behaviour.
+**Failover on MCP and A2A is opt-in and operator-declared, and it is declared as a pool
+rather than a per-registration key.** A tool is namespaced to the server that exports it
+and an A2A task is addressed to a specific agent, so busbar will never guess at a
+substitute: you name the twins yourself, in a top-level `tool_pools:` or `agent_pools:`
+map, and busbar then verifies that claim against the fingerprints it already computed —
+the approved tool schema digest on MCP, the approved canonical card fingerprint on A2A —
+before it moves anything. Members whose pins disagree are refused with both fingerprints
+named, not defaulted. `failover:` is still not accepted under `tools:` or `agents:`; the
+two pool sections are the whole vocabulary, and an absent section is exactly the old
+behaviour. Given a pool, a `tools/call` to a server whose primary is tripped, or that
+cannot be connected to at all, is rerouted to its verified twin **before the first
+byte**, and a fresh A2A submission to a pooled agent is walked the same way at
+admission.
 
 **What stays deliberately narrower than the LLM plane** is everything after a dispatch
 has gone out. Once a call has left Busbar, moving it repeats work the upstream may

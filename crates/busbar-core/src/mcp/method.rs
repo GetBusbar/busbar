@@ -1407,29 +1407,30 @@ async fn tools_call(
             }
         };
 
-    // (3b) THE BREAKER — the ONE core breaker's degenerate cell for this server, consulted BEFORE
-    // the loop and before any socket, exactly where the LLM walk consults it before a lane
-    // (the audit's degenerate single-member cell). A tripped server is refused HERE, in
+    // (3b) THE BREAKER, THROUGH THE ONE SELECTION LOOP — `failover::walk` over this server's
+    // candidate set, consulted BEFORE the loop and before any socket, exactly where the LLM walk
+    // consults it before a lane. An un-pooled server is the degenerate single-member set (same
+    // cell, same fast-fail, no reroute — the breaker unit's behaviour, unchanged); a `tool_pools:`
+    // member walks its pool, so a tripped primary reroutes to its verified twin before the first
+    // byte and the caller never learns. A pool with nothing admissible is refused HERE, in
     // milliseconds, as a JSON-RPC ERROR — the call never happened, so it is NEVER an `isError`
     // tool result (that shape says the tool ran, and the model would reason from a lie). The
-    // outcome of the leg is recorded inside `upstream::call`, where the wire's structure still
-    // exists; the probe token is released after the loop so an abandoned recovery probe cannot
-    // wedge the cell.
+    // outcome of each leg is recorded inside `upstream::call`, against the dispatched member's own
+    // cell; the probe hold lives in the route and is released owner-checked when it drops.
     let breakers = std::sync::Arc::clone(&ctx.app.plane_breakers);
-    let breaker_key = crate::store::PlaneBreakers::tool_key(&selected.server);
-    let _admission = match breakers.admit(&breaker_key) {
-        Ok(token) => token,
-        Err(_) => {
-            return log.refused(
-                REASON_UPSTREAM_UNAVAILABLE,
-                refuse_upstream_unavailable(
-                    id,
-                    &selected.server,
-                    breakers.retry_after_secs(&breaker_key),
-                ),
-            )
-        }
-    };
+    let route = super::reroute::PoolRoute::build(
+        &live,
+        ctx.gov.key.as_deref(),
+        &selected,
+        authorised,
+        &arguments,
+    );
+    if let Err(refused) = route.admit(&breakers) {
+        return log.refused(
+            route_refusal_reason(&refused),
+            refuse_route(id, &route, &refused),
+        );
+    }
 
     // (4) THE BOUNDED, METERED, PER-ROUND-GATED LOOP.
     //
@@ -1439,7 +1440,7 @@ async fn tools_call(
     let mut holds: Vec<crate::governance::AdmitGrant> = Vec::new();
     let server_id = selected.server.clone();
     let pool = ctx.app.mcp_pool.as_ref();
-    let breakers_ref = breakers.as_ref();
+    let route_ref = &route;
     let outcome = inputreq::drive(
         &server_id,
         server.max_input_required_rounds,
@@ -1447,23 +1448,18 @@ async fn tools_call(
         // caller's id. An id chosen by the caller and echoed onto an upstream is a caller-controlled
         // value crossing a trust boundary for no reason.
         |round, satisfaction| {
-            super::upstream::call(
-                pool,
-                breakers_ref,
-                &authorised,
-                &arguments,
-                u64::from(round),
-                satisfaction,
-            )
+            route_ref.dispatch(pool, &breakers, &arguments, u64::from(round), satisfaction)
         },
         // THE GRANT, RE-READ LIVE ON EVERY ROUND. There is no handshake to authorise once and then
         // trust, so a revocation between rounds has to bite on the next one — which is the only
         // thing "per-request check" can mean when one logical dispatch is several requests.
+        // Read for the member the route ACTUALLY dispatched to: a reroute moved the conversation
+        // to the twin, and the twin's asks are judged against the twin's own operator grants.
         || {
             ctx.handle
                 .load()
                 .mcp_catalogue
-                .server(&server_id)
+                .server(&route_ref.active_member())
                 .map(|s| s.grants)
                 .unwrap_or_default()
         },
@@ -1478,33 +1474,36 @@ async fn tools_call(
         // they are different arms. The ask still TERMINATES here in every arm: the caller is told
         // what busbar decided, never handed the ask.
         |ask| {
+            // Satisfied for the member the route ACTUALLY dispatched to, not the selection's
+            // nominal server: a reroute moved the conversation to the twin, and the twin's own
+            // `roots`/`sampling` declarations are the ones its asks must be answered from.
+            let member = route_ref.active_member();
             let live = ctx.handle.load();
-            let entry = live.mcp_catalogue.server(&server_id);
+            let entry = live.mcp_catalogue.server(&member);
             let roots = entry.map(|s| s.roots.clone()).unwrap_or_default();
             let sampling = entry.and_then(|s| s.sampling.clone());
             let gov = ctx.gov.clone();
-            let server = server_id.clone();
             async move {
                 if ask.kind == "sampling" {
                     super::sampling::satisfy_upstream_ask(
                         &live,
                         &gov,
                         &ask,
-                        &server,
+                        &member,
                         sampling.as_ref(),
                     )
                     .await
                 } else {
-                    super::roots::satisfy_upstream_ask(&ask, &server, &roots)
+                    super::roots::satisfy_upstream_ask(&ask, &member, &roots)
                 }
             }
         },
         |rec| charge_round(ctx, &selected.namespaced, rec, &mut holds),
     )
     .await;
-    // `_admission` (the single-flight probe hold) drops at the end of this function — or with the
-    // future, if the caller disconnected — releasing owner-checked either way. A recorded outcome
-    // has already consumed it and the drop is then a no-op.
+    // The route (and with it any un-consumed single-flight probe hold) drops at the end of this
+    // function — or with the future, if the caller disconnected — releasing owner-checked either
+    // way. A recorded outcome has already consumed it and the drop is then a no-op.
 
     // (5) AUDIT the VALIDATED decision — the one that survived every check above, never a call that
     // got no further than a refusal.
@@ -1732,24 +1731,34 @@ async fn create_task(
             }
         };
 
-    // THE BREAKER, at the same pre-network position the synchronous path consults it — and BEFORE
-    // the task row is minted, because a tripped server must be a refusal the caller sees NOW, not
-    // a task id for work busbar already knows it will not dispatch. The probe token rides into the
-    // runner, which releases it after its loop settles (a recorded outcome makes that a no-op).
+    // THE BREAKER, at the same pre-network position the synchronous path consults it — through the
+    // SAME walk, so a pooled tool's task is admitted to whichever verified twin is serving — and
+    // BEFORE the task row is minted, because a pool with nothing admissible must be a refusal the
+    // caller sees NOW, not a task id for work busbar already knows it will not dispatch. The
+    // admitted member is FIXED for the task's whole life (`into_task_dispatch`): a task is one
+    // conversation with one deployment, and its probe hold rides into the runner, which releases
+    // it after its loop settles (a recorded outcome makes that a no-op).
     let breakers = std::sync::Arc::clone(&ctx.app.plane_breakers);
-    let breaker_key = crate::store::PlaneBreakers::tool_key(&selected.server);
-    let admission = match breakers.admit(&breaker_key) {
-        Ok(token) => token,
-        Err(_) => {
-            return log.refused(
-                REASON_UPSTREAM_UNAVAILABLE,
-                refuse_upstream_unavailable(
-                    id,
-                    &selected.server,
-                    breakers.retry_after_secs(&breaker_key),
-                ),
-            )
-        }
+    let live_app = ctx.handle.load();
+    let route = super::reroute::PoolRoute::build(
+        &live_app,
+        ctx.gov.key.as_deref(),
+        selected,
+        authorised,
+        &arguments,
+    );
+    if let Err(refused) = route.admit(&breakers) {
+        return log.refused(
+            route_refusal_reason(&refused),
+            refuse_route(id, &route, &refused),
+        );
+    }
+    let Some((authorised, cell, admission, member_id)) = route.into_task_dispatch() else {
+        // Unreachable after a successful `admit`; refuse rather than panic on a caller's path.
+        return log.refused(
+            REASON_UPSTREAM_UNAVAILABLE,
+            refuse_upstream_unavailable(id, &selected.server, 1),
+        );
     };
 
     // CHARGED ONCE, HERE, and this is the only moment at which a refusal can still be reported to
@@ -1789,9 +1798,12 @@ async fn create_task(
             handle: std::sync::Arc::clone(ctx.handle),
             breakers,
             admission,
+            cell,
             authorised,
             arguments,
-            server_id: selected.server.clone(),
+            // The ADMITTED member's id, not the caller-named one: the runner's per-round grant and
+            // roots lookups must read the deployment the task actually runs against.
+            server_id: member_id,
             max_rounds: server.max_input_required_rounds,
             task_asks: super::tasks::task_ask_rounds(selected, ctx.capabilities),
         },
@@ -2107,6 +2119,52 @@ fn refuse_upstream_unavailable(
             .insert(axum::http::header::RETRY_AFTER, v);
     }
     resp
+}
+
+/// Render a routed admission refusal. The availability shapes (`Empty`/`NoneAdmissible`) keep the
+/// EXACT rendering the degenerate cell decided — 503 + `Retry-After` + `-32030` with structured
+/// `data`, never an `isError` result — with `server` naming the pool when one is configured (the
+/// pool is the unit the operator declared and the unit that has nothing left). A pin mismatch
+/// (`NotInterchangeable`) is NOT an availability fact: it is the operator's same-deployment claim
+/// failing busbar's check, so it carries the walk's own wording and its own reason token; 503 all
+/// the same, because from the caller's seat the named tool cannot currently be served and nothing
+/// was dispatched.
+/// The per-call log's reason token for a routed admission refusal — the walk's own vocabulary for
+/// a pin mismatch, the degenerate cell's established token for every availability shape (so the
+/// un-pooled path's records are byte-identical to the breaker unit's).
+fn route_refusal_reason(refused: &super::reroute::RouteRefused) -> &'static str {
+    match &refused.refusal {
+        crate::failover::Refusal::NotInterchangeable { .. } => refused.refusal.reason(),
+        _ => REASON_UPSTREAM_UNAVAILABLE,
+    }
+}
+
+fn refuse_route(
+    id: Option<serde_json::Value>,
+    route: &super::reroute::PoolRoute,
+    refused: &super::reroute::RouteRefused,
+) -> Response {
+    if let crate::failover::Refusal::NotInterchangeable { .. } = &refused.refusal {
+        return error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            id,
+            CODE_UPSTREAM_UNAVAILABLE,
+            &refused.refusal.to_string(),
+            Some(serde_json::json!({
+                "reason": refused.refusal.reason(),
+                "server": route.display(),
+            })),
+        );
+    }
+    if route.pooled() {
+        // The pooled wording in the log: every interchangeable member refused, not just "a server".
+        tracing::info!(
+            pool = %route.display(),
+            refusal = %refused.refusal,
+            "mcp tools/call refused: no pool member admissible"
+        );
+    }
+    refuse_upstream_unavailable(id, route.display(), refused.retry_after_secs)
 }
 
 fn string_param<'a>(params: Option<&'a serde_json::Value>, key: &str) -> Option<&'a str> {

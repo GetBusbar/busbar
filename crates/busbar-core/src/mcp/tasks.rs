@@ -519,6 +519,10 @@ pub(crate) struct Runner {
     /// Never read: the field EXISTS to be dropped with the runner, which is what the allow says.
     #[allow(dead_code)]
     pub(crate) admission: crate::store::PlaneAdmission,
+    /// The breaker cell the admitted member records into — `("tool:<pool>", lane)` for a pooled
+    /// member, the degenerate `("tool:<server>", 0)` otherwise. Carried from `create_task`'s walk
+    /// so the runner's legs record against exactly the cell the admission consulted.
+    pub(crate) cell: super::upstream::BreakerCell,
     /// THE CALLER'S PRINCIPAL IS FROZEN IN HERE, AND THAT IS BOUNDED RATHER THAN CLOSED. SAY SO.
     ///
     /// `Authorised::caller` is a `VirtualKey` resolved at ingress. `upstream::call` re-plans the
@@ -591,14 +595,18 @@ async fn run(task: Arc<McpTask>, runner: Runner) {
         &runner.server_id,
         runner.max_rounds,
         |round, satisfaction| {
-            super::upstream::call(
+            let leg = super::upstream::call(
                 &runner.pool,
                 &runner.breakers,
+                &runner.cell,
                 &runner.authorised,
                 &arguments,
                 u64::from(round),
                 satisfaction,
-            )
+            );
+            // A task never reroutes mid-flight (the member was fixed at creation), so the leg's
+            // stage is not consulted here: only the message survives into the loop's refusal.
+            async move { leg.await.map_err(|f| f.message) }
         },
         {
             let handle = Arc::clone(&handle);

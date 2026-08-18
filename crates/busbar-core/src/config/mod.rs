@@ -487,14 +487,11 @@ pub struct RootCfg {
     /// accumulated. Nothing here is accumulation.
     pub(crate) agent_defs: crate::a2a::config::AgentsCfg,
     /// The `tool_pools:` MCP failover pools, carried through `resolve` VERBATIM — operator intent,
-    /// like `tool_defs` beside it. Empty ⇒ no MCP failover.
-    #[cfg_attr(not(test), allow(dead_code))]
-    // read by the dispatch-path wiring; see crate::failover
+    /// like `tool_defs` beside it, projected onto `state::App::tool_pools` at build. Empty ⇒ no
+    /// MCP failover.
     pub(crate) tool_pools: std::collections::BTreeMap<String, crate::failover::CandidatePoolCfg>,
-    /// The `agent_pools:` A2A failover pools, carried through `resolve` VERBATIM. Empty ⇒ no A2A
-    /// failover.
-    #[cfg_attr(not(test), allow(dead_code))]
-    // read by the dispatch-path wiring; see crate::failover
+    /// The `agent_pools:` A2A failover pools, carried through `resolve` VERBATIM onto
+    /// `state::App::agent_pools`. Empty ⇒ no A2A failover.
     pub(crate) agent_pools: std::collections::BTreeMap<String, crate::failover::CandidatePoolCfg>,
 }
 
@@ -1598,6 +1595,28 @@ fn check_failover_pool(
              one member has nowhere to fail over to, so it changes nothing; remove it or add the \
              second registration.",
             def.members.len()
+        ));
+    }
+    // The plane breaker store's lane table is FIXED (process-lifetime, sized
+    // `store::MAX_POOL_MEMBERS`; see `store/planes.rs` for why it cannot track config), so a pool
+    // must fit it — refused here, where the operator can act, rather than indexed past at dispatch.
+    if def.members.len() > crate::store::MAX_POOL_MEMBERS {
+        errors.push(format!(
+            "{section}.{pool}: {} members exceeds the supported maximum of {} per failover pool \
+             (the breaker's per-member lane table is fixed at process start). Split the pool or \
+             drop members.",
+            def.members.len(),
+            crate::store::MAX_POOL_MEMBERS
+        ));
+    }
+    // A pool named after a REGISTRATION on its own plane would alias the registration's degenerate
+    // breaker cell (`tool:<id>` / `agent:<id>` — the same string either way), merging two targets'
+    // learned health into one cell. The keyspace rule is the audit's; this is its enforcement.
+    if on_this_plane(pool) {
+        errors.push(format!(
+            "{section}.{pool}: `{pool}` is also the id of a `{this_registry}:` registration. A \
+             pool's name shares the breaker keyspace with registration ids on its plane, so it \
+             must not collide with one; rename the pool."
         ));
     }
     let mut seen = std::collections::BTreeSet::new();
@@ -4444,6 +4463,30 @@ pub fn resolve(
             "agents",
             "tools",
         );
+    }
+    // ONE POOL PER MEMBER, per plane. The dispatch route resolves a registration to ITS pool and
+    // records health into that pool's cells; a registration in two pools would be two cell
+    // histories for one upstream with the winner chosen by map iteration order — a nondeterminism
+    // an operator cannot see. Refused as config, where the ambiguity was written.
+    for (section, pools) in [
+        ("tool_pools", &deploy.tool_pools),
+        ("agent_pools", &deploy.agent_pools),
+    ] {
+        let mut owner: std::collections::BTreeMap<&str, &str> = std::collections::BTreeMap::new();
+        for (pool, def) in pools {
+            for member in &def.members {
+                if let Some(first) = owner.insert(member.as_str(), pool.as_str()) {
+                    if first != pool.as_str() {
+                        errors.push(format!(
+                            "{section}: `{member}` is a member of both `{first}` and `{pool}`. A \
+                             registration belongs to at most ONE failover pool — its learned \
+                             health lives in that pool's breaker cells, and two pools would keep \
+                             two contradictory histories for one upstream."
+                        ));
+                    }
+                }
+            }
+        }
     }
     for (name, def) in &deploy.hooks {
         if RESERVED_HOOK_NAMES.contains(&name.as_str()) {

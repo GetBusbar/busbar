@@ -32,7 +32,7 @@
   "capabilities": {
     "breaker-trip": "a failing upstream target records into the ONE core breaker cell (LaneRuntime, (pool,lane)-keyed) and the cell opens",
     "breaker-fastfail": "a tripped target is refused before dispatch in milliseconds, not after the full timeout, via try_admit_breaker",
-    "failover-reroute": "a second interchangeable candidate is tried before the first byte, through the one selection loop (failover::walk)",
+    "failover-reroute": "a second interchangeable candidate is tried before the first byte. One breaker admission (LaneRuntime::try_admit_breaker) on every plane; candidate selection is failover::walk on the MCP/A2A planes and the engine's pool walk (proxy/engine/walk.rs) on the LLM plane, which predates the seam and carries SWRR/policy/queue semantics the seam deliberately does not",
     "hooks-tap": "observe/transform hooks (rewrite, usage projection) run over the plane's payloads",
     "hooks-gate": "hooks::gate::decide can refuse the plane's traffic before dispatch",
     "audit-chain": "the plane's dispatches and refusals land in a tamper-evident hash chain (crate::audit)",
@@ -121,8 +121,8 @@
     {
       "capability": "failover-reroute",
       "plane": "mcp-client",
-      "state": "missing",
-      "note": "the seam (failover::walk) is built and proven against synthetic candidates but is cfg(dead_code) with NO production caller; tool_pools: is parsed and validated but read by nothing at dispatch."
+      "state": "proven",
+      "test": "crates/busbar-core/src/mcp/tests/reroute_pool_tests.rs::a_tripped_pool_primary_reroutes_the_next_tools_call_to_its_twin_and_stays_untouched"
     },
     {
       "capability": "failover-reroute",
@@ -133,8 +133,8 @@
     {
       "capability": "failover-reroute",
       "plane": "a2a-client",
-      "state": "missing",
-      "note": "agent_pools: parsed and validated, consumed by nothing; one registered backend per agent, one attempt. Task-scoped verbs on an accepted task are pinned to the member that accepted it by design; only fresh submissions are owed reroute, and they do not get it."
+      "state": "proven",
+      "test": "crates/busbar-core/src/a2a/tests/reroute_pool_tests.rs::a_tripped_pool_primary_reroutes_a_fresh_submission_to_the_twin_and_stays_untouched"
     },
     {
       "capability": "failover-reroute",
@@ -277,8 +277,8 @@
     {
       "capability": "disposition",
       "plane": "mcp-client",
-      "state": "missing",
-      "note": "no Stage-1 normalizer produces a CanonicalSignal from a JSON-RPC error or transport failure on this leg; mcp/client/jsonrpc.rs classifies for refusal rendering only, never into StatusClass."
+      "state": "proven",
+      "test": "crates/busbar-core/src/mcp/tests/reroute_pool_tests.rs::a_client_fault_answer_never_penalizes_the_member"
     },
     {
       "capability": "disposition",
@@ -289,8 +289,8 @@
     {
       "capability": "disposition",
       "plane": "a2a-client",
-      "state": "missing",
-      "note": "a2a/rpcerror.rs classifies for its own refusal rendering, not into StatusClass; RawUpstreamError producers are all LLM-dialect readers plus health.rs."
+      "state": "proven",
+      "test": "crates/busbar-core/src/a2a/tests/reroute_pool_tests.rs::a_client_fault_answer_never_penalizes_the_agent"
     },
     {
       "capability": "disposition",

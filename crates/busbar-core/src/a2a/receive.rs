@@ -42,7 +42,7 @@ use super::words::{plane_absent, refuse_admission, A2aWords};
 use crate::state::{App, CurrentApp};
 
 /// The audit action every inbound call on this plane records under.
-const AUDIT_ACTION: &str = "agent.call";
+pub(super) const AUDIT_ACTION: &str = "agent.call";
 
 /// THE CREDENTIAL KIND THIS MOUNT CONFERS. `a2a_inbound` only when the plane is audience-bound;
 /// otherwise the empty string, which [`super::inbound::authorize`] refuses.
@@ -611,7 +611,7 @@ fn governance_required() -> Response {
 }
 
 /// `agents:` configured for the DELEGATING direction alone — no `public_url`, so no receiving side.
-fn no_receiving_side() -> Response {
+pub(super) fn no_receiving_side() -> Response {
     (
         axum::http::StatusCode::SERVICE_UNAVAILABLE,
         axum::Json(super::rpcerror::body(
@@ -844,7 +844,7 @@ async fn admitted(
         super::local::method_of(&envelope),
         "GetExtendedAgentCard" | "agent/getAuthenticatedExtendedCard"
     ) {
-        return extended_agent_card(&app, key, &rpc_id);
+        return super::route::extended_agent_card(&app, key, &rpc_id);
     }
 
     let shape = shape_of(&envelope);
@@ -1182,8 +1182,25 @@ async fn admitted(
     // nothing, the ordinary path runs, and the backend answers about an id it does not hold.
     let addressed = addressed_task(&envelope, &admitted.dispatch.billed_key_id);
 
+    // ── THE POOL, if the caller-named agent is an `agent_pools:` member — resolved ONCE and read
+    //    by everything below: the resume lookup (a task the walk routed to the twin must still be
+    //    resumable through the name the caller knows), the fresh-submission walk, and the pinning
+    //    of task-scoped verbs to the member that accepted the task.
+    let pool = super::route::pool_of(&app, &admitted.dispatch.agent_id);
+
     let resumed = if addressed.is_some() || context_id.is_empty() {
         None
+    } else if let Some((_, cfg)) = pool {
+        // ANY member's interrupted task on this context resumes — and resumes AT that member (the
+        // pinning reads the task's own `agent_id`). Most recent across members, like the
+        // single-agent lookup.
+        let mut c: Vec<super::task::Task> = cfg
+            .members
+            .iter()
+            .filter_map(|m| resumable_task(&admitted.dispatch.billed_key_id, context_id, m))
+            .collect();
+        c.sort_by_key(|t| t.updated_at);
+        c.pop()
     } else {
         resumable_task(
             &admitted.dispatch.billed_key_id,
@@ -1214,6 +1231,38 @@ async fn admitted(
     };
     let request_id = task_id.clone();
 
+    // The plane, fetched ONCE for the member selection below and every later reader (the lease,
+    // the binding, the seam). The refusal is identical wherever it fires.
+    let Some(plane) = plane_of(&app) else {
+        return plane_absent();
+    };
+
+    // ── THE TARGET MEMBER — the failover seam, mounted at ADMISSION TIME. The three rules (a
+    //    fresh submission to a pooled agent WALKS the pool; an addressed/resumed task is PINNED
+    //    to the member that accepted it; an un-pooled agent keeps its degenerate cell) live in
+    //    `super::route`, whose module header carries the full argument.
+    let pinned_member: Option<String> = addressed
+        .as_ref()
+        .or(resumed.as_ref())
+        .map(|t| t.agent_id.clone());
+    let selected_member = super::route::select_member(
+        &app,
+        &plane,
+        key,
+        credential_kind_of(&app),
+        &admitted.dispatch.agent_id,
+        admitted.generation,
+        pinned_member.as_deref(),
+        super::local::method_of(&envelope),
+        now,
+    );
+    let target_agent = selected_member.agent_id;
+    let hop_breaker = selected_member.breaker;
+    let walk_refusal = selected_member.walk_refusal;
+    let pin_mismatch = selected_member.pin_mismatch;
+    // Held across the hop below; the recorded outcome consumes it and the drop is then a no-op.
+    let route_admission = selected_member.admission;
+
     // WHO IS BILLED, recorded as this plane's own statement rather than inferred later. Receiving
     // covers the downstream L2 spend this call causes and never the callee's internal spend — a
     // distinction `Attribution` makes unconstructible rather than documented.
@@ -1233,7 +1282,10 @@ async fn admitted(
     let hop = super::meter::Attribution::delegating(
         &admitted.dispatch.billed_key_id,
         &agent_id,
-        &admitted.dispatch.agent_id,
+        // The member the hop ACTUALLY reaches — the walked twin on a rerouted fresh submission,
+        // the pinned member on a task-scoped verb. This is also what `record_dispatch` stamps on
+        // the task row, which is the pinning's whole mechanism.
+        &target_agent,
         &context_id,
         &task_id,
     );
@@ -1342,21 +1394,40 @@ async fn admitted(
     // counts seconds. Converted once, here, rather than at each of the call sites that would
     // otherwise each have to remember.
     let now_ms = now.saturating_mul(1_000);
-    let Some(plane) = plane_of(&app) else {
-        return plane_absent();
-    };
     let seam = plane.relay_seam();
     let gate: Arc<dyn super::relay::DelegationGate> =
         Arc::new(super::plane::LiveGate(Arc::clone(&plane)));
 
+    // THE TARGET MEMBER'S OWN FACTS — its backend URL, its credential handle, and the egress
+    // grant re-derived FOR THAT MEMBER when the hop was re-targeted; see `route::hop_facts` for
+    // why busbar's credential is never leased for a backend the caller's grant does not cover.
+    let (target_backend_url, target_cred, grant) = match super::route::hop_facts(
+        &plane,
+        key,
+        &admitted,
+        &target_agent,
+        grant,
+        &rpc_id,
+        &resource,
+        &actor,
+        now,
+    ) {
+        Ok(f) => f,
+        Err(refusal) => {
+            return refusal
+                .map(|resp| *resp)
+                .unwrap_or_else(|| fail_task(&seam, &rpc_id, &task_id, &request_id, now, 502))
+        }
+    };
+
     // BUSBAR'S OWN CREDENTIAL FOR THIS BACKEND, or none — and it can only be minted against the
     // grant obtained above. A configured credential that will not resolve is a REFUSAL and not a
     // quiet unauthenticated hop: an operator who configured one meant the backend to see one.
-    let lease = match admitted.outbound_cred.as_ref() {
+    let lease = match target_cred.as_ref() {
         Some(cred) => match super::creds::mint_from(&grant, cred, &app.secret_resolver, now_ms) {
             Ok(lease) => Some(lease),
             Err(e) => {
-                tracing::error!(agent = %admitted.dispatch.agent_id, error = %e, "a2a: the outbound credential could not be leased");
+                tracing::error!(agent = %target_agent, error = %e, "a2a: the outbound credential could not be leased");
                 return fail_task(&seam, &rpc_id, &task_id, &request_id, now, 502);
             }
         },
@@ -1371,7 +1442,7 @@ async fn admitted(
         plane
             .with_registrations(|regs| {
                 regs.iter()
-                    .find(|r| r.agent_id == admitted.dispatch.agent_id)
+                    .find(|r| r.agent_id == target_agent)
                     .and_then(|r| r.cached_card.clone())
             })
             .as_ref(),
@@ -1402,26 +1473,44 @@ async fn admitted(
     let hop_ctx = HopContext {
         seam: Arc::clone(&seam),
         framing,
-        agent_id: admitted.dispatch.agent_id.clone(),
+        agent_id: target_agent.clone(),
         addressed: addressed.is_some(),
-        backend_url: admitted.dispatch.backend_url.clone(),
+        backend_url: target_backend_url,
         // THE ONE READING OF THE OPERATOR'S `allow_private:` LINE, obtained where every other
         // caller obtains it. Reaching for `seam.policy()` inside the relay instead is the defect
         // `relay::RelayCall::policy` documents.
-        policy: plane.fetch_policy_for(&admitted.dispatch.agent_id),
+        policy: plane.fetch_policy_for(&target_agent),
         task_id: task_id.clone(),
         context_id: context_id.clone(),
         matched_skill: admitted.matched_skill.clone(),
         admitted_generation: admitted.generation,
         request_id,
         a2a_version,
-        breakers: Arc::clone(&app.plane_breakers),
+        breaker: hop_breaker,
         now,
         now_ms,
         // Established by the envelope reader at the top of this handler, where `null` and absent
         // were still distinguishable. It is a string or a number, never `null`.
         rpc_id,
     };
+
+    // ── THE WALK'S REFUSAL, fired AFTER the task row exists so the caller keeps an id to poll —
+    //    through the exact rendering the degenerate breaker refusal decided (`rejected` + 503 +
+    //    Retry-After naming the POOL, because the pool is the unit with nothing left).
+    if let Some(refusal) = walk_refusal {
+        return refuse_hop(&hop_ctx, &refusal);
+    }
+    if let Some(reason) = pin_mismatch {
+        return super::route::render_pin_mismatch(
+            &hop_ctx.seam,
+            &hop_ctx.rpc_id,
+            &hop_ctx.task_id,
+            &hop_ctx.request_id,
+            hop_ctx.addressed,
+            hop_ctx.now,
+            reason,
+        );
+    }
 
     // THE INVERSE OF THE IDENTITY SUBSTITUTION. busbar issues its own task ids and puts them in
     // every answer; a caller reading one and asking `GetTask` for it had that id forwarded, unchanged,
@@ -1439,11 +1528,15 @@ async fn admitted(
     let relayed_body = super::idmap::translate_request(&envelope, &admitted.dispatch.billed_key_id)
         .unwrap_or_else(|| body.to_vec());
 
-    if shape.requires_streaming {
+    let response = if shape.requires_streaming {
         stream_hop(hop_ctx, seam, gate, lease, relayed_body).await
     } else {
         unary_hop(hop_ctx, seam, gate, lease, relayed_body).await
-    }
+    };
+    // The walked selection's probe hold outlives the hop that recorded its outcome (a record makes
+    // this drop a no-op; an abandoned hop hands the probe back owner-checked).
+    drop(route_admission);
+    response
 }
 
 /// Everything one hop needs that is neither a seam nor a secret. One struct because the two hop
@@ -1476,14 +1569,15 @@ struct HopContext {
     admitted_generation: u64,
     /// WHICH OF A2A'S THREE BINDINGS THE BACKEND SPEAKS, as the framing that composes the hop.
     ///
-    /// Resolved ONCE, here, off the registration's own cached card, and carried rather than looked
+    /// Resolved ONCE, off the registration's own cached card, and carried rather than looked
     /// up again in each hop: the two hops must not be able to reach different answers about which
     /// binding one request goes out on. `&'static` because the three framings are stateless
     /// vtables, so carrying one costs a pointer and there is nothing to build.
     framing: &'static dyn super::relay::OutboundFraming,
-    /// The plane's breaker cells, cloned into each hop's `RelayCall` — the relay consults and
-    /// records; this context only carries the handle (and renders the tripped refusal).
-    breakers: Arc<crate::store::PlaneBreakers>,
+    /// The breaker cell this hop admits against and records into — plane-qualified key + pool
+    /// lane, resolved by the member selection (`super::route`) and cloned into each hop's
+    /// `RelayCall`.
+    breaker: super::relay::RelayBreaker,
     now: u64,
     now_ms: u64,
     rpc_id: serde_json::Value,
@@ -1492,97 +1586,6 @@ struct HopContext {
 /// The plane, if this deployment has one.
 pub(super) fn plane_of(app: &App) -> Option<Arc<super::plane::A2aPlane>> {
     app.a2a.as_ref().map(Arc::clone)
-}
-
-/// `GetExtendedAgentCard` / `agent/getAuthenticatedExtendedCard` — BUSBAR'S OWN CARD, for a caller
-/// that has authenticated.
-///
-/// [`super::serve::extended_card`] carries the argument for what this publishes and why it is the
-/// caller's catalogue rather than a merge across upstreams. What is decided HERE is the one thing
-/// that needs the request: WHICH agents are this caller's, and it is answered by
-/// [`super::registry::inbound_catalogue`] — the same judgement that decides dispatch, so the card
-/// cannot name an agent a submission would refuse.
-///
-/// THE EMPTY TASK SHAPE, deliberately. The catalogue's structural filter narrows a set to the
-/// agents that can accept a PARTICULAR task, and this request is not a task: it asks what this
-/// caller may reach at all. Passing a shape here would silently drop every agent that cannot serve
-/// whatever shape was invented.
-fn extended_agent_card(
-    app: &App,
-    key: &busbar_api::VirtualKey,
-    rpc_id: &serde_json::Value,
-) -> Response {
-    let Some(plane) = app.a2a.as_ref() else {
-        return plane_absent();
-    };
-    let Some(public_url) = plane.public_url() else {
-        return no_receiving_side();
-    };
-    let signer = app.governance.as_ref().and_then(|g| g.a2a_card_signer());
-
-    // NOTHING FRONTED AT ALL is the one shape A2A has a specific error for: the card declares the
-    // capability (it is a property of the binary, and busbar always has this verb) and the
-    // deployment has no extended content for anybody. SPEC 3.1.11 binds that to
-    // `ExtendedAgentCardNotConfiguredError`, so it is answered rather than dressed up as an empty
-    // card — an empty card would say "you may reach nothing", which is a statement about the CALLER
-    // and is a different and misleading answer.
-    //
-    // A caller entitled to none of several configured agents DOES get the empty card, and the
-    // distinction is deliberate: that is a statement about that caller's grants, which is exactly
-    // what the caller is entitled to be told.
-    let caller = crate::catalogue::Caller {
-        key: Some(key),
-        now: crate::store::now(),
-        generation: crate::trust::validate::Generations::at_admission(plane.generation()),
-    };
-    let anything = super::registry::Wanted::default();
-    let card = plane.with_registrations(|regs| {
-        if regs.is_empty() {
-            return None;
-        }
-        // THE EMPTY TASK SHAPE, deliberately. The structural filter narrows a set to the agents
-        // that can accept a PARTICULAR task, and this request is not a task: it asks what this
-        // caller may reach at all. Passing a shape here would silently drop every agent that cannot
-        // serve whatever shape was invented.
-        let entitled: Vec<super::serve::EntitledAgent<'_>> =
-            super::registry::entitled_agents(&caller, regs, &anything);
-        Some(super::serve::extended_card(
-            public_url,
-            &entitled,
-            signer.as_ref(),
-        ))
-    });
-
-    match card {
-        None => super::rpcerror::respond(
-            rpc_id,
-            super::rpcerror::A2aError::ExtendedAgentCardNotConfigured,
-            "this deployment fronts no agents, so there is no extended agent card to serve",
-        ),
-        Some(Ok(doc)) => {
-            use axum::response::IntoResponse as _;
-            (
-                axum::http::StatusCode::OK,
-                axum::Json(serde_json::json!({
-                    "jsonrpc": "2.0",
-                    "id": rpc_id,
-                    "result": doc,
-                })),
-            )
-                .into_response()
-        }
-        // A card busbar cannot build is a refusal, not a hollow document. The failures that reach
-        // here are a `public_url` that will not parse and a signing key that will not sign, and
-        // both would otherwise publish a card asserting something busbar cannot stand behind.
-        Some(Err(e)) => {
-            tracing::error!(error = %e, "a2a: could not build the extended agent card");
-            super::rpcerror::respond(
-                rpc_id,
-                super::rpcerror::A2aError::Internal,
-                "the extended agent card could not be built",
-            )
-        }
-    }
 }
 
 /// THE UNARY HOP: one submission, one answer.
@@ -1608,7 +1611,7 @@ async fn unary_hop(
     // backend IS this one — see `RelayCall::rpc_id`.
     let rpc_id = ctx.rpc_id.clone();
     let a2a_version = ctx.a2a_version;
-    let breakers = Arc::clone(&ctx.breakers);
+    let breaker = ctx.breaker.clone();
     let relayed = tokio::task::spawn_blocking(move || {
         super::relay::relay(
             &super::relay::RelayCall {
@@ -1622,7 +1625,7 @@ async fn unary_hop(
                 policy: &relay_policy,
                 a2a_version,
                 framing,
-                breakers: Some(breakers),
+                breakers: Some(breaker),
             },
             seam.as_ref(),
             now_ms,
@@ -1712,7 +1715,7 @@ async fn stream_hop(
     // see.
     let notify_seam = Arc::clone(&seam);
     let a2a_version = ctx.a2a_version;
-    let breakers = Arc::clone(&ctx.breakers);
+    let breaker = ctx.breaker.clone();
 
     // THE CURSOR RESUMES WHERE THE TASK LEFT OFF rather than at zero. On a resumed stream, starting
     // at zero would spend the first N advances re-asserting a position the store already holds —
@@ -1787,7 +1790,7 @@ async fn stream_hop(
                 policy: &relay_policy,
                 a2a_version,
                 framing,
-                breakers: Some(breakers),
+                breakers: Some(breaker),
             },
             seam.as_ref(),
             &task_id,
