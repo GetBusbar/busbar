@@ -41,6 +41,17 @@ guide](docs/observability.md).
 
 ### Added
 
+- **Failover for MCP servers and A2A agents, declared as a pool.** Run the same server image in
+  two regions, or a hosted instance beside its self-hosted twin, and list them under a top-level
+  `tool_pools:` or `agent_pools:` map. A `tools/call` to a member whose breaker has tripped — or
+  that cannot be connected to at all — goes to its twin before the first byte, and a fresh A2A
+  submission is walked the same way at admission. Busbar never decides two registrations are
+  interchangeable on its own: you name them, and Busbar checks the claim against fingerprints it
+  already computed (the approved tool schema digest on MCP, the approved card fingerprint on A2A)
+  before it moves anything, naming both fingerprints when they disagree. Two limits are
+  deliberate: once a dispatch has gone out only operations you listed in `repeatable:` may be sent
+  again, and an accepted A2A task stays pinned to the member that accepted it. An absent section
+  is exactly the previous behaviour. See [the circuit breaker guide](docs/circuit-breaker.md).
 - **Busbar is an MCP server.** Add an `mcp:` block naming your endpoint's canonical URI and your
   identity provider, and Busbar mounts an MCP endpoint plus the OAuth 2.1 discovery surface that
   lets an agent find its way in with no prior configuration. Tokens are minted by your existing
@@ -125,10 +136,11 @@ guide](docs/observability.md).
   scoped to a sibling path of the endpoint that reads it, so the browser never sent it and every
   authorization-code flow bounced between `/authorize` and the consent screen forever. The cookie
   is now scoped per reading endpoint, and carries `Secure` whenever the issuer is `https:`.
-- **One blip no longer takes an MCP server or an A2A agent out for 15–120 seconds.** These planes
-  have no failover, so a single upstream timeout arming an escalating cooldown meant refusing every
-  caller of that server. They now refuse on a breaker trip and nothing less. An upstream's own
-  `Retry-After` is still honoured. The LLM plane is unchanged.
+- **One blip no longer takes an MCP server or an A2A agent out for 15–120 seconds.** A single
+  upstream timeout arming an escalating cooldown meant refusing every caller of that server, and
+  the registration an operator is most likely to have — one with no pool declared — has nowhere
+  to send the calls in the meantime. These planes now refuse on a breaker trip and nothing less.
+  An upstream's own `Retry-After` is still honoured. The LLM plane is unchanged.
 - **MCP and A2A traffic was invisible on `/metrics`** — not under-labelled, absent. Both planes now
   emit `busbar_requests_total` and `busbar_request_duration_seconds` with the same `outcome`
   vocabulary as model traffic, including refusals issued before the handler runs.
