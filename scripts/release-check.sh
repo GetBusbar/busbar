@@ -777,11 +777,15 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Sets $NEW_TMPDIR; it does NOT echo the path. Callers used to capture it in a command
+# substitution, which runs the function in a SUBSHELL — so `TMP_DIRS+=` mutated a copy of the array
+# that died with the subshell, the parent's `TMP_DIRS` stayed empty for the whole run, and
+# `cleanup`'s `rm -rf` loop iterated NOTHING, every time. This gate has therefore never once deleted
+# a working directory it created, and it stages release binaries in them. Same defect, same shape,
+# as the one fixed in scripts/no-plugins-gate.sh; `scripts/release-script-lint.sh` now enforces it.
 new_tmpdir() {
-  local d
-  d="$(mktemp -d "${TMPDIR:-/tmp}/busbar-release-check.XXXXXX")"
-  TMP_DIRS+=("$d")
-  echo "$d"
+  NEW_TMPDIR="$(mktemp -d "${TMPDIR:-/tmp}/busbar-release-check.XXXXXX")"
+  TMP_DIRS+=("$NEW_TMPDIR")
 }
 
 # ── Wait-for-HTTP helper: real polling, no fixed sleeps. Fails loudly on timeout. ──────────────────
@@ -810,7 +814,7 @@ esac
 VER="$(grep -m1 '^version' crates/busbar/Cargo.toml | sed -E 's/version *= *"([^"]+)"/\1/')"
 note "Host: $(uname -s) $(uname -m), busbar version ${VER}, libext=${LIBEXT}"
 
-PLUGIN_DIST="$(new_tmpdir)"
+new_tmpdir; PLUGIN_DIST="$NEW_TMPDIR"
 MOCK_TEXT_MARKER_SEQ=0
 
 # ── Tiny local mock upstream (Anthropic-protocol) — a real HTTP server, not a canned function ─────
@@ -826,7 +830,7 @@ MOCK_TEXT_MARKER_SEQ=0
 start_mock_upstream() {
   local port="$1" marker="$2" delay="${3:-0}"
   local script
-  script="$(new_tmpdir)/mock_upstream.py"
+  new_tmpdir; script="$NEW_TMPDIR/mock_upstream.py"
   cat >"$script" <<PYEOF
 import http.server, json, sys, time
 
@@ -920,7 +924,7 @@ if ! phase_selected phase-0a2-signing-key; then
   record_phase_skip phase-0a2-signing-key "not-in-segment"
 else
 begin_phase phase-0a2-signing-key "Phase 0a2: signing-key requirement — keys verifier without signing_key fail-closes, with it validates"
-sk_work="$(new_tmpdir)"
+new_tmpdir; sk_work="$NEW_TMPDIR"
 cat >"${sk_work}/providers.yaml" <<EOF
 mock:
   protocol: anthropic
@@ -1090,7 +1094,7 @@ soak_wait_saturated() {
 
 run_saturation_soak() {
   local budget_ms=5000
-  SOAK_WORK="$(new_tmpdir)"
+  new_tmpdir; SOAK_WORK="$NEW_TMPDIR"
   local marker="soak-$$-${RANDOM}"
   # Declared up front (not inside scenario A) so scenario B is genuinely independent of it: either
   # scenario can be selected on its own by --segment.
@@ -1223,7 +1227,7 @@ run_store_backend_e2e() {
   local listen_port="$4" admin_port="$5" mock_port="$6"
 
   local work
-  work="$(new_tmpdir)"
+  new_tmpdir; work="$NEW_TMPDIR"
   local marker="release-check-${backend_label}-$$-${RANDOM}"
 
   echo "  starting mock upstream on 127.0.0.1:${mock_port} (marker=${marker})"
@@ -1276,18 +1280,22 @@ EOF
     "$BUSBAR_BIN" --validate
   ok "--validate clean for ${backend_label}"
 
+  # Sets $NEW_BG_PID rather than echoing it: captured in a command substitution, the `BG_PIDS+=`
+  # below runs in a SUBSHELL and is discarded, so `cleanup` never learns about this process. The
+  # inline `kill`s further down cover the happy path only — every `exit 1` between the boot and the
+  # kill (there are several) would otherwise leave a busbar holding ${listen_port} after the gate
+  # returns.
   boot_busbar() {
     BUSBAR_CONFIG="${work}/config.yaml" BUSBAR_PROVIDERS="${work}/providers.yaml" \
       MOCK_KEY=unused BUSBAR_ADMIN_TOKEN=release-check-admin \
       RUST_LOG=warn \
       "$BUSBAR_BIN" >"${work}/busbar.log" 2>&1 &
-    local pid=$!
-    BG_PIDS+=("$pid")
-    echo "$pid"
+    NEW_BG_PID=$!
+    BG_PIDS+=("$NEW_BG_PID")
   }
 
   echo "  booting busbar (${backend_label})..."
-  local pid; pid="$(boot_busbar)"
+  local pid; boot_busbar; pid="$NEW_BG_PID"
   wait_for_http "http://127.0.0.1:${listen_port}/healthz" 30
   ok "busbar up (pid ${pid}), /healthz green"
 
@@ -1329,7 +1337,7 @@ EOF
   echo "  restarting busbar (${backend_label}) against the SAME store to prove durability..."
   kill "$pid"
   wait "$pid" 2>/dev/null || true
-  local pid2; pid2="$(boot_busbar)"
+  local pid2; boot_busbar; pid2="$NEW_BG_PID"
   wait_for_http "http://127.0.0.1:${listen_port}/healthz" 30
   ok "busbar restarted (pid ${pid2}), /healthz green"
 
@@ -1389,7 +1397,7 @@ elif [ -d "$STORE_SQLITE_SRC" ]; then
     --out "${PLUGIN_DIST}/busbar-store-sqlite-${VER}-local.tar.gz" \
     --allow-unsigned
   ok "packed busbar-store-sqlite (sibling checkout)"
-  SQLITE_DB="$(new_tmpdir)/governance.db"
+  new_tmpdir; SQLITE_DB="$NEW_TMPDIR/governance.db"
   run_store_backend_e2e "sqlite" "sqlite" "{ db_path: \"${SQLITE_DB}\" }" 18080 18081 18079
   ok "SQLite phase complete: $(date -u +%H:%M:%S) elapsed=${SECONDS}s"
   end_phase ran
@@ -1614,7 +1622,7 @@ WEBREQUEST_SRC="${REPO_ROOT}/../webrequest-hook"
 
 run_validate_smoke() {
   local name="$1" manifest_path="$2" crate_lib_name="$3" kind="$4" needs_flag="${5:-}"
-  local work; work="$(new_tmpdir)"
+  local work; new_tmpdir; work="$NEW_TMPDIR"
   mkdir -p "${work}/plugins"
   echo "  building ${name} cdylib from ${manifest_path}..."
   cargo build --release --manifest-path "$manifest_path"
