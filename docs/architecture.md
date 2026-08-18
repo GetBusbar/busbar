@@ -438,10 +438,10 @@ are configured via the `observability` section.
 
 ## How it deploys, simplest first
 
-Busbar is **one static binary** with no interpreter, no sidecar and no database
-required to start. The topologies below are the same binary with progressively
-more of its optional seams turned on; nothing is a different build or a different
-edition.
+Busbar is **one self-contained binary** with no runtime, no interpreter, no sidecar
+and no database required to start. The topologies below are the same binary with
+progressively more of its optional seams turned on; nothing is a different build or a
+different edition.
 
 All three planes are in the one binary. Serving MCP or fronting agents is a
 `tools:` or `agents:` block in the config, not another process to run.

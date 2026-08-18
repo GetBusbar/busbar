@@ -622,9 +622,11 @@ pub(crate) struct NamedDefView {
     /// and this surface is reachable at READ-ONLY admin scope. An empty bag ⇒ an empty list. The
     /// values are readable only where they are writable: the config file and the config overlay.
     pub(crate) settings_keys: Vec<String>,
-    /// `identity-providers` ONLY: the per-provider ADMIN CEILING (`none` | `read-only` | `full`).
-    /// `None` ⇒ the definition names none, so the most restrictive default applies. Omitted entirely
-    /// for a section that carries no ceiling.
+    /// `identity-providers` ONLY: the per-provider ADMIN CEILING (`read-only` | `full`). There is no
+    /// `none` token: `Scope::parse_ceiling` rejects it (see `Scope::parse` above), because a ceiling
+    /// caps what a grant can reach and cannot express the absence of one.
+    /// `None` ⇒ the definition names no ceiling, so the most restrictive default applies. Omitted
+    /// entirely for a section that carries no ceiling.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) max_admin_scope: Option<String>,
     /// `identity-providers` ONLY: whether a `token:` secret REFERENCE is configured (the built-in

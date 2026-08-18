@@ -1,6 +1,6 @@
 # In-flight failover
 
-When a lane fails, Busbar reroutes the request to another pool member before your client sees a byte, even mid-stream, across protocol families. This page covers the first-byte boundary, the per-request failover budget, context-length failover, session affinity, and what happens when a pool is exhausted.
+When a lane fails, Busbar reroutes the request to another pool member before the first byte, even on a streaming request, across protocol families. This page covers the first-byte boundary, the per-request failover budget, context-length failover, session affinity, and what happens when a pool is exhausted.
 
 Cross-references: [Circuit breaker](/docs/circuit-breaker/) (how lanes trip) · [Pools](/docs/pools/) (structure) · [Configuration](/docs/configuration/) (field reference).
 

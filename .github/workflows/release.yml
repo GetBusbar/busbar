@@ -688,8 +688,27 @@ jobs:
           # all -- that is what makes "no way for 1 to be different" a property of the graph rather
           # than a promise in a comment.
           fields = ("target", "runner", "pgo", "archive", "plugin_asset")
-          inc = [{k: t[k] for k in fields} for t in spec["targets"]]
-          assets = ["busbar-%s.%s" % (t["target"], t["archive"]) for t in spec["targets"]]
+          # ONLY THE PUBLISHED TARGETS. `.github/release-targets.json` also declares targets that are
+          # NOT release downloads: the two musl binaries (`published: false`, `packaged_into` an
+          # image) and the two `kind: image` entries, whose "target" is not a Rust triple and whose
+          # `archive` is `oci`. Iterating the file unfiltered put those four into the BUILD matrix
+          # (build-artifact.yml would be asked to `cargo build --target image-linux-amd64`) and into
+          # the asset list `verify-assets` asserts is present on the GitHub Release -- assets that,
+          # by declaration, are never uploaded. `published` is the field that says which is which;
+          # scripts/release-gate/lib.sh's `published_targets()` and release-fleet.yml already filter
+          # on it, and this is the same predicate.
+          #
+          # STRICT, NOT `.get(..., True)`: a new target that forgets the flag must stop the release
+          # here rather than drift into or out of the matrix silently.
+          missing = [t["target"] for t in spec["targets"] if "published" not in t]
+          if missing:
+              raise SystemExit(
+                  "release-targets.json: these targets declare no `published` flag: %s. Every target "
+                  "must say whether it is a release download or an input to something else."
+                  % ", ".join(missing))
+          shipped = [t for t in spec["targets"] if t["published"]]
+          inc = [{k: t[k] for k in fields} for t in shipped]
+          assets = ["busbar-%s.%s" % (t["target"], t["archive"]) for t in shipped]
           assets += [a.replace("{tag}", tag) for a in spec["metadata_assets"]]
           # A FLOOR, BECAUSE A LOOP OVER A DISCOVERED SET WITH NO FLOOR PASSES WHEN THE SET IS EMPTY.
           # Both the build matrix and the verify matrix are enumerated from this output; a truncated
@@ -697,11 +716,11 @@ jobs:
           # all the way to a published release with no assets on it.
           if len(inc) < 5:
               raise SystemExit(
-                  "release-targets.json declares %d targets; busbar ships 5. Refusing to run a "
-                  "build matrix and a verify matrix over a set this small: an empty expectation "
-                  "list passes for a release that published nothing." % len(inc))
+                  "release-targets.json declares %d PUBLISHED targets; busbar ships 5. Refusing to "
+                  "run a build matrix and a verify matrix over a set this small: an empty "
+                  "expectation list passes for a release that published nothing." % len(inc))
           print("matrix=" + json.dumps({"include": inc}))
-          print("targets=" + json.dumps(sorted(t["target"] for t in spec["targets"])))
+          print("targets=" + json.dumps(sorted(t["target"] for t in shipped)))
           print("assets=" + json.dumps(assets))
           PY
           cat "$GITHUB_OUTPUT"

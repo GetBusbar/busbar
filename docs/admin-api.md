@@ -313,7 +313,7 @@ All hook mutations honor `If-Match` against the config-plane ETag, are audited (
 # Register a global compression gate, live immediately (forwarding to an HTTPS sidecar via the
 # first-party busbar-webrequest-hook plugin; requires plugins.enabled: true)
 curl -s -X POST -H "x-admin-token: $TOK" -H 'content-type: application/json' \
-  --data '{"name":"compress","config":{"kind":"gate","module":"busbar-webrequest-hook","settings":{"url":"https://127.0.0.1:8900/"},"prompt":"rw","global":true}}' \
+  --data '{"name":"compress","config":{"kind":"gate","module":"webrequest","settings":{"url":"https://127.0.0.1:8900/"},"prompt":"rw","global":true}}' \
   http://localhost:8081/api/v1/admin/hooks
 
 # Is it running what we pushed? (desired vs reported, with a drift verdict)

@@ -82,7 +82,7 @@ plugins: { enabled: true, dir: /etc/busbar/plugins }
 
 hooks:
   pii-guard:
-    module: busbar-webrequest-hook
+    module: webrequest
     settings: { url: "https://sidecar.internal/pii" }
     kind: gate
     prompt: ro

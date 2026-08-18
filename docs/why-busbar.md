@@ -54,13 +54,13 @@ The short version. LiteLLM is a Python-native router with a big preconfigured ca
 
 ## The operational story
 
-Busbar ships as a single static binary. Deployment is:
+Busbar ships as a single self-contained binary: no runtime, no interpreter, no sidecar. Deployment is:
 
 1. Write a `config.yaml` (providers + models, optionally pools and governance).
 2. Set the environment variables your config references (one per provider key).
 3. Run the binary.
 
-There is no Python environment to manage, no Node runtime, and no database to provision: governance defaults to an in-memory store (ephemeral RAM, zero setup), and durability is an opt-in you point at a `sqlite`, `postgres`, or `valkey` store plugin. No sidecar is required. Health, metrics, and management traffic all pass through the same process on the same port.
+There is no Python environment to manage, no Node runtime, and no database to provision: governance defaults to an in-memory store (ephemeral RAM, zero setup), and durability is an opt-in you point at a `sqlite`, `postgres`, `mysql`, or `valkey` store plugin. No sidecar is required. Health, metrics, and management traffic all pass through the same process on the same port.
 
 **Observability is built in.** Prometheus metrics are exposed at `/metrics` with bounded cardinality: metric labels use configured pool names and fixed enumerations, never raw model strings from client requests. OTLP trace export and a request-log webhook are both optional and configurable. The `/healthz` endpoint is side-effect-free (it never steals a recovery probe) and safe for high-frequency load balancer probing. Note that `/metrics` and `/stats` are not auth-exempt, they go through the same auth check as request traffic, since telemetry is itself a fingerprinting surface.
 
@@ -93,6 +93,6 @@ One auth note for Bedrock: Busbar signs outbound Bedrock requests with AWS SigV4
 
 ## Current status
 
-Busbar is licensed **Apache-2.0**. The wire protocol translation, the data-plane HTTP surface, and the circuit breaker model are stable under Semantic Versioning; the config format is an operator artifact with a tooled migration path between releases, and the admin API carries its own contract version. The test suite covers over 2,300 test cases across the protocol translators, breaker FSM, auth middleware, governance enforcement, and config validation.
+Busbar is licensed **Apache-2.0**. The wire protocol translation, the data-plane HTTP surface, and the circuit breaker model are stable under Semantic Versioning; the config format is an operator artifact with a tooled migration path between releases, and the admin API carries its own contract version. The test suite covers over 5,500 test cases across the protocol translators, breaker FSM, auth middleware, governance enforcement, and config validation.
 
 Apache-2.0 is permissive: use it commercially, modify it privately, redistribute it, with an explicit patent grant and no copyleft obligations.

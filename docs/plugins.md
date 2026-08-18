@@ -1,10 +1,11 @@
 # Plugins
 
-Busbar ships as one small static binary (see the image-size badge on the repo) with nothing
-compiled in that you did not ask for: no SQLite built in (add it as a signed plugin), no Postgres,
-no Valkey. The default deploy needs no plugins at all. When you do need more, a durable store, a
-secret backend, auth or hook modules, you add exactly that capability as a signed plugin tarball
-dropped into a directory. Lightweight by default, extend when needed.
+Busbar ships as one small self-contained binary, no runtime, no interpreter, no sidecar (see the
+image-size badge on the repo), with nothing compiled in that you did not ask for: no SQLite built in
+(add it as a signed plugin), no Postgres, no Valkey. The default deploy needs no plugins at all.
+When you do need more, a durable store, a secret backend, auth or hook modules, you add exactly that
+capability as a signed plugin tarball dropped into a directory. Lightweight by default, extend when
+needed.
 
 A plugin is a plugin: store, secret, auth, and hook plugins share ONE artifact format, ONE trust model, ONE
 loader, and ONE inventory (`busbar --list-plugins`). The manifest `kind` field is the only
@@ -546,11 +547,11 @@ receive more than it declared.
 Every first-party plugin is built and signed with the same `BUSBAR_SIGN_KEY` / publisher `busbar`
 signing identity, but the *release* it ships from depends on the plugin:
 
-- **Store plugins** (`busbar-store-sqlite`, `busbar-store-postgres`, `busbar-store-valkey-plugin`), the
-  **auth plugin** (`busbar-auth-oidc`), and the **secret plugin** (`busbar-hashicorp-vault`) each
-  live in their own standalone repo (`GetBusbar/store-sqlite`, `GetBusbar/store-postgres`,
-  `GetBusbar/store-valkey`, `GetBusbar/auth-oidc`, `GetBusbar/hashicorp-vault`) with its own CI and
-  its own release workflow. Download the tarball for the backend you need from *that plugin's own*
+- **Store plugins** (`busbar-store-sqlite`, `busbar-store-postgres`, `busbar-store-mysql`,
+  `busbar-store-valkey-plugin`), the **auth plugin** (`busbar-auth-oidc`), and the **secret plugin**
+  (`busbar-hashicorp-vault`) each live in their own standalone repo (`GetBusbar/store-sqlite`,
+  `GetBusbar/store-postgres`, `GetBusbar/store-mysql`, `GetBusbar/store-valkey`,
+  `GetBusbar/auth-oidc`, `GetBusbar/hashicorp-vault`) with its own CI and its own release workflow. Download the tarball for the backend you need from *that plugin's own*
   GitHub Release, not from busbar's.
 - **Hook plugins** (`busbar-headroom`, `busbar-webrequest`) also live in their own repos
   (`GetBusbar/headroom-hook`, `GetBusbar/webrequest-hook`) with their own CI and release workflow,

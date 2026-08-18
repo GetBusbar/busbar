@@ -56,10 +56,10 @@ hooks:                                     # THE definition map
     prompt: ro
     on_error: reject
   rtr:
-    module: busbar-webrequest-hook         # out-of-process forwarder to a sidecar
+    module: webrequest                     # out-of-process forwarder to a sidecar
     settings: { url: "https://hooks.internal/rtr" }
   headroom:
-    module: busbar-headroom-hook           # first-party kind: hook plugin (in-process)
+    module: headroom                       # first-party kind: hook plugin (in-process)
     prompt: rw
 
 pools:
@@ -73,10 +73,10 @@ pools:
 ```
 
 The `module` names a loaded `kind: hook` plugin by its signed-manifest name/alias (e.g. the
-first-party `busbar-headroom-hook` and `busbar-webrequest-hook`, or your own). `settings:` is the
-plugin's opaque config. For `busbar-webrequest-hook` that includes the SSRF-guarded sidecar
-`url`. Loading any of these requires `plugins.enabled: true` and the tarball installed in
-`plugins.dir`; an unresolved `module:`, or an attach-point name that no `hooks:` entry defines,
+first-party `headroom` and `webrequest` aliases, or your own). Resolution is exact: name first,
+then alias, with no fuzzy matching. `settings:` is the plugin's opaque config. For `webrequest`
+that includes the SSRF-guarded sidecar `url`. Loading any of these requires
+`plugins.enabled: true` and the tarball installed in `plugins.dir`; an unresolved `module:`, or an attach-point name that no `hooks:` entry defines,
 refuses to boot.
 
 **Attach a hook** two ways, both bare-name lists: the reserved `pools.hooks:` key (fires for every

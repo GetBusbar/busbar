@@ -488,7 +488,14 @@ jobs:
             mapfile -t want < <(python3 - "$TAG" <<'PY'
           import json, sys
           spec = json.load(open("/tmp/pt-targets.json"))
+          # PUBLISHED ONLY. The manifest also declares non-download targets (the musl pair, which is
+          # `packaged_into` an image, and the `kind: image` entries whose `archive` is `oci`); those
+          # have no release asset, so asking /releases/latest/download for them is a guaranteed 404
+          # against an artifact nothing ever owed. `.get(..., True)` because manifests at tags cut
+          # before the flag existed declared published targets only.
           for t in spec["targets"]:
+              if not t.get("published", True):
+                  continue
               print("busbar-%s.%s" % (t["target"], t["archive"]))
           PY
           )
@@ -907,7 +914,14 @@ jobs:
           import json, sys
           tag = sys.argv[1]
           spec = json.load(open("/tmp/release-targets.json"))
+          # PUBLISHED ONLY -- same reason as the latest-download probe above: an artifact declared
+          # `published: false` is an INPUT (the musl pair feeds the image), never a release asset,
+          # and demanding it here fails every release for a name that was never owed. `.get(...,
+          # True)` because manifests at tags cut before the flag existed declared published targets
+          # only.
           for t in spec["targets"]:
+              if not t.get("published", True):
+                  continue
               print("busbar-%s.%s" % (t["target"], t["archive"]))
           for a in spec["metadata_assets"]:
               print(a.replace("{tag}", tag))

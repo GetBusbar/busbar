@@ -49,7 +49,7 @@ Pools are optional: you can route directly to a single model. But the moment you
 
 ## How selection works
 
-By default a pool uses **smooth weighted round-robin (SWRR)** over the healthy members: each request goes to the next member by weight, and a tripped, dead, or capacity-exhausted member is skipped with its share redistributed to the rest. If the chosen lane fails before the client has seen a byte, Busbar fails over to the next member, even mid-stream. That is the whole reliability story: weighting for the happy path, automatic failover for the bad one.
+By default a pool uses **smooth weighted round-robin (SWRR)** over the healthy members: each request goes to the next member by weight, and a tripped, dead, or capacity-exhausted member is skipped with its share redistributed to the rest. If the chosen lane fails before the client has seen a byte, Busbar fails over to the next member, even on a streaming request. That is the whole reliability story: weighting for the happy path, automatic failover for the bad one.
 
 Want a different order than weighted? Name a **selection strategy** (`cheapest`, `fastest`, `least_busy`, `usage`, or your own ordering hook) as one entry in the pool's `hooks:` list. That is all of **[Routing](/docs/routing/)**, which owns every strategy, the routing signals, and the ordering-hook contract, with worked examples. The rest of *this* page is pool **structure**: members, weights, failover, and affinity.
 

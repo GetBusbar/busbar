@@ -933,7 +933,7 @@ hooks:                                                 # the DEFINITION map (def
     phase: [request, response]                         # a LIST of stages; omit = all four
     on_error: nothing
   pii:
-    module: busbar-webrequest-hook                     # forwards to an HTTPS sidecar
+    module: webrequest                                 # forwards to an HTTPS sidecar
     settings: { url: "https://sidecar.internal/pii" }
     groups: [engineering]                              # SCOPE: omit or [] = every caller
     kind: gate
@@ -941,7 +941,7 @@ hooks:                                                 # the DEFINITION map (def
     prompt: ro
     on_error: reject
   rank:
-    module: busbar-webrequest-hook                     # the SAME module, a second named hook
+    module: webrequest                                 # the SAME module, a second named hook
     settings: { url: "https://router.internal/rank" }
     kind: gate
     timeout_ms: 5

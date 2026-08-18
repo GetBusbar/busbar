@@ -1827,7 +1827,7 @@
             ]
           },
           "max_admin_scope": {
-            "description": "`identity-providers` ONLY: the per-provider ADMIN CEILING (`none` | `read-only` | `full`).\n`None` ⇒ the definition names none, so the most restrictive default applies. Omitted entirely\nfor a section that carries no ceiling.",
+            "description": "`identity-providers` ONLY: the per-provider ADMIN CEILING (`read-only` | `full`). There is no\n`none` token: `Scope::parse_ceiling` rejects it (see `Scope::parse` above), because a ceiling\ncaps what a grant can reach and cannot express the absence of one.\n`None` ⇒ the definition names no ceiling, so the most restrictive default applies. Omitted\nentirely for a section that carries no ceiling.",
             "type": [
               "string",
               "null"
