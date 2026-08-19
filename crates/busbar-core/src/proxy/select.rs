@@ -265,164 +265,298 @@ pub(crate) async fn pick_among(
     // lanes through the unchanged breaker filter instead of the blind SWRR pick (see SELECTION below).
     policy_order: Option<&[usize]>,
 ) -> Option<(usize, Permit, u64)> {
-    let t = now();
+    // THE MODEL PLANE'S CANDIDATE VIEW, for the ONE selection loop. Built once per pick (never inside
+    // the walk's retry hops) and borrowed for its whole life: `wl` is the pool member as configured,
+    // `model` is the operator-facing name a refusal must be able to say, and `pool_name` is this
+    // plane's PIN — see `LaneCandidate::interchange_key`.
+    let members: Vec<LaneCandidate<'_>> = cands
+        .iter()
+        .map(|wl| LaneCandidate {
+            wl,
+            model: app.lanes[wl.idx].model.as_str(),
+            pool: pool_name,
+        })
+        .collect();
 
-    // Fresh exclusion reasons for THIS pick attempt (advisory; fed to `on_exhausted`). Cleared here so
-    // a fallback-pool hop that re-runs `pick_among` reports its OWN exhaustion, not a stale earlier one.
+    // The positions this request has ALREADY dispatched to on an earlier failover hop — the seam's
+    // `Attempt::tried`, spelled from the caller's accumulated cross-hop exclusion set.
+    let tried: Vec<usize> = members
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| request_ctx.excluded.contains(&c.wl.idx))
+        .map(|(position, _)| position)
+        .collect();
+
+    let attempt = crate::failover::Attempt {
+        tried: &tried,
+        // THE MODEL PLANE'S REPEAT POSTURE, STATED RATHER THAN ASSUMED. A hop after the first is a
+        // genuine `AfterDispatch` retry — the previous lane may already have received the request —
+        // and the model plane has always permitted it, because a completion is a read: it charges the
+        // caller twice and can never send a second email. That is why `Repeatable::Yes` here is a
+        // description and not an exemption. The MCP/A2A planes hand the seam `Repeatable::No` unless
+        // the operator names the operation in `repeatable:`, and the SAME rule in the SAME loop then
+        // refuses their after-dispatch hop. The rule is one; the answer differs because the operations
+        // differ, which is exactly what the rule is for.
+        stage: if tried.is_empty() {
+            crate::failover::Stage::BeforeFirstByte
+        } else {
+            crate::failover::Stage::AfterDispatch
+        },
+        repeatable: crate::failover::Repeatable::Yes,
+        operation: "completion",
+    };
+
+    let mut order = SwrrOrder {
+        app,
+        cands,
+        request_ctx,
+        pool_name,
+        policy_order,
+        sticky: affinity_key_hash.and_then(|h| {
+            if cands.is_empty() {
+                return None;
+            }
+            {
+                let pos = (h as usize) % cands.len();
+                // DRAIN (`weight: 0`): an operator weights a member to 0 to bleed it off before
+                // decommission. SWRR (`select_weighted_for`) and the routing-policy preferred walk
+                // both already exclude a 0-weight candidate; this sticky fast path must too, else a
+                // session whose hash lands on a drained-but-breaker-healthy member keeps pinning to
+                // it on the NORMAL path — silently defeating drain. The admission only consults
+                // dead/budget/breaker/permits, never weight, so gate on the candidate's weight (and
+                // the caller's cross-hop exclusion set) here — those are selection-policy skips, NOT
+                // `Unavailable` reasons, so they are never recorded.
+                (cands[pos].weight != 0 && !request_ctx.excluded.contains(&cands[pos].idx))
+                    .then_some(pos)
+            }
+        }),
+        sticky_offered: false,
+        sticky_grace: false,
+        local_excluded: std::collections::HashSet::new(),
+        // Pre-sized to the candidate count and reused across the walk's retry hops (`.clear()` +
+        // re-`.extend()`), so a HalfOpen-probe-race re-selection costs no allocation and no growth
+        // realloc. The filter can only DROP entries, so `cands.len()` is an upper bound.
+        candidates: Vec::with_capacity(cands.len()),
+        weights: Vec::with_capacity(cands.len()),
+    };
+
+    // THE ONE SELECTION LOOP — `failover::walk_with`, the same function `failover::walk` hands the
+    // MCP and A2A planes' candidates to. This plane supplies exactly two things and owns no loop:
+    // the ORDER (SWRR / routing policy / session affinity, above) and the ADMISSION (`try_admit`,
+    // which is `try_admit_breaker` plus this plane's concurrency permit — one FSM, one cell, one
+    // single-flight probe). Everything the loop decides — is there anything here, is this a repeat
+    // and is that allowed, do the pins agree, will the breaker have it, and what is the refusal —
+    // is decided in core, identically for all three planes.
+    let mut passed_over: Vec<(usize, crate::store::Unavailable)> = Vec::new();
+    let admitted = crate::failover::walk_with(
+        pool_name,
+        &members,
+        &attempt,
+        &mut order,
+        &mut passed_over,
+        &mut |_position, c: &LaneCandidate<'_>| app.store.try_admit(pool_name, c.wl.idx, now()),
+    );
+
+    // Fresh exclusion reasons for THIS pick attempt (advisory; fed to `on_exhausted`), replaced
+    // wholesale so a fallback-pool hop that re-runs `pick_among` reports its OWN exhaustion and never
+    // a stale earlier one. The walk hands back POSITIONS; `excluded_reasons` speaks lane indices.
     request_ctx.excluded_reasons.clear();
+    request_ctx.excluded_reasons.extend(
+        passed_over
+            .iter()
+            .filter_map(|(position, why)| cands.get(*position).map(|wl| (wl.idx, *why))),
+    );
 
-    // Session affinity preference - try sticky lane first if usable (in this pool's breaker view).
-    // The hash was taken with `stable_hash` (NOT DefaultHasher, whose seed is randomized per process)
-    // at the ingress boundary, so a session pins to the same lane across restarts.
-    if let Some(h) = affinity_key_hash {
-        if !cands.is_empty() {
-            let pos = (h as usize) % cands.len();
-            let sticky = cands[pos].idx;
+    match admitted {
+        Ok(adm) => {
+            let idx = adm.candidate().wl.idx;
+            let admit = adm.into_token();
+            Some((idx, admit.permit, admit.probe_epoch))
+        }
+        // Every refusal the loop can produce is "there is nowhere to send this hop", which is what
+        // `None` has always meant here: the caller falls through to `on_exhausted`, which renders the
+        // operator-facing answer from `excluded_reasons` above. The model plane therefore adds no
+        // second refusal vocabulary — `Refusal` is rendered by the planes that have somewhere to
+        // render it (MCP's `-32030`, A2A's task refusal).
+        Err(_) => None,
+    }
+}
 
-            // DRAIN (`weight: 0`): an operator weights a member to 0 to bleed it off before
-            // decommission. SWRR (`select_weighted_for`) and the routing-policy preferred walk both
-            // already exclude a 0-weight candidate; this sticky fast-path must too, else a session
-            // whose hash lands on a drained-but-breaker-healthy member keeps pinning to it on the
-            // NORMAL path — silently defeating drain. `try_admit`/`lane_admissible` only consult
-            // dead/budget/breaker/permits, never weight, so gate on the candidate's weight (and the
-            // caller's cross-hop exclusion set) here — those are selection-policy skips, NOT
-            // `Unavailable` reasons, so they are not recorded.
-            if cands[pos].weight != 0 && !request_ctx.excluded.contains(&sticky) {
-                // The sticky fast path uses the SAME admission primitive as the main loop —
-                // `try_admit` wins-or-releases the single-flight probe and grabs-or-fails the permit
-                // atomically (probe ownership transfers via `Admit.probe_epoch` on success; on failure
-                // it releases the probe internally, EXACTLY, so nothing wedges HalfOpen). On
-                // fall-through we RECORD the `Unavailable` reason instead of dropping it silently.
-                match app.store.try_admit(pool_name, sticky, t) {
-                    Ok(admit) => return Some((sticky, admit.permit, admit.probe_epoch)),
-                    Err(reason) => request_ctx.excluded_reasons.push((sticky, reason)),
-                }
+/// THE MODEL PLANE'S [`crate::failover::Candidate`] — a pool member, borrowed for one selection.
+struct LaneCandidate<'a> {
+    wl: &'a WeightedLane,
+    model: &'a str,
+    pool: &'a str,
+}
+
+impl crate::failover::Candidate for LaneCandidate<'_> {
+    fn name(&self) -> &str {
+        self.model
+    }
+    fn lane(&self) -> usize {
+        self.wl.idx
+    }
+    /// THE MODEL PLANE HAS NO DIGEST TO CHECK, AND THIS SAYS SO IN THE ONE PLACE THE CHECK RUNS.
+    ///
+    /// On the MCP plane the pin is an approved tool-schema digest and on A2A an approved card
+    /// fingerprint — values busbar itself computed, so "these two are the same deployment" is a fact
+    /// it can VERIFY and refuse on. A model endpoint has no such artifact: two members of a `pools:`
+    /// entry are interchangeable because the operator wrote them in one pool, and that has been this
+    /// plane's semantics since long before the seam existed. Returning the POOL NAME states exactly
+    /// that and nothing more — every member of one pool agrees, so the shared pin check passes.
+    ///
+    /// What this deliberately does NOT do is skip the check for this plane. The check runs; it is
+    /// run against the only pin this plane has. The difference between "verified same deployment"
+    /// and "the operator's declaration" is now a visible one-line answer in the candidate type,
+    /// instead of an unstated absence in a second selection loop.
+    fn interchange_key(&self) -> Option<&str> {
+        Some(self.pool)
+    }
+}
+
+/// THE MODEL PLANE'S [`crate::failover::Order`]: session affinity first, then SWRR — or the routing
+/// policy's ranked walk — over what is left.
+///
+/// ORDER ONLY. Nothing here admits anything: `ready_in` and `select_weighted_in` are read-only peeks
+/// (no Open→HalfOpen transition, no single-flight probe CAS), and the SOLE mutating admission is the
+/// `try_admit` the walk calls on whatever this yields. That is why weighting, routing policy, drain
+/// and stickiness can live on this plane without being a second selection loop — they answer "who is
+/// asked first", never "who is allowed".
+struct SwrrOrder<'a> {
+    app: &'a Arc<App>,
+    /// This pool's membership, in the SAME order as the walk's `members` slice — so a position here
+    /// is a position there.
+    cands: &'a [WeightedLane],
+    request_ctx: &'a RequestCtx,
+    pool_name: &'a str,
+    policy_order: Option<&'a [usize]>,
+    /// The session-affinity position, offered FIRST and exactly once. `None` = no sticky preference,
+    /// a drained sticky member, or one this request already tried (pure SWRR).
+    sticky: Option<usize>,
+    sticky_offered: bool,
+    /// Set for exactly one `next` call after the sticky position was offered. See its use below: a
+    /// refused STICKY is deliberately not locally excluded.
+    sticky_grace: bool,
+    /// Positions this order will not offer again — a lane that was selected but could not be admitted
+    /// (HalfOpen probe race, at capacity). Local to the pick: it never mutates the caller's
+    /// cross-hop exclusion set.
+    local_excluded: std::collections::HashSet<usize>,
+    candidates: Vec<usize>,
+    weights: Vec<u32>,
+}
+
+impl crate::failover::Order for SwrrOrder<'_> {
+    fn next(&mut self, refused: Option<usize>) -> Option<usize> {
+        if let Some(position) = refused {
+            // A REFUSED STICKY IS NOT LOCALLY EXCLUDED, and that is this plane's long-standing
+            // behaviour preserved exactly, not an oversight inherited: the sticky fast path records
+            // its `Unavailable` reason and falls THROUGH to SWRR, which may legitimately pick the
+            // same lane again and attempt it a second time. `handle_queue` is written against that —
+            // it dedups the doubled at-capacity reason by lane and says so in its comment. Keeping it
+            // means the model plane's byte-identical behaviour survives the move onto the one loop;
+            // it now lives in this plane's ORDER, where it is one visible branch, instead of being an
+            // untidy fall-through in a selection loop of its own.
+            if !(self.sticky_grace && Some(position) == self.sticky) {
+                self.local_excluded.insert(position);
             }
         }
-    }
+        self.sticky_grace = false;
 
-    // Filter out already-tried lanes (accumulated exclusions across hops). A locally-tracked
-    // exclusion set lets us skip a lane we selected but couldn't probe-acquire (HalfOpen race),
-    // without mutating the caller's RequestCtx for what is a within-pick retry.
-    let mut local_excluded: std::collections::HashSet<usize> = std::collections::HashSet::new();
+        // 1. SESSION AFFINITY, offered before anything else and before the deadline guard — exactly
+        //    where the fast path sat. The hash was taken with `stable_hash` (NOT `DefaultHasher`,
+        //    whose seed is randomized per process) at the ingress boundary, so a session pins to the
+        //    same lane across restarts.
+        if !self.sticky_offered {
+            self.sticky_offered = true;
+            if let Some(position) = self.sticky {
+                self.sticky_grace = true;
+                return Some(position);
+            }
+        }
 
-    // Hoisted out of the retry loop and pre-sized to the candidate count: the loop body re-runs on
-    // every within-pick retry hop (HalfOpen-probe race), so reusing these buffers (`.clear()` +
-    // re-`.extend()` each iteration) avoids both per-iteration allocation AND growth reallocation.
-    // The filter can only DROP entries, so `cands.len()` is an upper bound (capacity, not fill);
-    // selection semantics are unchanged. `filtered_cands` borrows `cands`, which outlives the loop.
-    let mut filtered_cands: Vec<&WeightedLane> = Vec::with_capacity(cands.len());
-    let mut candidates: Vec<usize> = Vec::with_capacity(cands.len());
-    let mut weights: Vec<u32> = Vec::with_capacity(cands.len());
-
-    loop {
-        // Deadline guard: never spin or re-select past the request deadline.
-        if request_ctx.expired(now()) {
+        // 2. Deadline guard: never spin or re-select past the request deadline.
+        if self.request_ctx.expired(now()) {
             return None;
         }
 
-        request_ctx.fill_candidates(cands, &mut filtered_cands);
-        filtered_cands.retain(|wl| !local_excluded.contains(&wl.idx));
-        if filtered_cands.is_empty() {
+        // 3. This hop's candidate set: the pool minus the caller's cross-hop exclusions minus the
+        //    positions this order has already burned.
+        self.candidates.clear();
+        self.weights.clear();
+        for (position, wl) in self.cands.iter().enumerate() {
+            if self.request_ctx.excluded.contains(&wl.idx)
+                || self.local_excluded.contains(&position)
+            {
+                continue;
+            }
+            self.candidates.push(wl.idx);
+            self.weights.push(wl.weight);
+        }
+        if self.candidates.is_empty() {
             return None;
         }
 
-        // Extract lane indices and weights for select_weighted call
-        candidates.clear();
-        candidates.extend(filtered_cands.iter().map(|wl| wl.idx));
-        weights.clear();
-        weights.extend(filtered_cands.iter().map(|wl| wl.weight));
-
-        // SELECTION. Two paths, and ONLY two:
+        // 4. SELECTION. Two paths, and ONLY two:
         //
-        //  • `policy_order == None` (the ZERO-COST DEFAULT, `route: weighted` / absent): byte-identical
-        //    to pre-feature behavior — a single `select_weighted_in` call, the unchanged inline SWRR.
+        //  • `policy_order == None` (the ZERO-COST DEFAULT, `route: weighted` / absent): a single
+        //    `select_weighted_in` call, the unchanged inline SWRR.
         //
         //  • `policy_order == Some(order)` (a routing policy returned `Prefer`): an ORDERED WALK.
-        //    Honor EXACTLY the same health filter SWRR honors — `select_weighted_in` admits a candidate
-        //    iff it is lane-admissible (not dead / in budget) AND its per-pool breaker cell is ready
-        //    (the side-effect-FREE `ready_in`, the SAME predicate SWRR's filter uses). So: pick the
-        //    FIRST lane in the policy's ranked `order` that is (a) still in this hop's candidate set
-        //    (`candidates` is already exclusions- and local_excluded-filtered) and (b) `ready_in`. A
-        //    preferred lane that is tripped / dead / excluded / at-capacity-by-breaker fails this check
-        //    and we walk to the next. If NO ranked lane qualifies — every preferred lane is
-        //    unhealthy/excluded, OR the policy ranked only a subset and those are exhausted — we fall
-        //    THROUGH to `select_weighted_in` over the same candidate set, which both (i) preserves the
-        //    contract's "an omitted/unranked candidate is lowest-priority but still REACHABLE, never
-        //    stranded" guarantee, and (ii) keeps `Abstain` ⇒ today's SWRR exact (Abstain resolves to
-        //    `policy_order == None`, so it never reaches this arm at all).
-        //
-        // The walk only ORDERS. It does NOT touch the breaker/probe/failover machinery: `ready_in` is
-        // a read-only peek (no Open→HalfOpen transition, no single-flight probe CAS), and the SOLE
-        // mutating admission — `acquire_for_dispatch_in` below — still runs EXACTLY ONCE on the chosen
-        // lane, identically to the SWRR path. A preferred lane that then loses the HalfOpen probe race
-        // is `local_excluded` + re-walked just like an SWRR pick, so it falls to the next preferred
-        // lane (or to SWRR) with no change to breaker, failover, or translation behavior.
-        let picked_lane_idx = match policy_order {
+        //    Honor EXACTLY the same health filter SWRR honors — `select_weighted_in` admits a
+        //    candidate iff it is lane-admissible (not dead / in budget) AND its per-pool breaker cell
+        //    is ready (the side-effect-FREE `ready_in`, the SAME predicate SWRR's filter uses). So:
+        //    pick the FIRST lane in the policy's ranked `order` that is (a) still in this hop's
+        //    candidate set and (b) `ready_in`. A preferred lane that is tripped / dead / excluded /
+        //    at-capacity-by-breaker fails this check and we walk to the next. If NO ranked lane
+        //    qualifies — every preferred lane is unhealthy/excluded, OR the policy ranked only a
+        //    subset and those are exhausted — we fall THROUGH to `select_weighted_in` over the same
+        //    candidate set, which both (i) preserves the contract's "an omitted/unranked candidate is
+        //    lowest-priority but still REACHABLE, never stranded" guarantee, and (ii) keeps
+        //    `Abstain` ⇒ today's SWRR exact (Abstain resolves to `policy_order == None`, so it never
+        //    reaches this arm at all).
+        let picked_lane_idx = match self.policy_order {
             Some(order) => {
                 let now_t = now();
-                // First ranked lane that is in this hop's candidate set, NOT drained, AND breaker-ready.
+                // First ranked lane that is in this hop's candidate set, NOT drained, AND
+                // breaker-ready.
                 //
                 // Weight-0 drain: SWRR's `select_weighted_in` skips `weight == 0` members (the
                 // operator drain signal — see store.rs). The side-effect-free `ready_in` does NOT
                 // check weight, so without this filter the ordered walk could rank a DRAINED lane #1
-                // and dispatch to it, violating operator drain intent. Mirror SWRR here: a candidate
+                // and yield it, violating operator drain intent. Mirror SWRR here: a candidate
                 // weighted to 0 is excluded from the preferred walk. It still falls through to
                 // `select_weighted_in` below if no ranked lane qualifies — which itself re-skips
                 // weight-0 — so a fully-drained candidate set strands nothing it shouldn't.
                 let preferred = order.iter().copied().find(|idx| {
-                    candidates
+                    self.candidates
                         .iter()
                         .position(|c| c == idx)
-                        .is_some_and(|pos| weights[pos] != 0)
-                        && app.store.ready_in(pool_name, *idx, now_t)
+                        .is_some_and(|pos| self.weights[pos] != 0)
+                        && self.app.store.ready_in(self.pool_name, *idx, now_t)
                 });
                 match preferred {
                     Some(idx) => idx,
-                    // No ranked lane qualifies: fall through to SWRR over the same candidates so an
-                    // unranked-but-healthy lane is still reachable (never stranded by the policy).
-                    None => {
-                        match app
-                            .store
-                            .select_weighted_in(pool_name, &candidates, &weights, now_t)
-                        {
-                            Some(i) => i,
-                            None => return None,
-                        }
-                    }
+                    None => self.app.store.select_weighted_in(
+                        self.pool_name,
+                        &self.candidates,
+                        &self.weights,
+                        now_t,
+                    )?,
                 }
             }
             // Zero-cost default: today's exact inline SWRR, one predictable branch.
-            None => match app
-                .store
-                .select_weighted_in(pool_name, &candidates, &weights, now())
-            {
-                Some(i) => i,
-                None => return None,
-            },
+            None => self.app.store.select_weighted_in(
+                self.pool_name,
+                &self.candidates,
+                &self.weights,
+                now(),
+            )?,
         };
 
-        // ONE admission path, ONE exclusion arm. `try_admit` is the thin composition over
-        // the breaker check + `try_acquire`: it wins-or-loses the single-flight probe and
-        // grabs-or-fails the permit atomically, handing back the held resources on success or the
-        // shared `Unavailable` taxonomy on failure. The two former `insert;continue` sites
-        // (breaker-lost and at-capacity) are now the SAME `Err(reason)` arm
-        // — they were always the same kind of thing (a lane that can't take this request), differing
-        // only in the reason carried forward. `try_admit` also owns the probe lifecycle: on the
-        // at-capacity path it releases the won-but-undispatched probe EXACTLY (owner-checked, no leak,
-        // no double-release), and on success the probe ownership transfers out via `admit.probe_epoch`
-        // (the dispatched request releases it after recording its outcome). So no `ProbeGuard` is
-        // needed here anymore — there is no await between winning the probe and returning/excluding,
-        // and the release that `ProbeGuard::drop` used to perform now happens inside `try_admit`.
-        match app.store.try_admit(pool_name, picked_lane_idx, now()) {
-            Ok(admit) => return Some((picked_lane_idx, admit.permit, admit.probe_epoch)),
-            Err(reason) => {
-                local_excluded.insert(picked_lane_idx);
-                // Record WHY (fed to `on_exhausted`); does not affect selection.
-                request_ctx.excluded_reasons.push((picked_lane_idx, reason));
-                continue;
-            }
-        }
+        // The walk indexes `members` by POSITION; SWRR answers with a LANE INDEX. Map back through
+        // this pool's membership. A lane can appear at most once in a pool's `members:` (config
+        // rejects a duplicate), so the first match is THE match.
+        self.cands.iter().position(|wl| wl.idx == picked_lane_idx)
     }
 }
 

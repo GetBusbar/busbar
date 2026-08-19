@@ -112,6 +112,12 @@ pub(super) enum Outcome {
     /// both would make the second hop's answer undecodable, and a test that then asserted only on
     /// the request would silently stop covering the answer half.
     AnswersInTurn(u16, Vec<String>, Arc<AtomicUsize>),
+    /// PER-BACKEND answers, matched by URL HOST substring, each correlated to the request's own
+    /// JSON-RPC `id` — the twin-pool fixture: one recording seam fronting two backends that behave
+    /// differently, which is the only way "the caller got the TWIN's answer and the dead member
+    /// was never touched again" can be asserted on outputs. A hop whose host matches no entry
+    /// panics: a pool test reaching an unplanned backend is the defect, not a default.
+    AnswersByHost(Vec<(String, u16, String)>),
     /// A backend that answers a UNARY hop with one document and a STREAMING hop with these frames.
     ///
     /// One fixture rather than two harnesses, because the tests that need it are the ones that OPEN
@@ -194,6 +200,20 @@ impl RelayTransport for RecordingTransport {
                 client_identity_offered: false,
             }),
             Outcome::Fails(err) => Err(err.clone()),
+            Outcome::AnswersByHost(hosts) => {
+                let host = url.host_str().unwrap_or_default().to_string();
+                let (_, status, reply) = hosts
+                    .iter()
+                    .find(|(needle, _, _)| host.contains(needle.as_str()))
+                    .unwrap_or_else(|| panic!("no planned answer for backend host `{host}`"));
+                Ok(HttpResponse {
+                    status: *status,
+                    location: None,
+                    body: correlated(reply, body).into_bytes(),
+                    peer_spki: None,
+                    client_identity_offered: false,
+                })
+            }
             Outcome::AnswersInTurn(status, replies, seen) => {
                 let n = seen.fetch_add(1, Ordering::SeqCst);
                 let reply = replies
@@ -284,6 +304,18 @@ impl RelayTransport for RecordingTransport {
                 content_type: "application/json".to_string(),
                 body: correlated(doc, body).into_bytes(),
             }),
+            Outcome::AnswersByHost(hosts) => {
+                let host = url.host_str().unwrap_or_default().to_string();
+                let (_, status, reply) = hosts
+                    .iter()
+                    .find(|(needle, _, _)| host.contains(needle.as_str()))
+                    .unwrap_or_else(|| panic!("no planned answer for backend host `{host}`"));
+                Ok(StreamHead {
+                    status: *status,
+                    content_type: "application/json".to_string(),
+                    body: correlated(reply, body).into_bytes(),
+                })
+            }
         }
     }
 }
@@ -454,6 +486,8 @@ pub(super) struct Harness {
     pub(super) lookups: Arc<AtomicUsize>,
     pub(super) gov: Arc<crate::governance::GovState>,
     pub(super) plane: Arc<crate::a2a::plane::A2aPlane>,
+    /// The built App, kept so the pool batteries can read the plane breaker cells directly.
+    pub(super) app: Arc<crate::state::App>,
     server: tokio::task::JoinHandle<()>,
 }
 
@@ -531,6 +565,28 @@ pub(super) async fn harness_gated(
     granted: &[&str],
     gates: Option<Gates>,
 ) -> Harness {
+    harness_full(
+        outcome,
+        with_credential,
+        granted,
+        gates,
+        &[("planner", BACKEND), ("payments", OTHER_BACKEND)],
+        &[],
+    )
+    .await
+}
+
+/// The fully-general constructor: the AGENT DEFINITIONS and `agent_pools:` declarations are the
+/// caller's. Every narrower constructor above builds exactly the deployment it always built by
+/// passing the historical two-agent set and no pools.
+pub(super) async fn harness_full(
+    outcome: Outcome,
+    with_credential: bool,
+    granted: &[&str],
+    gates: Option<Gates>,
+    defs: &[(&str, &str)],
+    pools: &[(&str, &[&str])],
+) -> Harness {
     use crate::governance::signing::{TokenSigner, TokenVerifier, DEFAULT_KID};
     use crate::governance::{GovState, NewKeySpec};
     crate::metrics::init();
@@ -590,10 +646,14 @@ pub(super) async fn harness_gated(
 
     let mut builder = crate::test_support::TestApp::new()
         .public_url(PUBLIC_URL)
-        .agent_def("planner", agent_cfg(BACKEND, with_credential))
-        .agent_def("payments", agent_cfg(OTHER_BACKEND, with_credential))
         .keys_chain()
         .governance(Arc::clone(&gov));
+    for (name, url) in defs {
+        builder = builder.agent_def(name, agent_cfg(url, with_credential));
+    }
+    for (pool, members) in pools {
+        builder = builder.agent_pool(pool, members);
+    }
     if let Some(g) = gates {
         builder = builder
             .hook_env(g.env)
@@ -623,7 +683,7 @@ pub(super) async fn harness_gated(
         },
     }));
 
-    let router = crate::build_router(app);
+    let router = crate::build_router(Arc::clone(&app));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -635,6 +695,7 @@ pub(super) async fn harness_gated(
         lookups,
         gov,
         plane,
+        app,
         server,
     }
 }

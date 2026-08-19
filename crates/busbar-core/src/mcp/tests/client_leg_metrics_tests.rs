@@ -46,6 +46,8 @@ const ISSUED: &str = "downscoped-access-token-issued-by-the-as";
 const SERVED: &str = "metricsclientfs";
 /// A second registration, pointed at a port nothing is listening on.
 const DEAD: &str = "metricsclientdead";
+/// A third, likewise dead — its own name so its series is this test's alone. See the module header.
+const UNREACHABLE: &str = "metricsclientunreachable";
 
 /// Every non-comment `/metrics` line for `family` carrying `pool="<pool>"`.
 fn series_for<'a>(exposition: &'a str, family: &str, pool: &str) -> Vec<&'a str> {
@@ -93,8 +95,10 @@ async fn scrape(app: &std::sync::Arc<crate::state::App>) -> String {
 }
 
 /// A LOOPBACK PORT WITH NOTHING BEHIND IT. Bound and then dropped, so the address is real, is
-/// certainly not in use by anything else in this binary, and refuses the connection immediately —
-/// which is a `TransportError::Io`, the one variant the client leg counts as a failure.
+/// certainly not in use by anything else in this binary, and refuses the connection immediately.
+/// The refusal happens at CONNECT, so the transport classifies it as the pre-first-byte variant —
+/// the one the reroute seam is allowed to move — and the client leg counts it as a failure all the
+/// same. See `an_unreachable_leg_is_counted_as_a_failure_and_not_only_as_an_attempt`.
 async fn dead_port() -> u16 {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -230,5 +234,92 @@ async fn an_upstream_that_cannot_be_reached_is_counted_as_a_transient_failure_be
         ],
         "the MCP client leg invented a differently-shaped failure series: {}",
         failures[0]
+    );
+}
+
+/// THE PRE-FIRST-BYTE FAILURE IS STILL A FAILURE — the boundary the reroute work put at risk, and
+/// the reason this file has a second unreachable test rather than one.
+///
+/// The failover seam needed to tell a leg that NEVER LEFT BUSBAR (safe to move to a twin) from one
+/// that may already have landed (a genuine retry), so the transport grew a second connect-class
+/// error variant beside its existing I/O one. That distinction is about DUPLICATION SAFETY and says
+/// nothing whatever about health — but a counting rule written against the old single variant
+/// silently stops matching the new one, and the leg then lands on
+/// `busbar_upstream_attempts_total` and on NOTHING else. The series does not disappear, which is
+/// what makes it dangerous: an operator's per-registration error rate *falls toward zero* exactly
+/// as a pooled upstream stops answering, because the denominator keeps climbing.
+///
+/// So this asserts both halves against one real refused connect, on a real scrape:
+///
+/// 1. the leg really took the PRE-FIRST-BYTE arm — proven by the wording the caller is answered
+///    with, which only that arm renders, not by naming a variant; and
+/// 2. it is on the failure family anyway, with the same transient disposition an I/O failure gets.
+///
+/// Restore the rule to the I/O variant alone and assertion 2 fails while assertion 1 still passes,
+/// which is precisely the shape of the regression.
+#[tokio::test]
+async fn an_unreachable_leg_is_counted_as_a_failure_and_not_only_as_an_attempt() {
+    crate::metrics::init();
+    let peer = Peer::start(Behaviour::Result, ISSUED).await;
+    let mut cfg = exchanging_server(&peer, SUBJECT);
+    cfg.url = format!("http://127.0.0.1:{}/mcp", dead_port().await);
+    let app = crate::test_support::TestApp::new()
+        .mcp(&mcp_cfg(CANONICAL))
+        .mcp_server(UNREACHABLE, cfg)
+        .build();
+    let g = gov_with_scopes(&[
+        ("mcp_server", UNREACHABLE),
+        ("mcp_tool", &format!("{UNREACHABLE}_read")),
+    ]);
+
+    let (status, body) = call(
+        &app,
+        &g,
+        "tools/call",
+        serde_json::json!({ "name": format!("{UNREACHABLE}_read"), "arguments": {} }),
+    )
+    .await;
+    assert_eq!(status, 200, "the tool-level error shape: {body}");
+
+    // (1) THE ARM. `could not be reached` is the pre-first-byte rendering and nothing else in the
+    // tree produces it; the post-connect arm says `transport error` instead. Asserting the text the
+    // caller is actually answered with keeps this test honest if the variants are ever renamed.
+    let rendered = body.to_string();
+    assert!(
+        rendered.contains("could not be reached"),
+        "this leg must fail at CONNECT, so the counting rule is being tested on the pre-first-byte \
+         arm rather than on the ordinary I/O one: {body}"
+    );
+
+    // (2) THE COUNT. Attempt and failure, or the error rate lies in exactly the direction that
+    // hides an outage.
+    let exposition = scrape(&app).await;
+    assert!(
+        !series_for(
+            &exposition,
+            crate::metrics::UPSTREAM_ATTEMPTS_TOTAL,
+            UNREACHABLE
+        )
+        .is_empty(),
+        "the attempt is the denominator. Exposition:\n{exposition}"
+    );
+    let failures = series_for(
+        &exposition,
+        crate::metrics::UPSTREAM_FAILURES_TOTAL,
+        UNREACHABLE,
+    );
+    assert!(
+        !failures.is_empty(),
+        "a leg that could not reach its peer at all was counted as an ATTEMPT and not as a \
+         FAILURE: pool=\"{UNREACHABLE}\" now reports a 0% error rate while answering nothing. \
+         Exposition:\n{exposition}"
+    );
+    assert!(
+        failures.iter().any(|l| l.contains(&format!(
+            "disposition=\"{}\"",
+            crate::proxy::DISPOSITION_TRANSIENT
+        ))),
+        "an unreachable peer may come back, so it carries the same transient word an I/O failure \
+         does — a second disposition here would split one outage across two panels: {failures:?}"
     );
 }

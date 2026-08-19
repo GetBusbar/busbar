@@ -222,12 +222,9 @@ Two more refusals run over the **whole** effective registry (file base + admin o
 
 ### Failover pools: `tool_pools:`
 
-<!-- POST-MERGE: requires feat/1.6.0-reroute-parity -->
-An MCP registration is one destination. `tool_pools:` is how you tell Busbar that two registrations are **the same server deployed twice** — one image in two regions, a hosted instance beside a self-hosted twin. That declaration is what a selection walk needs in order to send a request the breaker would otherwise refuse to the other member instead.
+An MCP registration is one destination. `tool_pools:` is how you tell Busbar that two registrations are **the same server deployed twice** — one image in two regions, a hosted instance beside a self-hosted twin. That declaration is what the selection walk needs in order to send a request the breaker would otherwise refuse to the other member instead, and the walk runs on every `tools/call` (`crates/busbar-core/src/mcp/reroute.rs:259`).
 
 It is **opt-in and the absent section is exactly today's behaviour**: one registration, one destination, nothing to reason about (`crates/busbar-core/src/failover/mod.rs:119-127`).
-
-> **What is live on this build, stated plainly.** The `tool_pools:` **grammar** is live: the section parses and every boot refusal in the table below fires today (`crates/busbar-core/src/config/mod.rs:1585-1639`). The **selection walk** is landed as a seam in `crate::failover` — the interchangeability rule, the repeat rule and their proofs are all in it — and it is **not mounted on a dispatch path**: `failover::walk` has no non-test caller (`crates/busbar-core/src/failover/mod.rs:88-95`). So a configured pool is validated at boot and is not yet consulted when a call is dispatched, and a tripped server is refused rather than rerouted, exactly as [What a tripped upstream returns](#what-a-tripped-upstream-returns) describes. The three rules below are the rules that seam enforces; none of them moves a request on this build. This is written down rather than omitted because a page that describes a path before it is wired is how a reader learns something false.
 
 | Key | Type | Required | Default | Notes |
 |---|---|---|---|---|
@@ -257,14 +254,11 @@ Boot refusals, all in `crates/busbar-core/src/config/mod.rs:1585-1639`:
 | `<member>` is not defined in the top-level `tools:` map | |
 | `repeatable:` holds an empty entry | an empty entry names nothing |
 
-<!-- POST-MERGE: requires feat/1.6.0-reroute-parity -->
-**Naming two servers in a pool is not what makes them interchangeable.** The walk compares the approved schema digest Busbar already computed for each candidate and will move a request only when they agree; a candidate whose digest differs, or that has nothing approved yet, is refused with both digests named (`crates/busbar-core/src/failover/mod.rs:33-57`, `:168-186`). Same image in two regions ⇒ same schemas ⇒ same digest ⇒ provably interchangeable. Two different vendors' `search` tools ⇒ different digests ⇒ refused. You are asserting only *"these names are the same deployment"*, and that claim is checked before a single request moves.
+**Naming two servers in a pool is not what makes them interchangeable.** The walk compares the approved schema digest Busbar already computed for each candidate and moves a request only when they agree; a candidate whose digest differs, or that has nothing approved yet, is refused with both digests named (`crates/busbar-core/src/failover/mod.rs:33-57`, `:168-186`). Same image in two regions ⇒ same schemas ⇒ same digest ⇒ provably interchangeable. Two different vendors' `search` tools ⇒ different digests ⇒ refused. You are asserting only *"these names are the same deployment"*, and that claim is checked before a single request moves.
 
-<!-- POST-MERGE: requires feat/1.6.0-reroute-parity -->
 **A reroute is not a retry**, and the seam draws the line there. When the primary's breaker is Open the request never left Busbar, so sending it to an equivalent deployment duplicates nothing: that movement is the one the rule allows by default. Once a call has gone out, moving it is a genuine repeat of work the upstream may already have done, and the rule refuses it unless the operation is named in `repeatable:` (`crates/busbar-core/src/failover/mod.rs:60-80`). `send_email` is not repeated. `charge_card` is not repeated. There is no switch that turns the rule off wholesale. The two rules compose: **repeat a call only when the digests match AND the operation is declared safe to repeat.**
 
-<!-- POST-MERGE: requires feat/1.6.0-reroute-parity -->
-Reroute will never mean Busbar found somewhere else to send a call on its own. It means the selection walk chose a different member of a pool you declared, whose fingerprint Busbar verified matches. There is no discovery, and no member you did not write down.
+Reroute never means Busbar found somewhere else to send a call on its own. It means the selection walk chose a different member of a pool you declared, whose fingerprint Busbar verified matches. There is no discovery, and no member you did not write down.
 
 ---
 
@@ -471,8 +465,7 @@ A tripped server answers:
 
 **These cells refuse on a trip and nothing less.** The MCP cell is built with `bench_below_trip_threshold: false` — the one field it does not take from the LLM defaults (`crates/busbar-core/src/store/planes.rs:81-98`). On an LLM pool, a sub-threshold failure arms a short cooldown meaning "prefer a sibling for a while", and failover is what keeps the caller served while it lasts. On a single MCP registration with no pool there is no sibling, so the same cooldown would mean "refuse *every* caller of this server for the next 15–120 seconds" after one transient blip, on a cell whose own trip predicate had just declined to trip. So the predicate is the published one and nothing weaker: **error rate ≥ 0.5 over at least 5 outcomes in a 30-second window**, cooldown 15 s escalating to 120 s (`crates/busbar-core/src/store/in_memory/mod.rs:563-574`, `:629-639`). An upstream's own `Retry-After` is still honoured, for as long as the upstream asked for — that is the upstream's backpressure, not Busbar inventing an outage.
 
-<!-- POST-MERGE: requires feat/1.6.0-reroute-parity -->
-**A tripped server is refused on this build even when it is a member of a `tool_pools:` pool.** The dispatch path consults the breaker and composes the `503` above; it does not consult the pool, because the selection walk is not mounted here yet (`crates/busbar-core/src/failover/mod.rs:88-95`). Once it is, the walk will try the next member whose approved digest matches the primary's before any refusal is composed, and the `503` will name the pool's exhaustion rather than one server's.
+**A tripped server that is a member of a `tool_pools:` pool is not what produces the `503` above.** The walk runs before any refusal is composed and tries the next member whose approved digest matches the primary's (`crates/busbar-core/src/mcp/reroute.rs:235-379`); the caller gets that member's answer. The `503` is what remains when the pool is *exhausted* — every interchangeable member tripped — and then it names the **pool**, not one server, with a `Retry-After` set from the soonest member cooldown to expire (`crates/busbar-core/src/mcp/method.rs:2142-2167`). An unpooled registration has no twin to select, so for it the `503` is the whole story.
 
 **Timeouts are a bound the upstream cannot lengthen by choosing to be slow.** `timeout:` is per server, default 30 s, and there is deliberately no spelling for "unlimited": a leg that cannot time out holds a concurrency slot for as long as the upstream chooses (`crates/busbar-core/src/mcp/config.rs:706-727`).
 

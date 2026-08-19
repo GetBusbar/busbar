@@ -45,7 +45,15 @@ pub(crate) struct TransportResponse {
 pub(crate) enum TransportError {
     /// The destination failed the dispatch-time SSRF check, or a redirect was refused.
     Refused(SsrfRefusal),
-    /// The connection failed, timed out, or the body could not be read whole.
+    /// The destination could not be REACHED AT ALL: a refused/reset connect, DNS failure, or a TLS
+    /// handshake that never completed. Distinct from [`TransportError::Io`] because NOTHING LEFT
+    /// BUSBAR — the peer never received a byte of the request — which is the one wire failure the
+    /// failover seam's `Stage::BeforeFirstByte` rule may reroute within a pool without any risk of
+    /// a duplicate effect. Everything ambiguous (a timeout after connect, a reset mid-response)
+    /// stays `Io`, deliberately: the request MAY have landed, so a reroute of it is a retry.
+    Unreachable(String),
+    /// The connection failed, timed out, or the body could not be read whole — AFTER the
+    /// destination was reached, so the request may have been received and acted on.
     Io(String),
     /// A SUPERVISED peer declined to be dispatched to: it is not up yet, it is in restart backoff,
     /// or it crash-looped and the breaker quarantined it. Distinct from [`TransportError::Io`]
@@ -59,6 +67,9 @@ impl std::fmt::Display for TransportError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             TransportError::Refused(r) => write!(f, "{r}"),
+            TransportError::Unreachable(m) => {
+                write!(f, "MCP upstream could not be reached: {m}")
+            }
             TransportError::Io(m) => write!(f, "MCP upstream transport error: {m}"),
             TransportError::Supervision(m) => write!(f, "MCP upstream is not serving: {m}"),
         }
@@ -162,12 +173,24 @@ pub(crate) trait McpWire: Send + Sync {
 ///
 /// ## Which failures are counted, and why not all of them
 ///
-/// Only [`TransportError::Io`] — the socket failed, the deadline expired, or a child died
-/// mid-exchange. That is availability, which is what this family means on the model plane too.
+/// [`TransportError::Io`] and [`TransportError::Unreachable`] — the socket failed, the connect was
+/// refused, DNS or TLS never completed, the deadline expired, or a child died mid-exchange. That is
+/// availability, which is what this family means on the model plane too.
+///
+/// The two are ONE fact to this counter and two facts to the failover seam, and conflating those
+/// two audiences is the bug this note exists to prevent. `Unreachable` was split out of `Io` so the
+/// seam could tell a hop that duplicates nothing from a hop that might; NOTHING about that split
+/// says the peer was healthier. A registration whose every leg is refused at connect is the most
+/// down an upstream can be, and it is exactly the failure mode pooled reroute makes routine — so a
+/// rule that counted only `Io` would silently stop reporting the failures this feature generates,
+/// while still counting their attempts, and an operator's error rate would fall as the outage
+/// spread. Both are `DISPOSITION_TRANSIENT`: the peer may come back, and neither says whose fault
+/// it was.
 ///
 /// * [`TransportError::Refused`] is busbar's OWN dispatch-time refusal (the SSRF guard, a malformed
 ///   target). Nothing left busbar and the upstream answered nothing, so counting it would report an
-///   outage at a peer that was never contacted.
+///   outage at a peer that was never contacted. (`Unreachable` is the opposite case despite the
+///   similar words: busbar did try to reach the peer and the network answered.)
 /// * [`TransportError::Supervision`] is busbar's own fast answer from the crash-loop supervisor, and
 ///   the crash that armed the supervisor was already counted here as the `Io` failure of the
 ///   exchange it killed. Counting the refusal too is double accounting.
@@ -181,7 +204,7 @@ pub(crate) async fn send(
 ) -> Result<TransportResponse, TransportError> {
     crate::telemetry::upstream_attempt_on(leg.server, transport.name());
     let out = transport.mcp_wire().send(leg, req).await;
-    if let Err(TransportError::Io(_)) = &out {
+    if let Err(TransportError::Io(_) | TransportError::Unreachable(_)) = &out {
         crate::telemetry::upstream_failure_on(
             leg.server,
             transport.name(),
@@ -204,7 +227,7 @@ pub(crate) async fn notify(
 ) -> Result<(), TransportError> {
     crate::telemetry::upstream_attempt_on(leg.server, transport.name());
     let out = transport.mcp_wire().notify(leg, req).await;
-    if let Err(TransportError::Io(_)) = &out {
+    if let Err(TransportError::Io(_) | TransportError::Unreachable(_)) = &out {
         crate::telemetry::upstream_failure_on(
             leg.server,
             transport.name(),

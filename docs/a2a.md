@@ -131,12 +131,9 @@ The practical difference from MCP: a misconfiguration here surfaces as every req
 
 ### Failover pools: `agent_pools:`
 
-<!-- POST-MERGE: requires feat/1.6.0-reroute-parity -->
-`agent_pools:` is the A2A twin of `tool_pools:`, sharing its type rather than copying its shape — one grammar, in core, over two registries, so an operator learns the concept once (`crates/busbar-core/src/failover/mod.rs:113-118`). It tells Busbar that two registrations are **the same agent registered twice**.
+`agent_pools:` is the A2A twin of `tool_pools:`, sharing its type rather than copying its shape — one grammar, in core, over two registries, so an operator learns the concept once (`crates/busbar-core/src/failover/mod.rs:113-118`). It tells Busbar that two registrations are **the same agent registered twice**, and the walk runs at the admission of every fresh submission (`crates/busbar-core/src/a2a/route.rs:167`).
 
 It is **opt-in and the absent section is exactly today's behaviour**.
-
-> **What is live on this build, stated plainly.** The `agent_pools:` **grammar** is live: the section parses and every boot refusal below fires today (`crates/busbar-core/src/config/mod.rs:1585-1639`). The **selection walk** is landed as a seam in `crate::failover` — the interchangeability rule, the repeat rule and their proofs are all in it — and it is **not mounted on a dispatch path**: `failover::walk` has no non-test caller (`crates/busbar-core/src/failover/mod.rs:88-95`). So a configured pool is validated at boot and is not yet consulted when a task is relayed, and a tripped agent is refused rather than rerouted, exactly as [What a tripped agent returns](#what-a-tripped-agent-returns) describes. The three rules below are the rules that seam enforces; none of them moves a request on this build.
 
 | Key | Type | Required | Default | Notes |
 |---|---|---|---|---|
@@ -151,14 +148,11 @@ agent_pools:
 
 Boot refusals are identical to `tool_pools:`, from the same function (`crates/busbar-core/src/config/mod.rs:1585-1639`): fewer than two members; a member named twice; **a member that is an entry in `tools:` rather than `agents:`** — no pool may straddle two planes, and the message names the section the entry really lives in; a member defined nowhere; an empty `repeatable:` entry.
 
-<!-- POST-MERGE: requires feat/1.6.0-reroute-parity -->
-**Interchangeability is checked, not asserted.** On this plane the pin the walk compares is the **approved canonical card fingerprint** (`crates/busbar-core/src/failover/mod.rs:180-186`). A request will move between two candidates only when those fingerprints agree; a candidate with nothing approved yet can never match, not even another unapproved one — two unknowns are not one fact. You are asserting only *"these names are the same deployment"*.
+**Interchangeability is checked, not asserted.** On this plane the pin the walk compares is the **approved canonical card fingerprint** (`crates/busbar-core/src/failover/mod.rs:180-186`). A request moves between two candidates only when those fingerprints agree; a candidate with nothing approved yet can never match, not even another unapproved one — two unknowns are not one fact. You are asserting only *"these names are the same deployment"*.
 
-<!-- POST-MERGE: requires feat/1.6.0-reroute-parity -->
 **A reroute is not a retry**, and the seam draws the line there. Before the first byte, the request never left Busbar and moving it duplicates nothing: that is the movement the rule allows by default. After a dispatch has gone out, moving it is a genuine repeat of work the backend may already have done, and the rule refuses it unless the operation is named in `repeatable:` (`crates/busbar-core/src/failover/mod.rs:60-80`). There is no `repeatable: all`.
 
-<!-- POST-MERGE: requires feat/1.6.0-reroute-parity -->
-Reroute will never mean Busbar found somewhere else to send a task on its own. It means the walk chose a different member of a pool you declared, whose fingerprint Busbar verified matches. There is no discovery, and no member you did not write down.
+Reroute never means Busbar found somewhere else to send a task on its own. It means the walk chose a different member of a pool you declared, whose fingerprint Busbar verified matches. There is no discovery, and no member you did not write down. It also applies to **fresh submissions only**: an accepted task lives at the member that accepted it, and a verb naming that task is refused rather than moved.
 
 ---
 
@@ -476,8 +470,7 @@ The relay is this plane's Stage-1 normalizer; Stage 2 is the one core classifier
 
 **These cells refuse on a trip and nothing less**, exactly as the MCP cells do and for the same reason: `bench_below_trip_threshold: false` (`crates/busbar-core/src/store/planes.rs:81-99`). The predicate is **error rate ≥ 0.5 over at least 5 outcomes in a 30-second window**, cooldown 15 s escalating to 120 s (`crates/busbar-core/src/store/in_memory/mod.rs:563-574`, `:629-639`). There is no `breaker:` key under `agents:` and none on an agent pool; these planes run on the built-in defaults. An upstream's own `Retry-After` is honoured.
 
-<!-- POST-MERGE: requires feat/1.6.0-reroute-parity -->
-**A tripped agent is refused on this build even when it is a member of an `agent_pools:` pool.** The relay consults the breaker and renders the `rejected` task above; it does not consult the pool, because the selection walk is not mounted here yet (`crates/busbar-core/src/failover/mod.rs:88-95`). Once it is, the walk will try the next member whose approved card fingerprint matches the primary's before any refusal is composed, and only an exhausted pool will yield the `rejected` task.
+**A tripped agent that is a member of an `agent_pools:` pool is not what produces the `rejected` task above.** For a FRESH submission the walk runs at admission, before any refusal is composed, and tries the next member whose approved card fingerprint matches the primary's (`crates/busbar-core/src/a2a/route.rs:82-219`); the caller gets that member's answer. Only an *exhausted* pool yields the `rejected` task, and then it names the **pool**, because the pool is the unit with nothing left (`crates/busbar-core/src/a2a/receive.rs:1497-1501`). A verb naming an **existing** task is unaffected either way: that task is pinned to the member that accepted it, so a tripped backend refuses the verb and the row keeps its last-known state.
 
 ### Anomaly-driven suspension
 
