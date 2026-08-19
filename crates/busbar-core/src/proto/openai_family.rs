@@ -12,7 +12,7 @@ use axum::http::StatusCode;
 /// Used in `bearer_error_code` to mirror the native `authentication_error` → `invalid_api_key`
 /// pairing that official SDKs surface as `error.code`. Also matched by the Responses stream
 /// classifier (`class_for_response_failed`) when the provider signal echoes this code back.
-pub(crate) const CODE_INVALID_API_KEY: &str = "invalid_api_key";
+pub const CODE_INVALID_API_KEY: &str = "invalid_api_key";
 
 /// Busbar-internal `provider_signal` label for a context-length result (the LANE label, not the
 /// OpenAI wire code). Distinct from `PROVIDER_CODE_CONTEXT_LENGTH` ("context_length_exceeded"),
@@ -206,13 +206,13 @@ pub fn openai_classify(status: StatusCode, body: &[u8]) -> crate::breaker::Canon
 /// → the name. Keyed by index rather than positional array so a request where only message 7 has a
 /// name costs one entry, and so the writer's lookup cannot be thrown off by a `null` hole.
 ///
-/// LIVES HERE (not in `busbar-proto-openai-chat`) because core's `ir/variant.rs` names this key by
+/// LIVES HERE (not in the `busbar-llm` plugin) because core's `ir/variant.rs` names this key by
 /// its own const, not a duplicated string literal — a genuine core<->dialect crossing, unlike
 /// `MAX_COMPLETION_TOKENS_SENTINEL` (openai_chat-only, stays in that crate).
 pub const MESSAGE_NAMES_SENTINEL: &str = "__busbar_openai_message_names";
 
 // SHARED ACROSS THE OPENAI-FAMILY DIALECTS AND COHERE (tool-call argument stringification, url
-// citation projection) — these do NOT move into `busbar-proto-openai-chat`; cohere's and
+// citation projection) — these do NOT move into the `busbar-llm` plugin; cohere's and
 // openai_responses' writers/readers call them too, so they stay at this shared crossing rather
 // than becoming a cross-protocol-crate dependency once openai_chat is extracted.
 /// Render an IR ToolUse `input` value as the OpenAI `function.arguments` string.

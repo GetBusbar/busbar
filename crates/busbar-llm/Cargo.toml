@@ -1,0 +1,51 @@
+# busbar-llm — THE LLM PROTOCOL, as ONE plugin crate.
+#
+# ONE PLUGIN PER PROTOCOL, not one per dialect. "LLM" is the protocol; anthropic, openai chat,
+# gemini, bedrock, openai responses and cohere are six DIALECTS of it, and an operator chooses LLM
+# coverage or no LLM coverage — never "anthropic but not gemini". A seventh dialect is a module
+# added here, not a new crate and not a new feature flag. This crate replaces the four per-dialect
+# crates (`busbar-proto-anthropic`, `-openai-chat`, `-gemini`, and the bedrock/cohere/responses
+# extractions that were in flight) that got the granularity wrong.
+#
+# `busbar-proto-mcp` is DELIBERATELY NOT FOLDED IN: MCP is a different protocol, so it is a
+# different plugin, and a later plane-split step folds the MCP codec together with the MCP plane.
+#
+# The contract each dialect module keeps (unchanged from the per-crate shape): five files —
+# declaration, reader, writer, handler, tests — with everything consumed through busbar-core's
+# public surface, and registration performed by the `busbar` binary (the composition root) and by
+# nothing else. Deleting this crate's dependency edge is a build the deletion gate makes on purpose
+# (scripts/proto-deletion-gate.sh): with it gone, busbar speaks NO LLM dialect and refuses every one
+# of the six at boot.
+[package]
+name = "busbar-llm"
+version = "1.6.0"
+publish = false            # internal workspace crate; never goes to crates.io
+edition = "2021"
+# `rust-version` rationale: see busbar-core/Cargo.toml — one pinned number, set to what CI verifies.
+rust-version = "1.97"
+description = "The LLM protocol for busbar: the anthropic, openai-chat, gemini, bedrock, openai-responses and cohere dialects — wire codecs, request handlers and protocol declarations — linked and registered as one plugin by the busbar binary."
+license = "Apache-2.0"
+
+[lib]
+name = "busbar_llm"
+path = "src/lib.rs"
+
+[dependencies]
+# The engine's public surface — the ONLY busbar crate this plugin may name. `default-features =
+# false` for the same reason the binary does it: the feature decisions are the composition root's.
+busbar-core = { path = "../busbar-core", default-features = false }
+axum = { workspace = true }
+bytes = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+# Synthesized wire ids (anthropic `req_…`, gemini/bedrock request ids, responses `resp_…`): random
+# bytes, hex-encoded.
+getrandom = { workspace = true }
+hex = { workspace = true }
+
+[dev-dependencies]
+# The dialects' own tests drive the codecs through core vocabulary (breaker signals, IR types) and
+# core's test_support (warn-capture), which core exposes to dependents behind this feature only.
+busbar-core = { path = "../busbar-core", features = ["test-support"] }
+serde_json = { workspace = true }
+tracing-subscriber = { workspace = true }

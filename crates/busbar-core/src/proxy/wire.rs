@@ -117,9 +117,9 @@ fn maybe_attach_route_policy_gated(
 /// generic JSON-decode error — a deterministic proxy tell). The status code is
 /// preserved exactly; only the body shape changes. `kind` is the protocol-agnostic error category
 /// (e.g. `"invalid_request_error"`, `"overloaded"`, `"authentication_error"`); `msg` is the
-/// human-readable detail. When `ingress` does not resolve to a known protocol, falls back to the
-/// generic default envelope via the OpenAI writer (`protocol_for` only fails for an unknown literal,
-/// which is itself a 400 the caller still needs shaped).
+/// human-readable detail. When `ingress` does not resolve to a known protocol the body is
+/// [`agnostic_error_envelope`] — core's own shape, named after no dialect (`protocol_for` only
+/// fails for an unknown literal, which is itself a 400 the caller still needs shaped).
 ///
 /// `pub(crate)` and the single source of truth for native error shaping: it attaches the
 /// protocol-appropriate headers (Bedrock `x-amzn-RequestId` / `x-amzn-errortype` via the
@@ -128,25 +128,30 @@ fn maybe_attach_route_policy_gated(
 /// function (the migration is complete — they hold no private copies), so the degraded path, the main
 /// path, and the auth/route paths cannot diverge on error shape or headers.
 pub(crate) fn ingress_error(ingress: &str, status: StatusCode, kind: &str, msg: &str) -> Response {
-    // Resolve the ingress protocol's vtable ONCE (fall back to Gemini's generic envelope for an
-    // unknown name — unreachable for the 6 validated ingress protocols). All provider-specific error
-    // shape (the body envelope AND any response headers) flows through trait methods on this writer,
-    // so the agnostic error path carries no `if ingress == "<name>"` branch. `Protocol::responses`
-    // (not gemini, not OpenAI Chat) is the fallback dialect because anthropic/openai-chat/gemini are
-    // ALL extracted, feature-optional protocol crates as of this dialect-extraction line — this
-    // generic default must name a dialect core always compiles in, and `openai_responses` is the
-    // LAST dialect in the extraction order (design/1.6.0-llm-extraction-plan.md §3.2), so it
-    // outlives cohere's and bedrock's extractions too. openai_responses' OWN extraction replaces
-    // this with a truly protocol-agnostic envelope once no dialect is guaranteed resident.
-    let protocol =
-        crate::proto::protocol_for(ingress).unwrap_or_else(crate::proto::Protocol::responses);
-    let envelope = protocol.writer().write_error(status.as_u16(), kind, msg);
+    // Resolve the ingress protocol's vtable ONCE. All provider-specific error shape (the body
+    // envelope AND any response headers) flows through trait methods on that writer, so the agnostic
+    // error path carries no `if ingress == "<name>"` branch.
+    //
+    // THE UNRESOLVED-INGRESS ARM NAMES NO DIALECT, and that is the point. It used to construct one
+    // — `Protocol::openai`, then `Protocol::gemini`, then `Protocol::responses` — moving each time
+    // to whichever dialect was still guaranteed compiled into core, and each move was forced by the
+    // extraction line deleting the previous answer. Now EVERY LLM dialect lives in the `busbar-llm`
+    // plugin and none is guaranteed resident, so there is no writer left to borrow an envelope from.
+    // A fallback that names a droppable crate is not a fallback, so core states its OWN shape
+    // ([`agnostic_error_envelope`]) and attaches no protocol headers, because it has no protocol to
+    // attach them for. Unreachable for the validated ingress protocols (config validation refuses an
+    // unknown `protocol:` before a lane exists); what it must be is HONEST and always available.
+    let protocol = crate::proto::protocol_for(ingress);
+    let envelope = match &protocol {
+        Some(p) => p.writer().write_error(status.as_u16(), kind, msg),
+        None => agnostic_error_envelope(kind, msg),
+    };
     let body = crate::json::to_string(&envelope).unwrap_or_else(|_| {
         // Envelope is built from serde_json::json! values and always serializes; this fallback only
         // exists to avoid an unwrap on the request path. Build it with `json!` (correct JSON string
         // escaping) rather than interpolating Rust `{:?}` Debug formatting, which is NOT guaranteed
         // valid JSON escaping for all inputs (e.g. it differs on `/` and some control sequences).
-        serde_json::json!({ "error": { "message": msg, "type": kind } }).to_string()
+        agnostic_error_envelope(kind, msg).to_string()
     });
     let mut resp = Response::builder()
         .status(status)
@@ -155,11 +160,27 @@ pub(crate) fn ingress_error(ingress: &str, status: StatusCode, kind: &str, msg: 
         .unwrap_or_else(|_| status.into_response());
     // Provider-specific error RESPONSE HEADERS (Bedrock `x-amzn-RequestId`/`x-amzn-errortype`;
     // Anthropic `request-id` mirrored from the body) — dispatched via the writer vtable so the main,
-    // degraded, auth, and route error paths cannot drift on header shape.
-    protocol
-        .writer()
-        .attach_error_response_headers(resp.headers_mut(), kind, &envelope);
+    // degraded, auth, and route error paths cannot drift on header shape. An unresolved ingress has
+    // no vtable and therefore no headers to attach.
+    if let Some(p) = &protocol {
+        p.writer()
+            .attach_error_response_headers(resp.headers_mut(), kind, &envelope);
+    }
     resp
+}
+
+/// CORE'S OWN ERROR ENVELOPE — the body for an ingress name that resolves to no protocol.
+///
+/// Every dialect owns its native error shape and answers for it through
+/// [`crate::proto::ProtocolWriter::write_error`]. This is the shape for the case where there IS no
+/// dialect: an ingress literal that resolved to nothing. It is the plainest
+/// `{"error": {"message", "type"}}` object — the same two fields the serialization-failure guard
+/// inside [`ingress_error`] emits, stated ONCE here so those spellings cannot drift — and it is
+/// core's, so it survives every LLM dialect being dropped from the build with the `busbar-llm`
+/// plugin. It is NOT "the OpenAI envelope": the resemblance is only that this is the minimum an HTTP
+/// JSON error can say, and an SDK that could not decode it could not decode any error body.
+fn agnostic_error_envelope(kind: &str, msg: &str) -> serde_json::Value {
+    serde_json::json!({ "error": { "message": msg, "type": kind } })
 }
 
 /// Project an [`crate::handlers::IngressReject`] into the caller-dialect error response
@@ -798,16 +819,19 @@ pub(crate) fn mid_stream_error_bytes(
     ingress_eventstream: bool,
     message: &str,
 ) -> Vec<u8> {
-    // The error is a mid-stream transport failure ≈ internal/5xx. Resolve the ingress protocol once;
-    // an unknown ingress falls back to the `responses` writer (mirrors `ingress_error`'s fallback
-    // choice and rationale — see that function's comment).
+    // The error is a mid-stream transport failure ≈ internal/5xx. Resolve the ingress protocol
+    // ONCE. An unknown ingress resolves to no writer at all and takes the dialect-free terminal
+    // frame at the bottom of this function — the same ruling `ingress_error` makes, for the same
+    // reason: every LLM dialect is a droppable plugin now, so there is no resident writer to borrow
+    // a shape from, and inventing one would put a foreign dialect's bytes on the wire.
     let err = crate::proto::IrError {
         class: crate::breaker::StatusClass::ServerError,
         provider_signal: Some(message.to_string()),
         retry_after: None,
     };
-    let proto = crate::proto::protocol_for(ingress_protocol)
-        .unwrap_or_else(crate::proto::Protocol::responses);
+    let Some(proto) = crate::proto::protocol_for(ingress_protocol) else {
+        return agnostic_stream_error_frame(message);
+    };
     if ingress_eventstream {
         // Binary eventstream client (a native AWS SDK): a mid-stream failure is a MODELED-EXCEPTION
         // frame, not an SSE event. The exception NAME comes from the ingress writer's vtable
@@ -850,13 +874,18 @@ pub(crate) fn mid_stream_error_bytes(
                 format!("event: {event_type}\ndata: {data}\n\n").into_bytes()
             }
         }
-        None => {
-            let data =
-                serde_json::json!({ "error": { "message": message, "type": KIND_API_ERROR } })
-                    .to_string();
-            format!("data: {data}\n\n").into_bytes()
-        }
+        None => agnostic_stream_error_frame(message),
     }
+}
+
+/// CORE'S OWN TERMINAL STREAM ERROR FRAME — the streaming sibling of [`agnostic_error_envelope`],
+/// for the two cases with no ingress writer to ask: an ingress name that resolves to no protocol,
+/// and a writer that declines to frame errors in-band. A bare `data:` SSE frame is the lowest
+/// common denominator every SSE decoder accepts, and it is core's to emit precisely because no LLM
+/// dialect is guaranteed linked into the binary any more.
+fn agnostic_stream_error_frame(message: &str) -> Vec<u8> {
+    let data = agnostic_error_envelope(KIND_API_ERROR, message).to_string();
+    format!("data: {data}\n\n").into_bytes()
 }
 
 /// Deterministic FNV-1a hash of a string — stable across processes/restarts (unlike the

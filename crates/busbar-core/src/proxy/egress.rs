@@ -156,9 +156,9 @@ pub const EGRESS_UA_OPENAI: &str = "OpenAI/Python 1.54.0";
 // Google GenAI SDK shape (generativelanguage.googleapis.com).
 pub const EGRESS_UA_GEMINI: &str = "google-genai-sdk/0.8.0 gl-python/3.11";
 // AWS Bedrock is reached via boto3/botocore.
-pub(crate) const EGRESS_UA_BEDROCK: &str = "Boto3/1.35.0 md/Botocore#1.35.0";
+pub const EGRESS_UA_BEDROCK: &str = "Boto3/1.35.0 md/Botocore#1.35.0";
 // Cohere Python SDK shape (api.cohere.com).
-pub(crate) const EGRESS_UA_COHERE: &str = "cohere-python/5.11.0";
+pub const EGRESS_UA_COHERE: &str = "cohere-python/5.11.0";
 // Unknown/foreign egress protocol: a generic-but-present UA still beats sending none.
 pub(crate) const EGRESS_UA_DEFAULT: &str = "okhttp/4.12.0";
 

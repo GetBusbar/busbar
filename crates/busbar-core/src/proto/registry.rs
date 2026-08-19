@@ -35,7 +35,7 @@
 //! row scans this function and fails on an allocation appearing in it.
 //!
 //! WHAT IS NOT HERE YET, stated so its absence is not read as a claim. `ProtocolDecl` carries the
-//! facts core reads TODAY. The crate extraction (step 4; `busbar-proto-anthropic` first) happened
+//! facts core reads TODAY. The plugin extraction (step 4; the `busbar-llm` protocol crate) happened
 //! WITHOUT `route`/`read`/`Decoded` (the ABI design's per-request methods), deliberately: it moved
 //! the dialect behind the existing `ProtocolReader`/`ProtocolWriter` pair, the compiler-measured
 //! cheaper seam (`design/1.6.0-llm-extraction-plan.md` §2.1). `Dispatch::{Linked,Dlopen}` and the
@@ -193,30 +193,43 @@ impl ProtocolDecl {
 ///
 /// This is the whole of core's knowledge of which protocols exist. It is deliberately not a match,
 /// not a `#[cfg]`-gated arm, and not a constructor: it is a list of references to declarations that
-/// live in the protocols' own modules. When a protocol becomes a crate (step 4), its line here
-/// becomes the `busbar-proto-llm` crate's `&DECL` and nothing else in core moves; when a protocol is LOADED, it
-/// never appears here at all and reaches [`Registry::new`] through the same iterator.
+/// live in the protocols' own modules. When a protocol becomes a plugin crate (step 4), its line
+/// here becomes an entry in that crate's own declaration set (`busbar_llm::DECLS`) and nothing else
+/// in core moves; when a protocol is LOADED, it never appears here at all and reaches
+/// [`Registry::new`] through the same iterator.
 static BUILTIN_DECLS: &[&ProtocolDecl] = &[
     // Order is the operator-visible order: it is the order `known_protocols()` reports, and
     // `telemetry` indexes its per-protocol metric families by position in that list.
-    // ANTHROPIC IS AN EXTRACTED CRATE (`busbar-proto-anthropic`) and this row exists only in the
-    // builds that compile the dialect back in for the fixture surface (see the `mod anthropic`
-    // decl in proto/mod.rs). In the production binary the composition root installs the crate's
-    // own `DECL` through [`install_protocols`], folded AHEAD of this table — so the operator-
-    // visible protocol order is the same in both shapes, and `merged_boot_decls` skips whichever
-    // copy of this dialect registers second.
+    // ── THE LLM PROTOCOL'S DIALECTS THAT NOW LIVE IN THE `busbar-llm` PLUGIN ───────────────────
+    // These rows exist ONLY in the builds that compile those dialects back in for the fixture
+    // surface (see the `mod anthropic` decl in proto/mod.rs and the dual-compile note there). In
+    // the production binary the composition root installs `busbar_llm::DECLS` through
+    // [`install_protocols`], folded AHEAD of this table — so the operator-visible protocol order
+    // is the same in both shapes, and `merged_boot_decls` skips whichever copy registers second.
+    //
+    // THEY ARE LISTED IN `busbar_llm::DECLS`' OWN ORDER, and that is a requirement, not tidiness:
+    // this table and that slice are two statements of ONE sequence. Core cannot check that itself
+    // (it must not name the plugin), so the check is black-box on the shipped binary —
+    // `crates/busbar/tests/cli_validate.rs::the_operator_visible_protocol_order_is_exactly_the_
+    // shipped_one` reads the `must be one of:` refusal an operator would read. Before the
+    // consolidation the two orders DID disagree (this table said anthropic, openai, gemini; the
+    // composition root installed anthropic, gemini, openai), which was harmless only because
+    // nothing compared them.
     #[cfg(any(test, feature = "test-support"))]
     &crate::proto::anthropic::DECL,
-    // OPENAI CHAT IS AN EXTRACTED CRATE (`busbar-proto-openai-chat`) — same rationale as the
-    // anthropic row above: this row exists only in the builds that compile the dialect back in.
-    #[cfg(any(test, feature = "test-support"))]
-    &crate::proto::openai_chat::DECL,
-    // GEMINI IS AN EXTRACTED CRATE (`busbar-proto-gemini`) — same rationale as the anthropic row
-    // above: this row exists only in the builds that compile the dialect back in.
     #[cfg(any(test, feature = "test-support"))]
     &crate::proto::gemini::DECL,
+    #[cfg(any(test, feature = "test-support"))]
+    &crate::proto::openai_chat::DECL,
+    // ── The remaining LLM dialects also live in the `busbar-llm` plugin now — same rationale as
+    //    the three rows above; these fixture-surface copies exist ONLY in the builds that compile
+    //    the dialects back in, and their ORDER matches `busbar_llm::DECLS` exactly (this table and
+    //    that slice are two statements of one operator-visible sequence).
+    #[cfg(any(test, feature = "test-support"))]
     &crate::proto::bedrock::DECL,
+    #[cfg(any(test, feature = "test-support"))]
     &crate::proto::openai_responses::DECL,
+    #[cfg(any(test, feature = "test-support"))]
     &crate::proto::cohere::DECL,
     // MCP declares a handler and NO codec: its IR is its own and there is no cross-dialect
     // translation into or out of it. That asymmetry is the point — the registry holds protocols,
@@ -379,8 +392,14 @@ static REGISTRY: std::sync::OnceLock<Registry> = std::sync::OnceLock::new();
 /// Declarations the COMPOSITION ROOT installed before the registry was first read — the protocol
 /// crates' entry point. Set once by [`install_protocols`]; folded ahead of the built-ins by
 /// [`registry`]'s initializer.
-static INSTALLED: std::sync::OnceLock<&'static [&'static ProtocolDecl]> =
-    std::sync::OnceLock::new();
+/// A `Vec`, not a `&'static [_]`, because the composition root ASSEMBLES this list: one protocol
+/// plugin contributes a whole slice of dialect declarations (the LLM protocol's six) and another
+/// contributes a single one, and which of them are linked is a feature decision. Concatenating
+/// those into one array literal is not something a `const` can express, and leaking a `Box` to
+/// manufacture a `'static` slice would be a lie about the lifetime to satisfy a signature. The
+/// ELEMENTS are still `&'static ProtocolDecl` — every declaration is a `const` in its own crate,
+/// which is the property the registry actually relies on.
+static INSTALLED: std::sync::OnceLock<Vec<&'static ProtocolDecl>> = std::sync::OnceLock::new();
 
 /// INSTALL PROTOCOL DECLARATIONS — the composition root's one write into the protocol axis, and
 /// the seam an extracted protocol crate registers through. The `busbar` binary calls this from
@@ -389,11 +408,11 @@ static INSTALLED: std::sync::OnceLock<&'static [&'static ProtocolDecl]> =
 /// over this crate's sources at zero), so this parameter is the ONLY way an extracted protocol
 /// reaches the registry.
 ///
-/// ORDER: installed declarations are folded AHEAD of the built-ins. The protocol list is
-/// operator-visible (`known_protocols()` order is dashboards' metric-family order and the
-/// config-error `must be one of:` order), and the first extracted protocol is `anthropic`, which
-/// has led that list since 1.0 — prepending keeps the shipped binary's list byte-identical to the
-/// monolith's instead of demoting a protocol to the tail on the day it becomes a crate.
+/// ORDER: installed declarations are folded AHEAD of the built-ins, and the caller's own order is
+/// preserved within them. The protocol list is operator-visible (`known_protocols()` order is
+/// dashboards' metric-family order and the config-error `must be one of:` order), and `anthropic`
+/// has led it since 1.0 — prepending keeps the shipped binary's list byte-identical to the
+/// monolith's instead of demoting a protocol to the tail on the day it becomes a plugin.
 ///
 /// A NAME THE BUILT-INS ALREADY DECLARE IS SKIPPED, deliberately and audibly (`tracing::info`),
 /// not asserted on: under `cargo test`'s feature unification the `test-support` build of core
@@ -410,7 +429,7 @@ static INSTALLED: std::sync::OnceLock<&'static [&'static ProtocolDecl]> =
 ///   resolved against the smaller set would mean two layers of one process disagree about which
 ///   protocols exist — fail loudly at the boot line that got the order wrong.
 #[allow(dead_code)] // pub-widened and called by the busbar binary once the first protocol crate registers through it
-pub fn install_protocols(decls: &'static [&'static ProtocolDecl]) {
+pub fn install_protocols(decls: Vec<&'static ProtocolDecl>) {
     assert!(
         INSTALLED.set(decls).is_ok(),
         "install_protocols called twice: there is one composition root, and it registers once"
@@ -449,7 +468,7 @@ pub(crate) fn merged_boot_decls(
 /// The process registry. One acquire-load once initialized.
 pub(crate) fn registry() -> &'static Registry {
     REGISTRY.get_or_init(|| {
-        let installed = INSTALLED.get().copied().unwrap_or(&[]);
+        let installed: &[&'static ProtocolDecl] = INSTALLED.get().map(Vec::as_slice).unwrap_or(&[]);
         Registry::new(merged_boot_decls(installed, BUILTIN_DECLS))
     })
 }

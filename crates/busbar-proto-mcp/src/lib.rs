@@ -3,7 +3,7 @@
 
 //! busbar-proto-mcp — the Model Context Protocol dialect, as a PROTOCOL CRATE.
 //!
-//! THE SECOND EXTRACTED PROTOCOL, on the seam `busbar-proto-anthropic` proved. The five files here
+//! THE SECOND EXTRACTED PROTOCOL, on the seam the LLM protocol crate proved. The five files here
 //! are the per-dialect template `one-core-mcp-a2a-as-protocols.md` bars — this file (the
 //! declaration, the dialect's wire vocabulary and the notification codec), `handler.rs` (which
 //! operations it serves), `invoke.rs` and `subscribe.rs` (the two cells), and `tests/` (its own

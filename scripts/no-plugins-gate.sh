@@ -179,17 +179,22 @@ print(d if d is not None else "")' "$1"; }
 # plugin subsystem is ON and finds nothing, which is the axis-2 premise stated in config.
 write_zero_plugin_config() {
   local work="$1" bin="$2" mock_port="$3" listen_port="$4" admin_port="$5" plugins_dir="$6"
-  # `openai`: `anthropic`, `openai` (chat) and `gemini` are all EXTRACTED protocol crates as of 1.6.0's
-  # dialect-extraction line — plugins by this very gate's mechanical definition — so the
-  # compiled-out axis no longer speaks either BY DEFAULT (scripts/proto-deletion-gate.sh proves
-  # that refusal separately, per dialect). This gate's OWN probe methodology (the mock upstream's
-  # wire shape, the `/v1/chat/completions` and `/v2/chat` ingress bodies below) is still written
-  # against the OpenAI dialect specifically, so `build_binaries`/`run_selftest` explicitly keep
-  # `proto-openai-chat` ON for axis 1 (`--features proto-openai-chat`) — axis 1 stays "every OTHER
-  # plugin-kind capability compiled out" rather than "every protocol dialect compiled out", which
-  # is a distinct claim scripts/proto-deletion-gate.sh already makes per dialect. When the
-  # remaining three dialects (bedrock, cohere, responses) extract, this fixture is
-  # unaffected (openai chat stays linked on both axes here either way).
+  # `openai`: the whole LLM PROTOCOL is an extracted plugin crate (`busbar-llm`) as of 1.6.0's
+  # consolidation — a plugin by this very gate's mechanical definition — so the compiled-out axis no
+  # longer speaks any dialect BY DEFAULT (scripts/proto-deletion-gate.sh proves that refusal
+  # separately, for every dialect the plugin carries). This gate's OWN probe methodology (the mock
+  # upstream's wire shape, the `/v1/chat/completions` and `/v2/chat` ingress bodies below) is
+  # written against real LLM dialects, so `build_binaries`/`run_selftest` explicitly keep
+  # `proto-llm` ON for axis 1 (`--features proto-llm`) — axis 1 stays "every OTHER plugin-kind
+  # capability compiled out" rather than "the LLM protocol compiled out", which is a distinct claim
+  # scripts/proto-deletion-gate.sh already makes.
+  #
+  # THE FEATURE NAME CHANGED AND THIS FIXTURE HAD TO CHANGE WITH IT, checked rather than assumed:
+  # the old flag was `proto-openai-chat`, and it covered only the `/v1/chat/completions` probe. The
+  # `/v2/chat` probe below is COHERE's — the deliberate cross-protocol translation leg — and it was
+  # passing only because cohere was still a core built-in. Under one LLM plugin both probes are
+  # covered by the one `proto-llm` flag, which is the first time this axis has actually been
+  # linking everything it exercises.
   cat >"${work}/providers.yaml" <<EOF
 mock:
   protocol: openai
@@ -516,8 +521,8 @@ expect_green() {
 build_binaries() {
   local stage="$1"
   hdr "Building both axes"
-  note "axis 1 — cargo build -p busbar --no-default-features --features proto-openai-chat --locked"
-  cargo build -p busbar --no-default-features --features proto-openai-chat --locked
+  note "axis 1 — cargo build -p busbar --no-default-features --features proto-llm --locked"
+  cargo build -p busbar --no-default-features --features proto-llm --locked
   cp "${REPO_ROOT}/target/debug/busbar" "${stage}/busbar-no-default-features"
   note "axis 2 — cargo build -p busbar --locked (DEFAULT features)"
   cargo build -p busbar --locked
@@ -531,7 +536,7 @@ run_selftest() {
   local empty; new_tmpdir; empty="$NEW_TMPDIR"
   local rc=0
 
-  cargo build -p busbar --no-default-features --features proto-openai-chat --locked
+  cargo build -p busbar --no-default-features --features proto-llm --locked
   cp "${REPO_ROOT}/target/debug/busbar" "${stage}/busbar-no-default-features"
 
   # ── RED-A / RED-B: the REAL featureless binary, with a REAL core dependency on a compiled-out

@@ -869,7 +869,7 @@ pub fn gemini_arrival(
 /// Three shapes under one model path — `converse`, `converse-stream` and `invoke` — plus the native
 /// 404 for anything else under it. All four were a `PROTO_BEDROCK =>` arm in core; all four are
 /// this protocol's own statement about its own URL space now.
-pub(crate) fn bedrock_arrival(
+pub fn bedrock_arrival(
     a: dispatch::Arrival,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Response> + Send>> {
     // axum's Path extractor percent-decoded {model_id} before the collapse; match it.

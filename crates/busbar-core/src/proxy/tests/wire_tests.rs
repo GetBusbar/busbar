@@ -84,3 +84,65 @@ fn route_policy_headers_absent_when_both_gates_closed() {
     assert_eq!(policy, "");
     assert_eq!(target, "");
 }
+
+// ══ THE UNRESOLVED-INGRESS ERROR SHAPE IS CORE'S OWN, NOT A DIALECT'S ═════════════════════════════
+//
+// `ingress_error`/`mid_stream_error_bytes` used to resolve an unknown ingress name to
+// `Protocol::responses()` and shape the error with THAT dialect's writer. Every LLM dialect is a
+// droppable plugin (`busbar-llm`) now, so there is no dialect core can promise is linked, and the
+// fallback became core's own (`agnostic_error_envelope`/`agnostic_stream_error_frame`).
+//
+// WHAT MAKES THESE DISCRIMINATING rather than decorative: the Responses writer REWRITES the `kind`
+// onto the OpenAI-family error vocabulary — `overloaded` becomes `server_error`, which that
+// vocabulary has instead. Core's envelope states the agnostic kind VERBATIM. So `type == "overloaded"`
+// FAILS on the old `responses` fallback (it emitted `server_error`) and PASSES on core's own shape.
+
+/// An ingress name that resolves to no protocol gets core's own envelope, agnostic `kind` verbatim,
+/// and no dialect response headers.
+#[tokio::test]
+async fn unknown_ingress_error_envelope_is_core_s_own_and_names_no_dialect() {
+    let resp = ingress_error(
+        "no-such-protocol",
+        StatusCode::SERVICE_UNAVAILABLE,
+        crate::proxy::KIND_OVERLOADED,
+        "everything is on fire",
+    );
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert!(
+        resp.headers().get("x-amzn-requestid").is_none(),
+        "an unresolved ingress must not carry a dialect's error headers"
+    );
+    let body = axum::body::to_bytes(resp.into_body(), 64 * 1024)
+        .await
+        .expect("body");
+    let v: serde_json::Value = serde_json::from_slice(&body).expect("valid JSON envelope");
+    assert_eq!(
+        v["error"]["type"], crate::proxy::KIND_OVERLOADED,
+        "core's envelope states the agnostic kind verbatim; the old `responses` fallback rewrote it \
+         to `server_error`"
+    );
+    assert_eq!(v["error"]["message"], "everything is on fire");
+}
+
+/// The streaming half: an unknown ingress gets a bare `data:` frame carrying core's envelope — no
+/// `event:` line (some dialects' shape, not others') and no dialect vocabulary in `type`.
+#[test]
+fn unknown_ingress_mid_stream_error_is_a_bare_data_frame_from_core() {
+    let bytes = mid_stream_error_bytes("no-such-protocol", false, "upstream vanished");
+    let s = String::from_utf8(bytes).expect("utf8 frame");
+    assert!(
+        s.starts_with("data: ") && s.ends_with("\n\n"),
+        "expected a bare SSE data frame, got: {s}"
+    );
+    assert!(
+        !s.contains("event:"),
+        "core's dialect-free frame must not claim a dialect's `event:` shape: {s}"
+    );
+    let payload = s
+        .trim_start_matches("data: ")
+        .trim_end_matches("\n\n")
+        .to_string();
+    let v: serde_json::Value = serde_json::from_str(&payload).expect("valid JSON");
+    assert_eq!(v["error"]["type"], crate::proxy::KIND_API_ERROR);
+    assert_eq!(v["error"]["message"], "upstream vanished");
+}

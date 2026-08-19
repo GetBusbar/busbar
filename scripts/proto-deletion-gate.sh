@@ -137,6 +137,15 @@ for _ in range(200):
 PYEOF
 }
 
+# An EMPTY providers file and a config with no `providers:`/`models:` — the fixture for a build that
+# carries no wire protocol at all, so there is nothing a lane could legally name.
+mk_no_providers() { printf '{}\n' > "$FIX/providers.yaml"; }
+mk_config_no_providers() { # $1 = listen, $2 = admin listen
+  # `providers:`/`models:` are present but EMPTY — the schema requires the fields, and empty maps are
+  # the honest statement of a busbar that serves no lane. Nothing here names a wire protocol.
+  printf 'listen: "%s"\nadmin_listen: "%s"\nproviders: {}\nmodels: {}\n' "$1" "$2" > "$FIX/config.yaml"
+}
+
 mk_config() { # $1 = listen, $2 = admin listen (the admin plane defaults to :8081, which a laptop
   # or a concurrently running gate may already hold — the boot leg must not fail on a port squat)
   printf 'listen: "%s"\nadmin_listen: "%s"\nproviders:\n  mock:\n    api_key: { env: MOCK_KEY }\nmodels:\n  test-model:\n    provider: mock\n' \
@@ -155,21 +164,58 @@ run_busbar_bg() { # binary, args... ; caller supplies the redirections and the t
   BUSBAR_CONFIG="$FIX/config.yaml" BUSBAR_PROVIDERS="$FIX/providers.yaml" exec "$@"
 }
 
-# ── run_gate: levels 2/3 + control, for ONE extracted dialect ───────────────────────────────────
-# $1 = dialect name (config `protocol:` value, e.g. "anthropic")
-# $2 = its Cargo feature name (e.g. "proto-anthropic")
-# $3 = comma-separated features to keep ON for every OTHER extracted dialect (so this run deletes
-#      exactly one dialect, not every extracted dialect at once)
-# $4 = remaining dialects string, in `known_protocols()` order, as the refusal names them
-# $5 = a REMAINING dialect's name to prove still serves (level 3b/3c)
-# $6 = an ingress path native to THE DELETED dialect, to prove it 404s post-deletion (level 3c)
+# ── llm_dialect_refused: level 3a, for ONE dialect of the deleted LLM protocol ──────────────────
+# $1 = the deleted binary, $2 = the dialect's config `protocol:` value, $3 = the remaining-dialect
+# string the refusal must name. Called once per dialect the plugin carried: deleting the plugin
+# deletes ALL of them, and a leg that checked only one would pass on a plugin that had quietly kept
+# five.
+llm_dialect_refused() {
+  local bin="$1" proto="$2" remaining="$3" out rc
+  mk_providers "$proto"; mk_config "127.0.0.1:0" "127.0.0.1:0"
+  out=$(run_busbar "$bin" --validate 2>&1); rc=$?
+  if [ $rc -eq 0 ]; then
+    die "the deleted binary ACCEPTED a config naming protocol: $proto (the deletion changed nothing)"
+  fi
+  if [ -n "$remaining" ]; then
+    # Some codec protocol still remains, so config_validate takes its unknown-name arm and names the
+    # survivors in the `must be one of:` tail.
+    echo "$out" | grep -q "unknown protocol '$proto'" \
+      || die "the refusal must NAME the unknown protocol; got: $out"
+    echo "$out" | grep -q "must be one of: $remaining" \
+      || die "the refusal must name the remaining protocols (and not $proto); got: $out"
+    note "level 3a refusal: 'unknown protocol $proto — must be one of: $remaining' (exit $rc)"
+  else
+    # NO codec protocol remains at all (deleting the LLM plugin left only codec-less MCP). The
+    # empty-codec-set arm of config_validate fires instead of the unknown-name arm — a DISTINCT,
+    # stronger refusal that still names the rejected protocol. Accept either the empty-set message
+    # or, defensively, the unknown-name form.
+    echo "$out" | grep -Eq "wire codec compiled in|unknown protocol '$proto'" \
+      || die "the refusal must reject protocol $proto (empty-codec-set or unknown-name arm); got: $out"
+    echo "$out" | grep -q "$proto" \
+      || die "the refusal must NAME the rejected protocol $proto; got: $out"
+    note "level 3a refusal: empty-codec-set rejects protocol $proto (exit $rc)"
+  fi
+}
+
+# ── run_gate: levels 2/3 + control, for ONE extracted PROTOCOL ──────────────────────────────────
+# $1 = protocol label, and the config `protocol:` value whose refusal levels 3a/control assert
+# $2 = its Cargo feature name (e.g. "proto-llm")
+# $3 = comma-separated features to keep ON for every OTHER protocol plugin (so this run deletes
+#      exactly one PLUGIN, not every plugin at once)
+# $4 = remaining dialects string, in `known_protocols()` order, as the refusal names them; EMPTY
+#      when the deletion leaves no codec protocol at all
+# $5 = a REMAINING dialect's name to prove still serves (level 3b/3c), or empty when none remains
+# $6 = an ingress path native to THE DELETED protocol, to prove it 404s post-deletion (level 3c)
+# $7 = optional: extra dialect names the deleted plugin also carried, space separated; each gets its
+#      own level-3a refusal, because ONE plugin now carries SIX dialects and all six must go
 run_gate() {
   local proto="$1" feature="$2" keep_features="$3" remaining="$4" control_proto="$5" deleted_ingress_path="$6"
+  local also_deleted="${7:-}"
   local del_target="target/deletion-gate-${proto}"
   local keep_arg=""
   [ -n "$keep_features" ] && keep_arg=",${keep_features}"
 
-  note "── dialect: ${proto} (feature ${feature}) ──"
+  note "── protocol: ${proto} (feature ${feature}) ──"
   note "level 2 build: cargo build -p busbar --no-default-features --features auth-admin-tokens,hooks-ranking${keep_arg}"
   CARGO_TARGET_DIR="$del_target" cargo build -q -p busbar \
     --no-default-features --features "auth-admin-tokens,hooks-ranking${keep_arg}" \
@@ -178,38 +224,63 @@ run_gate() {
   [ -x "$deleted_bin" ] || die "deleted-build binary not found at $deleted_bin"
   note "level 2 build: ok ($deleted_bin)"
 
-  # ── level 3a: the deleted binary refuses protocol: $proto, naming the cause ───────────────────
-  mk_providers "$proto"; mk_config "127.0.0.1:0" "127.0.0.1:0"
-  local out rc
-  out=$(run_busbar "$deleted_bin" --validate 2>&1); rc=$?
-  if [ $rc -eq 0 ]; then
-    die "the deleted binary ACCEPTED a config naming protocol: $proto (the deletion changed nothing)"
-  fi
-  echo "$out" | grep -q "unknown protocol '$proto'" \
-    || die "the refusal must NAME the unknown protocol; got: $out"
-  echo "$out" | grep -q "must be one of: $remaining" \
-    || die "the refusal must name the remaining dialects (and not $proto); got: $out"
-  note "level 3a refusal: 'unknown protocol $proto — must be one of: $remaining' (exit $rc)"
+  # ── level 3a: the deleted binary refuses EVERY dialect the plugin carried, naming the cause ───
+  llm_dialect_refused "$deleted_bin" "$proto" "$remaining"
+  local extra
+  for extra in $also_deleted; do
+    llm_dialect_refused "$deleted_bin" "$extra" "$remaining"
+  done
 
   # ── level 3b: the remaining dialects still validate ─────────────────────────────────────────────
-  mk_providers "$control_proto"; mk_config "127.0.0.1:0" "127.0.0.1:0"
-  out=$(run_busbar "$deleted_bin" --validate 2>&1) || die "the deleted binary must accept a $control_proto config; got: $out"
-  note "level 3b remaining dialects: $control_proto config validates clean"
+  # SKIPPED, honestly and loudly, when the deletion leaves NO dialect behind: there is then nothing
+  # for a provider lane to name, and inventing a control here would be asserting against a fixture
+  # rather than against the build. Level 3c still proves the binary boots and serves.
+  local out
+  if [ -n "$control_proto" ]; then
+    mk_providers "$control_proto"; mk_config "127.0.0.1:0" "127.0.0.1:0"
+    out=$(run_busbar "$deleted_bin" --validate 2>&1) || die "the deleted binary must accept a $control_proto config; got: $out"
+    note "level 3b remaining dialects: $control_proto config validates clean"
+  else
+    note "level 3b remaining dialects: none left to validate (this deletion removed the last one)"
+  fi
 
   # ── level 3c: the deleted binary BOOTS and answers (R-D: fewer protocols is a valid busbar) ────
   local port; port=$(free_port) || die "could not find a free port pair for the deletion boot"
   local admin_port=$(( port + 1 ))
-  mk_providers "$control_proto"; mk_config "127.0.0.1:$port" "127.0.0.1:$admin_port"
+  if [ -n "$control_proto" ]; then
+    mk_providers "$control_proto"; mk_config "127.0.0.1:$port" "127.0.0.1:$admin_port"
+  else
+    # NO DIALECT LEFT TO CONFIGURE — so boot with no providers and no models at all. This is the
+    # R-D claim at its limit and the reason it is worth making: a busbar that speaks NO wire
+    # protocol is still a valid busbar, and it must SERVE its operator surface rather than refuse
+    # to start. A gate that could only boot a binary with a provider in it could never assert that.
+    mk_no_providers; mk_config_no_providers "127.0.0.1:$port" "127.0.0.1:$admin_port"
+  fi
   run_busbar_bg "$deleted_bin" >"$FIX/boot-${proto}.log" 2>&1 &
   SRV_PID=$!
+  # READINESS SIGNAL depends on whether any lane exists. `/healthz` is a lane-readiness probe: with
+  # zero lanes it CORRECTLY answers 503 "no usable lanes" (endpoints::healthz), so in the empty case
+  # it is not the up-signal — `/stats` is (the operator surface answers regardless of lanes). When a
+  # control dialect provides a lane, `/healthz` is the up-signal as before.
+  local up_probe="/healthz"
+  [ -z "$control_proto" ] && up_probe="/stats"
   local up=""
   for _ in $(seq 1 60); do
-    if curl -fsS "http://127.0.0.1:$port/healthz" >/dev/null 2>&1; then up=1; break; fi
+    if curl -fsS "http://127.0.0.1:$port$up_probe" >/dev/null 2>&1; then up=1; break; fi
     kill -0 "$SRV_PID" 2>/dev/null || break
     sleep 0.5
   done
-  [ -n "$up" ] || { cat "$FIX/boot-${proto}.log"; die "the deleted binary did not come up on /healthz"; }
+  [ -n "$up" ] || { cat "$FIX/boot-${proto}.log"; die "the deleted binary did not come up on $up_probe"; }
   curl -fsS "http://127.0.0.1:$port/stats" >/dev/null || die "/stats must answer on the deleted binary"
+  if [ -z "$control_proto" ]; then
+    # POSITIVE ASSERTION on the limit case: a busbar with no lanes reports NOT-ready on /healthz —
+    # an honest readiness answer, not a crash — while /stats (checked above) still serves. 503 is
+    # the expected code; any 2xx would mean it falsely claims readiness with nothing to serve.
+    local hz
+    hz=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port/healthz")
+    [ "$hz" = "503" ] || die "with zero lanes /healthz must report 503 (no usable lanes); got $hz"
+    note "level 3c boot (no lanes): /stats 200 serves, /healthz 503 honestly not-ready"
+  fi
   local msg_code
   msg_code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:$port$deleted_ingress_path" \
     -H 'content-type: application/json' -d '{"model":"test-model","max_tokens":8,"messages":[]}')
@@ -217,7 +288,7 @@ run_gate() {
     2*) die "POST $deleted_ingress_path answered $msg_code on a build with no $proto dialect" ;;
   esac
   kill "$SRV_PID" 2>/dev/null; wait "$SRV_PID" 2>/dev/null; SRV_PID=""
-  note "level 3c boot: /healthz 200, /stats 200, ${proto}-format ingress answers $msg_code (no handler)"
+  note "level 3c boot: up on $up_probe, /stats 200, ${proto}-format ingress answers $msg_code (no handler)"
 
   # ── control: the default build (feature ON) accepts the deleted dialect's config ────────────────
   note "control: cargo build -p busbar (default features)"
@@ -228,20 +299,28 @@ run_gate() {
   note "control: default build accepts protocol: $proto"
 }
 
-# ── ANTHROPIC: every OTHER protocol crate stays ON so this run deletes ONLY anthropic ───────────
-run_gate "anthropic" "proto-anthropic" "proto-gemini,proto-mcp,proto-openai-chat" \
-  "gemini, openai, bedrock, responses, cohere" "openai" "/v1/messages"
-
-# ── OPENAI CHAT: every OTHER protocol crate stays ON so this run deletes ONLY openai chat ────────
-run_gate "openai" "proto-openai-chat" "proto-anthropic,proto-gemini,proto-mcp" \
-  "anthropic, gemini, bedrock, responses, cohere" "anthropic" "/v1/chat/completions"
-
-# ── GEMINI: every OTHER protocol crate stays ON so this run deletes ONLY gemini ──────────────────
-# The deleted-ingress probe is gemini's own URL space (`/v1beta/models/{model}:{action}`), where the
-# MODEL rides in the path — the reason this dialect declares `path_ingress` at all.
-run_gate "gemini" "proto-gemini" "proto-anthropic,proto-mcp,proto-openai-chat" \
-  "anthropic, openai, bedrock, responses, cohere" "anthropic" \
-  "/v1beta/models/test-model:generateContent"
+# ── THE LLM PROTOCOL: ONE leg, because there is ONE plugin ──────────────────────────────────────
+# This replaced three per-dialect legs (anthropic, openai-chat, gemini), and the replacement is not
+# a loss of coverage — it is the coverage the seam now actually has. There is no `proto-gemini`
+# feature to drop any more: the operator's choice is LLM coverage or none, so the only deletion the
+# build can make is the whole protocol, and asserting a per-dialect deletion would be asserting
+# against a knob that does not exist.
+#
+# It is STRICTER than the six per-dialect legs it replaces in the way that matters: deleting the ONE
+# plugin deletes ALL SIX dialects, and each gets its own level-3a refusal (see `llm_dialect_refused`),
+# so a plugin that dropped its dependency edge while quietly leaving even one dialect resident in
+# core fails here. The MCP protocol crate stays ON, so this run deletes exactly one PLUGIN — and MCP
+# has no wire codec, so the codec-protocol list is EMPTY afterward: there is NO remaining LLM dialect
+# and NO control dialect to re-point a lane at (both the remaining-string and control args are empty,
+# which routes level 3b to its honest skip and level 3c to a NO-PROVIDERS boot — a busbar that speaks
+# no wire protocol at all is still a valid busbar and must serve its operator surface).
+#
+# The deleted-ingress probe is anthropic's `/v1/messages`; every other dialect's URL space
+# (gemini's `/v1beta/...`, bedrock's `/model/{id}/converse`, `/v1/responses`, `/v2/chat`) is covered
+# by the same binary having no LLM handler at all.
+run_gate "anthropic" "proto-llm" "proto-mcp" \
+  "" "" "/v1/messages" \
+  "gemini openai bedrock responses cohere"
 
 # ── MCP: its own leg, NOT a run_gate call — see the header's "what the mcp leg does not claim". ──
 # MCP has no ingress path this gate can probe (the `/mcp` PLANE stays in core), so levels 3a/3c do
@@ -264,7 +343,7 @@ note "mcp-a static: mcp declared by the crate, absent from core, registered by t
 # (R-D). It is NOT a behaviour discriminator and is not presented as one: mcp-a above is what goes
 # red without the move.
 MCP_TARGET="target/deletion-gate-mcp"
-MCP_KEEP="auth-admin-tokens,hooks-ranking,proto-anthropic,proto-gemini,proto-openai-chat"
+MCP_KEEP="auth-admin-tokens,hooks-ranking,proto-llm"
 note "mcp-b build: cargo build -p busbar --no-default-features --features $MCP_KEEP (proto-mcp OFF)"
 CARGO_TARGET_DIR="$MCP_TARGET" cargo build -q -p busbar \
   --no-default-features --features "$MCP_KEEP" \
@@ -297,4 +376,4 @@ curl -fsS "http://127.0.0.1:$PORT/stats" >/dev/null || die "/stats must answer o
 kill "$SRV_PID" 2>/dev/null; wait "$SRV_PID" 2>/dev/null; SRV_PID=""
 note "mcp-b boot: /healthz 200, /stats 200 with the mcp protocol crate deleted"
 
-echo "proto-deletion-gate: PASS (static 0; anthropic, openai-chat and gemini each delete independently, boot+serve, remaining dialects unaffected, control green; mcp independently droppable and still serving)"
+echo "proto-deletion-gate: PASS (static 0; the LLM protocol deletes as one plugin and all six dialects it carries are refused, boot+serve, remaining dialects unaffected, control green; mcp independently droppable and still serving)"
