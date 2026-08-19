@@ -93,12 +93,21 @@ fn an_unterminated_tag_keeps_the_tail_verbatim() {
         "see <https://example.com for details",
     );
     // A Rust generic in a returned code snippet.
-    assert_eq!(normalise("let v: Vec<Foo = make();"), "let v: Vec<Foo = make();");
+    assert_eq!(
+        normalise("let v: Vec<Foo = make();"),
+        "let v: Vec<Foo = make();"
+    );
     // The minimal cases, and the tail after a kept `<` is preserved to the last byte.
-    assert_eq!(normalise("keep me<system and the rest"), "keep me<system and the rest");
+    assert_eq!(
+        normalise("keep me<system and the rest"),
+        "keep me<system and the rest"
+    );
     assert_eq!(normalise("<system"), "<system");
     // Unicode after the unterminated `<` survives intact — no byte-slicing corruption.
-    assert_eq!(normalise("<b caf\u{e9} \u{4E2D}\u{6587}"), "<b caf\u{e9} \u{4E2D}\u{6587}");
+    assert_eq!(
+        normalise("<b caf\u{e9} \u{4E2D}\u{6587}"),
+        "<b caf\u{e9} \u{4E2D}\u{6587}"
+    );
 }
 
 /// The three injectable SITES — tool descriptions, prompt templates, and `resources/read` content —
