@@ -12,7 +12,7 @@ use axum::http::StatusCode;
 /// Used in `bearer_error_code` to mirror the native `authentication_error` → `invalid_api_key`
 /// pairing that official SDKs surface as `error.code`. Also matched by the Responses stream
 /// classifier (`class_for_response_failed`) when the provider signal echoes this code back.
-pub(crate) const CODE_INVALID_API_KEY: &str = "invalid_api_key";
+pub const CODE_INVALID_API_KEY: &str = "invalid_api_key";
 
 /// Busbar-internal `provider_signal` label for a context-length result (the LANE label, not the
 /// OpenAI wire code). Distinct from `PROVIDER_CODE_CONTEXT_LENGTH` ("context_length_exceeded"),

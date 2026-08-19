@@ -68,8 +68,8 @@ fn embeddings_read_request_captures_input_text() {
 
 #[test]
 fn embeddings_write_request_warns_on_dropped_non_text_input() {
-    use crate::ir::embeddings::EmbeddingsReq;
-    use crate::test_support::warn_capture::WarnCapture;
+    use busbar_core::ir::embeddings::EmbeddingsReq;
+    use busbar_core::test_support::warn_capture::WarnCapture;
     use tracing_subscriber::layer::SubscriberExt as _;
 
     let req = IrReq::Embeddings(EmbeddingsReq {
@@ -105,7 +105,7 @@ fn embeddings_read_request_without_input_text_is_bad_request() {
 #[test]
 fn embeddings_write_read_roundtrip_preserves_input_text() {
     // write_request emits `inputText`; read_request must recover the same input string.
-    let req = IrReq::Embeddings(crate::ir::embeddings::EmbeddingsReq {
+    let req = IrReq::Embeddings(busbar_core::ir::embeddings::EmbeddingsReq {
         input: EmbInput::Text(vec!["roundtrip".to_string()]),
         encoding_formats: vec![EncFmt::Float],
         ..Default::default()

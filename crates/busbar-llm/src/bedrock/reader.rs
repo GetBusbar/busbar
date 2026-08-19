@@ -1,29 +1,34 @@
 use super::*;
 
 impl ProtocolReader for BedrockReader {
-    fn extract_error(&self, status: StatusCode, body: &[u8]) -> crate::breaker::RawUpstreamError {
+    fn extract_error(
+        &self,
+        status: StatusCode,
+        body: &[u8],
+    ) -> busbar_core::breaker::RawUpstreamError {
         // Parse the body once. Bedrock error responses carry the human-readable
         // text in `message` and the machine-readable error type in `__type`
         // (e.g. `ValidationException`, `ThrottlingException`). The structured
         // type is what the breaker's error_map keys on for fine-grained routing,
         // so it must come from `__type`, not from `message`.
-        let (provider_code, structured_type) = match crate::json::parse::<serde_json::Value>(body) {
-            Ok(json) => {
-                let provider_code = json
-                    .get("message")
-                    .and_then(|m| m.as_str())
-                    .map(String::from);
-                // AWS may also serialise the type as `__type` containing a
-                // shape ARN suffix (e.g. `com.amazon...#ThrottlingException`);
-                // keep only the trailing type token in that case.
-                let structured_type = json
-                    .get("__type")
-                    .and_then(|t| t.as_str())
-                    .map(|t| t.rsplit(['#', '/']).next().unwrap_or(t).to_string());
-                (provider_code, structured_type)
-            }
-            Err(_) => (None, None),
-        };
+        let (provider_code, structured_type) =
+            match busbar_core::json::parse::<serde_json::Value>(body) {
+                Ok(json) => {
+                    let provider_code = json
+                        .get("message")
+                        .and_then(|m| m.as_str())
+                        .map(String::from);
+                    // AWS may also serialise the type as `__type` containing a
+                    // shape ARN suffix (e.g. `com.amazon...#ThrottlingException`);
+                    // keep only the trailing type token in that case.
+                    let structured_type = json
+                        .get("__type")
+                        .and_then(|t| t.as_str())
+                        .map(|t| t.rsplit(['#', '/']).next().unwrap_or(t).to_string());
+                    (provider_code, structured_type)
+                }
+                Err(_) => (None, None),
+            };
 
         // Bedrock has no distinct context-length error CODE: an oversized request comes back as a
         // generic `ValidationException` whose human-readable `message` carries the signal (e.g.
@@ -50,7 +55,7 @@ impl ProtocolReader for BedrockReader {
                 || (lower.contains("exceeds the maximum")
                     && (lower.contains("token") || lower.contains("context")))
             {
-                Some(crate::proxy::PROVIDER_CODE_CONTEXT_LENGTH.to_string())
+                Some(busbar_core::proxy::PROVIDER_CODE_CONTEXT_LENGTH.to_string())
             } else {
                 provider_code
             }
@@ -58,7 +63,7 @@ impl ProtocolReader for BedrockReader {
             provider_code
         };
 
-        crate::breaker::RawUpstreamError {
+        busbar_core::breaker::RawUpstreamError {
             http_status: status.as_u16(),
             provider_code,
             structured_type,
@@ -87,7 +92,7 @@ impl ProtocolReader for BedrockReader {
         {
             return CanonicalSignal {
                 class: StatusClass::ContextLength,
-                provider_signal: Some(crate::proxy::PROVIDER_CODE_CONTEXT_LENGTH.to_string()),
+                provider_signal: Some(busbar_core::proxy::PROVIDER_CODE_CONTEXT_LENGTH.to_string()),
                 retry_after: None,
             };
         }
@@ -131,10 +136,13 @@ impl ProtocolReader for BedrockReader {
         }
     }
 
-    fn read_request(&self, body: &serde_json::Value) -> Result<crate::ir::IrRequest, IrError> {
+    fn read_request(
+        &self,
+        body: &serde_json::Value,
+    ) -> Result<busbar_core::ir::IrRequest, IrError> {
         let obj = body.as_object().ok_or(IrError {
             class: StatusClass::ClientError,
-            provider_signal: Some(crate::proto::SIGNAL_IR_PARSE.to_string()),
+            provider_signal: Some(busbar_core::proto::SIGNAL_IR_PARSE.to_string()),
             retry_after: None,
         })?;
 
@@ -203,11 +211,11 @@ impl ProtocolReader for BedrockReader {
         // `content` array (there is no `document`/`video` in the Converse `system` array).
         let mut message_doc_video: Vec<serde_json::Value> = Vec::new();
 
-        let mut system_blocks: Vec<crate::ir::IrBlock> = Vec::new();
+        let mut system_blocks: Vec<busbar_core::ir::IrBlock> = Vec::new();
         if let Some(system_arr) = obj.get("system").and_then(|s| s.as_array()) {
             for (idx, sys_val) in system_arr.iter().enumerate() {
                 if let Some(text_val) = sys_val.get("text").and_then(|t| t.as_str()) {
-                    system_blocks.push(crate::ir::IrBlock::Text {
+                    system_blocks.push(busbar_core::ir::IrBlock::Text {
                         text: text_val.to_string(),
                         cache_control: None,
                         citations: Vec::new(),
@@ -240,28 +248,28 @@ impl ProtocolReader for BedrockReader {
             }
         }
 
-        let mut messages: Vec<crate::ir::IrMessage> = Vec::new();
+        let mut messages: Vec<busbar_core::ir::IrMessage> = Vec::new();
         if let Some(msgs_arr) = obj.get("messages").and_then(|m| m.as_array()) {
             for (msg_idx, msg_val) in msgs_arr.iter().enumerate() {
                 let role_str = msg_val.get("role").and_then(|r| r.as_str()).unwrap_or("");
 
                 let role = match role_str {
-                    "user" => crate::ir::IrRole::User,
-                    "assistant" => crate::ir::IrRole::Assistant,
+                    "user" => busbar_core::ir::IrRole::User,
+                    "assistant" => busbar_core::ir::IrRole::Assistant,
                     _ => {
                         return Err(IrError {
                             class: StatusClass::ClientError,
-                            provider_signal: Some(crate::proto::SIGNAL_IR_PARSE.to_string()),
+                            provider_signal: Some(busbar_core::proto::SIGNAL_IR_PARSE.to_string()),
                             retry_after: None,
                         })
                     }
                 };
 
-                let mut msg_content: Vec<crate::ir::IrBlock> = Vec::new();
+                let mut msg_content: Vec<busbar_core::ir::IrBlock> = Vec::new();
                 if let Some(content_arr) = msg_val.get("content").and_then(|c| c.as_array()) {
                     for (block_idx, content_val) in content_arr.iter().enumerate() {
                         if let Some(text_val) = content_val.get("text").and_then(|t| t.as_str()) {
-                            msg_content.push(crate::ir::IrBlock::Text {
+                            msg_content.push(busbar_core::ir::IrBlock::Text {
                                 text: text_val.to_string(),
                                 cache_control: None,
                                 citations: Vec::new(),
@@ -282,7 +290,7 @@ impl ProtocolReader for BedrockReader {
                                 .cloned()
                                 .unwrap_or(serde_json::Value::Null);
 
-                            msg_content.push(crate::ir::IrBlock::ToolUse {
+                            msg_content.push(busbar_core::ir::IrBlock::ToolUse {
                                 id: tu_id,
                                 name,
                                 input,
@@ -297,7 +305,7 @@ impl ProtocolReader for BedrockReader {
                                 .unwrap_or("")
                                 .to_string();
 
-                            let mut inner_content: Vec<crate::ir::IrBlock> = Vec::new();
+                            let mut inner_content: Vec<busbar_core::ir::IrBlock> = Vec::new();
                             if let Some(inner_arr) =
                                 tool_result.get("content").and_then(|c| c.as_array())
                             {
@@ -305,7 +313,7 @@ impl ProtocolReader for BedrockReader {
                                     if let Some(text_val) =
                                         inner_val.get("text").and_then(|t| t.as_str())
                                     {
-                                        inner_content.push(crate::ir::IrBlock::Text {
+                                        inner_content.push(busbar_core::ir::IrBlock::Text {
                                             text: text_val.to_string(),
                                             cache_control: None,
                                             citations: Vec::new(),
@@ -318,7 +326,7 @@ impl ProtocolReader for BedrockReader {
                                         // serialized it into a `{"text": "..."}` string, losing the
                                         // json/text distinction).
                                         inner_content
-                                            .push(crate::ir::IrBlock::Json(json_val.clone()));
+                                            .push(busbar_core::ir::IrBlock::Json(json_val.clone()));
                                     } else if let Some(image) = inner_val.get("image") {
                                         // The Converse `ToolResultContentBlock` union also includes
                                         // `image` (and `document`/`video`). Decode `image`
@@ -356,11 +364,13 @@ impl ProtocolReader for BedrockReader {
                                                 if let Some(t) =
                                                     piece.get("text").and_then(|t| t.as_str())
                                                 {
-                                                    inner_content.push(crate::ir::IrBlock::Text {
-                                                        text: t.to_string(),
-                                                        cache_control: None,
-                                                        citations: Vec::new(),
-                                                    });
+                                                    inner_content.push(
+                                                        busbar_core::ir::IrBlock::Text {
+                                                            text: t.to_string(),
+                                                            cache_control: None,
+                                                            citations: Vec::new(),
+                                                        },
+                                                    );
                                                 }
                                             }
                                         }
@@ -381,7 +391,7 @@ impl ProtocolReader for BedrockReader {
                                 .map(|s| s == "error")
                                 .unwrap_or(false);
 
-                            msg_content.push(crate::ir::IrBlock::ToolResult {
+                            msg_content.push(busbar_core::ir::IrBlock::ToolResult {
                                 tool_use_id: tu_id,
                                 content: inner_content,
                                 is_error,
@@ -461,7 +471,7 @@ impl ProtocolReader for BedrockReader {
                             // SUPPRESSES this modelled block whenever the stash is present, so the
                             // same-protocol round-trip stays byte-identical (no double emission).
                             msg_content.push(bedrock_media_block(
-                                crate::ir::IrMediaKind::Document,
+                                busbar_core::ir::IrMediaKind::Document,
                                 document,
                             ));
                         } else if let Some(video) = content_val.get("video") {
@@ -474,20 +484,22 @@ impl ProtocolReader for BedrockReader {
                                 "block": { "video": video.clone() },
                             }));
                             // Modelled for the cross-protocol hop as well — see the `document` arm.
-                            msg_content
-                                .push(bedrock_media_block(crate::ir::IrMediaKind::Video, video));
+                            msg_content.push(bedrock_media_block(
+                                busbar_core::ir::IrMediaKind::Video,
+                                video,
+                            ));
                         }
                     }
                 }
 
-                messages.push(crate::ir::IrMessage {
+                messages.push(busbar_core::ir::IrMessage {
                     role,
                     content: msg_content,
                 });
             }
         }
 
-        let mut tools: Vec<crate::ir::IrTool> = Vec::new();
+        let mut tools: Vec<busbar_core::ir::IrTool> = Vec::new();
         if let Some(tool_config) = obj.get("toolConfig").and_then(|t| t.as_object()) {
             if let Some(tools_arr) = tool_config.get("tools").and_then(|t| t.as_array()) {
                 for tool_val in tools_arr {
@@ -511,7 +523,7 @@ impl ProtocolReader for BedrockReader {
                             serde_json::Value::Null
                         };
 
-                        tools.push(crate::ir::IrTool {
+                        tools.push(busbar_core::ir::IrTool {
                             name,
                             description,
                             input_schema,
@@ -537,8 +549,8 @@ impl ProtocolReader for BedrockReader {
                         // not a valid Converse `toolConfig`), so there is no valid request whose
                         // fidelity it harms; not worth a positional stash to preserve invalid shapes.
                         if let Some(last) = tools.last_mut() {
-                            last.cache_control = Some(crate::ir::CacheControl {
-                                kind: crate::ir::CacheKind::Ephemeral,
+                            last.cache_control = Some(busbar_core::ir::CacheControl {
+                                kind: busbar_core::ir::CacheKind::Ephemeral,
                             });
                         }
                     }
@@ -604,8 +616,9 @@ impl ProtocolReader for BedrockReader {
         // Only meaningful when a usable top_k actually came from the camel key; reset otherwise so a
         // present-but-`top_k`-spelled (or absent/out-of-range) value never stamps the sentinel.
         top_k_was_camel &= top_k.is_some();
-        let stop =
-            crate::ir::read_stop_sequences(inference_config.and_then(|ic| ic.get("stopSequences")));
+        let stop = busbar_core::ir::read_stop_sequences(
+            inference_config.and_then(|ic| ic.get("stopSequences")),
+        );
 
         // Stash any captured `cachePoint` markers (with their original positions) under the sentinel
         // so `write_request` re-emits them at the same spots on a same-protocol passthrough. Only
@@ -683,7 +696,7 @@ impl ProtocolReader for BedrockReader {
             );
         }
 
-        Ok(crate::ir::IrRequest {
+        Ok(busbar_core::ir::IrRequest {
             reasoning: None,
             reasoning_budgets: None,
             logprobs: None,
@@ -722,7 +735,7 @@ impl ProtocolReader for BedrockReader {
         &self,
         _event_type: &str,
         data: &serde_json::Value,
-        state: &mut crate::ir::StreamDecodeState,
+        state: &mut busbar_core::ir::StreamDecodeState,
     ) -> Vec<IrStreamEvent> {
         let mut out: Vec<IrStreamEvent> = Vec::new();
 
@@ -735,7 +748,7 @@ impl ProtocolReader for BedrockReader {
                 if !state.started {
                     state.started = true;
                     out.push(IrStreamEvent::MessageStart {
-                        role: crate::ir::IrRole::Assistant,
+                        role: busbar_core::ir::IrRole::Assistant,
                         usage: None,
                         id: None,
                         created: None,
@@ -775,7 +788,7 @@ impl ProtocolReader for BedrockReader {
 
                             out.push(IrStreamEvent::BlockStart {
                                 index: idx,
-                                block: crate::ir::IrBlockMeta::ToolUse { id: tu_id, name },
+                                block: busbar_core::ir::IrBlockMeta::ToolUse { id: tu_id, name },
                             });
                         }
                     } else if start_obj.contains_key("reasoningContent")
@@ -792,7 +805,7 @@ impl ProtocolReader for BedrockReader {
                         state.thinking_block_open = true;
                         out.push(IrStreamEvent::BlockStart {
                             index: idx,
-                            block: crate::ir::IrBlockMeta::Thinking,
+                            block: busbar_core::ir::IrBlockMeta::Thinking,
                         });
                     } else if start_obj.is_empty() && state.started && !state.text_block_open {
                         // The native Bedrock ConverseStream wire sends `contentBlockStart` with an
@@ -804,7 +817,7 @@ impl ProtocolReader for BedrockReader {
                         state.text_block_open = true;
                         out.push(IrStreamEvent::BlockStart {
                             index: idx,
-                            block: crate::ir::IrBlockMeta::Text,
+                            block: busbar_core::ir::IrBlockMeta::Text,
                         });
                     }
                 } else if state.started && !state.text_block_open {
@@ -812,7 +825,7 @@ impl ProtocolReader for BedrockReader {
                     state.text_block_open = true;
                     out.push(IrStreamEvent::BlockStart {
                         index: idx,
-                        block: crate::ir::IrBlockMeta::Text,
+                        block: busbar_core::ir::IrBlockMeta::Text,
                     });
                 }
             }
@@ -842,13 +855,13 @@ impl ProtocolReader for BedrockReader {
                             state.text_block_open = true;
                             out.push(IrStreamEvent::BlockStart {
                                 index: idx,
-                                block: crate::ir::IrBlockMeta::Text,
+                                block: busbar_core::ir::IrBlockMeta::Text,
                             });
                         }
 
                         out.push(IrStreamEvent::BlockDelta {
                             index: idx,
-                            delta: crate::ir::IrDelta::TextDelta(text_val),
+                            delta: busbar_core::ir::IrDelta::TextDelta(text_val),
                         });
                     } else if let Some(tool_use) =
                         delta_obj.get("toolUse").and_then(|t| t.as_object())
@@ -856,7 +869,9 @@ impl ProtocolReader for BedrockReader {
                         if let Some(input_str) = tool_use.get("input").and_then(|i| i.as_str()) {
                             out.push(IrStreamEvent::BlockDelta {
                                 index: idx,
-                                delta: crate::ir::IrDelta::InputJsonDelta(input_str.to_string()),
+                                delta: busbar_core::ir::IrDelta::InputJsonDelta(
+                                    input_str.to_string(),
+                                ),
                             });
                         }
                     } else if let Some(reasoning) = delta_obj
@@ -885,28 +900,32 @@ impl ProtocolReader for BedrockReader {
                             state.thinking_block_open = true;
                             out.push(IrStreamEvent::BlockStart {
                                 index: idx,
-                                block: crate::ir::IrBlockMeta::Thinking,
+                                block: busbar_core::ir::IrBlockMeta::Thinking,
                             });
                         }
                         if state.thinking_block_open {
                             if let Some(text) = reasoning.get("text").and_then(|t| t.as_str()) {
                                 out.push(IrStreamEvent::BlockDelta {
                                     index: idx,
-                                    delta: crate::ir::IrDelta::ThinkingDelta(text.to_string()),
+                                    delta: busbar_core::ir::IrDelta::ThinkingDelta(
+                                        text.to_string(),
+                                    ),
                                 });
                             } else if let Some(sig) =
                                 reasoning.get("signature").and_then(|s| s.as_str())
                             {
                                 out.push(IrStreamEvent::BlockDelta {
                                     index: idx,
-                                    delta: crate::ir::IrDelta::SignatureDelta(sig.to_string()),
+                                    delta: busbar_core::ir::IrDelta::SignatureDelta(
+                                        sig.to_string(),
+                                    ),
                                 });
                             } else if let Some(redacted) =
                                 reasoning.get("redactedContent").and_then(|r| r.as_str())
                             {
                                 out.push(IrStreamEvent::BlockDelta {
                                     index: idx,
-                                    delta: crate::ir::IrDelta::RedactedReasoningDelta(
+                                    delta: busbar_core::ir::IrDelta::RedactedReasoningDelta(
                                         redacted.to_string(),
                                     ),
                                 });
@@ -1030,7 +1049,7 @@ impl ProtocolReader for BedrockReader {
                 let usage_obj = data.get("usage").and_then(|u| u.as_object());
                 let (cache_creation_input_tokens, cache_read_input_tokens) =
                     read_cache_usage(usage_obj);
-                let usage = crate::ir::IrUsage {
+                let usage = busbar_core::ir::IrUsage {
                     input_tokens: usage_obj
                         .and_then(|u| u.get("inputTokens"))
                         .and_then(|v| v.as_u64())
@@ -1041,7 +1060,7 @@ impl ProtocolReader for BedrockReader {
                         .unwrap_or(0),
                     cache_creation_input_tokens,
                     cache_read_input_tokens,
-                    detail: crate::ir::IrUsageDetail::default(),
+                    detail: busbar_core::ir::IrUsageDetail::default(),
                 };
 
                 out.push(IrStreamEvent::MessageDelta {
@@ -1097,7 +1116,7 @@ impl ProtocolReader for BedrockReader {
                         StatusClass::ServerError
                     }
                 };
-                out.push(IrStreamEvent::Error(crate::proto::IrError {
+                out.push(IrStreamEvent::Error(busbar_core::proto::IrError {
                     class,
                     provider_signal: message.or_else(|| Some(exc.to_string())),
                     retry_after: None,
@@ -1114,31 +1133,34 @@ impl ProtocolReader for BedrockReader {
         out
     }
 
-    fn read_response(&self, body: &serde_json::Value) -> Result<crate::ir::IrResponse, IrError> {
+    fn read_response(
+        &self,
+        body: &serde_json::Value,
+    ) -> Result<busbar_core::ir::IrResponse, IrError> {
         let obj = body.as_object().ok_or(IrError {
             class: StatusClass::ClientError,
-            provider_signal: Some(crate::proto::SIGNAL_IR_PARSE.to_string()),
+            provider_signal: Some(busbar_core::proto::SIGNAL_IR_PARSE.to_string()),
             retry_after: None,
         })?;
 
         let output_val = obj.get("output").ok_or(IrError {
             class: StatusClass::ClientError,
-            provider_signal: Some(crate::proto::SIGNAL_IR_PARSE.to_string()),
+            provider_signal: Some(busbar_core::proto::SIGNAL_IR_PARSE.to_string()),
             retry_after: None,
         })?;
 
         let message_val = output_val.get("message").ok_or(IrError {
             class: StatusClass::ClientError,
-            provider_signal: Some(crate::proto::SIGNAL_IR_PARSE.to_string()),
+            provider_signal: Some(busbar_core::proto::SIGNAL_IR_PARSE.to_string()),
             retry_after: None,
         })?;
 
-        let mut content: Vec<crate::ir::IrBlock> = Vec::new();
+        let mut content: Vec<busbar_core::ir::IrBlock> = Vec::new();
 
         if let Some(content_arr) = message_val.get("content").and_then(|c| c.as_array()) {
             for block_val in content_arr {
                 if let Some(text_val) = block_val.get("text").and_then(|t| t.as_str()) {
-                    content.push(crate::ir::IrBlock::Text {
+                    content.push(busbar_core::ir::IrBlock::Text {
                         text: text_val.to_string(),
                         cache_control: None,
                         citations: Vec::new(),
@@ -1160,7 +1182,7 @@ impl ProtocolReader for BedrockReader {
                         .cloned()
                         .unwrap_or(serde_json::Value::Null);
 
-                    content.push(crate::ir::IrBlock::ToolUse {
+                    content.push(busbar_core::ir::IrBlock::ToolUse {
                         id: tu_id,
                         name,
                         input,
@@ -1218,7 +1240,7 @@ impl ProtocolReader for BedrockReader {
         let usage_obj = obj.get("usage");
         let (cache_creation_input_tokens, cache_read_input_tokens) =
             read_cache_usage(usage_obj.and_then(|u| u.as_object()));
-        let usage = crate::ir::IrUsage {
+        let usage = busbar_core::ir::IrUsage {
             input_tokens: usage_obj
                 .and_then(|u| u.get("inputTokens"))
                 .and_then(|v| v.as_u64())
@@ -1229,12 +1251,12 @@ impl ProtocolReader for BedrockReader {
                 .unwrap_or(0),
             cache_creation_input_tokens,
             cache_read_input_tokens,
-            detail: crate::ir::IrUsageDetail::default(),
+            detail: busbar_core::ir::IrUsageDetail::default(),
         };
 
-        Ok(crate::ir::IrResponse {
+        Ok(busbar_core::ir::IrResponse {
             logprobs: Vec::new(),
-            role: crate::ir::IrRole::Assistant,
+            role: busbar_core::ir::IrRole::Assistant,
             content,
             stop_reason: stop_reason_val,
             usage,

@@ -185,7 +185,7 @@ fn native_metadata_wins_over_promoted_user() {
 /// has no such parameter". Round-trips ingress read AND egress re-emit.
 #[test]
 fn responses_parallel_tool_calls_round_trips() {
-    use busbar_core::proto::openai_responses::{ResponsesReader, ResponsesWriter};
+    use super::super::openai_responses::{ResponsesReader, ResponsesWriter};
 
     let body = serde_json::json!({
         "model": "gpt-4o",

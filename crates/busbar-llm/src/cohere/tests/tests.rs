@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn cohere_stop_reason_codec_round_trips_and_never_leaks() {
-    use crate::ir::IrStopReason as S;
+    use busbar_core::ir::IrStopReason as S;
     // Native tokens round-trip through the typed IR.
     assert_eq!(read_cohere_stop_reason(COHERE_FINISH_ERROR), S::Error);
     assert_eq!(write_cohere_stop_reason(S::Error), "ERROR"); // golden wire-contract literal (kept bare on purpose)
@@ -23,30 +23,30 @@ fn cohere_stop_reason_codec_round_trips_and_never_leaks() {
 
 #[test]
 fn test_write_request() {
-    let ir = crate::ir::IrRequest {
+    let ir = busbar_core::ir::IrRequest {
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
         top_logprobs: None,
         user: None,
         parallel_tool_calls: None,
-        system: vec![crate::ir::IrBlock::Text {
+        system: vec![busbar_core::ir::IrBlock::Text {
             text: "You are helpful.".to_string(),
             cache_control: None,
             citations: Vec::new(),
         }],
         messages: vec![
-            crate::ir::IrMessage {
-                role: crate::ir::IrRole::User,
-                content: vec![crate::ir::IrBlock::Text {
+            busbar_core::ir::IrMessage {
+                role: busbar_core::ir::IrRole::User,
+                content: vec![busbar_core::ir::IrBlock::Text {
                     text: "hi".to_string(),
                     cache_control: None,
                     citations: Vec::new(),
                 }],
             },
-            crate::ir::IrMessage {
-                role: crate::ir::IrRole::Assistant,
-                content: vec![crate::ir::IrBlock::ToolUse {
+            busbar_core::ir::IrMessage {
+                role: busbar_core::ir::IrRole::Assistant,
+                content: vec![busbar_core::ir::IrBlock::ToolUse {
                     thought_signature: None,
                     id: "t1".to_string(),
                     name: "f".to_string(),
@@ -54,11 +54,11 @@ fn test_write_request() {
                     cache_control: None,
                 }],
             },
-            crate::ir::IrMessage {
-                role: crate::ir::IrRole::Tool,
-                content: vec![crate::ir::IrBlock::ToolResult {
+            busbar_core::ir::IrMessage {
+                role: busbar_core::ir::IrRole::Tool,
+                content: vec![busbar_core::ir::IrBlock::ToolResult {
                     tool_use_id: "t1".to_string(),
-                    content: vec![crate::ir::IrBlock::Text {
+                    content: vec![busbar_core::ir::IrBlock::Text {
                         text: "result text".to_string(),
                         cache_control: None,
                         citations: Vec::new(),
@@ -68,7 +68,7 @@ fn test_write_request() {
                 }],
             },
         ],
-        tools: vec![crate::ir::IrTool {
+        tools: vec![busbar_core::ir::IrTool {
             name: "f".to_string(),
             description: Some("..".to_string()),
             input_schema: serde_json::json!({}),
@@ -129,7 +129,7 @@ fn test_write_request() {
 
 #[test]
 fn test_read_request_roundtrip() {
-    let ir = crate::ir::IrRequest {
+    let ir = busbar_core::ir::IrRequest {
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -138,17 +138,17 @@ fn test_read_request_roundtrip() {
         parallel_tool_calls: None,
         system: vec![],
         messages: vec![
-            crate::ir::IrMessage {
-                role: crate::ir::IrRole::User,
-                content: vec![crate::ir::IrBlock::Text {
+            busbar_core::ir::IrMessage {
+                role: busbar_core::ir::IrRole::User,
+                content: vec![busbar_core::ir::IrBlock::Text {
                     text: "user msg".to_string(),
                     cache_control: None,
                     citations: Vec::new(),
                 }],
             },
-            crate::ir::IrMessage {
-                role: crate::ir::IrRole::Assistant,
-                content: vec![crate::ir::IrBlock::Text {
+            busbar_core::ir::IrMessage {
+                role: busbar_core::ir::IrRole::Assistant,
+                content: vec![busbar_core::ir::IrBlock::Text {
                     text: "assistant msg".to_string(),
                     cache_control: None,
                     citations: Vec::new(),
@@ -201,8 +201,11 @@ fn test_read_response() {
         .read_response(&json)
         .expect("read_response should succeed");
 
-    assert_eq!(resp.role, crate::ir::IrRole::Assistant);
-    assert_eq!(resp.stop_reason, Some(crate::ir::IrStopReason::ToolUse));
+    assert_eq!(resp.role, busbar_core::ir::IrRole::Assistant);
+    assert_eq!(
+        resp.stop_reason,
+        Some(busbar_core::ir::IrStopReason::ToolUse)
+    );
     assert_eq!(resp.usage.input_tokens, 10);
     // The upstream `id` is captured verbatim into the IR (same-protocol identity fidelity).
     assert_eq!(resp.id.as_deref(), Some("msg_123"));
@@ -230,7 +233,7 @@ fn test_write_response_roundtrip() {
 
 #[test]
 fn test_stream_fanout() {
-    let mut state = crate::ir::StreamDecodeState::default();
+    let mut state = busbar_core::ir::StreamDecodeState::default();
     let reader = CohereReader;
 
     // message-start
@@ -242,7 +245,7 @@ fn test_stream_fanout() {
     assert_eq!(evs.len(), 1);
     assert!(matches!(
         evs[0],
-        crate::ir::IrStreamEvent::MessageStart { .. }
+        busbar_core::ir::IrStreamEvent::MessageStart { .. }
     ));
 
     // content-start
@@ -250,18 +253,18 @@ fn test_stream_fanout() {
     assert_eq!(evs.len(), 1);
     assert!(matches!(
         evs[0],
-        crate::ir::IrStreamEvent::BlockStart {
+        busbar_core::ir::IrStreamEvent::BlockStart {
             index: 0,
-            block: crate::ir::IrBlockMeta::Text
+            block: busbar_core::ir::IrBlockMeta::Text
         }
     ));
 
     // content-delta x2
     let evs = reader.read_response_events("", &serde_json::json!({"type": ET_CONTENT_DELTA, "index": 0, "delta": {"message": {"content": "he"}}}), &mut state);
     assert_eq!(evs.len(), 1);
-    let crate::ir::IrStreamEvent::BlockDelta {
+    let busbar_core::ir::IrStreamEvent::BlockDelta {
         index,
-        delta: crate::ir::IrDelta::TextDelta(ref t),
+        delta: busbar_core::ir::IrDelta::TextDelta(ref t),
     } = &evs[0]
     else {
         panic!(
@@ -277,9 +280,9 @@ fn test_stream_fanout() {
 
     let evs = reader.read_response_events("", &serde_json::json!({"type": ET_CONTENT_DELTA, "index": 0, "delta": {"message": {"content": "llo"}}}), &mut state);
     assert_eq!(evs.len(), 1);
-    let crate::ir::IrStreamEvent::BlockDelta {
+    let busbar_core::ir::IrStreamEvent::BlockDelta {
         index,
-        delta: crate::ir::IrDelta::TextDelta(ref t),
+        delta: busbar_core::ir::IrDelta::TextDelta(ref t),
     } = &evs[0]
     else {
         panic!(
@@ -302,13 +305,13 @@ fn test_stream_fanout() {
     assert_eq!(evs.len(), 1);
     assert!(matches!(
         evs[0],
-        crate::ir::IrStreamEvent::BlockStop { index: 0 }
+        busbar_core::ir::IrStreamEvent::BlockStop { index: 0 }
     ));
 
     // message-end with usage
     let evs = reader.read_response_events("", &serde_json::json!({"type": ET_MESSAGE_END, "delta": {"finish_reason": COHERE_FINISH_COMPLETE, "usage": {"tokens": {"input_tokens": 10, "output_tokens": 5}}}}), &mut state);
     assert_eq!(evs.len(), 2);
-    let crate::ir::IrStreamEvent::MessageDelta {
+    let busbar_core::ir::IrStreamEvent::MessageDelta {
         stop_reason,
         ref usage,
         ..
@@ -319,10 +322,13 @@ fn test_stream_fanout() {
             evs[0]
         );
     };
-    assert_eq!(*stop_reason, Some(crate::ir::IrStopReason::EndTurn));
+    assert_eq!(*stop_reason, Some(busbar_core::ir::IrStopReason::EndTurn));
     assert_eq!(usage.input_tokens, 10);
     assert_eq!(usage.output_tokens, 5);
-    assert!(matches!(evs[1], crate::ir::IrStreamEvent::MessageStop));
+    assert!(matches!(
+        evs[1],
+        busbar_core::ir::IrStreamEvent::MessageStop
+    ));
 }
 
 #[test]
@@ -337,7 +343,7 @@ fn test_cross_protocol_system_prompt_preserved_to_cohere() {
         "messages": [{"role": "user", "content": "hi"}],
         "max_tokens": 10
     });
-    let ir = AnthropicReader
+    let ir = super::super::anthropic::AnthropicReader
         .read_request(&anthropic_body)
         .expect("anthropic read_request");
     assert!(
@@ -366,7 +372,7 @@ fn test_write_response_event() {
     // BlockDelta TextDelta("hi") → content-delta frame
     let ev = IrStreamEvent::BlockDelta {
         index: 0,
-        delta: crate::ir::IrDelta::TextDelta("hi".to_string()),
+        delta: busbar_core::ir::IrDelta::TextDelta("hi".to_string()),
     };
     let result = writer.write_response_event(&ev);
     assert!(result.is_some());
@@ -401,25 +407,25 @@ fn test_write_response_event() {
 /// dropped every call but the last.
 #[test]
 fn test_write_response_preserves_parallel_tool_calls() {
-    let resp = crate::ir::IrResponse {
+    let resp = busbar_core::ir::IrResponse {
         logprobs: Vec::new(),
-        role: crate::ir::IrRole::Assistant,
+        role: busbar_core::ir::IrRole::Assistant,
         content: vec![
-            crate::ir::IrBlock::ToolUse {
+            busbar_core::ir::IrBlock::ToolUse {
                 thought_signature: None,
                 id: "t1".to_string(),
                 name: "get_weather".to_string(),
                 input: serde_json::json!({"city": "SF"}),
                 cache_control: None,
             },
-            crate::ir::IrBlock::ToolUse {
+            busbar_core::ir::IrBlock::ToolUse {
                 thought_signature: None,
                 id: "t2".to_string(),
                 name: "get_time".to_string(),
                 input: serde_json::json!({"tz": "PST"}),
                 cache_control: None,
             },
-            crate::ir::IrBlock::ToolUse {
+            busbar_core::ir::IrBlock::ToolUse {
                 thought_signature: None,
                 id: "t3".to_string(),
                 name: "get_news".to_string(),
@@ -427,13 +433,13 @@ fn test_write_response_preserves_parallel_tool_calls() {
                 cache_control: None,
             },
         ],
-        stop_reason: Some(crate::ir::IrStopReason::ToolUse),
-        usage: crate::ir::IrUsage {
+        stop_reason: Some(busbar_core::ir::IrStopReason::ToolUse),
+        usage: busbar_core::ir::IrUsage {
             input_tokens: 1,
             output_tokens: 2,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
-            detail: crate::ir::IrUsageDetail::default(),
+            detail: busbar_core::ir::IrUsageDetail::default(),
         },
         model: None,
         id: None,
@@ -462,7 +468,7 @@ fn test_write_response_preserves_parallel_tool_calls() {
 /// must NOT emit `content: []`. The `content` key should be omitted entirely.
 #[test]
 fn test_write_request_sole_tooluse_omits_empty_content() {
-    let ir = crate::ir::IrRequest {
+    let ir = busbar_core::ir::IrRequest {
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -470,9 +476,9 @@ fn test_write_request_sole_tooluse_omits_empty_content() {
         user: None,
         parallel_tool_calls: None,
         system: vec![],
-        messages: vec![crate::ir::IrMessage {
-            role: crate::ir::IrRole::Assistant,
-            content: vec![crate::ir::IrBlock::ToolUse {
+        messages: vec![busbar_core::ir::IrMessage {
+            role: busbar_core::ir::IrRole::Assistant,
+            content: vec![busbar_core::ir::IrBlock::ToolUse {
                 thought_signature: None,
                 id: "t1".to_string(),
                 name: "f".to_string(),
@@ -514,7 +520,7 @@ fn test_write_request_sole_tooluse_omits_empty_content() {
 /// while a single text block stays a bare string.
 #[test]
 fn test_write_request_text_block_shapes() {
-    let single = crate::ir::IrRequest {
+    let single = busbar_core::ir::IrRequest {
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -522,9 +528,9 @@ fn test_write_request_text_block_shapes() {
         user: None,
         parallel_tool_calls: None,
         system: vec![],
-        messages: vec![crate::ir::IrMessage {
-            role: crate::ir::IrRole::User,
-            content: vec![crate::ir::IrBlock::Text {
+        messages: vec![busbar_core::ir::IrMessage {
+            role: busbar_core::ir::IrRole::User,
+            content: vec![busbar_core::ir::IrBlock::Text {
                 text: "hi".to_string(),
                 cache_control: None,
                 citations: Vec::new(),
@@ -552,16 +558,16 @@ fn test_write_request_text_block_shapes() {
         Some(&serde_json::json!("hi"))
     );
 
-    let multi = crate::ir::IrRequest {
-        messages: vec![crate::ir::IrMessage {
-            role: crate::ir::IrRole::User,
+    let multi = busbar_core::ir::IrRequest {
+        messages: vec![busbar_core::ir::IrMessage {
+            role: busbar_core::ir::IrRole::User,
             content: vec![
-                crate::ir::IrBlock::Text {
+                busbar_core::ir::IrBlock::Text {
                     text: "a".to_string(),
                     cache_control: None,
                     citations: Vec::new(),
                 },
-                crate::ir::IrBlock::Text {
+                busbar_core::ir::IrBlock::Text {
                     text: "b".to_string(),
                     cache_control: None,
                     citations: Vec::new(),
@@ -617,11 +623,11 @@ fn test_read_request_role_system_maps_to_ir_system_not_a_message() {
         1,
         "the system message must not appear in .messages"
     );
-    assert_eq!(ir.messages[0].role, crate::ir::IrRole::User);
+    assert_eq!(ir.messages[0].role, busbar_core::ir::IrRole::User);
     assert_eq!(ir.system.len(), 1);
     assert!(matches!(
         &ir.system[0],
-        crate::ir::IrBlock::Text { text, .. } if text == "be nice"
+        busbar_core::ir::IrBlock::Text { text, .. } if text == "be nice"
     ));
 }
 
@@ -648,7 +654,7 @@ fn test_read_request_system_content_array_only_collects_text_typed_blocks() {
         .system
         .iter()
         .map(|b| match b {
-            crate::ir::IrBlock::Text { text, .. } => text.as_str(),
+            busbar_core::ir::IrBlock::Text { text, .. } => text.as_str(),
             _ => panic!("expected only Text blocks"),
         })
         .collect();
@@ -679,7 +685,7 @@ fn test_read_request_tool_calls_only_processed_for_assistant_role() {
         ir.messages[0]
             .content
             .iter()
-            .all(|b| !matches!(b, crate::ir::IrBlock::ToolUse { .. })),
+            .all(|b| !matches!(b, busbar_core::ir::IrBlock::ToolUse { .. })),
         "a user message's tool_calls field must be ignored, not decoded: {:?}",
         ir.messages[0].content
     );
@@ -697,7 +703,7 @@ fn test_read_request_tool_calls_only_processed_for_assistant_role() {
         ir.messages[0]
             .content
             .iter()
-            .any(|b| matches!(b, crate::ir::IrBlock::ToolUse { .. })),
+            .any(|b| matches!(b, busbar_core::ir::IrBlock::ToolUse { .. })),
         "an assistant message's tool_calls field must be decoded: {:?}",
         ir.messages[0].content
     );
@@ -708,7 +714,7 @@ fn test_read_request_tool_calls_only_processed_for_assistant_role() {
 /// never reopening the already-stopped index with a second `BlockStart`.
 #[test]
 fn test_stream_content_start_after_close_does_not_reopen_the_text_block() {
-    let mut state = crate::ir::StreamDecodeState::default();
+    let mut state = busbar_core::ir::StreamDecodeState::default();
     let reader = CohereReader;
 
     let evs = reader.read_response_events(
@@ -719,7 +725,7 @@ fn test_stream_content_start_after_close_does_not_reopen_the_text_block() {
     assert_eq!(evs.len(), 1);
     assert!(matches!(
         evs[0],
-        crate::ir::IrStreamEvent::BlockStart { .. }
+        busbar_core::ir::IrStreamEvent::BlockStart { .. }
     ));
 
     let evs = reader.read_response_events(
@@ -728,7 +734,10 @@ fn test_stream_content_start_after_close_does_not_reopen_the_text_block() {
         &mut state,
     );
     assert_eq!(evs.len(), 1);
-    assert!(matches!(evs[0], crate::ir::IrStreamEvent::BlockStop { .. }));
+    assert!(matches!(
+        evs[0],
+        busbar_core::ir::IrStreamEvent::BlockStop { .. }
+    ));
 
     // A second content-start after the close must be dropped entirely: no BlockStart, no event.
     let evs = reader.read_response_events(
@@ -748,7 +757,7 @@ fn test_stream_content_start_after_close_does_not_reopen_the_text_block() {
 /// from the earlier object-form check on the same event type.
 #[test]
 fn test_stream_content_delta_array_form_only_emits_text_typed_blocks() {
-    let mut state = crate::ir::StreamDecodeState::default();
+    let mut state = busbar_core::ir::StreamDecodeState::default();
     let reader = CohereReader;
 
     let _ = reader.read_response_events(
@@ -768,8 +777,8 @@ fn test_stream_content_delta_array_form_only_emits_text_typed_blocks() {
     let texts: Vec<&str> = evs
         .iter()
         .map(|e| match e {
-            crate::ir::IrStreamEvent::BlockDelta {
-                delta: crate::ir::IrDelta::TextDelta(t),
+            busbar_core::ir::IrStreamEvent::BlockDelta {
+                delta: busbar_core::ir::IrDelta::TextDelta(t),
                 ..
             } => t.as_str(),
             other => panic!("expected only TextDelta events, got {other:?}"),
@@ -856,7 +865,7 @@ fn test_same_protocol_roundtrip_preserves_id() {
 #[test]
 fn test_same_protocol_stream_roundtrip_preserves_id() {
     let upstream_id = "c14c80c3-18eb-4519-9460-6c92edd8cfb4";
-    let mut state = crate::ir::StreamDecodeState::default();
+    let mut state = busbar_core::ir::StreamDecodeState::default();
     let evs = CohereReader.read_response_events(
         "",
         &serde_json::json!({
@@ -868,7 +877,7 @@ fn test_same_protocol_stream_roundtrip_preserves_id() {
     );
     assert_eq!(evs.len(), 1);
     let captured = match &evs[0] {
-        crate::ir::IrStreamEvent::MessageStart { id, .. } => id.clone(),
+        busbar_core::ir::IrStreamEvent::MessageStart { id, .. } => id.clone(),
         other => panic!("expected MessageStart, got {other:?}"),
     };
     assert_eq!(captured.as_deref(), Some(upstream_id));
@@ -888,21 +897,21 @@ fn test_same_protocol_stream_roundtrip_preserves_id() {
 /// valid, non-empty Cohere id without panicking, so a native Cohere SDK still reads a string.
 #[test]
 fn test_cross_protocol_write_synthesizes_valid_id() {
-    let resp = crate::ir::IrResponse {
+    let resp = busbar_core::ir::IrResponse {
         logprobs: Vec::new(),
-        role: crate::ir::IrRole::Assistant,
-        content: vec![crate::ir::IrBlock::Text {
+        role: busbar_core::ir::IrRole::Assistant,
+        content: vec![busbar_core::ir::IrBlock::Text {
             text: "hello".to_string(),
             cache_control: None,
             citations: Vec::new(),
         }],
-        stop_reason: Some(crate::ir::IrStopReason::EndTurn),
-        usage: crate::ir::IrUsage {
+        stop_reason: Some(busbar_core::ir::IrStopReason::EndTurn),
+        usage: busbar_core::ir::IrUsage {
             input_tokens: 1,
             output_tokens: 1,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
-            detail: crate::ir::IrUsageDetail::default(),
+            detail: busbar_core::ir::IrUsageDetail::default(),
         },
         model: None,
         id: None,
@@ -1043,7 +1052,7 @@ fn test_synthesized_ids_are_unique() {
 /// A well-formed credential produces a single `Authorization: Bearer <key>` header.
 #[test]
 fn test_auth_headers_valid_key_emits_bearer() {
-    let headers = crate::proto::bearer_auth_headers("cohere", "valid-key-123");
+    let headers = busbar_core::proto::bearer_auth_headers("cohere", "valid-key-123");
     assert_eq!(headers.len(), 1, "exactly one auth header");
     assert_eq!(headers[0].0.as_str(), "authorization");
     assert_eq!(
@@ -1059,7 +1068,7 @@ fn test_auth_headers_valid_key_emits_bearer() {
 /// `gemini.rs::test_auth_headers_invalid_key_omits_header_no_empty_value`.
 #[test]
 fn test_auth_headers_invalid_key_omits_header_no_empty_value() {
-    let headers = crate::proto::bearer_auth_headers("cohere", "bad\nkey");
+    let headers = busbar_core::proto::bearer_auth_headers("cohere", "bad\nkey");
     assert!(
         headers.is_empty(),
         "an invalid credential must omit the auth header entirely, got {headers:?}"
@@ -1070,7 +1079,7 @@ fn test_auth_headers_invalid_key_omits_header_no_empty_value() {
 /// an empty value).
 #[test]
 fn test_auth_headers_control_byte_key_omits_header() {
-    let headers = crate::proto::bearer_auth_headers("cohere", "key\u{0000}bad");
+    let headers = busbar_core::proto::bearer_auth_headers("cohere", "key\u{0000}bad");
     assert!(
         headers.is_empty(),
         "a control-byte credential must omit the auth header entirely, got {headers:?}"
@@ -1084,21 +1093,21 @@ fn test_auth_headers_control_byte_key_omits_header() {
 /// streaming `message-end` paths.
 #[test]
 fn test_safety_finish_reason_writes_error_non_stream() {
-    let resp = crate::ir::IrResponse {
+    let resp = busbar_core::ir::IrResponse {
         logprobs: Vec::new(),
-        role: crate::ir::IrRole::Assistant,
-        content: vec![crate::ir::IrBlock::Text {
+        role: busbar_core::ir::IrRole::Assistant,
+        content: vec![busbar_core::ir::IrBlock::Text {
             text: "moderated".to_string(),
             cache_control: None,
             citations: Vec::new(),
         }],
-        stop_reason: Some(crate::ir::IrStopReason::Safety),
-        usage: crate::ir::IrUsage {
+        stop_reason: Some(busbar_core::ir::IrStopReason::Safety),
+        usage: busbar_core::ir::IrUsage {
             input_tokens: 1,
             output_tokens: 1,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
-            detail: crate::ir::IrUsageDetail::default(),
+            detail: busbar_core::ir::IrUsageDetail::default(),
         },
         model: None,
         id: Some("r1".to_string()),
@@ -1119,20 +1128,20 @@ fn test_safety_finish_reason_writes_error_non_stream() {
     let back = CohereReader
         .read_response(&body)
         .expect("read self-written body");
-    assert_eq!(back.stop_reason, Some(crate::ir::IrStopReason::Error));
+    assert_eq!(back.stop_reason, Some(busbar_core::ir::IrStopReason::Error));
 }
 
 #[test]
 fn test_safety_finish_reason_writes_error_stream() {
     let ev = IrStreamEvent::MessageDelta {
-        stop_reason: Some(crate::ir::IrStopReason::Safety),
+        stop_reason: Some(busbar_core::ir::IrStopReason::Safety),
         stop_sequence: None,
-        usage: crate::ir::IrUsage {
+        usage: busbar_core::ir::IrUsage {
             input_tokens: 0,
             output_tokens: 0,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
-            detail: crate::ir::IrUsageDetail::default(),
+            detail: busbar_core::ir::IrUsageDetail::default(),
         },
     };
     let writer = CohereWriter;
@@ -1171,7 +1180,7 @@ fn test_generic_error_does_not_fold_into_safety_and_round_trips() {
     let err_ir = reader.read_response(&err_body).expect("read ERROR body");
     assert_eq!(
         err_ir.stop_reason,
-        Some(crate::ir::IrStopReason::Error),
+        Some(busbar_core::ir::IrStopReason::Error),
         "generic ERROR must read back as IR `error`, not `safety`"
     );
     // ERROR_TOXIC still reads back as `safety`.
@@ -1185,23 +1194,23 @@ fn test_generic_error_does_not_fold_into_safety_and_round_trips() {
         .expect("read ERROR_TOXIC body");
     assert_eq!(
         toxic_ir.stop_reason,
-        Some(crate::ir::IrStopReason::Safety),
+        Some(busbar_core::ir::IrStopReason::Safety),
         "ERROR_TOXIC must still read back as IR `safety`"
     );
 
     // Write-back round-trips: IR `error` -> native `ERROR`; IR `safety` -> native `ERROR_TOXIC`.
     let writer = CohereWriter;
-    let err_resp = crate::ir::IrResponse {
+    let err_resp = busbar_core::ir::IrResponse {
         logprobs: Vec::new(),
-        role: crate::ir::IrRole::Assistant,
+        role: busbar_core::ir::IrRole::Assistant,
         content: Vec::new(),
-        stop_reason: Some(crate::ir::IrStopReason::Error),
-        usage: crate::ir::IrUsage {
+        stop_reason: Some(busbar_core::ir::IrStopReason::Error),
+        usage: busbar_core::ir::IrUsage {
             input_tokens: 0,
             output_tokens: 0,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
-            detail: crate::ir::IrUsageDetail::default(),
+            detail: busbar_core::ir::IrUsageDetail::default(),
         },
         model: None,
         id: Some("e1".to_string()),
@@ -1217,7 +1226,7 @@ fn test_generic_error_does_not_fold_into_safety_and_round_trips() {
     );
 
     // --- Streaming reader (message-end) ---
-    let mut state = crate::ir::StreamDecodeState::default();
+    let mut state = busbar_core::ir::StreamDecodeState::default();
     let err_frame = serde_json::json!({
         "type": ET_MESSAGE_END,
         "delta": { "finish_reason": COHERE_FINISH_ERROR, "usage": { "tokens": {} } }
@@ -1227,11 +1236,11 @@ fn test_generic_error_does_not_fold_into_safety_and_round_trips() {
         evs.iter().any(|e| matches!(
             e,
             IrStreamEvent::MessageDelta { stop_reason, .. }
-                if stop_reason == &Some(crate::ir::IrStopReason::Error)
+                if stop_reason == &Some(busbar_core::ir::IrStopReason::Error)
         )),
         "streamed generic ERROR must decode to IR `error`, not `safety`, got {evs:?}"
     );
-    let mut state2 = crate::ir::StreamDecodeState::default();
+    let mut state2 = busbar_core::ir::StreamDecodeState::default();
     let toxic_frame = serde_json::json!({
         "type": ET_MESSAGE_END,
         "delta": { "finish_reason": COHERE_FINISH_ERROR_TOXIC, "usage": { "tokens": {} } }
@@ -1241,7 +1250,7 @@ fn test_generic_error_does_not_fold_into_safety_and_round_trips() {
         toxic_evs.iter().any(|e| matches!(
             e,
             IrStreamEvent::MessageDelta { stop_reason, .. }
-                if stop_reason == &Some(crate::ir::IrStopReason::Safety)
+                if stop_reason == &Some(busbar_core::ir::IrStopReason::Safety)
         )),
         "streamed ERROR_TOXIC must still decode to IR `safety`, got {toxic_evs:?}"
     );
@@ -1256,7 +1265,7 @@ fn test_generic_error_does_not_fold_into_safety_and_round_trips() {
 #[test]
 fn test_huge_tool_frame_index_clamped_below_sentinel() {
     let reader = CohereReader;
-    let mut state = crate::ir::StreamDecodeState::default();
+    let mut state = busbar_core::ir::StreamDecodeState::default();
 
     // A tool-call-start whose wire index is usize::MAX (the sentinel value).
     let huge = u64::MAX;
@@ -1339,8 +1348,8 @@ fn test_stream_error_emits_native_message_end_not_error_event() {
     let writer = CohereWriter;
 
     // Generic infrastructure error -> ERROR.
-    let infra = IrStreamEvent::Error(crate::proto::IrError {
-        class: crate::breaker::StatusClass::ServerError,
+    let infra = IrStreamEvent::Error(busbar_core::proto::IrError {
+        class: busbar_core::breaker::StatusClass::ServerError,
         provider_signal: Some("internal_server_error".to_string()),
         retry_after: None,
     });
@@ -1403,20 +1412,20 @@ fn test_stream_error_emits_native_message_end_not_error_event() {
     // Round-trips through the reader back to IR `error` (the generic infra-failure passthrough).
     // The reader maps ONLY `ERROR_TOXIC` to `safety`; a generic `ERROR` must NOT be folded into
     // the moderation bucket — it falls through to the lowercase passthrough -> `error`.
-    let mut state = crate::ir::StreamDecodeState::default();
+    let mut state = busbar_core::ir::StreamDecodeState::default();
     let decoded = CohereReader.read_response_events("", &frame, &mut state);
     assert!(
         decoded.iter().any(|e| matches!(
             e,
             IrStreamEvent::MessageDelta { stop_reason, .. }
-                if stop_reason == &Some(crate::ir::IrStopReason::Error)
+                if stop_reason == &Some(busbar_core::ir::IrStopReason::Error)
         )),
         "emitted message-end must decode back to a generic `error` stop, got {decoded:?}"
     );
 
     // Content-moderation signal -> ERROR_TOXIC.
-    let toxic = IrStreamEvent::Error(crate::proto::IrError {
-        class: crate::breaker::StatusClass::ClientError,
+    let toxic = IrStreamEvent::Error(busbar_core::proto::IrError {
+        class: busbar_core::breaker::StatusClass::ClientError,
         provider_signal: Some("content_filter_safety".to_string()),
         retry_after: None,
     });
@@ -1437,8 +1446,8 @@ fn test_stream_error_emits_native_message_end_not_error_event() {
     );
 
     // An absent provider_signal still produces a native ERROR termination (never `type: error`).
-    let bare = IrStreamEvent::Error(crate::proto::IrError {
-        class: crate::breaker::StatusClass::ServerError,
+    let bare = IrStreamEvent::Error(busbar_core::proto::IrError {
+        class: busbar_core::breaker::StatusClass::ServerError,
         provider_signal: None,
         retry_after: None,
     });
@@ -1482,7 +1491,10 @@ fn test_read_response_missing_usage_defaults_to_zero() {
         .expect("missing usage must not hard-error (zero-usage fallback)");
     assert_eq!(resp.usage.input_tokens, 0);
     assert_eq!(resp.usage.output_tokens, 0);
-    assert_eq!(resp.stop_reason, Some(crate::ir::IrStopReason::EndTurn));
+    assert_eq!(
+        resp.stop_reason,
+        Some(busbar_core::ir::IrStopReason::EndTurn)
+    );
 
     // A present-but-empty usage object (no `tokens`) is also tolerated.
     let json_empty_usage = serde_json::json!({
@@ -1503,23 +1515,23 @@ fn test_read_response_missing_usage_defaults_to_zero() {
 /// calls from `message.tool_calls`, so a Cohere -> Cohere passthrough keeps every parallel call.
 #[test]
 fn test_write_response_tool_calls_nested_and_roundtrip() {
-    let resp = crate::ir::IrResponse {
+    let resp = busbar_core::ir::IrResponse {
         logprobs: Vec::new(),
-        role: crate::ir::IrRole::Assistant,
+        role: busbar_core::ir::IrRole::Assistant,
         content: vec![
-            crate::ir::IrBlock::Text {
+            busbar_core::ir::IrBlock::Text {
                 text: "calling tools".to_string(),
                 cache_control: None,
                 citations: Vec::new(),
             },
-            crate::ir::IrBlock::ToolUse {
+            busbar_core::ir::IrBlock::ToolUse {
                 thought_signature: None,
                 id: "t1".to_string(),
                 name: "get_weather".to_string(),
                 input: serde_json::json!({"city": "SF"}),
                 cache_control: None,
             },
-            crate::ir::IrBlock::ToolUse {
+            busbar_core::ir::IrBlock::ToolUse {
                 thought_signature: None,
                 id: "t2".to_string(),
                 name: "get_time".to_string(),
@@ -1527,13 +1539,13 @@ fn test_write_response_tool_calls_nested_and_roundtrip() {
                 cache_control: None,
             },
         ],
-        stop_reason: Some(crate::ir::IrStopReason::ToolUse),
-        usage: crate::ir::IrUsage {
+        stop_reason: Some(busbar_core::ir::IrStopReason::ToolUse),
+        usage: busbar_core::ir::IrUsage {
             input_tokens: 4,
             output_tokens: 6,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
-            detail: crate::ir::IrUsageDetail::default(),
+            detail: busbar_core::ir::IrUsageDetail::default(),
         },
         model: None,
         id: Some("resp-1".to_string()),
@@ -1565,7 +1577,7 @@ fn test_write_response_tool_calls_nested_and_roundtrip() {
         .content
         .iter()
         .filter_map(|b| {
-            if let crate::ir::IrBlock::ToolUse { id, name, .. } = b {
+            if let busbar_core::ir::IrBlock::ToolUse { id, name, .. } = b {
                 Some((id.as_str(), name.as_str()))
             } else {
                 None
@@ -1577,7 +1589,10 @@ fn test_write_response_tool_calls_nested_and_roundtrip() {
         [("t1", "get_weather"), ("t2", "get_time")],
         "Cohere -> Cohere tool-call passthrough must preserve every call"
     );
-    assert_eq!(back.stop_reason, Some(crate::ir::IrStopReason::ToolUse));
+    assert_eq!(
+        back.stop_reason,
+        Some(busbar_core::ir::IrStopReason::ToolUse)
+    );
 }
 
 /// The streaming `content-delta` frame must carry text at
@@ -1590,7 +1605,7 @@ fn test_write_response_tool_calls_nested_and_roundtrip() {
 fn test_write_response_event_content_delta_is_object() {
     let ev = IrStreamEvent::BlockDelta {
         index: 0,
-        delta: crate::ir::IrDelta::TextDelta("chunk".to_string()),
+        delta: busbar_core::ir::IrDelta::TextDelta("chunk".to_string()),
     };
     let writer = CohereWriter;
     let (_, frame) = writer
@@ -1625,7 +1640,7 @@ fn test_content_delta_writer_reader_roundtrip_object_shape() {
     let (_, frame) = writer
         .write_response_event(&IrStreamEvent::BlockDelta {
             index: 0,
-            delta: crate::ir::IrDelta::TextDelta("hi".to_string()),
+            delta: busbar_core::ir::IrDelta::TextDelta("hi".to_string()),
         })
         .expect("content-delta must serialize");
     // Sanity: the writer really emitted the object shape this test guards.
@@ -1636,11 +1651,11 @@ fn test_content_delta_writer_reader_roundtrip_object_shape() {
         "writer must emit object-shaped content: {frame}"
     );
     // Feed the writer's own frame back through the reader.
-    let mut state = crate::ir::StreamDecodeState::default();
+    let mut state = busbar_core::ir::StreamDecodeState::default();
     let evs = CohereReader.read_response_events("", &frame, &mut state);
     let decoded_text: Option<String> = evs.iter().find_map(|e| match e {
         IrStreamEvent::BlockDelta {
-            delta: crate::ir::IrDelta::TextDelta(t),
+            delta: busbar_core::ir::IrDelta::TextDelta(t),
             ..
         } => Some(t.clone()),
         _ => None,
@@ -1662,11 +1677,11 @@ fn test_content_delta_real_cohere_shape_no_type_field() {
         r#"{"type":"content-delta","index":0,"delta":{"message":{"content":{"text":"hi"}}}}"#,
     )
     .unwrap();
-    let mut state = crate::ir::StreamDecodeState::default();
+    let mut state = busbar_core::ir::StreamDecodeState::default();
     let evs = CohereReader.read_response_events("", &frame, &mut state);
     let decoded: Option<String> = evs.iter().find_map(|e| match e {
         IrStreamEvent::BlockDelta {
-            delta: crate::ir::IrDelta::TextDelta(t),
+            delta: busbar_core::ir::IrDelta::TextDelta(t),
             ..
         } => Some(t.clone()),
         _ => None,
@@ -1682,7 +1697,7 @@ fn test_content_delta_real_cohere_shape_no_type_field() {
 /// tool-call-end) must NOT be swallowed by a catch-all — it maps onto the IR block lifecycle.
 #[test]
 fn test_stream_tool_call_events_mapped() {
-    let mut state = crate::ir::StreamDecodeState::default();
+    let mut state = busbar_core::ir::StreamDecodeState::default();
     let reader = CohereReader;
 
     // start
@@ -1701,9 +1716,9 @@ fn test_stream_tool_call_events_mapped() {
     );
     assert_eq!(evs.len(), 1, "tool-call-start must emit a BlockStart");
     match &evs[0] {
-        crate::ir::IrStreamEvent::BlockStart {
+        busbar_core::ir::IrStreamEvent::BlockStart {
             index,
-            block: crate::ir::IrBlockMeta::ToolUse { id, name },
+            block: busbar_core::ir::IrBlockMeta::ToolUse { id, name },
         } => {
             assert_eq!(*index, 0);
             assert_eq!(id, "call_1");
@@ -1724,9 +1739,9 @@ fn test_stream_tool_call_events_mapped() {
     );
     assert_eq!(evs.len(), 1);
     match &evs[0] {
-        crate::ir::IrStreamEvent::BlockDelta {
+        busbar_core::ir::IrStreamEvent::BlockDelta {
             index: 0,
-            delta: crate::ir::IrDelta::InputJsonDelta(args),
+            delta: busbar_core::ir::IrDelta::InputJsonDelta(args),
         } => assert_eq!(args, "{\"city\":"),
         other => panic!("expected InputJsonDelta, got {other:?}"),
     }
@@ -1740,7 +1755,7 @@ fn test_stream_tool_call_events_mapped() {
     assert_eq!(evs.len(), 1);
     assert!(matches!(
         evs[0],
-        crate::ir::IrStreamEvent::BlockStop { index: 0 }
+        busbar_core::ir::IrStreamEvent::BlockStop { index: 0 }
     ));
     // tool-call-end emits the BlockStop but intentionally does NOT remove the frame's entry
     // from `open_tools`: the recorded packed entry is what keeps each tool's ASSIGNED IR index
@@ -1764,7 +1779,7 @@ fn test_stream_tool_call_events_mapped() {
 /// the text block closes at the index it actually opened (1, not a hardcoded 0).
 #[test]
 fn test_stream_tool_before_text_no_index_collision() {
-    let mut state = crate::ir::StreamDecodeState::default();
+    let mut state = busbar_core::ir::StreamDecodeState::default();
     let reader = CohereReader;
 
     // Tool opens FIRST — claims IR index 0 (no text seen yet).
@@ -1783,9 +1798,9 @@ fn test_stream_tool_before_text_no_index_collision() {
     );
     assert_eq!(evs.len(), 1, "tool-call-start emits one BlockStart");
     match &evs[0] {
-        crate::ir::IrStreamEvent::BlockStart {
+        busbar_core::ir::IrStreamEvent::BlockStart {
             index,
-            block: crate::ir::IrBlockMeta::ToolUse { id, name },
+            block: busbar_core::ir::IrBlockMeta::ToolUse { id, name },
         } => {
             assert_eq!(*index, 0, "the first-arriving tool claims IR index 0");
             assert_eq!(id, "call_1");
@@ -1802,9 +1817,9 @@ fn test_stream_tool_before_text_no_index_collision() {
     );
     assert_eq!(evs.len(), 1, "content-start emits one text BlockStart");
     let text_idx = match &evs[0] {
-        crate::ir::IrStreamEvent::BlockStart {
+        busbar_core::ir::IrStreamEvent::BlockStart {
             index,
-            block: crate::ir::IrBlockMeta::Text,
+            block: busbar_core::ir::IrBlockMeta::Text,
         } => *index,
         other => panic!("expected text BlockStart, got {other:?}"),
     };
@@ -1829,9 +1844,9 @@ fn test_stream_tool_before_text_no_index_collision() {
     );
     assert_eq!(evs.len(), 1, "content-delta emits one text delta");
     match &evs[0] {
-        crate::ir::IrStreamEvent::BlockDelta {
+        busbar_core::ir::IrStreamEvent::BlockDelta {
             index,
-            delta: crate::ir::IrDelta::TextDelta(t),
+            delta: busbar_core::ir::IrDelta::TextDelta(t),
         } => {
             assert_eq!(*index, 1, "the text delta rides the assigned index 1");
             assert_eq!(t, "hi");
@@ -1847,7 +1862,10 @@ fn test_stream_tool_before_text_no_index_collision() {
     );
     assert_eq!(evs.len(), 1, "content-end emits one BlockStop");
     assert!(
-        matches!(evs[0], crate::ir::IrStreamEvent::BlockStop { index: 1 }),
+        matches!(
+            evs[0],
+            busbar_core::ir::IrStreamEvent::BlockStop { index: 1 }
+        ),
         "the text block closes at its assigned index 1, not a hardcoded 0; got {:?}",
         evs[0]
     );
@@ -1863,7 +1881,7 @@ fn test_stream_tool_before_text_no_index_collision() {
     // stream (the fix must not regress the common case). A text block still OPEN when the tool
     // arrives (no intervening content-end — the tool-plan shape) is closed FIRST with a BlockStop at
     // its index 0, then the tool opens at index 1, so the emitted stream stays balanced.
-    let mut state2 = crate::ir::StreamDecodeState::default();
+    let mut state2 = busbar_core::ir::StreamDecodeState::default();
     let evs = reader.read_response_events(
         "",
         &serde_json::json!({"type": ET_CONTENT_START, "index": 0}),
@@ -1871,9 +1889,9 @@ fn test_stream_tool_before_text_no_index_collision() {
     );
     assert!(matches!(
         evs[0],
-        crate::ir::IrStreamEvent::BlockStart {
+        busbar_core::ir::IrStreamEvent::BlockStart {
             index: 0,
-            block: crate::ir::IrBlockMeta::Text
+            block: busbar_core::ir::IrBlockMeta::Text
         }
     ));
     let evs = reader.read_response_events(
@@ -1889,11 +1907,14 @@ fn test_stream_tool_before_text_no_index_collision() {
         &mut state2,
     );
     assert!(
-        matches!(&evs[0], crate::ir::IrStreamEvent::BlockStop { index: 0 }),
+        matches!(
+            &evs[0],
+            busbar_core::ir::IrStreamEvent::BlockStop { index: 0 }
+        ),
         "the still-open text block must close at index 0 before the tool opens, got {evs:?}"
     );
     match &evs[1] {
-        crate::ir::IrStreamEvent::BlockStart { index, .. } => assert_eq!(
+        busbar_core::ir::IrStreamEvent::BlockStart { index, .. } => assert_eq!(
             *index, 1,
             "text-before-tool: text keeps 0, tool takes 1 (no regression)"
         ),
@@ -1909,7 +1930,7 @@ fn test_stream_tool_before_text_no_index_collision() {
 #[test]
 fn test_stream_text_not_reopened_after_close() {
     let reader = CohereReader;
-    let mut state = crate::ir::StreamDecodeState::default();
+    let mut state = busbar_core::ir::StreamDecodeState::default();
 
     // Leading tool-plan opens a REASONING block at index 0 (BlockStart + BlockDelta). It claims the
     // same index a leading text block would; what changed is the block KIND, because a tool_plan is
@@ -1925,9 +1946,9 @@ fn test_stream_text_not_reopened_after_close() {
     assert!(
         matches!(
             evs[0],
-            crate::ir::IrStreamEvent::BlockStart {
+            busbar_core::ir::IrStreamEvent::BlockStart {
                 index: 0,
-                block: crate::ir::IrBlockMeta::Thinking
+                block: busbar_core::ir::IrBlockMeta::Thinking
             }
         ),
         "tool-plan opens the leading reasoning block at index 0, got {evs:?}"
@@ -1947,7 +1968,10 @@ fn test_stream_text_not_reopened_after_close() {
         &mut state,
     );
     assert!(
-        matches!(&evs[0], crate::ir::IrStreamEvent::BlockStop { index: 0 }),
+        matches!(
+            &evs[0],
+            busbar_core::ir::IrStreamEvent::BlockStop { index: 0 }
+        ),
         "tool-call-start closes the plan text block at index 0, got {evs:?}"
     );
 
@@ -1987,7 +2011,7 @@ fn test_stream_text_not_reopened_after_close() {
 #[test]
 fn test_stream_message_end_closes_dangling_text_block() {
     let reader = CohereReader;
-    let mut state = crate::ir::StreamDecodeState::default();
+    let mut state = busbar_core::ir::StreamDecodeState::default();
 
     // tool-plan opens a reasoning block at index 0 (BlockStart + BlockDelta), then the stream ends
     // abruptly. The dangling-block close below is index-based and kind-independent.
@@ -2002,9 +2026,9 @@ fn test_stream_message_end_closes_dangling_text_block() {
     assert!(
         matches!(
             evs[0],
-            crate::ir::IrStreamEvent::BlockStart {
+            busbar_core::ir::IrStreamEvent::BlockStart {
                 index: 0,
-                block: crate::ir::IrBlockMeta::Thinking
+                block: busbar_core::ir::IrBlockMeta::Thinking
             }
         ),
         "tool-plan opens the reasoning block, got {evs:?}"
@@ -2017,12 +2041,15 @@ fn test_stream_message_end_closes_dangling_text_block() {
         &mut state,
     );
     assert!(
-        matches!(evs[0], crate::ir::IrStreamEvent::BlockStop { index: 0 }),
+        matches!(
+            evs[0],
+            busbar_core::ir::IrStreamEvent::BlockStop { index: 0 }
+        ),
         "message-end must force-close the dangling text block first, got {evs:?}"
     );
     assert!(
         evs.iter()
-            .any(|e| matches!(e, crate::ir::IrStreamEvent::MessageStop)),
+            .any(|e| matches!(e, busbar_core::ir::IrStreamEvent::MessageStop)),
         "message-end still emits MessageStop, got {evs:?}"
     );
     // Balanced: exactly one Text BlockStart (from tool-plan) and one BlockStop across the stream.
@@ -2032,7 +2059,7 @@ fn test_stream_message_end_closes_dangling_text_block() {
 /// fallthrough arm must not break the stream.
 #[test]
 fn test_stream_unknown_event_is_noop() {
-    let mut state = crate::ir::StreamDecodeState::default();
+    let mut state = busbar_core::ir::StreamDecodeState::default();
     let evs = CohereReader.read_response_events(
         "",
         &serde_json::json!({"type": "citation-start", "index": 0}),
@@ -2086,10 +2113,10 @@ fn test_extract_error_synthesizes_context_length_in_production() {
 
         // The breaker must then route the canonical code to ContextLength (fail over, no penalty)
         // rather than treating the 400 as a plain ClientError.
-        let signal = crate::breaker::normalize_raw_error(&raw, &empty_map);
+        let signal = busbar_core::breaker::normalize_raw_error(&raw, &empty_map);
         assert_eq!(
             signal.class,
-            crate::breaker::StatusClass::ContextLength,
+            busbar_core::breaker::StatusClass::ContextLength,
             "breaker must map the synthesized code to ContextLength for body {}",
             String::from_utf8_lossy(body)
         );
@@ -2109,10 +2136,10 @@ fn test_extract_error_non_context_length_message_preserved() {
         Some("invalid api key"),
         "a non-context-length message must be carried verbatim"
     );
-    let signal = crate::breaker::normalize_raw_error(&raw, &std::collections::HashMap::new());
+    let signal = busbar_core::breaker::normalize_raw_error(&raw, &std::collections::HashMap::new());
     assert_ne!(
         signal.class,
-        crate::breaker::StatusClass::ContextLength,
+        busbar_core::breaker::StatusClass::ContextLength,
         "a non-context-length error must not be classified as ContextLength"
     );
 }
@@ -2143,10 +2170,10 @@ fn test_too_long_only_classifies_context_length_when_qualified() {
             "a generic 'too long' message must not synthesize the context-length code: {}",
             String::from_utf8_lossy(body)
         );
-        let signal = crate::breaker::normalize_raw_error(&raw, &empty);
+        let signal = busbar_core::breaker::normalize_raw_error(&raw, &empty);
         assert_ne!(
             signal.class,
-            crate::breaker::StatusClass::ContextLength,
+            busbar_core::breaker::StatusClass::ContextLength,
             "a generic 'too long' message must not classify as ContextLength: {}",
             String::from_utf8_lossy(body)
         );
@@ -2167,10 +2194,10 @@ fn test_too_long_only_classifies_context_length_when_qualified() {
             "a qualified 'too long' (context) message must synthesize the context-length code: {}",
             String::from_utf8_lossy(body)
         );
-        let signal = crate::breaker::normalize_raw_error(&raw, &empty);
+        let signal = busbar_core::breaker::normalize_raw_error(&raw, &empty);
         assert_eq!(
             signal.class,
-            crate::breaker::StatusClass::ContextLength,
+            busbar_core::breaker::StatusClass::ContextLength,
             "a qualified 'too long' (context) message must classify as ContextLength: {}",
             String::from_utf8_lossy(body)
         );
@@ -2183,7 +2210,7 @@ fn test_too_long_only_classifies_context_length_when_qualified() {
 /// passthrough fidelity break.
 #[test]
 fn test_write_request_stream_field_conditional() {
-    let base = crate::ir::IrRequest {
+    let base = busbar_core::ir::IrRequest {
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -2191,9 +2218,9 @@ fn test_write_request_stream_field_conditional() {
         user: None,
         parallel_tool_calls: None,
         system: vec![],
-        messages: vec![crate::ir::IrMessage {
-            role: crate::ir::IrRole::User,
-            content: vec![crate::ir::IrBlock::Text {
+        messages: vec![busbar_core::ir::IrMessage {
+            role: busbar_core::ir::IrRole::User,
+            content: vec![busbar_core::ir::IrBlock::Text {
                 text: "hi".to_string(),
                 cache_control: None,
                 citations: Vec::new(),
@@ -2222,7 +2249,7 @@ fn test_write_request_stream_field_conditional() {
         "non-streaming request must omit the `stream` key, got {non_streaming}"
     );
 
-    let streaming = writer.write_request(&crate::ir::IrRequest {
+    let streaming = writer.write_request(&busbar_core::ir::IrRequest {
         stream: true,
         ..base
     });
@@ -2260,14 +2287,14 @@ fn test_stream_field_roundtrip_omitted() {
 #[test]
 fn test_write_response_event_message_end_carries_usage() {
     let ev = IrStreamEvent::MessageDelta {
-        stop_reason: Some(crate::ir::IrStopReason::EndTurn),
+        stop_reason: Some(busbar_core::ir::IrStopReason::EndTurn),
         stop_sequence: None,
-        usage: crate::ir::IrUsage {
+        usage: busbar_core::ir::IrUsage {
             input_tokens: 42,
             output_tokens: 7,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
-            detail: crate::ir::IrUsageDetail::default(),
+            detail: busbar_core::ir::IrUsageDetail::default(),
         },
     };
     let writer = CohereWriter;
@@ -2300,12 +2327,12 @@ fn test_write_response_event_message_end_zero_usage_present() {
     let ev = IrStreamEvent::MessageDelta {
         stop_reason: None,
         stop_sequence: None,
-        usage: crate::ir::IrUsage {
+        usage: busbar_core::ir::IrUsage {
             input_tokens: 0,
             output_tokens: 0,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
-            detail: crate::ir::IrUsageDetail::default(),
+            detail: busbar_core::ir::IrUsageDetail::default(),
         },
     };
     let writer = CohereWriter;
@@ -2328,23 +2355,23 @@ fn test_write_response_event_message_end_zero_usage_present() {
 /// written into `delta.usage.tokens` is read back identically.
 #[test]
 fn test_message_end_usage_stream_roundtrip() {
-    let usage = crate::ir::IrUsage {
+    let usage = busbar_core::ir::IrUsage {
         input_tokens: 11,
         output_tokens: 3,
         cache_creation_input_tokens: None,
         cache_read_input_tokens: None,
-        detail: crate::ir::IrUsageDetail::default(),
+        detail: busbar_core::ir::IrUsageDetail::default(),
     };
     let writer = CohereWriter;
     let (_, frame) = writer
         .write_response_event(&IrStreamEvent::MessageDelta {
-            stop_reason: Some(crate::ir::IrStopReason::EndTurn),
+            stop_reason: Some(busbar_core::ir::IrStopReason::EndTurn),
             stop_sequence: None,
             usage: usage.clone(),
         })
         .expect("message-end must serialize");
 
-    let mut state = crate::ir::StreamDecodeState::default();
+    let mut state = busbar_core::ir::StreamDecodeState::default();
     let evs = CohereReader.read_response_events("", &frame, &mut state);
     let back = evs
         .iter()
@@ -2364,7 +2391,7 @@ fn test_message_end_usage_stream_roundtrip() {
 /// must not silently drop the text — it is folded into the emitted tool message content.
 #[test]
 fn test_tool_role_text_alongside_result_not_dropped() {
-    let ir = crate::ir::IrRequest {
+    let ir = busbar_core::ir::IrRequest {
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -2372,17 +2399,17 @@ fn test_tool_role_text_alongside_result_not_dropped() {
         user: None,
         parallel_tool_calls: None,
         system: vec![],
-        messages: vec![crate::ir::IrMessage {
-            role: crate::ir::IrRole::Tool,
+        messages: vec![busbar_core::ir::IrMessage {
+            role: busbar_core::ir::IrRole::Tool,
             content: vec![
-                crate::ir::IrBlock::Text {
+                busbar_core::ir::IrBlock::Text {
                     text: "note".to_string(),
                     cache_control: None,
                     citations: Vec::new(),
                 },
-                crate::ir::IrBlock::ToolResult {
+                busbar_core::ir::IrBlock::ToolResult {
                     tool_use_id: "t1".to_string(),
-                    content: vec![crate::ir::IrBlock::Text {
+                    content: vec![busbar_core::ir::IrBlock::Text {
                         text: "result".to_string(),
                         cache_control: None,
                         citations: Vec::new(),
@@ -2428,7 +2455,7 @@ fn test_tool_role_text_alongside_result_not_dropped() {
 /// round-trip. The reader join was tested; this guards the WRITER site (cohere.rs).
 #[test]
 fn test_tool_result_multi_block_content_joins_without_space() {
-    let ir = crate::ir::IrRequest {
+    let ir = busbar_core::ir::IrRequest {
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -2436,17 +2463,17 @@ fn test_tool_result_multi_block_content_joins_without_space() {
         user: None,
         parallel_tool_calls: None,
         system: vec![],
-        messages: vec![crate::ir::IrMessage {
-            role: crate::ir::IrRole::Tool,
-            content: vec![crate::ir::IrBlock::ToolResult {
+        messages: vec![busbar_core::ir::IrMessage {
+            role: busbar_core::ir::IrRole::Tool,
+            content: vec![busbar_core::ir::IrBlock::ToolResult {
                 tool_use_id: "t1".to_string(),
                 content: vec![
-                    crate::ir::IrBlock::Text {
+                    busbar_core::ir::IrBlock::Text {
                         text: "foo".to_string(),
                         cache_control: None,
                         citations: Vec::new(),
                     },
-                    crate::ir::IrBlock::Text {
+                    busbar_core::ir::IrBlock::Text {
                         text: "bar".to_string(),
                         cache_control: None,
                         citations: Vec::new(),
@@ -2486,7 +2513,7 @@ fn test_tool_result_multi_block_content_joins_without_space() {
 /// block must still emit its text rather than producing nothing at all.
 #[test]
 fn test_tool_role_text_without_result_not_dropped() {
-    let ir = crate::ir::IrRequest {
+    let ir = busbar_core::ir::IrRequest {
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -2494,9 +2521,9 @@ fn test_tool_role_text_without_result_not_dropped() {
         user: None,
         parallel_tool_calls: None,
         system: vec![],
-        messages: vec![crate::ir::IrMessage {
-            role: crate::ir::IrRole::Tool,
-            content: vec![crate::ir::IrBlock::Text {
+        messages: vec![busbar_core::ir::IrMessage {
+            role: busbar_core::ir::IrRole::Tool,
+            content: vec![busbar_core::ir::IrBlock::Text {
                 text: "orphan tool text".to_string(),
                 cache_control: None,
                 citations: Vec::new(),
@@ -2538,7 +2565,7 @@ fn test_tool_role_text_without_result_not_dropped() {
 /// tool message; the fix stringifies the blocks like the ToolResult path.
 #[test]
 fn test_tool_role_multi_text_without_result_is_string() {
-    let ir = crate::ir::IrRequest {
+    let ir = busbar_core::ir::IrRequest {
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -2546,15 +2573,15 @@ fn test_tool_role_multi_text_without_result_is_string() {
         user: None,
         parallel_tool_calls: None,
         system: vec![],
-        messages: vec![crate::ir::IrMessage {
-            role: crate::ir::IrRole::Tool,
+        messages: vec![busbar_core::ir::IrMessage {
+            role: busbar_core::ir::IrRole::Tool,
             content: vec![
-                crate::ir::IrBlock::Text {
+                busbar_core::ir::IrBlock::Text {
                     text: "a".to_string(),
                     cache_control: None,
                     citations: Vec::new(),
                 },
-                crate::ir::IrBlock::Text {
+                busbar_core::ir::IrBlock::Text {
                     text: "b".to_string(),
                     cache_control: None,
                     citations: Vec::new(),
@@ -2640,18 +2667,18 @@ fn test_read_request_tool_content_object_array_preserved() {
     let tool_msg = ir
         .messages
         .iter()
-        .find(|m| m.role == crate::ir::IrRole::Tool)
+        .find(|m| m.role == busbar_core::ir::IrRole::Tool)
         .expect("tool message present");
     let tool_result = tool_msg
         .content
         .iter()
         .find_map(|b| match b {
-            crate::ir::IrBlock::ToolResult { content, .. } => Some(content),
+            busbar_core::ir::IrBlock::ToolResult { content, .. } => Some(content),
             _ => None,
         })
         .expect("ToolResult block present");
     let text = match tool_result.first() {
-        Some(crate::ir::IrBlock::Text { text, .. }) => text.clone(),
+        Some(busbar_core::ir::IrBlock::Text { text, .. }) => text.clone(),
         other => panic!("expected text block in tool result, got {other:?}"),
     };
     assert!(
@@ -2673,11 +2700,11 @@ fn test_read_request_tool_content_object_array_preserved() {
     assert!(
         tool_result.iter().any(|b| matches!(
             b,
-            crate::ir::IrBlock::Media {
-                kind: crate::ir::IrMediaKind::Document,
-                source: crate::ir::IrImageSource::Vendor { value, .. },
+            busbar_core::ir::IrBlock::Media {
+                kind: busbar_core::ir::IrMediaKind::Document,
+                source: busbar_core::ir::IrImageSource::Vendor { value, .. },
                 ..
-            } if crate::json::to_string(value).unwrap_or_default().contains("doc body")
+            } if busbar_core::json::to_string(value).unwrap_or_default().contains("doc body")
         )),
         "the document must be preserved as a structured Media block: {tool_result:?}"
     );
@@ -2709,16 +2736,16 @@ fn test_read_request_tool_text_blocks_join_without_space() {
     let tool_result = ir
         .messages
         .iter()
-        .find(|m| m.role == crate::ir::IrRole::Tool)
+        .find(|m| m.role == busbar_core::ir::IrRole::Tool)
         .and_then(|m| {
             m.content.iter().find_map(|b| match b {
-                crate::ir::IrBlock::ToolResult { content, .. } => Some(content),
+                busbar_core::ir::IrBlock::ToolResult { content, .. } => Some(content),
                 _ => None,
             })
         })
         .expect("ToolResult block present");
     let text = match tool_result.first() {
-        Some(crate::ir::IrBlock::Text { text, .. }) => text.clone(),
+        Some(busbar_core::ir::IrBlock::Text { text, .. }) => text.clone(),
         other => panic!("expected text block in tool result, got {other:?}"),
     };
     assert_eq!(
@@ -2747,18 +2774,18 @@ fn test_read_request_tool_content_string_array_still_works() {
     let tool_msg = ir
         .messages
         .iter()
-        .find(|m| m.role == crate::ir::IrRole::Tool)
+        .find(|m| m.role == busbar_core::ir::IrRole::Tool)
         .expect("tool message present");
     let tool_result = tool_msg
         .content
         .iter()
         .find_map(|b| match b {
-            crate::ir::IrBlock::ToolResult { content, .. } => Some(content),
+            busbar_core::ir::IrBlock::ToolResult { content, .. } => Some(content),
             _ => None,
         })
         .expect("ToolResult block present");
     let text = match tool_result.first() {
-        Some(crate::ir::IrBlock::Text { text, .. }) => text.clone(),
+        Some(busbar_core::ir::IrBlock::Text { text, .. }) => text.clone(),
         other => panic!("expected text block in tool result, got {other:?}"),
     };
     // Concatenate with NO separator (the OpenAI/Anthropic writers concat text blocks
@@ -2775,7 +2802,7 @@ fn test_read_request_tool_content_string_array_still_works() {
 /// assert two DISTINCT BlockStart indices that match their deltas/stops.
 #[test]
 fn test_stream_two_sequential_tool_calls_get_distinct_indices() {
-    let mut state = crate::ir::StreamDecodeState::default();
+    let mut state = busbar_core::ir::StreamDecodeState::default();
     let reader = CohereReader;
 
     // --- Tool 1: start (frame index 0) ---
@@ -2793,9 +2820,9 @@ fn test_stream_two_sequential_tool_calls_get_distinct_indices() {
         &mut state,
     );
     let idx1 = match &evs[0] {
-        crate::ir::IrStreamEvent::BlockStart {
+        busbar_core::ir::IrStreamEvent::BlockStart {
             index,
-            block: crate::ir::IrBlockMeta::ToolUse { id, .. },
+            block: busbar_core::ir::IrBlockMeta::ToolUse { id, .. },
         } => {
             assert_eq!(id, "call_a");
             *index
@@ -2815,7 +2842,7 @@ fn test_stream_two_sequential_tool_calls_get_distinct_indices() {
     );
     assert!(matches!(
         &evs[0],
-        crate::ir::IrStreamEvent::BlockDelta { index, .. } if *index == idx1
+        busbar_core::ir::IrStreamEvent::BlockDelta { index, .. } if *index == idx1
     ));
     let evs = reader.read_response_events(
         "",
@@ -2824,7 +2851,7 @@ fn test_stream_two_sequential_tool_calls_get_distinct_indices() {
     );
     assert!(matches!(
         &evs[0],
-        crate::ir::IrStreamEvent::BlockStop { index } if *index == idx1
+        busbar_core::ir::IrStreamEvent::BlockStop { index } if *index == idx1
     ));
 
     // --- Tool 2: start (frame index 1), AFTER tool 1 closed ---
@@ -2842,9 +2869,9 @@ fn test_stream_two_sequential_tool_calls_get_distinct_indices() {
         &mut state,
     );
     let idx2 = match &evs[0] {
-        crate::ir::IrStreamEvent::BlockStart {
+        busbar_core::ir::IrStreamEvent::BlockStart {
             index,
-            block: crate::ir::IrBlockMeta::ToolUse { id, .. },
+            block: busbar_core::ir::IrBlockMeta::ToolUse { id, .. },
         } => {
             assert_eq!(id, "call_b");
             *index
@@ -2870,7 +2897,7 @@ fn test_stream_two_sequential_tool_calls_get_distinct_indices() {
     );
     assert!(matches!(
         &evs[0],
-        crate::ir::IrStreamEvent::BlockDelta { index, .. } if *index == idx2
+        busbar_core::ir::IrStreamEvent::BlockDelta { index, .. } if *index == idx2
     ));
     let evs = reader.read_response_events(
         "",
@@ -2879,7 +2906,7 @@ fn test_stream_two_sequential_tool_calls_get_distinct_indices() {
     );
     assert!(matches!(
         &evs[0],
-        crate::ir::IrStreamEvent::BlockStop { index } if *index == idx2
+        busbar_core::ir::IrStreamEvent::BlockStop { index } if *index == idx2
     ));
 }
 
@@ -2897,7 +2924,7 @@ fn test_stream_two_sequential_tool_calls_get_distinct_indices() {
 #[test]
 fn test_stream_tool_ir_index_stable_under_non_monotonic_frame_indices() {
     let reader = CohereReader;
-    let mut state = crate::ir::StreamDecodeState::default();
+    let mut state = busbar_core::ir::StreamDecodeState::default();
 
     let start = |wire: u64, id: &str| {
         serde_json::json!({
@@ -2956,7 +2983,7 @@ fn test_stream_tool_ir_index_stable_under_non_monotonic_frame_indices() {
 /// A leading text block must push tool blocks to IR index 1+ while keeping each tool distinct.
 #[test]
 fn test_stream_tool_indices_offset_by_open_text_block() {
-    let mut state = crate::ir::StreamDecodeState::default();
+    let mut state = busbar_core::ir::StreamDecodeState::default();
     let reader = CohereReader;
 
     // Open a text block at index 0.
@@ -2978,11 +3005,14 @@ fn test_stream_tool_indices_offset_by_open_text_block() {
     // The still-open text block (no intervening content-end) closes at index 0 first, then the
     // tool opens at index 1 — the emitted stream stays balanced.
     assert!(
-        matches!(&evs[0], crate::ir::IrStreamEvent::BlockStop { index: 0 }),
+        matches!(
+            &evs[0],
+            busbar_core::ir::IrStreamEvent::BlockStop { index: 0 }
+        ),
         "the open text block must close at index 0 before the first tool opens, got {evs:?}"
     );
     let idx1 = match &evs[1] {
-        crate::ir::IrStreamEvent::BlockStart { index, .. } => *index,
+        busbar_core::ir::IrStreamEvent::BlockStart { index, .. } => *index,
         other => panic!("expected BlockStart, got {other:?}"),
     };
     assert_eq!(idx1, 1, "first tool follows the open text block at index 0");
@@ -3003,7 +3033,7 @@ fn test_stream_tool_indices_offset_by_open_text_block() {
             &mut state,
         );
     let idx2 = match &evs[0] {
-        crate::ir::IrStreamEvent::BlockStart { index, .. } => *index,
+        busbar_core::ir::IrStreamEvent::BlockStart { index, .. } => *index,
         other => panic!("expected BlockStart, got {other:?}"),
     };
     assert_eq!(
@@ -3022,7 +3052,7 @@ fn test_stream_tool_indices_offset_by_open_text_block() {
 /// block was EVER opened this stream.
 #[test]
 fn test_stream_tool_after_closed_text_block_does_not_reuse_index_zero() {
-    let mut state = crate::ir::StreamDecodeState::default();
+    let mut state = busbar_core::ir::StreamDecodeState::default();
     let reader = CohereReader;
 
     // Text block: start at index 0 ...
@@ -3033,9 +3063,9 @@ fn test_stream_tool_after_closed_text_block_does_not_reuse_index_zero() {
         );
     assert!(matches!(
         &evs[0],
-        crate::ir::IrStreamEvent::BlockStart {
+        busbar_core::ir::IrStreamEvent::BlockStart {
             index: 0,
-            block: crate::ir::IrBlockMeta::Text
+            block: busbar_core::ir::IrBlockMeta::Text
         }
     ));
 
@@ -3047,7 +3077,7 @@ fn test_stream_tool_after_closed_text_block_does_not_reuse_index_zero() {
     );
     assert!(matches!(
         &evs[0],
-        crate::ir::IrStreamEvent::BlockStop { index: 0 }
+        busbar_core::ir::IrStreamEvent::BlockStop { index: 0 }
     ));
     assert!(
         !state.text_block_open,
@@ -3065,9 +3095,9 @@ fn test_stream_tool_after_closed_text_block_does_not_reuse_index_zero() {
             &mut state,
         );
     let tool_idx = match &evs[0] {
-        crate::ir::IrStreamEvent::BlockStart {
+        busbar_core::ir::IrStreamEvent::BlockStart {
             index,
-            block: crate::ir::IrBlockMeta::ToolUse { .. },
+            block: busbar_core::ir::IrBlockMeta::ToolUse { .. },
         } => *index,
         other => panic!("expected BlockStart ToolUse, got {other:?}"),
     };
@@ -3084,7 +3114,7 @@ fn test_stream_tool_after_closed_text_block_does_not_reuse_index_zero() {
     );
     assert!(matches!(
         &evs[0],
-        crate::ir::IrStreamEvent::BlockStop { index: 1 }
+        busbar_core::ir::IrStreamEvent::BlockStop { index: 1 }
     ));
 }
 
@@ -3124,7 +3154,7 @@ fn test_write_response_event_emits_tool_call_frames() {
     // BlockStart{ToolUse} → tool-call-start carrying id/name and an empty-string arguments.
     let start = IrStreamEvent::BlockStart {
         index: 2,
-        block: crate::ir::IrBlockMeta::ToolUse {
+        block: busbar_core::ir::IrBlockMeta::ToolUse {
             id: "call_x".to_string(),
             name: "get_weather".to_string(),
         },
@@ -3161,7 +3191,7 @@ fn test_write_response_event_emits_tool_call_frames() {
     // BlockDelta{InputJsonDelta} → tool-call-delta carrying the argument fragment.
     let delta = IrStreamEvent::BlockDelta {
         index: 2,
-        delta: crate::ir::IrDelta::InputJsonDelta("{\"city\":\"SF\"}".to_string()),
+        delta: busbar_core::ir::IrDelta::InputJsonDelta("{\"city\":\"SF\"}".to_string()),
     };
     let (_, frame) = writer
         .write_response_event(&delta)
@@ -3191,7 +3221,7 @@ fn test_writer_tool_call_frames_roundtrip_through_reader() {
     let (_, start_frame) = writer
         .write_response_event(&IrStreamEvent::BlockStart {
             index: 0,
-            block: crate::ir::IrBlockMeta::ToolUse {
+            block: busbar_core::ir::IrBlockMeta::ToolUse {
                 id: "call_z".to_string(),
                 name: "lookup".to_string(),
             },
@@ -3200,16 +3230,16 @@ fn test_writer_tool_call_frames_roundtrip_through_reader() {
     let (_, delta_frame) = writer
         .write_response_event(&IrStreamEvent::BlockDelta {
             index: 0,
-            delta: crate::ir::IrDelta::InputJsonDelta("{\"q\":1}".to_string()),
+            delta: busbar_core::ir::IrDelta::InputJsonDelta("{\"q\":1}".to_string()),
         })
         .expect("delta frame");
 
-    let mut state = crate::ir::StreamDecodeState::default();
+    let mut state = busbar_core::ir::StreamDecodeState::default();
     let reader = CohereReader;
     let start_evs = reader.read_response_events("", &start_frame, &mut state);
     match &start_evs[0] {
-        crate::ir::IrStreamEvent::BlockStart {
-            block: crate::ir::IrBlockMeta::ToolUse { id, name },
+        busbar_core::ir::IrStreamEvent::BlockStart {
+            block: busbar_core::ir::IrBlockMeta::ToolUse { id, name },
             ..
         } => {
             assert_eq!(id, "call_z");
@@ -3219,8 +3249,8 @@ fn test_writer_tool_call_frames_roundtrip_through_reader() {
     }
     let delta_evs = reader.read_response_events("", &delta_frame, &mut state);
     match &delta_evs[0] {
-        crate::ir::IrStreamEvent::BlockDelta {
-            delta: crate::ir::IrDelta::InputJsonDelta(args),
+        busbar_core::ir::IrStreamEvent::BlockDelta {
+            delta: busbar_core::ir::IrDelta::InputJsonDelta(args),
             ..
         } => assert_eq!(args, "{\"q\":1}"),
         other => panic!("expected InputJsonDelta, got {other:?}"),
@@ -3239,20 +3269,20 @@ fn test_write_response_event_thinking_and_image_blocks_suppressed() {
     assert!(writer
         .write_response_event(&IrStreamEvent::BlockStart {
             index: 0,
-            block: crate::ir::IrBlockMeta::Thinking,
+            block: busbar_core::ir::IrBlockMeta::Thinking,
         })
         .is_none());
     assert!(writer
         .write_response_event(&IrStreamEvent::BlockStart {
             index: 0,
-            block: crate::ir::IrBlockMeta::Image,
+            block: busbar_core::ir::IrBlockMeta::Image,
         })
         .is_none());
     // The reasoning DELTA, by contrast, MUST emit — into Cohere's native `tool-plan-delta` frame.
     let (_, frame) = writer
         .write_response_event(&IrStreamEvent::BlockDelta {
             index: 0,
-            delta: crate::ir::IrDelta::ThinkingDelta("x".to_string()),
+            delta: busbar_core::ir::IrDelta::ThinkingDelta("x".to_string()),
         })
         .expect("a reasoning delta has a native Cohere frame (`tool-plan-delta`)");
     assert_eq!(frame["type"], ET_TOOL_PLAN_DELTA);
@@ -3282,31 +3312,31 @@ fn test_read_request_tool_content_not_double_decoded() {
     let tool_msg = ir
         .messages
         .iter()
-        .find(|m| m.role == crate::ir::IrRole::Tool)
+        .find(|m| m.role == busbar_core::ir::IrRole::Tool)
         .expect("tool message present");
 
     // No stray top-level Text block on the Tool message.
     let stray_text = tool_msg
         .content
         .iter()
-        .any(|b| matches!(b, crate::ir::IrBlock::Text { .. }));
+        .any(|b| matches!(b, busbar_core::ir::IrBlock::Text { .. }));
     assert!(
         !stray_text,
         "tool message must NOT carry a top-level Text block (content belongs to the ToolResult)"
     );
 
     // Exactly one ToolResult, carrying the text once.
-    let tool_results: Vec<&Vec<crate::ir::IrBlock>> = tool_msg
+    let tool_results: Vec<&Vec<busbar_core::ir::IrBlock>> = tool_msg
         .content
         .iter()
         .filter_map(|b| match b {
-            crate::ir::IrBlock::ToolResult { content, .. } => Some(content),
+            busbar_core::ir::IrBlock::ToolResult { content, .. } => Some(content),
             _ => None,
         })
         .collect();
     assert_eq!(tool_results.len(), 1, "exactly one ToolResult block");
     let inner = match tool_results[0].first() {
-        Some(crate::ir::IrBlock::Text { text, .. }) => text.clone(),
+        Some(busbar_core::ir::IrBlock::Text { text, .. }) => text.clone(),
         other => panic!("expected text in tool result, got {other:?}"),
     };
     assert_eq!(inner, "the result");
@@ -3495,7 +3525,7 @@ fn test_read_request_top_k_out_of_range_drops_to_none() {
 /// every realistic stream (a handful of tools) is unaffected.
 #[test]
 fn test_open_tools_growth_is_capped() {
-    let mut state = crate::ir::StreamDecodeState::default();
+    let mut state = busbar_core::ir::StreamDecodeState::default();
     let reader = CohereReader;
     for frame_idx in 0..(MAX_TRACKED_TOOL_FRAMES + 50) {
         reader.read_response_events(
@@ -3541,7 +3571,7 @@ fn test_open_tools_growth_is_capped() {
 ///   `MAX_TRACKED_TOOL_FRAMES` is still enforced under the new structure.
 #[test]
 fn test_stream_tool_ir_index_o1_lookup_matches_insertion_order_at_scale() {
-    let mut state = crate::ir::StreamDecodeState::default();
+    let mut state = busbar_core::ir::StreamDecodeState::default();
 
     // Small-N hand check: wires 10, 5, 2 (descending) must assign 0, 1, 2 (insertion order).
     assert_eq!(cohere_assign_tool_ir_index(&mut state, 10), Some(0));
@@ -3557,7 +3587,7 @@ fn test_stream_tool_ir_index_o1_lookup_matches_insertion_order_at_scale() {
     // Large-N scale check on a FRESH stream: open exactly MAX_TRACKED_TOOL_FRAMES tools with fully
     // reversed wire indices. The i-th call opened (wire = N-1-i) must be assigned IR index i,
     // exactly the insertion-order rule the old O(n) scan-to-find-or-insert also implemented.
-    let mut state = crate::ir::StreamDecodeState::default();
+    let mut state = busbar_core::ir::StreamDecodeState::default();
     let n = MAX_TRACKED_TOOL_FRAMES;
     for i in 0..n {
         let wire = n - 1 - i;
@@ -3616,7 +3646,7 @@ fn test_block_stop_closes_tool_block_with_tool_call_end() {
     let (_, start) = writer
         .write_response_event(&IrStreamEvent::BlockStart {
             index: 0,
-            block: crate::ir::IrBlockMeta::ToolUse {
+            block: busbar_core::ir::IrBlockMeta::ToolUse {
                 id: "call_1".to_string(),
                 name: "get_weather".to_string(),
             },
@@ -3648,7 +3678,7 @@ fn test_block_stop_closes_text_block_with_content_end() {
     let (_, start) = writer
         .write_response_event(&IrStreamEvent::BlockStart {
             index: 0,
-            block: crate::ir::IrBlockMeta::Text,
+            block: busbar_core::ir::IrBlockMeta::Text,
         })
         .expect("content-start must emit");
     assert_eq!(
@@ -3676,14 +3706,14 @@ fn test_block_stop_mixed_text_and_tool_close_events() {
     writer
         .write_response_event(&IrStreamEvent::BlockStart {
             index: 0,
-            block: crate::ir::IrBlockMeta::Text,
+            block: busbar_core::ir::IrBlockMeta::Text,
         })
         .expect("text start");
     // Tool block at index 1.
     writer
         .write_response_event(&IrStreamEvent::BlockStart {
             index: 1,
-            block: crate::ir::IrBlockMeta::ToolUse {
+            block: busbar_core::ir::IrBlockMeta::ToolUse {
                 id: "call_2".to_string(),
                 name: "lookup".to_string(),
             },
@@ -3718,7 +3748,7 @@ fn test_tool_block_open_close_roundtrip_through_reader() {
     let (_, start_frame) = writer
         .write_response_event(&IrStreamEvent::BlockStart {
             index: 0,
-            block: crate::ir::IrBlockMeta::ToolUse {
+            block: busbar_core::ir::IrBlockMeta::ToolUse {
                 id: "call_z".to_string(),
                 name: "lookup".to_string(),
             },
@@ -3732,19 +3762,22 @@ fn test_tool_block_open_close_roundtrip_through_reader() {
         Some("tool-call-end") // golden wire-contract literal (kept bare on purpose)
     );
 
-    let mut state = crate::ir::StreamDecodeState::default();
+    let mut state = busbar_core::ir::StreamDecodeState::default();
     let reader = CohereReader;
     let start_evs = reader.read_response_events("", &start_frame, &mut state);
     assert!(matches!(
         &start_evs[0],
-        crate::ir::IrStreamEvent::BlockStart {
-            block: crate::ir::IrBlockMeta::ToolUse { .. },
+        busbar_core::ir::IrStreamEvent::BlockStart {
+            block: busbar_core::ir::IrBlockMeta::ToolUse { .. },
             ..
         }
     ));
     let stop_evs = reader.read_response_events("", &stop_frame, &mut state);
     assert!(
-        matches!(&stop_evs[0], crate::ir::IrStreamEvent::BlockStop { .. }),
+        matches!(
+            &stop_evs[0],
+            busbar_core::ir::IrStreamEvent::BlockStop { .. }
+        ),
         "tool-call-end must map back to a BlockStop, got {stop_evs:?}"
     );
 }
@@ -3759,7 +3792,7 @@ fn test_block_stop_tool_index_consumed_on_close() {
     writer
         .write_response_event(&IrStreamEvent::BlockStart {
             index: 3,
-            block: crate::ir::IrBlockMeta::ToolUse {
+            block: busbar_core::ir::IrBlockMeta::ToolUse {
                 id: "c".to_string(),
                 name: "f".to_string(),
             },
@@ -3788,21 +3821,21 @@ fn test_block_stop_tool_index_consumed_on_close() {
 /// stop-sequence stop as a normal end-of-turn for a Cohere client.
 #[test]
 fn test_write_response_stop_sequence_maps_to_stop_sequence() {
-    let resp = crate::ir::IrResponse {
+    let resp = busbar_core::ir::IrResponse {
         logprobs: Vec::new(),
-        role: crate::ir::IrRole::Assistant,
-        content: vec![crate::ir::IrBlock::Text {
+        role: busbar_core::ir::IrRole::Assistant,
+        content: vec![busbar_core::ir::IrBlock::Text {
             text: "hi".to_string(),
             cache_control: None,
             citations: Vec::new(),
         }],
-        stop_reason: Some(crate::ir::IrStopReason::StopSequence),
-        usage: crate::ir::IrUsage {
+        stop_reason: Some(busbar_core::ir::IrStopReason::StopSequence),
+        usage: busbar_core::ir::IrUsage {
             input_tokens: 1,
             output_tokens: 1,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
-            detail: crate::ir::IrUsageDetail::default(),
+            detail: busbar_core::ir::IrUsageDetail::default(),
         },
         model: None,
         id: Some("c14c80c3-18eb-4519-9460-6c92edd8cfb4".to_string()),
@@ -3823,21 +3856,21 @@ fn test_write_response_stop_sequence_maps_to_stop_sequence() {
 /// end-of-turn case).
 #[test]
 fn test_write_response_end_turn_maps_to_complete() {
-    let resp = crate::ir::IrResponse {
+    let resp = busbar_core::ir::IrResponse {
         logprobs: Vec::new(),
-        role: crate::ir::IrRole::Assistant,
-        content: vec![crate::ir::IrBlock::Text {
+        role: busbar_core::ir::IrRole::Assistant,
+        content: vec![busbar_core::ir::IrBlock::Text {
             text: "hi".to_string(),
             cache_control: None,
             citations: Vec::new(),
         }],
-        stop_reason: Some(crate::ir::IrStopReason::EndTurn),
-        usage: crate::ir::IrUsage {
+        stop_reason: Some(busbar_core::ir::IrStopReason::EndTurn),
+        usage: busbar_core::ir::IrUsage {
             input_tokens: 1,
             output_tokens: 1,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
-            detail: crate::ir::IrUsageDetail::default(),
+            detail: busbar_core::ir::IrUsageDetail::default(),
         },
         model: None,
         id: Some("c14c80c3-18eb-4519-9460-6c92edd8cfb4".to_string()),
@@ -3860,14 +3893,14 @@ fn test_stream_message_delta_stop_sequence_maps_to_stop_sequence() {
     let writer = CohereWriter;
     let (_, frame) = writer
         .write_response_event(&IrStreamEvent::MessageDelta {
-            stop_reason: Some(crate::ir::IrStopReason::StopSequence),
+            stop_reason: Some(busbar_core::ir::IrStopReason::StopSequence),
             stop_sequence: None,
-            usage: crate::ir::IrUsage {
+            usage: busbar_core::ir::IrUsage {
                 input_tokens: 2,
                 output_tokens: 3,
                 cache_creation_input_tokens: None,
                 cache_read_input_tokens: None,
-                detail: crate::ir::IrUsageDetail::default(),
+                detail: busbar_core::ir::IrUsageDetail::default(),
             },
         })
         .expect("message-end frame");
@@ -3894,7 +3927,10 @@ fn test_stop_sequence_roundtrips_symmetrically() {
         "usage": { "tokens": { "input_tokens": 1, "output_tokens": 1 } }
     });
     let ir = reader.read_response(&native).expect("read native response");
-    assert_eq!(ir.stop_reason, Some(crate::ir::IrStopReason::StopSequence));
+    assert_eq!(
+        ir.stop_reason,
+        Some(busbar_core::ir::IrStopReason::StopSequence)
+    );
 
     let writer = CohereWriter;
     let out = writer.write_response(&ir);
@@ -3920,7 +3956,7 @@ fn count_block_starts_at(evs: &[IrStreamEvent], idx: usize) -> usize {
 #[test]
 fn test_duplicate_tool_call_start_is_noop() {
     let reader = CohereReader;
-    let mut state = crate::ir::StreamDecodeState::default();
+    let mut state = busbar_core::ir::StreamDecodeState::default();
 
     let start = serde_json::json!({
         "type": ET_TOOL_CALL_START,
@@ -3961,7 +3997,7 @@ fn test_duplicate_tool_call_start_is_noop() {
 #[test]
 fn test_over_cap_tool_call_start_emits_no_block() {
     let reader = CohereReader;
-    let mut state = crate::ir::StreamDecodeState::default();
+    let mut state = busbar_core::ir::StreamDecodeState::default();
 
     // Saturate the tracked set with distinct frame indices [0, MAX_TRACKED_TOOL_FRAMES).
     for f in 0..MAX_TRACKED_TOOL_FRAMES {
@@ -4011,7 +4047,7 @@ fn test_over_cap_tool_call_start_emits_no_block() {
 #[test]
 fn test_text_block_normalized_to_ir_index_zero() {
     let reader = CohereReader;
-    let mut state = crate::ir::StreamDecodeState::default();
+    let mut state = busbar_core::ir::StreamDecodeState::default();
 
     // Backend numbers the text content block at a NON-ZERO wire index.
     let cs = reader.read_response_events(
@@ -4029,7 +4065,7 @@ fn test_text_block_normalized_to_ir_index_zero() {
                 *index, 0,
                 "text BlockStart must be normalized to IR index 0"
             );
-            assert!(matches!(block, crate::ir::IrBlockMeta::Text));
+            assert!(matches!(block, busbar_core::ir::IrBlockMeta::Text));
         }
         other => panic!("expected one text BlockStart, got {other:?}"),
     }
@@ -4049,7 +4085,7 @@ fn test_text_block_normalized_to_ir_index_zero() {
                 *index, 0,
                 "text BlockDelta must be normalized to IR index 0"
             );
-            assert!(matches!(delta, crate::ir::IrDelta::TextDelta(t) if t == "hi"));
+            assert!(matches!(delta, busbar_core::ir::IrDelta::TextDelta(t) if t == "hi"));
         }
         other => panic!("expected one text BlockDelta, got {other:?}"),
     }
@@ -4115,7 +4151,7 @@ fn test_rate_limit_body_mentioning_tokens_is_not_context_length() {
     );
 
     // End-to-end through the breaker: the canonical class is RateLimit, not ContextLength.
-    let sig = crate::breaker::normalize_raw_error(&raw, &std::collections::HashMap::new());
+    let sig = busbar_core::breaker::normalize_raw_error(&raw, &std::collections::HashMap::new());
     assert_eq!(
             sig.class,
             StatusClass::RateLimit,
@@ -4140,7 +4176,7 @@ fn test_bad_request_body_mentioning_tokens_is_context_length() {
         Some("context_length_exceeded"),
         "a 400 oversized-request body must still override to the canonical code"
     );
-    let sig = crate::breaker::normalize_raw_error(&raw, &std::collections::HashMap::new());
+    let sig = busbar_core::breaker::normalize_raw_error(&raw, &std::collections::HashMap::new());
     assert_eq!(sig.class, StatusClass::ContextLength);
 
     let signal = reader.classify(StatusCode::BAD_REQUEST, body);
@@ -4158,7 +4194,7 @@ fn test_thinking_blockstop_emits_no_orphan_content_end() {
     // Thinking BlockStart → no frame.
     let start = writer.write_response_event(&IrStreamEvent::BlockStart {
         index: 0,
-        block: crate::ir::IrBlockMeta::Thinking,
+        block: busbar_core::ir::IrBlockMeta::Thinking,
     });
     assert!(
         start.is_none(),
@@ -4181,7 +4217,7 @@ fn test_text_block_emits_balanced_content_start_and_end() {
 
     let start = writer.write_response_event(&IrStreamEvent::BlockStart {
         index: 0,
-        block: crate::ir::IrBlockMeta::Text,
+        block: busbar_core::ir::IrBlockMeta::Text,
     });
     let (_, start_data) = start.expect("Text BlockStart must emit a content-start frame");
     assert_eq!(
@@ -4199,8 +4235,8 @@ fn test_text_block_emits_balanced_content_start_and_end() {
 
 /// Minimal IR request carrying a single tool and an explicit `tool_choice`, for the
 /// tool-choice round-trip tests below.
-fn ir_with_tool_choice(tc: Option<crate::ir::IrToolChoice>) -> crate::ir::IrRequest {
-    crate::ir::IrRequest {
+fn ir_with_tool_choice(tc: Option<busbar_core::ir::IrToolChoice>) -> busbar_core::ir::IrRequest {
+    busbar_core::ir::IrRequest {
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -4208,15 +4244,15 @@ fn ir_with_tool_choice(tc: Option<crate::ir::IrToolChoice>) -> crate::ir::IrRequ
         user: None,
         parallel_tool_calls: None,
         system: vec![],
-        messages: vec![crate::ir::IrMessage {
-            role: crate::ir::IrRole::User,
-            content: vec![crate::ir::IrBlock::Text {
+        messages: vec![busbar_core::ir::IrMessage {
+            role: busbar_core::ir::IrRole::User,
+            content: vec![busbar_core::ir::IrBlock::Text {
                 text: "hi".to_string(),
                 cache_control: None,
                 citations: Vec::new(),
             }],
         }],
-        tools: vec![crate::ir::IrTool {
+        tools: vec![busbar_core::ir::IrTool {
             name: "get_weather".to_string(),
             description: None,
             input_schema: serde_json::json!({}),
@@ -4256,7 +4292,10 @@ fn test_cohere_tool_choice_required_roundtrips() {
     let ir = CohereReader
         .read_request(&body)
         .expect("read_request should succeed");
-    assert_eq!(ir.tool_choice, Some(crate::ir::IrToolChoice::Required));
+    assert_eq!(
+        ir.tool_choice,
+        Some(busbar_core::ir::IrToolChoice::Required)
+    );
 
     let writer = CohereWriter;
     let out = writer.write_request(&ir);
@@ -4279,7 +4318,7 @@ fn test_cohere_tool_choice_none() {
     let ir = CohereReader
         .read_request(&body)
         .expect("read_request should succeed");
-    assert_eq!(ir.tool_choice, Some(crate::ir::IrToolChoice::None));
+    assert_eq!(ir.tool_choice, Some(busbar_core::ir::IrToolChoice::None));
 
     let writer = CohereWriter;
     let out = writer.write_request(&ir);
@@ -4294,7 +4333,7 @@ fn test_cohere_tool_choice_specific_degrades_to_required() {
     // Cohere cannot pin ONE tool; a targeted IrToolChoice::Tool (e.g. translated from an OpenAI
     // `tool_choice:{type:function,...}`) must degrade to REQUIRED — force *some* tool — NOT
     // silently drop to auto. This is the load-bearing tool-choice behavior on a lossy-by-target hop.
-    let ir = ir_with_tool_choice(Some(crate::ir::IrToolChoice::Tool {
+    let ir = ir_with_tool_choice(Some(busbar_core::ir::IrToolChoice::Tool {
         name: "get_weather".to_string(),
     }));
     let writer = CohereWriter;
@@ -4310,7 +4349,7 @@ fn test_cohere_tool_choice_specific_degrades_to_required() {
 fn test_cohere_tool_choice_auto_omitted() {
     // Auto is Cohere's default — the writer must omit the field entirely (emitting "auto" would
     // be invalid for Cohere v2), and an absent inbound tool_choice reads as None (the Option).
-    let ir = ir_with_tool_choice(Some(crate::ir::IrToolChoice::Auto));
+    let ir = ir_with_tool_choice(Some(busbar_core::ir::IrToolChoice::Auto));
     let writer = CohereWriter;
     let out = writer.write_request(&ir);
     assert!(
@@ -4390,7 +4429,7 @@ fn test_cohere_sampling_controls_survive_roundtrip() {
     assert_eq!(ir.seed, Some(42));
     assert_eq!(
         ir.response_format,
-        Some(crate::ir::IrResponseFormat {
+        Some(busbar_core::ir::IrResponseFormat {
             json: true,
             schema: None,
             name: None,
@@ -4440,10 +4479,10 @@ fn test_cohere_image_content_part_read_write_roundtrip() {
         .expect("read_request should succeed");
     let content = &ir.messages[0].content;
     // Text + 2 images, in order.
-    assert!(matches!(content[0], crate::ir::IrBlock::Text { .. }));
+    assert!(matches!(content[0], busbar_core::ir::IrBlock::Text { .. }));
     match &content[1] {
-        crate::ir::IrBlock::Image {
-            source: crate::ir::IrImageSource::Base64 { media_type, data },
+        busbar_core::ir::IrBlock::Image {
+            source: busbar_core::ir::IrImageSource::Base64 { media_type, data },
             ..
         } => {
             assert_eq!(media_type, "image/png");
@@ -4452,8 +4491,8 @@ fn test_cohere_image_content_part_read_write_roundtrip() {
         other => panic!("expected base64 Image, got {other:?}"),
     }
     match &content[2] {
-        crate::ir::IrBlock::Image {
-            source: crate::ir::IrImageSource::Url(url),
+        busbar_core::ir::IrBlock::Image {
+            source: busbar_core::ir::IrImageSource::Url(url),
             ..
         } => {
             // A non-data URL is preserved verbatim as the typed Url source.
@@ -4500,7 +4539,7 @@ fn test_cohere_image_content_part_read_write_roundtrip() {
 /// and `COMPLETE` on write (never leaked verbatim into Cohere's closed enum).
 #[test]
 fn finish_reason_error_and_unknown_codec() {
-    use crate::ir::IrStopReason as S;
+    use busbar_core::ir::IrStopReason as S;
     // ERROR (infra) vs ERROR_TOXIC (moderation) must NOT be conflated.
     assert_eq!(read_cohere_stop_reason(COHERE_FINISH_ERROR), S::Error);
     assert_eq!(
@@ -4532,7 +4571,7 @@ fn read_write_response_error_finish_reason_round_trips() {
         "usage": {"tokens": {"input_tokens": 4, "output_tokens": 0}}
     });
     let resp = CohereReader.read_response(&body).expect("read_response");
-    assert_eq!(resp.stop_reason, Some(crate::ir::IrStopReason::Error));
+    assert_eq!(resp.stop_reason, Some(busbar_core::ir::IrStopReason::Error));
     let writer = CohereWriter;
     let out = writer.write_response(&resp);
     assert_eq!(
@@ -4547,11 +4586,11 @@ fn read_write_response_error_finish_reason_round_trips() {
 /// call a tool" intent rather than silently dropping to auto.
 #[test]
 fn tool_choice_maps_to_cohere_native_strings() {
-    let mk = |tc: Option<crate::ir::IrToolChoice>| {
-        let mut req = crate::ir::IrRequest {
-            messages: vec![crate::ir::IrMessage {
-                role: crate::ir::IrRole::User,
-                content: vec![crate::ir::IrBlock::Text {
+    let mk = |tc: Option<busbar_core::ir::IrToolChoice>| {
+        let mut req = busbar_core::ir::IrRequest {
+            messages: vec![busbar_core::ir::IrMessage {
+                role: busbar_core::ir::IrRole::User,
+                content: vec![busbar_core::ir::IrBlock::Text {
                     text: "hi".to_string(),
                     cache_control: None,
                     citations: Vec::new(),
@@ -4559,7 +4598,7 @@ fn tool_choice_maps_to_cohere_native_strings() {
             }],
             // `tools` is required alongside `tool_choice` — omitting it would test
             // the guaranteed-400 shape the guard exists to prevent.
-            tools: vec![crate::ir::IrTool {
+            tools: vec![busbar_core::ir::IrTool {
                 name: "f".to_string(),
                 description: None,
                 input_schema: serde_json::json!({}),
@@ -4574,20 +4613,20 @@ fn tool_choice_maps_to_cohere_native_strings() {
         writer.write_request(&req)
     };
     assert_eq!(
-        mk(Some(crate::ir::IrToolChoice::Required))
+        mk(Some(busbar_core::ir::IrToolChoice::Required))
             .get("tool_choice")
             .and_then(|v| v.as_str()),
         Some("REQUIRED")
     );
     assert_eq!(
-        mk(Some(crate::ir::IrToolChoice::None))
+        mk(Some(busbar_core::ir::IrToolChoice::None))
             .get("tool_choice")
             .and_then(|v| v.as_str()),
         Some("NONE")
     );
     // A specific tool degrades to REQUIRED (documented lossy-by-target — v2 has no named choice).
     assert_eq!(
-        mk(Some(crate::ir::IrToolChoice::Tool {
+        mk(Some(busbar_core::ir::IrToolChoice::Tool {
             name: "f".to_string()
         }))
         .get("tool_choice")
@@ -4596,7 +4635,7 @@ fn tool_choice_maps_to_cohere_native_strings() {
     );
     // Auto is the default and is OMITTED (a request that never forced a tool gains no directive).
     assert!(
-        mk(Some(crate::ir::IrToolChoice::Auto))
+        mk(Some(busbar_core::ir::IrToolChoice::Auto))
             .get("tool_choice")
             .is_none(),
         "Auto must be omitted, not emitted"
@@ -4651,10 +4690,10 @@ fn response_format_json_schema_round_trips_cohere_shape() {
 /// cross-protocol request carrying `n` does not produce an invalid Cohere body.
 #[test]
 fn n_candidate_count_never_emitted_on_cohere() {
-    let mut req = crate::ir::IrRequest {
-        messages: vec![crate::ir::IrMessage {
-            role: crate::ir::IrRole::User,
-            content: vec![crate::ir::IrBlock::Text {
+    let mut req = busbar_core::ir::IrRequest {
+        messages: vec![busbar_core::ir::IrMessage {
+            role: busbar_core::ir::IrRole::User,
+            content: vec![busbar_core::ir::IrBlock::Text {
                 text: "hi".to_string(),
                 cache_control: None,
                 citations: Vec::new(),
@@ -4689,7 +4728,7 @@ fn n_candidate_count_never_emitted_on_cohere() {
 /// agree on is "reasoning".
 #[test]
 fn test_stream_tool_plan_delta_becomes_leading_reasoning_before_tool_call() {
-    let mut state = crate::ir::StreamDecodeState::default();
+    let mut state = busbar_core::ir::StreamDecodeState::default();
     let reader = CohereReader;
 
     // message-start
@@ -4709,9 +4748,9 @@ fn test_stream_tool_plan_delta_becomes_leading_reasoning_before_tool_call() {
     assert!(
         matches!(
             &evs[0],
-            crate::ir::IrStreamEvent::BlockStart {
+            busbar_core::ir::IrStreamEvent::BlockStart {
                 index: 0,
-                block: crate::ir::IrBlockMeta::Thinking
+                block: busbar_core::ir::IrBlockMeta::Thinking
             }
         ),
         "first tool-plan-delta must open a leading reasoning block at index 0, got {evs:?}"
@@ -4719,9 +4758,9 @@ fn test_stream_tool_plan_delta_becomes_leading_reasoning_before_tool_call() {
     assert!(
         matches!(
             &evs[1],
-            crate::ir::IrStreamEvent::BlockDelta {
+            busbar_core::ir::IrStreamEvent::BlockDelta {
                 index: 0,
-                delta: crate::ir::IrDelta::ThinkingDelta(t)
+                delta: busbar_core::ir::IrDelta::ThinkingDelta(t)
             } if t == "I will "
         ),
         "the plan token must be a ThinkingDelta, got {evs:?}"
@@ -4739,9 +4778,9 @@ fn test_stream_tool_plan_delta_becomes_leading_reasoning_before_tool_call() {
     );
     assert!(matches!(
         &evs[0],
-        crate::ir::IrStreamEvent::BlockDelta {
+        busbar_core::ir::IrStreamEvent::BlockDelta {
             index: 0,
-            delta: crate::ir::IrDelta::ThinkingDelta(t)
+            delta: busbar_core::ir::IrDelta::ThinkingDelta(t)
         } if t == "check the weather."
     ));
 
@@ -4759,15 +4798,18 @@ fn test_stream_tool_plan_delta_becomes_leading_reasoning_before_tool_call() {
         &mut state,
     );
     assert!(
-        matches!(&evs[0], crate::ir::IrStreamEvent::BlockStop { index: 0 }),
+        matches!(
+            &evs[0],
+            busbar_core::ir::IrStreamEvent::BlockStop { index: 0 }
+        ),
         "the tool-call-start must close the open plan Text block at index 0 first, got {evs:?}"
     );
     assert!(
         matches!(
             &evs[1],
-            crate::ir::IrStreamEvent::BlockStart {
+            busbar_core::ir::IrStreamEvent::BlockStart {
                 index: 1,
-                block: crate::ir::IrBlockMeta::ToolUse { id, name }
+                block: busbar_core::ir::IrBlockMeta::ToolUse { id, name }
             } if id == "t1" && name == "get_weather"
         ),
         "the tool must open at index 1, after the leading plan Text at index 0, got {evs:?}"
@@ -4781,15 +4823,15 @@ fn test_stream_tool_plan_delta_becomes_leading_reasoning_before_tool_call() {
 #[test]
 fn test_write_response_reemits_folded_tool_plan_as_content_not_tool_plan() {
     let writer = CohereWriter;
-    let resp = crate::ir::IrResponse {
-        role: crate::ir::IrRole::Assistant,
+    let resp = busbar_core::ir::IrResponse {
+        role: busbar_core::ir::IrRole::Assistant,
         content: vec![
-            crate::ir::IrBlock::Text {
+            busbar_core::ir::IrBlock::Text {
                 text: "First I will check the weather.".to_string(),
                 cache_control: None,
                 citations: Vec::new(),
             },
-            crate::ir::IrBlock::ToolUse {
+            busbar_core::ir::IrBlock::ToolUse {
                 thought_signature: None,
                 id: "t1".to_string(),
                 name: "get_weather".to_string(),
@@ -4798,12 +4840,12 @@ fn test_write_response_reemits_folded_tool_plan_as_content_not_tool_plan() {
             },
         ],
         stop_reason: None,
-        usage: crate::ir::IrUsage {
+        usage: busbar_core::ir::IrUsage {
             input_tokens: 0,
             output_tokens: 0,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
-            detail: crate::ir::IrUsageDetail::default(),
+            detail: busbar_core::ir::IrUsageDetail::default(),
         },
         model: None,
         id: None,
@@ -4843,8 +4885,8 @@ fn test_write_response_reemits_folded_tool_plan_as_content_not_tool_plan() {
 #[test]
 fn test_stream_tool_plan_to_anthropic_writer_is_balanced() {
     let reader = CohereReader;
-    let writer = crate::proto::anthropic::AnthropicWriter;
-    let mut state = crate::ir::StreamDecodeState::default();
+    let writer = super::super::anthropic::AnthropicWriter;
+    let mut state = busbar_core::ir::StreamDecodeState::default();
 
     // The native Cohere v2 tool-use stream frame sequence, in order.
     let frames = vec![
@@ -4915,7 +4957,7 @@ fn test_anthropic_user_tool_result_survives_to_cohere() {
             ]}
         ]
     });
-    let ir = AnthropicReader
+    let ir = super::super::anthropic::AnthropicReader
         .read_request(&anthropic_body)
         .expect("anthropic read_request");
     // The IR must carry the tool_result on a USER-role message (this is the crux of the bug).
@@ -4925,12 +4967,12 @@ fn test_anthropic_user_tool_result_survives_to_cohere() {
         .find(|m| {
             m.content
                 .iter()
-                .any(|b| matches!(b, crate::ir::IrBlock::ToolResult { .. }))
+                .any(|b| matches!(b, busbar_core::ir::IrBlock::ToolResult { .. }))
         })
         .expect("IR must contain a ToolResult block");
     assert_eq!(
         tr_msg.role,
-        crate::ir::IrRole::User,
+        busbar_core::ir::IrRole::User,
         "Anthropic carries tool_result on a User-role message in the IR"
     );
 
@@ -4979,7 +5021,7 @@ fn test_anthropic_user_tool_result_plus_text_splits_to_tool_and_user() {
             ]}
         ]
     });
-    let ir = AnthropicReader
+    let ir = super::super::anthropic::AnthropicReader
         .read_request(&anthropic_body)
         .expect("anthropic read_request");
     // Precondition: the IR carries BOTH a ToolResult and genuine Text on the same User-role message.
@@ -4987,16 +5029,16 @@ fn test_anthropic_user_tool_result_plus_text_splits_to_tool_and_user() {
         .messages
         .iter()
         .find(|m| {
-            m.role == crate::ir::IrRole::User
+            m.role == busbar_core::ir::IrRole::User
                 && m.content
                     .iter()
-                    .any(|b| matches!(b, crate::ir::IrBlock::ToolResult { .. }))
+                    .any(|b| matches!(b, busbar_core::ir::IrBlock::ToolResult { .. }))
                 && m.content
                     .iter()
-                    .any(|b| matches!(b, crate::ir::IrBlock::Text { .. }))
+                    .any(|b| matches!(b, busbar_core::ir::IrBlock::Text { .. }))
         })
         .expect("IR must carry a User message bundling a ToolResult AND follow-up Text");
-    assert_eq!(bundled.role, crate::ir::IrRole::User);
+    assert_eq!(bundled.role, busbar_core::ir::IrRole::User);
 
     let writer = CohereWriter;
     let cohere = writer.write_request(&ir);

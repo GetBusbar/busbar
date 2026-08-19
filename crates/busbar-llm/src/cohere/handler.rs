@@ -3,12 +3,12 @@
 
 //! Cohere `RequestHandler` + cells. Embeddings via `/v2/embed`.
 
-use crate::handlers::{
+use busbar_core::handlers::{
     CodecError, EgressCtx, IngressReject, OperationHandler, RequestHandler, WireBody,
 };
-use crate::ir::embeddings::{EmbInput, EmbeddingItem, EmbeddingsResp, EncFmt, VectorData};
-use crate::ir::variant::{IrReq, IrResp};
-use crate::operation::Operation;
+use busbar_core::ir::embeddings::{EmbInput, EmbeddingItem, EmbeddingsResp, EncFmt, VectorData};
+use busbar_core::ir::variant::{IrReq, IrResp};
+use busbar_core::operation::Operation;
 use bytes::Bytes;
 use serde_json::{json, Value};
 
@@ -18,17 +18,18 @@ const PATH_CHAT: &str = "/v2/chat";
 const PATH_EMBED: &str = "/v2/embed";
 const PATH_RERANK: &str = "/v2/rerank";
 
-pub(crate) struct CohereRequestHandler;
+pub struct CohereRequestHandler;
 /// This protocol's OWN chat instance — delete this line (and the registry arm) and this
 /// protocol's chat 404s via the standard no-handler path; everything else keeps working.
-static CHAT: crate::handlers::chat::ChatOperation = crate::handlers::chat::ChatOperation("cohere");
+static CHAT: busbar_core::handlers::chat::ChatOperation =
+    busbar_core::handlers::chat::ChatOperation("cohere");
 static EMB: CohereEmbeddings = CohereEmbeddings;
 static RERANK: CohereRerank = CohereRerank;
 
 /// COHERE'S ROW OF THE SUPPORT MATRIX — the verbs this protocol speaks, as data. A verb absent from
 /// it is the standard no-handler 404: Cohere has no moderation/image/audio surface, and the
 /// protocol-surface verbs are MCP's and A2A's.
-static CELLS: &[crate::handlers::Cell] = &[
+static CELLS: &[busbar_core::handlers::Cell] = &[
     (Operation::CHAT, &CHAT),
     (Operation::EMBEDDINGS, &EMB),
     (Operation::RERANK, &RERANK),
@@ -46,12 +47,12 @@ impl RequestHandler for CohereRequestHandler {
         "cohere"
     }
     fn operation_handler(&self, op: Operation) -> Option<&dyn OperationHandler> {
-        crate::handlers::cell_of(CELLS, op)
+        busbar_core::handlers::cell_of(CELLS, op)
     }
     fn upstream_path(&self, ctx: &EgressCtx) -> String {
         // Unreachable: `operation_handler` returns `None` for a verb absent from the table, so
         // egress path resolution is never reached for one. The fallback is the pre-1.6.0 answer.
-        crate::handlers::path_of(PATHS, ctx.operation)
+        busbar_core::handlers::path_of(PATHS, ctx.operation)
             .unwrap_or(PATH_EMBED)
             .into()
     }
@@ -111,8 +112,8 @@ struct CohereEmbeddings;
 impl OperationHandler for CohereEmbeddings {
     /// This protocol's error envelope, shared by every operation it serves: the same
     /// vocabulary its chat cell reports, read from the same upstream.
-    fn extract_error(&self, status: u16, body: &[u8]) -> crate::breaker::RawUpstreamError {
-        crate::handlers::protocol_error("cohere", status, body)
+    fn extract_error(&self, status: u16, body: &[u8]) -> busbar_core::breaker::RawUpstreamError {
+        busbar_core::handlers::protocol_error("cohere", status, body)
     }
     // Token-metered: buffer the same-protocol non-stream 2xx body so the default
     // `extract_usage` can read the `usage` object and bill the virtual key's TPM/spend
@@ -148,28 +149,30 @@ impl OperationHandler for CohereEmbeddings {
                     .collect()
             })
             .unwrap_or_else(|| vec![EncFmt::Float]);
-        Ok(IrReq::Embeddings(crate::ir::embeddings::EmbeddingsReq {
-            model: wire
-                .get("model")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
-            input: EmbInput::Text(texts),
-            input_type: wire
-                .get("input_type")
-                .and_then(Value::as_str)
-                .map(str::to_string),
-            dimensions: wire
-                .get("output_dimension")
-                .and_then(Value::as_u64)
-                .and_then(|d| u32::try_from(d).ok()),
-            truncate: wire
-                .get("truncate")
-                .and_then(Value::as_str)
-                .map(str::to_string),
-            encoding_formats,
-            ..Default::default()
-        }))
+        Ok(IrReq::Embeddings(
+            busbar_core::ir::embeddings::EmbeddingsReq {
+                model: wire
+                    .get("model")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                input: EmbInput::Text(texts),
+                input_type: wire
+                    .get("input_type")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                dimensions: wire
+                    .get("output_dimension")
+                    .and_then(Value::as_u64)
+                    .and_then(|d| u32::try_from(d).ok()),
+                truncate: wire
+                    .get("truncate")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                encoding_formats,
+                ..Default::default()
+            },
+        ))
     }
     fn write_request(&self, ir: &IrReq) -> Bytes {
         let IrReq::Embeddings(r) = ir else {
@@ -273,7 +276,7 @@ impl OperationHandler for CohereEmbeddings {
             .and_then(|m| m.get("billed_units"))
             .and_then(|b| b.get("input_tokens"))
             .and_then(Value::as_u64)
-            .map(|n| crate::billing::TokenUsage {
+            .map(|n| busbar_core::billing::TokenUsage {
                 input: n,
                 ..Default::default()
             });
@@ -356,8 +359,8 @@ fn rerank_documents(v: Option<&Value>) -> Vec<String> {
 impl OperationHandler for CohereRerank {
     /// This protocol's error envelope, shared by every operation it serves: the same
     /// vocabulary its chat cell reports, read from the same upstream.
-    fn extract_error(&self, status: u16, body: &[u8]) -> crate::breaker::RawUpstreamError {
-        crate::handlers::protocol_error("cohere", status, body)
+    fn extract_error(&self, status: u16, body: &[u8]) -> busbar_core::breaker::RawUpstreamError {
+        busbar_core::handlers::protocol_error("cohere", status, body)
     }
     fn read_request(&self, body: &[u8], _content_type: &str) -> Result<IrReq, IngressReject> {
         let wire: Value =
@@ -373,7 +376,7 @@ impl OperationHandler for CohereRerank {
                 "rerank request requires `query` and `documents`".into(),
             ));
         }
-        Ok(IrReq::Rerank(crate::ir::rerank::RerankReq {
+        Ok(IrReq::Rerank(busbar_core::ir::rerank::RerankReq {
             model: wire
                 .get("model")
                 .and_then(Value::as_str)
@@ -412,7 +415,7 @@ impl OperationHandler for CohereRerank {
     fn read_response(&self, wire: &[u8]) -> Result<IrResp, CodecError> {
         let v: Value =
             serde_json::from_slice(wire).map_err(|e| CodecError::Malformed(e.to_string()))?;
-        Ok(IrResp::Rerank(crate::ir::rerank::RerankResp {
+        Ok(IrResp::Rerank(busbar_core::ir::rerank::RerankResp {
             id: v.get("id").and_then(Value::as_str).map(str::to_string),
             results: read_rerank_results(v.get("results")),
             search_units: v
@@ -445,12 +448,12 @@ impl OperationHandler for CohereRerank {
 
 /// `results[] -> [{index, relevance_score}]` — shared by the Cohere and Bedrock rerank readers
 /// (the two wires use the same result shape).
-pub(crate) fn read_rerank_results(v: Option<&Value>) -> Vec<crate::ir::rerank::RerankResult> {
+pub(crate) fn read_rerank_results(v: Option<&Value>) -> Vec<busbar_core::ir::rerank::RerankResult> {
     v.and_then(Value::as_array)
         .map(|a| {
             a.iter()
                 .filter_map(|x| {
-                    Some(crate::ir::rerank::RerankResult {
+                    Some(busbar_core::ir::rerank::RerankResult {
                         index: x.get("index").and_then(Value::as_u64)? as usize,
                         relevance_score: x.get("relevance_score").and_then(Value::as_f64)?,
                     })

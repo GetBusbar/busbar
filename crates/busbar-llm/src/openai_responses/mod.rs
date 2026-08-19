@@ -3,23 +3,37 @@
 
 //! OpenAI Responses API protocol reader/writer implementation.
 
-use super::openai_family::{
+use axum::http::StatusCode;
+use busbar_core::breaker::StatusClass;
+use busbar_core::ir::IrStreamEvent;
+use busbar_core::proto::openai_family::{
     bearer_error_code, CODE_INVALID_API_KEY, ERR_TYPE_AUTHENTICATION, ERR_TYPE_INSUFFICIENT_QUOTA,
     ERR_TYPE_INVALID_REQUEST, ERR_TYPE_NOT_FOUND, ERR_TYPE_OVERLOADED, ERR_TYPE_PERMISSION,
     ERR_TYPE_RATE_LIMIT, ERR_TYPE_SERVER_ERROR,
 };
-use super::*;
+use busbar_core::proto::*;
 use std::sync::atomic::{AtomicU64, Ordering};
+
+pub mod handler;
+mod reader;
+mod writer;
+
+/// Build this dialect's wire codec — the [`ProtocolDecl::codec`] constructor. A fresh instance per
+/// resolution: `ResponsesWriter` carries per-STREAM mutable state (`sequence`, `response_id`).
+/// Mirrors `super::anthropic::protocol`.
+pub fn protocol() -> Protocol {
+    Protocol::new(PROTO_RESPONSES, ResponsesReader, ResponsesWriter)
+}
 
 /// THE `/v1/responses` DECLARATION. Shares OpenAI's `call_…` tool-id shape (it is the same vendor's
 /// second surface) and declares its own name, because a metric label is a protocol's own.
-pub(crate) const DECL: ProtocolDecl = ProtocolDecl {
+pub const DECL: ProtocolDecl = ProtocolDecl {
     name: PROTO_RESPONSES,
-    codec: Some(Protocol::responses),
-    handler: Some(&crate::handlers::responses::ResponsesRequestHandler),
-    verbs: &[crate::operation::Operation::CHAT],
+    codec: Some(protocol),
+    handler: Some(&handler::ResponsesRequestHandler),
+    verbs: &[busbar_core::operation::Operation::CHAT],
     head_keys: LLM_HEAD_KEYS,
-    streaming_content_type: Some(crate::proxy::TEXT_EVENT_STREAM),
+    streaming_content_type: Some(busbar_core::proxy::TEXT_EVENT_STREAM),
     array_stream_shim_key: None,
     native_tool_id_prefix: Some("call_"),
     ingress_auth: IngressAuth::Bearer,
@@ -46,13 +60,13 @@ const MAX_OUTPUT_INDEX: usize = 127;
 /// omits it, making the omission a distinguishability tell. On any cross-protocol path
 /// (Anthropic→Responses, Bedrock→Responses) the IR `model` is `None`; emit this fallback rather
 /// than dropping the key. Mirrors `openai_family.rs::OPENAI_FAMILY_DEFAULT_MODEL`.
-const DEFAULT_MODEL: &str = super::openai_family::OPENAI_FAMILY_DEFAULT_MODEL;
+const DEFAULT_MODEL: &str = busbar_core::proto::openai_family::OPENAI_FAMILY_DEFAULT_MODEL;
 
 /// Hard cap on the number of DISTINCT output indices tracked per stream in `StreamDecodeState`
 /// (`open_tools`) and in the writer's open-item sets. Bounds per-request memory against a
 /// pathological backend that emits a unique `output_index` per event (a per-connection amplification
 /// DoS). Matches `openai_family.rs::OPENAI_FAMILY_MAX_OPEN_TOOLS` (OpenAI's documented parallel-tool-call limit, 128).
-const MAX_OPEN_TOOLS: usize = super::openai_family::OPENAI_FAMILY_MAX_OPEN_TOOLS;
+const MAX_OPEN_TOOLS: usize = busbar_core::proto::openai_family::OPENAI_FAMILY_MAX_OPEN_TOOLS;
 
 /// Key offset under which the streaming reader tracks OPEN TEXT output indices inside the shared
 /// `StreamDecodeState::open_tools` set. A native /v1/responses stream can carry MULTIPLE message
@@ -69,9 +83,9 @@ const MAX_OPEN_TOOLS: usize = super::openai_family::OPENAI_FAMILY_MAX_OPEN_TOOLS
 const TEXT_INDEX_KEY_OFFSET: usize = 1_000;
 
 /// Base62 alphabet the native Responses ids draw their opaque suffix from — the shared
-/// single-source-of-truth atom (see `crate::proto::BASE62_ALPHABET`), aliased locally. Used by
+/// single-source-of-truth atom (see `busbar_core::proto::BASE62_ALPHABET`), aliased locally. Used by
 /// [`synthesize_item_id`] and [`synthesize_response_id`].
-const BASE62: &[u8; 62] = crate::proto::BASE62_ALPHABET;
+const BASE62: &[u8; 62] = busbar_core::proto::BASE62_ALPHABET;
 
 /// Width of the opaque base62 suffix on a synthesized item id (`msg_…`/`fc_…`). Native Responses
 /// item ids carry a long opaque random token with no positional structure; 48 base62 chars matches
@@ -127,7 +141,7 @@ const INCOMPLETE_REASON_OTHER: &str = "other";
 
 /// Top-level `object` field value and vendor tag for the Responses protocol.
 const OBJ_RESPONSE: &str = "response";
-const VENDOR_NAME: &str = crate::proto::PROTO_RESPONSES;
+const VENDOR_NAME: &str = busbar_core::proto::PROTO_RESPONSES;
 
 /// Synthesized id prefixes (bare prefix without trailing underscore for item ids).
 const RESPONSE_ID_PREFIX: &str = "resp_";
@@ -180,7 +194,7 @@ fn synth_token<const N: usize>() -> String {
     // Largest multiple of 62 that fits in a u8 (62 * 4). A byte in `0..REJECT_THRESHOLD` maps to a
     // base62 digit with NO modular bias; a byte >= this threshold (248..=255) is rejected so every
     // base62 character stays equiprobable. See the docstring for the bias rationale.
-    const REJECT_THRESHOLD: u8 = crate::proto::BASE62_REJECT_THRESHOLD;
+    const REJECT_THRESHOLD: u8 = busbar_core::proto::BASE62_REJECT_THRESHOLD;
 
     let mut token = [b'0'; N];
     for slot in token.iter_mut() {
@@ -234,7 +248,7 @@ fn now_unix_secs() -> u64 {
         .unwrap_or(0)
 }
 
-/// Build the Responses API `usage` object from the neutral [`crate::ir::IrUsage`] with ALL fields the
+/// Build the Responses API `usage` object from the neutral [`busbar_core::ir::IrUsage`] with ALL fields the
 /// official SDKs require. `openai-python`'s `ResponseUsage` and `openai-node`'s
 /// `ResponseUsage` type `total_tokens`, `input_tokens_details` (with `cached_tokens`), and
 /// `output_tokens_details` (with `reasoning_tokens`) as REQUIRED, non-nullable fields - a strict
@@ -254,11 +268,11 @@ fn now_unix_secs() -> u64 {
 /// The IR stores UNCACHED input, but the Responses `input_tokens` is a TOTAL that includes the cached
 /// prefix, so `cache_read` (+ `cache_creation`) are added back. `cached_tokens` mirrors the cache-read
 /// count (`0` when absent - not omitted, matching the required-field contract). `reasoning_tokens`
-/// is the carried sub-bucket ([`crate::ir::IrUsageDetail::reasoning_tokens`]), falling back to `0`
+/// is the carried sub-bucket ([`busbar_core::ir::IrUsageDetail::reasoning_tokens`]), falling back to `0`
 /// ONLY when the source reported none - the SDK models the field as required and non-nullable, so it
 /// must be present; what changed is that a reasoning backend's real count now reaches it instead of
 /// every response asserting `0`. `total_tokens` = `input_total` + `output_tokens`.
-fn build_responses_usage(usage: &crate::ir::IrUsage) -> serde_json::Value {
+fn build_responses_usage(usage: &busbar_core::ir::IrUsage) -> serde_json::Value {
     let cache_read = usage.cache_read_input_tokens.unwrap_or(0);
     let cache_write = usage.cache_creation_input_tokens.unwrap_or(0);
     let input_total = usage
@@ -304,12 +318,12 @@ fn synthesize_response_id() -> String {
 /// of `{"type":"input_text","text":...}` blocks (or `output_text`); both are handled. Empty text
 /// is skipped to avoid emitting blank system blocks.
 fn push_system_content(
-    system_blocks: &mut Vec<crate::ir::IrBlock>,
+    system_blocks: &mut Vec<busbar_core::ir::IrBlock>,
     content: Option<&serde_json::Value>,
 ) {
     let mut push_text = |text: &str| {
         if !text.is_empty() {
-            system_blocks.push(crate::ir::IrBlock::Text {
+            system_blocks.push(busbar_core::ir::IrBlock::Text {
                 text: text.to_string(),
                 cache_control: None,
                 citations: Vec::new(),
@@ -337,9 +351,11 @@ fn push_system_content(
 /// user/assistant turn on a cross-protocol hop. This helper handles both shapes so neither arm
 /// loses a turn. A bare string becomes a single `Text` block (empty string -> empty content, but
 /// the message is still emitted so the turn survives).
-fn message_content_blocks(content: Option<&serde_json::Value>) -> Option<Vec<crate::ir::IrBlock>> {
+fn message_content_blocks(
+    content: Option<&serde_json::Value>,
+) -> Option<Vec<busbar_core::ir::IrBlock>> {
     match content {
-        Some(serde_json::Value::String(s)) => Some(vec![crate::ir::IrBlock::Text {
+        Some(serde_json::Value::String(s)) => Some(vec![busbar_core::ir::IrBlock::Text {
             text: s.clone(),
             cache_control: None,
             citations: Vec::new(),
@@ -359,12 +375,14 @@ fn message_content_blocks(content: Option<&serde_json::Value>) -> Option<Vec<cra
 /// fallback) so a forced/targeted tool survives the cross-protocol seam instead of degrading to
 /// `auto`. Absent / unrecognized → `None` (omitted), so a request that never carried a directive does
 /// not gain a spurious one.
-fn read_responses_tool_choice(val: Option<&serde_json::Value>) -> Option<crate::ir::IrToolChoice> {
+fn read_responses_tool_choice(
+    val: Option<&serde_json::Value>,
+) -> Option<busbar_core::ir::IrToolChoice> {
     match val? {
         serde_json::Value::String(s) => match s.as_str() {
-            "auto" => Some(crate::ir::IrToolChoice::Auto),
-            "none" => Some(crate::ir::IrToolChoice::None),
-            "required" => Some(crate::ir::IrToolChoice::Required),
+            "auto" => Some(busbar_core::ir::IrToolChoice::Auto),
+            "none" => Some(busbar_core::ir::IrToolChoice::None),
+            "required" => Some(busbar_core::ir::IrToolChoice::Required),
             _ => None,
         },
         serde_json::Value::Object(o) => {
@@ -376,7 +394,7 @@ fn read_responses_tool_choice(val: Option<&serde_json::Value>) -> Option<crate::
                             .and_then(|f| f.get("name"))
                             .and_then(|n| n.as_str())
                     })
-                    .map(|name| crate::ir::IrToolChoice::Tool {
+                    .map(|name| busbar_core::ir::IrToolChoice::Tool {
                         name: name.to_string(),
                     })
             } else {
@@ -389,12 +407,12 @@ fn read_responses_tool_choice(val: Option<&serde_json::Value>) -> Option<crate::
 
 /// Emit the IR tool-choice union in the Responses API's native shape — string forms for
 /// auto/none/required, the FLAT `{"type":"function","name":...}` object for a targeted tool.
-fn write_responses_tool_choice(tc: &crate::ir::IrToolChoice) -> serde_json::Value {
+fn write_responses_tool_choice(tc: &busbar_core::ir::IrToolChoice) -> serde_json::Value {
     match tc {
-        crate::ir::IrToolChoice::Auto => serde_json::json!("auto"),
-        crate::ir::IrToolChoice::None => serde_json::json!("none"),
-        crate::ir::IrToolChoice::Required => serde_json::json!("required"),
-        crate::ir::IrToolChoice::Tool { name } => {
+        busbar_core::ir::IrToolChoice::Auto => serde_json::json!("auto"),
+        busbar_core::ir::IrToolChoice::None => serde_json::json!("none"),
+        busbar_core::ir::IrToolChoice::Required => serde_json::json!("required"),
+        busbar_core::ir::IrToolChoice::Tool { name } => {
             serde_json::json!({"type": "function", "name": name})
         }
     }
@@ -419,7 +437,7 @@ fn class_for_response_failed(signal: &str) -> StatusClass {
     match signal {
         CODE_INVALID_API_KEY | ERR_TYPE_AUTHENTICATION => StatusClass::Auth,
         ERR_CODE_RATE_LIMIT | ERR_TYPE_INSUFFICIENT_QUOTA => StatusClass::RateLimit,
-        crate::proxy::PROVIDER_CODE_CONTEXT_LENGTH | ERR_CODE_STRING_ABOVE_MAX => {
+        busbar_core::proxy::PROVIDER_CODE_CONTEXT_LENGTH | ERR_CODE_STRING_ABOVE_MAX => {
             StatusClass::ContextLength
         }
         ERR_TYPE_SERVER_ERROR | ERR_TYPE_OVERLOADED => StatusClass::ServerError,
@@ -453,7 +471,7 @@ fn is_code_like_signal(signal: &str) -> bool {
 /// — the code is DERIVED from the error class so the wire ALWAYS carries a valid enum an SDK can
 /// switch on, never a free-form string. Exhaustive over `StatusClass` (no `_`) per the no-catch-all
 /// rule.
-fn responses_error_code(err: &crate::proto::IrError) -> String {
+fn responses_error_code(err: &busbar_core::proto::IrError) -> String {
     if let Some(s) = err.provider_signal.as_deref() {
         if is_code_like_signal(s) {
             return s.to_string();
@@ -506,10 +524,10 @@ fn responses_modeled_keys() -> &'static std::collections::HashSet<&'static str> 
 #[derive(Clone)]
 pub struct ResponsesReader;
 
-fn responses_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock, IrError> {
+fn responses_block(block_val: &serde_json::Value) -> Result<busbar_core::ir::IrBlock, IrError> {
     let obj = block_val.as_object().ok_or(IrError {
         class: StatusClass::ClientError,
-        provider_signal: Some(crate::proto::SIGNAL_IR_PARSE.to_string()),
+        provider_signal: Some(busbar_core::proto::SIGNAL_IR_PARSE.to_string()),
         retry_after: None,
     })?;
 
@@ -519,7 +537,7 @@ fn responses_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock, 
         CONTENT_TYPE_INPUT_TEXT | CONTENT_TYPE_OUTPUT_TEXT => {
             let text_val = obj.get("text");
             let text = text_val.and_then(|t| t.as_str()).unwrap_or("").to_string();
-            Ok(crate::ir::IrBlock::Text {
+            Ok(busbar_core::ir::IrBlock::Text {
                 text,
                 cache_control: None,
                 citations: Vec::new(),
@@ -530,7 +548,7 @@ fn responses_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock, 
             // emitting an empty Image block. Shared with the request-input reader.
             responses_input_image_block(block_val).ok_or(IrError {
                 class: StatusClass::ClientError,
-                provider_signal: Some(crate::proto::SIGNAL_IR_PARSE.to_string()),
+                provider_signal: Some(busbar_core::proto::SIGNAL_IR_PARSE.to_string()),
                 retry_after: None,
             })
         }
@@ -550,16 +568,16 @@ fn responses_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock, 
                 .and_then(|v| v.as_str())
                 .filter(|s| !s.is_empty())
             {
-                super::parse_image_url(data_uri)
+                busbar_core::proto::parse_image_url(data_uri)
             } else if let Some(url) = obj
                 .get("file_url")
                 .and_then(|v| v.as_str())
                 .filter(|s| !s.is_empty())
             {
-                crate::ir::IrImageSource::Url(url.to_string())
+                busbar_core::ir::IrImageSource::Url(url.to_string())
             } else {
                 // An OpenAI-hosted uploads handle: no neutral form, so the opaque `Vendor` escape.
-                crate::ir::IrImageSource::Vendor {
+                busbar_core::ir::IrImageSource::Vendor {
                     vendor: VENDOR_NAME,
                     value: serde_json::json!({
                         "file_id": obj.get("file_id").and_then(|v| v.as_str()).unwrap_or("")
@@ -567,12 +585,12 @@ fn responses_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock, 
                 }
             };
             let kind = match &source {
-                crate::ir::IrImageSource::Base64 { media_type, .. } => {
-                    crate::ir::IrMediaKind::from_media_type(media_type)
+                busbar_core::ir::IrImageSource::Base64 { media_type, .. } => {
+                    busbar_core::ir::IrMediaKind::from_media_type(media_type)
                 }
-                _ => crate::ir::IrMediaKind::Document,
+                _ => busbar_core::ir::IrMediaKind::Document,
             };
-            Ok(crate::ir::IrBlock::Media {
+            Ok(busbar_core::ir::IrBlock::Media {
                 kind,
                 source,
                 name,
@@ -593,7 +611,7 @@ fn responses_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock, 
                 "skipping unmodeled Responses content-block type during ir parse; degrading to an \
                  empty text block rather than silently dropping it"
             );
-            Ok(crate::ir::IrBlock::Text {
+            Ok(busbar_core::ir::IrBlock::Text {
                 text: String::new(),
                 cache_control: None,
                 citations: Vec::new(),
@@ -606,11 +624,11 @@ fn responses_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock, 
 /// `image_url` (parsed via the shared `parse_image_url` into a `Base64`/`Url` source). Otherwise, an
 /// uploaded-file reference becomes the typed `FileId` source so the writer reconstructs the native
 /// `file_id` form losslessly. Returns `None` when the block carries NEITHER (a degenerate reference).
-fn responses_input_image_block(item: &serde_json::Value) -> Option<crate::ir::IrBlock> {
+fn responses_input_image_block(item: &serde_json::Value) -> Option<busbar_core::ir::IrBlock> {
     let image_url = item.get("image_url").and_then(|u| u.as_str());
     if let Some(url) = image_url.filter(|u| !u.is_empty()) {
-        return Some(crate::ir::IrBlock::Image {
-            source: super::parse_image_url(url),
+        return Some(busbar_core::ir::IrBlock::Image {
+            source: busbar_core::proto::parse_image_url(url),
             cache_control: None,
         });
     }
@@ -619,8 +637,8 @@ fn responses_input_image_block(item: &serde_json::Value) -> Option<crate::ir::Ir
         .and_then(|f| f.as_str())
         .filter(|f| !f.is_empty())
     {
-        return Some(crate::ir::IrBlock::Image {
-            source: crate::ir::IrImageSource::Vendor {
+        return Some(busbar_core::ir::IrBlock::Image {
+            source: busbar_core::ir::IrImageSource::Vendor {
                 vendor: VENDOR_NAME,
                 value: serde_json::json!({ "file_id": file_id }),
             },
@@ -708,10 +726,10 @@ pub(crate) fn read_reasoning_encrypted_content(item: &serde_json::Value) -> Opti
         .filter(|s| !s.is_empty())
 }
 
-/// Responses `incomplete_details.reason` → canonical [`crate::ir::IrStopReason`]. The ONLY place that
+/// Responses `incomplete_details.reason` → canonical [`busbar_core::ir::IrStopReason`]. The ONLY place that
 /// knows the Responses truncation-reason vocabulary; an unmodeled reason maps to `Other`.
-fn read_responses_incomplete_reason(reason: &str) -> crate::ir::IrStopReason {
-    use crate::ir::IrStopReason as S;
+fn read_responses_incomplete_reason(reason: &str) -> busbar_core::ir::IrStopReason {
+    use busbar_core::ir::IrStopReason as S;
     match reason {
         INCOMPLETE_REASON_MAX_OUTPUT => S::MaxTokens,
         INCOMPLETE_REASON_CONTENT_FILTER => S::Safety,
@@ -720,21 +738,21 @@ fn read_responses_incomplete_reason(reason: &str) -> crate::ir::IrStopReason {
     }
 }
 
-/// [`crate::ir::IrStopReason`] → Responses terminal `status`. Only a truncation (`max_tokens`) or a
+/// [`busbar_core::ir::IrStopReason`] → Responses terminal `status`. Only a truncation (`max_tokens`) or a
 /// content-filter (`safety`) renders the turn `incomplete`; everything else (incl. tool_use, refusal)
 /// is `completed` (a refusal/tool-call is surfaced via output items, not the status).
-fn write_responses_status(reason: crate::ir::IrStopReason) -> &'static str {
-    use crate::ir::IrStopReason as S;
+fn write_responses_status(reason: busbar_core::ir::IrStopReason) -> &'static str {
+    use busbar_core::ir::IrStopReason as S;
     match reason {
         S::MaxTokens | S::Safety => STATUS_INCOMPLETE,
         _ => STATUS_COMPLETED,
     }
 }
 
-/// [`crate::ir::IrStopReason`] → Responses `incomplete_details.reason` (only consulted when the status
+/// [`busbar_core::ir::IrStopReason`] → Responses `incomplete_details.reason` (only consulted when the status
 /// is `incomplete`, i.e. for `MaxTokens`/`Safety`; any other reason defaults to `other`).
-fn write_responses_incomplete_reason(reason: crate::ir::IrStopReason) -> &'static str {
-    use crate::ir::IrStopReason as S;
+fn write_responses_incomplete_reason(reason: busbar_core::ir::IrStopReason) -> &'static str {
+    use busbar_core::ir::IrStopReason as S;
     match reason {
         S::MaxTokens => INCOMPLETE_REASON_MAX_OUTPUT,
         S::Safety => INCOMPLETE_REASON_CONTENT_FILTER,
@@ -752,11 +770,13 @@ fn write_responses_incomplete_reason(reason: crate::ir::IrStopReason) -> &'stati
 /// no extra fields and pass through as `{"type":...}`. Returns `None` when `text.format` is absent so
 /// the IR field stays unset (no spurious response_format on a request that carried none). An
 /// unrecognized `type` is passed through verbatim rather than dropped.
-fn read_text_format(text_val: Option<&serde_json::Value>) -> Option<crate::ir::IrResponseFormat> {
+fn read_text_format(
+    text_val: Option<&serde_json::Value>,
+) -> Option<busbar_core::ir::IrResponseFormat> {
     let format = text_val.and_then(|t| t.get("format"))?;
     let o = format.as_object()?;
     match o.get("type").and_then(|t| t.as_str()) {
-        Some("text") => Some(crate::ir::IrResponseFormat {
+        Some("text") => Some(busbar_core::ir::IrResponseFormat {
             json: false,
             schema: None,
             name: None,
@@ -765,7 +785,7 @@ fn read_text_format(text_val: Option<&serde_json::Value>) -> Option<crate::ir::I
         }),
         // The Responses `text.format` json_schema form is FLAT — name/schema/strict/description sit
         // beside `type` (not nested under `json_schema` as in OpenAI).
-        Some("json_schema") => Some(crate::ir::IrResponseFormat {
+        Some("json_schema") => Some(busbar_core::ir::IrResponseFormat {
             json: true,
             schema: o.get("schema").cloned(),
             name: o.get("name").and_then(|n| n.as_str()).map(String::from),
@@ -776,7 +796,7 @@ fn read_text_format(text_val: Option<&serde_json::Value>) -> Option<crate::ir::I
                 .map(String::from),
         }),
         // `json_object` / any unknown type → free-form JSON (safe default).
-        Some(_) => Some(crate::ir::IrResponseFormat {
+        Some(_) => Some(busbar_core::ir::IrResponseFormat {
             json: true,
             schema: None,
             name: None,
@@ -787,11 +807,11 @@ fn read_text_format(text_val: Option<&serde_json::Value>) -> Option<crate::ir::I
     }
 }
 
-/// Project the agnostic [`crate::ir::IrResponseFormat`] into a Responses `text.format` object (inverse
+/// Project the agnostic [`busbar_core::ir::IrResponseFormat`] into a Responses `text.format` object (inverse
 /// of [`read_text_format`]). The ONLY code that builds the Responses structured-output wire shape: the
 /// json_schema form is FLAT — `name`/`schema`/`strict`/`description` sit beside `type`. Returns the
 /// `format` value to place under `text.format`; the caller wraps it in `{"text":{"format":...}}`.
-fn write_text_format(rf: &crate::ir::IrResponseFormat) -> serde_json::Value {
+fn write_text_format(rf: &busbar_core::ir::IrResponseFormat) -> serde_json::Value {
     if !rf.json {
         return serde_json::json!({"type": "text"});
     }
@@ -947,7 +967,8 @@ pub struct ResponsesWriter {
     /// standalone delta frame, so a streamed `CitationsDelta` has nowhere to go at arrival time and
     /// is accumulated here until `BlockStop` builds that part. Dropping it, as the writer used to,
     /// lost every grounding source on any cross-protocol stream into Responses.
-    citation_accum: std::sync::Mutex<std::collections::BTreeMap<usize, Vec<crate::ir::IrCitation>>>,
+    citation_accum:
+        std::sync::Mutex<std::collections::BTreeMap<usize, Vec<busbar_core::ir::IrCitation>>>,
     /// Per-stream buffer of FINALIZED `output[]` items, keyed by `output_index` so the terminal
     /// event emits them in stable index order. A native /v1/responses `response.completed`/
     /// `response.incomplete` event's inner `response.output` is the fully assembled array (each
@@ -1308,7 +1329,7 @@ impl ResponsesWriter {
 
     /// Buffer streamed citations for the message item at `index` until `BlockStop` assembles the
     /// `output_text` part they annotate. Lock poisoning degrades to a no-op.
-    fn append_citations(&self, index: usize, cits: &[crate::ir::IrCitation]) {
+    fn append_citations(&self, index: usize, cits: &[busbar_core::ir::IrCitation]) {
         if cits.is_empty() {
             return;
         }
@@ -1318,7 +1339,7 @@ impl ResponsesWriter {
     }
 
     /// Remove and return the accumulated citations for the message item at `index`.
-    fn take_citation_accum(&self, index: usize) -> Vec<crate::ir::IrCitation> {
+    fn take_citation_accum(&self, index: usize) -> Vec<busbar_core::ir::IrCitation> {
         self.citation_accum
             .lock()
             .ok()
@@ -1454,6 +1475,3 @@ impl ResponsesWriter {
 #[cfg(test)]
 #[path = "tests/tests.rs"]
 mod tests;
-
-mod reader;
-mod writer;

@@ -35,8 +35,11 @@
 //! `crate::proto` in the other, and only a relative path is correct in both.
 
 pub mod anthropic;
+pub mod bedrock;
+pub mod cohere;
 pub mod gemini;
 pub mod openai_chat;
+pub mod openai_responses;
 
 /// EVERY DIALECT THIS PLUGIN DECLARES, in the order an operator sees.
 ///
@@ -48,5 +51,11 @@ pub mod openai_chat;
 /// order reproduces, exactly, the operator-visible list from before the dialects were plugins:
 /// `anthropic, gemini, openai, bedrock, responses, cohere`. A dialect appended here rather than
 /// inserted keeps every existing family's index; inserting one silently renumbers all of them.
-pub static DECLS: &[&busbar_core::proto::ProtocolDecl] =
-    &[&anthropic::DECL, &gemini::DECL, &openai_chat::DECL];
+pub static DECLS: &[&busbar_core::proto::ProtocolDecl] = &[
+    &anthropic::DECL,
+    &gemini::DECL,
+    &openai_chat::DECL,
+    &bedrock::DECL,
+    &openai_responses::DECL,
+    &cohere::DECL,
+];

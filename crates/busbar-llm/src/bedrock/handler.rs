@@ -3,26 +3,27 @@
 
 //! Bedrock `RequestHandler` + cells. Embeddings first (Titan, via InvokeModel).
 
-use crate::handlers::{
+use busbar_core::handlers::{
     CodecError, EgressCtx, IngressReject, OperationHandler, RequestHandler, WireBody,
 };
-use crate::ir::embeddings::{EmbInput, EmbeddingItem, EmbeddingsResp, EncFmt, VectorData};
-use crate::ir::variant::{IrReq, IrResp};
-use crate::operation::Operation;
+use busbar_core::ir::embeddings::{EmbInput, EmbeddingItem, EmbeddingsResp, EncFmt, VectorData};
+use busbar_core::ir::variant::{IrReq, IrResp};
+use busbar_core::operation::Operation;
 use bytes::Bytes;
 use serde_json::{json, Value};
 
-pub(crate) struct BedrockRequestHandler;
+pub struct BedrockRequestHandler;
 /// This protocol's OWN chat instance — delete this line (and the registry arm) and this
 /// protocol's chat 404s via the standard no-handler path; everything else keeps working.
-static CHAT: crate::handlers::chat::ChatOperation = crate::handlers::chat::ChatOperation("bedrock");
+static CHAT: busbar_core::handlers::chat::ChatOperation =
+    busbar_core::handlers::chat::ChatOperation("bedrock");
 static EMB: BedrockEmbeddings = BedrockEmbeddings;
 static IMG: BedrockImage = BedrockImage;
 static RERANK: BedrockRerank = BedrockRerank;
 
 /// BEDROCK'S ROW OF THE SUPPORT MATRIX — the verbs this protocol speaks, as data. A verb absent
 /// from it is a genuine gap → the standard no-handler 404.
-static CELLS: &[crate::handlers::Cell] = &[
+static CELLS: &[busbar_core::handlers::Cell] = &[
     (Operation::CHAT, &CHAT),
     (Operation::EMBEDDINGS, &EMB),
     (Operation::IMAGE, &IMG),
@@ -34,7 +35,7 @@ impl RequestHandler for BedrockRequestHandler {
         "bedrock"
     }
     fn operation_handler(&self, op: Operation) -> Option<&dyn OperationHandler> {
-        crate::handlers::cell_of(CELLS, op)
+        busbar_core::handlers::cell_of(CELLS, op)
     }
     fn upstream_path(&self, ctx: &EgressCtx) -> String {
         // Chat uses the Converse API (stream-aware); everything else rides InvokeModel. The
@@ -93,8 +94,8 @@ struct BedrockImage;
 impl OperationHandler for BedrockImage {
     /// This protocol's error envelope, shared by every operation it serves: the same
     /// vocabulary its chat cell reports, read from the same upstream.
-    fn extract_error(&self, status: u16, body: &[u8]) -> crate::breaker::RawUpstreamError {
-        crate::handlers::protocol_error("bedrock", status, body)
+    fn extract_error(&self, status: u16, body: &[u8]) -> busbar_core::breaker::RawUpstreamError {
+        busbar_core::handlers::protocol_error("bedrock", status, body)
     }
     /// Titan image `InvokeModel` wire → IR (bedrock as INGRESS). Model rides the PATH, not the body —
     /// the route layer resolves it; the IR's `model` is filled by routing (`IrReq::set_model`).
@@ -106,7 +107,7 @@ impl OperationHandler for BedrockImage {
             .get("imageGenerationConfig")
             .cloned()
             .unwrap_or_default();
-        Ok(IrReq::Image(crate::ir::image::ImageReq {
+        Ok(IrReq::Image(busbar_core::ir::image::ImageReq {
             prompt: params
                 .get("text")
                 .and_then(Value::as_str)
@@ -147,14 +148,14 @@ impl OperationHandler for BedrockImage {
             .map(|arr| {
                 arr.iter()
                     .filter_map(|b| b.as_str())
-                    .map(|b| crate::media::ImageOutput {
+                    .map(|b| busbar_core::media::ImageOutput {
                         b64: Some(b.to_string()),
                         ..Default::default()
                     })
                     .collect()
             })
             .unwrap_or_default();
-        Ok(IrResp::Image(crate::ir::image::ImageResp {
+        Ok(IrResp::Image(busbar_core::ir::image::ImageResp {
             images,
             ..Default::default()
         }))
@@ -177,8 +178,8 @@ struct BedrockEmbeddings;
 impl OperationHandler for BedrockEmbeddings {
     /// This protocol's error envelope, shared by every operation it serves: the same
     /// vocabulary its chat cell reports, read from the same upstream.
-    fn extract_error(&self, status: u16, body: &[u8]) -> crate::breaker::RawUpstreamError {
-        crate::handlers::protocol_error("bedrock", status, body)
+    fn extract_error(&self, status: u16, body: &[u8]) -> busbar_core::breaker::RawUpstreamError {
+        busbar_core::handlers::protocol_error("bedrock", status, body)
     }
     // Token-metered: buffer the same-protocol non-stream 2xx body so the default
     // `extract_usage` can read the `usage` object and bill the virtual key's TPM/spend
@@ -196,16 +197,18 @@ impl OperationHandler for BedrockEmbeddings {
                 "invoke embeddings requires `inputText`".into(),
             ));
         };
-        Ok(IrReq::Embeddings(crate::ir::embeddings::EmbeddingsReq {
-            input: EmbInput::Text(vec![text.to_string()]),
-            dimensions: wire
-                .get("dimensions")
-                .and_then(Value::as_u64)
-                .and_then(|d| u32::try_from(d).ok()),
-            normalize: wire.get("normalize").and_then(Value::as_bool),
-            encoding_formats: vec![EncFmt::Float],
-            ..Default::default()
-        }))
+        Ok(IrReq::Embeddings(
+            busbar_core::ir::embeddings::EmbeddingsReq {
+                input: EmbInput::Text(vec![text.to_string()]),
+                dimensions: wire
+                    .get("dimensions")
+                    .and_then(Value::as_u64)
+                    .and_then(|d| u32::try_from(d).ok()),
+                normalize: wire.get("normalize").and_then(Value::as_bool),
+                encoding_formats: vec![EncFmt::Float],
+                ..Default::default()
+            },
+        ))
     }
     fn write_request(&self, ir: &IrReq) -> Bytes {
         let IrReq::Embeddings(r) = ir else {
@@ -257,7 +260,7 @@ impl OperationHandler for BedrockEmbeddings {
         let usage = v
             .get("inputTextTokenCount")
             .and_then(Value::as_u64)
-            .map(|n| crate::billing::TokenUsage {
+            .map(|n| busbar_core::billing::TokenUsage {
                 input: n,
                 ..Default::default()
             });
@@ -298,8 +301,8 @@ struct BedrockRerank;
 impl OperationHandler for BedrockRerank {
     /// This protocol's error envelope, shared by every operation it serves: the same
     /// vocabulary its chat cell reports, read from the same upstream.
-    fn extract_error(&self, status: u16, body: &[u8]) -> crate::breaker::RawUpstreamError {
-        crate::handlers::protocol_error("bedrock", status, body)
+    fn extract_error(&self, status: u16, body: &[u8]) -> busbar_core::breaker::RawUpstreamError {
+        busbar_core::handlers::protocol_error("bedrock", status, body)
     }
     fn read_request(&self, body: &[u8], _content_type: &str) -> Result<IrReq, IngressReject> {
         let wire: Value =
@@ -309,13 +312,13 @@ impl OperationHandler for BedrockRerank {
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string();
-        let documents = crate::handlers::cohere::rerank_documents_pub(wire.get("documents"));
+        let documents = super::super::cohere::handler::rerank_documents_pub(wire.get("documents"));
         if query.is_empty() || documents.is_empty() {
             return Err(IngressReject::BadRequest(
                 "rerank request requires `query` and `documents`".into(),
             ));
         }
-        Ok(IrReq::Rerank(crate::ir::rerank::RerankReq {
+        Ok(IrReq::Rerank(busbar_core::ir::rerank::RerankReq {
             // Path-model protocol: the model arrives via the URL and routing calls `set_model`.
             model: String::new(),
             query,
@@ -344,9 +347,9 @@ impl OperationHandler for BedrockRerank {
     fn read_response(&self, wire: &[u8]) -> Result<IrResp, CodecError> {
         let v: Value =
             serde_json::from_slice(wire).map_err(|e| CodecError::Malformed(e.to_string()))?;
-        Ok(IrResp::Rerank(crate::ir::rerank::RerankResp {
+        Ok(IrResp::Rerank(busbar_core::ir::rerank::RerankResp {
             id: v.get("id").and_then(Value::as_str).map(str::to_string),
-            results: crate::handlers::cohere::read_rerank_results(v.get("results")),
+            results: super::super::cohere::handler::read_rerank_results(v.get("results")),
             ..Default::default()
         }))
     }
@@ -368,5 +371,5 @@ impl OperationHandler for BedrockRerank {
 }
 
 #[cfg(test)]
-#[path = "tests/bedrock_tests.rs"]
+#[path = "tests/handler_tests.rs"]
 mod tests;

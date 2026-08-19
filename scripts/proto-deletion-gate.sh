@@ -141,7 +141,9 @@ PYEOF
 # carries no wire protocol at all, so there is nothing a lane could legally name.
 mk_no_providers() { printf '{}\n' > "$FIX/providers.yaml"; }
 mk_config_no_providers() { # $1 = listen, $2 = admin listen
-  printf 'listen: "%s"\nadmin_listen: "%s"\n' "$1" "$2" > "$FIX/config.yaml"
+  # `providers:`/`models:` are present but EMPTY — the schema requires the fields, and empty maps are
+  # the honest statement of a busbar that serves no lane. Nothing here names a wire protocol.
+  printf 'listen: "%s"\nadmin_listen: "%s"\nproviders: {}\nmodels: {}\n' "$1" "$2" > "$FIX/config.yaml"
 }
 
 mk_config() { # $1 = listen, $2 = admin listen (the admin plane defaults to :8081, which a laptop
@@ -174,13 +176,25 @@ llm_dialect_refused() {
   if [ $rc -eq 0 ]; then
     die "the deleted binary ACCEPTED a config naming protocol: $proto (the deletion changed nothing)"
   fi
-  echo "$out" | grep -q "unknown protocol '$proto'" \
-    || die "the refusal must NAME the unknown protocol; got: $out"
   if [ -n "$remaining" ]; then
+    # Some codec protocol still remains, so config_validate takes its unknown-name arm and names the
+    # survivors in the `must be one of:` tail.
+    echo "$out" | grep -q "unknown protocol '$proto'" \
+      || die "the refusal must NAME the unknown protocol; got: $out"
     echo "$out" | grep -q "must be one of: $remaining" \
       || die "the refusal must name the remaining protocols (and not $proto); got: $out"
+    note "level 3a refusal: 'unknown protocol $proto — must be one of: $remaining' (exit $rc)"
+  else
+    # NO codec protocol remains at all (deleting the LLM plugin left only codec-less MCP). The
+    # empty-codec-set arm of config_validate fires instead of the unknown-name arm — a DISTINCT,
+    # stronger refusal that still names the rejected protocol. Accept either the empty-set message
+    # or, defensively, the unknown-name form.
+    echo "$out" | grep -Eq "wire codec compiled in|unknown protocol '$proto'" \
+      || die "the refusal must reject protocol $proto (empty-codec-set or unknown-name arm); got: $out"
+    echo "$out" | grep -q "$proto" \
+      || die "the refusal must NAME the rejected protocol $proto; got: $out"
+    note "level 3a refusal: empty-codec-set rejects protocol $proto (exit $rc)"
   fi
-  note "level 3a refusal: 'unknown protocol $proto' (exit $rc)"
 }
 
 # ── run_gate: levels 2/3 + control, for ONE extracted PROTOCOL ──────────────────────────────────
@@ -244,14 +258,29 @@ run_gate() {
   fi
   run_busbar_bg "$deleted_bin" >"$FIX/boot-${proto}.log" 2>&1 &
   SRV_PID=$!
+  # READINESS SIGNAL depends on whether any lane exists. `/healthz` is a lane-readiness probe: with
+  # zero lanes it CORRECTLY answers 503 "no usable lanes" (endpoints::healthz), so in the empty case
+  # it is not the up-signal — `/stats` is (the operator surface answers regardless of lanes). When a
+  # control dialect provides a lane, `/healthz` is the up-signal as before.
+  local up_probe="/healthz"
+  [ -z "$control_proto" ] && up_probe="/stats"
   local up=""
   for _ in $(seq 1 60); do
-    if curl -fsS "http://127.0.0.1:$port/healthz" >/dev/null 2>&1; then up=1; break; fi
+    if curl -fsS "http://127.0.0.1:$port$up_probe" >/dev/null 2>&1; then up=1; break; fi
     kill -0 "$SRV_PID" 2>/dev/null || break
     sleep 0.5
   done
-  [ -n "$up" ] || { cat "$FIX/boot-${proto}.log"; die "the deleted binary did not come up on /healthz"; }
+  [ -n "$up" ] || { cat "$FIX/boot-${proto}.log"; die "the deleted binary did not come up on $up_probe"; }
   curl -fsS "http://127.0.0.1:$port/stats" >/dev/null || die "/stats must answer on the deleted binary"
+  if [ -z "$control_proto" ]; then
+    # POSITIVE ASSERTION on the limit case: a busbar with no lanes reports NOT-ready on /healthz —
+    # an honest readiness answer, not a crash — while /stats (checked above) still serves. 503 is
+    # the expected code; any 2xx would mean it falsely claims readiness with nothing to serve.
+    local hz
+    hz=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port/healthz")
+    [ "$hz" = "503" ] || die "with zero lanes /healthz must report 503 (no usable lanes); got $hz"
+    note "level 3c boot (no lanes): /stats 200 serves, /healthz 503 honestly not-ready"
+  fi
   local msg_code
   msg_code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:$port$deleted_ingress_path" \
     -H 'content-type: application/json' -d '{"model":"test-model","max_tokens":8,"messages":[]}')
@@ -259,7 +288,7 @@ run_gate() {
     2*) die "POST $deleted_ingress_path answered $msg_code on a build with no $proto dialect" ;;
   esac
   kill "$SRV_PID" 2>/dev/null; wait "$SRV_PID" 2>/dev/null; SRV_PID=""
-  note "level 3c boot: /healthz 200, /stats 200, ${proto}-format ingress answers $msg_code (no handler)"
+  note "level 3c boot: up on $up_probe, /stats 200, ${proto}-format ingress answers $msg_code (no handler)"
 
   # ── control: the default build (feature ON) accepts the deleted dialect's config ────────────────
   note "control: cargo build -p busbar (default features)"
@@ -277,16 +306,21 @@ run_gate() {
 # build can make is the whole protocol, and asserting a per-dialect deletion would be asserting
 # against a knob that does not exist.
 #
-# It is STRICTER than the three legs it replaces in the way that matters: every dialect the plugin
-# carries gets its own level-3a refusal (see `llm_dialect_refused`), so a plugin that dropped its
-# dependency edge while quietly leaving five dialects resident in core fails here. The MCP protocol
-# crate stays ON, so this run deletes exactly one PLUGIN.
+# It is STRICTER than the six per-dialect legs it replaces in the way that matters: deleting the ONE
+# plugin deletes ALL SIX dialects, and each gets its own level-3a refusal (see `llm_dialect_refused`),
+# so a plugin that dropped its dependency edge while quietly leaving even one dialect resident in
+# core fails here. The MCP protocol crate stays ON, so this run deletes exactly one PLUGIN — and MCP
+# has no wire codec, so the codec-protocol list is EMPTY afterward: there is NO remaining LLM dialect
+# and NO control dialect to re-point a lane at (both the remaining-string and control args are empty,
+# which routes level 3b to its honest skip and level 3c to a NO-PROVIDERS boot — a busbar that speaks
+# no wire protocol at all is still a valid busbar and must serve its operator surface).
 #
-# The deleted-ingress probe is anthropic's `/v1/messages`; gemini's `/v1beta/...` path space and
-# bedrock's `/model/{id}/converse` are covered by the same binary having no LLM handler at all.
+# The deleted-ingress probe is anthropic's `/v1/messages`; every other dialect's URL space
+# (gemini's `/v1beta/...`, bedrock's `/model/{id}/converse`, `/v1/responses`, `/v2/chat`) is covered
+# by the same binary having no LLM handler at all.
 run_gate "anthropic" "proto-llm" "proto-mcp" \
-  "bedrock, responses, cohere" "bedrock" "/v1/messages" \
-  "gemini openai"
+  "" "" "/v1/messages" \
+  "gemini openai bedrock responses cohere"
 
 # ── MCP: its own leg, NOT a run_gate call — see the header's "what the mcp leg does not claim". ──
 # MCP has no ingress path this gate can probe (the `/mcp` PLANE stays in core), so levels 3a/3c do
@@ -342,4 +376,4 @@ curl -fsS "http://127.0.0.1:$PORT/stats" >/dev/null || die "/stats must answer o
 kill "$SRV_PID" 2>/dev/null; wait "$SRV_PID" 2>/dev/null; SRV_PID=""
 note "mcp-b boot: /healthz 200, /stats 200 with the mcp protocol crate deleted"
 
-echo "proto-deletion-gate: PASS (static 0; the LLM protocol deletes as one plugin and every dialect it carries is refused, boot+serve, remaining dialects unaffected, control green; mcp independently droppable and still serving)"
+echo "proto-deletion-gate: PASS (static 0; the LLM protocol deletes as one plugin and all six dialects it carries are refused, boot+serve, remaining dialects unaffected, control green; mcp independently droppable and still serving)"

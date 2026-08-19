@@ -3,21 +3,35 @@
 
 //! Cohere v2 protocol reader/writer implementation.
 
-use super::*;
+use axum::http::StatusCode;
+use busbar_core::breaker::StatusClass;
+use busbar_core::ir::IrStreamEvent;
+use busbar_core::proto::*;
 use std::sync::OnceLock;
 
+pub mod handler;
+mod reader;
+mod writer;
+
+/// Build this dialect's wire codec — the [`ProtocolDecl::codec`] constructor. A fresh instance per
+/// resolution, exactly as the registry's field doc requires (the writer carries per-stream mutable
+/// state). Mirrors `super::anthropic::protocol`.
+pub fn protocol() -> Protocol {
+    Protocol::new(PROTO_COHERE, CohereReader, CohereWriter)
+}
+
 /// COHERE'S DECLARATION.
-pub(crate) const DECL: ProtocolDecl = ProtocolDecl {
+pub const DECL: ProtocolDecl = ProtocolDecl {
     name: PROTO_COHERE,
-    codec: Some(Protocol::cohere),
-    handler: Some(&crate::handlers::cohere::CohereRequestHandler),
+    codec: Some(protocol),
+    handler: Some(&handler::CohereRequestHandler),
     verbs: &[
-        crate::operation::Operation::CHAT,
-        crate::operation::Operation::EMBEDDINGS,
-        crate::operation::Operation::RERANK,
+        busbar_core::operation::Operation::CHAT,
+        busbar_core::operation::Operation::EMBEDDINGS,
+        busbar_core::operation::Operation::RERANK,
     ],
     head_keys: LLM_HEAD_KEYS,
-    streaming_content_type: Some(crate::proxy::TEXT_EVENT_STREAM),
+    streaming_content_type: Some(busbar_core::proxy::TEXT_EVENT_STREAM),
     array_stream_shim_key: None,
     // Cohere tool ids are free-form with NO canonical prefix. An empty prefix would make the
     // reversibility marker itself the only distinguishing signal, which collides with a legitimate
@@ -44,7 +58,7 @@ const PATH_UPSTREAM: &str = "/v2/chat";
 /// Cohere spells a citation `{"start": <char>, "end": <char>, "text": "<quoted span>", "type":
 /// "TEXT_CONTENT", "sources": [{"type": "document", "id": "…", "document": {…}}]}`. The offsets are
 /// CHARACTER offsets into the assembled content text, which is exactly the IR contract
-/// ([`crate::ir::IrCitation::start_index`]), so they carry across with no unit conversion — unlike
+/// ([`busbar_core::ir::IrCitation::start_index`]), so they carry across with no unit conversion — unlike
 /// the OpenAI-family `annotations`, whose byte-vs-character unit is undocumented and therefore
 /// deliberately not asserted.
 ///
@@ -56,7 +70,9 @@ const PATH_UPSTREAM: &str = "/v2/chat";
 ///
 /// The source object is kept VERBATIM in `raw` so a same-protocol path can re-emit it unchanged,
 /// the same no-regression guarantee the Anthropic reader gives.
-pub(crate) fn read_cohere_citations(citations: &serde_json::Value) -> Vec<crate::ir::IrCitation> {
+pub(crate) fn read_cohere_citations(
+    citations: &serde_json::Value,
+) -> Vec<busbar_core::ir::IrCitation> {
     let mut out = Vec::new();
     let Some(arr) = citations.as_array() else {
         return out;
@@ -81,7 +97,7 @@ pub(crate) fn read_cohere_citations(citations: &serde_json::Value) -> Vec<crate:
             .and_then(|s| s.as_array())
             .and_then(|a| a.first());
         let doc = first_source.and_then(|s| s.get("document"));
-        out.push(crate::ir::IrCitation {
+        out.push(busbar_core::ir::IrCitation {
             // Cohere citations are character spans into the answer text — the same thing
             // Anthropic calls a `char_location`, which is the vocabulary the neutral `kind` uses.
             kind: Some("char_location".to_string()),
@@ -106,7 +122,7 @@ pub(crate) fn read_cohere_citations(citations: &serde_json::Value) -> Vec<crate:
     out
 }
 
-/// Project a neutral [`crate::ir::IrCitation`] into Cohere v2's native citation object — the
+/// Project a neutral [`busbar_core::ir::IrCitation`] into Cohere v2's native citation object — the
 /// inverse of [`read_cohere_citations`].
 ///
 /// A citation this protocol itself READ carries the source object verbatim in `raw`; re-emitting
@@ -114,7 +130,7 @@ pub(crate) fn read_cohere_citations(citations: &serde_json::Value) -> Vec<crate:
 /// is strictly better than a field-by-field reconstruction that could only lose Cohere-specific
 /// members. Only a citation with no `raw` (one synthesized on a cross-protocol hop) is built from
 /// the neutral fields.
-fn write_cohere_citation(c: &crate::ir::IrCitation) -> serde_json::Value {
+fn write_cohere_citation(c: &busbar_core::ir::IrCitation) -> serde_json::Value {
     if let Some(raw) = &c.raw {
         // Only re-emit `raw` when it IS a Cohere citation: a foreign raw (an Anthropic
         // `web_search_result_location`) would put a foreign shape on the Cohere wire, which is the
@@ -149,11 +165,11 @@ fn write_cohere_citation(c: &crate::ir::IrCitation) -> serde_json::Value {
     serde_json::Value::Object(obj)
 }
 
-/// The `vendor` tag on an [`crate::ir::IrImageSource::Vendor`] this protocol produces — a Cohere v2
+/// The `vendor` tag on an [`busbar_core::ir::IrImageSource::Vendor`] this protocol produces — a Cohere v2
 /// tool-result `document` object, whose `data` is an arbitrary map of string fields rather than
 /// bytes with a mime type, so it has NO neutral base64/url form. Only this protocol's writer
 /// re-emits it; a foreign writer, which could only mangle it, drops it with a warn.
-const VENDOR_NAME: &str = crate::proto::PROTO_COHERE;
+const VENDOR_NAME: &str = busbar_core::proto::PROTO_COHERE;
 
 /// Hard cap on the number of distinct tool-call frame indices recorded in `state.open_tools` for a
 /// single stream. The set is intentionally never shrunk (so each tool's IR block index stays stable
@@ -252,10 +268,12 @@ fn clamp_frame_index(data: &serde_json::Value) -> usize {
 /// `auto` literal (auto is the default when omitted) and no way to pin ONE specific tool. So an
 /// unrecognized/absent value yields `None` (omitted), and the targeted-tool case is handled lossily
 /// on the WRITE side (degraded to `REQUIRED`). The reader can only ever observe `REQUIRED`/`NONE`.
-fn read_cohere_tool_choice(val: Option<&serde_json::Value>) -> Option<crate::ir::IrToolChoice> {
+fn read_cohere_tool_choice(
+    val: Option<&serde_json::Value>,
+) -> Option<busbar_core::ir::IrToolChoice> {
     match val?.as_str()? {
-        COHERE_TOOL_CHOICE_REQUIRED => Some(crate::ir::IrToolChoice::Required),
-        COHERE_TOOL_CHOICE_NONE => Some(crate::ir::IrToolChoice::None),
+        COHERE_TOOL_CHOICE_REQUIRED => Some(busbar_core::ir::IrToolChoice::Required),
+        COHERE_TOOL_CHOICE_NONE => Some(busbar_core::ir::IrToolChoice::None),
         _ => None,
     }
 }
@@ -280,14 +298,14 @@ fn clamp_temperature_for_cohere(temperature: f64) -> (f64, bool) {
     (clamped, clamped != temperature)
 }
 
-/// Read a Cohere v2 `response_format` into the protocol-agnostic [`crate::ir::IrResponseFormat`]. The
+/// Read a Cohere v2 `response_format` into the protocol-agnostic [`busbar_core::ir::IrResponseFormat`]. The
 /// ONLY code that knows Cohere's structured-output wire shape: `{"type":"text"}`,
 /// `{"type":"json_object"}`, or `{"type":"json_object","json_schema":<schema>}` (the schema sits
 /// DIRECTLY under `json_schema`, not nested under `.schema` as in OpenAI).
-fn read_cohere_response_format(v: &serde_json::Value) -> Option<crate::ir::IrResponseFormat> {
+fn read_cohere_response_format(v: &serde_json::Value) -> Option<busbar_core::ir::IrResponseFormat> {
     let o = v.as_object()?;
     match o.get("type").and_then(|t| t.as_str()) {
-        Some("text") => Some(crate::ir::IrResponseFormat {
+        Some("text") => Some(busbar_core::ir::IrResponseFormat {
             json: false,
             schema: None,
             name: None,
@@ -296,7 +314,7 @@ fn read_cohere_response_format(v: &serde_json::Value) -> Option<crate::ir::IrRes
         }),
         // `json_object` may carry the schema directly under `json_schema`. An unrecognized `type` is
         // treated as free-form JSON (safe default).
-        Some(_) => Some(crate::ir::IrResponseFormat {
+        Some(_) => Some(busbar_core::ir::IrResponseFormat {
             json: true,
             schema: o
                 .get("json_schema")
@@ -311,9 +329,9 @@ fn read_cohere_response_format(v: &serde_json::Value) -> Option<crate::ir::IrRes
     }
 }
 
-/// Project the agnostic [`crate::ir::IrResponseFormat`] into Cohere v2's native `response_format`. The
+/// Project the agnostic [`busbar_core::ir::IrResponseFormat`] into Cohere v2's native `response_format`. The
 /// ONLY code that builds Cohere's structured-output wire shape.
-fn write_cohere_response_format(rf: &crate::ir::IrResponseFormat) -> serde_json::Value {
+fn write_cohere_response_format(rf: &busbar_core::ir::IrResponseFormat) -> serde_json::Value {
     if !rf.json {
         return serde_json::json!({ "type": "text" });
     }
@@ -323,10 +341,10 @@ fn write_cohere_response_format(rf: &crate::ir::IrResponseFormat) -> serde_json:
     }
 }
 
-/// Cohere v2 native `finish_reason` → canonical [`crate::ir::IrStopReason`]. The ONLY place that knows
+/// Cohere v2 native `finish_reason` → canonical [`busbar_core::ir::IrStopReason`]. The ONLY place that knows
 /// Cohere's finish vocabulary on the read side; an unmodeled token maps to `Other`.
-fn read_cohere_stop_reason(token: &str) -> crate::ir::IrStopReason {
-    use crate::ir::IrStopReason as S;
+fn read_cohere_stop_reason(token: &str) -> busbar_core::ir::IrStopReason {
+    use busbar_core::ir::IrStopReason as S;
     match token {
         COHERE_FINISH_COMPLETE => S::EndTurn,
         COHERE_FINISH_MAX_TOKENS => S::MaxTokens,
@@ -357,8 +375,8 @@ fn read_cohere_stop_reason(token: &str) -> crate::ir::IrStopReason {
 /// the v2 enum genuinely cannot express the distinction and an off-spec token a strict client
 /// rejects is strictly worse. The reader's `ERROR_TOXIC`→`S::Safety` stays asymmetric on purpose
 /// (forward-compat for a v1-dialect upstream); do not "fix" it back to match this writer arm.
-fn write_cohere_stop_reason(reason: crate::ir::IrStopReason) -> &'static str {
-    use crate::ir::IrStopReason as S;
+fn write_cohere_stop_reason(reason: busbar_core::ir::IrStopReason) -> &'static str {
+    use busbar_core::ir::IrStopReason as S;
     match reason {
         S::EndTurn => COHERE_FINISH_COMPLETE,
         S::StopSequence => COHERE_FINISH_STOP_SEQUENCE,
@@ -469,7 +487,7 @@ fn cohere_error_is_content_moderation(signal: &str) -> bool {
 /// NOT the tool count — but since it holds at most one sentinel plus one entry per tracked tool, a
 /// single O(log n) `contains` check (rather than a full O(n) scan-and-filter) is enough to correct
 /// for it.
-fn cohere_tracked_tool_count(state: &crate::ir::StreamDecodeState) -> usize {
+fn cohere_tracked_tool_count(state: &busbar_core::ir::StreamDecodeState) -> usize {
     state.open_tools.len() - usize::from(state.open_tools.contains(&TEXT_BLOCK_SEEN_SENTINEL))
 }
 
@@ -486,7 +504,7 @@ fn cohere_tracked_tool_count(state: &crate::ir::StreamDecodeState) -> usize {
 /// linear scan over `open_tools` on EVERY tool-call-start/delta frame, which made a stream with many
 /// sequential tool calls cost O(n²) instead of O(n) overall.
 fn cohere_lookup_tool_ir_index(
-    state: &crate::ir::StreamDecodeState,
+    state: &busbar_core::ir::StreamDecodeState,
     frame_idx: usize,
 ) -> Option<usize> {
     state.tool_ir_index.get(&frame_idx).copied()
@@ -507,7 +525,7 @@ fn cohere_lookup_tool_ir_index(
 /// stream's lifetime, so a recorded frame — and the IR index assigned to it — survives until the
 /// stream ends.
 fn cohere_assign_tool_ir_index(
-    state: &mut crate::ir::StreamDecodeState,
+    state: &mut busbar_core::ir::StreamDecodeState,
     frame_idx: usize,
 ) -> Option<usize> {
     // Duplicate tool-call-start for a frame already open: no-op (do not re-assign or re-emit).
@@ -539,7 +557,7 @@ fn cohere_assign_tool_ir_index(
 /// `TEXT_BLOCK_SEEN_SENTINEL` still gates the TOOL base offset (so a tool opened after the text block
 /// stays off the text index even after `content-end` clears the live flag); this
 /// helper governs only the TEXT block's own index (the tool-before-text collision).
-fn cohere_text_ir_index(state: &mut crate::ir::StreamDecodeState) -> usize {
+fn cohere_text_ir_index(state: &mut busbar_core::ir::StreamDecodeState) -> usize {
     let ti = state
         .text_index
         .unwrap_or_else(|| cohere_tracked_tool_count(state));
@@ -689,6 +707,3 @@ impl CohereWriter {
 #[cfg(test)]
 #[path = "tests/tests.rs"]
 mod tests;
-
-mod reader;
-mod writer;

@@ -1,9 +1,10 @@
 use super::*;
+use busbar_core::ir::IrUsage;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 #[test]
 fn stop_reason_reverse_never_leaks_foreign_tokens() {
-    use crate::ir::IrStopReason as S;
+    use busbar_core::ir::IrStopReason as S;
     assert_eq!(stop_reason_reverse(S::EndTurn), "end_turn");
     assert_eq!(stop_reason_reverse(S::ToolUse), "tool_use");
     assert_eq!(stop_reason_reverse(S::Safety), "content_filtered");
@@ -16,7 +17,7 @@ fn stop_reason_reverse_never_leaks_foreign_tokens() {
     assert_eq!(stop_reason_reverse(S::Other), "end_turn");
 }
 
-fn read_bedrock_stop_reason_guardrail() -> crate::ir::IrStopReason {
+fn read_bedrock_stop_reason_guardrail() -> busbar_core::ir::IrStopReason {
     stop_reason_map("guardrail_intervened")
 }
 
@@ -50,14 +51,14 @@ fn synth_response_id() -> String {
 fn test_bedrock_sigv4_sign_request_structure() {
     // SigV4 header assembly + scope/region derivation. (The signing crypto itself is
     // verified against AWS's published vector in sigv4::tests.)
-    let ctx = crate::proto::SigningContext {
+    let ctx = busbar_core::proto::SigningContext {
         host: "bedrock-runtime.us-east-1.amazonaws.com",
-        canonical_uri: crate::sigv4::uri_encode_path("/model/anthropic.claude:0/converse"),
+        canonical_uri: busbar_core::sigv4::uri_encode_path("/model/anthropic.claude:0/converse"),
         body: br#"{"messages":[]}"#,
         timestamp_epoch: 1_440_938_160, // 20150830T123600Z
-        upstream_creds: crate::auth::UpstreamCreds::Own,
+        upstream_creds: busbar_core::auth::UpstreamCreds::Own,
     };
-    let headers = crate::proto::bedrock::sigv4_sign_headers("AKIDEXAMPLE:SECRETKEY", &ctx);
+    let headers = super::writer::sigv4_sign_headers("AKIDEXAMPLE:SECRETKEY", &ctx);
 
     let get = |name: &str| {
         headers
@@ -84,14 +85,14 @@ fn test_bedrock_sigv4_sign_request_structure() {
 
 #[test]
 fn test_bedrock_sigv4_session_token() {
-    let ctx = crate::proto::SigningContext {
+    let ctx = busbar_core::proto::SigningContext {
         host: "bedrock-runtime.eu-west-1.amazonaws.com",
         canonical_uri: "/model/m/converse".to_string(),
         body: b"{}",
         timestamp_epoch: 1_440_938_160,
-        upstream_creds: crate::auth::UpstreamCreds::Own,
+        upstream_creds: busbar_core::auth::UpstreamCreds::Own,
     };
-    let headers = crate::proto::bedrock::sigv4_sign_headers("AKID:SECRET:SESSIONTOKEN", &ctx);
+    let headers = super::writer::sigv4_sign_headers("AKID:SECRET:SESSIONTOKEN", &ctx);
     let tok = headers
         .iter()
         .find(|(k, _)| k.as_str() == "x-amz-security-token") // golden wire-contract literal (kept bare on purpose)
@@ -110,14 +111,14 @@ fn test_bedrock_sigv4_session_token() {
 #[test]
 fn test_bedrock_sigv4_misconfigured_key_no_signature() {
     // A key without ACCESS:SECRET shape yields no headers (AWS will 403 → surfaced as auth).
-    let ctx = crate::proto::SigningContext {
+    let ctx = busbar_core::proto::SigningContext {
         host: "bedrock-runtime.us-east-1.amazonaws.com",
         canonical_uri: "/model/m/converse".to_string(),
         body: b"{}",
         timestamp_epoch: 1_440_938_160,
-        upstream_creds: crate::auth::UpstreamCreds::Own,
+        upstream_creds: busbar_core::auth::UpstreamCreds::Own,
     };
-    assert!(crate::proto::bedrock::sigv4_sign_headers("not-a-valid-key", &ctx).is_empty());
+    assert!(super::writer::sigv4_sign_headers("not-a-valid-key", &ctx).is_empty());
 }
 
 fn bedrock_rich_fixture() -> serde_json::Value {
@@ -144,30 +145,30 @@ fn bedrock_rich_fixture() -> serde_json::Value {
 
 #[test]
 fn test_write_request() {
-    let ir = crate::ir::IrRequest {
+    let ir = busbar_core::ir::IrRequest {
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
         top_logprobs: None,
         user: None,
         parallel_tool_calls: None,
-        system: vec![crate::ir::IrBlock::Text {
+        system: vec![busbar_core::ir::IrBlock::Text {
             text: "You are a helpful assistant.".to_string(),
             cache_control: None,
             citations: Vec::new(),
         }],
         messages: vec![
-            crate::ir::IrMessage {
-                role: crate::ir::IrRole::User,
-                content: vec![crate::ir::IrBlock::Text {
+            busbar_core::ir::IrMessage {
+                role: busbar_core::ir::IrRole::User,
+                content: vec![busbar_core::ir::IrBlock::Text {
                     text: "What is the weather in San Francisco?".to_string(),
                     cache_control: None,
                     citations: Vec::new(),
                 }],
             },
-            crate::ir::IrMessage {
-                role: crate::ir::IrRole::Assistant,
-                content: vec![crate::ir::IrBlock::ToolUse {
+            busbar_core::ir::IrMessage {
+                role: busbar_core::ir::IrRole::Assistant,
+                content: vec![busbar_core::ir::IrBlock::ToolUse {
                     thought_signature: None,
                     id: "tool_123".to_string(),
                     name: "get_weather".to_string(),
@@ -175,11 +176,11 @@ fn test_write_request() {
                     cache_control: None,
                 }],
             },
-            crate::ir::IrMessage {
-                role: crate::ir::IrRole::User,
-                content: vec![crate::ir::IrBlock::ToolResult {
+            busbar_core::ir::IrMessage {
+                role: busbar_core::ir::IrRole::User,
+                content: vec![busbar_core::ir::IrBlock::ToolResult {
                     tool_use_id: "tool_123".to_string(),
-                    content: vec![crate::ir::IrBlock::Text {
+                    content: vec![busbar_core::ir::IrBlock::Text {
                         text: "Sunny, 72°F".to_string(),
                         cache_control: None,
                         citations: Vec::new(),
@@ -189,7 +190,7 @@ fn test_write_request() {
                 }],
             },
         ],
-        tools: vec![crate::ir::IrTool {
+        tools: vec![busbar_core::ir::IrTool {
             name: "get_weather".to_string(),
             description: Some("Get weather for a city".to_string()),
             input_schema: serde_json::json!({"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]}),
@@ -318,7 +319,7 @@ fn test_read_request() {
         .expect("read_request should succeed");
 
     assert!(!ir.system.is_empty());
-    if let crate::ir::IrBlock::Text { text, .. } = &ir.system[0] {
+    if let busbar_core::ir::IrBlock::Text { text, .. } = &ir.system[0] {
         assert_eq!(text, "You are a helpful assistant.");
     } else {
         panic!("system[0] should be Text block");
@@ -326,13 +327,13 @@ fn test_read_request() {
 
     assert_eq!(ir.messages.len(), 3);
 
-    if let crate::ir::IrBlock::Text { text, .. } = &ir.messages[0].content[0] {
+    if let busbar_core::ir::IrBlock::Text { text, .. } = &ir.messages[0].content[0] {
         assert_eq!(text, "What is the weather in San Francisco?");
     } else {
         panic!("messages[0].content[0] should be Text block");
     }
 
-    if let crate::ir::IrBlock::ToolUse {
+    if let busbar_core::ir::IrBlock::ToolUse {
         id, name, input, ..
     } = &ir.messages[1].content[0]
     {
@@ -348,7 +349,7 @@ fn test_read_request() {
         panic!("messages[1].content[0] should be ToolUse block");
     }
 
-    if let crate::ir::IrBlock::ToolResult {
+    if let busbar_core::ir::IrBlock::ToolResult {
         tool_use_id,
         content,
         is_error,
@@ -357,7 +358,7 @@ fn test_read_request() {
     {
         assert_eq!(tool_use_id, "tool_123");
         assert!(!is_error);
-        if let crate::ir::IrBlock::Text { text, .. } = &content[0] {
+        if let busbar_core::ir::IrBlock::Text { text, .. } = &content[0] {
             assert_eq!(text, "Sunny, 72°F");
         } else {
             panic!("toolResult content[0] should be Text block");
@@ -369,7 +370,7 @@ fn test_read_request() {
     assert_eq!(ir.max_tokens, Some(1024));
     assert_eq!(ir.temperature, Some(0.7_f64));
     assert_eq!(ir.tools.len(), 1);
-    let crate::ir::IrTool {
+    let busbar_core::ir::IrTool {
         ref name,
         ref description,
         ..
@@ -442,16 +443,16 @@ fn test_read_response_decode() {
         .read_response(&j)
         .expect("read_response should succeed");
 
-    assert_eq!(resp.role, crate::ir::IrRole::Assistant);
+    assert_eq!(resp.role, busbar_core::ir::IrRole::Assistant);
     assert_eq!(resp.content.len(), 2);
 
-    if let crate::ir::IrBlock::Text { text, .. } = &resp.content[0] {
+    if let busbar_core::ir::IrBlock::Text { text, .. } = &resp.content[0] {
         assert_eq!(text, "Let me check the weather for you.");
     } else {
         panic!("content[0] should be Text block");
     }
 
-    if let crate::ir::IrBlock::ToolUse {
+    if let busbar_core::ir::IrBlock::ToolUse {
         id, name, input, ..
     } = &resp.content[1]
     {
@@ -467,7 +468,10 @@ fn test_read_response_decode() {
         panic!("content[1] should be ToolUse block");
     }
 
-    assert_eq!(resp.stop_reason, Some(crate::ir::IrStopReason::ToolUse));
+    assert_eq!(
+        resp.stop_reason,
+        Some(busbar_core::ir::IrStopReason::ToolUse)
+    );
     assert_eq!(resp.usage.input_tokens, 42);
     assert_eq!(resp.usage.output_tokens, 15);
 }
@@ -505,9 +509,9 @@ fn test_read_write_response_roundtrip() {
 
 #[test]
 fn test_stream_decode_sequence() {
-    use crate::ir::IrStreamEvent;
+    use busbar_core::ir::IrStreamEvent;
 
-    let mut state = crate::ir::StreamDecodeState::default();
+    let mut state = busbar_core::ir::StreamDecodeState::default();
     let reader = BedrockReader;
 
     let events: Vec<_> = vec![
@@ -552,7 +556,7 @@ fn test_stream_decode_sequence() {
 
     match &events[0] {
         IrStreamEvent::MessageStart { role, usage, .. } => {
-            assert_eq!(*role, crate::ir::IrRole::Assistant);
+            assert_eq!(*role, busbar_core::ir::IrRole::Assistant);
             assert!(usage.is_none());
         }
         _ => panic!("event[0] should be MessageStart"),
@@ -561,7 +565,7 @@ fn test_stream_decode_sequence() {
     match &events[1] {
         IrStreamEvent::BlockStart { index, block } => {
             assert_eq!(*index, 0);
-            assert!(matches!(block, crate::ir::IrBlockMeta::Text));
+            assert!(matches!(block, busbar_core::ir::IrBlockMeta::Text));
         }
         _ => panic!("event[1] should be BlockStart"),
     }
@@ -569,7 +573,7 @@ fn test_stream_decode_sequence() {
     match &events[2] {
         IrStreamEvent::BlockDelta { index, delta } => {
             assert_eq!(*index, 0);
-            if let crate::ir::IrDelta::TextDelta(text) = delta {
+            if let busbar_core::ir::IrDelta::TextDelta(text) = delta {
                 assert_eq!(text, "Hello");
             } else {
                 panic!("event[2] should be TextDelta");
@@ -581,7 +585,7 @@ fn test_stream_decode_sequence() {
     match &events[3] {
         IrStreamEvent::BlockDelta { index, delta } => {
             assert_eq!(*index, 0);
-            if let crate::ir::IrDelta::TextDelta(text) = delta {
+            if let busbar_core::ir::IrDelta::TextDelta(text) = delta {
                 assert_eq!(text, ", world!");
             } else {
                 panic!("event[3] should be TextDelta");
@@ -604,7 +608,7 @@ fn test_stream_decode_sequence() {
         IrStreamEvent::MessageDelta {
             stop_reason, usage, ..
         } => {
-            assert_eq!(stop_reason, &Some(crate::ir::IrStopReason::EndTurn));
+            assert_eq!(stop_reason, &Some(busbar_core::ir::IrStopReason::EndTurn));
             assert_eq!(usage.input_tokens, 10);
             assert_eq!(usage.output_tokens, 5);
         }
@@ -628,7 +632,7 @@ fn test_write_response_event() {
 
     let delta_ev = IrStreamEvent::BlockDelta {
         index: 0,
-        delta: crate::ir::IrDelta::TextDelta("hi".to_string()),
+        delta: busbar_core::ir::IrDelta::TextDelta("hi".to_string()),
     };
 
     if let Some((event_type, payload)) = writer.write_response_event(&delta_ev) {
@@ -650,14 +654,14 @@ fn test_write_response_event() {
     }
 
     let delta_ev2 = IrStreamEvent::MessageDelta {
-        stop_reason: Some(crate::ir::IrStopReason::ToolUse),
+        stop_reason: Some(busbar_core::ir::IrStopReason::ToolUse),
         stop_sequence: None,
         usage: IrUsage {
             input_tokens: 10,
             output_tokens: 5,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
-            detail: crate::ir::IrUsageDetail::default(),
+            detail: busbar_core::ir::IrUsageDetail::default(),
         },
     };
 
@@ -680,31 +684,31 @@ fn test_write_response_event() {
 /// request goes out unsigned and AWS surfaces a 403 auth error instead of aborting the task.
 #[test]
 fn test_bedrock_sigv4_control_char_in_access_key_no_panic() {
-    let ctx = crate::proto::SigningContext {
+    let ctx = busbar_core::proto::SigningContext {
         host: "bedrock-runtime.us-east-1.amazonaws.com",
         canonical_uri: "/model/m/converse".to_string(),
         body: b"{}",
         timestamp_epoch: 1_440_938_160,
-        upstream_creds: crate::auth::UpstreamCreds::Own,
+        upstream_creds: busbar_core::auth::UpstreamCreds::Own,
     };
     // CR/LF embedded in the access key id → invalid Authorization header value
     // (HeaderValue::from_str rejects ASCII control chars, including CR/LF). This is the
     // header-injection / misconfiguration vector this guards.
-    let headers = crate::proto::bedrock::sigv4_sign_headers("AKID\r\nINJECT:SECRET", &ctx);
+    let headers = super::writer::sigv4_sign_headers("AKID\r\nINJECT:SECRET", &ctx);
     assert!(
         headers.is_empty(),
         "control-char access key must yield no headers (graceful), not panic; got: {headers:?}"
     );
 
     // A bare NUL / control byte is likewise rejected gracefully rather than panicking.
-    let headers2 = crate::proto::bedrock::sigv4_sign_headers("AKID\u{0001}X:SECRET", &ctx);
+    let headers2 = super::writer::sigv4_sign_headers("AKID\u{0001}X:SECRET", &ctx);
     assert!(
         headers2.is_empty(),
         "control-char access key must yield no headers; got: {headers2:?}"
     );
 
     // Sanity: a well-formed key still produces the full signed header set.
-    let ok = crate::proto::bedrock::sigv4_sign_headers("AKIDEXAMPLE:SECRETKEY", &ctx);
+    let ok = super::writer::sigv4_sign_headers("AKIDEXAMPLE:SECRETKEY", &ctx);
     assert!(
         ok.iter().any(|(k, _)| k.as_str() == "authorization"),
         "valid key still signs"
@@ -777,9 +781,9 @@ fn test_extract_error_non_json_body() {
 /// `*Exception` → `IrStreamEvent::Error` path, which is unaffected.
 #[test]
 fn test_stream_metadata_less_defers_terminator() {
-    use crate::ir::IrStreamEvent;
+    use busbar_core::ir::IrStreamEvent;
 
-    let mut state = crate::ir::StreamDecodeState::default();
+    let mut state = busbar_core::ir::StreamDecodeState::default();
     let reader = BedrockReader;
 
     let events: Vec<_> = vec![
@@ -814,7 +818,7 @@ fn test_stream_metadata_less_defers_terminator() {
     // The buffered stop_reason is retained in decode state (it would pair with `metadata`).
     assert_eq!(
         state.pending_stop_reason,
-        Some(crate::ir::IrStopReason::EndTurn)
+        Some(busbar_core::ir::IrStopReason::EndTurn)
     );
 }
 
@@ -822,9 +826,9 @@ fn test_stream_metadata_less_defers_terminator() {
 /// (messageStop + metadata) — no duplicate terminator.
 #[test]
 fn test_stream_emits_single_message_stop_with_metadata() {
-    use crate::ir::IrStreamEvent;
+    use busbar_core::ir::IrStreamEvent;
 
-    let mut state = crate::ir::StreamDecodeState::default();
+    let mut state = busbar_core::ir::StreamDecodeState::default();
     let reader = BedrockReader;
 
     let events: Vec<_> = vec![
@@ -898,7 +902,7 @@ fn test_error_kind_to_bedrock_type_mapping() {
     // would pair an HTTP 503 with a 400-class `__type` AWS never produces, making an AWS SDK
     // raise a non-retryable client fault instead of a retryable ServiceUnavailableException.
     assert_eq!(
-        error_kind_to_bedrock_type(crate::proxy::KIND_OVERLOADED),
+        error_kind_to_bedrock_type(busbar_core::proxy::KIND_OVERLOADED),
         "ServiceUnavailableException"
     );
     assert_eq!(
@@ -955,7 +959,10 @@ fn test_response_identity_same_protocol_roundtrip_no_synth() {
     assert_eq!(resp.system_fingerprint, None);
     assert_eq!(resp.stop_sequence, None);
     // stopReason + usage are present (the identity-bearing fields Bedrock does emit).
-    assert_eq!(resp.stop_reason, Some(crate::ir::IrStopReason::EndTurn));
+    assert_eq!(
+        resp.stop_reason,
+        Some(busbar_core::ir::IrStopReason::EndTurn)
+    );
     assert_eq!(resp.usage.input_tokens, 10);
     assert_eq!(resp.usage.output_tokens, 5);
 
@@ -1009,7 +1016,7 @@ fn test_write_response_event_usage_delta_is_metadata_frame() {
             output_tokens: 7,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
-            detail: crate::ir::IrUsageDetail::default(),
+            detail: busbar_core::ir::IrUsageDetail::default(),
         },
     };
     let (et, payload) = writer
@@ -1041,14 +1048,14 @@ fn test_write_response_event_usage_delta_is_metadata_frame() {
 
     // Stop-reason delta still maps to `messageStop` (the stop discriminant).
     let stop = IrStreamEvent::MessageDelta {
-        stop_reason: Some(crate::ir::IrStopReason::ToolUse),
+        stop_reason: Some(busbar_core::ir::IrStopReason::ToolUse),
         stop_sequence: None,
         usage: IrUsage {
             input_tokens: 0,
             output_tokens: 0,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
-            detail: crate::ir::IrUsageDetail::default(),
+            detail: busbar_core::ir::IrUsageDetail::default(),
         },
     };
     let (et2, payload2) = writer
@@ -1069,7 +1076,7 @@ fn test_write_response_event_text_block_start_emits_frame() {
     let writer = BedrockWriter;
     let ev = IrStreamEvent::BlockStart {
         index: 0,
-        block: crate::ir::IrBlockMeta::Text,
+        block: busbar_core::ir::IrBlockMeta::Text,
     };
     let (et, payload) = writer
         .write_response_event(&ev)
@@ -1095,7 +1102,7 @@ fn test_write_response_event_text_block_start_emits_frame() {
 /// instead of a hanging / EOF-without-terminator stream.
 #[test]
 fn test_stream_decode_surfaces_midstream_exception() {
-    let mut state = crate::ir::StreamDecodeState::default();
+    let mut state = busbar_core::ir::StreamDecodeState::default();
     let reader = BedrockReader;
 
     let events = reader.read_response_events(
@@ -1171,7 +1178,7 @@ fn test_stream_decode_surfaces_midstream_exception() {
 #[test]
 fn test_bedrock_image_block_empty_subtype_falls_back_to_png() {
     // Exact `"image/"` prefix with an empty subtype.
-    let block = bedrock_image_block(&crate::ir::IrImageSource::Base64 {
+    let block = bedrock_image_block(&busbar_core::ir::IrImageSource::Base64 {
         media_type: "image/".to_string(),
         data: ("QQ==").to_string(),
     })
@@ -1187,7 +1194,7 @@ fn test_bedrock_image_block_empty_subtype_falls_back_to_png() {
     );
 
     // A real subtype is preserved verbatim.
-    let jpeg = bedrock_image_block(&crate::ir::IrImageSource::Base64 {
+    let jpeg = bedrock_image_block(&busbar_core::ir::IrImageSource::Base64 {
         media_type: "image/jpeg".to_string(),
         data: ("QQ==").to_string(),
     })
@@ -1198,7 +1205,7 @@ fn test_bedrock_image_block_empty_subtype_falls_back_to_png() {
     );
 
     // A media_type with no `image/` prefix also falls back to png (unchanged behavior).
-    let bare = bedrock_image_block(&crate::ir::IrImageSource::Base64 {
+    let bare = bedrock_image_block(&busbar_core::ir::IrImageSource::Base64 {
         media_type: "png".to_string(),
         data: ("QQ==").to_string(),
     })
@@ -1210,7 +1217,7 @@ fn test_bedrock_image_block_empty_subtype_falls_back_to_png() {
 
     // The URL sentinel is still dropped (no corrupt block).
     assert!(
-        bedrock_image_block(&crate::ir::IrImageSource::Url(
+        bedrock_image_block(&busbar_core::ir::IrImageSource::Url(
             ("https://example.com/x.png").to_string()
         ))
         .is_none(),
@@ -1252,7 +1259,7 @@ fn test_read_request_honors_injected_stream_flag() {
 #[test]
 fn test_write_request_skips_system_role_message() {
     let writer = BedrockWriter;
-    let req = crate::ir::IrRequest {
+    let req = busbar_core::ir::IrRequest {
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -1261,19 +1268,19 @@ fn test_write_request_skips_system_role_message() {
         parallel_tool_calls: None,
         system: vec![],
         messages: vec![
-            crate::ir::IrMessage {
-                role: crate::ir::IrRole::System,
-                content: vec![crate::ir::IrBlock::Text {
+            busbar_core::ir::IrMessage {
+                role: busbar_core::ir::IrRole::System,
+                content: vec![busbar_core::ir::IrBlock::Text {
                     text: "leaked system text".to_string(),
                     cache_control: None,
                     citations: Vec::new(),
                 }],
             },
-            crate::ir::IrMessage {
-                role: crate::ir::IrRole::Tool,
-                content: vec![crate::ir::IrBlock::ToolResult {
+            busbar_core::ir::IrMessage {
+                role: busbar_core::ir::IrRole::Tool,
+                content: vec![busbar_core::ir::IrBlock::ToolResult {
                     tool_use_id: "t1".to_string(),
-                    content: vec![crate::ir::IrBlock::Text {
+                    content: vec![busbar_core::ir::IrBlock::Text {
                         text: "ok".to_string(),
                         cache_control: None,
                         citations: Vec::new(),
@@ -1328,7 +1335,7 @@ fn test_write_request_skips_system_role_message() {
 #[test]
 fn test_write_request_tool_result_preserves_non_text_content() {
     let writer = BedrockWriter;
-    let req = crate::ir::IrRequest {
+    let req = busbar_core::ir::IrRequest {
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -1336,12 +1343,12 @@ fn test_write_request_tool_result_preserves_non_text_content() {
         user: None,
         parallel_tool_calls: None,
         system: vec![],
-        messages: vec![crate::ir::IrMessage {
-            role: crate::ir::IrRole::User,
-            content: vec![crate::ir::IrBlock::ToolResult {
+        messages: vec![busbar_core::ir::IrMessage {
+            role: busbar_core::ir::IrRole::User,
+            content: vec![busbar_core::ir::IrBlock::ToolResult {
                 tool_use_id: "t1".to_string(),
-                content: vec![crate::ir::IrBlock::Image {
-                    source: crate::ir::IrImageSource::Base64 {
+                content: vec![busbar_core::ir::IrBlock::Image {
+                    source: busbar_core::ir::IrImageSource::Base64 {
                         media_type: "image/png".to_string(),
                         data: "BASE64DATA".to_string(),
                     },
@@ -1398,7 +1405,7 @@ fn test_write_request_tool_result_preserves_non_text_content() {
 fn test_write_response_event_error_names_real_exception() {
     let writer = BedrockWriter;
 
-    let throttle = IrStreamEvent::Error(crate::proto::IrError {
+    let throttle = IrStreamEvent::Error(busbar_core::proto::IrError {
         class: StatusClass::RateLimit,
         provider_signal: Some("slow down".to_string()),
         retry_after: None,
@@ -1417,7 +1424,7 @@ fn test_write_response_event_error_names_real_exception() {
 
     // A server-class error maps to InternalServerException and falls back to the exception name
     // when no provider_signal is present.
-    let server = IrStreamEvent::Error(crate::proto::IrError {
+    let server = IrStreamEvent::Error(busbar_core::proto::IrError {
         class: StatusClass::ServerError,
         provider_signal: None,
         retry_after: None,
@@ -1595,7 +1602,7 @@ fn test_write_request_tool_config_cross_protocol_and_empty() {
     let writer = BedrockWriter;
 
     // Cross-protocol shape: typed tools, empty extra (seam cleared it).
-    let ir_tools = crate::ir::IrRequest {
+    let ir_tools = busbar_core::ir::IrRequest {
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -1604,7 +1611,7 @@ fn test_write_request_tool_config_cross_protocol_and_empty() {
         parallel_tool_calls: None,
         system: vec![],
         messages: vec![],
-        tools: vec![crate::ir::IrTool {
+        tools: vec![busbar_core::ir::IrTool {
             name: "f".to_string(),
             description: None,
             input_schema: serde_json::json!({"type": "object"}),
@@ -1643,7 +1650,7 @@ fn test_write_request_tool_config_cross_protocol_and_empty() {
     );
 
     // No tools, no raw toolConfig → no toolConfig key at all.
-    let ir_empty = crate::ir::IrRequest {
+    let ir_empty = busbar_core::ir::IrRequest {
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -1681,8 +1688,8 @@ fn test_write_request_tool_config_cross_protocol_and_empty() {
 /// BlockStarts and silently dropping the rest of the text content.
 #[test]
 fn test_stream_text_block_after_tool_not_dropped() {
-    use crate::ir::IrStreamEvent;
-    let mut state = crate::ir::StreamDecodeState::default();
+    use busbar_core::ir::IrStreamEvent;
+    let mut state = busbar_core::ir::StreamDecodeState::default();
     let reader = BedrockReader;
 
     let events: Vec<_> = vec![
@@ -1721,7 +1728,7 @@ fn test_stream_text_block_after_tool_not_dropped() {
         .filter_map(|e| match e {
             IrStreamEvent::BlockStart {
                 index,
-                block: crate::ir::IrBlockMeta::Text,
+                block: busbar_core::ir::IrBlockMeta::Text,
             } => Some(*index),
             _ => None,
         })
@@ -1736,7 +1743,7 @@ fn test_stream_text_block_after_tool_not_dropped() {
         .iter()
         .filter_map(|e| match e {
             IrStreamEvent::BlockDelta {
-                delta: crate::ir::IrDelta::TextDelta(t),
+                delta: busbar_core::ir::IrDelta::TextDelta(t),
                 ..
             } => Some(t.clone()),
             _ => None,
@@ -1751,8 +1758,8 @@ fn test_stream_text_block_after_tool_not_dropped() {
 /// `start`) opens text. Forward-compatibility / defensive parsing.
 #[test]
 fn test_stream_unrecognized_start_does_not_open_text() {
-    use crate::ir::IrStreamEvent;
-    let mut state = crate::ir::StreamDecodeState::default();
+    use busbar_core::ir::IrStreamEvent;
+    let mut state = busbar_core::ir::StreamDecodeState::default();
     let reader = BedrockReader;
 
     let _ = reader.read_response_events(
@@ -1774,7 +1781,7 @@ fn test_stream_unrecognized_start_does_not_open_text() {
         !evs.iter().any(|e| matches!(
             e,
             IrStreamEvent::BlockStart {
-                block: crate::ir::IrBlockMeta::Text,
+                block: busbar_core::ir::IrBlockMeta::Text,
                 ..
             }
         )),
@@ -1795,7 +1802,7 @@ fn test_stream_unrecognized_start_does_not_open_text() {
         evs2.iter().any(|e| matches!(
             e,
             IrStreamEvent::BlockStart {
-                block: crate::ir::IrBlockMeta::Text,
+                block: busbar_core::ir::IrBlockMeta::Text,
                 ..
             }
         )),
@@ -1810,15 +1817,15 @@ fn test_stream_unrecognized_start_does_not_open_text() {
 /// empty-header path (unsigned request → AWS 403 as auth) — no panic, no divergence.
 #[test]
 fn test_bedrock_sigv4_unencodable_session_token_bails_gracefully() {
-    let ctx = crate::proto::SigningContext {
+    let ctx = busbar_core::proto::SigningContext {
         host: "bedrock-runtime.us-east-1.amazonaws.com",
         canonical_uri: "/model/m/converse".to_string(),
         body: b"{}",
         timestamp_epoch: 1_440_938_160,
-        upstream_creds: crate::auth::UpstreamCreds::Own,
+        upstream_creds: busbar_core::auth::UpstreamCreds::Own,
     };
     // Session token with an embedded control char → un-encodable HeaderValue.
-    let headers = crate::proto::bedrock::sigv4_sign_headers("AKID:SECRET:TOK\r\nEN", &ctx);
+    let headers = super::writer::sigv4_sign_headers("AKID:SECRET:TOK\r\nEN", &ctx);
     assert!(
         headers.is_empty(),
         "un-encodable session token must yield no headers (graceful), not a signed-but-absent \
@@ -1826,7 +1833,7 @@ fn test_bedrock_sigv4_unencodable_session_token_bails_gracefully() {
     );
     // A bare control byte (e.g. NUL / U+0001) likewise bails — `HeaderValue::from_str` rejects
     // ASCII control characters, the same vector as the misconfigured access-key path.
-    let headers2 = crate::proto::bedrock::sigv4_sign_headers("AKID:SECRET:TOK\u{0001}EN", &ctx);
+    let headers2 = super::writer::sigv4_sign_headers("AKID:SECRET:TOK\u{0001}EN", &ctx);
     assert!(
         headers2.is_empty(),
         "control-byte token must bail; got {headers2:?}"
@@ -1834,7 +1841,7 @@ fn test_bedrock_sigv4_unencodable_session_token_bails_gracefully() {
 
     // Sanity: a clean token still signs AND emits the token header, and the signed set commits
     // to it (so the two never diverge in the success case either).
-    let ok = crate::proto::bedrock::sigv4_sign_headers("AKID:SECRET:CLEANTOKEN", &ctx);
+    let ok = super::writer::sigv4_sign_headers("AKID:SECRET:CLEANTOKEN", &ctx);
     let auth = ok
         .iter()
         .find(|(k, _)| k.as_str() == "authorization")
@@ -1871,7 +1878,7 @@ fn test_write_response_event_metadata_no_fabricated_metrics() {
             output_tokens: 2,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
-            detail: crate::ir::IrUsageDetail::default(),
+            detail: busbar_core::ir::IrUsageDetail::default(),
         },
     };
     let (et, payload) = writer
@@ -1908,7 +1915,7 @@ fn test_write_response_event_total_tokens_saturates() {
             output_tokens: 1,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
-            detail: crate::ir::IrUsageDetail::default(),
+            detail: busbar_core::ir::IrUsageDetail::default(),
         },
     };
     let (et, payload) = writer
@@ -1950,7 +1957,7 @@ fn bedrock_writer_image_block_stop_is_suppressed() {
         writer
             .write_response_event(&IrStreamEvent::BlockStart {
                 index: 0,
-                block: crate::ir::IrBlockMeta::Image,
+                block: busbar_core::ir::IrBlockMeta::Image,
             })
             .is_none(),
         "Image BlockStart must stay suppressed"
@@ -1970,29 +1977,29 @@ fn bedrock_writer_image_block_stop_is_suppressed() {
 /// upstream reasoning; it now synthesizes the `reasoningContent` start/delta/stop frames.
 #[test]
 fn eventstream_emits_reasoning_content_for_thinking_block() {
-    let resp = crate::ir::IrResponse {
+    let resp = busbar_core::ir::IrResponse {
         logprobs: Vec::new(),
-        role: crate::ir::IrRole::Assistant,
+        role: busbar_core::ir::IrRole::Assistant,
         content: vec![
-            crate::ir::IrBlock::Thinking {
+            busbar_core::ir::IrBlock::Thinking {
                 text: "let me think".to_string(),
                 signature: Some("sigblob".to_string()),
                 redacted: false,
                 cache_control: None,
             },
-            crate::ir::IrBlock::Text {
+            busbar_core::ir::IrBlock::Text {
                 text: "answer".to_string(),
                 cache_control: None,
                 citations: Vec::new(),
             },
         ],
-        stop_reason: Some(crate::ir::IrStopReason::EndTurn),
+        stop_reason: Some(busbar_core::ir::IrStopReason::EndTurn),
         usage: IrUsage {
             input_tokens: 1,
             output_tokens: 1,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
-            detail: crate::ir::IrUsageDetail::default(),
+            detail: busbar_core::ir::IrUsageDetail::default(),
         },
         model: None,
         id: None,
@@ -2022,30 +2029,30 @@ fn eventstream_emits_reasoning_content_for_thinking_block() {
 /// contiguous from 0. `[Image, Text]` must put the Text frames at `contentBlockIndex: 0`, not `1`.
 #[test]
 fn eventstream_content_block_index_is_contiguous_when_a_block_is_skipped() {
-    let resp = crate::ir::IrResponse {
+    let resp = busbar_core::ir::IrResponse {
         logprobs: Vec::new(),
-        role: crate::ir::IrRole::Assistant,
+        role: busbar_core::ir::IrRole::Assistant,
         content: vec![
-            crate::ir::IrBlock::Image {
-                source: crate::ir::IrImageSource::Base64 {
+            busbar_core::ir::IrBlock::Image {
+                source: busbar_core::ir::IrImageSource::Base64 {
                     media_type: "image/png".to_string(),
                     data: "aGk=".to_string(),
                 },
                 cache_control: None,
             },
-            crate::ir::IrBlock::Text {
+            busbar_core::ir::IrBlock::Text {
                 text: "answer".to_string(),
                 cache_control: None,
                 citations: Vec::new(),
             },
         ],
-        stop_reason: Some(crate::ir::IrStopReason::EndTurn),
+        stop_reason: Some(busbar_core::ir::IrStopReason::EndTurn),
         usage: IrUsage {
             input_tokens: 1,
             output_tokens: 1,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
-            detail: crate::ir::IrUsageDetail::default(),
+            detail: busbar_core::ir::IrUsageDetail::default(),
         },
         model: None,
         id: None,
@@ -2054,7 +2061,7 @@ fn eventstream_content_block_index_is_contiguous_when_a_block_is_skipped() {
         stop_sequence: None,
     };
     let mut bytes = bedrock_response_to_eventstream(&resp, Some(5));
-    let frames = crate::eventstream::drain_frames(&mut bytes);
+    let frames = busbar_core::eventstream::drain_frames(&mut bytes);
     let text_start = frames
         .iter()
         .find(|(et, _)| et == "contentBlockStart")
@@ -2076,38 +2083,38 @@ fn eventstream_content_block_index_is_contiguous_when_a_block_is_skipped() {
 /// proves the fix does not introduce an orphaned start or stop.
 #[test]
 fn eventstream_every_content_block_start_has_exactly_one_stop() {
-    let resp = crate::ir::IrResponse {
+    let resp = busbar_core::ir::IrResponse {
         logprobs: Vec::new(),
-        role: crate::ir::IrRole::Assistant,
+        role: busbar_core::ir::IrRole::Assistant,
         content: vec![
-            crate::ir::IrBlock::Image {
-                source: crate::ir::IrImageSource::Base64 {
+            busbar_core::ir::IrBlock::Image {
+                source: busbar_core::ir::IrImageSource::Base64 {
                     media_type: "image/png".to_string(),
                     data: "aGk=".to_string(),
                 },
                 cache_control: None,
             },
-            crate::ir::IrBlock::Thinking {
+            busbar_core::ir::IrBlock::Thinking {
                 text: "let me think".to_string(),
                 signature: Some("sigblob".to_string()),
                 redacted: false,
                 cache_control: None,
             },
-            crate::ir::IrBlock::Text {
+            busbar_core::ir::IrBlock::Text {
                 text: "answer".to_string(),
                 cache_control: None,
                 citations: Vec::new(),
             },
-            crate::ir::IrBlock::ToolUse {
+            busbar_core::ir::IrBlock::ToolUse {
                 thought_signature: None,
                 id: "toolu_1".to_string(),
                 name: "get_weather".to_string(),
                 input: serde_json::json!({"city": "SF"}),
                 cache_control: None,
             },
-            crate::ir::IrBlock::ToolResult {
+            busbar_core::ir::IrBlock::ToolResult {
                 tool_use_id: "toolu_1".to_string(),
-                content: vec![crate::ir::IrBlock::Text {
+                content: vec![busbar_core::ir::IrBlock::Text {
                     text: "sunny".to_string(),
                     cache_control: None,
                     citations: Vec::new(),
@@ -2115,15 +2122,15 @@ fn eventstream_every_content_block_start_has_exactly_one_stop() {
                 is_error: false,
                 cache_control: None,
             },
-            crate::ir::IrBlock::Json(serde_json::json!({"k": "v"})),
+            busbar_core::ir::IrBlock::Json(serde_json::json!({"k": "v"})),
         ],
-        stop_reason: Some(crate::ir::IrStopReason::EndTurn),
+        stop_reason: Some(busbar_core::ir::IrStopReason::EndTurn),
         usage: IrUsage {
             input_tokens: 1,
             output_tokens: 1,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
-            detail: crate::ir::IrUsageDetail::default(),
+            detail: busbar_core::ir::IrUsageDetail::default(),
         },
         model: None,
         id: None,
@@ -2132,7 +2139,7 @@ fn eventstream_every_content_block_start_has_exactly_one_stop() {
         stop_sequence: None,
     };
     let mut bytes = bedrock_response_to_eventstream(&resp, Some(5));
-    let frames = crate::eventstream::drain_frames(&mut bytes);
+    let frames = busbar_core::eventstream::drain_frames(&mut bytes);
 
     let mut starts: Vec<u64> = Vec::new();
     let mut stops: Vec<u64> = Vec::new();
@@ -2164,21 +2171,21 @@ fn eventstream_every_content_block_start_has_exactly_one_stop() {
 #[test]
 fn test_write_response_total_tokens_saturates() {
     let writer = BedrockWriter;
-    let resp = crate::ir::IrResponse {
+    let resp = busbar_core::ir::IrResponse {
         logprobs: Vec::new(),
-        role: crate::ir::IrRole::Assistant,
-        content: vec![crate::ir::IrBlock::Text {
+        role: busbar_core::ir::IrRole::Assistant,
+        content: vec![busbar_core::ir::IrBlock::Text {
             text: "hi".to_string(),
             cache_control: None,
             citations: Vec::new(),
         }],
-        stop_reason: Some(crate::ir::IrStopReason::EndTurn),
+        stop_reason: Some(busbar_core::ir::IrStopReason::EndTurn),
         usage: IrUsage {
             input_tokens: u64::MAX - 1,
             output_tokens: 100,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
-            detail: crate::ir::IrUsageDetail::default(),
+            detail: busbar_core::ir::IrUsageDetail::default(),
         },
         model: None,
         id: None,
@@ -2193,13 +2200,13 @@ fn test_write_response_total_tokens_saturates() {
         "totalTokens must saturate, not wrap; got {body}"
     );
     // A normal (non-overflowing) pair still sums exactly.
-    let normal = crate::ir::IrResponse {
+    let normal = busbar_core::ir::IrResponse {
         usage: IrUsage {
             input_tokens: 10,
             output_tokens: 5,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
-            detail: crate::ir::IrUsageDetail::default(),
+            detail: busbar_core::ir::IrUsageDetail::default(),
         },
         ..resp
     };
@@ -2217,30 +2224,30 @@ fn test_write_response_total_tokens_saturates() {
 #[test]
 fn test_write_response_projects_image_block() {
     let writer = BedrockWriter;
-    let resp = crate::ir::IrResponse {
+    let resp = busbar_core::ir::IrResponse {
         logprobs: Vec::new(),
-        role: crate::ir::IrRole::Assistant,
+        role: busbar_core::ir::IrRole::Assistant,
         content: vec![
-            crate::ir::IrBlock::Text {
+            busbar_core::ir::IrBlock::Text {
                 text: "see image".to_string(),
                 cache_control: None,
                 citations: Vec::new(),
             },
-            crate::ir::IrBlock::Image {
-                source: crate::ir::IrImageSource::Base64 {
+            busbar_core::ir::IrBlock::Image {
+                source: busbar_core::ir::IrImageSource::Base64 {
                     media_type: "image/png".to_string(),
                     data: "aGVsbG8=".to_string(),
                 },
                 cache_control: None,
             },
         ],
-        stop_reason: Some(crate::ir::IrStopReason::EndTurn),
+        stop_reason: Some(busbar_core::ir::IrStopReason::EndTurn),
         usage: IrUsage {
             input_tokens: 1,
             output_tokens: 1,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
-            detail: crate::ir::IrUsageDetail::default(),
+            detail: busbar_core::ir::IrUsageDetail::default(),
         },
         model: None,
         id: None,
@@ -2285,22 +2292,22 @@ fn test_write_response_projects_image_block() {
 #[test]
 fn test_write_response_empty_content_emits_placeholder() {
     let writer = BedrockWriter;
-    let resp = crate::ir::IrResponse {
+    let resp = busbar_core::ir::IrResponse {
         logprobs: Vec::new(),
-        role: crate::ir::IrRole::Assistant,
-        content: vec![crate::ir::IrBlock::ToolResult {
+        role: busbar_core::ir::IrRole::Assistant,
+        content: vec![busbar_core::ir::IrBlock::ToolResult {
             tool_use_id: "tu_1".to_string(),
             content: Vec::new(),
             is_error: false,
             cache_control: None,
         }],
-        stop_reason: Some(crate::ir::IrStopReason::EndTurn),
+        stop_reason: Some(busbar_core::ir::IrStopReason::EndTurn),
         usage: IrUsage {
             input_tokens: 1,
             output_tokens: 1,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
-            detail: crate::ir::IrUsageDetail::default(),
+            detail: busbar_core::ir::IrUsageDetail::default(),
         },
         model: None,
         id: None,
@@ -2400,7 +2407,7 @@ fn test_top_k_reaches_bedrock_via_additional_model_request_fields() {
     let writer = BedrockWriter;
 
     // Cross-protocol shape: top_k set in the IR, extra cleared (as the translate seam leaves it).
-    let ir = crate::ir::IrRequest {
+    let ir = busbar_core::ir::IrRequest {
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -2408,9 +2415,9 @@ fn test_top_k_reaches_bedrock_via_additional_model_request_fields() {
         user: None,
         parallel_tool_calls: None,
         system: vec![],
-        messages: vec![crate::ir::IrMessage {
-            role: crate::ir::IrRole::User,
-            content: vec![crate::ir::IrBlock::Text {
+        messages: vec![busbar_core::ir::IrMessage {
+            role: busbar_core::ir::IrRole::User,
+            content: vec![busbar_core::ir::IrBlock::Text {
                 text: "hi".to_string(),
                 cache_control: None,
                 citations: Vec::new(),
@@ -2507,7 +2514,7 @@ fn test_top_k_camel_spelling_round_trips_and_cross_protocol_stays_snake() {
 
     // Cross-protocol: top_k in the IR, `extra` cleared (as the translate seam leaves it) — no
     // sentinel, so the writer emits the canonical snake_case `top_k`.
-    let ir_cross = crate::ir::IrRequest {
+    let ir_cross = busbar_core::ir::IrRequest {
         top_k: Some(40),
         extra: serde_json::Map::new(),
         ..ir.clone()
@@ -2555,7 +2562,7 @@ fn test_inference_config_typed_fields_override_raw_and_cross_protocol() {
         "inferenceConfig".to_string(),
         serde_json::json!({"maxTokens": 1, "topP": 0.5}),
     );
-    let ir = crate::ir::IrRequest {
+    let ir = busbar_core::ir::IrRequest {
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -2563,9 +2570,9 @@ fn test_inference_config_typed_fields_override_raw_and_cross_protocol() {
         user: None,
         parallel_tool_calls: None,
         system: vec![],
-        messages: vec![crate::ir::IrMessage {
-            role: crate::ir::IrRole::User,
-            content: vec![crate::ir::IrBlock::Text {
+        messages: vec![busbar_core::ir::IrMessage {
+            role: busbar_core::ir::IrRole::User,
+            content: vec![busbar_core::ir::IrBlock::Text {
                 text: "hi".to_string(),
                 cache_control: None,
                 citations: Vec::new(),
@@ -2601,7 +2608,7 @@ fn test_inference_config_typed_fields_override_raw_and_cross_protocol() {
     );
 
     // Cross-protocol egress: no inferenceConfig in extra → config built purely from typed IR.
-    let ir2 = crate::ir::IrRequest {
+    let ir2 = busbar_core::ir::IrRequest {
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -2609,9 +2616,9 @@ fn test_inference_config_typed_fields_override_raw_and_cross_protocol() {
         user: None,
         parallel_tool_calls: None,
         system: vec![],
-        messages: vec![crate::ir::IrMessage {
-            role: crate::ir::IrRole::User,
-            content: vec![crate::ir::IrBlock::Text {
+        messages: vec![busbar_core::ir::IrMessage {
+            role: busbar_core::ir::IrRole::User,
+            content: vec![busbar_core::ir::IrBlock::Text {
                 text: "hi".to_string(),
                 cache_control: None,
                 citations: Vec::new(),
@@ -2681,7 +2688,7 @@ fn test_stream_exception_only_emits_converse_stream_union_members() {
     ];
 
     for (class, expected) in cases {
-        let err = crate::proto::IrError {
+        let err = busbar_core::proto::IrError {
             class,
             provider_signal: Some("upstream detail".to_string()),
             retry_after: None,
@@ -2701,7 +2708,7 @@ fn test_stream_exception_only_emits_converse_stream_union_members() {
         assert_eq!(msg, "upstream detail", "message prefers provider_signal");
 
         // Fallback event-arm path uses the SAME stream union.
-        let ev = IrStreamEvent::Error(crate::proto::IrError {
+        let ev = IrStreamEvent::Error(busbar_core::proto::IrError {
             class,
             provider_signal: None,
             retry_after: None,
@@ -2730,7 +2737,7 @@ fn test_stream_exception_only_emits_converse_stream_union_members() {
         StatusClass::Auth,
         StatusClass::Billing,
     ] {
-        let err = crate::proto::IrError {
+        let err = busbar_core::proto::IrError {
             class,
             provider_signal: None,
             retry_after: None,
@@ -2755,7 +2762,7 @@ fn test_write_request_url_sentinel_image_not_emitted_as_base64() {
 
     // Top-level URL-sentinel image → dropped (no image block, no garbage bytes).
     let url = "https://example.com/cat.png";
-    let req = crate::ir::IrRequest {
+    let req = busbar_core::ir::IrRequest {
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -2763,16 +2770,16 @@ fn test_write_request_url_sentinel_image_not_emitted_as_base64() {
         user: None,
         parallel_tool_calls: None,
         system: vec![],
-        messages: vec![crate::ir::IrMessage {
-            role: crate::ir::IrRole::User,
+        messages: vec![busbar_core::ir::IrMessage {
+            role: busbar_core::ir::IrRole::User,
             content: vec![
-                crate::ir::IrBlock::Text {
+                busbar_core::ir::IrBlock::Text {
                     text: "look".to_string(),
                     cache_control: None,
                     citations: Vec::new(),
                 },
-                crate::ir::IrBlock::Image {
-                    source: crate::ir::IrImageSource::Url(url.to_string()),
+                busbar_core::ir::IrBlock::Image {
+                    source: busbar_core::ir::IrImageSource::Url(url.to_string()),
                     cache_control: None,
                 },
             ],
@@ -2810,11 +2817,11 @@ fn test_write_request_url_sentinel_image_not_emitted_as_base64() {
     );
 
     // A genuine base64 image is still emitted natively.
-    let req2 = crate::ir::IrRequest {
-        messages: vec![crate::ir::IrMessage {
-            role: crate::ir::IrRole::User,
-            content: vec![crate::ir::IrBlock::Image {
-                source: crate::ir::IrImageSource::Base64 {
+    let req2 = busbar_core::ir::IrRequest {
+        messages: vec![busbar_core::ir::IrMessage {
+            role: busbar_core::ir::IrRole::User,
+            content: vec![busbar_core::ir::IrBlock::Image {
+                source: busbar_core::ir::IrImageSource::Base64 {
                     media_type: "image/png".to_string(),
                     data: "QkFTRTY0".to_string(),
                 },
@@ -2849,7 +2856,7 @@ fn test_write_request_url_sentinel_image_not_emitted_as_base64() {
 #[test]
 fn test_write_request_all_nonrepresentable_turn_kept_with_placeholder() {
     let writer = BedrockWriter;
-    let req = crate::ir::IrRequest {
+    let req = busbar_core::ir::IrRequest {
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -2858,18 +2865,18 @@ fn test_write_request_all_nonrepresentable_turn_kept_with_placeholder() {
         parallel_tool_calls: None,
         system: vec![],
         messages: vec![
-            crate::ir::IrMessage {
-                role: crate::ir::IrRole::User,
-                content: vec![crate::ir::IrBlock::Text {
+            busbar_core::ir::IrMessage {
+                role: busbar_core::ir::IrRole::User,
+                content: vec![busbar_core::ir::IrBlock::Text {
                     text: "hello".to_string(),
                     cache_control: None,
                     citations: Vec::new(),
                 }],
             },
             // Assistant turn carrying ONLY a thinking block (now re-emitted as reasoningContent).
-            crate::ir::IrMessage {
-                role: crate::ir::IrRole::Assistant,
-                content: vec![crate::ir::IrBlock::Thinking {
+            busbar_core::ir::IrMessage {
+                role: busbar_core::ir::IrRole::Assistant,
+                content: vec![busbar_core::ir::IrBlock::Thinking {
                     text: "internal reasoning".to_string(),
                     signature: None,
                     redacted: false,
@@ -2877,10 +2884,10 @@ fn test_write_request_all_nonrepresentable_turn_kept_with_placeholder() {
                 }],
             },
             // User turn carrying ONLY a URL-sentinel image (also non-representable here).
-            crate::ir::IrMessage {
-                role: crate::ir::IrRole::User,
-                content: vec![crate::ir::IrBlock::Image {
-                    source: crate::ir::IrImageSource::Url(
+            busbar_core::ir::IrMessage {
+                role: busbar_core::ir::IrRole::User,
+                content: vec![busbar_core::ir::IrBlock::Image {
+                    source: busbar_core::ir::IrImageSource::Url(
                         "https://example.com/cat.png".to_string(),
                     ),
                     cache_control: None,
@@ -3043,14 +3050,14 @@ fn test_derive_sigv4_region_shapes() {
 /// here we assert the derived scope region in the Authorization header.
 #[test]
 fn test_bedrock_sigv4_fips_host_derives_correct_region() {
-    let ctx = crate::proto::SigningContext {
+    let ctx = busbar_core::proto::SigningContext {
         host: "bedrock-runtime-fips.eu-west-1.amazonaws.com",
         canonical_uri: "/model/m/converse".to_string(),
         body: b"{}",
         timestamp_epoch: 1_440_938_160,
-        upstream_creds: crate::auth::UpstreamCreds::Own,
+        upstream_creds: busbar_core::auth::UpstreamCreds::Own,
     };
-    let headers = crate::proto::bedrock::sigv4_sign_headers("AKID:SECRET", &ctx);
+    let headers = super::writer::sigv4_sign_headers("AKID:SECRET", &ctx);
     let auth = headers
         .iter()
         .find(|(k, _)| k.as_str() == "authorization")
@@ -3071,14 +3078,14 @@ fn test_bedrock_sigv4_fips_host_derives_correct_region() {
 /// operator-visible signal, asserted indirectly via the resulting scope.
 #[test]
 fn test_bedrock_sigv4_undecodable_host_falls_back_to_us_east_1() {
-    let ctx = crate::proto::SigningContext {
+    let ctx = busbar_core::proto::SigningContext {
         host: "my-cname-front.example.com",
         canonical_uri: "/model/m/converse".to_string(),
         body: b"{}",
         timestamp_epoch: 1_440_938_160,
-        upstream_creds: crate::auth::UpstreamCreds::Own,
+        upstream_creds: busbar_core::auth::UpstreamCreds::Own,
     };
-    let headers = crate::proto::bedrock::sigv4_sign_headers("AKID:SECRET", &ctx);
+    let headers = super::writer::sigv4_sign_headers("AKID:SECRET", &ctx);
     let auth = headers
         .iter()
         .find(|(k, _)| k.as_str() == "authorization")
@@ -3098,9 +3105,9 @@ fn test_bedrock_sigv4_undecodable_host_falls_back_to_us_east_1() {
 /// so a usage-less metadata dropped the stop_reason and emitted a bare MessageStop.
 #[test]
 fn test_stream_metadata_without_usage_still_emits_delta_with_stop_reason() {
-    use crate::ir::IrStreamEvent;
+    use busbar_core::ir::IrStreamEvent;
 
-    let mut state = crate::ir::StreamDecodeState::default();
+    let mut state = busbar_core::ir::StreamDecodeState::default();
     let reader = BedrockReader;
 
     let events: Vec<_> = vec![
@@ -3131,7 +3138,7 @@ fn test_stream_metadata_without_usage_still_emits_delta_with_stop_reason() {
         } => {
             assert_eq!(
                 stop_reason,
-                &Some(crate::ir::IrStopReason::EndTurn),
+                &Some(busbar_core::ir::IrStopReason::EndTurn),
                 "stop_reason buffered from messageStop must survive a usage-less metadata"
             );
             assert_eq!(usage.input_tokens, 0);
@@ -3170,7 +3177,7 @@ fn test_stream_metadata_without_usage_still_emits_delta_with_stop_reason() {
 fn test_write_request_tool_result_url_sentinel_image_dropped() {
     let writer = BedrockWriter;
     let url = "https://example.com/in-tool.png";
-    let req = crate::ir::IrRequest {
+    let req = busbar_core::ir::IrRequest {
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -3178,18 +3185,18 @@ fn test_write_request_tool_result_url_sentinel_image_dropped() {
         user: None,
         parallel_tool_calls: None,
         system: vec![],
-        messages: vec![crate::ir::IrMessage {
-            role: crate::ir::IrRole::Tool,
-            content: vec![crate::ir::IrBlock::ToolResult {
+        messages: vec![busbar_core::ir::IrMessage {
+            role: busbar_core::ir::IrRole::Tool,
+            content: vec![busbar_core::ir::IrBlock::ToolResult {
                 tool_use_id: "t1".to_string(),
                 content: vec![
-                    crate::ir::IrBlock::Text {
+                    busbar_core::ir::IrBlock::Text {
                         text: "result".to_string(),
                         cache_control: None,
                         citations: Vec::new(),
                     },
-                    crate::ir::IrBlock::Image {
-                        source: crate::ir::IrImageSource::Url(url.to_string()),
+                    busbar_core::ir::IrBlock::Image {
+                        source: busbar_core::ir::IrImageSource::Url(url.to_string()),
                         cache_control: None,
                     },
                 ],
@@ -3296,8 +3303,8 @@ fn test_read_request_image_s3_location_captured() {
     let ir = reader.read_request(&body).expect("read_request");
     let block = &ir.messages[0].content[0];
     match block {
-        crate::ir::IrBlock::Image {
-            source: crate::ir::IrImageSource::Vendor { vendor, value },
+        busbar_core::ir::IrBlock::Image {
+            source: busbar_core::ir::IrImageSource::Vendor { vendor, value },
             ..
         } => {
             assert_eq!(
@@ -3404,15 +3411,15 @@ fn test_read_request_tool_result_decodes_image() {
     });
     let ir = reader.read_request(&body).expect("read_request");
     match &ir.messages[0].content[0] {
-        crate::ir::IrBlock::ToolResult { content, .. } => {
+        busbar_core::ir::IrBlock::ToolResult { content, .. } => {
             assert_eq!(
                 content.len(),
                 2,
                 "both inner blocks must decode; got {content:?}"
             );
             match &content[1] {
-                crate::ir::IrBlock::Image {
-                    source: crate::ir::IrImageSource::Base64 { media_type, data },
+                busbar_core::ir::IrBlock::Image {
+                    source: busbar_core::ir::IrImageSource::Base64 { media_type, data },
                     ..
                 } => {
                     assert_eq!(media_type, "image/png");
@@ -3469,7 +3476,7 @@ fn test_tool_result_image_s3_round_trip() {
 /// (no Bedrock projection) rather than corrupting the source.
 #[test]
 fn test_bedrock_image_block_s3_vendor() {
-    let source = crate::ir::IrImageSource::Vendor {
+    let source = busbar_core::ir::IrImageSource::Vendor {
         vendor: "bedrock",
         value: serde_json::json!({
             "format": "png",
@@ -3494,7 +3501,7 @@ fn test_bedrock_image_block_s3_vendor() {
         Some("111122223333")
     );
     // A vendor reference produced by ANOTHER protocol has no Bedrock projection → dropped.
-    let foreign = crate::ir::IrImageSource::Vendor {
+    let foreign = busbar_core::ir::IrImageSource::Vendor {
         vendor: "responses",
         value: serde_json::json!({ "file_id": "x" }),
     };
@@ -3557,8 +3564,8 @@ fn test_read_response_absent_cache_tokens_are_none() {
 /// the combined MessageDelta's IR usage (old code hardcoded both to `None`).
 #[test]
 fn test_read_stream_metadata_plumbs_cache_tokens() {
-    use crate::ir::IrStreamEvent;
-    let mut state = crate::ir::StreamDecodeState::default();
+    use busbar_core::ir::IrStreamEvent;
+    let mut state = busbar_core::ir::StreamDecodeState::default();
     let reader = BedrockReader;
     let events: Vec<IrStreamEvent> = [
         serde_json::json!({"type": "messageStop", "stopReason": "end_turn"}),
@@ -3632,17 +3639,17 @@ fn test_write_response_emits_cache_tokens_roundtrip() {
 #[test]
 fn test_write_response_omits_absent_cache_tokens() {
     let writer = BedrockWriter;
-    let resp = crate::ir::IrResponse {
+    let resp = busbar_core::ir::IrResponse {
         logprobs: Vec::new(),
-        role: crate::ir::IrRole::Assistant,
+        role: busbar_core::ir::IrRole::Assistant,
         content: vec![],
-        stop_reason: Some(crate::ir::IrStopReason::EndTurn),
+        stop_reason: Some(busbar_core::ir::IrStopReason::EndTurn),
         usage: IrUsage {
             input_tokens: 1,
             output_tokens: 1,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
-            detail: crate::ir::IrUsageDetail::default(),
+            detail: busbar_core::ir::IrUsageDetail::default(),
         },
         model: None,
         id: None,
@@ -3674,7 +3681,7 @@ fn test_write_stream_metadata_emits_cache_tokens() {
             output_tokens: 7,
             cache_creation_input_tokens: Some(40),
             cache_read_input_tokens: Some(20),
-            detail: crate::ir::IrUsageDetail::default(),
+            detail: busbar_core::ir::IrUsageDetail::default(),
         },
     };
     let (et, payload) = writer
@@ -3897,8 +3904,8 @@ fn test_extract_error_synthesizes_context_length_exceeded() {
 /// `messageStart` (reordered/malformed stream) must emit NO BlockStart.
 #[test]
 fn test_stream_tool_block_start_before_message_start_is_dropped() {
-    use crate::ir::IrStreamEvent;
-    let mut state = crate::ir::StreamDecodeState::default();
+    use busbar_core::ir::IrStreamEvent;
+    let mut state = busbar_core::ir::StreamDecodeState::default();
     let reader = BedrockReader;
 
     // toolUse contentBlockStart BEFORE any messageStart: state.started is false → drop it.
@@ -3915,7 +3922,7 @@ fn test_stream_tool_block_start_before_message_start_is_dropped() {
         !evs.iter().any(|e| matches!(
             e,
             IrStreamEvent::BlockStart {
-                block: crate::ir::IrBlockMeta::ToolUse { .. },
+                block: busbar_core::ir::IrBlockMeta::ToolUse { .. },
                 ..
             }
         )),
@@ -3941,7 +3948,7 @@ fn test_stream_tool_block_start_before_message_start_is_dropped() {
         evs2.iter().any(|e| matches!(
             e,
             IrStreamEvent::BlockStart {
-                block: crate::ir::IrBlockMeta::ToolUse { .. },
+                block: busbar_core::ir::IrBlockMeta::ToolUse { .. },
                 ..
             }
         )),
@@ -3958,8 +3965,8 @@ fn test_stream_tool_block_start_before_message_start_is_dropped() {
 /// with no preceding `content_block_start`.
 #[test]
 fn test_stream_block_stop_before_message_start_is_dropped() {
-    use crate::ir::IrStreamEvent;
-    let mut state = crate::ir::StreamDecodeState::default();
+    use busbar_core::ir::IrStreamEvent;
+    let mut state = busbar_core::ir::StreamDecodeState::default();
     let reader = BedrockReader;
 
     let evs = reader.read_response_events(
@@ -3979,8 +3986,8 @@ fn test_stream_block_stop_before_message_start_is_dropped() {
 /// dropped, not unconditionally forwarded as a `BlockStop` with no matching prior BlockStart.
 #[test]
 fn test_stream_block_stop_for_unopened_tool_index_is_dropped() {
-    use crate::ir::IrStreamEvent;
-    let mut state = crate::ir::StreamDecodeState::default();
+    use busbar_core::ir::IrStreamEvent;
+    let mut state = busbar_core::ir::StreamDecodeState::default();
     let reader = BedrockReader;
 
     let _ = reader.read_response_events(
@@ -4008,8 +4015,8 @@ fn test_stream_block_stop_for_unopened_tool_index_is_dropped() {
 /// index — the unmatched-STOP fix above must not also suppress a legitimately matched STOP.
 #[test]
 fn test_stream_block_stop_for_opened_tool_index_still_emits() {
-    use crate::ir::IrStreamEvent;
-    let mut state = crate::ir::StreamDecodeState::default();
+    use busbar_core::ir::IrStreamEvent;
+    let mut state = busbar_core::ir::StreamDecodeState::default();
     let reader = BedrockReader;
 
     let _ = reader.read_response_events(
@@ -4044,8 +4051,8 @@ fn test_stream_block_stop_for_opened_tool_index_still_emits() {
 /// naive single-flag fix that would only track "is *a* tool open" rather than "is *this* index open".
 #[test]
 fn test_stream_block_stop_closes_concurrent_tool_blocks_independently() {
-    use crate::ir::IrStreamEvent;
-    let mut state = crate::ir::StreamDecodeState::default();
+    use busbar_core::ir::IrStreamEvent;
+    let mut state = busbar_core::ir::StreamDecodeState::default();
     let reader = BedrockReader;
 
     let _ = reader.read_response_events(
@@ -4106,8 +4113,8 @@ fn test_stream_block_stop_closes_concurrent_tool_blocks_independently() {
 /// silently swallowed the LATER, legitimate STOP for the text block's own index.
 #[test]
 fn test_stream_block_stop_prefers_indexed_tool_over_stale_text_flag() {
-    use crate::ir::IrStreamEvent;
-    let mut state = crate::ir::StreamDecodeState::default();
+    use busbar_core::ir::IrStreamEvent;
+    let mut state = busbar_core::ir::StreamDecodeState::default();
     let reader = BedrockReader;
 
     let _ = reader.read_response_events(
@@ -4204,8 +4211,8 @@ fn test_tool_result_json_block_round_trip() {
 /// downstream ingress writer can never be driven to track/allocate against a pathological index.
 #[test]
 fn test_stream_huge_content_block_index_is_clamped() {
-    use crate::ir::IrStreamEvent;
-    let mut state = crate::ir::StreamDecodeState::default();
+    use busbar_core::ir::IrStreamEvent;
+    let mut state = busbar_core::ir::StreamDecodeState::default();
     let reader = BedrockReader;
 
     // Open the stream so the BlockStart `state.started` guard passes.
@@ -4390,8 +4397,8 @@ fn test_read_response_carries_image_block() {
     });
     let ir = reader.read_response(&body).expect("read_response");
     let img = ir.content.iter().find_map(|b| match b {
-        crate::ir::IrBlock::Image {
-            source: crate::ir::IrImageSource::Base64 { media_type, data },
+        busbar_core::ir::IrBlock::Image {
+            source: busbar_core::ir::IrImageSource::Base64 { media_type, data },
             ..
         } => Some((media_type, data)),
         _ => None,
@@ -4420,8 +4427,8 @@ fn test_read_response_carries_image_block() {
     let has_s3 = ir_s3.content.iter().any(|b| {
         matches!(
             b,
-            crate::ir::IrBlock::Image {
-                source: crate::ir::IrImageSource::Vendor {
+            busbar_core::ir::IrBlock::Image {
+                source: busbar_core::ir::IrImageSource::Vendor {
                     vendor: "bedrock",
                     ..
                 },
@@ -4460,7 +4467,7 @@ fn test_request_reasoning_content_round_trips() {
     let ir = reader.read_request(&body).expect("read_request");
     // Reader carried reasoningContent into an IR Thinking block with the signature preserved.
     let thinking = ir.messages[0].content.iter().find_map(|b| match b {
-        crate::ir::IrBlock::Thinking {
+        busbar_core::ir::IrBlock::Thinking {
             text, signature, ..
         } => Some((text, signature)),
         _ => None,
@@ -4516,7 +4523,7 @@ fn test_response_reasoning_content_round_trips() {
     assert!(
         ir.content.iter().any(|b| matches!(
             b,
-            crate::ir::IrBlock::Thinking { text, signature , .. }
+            busbar_core::ir::IrBlock::Thinking { text, signature , .. }
                 if text == "reasoning" && signature.as_deref() == Some("rs-1")
         )),
         "response reasoningContent must be carried into IR as a Thinking block; got {:?}",
@@ -4546,7 +4553,7 @@ fn test_response_reasoning_content_round_trips() {
     assert!(
         ir_r.content.iter().any(|b| matches!(
             b,
-            crate::ir::IrBlock::Thinking { text, redacted: true, .. }
+            busbar_core::ir::IrBlock::Thinking { text, redacted: true, .. }
                 if text == "RVhBTVBMRQ=="
         )),
         "redactedContent must be carried under the redacted-signature sentinel; got {:?}",
@@ -4578,11 +4585,11 @@ fn test_response_reasoning_content_round_trips() {
 /// the reasoning block; ThinkingDelta/SignatureDelta produce no frame) and passes after.
 #[test]
 fn test_stream_reasoning_content_round_trips() {
-    use crate::ir::{IrBlockMeta, IrDelta, IrStreamEvent};
+    use busbar_core::ir::{IrBlockMeta, IrDelta, IrStreamEvent};
 
     let reader = BedrockReader;
     let writer = BedrockWriter;
-    let mut state = crate::ir::StreamDecodeState::default();
+    let mut state = busbar_core::ir::StreamDecodeState::default();
 
     // A native ConverseStream that streams a reasoning block (text deltas then a signature) and
     // then a normal text answer. The reasoning block is implied by its first `reasoningContent`
@@ -4716,11 +4723,11 @@ fn test_stream_reasoning_content_round_trips() {
 /// redacted delta was dropped entirely) and passes after.
 #[test]
 fn test_stream_reasoning_redacted_round_trips() {
-    use crate::ir::{IrBlockMeta, IrDelta, IrStreamEvent};
+    use busbar_core::ir::{IrBlockMeta, IrDelta, IrStreamEvent};
 
     let reader = BedrockReader;
     let writer = BedrockWriter;
-    let mut state = crate::ir::StreamDecodeState::default();
+    let mut state = busbar_core::ir::StreamDecodeState::default();
 
     let frames = vec![
         serde_json::json!({"type": "messageStart", "role": "assistant"}),
@@ -4900,7 +4907,7 @@ fn test_unknown_reasoning_member_does_not_panic() {
         !ir.messages[0]
             .content
             .iter()
-            .any(|b| matches!(b, crate::ir::IrBlock::Thinking { .. })),
+            .any(|b| matches!(b, busbar_core::ir::IrBlock::Thinking { .. })),
         "an unknown reasoningContent member must not be mis-mapped to a Thinking block; got {:?}",
         ir.messages[0].content
     );
@@ -4913,15 +4920,15 @@ fn test_unknown_reasoning_member_does_not_panic() {
 /// Converse rejects (a 400). The two user turns must merge into one.
 #[test]
 fn consecutive_user_turns_coalesce_for_alternation() {
-    let text_msg = |role, t: &str| crate::ir::IrMessage {
+    let text_msg = |role, t: &str| busbar_core::ir::IrMessage {
         role,
-        content: vec![crate::ir::IrBlock::Text {
+        content: vec![busbar_core::ir::IrBlock::Text {
             text: t.to_string(),
             cache_control: None,
             citations: vec![],
         }],
     };
-    let req = crate::ir::IrRequest {
+    let req = busbar_core::ir::IrRequest {
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -4930,10 +4937,10 @@ fn consecutive_user_turns_coalesce_for_alternation() {
         parallel_tool_calls: None,
         system: vec![],
         messages: vec![
-            text_msg(crate::ir::IrRole::User, "q"),
-            crate::ir::IrMessage {
-                role: crate::ir::IrRole::Assistant,
-                content: vec![crate::ir::IrBlock::ToolUse {
+            text_msg(busbar_core::ir::IrRole::User, "q"),
+            busbar_core::ir::IrMessage {
+                role: busbar_core::ir::IrRole::Assistant,
+                content: vec![busbar_core::ir::IrBlock::ToolUse {
                     thought_signature: None,
                     id: "t1".to_string(),
                     name: "get".to_string(),
@@ -4943,11 +4950,11 @@ fn consecutive_user_turns_coalesce_for_alternation() {
             },
             // A Tool-result turn (maps to "user") immediately followed by a real User turn:
             // assistant, user, user on the wire without coalescing.
-            crate::ir::IrMessage {
-                role: crate::ir::IrRole::Tool,
-                content: vec![crate::ir::IrBlock::ToolResult {
+            busbar_core::ir::IrMessage {
+                role: busbar_core::ir::IrRole::Tool,
+                content: vec![busbar_core::ir::IrBlock::ToolResult {
                     tool_use_id: "t1".to_string(),
-                    content: vec![crate::ir::IrBlock::Text {
+                    content: vec![busbar_core::ir::IrBlock::Text {
                         text: "42".to_string(),
                         cache_control: None,
                         citations: vec![],
@@ -4956,7 +4963,7 @@ fn consecutive_user_turns_coalesce_for_alternation() {
                     cache_control: None,
                 }],
             },
-            text_msg(crate::ir::IrRole::User, "thanks"),
+            text_msg(busbar_core::ir::IrRole::User, "thanks"),
         ],
         tools: vec![],
         max_tokens: None,
@@ -5007,8 +5014,8 @@ fn consecutive_user_turns_coalesce_for_alternation() {
     );
 }
 
-fn tool_choice_req(tc: Option<crate::ir::IrToolChoice>) -> crate::ir::IrRequest {
-    crate::ir::IrRequest {
+fn tool_choice_req(tc: Option<busbar_core::ir::IrToolChoice>) -> busbar_core::ir::IrRequest {
+    busbar_core::ir::IrRequest {
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -5017,7 +5024,7 @@ fn tool_choice_req(tc: Option<crate::ir::IrToolChoice>) -> crate::ir::IrRequest 
         parallel_tool_calls: None,
         system: vec![],
         messages: vec![],
-        tools: vec![crate::ir::IrTool {
+        tools: vec![busbar_core::ir::IrTool {
             name: "get_weather".to_string(),
             description: None,
             input_schema: serde_json::json!({"type": "object"}),
@@ -5050,9 +5057,9 @@ fn tool_choice_req(tc: Option<crate::ir::IrToolChoice>) -> crate::ir::IrRequest 
 #[test]
 fn tool_choice_without_tools_emits_no_tool_config() {
     for tc in [
-        crate::ir::IrToolChoice::Auto,
-        crate::ir::IrToolChoice::Required,
-        crate::ir::IrToolChoice::Tool {
+        busbar_core::ir::IrToolChoice::Auto,
+        busbar_core::ir::IrToolChoice::Required,
+        busbar_core::ir::IrToolChoice::Tool {
             name: "get_weather".to_string(),
         },
     ] {
@@ -5072,7 +5079,7 @@ fn tool_choice_without_tools_emits_no_tool_config() {
 #[test]
 fn image_format_jpg_normalizes_to_jpeg() {
     for mt in ["image/jpg", "image/JPG", "image/Jpeg", "image/jpeg"] {
-        let block = bedrock_image_block(&crate::ir::IrImageSource::Base64 {
+        let block = bedrock_image_block(&busbar_core::ir::IrImageSource::Base64 {
             media_type: mt.to_string(),
             data: "QUJD".to_string(),
         })
@@ -5089,7 +5096,7 @@ fn image_format_jpg_normalizes_to_jpeg() {
         ("image/gif", "gif"),
         ("image/webp", "webp"),
     ] {
-        let block = bedrock_image_block(&crate::ir::IrImageSource::Base64 {
+        let block = bedrock_image_block(&busbar_core::ir::IrImageSource::Base64 {
             media_type: mt.to_string(),
             data: "QUJD".to_string(),
         })
@@ -5111,7 +5118,10 @@ fn test_bedrock_tool_choice_any_required_roundtrips() {
         }
     });
     let ir = reader.read_request(&j).expect("read ok");
-    assert_eq!(ir.tool_choice, Some(crate::ir::IrToolChoice::Required));
+    assert_eq!(
+        ir.tool_choice,
+        Some(busbar_core::ir::IrToolChoice::Required)
+    );
 
     let writer = BedrockWriter;
     let out = writer.write_request(&ir);
@@ -5137,7 +5147,7 @@ fn test_bedrock_tool_choice_specific_tool() {
     let ir = reader.read_request(&j).expect("read ok");
     assert_eq!(
         ir.tool_choice,
-        Some(crate::ir::IrToolChoice::Tool {
+        Some(busbar_core::ir::IrToolChoice::Tool {
             name: "get_weather".to_string()
         })
     );
@@ -5158,10 +5168,10 @@ fn test_bedrock_tool_choice_specific_tool() {
 /// least diagnosable.
 #[test]
 fn bedrock_specific_tool_choice_warns_it_is_claude_only() {
-    use crate::test_support::warn_capture::WarnCapture;
+    use busbar_core::test_support::warn_capture::WarnCapture;
     use tracing_subscriber::layer::SubscriberExt as _;
 
-    let req = tool_choice_req(Some(crate::ir::IrToolChoice::Tool {
+    let req = tool_choice_req(Some(busbar_core::ir::IrToolChoice::Tool {
         name: "get_weather".to_string(),
     }));
     let writer = BedrockWriter;
@@ -5188,7 +5198,7 @@ fn bedrock_specific_tool_choice_warns_it_is_claude_only() {
 /// `toolChoice` entirely (rather than emit an invalid shape) while still emitting the tools.
 #[test]
 fn test_bedrock_tool_choice_none_omitted_on_write() {
-    let req = tool_choice_req(Some(crate::ir::IrToolChoice::None));
+    let req = tool_choice_req(Some(busbar_core::ir::IrToolChoice::None));
     let writer = BedrockWriter;
     let out = writer.write_request(&req);
     let tool_config = out
@@ -5229,7 +5239,7 @@ fn test_bedrock_tool_choice_absent_is_none() {
 // [0.0, 1.0] and rejects >1 with a hard 400 ValidationException. The writer must clamp.
 #[test]
 fn test_bedrock_writer_clamps_temperature_above_one() {
-    let ir = crate::ir::IrRequest {
+    let ir = busbar_core::ir::IrRequest {
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -5237,9 +5247,9 @@ fn test_bedrock_writer_clamps_temperature_above_one() {
         user: None,
         parallel_tool_calls: None,
         system: vec![],
-        messages: vec![crate::ir::IrMessage {
-            role: crate::ir::IrRole::User,
-            content: vec![crate::ir::IrBlock::Text {
+        messages: vec![busbar_core::ir::IrMessage {
+            role: busbar_core::ir::IrRole::User,
+            content: vec![busbar_core::ir::IrBlock::Text {
                 text: "hi".to_string(),
                 cache_control: None,
                 citations: Vec::new(),
@@ -5276,11 +5286,11 @@ fn test_bedrock_writer_clamps_temperature_above_one() {
 /// (cross-protocol shape — the positional cachePoint stash is absent, so the writer drives
 /// cachePoint emission from the first-class `cache_control` field, not the stash).
 fn cache_ctrl_req(
-    system: Vec<crate::ir::IrBlock>,
-    messages: Vec<crate::ir::IrMessage>,
-    tools: Vec<crate::ir::IrTool>,
-) -> crate::ir::IrRequest {
-    crate::ir::IrRequest {
+    system: Vec<busbar_core::ir::IrBlock>,
+    messages: Vec<busbar_core::ir::IrMessage>,
+    tools: Vec<busbar_core::ir::IrTool>,
+) -> busbar_core::ir::IrRequest {
+    busbar_core::ir::IrRequest {
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -5306,9 +5316,9 @@ fn cache_ctrl_req(
     }
 }
 
-fn ephemeral() -> Option<crate::ir::CacheControl> {
-    Some(crate::ir::CacheControl {
-        kind: crate::ir::CacheKind::Ephemeral,
+fn ephemeral() -> Option<busbar_core::ir::CacheControl> {
+    Some(busbar_core::ir::CacheControl {
+        kind: busbar_core::ir::CacheKind::Ephemeral,
     })
 }
 
@@ -5319,15 +5329,15 @@ fn ephemeral() -> Option<crate::ir::CacheControl> {
 fn test_cache_control_on_message_block_emits_cache_point() {
     let req = cache_ctrl_req(
         vec![],
-        vec![crate::ir::IrMessage {
-            role: crate::ir::IrRole::User,
+        vec![busbar_core::ir::IrMessage {
+            role: busbar_core::ir::IrRole::User,
             content: vec![
-                crate::ir::IrBlock::Text {
+                busbar_core::ir::IrBlock::Text {
                     text: "cache me".to_string(),
                     cache_control: ephemeral(),
                     citations: vec![],
                 },
-                crate::ir::IrBlock::Text {
+                busbar_core::ir::IrBlock::Text {
                     text: "but not this".to_string(),
                     cache_control: None,
                     citations: vec![],
@@ -5369,7 +5379,7 @@ fn test_cache_control_on_message_block_emits_cache_point() {
 #[test]
 fn test_cache_control_on_system_block_emits_cache_point() {
     let req = cache_ctrl_req(
-        vec![crate::ir::IrBlock::Text {
+        vec![busbar_core::ir::IrBlock::Text {
             text: "long static preamble".to_string(),
             cache_control: ephemeral(),
             citations: vec![],
@@ -5397,7 +5407,7 @@ fn test_cache_control_on_tool_emits_cache_point() {
     let req = cache_ctrl_req(
         vec![],
         vec![],
-        vec![crate::ir::IrTool {
+        vec![busbar_core::ir::IrTool {
             name: "get_weather".to_string(),
             description: None,
             input_schema: serde_json::json!({"type": "object"}),
@@ -5450,7 +5460,7 @@ fn test_cache_point_maps_onto_preceding_block_cache_control() {
     let ir = reader.read_request(&wire).expect("read_request");
     // System: the first (and only) text block carries cache_control.
     match &ir.system[0] {
-        crate::ir::IrBlock::Text { cache_control, .. } => {
+        busbar_core::ir::IrBlock::Text { cache_control, .. } => {
             assert!(
                 cache_control.is_some(),
                 "system block must carry cache_control"
@@ -5460,7 +5470,7 @@ fn test_cache_point_maps_onto_preceding_block_cache_control() {
     }
     // Message: the FIRST text ("doc") carries cache_control; the second ("tail") does not.
     match &ir.messages[0].content[0] {
-        crate::ir::IrBlock::Text {
+        busbar_core::ir::IrBlock::Text {
             text,
             cache_control,
             ..
@@ -5474,7 +5484,7 @@ fn test_cache_point_maps_onto_preceding_block_cache_control() {
         other => panic!("expected Text, got {other:?}"),
     }
     match &ir.messages[0].content[1] {
-        crate::ir::IrBlock::Text {
+        busbar_core::ir::IrBlock::Text {
             text,
             cache_control,
             ..
@@ -5568,7 +5578,7 @@ fn test_same_protocol_cache_point_no_double_emit() {
 /// tools still emitted) is asserted here; the warn fires on the same branch.
 #[test]
 fn test_tool_choice_none_warns_and_omits() {
-    let req = tool_choice_req(Some(crate::ir::IrToolChoice::None));
+    let req = tool_choice_req(Some(busbar_core::ir::IrToolChoice::None));
     let writer = BedrockWriter;
     let out = writer.write_request(&req);
     let tool_config = out.get("toolConfig").expect("toolConfig emitted");
@@ -5588,7 +5598,7 @@ fn test_tool_choice_none_warns_and_omits() {
 #[test]
 fn test_malformed_media_type_warns_and_falls_back_to_png() {
     // Empty subtype (`image/`) takes the fallback branch that warns.
-    let block = bedrock_image_block(&crate::ir::IrImageSource::Base64 {
+    let block = bedrock_image_block(&busbar_core::ir::IrImageSource::Base64 {
         media_type: "image/".to_string(),
         data: ("QQ==").to_string(),
     })
@@ -5599,7 +5609,7 @@ fn test_malformed_media_type_warns_and_falls_back_to_png() {
         "an empty subtype must coerce to png (warn-and-degrade); got {block}"
     );
     // A bare, unprefixed media_type also takes the warning fallback.
-    let bare = bedrock_image_block(&crate::ir::IrImageSource::Base64 {
+    let bare = bedrock_image_block(&busbar_core::ir::IrImageSource::Base64 {
         media_type: "garbage".to_string(),
         data: ("QQ==").to_string(),
     })
@@ -5609,7 +5619,7 @@ fn test_malformed_media_type_warns_and_falls_back_to_png() {
         Some("png"),
     );
     // A well-formed subtype does NOT take the fallback (no coercion, no warn).
-    let jpeg = bedrock_image_block(&crate::ir::IrImageSource::Base64 {
+    let jpeg = bedrock_image_block(&busbar_core::ir::IrImageSource::Base64 {
         media_type: "image/jpeg".to_string(),
         data: ("QQ==").to_string(),
     })
@@ -5627,7 +5637,7 @@ fn test_malformed_media_type_warns_and_falls_back_to_png() {
 #[test]
 fn test_write_request_response_format_dropped() {
     let writer = BedrockWriter;
-    let req = crate::ir::IrRequest {
+    let req = busbar_core::ir::IrRequest {
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -5635,9 +5645,9 @@ fn test_write_request_response_format_dropped() {
         user: None,
         parallel_tool_calls: None,
         system: vec![],
-        messages: vec![crate::ir::IrMessage {
-            role: crate::ir::IrRole::User,
-            content: vec![crate::ir::IrBlock::Text {
+        messages: vec![busbar_core::ir::IrMessage {
+            role: busbar_core::ir::IrRole::User,
+            content: vec![busbar_core::ir::IrBlock::Text {
                 text: "hi".to_string(),
                 cache_control: None,
                 citations: Vec::new(),
@@ -5655,7 +5665,7 @@ fn test_write_request_response_format_dropped() {
         presence_penalty: None,
         seed: None,
         n: None,
-        response_format: Some(crate::ir::IrResponseFormat {
+        response_format: Some(busbar_core::ir::IrResponseFormat {
             json: true,
             schema: Some(serde_json::json!({"type": "object"})),
             name: Some("s".to_string()),
@@ -5684,23 +5694,23 @@ fn bedrock_stream_framing_emits_one_metadata_delta_then_guards_duplicate() {
     // usage-only `MessageDelta{stop_reason:None}` (the metadata frame); the SECOND call — `emitted`
     // is now set — emits ONLY the stop-only delta, so NO second metadata frame is produced.
     use super::StreamFraming;
-    let usage = crate::ir::IrUsage {
+    let usage = busbar_core::ir::IrUsage {
         input_tokens: 5,
         output_tokens: 2,
         cache_creation_input_tokens: None,
         cache_read_input_tokens: None,
-        detail: crate::ir::IrUsageDetail::default(),
+        detail: busbar_core::ir::IrUsageDetail::default(),
     };
     let mut framing = BedrockStreamFraming::default();
 
     // Helper: count the usage-only metadata deltas (`MessageDelta{stop_reason: None, ..}`).
-    fn metadata_delta_count(events: &[crate::ir::IrStreamEvent]) -> usize {
+    fn metadata_delta_count(events: &[busbar_core::ir::IrStreamEvent]) -> usize {
         events
             .iter()
             .filter(|e| {
                 matches!(
                     e,
-                    crate::ir::IrStreamEvent::MessageDelta {
+                    busbar_core::ir::IrStreamEvent::MessageDelta {
                         stop_reason: None,
                         ..
                     }
@@ -5710,7 +5720,7 @@ fn bedrock_stream_framing_emits_one_metadata_delta_then_guards_duplicate() {
     }
 
     let first = framing
-        .on_combined_stop_delta(crate::ir::IrStopReason::EndTurn, None, &usage)
+        .on_combined_stop_delta(busbar_core::ir::IrStopReason::EndTurn, None, &usage)
         .expect("first stop-delta returns events");
     assert_eq!(
         metadata_delta_count(&first),
@@ -5719,7 +5729,7 @@ fn bedrock_stream_framing_emits_one_metadata_delta_then_guards_duplicate() {
     );
 
     let second = framing
-        .on_combined_stop_delta(crate::ir::IrStopReason::EndTurn, None, &usage)
+        .on_combined_stop_delta(busbar_core::ir::IrStopReason::EndTurn, None, &usage)
         .expect("second stop-delta returns events");
     assert_eq!(
             metadata_delta_count(&second),
@@ -5734,13 +5744,13 @@ fn bedrock_stream_framing_emits_one_metadata_delta_then_guards_duplicate() {
 /// the cache fields.
 #[test]
 fn cache_only_usage_emits_metadata_inline() {
-    fn metadata_delta_count(events: &[crate::ir::IrStreamEvent]) -> usize {
+    fn metadata_delta_count(events: &[busbar_core::ir::IrStreamEvent]) -> usize {
         events
             .iter()
             .filter(|e| {
                 matches!(
                     e,
-                    crate::ir::IrStreamEvent::MessageDelta {
+                    busbar_core::ir::IrStreamEvent::MessageDelta {
                         stop_reason: None,
                         ..
                     }
@@ -5748,16 +5758,16 @@ fn cache_only_usage_emits_metadata_inline() {
             })
             .count()
     }
-    let usage = crate::ir::IrUsage {
+    let usage = busbar_core::ir::IrUsage {
         input_tokens: 0,
         output_tokens: 0,
         cache_creation_input_tokens: None,
         cache_read_input_tokens: Some(4096), // full cache hit
-        detail: crate::ir::IrUsageDetail::default(),
+        detail: busbar_core::ir::IrUsageDetail::default(),
     };
     let mut framing = BedrockStreamFraming::default();
     let evs = framing
-        .on_combined_stop_delta(crate::ir::IrStopReason::EndTurn, None, &usage)
+        .on_combined_stop_delta(busbar_core::ir::IrStopReason::EndTurn, None, &usage)
         .expect("stop-delta returns events");
     assert_eq!(
             metadata_delta_count(&evs),
@@ -5772,19 +5782,19 @@ fn cache_only_usage_emits_metadata_inline() {
 /// role and MUST coalesce them into ONE user message so the wire alternates assistant,user.
 #[test]
 fn consecutive_tool_result_turns_coalesce_into_single_user_message() {
-    let req = crate::ir::IrRequest {
+    let req = busbar_core::ir::IrRequest {
         messages: vec![
-            crate::ir::IrMessage {
-                role: crate::ir::IrRole::User,
-                content: vec![crate::ir::IrBlock::Text {
+            busbar_core::ir::IrMessage {
+                role: busbar_core::ir::IrRole::User,
+                content: vec![busbar_core::ir::IrBlock::Text {
                     text: "run both tools".to_string(),
                     cache_control: None,
                     citations: Vec::new(),
                 }],
             },
-            crate::ir::IrMessage {
-                role: crate::ir::IrRole::Assistant,
-                content: vec![crate::ir::IrBlock::ToolUse {
+            busbar_core::ir::IrMessage {
+                role: busbar_core::ir::IrRole::Assistant,
+                content: vec![busbar_core::ir::IrBlock::ToolUse {
                     thought_signature: None,
                     id: "t1".to_string(),
                     name: "a".to_string(),
@@ -5792,11 +5802,11 @@ fn consecutive_tool_result_turns_coalesce_into_single_user_message() {
                     cache_control: None,
                 }],
             },
-            crate::ir::IrMessage {
-                role: crate::ir::IrRole::Tool,
-                content: vec![crate::ir::IrBlock::ToolResult {
+            busbar_core::ir::IrMessage {
+                role: busbar_core::ir::IrRole::Tool,
+                content: vec![busbar_core::ir::IrBlock::ToolResult {
                     tool_use_id: "t1".to_string(),
-                    content: vec![crate::ir::IrBlock::Text {
+                    content: vec![busbar_core::ir::IrBlock::Text {
                         text: "r1".to_string(),
                         cache_control: None,
                         citations: Vec::new(),
@@ -5805,11 +5815,11 @@ fn consecutive_tool_result_turns_coalesce_into_single_user_message() {
                     cache_control: None,
                 }],
             },
-            crate::ir::IrMessage {
-                role: crate::ir::IrRole::Tool,
-                content: vec![crate::ir::IrBlock::ToolResult {
+            busbar_core::ir::IrMessage {
+                role: busbar_core::ir::IrRole::Tool,
+                content: vec![busbar_core::ir::IrBlock::ToolResult {
                     tool_use_id: "t2".to_string(),
-                    content: vec![crate::ir::IrBlock::Text {
+                    content: vec![busbar_core::ir::IrBlock::Text {
                         text: "r2".to_string(),
                         cache_control: None,
                         citations: Vec::new(),
@@ -5857,7 +5867,7 @@ fn consecutive_tool_result_turns_coalesce_into_single_user_message() {
 fn unknown_stop_reason_maps_to_other_and_degrades_to_end_turn() {
     assert_eq!(
         stop_reason_map("some_future_reason"),
-        crate::ir::IrStopReason::Other
+        busbar_core::ir::IrStopReason::Other
     );
     let body = serde_json::json!({
         "output": {"message": {"role": "assistant", "content": [{"text": "hi"}]}},
@@ -5865,7 +5875,7 @@ fn unknown_stop_reason_maps_to_other_and_degrades_to_end_turn() {
         "usage": {"inputTokens": 3, "outputTokens": 1, "totalTokens": 4}
     });
     let resp = BedrockReader.read_response(&body).expect("read_response");
-    assert_eq!(resp.stop_reason, Some(crate::ir::IrStopReason::Other));
+    assert_eq!(resp.stop_reason, Some(busbar_core::ir::IrStopReason::Other));
     let writer = BedrockWriter;
     let out = writer.write_response(&resp);
     assert_eq!(
@@ -5927,7 +5937,7 @@ fn cache_usage_is_additive_input_not_reduced() {
 /// reaches a Bedrock client as a typed, decodable exception.
 #[test]
 fn write_response_exception_folds_to_stream_union_members() {
-    let mk = |class| crate::proto::IrError {
+    let mk = |class| busbar_core::proto::IrError {
         class,
         provider_signal: None,
         retry_after: None,
@@ -5951,7 +5961,7 @@ fn write_response_exception_folds_to_stream_union_members() {
         assert_eq!(name, expect, "class {class:?} must fold to {expect}");
     }
     // The message prefers the upstream provider_signal when present.
-    let err = crate::proto::IrError {
+    let err = busbar_core::proto::IrError {
         class: StatusClass::RateLimit,
         provider_signal: Some("slow down".to_string()),
         retry_after: None,
@@ -5974,9 +5984,9 @@ fn write_response_exception_folds_to_stream_union_members() {
 /// BlockStart on the first text delta, exactly like the reasoningContent arm.
 #[test]
 fn test_stream_text_delta_lazily_opens_block_start() {
-    use crate::ir::IrStreamEvent;
+    use busbar_core::ir::IrStreamEvent;
 
-    let mut state = crate::ir::StreamDecodeState::default();
+    let mut state = busbar_core::ir::StreamDecodeState::default();
     let reader = BedrockReader;
 
     // Native AWS text sequence: messageStart, then text deltas with NO contentBlockStart.
@@ -6008,7 +6018,7 @@ fn test_stream_text_delta_lazily_opens_block_start() {
         matches!(
             e,
             IrStreamEvent::BlockStart {
-                block: crate::ir::IrBlockMeta::Text,
+                block: busbar_core::ir::IrBlockMeta::Text,
                 ..
             }
         )
@@ -6017,7 +6027,7 @@ fn test_stream_text_delta_lazily_opens_block_start() {
         matches!(
             e,
             IrStreamEvent::BlockDelta {
-                delta: crate::ir::IrDelta::TextDelta(_),
+                delta: busbar_core::ir::IrDelta::TextDelta(_),
                 ..
             }
         )

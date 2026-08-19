@@ -26,14 +26,13 @@
 //! TRANSPORT: a variant in `transport.rs` and an arrival that frames these same codecs — no codec
 //! changes, because a codec never learns which channel it is speaking over. Nothing else moves.
 
-// The Anthropic, OpenAI Chat and Gemini handlers live in the `busbar-llm` plugin crate, each in
-// its own dialect module's `handler.rs` — reachable in the builds that compile those dialects back
-// in as `crate::proto::anthropic::handler` / `crate::proto::openai_chat::handler` /
-// `crate::proto::gemini::handler`, and reachable in production only through the registry's
-// `ProtocolDecl::handler`, which is the point.
-pub(crate) mod bedrock;
+// EVERY LLM DIALECT'S HANDLER LIVES IN THE `busbar-llm` PLUGIN CRATE — anthropic, openai-chat,
+// gemini, bedrock, cohere and openai-responses — each in its own dialect module's `handler.rs`.
+// They are reachable in the builds that compile the dialects back in as
+// `crate::proto::<dialect>::handler`, and in production only through the registry's
+// `ProtocolDecl::handler`, which is the point. `chat::ChatOperation` STAYS here: it is the shared
+// chat cell the LLM dialects parameterize by protocol name, not a dialect of its own.
 pub mod chat;
-pub(crate) mod cohere;
 /// THE EXTRACTED MCP DIALECT, compiled back in for TEST BUILDS ONLY. The sources live in
 /// `crates/busbar-proto-mcp` (the second protocol crate; the `busbar` binary registers its `DECL`
 /// through `crate::proto::registry::install_protocols`), and core's PRODUCTION build knows nothing
@@ -49,7 +48,6 @@ pub(crate) mod cohere;
 #[cfg(any(test, feature = "test-support"))]
 #[path = "../../../busbar-proto-mcp/src/lib.rs"]
 pub(crate) mod mcp;
-pub(crate) mod responses;
 
 /// The protocol's `RequestHandler`, by name (matches `router` / `proto::Protocol::name()`). A
 /// registered handler may still return `None` from `operation_handler` for an op it lacks — that IS

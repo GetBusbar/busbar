@@ -145,9 +145,12 @@ pub(crate) fn drain_frames_checked(
 /// proto tests that only need the decoded frames. Production code (the egress reassembler) calls
 /// [`drain_frames_checked`] directly for the explicit malformed-prelude signal; after the byte-scanner's
 /// `feed_eventstream` was removed, this convenience wrapper has only test callers, so it is
-/// gated to test builds to avoid an unused-function warning in the 1.0 binary.
-#[cfg(test)]
-pub(crate) fn drain_frames(buf: &mut Vec<u8>) -> Vec<(String, Vec<u8>)> {
+/// gated to test builds to avoid an unused-function warning in the 1.0 binary — on the
+/// `test-support` gate, not bare `cfg(test)`, because the callers are the Bedrock dialect's tests
+/// and that dialect is now a module of the `busbar-llm` plugin, whose test build reaches core
+/// through `test-support`.
+#[cfg(any(test, feature = "test-support"))]
+pub fn drain_frames(buf: &mut Vec<u8>) -> Vec<(String, Vec<u8>)> {
     drain_frames_checked(buf, None).0
 }
 
@@ -326,7 +329,7 @@ fn push_string_header(headers: &mut Vec<u8>, name: &str, value: &str) -> bool {
 /// `:content-type` (`application/json`) and `:message-type` (`event`). Runs in the streaming hot
 /// path: all arithmetic is `u64`-widened and the result is bounded by `MAX_FRAME_BYTES`, so no cast
 /// can wrap (frame lengths are bounded and this never panics on the request path).
-pub(crate) fn encode_frame(event_type: &str, payload: &[u8]) -> Vec<u8> {
+pub fn encode_frame(event_type: &str, payload: &[u8]) -> Vec<u8> {
     // Build the header block DIRECTLY into the frame buffer (after a 12-byte prelude placeholder)
     // rather than into a throwaway `headers` Vec that `encode_with_headers` would then copy — that
     // copy was a second heap allocation per frame on the Bedrock streaming hot path. `frame_open`

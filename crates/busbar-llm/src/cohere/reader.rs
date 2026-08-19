@@ -1,11 +1,15 @@
 use super::*;
 
 impl ProtocolReader for CohereReader {
-    fn extract_error(&self, status: StatusCode, body: &[u8]) -> crate::breaker::RawUpstreamError {
+    fn extract_error(
+        &self,
+        status: StatusCode,
+        body: &[u8],
+    ) -> busbar_core::breaker::RawUpstreamError {
         // Parse the body exactly once and derive both fields from the single binding — the Gemini
         // and Bedrock readers do the same, preserving the "parse once" invariant. Parsing twice
         // paid a pointless 2x CPU cost on every error response.
-        let json = crate::json::parse::<serde_json::Value>(body).ok();
+        let json = busbar_core::json::parse::<serde_json::Value>(body).ok();
         let provider_code = json
             .as_ref()
             .and_then(|j| j.get("message"))
@@ -41,12 +45,12 @@ impl ProtocolReader for CohereReader {
             || status == StatusCode::PAYLOAD_TOO_LARGE)
             && Self::body_signals_context_length(body)
         {
-            Some(crate::proxy::PROVIDER_CODE_CONTEXT_LENGTH.to_string())
+            Some(busbar_core::proxy::PROVIDER_CODE_CONTEXT_LENGTH.to_string())
         } else {
             provider_code
         };
 
-        crate::breaker::RawUpstreamError {
+        busbar_core::breaker::RawUpstreamError {
             http_status: status.as_u16(),
             provider_code,
             structured_type,
@@ -93,7 +97,7 @@ impl ProtocolReader for CohereReader {
         {
             return CanonicalSignal {
                 class: StatusClass::ContextLength,
-                provider_signal: Some(crate::proxy::PROVIDER_CODE_CONTEXT_LENGTH.to_string()),
+                provider_signal: Some(busbar_core::proxy::PROVIDER_CODE_CONTEXT_LENGTH.to_string()),
                 retry_after: None,
             };
         }
@@ -113,35 +117,38 @@ impl ProtocolReader for CohereReader {
         }
     }
 
-    fn read_request(&self, body: &serde_json::Value) -> Result<crate::ir::IrRequest, IrError> {
+    fn read_request(
+        &self,
+        body: &serde_json::Value,
+    ) -> Result<busbar_core::ir::IrRequest, IrError> {
         let obj = body.as_object().ok_or(IrError {
             class: StatusClass::ClientError,
-            provider_signal: Some(crate::proto::SIGNAL_IR_PARSE.to_string()),
+            provider_signal: Some(busbar_core::proto::SIGNAL_IR_PARSE.to_string()),
             retry_after: None,
         })?;
 
         let mut extra = serde_json::Map::new();
-        let mut system_blocks: Vec<crate::ir::IrBlock> = Vec::new();
+        let mut system_blocks: Vec<busbar_core::ir::IrBlock> = Vec::new();
 
-        let mut messages: Vec<crate::ir::IrMessage> = Vec::new();
+        let mut messages: Vec<busbar_core::ir::IrMessage> = Vec::new();
         if let Some(messages_val) = obj.get("messages") {
             let msgs_arr = messages_val.as_array().ok_or(IrError {
                 class: StatusClass::ClientError,
-                provider_signal: Some(crate::proto::SIGNAL_IR_PARSE.to_string()),
+                provider_signal: Some(busbar_core::proto::SIGNAL_IR_PARSE.to_string()),
                 retry_after: None,
             })?;
 
             for msg_val in msgs_arr {
                 let role_str = msg_val.get("role").and_then(|r| r.as_str()).unwrap_or("");
                 let role = match role_str {
-                    "system" => crate::ir::IrRole::System,
-                    "user" => crate::ir::IrRole::User,
-                    "assistant" => crate::ir::IrRole::Assistant,
-                    "tool" => crate::ir::IrRole::Tool,
+                    "system" => busbar_core::ir::IrRole::System,
+                    "user" => busbar_core::ir::IrRole::User,
+                    "assistant" => busbar_core::ir::IrRole::Assistant,
+                    "tool" => busbar_core::ir::IrRole::Tool,
                     _ => {
                         return Err(IrError {
                             class: StatusClass::ClientError,
-                            provider_signal: Some(crate::proto::SIGNAL_IR_PARSE.to_string()),
+                            provider_signal: Some(busbar_core::proto::SIGNAL_IR_PARSE.to_string()),
                             retry_after: None,
                         })
                     }
@@ -150,10 +157,10 @@ impl ProtocolReader for CohereReader {
                 // System content is canonicalized into IrRequest.system (matching the other
                 // protocols), not carried as a System-role message — so it survives translation
                 // to a protocol whose writer reads req.system.
-                if role == crate::ir::IrRole::System {
+                if role == busbar_core::ir::IrRole::System {
                     if let Some(content_val) = msg_val.get("content") {
                         if let Some(s) = content_val.as_str() {
-                            system_blocks.push(crate::ir::IrBlock::Text {
+                            system_blocks.push(busbar_core::ir::IrBlock::Text {
                                 text: s.to_string(),
                                 cache_control: None,
                                 citations: Vec::new(),
@@ -164,7 +171,7 @@ impl ProtocolReader for CohereReader {
                                     if bo.get("type").and_then(|t| t.as_str()) == Some("text") {
                                         if let Some(text) = bo.get("text").and_then(|t| t.as_str())
                                         {
-                                            system_blocks.push(crate::ir::IrBlock::Text {
+                                            system_blocks.push(busbar_core::ir::IrBlock::Text {
                                                 text: text.to_string(),
                                                 cache_control: None,
                                                 citations: Vec::new(),
@@ -201,10 +208,10 @@ impl ProtocolReader for CohereReader {
                 // text into the first ToolResult, duplicating it. Skip the generic parse here — the
                 // Tool branch owns a tool message's content exclusively (mirrors the System early
                 // `continue` above, which keeps System content out of this loop too).
-                if role != crate::ir::IrRole::Tool {
+                if role != busbar_core::ir::IrRole::Tool {
                     if let Some(content_val) = msg_val.get("content") {
                         if content_val.is_string() {
-                            msg_content.push(crate::ir::IrBlock::Text {
+                            msg_content.push(busbar_core::ir::IrBlock::Text {
                                 text: content_val.as_str().unwrap_or("").to_string(),
                                 cache_control: None,
                                 citations: Vec::new(),
@@ -217,7 +224,7 @@ impl ProtocolReader for CohereReader {
                                             if let Some(text) =
                                                 block_obj.get("text").and_then(|t| t.as_str())
                                             {
-                                                msg_content.push(crate::ir::IrBlock::Text {
+                                                msg_content.push(busbar_core::ir::IrBlock::Text {
                                                     text: text.to_string(),
                                                     cache_control: None,
                                                     citations: Vec::new(),
@@ -242,7 +249,7 @@ impl ProtocolReader for CohereReader {
                                                 .and_then(|iu| iu.get("url"))
                                                 .and_then(|u| u.as_str())
                                             {
-                                                msg_content.push(crate::ir::IrBlock::Image {
+                                                msg_content.push(busbar_core::ir::IrBlock::Image {
                                                     source: super::parse_image_url(url),
                                                     cache_control: None,
                                                 });
@@ -256,7 +263,7 @@ impl ProtocolReader for CohereReader {
                     }
                 }
 
-                if role == crate::ir::IrRole::Assistant {
+                if role == busbar_core::ir::IrRole::Assistant {
                     if let Some(tool_calls) = msg_val.get("tool_calls") {
                         if let Some(tc_arr) = tool_calls.as_array() {
                             for tc_val in tc_arr {
@@ -275,10 +282,10 @@ impl ProtocolReader for CohereReader {
                                         .get("arguments")
                                         .and_then(|v| v.as_str())
                                         .unwrap_or("{}");
-                                    let input = crate::json::parse_str(arguments).unwrap_or(
+                                    let input = busbar_core::json::parse_str(arguments).unwrap_or(
                                         serde_json::Value::String(arguments.to_string()),
                                     );
-                                    msg_content.push(crate::ir::IrBlock::ToolUse {
+                                    msg_content.push(busbar_core::ir::IrBlock::ToolUse {
                                         id,
                                         name,
                                         input,
@@ -291,7 +298,7 @@ impl ProtocolReader for CohereReader {
                     }
                 }
 
-                if role == crate::ir::IrRole::Tool {
+                if role == busbar_core::ir::IrRole::Tool {
                     let tool_call_id = msg_val
                         .get("tool_call_id")
                         .and_then(|v| v.as_str())
@@ -326,12 +333,12 @@ impl ProtocolReader for CohereReader {
                                         } else {
                                             // Preserve any OTHER non-text typed block verbatim
                                             // rather than dropping it.
-                                            crate::json::to_string(b).ok()
+                                            busbar_core::json::to_string(b).ok()
                                         }
                                     } else {
                                         // Non-string, non-object array element: serialize it so no
                                         // content is lost.
-                                        crate::json::to_string(b).ok()
+                                        busbar_core::json::to_string(b).ok()
                                     }
                                 })
                                 .collect::<Vec<_>>()
@@ -344,7 +351,7 @@ impl ProtocolReader for CohereReader {
                         } else if let Some(s) = content_val.as_str() {
                             s.to_string()
                         } else {
-                            crate::json::to_string(content_val).unwrap_or_default()
+                            busbar_core::json::to_string(content_val).unwrap_or_default()
                         }
                     } else {
                         String::new()
@@ -358,9 +365,9 @@ impl ProtocolReader for CohereReader {
                     // type) has no neutral base64/url form: this protocol re-emits its own
                     // reference verbatim, and a foreign writer, which could only mangle it, drops
                     // it with a warn.
-                    let mut result_content: Vec<crate::ir::IrBlock> = Vec::new();
+                    let mut result_content: Vec<busbar_core::ir::IrBlock> = Vec::new();
                     if !content_text.is_empty() {
-                        result_content.push(crate::ir::IrBlock::Text {
+                        result_content.push(busbar_core::ir::IrBlock::Text {
                             text: content_text,
                             cache_control: None,
                             citations: Vec::new(),
@@ -371,9 +378,9 @@ impl ProtocolReader for CohereReader {
                             let Some(doc) = b.get("document") else {
                                 continue;
                             };
-                            result_content.push(crate::ir::IrBlock::Media {
-                                kind: crate::ir::IrMediaKind::Document,
-                                source: crate::ir::IrImageSource::Vendor {
+                            result_content.push(busbar_core::ir::IrBlock::Media {
+                                kind: busbar_core::ir::IrMediaKind::Document,
+                                source: busbar_core::ir::IrImageSource::Vendor {
                                     vendor: VENDOR_NAME,
                                     value: doc.clone(),
                                 },
@@ -390,13 +397,13 @@ impl ProtocolReader for CohereReader {
                     // downstream writers project a tool result's content, and an empty vec would
                     // emit a result with no content where the old code emitted an empty string.
                     if result_content.is_empty() {
-                        result_content.push(crate::ir::IrBlock::Text {
+                        result_content.push(busbar_core::ir::IrBlock::Text {
                             text: String::new(),
                             cache_control: None,
                             citations: Vec::new(),
                         });
                     }
-                    msg_content.push(crate::ir::IrBlock::ToolResult {
+                    msg_content.push(busbar_core::ir::IrBlock::ToolResult {
                         tool_use_id: tool_call_id,
                         content: result_content,
                         is_error: false,
@@ -404,7 +411,7 @@ impl ProtocolReader for CohereReader {
                     });
                 }
 
-                messages.push(crate::ir::IrMessage {
+                messages.push(busbar_core::ir::IrMessage {
                     role,
                     content: msg_content,
                 });
@@ -412,12 +419,12 @@ impl ProtocolReader for CohereReader {
         } else {
             return Err(IrError {
                 class: StatusClass::ClientError,
-                provider_signal: Some(crate::proto::SIGNAL_IR_PARSE.to_string()),
+                provider_signal: Some(busbar_core::proto::SIGNAL_IR_PARSE.to_string()),
                 retry_after: None,
             });
         }
 
-        let mut tools: Vec<crate::ir::IrTool> = Vec::new();
+        let mut tools: Vec<busbar_core::ir::IrTool> = Vec::new();
         if let Some(tools_arr) = obj.get("tools").and_then(|v| v.as_array()) {
             for tool_val in tools_arr {
                 if let Some(func_obj) = tool_val.get("function") {
@@ -433,7 +440,7 @@ impl ProtocolReader for CohereReader {
                         .get("parameters")
                         .cloned()
                         .unwrap_or(serde_json::Value::Null);
-                    tools.push(crate::ir::IrTool {
+                    tools.push(busbar_core::ir::IrTool {
                         name,
                         description,
                         input_schema,
@@ -467,7 +474,7 @@ impl ProtocolReader for CohereReader {
             .get("k")
             .and_then(|v| v.as_u64())
             .and_then(|v| u32::try_from(v).ok());
-        let stop = crate::ir::read_stop_sequences(obj.get("stop_sequences"));
+        let stop = busbar_core::ir::read_stop_sequences(obj.get("stop_sequences"));
         // Cohere v2 `tool_choice` is a top-level enum string (REQUIRED/NONE). Promote it to the IR
         // union so a forced directive survives the cross-protocol seam.
         let tool_choice = read_cohere_tool_choice(obj.get("tool_choice"));
@@ -517,7 +524,7 @@ impl ProtocolReader for CohereReader {
             }
         }
 
-        Ok(crate::ir::IrRequest {
+        Ok(busbar_core::ir::IrRequest {
             reasoning: None,
             reasoning_budgets: None,
             logprobs: None,
@@ -552,10 +559,10 @@ impl ProtocolReader for CohereReader {
         &self,
         _event_type: &str,
         data: &serde_json::Value,
-        state: &mut crate::ir::StreamDecodeState,
+        state: &mut busbar_core::ir::StreamDecodeState,
     ) -> Vec<IrStreamEvent> {
         let mut out: Vec<IrStreamEvent> = Vec::new();
-        if data.as_str() == Some(crate::proto::SSE_DONE_SENTINEL) || !data.is_object() {
+        if data.as_str() == Some(busbar_core::proto::SSE_DONE_SENTINEL) || !data.is_object() {
             return out;
         }
 
@@ -574,7 +581,7 @@ impl ProtocolReader for CohereReader {
                         .map(String::from)
                         .or_else(|| Some(synthesize_cohere_id()));
                     out.push(IrStreamEvent::MessageStart {
-                        role: crate::ir::IrRole::Assistant,
+                        role: busbar_core::ir::IrRole::Assistant,
                         usage: None,
                         id,
                         created: None,
@@ -607,7 +614,7 @@ impl ProtocolReader for CohereReader {
                     let ti = cohere_text_ir_index(state);
                     out.push(IrStreamEvent::BlockStart {
                         index: ti,
-                        block: crate::ir::IrBlockMeta::Text,
+                        block: busbar_core::ir::IrBlockMeta::Text,
                     });
                 }
             }
@@ -623,7 +630,7 @@ impl ProtocolReader for CohereReader {
                     state.text_block_open = true;
                     out.push(IrStreamEvent::BlockStart {
                         index: text_idx,
-                        block: crate::ir::IrBlockMeta::Text,
+                        block: busbar_core::ir::IrBlockMeta::Text,
                     });
                 }
 
@@ -635,7 +642,7 @@ impl ProtocolReader for CohereReader {
                             if !text.is_empty() {
                                 out.push(IrStreamEvent::BlockDelta {
                                     index: text_idx,
-                                    delta: crate::ir::IrDelta::TextDelta(text.to_string()),
+                                    delta: busbar_core::ir::IrDelta::TextDelta(text.to_string()),
                                 });
                             }
                         } else if let Some(block_obj) = content_obj.as_object() {
@@ -652,7 +659,9 @@ impl ProtocolReader for CohereReader {
                                     if !text.is_empty() {
                                         out.push(IrStreamEvent::BlockDelta {
                                             index: text_idx,
-                                            delta: crate::ir::IrDelta::TextDelta(text.to_string()),
+                                            delta: busbar_core::ir::IrDelta::TextDelta(
+                                                text.to_string(),
+                                            ),
                                         });
                                     }
                                 }
@@ -668,7 +677,7 @@ impl ProtocolReader for CohereReader {
                                         {
                                             out.push(IrStreamEvent::BlockDelta {
                                                 index: text_idx,
-                                                delta: crate::ir::IrDelta::TextDelta(
+                                                delta: busbar_core::ir::IrDelta::TextDelta(
                                                     text.to_string(),
                                                 ),
                                             });
@@ -702,7 +711,7 @@ impl ProtocolReader for CohereReader {
                     state.thinking_block_open = true;
                     out.push(IrStreamEvent::BlockStart {
                         index: plan_idx,
-                        block: crate::ir::IrBlockMeta::Thinking,
+                        block: busbar_core::ir::IrBlockMeta::Thinking,
                     });
                 }
                 if let Some(text) = data
@@ -714,7 +723,7 @@ impl ProtocolReader for CohereReader {
                 {
                     out.push(IrStreamEvent::BlockDelta {
                         index: plan_idx,
-                        delta: crate::ir::IrDelta::ThinkingDelta(text.to_string()),
+                        delta: busbar_core::ir::IrDelta::ThinkingDelta(text.to_string()),
                     });
                 }
             }
@@ -770,7 +779,7 @@ impl ProtocolReader for CohereReader {
                             .and_then(|t| t.as_object())
                             .cloned()
                             .unwrap_or_default();
-                        crate::ir::IrUsage {
+                        busbar_core::ir::IrUsage {
                             input_tokens: tokens_map
                                 .get("input_tokens")
                                 .and_then(|v| v.as_u64())
@@ -787,7 +796,7 @@ impl ProtocolReader for CohereReader {
                             // at all, so its loss is invisible in a token total that reconciles
                             // perfectly. Reading it only on the buffered path meant a streamed RAG
                             // call silently dropped the search charge.
-                            detail: crate::ir::IrUsageDetail {
+                            detail: busbar_core::ir::IrUsageDetail {
                                 search_units: u
                                     .get("billed_units")
                                     .and_then(|b| b.get("search_units"))
@@ -796,12 +805,12 @@ impl ProtocolReader for CohereReader {
                             },
                         }
                     })
-                    .unwrap_or(crate::ir::IrUsage {
+                    .unwrap_or(busbar_core::ir::IrUsage {
                         input_tokens: 0,
                         output_tokens: 0,
                         cache_creation_input_tokens: None,
                         cache_read_input_tokens: None,
-                        detail: crate::ir::IrUsageDetail::default(),
+                        detail: busbar_core::ir::IrUsageDetail::default(),
                     });
 
                 out.push(IrStreamEvent::MessageDelta {
@@ -875,7 +884,7 @@ impl ProtocolReader for CohereReader {
                 if let Some(ir_idx) = cohere_assign_tool_ir_index(state, frame_idx) {
                     out.push(IrStreamEvent::BlockStart {
                         index: ir_idx,
-                        block: crate::ir::IrBlockMeta::ToolUse { id, name },
+                        block: busbar_core::ir::IrBlockMeta::ToolUse { id, name },
                     });
                     // Cohere may include initial argument text on the start frame.
                     if let Some(args) = tc
@@ -886,7 +895,7 @@ impl ProtocolReader for CohereReader {
                     {
                         out.push(IrStreamEvent::BlockDelta {
                             index: ir_idx,
-                            delta: crate::ir::IrDelta::InputJsonDelta(args.to_string()),
+                            delta: busbar_core::ir::IrDelta::InputJsonDelta(args.to_string()),
                         });
                     }
                 }
@@ -910,7 +919,7 @@ impl ProtocolReader for CohereReader {
                     {
                         out.push(IrStreamEvent::BlockDelta {
                             index: ir_idx,
-                            delta: crate::ir::IrDelta::InputJsonDelta(args.to_string()),
+                            delta: busbar_core::ir::IrDelta::InputJsonDelta(args.to_string()),
                         });
                     }
                 }
@@ -942,19 +951,22 @@ impl ProtocolReader for CohereReader {
         Box::new(self.clone())
     }
 
-    fn read_response(&self, body: &serde_json::Value) -> Result<crate::ir::IrResponse, IrError> {
+    fn read_response(
+        &self,
+        body: &serde_json::Value,
+    ) -> Result<busbar_core::ir::IrResponse, IrError> {
         let obj = body.as_object().ok_or(IrError {
             class: StatusClass::ClientError,
-            provider_signal: Some(crate::proto::SIGNAL_IR_PARSE.to_string()),
+            provider_signal: Some(busbar_core::proto::SIGNAL_IR_PARSE.to_string()),
             retry_after: None,
         })?;
         let message_val = obj.get("message").ok_or(IrError {
             class: StatusClass::ClientError,
-            provider_signal: Some(crate::proto::SIGNAL_IR_PARSE.to_string()),
+            provider_signal: Some(busbar_core::proto::SIGNAL_IR_PARSE.to_string()),
             retry_after: None,
         })?;
 
-        let mut content: Vec<crate::ir::IrBlock> = Vec::new();
+        let mut content: Vec<busbar_core::ir::IrBlock> = Vec::new();
         // Cohere v2 carries the assistant's INTERNAL plan that precedes its tool calls in
         // `message.tool_plan` (a string, distinct from `content[]`).
         //
@@ -969,7 +981,7 @@ impl ProtocolReader for CohereReader {
         // did not intend the user to see.
         if let Some(plan) = message_val.get("tool_plan").and_then(|p| p.as_str()) {
             if !plan.is_empty() {
-                content.push(crate::ir::IrBlock::Thinking {
+                content.push(busbar_core::ir::IrBlock::Thinking {
                     text: plan.to_string(),
                     signature: None,
                     redacted: false,
@@ -991,7 +1003,7 @@ impl ProtocolReader for CohereReader {
                 if let Some(block_obj) = block_val.as_object() {
                     if block_obj.get("type").and_then(|t| t.as_str()) == Some("text") {
                         if let Some(text) = block_obj.get("text").and_then(|t| t.as_str()) {
-                            content.push(crate::ir::IrBlock::Text {
+                            content.push(busbar_core::ir::IrBlock::Text {
                                 text: text.to_string(),
                                 cache_control: None,
                                 citations: std::mem::take(&mut citations_pending),
@@ -1019,9 +1031,9 @@ impl ProtocolReader for CohereReader {
                         .get("arguments")
                         .and_then(|v| v.as_str())
                         .unwrap_or("{}");
-                    let input = crate::json::parse_str(arguments)
+                    let input = busbar_core::json::parse_str(arguments)
                         .unwrap_or(serde_json::Value::String(arguments.to_string()));
-                    content.push(crate::ir::IrBlock::ToolUse {
+                    content.push(busbar_core::ir::IrBlock::ToolUse {
                         id,
                         name,
                         input,
@@ -1050,7 +1062,7 @@ impl ProtocolReader for CohereReader {
         // `Option`, so each token lookup below already defaults to 0.
         let usage_val = obj.get("usage");
         let tokens_val = usage_val.and_then(|u| u.get("tokens"));
-        let usage = crate::ir::IrUsage {
+        let usage = busbar_core::ir::IrUsage {
             input_tokens: tokens_val
                 .and_then(|t| t.as_object())
                 .and_then(|t_obj| t_obj.get("input_tokens"))
@@ -1066,7 +1078,7 @@ impl ProtocolReader for CohereReader {
             // `billed_units.search_units` is a SEPARATELY BILLED unit that is not a token count at
             // all, so no token field can carry it — and its loss is invisible in a token total that
             // reconciles perfectly, which is exactly why it went unnoticed.
-            detail: crate::ir::IrUsageDetail {
+            detail: busbar_core::ir::IrUsageDetail {
                 search_units: usage_val
                     .and_then(|u| u.get("billed_units"))
                     .and_then(|b| b.get("search_units"))
@@ -1089,9 +1101,9 @@ impl ProtocolReader for CohereReader {
             .map(String::from)
             .or_else(|| Some(synthesize_cohere_id()));
 
-        Ok(crate::ir::IrResponse {
+        Ok(busbar_core::ir::IrResponse {
             logprobs: Vec::new(),
-            role: crate::ir::IrRole::Assistant,
+            role: busbar_core::ir::IrRole::Assistant,
             content,
             stop_reason,
             usage,

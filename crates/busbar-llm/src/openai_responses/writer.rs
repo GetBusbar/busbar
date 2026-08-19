@@ -17,7 +17,7 @@ impl ProtocolWriter for ResponsesWriter {
         if obj.get("input").is_none() {
             return false;
         }
-        let Some(pairs) = crate::proto::rewrite_text_pairs(messages) else {
+        let Some(pairs) = busbar_core::proto::rewrite_text_pairs(messages) else {
             return false;
         };
         let framed: Vec<serde_json::Value> = pairs
@@ -28,7 +28,7 @@ impl ProtocolWriter for ResponsesWriter {
         true
     }
 
-    fn write_request(&self, req: &crate::ir::IrRequest) -> serde_json::Value {
+    fn write_request(&self, req: &busbar_core::ir::IrRequest) -> serde_json::Value {
         let mut out = serde_json::Map::new();
 
         if !req.system.is_empty() {
@@ -36,7 +36,7 @@ impl ProtocolWriter for ResponsesWriter {
                 .system
                 .iter()
                 .filter_map(|block| match block {
-                    crate::ir::IrBlock::Text { text, .. } => Some(text.clone()),
+                    busbar_core::ir::IrBlock::Text { text, .. } => Some(text.clone()),
                     _ => None,
                 })
                 .collect::<Vec<_>>()
@@ -49,8 +49,8 @@ impl ProtocolWriter for ResponsesWriter {
         let mut input_arr: Vec<serde_json::Value> = Vec::new();
         for msg in &req.messages {
             match msg.role {
-                crate::ir::IrRole::User | crate::ir::IrRole::Assistant => {
-                    let role_str = if msg.role == crate::ir::IrRole::User {
+                busbar_core::ir::IrRole::User | busbar_core::ir::IrRole::Assistant => {
+                    let role_str = if msg.role == busbar_core::ir::IrRole::User {
                         "user"
                     } else {
                         "assistant"
@@ -68,8 +68,8 @@ impl ProtocolWriter for ResponsesWriter {
                     let mut reasoning_items: Vec<serde_json::Value> = Vec::new();
                     for block in &msg.content {
                         match block {
-                            crate::ir::IrBlock::Text { text, .. } => {
-                                let type_str = if msg.role == crate::ir::IrRole::User {
+                            busbar_core::ir::IrBlock::Text { text, .. } => {
+                                let type_str = if msg.role == busbar_core::ir::IrRole::User {
                                     CONTENT_TYPE_INPUT_TEXT
                                 } else {
                                     CONTENT_TYPE_OUTPUT_TEXT
@@ -79,10 +79,10 @@ impl ProtocolWriter for ResponsesWriter {
                                     "text": text
                                 }));
                             }
-                            crate::ir::IrBlock::Image { source, .. } => match source {
+                            busbar_core::ir::IrBlock::Image { source, .. } => match source {
                                 // A Responses-produced vendor reference is a `file_id` — re-emit
                                 // the native `input_image.file_id` form (a data URI would corrupt it).
-                                crate::ir::IrImageSource::Vendor { vendor, value }
+                                busbar_core::ir::IrImageSource::Vendor { vendor, value }
                                     if *vendor == VENDOR_NAME =>
                                 {
                                     if let Some(id) = value.get("file_id").and_then(|i| i.as_str())
@@ -95,7 +95,7 @@ impl ProtocolWriter for ResponsesWriter {
                                 }
                                 // A foreign vendor reference (a Bedrock s3Location) has no Responses
                                 // analog — drop with a warn rather than corrupt the block.
-                                crate::ir::IrImageSource::Vendor { .. } => {
+                                busbar_core::ir::IrImageSource::Vendor { .. } => {
                                     tracing::warn!(
                                         "dropping unresolvable foreign vendor image reference on \
                                          Responses egress: no cross-vendor analog"
@@ -116,10 +116,10 @@ impl ProtocolWriter for ResponsesWriter {
                             // slot an Anthropic `document` or a Bedrock `document` lands in) and the
                             // other kinds are dropped DELIBERATELY with a warn naming the construct,
                             // never as the empty text part they used to become.
-                            crate::ir::IrBlock::Media {
+                            busbar_core::ir::IrBlock::Media {
                                 kind, source, name, ..
                             } => {
-                                if *kind != crate::ir::IrMediaKind::Document {
+                                if *kind != busbar_core::ir::IrMediaKind::Document {
                                     tracing::warn!(
                                         media_kind = kind.as_str(),
                                         "dropping attachment on Responses egress: the input surface \
@@ -133,7 +133,10 @@ impl ProtocolWriter for ResponsesWriter {
                                         serde_json::json!("input_file"),
                                     );
                                     let representable = match source {
-                                        crate::ir::IrImageSource::Base64 { media_type, data } => {
+                                        busbar_core::ir::IrImageSource::Base64 {
+                                            media_type,
+                                            data,
+                                        } => {
                                             part.insert(
                                                 "file_data".to_string(),
                                                 serde_json::json!(format!(
@@ -142,7 +145,7 @@ impl ProtocolWriter for ResponsesWriter {
                                             );
                                             true
                                         }
-                                        crate::ir::IrImageSource::Url(url) => {
+                                        busbar_core::ir::IrImageSource::Url(url) => {
                                             part.insert(
                                                 "file_url".to_string(),
                                                 serde_json::json!(url),
@@ -152,9 +155,10 @@ impl ProtocolWriter for ResponsesWriter {
                                         // This protocol's OWN uploads handle round-trips verbatim;
                                         // a FOREIGN handle (a Bedrock s3Location, an Anthropic
                                         // Files-API id) is unresolvable here.
-                                        crate::ir::IrImageSource::Vendor { vendor, value }
-                                            if *vendor == VENDOR_NAME =>
-                                        {
+                                        busbar_core::ir::IrImageSource::Vendor {
+                                            vendor,
+                                            value,
+                                        } if *vendor == VENDOR_NAME => {
                                             match value.get("file_id").and_then(|i| i.as_str()) {
                                                 Some(id) => {
                                                     part.insert(
@@ -166,7 +170,9 @@ impl ProtocolWriter for ResponsesWriter {
                                                 None => false,
                                             }
                                         }
-                                        crate::ir::IrImageSource::Vendor { vendor, .. } => {
+                                        busbar_core::ir::IrImageSource::Vendor {
+                                            vendor, ..
+                                        } => {
                                             tracing::warn!(
                                                 vendor = %vendor,
                                                 "dropping document attachment on Responses egress: \
@@ -187,17 +193,19 @@ impl ProtocolWriter for ResponsesWriter {
                                     }
                                 }
                             }
-                            crate::ir::IrBlock::Json(_) => {
+                            busbar_core::ir::IrBlock::Json(_) => {
                                 // Structured-json (Bedrock tool-result content) has no Responses
                                 // input-content shape; dropped here.
                             }
-                            crate::ir::IrBlock::ToolUse {
+                            busbar_core::ir::IrBlock::ToolUse {
                                 id, name, input, ..
                             } => {
                                 // Emit a raw `Value::String` (unparseable/streaming-partial args) verbatim
                                 // rather than JSON-encoding it a second time — same as the Chat writer.
                                 let args_str =
-                                    crate::proto::openai_family::tool_arguments_to_string(input);
+                                    busbar_core::proto::openai_family::tool_arguments_to_string(
+                                        input,
+                                    );
                                 tool_items.push(serde_json::json!({
                                     "type": ITEM_TYPE_FUNCTION_CALL,
                                     "call_id": id,
@@ -205,7 +213,7 @@ impl ProtocolWriter for ResponsesWriter {
                                     "arguments": args_str
                                 }));
                             }
-                            crate::ir::IrBlock::ToolResult {
+                            busbar_core::ir::IrBlock::ToolResult {
                                 tool_use_id,
                                 content,
                                 ..
@@ -216,7 +224,7 @@ impl ProtocolWriter for ResponsesWriter {
                                 let output_text = content
                                     .iter()
                                     .filter_map(|b| match b {
-                                        crate::ir::IrBlock::Text { text, .. } => Some(text.clone()),
+                                        busbar_core::ir::IrBlock::Text { text, .. } => Some(text.clone()),
                                         // A non-Text ToolResult block is a Bedrock json-tool-result
                                         // sentinel with no Responses analog. Drop WITH a warn
                                         // (drop-with-warn convention) instead of vanishing silently.
@@ -255,12 +263,12 @@ impl ProtocolWriter for ResponsesWriter {
                             // `thought: true` parts) must NOT be re-emitted as the model's own past
                             // reasoning, or the caller's content is presented back to the model
                             // with false provenance.
-                            crate::ir::IrBlock::Thinking {
+                            busbar_core::ir::IrBlock::Thinking {
                                 text,
                                 signature,
                                 redacted,
                                 ..
-                            } if !*redacted && msg.role == crate::ir::IrRole::Assistant => {
+                            } if !*redacted && msg.role == busbar_core::ir::IrRole::Assistant => {
                                 let emit_sig = signature.as_deref();
                                 // A wholly-empty reasoning block (no text, no signature) emits no item.
                                 if !text.is_empty() || emit_sig.is_some() {
@@ -296,7 +304,7 @@ impl ProtocolWriter for ResponsesWriter {
                             // file's convention for a block with no analog on the target surface
                             // (see the foreign-vendor-image and json-tool-result arms above), so
                             // the loss is visible rather than silent.
-                            crate::ir::IrBlock::Thinking { redacted, .. } if !*redacted => {
+                            busbar_core::ir::IrBlock::Thinking { redacted, .. } if !*redacted => {
                                 tracing::warn!(
                                     "dropping non-Assistant Thinking block on Responses egress: a \
                                      `reasoning` input item asserts it is the model's own prior \
@@ -305,7 +313,7 @@ impl ProtocolWriter for ResponsesWriter {
                             }
                             // A REDACTED reasoning block (opaque encrypted bytes, no plaintext
                             // analog on Responses) is dropped rather than leaked as `reasoning_text`.
-                            crate::ir::IrBlock::Thinking { .. } => {}
+                            busbar_core::ir::IrBlock::Thinking { .. } => {}
                         }
                     }
 
@@ -327,9 +335,9 @@ impl ProtocolWriter for ResponsesWriter {
                     input_arr.extend(tool_items);
                 }
 
-                crate::ir::IrRole::Tool => {
+                busbar_core::ir::IrRole::Tool => {
                     for block in &msg.content {
-                        if let crate::ir::IrBlock::ToolResult {
+                        if let busbar_core::ir::IrBlock::ToolResult {
                             tool_use_id,
                             content,
                             ..
@@ -341,7 +349,7 @@ impl ProtocolWriter for ResponsesWriter {
                             let output_text = content
                                 .iter()
                                 .filter_map(|b| match b {
-                                    crate::ir::IrBlock::Text { text, .. } => Some(text.clone()),
+                                    busbar_core::ir::IrBlock::Text { text, .. } => Some(text.clone()),
                                     // A non-Text ToolResult block is a Bedrock json-tool-result
                                     // sentinel with no Responses analog. Drop WITH a warn
                                     // (drop-with-warn convention) instead of vanishing silently.
@@ -369,7 +377,7 @@ impl ProtocolWriter for ResponsesWriter {
                     }
                 }
 
-                crate::ir::IrRole::System => {}
+                busbar_core::ir::IrRole::System => {}
             }
         }
 
@@ -536,7 +544,7 @@ impl ProtocolWriter for ResponsesWriter {
             if !req.extra.contains_key("reasoning") {
                 let table = req
                     .reasoning_budgets
-                    .unwrap_or(crate::ir::REASONING_BUDGET_DEFAULTS);
+                    .unwrap_or(busbar_core::ir::REASONING_BUDGET_DEFAULTS);
                 out.insert(
                     "reasoning".to_string(),
                     serde_json::json!({"effort": ask.to_effort(table).as_openai_reasoning_effort()}),
@@ -616,7 +624,7 @@ impl ProtocolWriter for ResponsesWriter {
             }
 
             IrStreamEvent::BlockStart { index, block } => match block {
-                crate::ir::IrBlockMeta::Text => {
+                busbar_core::ir::IrBlockMeta::Text => {
                     // A native /v1/responses stream brackets a text part inside a `message` output
                     // item: `output_item.added(message)` opens it, the `output_text.delta`s carry
                     // the body, and `output_item.done(message)` closes it. The official SDK builds
@@ -651,7 +659,7 @@ impl ProtocolWriter for ResponsesWriter {
                         }),
                     ))
                 }
-                crate::ir::IrBlockMeta::ToolUse { id, name } => {
+                busbar_core::ir::IrBlockMeta::ToolUse { id, name } => {
                     // `item_id` (a stable per-output-item id, `fc_…` for a function-call item) is
                     // carried on the native `output_item.added`/`.done` pair so a client correlates the
                     // item's lifecycle. Synthesize it deterministically from the output index so the
@@ -680,7 +688,7 @@ impl ProtocolWriter for ResponsesWriter {
                         }),
                     ))
                 }
-                crate::ir::IrBlockMeta::Thinking => {
+                busbar_core::ir::IrBlockMeta::Thinking => {
                     // REASONING (stream): open a native Responses `reasoning` output item. The IR
                     // Thinking BlockStart carries only the index; emit `output_item.added` typed
                     // "reasoning" with a stable `rs_…` item_id (so the matching `.done` reconstructs
@@ -705,11 +713,11 @@ impl ProtocolWriter for ResponsesWriter {
                         }),
                     ))
                 }
-                crate::ir::IrBlockMeta::Image => None,
+                busbar_core::ir::IrBlockMeta::Image => None,
             },
 
             IrStreamEvent::BlockDelta { index, delta } => match delta {
-                crate::ir::IrDelta::TextDelta(text) if !text.is_empty() => {
+                busbar_core::ir::IrDelta::TextDelta(text) if !text.is_empty() => {
                     // Native `output_text.delta` carries `item_id` (the enclosing message item) and
                     // `content_index` (the index of the text part within that item). The IR delta
                     // carries only the output index; synthesize the message `item_id` deterministically
@@ -730,7 +738,7 @@ impl ProtocolWriter for ResponsesWriter {
                         }),
                     ))
                 }
-                crate::ir::IrDelta::InputJsonDelta(json_str) => {
+                busbar_core::ir::IrDelta::InputJsonDelta(json_str) => {
                     // Accumulate the arguments fragment so the matching `output_item.done` emits the
                     // COMPLETE arguments string the native event (and the SDK's `event.item.arguments`)
                     // carries.
@@ -745,8 +753,8 @@ impl ProtocolWriter for ResponsesWriter {
                         }),
                     ))
                 }
-                &crate::ir::IrDelta::TextDelta(_) => None,
-                crate::ir::IrDelta::ThinkingDelta(text) if !text.is_empty() => {
+                &busbar_core::ir::IrDelta::TextDelta(_) => None,
+                busbar_core::ir::IrDelta::ThinkingDelta(text) if !text.is_empty() => {
                     // REASONING (stream): emit the native `response.reasoning_text.delta` for the
                     // reasoning item at this index, accumulating the fragment so the matching
                     // BlockStop assembles the complete reasoning item. The prior `None` DROPPED the
@@ -767,20 +775,20 @@ impl ProtocolWriter for ResponsesWriter {
                 // An empty ThinkingDelta carries no content (drop it), and Responses has no streaming
                 // analog for a thinking `SignatureDelta` (the signature rides on the item's
                 // `encrypted_content`, not a stream delta) — so both emit no frame.
-                &crate::ir::IrDelta::ThinkingDelta(_)
-                | crate::ir::IrDelta::SignatureDelta(_)
-                | crate::ir::IrDelta::RedactedReasoningDelta(_) => None,
+                &busbar_core::ir::IrDelta::ThinkingDelta(_)
+                | busbar_core::ir::IrDelta::SignatureDelta(_)
+                | busbar_core::ir::IrDelta::RedactedReasoningDelta(_) => None,
                 // Responses carries citations as `annotations` on the assembled `output_text`
                 // part, not as a standalone delta frame — so there is nothing to emit HERE, but the
                 // citations must survive until `BlockStop` builds that part. Buffer them; dropping
                 // them lost every grounding source on a cross-protocol stream into Responses.
-                crate::ir::IrDelta::CitationsDelta(cits) => {
+                busbar_core::ir::IrDelta::CitationsDelta(cits) => {
                     self.append_citations(*index, cits);
                     None
                 }
                 // Responses streaming logprobs (inside `output_text` events) are out of the 1.2
                 // OpenAI<->Gemini scope; dropped rather than emitted in a non-native shape.
-                crate::ir::IrDelta::LogprobsDelta(_) => None,
+                busbar_core::ir::IrDelta::LogprobsDelta(_) => None,
             },
 
             IrStreamEvent::BlockStop { index } => {
@@ -872,7 +880,7 @@ impl ProtocolWriter for ResponsesWriter {
                     // empty content array.
                     let item_id = self.item_id_for(ITEM_ID_PREFIX_MSG, *index);
                     let text = self.take_text_accum(*index);
-                    let annotations = crate::proto::openai_family::url_annotations(
+                    let annotations = busbar_core::proto::openai_family::url_annotations(
                         &text,
                         0,
                         &self.take_citation_accum(*index),
@@ -1102,7 +1110,7 @@ impl ProtocolWriter for ResponsesWriter {
         })
     }
 
-    fn write_response(&self, resp: &crate::ir::IrResponse) -> serde_json::Value {
+    fn write_response(&self, resp: &busbar_core::ir::IrResponse) -> serde_json::Value {
         // Unknown/None stop reasons default to `completed` (not `failed`): a future IR reason that
         // did not explicitly signal an error must not surface as a failed response to a Responses
         // client. Only the explicitly-mapped incomplete reasons downgrade the status.
@@ -1123,14 +1131,14 @@ impl ProtocolWriter for ResponsesWriter {
         let mut output_arr: Vec<serde_json::Value> = Vec::new();
         for block in &resp.content {
             match block {
-                crate::ir::IrBlock::Text {
+                busbar_core::ir::IrBlock::Text {
                     text, citations, ..
                 } => {
                     if text.is_empty() {
                         continue;
                     }
                     let annotations =
-                        crate::proto::openai_family::url_annotations(text, 0, citations);
+                        busbar_core::proto::openai_family::url_annotations(text, 0, citations);
                     // Match the native message-item shape the STREAMING `output_item.done` emits: an
                     // item-level `id` (`msg_…`), a `status`, and `annotations: []` on the `output_text`
                     // content part. Omitting them is a proxy tell — a typed SDK reading `item.id` /
@@ -1149,11 +1157,12 @@ impl ProtocolWriter for ResponsesWriter {
                         }]
                     }));
                 }
-                crate::ir::IrBlock::ToolUse {
+                busbar_core::ir::IrBlock::ToolUse {
                     id, name, input, ..
                 } => {
                     // Verbatim for a raw `Value::String` (avoid double-encoding), same as the Chat writer.
-                    let args_str = crate::proto::openai_family::tool_arguments_to_string(input);
+                    let args_str =
+                        busbar_core::proto::openai_family::tool_arguments_to_string(input);
                     output_arr.push(serde_json::json!({
                         "type": ITEM_TYPE_FUNCTION_CALL,
                         // Native function_call items carry an item-level opaque `id` (`fc_…`) DISTINCT
@@ -1173,7 +1182,7 @@ impl ProtocolWriter for ResponsesWriter {
                 // location); when the IR carries a signature, round-trip it into Responses'
                 // `encrypted_content` slot (the opaque reasoning-reuse blob) so a same-protocol hop is
                 // lossless. A purely-empty Thinking block emits no item.
-                crate::ir::IrBlock::Thinking {
+                busbar_core::ir::IrBlock::Thinking {
                     text,
                     signature,
                     redacted,
@@ -1211,12 +1220,12 @@ impl ProtocolWriter for ResponsesWriter {
                 // intentionally dropped here. Enumerated explicitly rather than swallowed by a
                 // catch-all so a future IrBlock variant forces a compile error instead of silently
                 // vanishing from Responses output.
-                crate::ir::IrBlock::ToolResult { .. } => {}
+                busbar_core::ir::IrBlock::ToolResult { .. } => {}
                 // A model does not emit an attachment back on the response surface, so there is
                 // nothing to project here and nothing is lost by omitting these.
-                crate::ir::IrBlock::Image { .. }
-                | crate::ir::IrBlock::Media { .. }
-                | crate::ir::IrBlock::Json(_) => {}
+                busbar_core::ir::IrBlock::Image { .. }
+                | busbar_core::ir::IrBlock::Media { .. }
+                | busbar_core::ir::IrBlock::Json(_) => {}
             }
         }
 
@@ -1300,7 +1309,7 @@ impl ProtocolWriter for ResponsesWriter {
             // exhaustion/timeout, a non-native type and a deterministic cross-protocol tell. Map the
             // overloaded/unavailable family onto the native `server_error`. Same class as the OpenAI
             // writer's 5xx bucket.
-            crate::proxy::KIND_OVERLOADED
+            busbar_core::proxy::KIND_OVERLOADED
             | ERR_TYPE_OVERLOADED
             | "service_unavailable"
             | "unavailable" => ERR_TYPE_SERVER_ERROR,
@@ -1312,16 +1321,18 @@ impl ProtocolWriter for ResponsesWriter {
             // non-native `type` such as `{"error":{"type":"timeout"}}` or `{"error":{"type":"5xx"}}`
             // to a Responses-API client: a deterministic cross-protocol tell that breaks SDK
             // consumers switching on `error.type`. Mirrors openai_chat.rs's `server_error` bucket.
-            crate::proxy::KIND_TIMEOUT
+            busbar_core::proxy::KIND_TIMEOUT
             | "network"
             | "connect"
             | "5xx"
             | "transient"
-            | crate::proxy::KIND_API_ERROR => ERR_TYPE_SERVER_ERROR,
+            | busbar_core::proxy::KIND_API_ERROR => ERR_TYPE_SERVER_ERROR,
             // A context-length overflow is surfaced by proxy engine as `context_length_exceeded`; the
             // Responses vocabulary has no dedicated type for it (as openai_chat.rs also maps it), so it
             // folds into `invalid_request_error`. `bad_request` is the same client-error class.
-            crate::proxy::PROVIDER_CODE_CONTEXT_LENGTH | "bad_request" => ERR_TYPE_INVALID_REQUEST,
+            busbar_core::proxy::PROVIDER_CODE_CONTEXT_LENGTH | "bad_request" => {
+                ERR_TYPE_INVALID_REQUEST
+            }
             "billing" | ERR_TYPE_INSUFFICIENT_QUOTA => ERR_TYPE_INSUFFICIENT_QUOTA,
             other => other,
         };
@@ -1339,7 +1350,7 @@ impl ProtocolWriter for ResponsesWriter {
     fn egress_user_agent(&self) -> &'static str {
         // Responses API is served by the same OpenAI SDK/UA as the Chat Completions surface.
         // Pinned — see `EGRESS_UA_OPENAI` in proxy engine.
-        crate::proxy::EGRESS_UA_OPENAI
+        busbar_core::proxy::EGRESS_UA_OPENAI
     }
 
     fn auth_failure_message(&self) -> &'static str {

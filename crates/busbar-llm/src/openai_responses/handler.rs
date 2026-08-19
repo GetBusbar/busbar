@@ -4,29 +4,29 @@
 //! OpenAI Responses `RequestHandler`. Chat-only (the `/v1/responses` conversational API); non-chat
 //! operations stay `None` = no-handler 404. Chat dispatches through the same registry as every op.
 
-use crate::handlers::{EgressCtx, OperationHandler, RequestHandler};
-use crate::operation::Operation;
+use busbar_core::handlers::{EgressCtx, OperationHandler, RequestHandler};
+use busbar_core::operation::Operation;
 
 /// Endpoint paths — each appears on BOTH the egress side (`upstream_path`) and the ingress match
 /// (`resolve_operation`); single-sourced so the two sides cannot drift.
 const PATH_RESPONSES: &str = "/v1/responses";
 
-pub(crate) struct ResponsesRequestHandler;
+pub struct ResponsesRequestHandler;
 /// This protocol's OWN chat instance — delete this line (and the registry arm) and this
 /// protocol's chat 404s via the standard no-handler path; everything else keeps working.
-static CHAT: crate::handlers::chat::ChatOperation =
-    crate::handlers::chat::ChatOperation("responses");
+static CHAT: busbar_core::handlers::chat::ChatOperation =
+    busbar_core::handlers::chat::ChatOperation("responses");
 
 /// THE RESPONSES API'S ROW OF THE SUPPORT MATRIX — one verb; every other verb is the standard
 /// no-handler 404.
-static CELLS: &[crate::handlers::Cell] = &[(Operation::CHAT, &CHAT)];
+static CELLS: &[busbar_core::handlers::Cell] = &[(Operation::CHAT, &CHAT)];
 
 impl RequestHandler for ResponsesRequestHandler {
     fn protocol_name(&self) -> &'static str {
         "responses"
     }
     fn operation_handler(&self, op: Operation) -> Option<&dyn OperationHandler> {
-        crate::handlers::cell_of(CELLS, op)
+        busbar_core::handlers::cell_of(CELLS, op)
     }
     fn upstream_path(&self, _ctx: &EgressCtx) -> String {
         PATH_RESPONSES.into()
@@ -37,5 +37,5 @@ impl RequestHandler for ResponsesRequestHandler {
 }
 
 #[cfg(test)]
-#[path = "tests/responses_tests.rs"]
+#[path = "tests/handler_tests.rs"]
 mod tests;

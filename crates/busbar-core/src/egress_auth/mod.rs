@@ -11,7 +11,10 @@
 //! (SigV4) consumes the protocol's already-written body + path — but auth no longer lives on the
 //! `ProtocolWriter`. The per-scheme logic lives in `pub(crate)` free functions co-located with each
 //! protocol's constants (`proto::bearer_auth_headers`, `proto::anthropic::anthropic_auth_headers`,
-//! `proto::bedrock::sigv4_sign_headers`); this module owns the *dispatch*. Those same free functions
+//! and, for an EXTRACTED dialect, a builder the dialect DECLARES on
+//! `ProtocolDecl::egress_auth_headers` — `busbar-llm`'s Bedrock module hands in its SigV4 signer
+//! that way, and this module wraps it in `DeclaredCredential` without ever naming the dialect).
+//! This module owns the *dispatch*. Those same free functions
 //! are what the byte-pinning auth tests call, so a credential and its test can never diverge.
 
 use crate::proto::SigningContext;
@@ -196,7 +199,6 @@ pub(crate) fn resolve(
         "gemini" => Arc::new(ApiKeyHeader {
             header: "x-goog-api-key",
         }),
-        "bedrock" => Arc::new(SigV4),
         // cohere / responses and any other bearer-native protocol not yet extracted.
         "cohere" => Arc::new(StaticBearer { proto: "cohere" }),
         "responses" => Arc::new(StaticBearer { proto: "responses" }),
@@ -261,14 +263,6 @@ struct DeclaredCredential(fn(&str, &SigningContext) -> Vec<(HeaderName, HeaderVa
 impl CredentialProvider for DeclaredCredential {
     fn headers_for(&self, key: &str, ctx: &SigningContext) -> Vec<(HeaderName, HeaderValue)> {
         (self.0)(key, ctx)
-    }
-}
-
-/// AWS SigV4 over the request (body + canonical path from `ctx`) — Bedrock.
-struct SigV4;
-impl CredentialProvider for SigV4 {
-    fn headers_for(&self, key: &str, ctx: &SigningContext) -> Vec<(HeaderName, HeaderValue)> {
-        crate::proto::bedrock::sigv4_sign_headers(key, ctx)
     }
 }
 

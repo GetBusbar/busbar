@@ -18,11 +18,6 @@ pub(crate) use crate::breaker::StatusClass;
 
 // Import types needed for response/stream IR
 use crate::ir::IrStreamEvent;
-// `IrUsage` is unused by this module's own (non-test) code; kept in scope here only because
-// `proto/bedrock/tests/tests.rs` reaches it via `use super::*`'s glob (bedrock's own tests, not
-// moved — bedrock is not yet an extracted dialect).
-#[cfg(test)]
-use crate::ir::IrUsage;
 // Consumed via `use super::*` by the proto test modules only, since the dialect that used them in
 // production moved out with the anthropic extraction.
 #[cfg(test)]
@@ -236,7 +231,7 @@ pub const BASE62_REJECT_THRESHOLD: u8 = 248;
 /// because BOTH `proxy engine` (SSE/forward abort path) and the Bedrock-eventstream reassembler in this
 /// module emit it, and `proxy engine → proto` is the only legal dependency direction. Single source of
 /// truth so the abort text a client sees is identical on every framing.
-pub(crate) const STREAM_ABORT_DETAIL: &str = "The response stream was interrupted.";
+pub const STREAM_ABORT_DETAIL: &str = "The response stream was interrupted.";
 
 /// THE RESIDUAL ARM of the ingress resolver: which LLM wire dialect a path names, from its shape
 /// alone. `None` when it names none.
@@ -1335,18 +1330,26 @@ impl Protocol {
         Self::new(PROTO_GEMINI, GeminiReader, GeminiWriter)
     }
 
-    /// Construct an OpenAI Responses protocol instance.
+    /// Construct an OpenAI Responses protocol instance — TEST FIXTURE SHIM, same rationale as
+    /// [`Protocol::anthropic`]: the dialect is a module of the LLM plugin crate (`busbar-llm`);
+    /// production resolves it through the registry after the composition root installs its
+    /// declaration.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn responses() -> Self {
         Self::new(PROTO_RESPONSES, ResponsesReader, ResponsesWriter)
     }
 
-    /// Construct a Bedrock protocol instance.
-    pub(crate) fn bedrock() -> Self {
+    /// Construct a Bedrock protocol instance — TEST FIXTURE SHIM, same rationale as
+    /// [`Protocol::anthropic`]: the dialect is a module of the LLM plugin crate (`busbar-llm`).
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn bedrock() -> Self {
         Self::new(PROTO_BEDROCK, BedrockReader, BedrockWriter)
     }
 
-    /// Construct a Cohere (v2 chat) protocol instance.
-    pub(crate) fn cohere() -> Self {
+    /// Construct a Cohere (v2 chat) protocol instance — TEST FIXTURE SHIM, same rationale as
+    /// [`Protocol::anthropic`]: the dialect is a module of the LLM plugin crate (`busbar-llm`).
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn cohere() -> Self {
         Self::new(PROTO_COHERE, CohereReader, CohereWriter)
     }
 }
@@ -1898,8 +1901,18 @@ fn write_sse_frame(out: &mut Vec<u8>, event_type: &str, data: &serde_json::Value
 #[cfg(any(test, feature = "test-support"))]
 #[path = "../../../busbar-llm/src/anthropic/mod.rs"]
 pub mod anthropic;
-pub(crate) mod bedrock;
-pub(crate) mod cohere;
+/// THE EXTRACTED BEDROCK DIALECT, compiled back in for TEST BUILDS ONLY. Sources live in
+/// `crates/busbar-llm/src/bedrock`; see the `mod anthropic` doc above — same mechanism, same crate,
+/// a different dialect module of it.
+#[cfg(any(test, feature = "test-support"))]
+#[path = "../../../busbar-llm/src/bedrock/mod.rs"]
+pub mod bedrock;
+/// THE EXTRACTED COHERE DIALECT, compiled back in for TEST BUILDS ONLY. Sources live in
+/// `crates/busbar-llm/src/cohere`; see the `mod anthropic` doc above — same mechanism, same crate,
+/// a different dialect module of it.
+#[cfg(any(test, feature = "test-support"))]
+#[path = "../../../busbar-llm/src/cohere/mod.rs"]
+pub mod cohere;
 /// Wire-dialect detection: `protocol_id(path, headers)` sniffs which protocol a request speaks.
 pub(crate) mod detect;
 /// THE EXTRACTED GEMINI DIALECT, compiled back in for TEST BUILDS ONLY. Sources live in
@@ -1915,6 +1928,11 @@ pub mod gemini;
 #[path = "../../../busbar-llm/src/openai_chat/mod.rs"]
 pub mod openai_chat;
 pub mod openai_family;
+/// THE EXTRACTED OPENAI RESPONSES DIALECT, compiled back in for TEST BUILDS ONLY. Sources live in
+/// `crates/busbar-llm/src/openai_responses`; see the `mod anthropic` doc above — same mechanism,
+/// same crate, a different dialect module of it.
+#[cfg(any(test, feature = "test-support"))]
+#[path = "../../../busbar-llm/src/openai_responses/mod.rs"]
 pub mod openai_responses;
 /// THE REGISTRY: `ProtocolDecl`, the built-in declaration table, and the by-name lookup that
 /// replaced `protocol_for`'s match.
@@ -1933,7 +1951,11 @@ use anthropic::{AnthropicReader, AnthropicWriter};
 // test-gated import — NOT a re-export.
 #[cfg(test)]
 use anthropic::synth_anthropic_request_id;
+// The extracted Bedrock and Cohere codec structs, in scope for the same test surface that predates
+// the extraction. Present only in the builds that compile the dialects back in.
+#[cfg(any(test, feature = "test-support"))]
 use bedrock::{BedrockReader, BedrockWriter};
+#[cfg(any(test, feature = "test-support"))]
 use cohere::{CohereReader, CohereWriter};
 // The extracted Gemini dialect's codec structs, in scope for the same test surface that predates
 // the extraction. Present only in the builds that compile the dialect back in.
@@ -1950,6 +1972,9 @@ use gemini::GeminiJsonArrayFramer;
 // that gate for a sibling dialect crate's test build.
 #[cfg(any(test, feature = "test-support"))]
 use openai_chat::{OpenAiReader, OpenAiWriter};
+// The extracted OpenAI Responses codec structs, in scope for the same test surface that predates
+// the extraction. Present only in the builds that compile the dialect back in.
+#[cfg(any(test, feature = "test-support"))]
 use openai_responses::{ResponsesReader, ResponsesWriter};
 // The declaration vocabulary, re-exported at `crate::proto::…` so every protocol module (each of
 // which does `use super::*`) can state its `DECL` without importing the registry by path.
@@ -1961,9 +1986,9 @@ pub use registry::{decl_for, IngressAuth, ProtocolDecl};
 pub const PROTO_ANTHROPIC: &str = "anthropic";
 pub const PROTO_OPENAI: &str = "openai";
 pub const PROTO_GEMINI: &str = "gemini";
-pub(crate) const PROTO_BEDROCK: &str = "bedrock";
-pub(crate) const PROTO_COHERE: &str = "cohere";
-pub(crate) const PROTO_RESPONSES: &str = "responses";
+pub const PROTO_BEDROCK: &str = "bedrock";
+pub const PROTO_COHERE: &str = "cohere";
+pub const PROTO_RESPONSES: &str = "responses";
 
 /// The TOP-LEVEL body keys the six LLM dialects point-read on the pre-materialized path: `model`
 /// (ingress model resolution + the pristine model-rewrite check), `stream` (chat's `wants_stream`),

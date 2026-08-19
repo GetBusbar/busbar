@@ -6,7 +6,7 @@ use super::*;
 /// disappeared block. It must now degrade to an empty placeholder AND warn, naming the type.
 #[test]
 fn responses_input_file_degrades_with_warn_not_silent_drop() {
-    use crate::test_support::warn_capture::WarnCapture;
+    use busbar_core::test_support::warn_capture::WarnCapture;
     use tracing_subscriber::layer::SubscriberExt as _;
 
     let body = serde_json::json!({
@@ -43,9 +43,9 @@ fn responses_input_file_degrades_with_warn_not_silent_drop() {
     assert!(
         matches!(
             &ir.messages[0].content[1],
-            crate::ir::IrBlock::Media {
-                kind: crate::ir::IrMediaKind::Document,
-                source: crate::ir::IrImageSource::Vendor { value, .. },
+            busbar_core::ir::IrBlock::Media {
+                kind: busbar_core::ir::IrMediaKind::Document,
+                source: busbar_core::ir::IrImageSource::Vendor { value, .. },
                 ..
             } if value["file_id"] == "file-x"
         ),
@@ -86,7 +86,7 @@ fn responses_input_file_degrades_with_warn_not_silent_drop() {
 /// surface DOES model, still passes through.
 #[test]
 fn write_request_drops_top_k_with_warn() {
-    let mk = |top_k: Option<u32>| crate::ir::IrRequest {
+    let mk = |top_k: Option<u32>| busbar_core::ir::IrRequest {
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -94,9 +94,9 @@ fn write_request_drops_top_k_with_warn() {
         user: None,
         parallel_tool_calls: None,
         system: vec![],
-        messages: vec![crate::ir::IrMessage {
-            role: crate::ir::IrRole::User,
-            content: vec![crate::ir::IrBlock::Text {
+        messages: vec![busbar_core::ir::IrMessage {
+            role: busbar_core::ir::IrRole::User,
+            content: vec![busbar_core::ir::IrBlock::Text {
                 text: "hi".to_string(),
                 cache_control: None,
                 citations: Vec::new(),
@@ -135,30 +135,30 @@ fn write_request_drops_top_k_with_warn() {
 
 #[test]
 fn test_write_request() {
-    let ir = crate::ir::IrRequest {
+    let ir = busbar_core::ir::IrRequest {
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
         top_logprobs: None,
         user: None,
         parallel_tool_calls: None,
-        system: vec![crate::ir::IrBlock::Text {
+        system: vec![busbar_core::ir::IrBlock::Text {
             text: "You are helpful.".to_string(),
             cache_control: None,
             citations: Vec::new(),
         }],
         messages: vec![
-            crate::ir::IrMessage {
-                role: crate::ir::IrRole::User,
-                content: vec![crate::ir::IrBlock::Text {
+            busbar_core::ir::IrMessage {
+                role: busbar_core::ir::IrRole::User,
+                content: vec![busbar_core::ir::IrBlock::Text {
                     text: "hi".to_string(),
                     cache_control: None,
                     citations: Vec::new(),
                 }],
             },
-            crate::ir::IrMessage {
-                role: crate::ir::IrRole::Assistant,
-                content: vec![crate::ir::IrBlock::ToolUse {
+            busbar_core::ir::IrMessage {
+                role: busbar_core::ir::IrRole::Assistant,
+                content: vec![busbar_core::ir::IrBlock::ToolUse {
                     thought_signature: None,
                     id: "fc_1".to_string(),
                     name: "get_weather".to_string(),
@@ -166,11 +166,11 @@ fn test_write_request() {
                     cache_control: None,
                 }],
             },
-            crate::ir::IrMessage {
-                role: crate::ir::IrRole::Tool,
-                content: vec![crate::ir::IrBlock::ToolResult {
+            busbar_core::ir::IrMessage {
+                role: busbar_core::ir::IrRole::Tool,
+                content: vec![busbar_core::ir::IrBlock::ToolResult {
                     tool_use_id: "fc_1".to_string(),
-                    content: vec![crate::ir::IrBlock::Text {
+                    content: vec![busbar_core::ir::IrBlock::Text {
                         text: "sunny".to_string(),
                         cache_control: None,
                         citations: Vec::new(),
@@ -180,7 +180,7 @@ fn test_write_request() {
                 }],
             },
         ],
-        tools: vec![crate::ir::IrTool {
+        tools: vec![busbar_core::ir::IrTool {
             name: "get_weather".to_string(),
             description: Some("Get weather for a location".to_string()),
             input_schema: serde_json::json!({
@@ -311,7 +311,7 @@ fn test_read_request() {
         .expect("read_request should succeed");
 
     assert_eq!(ir.system.len(), 1);
-    if let crate::ir::IrBlock::Text { text, .. } = &ir.system[0] {
+    if let busbar_core::ir::IrBlock::Text { text, .. } = &ir.system[0] {
         assert_eq!(text, "You are helpful.");
     } else {
         panic!("system should be Text block");
@@ -320,8 +320,8 @@ fn test_read_request() {
     // 2 role/content messages + function_call -> assistant + function_call_output -> tool
     assert_eq!(ir.messages.len(), 4);
 
-    assert_eq!(ir.messages[0].role, crate::ir::IrRole::User);
-    if let crate::ir::IrBlock::Text { text, .. } = &ir.messages[0].content[0] {
+    assert_eq!(ir.messages[0].role, busbar_core::ir::IrRole::User);
+    if let busbar_core::ir::IrBlock::Text { text, .. } = &ir.messages[0].content[0] {
         assert_eq!(text, "What's the weather?");
     } else {
         panic!("first message should be Text block");
@@ -363,59 +363,64 @@ fn test_read_request_bare_string_content_survives() {
     // All four turns must survive (old code dropped every one).
     assert_eq!(ir.messages.len(), 4, "no turn may be dropped");
 
-    let expect_text = |msg: &crate::ir::IrMessage, role: crate::ir::IrRole, text: &str| {
-        assert_eq!(msg.role, role);
-        assert_eq!(msg.content.len(), 1);
-        match &msg.content[0] {
-            crate::ir::IrBlock::Text { text: t, .. } => assert_eq!(t, text),
-            other => panic!("expected Text block, got {other:?}"),
-        }
-    };
+    let expect_text =
+        |msg: &busbar_core::ir::IrMessage, role: busbar_core::ir::IrRole, text: &str| {
+            assert_eq!(msg.role, role);
+            assert_eq!(msg.content.len(), 1);
+            match &msg.content[0] {
+                busbar_core::ir::IrBlock::Text { text: t, .. } => assert_eq!(t, text),
+                other => panic!("expected Text block, got {other:?}"),
+            }
+        };
 
-    expect_text(&ir.messages[0], crate::ir::IrRole::User, "hello from typed");
+    expect_text(
+        &ir.messages[0],
+        busbar_core::ir::IrRole::User,
+        "hello from typed",
+    );
     expect_text(
         &ir.messages[1],
-        crate::ir::IrRole::Assistant,
+        busbar_core::ir::IrRole::Assistant,
         "typed assistant reply",
     );
     expect_text(
         &ir.messages[2],
-        crate::ir::IrRole::User,
+        busbar_core::ir::IrRole::User,
         "hello from untyped",
     );
     expect_text(
         &ir.messages[3],
-        crate::ir::IrRole::Assistant,
+        busbar_core::ir::IrRole::Assistant,
         "untyped assistant reply",
     );
 }
 
 #[test]
 fn test_roundtrip_identity() {
-    let ir = crate::ir::IrRequest {
+    let ir = busbar_core::ir::IrRequest {
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
         top_logprobs: None,
         user: None,
         parallel_tool_calls: None,
-        system: vec![crate::ir::IrBlock::Text {
+        system: vec![busbar_core::ir::IrBlock::Text {
             text: "You are helpful.".to_string(),
             cache_control: None,
             citations: Vec::new(),
         }],
         messages: vec![
-            crate::ir::IrMessage {
-                role: crate::ir::IrRole::User,
-                content: vec![crate::ir::IrBlock::Text {
+            busbar_core::ir::IrMessage {
+                role: busbar_core::ir::IrRole::User,
+                content: vec![busbar_core::ir::IrBlock::Text {
                     text: "Hello!".to_string(),
                     cache_control: None,
                     citations: Vec::new(),
                 }],
             },
-            crate::ir::IrMessage {
-                role: crate::ir::IrRole::Assistant,
-                content: vec![crate::ir::IrBlock::Text {
+            busbar_core::ir::IrMessage {
+                role: busbar_core::ir::IrRole::Assistant,
+                content: vec![busbar_core::ir::IrBlock::Text {
                     text: "Hi there!".to_string(),
                     cache_control: None,
                     citations: Vec::new(),
@@ -468,7 +473,7 @@ fn test_temperature_fidelity() {
 
 #[test]
 fn test_auth_headers() {
-    let headers = crate::proto::bearer_auth_headers("responses", "sk-test");
+    let headers = busbar_core::proto::bearer_auth_headers("responses", "sk-test");
 
     assert_eq!(headers.len(), 1);
     assert_eq!(headers[0].0.as_str(), "authorization");
@@ -480,7 +485,7 @@ fn test_auth_headers() {
 /// `authorization` value (a syntactically invalid header AND a fingerprinting tell). No panic.
 #[test]
 fn auth_headers_invalid_key_omits_header_no_panic() {
-    let headers = crate::proto::bearer_auth_headers("responses", "sk-bad\nkey");
+    let headers = busbar_core::proto::bearer_auth_headers("responses", "sk-bad\nkey");
     assert!(
         headers.is_empty(),
         "an invalid key must omit the auth header, not emit an empty value"
@@ -516,13 +521,13 @@ fn test_read_response_decode() {
 
     assert_eq!(resp.content.len(), 2);
     match &resp.content[0] {
-        crate::ir::IrBlock::Text { text, .. } => {
+        busbar_core::ir::IrBlock::Text { text, .. } => {
             assert_eq!(text, "The weather in SF is sunny.")
         }
         _ => panic!("first block should be Text"),
     }
     match &resp.content[1] {
-        crate::ir::IrBlock::ToolUse {
+        busbar_core::ir::IrBlock::ToolUse {
             id, name, input, ..
         } => {
             assert_eq!(id, "fc_1");
@@ -532,7 +537,10 @@ fn test_read_response_decode() {
         _ => panic!("second block should be ToolUse"),
     }
 
-    assert_eq!(resp.stop_reason, Some(crate::ir::IrStopReason::ToolUse));
+    assert_eq!(
+        resp.stop_reason,
+        Some(busbar_core::ir::IrStopReason::ToolUse)
+    );
     assert_eq!(resp.usage.input_tokens, 50);
     assert_eq!(resp.usage.output_tokens, 25);
 }
@@ -634,27 +642,27 @@ fn test_write_response_roundtrip_text_only() {
 /// `output_item.done` emits, or a typed SDK reading `item.id` sees a missing field.
 #[test]
 fn test_write_response_function_call_item_has_native_id() {
-    let resp = crate::ir::IrResponse {
+    let resp = busbar_core::ir::IrResponse {
         logprobs: Vec::new(),
-        role: crate::ir::IrRole::Assistant,
+        role: busbar_core::ir::IrRole::Assistant,
         id: Some("resp_x".to_string()),
         model: Some("gpt-4o".to_string()),
         created: Some(1_700_000_000),
-        content: vec![crate::ir::IrBlock::ToolUse {
+        content: vec![busbar_core::ir::IrBlock::ToolUse {
             thought_signature: None,
             id: "call_abc".to_string(),
             name: "get_weather".to_string(),
             input: serde_json::json!({"city": "SF"}),
             cache_control: None,
         }],
-        stop_reason: Some(crate::ir::IrStopReason::ToolUse),
+        stop_reason: Some(busbar_core::ir::IrStopReason::ToolUse),
         stop_sequence: None,
-        usage: crate::ir::IrUsage {
+        usage: busbar_core::ir::IrUsage {
             input_tokens: 1,
             output_tokens: 1,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
-            detail: crate::ir::IrUsageDetail::default(),
+            detail: busbar_core::ir::IrUsageDetail::default(),
         },
         system_fingerprint: None,
     };
@@ -708,13 +716,13 @@ fn test_read_response_incomplete_with_function_call_keeps_max_tokens() {
     assert!(
         resp.content
             .iter()
-            .any(|b| matches!(b, crate::ir::IrBlock::ToolUse { .. })),
+            .any(|b| matches!(b, busbar_core::ir::IrBlock::ToolUse { .. })),
         "the partial function_call must still be present as a ToolUse block"
     );
     // ...but the truncation reason must NOT have been clobbered to tool_use.
     assert_eq!(
         resp.stop_reason,
-        Some(crate::ir::IrStopReason::MaxTokens),
+        Some(busbar_core::ir::IrStopReason::MaxTokens),
         "an incomplete (max_output_tokens) response must keep stop_reason=max_tokens, not be \
              promoted to tool_use just because a partial function_call survived"
     );
@@ -752,7 +760,7 @@ fn read_response_refusal_part_survives_and_promotes_stop_reason() {
     assert!(
         resp.content.iter().any(|b| matches!(
             b,
-            crate::ir::IrBlock::Text { text, .. } if text == "I can't help with that."
+            busbar_core::ir::IrBlock::Text { text, .. } if text == "I can't help with that."
         )),
         "the refusal text must survive as assistant content, not be silently dropped: {:?}",
         resp.content
@@ -760,7 +768,7 @@ fn read_response_refusal_part_survives_and_promotes_stop_reason() {
     // The completed status was promoted to the typed Refusal stop_reason.
     assert_eq!(
         resp.stop_reason,
-        Some(crate::ir::IrStopReason::Refusal),
+        Some(busbar_core::ir::IrStopReason::Refusal),
         "a completed response carrying a refusal part must surface stop_reason=refusal"
     );
 }
@@ -772,34 +780,34 @@ fn read_response_refusal_part_survives_and_promotes_stop_reason() {
 /// `response.output[]` saw the two paths disagree. Order must now follow the blocks: tool, then text.
 #[test]
 fn test_write_response_preserves_text_after_tool_order() {
-    let resp = crate::ir::IrResponse {
+    let resp = busbar_core::ir::IrResponse {
         logprobs: Vec::new(),
-        role: crate::ir::IrRole::Assistant,
+        role: busbar_core::ir::IrRole::Assistant,
         id: Some("resp_order".to_string()),
         model: Some("gpt-4o".to_string()),
         created: Some(1_700_000_000),
         content: vec![
-            crate::ir::IrBlock::ToolUse {
+            busbar_core::ir::IrBlock::ToolUse {
                 thought_signature: None,
                 id: "call_1".to_string(),
                 name: "get_weather".to_string(),
                 input: serde_json::json!({"city": "SF"}),
                 cache_control: None,
             },
-            crate::ir::IrBlock::Text {
+            busbar_core::ir::IrBlock::Text {
                 text: "Here is the weather.".to_string(),
                 cache_control: None,
                 citations: Vec::new(),
             },
         ],
-        stop_reason: Some(crate::ir::IrStopReason::ToolUse),
+        stop_reason: Some(busbar_core::ir::IrStopReason::ToolUse),
         stop_sequence: None,
-        usage: crate::ir::IrUsage {
+        usage: busbar_core::ir::IrUsage {
             input_tokens: 1,
             output_tokens: 1,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
-            detail: crate::ir::IrUsageDetail::default(),
+            detail: busbar_core::ir::IrUsageDetail::default(),
         },
         system_fingerprint: None,
     };
@@ -927,7 +935,7 @@ fn test_same_protocol_roundtrip_preserves_identity() {
 /// passthrough.
 #[test]
 fn test_stream_message_start_captures_identity() {
-    let mut state = crate::ir::StreamDecodeState::default();
+    let mut state = busbar_core::ir::StreamDecodeState::default();
     let events = reader_read_response_events(
         EVT_RESPONSE_CREATED,
         &serde_json::json!({
@@ -943,7 +951,7 @@ fn test_stream_message_start_captures_identity() {
     );
     assert_eq!(events.len(), 1);
     match &events[0] {
-        crate::ir::IrStreamEvent::MessageStart {
+        busbar_core::ir::IrStreamEvent::MessageStart {
             id, created, model, ..
         } => {
             assert_eq!(id.as_deref(), Some("resp_streamid"));
@@ -960,21 +968,21 @@ fn test_stream_message_start_captures_identity() {
 #[test]
 fn test_cross_protocol_write_synthesizes_valid_id() {
     let writer = ResponsesWriter;
-    let make_ir = || crate::ir::IrResponse {
+    let make_ir = || busbar_core::ir::IrResponse {
         logprobs: Vec::new(),
-        role: crate::ir::IrRole::Assistant,
-        content: vec![crate::ir::IrBlock::Text {
+        role: busbar_core::ir::IrRole::Assistant,
+        content: vec![busbar_core::ir::IrBlock::Text {
             text: "answer".to_string(),
             cache_control: None,
             citations: Vec::new(),
         }],
-        stop_reason: Some(crate::ir::IrStopReason::EndTurn),
-        usage: crate::ir::IrUsage {
+        stop_reason: Some(busbar_core::ir::IrStopReason::EndTurn),
+        usage: busbar_core::ir::IrUsage {
             input_tokens: 1,
             output_tokens: 1,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
-            detail: crate::ir::IrUsageDetail::default(),
+            detail: busbar_core::ir::IrUsageDetail::default(),
         },
         model: None,
         id: None,
@@ -1004,7 +1012,7 @@ fn test_cross_protocol_write_synthesizes_valid_id() {
 
 #[test]
 fn test_stream_fanout() {
-    let mut state = crate::ir::StreamDecodeState::default();
+    let mut state = busbar_core::ir::StreamDecodeState::default();
 
     // response.created → MessageStart only (first time)
     let events1 = reader_read_response_events(
@@ -1015,7 +1023,7 @@ fn test_stream_fanout() {
     assert_eq!(events1.len(), 1);
     assert!(matches!(
         events1[0],
-        crate::ir::IrStreamEvent::MessageStart { .. }
+        busbar_core::ir::IrStreamEvent::MessageStart { .. }
     ));
     // response.output_item.added for function_call → BlockStart
     let events2 = reader_read_response_events(
@@ -1029,7 +1037,7 @@ fn test_stream_fanout() {
     assert_eq!(events2.len(), 1);
     assert!(matches!(
         events2[0],
-        crate::ir::IrStreamEvent::BlockStart { .. }
+        busbar_core::ir::IrStreamEvent::BlockStart { .. }
     ));
     // response.output_text.delta ×3 → BlockStart (lazy) + BlockDelta ×3
     let delta_json = |d: &str| serde_json::json!({"output_index": 0, "delta": d});
@@ -1037,17 +1045,17 @@ fn test_stream_fanout() {
     assert_eq!(events3a.len(), 2); // BlockStart + BlockDelta
     assert!(matches!(
         events3a[0],
-        crate::ir::IrStreamEvent::BlockStart { .. }
+        busbar_core::ir::IrStreamEvent::BlockStart { .. }
     ));
     assert!(matches!(
         events3a[1],
-        crate::ir::IrStreamEvent::BlockDelta { .. }
+        busbar_core::ir::IrStreamEvent::BlockDelta { .. }
     ));
     let events3b = reader_read_response_events(EVT_OUTPUT_TEXT_DELTA, &delta_json("i"), &mut state);
     assert_eq!(events3b.len(), 1); // BlockDelta only
     assert!(matches!(
         events3b[0],
-        crate::ir::IrStreamEvent::BlockDelta { .. }
+        busbar_core::ir::IrStreamEvent::BlockDelta { .. }
     ));
     let events3c = reader_read_response_events(EVT_OUTPUT_TEXT_DELTA, &delta_json("!"), &mut state);
     assert_eq!(events3c.len(), 1); // BlockDelta only
@@ -1061,7 +1069,7 @@ fn test_stream_fanout() {
     assert_eq!(events4.len(), 1);
     assert!(matches!(
         events4[0],
-        crate::ir::IrStreamEvent::BlockStop { .. }
+        busbar_core::ir::IrStreamEvent::BlockStop { .. }
     ));
     // response.completed with usage. The function_call block opened at index 1 (events2) was
     // never closed by an `output_item.done`, so it is STILL OPEN at the terminal event. The
@@ -1076,15 +1084,21 @@ fn test_stream_fanout() {
     let events5 = reader_read_response_events(EVT_RESPONSE_COMPLETED, &completed_json, &mut state);
     assert_eq!(events5.len(), 3);
     assert!(
-        matches!(events5[0], crate::ir::IrStreamEvent::BlockStop { index: 1 }),
+        matches!(
+            events5[0],
+            busbar_core::ir::IrStreamEvent::BlockStop { index: 1 }
+        ),
         "still-open tool block at index 1 must be closed before MessageStop, got {:?}",
         events5[0]
     );
     assert!(matches!(
         events5[1],
-        crate::ir::IrStreamEvent::MessageDelta { .. }
+        busbar_core::ir::IrStreamEvent::MessageDelta { .. }
     ));
-    assert!(matches!(events5[2], crate::ir::IrStreamEvent::MessageStop));
+    assert!(matches!(
+        events5[2],
+        busbar_core::ir::IrStreamEvent::MessageStop
+    ));
     // response.in_progress should not emit MessageStart again (state.started=true)
     let events6 = reader_read_response_events(
         "response.in_progress",
@@ -1109,8 +1123,8 @@ fn test_stream_fanout() {
 /// refusal text as a Text block and promote stop_reason to Refusal (mirroring the non-stream path).
 #[test]
 fn read_response_events_streamed_refusal_surfaces_text_and_refusal_stop_reason() {
-    use crate::ir::{IrDelta, IrStopReason, IrStreamEvent};
-    let mut state = crate::ir::StreamDecodeState::default();
+    use busbar_core::ir::{IrDelta, IrStopReason, IrStreamEvent};
+    let mut state = busbar_core::ir::StreamDecodeState::default();
     // No output_text.delta is emitted for a refusal — only the terminal completed frame.
     let events = reader_read_response_events(
         EVT_RESPONSE_COMPLETED,
@@ -1168,24 +1182,24 @@ fn test_write_response_event_blockdelta() {
     let writer = ResponsesWriter;
 
     // BlockDelta TextDelta("hi") → ("response.output_text.delta", delta=="hi")
-    let ev1 = crate::ir::IrStreamEvent::BlockDelta {
+    let ev1 = busbar_core::ir::IrStreamEvent::BlockDelta {
         index: 0,
-        delta: crate::ir::IrDelta::TextDelta("hi".to_string()),
+        delta: busbar_core::ir::IrDelta::TextDelta("hi".to_string()),
     };
     let (etype1, payload1) = writer.write_response_event(&ev1).expect("should emit");
     assert_eq!(etype1, "response.output_text.delta"); // golden wire-contract literal (kept bare on purpose)
     assert_eq!(payload1.get("delta").and_then(|d| d.as_str()), Some("hi"));
 
     // MessageDelta{end_turn} → ("response.completed", status maps to completed)
-    let ev2 = crate::ir::IrStreamEvent::MessageDelta {
-        stop_reason: Some(crate::ir::IrStopReason::EndTurn),
+    let ev2 = busbar_core::ir::IrStreamEvent::MessageDelta {
+        stop_reason: Some(busbar_core::ir::IrStopReason::EndTurn),
         stop_sequence: None,
-        usage: crate::ir::IrUsage {
+        usage: busbar_core::ir::IrUsage {
             input_tokens: 10,
             output_tokens: 5,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
-            detail: crate::ir::IrUsageDetail::default(),
+            detail: busbar_core::ir::IrUsageDetail::default(),
         },
     };
     let (etype2, payload2) = writer.write_response_event(&ev2).expect("should emit");
@@ -1202,8 +1216,8 @@ fn test_write_response_event_blockdelta() {
 fn reader_read_response_events(
     event_type: &str,
     data: &serde_json::Value,
-    state: &mut crate::ir::StreamDecodeState,
-) -> Vec<crate::ir::IrStreamEvent> {
+    state: &mut busbar_core::ir::StreamDecodeState,
+) -> Vec<busbar_core::ir::IrStreamEvent> {
     let reader = ResponsesReader;
     reader.read_response_events(event_type, data, state)
 }
@@ -1213,7 +1227,7 @@ fn reader_read_response_events(
 /// wire index, producing an unmatched open/write pair for downstream index-keyed consumers.
 #[test]
 fn test_text_delta_index_pairing_nonzero() {
-    let mut state = crate::ir::StreamDecodeState::default();
+    let mut state = busbar_core::ir::StreamDecodeState::default();
     let events = reader_read_response_events(
         EVT_OUTPUT_TEXT_DELTA,
         &serde_json::json!({"output_index": 2, "delta": "hello"}),
@@ -1221,11 +1235,11 @@ fn test_text_delta_index_pairing_nonzero() {
     );
     assert_eq!(events.len(), 2, "expected lazy BlockStart + BlockDelta");
     let start_idx = match &events[0] {
-        crate::ir::IrStreamEvent::BlockStart { index, .. } => *index,
+        busbar_core::ir::IrStreamEvent::BlockStart { index, .. } => *index,
         other => panic!("first event should be BlockStart, got {other:?}"),
     };
     let delta_idx = match &events[1] {
-        crate::ir::IrStreamEvent::BlockDelta { index, .. } => *index,
+        busbar_core::ir::IrStreamEvent::BlockDelta { index, .. } => *index,
         other => panic!("second event should be BlockDelta, got {other:?}"),
     };
     assert_eq!(start_idx, 2, "BlockStart must use the wire output_index");
@@ -1238,7 +1252,7 @@ fn test_text_delta_index_pairing_nonzero() {
 /// TextDelta for every keepalive after the block opened.
 #[test]
 fn test_empty_delta_keepalive_emits_nothing() {
-    let mut state = crate::ir::StreamDecodeState::default();
+    let mut state = busbar_core::ir::StreamDecodeState::default();
     // Open a block with a real delta first.
     let opened = reader_read_response_events(
         EVT_OUTPUT_TEXT_DELTA,
@@ -1258,7 +1272,7 @@ fn test_empty_delta_keepalive_emits_nothing() {
         "empty keepalive delta must not emit events, got {keepalive:?}"
     );
     // And an empty delta before any block is open also emits nothing.
-    let mut fresh = crate::ir::StreamDecodeState::default();
+    let mut fresh = busbar_core::ir::StreamDecodeState::default();
     let pre = reader_read_response_events(
         EVT_OUTPUT_TEXT_DELTA,
         &serde_json::json!({"output_index": 0, "delta": ""}),
@@ -1272,7 +1286,7 @@ fn test_empty_delta_keepalive_emits_nothing() {
 /// lazily re-open its own block instead of silently reusing stale open state.
 #[test]
 fn test_done_clears_text_block_open() {
-    let mut state = crate::ir::StreamDecodeState::default();
+    let mut state = busbar_core::ir::StreamDecodeState::default();
     let _ = reader_read_response_events(
         EVT_OUTPUT_TEXT_DELTA,
         &serde_json::json!({"output_index": 0, "delta": "a"}),
@@ -1287,7 +1301,7 @@ fn test_done_clears_text_block_open() {
     assert_eq!(done.len(), 1);
     assert!(matches!(
         done[0],
-        crate::ir::IrStreamEvent::BlockStop { .. }
+        busbar_core::ir::IrStreamEvent::BlockStop { .. }
     ));
     assert!(
         !state.open_tools.contains(&TEXT_INDEX_KEY_OFFSET),
@@ -1302,7 +1316,7 @@ fn test_done_clears_text_block_open() {
     assert_eq!(reopen.len(), 2);
     assert!(matches!(
         reopen[0],
-        crate::ir::IrStreamEvent::BlockStart { index: 1, .. }
+        busbar_core::ir::IrStreamEvent::BlockStart { index: 1, .. }
     ));
 }
 
@@ -1313,7 +1327,7 @@ fn test_done_clears_text_block_open() {
 /// hardcoded `Some("end_turn")` for every bodyless terminal regardless of event_type.
 #[test]
 fn test_bodyless_incomplete_is_not_end_turn() {
-    let mut state = crate::ir::StreamDecodeState::default();
+    let mut state = busbar_core::ir::StreamDecodeState::default();
     let events = reader_read_response_events(
         EVT_RESPONSE_INCOMPLETE,
         // No nested `response` object at all.
@@ -1324,7 +1338,7 @@ fn test_bodyless_incomplete_is_not_end_turn() {
     let delta_stop = events
         .iter()
         .find_map(|e| match e {
-            crate::ir::IrStreamEvent::MessageDelta { stop_reason, .. } => Some(stop_reason),
+            busbar_core::ir::IrStreamEvent::MessageDelta { stop_reason, .. } => Some(stop_reason),
             _ => None,
         })
         .expect("bodyless incomplete must still emit a MessageDelta");
@@ -1335,24 +1349,24 @@ fn test_bodyless_incomplete_is_not_end_turn() {
     assert!(
         events
             .iter()
-            .any(|e| matches!(e, crate::ir::IrStreamEvent::MessageStop)),
+            .any(|e| matches!(e, busbar_core::ir::IrStreamEvent::MessageStop)),
         "stream must still terminate with MessageStop"
     );
 
     // And a bodyless `completed` still maps to end_turn (the only successful terminal).
-    let mut s2 = crate::ir::StreamDecodeState::default();
+    let mut s2 = busbar_core::ir::StreamDecodeState::default();
     let completed =
         reader_read_response_events(EVT_RESPONSE_COMPLETED, &serde_json::json!({}), &mut s2);
     let completed_reason = completed
         .iter()
         .find_map(|e| match e {
-            crate::ir::IrStreamEvent::MessageDelta { stop_reason, .. } => Some(stop_reason),
+            busbar_core::ir::IrStreamEvent::MessageDelta { stop_reason, .. } => Some(stop_reason),
             _ => None,
         })
         .expect("bodyless completed must still emit a MessageDelta");
     assert_eq!(
         *completed_reason,
-        Some(crate::ir::IrStopReason::EndTurn),
+        Some(busbar_core::ir::IrStopReason::EndTurn),
         "bodyless completed must map to end_turn"
     );
 }
@@ -1363,7 +1377,7 @@ fn test_stream_completed_with_function_call_is_tool_use_not_end_turn() {
     // non-streaming read_response (which flips a completed end_turn to tool_use when the output
     // carries a function_call). Before the fix the stream said end_turn, so a cross-protocol
     // client never saw the tool-call finish signal on the streaming path.
-    let mut state = crate::ir::StreamDecodeState::default();
+    let mut state = busbar_core::ir::StreamDecodeState::default();
     let events = reader_read_response_events(
         EVT_RESPONSE_COMPLETED,
         &serde_json::json!({
@@ -1380,13 +1394,13 @@ fn test_stream_completed_with_function_call_is_tool_use_not_end_turn() {
     let stop = events
         .iter()
         .find_map(|e| match e {
-            crate::ir::IrStreamEvent::MessageDelta { stop_reason, .. } => Some(stop_reason),
+            busbar_core::ir::IrStreamEvent::MessageDelta { stop_reason, .. } => Some(stop_reason),
             _ => None,
         })
         .expect("terminal MessageDelta");
     assert_eq!(
         *stop,
-        Some(crate::ir::IrStopReason::ToolUse),
+        Some(busbar_core::ir::IrStopReason::ToolUse),
         "a streamed completed response containing a function_call must be tool_use, not end_turn"
     );
 }
@@ -1394,7 +1408,7 @@ fn test_stream_completed_with_function_call_is_tool_use_not_end_turn() {
 #[test]
 fn test_stream_completed_without_function_call_stays_end_turn() {
     // No function_call in the output → still a plain end_turn (the override must not over-fire).
-    let mut state = crate::ir::StreamDecodeState::default();
+    let mut state = busbar_core::ir::StreamDecodeState::default();
     let events = reader_read_response_events(
         EVT_RESPONSE_COMPLETED,
         &serde_json::json!({
@@ -1411,13 +1425,13 @@ fn test_stream_completed_without_function_call_stays_end_turn() {
     let stop = events
         .iter()
         .find_map(|e| match e {
-            crate::ir::IrStreamEvent::MessageDelta { stop_reason, .. } => Some(stop_reason),
+            busbar_core::ir::IrStreamEvent::MessageDelta { stop_reason, .. } => Some(stop_reason),
             _ => None,
         })
         .expect("terminal MessageDelta");
     assert_eq!(
         *stop,
-        Some(crate::ir::IrStopReason::EndTurn),
+        Some(busbar_core::ir::IrStopReason::EndTurn),
         "text-only completed stays end_turn"
     );
 }
@@ -1433,8 +1447,8 @@ fn test_terminal_closes_open_blocks_balanced() {
     // Helper: opens a text block at index 0 and a tool block at index 1, then fires `etype`
     // with `data`, and asserts every BlockStart in the WHOLE stream has a matching BlockStop.
     fn assert_balanced(etype: &str, data: serde_json::Value) {
-        let mut state = crate::ir::StreamDecodeState::default();
-        let mut all: Vec<crate::ir::IrStreamEvent> = Vec::new();
+        let mut state = busbar_core::ir::StreamDecodeState::default();
+        let mut all: Vec<busbar_core::ir::IrStreamEvent> = Vec::new();
         // Open a text block at index 0.
         all.extend(reader_read_response_events(
             EVT_OUTPUT_TEXT_DELTA,
@@ -1469,10 +1483,10 @@ fn test_terminal_closes_open_blocks_balanced() {
         let mut stops: BTreeMap<usize, usize> = BTreeMap::new();
         for ev in &all {
             match ev {
-                crate::ir::IrStreamEvent::BlockStart { index, .. } => {
+                busbar_core::ir::IrStreamEvent::BlockStart { index, .. } => {
                     *starts.entry(*index).or_insert(0) += 1;
                 }
-                crate::ir::IrStreamEvent::BlockStop { index } => {
+                busbar_core::ir::IrStreamEvent::BlockStop { index } => {
                     *stops.entry(*index).or_insert(0) += 1;
                 }
                 _ => {}
@@ -1504,11 +1518,11 @@ fn test_terminal_closes_open_blocks_balanced() {
         // out of order). Verify the last BlockStop comes before MessageStop.
         let msg_stop_pos = all
             .iter()
-            .position(|e| matches!(e, crate::ir::IrStreamEvent::MessageStop))
+            .position(|e| matches!(e, busbar_core::ir::IrStreamEvent::MessageStop))
             .expect("must emit MessageStop");
         let last_block_stop = all
             .iter()
-            .rposition(|e| matches!(e, crate::ir::IrStreamEvent::BlockStop { .. }))
+            .rposition(|e| matches!(e, busbar_core::ir::IrStreamEvent::BlockStop { .. }))
             .expect("must emit BlockStop");
         assert!(
             last_block_stop < msg_stop_pos,
@@ -1543,7 +1557,7 @@ fn test_terminal_closes_open_blocks_balanced() {
 /// Regression: content_part.done is also a terminal-of-part signal and must close its block.
 #[test]
 fn test_content_part_done_closes_block() {
-    let mut state = crate::ir::StreamDecodeState::default();
+    let mut state = busbar_core::ir::StreamDecodeState::default();
     let _ = reader_read_response_events(
         EVT_OUTPUT_TEXT_DELTA,
         &serde_json::json!({"output_index": 0, "delta": "a"}),
@@ -1557,7 +1571,7 @@ fn test_content_part_done_closes_block() {
     assert_eq!(done.len(), 1);
     assert!(matches!(
         done[0],
-        crate::ir::IrStreamEvent::BlockStop { .. }
+        busbar_core::ir::IrStreamEvent::BlockStop { .. }
     ));
     assert!(!state.open_tools.contains(&TEXT_INDEX_KEY_OFFSET));
 }
@@ -1566,35 +1580,44 @@ fn test_content_part_done_closes_block() {
 /// terminate the stream with MessageDelta + MessageStop, not leave it hanging.
 #[test]
 fn test_completed_without_response_object_terminates() {
-    let mut state = crate::ir::StreamDecodeState::default();
+    let mut state = busbar_core::ir::StreamDecodeState::default();
     let events =
         reader_read_response_events(EVT_RESPONSE_COMPLETED, &serde_json::json!({}), &mut state);
     assert_eq!(events.len(), 2, "must emit MessageDelta + MessageStop");
     assert!(matches!(
         events[0],
-        crate::ir::IrStreamEvent::MessageDelta { .. }
+        busbar_core::ir::IrStreamEvent::MessageDelta { .. }
     ));
-    assert!(matches!(events[1], crate::ir::IrStreamEvent::MessageStop));
+    assert!(matches!(
+        events[1],
+        busbar_core::ir::IrStreamEvent::MessageStop
+    ));
 }
 
 /// Regression: same for `response.incomplete` with no nested response object.
 #[test]
 fn test_incomplete_without_response_object_terminates() {
-    let mut state = crate::ir::StreamDecodeState::default();
+    let mut state = busbar_core::ir::StreamDecodeState::default();
     let events =
         reader_read_response_events(EVT_RESPONSE_INCOMPLETE, &serde_json::json!({}), &mut state);
     assert_eq!(events.len(), 2);
     assert!(matches!(
         events[0],
-        crate::ir::IrStreamEvent::MessageDelta { .. }
+        busbar_core::ir::IrStreamEvent::MessageDelta { .. }
     ));
-    assert!(matches!(events[1], crate::ir::IrStreamEvent::MessageStop));
+    assert!(matches!(
+        events[1],
+        busbar_core::ir::IrStreamEvent::MessageStop
+    ));
 
     // response.failed without object still works (pre-existing behavior preserved).
-    let mut s2 = crate::ir::StreamDecodeState::default();
+    let mut s2 = busbar_core::ir::StreamDecodeState::default();
     let failed = reader_read_response_events(EVT_RESPONSE_FAILED, &serde_json::json!({}), &mut s2);
     assert_eq!(failed.len(), 2);
-    assert!(matches!(failed[1], crate::ir::IrStreamEvent::MessageStop));
+    assert!(matches!(
+        failed[1],
+        busbar_core::ir::IrStreamEvent::MessageStop
+    ));
 }
 
 /// Regression: an input item carrying BOTH a `type` and a `role` must be processed exactly once
@@ -1619,9 +1642,9 @@ fn test_typed_item_with_role_not_duplicated() {
     // Exactly one message: the type arm produced the assistant text turn; the role fallback
     // must NOT have added a second turn from the `content` array.
     assert_eq!(ir.messages.len(), 1, "typed+role item must not duplicate");
-    assert_eq!(ir.messages[0].role, crate::ir::IrRole::Assistant);
+    assert_eq!(ir.messages[0].role, busbar_core::ir::IrRole::Assistant);
     match &ir.messages[0].content[0] {
-        crate::ir::IrBlock::Text { text, .. } => assert_eq!(text, "hello"),
+        busbar_core::ir::IrBlock::Text { text, .. } => assert_eq!(text, "hello"),
         other => panic!("expected text turn, got {other:?}"),
     }
 }
@@ -1631,7 +1654,7 @@ fn test_typed_item_with_role_not_duplicated() {
 /// assistant message items with `content: []`.
 #[test]
 fn test_tool_only_assistant_turn_no_empty_message_wrapper() {
-    let ir = crate::ir::IrRequest {
+    let ir = busbar_core::ir::IrRequest {
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -1639,9 +1662,9 @@ fn test_tool_only_assistant_turn_no_empty_message_wrapper() {
         user: None,
         parallel_tool_calls: None,
         system: Vec::new(),
-        messages: vec![crate::ir::IrMessage {
-            role: crate::ir::IrRole::Assistant,
-            content: vec![crate::ir::IrBlock::ToolUse {
+        messages: vec![busbar_core::ir::IrMessage {
+            role: busbar_core::ir::IrRole::Assistant,
+            content: vec![busbar_core::ir::IrBlock::ToolUse {
                 thought_signature: None,
                 id: "fc_1".to_string(),
                 name: "get_weather".to_string(),
@@ -1697,7 +1720,7 @@ fn test_tool_only_assistant_turn_no_empty_message_wrapper() {
 /// the conversation order the assistant produced.
 #[test]
 fn test_assistant_text_then_tool_call_order() {
-    let ir = crate::ir::IrRequest {
+    let ir = busbar_core::ir::IrRequest {
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -1705,15 +1728,15 @@ fn test_assistant_text_then_tool_call_order() {
         user: None,
         parallel_tool_calls: None,
         system: Vec::new(),
-        messages: vec![crate::ir::IrMessage {
-            role: crate::ir::IrRole::Assistant,
+        messages: vec![busbar_core::ir::IrMessage {
+            role: busbar_core::ir::IrRole::Assistant,
             content: vec![
-                crate::ir::IrBlock::Text {
+                busbar_core::ir::IrBlock::Text {
                     text: "Let me check.".to_string(),
                     cache_control: None,
                     citations: Vec::new(),
                 },
-                crate::ir::IrBlock::ToolUse {
+                busbar_core::ir::IrBlock::ToolUse {
                     thought_signature: None,
                     id: "fc_9".to_string(),
                     name: "lookup".to_string(),
@@ -1777,7 +1800,7 @@ fn test_assistant_text_then_tool_call_order() {
 /// would mask the failure from a downstream client.
 #[test]
 fn test_stream_failed_status_emits_error_not_end_turn() {
-    let mut state = crate::ir::StreamDecodeState::default();
+    let mut state = busbar_core::ir::StreamDecodeState::default();
     let events = reader_read_response_events(
         EVT_RESPONSE_FAILED,
         &serde_json::json!({
@@ -1794,17 +1817,20 @@ fn test_stream_failed_status_emits_error_not_end_turn() {
         "expected Error + MessageStop, got {events:?}"
     );
     match &events[0] {
-        crate::ir::IrStreamEvent::Error(err) => {
+        busbar_core::ir::IrStreamEvent::Error(err) => {
             assert_eq!(err.provider_signal.as_deref(), Some("server_error"));
         }
         other => panic!("expected Error, got {other:?}"),
     }
-    assert!(matches!(events[1], crate::ir::IrStreamEvent::MessageStop));
+    assert!(matches!(
+        events[1],
+        busbar_core::ir::IrStreamEvent::MessageStop
+    ));
     // Crucially, no MessageDelta with end_turn was emitted.
     assert!(
         !events
             .iter()
-            .any(|e| matches!(e, crate::ir::IrStreamEvent::MessageDelta { .. })),
+            .any(|e| matches!(e, busbar_core::ir::IrStreamEvent::MessageDelta { .. })),
         "failed stream must not emit a MessageDelta"
     );
 }
@@ -1816,7 +1842,7 @@ fn test_stream_failed_status_emits_error_not_end_turn() {
 /// verbatim. Against the old code (class: ServerError) this asserts Auth and fails.
 #[test]
 fn test_stream_failed_invalid_api_key_classifies_as_auth() {
-    let mut state = crate::ir::StreamDecodeState::default();
+    let mut state = busbar_core::ir::StreamDecodeState::default();
     let events = reader_read_response_events(
         EVT_RESPONSE_FAILED,
         &serde_json::json!({
@@ -1828,7 +1854,7 @@ fn test_stream_failed_invalid_api_key_classifies_as_auth() {
         &mut state,
     );
     match &events[0] {
-        crate::ir::IrStreamEvent::Error(err) => {
+        busbar_core::ir::IrStreamEvent::Error(err) => {
             assert_eq!(
                 err.class,
                 StatusClass::Auth,
@@ -1858,7 +1884,7 @@ fn test_stream_failed_invalid_api_key_classifies_as_auth() {
         StatusClass::RateLimit
     );
     assert_eq!(
-        class_for_response_failed(crate::proxy::PROVIDER_CODE_CONTEXT_LENGTH),
+        class_for_response_failed(busbar_core::proxy::PROVIDER_CODE_CONTEXT_LENGTH),
         StatusClass::ContextLength
     );
     assert_eq!(
@@ -1892,7 +1918,7 @@ fn test_read_response_failed_body_classifies_by_signal() {
             .read_response(&serde_json::json!({
                 "status": STATUS_FAILED,
                 "output": [],
-                "error": {"code": crate::proxy::PROVIDER_CODE_CONTEXT_LENGTH, "type": ERR_TYPE_INVALID_REQUEST}
+                "error": {"code": busbar_core::proxy::PROVIDER_CODE_CONTEXT_LENGTH, "type": ERR_TYPE_INVALID_REQUEST}
             }))
             .expect_err("failed body must surface an IrError");
     assert_eq!(
@@ -1920,7 +1946,7 @@ fn test_read_response_failed_body_classifies_by_signal() {
 /// stop_reason is None (terminal, but no success claim).
 #[test]
 fn test_stream_unknown_status_not_end_turn() {
-    let mut state = crate::ir::StreamDecodeState::default();
+    let mut state = busbar_core::ir::StreamDecodeState::default();
     let events = reader_read_response_events(
         EVT_RESPONSE_COMPLETED,
         &serde_json::json!({"response": {"status": "some_future_status"}}),
@@ -1928,12 +1954,15 @@ fn test_stream_unknown_status_not_end_turn() {
     );
     assert_eq!(events.len(), 2);
     match &events[0] {
-        crate::ir::IrStreamEvent::MessageDelta { stop_reason, .. } => {
+        busbar_core::ir::IrStreamEvent::MessageDelta { stop_reason, .. } => {
             assert_eq!(*stop_reason, None, "unknown status must not claim end_turn");
         }
         other => panic!("expected MessageDelta, got {other:?}"),
     }
-    assert!(matches!(events[1], crate::ir::IrStreamEvent::MessageStop));
+    assert!(matches!(
+        events[1],
+        busbar_core::ir::IrStreamEvent::MessageStop
+    ));
 }
 
 /// Regression: a streaming `incomplete` status with NO `incomplete_details` must NOT decode to
@@ -1943,7 +1972,7 @@ fn test_stream_unknown_status_not_end_turn() {
 #[test]
 fn test_stream_incomplete_without_details_is_none() {
     // Branch 1: no `incomplete_details` at all.
-    let mut state = crate::ir::StreamDecodeState::default();
+    let mut state = busbar_core::ir::StreamDecodeState::default();
     let events = reader_read_response_events(
         EVT_RESPONSE_INCOMPLETE,
         &serde_json::json!({"response": {"status": STATUS_INCOMPLETE}}),
@@ -1951,7 +1980,7 @@ fn test_stream_incomplete_without_details_is_none() {
     );
     assert_eq!(events.len(), 2);
     match &events[0] {
-        crate::ir::IrStreamEvent::MessageDelta { stop_reason, .. } => {
+        busbar_core::ir::IrStreamEvent::MessageDelta { stop_reason, .. } => {
             assert_eq!(
                 *stop_reason, None,
                 "incomplete with no details must not claim end_turn"
@@ -1959,10 +1988,13 @@ fn test_stream_incomplete_without_details_is_none() {
         }
         other => panic!("expected MessageDelta, got {other:?}"),
     }
-    assert!(matches!(events[1], crate::ir::IrStreamEvent::MessageStop));
+    assert!(matches!(
+        events[1],
+        busbar_core::ir::IrStreamEvent::MessageStop
+    ));
 
     // Branch 2: `incomplete_details` present but carries no `reason`.
-    let mut state = crate::ir::StreamDecodeState::default();
+    let mut state = busbar_core::ir::StreamDecodeState::default();
     let events = reader_read_response_events(
         EVT_RESPONSE_INCOMPLETE,
         &serde_json::json!({
@@ -1972,7 +2004,7 @@ fn test_stream_incomplete_without_details_is_none() {
     );
     assert_eq!(events.len(), 2);
     match &events[0] {
-        crate::ir::IrStreamEvent::MessageDelta { stop_reason, .. } => {
+        busbar_core::ir::IrStreamEvent::MessageDelta { stop_reason, .. } => {
             assert_eq!(
                 *stop_reason, None,
                 "incomplete_details without a reason must not claim end_turn"
@@ -1980,10 +2012,13 @@ fn test_stream_incomplete_without_details_is_none() {
         }
         other => panic!("expected MessageDelta, got {other:?}"),
     }
-    assert!(matches!(events[1], crate::ir::IrStreamEvent::MessageStop));
+    assert!(matches!(
+        events[1],
+        busbar_core::ir::IrStreamEvent::MessageStop
+    ));
 
     // Sanity: a known reason still maps (max_output_tokens -> max_tokens).
-    let mut state = crate::ir::StreamDecodeState::default();
+    let mut state = busbar_core::ir::StreamDecodeState::default();
     let events = reader_read_response_events(
         EVT_RESPONSE_INCOMPLETE,
         &serde_json::json!({
@@ -1995,8 +2030,8 @@ fn test_stream_incomplete_without_details_is_none() {
         &mut state,
     );
     match &events[0] {
-        crate::ir::IrStreamEvent::MessageDelta { stop_reason, .. } => {
-            assert_eq!(stop_reason, &Some(crate::ir::IrStopReason::MaxTokens));
+        busbar_core::ir::IrStreamEvent::MessageDelta { stop_reason, .. } => {
+            assert_eq!(stop_reason, &Some(busbar_core::ir::IrStopReason::MaxTokens));
         }
         other => panic!("expected MessageDelta, got {other:?}"),
     }
@@ -2007,15 +2042,15 @@ fn test_stream_incomplete_without_details_is_none() {
 /// Tool-role flat path AND the Assistant-role inline-tool_result path in `write_request`.
 #[test]
 fn write_request_tool_result_multi_text_concatenates_without_separator() {
-    fn text_block(s: &str) -> crate::ir::IrBlock {
-        crate::ir::IrBlock::Text {
+    fn text_block(s: &str) -> busbar_core::ir::IrBlock {
+        busbar_core::ir::IrBlock::Text {
             text: s.to_string(),
             cache_control: None,
             citations: Vec::new(),
         }
     }
     let writer = ResponsesWriter;
-    let multi = || crate::ir::IrBlock::ToolResult {
+    let multi = || busbar_core::ir::IrBlock::ToolResult {
         tool_use_id: "call_1".to_string(),
         content: vec![text_block("AAA"), text_block("BBB")],
         is_error: false,
@@ -2023,7 +2058,7 @@ fn write_request_tool_result_multi_text_concatenates_without_separator() {
     };
 
     // Tool-role path.
-    let req = crate::ir::IrRequest {
+    let req = busbar_core::ir::IrRequest {
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -2031,8 +2066,8 @@ fn write_request_tool_result_multi_text_concatenates_without_separator() {
         user: None,
         parallel_tool_calls: None,
         system: Vec::new(),
-        messages: vec![crate::ir::IrMessage {
-            role: crate::ir::IrRole::Tool,
+        messages: vec![busbar_core::ir::IrMessage {
+            role: busbar_core::ir::IrRole::Tool,
             content: vec![multi()],
         }],
         tools: Vec::new(),
@@ -2062,7 +2097,7 @@ fn write_request_tool_result_multi_text_concatenates_without_separator() {
     );
 
     // Assistant-role inline tool_result path.
-    let req = crate::ir::IrRequest {
+    let req = busbar_core::ir::IrRequest {
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -2070,8 +2105,8 @@ fn write_request_tool_result_multi_text_concatenates_without_separator() {
         user: None,
         parallel_tool_calls: None,
         system: Vec::new(),
-        messages: vec![crate::ir::IrMessage {
-            role: crate::ir::IrRole::Assistant,
+        messages: vec![busbar_core::ir::IrMessage {
+            role: busbar_core::ir::IrRole::Assistant,
             content: vec![multi()],
         }],
         tools: Vec::new(),
@@ -2109,7 +2144,7 @@ fn write_request_tool_result_multi_text_concatenates_without_separator() {
 #[test]
 fn test_write_error_stream_event_full_shape() {
     let writer = ResponsesWriter;
-    let ev = crate::ir::IrStreamEvent::Error(IrError {
+    let ev = busbar_core::ir::IrStreamEvent::Error(IrError {
         class: StatusClass::ServerError,
         provider_signal: Some("boom".to_string()),
         retry_after: None,
@@ -2145,15 +2180,15 @@ fn test_write_error_stream_event_full_shape() {
 fn test_unknown_stop_reason_maps_to_completed() {
     let writer = ResponsesWriter;
     // Streaming MessageDelta path.
-    let ev = crate::ir::IrStreamEvent::MessageDelta {
-        stop_reason: Some(crate::ir::IrStopReason::Refusal),
+    let ev = busbar_core::ir::IrStreamEvent::MessageDelta {
+        stop_reason: Some(busbar_core::ir::IrStopReason::Refusal),
         stop_sequence: None,
-        usage: crate::ir::IrUsage {
+        usage: busbar_core::ir::IrUsage {
             input_tokens: 1,
             output_tokens: 1,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
-            detail: crate::ir::IrUsageDetail::default(),
+            detail: busbar_core::ir::IrUsageDetail::default(),
         },
     };
     let (etype, payload) = writer.write_response_event(&ev).expect("should emit");
@@ -2168,21 +2203,21 @@ fn test_unknown_stop_reason_maps_to_completed() {
     );
 
     // Non-streaming write_response path.
-    let resp = crate::ir::IrResponse {
+    let resp = busbar_core::ir::IrResponse {
         logprobs: Vec::new(),
-        role: crate::ir::IrRole::Assistant,
-        content: vec![crate::ir::IrBlock::Text {
+        role: busbar_core::ir::IrRole::Assistant,
+        content: vec![busbar_core::ir::IrBlock::Text {
             text: "ok".to_string(),
             cache_control: None,
             citations: Vec::new(),
         }],
-        stop_reason: Some(crate::ir::IrStopReason::Refusal),
-        usage: crate::ir::IrUsage {
+        stop_reason: Some(busbar_core::ir::IrStopReason::Refusal),
+        usage: busbar_core::ir::IrUsage {
             input_tokens: 1,
             output_tokens: 1,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
-            detail: crate::ir::IrUsageDetail::default(),
+            detail: busbar_core::ir::IrUsageDetail::default(),
         },
         model: None,
         id: Some("resp_x".to_string()),
@@ -2217,7 +2252,7 @@ fn test_malformed_function_call_args_preserved() {
         .iter()
         .flat_map(|m| &m.content)
         .find_map(|b| match b {
-            crate::ir::IrBlock::ToolUse { input, .. } => Some(input),
+            busbar_core::ir::IrBlock::ToolUse { input, .. } => Some(input),
             _ => None,
         })
         .expect("tool use present");
@@ -2238,7 +2273,7 @@ fn test_malformed_function_call_args_preserved() {
     });
     let resp = reader.read_response(&resp_json).expect("read_response ok");
     match &resp.content[0] {
-        crate::ir::IrBlock::ToolUse { input, .. } => {
+        busbar_core::ir::IrBlock::ToolUse { input, .. } => {
             assert_eq!(input.as_str(), Some("broken]"));
         }
         other => panic!("expected ToolUse, got {other:?}"),
@@ -2265,8 +2300,8 @@ fn test_input_image_base64_payload_preserved() {
     let ir = reader.read_request(&json).expect("read_request ok");
     assert_eq!(ir.messages.len(), 1);
     match &ir.messages[0].content[0] {
-        crate::ir::IrBlock::Image {
-            source: crate::ir::IrImageSource::Base64 { media_type, data },
+        busbar_core::ir::IrBlock::Image {
+            source: busbar_core::ir::IrImageSource::Base64 { media_type, data },
             ..
         } => {
             assert_eq!(media_type, "image/png");
@@ -2278,8 +2313,8 @@ fn test_input_image_base64_payload_preserved() {
     // responses_block path (e.g. a content block nested in a function_call_output).
     let block = serde_json::json!({"type": "input_image", "image_url": url});
     match responses_block(&block).expect("responses_block ok") {
-        crate::ir::IrBlock::Image {
-            source: crate::ir::IrImageSource::Base64 { media_type, data },
+        busbar_core::ir::IrBlock::Image {
+            source: busbar_core::ir::IrImageSource::Base64 { media_type, data },
             ..
         } => {
             assert_eq!(media_type, "image/png");
@@ -2296,7 +2331,7 @@ fn test_input_image_base64_payload_preserved() {
 fn test_input_image_roundtrip_lossless() {
     let payload = "QUJDMTIzKz0=";
     let media_type = "image/jpeg";
-    let ir = crate::ir::IrRequest {
+    let ir = busbar_core::ir::IrRequest {
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -2304,10 +2339,10 @@ fn test_input_image_roundtrip_lossless() {
         user: None,
         parallel_tool_calls: None,
         system: Vec::new(),
-        messages: vec![crate::ir::IrMessage {
-            role: crate::ir::IrRole::User,
-            content: vec![crate::ir::IrBlock::Image {
-                source: crate::ir::IrImageSource::Base64 {
+        messages: vec![busbar_core::ir::IrMessage {
+            role: busbar_core::ir::IrRole::User,
+            content: vec![busbar_core::ir::IrBlock::Image {
+                source: busbar_core::ir::IrImageSource::Base64 {
                     media_type: media_type.to_string(),
                     data: payload.to_string(),
                 },
@@ -2334,9 +2369,9 @@ fn test_input_image_roundtrip_lossless() {
     let json = writer.write_request(&ir);
     let rt = reader.read_request(&json).expect("read round-trip ok");
     match &rt.messages[0].content[0] {
-        crate::ir::IrBlock::Image {
+        busbar_core::ir::IrBlock::Image {
             source:
-                crate::ir::IrImageSource::Base64 {
+                busbar_core::ir::IrImageSource::Base64 {
                     media_type: mt,
                     data,
                 },
@@ -2357,8 +2392,8 @@ fn test_input_image_https_url_sentinel_roundtrip() {
     let url = "https://example.com/cat.png";
     let block = serde_json::json!({"type": "input_image", "image_url": url});
     let stored_url = match responses_block(&block).expect("responses_block ok") {
-        crate::ir::IrBlock::Image {
-            source: crate::ir::IrImageSource::Url(url),
+        busbar_core::ir::IrBlock::Image {
+            source: busbar_core::ir::IrImageSource::Url(url),
             ..
         } => url,
         other => panic!("expected Image(Url), got {other:?}"),
@@ -2373,7 +2408,7 @@ fn test_input_image_https_url_sentinel_roundtrip() {
     );
 
     // Round-trip through the writer reconstructs the exact original image_url.
-    let ir = crate::ir::IrRequest {
+    let ir = busbar_core::ir::IrRequest {
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -2381,10 +2416,10 @@ fn test_input_image_https_url_sentinel_roundtrip() {
         user: None,
         parallel_tool_calls: None,
         system: Vec::new(),
-        messages: vec![crate::ir::IrMessage {
-            role: crate::ir::IrRole::User,
-            content: vec![crate::ir::IrBlock::Image {
-                source: crate::ir::IrImageSource::Url(stored_url),
+        messages: vec![busbar_core::ir::IrMessage {
+            role: busbar_core::ir::IrRole::User,
+            content: vec![busbar_core::ir::IrBlock::Image {
+                source: busbar_core::ir::IrImageSource::Url(stored_url),
                 cache_control: None,
             }],
         }],
@@ -2415,7 +2450,7 @@ fn test_input_image_https_url_sentinel_roundtrip() {
 /// `extra`); omitting it answers a `stream: true` request non-streaming and stalls SSE.
 #[test]
 fn test_write_request_emits_stream() {
-    let make = |stream: bool| crate::ir::IrRequest {
+    let make = |stream: bool| busbar_core::ir::IrRequest {
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -2423,9 +2458,9 @@ fn test_write_request_emits_stream() {
         user: None,
         parallel_tool_calls: None,
         system: Vec::new(),
-        messages: vec![crate::ir::IrMessage {
-            role: crate::ir::IrRole::User,
-            content: vec![crate::ir::IrBlock::Text {
+        messages: vec![busbar_core::ir::IrMessage {
+            role: busbar_core::ir::IrRole::User,
+            content: vec![busbar_core::ir::IrBlock::Text {
                 text: "hi".to_string(),
                 cache_control: None,
                 citations: Vec::new(),
@@ -2479,14 +2514,14 @@ fn test_typed_message_item_read() {
         2,
         "both typed message turns must be read"
     );
-    assert_eq!(ir.messages[0].role, crate::ir::IrRole::User);
+    assert_eq!(ir.messages[0].role, busbar_core::ir::IrRole::User);
     match &ir.messages[0].content[0] {
-        crate::ir::IrBlock::Text { text, .. } => assert_eq!(text, "hello typed"),
+        busbar_core::ir::IrBlock::Text { text, .. } => assert_eq!(text, "hello typed"),
         other => panic!("expected Text, got {other:?}"),
     }
-    assert_eq!(ir.messages[1].role, crate::ir::IrRole::Assistant);
+    assert_eq!(ir.messages[1].role, busbar_core::ir::IrRole::Assistant);
     match &ir.messages[1].content[0] {
-        crate::ir::IrBlock::Text { text, .. } => assert_eq!(text, "hi back"),
+        busbar_core::ir::IrBlock::Text { text, .. } => assert_eq!(text, "hi back"),
         other => panic!("expected Text, got {other:?}"),
     }
 }
@@ -2499,8 +2534,8 @@ fn test_message_start_emits_identity() {
     let writer = ResponsesWriter;
 
     // Identity present (same-protocol passthrough): forwarded verbatim.
-    let ev = crate::ir::IrStreamEvent::MessageStart {
-        role: crate::ir::IrRole::Assistant,
+    let ev = busbar_core::ir::IrStreamEvent::MessageStart {
+        role: busbar_core::ir::IrRole::Assistant,
         usage: None,
         id: Some("resp_streamid".to_string()),
         created: Some(1_720_000_000),
@@ -2524,8 +2559,8 @@ fn test_message_start_emits_identity() {
     );
 
     // Identity absent (cross-protocol, stripped by translate_event): synthesized + valid.
-    let ev2 = crate::ir::IrStreamEvent::MessageStart {
-        role: crate::ir::IrRole::Assistant,
+    let ev2 = busbar_core::ir::IrStreamEvent::MessageStart {
+        role: busbar_core::ir::IrRole::Assistant,
         usage: None,
         id: None,
         created: None,
@@ -2693,8 +2728,8 @@ fn test_metadata_round_trips_through_extra() {
 #[test]
 fn test_message_start_skeleton_carries_usage_output_error() {
     let writer = ResponsesWriter;
-    let ev = crate::ir::IrStreamEvent::MessageStart {
-        role: crate::ir::IrRole::Assistant,
+    let ev = busbar_core::ir::IrStreamEvent::MessageStart {
+        role: busbar_core::ir::IrRole::Assistant,
         usage: None,
         id: None,
         created: None,
@@ -2739,9 +2774,9 @@ fn test_role_only_item_still_processed() {
         .read_request(&json)
         .expect("read_request should succeed");
     assert_eq!(ir.messages.len(), 1);
-    assert_eq!(ir.messages[0].role, crate::ir::IrRole::User);
+    assert_eq!(ir.messages[0].role, busbar_core::ir::IrRole::User);
     match &ir.messages[0].content[0] {
-        crate::ir::IrBlock::Text { text, .. } => assert_eq!(text, "hi there"),
+        busbar_core::ir::IrBlock::Text { text, .. } => assert_eq!(text, "hi there"),
         other => panic!("expected text turn, got {other:?}"),
     }
 }
@@ -2763,8 +2798,8 @@ fn test_read_request_array_input_no_unwrap() {
         .read_request(&json)
         .expect("array input should decode");
     assert_eq!(ir.messages.len(), 2);
-    assert_eq!(ir.messages[0].role, crate::ir::IrRole::User);
-    assert_eq!(ir.messages[1].role, crate::ir::IrRole::Assistant);
+    assert_eq!(ir.messages[0].role, busbar_core::ir::IrRole::User);
+    assert_eq!(ir.messages[1].role, busbar_core::ir::IrRole::Assistant);
 }
 
 /// A `response.failed` terminal event with NO nested `response`
@@ -2774,7 +2809,7 @@ fn test_read_request_array_input_no_unwrap() {
 #[test]
 fn test_failed_event_without_body_surfaces_error() {
     let reader = ResponsesReader;
-    let mut state = crate::ir::StreamDecodeState::default();
+    let mut state = busbar_core::ir::StreamDecodeState::default();
     let data = serde_json::json!({});
     let events = reader.read_response_events(EVT_RESPONSE_FAILED, &data, &mut state);
 
@@ -2809,14 +2844,14 @@ fn test_failed_event_without_body_surfaces_error() {
 #[test]
 fn test_completed_event_without_body_emits_end_turn() {
     let reader = ResponsesReader;
-    let mut state = crate::ir::StreamDecodeState::default();
+    let mut state = busbar_core::ir::StreamDecodeState::default();
     let data = serde_json::json!({});
     let events = reader.read_response_events(EVT_RESPONSE_COMPLETED, &data, &mut state);
 
     assert_eq!(events.len(), 2, "expected MessageDelta + MessageStop");
     match &events[0] {
         IrStreamEvent::MessageDelta { stop_reason, .. } => {
-            assert_eq!(stop_reason, &Some(crate::ir::IrStopReason::EndTurn));
+            assert_eq!(stop_reason, &Some(busbar_core::ir::IrStopReason::EndTurn));
         }
         other => panic!("expected MessageDelta first, got {other:?}"),
     }
@@ -2893,16 +2928,16 @@ fn test_error_event_wraps_in_response_object() {
 #[test]
 fn test_every_stream_event_carries_top_level_type() {
     let writer = ResponsesWriter;
-    let usage = || crate::ir::IrUsage {
+    let usage = || busbar_core::ir::IrUsage {
         input_tokens: 1,
         output_tokens: 1,
         cache_creation_input_tokens: None,
         cache_read_input_tokens: None,
-        detail: crate::ir::IrUsageDetail::default(),
+        detail: busbar_core::ir::IrUsageDetail::default(),
     };
     let events = vec![
         IrStreamEvent::MessageStart {
-            role: crate::ir::IrRole::Assistant,
+            role: busbar_core::ir::IrRole::Assistant,
             usage: None,
             id: None,
             created: None,
@@ -2910,22 +2945,22 @@ fn test_every_stream_event_carries_top_level_type() {
         },
         IrStreamEvent::BlockStart {
             index: 0,
-            block: crate::ir::IrBlockMeta::ToolUse {
+            block: busbar_core::ir::IrBlockMeta::ToolUse {
                 id: "fc_1".to_string(),
                 name: "f".to_string(),
             },
         },
         IrStreamEvent::BlockDelta {
             index: 0,
-            delta: crate::ir::IrDelta::TextDelta("hi".to_string()),
+            delta: busbar_core::ir::IrDelta::TextDelta("hi".to_string()),
         },
         IrStreamEvent::BlockDelta {
             index: 0,
-            delta: crate::ir::IrDelta::InputJsonDelta("{}".to_string()),
+            delta: busbar_core::ir::IrDelta::InputJsonDelta("{}".to_string()),
         },
         IrStreamEvent::BlockStop { index: 0 },
         IrStreamEvent::MessageDelta {
-            stop_reason: Some(crate::ir::IrStopReason::EndTurn),
+            stop_reason: Some(busbar_core::ir::IrStopReason::EndTurn),
             stop_sequence: None,
             usage: usage(),
         },
@@ -2950,13 +2985,13 @@ fn test_every_stream_event_carries_top_level_type() {
 
 /// A full single-stream sequence of emitted Responses events. The events go through the writer in
 /// the order `StreamTranslate::feed` would emit them.
-fn usage_fixture() -> crate::ir::IrUsage {
-    crate::ir::IrUsage {
+fn usage_fixture() -> busbar_core::ir::IrUsage {
+    busbar_core::ir::IrUsage {
         input_tokens: 1,
         output_tokens: 1,
         cache_creation_input_tokens: None,
         cache_read_input_tokens: None,
-        detail: crate::ir::IrUsageDetail::default(),
+        detail: busbar_core::ir::IrUsageDetail::default(),
     }
 }
 
@@ -2970,7 +3005,7 @@ fn test_sequence_number_monotonic_from_zero() {
     // A representative stream: created → text deltas → completed.
     let stream = vec![
         IrStreamEvent::MessageStart {
-            role: crate::ir::IrRole::Assistant,
+            role: busbar_core::ir::IrRole::Assistant,
             usage: None,
             id: None,
             created: None,
@@ -2978,15 +3013,15 @@ fn test_sequence_number_monotonic_from_zero() {
         },
         IrStreamEvent::BlockDelta {
             index: 0,
-            delta: crate::ir::IrDelta::TextDelta("Hel".to_string()),
+            delta: busbar_core::ir::IrDelta::TextDelta("Hel".to_string()),
         },
         IrStreamEvent::BlockDelta {
             index: 0,
-            delta: crate::ir::IrDelta::TextDelta("lo".to_string()),
+            delta: busbar_core::ir::IrDelta::TextDelta("lo".to_string()),
         },
         IrStreamEvent::BlockStop { index: 0 },
         IrStreamEvent::MessageDelta {
-            stop_reason: Some(crate::ir::IrStopReason::EndTurn),
+            stop_reason: Some(busbar_core::ir::IrStopReason::EndTurn),
             stop_sequence: None,
             usage: usage_fixture(),
         },
@@ -3022,7 +3057,7 @@ fn test_sequence_number_monotonic_from_zero() {
 fn test_sequence_number_resets_per_stream() {
     let writer = ResponsesWriter;
     let start = || IrStreamEvent::MessageStart {
-        role: crate::ir::IrRole::Assistant,
+        role: busbar_core::ir::IrRole::Assistant,
         usage: None,
         id: None,
         created: None,
@@ -3030,7 +3065,7 @@ fn test_sequence_number_resets_per_stream() {
     };
     let delta = || IrStreamEvent::BlockDelta {
         index: 0,
-        delta: crate::ir::IrDelta::TextDelta("x".to_string()),
+        delta: busbar_core::ir::IrDelta::TextDelta("x".to_string()),
     };
 
     // Stream A: created(0), delta(1).
@@ -3058,7 +3093,7 @@ fn test_every_stream_event_carries_sequence_number() {
     let writer = ResponsesWriter;
     let events = vec![
         IrStreamEvent::MessageStart {
-            role: crate::ir::IrRole::Assistant,
+            role: busbar_core::ir::IrRole::Assistant,
             usage: None,
             id: None,
             created: None,
@@ -3066,22 +3101,22 @@ fn test_every_stream_event_carries_sequence_number() {
         },
         IrStreamEvent::BlockStart {
             index: 0,
-            block: crate::ir::IrBlockMeta::ToolUse {
+            block: busbar_core::ir::IrBlockMeta::ToolUse {
                 id: "call_1".to_string(),
                 name: "f".to_string(),
             },
         },
         IrStreamEvent::BlockDelta {
             index: 0,
-            delta: crate::ir::IrDelta::TextDelta("hi".to_string()),
+            delta: busbar_core::ir::IrDelta::TextDelta("hi".to_string()),
         },
         IrStreamEvent::BlockDelta {
             index: 0,
-            delta: crate::ir::IrDelta::InputJsonDelta("{}".to_string()),
+            delta: busbar_core::ir::IrDelta::InputJsonDelta("{}".to_string()),
         },
         IrStreamEvent::BlockStop { index: 0 },
         IrStreamEvent::MessageDelta {
-            stop_reason: Some(crate::ir::IrStopReason::EndTurn),
+            stop_reason: Some(busbar_core::ir::IrStopReason::EndTurn),
             stop_sequence: None,
             usage: usage_fixture(),
         },
@@ -3117,7 +3152,7 @@ fn test_delta_and_item_added_carry_item_id_and_content_index() {
     let (_, text) = writer
         .write_response_event(&IrStreamEvent::BlockDelta {
             index: 2,
-            delta: crate::ir::IrDelta::TextDelta("hi".to_string()),
+            delta: busbar_core::ir::IrDelta::TextDelta("hi".to_string()),
         })
         .expect("emit");
     let text_item = text
@@ -3138,7 +3173,7 @@ fn test_delta_and_item_added_carry_item_id_and_content_index() {
     let (_, added) = writer
         .write_response_event(&IrStreamEvent::BlockStart {
             index: 1,
-            block: crate::ir::IrBlockMeta::ToolUse {
+            block: busbar_core::ir::IrBlockMeta::ToolUse {
                 id: "call_9".to_string(),
                 name: "lookup".to_string(),
             },
@@ -3166,7 +3201,7 @@ fn test_delta_and_item_added_carry_item_id_and_content_index() {
     let (_, args) = writer
         .write_response_event(&IrStreamEvent::BlockDelta {
             index: 1,
-            delta: crate::ir::IrDelta::InputJsonDelta("{\"q\":1}".to_string()),
+            delta: busbar_core::ir::IrDelta::InputJsonDelta("{\"q\":1}".to_string()),
         })
         .expect("emit");
     assert_eq!(
@@ -3188,7 +3223,7 @@ fn test_sequence_number_is_per_instance_not_thread_local() {
     let stream_a = ResponsesWriter;
     let stream_b = ResponsesWriter;
     let start = || IrStreamEvent::MessageStart {
-        role: crate::ir::IrRole::Assistant,
+        role: busbar_core::ir::IrRole::Assistant,
         usage: None,
         id: None,
         created: None,
@@ -3196,7 +3231,7 @@ fn test_sequence_number_is_per_instance_not_thread_local() {
     };
     let delta = || IrStreamEvent::BlockDelta {
         index: 0,
-        delta: crate::ir::IrDelta::TextDelta("x".to_string()),
+        delta: busbar_core::ir::IrDelta::TextDelta("x".to_string()),
     };
     let seq = |opt: Option<(String, serde_json::Value)>| {
         opt.expect("emit")
@@ -3237,7 +3272,7 @@ fn test_output_item_done_carries_matching_item_id_and_item() {
     let (_, added) = writer
         .write_response_event(&IrStreamEvent::BlockStart {
             index: 3,
-            block: crate::ir::IrBlockMeta::ToolUse {
+            block: busbar_core::ir::IrBlockMeta::ToolUse {
                 id: "call_x".to_string(),
                 name: "f".to_string(),
             },
@@ -3345,7 +3380,7 @@ fn test_response_failed_code_is_enum_even_for_human_provider_signal() {
     let (_, payload) = writer
         .write_response_event(&IrStreamEvent::Error(IrError {
             class: StatusClass::ServerError,
-            provider_signal: Some(crate::proto::STREAM_ABORT_DETAIL.to_string()),
+            provider_signal: Some(busbar_core::proto::STREAM_ABORT_DETAIL.to_string()),
             retry_after: None,
         }))
         .expect("emit");
@@ -3361,7 +3396,7 @@ fn test_response_failed_code_is_enum_even_for_human_provider_signal() {
     );
     assert_eq!(
         error.get("message").and_then(|m| m.as_str()),
-        Some(crate::proto::STREAM_ABORT_DETAIL),
+        Some(busbar_core::proto::STREAM_ABORT_DETAIL),
         "the human text stays in `message`"
     );
 
@@ -3396,7 +3431,7 @@ fn test_response_failed_code_is_enum_even_for_human_provider_signal() {
 fn test_text_block_emits_message_item_lifecycle() {
     let writer = ResponsesWriter;
     let _ = writer.write_response_event(&IrStreamEvent::MessageStart {
-        role: crate::ir::IrRole::Assistant,
+        role: busbar_core::ir::IrRole::Assistant,
         usage: None,
         id: None,
         created: None,
@@ -3406,7 +3441,7 @@ fn test_text_block_emits_message_item_lifecycle() {
     let (added_et, added) = writer
         .write_response_event(&IrStreamEvent::BlockStart {
             index: 0,
-            block: crate::ir::IrBlockMeta::Text,
+            block: busbar_core::ir::IrBlockMeta::Text,
         })
         .expect("text BlockStart opens a message item");
     assert_eq!(added_et, "response.output_item.added"); // golden wire-contract literal (kept bare on purpose)
@@ -3420,7 +3455,7 @@ fn test_text_block_emits_message_item_lifecycle() {
 
     let _ = writer.write_response_event(&IrStreamEvent::BlockDelta {
         index: 0,
-        delta: crate::ir::IrDelta::TextDelta("hi".to_string()),
+        delta: busbar_core::ir::IrDelta::TextDelta("hi".to_string()),
     });
 
     // Text BlockStop now closes the message item with a matching done.
@@ -3452,7 +3487,7 @@ fn test_text_block_emits_message_item_lifecycle() {
 fn test_tool_and_text_block_stop_emit_correctly_typed_done() {
     let writer = ResponsesWriter;
     let _ = writer.write_response_event(&IrStreamEvent::MessageStart {
-        role: crate::ir::IrRole::Assistant,
+        role: busbar_core::ir::IrRole::Assistant,
         usage: None,
         id: None,
         created: None,
@@ -3462,7 +3497,7 @@ fn test_tool_and_text_block_stop_emit_correctly_typed_done() {
     let _ = writer
         .write_response_event(&IrStreamEvent::BlockStart {
             index: 0,
-            block: crate::ir::IrBlockMeta::ToolUse {
+            block: busbar_core::ir::IrBlockMeta::ToolUse {
                 id: "call_1".to_string(),
                 name: "f".to_string(),
             },
@@ -3471,12 +3506,12 @@ fn test_tool_and_text_block_stop_emit_correctly_typed_done() {
     let _ = writer
         .write_response_event(&IrStreamEvent::BlockStart {
             index: 1,
-            block: crate::ir::IrBlockMeta::Text,
+            block: busbar_core::ir::IrBlockMeta::Text,
         })
         .expect("text added emits");
     let _ = writer.write_response_event(&IrStreamEvent::BlockDelta {
         index: 1,
-        delta: crate::ir::IrDelta::TextDelta("hi".to_string()),
+        delta: busbar_core::ir::IrDelta::TextDelta("hi".to_string()),
     });
     // Tool index closes with a function_call done.
     let (etype, tool_done) = writer
@@ -3509,7 +3544,7 @@ fn test_completed_event_carries_id_and_created_at() {
     let writer = ResponsesWriter;
     let (etype, payload) = writer
         .write_response_event(&IrStreamEvent::MessageDelta {
-            stop_reason: Some(crate::ir::IrStopReason::EndTurn),
+            stop_reason: Some(busbar_core::ir::IrStopReason::EndTurn),
             stop_sequence: None,
             usage: usage_fixture(),
         })
@@ -3604,7 +3639,7 @@ fn write_error_insufficient_quota_keeps_type_and_sets_code() {
 /// does not emit a duplicate `content_block_stop`.
 #[test]
 fn test_paired_content_and_item_done_emits_single_block_stop() {
-    let mut state = crate::ir::StreamDecodeState::default();
+    let mut state = busbar_core::ir::StreamDecodeState::default();
     // Open a text block lazily.
     let _ = reader_read_response_events(
         EVT_OUTPUT_TEXT_DELTA,
@@ -3640,7 +3675,7 @@ fn test_paired_content_and_item_done_emits_single_block_stop() {
 /// single `output_item.done`, and a stray second `done` at that index emits nothing.
 #[test]
 fn test_tool_item_done_emits_single_block_stop() {
-    let mut state = crate::ir::StreamDecodeState::default();
+    let mut state = busbar_core::ir::StreamDecodeState::default();
     let _ = reader_read_response_events(
         EVT_OUTPUT_ITEM_ADDED,
         &serde_json::json!({
@@ -3657,7 +3692,7 @@ fn test_tool_item_done_emits_single_block_stop() {
     assert_eq!(first.len(), 1);
     assert!(matches!(
         first[0],
-        crate::ir::IrStreamEvent::BlockStop { index: 2 }
+        busbar_core::ir::IrStreamEvent::BlockStop { index: 2 }
     ));
     let second = reader_read_response_events(
         EVT_OUTPUT_ITEM_DONE,
@@ -3681,7 +3716,7 @@ fn test_terminal_id_matches_created_id_cross_protocol() {
     // Cross-protocol: id is None, so response.created synthesizes one.
     let (_, created) = writer
         .write_response_event(&IrStreamEvent::MessageStart {
-            role: crate::ir::IrRole::Assistant,
+            role: busbar_core::ir::IrRole::Assistant,
             usage: None,
             id: None,
             created: None,
@@ -3696,7 +3731,7 @@ fn test_terminal_id_matches_created_id_cross_protocol() {
 
     let (etype, completed) = writer
         .write_response_event(&IrStreamEvent::MessageDelta {
-            stop_reason: Some(crate::ir::IrStopReason::EndTurn),
+            stop_reason: Some(busbar_core::ir::IrStopReason::EndTurn),
             stop_sequence: None,
             usage: usage_fixture(),
         })
@@ -3718,7 +3753,7 @@ fn test_failed_id_matches_created_id_cross_protocol() {
     let writer = ResponsesWriter;
     let (_, created) = writer
         .write_response_event(&IrStreamEvent::MessageStart {
-            role: crate::ir::IrRole::Assistant,
+            role: busbar_core::ir::IrRole::Assistant,
             usage: None,
             id: None,
             created: None,
@@ -3749,7 +3784,7 @@ fn test_terminal_id_matches_forwarded_created_id() {
     let writer = ResponsesWriter;
     let (_, created) = writer
         .write_response_event(&IrStreamEvent::MessageStart {
-            role: crate::ir::IrRole::Assistant,
+            role: busbar_core::ir::IrRole::Assistant,
             usage: None,
             id: Some("resp_upstream123".to_string()),
             created: Some(42),
@@ -3759,7 +3794,7 @@ fn test_terminal_id_matches_forwarded_created_id() {
     assert_eq!(created["response"]["id"].as_str(), Some("resp_upstream123"));
     let (_, completed) = writer
         .write_response_event(&IrStreamEvent::MessageDelta {
-            stop_reason: Some(crate::ir::IrStopReason::EndTurn),
+            stop_reason: Some(busbar_core::ir::IrStopReason::EndTurn),
             stop_sequence: None,
             usage: usage_fixture(),
         })
@@ -3780,7 +3815,7 @@ fn test_carried_id_resets_per_stream() {
     // Stream A.
     let (_, a_created) = writer
         .write_response_event(&IrStreamEvent::MessageStart {
-            role: crate::ir::IrRole::Assistant,
+            role: busbar_core::ir::IrRole::Assistant,
             usage: None,
             id: Some("resp_A".to_string()),
             created: None,
@@ -3791,7 +3826,7 @@ fn test_carried_id_resets_per_stream() {
     // Stream B begins on the same writer instance.
     let (_, b_created) = writer
         .write_response_event(&IrStreamEvent::MessageStart {
-            role: crate::ir::IrRole::Assistant,
+            role: busbar_core::ir::IrRole::Assistant,
             usage: None,
             id: Some("resp_B".to_string()),
             created: None,
@@ -3801,7 +3836,7 @@ fn test_carried_id_resets_per_stream() {
     assert_eq!(b_created["response"]["id"].as_str(), Some("resp_B"));
     let (_, b_completed) = writer
         .write_response_event(&IrStreamEvent::MessageDelta {
-            stop_reason: Some(crate::ir::IrStopReason::EndTurn),
+            stop_reason: Some(busbar_core::ir::IrStopReason::EndTurn),
             stop_sequence: None,
             usage: usage_fixture(),
         })
@@ -3818,7 +3853,7 @@ fn test_carried_id_resets_per_stream() {
 /// bound. After feeding more than MAX_OPEN_TOOLS distinct indices, the tracked set is capped.
 #[test]
 fn test_reader_open_tools_is_capped() {
-    let mut state = crate::ir::StreamDecodeState::default();
+    let mut state = busbar_core::ir::StreamDecodeState::default();
     for i in 0..(MAX_OPEN_TOOLS as u64 + 200) {
         let _ = reader_read_response_events(
             EVT_OUTPUT_ITEM_ADDED,
@@ -3841,7 +3876,7 @@ fn test_reader_open_tools_is_capped() {
 /// downstream index arithmetic stays bounded.
 #[test]
 fn test_reader_output_index_clamped() {
-    let mut state = crate::ir::StreamDecodeState::default();
+    let mut state = busbar_core::ir::StreamDecodeState::default();
     let out = reader_read_response_events(
         EVT_OUTPUT_ITEM_ADDED,
         &serde_json::json!({
@@ -3851,7 +3886,7 @@ fn test_reader_output_index_clamped() {
         &mut state,
     );
     match out.first() {
-        Some(crate::ir::IrStreamEvent::BlockStart { index, .. }) => {
+        Some(busbar_core::ir::IrStreamEvent::BlockStart { index, .. }) => {
             assert_eq!(*index, MAX_OUTPUT_INDEX, "u64::MAX index must clamp to cap");
         }
         other => panic!("expected a clamped BlockStart, got {other:?}"),
@@ -3867,7 +3902,7 @@ fn test_reader_output_index_clamped() {
 fn test_writer_open_text_indices_capped() {
     let writer = ResponsesWriter;
     let _ = writer.write_response_event(&IrStreamEvent::MessageStart {
-        role: crate::ir::IrRole::Assistant,
+        role: busbar_core::ir::IrRole::Assistant,
         usage: None,
         id: None,
         created: None,
@@ -3878,7 +3913,7 @@ fn test_writer_open_text_indices_capped() {
         if writer
             .write_response_event(&IrStreamEvent::BlockStart {
                 index: i,
-                block: crate::ir::IrBlockMeta::Text,
+                block: busbar_core::ir::IrBlockMeta::Text,
             })
             .is_some()
         {
@@ -4025,7 +4060,7 @@ fn test_responses_classify_delegates() {
 fn test_terminal_incomplete_emits_response_incomplete_for_max_tokens() {
     let writer = ResponsesWriter;
     let _ = writer.write_response_event(&IrStreamEvent::MessageStart {
-        role: crate::ir::IrRole::Assistant,
+        role: busbar_core::ir::IrRole::Assistant,
         usage: None,
         id: None,
         created: None,
@@ -4033,7 +4068,7 @@ fn test_terminal_incomplete_emits_response_incomplete_for_max_tokens() {
     });
     let (etype, body) = writer
         .write_response_event(&IrStreamEvent::MessageDelta {
-            stop_reason: Some(crate::ir::IrStopReason::MaxTokens),
+            stop_reason: Some(busbar_core::ir::IrStopReason::MaxTokens),
             stop_sequence: None,
             usage: usage_fixture(),
         })
@@ -4066,7 +4101,7 @@ fn test_terminal_incomplete_emits_response_incomplete_for_max_tokens() {
 fn test_terminal_incomplete_emits_response_incomplete_for_safety() {
     let writer = ResponsesWriter;
     let _ = writer.write_response_event(&IrStreamEvent::MessageStart {
-        role: crate::ir::IrRole::Assistant,
+        role: busbar_core::ir::IrRole::Assistant,
         usage: None,
         id: None,
         created: None,
@@ -4074,7 +4109,7 @@ fn test_terminal_incomplete_emits_response_incomplete_for_safety() {
     });
     let (etype, body) = writer
         .write_response_event(&IrStreamEvent::MessageDelta {
-            stop_reason: Some(crate::ir::IrStopReason::Safety),
+            stop_reason: Some(busbar_core::ir::IrStopReason::Safety),
             stop_sequence: None,
             usage: usage_fixture(),
         })
@@ -4095,7 +4130,7 @@ fn test_terminal_completed_unchanged_for_end_turn() {
     let writer = ResponsesWriter;
     let (_, created) = writer
         .write_response_event(&IrStreamEvent::MessageStart {
-            role: crate::ir::IrRole::Assistant,
+            role: busbar_core::ir::IrRole::Assistant,
             usage: None,
             id: None,
             created: None,
@@ -4105,7 +4140,7 @@ fn test_terminal_completed_unchanged_for_end_turn() {
     let created_id = created["response"]["id"].as_str().unwrap().to_string();
     let (etype, body) = writer
         .write_response_event(&IrStreamEvent::MessageDelta {
-            stop_reason: Some(crate::ir::IrStopReason::EndTurn),
+            stop_reason: Some(busbar_core::ir::IrStopReason::EndTurn),
             stop_sequence: None,
             usage: usage_fixture(),
         })
@@ -4244,7 +4279,7 @@ fn test_item_id_for_is_stream_stable_and_opaque() {
 fn test_streamed_text_item_shares_one_item_id() {
     let writer = ResponsesWriter;
     let _ = writer.write_response_event(&IrStreamEvent::MessageStart {
-        role: crate::ir::IrRole::Assistant,
+        role: busbar_core::ir::IrRole::Assistant,
         usage: None,
         id: None,
         created: None,
@@ -4253,7 +4288,7 @@ fn test_streamed_text_item_shares_one_item_id() {
     let (_, added) = writer
         .write_response_event(&IrStreamEvent::BlockStart {
             index: 0,
-            block: crate::ir::IrBlockMeta::Text,
+            block: busbar_core::ir::IrBlockMeta::Text,
         })
         .expect("output_item.added");
     let added_id = added["item_id"].as_str().unwrap().to_string();
@@ -4262,7 +4297,7 @@ fn test_streamed_text_item_shares_one_item_id() {
     let (_, delta) = writer
         .write_response_event(&IrStreamEvent::BlockDelta {
             index: 0,
-            delta: crate::ir::IrDelta::TextDelta("hello".to_string()),
+            delta: busbar_core::ir::IrDelta::TextDelta("hello".to_string()),
         })
         .expect("output_text.delta");
     assert_eq!(delta["item_id"].as_str(), Some(added_id.as_str()));
@@ -4286,7 +4321,7 @@ fn test_streamed_text_item_shares_one_item_id() {
 /// sequence and a proxy tell.
 #[test]
 fn test_repeated_output_item_added_does_not_reemit_block_start() {
-    let mut state = crate::ir::StreamDecodeState::default();
+    let mut state = busbar_core::ir::StreamDecodeState::default();
     let item = serde_json::json!({
         "output_index": 0,
         "item": {"type":ITEM_TYPE_FUNCTION_CALL,"call_id":"fc_1","name":"f"}
@@ -4299,7 +4334,7 @@ fn test_repeated_output_item_added_does_not_reemit_block_start() {
     );
     assert!(matches!(
         first.first(),
-        Some(crate::ir::IrStreamEvent::BlockStart { index: 0, .. })
+        Some(busbar_core::ir::IrStreamEvent::BlockStart { index: 0, .. })
     ));
     // A second added for the SAME index must emit nothing (the block is already open).
     let second = reader_read_response_events(EVT_OUTPUT_ITEM_ADDED, &item, &mut state);
@@ -4319,7 +4354,7 @@ fn test_repeated_output_item_added_does_not_reemit_block_start() {
 /// a NEW index emits no BlockStart and is not tracked.
 #[test]
 fn test_cap_still_bounds_new_indices_after_guard_fix() {
-    let mut state = crate::ir::StreamDecodeState::default();
+    let mut state = busbar_core::ir::StreamDecodeState::default();
     for i in 0..(MAX_OPEN_TOOLS as u64) {
         let out = reader_read_response_events(
             EVT_OUTPUT_ITEM_ADDED,
@@ -4362,7 +4397,7 @@ fn test_cap_still_bounds_new_indices_after_guard_fix() {
 /// no BlockStart.
 #[test]
 fn test_args_delta_dropped_for_unopened_index() {
-    let mut state = crate::ir::StreamDecodeState::default();
+    let mut state = busbar_core::ir::StreamDecodeState::default();
     // No output_item.added for index 3 — the delta must be dropped.
     let out = reader_read_response_events(
         EVT_FUNCTION_CALL_ARGS_DELTA,
@@ -4379,7 +4414,7 @@ fn test_args_delta_dropped_for_unopened_index() {
 /// that DID open (via `output_item.added`) is routed as an InputJsonDelta to that index.
 #[test]
 fn test_args_delta_routed_for_opened_index() {
-    let mut state = crate::ir::StreamDecodeState::default();
+    let mut state = busbar_core::ir::StreamDecodeState::default();
     let _ = reader_read_response_events(
         EVT_OUTPUT_ITEM_ADDED,
         &serde_json::json!({
@@ -4394,9 +4429,9 @@ fn test_args_delta_routed_for_opened_index() {
         &mut state,
     );
     match out.first() {
-        Some(crate::ir::IrStreamEvent::BlockDelta {
+        Some(busbar_core::ir::IrStreamEvent::BlockDelta {
             index,
-            delta: crate::ir::IrDelta::InputJsonDelta(s),
+            delta: busbar_core::ir::IrDelta::InputJsonDelta(s),
         }) => {
             assert_eq!(*index, 1);
             assert_eq!(s, "{\"a\":1}");
@@ -4413,7 +4448,7 @@ fn test_created_at_is_constant_across_stream_events() {
     let writer = ResponsesWriter;
     let (_, created) = writer
         .write_response_event(&IrStreamEvent::MessageStart {
-            role: crate::ir::IrRole::Assistant,
+            role: busbar_core::ir::IrRole::Assistant,
             usage: None,
             id: None,
             created: Some(1_700_000_000),
@@ -4425,7 +4460,7 @@ fn test_created_at_is_constant_across_stream_events() {
 
     let (_, completed) = writer
         .write_response_event(&IrStreamEvent::MessageDelta {
-            stop_reason: Some(crate::ir::IrStopReason::EndTurn),
+            stop_reason: Some(busbar_core::ir::IrStopReason::EndTurn),
             stop_sequence: None,
             usage: usage_fixture(),
         })
@@ -4444,7 +4479,7 @@ fn test_failed_event_replays_created_at() {
     let writer = ResponsesWriter;
     let (_, created) = writer
         .write_response_event(&IrStreamEvent::MessageStart {
-            role: crate::ir::IrRole::Assistant,
+            role: busbar_core::ir::IrRole::Assistant,
             usage: None,
             id: None,
             created: Some(1_700_000_123),
@@ -4490,7 +4525,10 @@ fn test_write_error_maps_forward_transient_kinds() {
         );
         assert!(v["error"]["code"].is_null(), "server_error code is null");
     }
-    for kind in [crate::proxy::PROVIDER_CODE_CONTEXT_LENGTH, "bad_request"] {
+    for kind in [
+        busbar_core::proxy::PROVIDER_CODE_CONTEXT_LENGTH,
+        "bad_request",
+    ] {
         let v = writer.write_error(400, kind, "bad request");
         assert_eq!(
             v["error"]["type"].as_str(),
@@ -4508,8 +4546,8 @@ fn test_write_error_maps_forward_transient_kinds() {
 fn test_function_call_done_carries_finalized_item() {
     let writer = ResponsesWriter;
     // Open the stream so the per-stream state is initialized/reset.
-    let _ = writer.write_response_event(&crate::ir::IrStreamEvent::MessageStart {
-        role: crate::ir::IrRole::Assistant,
+    let _ = writer.write_response_event(&busbar_core::ir::IrStreamEvent::MessageStart {
+        role: busbar_core::ir::IrRole::Assistant,
         usage: None,
         id: None,
         created: None,
@@ -4517,9 +4555,9 @@ fn test_function_call_done_carries_finalized_item() {
     });
     // BlockStart(ToolUse) captures call_id + name.
     let added = writer
-        .write_response_event(&crate::ir::IrStreamEvent::BlockStart {
+        .write_response_event(&busbar_core::ir::IrStreamEvent::BlockStart {
             index: 0,
-            block: crate::ir::IrBlockMeta::ToolUse {
+            block: busbar_core::ir::IrBlockMeta::ToolUse {
                 id: "call_abc".to_string(),
                 name: "get_weather".to_string(),
             },
@@ -4528,18 +4566,18 @@ fn test_function_call_done_carries_finalized_item() {
     assert_eq!(added.0, "response.output_item.added"); // golden wire-contract literal (kept bare on purpose)
 
     // Two argument fragments accumulate into the complete string.
-    let _ = writer.write_response_event(&crate::ir::IrStreamEvent::BlockDelta {
+    let _ = writer.write_response_event(&busbar_core::ir::IrStreamEvent::BlockDelta {
         index: 0,
-        delta: crate::ir::IrDelta::InputJsonDelta("{\"city\":".to_string()),
+        delta: busbar_core::ir::IrDelta::InputJsonDelta("{\"city\":".to_string()),
     });
-    let _ = writer.write_response_event(&crate::ir::IrStreamEvent::BlockDelta {
+    let _ = writer.write_response_event(&busbar_core::ir::IrStreamEvent::BlockDelta {
         index: 0,
-        delta: crate::ir::IrDelta::InputJsonDelta("\"SF\"}".to_string()),
+        delta: busbar_core::ir::IrDelta::InputJsonDelta("\"SF\"}".to_string()),
     });
 
     // BlockStop closes it with the fully finalized item.
     let (etype, payload) = writer
-        .write_response_event(&crate::ir::IrStreamEvent::BlockStop { index: 0 })
+        .write_response_event(&busbar_core::ir::IrStreamEvent::BlockStop { index: 0 })
         .expect("output_item.done should emit");
     assert_eq!(etype, "response.output_item.done"); // golden wire-contract literal (kept bare on purpose)
     let item = &payload["item"];
@@ -4569,7 +4607,7 @@ fn test_function_call_done_carries_finalized_item() {
 /// close.
 #[test]
 fn test_reader_multiple_text_items_distinct_indices() {
-    let mut state = crate::ir::StreamDecodeState::default();
+    let mut state = busbar_core::ir::StreamDecodeState::default();
     // First text item at index 0.
     let a = reader_read_response_events(
         EVT_OUTPUT_TEXT_DELTA,
@@ -4579,7 +4617,7 @@ fn test_reader_multiple_text_items_distinct_indices() {
     assert_eq!(a.len(), 2, "first delta opens its block then writes");
     assert!(matches!(
         a[0],
-        crate::ir::IrStreamEvent::BlockStart { index: 0, .. }
+        busbar_core::ir::IrStreamEvent::BlockStart { index: 0, .. }
     ));
     // Second text item at index 1 arrives BEFORE index 0 closes — must open its OWN block,
     // never an orphan delta against an unopened block.
@@ -4590,13 +4628,16 @@ fn test_reader_multiple_text_items_distinct_indices() {
     );
     assert_eq!(b.len(), 2, "a new index must lazily open its own block");
     assert!(
-        matches!(b[0], crate::ir::IrStreamEvent::BlockStart { index: 1, .. }),
+        matches!(
+            b[0],
+            busbar_core::ir::IrStreamEvent::BlockStart { index: 1, .. }
+        ),
         "second text index must emit its OWN BlockStart, got {:?}",
         b[0]
     );
     assert!(matches!(
         b[1],
-        crate::ir::IrStreamEvent::BlockDelta { index: 1, .. }
+        busbar_core::ir::IrStreamEvent::BlockDelta { index: 1, .. }
     ));
     // Close index 0: BlockStop must pair with index 0 (not index 1).
     let close0 = reader_read_response_events(
@@ -4606,7 +4647,10 @@ fn test_reader_multiple_text_items_distinct_indices() {
     );
     assert_eq!(close0.len(), 1);
     assert!(
-        matches!(close0[0], crate::ir::IrStreamEvent::BlockStop { index: 0 }),
+        matches!(
+            close0[0],
+            busbar_core::ir::IrStreamEvent::BlockStop { index: 0 }
+        ),
         "close must pair with index 0, got {:?}",
         close0[0]
     );
@@ -4619,7 +4663,7 @@ fn test_reader_multiple_text_items_distinct_indices() {
     assert_eq!(close1.len(), 1);
     assert!(matches!(
         close1[0],
-        crate::ir::IrStreamEvent::BlockStop { index: 1 }
+        busbar_core::ir::IrStreamEvent::BlockStop { index: 1 }
     ));
 }
 
@@ -4629,7 +4673,7 @@ fn test_reader_multiple_text_items_distinct_indices() {
 /// keeps tool routing (`open_tools.contains(&idx)`) intact.
 #[test]
 fn test_reader_text_and_tool_indices_coexist() {
-    let mut state = crate::ir::StreamDecodeState::default();
+    let mut state = busbar_core::ir::StreamDecodeState::default();
     // Tool item opens at index 0.
     let _ = reader_read_response_events(
         EVT_OUTPUT_ITEM_ADDED,
@@ -4647,7 +4691,7 @@ fn test_reader_text_and_tool_indices_coexist() {
     );
     assert!(matches!(
         t[0],
-        crate::ir::IrStreamEvent::BlockStart { index: 1, .. }
+        busbar_core::ir::IrStreamEvent::BlockStart { index: 1, .. }
     ));
     // Tool arguments delta at index 0 must still route (tool index intact under raw key).
     let args = reader_read_response_events(
@@ -4658,9 +4702,9 @@ fn test_reader_text_and_tool_indices_coexist() {
     assert_eq!(args.len(), 1, "tool args delta must route to the open tool");
     assert!(matches!(
         args[0],
-        crate::ir::IrStreamEvent::BlockDelta {
+        busbar_core::ir::IrStreamEvent::BlockDelta {
             index: 0,
-            delta: crate::ir::IrDelta::InputJsonDelta(_)
+            delta: busbar_core::ir::IrDelta::InputJsonDelta(_)
         }
     ));
     // Close the tool index → tool BlockStop.
@@ -4671,7 +4715,7 @@ fn test_reader_text_and_tool_indices_coexist() {
     );
     assert!(matches!(
         close_tool[0],
-        crate::ir::IrStreamEvent::BlockStop { index: 0 }
+        busbar_core::ir::IrStreamEvent::BlockStop { index: 0 }
     ));
     // Close the text index → text BlockStop.
     let close_text = reader_read_response_events(
@@ -4681,7 +4725,7 @@ fn test_reader_text_and_tool_indices_coexist() {
     );
     assert!(matches!(
         close_text[0],
-        crate::ir::IrStreamEvent::BlockStop { index: 1 }
+        busbar_core::ir::IrStreamEvent::BlockStop { index: 1 }
     ));
 }
 
@@ -4692,21 +4736,21 @@ fn test_reader_text_and_tool_indices_coexist() {
 /// tell. Absent IR model must fall back to DEFAULT_MODEL; a present model is preserved verbatim.
 #[test]
 fn test_write_response_emits_model_fallback() {
-    let make_resp = |model: Option<String>| crate::ir::IrResponse {
+    let make_resp = |model: Option<String>| busbar_core::ir::IrResponse {
         logprobs: Vec::new(),
-        role: crate::ir::IrRole::Assistant,
-        content: vec![crate::ir::IrBlock::Text {
+        role: busbar_core::ir::IrRole::Assistant,
+        content: vec![busbar_core::ir::IrBlock::Text {
             text: "hi".to_string(),
             cache_control: None,
             citations: Vec::new(),
         }],
-        stop_reason: Some(crate::ir::IrStopReason::EndTurn),
-        usage: crate::ir::IrUsage {
+        stop_reason: Some(busbar_core::ir::IrStopReason::EndTurn),
+        usage: busbar_core::ir::IrUsage {
             input_tokens: 1,
             output_tokens: 1,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
-            detail: crate::ir::IrUsageDetail::default(),
+            detail: busbar_core::ir::IrUsageDetail::default(),
         },
         model,
         id: Some("resp_x".to_string()),
@@ -4743,8 +4787,8 @@ fn test_write_response_emits_model_fallback() {
 fn test_stream_terminal_events_carry_model_fallback() {
     // --- cross-protocol completed stream: model None throughout the IR ---
     let writer = ResponsesWriter;
-    let start = crate::ir::IrStreamEvent::MessageStart {
-        role: crate::ir::IrRole::Assistant,
+    let start = busbar_core::ir::IrStreamEvent::MessageStart {
+        role: busbar_core::ir::IrRole::Assistant,
         usage: None,
         id: None,
         created: None,
@@ -4760,15 +4804,15 @@ fn test_stream_terminal_events_carry_model_fallback() {
         "response.created must carry DEFAULT_MODEL when IR model is None"
     );
 
-    let delta = crate::ir::IrStreamEvent::MessageDelta {
-        stop_reason: Some(crate::ir::IrStopReason::EndTurn),
+    let delta = busbar_core::ir::IrStreamEvent::MessageDelta {
+        stop_reason: Some(busbar_core::ir::IrStopReason::EndTurn),
         stop_sequence: None,
-        usage: crate::ir::IrUsage {
+        usage: busbar_core::ir::IrUsage {
             input_tokens: 1,
             output_tokens: 1,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
-            detail: crate::ir::IrUsageDetail::default(),
+            detail: busbar_core::ir::IrUsageDetail::default(),
         },
     };
     let (ename, completed) = writer.write_response_event(&delta).expect("terminal event");
@@ -4784,8 +4828,8 @@ fn test_stream_terminal_events_carry_model_fallback() {
 
     // --- same-protocol stream: the captured model is replayed onto the terminal event ---
     let writer2 = ResponsesWriter;
-    let start2 = crate::ir::IrStreamEvent::MessageStart {
-        role: crate::ir::IrRole::Assistant,
+    let start2 = busbar_core::ir::IrStreamEvent::MessageStart {
+        role: busbar_core::ir::IrRole::Assistant,
         usage: None,
         id: Some("resp_keep".to_string()),
         created: Some(1_720_000_000),
@@ -4794,7 +4838,7 @@ fn test_stream_terminal_events_carry_model_fallback() {
     writer2
         .write_response_event(&start2)
         .expect("created event");
-    let err = crate::ir::IrStreamEvent::Error(IrError {
+    let err = busbar_core::ir::IrStreamEvent::Error(IrError {
         class: StatusClass::ServerError,
         provider_signal: Some("boom".to_string()),
         retry_after: None,
@@ -4818,10 +4862,10 @@ fn test_stream_terminal_events_carry_model_fallback() {
 /// `response.error` unconditionally and is a distinguishability tell.
 #[test]
 fn test_write_response_emits_error_null_for_completed_and_incomplete() {
-    let make_resp = |stop: crate::ir::IrStopReason| crate::ir::IrResponse {
+    let make_resp = |stop: busbar_core::ir::IrStopReason| busbar_core::ir::IrResponse {
         logprobs: Vec::new(),
-        role: crate::ir::IrRole::Assistant,
-        content: vec![crate::ir::IrBlock::Text {
+        role: busbar_core::ir::IrRole::Assistant,
+        content: vec![busbar_core::ir::IrBlock::Text {
             text: "hi".to_string(),
             cache_control: None,
             citations: Vec::new(),
@@ -4837,7 +4881,7 @@ fn test_write_response_emits_error_null_for_completed_and_incomplete() {
     let writer = ResponsesWriter;
 
     // Completed: error key present and explicitly null.
-    let completed = writer.write_response(&make_resp(crate::ir::IrStopReason::EndTurn));
+    let completed = writer.write_response(&make_resp(busbar_core::ir::IrStopReason::EndTurn));
     assert_eq!(completed["status"].as_str(), Some("completed")); // golden wire-contract literal (kept bare on purpose)
     assert!(
         completed.get("error").is_some(),
@@ -4850,7 +4894,7 @@ fn test_write_response_emits_error_null_for_completed_and_incomplete() {
 
     // Incomplete (max_tokens): error is still present and null (the failure path is the error
     // envelope, never this success/incomplete body).
-    let incomplete = writer.write_response(&make_resp(crate::ir::IrStopReason::MaxTokens));
+    let incomplete = writer.write_response(&make_resp(busbar_core::ir::IrStopReason::MaxTokens));
     assert_eq!(incomplete["status"].as_str(), Some("incomplete")); // golden wire-contract literal (kept bare on purpose)
     assert!(
         incomplete["error"].is_null(),
@@ -4986,7 +5030,7 @@ fn test_read_request_system_and_developer_turns_feed_system() {
         .system
         .iter()
         .filter_map(|b| match b {
-            crate::ir::IrBlock::Text { text, .. } => Some(text.as_str()),
+            busbar_core::ir::IrBlock::Text { text, .. } => Some(text.as_str()),
             _ => None,
         })
         .collect();
@@ -5002,7 +5046,7 @@ fn test_read_request_system_and_developer_turns_feed_system() {
         "only the user turn becomes a message"
     );
     assert!(
-        matches!(req.messages[0].role, crate::ir::IrRole::User),
+        matches!(req.messages[0].role, busbar_core::ir::IrRole::User),
         "the surviving message is the user turn"
     );
 }
@@ -5048,7 +5092,7 @@ fn test_stream_terminal_events_carry_output_and_error() {
     // --- completed terminal ---
     let writer = ResponsesWriter;
     let _ = writer.write_response_event(&IrStreamEvent::MessageStart {
-        role: crate::ir::IrRole::Assistant,
+        role: busbar_core::ir::IrRole::Assistant,
         usage: None,
         id: None,
         created: None,
@@ -5056,7 +5100,7 @@ fn test_stream_terminal_events_carry_output_and_error() {
     });
     let (_, completed) = writer
         .write_response_event(&IrStreamEvent::MessageDelta {
-            stop_reason: Some(crate::ir::IrStopReason::EndTurn),
+            stop_reason: Some(busbar_core::ir::IrStopReason::EndTurn),
             stop_sequence: None,
             usage: usage_fixture(),
         })
@@ -5073,7 +5117,7 @@ fn test_stream_terminal_events_carry_output_and_error() {
     // --- incomplete terminal ---
     let writer2 = ResponsesWriter;
     let _ = writer2.write_response_event(&IrStreamEvent::MessageStart {
-        role: crate::ir::IrRole::Assistant,
+        role: busbar_core::ir::IrRole::Assistant,
         usage: None,
         id: None,
         created: None,
@@ -5081,7 +5125,7 @@ fn test_stream_terminal_events_carry_output_and_error() {
     });
     let (_, incomplete) = writer2
         .write_response_event(&IrStreamEvent::MessageDelta {
-            stop_reason: Some(crate::ir::IrStopReason::MaxTokens),
+            stop_reason: Some(busbar_core::ir::IrStopReason::MaxTokens),
             stop_sequence: None,
             usage: usage_fixture(),
         })
@@ -5098,7 +5142,7 @@ fn test_stream_terminal_events_carry_output_and_error() {
     // --- failed terminal: output present-but-empty alongside the populated error object ---
     let writer3 = ResponsesWriter;
     let _ = writer3.write_response_event(&IrStreamEvent::MessageStart {
-        role: crate::ir::IrRole::Assistant,
+        role: busbar_core::ir::IrRole::Assistant,
         usage: None,
         id: None,
         created: None,
@@ -5133,7 +5177,7 @@ fn test_terminal_output_assembles_streamed_text_and_tool_items() {
     let writer = ResponsesWriter;
     // Opening event.
     let _ = writer.write_response_event(&IrStreamEvent::MessageStart {
-        role: crate::ir::IrRole::Assistant,
+        role: busbar_core::ir::IrRole::Assistant,
         usage: None,
         id: None,
         created: None,
@@ -5143,40 +5187,40 @@ fn test_terminal_output_assembles_streamed_text_and_tool_items() {
     // Text item at index 0: BlockStart + two deltas + BlockStop.
     let _ = writer.write_response_event(&IrStreamEvent::BlockStart {
         index: 0,
-        block: crate::ir::IrBlockMeta::Text,
+        block: busbar_core::ir::IrBlockMeta::Text,
     });
     let _ = writer.write_response_event(&IrStreamEvent::BlockDelta {
         index: 0,
-        delta: crate::ir::IrDelta::TextDelta("Hello ".to_string()),
+        delta: busbar_core::ir::IrDelta::TextDelta("Hello ".to_string()),
     });
     let _ = writer.write_response_event(&IrStreamEvent::BlockDelta {
         index: 0,
-        delta: crate::ir::IrDelta::TextDelta("world".to_string()),
+        delta: busbar_core::ir::IrDelta::TextDelta("world".to_string()),
     });
     let _ = writer.write_response_event(&IrStreamEvent::BlockStop { index: 0 });
 
     // Function-call item at index 1: BlockStart(ToolUse) + arg deltas + BlockStop.
     let _ = writer.write_response_event(&IrStreamEvent::BlockStart {
         index: 1,
-        block: crate::ir::IrBlockMeta::ToolUse {
+        block: busbar_core::ir::IrBlockMeta::ToolUse {
             id: "call_abc".to_string(),
             name: "get_weather".to_string(),
         },
     });
     let _ = writer.write_response_event(&IrStreamEvent::BlockDelta {
         index: 1,
-        delta: crate::ir::IrDelta::InputJsonDelta("{\"city\":".to_string()),
+        delta: busbar_core::ir::IrDelta::InputJsonDelta("{\"city\":".to_string()),
     });
     let _ = writer.write_response_event(&IrStreamEvent::BlockDelta {
         index: 1,
-        delta: crate::ir::IrDelta::InputJsonDelta("\"SF\"}".to_string()),
+        delta: busbar_core::ir::IrDelta::InputJsonDelta("\"SF\"}".to_string()),
     });
     let _ = writer.write_response_event(&IrStreamEvent::BlockStop { index: 1 });
 
     // Terminal.
     let (ename, completed) = writer
         .write_response_event(&IrStreamEvent::MessageDelta {
-            stop_reason: Some(crate::ir::IrStopReason::ToolUse),
+            stop_reason: Some(busbar_core::ir::IrStopReason::ToolUse),
             stop_sequence: None,
             usage: usage_fixture(),
         })
@@ -5221,7 +5265,7 @@ fn test_terminal_output_assembles_streamed_text_and_tool_items() {
 fn test_terminal_output_empty_when_no_blocks_streamed() {
     let writer = ResponsesWriter;
     let _ = writer.write_response_event(&IrStreamEvent::MessageStart {
-        role: crate::ir::IrRole::Assistant,
+        role: busbar_core::ir::IrRole::Assistant,
         usage: None,
         id: None,
         created: None,
@@ -5229,7 +5273,7 @@ fn test_terminal_output_empty_when_no_blocks_streamed() {
     });
     let (_, completed) = writer
         .write_response_event(&IrStreamEvent::MessageDelta {
-            stop_reason: Some(crate::ir::IrStopReason::EndTurn),
+            stop_reason: Some(busbar_core::ir::IrStopReason::EndTurn),
             stop_sequence: None,
             usage: usage_fixture(),
         })
@@ -5253,7 +5297,7 @@ fn test_terminal_output_empty_when_no_blocks_streamed() {
 /// `content_block_stop` the Anthropic writer relays for an already-closed index.
 #[test]
 fn test_same_output_index_tool_and_text_single_open_single_close() {
-    let mut state = crate::ir::StreamDecodeState::default();
+    let mut state = busbar_core::ir::StreamDecodeState::default();
 
     // Open a tool block at output_index 0.
     let added = reader_read_response_events(
@@ -5266,7 +5310,7 @@ fn test_same_output_index_tool_and_text_single_open_single_close() {
     );
     let starts_after_tool = added
         .iter()
-        .filter(|e| matches!(e, crate::ir::IrStreamEvent::BlockStart { .. }))
+        .filter(|e| matches!(e, busbar_core::ir::IrStreamEvent::BlockStart { .. }))
         .count();
     assert_eq!(
         starts_after_tool, 1,
@@ -5304,7 +5348,7 @@ fn test_same_output_index_tool_and_text_single_open_single_close() {
     );
     let stops_at_0 = completed
         .iter()
-        .filter(|e| matches!(e, crate::ir::IrStreamEvent::BlockStop { index: 0 }))
+        .filter(|e| matches!(e, busbar_core::ir::IrStreamEvent::BlockStop { index: 0 }))
         .count();
     assert_eq!(
         stops_at_0, 1,
@@ -5318,7 +5362,7 @@ fn test_same_output_index_tool_and_text_single_open_single_close() {
 /// directly: before the dedup fix this drain produced two `BlockStop{N}`.
 #[test]
 fn test_terminal_drain_dedups_colliding_keys() {
-    let mut state = crate::ir::StreamDecodeState::default();
+    let mut state = busbar_core::ir::StreamDecodeState::default();
     // Directly seed both keys for IR index 3 to exercise the drain's dedup in isolation.
     state.open_tools.insert(3);
     state.open_tools.insert(3 + TEXT_INDEX_KEY_OFFSET);
@@ -5330,7 +5374,7 @@ fn test_terminal_drain_dedups_colliding_keys() {
     );
     let stops_at_3 = events
         .iter()
-        .filter(|e| matches!(e, crate::ir::IrStreamEvent::BlockStop { index: 3 }))
+        .filter(|e| matches!(e, busbar_core::ir::IrStreamEvent::BlockStop { index: 3 }))
         .count();
     assert_eq!(
             stops_at_3, 1,
@@ -5347,7 +5391,7 @@ fn test_terminal_drain_dedups_colliding_keys() {
 /// a text block open under `N + TEXT_INDEX_KEY_OFFSET` did not block a tool open at raw `N`.
 #[test]
 fn test_tool_open_suppressed_when_text_block_open_at_index() {
-    let mut state = crate::ir::StreamDecodeState::default();
+    let mut state = busbar_core::ir::StreamDecodeState::default();
     // Open a TEXT block at index 0.
     let text = reader_read_response_events(
         EVT_OUTPUT_TEXT_DELTA,
@@ -5369,7 +5413,7 @@ fn test_tool_open_suppressed_when_text_block_open_at_index() {
     assert!(
         !added
             .iter()
-            .any(|e| matches!(e, crate::ir::IrStreamEvent::BlockStart { .. })),
+            .any(|e| matches!(e, busbar_core::ir::IrStreamEvent::BlockStart { .. })),
         "tool open at an index already held by a text block must emit no BlockStart, got {added:?}"
     );
     assert!(
@@ -5445,7 +5489,10 @@ fn test_responses_tool_choice_required_roundtrips() {
     });
     let reader = ResponsesReader;
     let ir = reader.read_request(&json).expect("read_request");
-    assert_eq!(ir.tool_choice, Some(crate::ir::IrToolChoice::Required));
+    assert_eq!(
+        ir.tool_choice,
+        Some(busbar_core::ir::IrToolChoice::Required)
+    );
     // It must NOT also linger in `extra` (modeled key).
     assert!(!ir.extra.contains_key("tool_choice"));
 
@@ -5471,7 +5518,7 @@ fn test_responses_tool_choice_specific_function() {
     let ir = reader.read_request(&json).expect("read_request");
     assert_eq!(
         ir.tool_choice,
-        Some(crate::ir::IrToolChoice::Tool {
+        Some(busbar_core::ir::IrToolChoice::Tool {
             name: "get_weather".to_string()
         })
     );
@@ -5500,8 +5547,8 @@ fn test_responses_tool_choice_absent_is_none() {
 
 /// Build a minimal IR request for writer tests, with every Phase-0 / sampling field None/empty so
 /// individual tests can set just the one knob under test.
-fn empty_ir_request() -> crate::ir::IrRequest {
-    crate::ir::IrRequest {
+fn empty_ir_request() -> busbar_core::ir::IrRequest {
+    busbar_core::ir::IrRequest {
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -5560,7 +5607,7 @@ fn test_reasoning_item_thinking_round_trip() {
         .content
         .iter()
         .find_map(|b| match b {
-            crate::ir::IrBlock::Thinking {
+            busbar_core::ir::IrBlock::Thinking {
                 text, signature, ..
             } => Some((text, signature)),
             _ => None,
@@ -5624,7 +5671,7 @@ fn reasoning_input_item_round_trips_through_request() {
         .iter()
         .flat_map(|m| m.content.iter())
         .find_map(|b| match b {
-            crate::ir::IrBlock::Thinking {
+            busbar_core::ir::IrBlock::Thinking {
                 text, signature, ..
             } => Some((text, signature)),
             _ => None,
@@ -5652,10 +5699,10 @@ fn reasoning_input_item_round_trips_through_request() {
 /// model's prior reasoning.
 #[test]
 fn user_role_thinking_is_not_emitted_as_a_reasoning_item() {
-    let req = crate::ir::IrRequest {
-        messages: vec![crate::ir::IrMessage {
-            role: crate::ir::IrRole::User,
-            content: vec![crate::ir::IrBlock::Thinking {
+    let req = busbar_core::ir::IrRequest {
+        messages: vec![busbar_core::ir::IrMessage {
+            role: busbar_core::ir::IrRole::User,
+            content: vec![busbar_core::ir::IrBlock::Thinking {
                 text: "user-authored text masquerading as reasoning".to_string(),
                 signature: None,
                 redacted: false,
@@ -5736,9 +5783,9 @@ fn test_cached_tokens_mapping() {
 #[test]
 fn test_stop_not_emitted_on_responses() {
     let mut req = empty_ir_request();
-    req.messages.push(crate::ir::IrMessage {
-        role: crate::ir::IrRole::User,
-        content: vec![crate::ir::IrBlock::Text {
+    req.messages.push(busbar_core::ir::IrMessage {
+        role: busbar_core::ir::IrRole::User,
+        content: vec![busbar_core::ir::IrBlock::Text {
             text: "hi".to_string(),
             cache_control: None,
             citations: Vec::new(),
@@ -5762,9 +5809,9 @@ fn test_stop_not_emitted_on_responses() {
 #[test]
 fn test_unsupported_sampling_params_omitted() {
     let mut req = empty_ir_request();
-    req.messages.push(crate::ir::IrMessage {
-        role: crate::ir::IrRole::User,
-        content: vec![crate::ir::IrBlock::Text {
+    req.messages.push(busbar_core::ir::IrMessage {
+        role: busbar_core::ir::IrRole::User,
+        content: vec![busbar_core::ir::IrBlock::Text {
             text: "hi".to_string(),
             cache_control: None,
             citations: Vec::new(),
@@ -5863,8 +5910,8 @@ fn test_input_image_file_id_round_trip() {
         .iter()
         .flat_map(|m| &m.content)
         .find_map(|b| match b {
-            crate::ir::IrBlock::Image {
-                source: crate::ir::IrImageSource::Vendor { vendor, value },
+            busbar_core::ir::IrBlock::Image {
+                source: busbar_core::ir::IrImageSource::Vendor { vendor, value },
                 ..
             } if *vendor == "responses" => value
                 .get("file_id")
@@ -5901,7 +5948,7 @@ fn test_input_image_file_id_round_trip() {
 #[test]
 fn test_streaming_reasoning_round_trip() {
     let reader = ResponsesReader;
-    let mut state = crate::ir::StreamDecodeState::default();
+    let mut state = busbar_core::ir::StreamDecodeState::default();
 
     // output_item.added (reasoning) at index 0 opens a Thinking BlockStart.
     let added = reader.read_response_events(
@@ -5915,9 +5962,9 @@ fn test_streaming_reasoning_round_trip() {
     assert!(
         added.iter().any(|e| matches!(
             e,
-            crate::ir::IrStreamEvent::BlockStart {
+            busbar_core::ir::IrStreamEvent::BlockStart {
                 index: 0,
-                block: crate::ir::IrBlockMeta::Thinking
+                block: busbar_core::ir::IrBlockMeta::Thinking
             }
         )),
         "reasoning item.added opens a Thinking block at index 0: {added:?}"
@@ -5932,9 +5979,9 @@ fn test_streaming_reasoning_round_trip() {
     assert!(
         delta.iter().any(|e| matches!(
             e,
-            crate::ir::IrStreamEvent::BlockDelta {
+            busbar_core::ir::IrStreamEvent::BlockDelta {
                 index: 0,
-                delta: crate::ir::IrDelta::ThinkingDelta(t)
+                delta: busbar_core::ir::IrDelta::ThinkingDelta(t)
             } if t == "pondering"
         )),
         "reasoning_text.delta yields a ThinkingDelta: {delta:?}"
@@ -5943,9 +5990,9 @@ fn test_streaming_reasoning_round_trip() {
     // Writer side: a Thinking BlockStart emits a native reasoning output_item.added.
     let writer = ResponsesWriter;
     let (etype, payload) = writer
-        .write_response_event(&crate::ir::IrStreamEvent::BlockStart {
+        .write_response_event(&busbar_core::ir::IrStreamEvent::BlockStart {
             index: 0,
-            block: crate::ir::IrBlockMeta::Thinking,
+            block: busbar_core::ir::IrBlockMeta::Thinking,
         })
         .expect("Thinking BlockStart emits a frame");
     assert_eq!(etype, "response.output_item.added"); // golden wire-contract literal (kept bare on purpose)
@@ -5953,9 +6000,9 @@ fn test_streaming_reasoning_round_trip() {
 
     // A ThinkingDelta emits a native reasoning_text.delta.
     let (etype2, payload2) = writer
-        .write_response_event(&crate::ir::IrStreamEvent::BlockDelta {
+        .write_response_event(&busbar_core::ir::IrStreamEvent::BlockDelta {
             index: 0,
-            delta: crate::ir::IrDelta::ThinkingDelta("pondering".to_string()),
+            delta: busbar_core::ir::IrDelta::ThinkingDelta("pondering".to_string()),
         })
         .expect("ThinkingDelta emits a frame");
     assert_eq!(etype2, "response.reasoning_text.delta"); // golden wire-contract literal (kept bare on purpose)
@@ -5963,7 +6010,7 @@ fn test_streaming_reasoning_round_trip() {
 
     // BlockStop closes it as a reasoning output_item.done carrying the assembled text.
     let (etype3, payload3) = writer
-        .write_response_event(&crate::ir::IrStreamEvent::BlockStop { index: 0 })
+        .write_response_event(&busbar_core::ir::IrStreamEvent::BlockStop { index: 0 })
         .expect("Thinking BlockStop emits a frame");
     assert_eq!(etype3, "response.output_item.done"); // golden wire-contract literal (kept bare on purpose)
     assert_eq!(payload3["item"]["type"], "reasoning"); // golden wire-contract literal (kept bare on purpose)
@@ -5976,7 +6023,7 @@ fn test_streaming_reasoning_round_trip() {
 #[test]
 fn test_streaming_cached_tokens_round_trip() {
     let reader = ResponsesReader;
-    let mut state = crate::ir::StreamDecodeState::default();
+    let mut state = busbar_core::ir::StreamDecodeState::default();
     let events = reader.read_response_events(
         EVT_RESPONSE_COMPLETED,
         &serde_json::json!({
@@ -5994,7 +6041,7 @@ fn test_streaming_cached_tokens_round_trip() {
     let usage = events
         .iter()
         .find_map(|e| match e {
-            crate::ir::IrStreamEvent::MessageDelta { usage, .. } => Some(usage),
+            busbar_core::ir::IrStreamEvent::MessageDelta { usage, .. } => Some(usage),
             _ => None,
         })
         .expect("a MessageDelta with usage");
@@ -6003,15 +6050,15 @@ fn test_streaming_cached_tokens_round_trip() {
     // Writer re-emits cached_tokens on the terminal event's inner response.usage.
     let writer = ResponsesWriter;
     let (_etype, payload) = writer
-        .write_response_event(&crate::ir::IrStreamEvent::MessageDelta {
-            stop_reason: Some(crate::ir::IrStopReason::EndTurn),
+        .write_response_event(&busbar_core::ir::IrStreamEvent::MessageDelta {
+            stop_reason: Some(busbar_core::ir::IrStopReason::EndTurn),
             stop_sequence: None,
-            usage: crate::ir::IrUsage {
+            usage: busbar_core::ir::IrUsage {
                 input_tokens: 50,
                 output_tokens: 5,
                 cache_creation_input_tokens: None,
                 cache_read_input_tokens: Some(32),
-                detail: crate::ir::IrUsageDetail::default(),
+                detail: busbar_core::ir::IrUsageDetail::default(),
             },
         })
         .expect("MessageDelta emits a terminal frame");
@@ -6060,21 +6107,21 @@ fn read_response_subtracts_cached_prefix_from_input_tokens() {
 /// `input_tokens_details.cached_tokens`. Pins the exact inverse of the read normalization.
 #[test]
 fn write_response_reconstructs_input_tokens_total_with_cached_details() {
-    let resp = crate::ir::IrResponse {
+    let resp = busbar_core::ir::IrResponse {
         logprobs: Vec::new(),
-        role: crate::ir::IrRole::Assistant,
-        content: vec![crate::ir::IrBlock::Text {
+        role: busbar_core::ir::IrRole::Assistant,
+        content: vec![busbar_core::ir::IrBlock::Text {
             text: "hi".to_string(),
             cache_control: None,
             citations: Vec::new(),
         }],
-        stop_reason: Some(crate::ir::IrStopReason::EndTurn),
-        usage: crate::ir::IrUsage {
+        stop_reason: Some(busbar_core::ir::IrStopReason::EndTurn),
+        usage: busbar_core::ir::IrUsage {
             input_tokens: 50,
             output_tokens: 5,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: Some(100),
-            detail: crate::ir::IrUsageDetail::default(),
+            detail: busbar_core::ir::IrUsageDetail::default(),
         },
         model: Some("gpt-4o".to_string()),
         id: Some("resp_abc".to_string()),
@@ -6102,7 +6149,7 @@ fn write_response_reconstructs_input_tokens_total_with_cached_details() {
 /// `incomplete`; everything else is `completed`).
 #[test]
 fn incomplete_reason_codec_is_exhaustive() {
-    use crate::ir::IrStopReason as S;
+    use busbar_core::ir::IrStopReason as S;
     assert_eq!(
         read_responses_incomplete_reason(INCOMPLETE_REASON_MAX_OUTPUT),
         S::MaxTokens
@@ -6162,14 +6209,14 @@ fn read_response_incomplete_details_promote_stop_reason() {
             .read_response(&mk(INCOMPLETE_REASON_CONTENT_FILTER))
             .expect("read")
             .stop_reason,
-        Some(crate::ir::IrStopReason::Safety)
+        Some(busbar_core::ir::IrStopReason::Safety)
     );
     assert_eq!(
         ResponsesReader
             .read_response(&mk(INCOMPLETE_REASON_MAX_OUTPUT))
             .expect("read")
             .stop_reason,
-        Some(crate::ir::IrStopReason::MaxTokens)
+        Some(busbar_core::ir::IrStopReason::MaxTokens)
     );
 }
 
@@ -6324,8 +6371,8 @@ fn test_hosted_tools_dropped_cross_protocol() {
     // Cross-protocol egress prep (Responses ingress -> a non-Responses backend). The engine calls this
     // ONLY on the cross-protocol seam; dropping every hosted tool here is the "keep same-proto, drop
     // cross-proto" contract.
-    let mut req = crate::ir::variant::IrReq::Chat(ir);
-    req.prepare_for_egress(&crate::ir::variant::EgressPrep {
+    let mut req = busbar_core::ir::variant::IrReq::Chat(ir);
+    req.prepare_for_egress(&busbar_core::ir::variant::EgressPrep {
         thought_signature_fill: false,
         ingress_protocol: "openai-responses",
         egress_requires_max_tokens: false,
@@ -6336,7 +6383,7 @@ fn test_hosted_tools_dropped_cross_protocol() {
         prompt_caching_allowed: true,
         cache_control_cap: None,
     });
-    let crate::ir::variant::IrReq::Chat(ir) = req else {
+    let busbar_core::ir::variant::IrReq::Chat(ir) = req else {
         panic!("still a chat request");
     };
     // The hosted tool is GONE; the function tool remains.
@@ -6348,7 +6395,7 @@ fn test_hosted_tools_dropped_cross_protocol() {
     assert_eq!(ir.tools[0].name, "get_weather");
 
     // The OpenAI-chat (non-Responses) writer now emits NO malformed empty-name function tool.
-    let out = crate::proto::openai_chat::OpenAiWriter.write_request(&ir);
+    let out = super::super::openai_chat::OpenAiWriter.write_request(&ir);
     let tools = out["tools"].as_array().expect("tools array");
     assert_eq!(tools.len(), 1, "only the function tool is written: {out}");
     for t in tools {
@@ -6389,7 +6436,7 @@ fn test_hosted_tools_dropped_cross_protocol() {
     }
 
     // Anthropic egress.
-    let anthropic = crate::proto::anthropic::AnthropicWriter.write_request(&ir);
+    let anthropic = super::super::anthropic::AnthropicWriter.write_request(&ir);
     assert!(
         !any_empty_name(&anthropic),
         "Anthropic egress must not emit an empty-name tool: {anthropic}"
@@ -6401,7 +6448,7 @@ fn test_hosted_tools_dropped_cross_protocol() {
 
     // Gemini egress. Bind the interior-mutable writer const to a local before use (its per-stream
     // Mutex state makes a bare-const borrow a clippy::borrow_interior_mutable_const).
-    let gemini_writer = crate::proto::gemini::GeminiWriter;
+    let gemini_writer = super::super::gemini::GeminiWriter;
     let gemini = gemini_writer.write_request(&ir);
     assert!(
         !any_empty_name(&gemini),
@@ -6413,7 +6460,7 @@ fn test_hosted_tools_dropped_cross_protocol() {
     );
 
     // Cohere egress. Same interior-mutable-const bind as Gemini above.
-    let cohere_writer = crate::proto::cohere::CohereWriter;
+    let cohere_writer = super::super::cohere::CohereWriter;
     let cohere = cohere_writer.write_request(&ir);
     assert!(
         !any_empty_name(&cohere),
@@ -6425,7 +6472,7 @@ fn test_hosted_tools_dropped_cross_protocol() {
     );
 
     // Bedrock egress.
-    let bedrock_writer = crate::proto::bedrock::BedrockWriter;
+    let bedrock_writer = super::super::bedrock::BedrockWriter;
     let bedrock = bedrock_writer.write_request(&ir);
     assert!(
         !any_empty_name(&bedrock),
@@ -6444,12 +6491,12 @@ fn test_hosted_tools_dropped_cross_protocol() {
 #[test]
 fn test_responses_usage_carries_all_required_fields() {
     // No-cache case: details objects still present, cached/reasoning tokens are 0.
-    let no_cache = crate::ir::IrUsage {
+    let no_cache = busbar_core::ir::IrUsage {
         input_tokens: 10,
         output_tokens: 5,
         cache_creation_input_tokens: None,
         cache_read_input_tokens: None,
-        detail: crate::ir::IrUsageDetail::default(),
+        detail: busbar_core::ir::IrUsageDetail::default(),
     };
     let u = super::build_responses_usage(&no_cache);
     assert_eq!(u["input_tokens"], 10);
@@ -6468,12 +6515,12 @@ fn test_responses_usage_carries_all_required_fields() {
     );
 
     // Cache-hit case: input_tokens is the cache-INCLUSIVE total; only `cached_tokens` is surfaced.
-    let cached = crate::ir::IrUsage {
+    let cached = busbar_core::ir::IrUsage {
         input_tokens: 10,
         output_tokens: 5,
         cache_creation_input_tokens: Some(3),
         cache_read_input_tokens: Some(7),
-        detail: crate::ir::IrUsageDetail::default(),
+        detail: busbar_core::ir::IrUsageDetail::default(),
     };
     let uc = super::build_responses_usage(&cached);
     assert_eq!(
@@ -6510,7 +6557,7 @@ fn write_response_emits_url_citations_without_inventing_fields() {
                 title: Option<&str>,
                 url: Option<&str>,
                 start: Option<i64>,
-                end: Option<i64>| crate::ir::IrCitation {
+                end: Option<i64>| busbar_core::ir::IrCitation {
         kind: Some(kind.to_string()),
         cited_text: cited_text.map(str::to_string),
         title: title.map(str::to_string),
@@ -6523,13 +6570,13 @@ fn write_response_emits_url_citations_without_inventing_fields() {
     };
 
     let text = "The tide turns at dawn. Nothing else is known.";
-    let resp = crate::ir::IrResponse {
+    let resp = busbar_core::ir::IrResponse {
         logprobs: Vec::new(),
-        role: crate::ir::IrRole::Assistant,
+        role: busbar_core::ir::IrRole::Assistant,
         id: Some("resp_c".to_string()),
         model: Some("gpt-4o".to_string()),
         created: Some(1_700_000_000),
-        content: vec![crate::ir::IrBlock::Text {
+        content: vec![busbar_core::ir::IrBlock::Text {
             text: text.to_string(),
             cache_control: None,
             citations: vec![
@@ -6572,14 +6619,14 @@ fn write_response_emits_url_citations_without_inventing_fields() {
                 ),
             ],
         }],
-        stop_reason: Some(crate::ir::IrStopReason::EndTurn),
+        stop_reason: Some(busbar_core::ir::IrStopReason::EndTurn),
         stop_sequence: None,
-        usage: crate::ir::IrUsage {
+        usage: busbar_core::ir::IrUsage {
             input_tokens: 1,
             output_tokens: 1,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
-            detail: crate::ir::IrUsageDetail::default(),
+            detail: busbar_core::ir::IrUsageDetail::default(),
         },
         system_fingerprint: None,
     };
@@ -6613,19 +6660,19 @@ fn write_response_emits_url_citations_without_inventing_fields() {
 #[test]
 fn streamed_citations_reach_the_assembled_output_item() {
     let w = ResponsesWriter;
-    let ev = |e: crate::ir::IrStreamEvent| w.write_response_event(&e);
+    let ev = |e: busbar_core::ir::IrStreamEvent| w.write_response_event(&e);
 
-    let _ = ev(crate::ir::IrStreamEvent::BlockStart {
+    let _ = ev(busbar_core::ir::IrStreamEvent::BlockStart {
         index: 0,
-        block: crate::ir::IrBlockMeta::Text,
+        block: busbar_core::ir::IrBlockMeta::Text,
     });
-    let _ = ev(crate::ir::IrStreamEvent::BlockDelta {
+    let _ = ev(busbar_core::ir::IrStreamEvent::BlockDelta {
         index: 0,
-        delta: crate::ir::IrDelta::TextDelta("Sourced claim.".into()),
+        delta: busbar_core::ir::IrDelta::TextDelta("Sourced claim.".into()),
     });
-    let _ = ev(crate::ir::IrStreamEvent::BlockDelta {
+    let _ = ev(busbar_core::ir::IrStreamEvent::BlockDelta {
         index: 0,
-        delta: crate::ir::IrDelta::CitationsDelta(vec![crate::ir::IrCitation {
+        delta: busbar_core::ir::IrDelta::CitationsDelta(vec![busbar_core::ir::IrCitation {
             kind: Some("web_search_result_location".into()),
             cited_text: Some("Sourced claim.".into()),
             title: Some("A Source".into()),
@@ -6637,8 +6684,8 @@ fn streamed_citations_reach_the_assembled_output_item() {
             raw: None,
         }]),
     });
-    let (name, frame) =
-        ev(crate::ir::IrStreamEvent::BlockStop { index: 0 }).expect("BlockStop finalizes the item");
+    let (name, frame) = ev(busbar_core::ir::IrStreamEvent::BlockStop { index: 0 })
+        .expect("BlockStop finalizes the item");
     assert_eq!(name, "response.output_item.done");
 
     let anns = frame["item"]["content"][0]["annotations"]
@@ -6659,7 +6706,7 @@ fn streamed_citations_reach_the_assembled_output_item() {
 /// semantics. The BEFORE-any-turn case must NOT warn (that is the ordinary, non-surprising shape).
 #[test]
 fn mid_conversation_developer_item_is_flagged() {
-    use crate::test_support::warn_capture::WarnCapture;
+    use busbar_core::test_support::warn_capture::WarnCapture;
     use tracing_subscriber::layer::SubscriberExt as _;
 
     let body = serde_json::json!({
@@ -6682,7 +6729,7 @@ fn mid_conversation_developer_item_is_flagged() {
     assert!(
         ir.system.iter().any(|b| matches!(
             b,
-            crate::ir::IrBlock::Text { text, .. } if text.contains("now answer in French")
+            busbar_core::ir::IrBlock::Text { text, .. } if text.contains("now answer in French")
         )),
         "the developer item's text must still be hoisted into system: {:?}",
         ir.system
@@ -6698,7 +6745,7 @@ fn mid_conversation_developer_item_is_flagged() {
 /// the ordinary shape and must NOT warn.
 #[test]
 fn leading_developer_item_does_not_warn() {
-    use crate::test_support::warn_capture::WarnCapture;
+    use busbar_core::test_support::warn_capture::WarnCapture;
     use tracing_subscriber::layer::SubscriberExt as _;
 
     let body = serde_json::json!({
@@ -6757,7 +6804,7 @@ fn responses_output_text_annotations_read_into_ir_citations() {
         .content
         .iter()
         .find_map(|b| match b {
-            crate::ir::IrBlock::Text { citations, .. } => Some(citations),
+            busbar_core::ir::IrBlock::Text { citations, .. } => Some(citations),
             _ => None,
         })
         .expect("a Text block must be present");

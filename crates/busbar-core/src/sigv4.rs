@@ -19,24 +19,24 @@ const SECS_PER_DAY: u64 = 86_400;
 const SECS_PER_HOUR: u64 = 3_600;
 
 /// The SigV4 algorithm token that appears in the `Authorization` header and the string-to-sign.
-pub(crate) const SIGV4_ALGORITHM: &str = "AWS4-HMAC-SHA256";
+pub const SIGV4_ALGORITHM: &str = "AWS4-HMAC-SHA256";
 /// The terminating scope component appended to every Credential scope and fed to the HMAC chain.
 /// Used as `SIGV4_TERMINATION` (&str) or `SIGV4_TERMINATION.as_bytes()` (byte slice) so the
 /// value is single-sourced even when a byte literal is required.
-pub(crate) const SIGV4_TERMINATION: &str = "aws4_request";
+pub const SIGV4_TERMINATION: &str = "aws4_request";
 /// The key-derivation prefix prepended to the secret access key before the first HMAC: `"AWS4"`.
 /// Always used via `format!("{SIGV4_KEY_PREFIX}{secret}")`, not mixed into `SIGV4_ALGORITHM`.
 const SIGV4_KEY_PREFIX: &str = "AWS4";
 /// The canonical lowercase name of the `x-amz-date` header.
-pub(crate) const X_AMZ_DATE: &str = "x-amz-date";
+pub const X_AMZ_DATE: &str = "x-amz-date";
 /// The canonical lowercase name of the `x-amz-content-sha256` header.
-pub(crate) const X_AMZ_CONTENT_SHA256: &str = "x-amz-content-sha256";
+pub const X_AMZ_CONTENT_SHA256: &str = "x-amz-content-sha256";
 /// The canonical lowercase name of the `x-amz-security-token` header (STS session credentials).
-pub(crate) const X_AMZ_SECURITY_TOKEN: &str = "x-amz-security-token";
+pub const X_AMZ_SECURITY_TOKEN: &str = "x-amz-security-token";
 
 /// Lowercase hex SHA-256 of `data` — re-exported from the `busbar-api` contract crate (plugins
 /// hash credentials under the SAME digest facility).
-pub(crate) use busbar_api::sha256_hex;
+pub use busbar_api::sha256_hex;
 
 /// HMAC-SHA256 of `data` under `key`. `Hmac::new_from_slice` is infallible for HMAC — the spec
 /// accepts a key of ANY length — so the `Err` arm is unreachable. We still avoid `expect()`/panic
@@ -76,7 +76,7 @@ fn signing_key(secret: &str, datestamp: &str, region: &str, service: &str) -> Ve
 /// AWS URI-encode a path, preserving `/`. Unreserved chars (A-Za-z0-9-_.~) pass through; everything
 /// else becomes %XX (uppercase hex). Bedrock model IDs contain `:` and `.`, so the path must be
 /// encoded identically in the canonical request and the wire request.
-pub(crate) fn uri_encode_path(path: &str) -> String {
+pub fn uri_encode_path(path: &str) -> String {
     let mut out = String::with_capacity(path.len());
     for &b in path.as_bytes() {
         match b {
@@ -99,7 +99,7 @@ pub(crate) fn uri_encode_path(path: &str) -> String {
 
 /// Convert a Unix epoch (seconds) to (amzdate `YYYYMMDDTHHMMSSZ`, datestamp `YYYYMMDD`). Pure UTC,
 /// no external date crate (a public-domain civil-from-days algorithm).
-pub(crate) fn format_amz_time(epoch_secs: u64) -> (String, String) {
+pub fn format_amz_time(epoch_secs: u64) -> (String, String) {
     let days = (epoch_secs / SECS_PER_DAY) as i64;
     let sod = epoch_secs % SECS_PER_DAY;
     let (h, mi, s) = (sod / SECS_PER_HOUR, (sod % SECS_PER_HOUR) / 60, sod % 60);
@@ -158,7 +158,7 @@ fn canonicalize_header_value(v: &str) -> String {
 /// full set of headers to sign (names case-insensitive); they are lowercased + sorted internally.
 /// `canonical_uri` must already be URI-encoded; `canonical_querystring` sorted + encoded (or empty).
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn sign_v4(
+pub fn sign_v4(
     secret: &str,
     region: &str,
     service: &str,

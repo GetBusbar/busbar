@@ -5,8 +5,8 @@
 
 //! The seventh operation, round-tripped through the IR: cohere <-> bedrock are the two rerank
 //! wires, and their result shapes are identical, so translation must be exact both ways.
+use super::super::bedrock::handler::BedrockRequestHandler;
 use super::*;
-use crate::handlers::bedrock::BedrockRequestHandler;
 
 fn cohere_wire() -> Vec<u8> {
     serde_json::to_vec(&json!({
@@ -97,7 +97,7 @@ fn bedrock_request_and_response_round_trip() {
 
 #[test]
 fn embeddings_write_request_emits_base64_encoding_type() {
-    use crate::ir::embeddings::EmbeddingsReq;
+    use busbar_core::ir::embeddings::EmbeddingsReq;
     let ir = IrReq::Embeddings(EmbeddingsReq {
         model: "embed-v4".into(),
         input: EmbInput::Text(vec!["a".into()]),
@@ -111,7 +111,7 @@ fn embeddings_write_request_emits_base64_encoding_type() {
 
 #[test]
 fn embeddings_write_request_defaults_to_float_when_empty() {
-    use crate::ir::embeddings::EmbeddingsReq;
+    use busbar_core::ir::embeddings::EmbeddingsReq;
     let ir = IrReq::Embeddings(EmbeddingsReq {
         model: "embed-v4".into(),
         input: EmbInput::Text(vec!["a".into()]),
@@ -125,7 +125,7 @@ fn embeddings_write_request_defaults_to_float_when_empty() {
 
 #[test]
 fn embeddings_write_request_preserves_multiple_encoding_types_in_order() {
-    use crate::ir::embeddings::EmbeddingsReq;
+    use busbar_core::ir::embeddings::EmbeddingsReq;
     let ir = IrReq::Embeddings(EmbeddingsReq {
         model: "embed-v4".into(),
         input: EmbInput::Text(vec!["a".into()]),
@@ -139,8 +139,8 @@ fn embeddings_write_request_preserves_multiple_encoding_types_in_order() {
 
 #[test]
 fn embeddings_write_request_warns_on_dropped_non_text_input() {
-    use crate::ir::embeddings::EmbeddingsReq;
-    use crate::test_support::warn_capture::WarnCapture;
+    use busbar_core::ir::embeddings::EmbeddingsReq;
+    use busbar_core::test_support::warn_capture::WarnCapture;
     use tracing_subscriber::layer::SubscriberExt as _;
 
     let ir = IrReq::Embeddings(EmbeddingsReq {
@@ -231,7 +231,7 @@ fn embeddings_read_response_reads_float_vectors() {
 
 #[test]
 fn embeddings_write_response_emits_base64_key_not_swallowed_by_empty_float() {
-    use crate::ir::embeddings::EmbeddingsResp;
+    use busbar_core::ir::embeddings::EmbeddingsResp;
     let mut item = EmbeddingItem {
         index: 0,
         ..Default::default()
@@ -251,7 +251,7 @@ fn embeddings_write_response_emits_base64_key_not_swallowed_by_empty_float() {
 
 #[test]
 fn embeddings_write_response_emits_float_key() {
-    use crate::ir::embeddings::EmbeddingsResp;
+    use busbar_core::ir::embeddings::EmbeddingsResp;
     let mut item = EmbeddingItem {
         index: 0,
         ..Default::default()
@@ -329,7 +329,7 @@ fn embeddings_read_request_maps_all_encoding_types_not_just_base64() {
 fn embeddings_write_request_carries_output_dimension_and_truncate() {
     // Cohere was the lone embeddings writer dropping these; they must reach the wire so a
     // Matryoshka (output_dimension) or explicit truncate request is honored.
-    use crate::ir::embeddings::{EmbeddingsReq, EncFmt};
+    use busbar_core::ir::embeddings::{EmbeddingsReq, EncFmt};
     let ir = IrReq::Embeddings(EmbeddingsReq {
         model: "embed-v4.0".into(),
         input: EmbInput::Text(vec!["x".into()]),
@@ -373,7 +373,7 @@ fn oversized_top_n_drops_to_none_not_wrapped() {
 #[test]
 fn no_rerank_handler_on_the_other_four() {
     for proto in ["openai", "anthropic", "gemini", "responses"] {
-        let rh = crate::handlers::request_handler(proto).expect(proto);
+        let rh = busbar_core::handlers::request_handler(proto).expect(proto);
         assert!(
             rh.operation_handler(Operation::RERANK).is_none(),
             "{proto} must have no rerank handler"

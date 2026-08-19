@@ -27,18 +27,27 @@ fn builtins() -> Registry {
 
 /// **THE METRIC-SURFACE PIN.** Protocol names are metric LABELS and `providers.*.protocol` config
 /// keys, and `telemetry::AppSlots::build` indexes its per-protocol families BY POSITION in this
-/// list. Deriving the list from the declarations must therefore reproduce the hand-maintained
-/// `KNOWN_PROTOCOLS` const it replaced EXACTLY — same names, same order — or every operator's
-/// dashboard re-bases silently. Spelled as literals on purpose: a golden value derived from the
-/// same source it is checking would be a tautology.
+/// list. Spelled as literals on purpose: a golden value derived from the same source it is checking
+/// would be a tautology.
+///
+/// THE ORDER IS `busbar_llm::DECLS`' ORDER, WHICH IS WHAT PRODUCTION SHIPS. Before the LLM plugin
+/// consolidation this const read `anthropic, openai, gemini, …` — core's own built-in TABLE order —
+/// while the SHIPPED binary installed `anthropic, gemini, openai, …` through the composition root
+/// (register_protocols), because `merged_boot_decls` folds the installed set ahead of the built-ins.
+/// The two silently disagreed, and this pin was guarding the fixture, not the metric surface an
+/// operator actually sees. The consolidation put core's fixture table into `DECLS`' order too, so
+/// this const now states the ONE order both the fixture and the shipped binary use — and it did NOT
+/// move production (the shipped order was `anthropic, gemini, openai` before and after). The
+/// black-box `cli_validate.rs::the_operator_visible_protocol_order_is_exactly_the_shipped_one`
+/// pins the same sequence on the real binary.
 #[test]
 fn the_derived_protocol_list_is_byte_identical_to_the_const_it_replaced() {
     assert_eq!(
         crate::proto::known_protocols(),
         &[
             "anthropic",
-            "openai",
             "gemini",
+            "openai",
             "bedrock",
             "responses",
             "cohere"

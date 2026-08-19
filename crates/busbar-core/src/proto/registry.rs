@@ -221,9 +221,15 @@ static BUILTIN_DECLS: &[&ProtocolDecl] = &[
     &crate::proto::gemini::DECL,
     #[cfg(any(test, feature = "test-support"))]
     &crate::proto::openai_chat::DECL,
-    // ── STILL CORE'S OWN: the dialects that have not moved into the plugin yet ─────────────────
+    // ── The remaining LLM dialects also live in the `busbar-llm` plugin now — same rationale as
+    //    the three rows above; these fixture-surface copies exist ONLY in the builds that compile
+    //    the dialects back in, and their ORDER matches `busbar_llm::DECLS` exactly (this table and
+    //    that slice are two statements of one operator-visible sequence).
+    #[cfg(any(test, feature = "test-support"))]
     &crate::proto::bedrock::DECL,
+    #[cfg(any(test, feature = "test-support"))]
     &crate::proto::openai_responses::DECL,
+    #[cfg(any(test, feature = "test-support"))]
     &crate::proto::cohere::DECL,
     // MCP declares a handler and NO codec: its IR is its own and there is no cross-dialect
     // translation into or out of it. That asymmetry is the point — the registry holds protocols,
