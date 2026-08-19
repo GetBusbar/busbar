@@ -339,7 +339,9 @@ The breaker is keyed on the **target** about to be called, and it runs on all th
 planes: a pool member (LLM), a registered tool server (MCP), a registered agent
 (A2A). The subsections below describe the LLM plane, whose vocabulary is pools and
 lanes; [across the planes](#the-breaker-across-the-planes) covers what changes and
-what does not on the other two.
+what does not on the other two, and [MCP](/docs/mcp/) and [A2A](/docs/a2a/) carry
+each plane's full operator reference, including the exact wire shape a tripped
+target answers with.
 
 Breaker state is **per-(pool, lane)**: a lane that is a member of more than one pool
 carries independent Open/Closed/HalfOpen state, streak, cooldown, and error window in

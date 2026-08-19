@@ -4,7 +4,7 @@ Busbar attributes every upstream failure to a cause, benches only the target at 
 
 The breaker runs on **all three planes**: a pool member on the LLM plane, an MCP tool server, an A2A agent. Most of this page is written in the LLM plane's vocabulary (pools, lanes and cells) because that is where member selection lives; [the breaker on the MCP and A2A planes](#the-breaker-on-the-mcp-and-a2a-planes) covers what is the same (everything about health and reroute-before-first-byte) and what is deliberately different (an accepted A2A task is pinned to its member — failover there is an admission-time choice, never a migration).
 
-Cross-references: [Pools](/docs/pools/) (structure) · [In-flight failover](/docs/failover/) (what happens when a lane trips) · [Configuration](/docs/configuration/) (field reference).
+Cross-references: [Pools](/docs/pools/) (structure) · [In-flight failover](/docs/failover/) (what happens when a lane trips) · [Configuration](/docs/configuration/) (field reference) · [MCP](/docs/mcp/) and [A2A](/docs/a2a/) (the two other planes this breaker runs on, and what each returns when a target is tripped).
 
 ## Concepts: pools, lanes, and cells
 
@@ -244,13 +244,15 @@ For a single registration with no pool, unchanged: **failing fast instead of fai
 
 ### What a tripped target returns: MCP
 
-This shape is **live** (`crates/busbar-core/src/mcp/tests/breaker_fastfail_tests.rs` asserts every token of it against a real dying peer). The *reason* for the shape is the part that matters, and it is a reason a future implementer must not relitigate.
+This shape is **live**: `crates/busbar-core/src/mcp/tests/breaker_fastfail_tests.rs` asserts every token of it against a real dying peer.
 
-A tripped tool server answers HTTP **`503`** with a **`Retry-After`** header populated from the breaker's own cooldown expiry: an exact number rather than a guess, the same shape budget rejection already uses with `429`. The body is a **JSON-RPC error** in Busbar's implementation-defined `-320xx` band (JSON-RPC 2.0 §5.1 reserves `-32000`..`-32099` for exactly this), with structured `data`:
+A tripped tool server answers HTTP **`503`** with a **`Retry-After`** header populated from the cell's own remaining cooldown: an exact number rather than a guess, the same shape budget rejection already uses with `429`. The body is a **JSON-RPC error** with code **`-32030`**, in Busbar's implementation-defined band (JSON-RPC 2.0 §5.1 reserves `-32000`..`-32099` for exactly this), carrying structured `data`:
 
 ```json
 { "reason": "upstream_unavailable", "server": "acme", "retry_after_ms": 12000 }
 ```
+
+The breaker is consulted before any socket, immediately after the authorization gate and before the dispatch loop, and the task-creating path consults it at the same position and *before* the task row is minted (`crates/busbar-core/src/mcp/method.rs:1410-1431`, `:1735-1754`; the refusal itself is `:2070-2109`). [MCP](/docs/mcp/#what-a-tripped-upstream-returns) carries the full response.
 
 **It is an error, never a tool result with `isError: true`.** MCP's `isError` means *the tool ran and it failed*. A tripped breaker means *the call never happened*. Returning the second as the first tells the calling model that a tool executed and reported a failure. The model then reasons from a lie, and may report that false result onward as fact. The reserved JSON-RPC codes are each wrong for a specific reason: `-32603` internal error blames Busbar, `-32601` method-not-found says the tool does not exist when it does, and `-32602` invalid-params blames the caller.
 
@@ -258,13 +260,15 @@ A tripped tool server answers HTTP **`503`** with a **`Retry-After`** header pop
 
 Also **live**, on all three bindings (`crates/busbar-core/src/a2a/tests/breaker_fastfail_tests.rs`).
 
-A2A has what MCP lacks: task state is first class. A submission to a tripped agent yields the task state **`rejected`**, not `failed`, returned **with a task id**.
+A2A has what MCP lacks: task state is first class. A fresh submission to a tripped agent yields the task state **`rejected`**, not `failed`, returned **with a task id**, alongside `503` and the same exact `Retry-After` (`crates/busbar-core/src/a2a/relay.rs:1462-1481`, `crates/busbar-core/src/a2a/receive.rs:1991-2016`). A verb naming an *existing* task is different: the task lives at exactly one backend and a tripped backend must not end it, so the verb gets the refusal and the row keeps its last-known state. [A2A](/docs/a2a/#what-a-tripped-agent-returns) carries the full response.
 
 The two states are different claims and the spec gives us both. `failed` means we tried and it broke. `rejected` means **we did not accept this work**, which is literally what a breaker refusing to start a call has done. The caller still gets a task id to poll and correlate, so it loses nothing, and **the calling agent decides whether and when to retry.** Busbar does not invent a retry schedule on another agent's behalf.
 
 ### What the operator sees
 
-On the LLM plane, a trip is an operator-facing signal that names the lane and the cause the disposition pipeline attributed. On MCP and A2A the same signal is live: a trip logs a warning naming the target's plane-qualified cell key, and the refusal a caller sees names the server (or pool) and the exact `Retry-After`. A hard-down tool server costs milliseconds, not timeouts, and the operator learns from the log rather than from a user.
+On all three planes a trip is an operator-facing signal that names the target and the cause the disposition pipeline attributed, and on MCP and A2A the caller is told too, in that plane's own vocabulary — the two sections above. A trip logs a warning naming the target's plane-qualified cell key, so a hard-down tool server costs milliseconds rather than a queue of slow calls whose first report comes from a user.
+
+Where the target is a member of a pool the operator declared, the refusal above is not what the caller gets: the walk selects the next verified member of that same pool and the call is served. A refusal is what remains when there is no such pool, or when every member of it is tripped.
 
 ---
 

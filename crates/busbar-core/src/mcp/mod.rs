@@ -13,9 +13,19 @@
 //! that the token's audience is ITSELF — and from there it is machinery that already exists:
 //! identity, budget, policy, rate limits, audit.
 //!
-//! busbar is NOT the authorization server. The tokens are minted by the operator's existing IdP
-//! (Okta, Entra, Auth0), and nothing in this module issues one. That split is deliberate: an
-//! authorization server is a plugin surface, and it is deferred.
+//! **THIS MODULE is not the authorization server**, and the split is deliberate: with `mcp:` alone
+//! the tokens are minted by the operator's existing IdP (Okta, Entra, Auth0) and nothing here issues
+//! one, so a resource server's whole job stays a resource server's job — verify, never mint.
+//!
+//! busbar the PRODUCT does have an authorization server, and it is not a plugin surface and not
+//! deferred: [`crate::oauth_as`] is a first-class in-core plane, off unless the `oauth_as:` block is
+//! configured, serving all three of the `2026-07-28` registration mechanisms and issuing RFC 9068
+//! `at+jwt` access tokens whose `aud` is one of busbar's own protected resources
+//! ([`crate::oauth_as::plane`], routes in [`crate::oauth_as::routes`]). It exists because an
+//! enterprise identity team will not turn on RFC 7591 for Codex or Claude.ai, so "point at your IdP"
+//! is not an answer for the clients people actually run. The two planes compose rather than
+//! overlap: `oauth_as:` mints, `mcp:` verifies, and this module's audience check is the same check
+//! either way — it does not care, and must not care, which authorization server minted the token.
 //!
 //! ## Why the audience check is the load-bearing one
 //!
