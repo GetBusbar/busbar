@@ -5497,7 +5497,7 @@ fn gemini_citation_metadata_reads_and_projects_to_anthropic() {
     assert_eq!(citations[0].end_index, Some(15));
 
     // Cross-protocol Anthropic egress carries url + title.
-    let aw = busbar_core::proto::anthropic::AnthropicWriter;
+    let aw = super::super::anthropic::AnthropicWriter;
     let wire = aw.write_response(&ir);
     let c = wire
         .pointer("/content")
@@ -5716,7 +5716,7 @@ fn stream_gemini_citation_metadata_projects_to_anthropic_citations_delta() {
 
     // Cross-protocol Anthropic egress: the CitationsDelta becomes a native
     // content_block_delta/citations_delta carrying the synthesized Anthropic citation.
-    let aw = busbar_core::proto::anthropic::AnthropicWriter;
+    let aw = super::super::anthropic::AnthropicWriter;
     let delta_ev = events
         .iter()
         .find_map(|e| match e {

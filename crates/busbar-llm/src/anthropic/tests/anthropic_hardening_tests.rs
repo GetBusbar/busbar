@@ -2657,7 +2657,7 @@ fn tool_choice_openai_specific_to_anthropic_targeted() {
         "tools": [{"type":"function","function":{"name":"get_weather","parameters":{}}}],
         "tool_choice": {"type":"function","function":{"name":"get_weather"}}
     });
-    let mut ir = busbar_core::proto::openai_chat::OpenAiReader
+    let mut ir = super::super::openai_chat::OpenAiReader
         .read_request(&openai_body)
         .expect("openai read");
     assert_eq!(

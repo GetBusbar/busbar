@@ -903,3 +903,44 @@ fn validate_refuses_a_publish_as_collision_with_a_namespaced_default() {
         "distinct published names must validate clean: {stdout}{stderr}"
     );
 }
+
+/// THE OPERATOR-VISIBLE PROTOCOL ORDER, PINNED ON THE SHIPPED BINARY.
+///
+/// This sequence is load-bearing twice: it is the `must be one of:` tail an operator reads on a bad
+/// `protocol:`, and `telemetry` banks one metric family per entry and finds it again BY POSITION,
+/// so a reordering silently re-points every dashboard series behind the moved entry. Nothing inside
+/// `busbar-core` can pin it — core's test build resolves the dialects from its own built-in table,
+/// while the SHIPPED order is `merged_boot_decls(busbar_llm::DECLS ++ mcp, remaining built-ins)`,
+/// which only exists once the composition root has run. So it is pinned here, black-box, on the
+/// real binary, by reading the refusal an operator would read.
+///
+/// This is the assertion the LLM consolidation had to satisfy. Folding six per-dialect crates into
+/// one plugin moves every one of them from core's built-in table into the installed set, and the
+/// installed set is folded AHEAD of the built-ins — so a naive fold reorders the list. It was
+/// measured doing exactly that during this work (cohere went from slot 6 to slot 2). The order is
+/// preserved by taking the dialects out in the built-in table's own order and appending each to
+/// `busbar_llm::DECLS`, which keeps the installed set a PREFIX of the operator-visible list at
+/// every step; this test is what makes that a checked property rather than a careful intention.
+#[test]
+fn the_operator_visible_protocol_order_is_exactly_the_shipped_one() {
+    let d = fixture_dir("protocol-order");
+    write_configs(&d, "");
+    // Point the provider at a protocol that cannot exist, so the refusal lists the real ones.
+    std::fs::write(
+        d.join("providers.yaml"),
+        r#"mock:
+  protocol: definitely-not-a-protocol
+  base_url: "http://127.0.0.1:9"
+  api_key_env: MOCK_KEY
+"#,
+    )
+    .unwrap();
+    let (code, out, err) = run_busbar(&d, &["--validate"]);
+    let all = format!("{out}{err}");
+    assert_ne!(code, 0, "an unknown protocol must fail validation: {all}");
+    assert!(
+        all.contains("must be one of: anthropic, gemini, openai, bedrock, responses, cohere"),
+        "the operator-visible protocol order changed. It is a metric-family index as well as a \
+         config-error string, so this is not cosmetic — see this test's doc. Got: {all}"
+    );
+}

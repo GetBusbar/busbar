@@ -18,7 +18,7 @@ mod writer;
 
 /// Build this dialect's wire codec — the [`ProtocolDecl::codec`] constructor. A fresh instance per
 /// resolution, exactly as the registry's field doc requires. Mirrors
-/// `busbar_proto_anthropic::protocol`.
+/// `super::anthropic::protocol`.
 pub fn protocol() -> Protocol {
     Protocol::new(PROTO_GEMINI, GeminiReader, GeminiWriter)
 }
@@ -61,7 +61,7 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
 /// (`proxy::strip_router_shim_keys`), and the Gemini reader's `modeled_keys` exclusion so it never
 /// reaches a backend on any path. A leading `__busbar` makes a collision with a real provider field
 /// impossible. Defined here and referenced at this owning path, so the route/forward sites reach it
-/// via `busbar_core::proto::gemini::GEMINI_JSON_ARRAY_SHIM_KEY`.
+/// via `super::gemini::GEMINI_JSON_ARRAY_SHIM_KEY`.
 pub(crate) const GEMINI_JSON_ARRAY_SHIM_KEY: &str = "__busbar_gemini_json_array";
 
 /// The canonical Gemini bad-API-key message text (`google.rpc.Status.message` a real Generative

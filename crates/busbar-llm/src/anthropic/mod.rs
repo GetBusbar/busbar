@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! busbar-proto-anthropic — the Anthropic (Messages API) dialect, as a PROTOCOL CRATE.
+//! The Anthropic (Messages API) dialect — one module of the `busbar-llm` protocol crate.
 //!
 //! THE FIRST EXTRACTED PROTOCOL, and the control experiment for the plugin seam
 //! (`design/1.6.0-llm-extraction-plan.md` §3.2): the five files here are exactly the per-dialect

@@ -1,8 +1,8 @@
 //! The two OpenAI<->Anthropic analog carries: `user` <-> `metadata.user_id` and
 //! `parallel_tool_calls` <-> `!tool_choice.disable_parallel_tool_use`. Same switch, different
 //! spelling/location — these must CROSS the seam instead of dying in `extra`.
+use super::super::openai_chat::{OpenAiReader, OpenAiWriter};
 use super::{AnthropicReader, AnthropicWriter};
-use busbar_core::proto::openai_chat::{OpenAiReader, OpenAiWriter};
 use busbar_core::proto::{ProtocolReader, ProtocolWriter};
 
 fn tools_json() -> serde_json::Value {

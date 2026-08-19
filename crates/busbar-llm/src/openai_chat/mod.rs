@@ -20,7 +20,7 @@ mod writer;
 
 /// Build this dialect's wire codec — the [`ProtocolDecl::codec`] constructor. A fresh instance per
 /// resolution, exactly as the registry's field doc requires. Mirrors
-/// `busbar_proto_anthropic::protocol`.
+/// `super::anthropic::protocol`.
 pub fn protocol() -> Protocol {
     Protocol::new(PROTO_OPENAI, OpenAiReader, OpenAiWriter)
 }

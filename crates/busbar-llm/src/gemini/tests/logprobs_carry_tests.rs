@@ -34,7 +34,7 @@ fn gemini_body_with_logprobs() -> serde_json::Value {
 fn openai_logprobs_codec_round_trips_bytes_and_top() {
     // Direct read/write of the OpenAI logprobs codec: bytes and top_logprobs survive, and a
     // missing `bytes` is synthesized from the token's UTF-8 on write.
-    use busbar_core::proto::openai_chat::{read_openai_logprobs, write_openai_logprobs};
+    use super::super::openai_chat::{read_openai_logprobs, write_openai_logprobs};
     let src = serde_json::json!({"content": [
         {"token": "Hi", "logprob": -0.1, "bytes": [72, 105],
          "top_logprobs": [{"token": "Hi", "logprob": -0.1, "bytes": [72, 105]},
@@ -119,7 +119,7 @@ fn top_logprobs_clamped_to_gemini_max_on_egress() {
         "messages": [{"role": "user", "content": "hi"}],
         "logprobs": true, "top_logprobs": 20
     });
-    let ir = busbar_core::proto::openai_chat::OpenAiReader
+    let ir = super::super::openai_chat::OpenAiReader
         .read_request(&body)
         .expect("parses");
     let out = Protocol::gemini().writer().write_request(&ir);
@@ -136,7 +136,7 @@ fn top_logprobs_zero_omits_gemini_logprobs_count_but_forces_response_logprobs() 
         "messages": [{"role": "user", "content": "hi"}],
         "logprobs": true, "top_logprobs": 0
     });
-    let ir = busbar_core::proto::openai_chat::OpenAiReader
+    let ir = super::super::openai_chat::OpenAiReader
         .read_request(&body)
         .expect("parses");
     let out = Protocol::gemini().writer().write_request(&ir);
@@ -152,7 +152,7 @@ fn top_logprobs_zero_omits_gemini_logprobs_count_but_forces_response_logprobs() 
         "messages": [{"role": "user", "content": "hi"}],
         "logprobs": true, "top_logprobs": 3
     });
-    let ir3 = busbar_core::proto::openai_chat::OpenAiReader
+    let ir3 = super::super::openai_chat::OpenAiReader
         .read_request(&body3)
         .expect("parses");
     let out3 = Protocol::gemini().writer().write_request(&ir3);

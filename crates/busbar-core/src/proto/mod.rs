@@ -1300,7 +1300,7 @@ impl Protocol {
     }
 
     /// Construct an Anthropic protocol instance — TEST FIXTURE SHIM. The dialect is an extracted
-    /// crate (`busbar-proto-anthropic`); production resolves it through the registry after the
+    /// module of the LLM plugin crate (`busbar-llm`); production resolves it through the registry after the
     /// composition root installs its declaration, and core has no production path that could name
     /// it. The pre-extraction fixture surface calls this constructor by name in hundreds of tests,
     /// so it survives for the builds that compile the dialect back in (see the `mod anthropic`
@@ -1315,11 +1315,11 @@ impl Protocol {
     }
 
     /// Construct an OpenAI protocol instance — TEST FIXTURE SHIM, same rationale as
-    /// [`Protocol::anthropic`]: the dialect is an extracted crate (`busbar-proto-openai-chat`);
+    /// [`Protocol::anthropic`]: the dialect is a module of the LLM plugin crate (`busbar-llm`);
     /// production resolves it through the registry after the composition root installs its
     /// declaration.
     // `test-support`, not bare `cfg(test)`: a SIBLING dialect crate's own test build reaches this
-    // fixture shim (busbar-proto-gemini's logprobs carry tests translate gemini ↔ openai), and that
+    // fixture shim (busbar-llm's gemini logprobs carry tests translate gemini ↔ openai), and that
     // build sees core through the `test-support` feature, not through core's `cfg(test)`.
     #[cfg(any(test, feature = "test-support"))]
     pub fn openai() -> Self {
@@ -1327,7 +1327,7 @@ impl Protocol {
     }
 
     /// Construct a Gemini protocol instance — TEST FIXTURE SHIM, same rationale as
-    /// [`Protocol::anthropic`]: the dialect is an extracted crate (`busbar-proto-gemini`);
+    /// [`Protocol::anthropic`]: the dialect is a module of the LLM plugin crate (`busbar-llm`);
     /// production resolves it through the registry after the composition root installs its
     /// declaration.
     #[cfg(any(test, feature = "test-support"))]
@@ -1887,8 +1887,8 @@ fn write_sse_frame(out: &mut Vec<u8>, event_type: &str, data: &serde_json::Value
 }
 
 /// THE EXTRACTED ANTHROPIC DIALECT, compiled back in for TEST BUILDS ONLY. The sources live in
-/// `crates/busbar-proto-anthropic` (the first protocol crate; the `busbar` binary registers its
-/// `DECL` through `registry::install_protocols`), and core's PRODUCTION build knows nothing of
+/// `crates/busbar-llm/src/anthropic` (a module of the ONE LLM plugin crate; the `busbar`
+/// binary registers every dialect's `DECL` through `registry::install_protocols`), and core's PRODUCTION build knows nothing of
 /// them — this decl exists so the pre-extraction fixture surface (the `Protocol::anthropic()`
 /// fixtures and `protocol: anthropic` configs across the core suite) keeps exercising the real
 /// codec from inside this crate's test binary, where an externally-linked copy could not reach the
@@ -1896,23 +1896,23 @@ fn write_sse_frame(out: &mut Vec<u8>, event_type: &str, data: &serde_json::Value
 /// written against `busbar_core::` paths, which the `extern crate self as busbar_core` alias in
 /// lib.rs resolves here.
 #[cfg(any(test, feature = "test-support"))]
-#[path = "../../../busbar-proto-anthropic/src/lib.rs"]
+#[path = "../../../busbar-llm/src/anthropic/mod.rs"]
 pub mod anthropic;
 pub(crate) mod bedrock;
 pub(crate) mod cohere;
 /// Wire-dialect detection: `protocol_id(path, headers)` sniffs which protocol a request speaks.
 pub(crate) mod detect;
 /// THE EXTRACTED GEMINI DIALECT, compiled back in for TEST BUILDS ONLY. Sources live in
-/// `crates/busbar-proto-gemini`; see the `mod anthropic` doc above for the full rationale — same
-/// mechanism, third dialect.
+/// `crates/busbar-llm/src/gemini`; see the `mod anthropic` doc above for the full rationale —
+/// same mechanism, same crate, a different dialect module of it.
 #[cfg(any(test, feature = "test-support"))]
-#[path = "../../../busbar-proto-gemini/src/lib.rs"]
+#[path = "../../../busbar-llm/src/gemini/mod.rs"]
 pub mod gemini;
 /// THE EXTRACTED OPENAI CHAT DIALECT, compiled back in for TEST BUILDS ONLY. Sources live in
-/// `crates/busbar-proto-openai-chat`; see the `mod anthropic` doc above for the full rationale —
-/// same mechanism, second dialect.
+/// `crates/busbar-llm/src/openai_chat`; see the `mod anthropic` doc above for the full
+/// rationale — same mechanism, same crate, a different dialect module of it.
 #[cfg(any(test, feature = "test-support"))]
-#[path = "../../../busbar-proto-openai-chat/src/lib.rs"]
+#[path = "../../../busbar-llm/src/openai_chat/mod.rs"]
 pub mod openai_chat;
 pub mod openai_family;
 pub mod openai_responses;

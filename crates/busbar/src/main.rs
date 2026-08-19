@@ -497,17 +497,21 @@ fn validate_worker_threads_config(wt: Option<usize>) -> Result<Option<usize>, St
 /// `proto-*` feature) drops the dependency edge AND the registration line together — which is what
 /// makes `cargo build -p busbar` without a dialect a complete deletion, not a link error.
 fn register_protocols() {
-    static INSTALLED: &[&busbar_core::proto::ProtocolDecl] = &[
-        #[cfg(feature = "proto-anthropic")]
-        &busbar_proto_anthropic::DECL,
-        #[cfg(feature = "proto-gemini")]
-        &busbar_proto_gemini::DECL,
-        #[cfg(feature = "proto-mcp")]
-        &busbar_proto_mcp::DECL,
-        #[cfg(feature = "proto-openai-chat")]
-        &busbar_proto_openai_chat::DECL,
-    ];
-    busbar_core::proto::registry::install_protocols(INSTALLED);
+    // ONE ENTRY PER PROTOCOL, and the LLM protocol's entry is a SLICE because that protocol has six
+    // dialects. `busbar_llm::DECLS` states their order (see its doc); the MCP protocol contributes
+    // its single declaration after them. Concatenated here rather than in core, because the ORDER
+    // of the whole installed set is the composition root's statement and nobody else's.
+    //
+    // THE ORDER IS OPERATOR-VISIBLE. `merged_boot_decls` folds this set AHEAD of whatever built-in
+    // declarations core still carries, and the resulting sequence is both the "must be one of:"
+    // tail on a bad `protocol:` and the list `telemetry` indexes its per-protocol metric families
+    // by POSITION in. Appending keeps every existing index; inserting renumbers them.
+    let mut installed: Vec<&'static busbar_core::proto::ProtocolDecl> = Vec::new();
+    #[cfg(feature = "proto-llm")]
+    installed.extend_from_slice(busbar_llm::DECLS);
+    #[cfg(feature = "proto-mcp")]
+    installed.push(&busbar_proto_mcp::DECL);
+    busbar_core::proto::registry::install_protocols(installed);
 }
 
 fn main() {

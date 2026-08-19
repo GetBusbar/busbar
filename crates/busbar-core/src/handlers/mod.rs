@@ -26,10 +26,9 @@
 //! TRANSPORT: a variant in `transport.rs` and an arrival that frames these same codecs — no codec
 //! changes, because a codec never learns which channel it is speaking over. Nothing else moves.
 
-// The Anthropic, OpenAI Chat and Gemini handlers live in their extracted dialect crates
-// (`busbar-proto-anthropic`, `busbar-proto-openai-chat`, `busbar-proto-gemini`, each own
-// `src/handler.rs`) — reachable in the builds that compile the dialect back in as
-// `crate::proto::anthropic::handler` / `crate::proto::openai_chat::handler` /
+// The Anthropic, OpenAI Chat and Gemini handlers live in the `busbar-llm` plugin crate, each in
+// its own dialect module's `handler.rs` — reachable in the builds that compile those dialects back
+// in as `crate::proto::anthropic::handler` / `crate::proto::openai_chat::handler` /
 // `crate::proto::gemini::handler`, and reachable in production only through the registry's
 // `ProtocolDecl::handler`, which is the point.
 pub(crate) mod bedrock;
