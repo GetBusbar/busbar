@@ -39,6 +39,7 @@ use std::sync::Arc;
 
 use super::inbound::{Dispatch, CREDENTIAL_KIND_A2A_INBOUND};
 use super::words::{plane_absent, refuse_admission, A2aWords};
+use crate::plane::taskstore;
 use crate::state::{App, CurrentApp};
 
 /// The audit action every inbound call on this plane records under.
@@ -1294,12 +1295,9 @@ async fn admitted(
         // BACK TO `working`, which chains a `task.resumed` provenance event. The transition table
         // refuses this from a terminal state, so a caller cannot resurrect finished work by
         // re-using its `contextId`.
-        if let Err(e) = crate::plane::taskstore::TASKS.transition(
-            &task_id,
-            super::task::TaskState::Working,
-            now,
-            &request_id,
-        ) {
+        if let Err(e) =
+            taskstore::TASKS.transition(&task_id, super::task::TaskState::Working, now, &request_id)
+        {
             tracing::error!(task = %task_id, error = %e, "a2a: an interrupted task could not be resumed");
             return (
                 axum::http::StatusCode::CONFLICT,
@@ -1328,7 +1326,7 @@ async fn admitted(
                 return plane_absent();
             }
         };
-        if let Err(e) = crate::plane::taskstore::TASKS.submit(&task, &request_id) {
+        if let Err(e) = taskstore::TASKS.submit(&task, &request_id) {
             tracing::error!(error = %e, "a2a: the inbound task could not be recorded");
             return (
                 axum::http::StatusCode::SERVICE_UNAVAILABLE,
@@ -1343,7 +1341,7 @@ async fn admitted(
         // THE PER-TASK HASH-CHAIN EVENT FOR THE HOP: who delegated, to which registered agent,
         // recorded BEFORE the socket rather than after it, so a hop that never returns still left a
         // chained record saying it was made.
-        let _ = crate::plane::taskstore::TASKS.record_dispatch(
+        let _ = taskstore::TASKS.record_dispatch(
             &task_id,
             hop.target_agent_id.as_deref().unwrap_or(&agent_id),
             now,
@@ -1352,11 +1350,7 @@ async fn admitted(
     }
 
     if let Some(pinned) = callback.as_ref() {
-        let _ = crate::plane::taskstore::TASKS.set_push_callback(
-            &task_id,
-            Some(pinned.url.clone()),
-            now,
-        );
+        let _ = taskstore::TASKS.set_push_callback(&task_id, Some(pinned.url.clone()), now);
         // THE ADDRESSES THE GUARD JUST JUDGED, kept so the FIRST delivery is a `revalidate` — the
         // fresh answer must pass the guard AND still overlap this set — rather than a bare
         // `validate`. Process-local: see `pushdeliver::pins` for why it is not, and must not be
@@ -1725,7 +1719,7 @@ async fn stream_hop(
     // at zero would spend the first N advances re-asserting a position the store already holds —
     // harmless, because the store refuses to rewind, but it would make the cursor stop counting
     // this stream's chunks and start counting from scratch, which is the number a resubscribe reads.
-    let mut cursor: u64 = crate::plane::taskstore::TASKS
+    let mut cursor: u64 = taskstore::TASKS
         .get_unscoped(&ctx.task_id)
         .map_or(0, |t| t.artifact_cursor);
     let handle = tokio::task::spawn_blocking(move || {
@@ -1742,9 +1736,7 @@ async fn stream_hop(
                 // ALREADY ON A BLOCKING THREAD, so the delivery is made inline rather than spawned:
                 // this closure IS the `spawn_blocking` the unary path has to create. Delivering in
                 // order also means the receiver sees the states in the order they happened.
-                if let Ok(task) =
-                    crate::plane::taskstore::TASKS.transition(&task_id, state, now, &request_id)
-                {
+                if let Ok(task) = taskstore::TASKS.transition(&task_id, state, now, &request_id) {
                     if task.push_callback.is_some() {
                         if let Err(e) = super::pushdeliver::deliver(notify_seam.as_ref(), &task) {
                             tracing::warn!(task = %task.task_id, error = %e, "a2a: the push notification was not delivered");
@@ -1756,12 +1748,7 @@ async fn stream_hop(
                 cursor = cursor.saturating_add(1);
                 // The resubscribe resume point, advanced durably per chunk. Monotonic in the store,
                 // so a duplicate delivery cannot rewind it.
-                let _ = crate::plane::taskstore::TASKS.advance_cursor(
-                    &task_id,
-                    cursor,
-                    now,
-                    &request_id,
-                );
+                let _ = taskstore::TASKS.advance_cursor(&task_id, cursor, now, &request_id);
             }
             // A caller that has gone away closes the receiver, and the hop stops there rather than
             // draining an upstream into a channel nobody is reading.
@@ -1882,7 +1869,7 @@ async fn stream_hop(
                 // A BROKEN STREAM IS A TERMINAL FAILURE and the caller is told, for the same
                 // reason `fail_task` tells them: silence and "still working" are the same thing to
                 // a receiver, and this is the case where they are most different.
-                if let Ok(task) = crate::plane::taskstore::TASKS.transition(
+                if let Ok(task) = taskstore::TASKS.transition(
                     &watched_task,
                     super::task::TaskState::Failed,
                     watched_now,
@@ -1928,7 +1915,7 @@ fn record_state(ctx: &HopContext, state: super::task::TaskState) {
     if state == super::task::TaskState::Submitted {
         return;
     }
-    match crate::plane::taskstore::TASKS.transition(&ctx.task_id, state, ctx.now, &ctx.request_id) {
+    match taskstore::TASKS.transition(&ctx.task_id, state, ctx.now, &ctx.request_id) {
         // THE STATE CHANGED, SO THE CALLER IS TOLD. This is the line that was missing: a caller
         // could register a push callback, have it validated, pinned and persisted, and then never
         // hear anything, because nothing on this plane ever connected to it.
@@ -2012,7 +1999,7 @@ fn refuse_hop(ctx: &HopContext, refusal: &super::relay::RelayRefusal) -> Respons
         // refusal and the row keeps its last-known state, readable from busbar's own store. Either
         // way: `503` + an EXACT `Retry-After` from the cell's own deadline.
         if !ctx.addressed {
-            match crate::plane::taskstore::TASKS.transition(
+            match taskstore::TASKS.transition(
                 &ctx.task_id,
                 super::task::TaskState::Rejected,
                 ctx.now,
@@ -2133,12 +2120,7 @@ fn refuse_hop(ctx: &HopContext, refusal: &super::relay::RelayRefusal) -> Respons
 /// about the RECORD rather than about the answer, split out because a refusal that carries the
 /// backend's own error code renders its answer differently and must still end the task identically.
 fn end_task(seam: &Arc<dyn super::relay::RelaySeam>, task_id: &str, request_id: &str, now: u64) {
-    match crate::plane::taskstore::TASKS.transition(
-        task_id,
-        super::task::TaskState::Failed,
-        now,
-        request_id,
-    ) {
+    match taskstore::TASKS.transition(task_id, super::task::TaskState::Failed, now, request_id) {
         // A FAILURE IS A TERMINAL STATE AND THE CALLER WANTS IT MOST. A push callback that only
         // ever fired on success would leave the one case a caller actually needs to be woken for —
         // work that will never finish — as silence indistinguishable from work still in progress.
@@ -2268,7 +2250,7 @@ pub(crate) async fn validate_callback(
 
 /// THE TASK A REQUEST NAMES, if this caller owns one by that id.
 ///
-/// SCOPED, through [`crate::plane::taskstore::TaskRegistry::get_scoped`], so a caller naming somebody
+/// SCOPED, through [`taskstore::TaskRegistry::get_scoped`], so a caller naming somebody
 /// else's task id resolves to nothing and takes the ordinary path — it is not a way to read, cancel
 /// or subscribe to another principal's work, and the answer it gets is the backend's opinion of an
 /// id the backend does not hold, which is the same answer a made-up id gets.
@@ -2281,7 +2263,7 @@ fn addressed_task(envelope: &serde_json::Value, principal: &str) -> Option<super
         let Some(named) = params.get(member).and_then(serde_json::Value::as_str) else {
             continue;
         };
-        if let Ok(task) = crate::plane::taskstore::TASKS.get_scoped(principal, named) {
+        if let Ok(task) = taskstore::TASKS.get_scoped(principal, named) {
             return Some(task);
         }
     }
@@ -2294,7 +2276,7 @@ fn addressed_task(envelope: &serde_json::Value, principal: &str) -> Option<super
 /// guessing a `contextId`. The most recently updated one wins where a context somehow has two, which
 /// is the only ordering that cannot resume a task that has since been superseded.
 fn resumable_task(principal: &str, context_id: &str, agent_id: &str) -> Option<super::task::Task> {
-    let mut candidates: Vec<super::task::Task> = crate::plane::taskstore::TASKS
+    let mut candidates: Vec<super::task::Task> = taskstore::TASKS
         .list_scoped(principal)
         .into_iter()
         .filter(|t| {
