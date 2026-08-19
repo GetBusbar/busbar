@@ -10,8 +10,10 @@
 //! singleton can be initialised once per test binary, which would leave the fold's order and skip
 //! rules provable only by booting binaries.
 
-use crate::plane::config::{config_sections_from, refuse_cross_plane_reference};
-use crate::plane::registry::{builtin_plane_decls, merged_boot_plane_decls, PlaneDecl};
+use crate::plane::config::{config_sections, config_sections_from, refuse_cross_plane_reference};
+use crate::plane::registry::{
+    builtin_plane_decls, install_planes, merged_boot_plane_decls, PlaneDecl,
+};
 use crate::plane::Plane;
 
 /// A PLANE BUSBAR DOES NOT HAVE. Nothing in core names it, nothing in core has an enum variant for
@@ -214,4 +216,23 @@ fn a_registered_plane_cannot_collide_with_a_builtin_vocabulary() {
         sections.len(),
         "config sections collide: {sections:?}"
     );
+}
+
+/// INSTALL BEFORE FIRST READ, enforced. The module header states the invariant: a declaration
+/// installed after another layer resolved against the smaller (built-ins-only) set would mean two
+/// layers of one process disagree about which planes exist, so [`install_planes`] must refuse to
+/// run once the process plane list has been read even once.
+///
+/// This is the ONLY test in the crate that calls [`install_planes`], deliberately: it is a write to
+/// process-global `OnceLock`s, and a second call anywhere else in this binary would make this test's
+/// outcome depend on test execution order. [`config_sections`] is called here specifically to force
+/// the read `install_planes` must then refuse to follow — it is exercised incidentally by many other
+/// tests in this crate's test binary already (any test that reaches
+/// `plane::config::config_sections()`), so this call is not what makes the read happen; it is what
+/// makes the read happen NO LATER than this test needs it to, regardless of what ran before it.
+#[test]
+#[should_panic(expected = "install_planes called after the plane list was first read")]
+fn install_planes_after_first_read_panics() {
+    let _ = config_sections();
+    install_planes(&[]);
 }
