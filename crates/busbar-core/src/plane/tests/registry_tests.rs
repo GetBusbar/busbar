@@ -12,9 +12,11 @@
 
 use crate::plane::config::{config_sections, config_sections_from, refuse_cross_plane_reference};
 use crate::plane::registry::{
-    builtin_plane_decls, install_planes, merged_boot_plane_decls, PlaneDecl,
+    build_dispatch, builtin_plane_decls, install_planes, merged_boot_plane_decls, PlaneDecl,
 };
 use crate::plane::Plane;
+use std::any::Any;
+use std::collections::BTreeMap;
 
 /// A PLANE BUSBAR DOES NOT HAVE. Nothing in core names it, nothing in core has an enum variant for
 /// it, and no `match` anywhere has an arm for it — which is precisely the property under test.
@@ -26,6 +28,8 @@ static WIDGET_PLANE: PlaneDecl = PlaneDecl {
     subject_noun: "fronted widget",
     audit_kind: "widget_thing",
     wire_format_names: || &["widgetrpc"],
+    claims: |_| Vec::new(),
+    admission: |_| None,
 };
 
 fn installed() -> Vec<&'static PlaneDecl> {
@@ -116,6 +120,8 @@ fn a_same_key_registration_is_skipped_and_the_first_copy_wins() {
         subject_noun: "fronted agent",
         audit_kind: "a2a_agent",
         wire_format_names: || &["jsonrpc"],
+        claims: |_| Vec::new(),
+        admission: |_| None,
     };
 
     let folded = merged_boot_plane_decls(&[&A2A_FROM_THE_CRATE], builtin_plane_decls());
@@ -235,4 +241,290 @@ fn a_registered_plane_cannot_collide_with_a_builtin_vocabulary() {
 fn install_planes_after_first_read_panics() {
     let _ = config_sections();
     install_planes(&[]);
+}
+
+// ---------------------------------------------------------------------------------------------
+// THE THREE ADMISSION RATCHETS (Step 2.2). These drive `build_dispatch` — the registry-driven
+// fold that assembles the dispatch table from each plane's decl and its runtime object — directly,
+// with the SAME real MCP/A2A objects a boot builds, so the security property they pin is the one
+// production has rather than one a fixture invented.
+// ---------------------------------------------------------------------------------------------
+
+/// A REAL MCP resource, mounting `/mcp` and binding its canonical URI as the audience.
+fn mcp_slot() -> crate::mcp::McpResource {
+    crate::mcp::McpResource::from_cfg(&crate::mcp::McpCfg {
+        canonical_uri: "https://gw.example.com/mcp".to_string(),
+        authorization_servers: vec!["https://login.example.com".to_string()],
+        ..Default::default()
+    })
+    .expect("a well-formed mcp resource")
+}
+
+/// A REAL A2A plane WITH a receiving side (a `public_url`), so `admission()` is `Some` and the plane
+/// mounts both `/a2a` and the gRPC service path.
+fn a2a_slot_receiving() -> std::sync::Arc<crate::a2a::plane::A2aPlane> {
+    use crate::a2a::config::{AgentDefCfg, AgentPinCfg, AgentsCfg, PinMechanism};
+    let mut cfg = AgentsCfg::default();
+    cfg.agents.insert(
+        "planner".to_string(),
+        AgentDefCfg {
+            url: "https://agent.example/planner".to_string(),
+            pin: AgentPinCfg {
+                mechanism: PinMechanism::Unpinned,
+                key: None,
+                fingerprint: None,
+            },
+            reverify_ttl: None,
+            recovery_backoff: None,
+            protocol_version: None,
+            allow_private: false,
+            upstream_credentials: None,
+            upstream_credential: None,
+            egress_scopes: Vec::new(),
+            client_identity: None,
+            hooks: Vec::new(),
+        },
+    );
+    crate::a2a::plane::A2aPlane::from_config(&cfg, Some("https://busbar.example"))
+        .expect("a receiving a2a plane")
+}
+
+/// The MCP + A2A slot map a boot hands `build_dispatch`, keyed by plane key.
+fn builtin_slots<'a>(
+    mcp: &'a crate::mcp::McpResource,
+    a2a: &'a crate::a2a::plane::A2aPlane,
+) -> BTreeMap<&'static str, &'a dyn Any> {
+    let mut slots: BTreeMap<&'static str, &dyn Any> = BTreeMap::new();
+    slots.insert("mcp", mcp);
+    slots.insert("a2a", a2a);
+    slots
+}
+
+/// **RATCHET R1 — every declared path is claimed, and every claimed path is audience-checked.**
+///
+/// For each registered plane, every `(path, wire)` its decl declares against its real object is
+/// mounted, and [`super::PlaneDispatch::admission_for`] resolves an audience on it — including the
+/// A2A gRPC SECOND claim, `/lf.a2a.v1.A2AService`, whose path a gRPC client cannot be pointed off of.
+/// A path a plane answers on but does not claim here is a confused-deputy hole where no token's `aud`
+/// is checked, which is the whole reason the claim set — not the router — is what this pins.
+///
+/// RED, watched: drop the gRPC entry from the A2A decl's `claims` and this fails —
+/// `admission_for("/lf.a2a.v1.A2AService/SendMessage")` returns `None` on a path the plane still
+/// answers, the exact audience-less door the ratchet forbids.
+#[test]
+fn r1_every_declared_path_resolves_an_admission() {
+    let mcp = mcp_slot();
+    let a2a = a2a_slot_receiving();
+    let slots = builtin_slots(&mcp, &a2a);
+    let dispatch = build_dispatch(builtin_plane_decls(), &slots).expect("the dispatch table builds");
+
+    for decl in builtin_plane_decls() {
+        let Some(slot) = slots.get(decl.key).copied() else {
+            continue;
+        };
+        for (path, _wire) in (decl.claims)(slot) {
+            // A claim's own path, and a path beneath it, both inherit the plane's audience.
+            assert!(
+                dispatch.admission_for(&path).is_some(),
+                "plane `{}` claims `{path}` but it resolves NO admission — an audience-less door",
+                decl.key
+            );
+            let beneath = format!("{path}/probe");
+            assert!(
+                dispatch.admission_for(&beneath).is_some(),
+                "plane `{}`: `{beneath}` under a claimed mount must inherit the audience",
+                decl.key
+            );
+        }
+    }
+
+    // The A2A gRPC SECOND claim specifically: it resolves the SAME audience as the canonical `/a2a`
+    // mount, which is the property that would vanish the moment the second claim were dropped.
+    let grpc = dispatch.admission_for("/lf.a2a.v1.A2AService/SendMessage");
+    assert!(
+        grpc.is_some(),
+        "the gRPC service path must be audience-checked, not left open"
+    );
+    assert_eq!(
+        grpc,
+        dispatch.admission_for("/a2a/agents/planner"),
+        "both A2A bindings resolve the one audience the plane's card publishes"
+    );
+}
+
+/// **RATCHET R2 — a mounted plane must bind an admission, or boot refuses.**
+///
+/// A plane that claims a path but returns `None` for its admission would serve an audience-less —
+/// hence unauthenticated — resource. [`build_dispatch`] refuses that at boot with a named error
+/// rather than mounting it. This is what stops a future plane lowering its own admission bar to
+/// nothing simply by omitting the fact.
+///
+/// RED, watched: delete the `!claims.is_empty() && admission.is_none()` guard in `build_dispatch`
+/// and this fails — the table builds `Ok`, the path is in `mounted_keys()`, and no audience guards
+/// it: a door with no lock.
+#[test]
+fn r2_a_mounted_plane_with_no_admission_refuses_boot() {
+    static MOUNTS_BUT_NEVER_ADMITS: PlaneDecl = PlaneDecl {
+        key: "widget",
+        config_section: "widgets",
+        scope_kinds: &["widget"],
+        subject_noun: "fronted widget",
+        audit_kind: "widget_thing",
+        wire_format_names: || &["widgetrpc"],
+        // Claims a path — but binds no audience. The shape build_dispatch must refuse.
+        claims: |_| vec![("/widget".to_string(), "widgetrpc")],
+        admission: |_| None,
+    };
+    let unit = ();
+    let mut slots: BTreeMap<&'static str, &dyn Any> = BTreeMap::new();
+    slots.insert("widget", &unit);
+
+    let err = build_dispatch(&[&MOUNTS_BUT_NEVER_ADMITS], &slots)
+        .expect_err("a plane that mounts a path but binds no admission must refuse boot");
+    assert!(
+        err.contains("widget"),
+        "the refusal names the offending plane: {err}"
+    );
+    assert!(
+        err.contains("bound no admission"),
+        "the refusal says what is missing: {err}"
+    );
+
+    // The CONTROL: a plane that mounts nothing (claims empty) needs no admission and does NOT refuse.
+    static MOUNTS_NOTHING: PlaneDecl = PlaneDecl {
+        key: "widget",
+        config_section: "widgets",
+        scope_kinds: &["widget"],
+        subject_noun: "fronted widget",
+        audit_kind: "widget_thing",
+        wire_format_names: || &["widgetrpc"],
+        claims: |_| Vec::new(),
+        admission: |_| None,
+    };
+    let dispatch = build_dispatch(&[&MOUNTS_NOTHING], &slots)
+        .expect("a plane that claims no path needs no admission");
+    assert!(
+        dispatch.mounted_keys().is_empty(),
+        "and it mounts nothing"
+    );
+}
+
+/// **RATCHET R3 — no scope-kind or audit-kind collision across the DISPATCHED set.**
+///
+/// 2.0 pinned this over the declared list; here it is re-asserted over the planes actually MOUNTED
+/// in a built dispatch table. Two planes sharing a scope kind is how one plane's grant admits
+/// another plane's traffic, and two sharing an audit kind is how one plane's records answer
+/// another's question — a hazard that only bites once both colliding planes have a door.
+///
+/// RED, watched: register a fourth plane that both MOUNTS and reuses `mcp_server` as a scope kind
+/// (a colliding widget in the mount set) and this fails on the scope-kind dedup.
+#[test]
+fn r3_no_vocabulary_collision_across_the_mounted_set() {
+    let mcp = mcp_slot();
+    let a2a = a2a_slot_receiving();
+    let slots = builtin_slots(&mcp, &a2a);
+    let dispatch = build_dispatch(builtin_plane_decls(), &slots).expect("the dispatch table builds");
+
+    let mounted_keys = dispatch.mounted_keys();
+    let mounted: Vec<&&PlaneDecl> = builtin_plane_decls()
+        .iter()
+        .filter(|d| mounted_keys.contains(&d.key))
+        .collect();
+
+    let mut scope_kinds: Vec<&str> = mounted
+        .iter()
+        .flat_map(|d| d.scope_kinds.iter().copied())
+        .collect();
+    let before = scope_kinds.len();
+    scope_kinds.sort_unstable();
+    scope_kinds.dedup();
+    assert_eq!(
+        before,
+        scope_kinds.len(),
+        "scope kinds collide across the mounted set: {scope_kinds:?}"
+    );
+
+    let mut audit_kinds: Vec<&str> = mounted.iter().map(|d| d.audit_kind).collect();
+    let before = audit_kinds.len();
+    audit_kinds.sort_unstable();
+    audit_kinds.dedup();
+    assert_eq!(
+        before,
+        audit_kinds.len(),
+        "audit kinds collide across the mounted set: {audit_kinds:?}"
+    );
+
+    // The mounted set is exactly the two non-residual planes this boot configured.
+    let mut keys = mounted_keys;
+    keys.sort_unstable();
+    assert_eq!(keys, vec!["a2a", "mcp"]);
+}
+
+/// The registry-driven fold reproduces the OLD hardcoded blocks BYTE-FOR-BEHAVIOUR: the same paths
+/// claimed with the same wire formats and the same admissions, built by hand through the public
+/// `mount`/`admit` API and by `build_dispatch` through the decls, must be equal.
+#[test]
+fn build_dispatch_matches_the_hand_mounted_table() {
+    let mcp = mcp_slot();
+    let a2a = a2a_slot_receiving();
+    let slots = builtin_slots(&mcp, &a2a);
+    let built = build_dispatch(builtin_plane_decls(), &slots).expect("dispatch builds");
+
+    let hand = crate::plane::PlaneDispatch::default()
+        .mount(Plane::Mcp, mcp.mount_path(), crate::plane::WIRE_JSONRPC)
+        .admit(Plane::Mcp, mcp.admission())
+        .mount(
+            Plane::A2a,
+            crate::a2a::serve::MOUNT_PATH,
+            crate::plane::WIRE_JSONRPC,
+        )
+        .mount(
+            Plane::A2a,
+            crate::a2a::serve::GRPC_MOUNT_PATH,
+            crate::plane::WIRE_GRPC,
+        )
+        .admit(Plane::A2a, a2a.admission().expect("receiving side"));
+
+    assert_eq!(built, hand, "the registry-driven fold must match the old blocks");
+}
+
+/// A DELEGATION-ONLY A2A plane (no `public_url`) mounts nothing and binds no audience — so it is NOT
+/// refused by R2 (it claims no path) and its paths stay unclaimed. Byte-identical to the old
+/// `a2a_plane.admission().is_some()` gate on the hardcoded block.
+#[test]
+fn a_delegation_only_a2a_plane_mounts_nothing() {
+    use crate::a2a::config::{AgentDefCfg, AgentPinCfg, AgentsCfg, PinMechanism};
+    let mut cfg = AgentsCfg::default();
+    cfg.agents.insert(
+        "planner".to_string(),
+        AgentDefCfg {
+            url: "https://agent.example/planner".to_string(),
+            pin: AgentPinCfg {
+                mechanism: PinMechanism::Unpinned,
+                key: None,
+                fingerprint: None,
+            },
+            reverify_ttl: None,
+            recovery_backoff: None,
+            protocol_version: None,
+            allow_private: false,
+            upstream_credentials: None,
+            upstream_credential: None,
+            egress_scopes: Vec::new(),
+            client_identity: None,
+            hooks: Vec::new(),
+        },
+    );
+    // No public_url ⇒ no receiving side ⇒ admission() is None.
+    let a2a = crate::a2a::plane::A2aPlane::from_config(&cfg, None).expect("a delegating plane");
+    assert!(a2a.admission().is_none());
+
+    let mut slots: BTreeMap<&'static str, &dyn Any> = BTreeMap::new();
+    slots.insert("a2a", a2a.as_ref());
+    let dispatch = build_dispatch(builtin_plane_decls(), &slots).expect("no path, no refusal");
+    assert!(
+        dispatch.mounted_keys().is_empty(),
+        "a delegation-only deployment claims no path"
+    );
+    assert!(dispatch.admission_for("/a2a").is_none());
 }

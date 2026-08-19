@@ -1459,37 +1459,30 @@ pub fn build_app_from_config(
         // it was written for a consumer that did not exist yet. A2A admits only when it has a
         // RECEIVING side (`A2aPlane::admission` answers `None` without a `public_url`), so a
         // delegation-only deployment claims no path and binds no audience.
+        // THE DISPATCH TABLE, folded from the registered plane declarations rather than a hardcoded
+        // block per plane. Each plane's runtime object is handed to its decl (type-erased as
+        // `&dyn Any`), and the decl computes the plane's claims and admission from it — the same
+        // strings the hardcoded MCP/A2A blocks used to compute, now stated beside the plane they
+        // describe so an extracted plane crate contributes its own door. `build_dispatch` refuses the
+        // boot if any plane claims a path but binds no audience (ratchet R2).
+        //
+        // The slot lookup here still names `crate::mcp`/`crate::a2a`: until Step 2.3's type-erased
+        // App slot map lands, appbuild is where each plane's object is matched to its key. The
+        // CLAIMS and ADMISSION logic — the security-load-bearing part — has already left for the
+        // decls.
         planes: Arc::new({
-            let mut dispatch = crate::plane::PlaneDispatch::default();
+            let mut plane_slots: std::collections::BTreeMap<&'static str, &dyn std::any::Any> =
+                std::collections::BTreeMap::new();
             if let Some(r) = cfg.mcp.as_ref() {
-                dispatch = dispatch
-                    .mount(
-                        crate::plane::Plane::Mcp,
-                        r.mount_path(),
-                        crate::plane::WIRE_JSONRPC,
-                    )
-                    .admit(crate::plane::Plane::Mcp, r.admission());
+                plane_slots.insert(crate::mcp::PLANE_DECL.key, r as &dyn std::any::Any);
             }
-            if let Some(admission) = a2a_plane.as_ref().and_then(|p| p.admission()) {
-                dispatch = dispatch
-                    .mount(
-                        crate::plane::Plane::A2a,
-                        crate::a2a::serve::MOUNT_PATH,
-                        crate::plane::WIRE_JSONRPC,
-                    )
-                    // THE SECOND BINDING'S PATH, claimed by the same act and for the same reason.
-                    // gRPC is served at the path the vendored `a2a.proto` dictates rather than under
-                    // the plane's mount, and a claimed path is where `admission_for` finds the RFC
-                    // 8707 audience — so leaving it out would not merely mislabel the leg, it would
-                    // admit a token minted for some other resource on it.
-                    .mount(
-                        crate::plane::Plane::A2a,
-                        crate::a2a::serve::GRPC_MOUNT_PATH,
-                        crate::plane::WIRE_GRPC,
-                    )
-                    .admit(crate::plane::Plane::A2a, admission);
+            if let Some(p) = a2a_plane.as_ref() {
+                plane_slots.insert(crate::a2a::PLANE_DECL.key, p.as_ref() as &dyn std::any::Any);
             }
-            dispatch
+            crate::plane::registry::build_dispatch(
+                crate::plane::registry::plane_decls(),
+                &plane_slots,
+            )?
         }),
         mcp: cfg.mcp.clone().map(Arc::new),
         oauth_as: oauth_as_plane.clone(),
