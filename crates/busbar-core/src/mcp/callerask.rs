@@ -62,7 +62,7 @@
 //! `InputRequiredResult`, so refusing is also the only conformant answer; but the security reason is
 //! the one that would still hold if the specification said nothing.
 
-use super::askstate::{self, AskState, Sealer};
+use crate::plane::approvals::{self, AskState, Sealer};
 use super::config::{AskEntryCfg, AskRoundCfg};
 
 /// The three client-side methods an ask may name, and the capability key each is gated by.
@@ -195,7 +195,7 @@ pub(crate) enum Refusal {
     /// The per-server cap on caller-facing rounds was reached.
     RoundCapExceeded { capability: String, cap: u32 },
     /// The presented `requestState` failed verification.
-    StateRejected(askstate::Rejected),
+    StateRejected(approvals::Rejected),
     /// The caller sent `inputResponses` or `requestState` on a capability that declares no ask, so
     /// there is nothing they could be answering.
     Unsolicited { capability: String },
@@ -301,15 +301,15 @@ pub(crate) struct Bind<'a> {
 ///
 /// One parameter rather than two because they are one thing viewed from either end — a `Sealer` with
 /// no ledger issues approvals nothing retires, which is precisely the defect
-/// [`askstate::SpentAskStates`] exists to close, and a call site that could pass the first without
+/// [`approvals::PlaneApprovals`] exists to close, and a call site that could pass the first without
 /// the second is a call site that can reintroduce it.
 #[derive(Clone, Copy)]
 pub(crate) struct Approvals<'a> {
     /// Mints and opens the sealed `requestState`. `None` is a deployment with no signing key, which
     /// refuses to ask at all rather than issue state it could not verify.
     pub(crate) sealer: Option<&'a Sealer>,
-    /// The approvals already redeemed. See [`askstate::SpentAskStates`].
-    pub(crate) spent: &'a askstate::SpentAskStates,
+    /// The approvals already redeemed. See [`approvals::PlaneApprovals`].
+    pub(crate) spent: &'a approvals::PlaneApprovals,
 }
 
 /// THE DECISION. Config, caller input, a clock — and the ledger of approvals already spent. It is
@@ -385,7 +385,7 @@ pub(crate) fn decide(
                 .roots_epoch
                 .is_some_and(|sealed| sealed != bind.roots_epoch)
             {
-                return AskDecision::Refuse(Refusal::StateRejected(askstate::Rejected::StaleRoots));
+                return AskDecision::Refuse(Refusal::StateRejected(approvals::Rejected::StaleRoots));
             }
             presented = Some((
                 opened.nonce.clone(),
@@ -417,10 +417,10 @@ pub(crate) fn decide(
         // complete by presenting state, and `presented` is therefore always `Some`. The `else` is
         // the fail-closed reading of a shape that cannot occur rather than a case with a meaning.
         let Some((nonce, expires_at)) = presented else {
-            return AskDecision::Refuse(Refusal::StateRejected(askstate::Rejected::AlreadySpent));
+            return AskDecision::Refuse(Refusal::StateRejected(approvals::Rejected::AlreadySpent));
         };
         if !spent.spend(&nonce, expires_at, bind.now) {
-            return AskDecision::Refuse(Refusal::StateRejected(askstate::Rejected::AlreadySpent));
+            return AskDecision::Refuse(Refusal::StateRejected(approvals::Rejected::AlreadySpent));
         }
         return AskDecision::Proceed;
     };
@@ -481,7 +481,7 @@ pub(crate) fn decide(
             capability: bind.capability.to_string(),
         });
     };
-    let Ok(nonce) = askstate::nonce() else {
+    let Ok(nonce) = approvals::nonce() else {
         // Entropy failure. Refusing is the only safe arm: a predictable nonce is a replay window.
         return AskDecision::Refuse(Refusal::NoSealer {
             capability: bind.capability.to_string(),
@@ -504,7 +504,7 @@ pub(crate) fn decide(
         round: next_round,
         nonce,
         issued_at: bind.now,
-        ttl_secs: askstate::DEFAULT_TTL_SECS,
+        ttl_secs: approvals::DEFAULT_TTL_SECS,
         // Present exactly when the exchange includes a roots ask, so a roots announcement cannot
         // invalidate a caller's unrelated confirmations. See `crate::mcp::roots`.
         roots_epoch: exchange_asks_roots.then_some(bind.roots_epoch),

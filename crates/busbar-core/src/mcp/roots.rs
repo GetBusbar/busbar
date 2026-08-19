@@ -14,7 +14,7 @@
 //!
 //! The sentence was one word too strong. There IS a window in which busbar is holding a
 //! roots-derived fact on a caller's behalf: the life of a sealed `requestState`. An exchange that
-//! asked for roots mints state with a [`crate::mcp::askstate::DEFAULT_TTL_SECS`] window, and inside
+//! asked for roots mints state with a [`crate::plane::approvals::DEFAULT_TTL_SECS`] window, and inside
 //! that window the caller can redeem an answer it gave BEFORE its roots changed. The caller has
 //! told busbar, in the protocol's own vocabulary, that the answer is stale — and a server that then
 //! redeems it is dispatching on roots the client just disavowed.
@@ -25,7 +25,7 @@
 //! bumps it. When [`crate::mcp::callerask::decide`] mints state for an exchange whose configured
 //! rounds include a `roots/list` ask, the CURRENT epoch is sealed into the blob; when such state is
 //! presented, the sealed epoch is compared against the live one, and a mismatch refuses with
-//! [`crate::mcp::askstate::Rejected::StaleRoots`] — the caller restarts the exchange and answers
+//! [`crate::plane::approvals::Rejected::StaleRoots`] — the caller restarts the exchange and answers
 //! with its current roots. State minted for exchanges that never asked for roots carries no epoch
 //! and is untouched, so a chatty client cannot invalidate its own unrelated confirmations.
 //!

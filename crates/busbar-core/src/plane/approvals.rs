@@ -141,7 +141,7 @@ pub(crate) enum Rejected {
     /// Sealed under a catalogue generation that is no longer live — an approval moved underneath it.
     WrongGeneration,
     /// ALREADY REDEEMED. Perfectly valid, for this caller, for this request, inside its window — and
-    /// already spent on the call it was minted to approve. See [`SpentAskStates`].
+    /// already spent on the call it was minted to approve. See [`PlaneApprovals`].
     AlreadySpent,
     /// SEALED UNDER A ROOTS EPOCH THE CALLER ITSELF HAS SINCE MOVED. The state carried a roots
     /// answer, and the caller sent `notifications/roots/list_changed` after it was minted — so
@@ -377,7 +377,7 @@ pub(crate) fn digest_arguments(arguments: &serde_json::Value) -> String {
 /// every redemption so it can bound its own table the same way. Minting an approval costs the caller
 /// a metered, budget-charged round, so the rate is bounded by governance rather than by this map.
 #[derive(Default)]
-pub(crate) struct SpentAskStates {
+pub(crate) struct PlaneApprovals {
     /// nonce ⇒ the instant after which the entry is meaningless, because the state it records can
     /// no longer be opened anyway.
     seen: std::sync::Mutex<std::collections::HashMap<String, u64>>,
@@ -389,9 +389,9 @@ pub(crate) struct SpentAskStates {
 /// Hand-written because `dyn Store` is not `Debug` — a backend must not be obliged to render itself,
 /// and one that did would be a place a credential could surface in a log. The nonces are not printed
 /// either: they identify live approvals.
-impl std::fmt::Debug for SpentAskStates {
+impl std::fmt::Debug for PlaneApprovals {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SpentAskStates")
+        f.debug_struct("PlaneApprovals")
             .field(
                 "entries",
                 &self.seen.lock().map(|s| s.len()).unwrap_or_default(),
@@ -401,7 +401,7 @@ impl std::fmt::Debug for SpentAskStates {
     }
 }
 
-impl SpentAskStates {
+impl PlaneApprovals {
     pub(crate) fn new() -> Self {
         Self::default()
     }

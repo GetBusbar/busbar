@@ -1514,9 +1514,9 @@ pub fn build_app_from_config(
         // CARRIED ACROSS THE APPLY for the same reason, and it is the same class of mistake: an
         // approval already spent is evidence, not intent, and a config apply that forgot it would
         // hand every outstanding confirmation back to whoever still holds it.
-        mcp_spent_approvals: prior.map_or_else(
-            || Arc::new(crate::mcp::askstate::SpentAskStates::new()),
-            |p| p.mcp_spent_approvals.clone(),
+        plane_approvals: prior.map_or_else(
+            || Arc::new(crate::plane::approvals::PlaneApprovals::new()),
+            |p| p.plane_approvals.clone(),
         ),
         // CARRIED ACROSS THE APPLY, same class again: an epoch bump is a caller's own announcement
         // that its roots changed, and an apply that reset it would re-validate roots answers the

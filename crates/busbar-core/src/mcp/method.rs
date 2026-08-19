@@ -2410,7 +2410,7 @@ fn caller_ask_decision(
     // key ⇒ no sealer ⇒ the decision refuses rather than asking with unprotected state.
     let sealer = ctx
         .gov_signing_secret()
-        .map(|s| super::askstate::Sealer::derive(&s));
+        .map(|s| crate::plane::approvals::Sealer::derive(&s));
     callerask::decide(
         rounds,
         cap,
@@ -2444,10 +2444,10 @@ fn caller_ask_decision(
                 roots_epoch: ctx.app.mcp_roots_epochs.current(principal),
             }
         },
-        &super::askstate::digest_arguments(arguments),
+        &crate::plane::approvals::digest_arguments(arguments),
         callerask::Approvals {
             sealer: sealer.as_ref(),
-            spent: &ctx.app.mcp_spent_approvals,
+            spent: &ctx.app.plane_approvals,
         },
     )
 }

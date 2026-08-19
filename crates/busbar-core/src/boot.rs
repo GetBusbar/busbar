@@ -180,7 +180,7 @@ pub fn hydrate_all(app: &Arc<crate::state::App>) {
     // remains — the same documented posture the audit ring, the task table and the call log have.
     if let Some(gov) = app.governance.as_ref() {
         let store = gov.store();
-        app.mcp_spent_approvals.set_sink(store.clone());
+        app.plane_approvals.set_sink(store.clone());
         app.mcp_demotions.set_sink(store.clone());
         match crate::mcp::demotion::hydrate(app) {
             0 => {}

@@ -516,9 +516,9 @@ pub struct App {
     /// mutation limiter are: this is ACCUMULATED evidence rather than intent, and rebuilding it on
     /// every apply would re-open every outstanding approval the instant an operator touched an
     /// unrelated section of config — which is the moment a caller holding a spent approval would
-    /// like it rebuilt. See [`crate::mcp::askstate::SpentAskStates`] for what a RESTART does to it
+    /// like it rebuilt. See [`crate::plane::approvals::PlaneApprovals`] for what a RESTART does to it
     /// and why that trade was taken.
-    pub(crate) mcp_spent_approvals: Arc<crate::mcp::askstate::SpentAskStates>,
+    pub(crate) plane_approvals: Arc<crate::plane::approvals::PlaneApprovals>,
     /// EACH PRINCIPAL'S ROOTS EPOCH — what a received `notifications/roots/list_changed` moves, and
     /// what a roots-bearing `requestState` is sealed against.
     ///

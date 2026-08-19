@@ -383,7 +383,7 @@ impl GovState {
     ///
     /// Deliberately returns the secret rather than a ready-made HMAC, so this module keeps knowing
     /// nothing about what any consumer seals: the MCP ask-state codec
-    /// ([`crate::mcp::askstate::Sealer::derive`]) does its own domain-separated derivation, which is
+    /// ([`crate::plane::approvals::Sealer::derive`]) does its own domain-separated derivation, which is
     /// what keeps its blobs and this module's virtual-key tokens unable to verify as one another.
     /// Secret-equivalent: never log it, never put it in a `Debug`.
     ///

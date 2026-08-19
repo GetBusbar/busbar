@@ -92,6 +92,7 @@
 
 pub(crate) mod config;
 pub(crate) mod observe;
+pub(crate) mod approvals;
 
 /// THE WIRE FORMAT both mounted planes speak: JSON-RPC 2.0. Named once, here, because it is read
 /// twice as a [`Plane::wire_format_names`] entry and once more by the error-shaping boundary, which

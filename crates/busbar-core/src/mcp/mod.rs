@@ -121,7 +121,6 @@
 pub(crate) mod admin_view;
 /// THE SEALED `requestState` busbar mints for its OWN asks: HMAC over a payload binding the
 /// authenticated principal, the request, the catalogue generation, a round index and a TTL.
-pub(crate) mod askstate;
 /// BUSBAR'S OWN ask of its caller, composed from operator configuration alone.
 pub(crate) mod callerask;
 /// THE DURABLE PER-CALL LOG — one hash-chained record per tool call, written through to the
