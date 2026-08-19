@@ -101,16 +101,12 @@ fn inventory(id: &AsIdentity) -> Vec<String> {
 /// `base_data_router` rather than a hand-rolled router: a table assembled here could describe a
 /// surface no deployment serves, and then every assertion below would be about a fiction.
 fn served_paths(app: &crate::state::App) -> std::collections::BTreeSet<String> {
-    crate::base_data_router(
-        &app.plugin_routes,
-        &app.plane_slots,
-        app.oauth_as.as_ref(),
-    )
-    .1
-    .routes()
-    .iter()
-    .map(|r| r.path.clone())
-    .collect()
+    crate::base_data_router(&app.plugin_routes, &app.plane_slots, app.oauth_as.as_ref())
+        .1
+        .routes()
+        .iter()
+        .map(|r| r.path.clone())
+        .collect()
 }
 
 /// THE CLAIM. With no `oauth_as:` block, not one path of the authorization server is served.

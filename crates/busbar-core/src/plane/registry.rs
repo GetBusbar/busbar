@@ -156,8 +156,9 @@ pub struct PlaneDecl {
     /// `Store`, a `GovCtx`, or an `audit::Chain`. A plane that needs one of those to decide its routes
     /// is not cleanly separable through this seam.
     #[allow(clippy::type_complexity)]
-    pub(crate) mount:
-        Option<fn(crate::core_routes::CoreRouter, &dyn std::any::Any) -> crate::core_routes::CoreRouter>,
+    pub(crate) mount: Option<
+        fn(crate::core_routes::CoreRouter, &dyn std::any::Any) -> crate::core_routes::CoreRouter,
+    >,
 
     /// CONTRIBUTE THE PLANE'S ADMIN VERBS to the Admin API v1 router — the operator surface a plane
     /// adds ON TOP of the generic named-definition CRUD (MCP's `connect`/`changes`/`health`, A2A's

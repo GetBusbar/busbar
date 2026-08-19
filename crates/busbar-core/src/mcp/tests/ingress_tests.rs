@@ -518,12 +518,8 @@ async fn the_default_origin_allowlist_is_empty_and_therefore_closed() {
 async fn without_the_config_block_the_plane_does_not_exist() {
     crate::metrics::init();
     let app = TestApp::new().build();
-    let core = crate::base_data_router(
-        &app.plugin_routes,
-        &app.plane_slots,
-        app.oauth_as.as_ref(),
-    )
-    .1;
+    let core =
+        crate::base_data_router(&app.plugin_routes, &app.plane_slots, app.oauth_as.as_ref()).1;
     for r in core.routes() {
         assert!(
             !r.path.starts_with("/.well-known/oauth-protected-resource"),

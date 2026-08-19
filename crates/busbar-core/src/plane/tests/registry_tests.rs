@@ -561,9 +561,12 @@ fn a_plane_with_admin_verbs_documents_at_least_one_openapi_path() {
         if decl.admin_routes.is_none() {
             continue;
         }
-        let openapi = decl
-            .openapi
-            .unwrap_or_else(|| panic!("plane `{}` contributes admin verbs but no OpenAPI fn", decl.key));
+        let openapi = decl.openapi.unwrap_or_else(|| {
+            panic!(
+                "plane `{}` contributes admin verbs but no OpenAPI fn",
+                decl.key
+            )
+        });
         let doc = openapi();
         let count = doc.as_object().map(|o| o.len()).unwrap_or(0);
         assert!(

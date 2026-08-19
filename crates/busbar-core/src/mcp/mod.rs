@@ -212,7 +212,10 @@ pub(crate) fn admin_routes(
             "/tools/{name}/connect",
             post(crate::admin::planeverbs::connect::<crate::mcp::admin_view::McpServers>),
         )
-        .route("/tools/{name}/changes", get(crate::mcp::admin_view::changes))
+        .route(
+            "/tools/{name}/changes",
+            get(crate::mcp::admin_view::changes),
+        )
         .route("/tools/{name}/health", get(crate::mcp::admin_view::health))
 }
 

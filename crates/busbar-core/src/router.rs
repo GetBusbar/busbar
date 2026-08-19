@@ -323,7 +323,10 @@ pub(crate) fn build_router_with_limits(
 /// a dedicated listener without any of these routes coming with it.
 pub(crate) fn base_data_router(
     plugin_routes: &crate::plugin_routes::PluginRouteTable,
-    plane_slots: &std::collections::BTreeMap<&'static str, std::sync::Arc<dyn std::any::Any + Send + Sync>>,
+    plane_slots: &std::collections::BTreeMap<
+        &'static str,
+        std::sync::Arc<dyn std::any::Any + Send + Sync>,
+    >,
     oauth_as: Option<&std::sync::Arc<crate::oauth_as::plane::AsPlane>>,
 ) -> (
     Router<std::sync::Arc<state::AppHandle>>,
@@ -544,7 +547,8 @@ pub fn build_split_routers_with_limits(
     let handle = std::sync::Arc::new(state::AppHandle::new(app));
     // DATA plane: protocols + health/metrics/stats + the `none`/`key`-auth plugin routes, NO admin
     // mount and NO admin-auth plugin routes (those are physically absent from the data listener).
-    let (data, data_core_routes) = base_data_router(&plugin_routes, &plane_slots, oauth_as.as_ref());
+    let (data, data_core_routes) =
+        base_data_router(&plugin_routes, &plane_slots, oauth_as.as_ref());
     let data = apply_common_layers(
         data,
         data_core_routes,
