@@ -157,7 +157,37 @@ pub(crate) const PLANE_DECL: crate::plane::registry::PlaneDecl =
         openapi: Some(mcp_openapi_fragment),
         hydrate: Some(mcp_hydrate),
         start: Some(mcp_start),
+        on_swap: Some(mcp_on_swap),
     };
+
+/// CARRY THE MCP CONNECTION POOL ACROSS A CONFIG SWAP — retire every stdio child whose registration
+/// is gone from the NEXT generation. The pool deliberately outlives an apply (a socket negotiated
+/// nothing this revision, so reusing it across a config edit is safe and desirable), and the
+/// catalogue does not — so without this, deleting a `tools:` entry would leave its child process
+/// running forever, unreferenced by any live registration and unreachable, which is a leak an
+/// operator has no surface to see or stop. The keep-set is the NEXT catalogue's server ids, so a
+/// registration the operator removed is exactly the child that is dropped; a registration that
+/// survives keeps its live child and the connection reuse the pool exists for.
+///
+/// It reads the NEXT snapshot's own MCP runtime state (`mcp_pool`, `mcp_catalogue`) and nothing that
+/// carries the audit chain or the governance context. The prior snapshot is unread here: the pool is
+/// Arc-carried onto the next snapshot by `App::clone` (a live-config mutation) already, so the work
+/// is a reconciliation of the carried pool to the next catalogue, not a copy from prior to next; the
+/// argument is present for a plane whose swap must DIFF the two generations. When the MCP plane's
+/// pool and catalogue move out of the flat `App` fields into the plane's own slot object, this
+/// downcasts that slot instead of the `App`.
+pub(crate) fn mcp_on_swap(_prior: &dyn std::any::Any, next: &dyn std::any::Any) {
+    let next = next
+        .downcast_ref::<crate::state::App>()
+        .expect("the mcp on_swap hook is handed the next App snapshot");
+    next.mcp_pool.children.retain(
+        &next
+            .mcp_catalogue
+            .servers()
+            .map(|s| s.id.clone())
+            .collect::<std::collections::BTreeSet<_>>(),
+    );
+}
 
 /// RESTORE THE MCP PLANE'S DURABLE STATE, in order, BEFORE a listener binds — the per-call log, the
 /// upstream-demotion record and the spent-approval ledger, each attached as a write-through sink to

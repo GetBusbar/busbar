@@ -329,6 +329,20 @@ pub struct PlaneDecl {
     /// `Err` REFUSES BOOT — an outbound identity that does not resolve is a startup failure, never a
     /// warning — so [`crate::boot::start_planes`] propagates it with `?`.
     pub(crate) start: Option<BootHook>,
+
+    /// CARRY THIS PLANE'S ENGINE-OWNED STATE ACROSS A CONFIG SWAP — the plane half of
+    /// [`crate::state::AppHandle::swap`]. Run once per swap, AFTER the next snapshot is fully built
+    /// and BEFORE it is published, with the PRIOR and NEXT snapshots each type-erased as `&dyn Any`.
+    /// A plane whose runtime state is rebuilt from config on every apply carries nothing and sets this
+    /// `None`; a plane that holds live state which deliberately OUTLIVES an apply (a connection pool,
+    /// an accumulated-sightings cache) uses this to reconcile that state to the next generation —
+    /// today, retiring the pooled children of a registration the next generation no longer declares,
+    /// so a deleted registration's process does not run on unreferenced and unreachable.
+    ///
+    /// The erased pair is the plane's own runtime state to read and reconcile — never a `Store`, a
+    /// `GovCtx`, or an `audit::Chain`. A plane whose swap-time work needs one of those is not cleanly
+    /// separable through this seam.
+    pub(crate) on_swap: Option<fn(prior: &dyn std::any::Any, next: &dyn std::any::Any)>,
 }
 
 /// THE BUILT-INS — one line per plane, and every line is DATA.
