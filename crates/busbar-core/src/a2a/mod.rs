@@ -114,6 +114,15 @@ pub(crate) const PLANE_DECL: crate::plane::registry::PlaneDecl =
                 .expect("the a2a plane's dispatch slot is an A2aPlane");
             p.admission()
         },
+        // THE A2A SLOT: lowered from `agent_defs:`/`public_url` through the SAME `from_config` the
+        // dispatch table and the re-verification job's registry are lowered from, so the object this
+        // seam erases and the object every other A2A consumer reads are one lowering, not two. `None`
+        // when no agent is configured — matching `App::a2a`'s own absence, and NOT the same condition
+        // as `admission().is_none()` (a delegation-only plane has a slot but claims/admits nothing).
+        build: |ctx| {
+            crate::a2a::plane::A2aPlane::from_config(ctx.agent_defs, ctx.public_url)
+                .map(|p| p as std::sync::Arc<dyn std::any::Any + Send + Sync>)
+        },
     };
 
 pub(crate) mod anomaly;

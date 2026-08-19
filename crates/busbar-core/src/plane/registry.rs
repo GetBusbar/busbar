@@ -41,14 +41,31 @@
 //! ## What this file does NOT yet carry, stated so its absence is not read as a claim
 //!
 //! [`PlaneDecl`] carries the plane VOCABULARY — the facts core reads to name, section, scope and
-//! label a plane. It does NOT yet carry the further seams a plane crate would also register through:
-//! a type-erased config section, boot hooks, a router mount, an app-state slot, and the admin verb +
-//! OpenAPI contributions. Those are designed in `design/1.6.0-plane-kind-seam.md` and are NOT built
-//! here. This file is the proof that the control's mechanism transfers to the plane axis at all —
-//! the vocabulary half — and the honest measure of how much of the plane problem the vocabulary half
-//! is.
+//! label a plane — plus, as of [`PlaneDecl::build`], the app-state SLOT seam: how a plane's runtime
+//! object for one config generation is constructed and type-erased. It does NOT yet carry the
+//! remaining seams a plane crate would also register through: a type-erased config section, boot
+//! hooks, a router mount, and the admin verb + OpenAPI contributions. Those are designed in
+//! `design/1.6.0-plane-kind-seam.md` and are NOT built here. This file is the proof that the
+//! control's mechanism transfers to the plane axis at all — the vocabulary half, now joined by the
+//! slot half — and the honest measure of how much of the plane problem is covered so far.
 
 use super::Plane;
+
+/// EVERYTHING A PLANE'S [`PlaneDecl::build`] NEEDS to construct its runtime object for one config
+/// generation — threaded from `appbuild::build_app_from_config` so a plane builds its object from
+/// the SAME resolved config the composition root read, never a second parse of it.
+///
+/// Individual `&`-fields rather than `&RootCfg` as a whole: by the point in `build_app_from_config`
+/// where planes are built, several `RootCfg` fields unrelated to a plane (`models`, among others)
+/// have already been partially moved out of `cfg` for lowering elsewhere, so a single `&RootCfg`
+/// borrow would not compile at that call site. Holds only what today's two planes with a slot (MCP,
+/// A2A) actually read; a future plane needing another section adds a field here rather than gaining
+/// its own parameter list, so `build`'s signature never has to change per plane.
+pub(crate) struct BuildCtx<'a> {
+    pub(crate) mcp: Option<&'a crate::mcp::McpResource>,
+    pub(crate) agent_defs: &'a crate::a2a::config::AgentsCfg,
+    pub(crate) public_url: Option<&'a str>,
+}
 
 /// EVERYTHING CORE KNOWS ABOUT A PLANE'S VOCABULARY, declared once by the plane itself.
 ///
@@ -115,6 +132,18 @@ pub struct PlaneDecl {
     /// that [`Self::claims`] a path but returns `None` here is refused at boot by
     /// [`build_dispatch`] rather than left serving an unauthenticated resource (ratchet R2).
     pub(crate) admission: fn(&dyn std::any::Any) -> Option<super::PlaneAdmission>,
+
+    /// BUILD THE PLANE'S RUNTIME OBJECT for one config generation, type-erased as
+    /// `Arc<dyn Any + Send + Sync>` — the app-state SLOT that [`Self::claims`] and [`Self::admission`]
+    /// above are computed from. Returns `None` when the plane is not configured for this generation
+    /// (no `tools:` / no `agents:` block, or an `agents:` block with no receiving side), matching the
+    /// `mcp: None` / absent-`a2a` behaviour those blocks' mere absence has always meant.
+    ///
+    /// A plane with no single runtime object to erase (today, `llm`: its state is the many `App`
+    /// fields the LLM data plane already reads directly, not one object) returns `None`
+    /// unconditionally — it contributes no slot, exactly as [`Self::claims`] already returns nothing
+    /// for it.
+    pub(crate) build: fn(&BuildCtx) -> Option<std::sync::Arc<dyn std::any::Any + Send + Sync>>,
 }
 
 /// THE BUILT-INS — one line per plane, and every line is DATA.

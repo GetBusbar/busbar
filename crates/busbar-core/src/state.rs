@@ -549,6 +549,23 @@ pub struct App {
     /// is told to go. Consulted by the auth middleware on every request, which is why it is a
     /// prebuilt table rather than a per-request derivation.
     pub(crate) planes: Arc<crate::plane::PlaneDispatch>,
+    /// THE TYPE-ERASED PLANE SLOT MAP, keyed by plane key (`"mcp"`, `"a2a"`, …) — the app-state seam
+    /// an extracted plane crate contributes its runtime object through, without core naming that
+    /// object's type. Each present entry is the SAME `Arc` the plane's own typed field below holds
+    /// (`App::mcp`, `App::a2a`): one construction, two readers, so a caller reading either sees the
+    /// same object under the same config generation.
+    ///
+    /// ADDITIVE, for now: every reader that already knows a plane's concrete type keeps reading its
+    /// typed field directly (`app.mcp`, `app.a2a`) — nothing here replaces that yet. This map exists
+    /// so a plane whose type core cannot name (because it now lives in a crate that depends on
+    /// `busbar-core`) has somewhere to put its object anyway; `PlaneDecl::claims`/`admission` already
+    /// read a plane's object through exactly this kind of erasure (`&dyn Any`), which is what this
+    /// map generalises to an owned, `App`-carried slot.
+    ///
+    /// Absent from this map is the same fact as `None` in the typed field: a plane the operator did
+    /// not configure contributes no slot (see [`crate::plane::registry::PlaneDecl::build`]).
+    pub(crate) plane_slots:
+        std::collections::BTreeMap<&'static str, Arc<dyn std::any::Any + Send + Sync>>,
     /// The credential cache — Arc-shared ACROSS config swaps (like the
     /// mutation limiter): an apply/reload must not silently re-open every cached-allow window.
     pub(crate) credential_cache: Arc<crate::auth_cache::CredentialCache>,
@@ -703,6 +720,14 @@ impl App {
     pub(crate) fn next_request_id(&self) -> u64 {
         self.request_id_counter
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Look up a plane's type-erased runtime object by plane key. `None` when the plane is not
+    /// registered for this key, OR the plane is registered but this config generation did not
+    /// configure it (see `App::plane_slots`) — the same absence a typed field's `None`/no-entry
+    /// already means, reached through the key instead of the field name.
+    pub(crate) fn plane_slot(&self, key: &str) -> Option<&Arc<dyn std::any::Any + Send + Sync>> {
+        self.plane_slots.get(key)
     }
 }
 

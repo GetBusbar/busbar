@@ -2527,3 +2527,136 @@ fn auth_scope_caps_are_keyed_by_provider_name_not_module() {
     );
     assert_eq!(caps.len(), 3, "one entry per NAMED provider: {caps:?}");
 }
+
+// ── STEP 2.3: THE TYPE-ERASED PLANE SLOT MAP (`App::plane_slot`) ─────────────────────────────
+//
+// Additive: `App::mcp` / `App::a2a` still exist and every existing reader is untouched. These
+// tests pin the two things Step 2.3 actually promises — the slot mirrors the typed field's SAME
+// `Arc` when a plane is configured, and is absent exactly when the typed field is `None`.
+
+/// A `agents:` entry lowering to a real, RECEIVING `A2aPlane` — the same shape
+/// `plane::tests::registry_tests::a2a_slot_receiving` uses, duplicated here rather than shared
+/// because that fixture is `pub(crate)` to `plane::tests` only.
+fn agents_cfg_with_one_receiving_agent() -> crate::a2a::config::AgentsCfg {
+    use crate::a2a::config::{AgentDefCfg, AgentPinCfg, AgentsCfg, PinMechanism};
+    let mut cfg = AgentsCfg::default();
+    cfg.agents.insert(
+        "planner".to_string(),
+        AgentDefCfg {
+            url: "https://agent.example/planner".to_string(),
+            pin: AgentPinCfg {
+                mechanism: PinMechanism::Unpinned,
+                key: None,
+                fingerprint: None,
+            },
+            reverify_ttl: None,
+            recovery_backoff: None,
+            protocol_version: None,
+            allow_private: false,
+            upstream_credentials: None,
+            upstream_credential: None,
+            egress_scopes: Vec::new(),
+            client_identity: None,
+            hooks: Vec::new(),
+        },
+    );
+    cfg
+}
+
+/// THE POSITIVE CASE: with `mcp:` and a receiving `agents:` both configured,
+/// `App::plane_slot("mcp")`/`("a2a")` are `Some`, and downcasting each is the exact same `Arc`
+/// object its typed field (`App::mcp`/`App::a2a`) holds — not a second, merely-equal construction.
+/// Proves the dual-population `build_app_from_config` does (build once via `PlaneDecl::build`,
+/// clone the `Arc` into both the map and the typed field) actually shares one object.
+#[test]
+fn plane_slot_mirrors_the_typed_mcp_and_a2a_fields_when_configured() {
+    crate::metrics::init();
+    let mut cfg = cfg_with_provider_api_key(crate::config::SecretRef::env(
+        "BUSBAR_TEST_NO_SUCH_KEY_PLANE_SLOT_PRESENT",
+    ));
+    cfg.mcp = Some(
+        crate::mcp::McpResource::from_cfg(&mcp_cfg_at("https://gw.example.com/mcp"))
+            .expect("valid mcp cfg"),
+    );
+    cfg.agent_defs = agents_cfg_with_one_receiving_agent();
+    cfg.public_url = Some("https://busbar.example".to_string());
+    // `mcp:` refuses to validate with an open (empty) data-plane `auth.chain` — close it with the
+    // test-only stand-in module, which needs no signing key.
+    let mut auth = crate::config::AuthCfg::default_none();
+    auth.chain = vec![crate::config::AuthChainEntry {
+        name: "test-groups-module".to_string(),
+        module: "test-groups-module".to_string(),
+        max_admin_scope: None,
+        token: None,
+        settings: serde_json::Map::new(),
+    }];
+    cfg.auth = Some(auth);
+
+    let app = build_once(cfg, None).expect("app builds with mcp: + agents: configured");
+
+    let mcp_slot = app
+        .plane_slot("mcp")
+        .expect("mcp: configured => plane_slot(\"mcp\") is Some")
+        .clone();
+    let mcp_via_slot = mcp_slot
+        .downcast::<crate::mcp::McpResource>()
+        .expect("the mcp plane's slot is an McpResource");
+    assert!(
+        std::sync::Arc::ptr_eq(
+            &mcp_via_slot,
+            app.mcp
+                .as_ref()
+                .expect("App::mcp is Some when mcp: is configured")
+        ),
+        "plane_slot(\"mcp\") and App::mcp must be the SAME Arc, not two constructions"
+    );
+
+    let a2a_slot = app
+        .plane_slot("a2a")
+        .expect("a receiving agents: entry => plane_slot(\"a2a\") is Some")
+        .clone();
+    let a2a_via_slot = a2a_slot
+        .downcast::<crate::a2a::plane::A2aPlane>()
+        .expect("the a2a plane's slot is an A2aPlane");
+    assert!(
+        std::sync::Arc::ptr_eq(
+            &a2a_via_slot,
+            app.a2a
+                .as_ref()
+                .expect("App::a2a is Some when agents: is configured")
+        ),
+        "plane_slot(\"a2a\") and App::a2a must be the SAME Arc, not two constructions"
+    );
+}
+
+/// THE NEGATIVE CASE (the RED-first gate): a deployment with NO `tools:`/`agents:` gets no slot
+/// for either plane — exactly the absence `App::mcp: None` / `App::a2a: None` already encode.
+/// Watched RED before `PlaneDecl::build` guarded absence (an unconditional `build` that always
+/// constructs an object regardless of `ctx.mcp`/`ctx.agent_defs` makes this fail: `plane_slot`
+/// answers `Some` on a deployment that configured no plane, disagreeing with the typed field's
+/// `None` right beside it).
+#[test]
+fn plane_slot_is_none_when_the_plane_is_not_configured() {
+    crate::metrics::init();
+    let cfg = cfg_with_provider_api_key(crate::config::SecretRef::env(
+        "BUSBAR_TEST_NO_SUCH_KEY_PLANE_SLOT_ABSENT",
+    ));
+    assert!(cfg.mcp.is_none(), "fixture control: not an mcp: deployment");
+    assert!(
+        cfg.agent_defs.agents.is_empty(),
+        "fixture control: no agents: entries"
+    );
+
+    let app = build_once(cfg, None).expect("app builds with neither plane configured");
+
+    assert!(app.mcp.is_none(), "control: App::mcp is None");
+    assert!(app.a2a.is_none(), "control: App::a2a is None");
+    assert!(
+        app.plane_slot("mcp").is_none(),
+        "no tools: => no mcp slot, matching App::mcp's own None"
+    );
+    assert!(
+        app.plane_slot("a2a").is_none(),
+        "no agents: => no a2a slot, matching App::a2a's own None"
+    );
+}

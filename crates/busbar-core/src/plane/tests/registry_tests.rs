@@ -30,6 +30,7 @@ static WIDGET_PLANE: PlaneDecl = PlaneDecl {
     wire_format_names: || &["widgetrpc"],
     claims: |_| Vec::new(),
     admission: |_| None,
+    build: |_| None,
 };
 
 fn installed() -> Vec<&'static PlaneDecl> {
@@ -122,6 +123,7 @@ fn a_same_key_registration_is_skipped_and_the_first_copy_wins() {
         wire_format_names: || &["jsonrpc"],
         claims: |_| Vec::new(),
         admission: |_| None,
+        build: |_| None,
     };
 
     let folded = merged_boot_plane_decls(&[&A2A_FROM_THE_CRATE], builtin_plane_decls());
@@ -375,6 +377,7 @@ fn r2_a_mounted_plane_with_no_admission_refuses_boot() {
         // Claims a path — but binds no audience. The shape build_dispatch must refuse.
         claims: |_| vec![("/widget".to_string(), "widgetrpc")],
         admission: |_| None,
+        build: |_| None,
     };
     let unit = ();
     let mut slots: BTreeMap<&'static str, &dyn Any> = BTreeMap::new();
@@ -401,6 +404,7 @@ fn r2_a_mounted_plane_with_no_admission_refuses_boot() {
         wire_format_names: || &["widgetrpc"],
         claims: |_| Vec::new(),
         admission: |_| None,
+        build: |_| None,
     };
     let dispatch = build_dispatch(&[&MOUNTS_NOTHING], &slots)
         .expect("a plane that claims no path needs no admission");
