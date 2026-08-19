@@ -763,6 +763,142 @@ async fn test_same_protocol_nonstream_multichunk_counts_usage() {
     );
 }
 
+/// BILLING-TRUNCATION regression (MEDIUM): a same-protocol non-stream `application/json` body
+/// LARGER than the usage-tap reassembly cap (`nonstream_buf`, capped at
+/// `max_translated_body_bytes()`) must still bill its trailing `usage` object correctly. The client
+/// always receives the body byte-for-byte regardless (asserted below); this test is about the
+/// SEPARATE billing-only copy.
+///
+/// Before the fix, `nonstream_buf` was HEAD-truncated: bytes past the cap were simply dropped, so
+/// once the body exceeded the cap the retained prefix never reached the tail `usage` object (every
+/// dialect places `usage` at/near the end) — `extract_usage` parsed nothing, and the request billed
+/// ZERO tokens despite the client receiving the full, valid completion. After the fix, the buffer is
+/// TAIL-anchored (drops from the FRONT once over cap), so the trailing `usage` object survives and
+/// is recovered even from a fragment whose head is gone (`usage::recover_truncated_usage`).
+///
+/// Uses a small test cap (via `InstallGuard`, not the 32 MiB production default) so the over-cap
+/// body doesn't need to be enormous, and drives `FirstByteBody` directly with the body split across
+/// several transport-frame-sized chunks (mirroring `test_same_protocol_nonstream_multichunk_counts_usage`).
+#[tokio::test]
+async fn test_same_protocol_nonstream_over_cap_body_still_bills_tail_usage() {
+    use super::FirstByteBody;
+    use crate::governance::{GovState, MemoryStore, NewKeySpec};
+    use bytes::Bytes;
+    use http_body_util::BodyExt as _;
+
+    crate::metrics::init();
+    let _lock = crate::limits::LIMITS_TEST_LOCK.lock().await;
+    // A cap small enough that the filler content alone blows well past it, but the RAII guard
+    // restores whatever was installed before this test regardless of how it exits.
+    const CAP: usize = 4096;
+    let _limits_guard = crate::limits::InstallGuard::install(&crate::config::LimitsResolved {
+        request_body_max_bytes: CAP,
+        ..crate::config::LimitsResolved::default()
+    });
+    assert_eq!(super::max_translated_body_bytes(), CAP);
+
+    let store = Arc::new(MemoryStore::new());
+    let gov = Arc::new(GovState::new(store, None).expect("gov"));
+    let cost = Arc::new(crate::cost::CostModel::flat(0));
+    let (key, _secret) = gov
+        .create_key(
+            NewKeySpec {
+                name: "k".to_string(),
+                allowed_pools: None,
+                group: None,
+                labels: Default::default(),
+            },
+            1_700_000_000,
+        )
+        .expect("create key");
+    let charged_at: u64 = 1_700_000_000;
+    let sink = Some(UsageSink {
+        gov: gov.clone(),
+        cost: cost.clone(),
+        key: std::sync::Arc::new(key.clone()),
+        pool: std::sync::Arc::from(""),
+        charged_at,
+        admit: None,
+    });
+
+    // A filler `content` string well over CAP bytes, so the whole body is > CAP and, under the old
+    // head-truncate code, the retained prefix would end well before the tail `usage` object.
+    let filler = "x".repeat(CAP * 3);
+    let body = format!(
+        r#"{{"id":"chatcmpl-huge","object":"chat.completion","choices":[{{"index":0,"message":{{"role":"assistant","content":"{filler}"}},"finish_reason":"stop"}}],"usage":{{"prompt_tokens":600,"completion_tokens":400}}}}"#
+    );
+    assert!(
+        body.len() > CAP * 2,
+        "body must genuinely exceed the test cap for this to be a meaningful regression test"
+    );
+
+    let app = TestApp::new()
+        .lane(LaneSpec::new(
+            "glm-4.5",
+            crate::proto::Protocol::openai(),
+            "http://127.0.0.1:1",
+        ))
+        .pool("pa", &[(0, 1)])
+        .build();
+
+    // Split into small transport-frame-sized chunks, same shape reqwest delivers a large body in.
+    let chunks: Vec<Result<Bytes, reqwest::Error>> = body
+        .as_bytes()
+        .chunks(512)
+        .map(|c| Ok(Bytes::copy_from_slice(c)))
+        .collect();
+    let inner = futures::stream::iter(chunks);
+    let fbb = FirstByteBody::new(
+        inner,
+        false, // is_sse: same-protocol NON-STREAM application/json
+        "openai",
+        crate::handlers::CHAT,
+        (),
+        app.clone(),
+        0,
+        Arc::new(crate::store::BreakerCfg::default()),
+        "pa",
+        None, // translate: same-protocol → no translation
+        None, // json_array
+        sink,
+        false, // budget_spent
+    );
+
+    let collected = fbb
+        .into_body()
+        .collect()
+        .await
+        .expect("drain body")
+        .to_bytes();
+    // The client must receive the COMPLETE body verbatim, unaffected by the billing-only buffer's
+    // tail-anchoring — telemetry must never change what is served.
+    assert_eq!(
+        collected.as_ref(),
+        body.as_bytes(),
+        "the client must still receive the complete over-cap body verbatim"
+    );
+
+    let mut tokens = 0;
+    for _ in 0..200 {
+        tokio::task::yield_now().await;
+        tokens = gov
+            .usage_for(&cost, &key.id, charged_at)
+            .expect("usage read")
+            .map(|u| u.tokens)
+            .unwrap_or(0);
+        if tokens == 1000 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+    }
+    assert_eq!(
+        tokens, 1000,
+        "an over-cap same-protocol non-stream body's tail usage MUST still be billed (1000 tokens); \
+         the old head-truncate code billed 0 here because the retained prefix never reached the \
+         tail `usage` object"
+    );
+}
+
 /// The non-stream usage-tap reassembly decision at
 /// `response_body.rs`'s `if this.nonstream_buf.len() < max_translated_body_bytes() { let remaining
 /// = max_translated_body_bytes() - ... }` reads the live-reloadable
