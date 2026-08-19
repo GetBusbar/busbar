@@ -95,7 +95,10 @@ pub(crate) const PLANE_DECL: crate::plane::registry::PlaneDecl =
                 .expect("the a2a plane's dispatch slot is an A2aPlane");
             if p.admission().is_some() {
                 vec![
-                    (crate::a2a::serve::MOUNT_PATH.to_string(), crate::plane::WIRE_JSONRPC),
+                    (
+                        crate::a2a::serve::MOUNT_PATH.to_string(),
+                        crate::plane::WIRE_JSONRPC,
+                    ),
                     (
                         crate::a2a::serve::GRPC_MOUNT_PATH.to_string(),
                         crate::plane::WIRE_GRPC,

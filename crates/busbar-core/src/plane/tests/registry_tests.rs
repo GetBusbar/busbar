@@ -316,7 +316,8 @@ fn r1_every_declared_path_resolves_an_admission() {
     let mcp = mcp_slot();
     let a2a = a2a_slot_receiving();
     let slots = builtin_slots(&mcp, &a2a);
-    let dispatch = build_dispatch(builtin_plane_decls(), &slots).expect("the dispatch table builds");
+    let dispatch =
+        build_dispatch(builtin_plane_decls(), &slots).expect("the dispatch table builds");
 
     for decl in builtin_plane_decls() {
         let Some(slot) = slots.get(decl.key).copied() else {
@@ -403,10 +404,7 @@ fn r2_a_mounted_plane_with_no_admission_refuses_boot() {
     };
     let dispatch = build_dispatch(&[&MOUNTS_NOTHING], &slots)
         .expect("a plane that claims no path needs no admission");
-    assert!(
-        dispatch.mounted_keys().is_empty(),
-        "and it mounts nothing"
-    );
+    assert!(dispatch.mounted_keys().is_empty(), "and it mounts nothing");
 }
 
 /// **RATCHET R3 — no scope-kind or audit-kind collision across the DISPATCHED set.**
@@ -423,7 +421,8 @@ fn r3_no_vocabulary_collision_across_the_mounted_set() {
     let mcp = mcp_slot();
     let a2a = a2a_slot_receiving();
     let slots = builtin_slots(&mcp, &a2a);
-    let dispatch = build_dispatch(builtin_plane_decls(), &slots).expect("the dispatch table builds");
+    let dispatch =
+        build_dispatch(builtin_plane_decls(), &slots).expect("the dispatch table builds");
 
     let mounted_keys = dispatch.mounted_keys();
     let mounted: Vec<&&PlaneDecl> = builtin_plane_decls()
@@ -485,7 +484,10 @@ fn build_dispatch_matches_the_hand_mounted_table() {
         )
         .admit(Plane::A2a, a2a.admission().expect("receiving side"));
 
-    assert_eq!(built, hand, "the registry-driven fold must match the old blocks");
+    assert_eq!(
+        built, hand,
+        "the registry-driven fold must match the old blocks"
+    );
 }
 
 /// A DELEGATION-ONLY A2A plane (no `public_url`) mounts nothing and binds no audience — so it is NOT
