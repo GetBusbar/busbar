@@ -178,6 +178,21 @@ pub(crate) const WEBHOOK_LOGS_DROPPED_TOTAL: &str = "busbar_webhook_logs_dropped
 // "the request-log file sink is shedding lines."
 pub(crate) const FILE_LOGS_DROPPED_TOTAL: &str = "busbar_file_logs_dropped_total"; // no labels
 
+// A request-log FILE sink crossed `rotate_mb` and was rolled over by RENAMING the full file to a
+// numbered archive (`<path>.1`, shifting any older archives up) before a fresh file was opened.
+// Incremented once per rotation. Unlabeled — rotation is a per-sink lifecycle event, not
+// per-request. A security/audit product must never rotate recorded evidence silently: this counter
+// is the observable proof that a rotation preserved history via rename rather than discarding it.
+pub(crate) const FILE_LOGS_ROTATED_TOTAL: &str = "busbar_file_logs_rotated_total"; // no labels
+
+// A request-log FILE sink crossed `rotate_mb` but the archive RENAME failed (e.g. cross-device
+// mount, permission, or a racing external process). On this path the sink deliberately keeps
+// APPENDING to the current (over-size) file rather than truncating it — truncation would destroy
+// unarchived audit data, which is strictly worse than a temporarily oversized file. Incremented
+// once per failed rotation attempt; alert on a non-zero rate — it means a sink is not being bounded
+// by `rotate_mb` and needs operator attention (disk/permissions on the sink's directory).
+pub(crate) const FILE_LOGS_ROTATE_FAILED_TOTAL: &str = "busbar_file_logs_rotate_failed_total"; // no labels
+
 // A fire-and-forget TAP notification dropped because the in-flight cap was reached (slow/unreachable
 // tap endpoint). Unlabeled global backpressure. Alert on a non-zero rate.
 pub(crate) const TAP_NOTIFICATIONS_DROPPED_TOTAL: &str = "busbar_tap_notifications_dropped_total";

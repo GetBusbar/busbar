@@ -24,6 +24,14 @@ use std::sync::{Mutex, OnceLock};
 /// deployment has a reason to tune (the value matches the webhook exporter's default cap).
 const MAX_INFLIGHT_FILE_APPENDS: usize = 64;
 
+/// How many rotated archives ONE sink keeps (`<path>.1` .. `<path>.{ROTATE_ARCHIVE_LIMIT}`) before
+/// the oldest is dropped to make room for a new rotation. This is a RETENTION policy, not a
+/// truncation one: every rotation preserves the just-completed file in full by renaming it — nothing
+/// written to disk is ever discarded except an archive that has already aged past this many
+/// rotations. Deliberately a compiled-in constant like [`MAX_INFLIGHT_FILE_APPENDS`]: the file
+/// exporter's config surface is frozen for 1.5.3.
+const ROTATE_ARCHIVE_LIMIT: usize = 9;
+
 /// One configured JSONL sink (path + optional rotate size in MiB). The `Mutex` serializes concurrent
 /// appends so two request-finish tasks never interleave a line.
 struct FileSink {
@@ -93,18 +101,21 @@ fn append_one(sink: &'static FileSink, line: String) {
     tokio::task::spawn_blocking(move || {
         let _permit = permit; // slot releases on task end via the owned permit's Drop.
         let _guard = sink.lock.lock().unwrap_or_else(|e| e.into_inner());
-        // Best-effort size bound (`rotate_mb`): when the file exceeds the configured size,
-        // roll over by truncation rather than a rename (which would bypass the durable-write choke
-        // point) — a bounded on-disk footprint without a second durable-write path.
-        let truncate = sink
+        // Best-effort size bound (`rotate_mb`): when the file exceeds the configured size, roll it
+        // over by RENAME to a numbered archive, never by truncation — this sink can be an audit
+        // trail, and destroying recorded history on a size threshold is not an acceptable "rotation".
+        let needs_rotate = sink
             .rotate_bytes
             .and_then(|limit| std::fs::metadata(&sink.path).ok().map(|m| m.len() >= limit))
             .unwrap_or(false);
+        if needs_rotate {
+            rotate(&sink.path);
+        }
+        // ALWAYS append, never truncate: even on a failed rotation (see `rotate`) the correct
+        // fallback is to keep growing the current file, not to void it.
         let opened = std::fs::OpenOptions::new()
             .create(true)
-            .append(!truncate)
-            .write(true)
-            .truncate(truncate)
+            .append(true)
             .open(&sink.path);
         match opened {
             Ok(mut file) => {
@@ -117,6 +128,61 @@ fn append_one(sink: &'static FileSink, line: String) {
             }
         }
     });
+}
+
+/// Roll `path` over to a numbered archive series (`path.1` is the newest archive, `path.N` the
+/// oldest retained one) and free up `path` for a fresh file. Called with the sink's append `Mutex`
+/// already held, so this never races a concurrent append or a concurrent rotation on the same sink.
+///
+/// Never truncates. On any rename failure this returns having changed nothing observable about
+/// `path` itself — the caller then reopens it in append mode, so the file keeps growing past
+/// `rotate_mb` rather than losing what's already on disk. A stuck rename (permissions, cross-device
+/// archive dir, a racing external process) degrades to "rotation isn't happening", never to
+/// "history is gone."
+fn rotate(path: &str) {
+    // Free the oldest archive slot first so the shift below never collides with a still-occupied
+    // name. Retention is a deliberate, documented bound (`ROTATE_ARCHIVE_LIMIT`) chosen by this
+    // sink's default, not a side effect of the rotation mechanism.
+    let oldest = format!("{path}.{ROTATE_ARCHIVE_LIMIT}");
+    if std::path::Path::new(&oldest).exists() {
+        if let Err(e) = std::fs::remove_file(&oldest) {
+            tracing::warn!(
+                archive = %oldest, error = %e,
+                "request-log archive retention cleanup failed; the archive series may exceed ROTATE_ARCHIVE_LIMIT"
+            );
+        }
+    }
+    // Shift path.{i} -> path.{i+1}, oldest first, so no archive is ever renamed onto one that still
+    // holds unshifted data.
+    for i in (1..ROTATE_ARCHIVE_LIMIT).rev() {
+        let from = format!("{path}.{i}");
+        if std::path::Path::new(&from).exists() {
+            let to = format!("{path}.{}", i + 1);
+            if let Err(e) = std::fs::rename(&from, &to) {
+                tracing::warn!(
+                    from = %from, to = %to, error = %e,
+                    "request-log archive shift failed; older archive left in place rather than lost"
+                );
+            }
+        }
+    }
+    // The rotation that matters: the just-completed, still-un-archived current file becomes `.1`.
+    let archive = format!("{path}.1");
+    match std::fs::rename(path, &archive) {
+        Ok(()) => {
+            tracing::info!(path = %path, archive = %archive, "request-log file rotated by rename");
+            metrics::counter!(crate::metrics::FILE_LOGS_ROTATED_TOTAL).increment(1);
+        }
+        Err(e) => {
+            tracing::warn!(
+                path = %path, error = %e,
+                "request-log file rotation rename failed; continuing to APPEND to the current file \
+                 rather than truncate it, so no recorded data is lost — the file will exceed rotate_mb \
+                 until this is resolved"
+            );
+            metrics::counter!(crate::metrics::FILE_LOGS_ROTATE_FAILED_TOTAL).increment(1);
+        }
+    }
 }
 
 #[cfg(test)]
