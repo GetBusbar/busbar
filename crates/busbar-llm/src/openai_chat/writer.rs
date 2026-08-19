@@ -310,10 +310,14 @@ impl ProtocolWriter for OpenAiWriter {
             out.insert("top_p".to_string(), serde_json::json!(top_p));
         }
         if !req.stop.is_empty() {
-            out.insert(
-                "stop".to_string(),
-                serde_json::json!(busbar_core::proto::clamp_stop(&req.stop, 4, "OpenAI")),
-            );
+            // NEVER truncate here: an over-cap `req.stop` is rejected up front, at the
+            // cross-protocol seam, by `ChatOperation::egress_representable` consulting
+            // `stop_sequence_cap()` below — before `write_request` ever runs. A same-protocol
+            // OpenAI->OpenAI request never rebuilds its body from the IR (verbatim relay), so it
+            // never reaches this writer either. By the time this line runs, `req.stop.len()` is
+            // guaranteed `<= 4`; forward it whole rather than re-deriving a silent, partial cap
+            // here that could drift from the reject's cap.
+            out.insert("stop".to_string(), serde_json::json!(req.stop));
         }
 
         // First-class sampling/output controls. Emitted in OpenAI's native top-level shape and
@@ -822,6 +826,13 @@ impl ProtocolWriter for OpenAiWriter {
 
     fn auth_failure_message(&self) -> &'static str {
         AUTH_FAILURE_MSG
+    }
+
+    /// OpenAI Chat Completions caps `stop` at 4 and 400s on more. See `stop_sequence_cap`'s doc on
+    /// `ProtocolWriter` for why an over-cap request is REJECTED at the cross-protocol seam rather
+    /// than silently truncated.
+    fn stop_sequence_cap(&self) -> Option<(usize, &'static str)> {
+        Some((4, "OpenAI"))
     }
 
     fn clone_box(&self) -> Box<dyn ProtocolWriter> {
