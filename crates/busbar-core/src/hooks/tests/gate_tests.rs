@@ -141,6 +141,7 @@ async fn an_invocation_is_projected_whole() {
             ingress_protocol: "mcp",
             request_id: 7,
             key: Some(&k),
+            incremental: None,
         },
     )
     .await;
@@ -203,6 +204,7 @@ async fn a_grantless_gate_sees_shape_and_no_content() {
             ingress_protocol: "mcp",
             request_id: 1,
             key: Some(&key()),
+            incremental: None,
         },
     )
     .await;
@@ -251,6 +253,7 @@ async fn a_reject_stops_the_request_with_a_clamped_status() {
                 ingress_protocol: "mcp",
                 request_id: 1,
                 key: None,
+                incremental: None,
             },
         )
         .await
@@ -293,6 +296,7 @@ async fn a_broken_gate_applies_its_own_on_error() {
         ingress_protocol: "mcp",
         request_id: 1,
         key: None,
+        incremental: None,
     };
     assert!(
         matches!(decide(&open, &subject).await, GateVerdict::Proceed),
@@ -343,6 +347,7 @@ async fn no_attached_gate_builds_no_projection() {
             ingress_protocol: "mcp",
             request_id: 1,
             key: None,
+            incremental: None,
         },
     )
     .await;
@@ -351,5 +356,107 @@ async fn no_attached_gate_builds_no_projection() {
         facts.walks.load(std::sync::atomic::Ordering::Relaxed),
         0,
         "a deployment that attached no hook must not pay for a projection"
+    );
+}
+
+// ── Incremental scan (session-substrate tenant) ─────────────────────────────────────────────────
+
+use crate::hooks::gate::IncrementalScan;
+use crate::session::{SessionKey, SessionStore};
+
+/// A long session re-screens only NEW content: a piece cleared on one turn is not sent to the hook
+/// again on the next turn of the same session, and the gate proceeds without a sidecar call.
+#[tokio::test]
+async fn incremental_scan_skips_a_piece_already_cleared_this_session() {
+    let store = SessionStore::new(64, None);
+    let session = SessionKey(999);
+    let facts = tool_call();
+
+    // Turn 1: the piece is new — the spy sees it and abstains (clean), so it is cached.
+    let spy1 = Arc::new(Spy { reply: RoutingDecision::Abstain, seen: Mutex::new(None) });
+    let g1 = gate(spy1.clone(), crate::config::PolicyOnError::Weighted, true, true);
+    let v1 = decide(
+        &g1,
+        &GateSubject {
+            facts: &facts,
+            container: "filesystem",
+            ingress_protocol: "mcp",
+            request_id: 1,
+            key: None,
+            incremental: Some(IncrementalScan { store: &store, session, now_ms: 0 }),
+        },
+    )
+    .await;
+    assert!(matches!(v1, GateVerdict::Proceed));
+    assert!(spy1.seen.lock().unwrap().is_some(), "turn 1 screens the new piece");
+
+    // Turn 2: same session, same content — the piece is already cleared, so the spy is NOT called.
+    let spy2 = Arc::new(Spy { reply: RoutingDecision::Abstain, seen: Mutex::new(None) });
+    let g2 = gate(spy2.clone(), crate::config::PolicyOnError::Weighted, true, true);
+    let v2 = decide(
+        &g2,
+        &GateSubject {
+            facts: &facts,
+            container: "filesystem",
+            ingress_protocol: "mcp",
+            request_id: 2,
+            key: None,
+            incremental: Some(IncrementalScan { store: &store, session, now_ms: 0 }),
+        },
+    )
+    .await;
+    assert!(matches!(v2, GateVerdict::Proceed));
+    assert!(
+        spy2.seen.lock().unwrap().is_none(),
+        "turn 2's piece was already cleared this session — no redundant sidecar call"
+    );
+}
+
+/// A BLOCKED piece is never cached, so it is re-screened on retry — the security-critical rule.
+#[tokio::test]
+async fn a_rejected_piece_is_not_cached_and_is_rescreened() {
+    let store = SessionStore::new(64, None);
+    let session = SessionKey(7);
+    let facts = tool_call();
+
+    // Turn 1: the gate REJECTS — the piece must NOT be recorded as cleared.
+    let spy1 = Arc::new(Spy {
+        reply: RoutingDecision::Reject { status: 403, message: "blocked".to_string() },
+        seen: Mutex::new(None),
+    });
+    let g1 = gate(spy1.clone(), crate::config::PolicyOnError::Weighted, true, true);
+    let v1 = decide(
+        &g1,
+        &GateSubject {
+            facts: &facts,
+            container: "filesystem",
+            ingress_protocol: "mcp",
+            request_id: 1,
+            key: None,
+            incremental: Some(IncrementalScan { store: &store, session, now_ms: 0 }),
+        },
+    )
+    .await;
+    assert!(matches!(v1, GateVerdict::Reject { .. }));
+
+    // Turn 2: same session/content — because the block was never cached, it is screened again.
+    let spy2 = Arc::new(Spy { reply: RoutingDecision::Abstain, seen: Mutex::new(None) });
+    let g2 = gate(spy2.clone(), crate::config::PolicyOnError::Weighted, true, true);
+    let v2 = decide(
+        &g2,
+        &GateSubject {
+            facts: &facts,
+            container: "filesystem",
+            ingress_protocol: "mcp",
+            request_id: 2,
+            key: None,
+            incremental: Some(IncrementalScan { store: &store, session, now_ms: 0 }),
+        },
+    )
+    .await;
+    assert!(matches!(v2, GateVerdict::Proceed));
+    assert!(
+        spy2.seen.lock().unwrap().is_some(),
+        "a blocked piece is re-screened on retry, never skipped"
     );
 }

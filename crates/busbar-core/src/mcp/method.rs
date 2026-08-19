@@ -1339,6 +1339,7 @@ async fn tools_call(
                 // `next_request_id()` would hand the hook a number that joins to nothing.
                 request_id: log.request_id.parse().unwrap_or_default(),
                 key: ctx.gov.key.as_deref(),
+                incremental: None,
             },
         )
         .await;

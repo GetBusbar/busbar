@@ -95,6 +95,75 @@ pub(crate) struct GateSubject<'a> {
     /// The caller's resolved governance key, for the `user: ro` identity projection. `None` when
     /// governance is disabled or the plane resolved no key.
     pub(crate) key: Option<&'a busbar_api::VirtualKey>,
+    /// Incremental scan: when `Some`, screen only the content pieces this session has not already had
+    /// cleared for each hook (the session-substrate tenant, design G5). `None` = screen the full
+    /// projection every time — the default, byte-identical to pre-incremental behaviour.
+    pub(crate) incremental: Option<IncrementalScan<'a>>,
+}
+
+/// The gate's tenant of the session substrate: a per-`(session, hook)` set of the content-piece
+/// digests already screened clean, so a long session re-screens only NEW content instead of the whole
+/// growing context every turn.
+///
+/// The screening HOOK never learns about sessions — this bookkeeping is pure neutral core (a session
+/// id + [`ContentItem::screening_digest`]). Safe degradation: a cold/evicted slot just means more gets
+/// re-screened — never wrong, only less optimised. A BLOCKED (rejected) piece is never recorded, so it
+/// is re-screened on retry. An OPAQUE piece is always re-surfaced (a presence signal, never cleared).
+#[derive(Clone, Copy)]
+pub(crate) struct IncrementalScan<'a> {
+    /// The neutral session substrate the cleared-set lives in.
+    pub(crate) store: &'a crate::session::SessionStore,
+    /// This request's session identity (a stable hash of the session key already read at ingress).
+    pub(crate) session: crate::session::SessionKey,
+    /// Epoch millis for the substrate's TTL — passed in, no ambient clock here.
+    pub(crate) now_ms: u64,
+}
+
+/// hook name → the set of content-piece digests cleared for it this session.
+type ClearedSets = std::sync::Mutex<std::collections::HashMap<String, std::collections::HashSet<String>>>;
+
+impl IncrementalScan<'_> {
+    const OWNER: crate::session::OwnerKey = "gate.screen";
+
+    /// Get-or-create this session's cleared-sets slot. The get-then-put is not atomic, but a lost race
+    /// only drops a cleared entry (→ a re-screen), which is safe degradation.
+    fn sets(&self) -> std::sync::Arc<ClearedSets> {
+        if let Some(m) = self.store.get::<ClearedSets>(self.session, Self::OWNER, self.now_ms) {
+            return m;
+        }
+        let m = std::sync::Arc::new(ClearedSets::default());
+        self.store
+            .put(self.session, Self::OWNER, m.clone(), self.now_ms, false, None);
+        m
+    }
+
+    /// The pieces to actually screen for `hook`: everything not yet cleared for it, plus every opaque
+    /// piece (always re-surfaced). Order is preserved.
+    fn unscreened<'i>(&self, hook: &str, items: &[ContentItem<'i>]) -> Vec<ContentItem<'i>> {
+        let sets = self.sets();
+        let guard = sets.lock().unwrap_or_else(|e| e.into_inner());
+        let cleared = guard.get(hook);
+        items
+            .iter()
+            .filter(|&item| {
+                matches!(item, ContentItem::Opaque { .. })
+                    || cleared.is_none_or(|set| !set.contains(&item.screening_digest()))
+            })
+            .cloned()
+            .collect()
+    }
+
+    /// Record the (non-opaque) pieces just screened clean for `hook`, so the next turn skips them.
+    fn mark_cleared(&self, hook: &str, screened: &[ContentItem<'_>]) {
+        let sets = self.sets();
+        let mut guard = sets.lock().unwrap_or_else(|e| e.into_inner());
+        let set = guard.entry(hook.to_string()).or_default();
+        for item in screened {
+            if !matches!(item, ContentItem::Opaque { .. }) {
+                set.insert(item.screening_digest());
+            }
+        }
+    }
 }
 
 /// FIRE the gates attached to this container, in priority order, and return the first verdict that
@@ -126,7 +195,18 @@ pub(crate) async fn decide(
         },
     ) in gates
     {
-        let req = project(subject, &items, *send_prompt, *send_user);
+        // Incremental scan (G5 tenant): screen only the pieces this session hasn't cleared for THIS
+        // hook. `None` → the full item set, byte-identical to pre-incremental behaviour.
+        let screened: Option<Vec<ContentItem>> = subject
+            .incremental
+            .as_ref()
+            .map(|inc| inc.unscreened(policy.name(), &items));
+        if screened.as_ref().is_some_and(|s| s.is_empty()) {
+            // Nothing new to screen for this hook this turn — it proceeds without a sidecar call.
+            continue;
+        }
+        let content: &[ContentItem] = screened.as_deref().unwrap_or(&items);
+        let req = project(subject, content, *send_prompt, *send_user);
         let ctx = RoutingContext {
             pool: subject.container,
             // No pool-scoped budget signal on these planes: the budget a request here spends is the
@@ -198,6 +278,12 @@ pub(crate) async fn decide(
                 );
             }
             RoutingDecision::Abstain => {}
+        }
+        // A clean pass (no reject returned above): record the pieces just screened as cleared for this
+        // hook, so the next turn in this session skips them. Rejects never reach here — a blocked piece
+        // is deliberately NOT cached and is re-screened on retry.
+        if let (Some(inc), Some(s)) = (subject.incremental.as_ref(), screened.as_ref()) {
+            inc.mark_cleared(policy.name(), s);
         }
     }
     GateVerdict::Proceed

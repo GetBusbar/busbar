@@ -908,6 +908,7 @@ async fn admitted(
                 ingress_protocol: crate::plane::Plane::A2a.key(),
                 request_id: app.next_request_id(),
                 key: Some(key.as_ref()),
+                incremental: None,
             },
         )
         .await;
