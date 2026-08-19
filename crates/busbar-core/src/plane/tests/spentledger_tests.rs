@@ -88,7 +88,7 @@ fn all_capabilities() -> serde_json::Value {
 fn node(cfg: Option<&str>) -> PlaneApprovals {
     let spent = PlaneApprovals::new();
     if let Some(cfg) = cfg {
-        spent.set_sink(open_plugin(cfg));
+        spent.set_sink(crate::plane::store::PlaneStoreView::narrow(open_plugin(cfg)));
     }
     spent
 }
@@ -287,9 +287,9 @@ fn two_nodes_sharing_no_store_each_redeem_once_which_is_the_documented_ram_postu
 #[test]
 fn the_memory_store_shares_no_ledger_which_is_the_documented_contract() {
     let node_a = PlaneApprovals::new();
-    node_a.set_sink(std::sync::Arc::new(busbar_store_memory::MemoryStore::new()));
+    node_a.set_sink(crate::plane::store::PlaneStoreView::narrow(std::sync::Arc::new(busbar_store_memory::MemoryStore::new())));
     let node_b = PlaneApprovals::new();
-    node_b.set_sink(std::sync::Arc::new(busbar_store_memory::MemoryStore::new()));
+    node_b.set_sink(crate::plane::store::PlaneStoreView::narrow(std::sync::Arc::new(busbar_store_memory::MemoryStore::new())));
 
     let state = ask(&node_a);
     assert_eq!(redeem(&node_a, &state), AskDecision::Proceed);

@@ -254,7 +254,7 @@ fn refused(ts: u64, tool: &str, reason: &str) -> CallInput {
 /// so the read-back can be compared against it field by field.
 fn write_then_drop(store: &Arc<dyn Store>) -> Vec<McpCallRecord> {
     let log = PlaneCallLog::new();
-    log.set_sink(store.clone());
+    log.set_sink(crate::plane::store::PlaneStoreView::narrow(store.clone()));
     let a = log
         .record(P, dispatched(1000, "fs_read", "sha256:aaa", 7))
         .expect("first call records");
@@ -314,14 +314,14 @@ fn a_durable_store_returns_every_record_field_for_field_across_a_restart() {
 
     // Process 2: nothing carried over.
     let log2 = PlaneCallLog::new();
-    log2.set_sink(store.clone());
+    log2.set_sink(crate::plane::store::PlaneStoreView::narrow(store.clone()));
     assert_eq!(
         log2.len(),
         0,
         "a fresh log holds no chain positions before it reads the store"
     );
     let restored = log2
-        .restore_from_store(store.as_ref())
+        .restore_from_store(crate::plane::store::PlaneStoreView::narrow(store.clone()).as_ref())
         .expect("the restore reads");
 
     assert_eq!(restored.principals, 1, "one principal had calls");
@@ -334,7 +334,7 @@ fn a_durable_store_returns_every_record_field_for_field_across_a_restart() {
     );
 
     let read_back = log2
-        .read_back(store.as_ref(), P)
+        .read_back(crate::plane::store::PlaneStoreView::narrow(store.clone()).as_ref(), P)
         .expect("the read-back reads");
     assert_eq!(read_back.len(), written.len(), "row count survived");
     for (i, (got, want)) in read_back.iter().zip(written.iter()).enumerate() {
@@ -357,7 +357,7 @@ fn a_durable_store_returns_every_record_field_for_field_across_a_restart() {
         "the post-restart record links to the PERSISTED tail, not to a fresh chain"
     );
     assert_eq!(
-        log2.verify_principal_chain(store.as_ref(), P)
+        log2.verify_principal_chain(crate::plane::store::PlaneStoreView::narrow(store.clone()).as_ref(), P)
             .expect("verify reads")
             .expect("the chain spanning the restart verifies"),
         4
@@ -378,9 +378,9 @@ fn the_ram_default_accepts_every_write_and_keeps_nothing_and_says_so() {
     assert_eq!(written.len(), 3, "all three writes returned Ok");
 
     let log2 = PlaneCallLog::new();
-    log2.set_sink(store.clone());
+    log2.set_sink(crate::plane::store::PlaneStoreView::narrow(store.clone()));
     let restored = log2
-        .restore_from_store(store.as_ref())
+        .restore_from_store(crate::plane::store::PlaneStoreView::narrow(store.clone()).as_ref())
         .expect("the restore reads");
     assert_eq!(
         restored,
@@ -388,7 +388,7 @@ fn the_ram_default_accepts_every_write_and_keeps_nothing_and_says_so() {
         "the RAM default restores NOTHING — no principals, no records, no empty chains, no breaks"
     );
     assert!(
-        log2.read_back(store.as_ref(), P)
+        log2.read_back(crate::plane::store::PlaneStoreView::narrow(store.clone()).as_ref(), P)
             .expect("the read-back reads")
             .is_empty(),
         "the RAM default hands back no rows: durability is a property of the CONFIGURED BACKEND, \
@@ -410,7 +410,7 @@ fn a_failed_durable_write_leaves_the_sequence_where_it_was() {
     let backing = Arc::new(DurableCallStore::new());
     let store: Arc<dyn Store> = backing.clone();
     let log = PlaneCallLog::new();
-    log.set_sink(store.clone());
+    log.set_sink(crate::plane::store::PlaneStoreView::narrow(store.clone()));
 
     log.record(P, dispatched(1000, "fs_read", "sha256:aaa", 7))
         .expect("the first call records");
@@ -436,7 +436,7 @@ fn a_failed_durable_write_leaves_the_sequence_where_it_was() {
         .expect("the retry records");
     assert_eq!(second.seq, 2, "seq 2 was still free");
     assert_eq!(
-        log.verify_principal_chain(store.as_ref(), P)
+        log.verify_principal_chain(crate::plane::store::PlaneStoreView::narrow(store.clone()).as_ref(), P)
             .expect("verify reads")
             .expect("the chain is contiguous across the failed write"),
         2
@@ -456,7 +456,7 @@ fn editing_a_persisted_row_is_reported_as_a_digest_mismatch_at_its_position() {
 
     let log = PlaneCallLog::new();
     assert!(
-        log.verify_principal_chain(store.as_ref(), P)
+        log.verify_principal_chain(crate::plane::store::PlaneStoreView::narrow(store.clone()).as_ref(), P)
             .expect("verify reads")
             .is_ok(),
         "the chain verifies BEFORE the tamper — otherwise this test proves nothing"
@@ -470,7 +470,7 @@ fn editing_a_persisted_row_is_reported_as_a_digest_mismatch_at_its_position() {
     });
 
     let brk = log
-        .verify_principal_chain(store.as_ref(), P)
+        .verify_principal_chain(crate::plane::store::PlaneStoreView::narrow(store.clone()).as_ref(), P)
         .expect("verify reads")
         .expect_err("the edited row is detected");
     assert_eq!(brk.at_index, 2, "the break is reported AT the edited row");
@@ -498,7 +498,7 @@ fn removing_a_persisted_row_is_reported_as_a_sequence_break() {
 
     let log = PlaneCallLog::new();
     let brk = log
-        .verify_principal_chain(store.as_ref(), P)
+        .verify_principal_chain(crate::plane::store::PlaneStoreView::narrow(store.clone()).as_ref(), P)
         .expect("verify reads")
         .expect_err("the missing row is detected");
     assert_eq!(
@@ -553,7 +553,7 @@ fn rewriting_only_a_persisted_rows_link_is_reported_as_a_link_mismatch() {
 
     let log = PlaneCallLog::new();
     let brk = log
-        .verify_principal_chain(store.as_ref(), P)
+        .verify_principal_chain(crate::plane::store::PlaneStoreView::narrow(store.clone()).as_ref(), P)
         .expect("verify reads")
         .expect_err("a self-consistent row with a rewritten link is still detected");
     assert_eq!(brk.at_index, 3);
@@ -608,9 +608,9 @@ fn a_boot_chain_break_is_reported_while_the_rows_are_still_restored() {
     backing.tamper(P, 2, |row| row.tool = "fs_exfiltrate".to_string());
 
     let log2 = PlaneCallLog::new();
-    log2.set_sink(store.clone());
+    log2.set_sink(crate::plane::store::PlaneStoreView::narrow(store.clone()));
     let restored = log2
-        .restore_from_store(store.as_ref())
+        .restore_from_store(crate::plane::store::PlaneStoreView::narrow(store.clone()).as_ref())
         .expect("the restore reads");
 
     assert_eq!(restored.chain_breaks.len(), 1, "the break is REPORTED");
@@ -634,7 +634,7 @@ fn a_boot_chain_break_is_reported_while_the_rows_are_still_restored() {
     // The evidence survives the restore: asking again still reports the same break, so a second
     // operator looking later sees what the first one saw.
     let brk = log2
-        .verify_principal_chain(store.as_ref(), P)
+        .verify_principal_chain(crate::plane::store::PlaneStoreView::narrow(store.clone()).as_ref(), P)
         .expect("verify reads")
         .expect_err("the break is still there after the restore");
     assert_eq!(brk.at_index, 2);
@@ -668,7 +668,7 @@ fn an_enumerated_principal_with_no_rows_is_reported_as_an_empty_chain() {
     let control = PlaneCallLog::new();
     assert_eq!(
         control
-            .restore_from_store(store.as_ref())
+            .restore_from_store(crate::plane::store::PlaneStoreView::narrow(store.clone()).as_ref())
             .expect("the restore reads")
             .empty_chains,
         0,
@@ -678,7 +678,7 @@ fn an_enumerated_principal_with_no_rows_is_reported_as_an_empty_chain() {
     let store2: Arc<dyn Store> = Arc::new(NamesOnePrincipalWithNoRows);
     let log2 = PlaneCallLog::new();
     let restored = log2
-        .restore_from_store(store2.as_ref())
+        .restore_from_store(crate::plane::store::PlaneStoreView::narrow(store2.clone()).as_ref())
         .expect("the restore reads");
     assert_eq!(restored.principals, 1);
     assert_eq!(restored.records, 0);
@@ -894,7 +894,7 @@ fn an_occupied_chain_position_takes_the_retry_and_refuses_the_fork() {
     let backing = Arc::new(DurableCallStore::new());
     let store: Arc<dyn Store> = backing.clone();
     let log = PlaneCallLog::new();
-    log.set_sink(store.clone());
+    log.set_sink(crate::plane::store::PlaneStoreView::narrow(store.clone()));
     let first = log
         .record(P, dispatched(1000, "fs_read", "sha256:aaa", 7))
         .expect("records");
@@ -918,7 +918,7 @@ fn retention_purges_rows_without_rewinding_the_chain() {
     let backing = Arc::new(DurableCallStore::new());
     let store: Arc<dyn Store> = backing.clone();
     let log = PlaneCallLog::new();
-    log.set_sink(store.clone());
+    log.set_sink(crate::plane::store::PlaneStoreView::narrow(store.clone()));
     log.record(P, dispatched(1000, "fs_read", "sha256:aaa", 7))
         .expect("records");
     log.record(P, dispatched(2000, "fs_read", "sha256:aaa", 7))
@@ -934,7 +934,7 @@ fn retention_purges_rows_without_rewinding_the_chain() {
 
     // The RAM default has nothing to purge and reports exactly that, rather than claiming a number.
     let ram = PlaneCallLog::new();
-    ram.set_sink(Arc::new(RamDefaultStore::new()));
+    ram.set_sink(crate::plane::store::PlaneStoreView::narrow(Arc::new(RamDefaultStore::new())));
     assert_eq!(
         ram.compact(1500).expect("compact runs"),
         0,

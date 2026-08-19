@@ -28,7 +28,7 @@ use crate::test_support::plugin_store::{durable_cfg, open_plugin};
 /// A `PlaneQuarantine` with a freshly `dlopen`ed handle on `cfg`.
 fn node(cfg: &str) -> PlaneQuarantine {
     let d = PlaneQuarantine::new();
-    d.set_sink(open_plugin(cfg));
+    d.set_sink(crate::plane::store::PlaneStoreView::narrow(open_plugin(cfg)));
     d
 }
 
@@ -212,7 +212,7 @@ fn with_no_durable_sink_a_demotion_is_recorded_nowhere() {
 #[test]
 fn the_memory_store_keeps_no_demotions_which_is_the_documented_contract() {
     let d = PlaneQuarantine::new();
-    d.set_sink(std::sync::Arc::new(busbar_store_memory::MemoryStore::new()));
+    d.set_sink(crate::plane::store::PlaneStoreView::narrow(std::sync::Arc::new(busbar_store_memory::MemoryStore::new())));
     d.record("fs", "quarantined", 100);
     assert!(
         d.list().is_empty(),

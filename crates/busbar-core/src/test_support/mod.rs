@@ -1499,8 +1499,10 @@ impl TestApp {
         // replay the recorded demotions into the sightings cache BEFORE the app is handed to a
         // caller, which is where boot does it relative to binding a listener.
         if let Some(durable) = mcp_durable_store {
-            app.plane_approvals.set_sink(durable.clone());
-            app.mcp_demotions.set_sink(durable);
+            // Narrowed to the plane surface exactly as boot does — these are plane sinks.
+            let plane_store = crate::plane::store::PlaneStoreView::narrow(durable);
+            app.plane_approvals.set_sink(plane_store.clone());
+            app.mcp_demotions.set_sink(plane_store);
             crate::mcp::demotion::hydrate(&app);
         }
         (app, store)
