@@ -7,7 +7,7 @@
 # hydration, the router mount and the admin API) — ONE PLUGIN PER PROTOCOL, and A2A the protocol and
 # A2A the plane are the same protocol, so they end up behind the same on/off switch rather than two.
 #
-# `busbar-core = { default-features = false }` mirrors `busbar-llm`/`busbar-proto-mcp`: the feature
+# `busbar-core = { default-features = false }` mirrors `busbar-llm`/`busbar-mcp`: the feature
 # decisions belong to the composition root, not to a plugin. `busbar-api` is named ahead of the code
 # that needs it, per 1.6.0's owner ruling R-E, which plans this crate to depend on `busbar-api` the
 # way `busbar-auth-admin-tokens` and `busbar-hooks-ranking` do today.

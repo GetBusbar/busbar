@@ -22,16 +22,17 @@ path = "src/main.rs"
 busbar-core = { path = "../busbar-core", default-features = false }
 # THE PROTOCOL CRATES — the composition root's knowledge, per the manifest header above. ONE CRATE
 # PER PROTOCOL: `busbar-llm` carries the LLM protocol's six dialects together (an operator picks LLM
-# coverage or none, never a subset), and `busbar-proto-mcp` is a different protocol and therefore a
-# different plugin. Each is optional behind a feature of the same name so the deletion gate can
-# build the binary WITHOUT a protocol and watch it refuse that protocol's config rather than serve
-# it (scripts/proto-deletion-gate.sh). Default-on: the shipped binary speaks both.
+# coverage or none, never a subset), and `busbar-mcp` is a different protocol and therefore a
+# different plugin — it carries the MCP protocol codec today (folded in from the former
+# `busbar-proto-mcp`) and the MCP plane in a later plane-split step, both behind the ONE `plane-mcp`
+# switch. Each is optional behind a feature so the deletion gate can build the binary WITHOUT a
+# protocol and watch it refuse that protocol's config rather than serve it
+# (scripts/proto-deletion-gate.sh). Default-on: the shipped binary speaks both.
 busbar-llm = { path = "../busbar-llm", optional = true }
-busbar-proto-mcp = { path = "../busbar-proto-mcp", optional = true }
-# THE PLANE-KIND SHELLS (step 3.A.0/3.B.0 of the plane split). Empty crates so far (see each one's
-# `src/lib.rs`) — nothing in `main.rs` names them and neither feature below is in `default`, so
-# this edge is inert until the plane/codec code that later steps move actually lands here.
 busbar-mcp = { path = "../busbar-mcp", optional = true }
+# THE A2A PLANE-KIND SHELL (step 3.B.0 of the plane split). Empty crate so far (see its `src/lib.rs`)
+# — nothing in `main.rs` names it and `plane-a2a` below is not in `default`, so this edge is inert
+# until the plane/codec code that a later step moves actually lands here.
 busbar-a2a = { path = "../busbar-a2a", optional = true }
 # Boot-time plugin listing (`--plugins`) reads the registry the loader builds.
 busbar-plugin-loader = { path = "../plugin-loader" }
@@ -55,17 +56,20 @@ tikv-jemallocator = { workspace = true, features = ["disable_initial_exec_tls"] 
 # Pure forwards: every `#[cfg(feature = ...)]` site lives in busbar-core, so the binary's features
 # are one-line re-exports of the core feature with the same name. The binary keeps the SAME default
 # set the monolithic crate had, so `cargo build -p busbar` builds the same artifact as before.
-default = ["auth-admin-tokens", "hooks-ranking", "proto-llm", "proto-mcp"]
+default = ["auth-admin-tokens", "hooks-ranking", "proto-llm", "plane-mcp"]
 # A protocol crate: the dependency edge plus its registration line in main.rs. Dropping the
 # feature is the deletion test's level-1 build. There is no per-DIALECT feature and there must not
 # be one — "LLM coverage or not" is the choice this seam offers, and a `proto-gemini` knob would be
 # a second, finer answer to a question the owner ruling already settled.
 proto-llm = ["dep:busbar-llm"]
-proto-mcp = ["dep:busbar-proto-mcp"]
-# NOT in `default` and NOT yet referenced from main.rs — see the dependency comment above. These
-# exist so the later plane/codec-move steps have a feature to flip; flipping one today would add a
-# dependency edge to an empty crate and nothing else.
+# THE MCP PROTOCOL, carried by `busbar-mcp`: the dependency edge plus the `busbar_mcp::PROTO_DECL`
+# registration line in main.rs. ONE switch for MCP the protocol codec today and MCP the plane once
+# it folds in — never two — so it keeps the plane-kind name `plane-mcp` rather than a `proto-mcp`
+# that would imply the plane rode a different knob. Default-on: the shipped binary speaks MCP.
 plane-mcp = ["dep:busbar-mcp"]
+# NOT in `default` and NOT yet referenced from main.rs — the A2A crate is still an empty shell (see
+# the dependency comment above). This exists so the later plane/codec-move step has a feature to
+# flip; flipping it today would add a dependency edge to an empty crate and nothing else.
 plane-a2a = ["dep:busbar-a2a"]
 auth-admin-tokens = ["busbar-core/auth-admin-tokens"]
 hooks-ranking = ["busbar-core/hooks-ranking"]

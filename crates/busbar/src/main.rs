@@ -512,8 +512,8 @@ fn register_protocols() {
     let mut installed: Vec<&'static busbar_core::proto::ProtocolDecl> = Vec::new();
     #[cfg(feature = "proto-llm")]
     installed.extend_from_slice(busbar_llm::DECLS);
-    #[cfg(feature = "proto-mcp")]
-    installed.push(&busbar_proto_mcp::DECL);
+    #[cfg(feature = "plane-mcp")]
+    installed.push(&busbar_mcp::PROTO_DECL);
     busbar_core::proto::registry::install_protocols(installed);
 }
 

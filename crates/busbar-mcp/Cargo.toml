@@ -1,17 +1,17 @@
-# busbar-mcp — THE MCP (Model Context Protocol) PLUGIN CRATE SHELL.
+# busbar-mcp — THE MCP (Model Context Protocol) PLUGIN CRATE.
 #
-# Step 3.A.0 of the plane split creates ONLY this shell: the manifest and a doc-only `src/lib.rs`.
-# No plane or codec code has moved here yet — that is later steps. When it does, this crate becomes
-# the MCP protocol codec (what `busbar-proto-mcp` holds today) FOLDED TOGETHER with the MCP plane
-# (today's `crates/busbar-core/src/mcp`, ~18k lines: the catalogue, the call log, the client pool and
-# its transports, the config sections, boot hydration, the router mount and the admin API) — ONE
-# PLUGIN PER PROTOCOL, and MCP the protocol and MCP the plane are the same protocol, so they end up
-# behind the same on/off switch rather than two.
+# Step 3.A.1 of the plane split folded the MCP protocol codec in here: the `codec` module
+# (`src/codec/`) is the `ProtocolDecl`, the JSON-RPC dialect and the `tools/call` + subscription
+# operation cells — everything the former `busbar-proto-mcp` crate carried. The MCP PLANE (today's
+# `crates/busbar-core/src/mcp`, ~18k lines: the catalogue, the call log, the client pool and its
+# transports, the config sections, boot hydration, the router mount and the admin API) folds in
+# BESIDE the codec in a later plane-split step — ONE PLUGIN PER PROTOCOL, and MCP the protocol and
+# MCP the plane are the same protocol, so they end up behind the same on/off switch rather than two.
 #
-# `busbar-core = { default-features = false }` mirrors `busbar-llm`/`busbar-proto-mcp`: the feature
-# decisions belong to the composition root, not to a plugin. `busbar-api` is named ahead of the code
-# that needs it, per 1.6.0's owner ruling R-E, which plans this crate to depend on `busbar-api` the
-# way `busbar-auth-admin-tokens` and `busbar-hooks-ranking` do today.
+# `busbar-core = { default-features = false }` mirrors `busbar-llm`: the feature decisions belong to
+# the composition root, not to a plugin. `busbar-api` is named ahead of the code that needs it, per
+# 1.6.0's owner ruling R-E, which plans this crate to depend on `busbar-api` the way
+# `busbar-auth-admin-tokens` and `busbar-hooks-ranking` do today.
 [package]
 name = "busbar-mcp"
 version = "1.6.0"
@@ -32,6 +32,10 @@ path = "src/lib.rs"
 busbar-core = { path = "../busbar-core", default-features = false }
 # The plugin contracts crate, named ahead of use per owner ruling R-E (see header).
 busbar-api = { path = "../api" }
+# The specification authors' own crate, pinned narrow (see busbar-core/Cargo.toml's rationale): the
+# codec takes the protocol VOCABULARY — MCP method names and parameter shapes — from it and nothing
+# else, so a name the SDK retires stops compiling here instead of being served.
+rmcp = { workspace = true }
 axum = { workspace = true }
 bytes = { workspace = true }
 serde_json = { workspace = true }

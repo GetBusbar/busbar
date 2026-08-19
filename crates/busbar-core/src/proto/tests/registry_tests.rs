@@ -372,7 +372,7 @@ const fn named_decl(name: &'static str) -> ProtocolDecl {
 /// `install_protocols` folds installed declarations AHEAD of the built-ins, and its doc justifies
 /// that by `anthropic` — a dialect that already LED the built-in table, so prepending reproduced the
 /// monolith's order exactly. `mcp` is the case that rule was not written for: it was the LAST row of
-/// `BUILTIN_DECLS`, and extracting it to `busbar-proto-mcp` moves it from the tail to the head of
+/// `BUILTIN_DECLS`, and extracting it to `busbar-mcp` moves it from the tail to the head of
 /// the production binary's declaration list. Nothing in core's own test build can catch that — the
 /// test build carries the dialect as a built-in and never calls `install_protocols` — so the
 /// question is settled here, on the derivation itself.
