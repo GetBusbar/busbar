@@ -100,8 +100,8 @@ pub struct PlaneDecl {
     /// this returns is mounted into [`super::PlaneDispatch`] and — since [`super::PlaneDispatch::admission_for`]
     /// resolves the RFC 8707 audience THROUGH the mount table — becomes a path where a token's `aud`
     /// is checked. A plane that answers on a path it does NOT return here has left a confused-deputy
-    /// hole: the door where any resource's token is admitted. So the invariant is stated as a
-    /// ratchet (`plane/tests`, R1): every path a plane answers on is a path it claims here. The A2A
+    /// hole: the door where any resource's token is admitted. So the invariant this list upholds is:
+    /// every path a plane answers on is a path it claims here. The A2A
     /// plane returns TWO claims — `/a2a` and the gRPC service `/lf.a2a.v1.A2AService`, whose path a
     /// gRPC client derives from the `.proto` and cannot be pointed elsewhere.
     ///
