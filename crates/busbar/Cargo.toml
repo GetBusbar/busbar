@@ -28,6 +28,11 @@ busbar-core = { path = "../busbar-core", default-features = false }
 # it (scripts/proto-deletion-gate.sh). Default-on: the shipped binary speaks both.
 busbar-llm = { path = "../busbar-llm", optional = true }
 busbar-proto-mcp = { path = "../busbar-proto-mcp", optional = true }
+# THE PLANE-KIND SHELLS (step 3.A.0/3.B.0 of the plane split). Empty crates so far (see each one's
+# `src/lib.rs`) — nothing in `main.rs` names them and neither feature below is in `default`, so
+# this edge is inert until the plane/codec code that later steps move actually lands here.
+busbar-mcp = { path = "../busbar-mcp", optional = true }
+busbar-a2a = { path = "../busbar-a2a", optional = true }
 # Boot-time plugin listing (`--plugins`) reads the registry the loader builds.
 busbar-plugin-loader = { path = "../plugin-loader" }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "io-util"] }
@@ -57,6 +62,11 @@ default = ["auth-admin-tokens", "hooks-ranking", "proto-llm", "proto-mcp"]
 # a second, finer answer to a question the owner ruling already settled.
 proto-llm = ["dep:busbar-llm"]
 proto-mcp = ["dep:busbar-proto-mcp"]
+# NOT in `default` and NOT yet referenced from main.rs — see the dependency comment above. These
+# exist so the later plane/codec-move steps have a feature to flip; flipping one today would add a
+# dependency edge to an empty crate and nothing else.
+plane-mcp = ["dep:busbar-mcp"]
+plane-a2a = ["dep:busbar-a2a"]
 auth-admin-tokens = ["busbar-core/auth-admin-tokens"]
 hooks-ranking = ["busbar-core/hooks-ranking"]
 openapi-schema = ["busbar-core/openapi-schema"]
