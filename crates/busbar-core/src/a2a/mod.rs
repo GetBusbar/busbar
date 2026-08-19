@@ -62,6 +62,29 @@
 // invisible, including in the modules a request now goes through; per-file, a new gap in a mounted
 // module is a warning again, and the file that still has one has to say why.
 
+/// THE A2A PLANE'S VOCABULARY DECLARATION, beside the code it describes. Folded into
+/// `plane::registry::BUILTIN_PLANE_DECLS`; every field replaces one arm of a `Plane::A2a` `match`.
+///
+/// `wire_format_names` is THREE BINDINGS OF ONE AGENT, ordered so the first is the canonical one:
+/// the JSON-RPC envelope (which a door refusal is shaped in), HTTP+JSON, and the gRPC service.
+/// `serve::servable_bindings` reads this list to decide what a served card may advertise, and its
+/// length (> 1) is what earns this plane a superset IR and denies it a `sole_wire_format`.
+pub(crate) const PLANE_DECL: crate::plane::registry::PlaneDecl =
+    crate::plane::registry::PlaneDecl {
+        key: "a2a",
+        config_section: "agents",
+        scope_kinds: &["agent"],
+        subject_noun: "fronted agent",
+        audit_kind: "a2a_agent",
+        wire_format_names: || {
+            &[
+                crate::plane::WIRE_JSONRPC,
+                crate::plane::WIRE_HTTP_JSON,
+                crate::plane::WIRE_GRPC,
+            ]
+        },
+    };
+
 pub(crate) mod anomaly;
 pub(crate) mod canonical;
 pub(crate) mod card;
