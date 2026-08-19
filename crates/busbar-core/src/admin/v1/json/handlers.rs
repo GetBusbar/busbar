@@ -3918,89 +3918,21 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
             }
         }),
     );
-    // ── The MCP TRUST VERBS. Additive on top of the generic `tools` section CRUD. ───────────────
-    paths.insert(
-        ap("/tools/{name}/connect"),
-        json!({
-            "post": {
-                "summary": "Fetch a registered MCP server's LIVE tool list, hash it, and record the observation. Approves nothing: adopting what was seen is a separate operator act",
-                "security": [{"adminToken": []}],
-                "parameters": [{
-                    "name": "name", "in": "path", "required": true,
-                    "schema": {"type": "string"}
-                }],
-                "responses": {
-                    "200": {"description": "OK (the derived trust state and changes queue; a refresh that landed a quarantine is still a 200 — the drift is in the body)"},
+    // ── THE PLANES' TRUST VERBS, contributed through the registry rather than named here. Each
+    // plane's `openapi` fragment carries the ABSOLUTE admin paths its verbs answer on (MCP's
+    // `tools/{name}/connect|changes|health`, A2A's `agents/{name}/connect|approve`), merged in
+    // DECLARATION ORDER so this document documents exactly the surface `JsonV1::router` mounts from
+    // the same `plane_decls()` list. The typed success-body schemas for these paths are attached
+    // below by the shared `typed!`/`body!` pass, which looks each path up by the key inserted here.
+    for decl in crate::plane::registry::plane_decls() {
+        if let Some(openapi) = decl.openapi {
+            if let Some(obj) = openapi().as_object() {
+                for (path, item) in obj {
+                    paths.insert(path.clone(), item.clone());
                 }
             }
-        }),
-    );
-    paths.insert(
-        ap("/tools/{name}/changes"),
-        json!({
-            "get": {
-                "summary": "The changes queue for one MCP server, derived from the LAST observation. Contacts nothing",
-                "security": [{"adminToken": []}],
-                "parameters": [{
-                    "name": "name", "in": "path", "required": true,
-                    "schema": {"type": "string"}
-                }],
-                "responses": {
-                    "200": {"description": "OK"},
-                }
-            }
-        }),
-    );
-    paths.insert(
-        ap("/tools/{name}/health"),
-        json!({
-            "get": {
-                "summary": "Whether one MCP server currently serves, and why not when it does not",
-                "security": [{"adminToken": []}],
-                "parameters": [{
-                    "name": "name", "in": "path", "required": true,
-                    "schema": {"type": "string"}
-                }],
-                "responses": {
-                    "200": {"description": "OK"},
-                }
-            }
-        }),
-    );
-    // ── The A2A TRUST VERBS. Additive on top of the generic `agents` section CRUD, and the reason
-    // a fronted agent can leave `Pending` at all. ───────────────────────────────────────────────
-    paths.insert(
-        ap("/agents/{name}/connect"),
-        json!({
-            "post": {
-                "summary": "Fetch a registered agent's card, verify it against the operator's out-of-band root, and report the fingerprint. Approves nothing and writes nothing",
-                "security": [{"adminToken": []}],
-                "parameters": [{
-                    "name": "name", "in": "path", "required": true,
-                    "schema": {"type": "string"}
-                }],
-                "responses": {
-                    "200": {"description": "OK (the derived trust state and the fingerprint a human is being asked to approve; a card that could not be authenticated is still a 200 — the reason is in `failure` and the state is `error`)"},
-                }
-            }
-        }),
-    );
-    paths.insert(
-        ap("/agents/{name}/approve"),
-        json!({
-            "post": {
-                "summary": "Lock a registered agent to the card fingerprint the operator has SEEN. The card is re-fetched and re-verified, and an approval naming any other fingerprint is refused",
-                "security": [{"adminToken": []}],
-                "parameters": [{
-                    "name": "name", "in": "path", "required": true,
-                    "schema": {"type": "string"}
-                }],
-                "responses": {
-                    "200": {"description": "OK (the registration's state AFTER the approval, read off the live registry)"},
-                }
-            }
-        }),
-    );
+        }
+    }
     paths.insert(
         ap("/hooks/{name}/health"),
         json!({

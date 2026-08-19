@@ -75,29 +75,23 @@ impl AdminTransport for JsonV1 {
             .route("/hooks/{name}/status", get(hook_status))
             // The 1.5.3 named-DEFINITION maps, mounted in ONE loop over `NamedMapSection::ALL` so
             // the admin surface mirrors the config grammar and a future section is additive.
-            .merge(named_map::routes())
-            // THE MCP TRUST VERBS. Additive on top of the generic `tools` section CRUD: the
-            // generic handler owns the DEFINITION, and these own the operator's standing decision
-            // about the upstream behind it. They live in `crate::mcp` — see that module.
-            .route(
-                "/tools/{name}/connect",
-                post(crate::admin::planeverbs::connect::<crate::mcp::admin_view::McpServers>),
-            )
-            .route(
-                "/tools/{name}/changes",
-                get(crate::mcp::admin_view::changes),
-            )
-            .route("/tools/{name}/health", get(crate::mcp::admin_view::health))
-            // THE A2A TRUST VERBS, the same addition on the `agents` section and mounted here
-            // beside their MCP siblings so the two planes' operator surfaces are read together.
-            // Without these the `agents:` surface is CRUD only, every registration stays `Pending`
-            // — the fail-closed floor its only constructor puts it in — and no sequence of operator
-            // actions can make a fronted agent serve. See `crate::a2a::verbs`.
-            .route(
-                "/agents/{name}/connect",
-                post(crate::admin::planeverbs::connect::<crate::a2a::verbs::A2aAgents>),
-            )
-            .route("/agents/{name}/approve", post(crate::a2a::verbs::approve))
+            .merge(named_map::routes());
+        // THE PLANES' TRUST VERBS, contributed through the registry rather than named here: the
+        // operator verbs a plane adds ON TOP of its generic named-definition CRUD (MCP's
+        // `connect`/`changes`/`health`, A2A's `connect`/`approve`). Each plane's `admin_routes`
+        // owns the operator's standing decision about the upstream behind a registration; the
+        // generic handler still owns the DEFINITION. Merged in DECLARATION ORDER (MCP before A2A),
+        // so the two planes' operator surfaces are read together and the route order is stable.
+        // Without these the `agents:`/`tools:` surfaces are CRUD only and no sequence of operator
+        // actions can make a fronted agent or MCP server serve. The `admin_routes` fns are granted
+        // only the router — never a `Store`/`GovCtx`/audit handle.
+        let mut router = router;
+        for decl in crate::plane::registry::plane_decls() {
+            if let Some(admin_routes) = decl.admin_routes {
+                router = admin_routes(router);
+            }
+        }
+        let router = router
             // Groups — the `groups:` limit-tree CRUD: runtime-mutable groups
             // → per-user budgets. Reads are read-only scope; mutations are full scope.
             .route(PATH_GROUPS, get(list_groups).post(register_group))

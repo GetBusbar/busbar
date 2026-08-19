@@ -2375,16 +2375,20 @@ fn uuid_like(body: &[u8], now: u64) -> String {
 
 /// The plane's mounted routes, or an unchanged router when this deployment fronts no agents.
 ///
-/// The gate is `app.a2a` plus an admission: a deployment with no `agents:` section has no plane, and
-/// one with no `public_url` has no RECEIVING side. Either way NOTHING is mounted — no route in the
-/// table, nothing for the auth middleware to consult, and "is this deployment an A2A server?"
-/// stays a question the mounted surface answers rather than a flag somebody has to trust.
+/// The gate is the plane's dispatch slot plus an admission: a deployment with no `agents:` section
+/// has no slot (this is not called), and one with no `public_url` has no RECEIVING side. Either way
+/// NOTHING is mounted — no route in the table, nothing for the auth middleware to consult, and "is
+/// this deployment an A2A server?" stays a question the mounted surface answers rather than a flag
+/// somebody has to trust. The slot is granted as `&dyn Any` and downcast to the plane's own type;
+/// no `Store`/`GovCtx`/`audit::Chain` reaches this seam.
 pub(crate) fn mount(
     router: crate::core_routes::CoreRouter,
-    plane: Option<&Arc<super::plane::A2aPlane>>,
+    slot: &dyn std::any::Any,
 ) -> crate::core_routes::CoreRouter {
     use busbar_plugin_loader::{RouteAuth, RouteMethod};
-    let Some(plane) = plane else { return router };
+    let plane = slot
+        .downcast_ref::<super::plane::A2aPlane>()
+        .expect("the a2a plane's mount slot is an A2aPlane");
     if plane.admission().is_none() {
         return router;
     }

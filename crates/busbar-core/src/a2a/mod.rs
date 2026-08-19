@@ -123,7 +123,62 @@ pub(crate) const PLANE_DECL: crate::plane::registry::PlaneDecl =
             crate::a2a::plane::A2aPlane::from_config(ctx.agent_defs, ctx.public_url)
                 .map(|p| p as std::sync::Arc<dyn std::any::Any + Send + Sync>)
         },
+        mount: Some(crate::a2a::receive::mount),
+        admin_routes: Some(admin_routes),
+        openapi: Some(openapi_fragment),
     };
+
+/// CONTRIBUTE THE A2A TRUST VERBS to the Admin API v1 router, beside their MCP siblings so the two
+/// planes' operator surfaces are read together. Without these the `agents:` surface is CRUD only,
+/// every registration stays `Pending`, and no sequence of operator actions can make a fronted agent
+/// serve. `connect` is the shared plane verb; `approve` locks a registration to a seen fingerprint.
+pub(crate) fn admin_routes(
+    router: axum::Router<std::sync::Arc<crate::state::AppHandle>>,
+) -> axum::Router<std::sync::Arc<crate::state::AppHandle>> {
+    use axum::routing::post;
+    router
+        .route(
+            "/agents/{name}/connect",
+            post(crate::admin::planeverbs::connect::<crate::a2a::verbs::A2aAgents>),
+        )
+        .route("/agents/{name}/approve", post(crate::a2a::verbs::approve))
+}
+
+/// THE A2A TRUST VERBS' OpenAPI FRAGMENT — the two admin paths keyed absolute, merged into the admin
+/// document. Kept beside the routes that answer them so the two cannot drift.
+// Read only by the OpenAPI generator (feature `openapi-schema`) and the non-vacuity floor test.
+#[cfg_attr(not(any(test, feature = "openapi-schema")), allow(dead_code))]
+pub(crate) fn openapi_fragment() -> serde_json::Value {
+    let ap = |rel: &str| format!("{}{rel}", crate::admin::v1::contract::ADMIN_PREFIX);
+    serde_json::json!({
+        ap("/agents/{name}/connect"): {
+            "post": {
+                "summary": "Fetch a registered agent's card, verify it against the operator's out-of-band root, and report the fingerprint. Approves nothing and writes nothing",
+                "security": [{"adminToken": []}],
+                "parameters": [{
+                    "name": "name", "in": "path", "required": true,
+                    "schema": {"type": "string"}
+                }],
+                "responses": {
+                    "200": {"description": "OK (the derived trust state and the fingerprint a human is being asked to approve; a card that could not be authenticated is still a 200 — the reason is in `failure` and the state is `error`)"},
+                }
+            }
+        },
+        ap("/agents/{name}/approve"): {
+            "post": {
+                "summary": "Lock a registered agent to the card fingerprint the operator has SEEN. The card is re-fetched and re-verified, and an approval naming any other fingerprint is refused",
+                "security": [{"adminToken": []}],
+                "parameters": [{
+                    "name": "name", "in": "path", "required": true,
+                    "schema": {"type": "string"}
+                }],
+                "responses": {
+                    "200": {"description": "OK (the registration's state AFTER the approval, read off the live registry)"},
+                }
+            }
+        }
+    })
+}
 
 pub(crate) mod anomaly;
 pub(crate) mod canonical;

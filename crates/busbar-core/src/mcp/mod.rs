@@ -152,7 +152,118 @@ pub(crate) const PLANE_DECL: crate::plane::registry::PlaneDecl =
                 .cloned()
                 .map(|r| std::sync::Arc::new(r) as std::sync::Arc<dyn std::any::Any + Send + Sync>)
         },
+        mount: Some(mount),
+        admin_routes: Some(admin_routes),
+        openapi: Some(openapi_fragment),
     };
+
+/// MOUNT THE MCP PLANE'S DATA ROUTES from the validated resource (its dispatch slot). The paths are
+/// CONCRETE, derived from the operator's canonical URI at mount time — no prefix matching, so the
+/// auth middleware's exact-match discipline survives. The RFC 9728 metadata document is the one open
+/// route (a credential-less client reads it to learn which credential to present); the endpoint
+/// itself takes the normal key chain, where the plane's admission facts make the verifier require
+/// this deployment's canonical URI as the token audience. GET and DELETE answer 405 (no GET stream,
+/// no sessions this revision) behind the same key bar.
+pub(crate) fn mount(
+    router: crate::core_routes::CoreRouter,
+    slot: &dyn std::any::Any,
+) -> crate::core_routes::CoreRouter {
+    use busbar_plugin_loader::{RouteAuth, RouteMethod};
+    let resource = slot
+        .downcast_ref::<McpResource>()
+        .expect("the mcp plane's mount slot is an McpResource");
+    router
+        .route(
+            resource.metadata_path().to_string(),
+            RouteMethod::Get,
+            RouteAuth::None,
+            crate::ingress::protocol::metadata_handler::<crate::mcp::envelope::McpWords>,
+        )
+        .route(
+            resource.mount_path().to_string(),
+            RouteMethod::Post,
+            RouteAuth::Key,
+            crate::mcp::envelope::rpc,
+        )
+        .route(
+            resource.mount_path().to_string(),
+            RouteMethod::Get,
+            RouteAuth::Key,
+            crate::mcp::envelope::legacy_verb,
+        )
+        .route(
+            resource.mount_path().to_string(),
+            RouteMethod::Delete,
+            RouteAuth::Key,
+            crate::mcp::envelope::legacy_verb,
+        )
+}
+
+/// CONTRIBUTE THE MCP TRUST VERBS to the Admin API v1 router: the operator's standing decision about
+/// the upstream behind a `tools` registration, additive on top of the generic `tools` CRUD.
+/// `connect` is the shared plane verb; `changes` and `health` are the two derived reads that contact
+/// nothing.
+pub(crate) fn admin_routes(
+    router: axum::Router<std::sync::Arc<crate::state::AppHandle>>,
+) -> axum::Router<std::sync::Arc<crate::state::AppHandle>> {
+    use axum::routing::{get, post};
+    router
+        .route(
+            "/tools/{name}/connect",
+            post(crate::admin::planeverbs::connect::<crate::mcp::admin_view::McpServers>),
+        )
+        .route("/tools/{name}/changes", get(crate::mcp::admin_view::changes))
+        .route("/tools/{name}/health", get(crate::mcp::admin_view::health))
+}
+
+/// THE MCP TRUST VERBS' OpenAPI FRAGMENT — the three admin paths keyed absolute, merged into the
+/// admin document. Kept beside the routes that answer them so the two cannot drift.
+// Read only by the OpenAPI generator (feature `openapi-schema`) and the non-vacuity floor test.
+#[cfg_attr(not(any(test, feature = "openapi-schema")), allow(dead_code))]
+pub(crate) fn openapi_fragment() -> serde_json::Value {
+    let ap = |rel: &str| format!("{}{rel}", crate::admin::v1::contract::ADMIN_PREFIX);
+    serde_json::json!({
+        ap("/tools/{name}/connect"): {
+            "post": {
+                "summary": "Fetch a registered MCP server's LIVE tool list, hash it, and record the observation. Approves nothing: adopting what was seen is a separate operator act",
+                "security": [{"adminToken": []}],
+                "parameters": [{
+                    "name": "name", "in": "path", "required": true,
+                    "schema": {"type": "string"}
+                }],
+                "responses": {
+                    "200": {"description": "OK (the derived trust state and changes queue; a refresh that landed a quarantine is still a 200 — the drift is in the body)"},
+                }
+            }
+        },
+        ap("/tools/{name}/changes"): {
+            "get": {
+                "summary": "The changes queue for one MCP server, derived from the LAST observation. Contacts nothing",
+                "security": [{"adminToken": []}],
+                "parameters": [{
+                    "name": "name", "in": "path", "required": true,
+                    "schema": {"type": "string"}
+                }],
+                "responses": {
+                    "200": {"description": "OK"},
+                }
+            }
+        },
+        ap("/tools/{name}/health"): {
+            "get": {
+                "summary": "Whether one MCP server currently serves, and why not when it does not",
+                "security": [{"adminToken": []}],
+                "parameters": [{
+                    "name": "name", "in": "path", "required": true,
+                    "schema": {"type": "string"}
+                }],
+                "responses": {
+                    "200": {"description": "OK"},
+                }
+            }
+        }
+    })
+}
 
 /// THE MCP PLANE'S ADMIN PROJECTION, and the plane's half of the shared trust verb surface —
 /// where an MCP registration is resolved from, what looking at one means, and the two derived reads
