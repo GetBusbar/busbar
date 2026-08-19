@@ -2065,6 +2065,53 @@ if [ ${#DECLARATION_CENSUS[@]} -eq 0 ]; then
 fi
 [ "$cs" -eq 0 ] && note "ok (${#DECLARATION_CENSUS[@]} census row(s), every count exact)"
 
+# ── THE PLANE STORE SEAM (invariant (a)): the plane-facing sink is PlaneStore, never Store ────────
+# `busbar_api::Store` bundles the append-only AUDIT CHAIN (`append_audit`/`list_audit`) with the
+# per-plane durable state. A plane handed an `Arc<dyn Store>` could forge the chain. The seam narrows
+# that to `PlaneStore` (plane methods only) at boot, and every plane trust-state type holds an
+# `Arc<dyn PlaneStore>`. This rule is what keeps it narrowed: every `set_sink` on a plane trust-state
+# type must name `dyn PlaneStore` and must NOT name `dyn Store` / `audit::Chain` / `GovCtx`. Widening
+# any one of them back to `dyn Store` re-arms the exact forge invariant (a) forbids, and this fails it
+# red. The AUDIT sink (`admin/audit.rs`) is DELIBERATELY out of scope: the audit ring IS the chain, so
+# its sink is correctly a `Store` — the scope below is the plane trust-state directory alone.
+hdr "plane store seam (every plane sink is narrowed to PlaneStore, never the audit-carrying Store)"
+PS_SCOPE="${CORE}/plane"
+ps_seam=0
+if [ ! -d "$PS_SCOPE" ]; then
+  note "PLANE-SINK-SCOPE-MISSING: \`${PS_SCOPE}\` does not exist; the plane trust-state types moved."
+  note "  Re-point this rule at their new home — do not drop it, it guards invariant (a)."
+  fail=1; ps_seam=1
+else
+  ps_sinks=$({ grep -rn 'fn set_sink' "$PS_SCOPE" || true; })
+  ps_count=$({ printf '%s' "$ps_sinks" | grep -c . || true; } | tr -d ' ')
+  if [ "$ps_count" -eq 0 ]; then
+    note "NO-PLANE-SINK: no \`fn set_sink\` under \`${PS_SCOPE}\`, so this rule scanned NOTHING. That"
+    note "  is the false green — a renamed or removed sink attach, not a clean bill."
+    fail=1; ps_seam=1
+  fi
+  # Every plane sink attach must NAME the narrowed trait.
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    case "$line" in
+      *PlaneStore*) : ;;
+      *) note "PLANE-SINK-NOT-NARROWED: a plane \`set_sink\` does not name \`dyn PlaneStore\`:"
+         note "    ${line}"
+         fail=1; ps_seam=1 ;;
+    esac
+  done <<EOF
+$ps_sinks
+EOF
+  # And none may name the audit-carrying Store or a governance/chain handle.
+  ps_wide=$({ printf '%s\n' "$ps_sinks" | grep -E 'dyn Store|audit::Chain|GovCtx' || true; })
+  if [ -n "$ps_wide" ]; then
+    note "PLANE-SINK-WIDENED: a plane \`set_sink\` names the audit-carrying \`Store\` / a chain / gov handle,"
+    note "  which hands a plane the power to forge the audit chain (invariant (a)):"
+    while IFS= read -r h; do [ -n "$h" ] && note "    ${h}"; done <<<"$ps_wide"
+    fail=1; ps_seam=1
+  fi
+  [ "$ps_seam" -eq 0 ] && note "ok (${ps_count} plane sink(s), each narrowed to PlaneStore)"
+fi
+
 hdr "result"
 if [ "$fail" -ne 0 ]; then note "structure-lint FAILED — see docs/code-layout.md"; exit 1; fi
 note "structure-lint passed"

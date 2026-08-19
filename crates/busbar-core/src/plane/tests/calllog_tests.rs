@@ -334,7 +334,10 @@ fn a_durable_store_returns_every_record_field_for_field_across_a_restart() {
     );
 
     let read_back = log2
-        .read_back(crate::plane::store::PlaneStoreView::narrow(store.clone()).as_ref(), P)
+        .read_back(
+            crate::plane::store::PlaneStoreView::narrow(store.clone()).as_ref(),
+            P,
+        )
         .expect("the read-back reads");
     assert_eq!(read_back.len(), written.len(), "row count survived");
     for (i, (got, want)) in read_back.iter().zip(written.iter()).enumerate() {
@@ -357,9 +360,12 @@ fn a_durable_store_returns_every_record_field_for_field_across_a_restart() {
         "the post-restart record links to the PERSISTED tail, not to a fresh chain"
     );
     assert_eq!(
-        log2.verify_principal_chain(crate::plane::store::PlaneStoreView::narrow(store.clone()).as_ref(), P)
-            .expect("verify reads")
-            .expect("the chain spanning the restart verifies"),
+        log2.verify_principal_chain(
+            crate::plane::store::PlaneStoreView::narrow(store.clone()).as_ref(),
+            P
+        )
+        .expect("verify reads")
+        .expect("the chain spanning the restart verifies"),
         4
     );
 }
@@ -388,9 +394,12 @@ fn the_ram_default_accepts_every_write_and_keeps_nothing_and_says_so() {
         "the RAM default restores NOTHING — no principals, no records, no empty chains, no breaks"
     );
     assert!(
-        log2.read_back(crate::plane::store::PlaneStoreView::narrow(store.clone()).as_ref(), P)
-            .expect("the read-back reads")
-            .is_empty(),
+        log2.read_back(
+            crate::plane::store::PlaneStoreView::narrow(store.clone()).as_ref(),
+            P
+        )
+        .expect("the read-back reads")
+        .is_empty(),
         "the RAM default hands back no rows: durability is a property of the CONFIGURED BACKEND, \
          and this is what not having it looks like"
     );
@@ -436,9 +445,12 @@ fn a_failed_durable_write_leaves_the_sequence_where_it_was() {
         .expect("the retry records");
     assert_eq!(second.seq, 2, "seq 2 was still free");
     assert_eq!(
-        log.verify_principal_chain(crate::plane::store::PlaneStoreView::narrow(store.clone()).as_ref(), P)
-            .expect("verify reads")
-            .expect("the chain is contiguous across the failed write"),
+        log.verify_principal_chain(
+            crate::plane::store::PlaneStoreView::narrow(store.clone()).as_ref(),
+            P
+        )
+        .expect("verify reads")
+        .expect("the chain is contiguous across the failed write"),
         2
     );
 }
@@ -456,9 +468,12 @@ fn editing_a_persisted_row_is_reported_as_a_digest_mismatch_at_its_position() {
 
     let log = PlaneCallLog::new();
     assert!(
-        log.verify_principal_chain(crate::plane::store::PlaneStoreView::narrow(store.clone()).as_ref(), P)
-            .expect("verify reads")
-            .is_ok(),
+        log.verify_principal_chain(
+            crate::plane::store::PlaneStoreView::narrow(store.clone()).as_ref(),
+            P
+        )
+        .expect("verify reads")
+        .is_ok(),
         "the chain verifies BEFORE the tamper — otherwise this test proves nothing"
     );
 
@@ -470,7 +485,10 @@ fn editing_a_persisted_row_is_reported_as_a_digest_mismatch_at_its_position() {
     });
 
     let brk = log
-        .verify_principal_chain(crate::plane::store::PlaneStoreView::narrow(store.clone()).as_ref(), P)
+        .verify_principal_chain(
+            crate::plane::store::PlaneStoreView::narrow(store.clone()).as_ref(),
+            P,
+        )
         .expect("verify reads")
         .expect_err("the edited row is detected");
     assert_eq!(brk.at_index, 2, "the break is reported AT the edited row");
@@ -498,7 +516,10 @@ fn removing_a_persisted_row_is_reported_as_a_sequence_break() {
 
     let log = PlaneCallLog::new();
     let brk = log
-        .verify_principal_chain(crate::plane::store::PlaneStoreView::narrow(store.clone()).as_ref(), P)
+        .verify_principal_chain(
+            crate::plane::store::PlaneStoreView::narrow(store.clone()).as_ref(),
+            P,
+        )
         .expect("verify reads")
         .expect_err("the missing row is detected");
     assert_eq!(
@@ -553,7 +574,10 @@ fn rewriting_only_a_persisted_rows_link_is_reported_as_a_link_mismatch() {
 
     let log = PlaneCallLog::new();
     let brk = log
-        .verify_principal_chain(crate::plane::store::PlaneStoreView::narrow(store.clone()).as_ref(), P)
+        .verify_principal_chain(
+            crate::plane::store::PlaneStoreView::narrow(store.clone()).as_ref(),
+            P,
+        )
         .expect("verify reads")
         .expect_err("a self-consistent row with a rewritten link is still detected");
     assert_eq!(brk.at_index, 3);
@@ -634,7 +658,10 @@ fn a_boot_chain_break_is_reported_while_the_rows_are_still_restored() {
     // The evidence survives the restore: asking again still reports the same break, so a second
     // operator looking later sees what the first one saw.
     let brk = log2
-        .verify_principal_chain(crate::plane::store::PlaneStoreView::narrow(store.clone()).as_ref(), P)
+        .verify_principal_chain(
+            crate::plane::store::PlaneStoreView::narrow(store.clone()).as_ref(),
+            P,
+        )
         .expect("verify reads")
         .expect_err("the break is still there after the restore");
     assert_eq!(brk.at_index, 2);
@@ -934,7 +961,9 @@ fn retention_purges_rows_without_rewinding_the_chain() {
 
     // The RAM default has nothing to purge and reports exactly that, rather than claiming a number.
     let ram = PlaneCallLog::new();
-    ram.set_sink(crate::plane::store::PlaneStoreView::narrow(Arc::new(RamDefaultStore::new())));
+    ram.set_sink(crate::plane::store::PlaneStoreView::narrow(Arc::new(
+        RamDefaultStore::new(),
+    )));
     assert_eq!(
         ram.compact(1500).expect("compact runs"),
         0,
