@@ -41,13 +41,14 @@
 //! ## What this file does NOT yet carry, stated so its absence is not read as a claim
 //!
 //! [`PlaneDecl`] carries the plane VOCABULARY — the facts core reads to name, section, scope and
-//! label a plane — plus, as of [`PlaneDecl::build`], the app-state SLOT seam: how a plane's runtime
-//! object for one config generation is constructed and type-erased. It does NOT yet carry the
-//! remaining seams a plane crate would also register through: a type-erased config section, boot
-//! hooks, a router mount, and the admin verb + OpenAPI contributions. Those are designed in
+//! label a plane — plus, as of [`PlaneDecl::build`], the app-state SLOT seam (how a plane's runtime
+//! object for one config generation is constructed and type-erased) and, as of [`PlaneDecl::mount`]
+//! / [`PlaneDecl::admin_routes`] / [`PlaneDecl::openapi`], the SURFACE seam: how a plane contributes
+//! its data-plane routes, its admin verbs, and its OpenAPI fragment. It does NOT yet carry the
+//! remaining seams a plane crate would also register through: boot hooks. Those are designed in
 //! `design/1.6.0-plane-kind-seam.md` and are NOT built here. This file is the proof that the
-//! control's mechanism transfers to the plane axis at all — the vocabulary half, now joined by the
-//! slot half — and the honest measure of how much of the plane problem is covered so far.
+//! control's mechanism transfers to the plane axis at all — the vocabulary half, joined by the slot
+//! half and the surface half — and the honest measure of how much of the plane problem is covered.
 
 use super::Plane;
 
@@ -144,6 +145,46 @@ pub struct PlaneDecl {
     /// unconditionally — it contributes no slot, exactly as [`Self::claims`] already returns nothing
     /// for it.
     pub(crate) build: fn(&BuildCtx) -> Option<std::sync::Arc<dyn std::any::Any + Send + Sync>>,
+
+    /// MOUNT THE PLANE'S DATA-PLANE ROUTES onto the shared data router, from the plane's own runtime
+    /// object (its app slot, type-erased as `&dyn Any`). `None` for a plane that answers on no data
+    /// path (the LLM plane, whose endpoints are the protocol catch-all). Called once per config
+    /// generation, only when the plane has a slot to mount from — a plane the operator did not
+    /// configure is skipped before this runs, exactly as the old typed-`Option` guards skipped it.
+    ///
+    /// The signature grants a plane's mount ONLY the router and its own `&dyn Any` slot — never a
+    /// `Store`, a `GovCtx`, or an `audit::Chain`. A plane that needs one of those to decide its routes
+    /// is not cleanly separable through this seam.
+    #[allow(clippy::type_complexity)]
+    pub(crate) mount: Option<
+        fn(crate::core_routes::CoreRouter, &dyn std::any::Any) -> crate::core_routes::CoreRouter,
+    >,
+
+    /// CONTRIBUTE THE PLANE'S ADMIN VERBS to the Admin API v1 router — the operator surface a plane
+    /// adds ON TOP of the generic named-definition CRUD (MCP's `connect`/`changes`/`health`, A2A's
+    /// `connect`/`approve`). `None` for a plane with no admin verbs. Unconditional (not slot-gated):
+    /// the verbs are part of the surface whether or not the plane is configured this generation, so
+    /// this takes only the router. Merged in declaration order so the route order is stable and
+    /// operator-visible.
+    ///
+    /// As with [`Self::mount`], the signature grants a plane's admin contribution ONLY the router —
+    /// never a `Store`, a `GovCtx`, or an `audit::Chain`.
+    #[allow(clippy::type_complexity)]
+    pub(crate) admin_routes: Option<
+        fn(
+            axum::Router<std::sync::Arc<crate::state::AppHandle>>,
+        ) -> axum::Router<std::sync::Arc<crate::state::AppHandle>>,
+    >,
+
+    /// CONTRIBUTE THE PLANE'S OpenAPI PATH FRAGMENT — a JSON object whose keys are the ABSOLUTE admin
+    /// paths this plane's verbs answer on and whose values are the OpenAPI path items. Merged into the
+    /// admin document in declaration order. `None` for a plane that contributes no admin path. A plane
+    /// that contributes admin verbs ([`Self::admin_routes`] is `Some`) MUST return a non-empty object
+    /// here, so the document can never silently omit a mounted verb.
+    // Read only by the OpenAPI generator (feature `openapi-schema`) and the non-vacuity floor test; a
+    // default `--no-default-features` build has neither, so the field is genuinely unread there.
+    #[cfg_attr(not(any(test, feature = "openapi-schema")), allow(dead_code))]
+    pub(crate) openapi: Option<fn() -> serde_json::Value>,
 }
 
 /// THE BUILT-INS — one line per plane, and every line is DATA.

@@ -291,23 +291,17 @@ pub(crate) fn build_router_with_limits(
 ) -> (Router, std::sync::Arc<state::AppHandle>) {
     // Capture the plugin route table before `app` moves into the handle (both planes mount from it).
     let plugin_routes = app.plugin_routes.clone();
-    // The MCP resource is captured before `app` moves into the handle, for the same reason the
+    // The plane slots are captured before `app` moves into the handle, for the same reason the
     // plugin route table is: the mount is decided ONCE, from this generation's config, and a route
-    // set is not something a later hot-swap can rewrite.
-    let mcp = app.mcp.clone();
-    let a2a = app.a2a.clone();
+    // set is not something a later hot-swap can rewrite. Each plane's `mount` reads its own slot.
+    let plane_slots = app.plane_slots.clone();
     let oauth_as = app.oauth_as.clone();
     let handle = std::sync::Arc::new(state::AppHandle::new(app));
     // TEST-ONLY combined router: mount the Admin API v1 onto the DATA route table so one router
     // exercises the whole surface. Production never does this — `build_split_routers_with_limits`
     // mounts admin on its OWN router served on a separate listener. Both planes' plugin routes are
     // mounted here (the combined router IS both listeners).
-    let (router, core_routes) = base_data_router(
-        &plugin_routes,
-        mcp.as_deref(),
-        a2a.as_ref(),
-        oauth_as.as_ref(),
-    );
+    let (router, core_routes) = base_data_router(&plugin_routes, &plane_slots, oauth_as.as_ref());
     let router = admin::transport::mount(router, &admin::JsonV1);
     let router = crate::plugin_routes::mount_plugin_routes(router, &plugin_routes, true);
     let router = apply_common_layers(
@@ -329,8 +323,10 @@ pub(crate) fn build_router_with_limits(
 /// a dedicated listener without any of these routes coming with it.
 pub(crate) fn base_data_router(
     plugin_routes: &crate::plugin_routes::PluginRouteTable,
-    mcp: Option<&crate::mcp::McpResource>,
-    a2a: Option<&std::sync::Arc<crate::a2a::plane::A2aPlane>>,
+    plane_slots: &std::collections::BTreeMap<
+        &'static str,
+        std::sync::Arc<dyn std::any::Any + Send + Sync>,
+    >,
     oauth_as: Option<&std::sync::Arc<crate::oauth_as::plane::AsPlane>>,
 ) -> (
     Router<std::sync::Arc<state::AppHandle>>,
@@ -417,62 +413,23 @@ pub(crate) fn base_data_router(
             RouteAuth::Key,
             ingress::adhoc,
         );
-    // THE MCP PLANE, mounted only when `mcp:` is configured. A deployment that is not an MCP server
-    // carries none of these routes: no ingress, no metadata document, nothing in the route table and
-    // therefore nothing for the auth middleware to consult. That is the same posture the AS design
-    // requires of its own routes, and it is what makes "is this deployment an MCP server?" a
-    // question the mounted surface answers rather than a config flag someone has to trust.
-    //
-    // The paths are CONCRETE, derived from the operator's canonical URI at mount time. No prefix
-    // matching anywhere: `/.well-known/oauth-protected-resource/mcp` is registered as that exact
-    // string, so the auth middleware's exact-match discipline survives a route whose path is not a
-    // literal (see `core_routes::CoreRoute::path`).
-    let router = match mcp {
-        None => router,
-        Some(resource) => router
-            // RFC 9728 §3: the protected-resource metadata document is READ WITHOUT CREDENTIALS.
-            // It must be — every caller who needs it is by definition one that does not have a
-            // token yet, so requiring one would be a discovery loop with no entrance. This is the
-            // ONE open route on this plane and it says so at the mount, where the openness travels
-            // with the route rather than being asserted from a distance.
-            .route(
-                resource.metadata_path().to_string(),
-                RouteMethod::Get,
-                RouteAuth::None,
-                crate::ingress::protocol::metadata_handler::<crate::mcp::envelope::McpWords>,
-            )
-            // The endpoint itself. `RouteAuth::Key` sends it through the normal chain, where the
-            // plane's admission facts make the verifier require this deployment's canonical URI as
-            // the token's audience — the RFC 8707 confused-deputy defence, enforced in the verifier
-            // rather than in the handler so a route added here later cannot forget it.
-            .route(
-                resource.mount_path().to_string(),
-                RouteMethod::Post,
-                RouteAuth::Key,
-                crate::mcp::envelope::rpc,
-            )
-            // GET and DELETE answer 405: this revision has no GET stream and no sessions. They are
-            // `RouteAuth::Key` like the POST, so an anonymous caller gets the 401 challenge and the
-            // 405 is only ever shown to an admitted one — a protected resource should not describe
-            // its own surface before it knows who is asking.
-            .route(
-                resource.mount_path().to_string(),
-                RouteMethod::Get,
-                RouteAuth::Key,
-                crate::mcp::envelope::legacy_verb,
-            )
-            .route(
-                resource.mount_path().to_string(),
-                RouteMethod::Delete,
-                RouteAuth::Key,
-                crate::mcp::envelope::legacy_verb,
-            ),
-    };
-
-    // THE A2A PLANE, mounted on exactly the same terms and by the plane's own module: no `agents:`
-    // (or no `public_url`, so no receiving side) means no route in the table at all, which is what
-    // keeps "is this deployment an A2A server?" a question the mounted surface answers.
-    let router = crate::a2a::receive::mount(router, a2a);
+    // THE PLANES' DATA ROUTES, contributed through the registry rather than named here. For every
+    // registered plane with a `mount` fn AND a runtime object this generation (its slot), the plane's
+    // own `mount` mounts its routes from that slot — the MCP door when `mcp:` is configured, the A2A
+    // door when `agents:`+`public_url` is. A plane the operator did not configure has no slot and is
+    // skipped, exactly as the old typed-`Option` guards skipped it: a deployment that is not an MCP
+    // (or A2A) server carries none of those routes, so "is this deployment an MCP server?" stays a
+    // question the mounted surface answers rather than a config flag someone has to trust. The mount
+    // fns are granted only the router and their own `&dyn Any` slot — never a `Store`/`GovCtx`/audit
+    // handle. Declaration order (MCP before A2A) is preserved, so the route order is stable.
+    let mut router = router;
+    for decl in crate::plane::registry::plane_decls() {
+        let Some(mount) = decl.mount else { continue };
+        let Some(slot) = plane_slots.get(decl.key) else {
+            continue;
+        };
+        router = mount(router, slot.as_ref());
+    }
     // THE AUTHORIZATION SERVER'S ROUTES, or none of them. Same posture as the two planes above: a
     // deployment that is not an authorization server carries no `/authorize`, no `/token`, no
     // metadata document and nothing in the route table.
@@ -585,18 +542,13 @@ pub fn build_split_routers_with_limits(
 ) -> (Router, Router, std::sync::Arc<state::AppHandle>) {
     // Capture the plugin route table before `app` moves into the handle.
     let plugin_routes = app.plugin_routes.clone();
-    let mcp = app.mcp.clone();
-    let a2a = app.a2a.clone();
+    let plane_slots = app.plane_slots.clone();
     let oauth_as = app.oauth_as.clone();
     let handle = std::sync::Arc::new(state::AppHandle::new(app));
     // DATA plane: protocols + health/metrics/stats + the `none`/`key`-auth plugin routes, NO admin
     // mount and NO admin-auth plugin routes (those are physically absent from the data listener).
-    let (data, data_core_routes) = base_data_router(
-        &plugin_routes,
-        mcp.as_deref(),
-        a2a.as_ref(),
-        oauth_as.as_ref(),
-    );
+    let (data, data_core_routes) =
+        base_data_router(&plugin_routes, &plane_slots, oauth_as.as_ref());
     let data = apply_common_layers(
         data,
         data_core_routes,
