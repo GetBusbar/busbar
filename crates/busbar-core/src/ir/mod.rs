@@ -1057,6 +1057,11 @@ pub struct StreamDecodeState {
     /// the engine now rejects `n>1`/`candidateCount>1` on a cross-protocol route up front, so this
     /// path should not be reached — but if a drop path survives, this makes it observable.
     pub multi_candidate_warned: bool,
+    /// One-way latch so the `MAX_GEMINI_TOOL_FRAMES` cap's drop `warn!` fires ONCE per stream
+    /// rather than once per dropped `functionCall` part. Set the first time a streaming chunk
+    /// tries to open a tool-call frame past the cap, making an otherwise-silent drop of model
+    /// output observable. Gemini reader only; other readers leave it false.
+    pub gemini_tool_frame_cap_warned: bool,
     /// Monotone next-free IR block index, for readers that allocate slots by ORDER OF FIRST
     /// APPEARANCE. NEVER reset for the life of the stream. The terminal branch's `mem::take` of
     /// `open_tools`/`tool_ir_index` (openai_chat reader) clears WHO IS OPEN — it must not also be

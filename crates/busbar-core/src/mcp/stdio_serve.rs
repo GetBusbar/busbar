@@ -771,6 +771,9 @@ impl<W: AsyncWrite + Unpin + Send + 'static> Session<W> {
         let Ok(mut envelope_value) = serde_json::from_slice::<Value>(&bytes) else {
             // Not a JSON-RPC message (unreachable from this plane's own builders). Stderr, exactly
             // as the bridge delivers a body it may not put on stdout.
+            // Diagnostic-only snippet, not data-of-record: the parse (over the FULL, unbounded
+            // `bytes` above) already failed and the body is being suppressed regardless — this
+            // 400-byte cap only bounds what a human sees in the stderr line.
             eprintln!(
                 "busbar: mcp stdio serve: a non-JSON-RPC body was produced and suppressed: {}",
                 String::from_utf8_lossy(&bytes[..bytes.len().min(400)])

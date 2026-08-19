@@ -953,6 +953,17 @@ impl ProtocolReader for GeminiReader {
                                 // turn carries this many parallel tool calls. Mirrors the Cohere
                                 // reader's cap.
                                 if !name_val.is_empty()
+                                    && state.open_tools.len() >= MAX_GEMINI_TOOL_FRAMES
+                                    && !state.gemini_tool_frame_cap_warned
+                                {
+                                    state.gemini_tool_frame_cap_warned = true;
+                                    tracing::warn!(
+                                        cap = MAX_GEMINI_TOOL_FRAMES,
+                                        "gemini stream exceeded MAX_GEMINI_TOOL_FRAMES concurrent tool-call frames; new functionCall parts are being dropped for the rest of this stream"
+                                    );
+                                }
+
+                                if !name_val.is_empty()
                                     && state.open_tools.len() < MAX_GEMINI_TOOL_FRAMES
                                 {
                                     // A tool block claims the next free IR index from the MONOTONE

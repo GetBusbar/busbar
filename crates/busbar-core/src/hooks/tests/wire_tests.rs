@@ -28,6 +28,11 @@ fn status_metric_hints_cap_char_safe() {
         metric.unit.as_ref().unwrap().chars().count(),
         super::MAX_METRIC_UNIT_CHARS
     );
+    // A capped help/label/unit must be observably truncated — an ellipsis marker, not a value
+    // that silently ends mid-string and could be mistaken for the real, complete one.
+    assert!(metric.help.as_ref().unwrap().ends_with('…'));
+    assert!(metric.label.as_ref().unwrap().ends_with('…'));
+    assert!(metric.unit.as_ref().unwrap().ends_with('…'));
     // Out-of-vocabulary viz + non-finite max drop individually; the metric survives.
     let m2 = [
         serde_json::json!({"name": "g", "type": "gauge", "value": 0.5,
@@ -303,6 +308,12 @@ fn reject_message_is_sanitized() {
     match norm(&format!(r#"{{"reject":{{"message":"{long}"}}}}"#)) {
         RoutingDecision::Reject { message, .. } => {
             assert_eq!(message.chars().count(), REJECT_MESSAGE_MAX_CHARS);
+            // A truncated reject message must carry an observable marker — the caller reading it
+            // back must be able to tell it was cut, not that it ends mid-word looking complete.
+            assert!(
+                message.ends_with('…'),
+                "truncated reject message must end with an ellipsis marker, got: {message:?}"
+            );
         }
         other => panic!("expected Reject, got {other:?}"),
     }
