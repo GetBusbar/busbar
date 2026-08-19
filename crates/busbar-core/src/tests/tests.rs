@@ -2660,3 +2660,87 @@ fn plane_slot_is_none_when_the_plane_is_not_configured() {
         "no agents: => no a2a slot, matching App::a2a's own None"
     );
 }
+
+// ── STEP 3.A.2: THE PLANE SWAP HOOK (`PlaneDecl::on_swap`) ───────────────────────────────────
+//
+// `AppHandle::swap` no longer names any one plane's types: it loops the registered decls and lets
+// each carry its engine-owned live state across the apply through `on_swap`. The MCP plane is the
+// only one with such state today — it retires the pooled stdio children of a registration the next
+// generation no longer declares, so a deleted `tools:` entry's process does not run on forever.
+
+/// A minimal VALID http `tools:` registration (its bare presence is enough to put its id in the
+/// next catalogue, which is all this test reads of it).
+fn swap_test_http_server(url: &str) -> crate::mcp::config::McpServerDefCfg {
+    crate::mcp::config::McpServerDefCfg {
+        url: url.to_string(),
+        pin: crate::mcp::config::ServerPinCfg {
+            mechanism: crate::mcp::config::McpPinMechanism::CertSpki,
+            key: Some("sha256/PEER=".to_string()),
+        },
+        command: None,
+        args: Vec::new(),
+        env: Default::default(),
+        cwd: None,
+        refresh_ttl: None,
+        timeout: None,
+        tools_allow: Default::default(),
+        prompts_allow: Default::default(),
+        resources_allow: Default::default(),
+        resource_templates_allow: Default::default(),
+        transport: None,
+        aud: None,
+        grants: Default::default(),
+        roots: Vec::new(),
+        sampling: None,
+        max_input_required_rounds: None,
+        max_caller_ask_rounds: None,
+        allow_private: true,
+        token_exchange: None,
+        upstream_credentials: None,
+        hooks: Vec::new(),
+    }
+}
+
+/// A HOT-SWAP CARRIES THE MCP CONNECTION POOL AND RETIRES THE ORPHANED CHILD.
+///
+/// The NEXT snapshot declares one server (`keep`); its pool — which outlives the apply — carries a
+/// child for `keep` and one for `orphan`, a registration the next generation dropped. After the
+/// swap the pool holds only `keep`: the orphan is retired, the survivor kept. This is exactly what
+/// `App::swap` did inline before Step 3.A.2; it now flows through the MCP plane's `on_swap` hook,
+/// with `App::swap` itself naming no MCP type.
+///
+/// RED, watched: point `crate::mcp::PLANE_DECL.on_swap` at a no-op (or set it `None`) and the pool
+/// keeps BOTH children — `orphan`'s process would run on unreferenced. GREEN with the real hook.
+#[test]
+fn a_config_swap_retires_the_orphaned_stdio_child_through_on_swap() {
+    crate::metrics::init();
+
+    // The next generation declares only `keep`, so its catalogue's server set is exactly {"keep"}.
+    let next = crate::test_support::TestApp::new()
+        .mcp_server("keep", swap_test_http_server("https://mcp.internal/keep"))
+        .build();
+
+    // The pool outlives an apply, so by swap time it holds a slot for the surviving registration AND
+    // one for a registration the operator removed. Seed both (a `slot` call creates the slot without
+    // spawning a process, which is all the retire path reads).
+    let _ = next.mcp_pool.children.slot("keep");
+    let _ = next.mcp_pool.children.slot("orphan");
+    assert_eq!(
+        next.mcp_pool.children.len(),
+        2,
+        "fixture control: the pool carries both the survivor and the orphan into the swap"
+    );
+
+    // A prior snapshot to swap away from — its identity is immaterial; `on_swap` reconciles `next`.
+    let prior = crate::test_support::TestApp::new().build();
+    let handle = std::sync::Arc::new(crate::state::AppHandle::new(prior));
+
+    handle.swap(next.clone());
+
+    assert_eq!(
+        next.mcp_pool.children.len(),
+        1,
+        "the swap retires the orphan (its registration is gone from next's catalogue) and keeps the \
+         survivor — the byte-identical behaviour App::swap gave inline, now via PlaneDecl::on_swap"
+    );
+}
