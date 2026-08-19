@@ -81,6 +81,27 @@ use crate::config::named_map::NamedMapSection;
 
 use super::Plane;
 
+/// A PLANE'S CONFIG SECTION, ASKED FOR ITS OWN SECRETS — so core enumerates a plane's credential
+/// references without naming that plane's credential-bearing types.
+///
+/// Implemented by the type a plane's top-level config section deserializes into (`tools:` →
+/// [`crate::mcp::config::ToolsCfg`], `agents:` → [`crate::a2a::config::AgentsCfg`]). The composition
+/// walk in `config_validate::secret_refs` gathers every plane's references by LOOPING this trait over
+/// the configured plane sections, rather than destructuring each plane's own config types itself: the
+/// section that owns a credential is the section that knows it is one.
+///
+/// [`Self::secret_refs`] destructures its plane's config types EXHAUSTIVELY (no `..`), so the
+/// anti-omission force that used to live in `config_validate::secret_refs` — adding a credential
+/// field to a plane fails to compile until someone decides, in the impl, whether it is a secret —
+/// travels with the plane instead of staying behind in core.
+pub(crate) trait PlaneCfg: std::any::Any + Send + Sync {
+    /// EVERY secret reference this plane's config section carries, as `(config-path, &SecretRef)`,
+    /// where the path is the operator-facing dotted location `--validate` prints in an error. The
+    /// path is fully qualified from the top-level section down (`tools.<name>.env.<var>`), so a
+    /// caller can concatenate the planes' answers with no per-plane prefixing of its own.
+    fn secret_refs(&self) -> Vec<(String, &crate::config::SecretRef)>;
+}
+
 /// THE TWO WORDS RESERVED AT EVERY PLANE SECTION'S TOP LEVEL, under the name the shared reader uses.
 ///
 /// One declaration, re-exported rather than restated: the whole point of the rule is that the

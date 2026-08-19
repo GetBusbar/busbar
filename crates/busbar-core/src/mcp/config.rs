@@ -1007,6 +1007,90 @@ impl<'de> Deserialize<'de> for ToolsCfg {
     }
 }
 
+impl crate::plane::config::PlaneCfg for ToolsCfg {
+    /// The MCP plane's secret references: `tools.<name>.token_exchange.subject_token` (busbar's OWN
+    /// token, the SUBJECT of an RFC 8693 exchange, never the caller's) and each reference-valued
+    /// `tools.<name>.env.<var>` a stdio child is handed. Moved here VERBATIM from the core
+    /// `config_validate::secret_refs` walk so the exhaustive destructure that forces a
+    /// secret/not-secret decision on every new field lives beside the fields it guards.
+    fn secret_refs(&self) -> Vec<(String, &crate::config::SecretRef)> {
+        // EXHAUSTIVE, no `..`: adding a field to `McpServerDefCfg` / `TokenExchangeCfg` fails to build
+        // with `E0027 pattern does not mention field` until somebody decides, here, whether it carries
+        // a secret. That force used to live in `config_validate::secret_refs`; it moved with the sweep.
+        let mut refs: Vec<(String, &crate::config::SecretRef)> = Vec::new();
+        for (name, server) in &self.servers {
+            let McpServerDefCfg {
+                token_exchange,
+                // A STDIO CHILD'S ENVIRONMENT, and it is the second place on this plane a credential can
+                // be written. A pipe has no header block, so `token_exchange:` is refused on that
+                // transport and `env:` is the only channel a child gets a credential through — which
+                // makes it exactly as owed a `--validate` resolution as the subject token above.
+                env,
+                // Not credentials, each for the reason recorded at the destructure above.
+                url: _,
+                // The binary busbar spawns, its argv, and its working directory. Operator-authored
+                // paths and arguments; the SECRETS in a spawn are in `env` and nowhere else, which is
+                // deliberate — an argv is world-readable on every platform busbar runs on.
+                command: _,
+                args: _,
+                cwd: _,
+                pin: _,
+                // A duration string driving the refresh timer's cadence. Not a credential.
+                refresh_ttl: _,
+                // A duration string bounding one outbound leg to this server. Not a credential.
+                timeout: _,
+                transport: _,
+                aud: _,
+                grants: _,
+                // The filesystem roots busbar may disclose to this server on a granted `roots/list`
+                // ask. Operator-authored `file://` URIs and display names — locations, never
+                // credentials, so there is nothing here for `--validate` to resolve.
+                roots: _,
+                // The sampling policy a granted `sampling/createMessage` ask spends against: a pool
+                // name and two ceilings. Operator-authored routing and budget numbers, never a
+                // credential, so there is nothing here for `--validate` to resolve.
+                sampling: _,
+                max_input_required_rounds: _,
+                max_caller_ask_rounds: _,
+                upstream_credentials: _,
+                hooks: _,
+                // The SSRF posture for this server. A boolean, and the guard that reads it is the one
+                // place it means anything.
+                allow_private: _,
+                tools_allow: _,
+                prompts_allow: _,
+                resources_allow: _,
+                // The exposed capabilities. Each is operator-authored CONTENT — a description, a
+                // template, a typed message, a URI template and the bytes it answers with — and none of
+                // them is a credential reference: a resource's `blob:` is base64 media the operator
+                // pasted, not a pointer into a secret store, so there is nothing here for `--validate`
+                // to resolve. Named rather than covered by `..` so the compiler keeps asking.
+                resource_templates_allow: _,
+            } = server;
+            if let Some(tx) = token_exchange {
+                let TokenExchangeCfg {
+                    subject_token,
+                    // A URL and an RFC 8693 token-type URN; neither is a secret.
+                    token_url: _,
+                    subject_token_type: _,
+                } = tx;
+                refs.push((
+                    format!("tools.{name}.token_exchange.subject_token"),
+                    subject_token,
+                ));
+            }
+            for (var, value) in env {
+                // The PLAIN arm is a literal the operator typed; there is nothing to resolve and nothing
+                // that can fail at runtime. Only the reference arm is owed a `--validate`.
+                if let ChildEnvValue::Secret(r) = value {
+                    refs.push((format!("tools.{name}.env.{var}"), r));
+                }
+            }
+        }
+        refs
+    }
+}
+
 /// THE VALUE-LEVEL RULES for one `tools:` entry.
 ///
 /// Split out as a free function on purpose: `serde` types check SHAPE, and every rule below is about

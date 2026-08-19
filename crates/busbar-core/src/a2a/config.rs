@@ -312,6 +312,68 @@ impl<'de> Deserialize<'de> for AgentsCfg {
     }
 }
 
+impl crate::plane::config::PlaneCfg for AgentsCfg {
+    /// The A2A plane's secret references: each agent's LEASED outbound delegation credential
+    /// (`agents.<name>.upstream_credential.secret`) and both halves of its outbound client identity
+    /// (`agents.<name>.client_identity.cert` / `.key`). Moved here VERBATIM from the core
+    /// `config_validate::secret_refs` walk so the exhaustive destructure that forces a
+    /// secret/not-secret decision on every new field lives beside the fields it guards.
+    fn secret_refs(&self) -> Vec<(String, &crate::config::SecretRef)> {
+        // EXHAUSTIVE, no `..`, at both levels: adding a field to `AgentsCfg`, `AgentDefCfg`,
+        // `OutboundCredential` or `ClientIdentityCfg` fails to build with `E0027 pattern does not
+        // mention field` until somebody decides, here, whether it carries a secret. That force used to
+        // live in `config_validate::secret_refs`; it moved with the sweep.
+        let mut refs: Vec<(String, &crate::config::SecretRef)> = Vec::new();
+        let AgentsCfg {
+            // The all-agents attach list and credential MODE carry no reference: a hook name is a bare
+            // name into the top-level `hooks:` map, and the mode is a `Copy` selector.
+            all_agent_hooks: _,
+            all_agent_upstream_credentials: _,
+            agents,
+        } = self;
+        for (name, def) in agents {
+            let AgentDefCfg {
+                upstream_credential,
+                client_identity,
+                // An endpoint URL, an out-of-band VERIFICATION pin, two cadence strings, a pinned
+                // protocol version, a private-address opt-in, a `Copy` credential-mode selector, egress
+                // scope names and bare hook names. None of them is a credential, and `pin.key` is the one that most looks like
+                // one: it is the public half of the operator's trust root, and an operator who cannot
+                // publish it has the wrong value in the field.
+                url: _,
+                pin: _,
+                reverify_ttl: _,
+                recovery_backoff: _,
+                protocol_version: _,
+                allow_private: _,
+                upstream_credentials: _,
+                egress_scopes: _,
+                hooks: _,
+            } = def;
+            if let Some(cred) = upstream_credential {
+                let super::creds::OutboundCredential {
+                    secret,
+                    // Where the resolved value is placed on the wire, and how long the lease lasts.
+                    // Neither is material.
+                    placement: _,
+                    lease_ttl_ms: _,
+                } = cred;
+                refs.push((format!("agents.{name}.upstream_credential.secret"), secret));
+            }
+            // THE OUTBOUND CLIENT IDENTITY. Both halves are references and both are walked: an
+            // unresolvable `cert:` fails the handshake exactly as an unresolvable `key:` does, and
+            // `--validate` that checked only the secret half would report a config that cannot connect
+            // as valid.
+            if let Some(identity) = client_identity {
+                let ClientIdentityCfg { cert, key } = identity;
+                refs.push((format!("agents.{name}.client_identity.cert"), cert));
+                refs.push((format!("agents.{name}.client_identity.key"), key));
+            }
+        }
+        refs
+    }
+}
+
 /// THE VALUE-LEVEL RULES for one `agents:` entry.
 ///
 /// Split out as a free function on purpose: `serde` types check SHAPE, and every rule below is
