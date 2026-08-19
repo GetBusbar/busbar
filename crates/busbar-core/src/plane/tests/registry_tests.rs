@@ -34,6 +34,8 @@ static WIDGET_PLANE: PlaneDecl = PlaneDecl {
     mount: None,
     admin_routes: None,
     openapi: None,
+    hydrate: None,
+    start: None,
 };
 
 fn installed() -> Vec<&'static PlaneDecl> {
@@ -130,6 +132,8 @@ fn a_same_key_registration_is_skipped_and_the_first_copy_wins() {
         mount: None,
         admin_routes: None,
         openapi: None,
+        hydrate: None,
+        start: None,
     };
 
     let folded = merged_boot_plane_decls(&[&A2A_FROM_THE_CRATE], builtin_plane_decls());
@@ -387,6 +391,8 @@ fn r2_a_mounted_plane_with_no_admission_refuses_boot() {
         mount: None,
         admin_routes: None,
         openapi: None,
+        hydrate: None,
+        start: None,
     };
     let unit = ();
     let mut slots: BTreeMap<&'static str, &dyn Any> = BTreeMap::new();
@@ -417,10 +423,104 @@ fn r2_a_mounted_plane_with_no_admission_refuses_boot() {
         mount: None,
         admin_routes: None,
         openapi: None,
+        hydrate: None,
+        start: None,
     };
     let dispatch = build_dispatch(&[&MOUNTS_NOTHING], &slots)
         .expect("a plane that claims no path needs no admission");
     assert!(dispatch.mounted_keys().is_empty(), "and it mounts nothing");
+}
+
+/// **R2-boot — a plane whose `start` returns `Err` REFUSES BOOT.** The start fold
+/// [`crate::boot::run_start_hooks`] (which `boot::start_planes` drives over the real plane list)
+/// propagates the hook's `Err` with `?`, so a plane that cannot start its background work — an A2A
+/// outbound client identity that does not resolve — aborts the boot with its OWN named message rather
+/// than yielding a running deployment that silently re-verifies nothing for that agent.
+///
+/// Driven over an INJECTED decl for the reason `build_dispatch` is: the ratchet is provable without
+/// the process plane `OnceLock` (once-per-binary) and without booting real listeners.
+///
+/// RED, watched: change `start(ctx)?;` to `let _ = start(ctx);` in `boot::run_start_hooks` and this
+/// fails — the fold returns `Ok`, the refusal is swallowed, and the named message never reaches the
+/// operator. GREEN with the `?`.
+#[test]
+fn r2_boot_a_plane_whose_start_errs_refuses_boot() {
+    static REFUSES_START: PlaneDecl = PlaneDecl {
+        key: "refuser",
+        config_section: "refusers",
+        scope_kinds: &["refuser"],
+        subject_noun: "refuser",
+        audit_kind: "refuser",
+        wire_format_names: || &["refrpc"],
+        claims: |_| Vec::new(),
+        admission: |_| None,
+        build: |_| None,
+        mount: None,
+        admin_routes: None,
+        openapi: None,
+        hydrate: None,
+        start: Some(|_ctx| Err("refuser: outbound client identity did not resolve".to_string())),
+    };
+    let ctx = crate::plane::registry::BootCtx::stub();
+
+    let err = crate::boot::run_start_hooks(&[&REFUSES_START], &ctx)
+        .expect_err("a plane whose start returns Err must refuse boot, not continue");
+    assert!(
+        err.contains("refuser: outbound client identity did not resolve"),
+        "the boot refusal carries the plane hook's own message verbatim: {err}"
+    );
+
+    // CONTROL: a plane whose `start` returns `Ok`, and a plane with NO `start` hook (WIDGET_PLANE),
+    // do not abort — the fold runs to the end and returns `Ok`.
+    static STARTS_CLEAN: PlaneDecl = PlaneDecl {
+        key: "clean",
+        config_section: "cleans",
+        scope_kinds: &["clean"],
+        subject_noun: "clean",
+        audit_kind: "clean",
+        wire_format_names: || &["cleanrpc"],
+        claims: |_| Vec::new(),
+        admission: |_| None,
+        build: |_| None,
+        mount: None,
+        admin_routes: None,
+        openapi: None,
+        hydrate: None,
+        start: Some(|_ctx| Ok(())),
+    };
+    crate::boot::run_start_hooks(&[&STARTS_CLEAN, &WIDGET_PLANE], &ctx)
+        .expect("an Ok start and a None-start plane do not refuse boot");
+}
+
+/// **R2-boot, the hydrate half.** A plane whose `hydrate` returns `Err` REFUSES BOOT the same way:
+/// [`crate::boot::run_hydrate_hooks`] propagates it with `?`, so a plane that cannot restore its
+/// durable state does not go on to serve half of it. Same red (`hydrate(ctx)?` → `let _ = ...`).
+#[test]
+fn r2_boot_a_plane_whose_hydrate_errs_refuses_boot() {
+    static REFUSES_HYDRATE: PlaneDecl = PlaneDecl {
+        key: "refuser",
+        config_section: "refusers",
+        scope_kinds: &["refuser"],
+        subject_noun: "refuser",
+        audit_kind: "refuser",
+        wire_format_names: || &["refrpc"],
+        claims: |_| Vec::new(),
+        admission: |_| None,
+        build: |_| None,
+        mount: None,
+        admin_routes: None,
+        openapi: None,
+        hydrate: Some(|_ctx| Err("refuser: durable task state did not verify".to_string())),
+        start: None,
+    };
+    let ctx = crate::plane::registry::BootCtx::stub();
+
+    let err = crate::boot::run_hydrate_hooks(&[&REFUSES_HYDRATE], &ctx)
+        .expect_err("a plane whose hydrate returns Err must refuse boot");
+    assert!(
+        err.contains("refuser: durable task state did not verify"),
+        "the boot refusal carries the plane hook's own message verbatim: {err}"
+    );
 }
 
 /// **RATCHET R3 — no scope-kind or audit-kind collision across the DISPATCHED set.**

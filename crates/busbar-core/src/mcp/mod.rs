@@ -155,7 +155,109 @@ pub(crate) const PLANE_DECL: crate::plane::registry::PlaneDecl =
         mount: Some(mcp_mount),
         admin_routes: Some(mcp_admin_routes),
         openapi: Some(mcp_openapi_fragment),
+        hydrate: Some(mcp_hydrate),
+        start: Some(mcp_start),
     };
+
+/// RESTORE THE MCP PLANE'S DURABLE STATE, in order, BEFORE a listener binds — the per-call log, the
+/// upstream-demotion record and the spent-approval ledger, each attached as a write-through sink to
+/// the plane-narrowed store and read back. The narrowed store (task/mcp/demotion/spent methods only,
+/// never `append_audit`) is the whole of what this hook touches of the durable home, so an MCP
+/// hydrate can neither read nor forge the audit chain (invariant (a)). With `store: memory` (no
+/// governance store) `ctx.store` is `None` and every block below is skipped — the call log, the
+/// demotion record and the spent ledger are ephemeral BY DESIGN there, exactly as the audit ring is.
+pub(crate) fn mcp_hydrate(ctx: &crate::plane::registry::BootCtx) -> Result<(), String> {
+    let Some(plane_store) = ctx.store.clone() else {
+        return Ok(());
+    };
+    let app = ctx
+        .app
+        .expect("mcp hydrate runs in the HYDRATE phase, which supplies the freshly-built app");
+
+    // DURABLE MCP PER-CALL LOG. The tamper-evident record of who called which tool, under which
+    // approved digest, and whether it went out — the Art 26(6) record-keeping pillar. Attached as a
+    // write-through sink and READ BACK, because a write's `Ok(())` proves nothing about a trait whose
+    // defaults accept and keep nothing.
+    //
+    // THE RESTORE IS NOT A FORMALITY. It is the only place in a running deployment where a persisted
+    // chain is recomputed, so it is also the only place a tamper is detected — every break it finds is
+    // logged at ERROR, naming the principal, while the records stay restored (refusing to restore them
+    // would let anyone able to write to the store DELETE a caller's history by corrupting one byte).
+    crate::plane::calllog::CALLS.set_sink(plane_store.clone());
+    match crate::plane::calllog::CALLS.restore_from_store(plane_store.as_ref()) {
+        Ok(r) if r == crate::plane::calllog::Restored::default() => {}
+        Ok(r) => {
+            tracing::info!(
+                principals = r.principals,
+                records = r.records,
+                "MCP per-call log restored from the durable governance store"
+            );
+            // An ENUMERATED-BUT-EMPTY chain is the one shape the verifier cannot judge alone, and it
+            // is what one caller's evidence being deleted wholesale looks like. Surfaced separately
+            // rather than summed into `principals`.
+            if r.empty_chains > 0 {
+                tracing::warn!(
+                    principals = r.empty_chains,
+                    "the durable MCP call log enumerates these principals but holds NO records \
+                     for them; their chains reopen at seq 1"
+                );
+            }
+            for brk in &r.chain_breaks {
+                tracing::error!(
+                    break_detail = %brk,
+                    "MCP per-call CHAIN VERIFICATION FAILED on restore — TAMPER EVIDENCE"
+                );
+            }
+        }
+        Err(e) => tracing::warn!(
+            error = %e,
+            "could not read the durable MCP per-call log; chains start at their persisted \
+             tail being unknown, which means a principal with rows in the store may reopen at \
+             seq 1 and collide"
+        ),
+    }
+
+    // THE DURABLE MCP DEMOTION RECORD, and the SPENT-APPROVAL LEDGER. Two security properties that
+    // were process-local, attached to the same durable home and each closing a window a restart used
+    // to re-open: a DEMOTED UPSTREAM stays demoted (replayed here, BEFORE a listener binds, so the
+    // quarantine is in force for the first request), and a SPENT APPROVAL stays spent across a restart
+    // AND across a fleet (two nodes share the signing key, so they share the seal, and without a shared
+    // ledger one approval was redeemable once per node — on a money-moving tool that is the defect the
+    // gate exists to stop). Both take the plane-narrowed store off the one wrapper.
+    app.plane_approvals.set_sink(plane_store.clone());
+    app.mcp_demotions.set_sink(plane_store);
+    match crate::mcp::demotion::hydrate(app) {
+        0 => {}
+        n => tracing::warn!(
+            servers = n,
+            "MCP upstream demotions restored from the durable governance store: these servers \
+             were quarantined before the last restart and are refused until an operator works \
+             the change or a sweep observes them serving what was approved"
+        ),
+    }
+    Ok(())
+}
+
+/// START THE MCP UNATTENDED DRIFT SWEEP after the listeners are built — the tool-list refresh job
+/// that re-hashes each registered server on its own `refresh_ttl:` and quarantines on drift with no
+/// operator present. Started only when there is a registration to sweep and ONCE at boot (a second
+/// job against the same registry would double every fetch and race every ledger stamp); it holds the
+/// HANDLE, so a config apply is picked up on the next tick rather than sweeping a replaced generation.
+/// The handle intentionally dropped: the job runs for the process lifetime and exits its own loop on
+/// the shutdown broadcast. This plane never refuses boot, so it always returns `Ok`.
+pub(crate) fn mcp_start(ctx: &crate::plane::registry::BootCtx) -> Result<(), String> {
+    let handle = ctx
+        .handle
+        .expect("mcp start runs in the START phase, which supplies the live app handle");
+    let shutdown = ctx
+        .shutdown
+        .expect("mcp start runs in the START phase, which supplies the shutdown broadcast");
+    std::mem::drop(crate::mcp::connect::spawn_refresh_job(
+        handle,
+        shutdown.subscribe(),
+    ));
+    Ok(())
+}
 
 /// MOUNT THE MCP PLANE'S DATA ROUTES from the validated resource (its dispatch slot). The paths are
 /// CONCRETE, derived from the operator's canonical URI at mount time — no prefix matching, so the

@@ -126,7 +126,125 @@ pub(crate) const PLANE_DECL: crate::plane::registry::PlaneDecl =
         mount: Some(crate::a2a::receive::mount),
         admin_routes: Some(admin_routes),
         openapi: Some(openapi_fragment),
+        hydrate: Some(a2a_hydrate),
+        start: Some(a2a_start),
     };
+
+/// RESTORE THE A2A PLANE'S DURABLE TASK STATE, BEFORE a listener binds. A2A is ASYNC BY DESIGN: a
+/// task spans turns, can be interrupted waiting on a human, and can outlive the process that started
+/// it — an in-memory task table loses every in-flight task on restart, which is the difference between
+/// a suspend/resume that is real and one that is nominal. The task store is a PLANE, so it is handed
+/// the plane-narrowed `Arc<dyn PlaneStore>` (task/provenance methods only), never the `Store` that
+/// also carries `append_audit`. With `store: memory` `ctx.store` is `None` and in-flight tasks are
+/// ephemeral BY DESIGN, exactly as the audit ring is.
+pub(crate) fn a2a_hydrate(ctx: &crate::plane::registry::BootCtx) -> Result<(), String> {
+    let Some(plane_store) = ctx.store.clone() else {
+        return Ok(());
+    };
+    crate::plane::taskstore::TASKS.set_sink(plane_store.clone());
+    match crate::plane::taskstore::TASKS.restore_from_store(plane_store.as_ref()) {
+        Ok(r) if r == crate::plane::taskstore::Rehydrated::default() => {}
+        Ok(r) => {
+            tracing::info!(
+                active = r.active,
+                terminal = r.terminal,
+                unreadable = r.unreadable,
+                "A2A in-flight tasks rehydrated from the durable governance store"
+            );
+            // An UNREADABLE row is an in-flight task that this binary cannot resume. Reported
+            // separately and at WARN, because summing it into the restored count is how a task that
+            // silently ceased to exist across a deploy stays invisible.
+            if r.unreadable > 0 {
+                tracing::warn!(
+                    rows = r.unreadable,
+                    "persisted A2A task rows could not be read back and are NOT resumable; \
+                     they were most likely written by a different engine version"
+                );
+            }
+            // A chain break is TAMPER EVIDENCE and is a different event from a read hiccup, so it is
+            // logged at ERROR and names the task rather than being folded into a count.
+            for brk in &r.chain_breaks {
+                tracing::error!(
+                    task_id = %brk.scope,
+                    break_detail = %brk,
+                    "A2A per-task provenance CHAIN VERIFICATION FAILED on restore"
+                );
+            }
+        }
+        Err(e) => tracing::warn!(
+            error = %e,
+            "could not read durable A2A task state; in-flight tasks start empty"
+        ),
+    }
+    Ok(())
+}
+
+/// THE A2A RE-VERIFICATION JOB, started after the listeners are built. An approval is a statement
+/// about a document at a moment and nothing keeps it true; the pin catches a change only when somebody
+/// looks, and this is what makes somebody look. Spawned only when `agents:` defines a plane and ONCE
+/// at boot (a second job against the same registry would double every fetch and race every ledger
+/// stamp). It resolves the outbound client identities ONCE — an identity that does not resolve is a
+/// boot REFUSAL (the returned `Err`), never a warning — publishes busbar's PUBLIC card-issuer key
+/// beside the plane start, builds the per-agent transports once, and starts the one sweep loop through
+/// the core spawner handed on [`crate::plane::registry::BootCtx`] (so `crate::trust::sweep::spawn`
+/// need not go public).
+pub(crate) fn a2a_start(ctx: &crate::plane::registry::BootCtx) -> Result<(), String> {
+    let handle = ctx
+        .handle
+        .expect("a2a start runs in the START phase, which supplies the live app handle");
+    let shutdown = ctx
+        .shutdown
+        .expect("a2a start runs in the START phase, which supplies the shutdown broadcast");
+    if let Some(plane) = handle.load().a2a.clone() {
+        tracing::info!(
+            agents = plane.len(),
+            tick_secs = crate::trust::sweep::SWEEP_TICK.as_secs(),
+            "a2a: re-verification job started"
+        );
+        // PUBLISH BUSBAR'S AGENT-CARD ISSUER KEY, once, at the one moment an operator is watching.
+        // busbar signs the cards it serves so external callers have something to pin it BY, and a pin
+        // is only a root if the pinning party got the key OUT OF BAND — which means a human has to be
+        // able to read it off this deployment. It is a PUBLIC key, so a log line is the right place;
+        // the secret it is derived from never appears here (the seam handed only the public half — see
+        // `BootCtx::card_issuer`). Logged beside the plane's start rather than at key resolution,
+        // because this value only means anything where an A2A plane is actually serving cards.
+        if let Some(issuer) = ctx.card_issuer.as_ref() {
+            tracing::info!(
+                kid = %issuer.kid,
+                issuer_key = %issuer.issuer_spki_base64,
+                "a2a: agent cards served by this deployment are signed with this key; give it to \
+                 callers out of band so they can pin busbar"
+            );
+        }
+        // THE OUTBOUND CLIENT CERTIFICATES, resolved ONCE, HERE, and fatal if they do not. Same
+        // discipline as `tls::build_server_config` on the inbound side: a cert/key that does not load
+        // is a startup failure naming its source, never a warning. A registration whose
+        // `client_identity:` did not resolve could never complete a handshake with its endpoint, so
+        // booting past it would produce a deployment that re-verifies nothing for that agent while
+        // reading, in config and in the admin API, as though mutual TLS were configured.
+        let a2a_identities = crate::a2a::transport::resolve_client_identities(
+            &handle.load().agent_defs,
+            &handle.load().secret_resolver,
+        )
+        .map_err(|e| format!("a2a: outbound client identity: {e}"))?;
+        // THE PER-AGENT TRANSPORTS, BUILT ONCE for the job's lifetime rather than per tick. The
+        // identities were resolved at boot and the plane the job holds is this generation's, so
+        // rebuilding the bundle every thirty seconds would re-derive a constant — and, now that a
+        // transport can carry a private key, would do so with key material in hand on every tick.
+        let live = std::sync::Arc::new(crate::a2a::transport::LiveCardFetch::presenting(
+            plane.fetch_policy().clone(),
+            &a2a_identities,
+        ));
+        // Handle intentionally dropped, exactly as the flusher's is: the job runs for the process
+        // lifetime and exits its own loop on the shutdown broadcast. Started through the core spawner
+        // handed on the ctx rather than `crate::trust::sweep::spawn` directly.
+        std::mem::drop((ctx.spawn_reverify)(
+            crate::a2a::verify::ReverifySweeper { plane, live },
+            shutdown.subscribe(),
+        ));
+    }
+    Ok(())
+}
 
 /// CONTRIBUTE THE A2A TRUST VERBS to the Admin API v1 router, beside their MCP siblings so the two
 /// planes' operator surfaces are read together. Without these the `agents:` surface is CRUD only,
