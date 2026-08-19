@@ -148,6 +148,10 @@ async fn file_sink_rotates_by_rename_preserving_prior_lines() {
     // must rotate BEFORE writing — the current file becomes empty/fresh, the old one becomes `.1`.
     append_one(sink, second_line.clone());
     wait_for_line(&std::path::PathBuf::from(&archive_str), &first_line).await;
+    // The post-rotation append to the fresh current file is also async (spawn_blocking behind the
+    // sink Mutex), so wait for it too before the direct reads below — otherwise under load the read
+    // can race ahead of the write and see an empty current file.
+    wait_for_line(&path, &second_line).await;
 
     let archived = std::fs::read_to_string(&archive_str).unwrap_or_default();
     assert!(
@@ -173,7 +177,7 @@ async fn file_sink_rotates_by_rename_preserving_prior_lines() {
 /// `spawn_blocking` behind the sink's `Mutex`, so the write is not synchronous with `append_one`
 /// returning.
 async fn wait_for_line(path: &std::path::Path, needle: &str) {
-    for _ in 0..200 {
+    for _ in 0..300 {
         if let Ok(contents) = std::fs::read_to_string(path) {
             if contents.contains(needle) {
                 return;
