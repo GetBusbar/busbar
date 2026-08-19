@@ -536,8 +536,27 @@ impl AuditLog {
             .unwrap_or_else(|e| e.into_inner())
             .back()
             .map(|e| e.seq);
+        // ONLY when the ring's top is actually ahead of what is durable. Passing `top`
+        // unconditionally meant that on an idle process — where the top is already persisted —
+        // every tick fell into `durable_write_through`'s "below the durable floor" arm and logged a
+        // WARN describing a rare concurrent-recorder race. At the default 100 ms interval that is
+        // ~10 spurious warnings a second, forever, burying real ones in operator logs. This is a
+        // FILTER, not a correctness gate: the authoritative `new_seq < durable_high + 1` test still
+        // runs inside `durable_write_through` under `durable_lock`.
+        //
+        // `Relaxed` is the right ordering here, and it matches every other `durable_high` access in
+        // this file. `durable_high` only ever moves UP (`fetch_max` after a successful
+        // `append_audit`), so a stale read can only be LOW, never high — the worst case is one
+        // needless `durable_write_through` call that immediately re-reads `durable_high` under
+        // `durable_lock` and takes the same skip decision. Work can therefore never be dropped by a
+        // stale read. Nothing is published or consumed through this load either: the entries it
+        // guards are read from `self.entries` under its own mutex, whose lock/unlock supplies the
+        // acquire/release edge, so no stronger ordering buys anything.
+        let durable = self.durable_high.load(std::sync::atomic::Ordering::Relaxed);
         if let Some(top) = top {
-            self.durable_write_through(store.as_ref(), top);
+            if top > durable {
+                self.durable_write_through(store.as_ref(), top);
+            }
         }
     }
 

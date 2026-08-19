@@ -1347,3 +1347,114 @@ async fn a_burst_outrunning_store_latency_never_prunes_an_unpersisted_seq() {
         "durable history starts at seq 1"
     );
 }
+
+// ── the periodic flusher must be SILENT when there is nothing to flush ────────────────────────
+
+/// `governance::spawn_budget_flusher` calls `flush_durable` every `usage_flush_interval_ms`
+/// (100 ms by default). `flush_durable` used to hand `durable_write_through` the ring's CURRENT TOP
+/// seq unconditionally — including when that top was already durable — which lands in the
+/// "below the durable floor" arm and logs a WARN. On an idle process that is a warning every tick,
+/// forever: 59 of them in 6 idle seconds were measured, and a gate run logged 78 in 7.8 s. That arm
+/// documents itself as a rare concurrent-recorder race, so a 10 Hz timer hitting it is pure noise
+/// that buries real warnings in operator logs.
+///
+/// `#[tokio::test]`: with a runtime present and the un-persisted tail below `WRITE_THROUGH_HEADROOM`,
+/// `record_by`'s pressure valve leaves the write to the flusher — which is exactly the production
+/// shape this test needs (entries pending, then drained by `flush_durable`).
+#[tokio::test]
+async fn flush_durable_is_silent_and_idempotent_once_the_ring_top_is_durable() {
+    use crate::test_support::warn_capture::WarnCapture;
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    let store: Arc<dyn Store> = Arc::new(DurableTestStore::new());
+    let log = AuditLog::new();
+    log.set_sink(store.clone());
+    log.record_by("hook.register", "hook:a", OUTCOME_APPLIED, "admin");
+    log.record_by("plugin.install", "plugin:x", OUTCOME_APPLIED, "admin");
+    log.record_by("hook.delete", "hook:a", OUTCOME_REJECTED, "admin");
+    assert!(
+        store.list_audit().unwrap().is_empty(),
+        "precondition: with a runtime and headroom to spare, record_by leaves the durable write to \
+         the flusher, so nothing is persisted yet"
+    );
+
+    // Tick 1 — there IS pending work. It must be done, and quietly.
+    let first = WarnCapture::default();
+    let sub = tracing_subscriber::registry().with(first.clone());
+    tracing::subscriber::with_default(sub, || log.flush_durable());
+    assert_eq!(
+        store.list_audit().unwrap().len(),
+        3,
+        "the flusher must still drain every pending entry"
+    );
+    assert!(
+        first.messages().is_empty(),
+        "a flush that does real work must not warn: {:?}",
+        first.messages()
+    );
+
+    // Ticks 2..=11 — nothing pending. These are the idle ticks that used to warn every time.
+    let idle = WarnCapture::default();
+    let sub = tracing_subscriber::registry().with(idle.clone());
+    tracing::subscriber::with_default(sub, || {
+        for _ in 0..10 {
+            log.flush_durable();
+        }
+    });
+    assert!(
+        idle.messages().is_empty(),
+        "an idle tick (ring top already durable) must be a silent no-op; got {} warning(s): {:?}",
+        idle.messages().len(),
+        idle.messages()
+    );
+    assert_eq!(
+        store.list_audit().unwrap().len(),
+        3,
+        "idle ticks must not change the durable log"
+    );
+    assert!(log.verify(), "the chain is untouched by the idle ticks");
+}
+
+/// The other half of the same fix: silencing the IDLE caller must NOT silence the arm's real case.
+/// The "below the durable floor" warning exists for a genuine concurrent-recorder race — a second
+/// recorder allocated a HIGHER seq, won `durable_lock` first, and its range backfill already
+/// persisted (and advanced `durable_high` past) THIS recorder's seq. That stale write-through must
+/// still be skipped AND still be reported.
+#[test]
+fn durable_write_through_still_warns_on_the_concurrent_recorder_race() {
+    use crate::test_support::warn_capture::WarnCapture;
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    let store: Arc<dyn Store> = Arc::new(DurableTestStore::new());
+    let log = AuditLog::new();
+    log.set_sink(store.clone());
+    // No tokio runtime here, so `record_by`'s pressure valve writes through inline: seqs 1 and 2 are
+    // durable and `durable_high` is 2 — i.e. the winning recorder's backfill has already run.
+    log.record_by("hook.register", "hook:a", OUTCOME_APPLIED, "admin");
+    log.record_by("hook.register", "hook:b", OUTCOME_APPLIED, "admin");
+    assert_eq!(store.list_audit().unwrap().len(), 2);
+    assert_eq!(
+        log.durable_high.load(std::sync::atomic::Ordering::Relaxed),
+        2
+    );
+
+    // The LOSING recorder now arrives with its own, lower seq — the race the arm was written for.
+    let cap = WarnCapture::default();
+    let sub = tracing_subscriber::registry().with(cap.clone());
+    tracing::subscriber::with_default(sub, || log.durable_write_through(store.as_ref(), 1));
+    assert!(
+        cap.contains("predates the recovered durable floor"),
+        "the genuine concurrent-recorder race must STILL warn; captured: {:?}",
+        cap.messages()
+    );
+    assert!(
+        cap.contains("seq=1") && cap.contains("durable_floor=3"),
+        "the warning must still carry the stale seq and the floor; captured: {:?}",
+        cap.messages()
+    );
+    assert_eq!(
+        store.list_audit().unwrap().len(),
+        2,
+        "the stale write-through is skipped, not re-upserted"
+    );
+}

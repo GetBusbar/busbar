@@ -28,6 +28,18 @@
 #   2. WATCHDOG rule: release-check-1.5.2.sh must keep its belt-and-suspenders `timeout` re-exec so
 #      that ANY future hang (not just this one) fails fast with exit 124 instead of a multi-hour
 #      `cancelled`.
+#   3. LOST-REGISTRATION rule: a helper that registers something for cleanup by appending to a
+#      global array (`TMP_DIRS+=(...)`, `BG_PIDS+=(...)`, `DOCKER_CIDS+=(...)`) must NOT be invoked
+#      inside a command substitution. `x="$(new_tmpdir)"` runs the helper in a SUBSHELL, so the
+#      append mutates a COPY of the array that dies with the subshell; the parent's array stays
+#      empty and the EXIT trap's cleanup loop iterates NOTHING. This is the same class of defect as
+#      rule 1 (a `$(...)` capture around a helper that has a side effect outside its stdout) and it
+#      had gone unnoticed in three gates at once: no-plugins-gate.sh leaked 8 directories / 213 MB
+#      per run, release-check.sh had never deleted a working directory it created, and
+#      release-check-1.5.2.sh additionally lost every backgrounded server's PID, so a run that hit
+#      an assertion failure left a live python upstream holding its port. The fix shape, used by all
+#      three now: the helper SETS a global (`NEW_TMPDIR` / `NEW_BG_PID`) and the caller reads it on
+#      the next statement, so the append lands in the caller's own shell.
 #
 # Runs in CI (see .github/workflows/ci.yml, structure-lint job). No external deps; bash 3.2 + POSIX
 # awk (macOS/Linux). `--selftest` proves the scanner still catches the real antipattern before its
@@ -62,6 +74,70 @@ scan_backgrounded_servers() {
       printf "%s:%d: %s\n", FILENAME, FNR, disp
     }
   ' "$@"
+}
+
+# ── THE LOST-REGISTRATION SCANNER (rule 3; one copy, driven by the self-test below) ───────────────
+# Emits `file:lineno: <line>` for every command substitution / backtick capture of a function whose
+# body appends to a global array. Two passes over each file:
+#   pass 1  walk the brace depth, tracking which function (including a NESTED one) each line belongs
+#           to, every `local` name declared in it, and every `NAME+=(` whose NAME is not one of them;
+#   pass 2  flag any line that captures such a function in `$( ... )` or backticks.
+# Deliberately NOT flagged: a helper whose array IS `local` (per-call scratch, no cleanup contract),
+# a plain call `helper arg` (the append lands correctly), and a name that only appears in a comment.
+scan_lost_registrations() {
+  local f
+  for f in "$@"; do
+    awk '
+      function strip(s,   t) { t = s; sub(/[[:space:]]#.*$/, "", t); sub(/^[[:space:]]*#.*$/, "", t); return t }
+      function opens(s,  n) { n = gsub(/\{/, "{", s); return n }
+      function closes(s, n) { n = gsub(/\}/, "}", s); return n }
+
+      # ── pass 1: which functions append to a non-local global array? ──
+      NR == FNR {
+        line = strip($0)
+        if (line ~ /^[[:space:]]*(function[[:space:]]+)?[A-Za-z_][A-Za-z0-9_]*[[:space:]]*\(\)[[:space:]]*\{[[:space:]]*$/) {
+          nm = line
+          sub(/^[[:space:]]*(function[[:space:]]+)?/, "", nm)
+          sub(/[[:space:]]*\(\).*$/, "", nm)
+          sp++; stack[sp] = nm; sdepth[sp] = depth
+          depth += opens(line) - closes(line)
+          next
+        }
+        depth += opens(line) - closes(line)
+        while (sp > 0 && depth <= sdepth[sp]) sp--
+        if (sp == 0) next
+        # every `local a b c=1` on this line, wherever it sits (`local x; x=...` is idiomatic here)
+        rest = line
+        while (match(rest, /(^|[;&|[:space:]])local[[:space:]]+[^;#]*/)) {
+          decl = substr(rest, RSTART, RLENGTH)
+          rest = substr(rest, RSTART + RLENGTH)
+          sub(/^[^l]*local[[:space:]]+/, "", decl)
+          n = split(decl, toks, /[[:space:]]+/)
+          for (i = 1; i <= n; i++) { sub(/=.*$/, "", toks[i]); if (toks[i] != "") loc[stack[sp] SUBSEP toks[i]] = 1 }
+        }
+        rest = line
+        while (match(rest, /[A-Za-z_][A-Za-z0-9_]*\+=\(/)) {
+          g = substr(rest, RSTART, RLENGTH - 3)
+          rest = substr(rest, RSTART + RLENGTH)
+          # attribute the append to every enclosing function that has not localised the name
+          for (j = sp; j >= 1; j--) if (!((stack[j] SUBSEP g) in loc)) reg[stack[j]] = reg[stack[j]] " " g
+        }
+        next
+      }
+
+      # ── pass 2: who captures one of them in a subshell? ──
+      {
+        line = strip($0)
+        if (line == "") next
+        for (fn in reg) {
+          if (line ~ ("\\$\\([[:space:]]*" fn "[[:space:])]") || line ~ ("`[[:space:]]*" fn "[[:space:]`]")) {
+            disp = $0; sub(/^[[:space:]]+/, "", disp)
+            printf "%s:%d: %s  [captures %s(), which appends to%s]\n", FILENAME, FNR, disp, fn, reg[fn]
+          }
+        }
+      }
+    ' "$f" "$f"
+  done
 }
 
 # ── SELF-TEST — the scanner cannot be lied to ─────────────────────────────────────────────────────
@@ -116,7 +192,72 @@ GREEN
     fail=1; note "GREEN FAILED: expected 0 flags, got:"; printf '%s\n' "$green_hits"
   fi
 
-  note "self-test: ${pass}/2 fixture groups passed"
+  # ── rule 3: LOST-REGISTRATION ────────────────────────────────────────────────────────────────
+  # RED — every one of these captures a cleanup-registering helper in a subshell, which is exactly
+  # the defect that left 8 leaked staging dirs per no-plugins-gate run and an unkillable mock
+  # upstream in the 1.5.2 gate.
+  cat >"${tmp}/red3.sh" <<'RED3'
+TMP_DIRS=()
+BG_PIDS=()
+new_tmpdir() {
+  local d; d="$(mktemp -d)"
+  TMP_DIRS+=("$d"); echo "$d"
+}
+start_mock() {
+  python3 "$s" >/dev/null 2>&1 &
+  local pid=$!; BG_PIDS+=("$pid"); echo "$pid"
+}
+run_phase() {
+  local work; work="$(new_tmpdir)"
+  local out1 out2; out1="$(new_tmpdir)"; out2="$(new_tmpdir)"
+  local mock; mock="$(start_mock 8080)"
+  local legacy; legacy=`start_mock 8081`
+}
+RED3
+  local red3_hits; red3_hits="$(scan_lost_registrations "${tmp}/red3.sh" || true)"
+  local red3_n; red3_n="$(printf '%s' "$red3_hits" | grep -c ':' || true)"
+  # 4 lines carry a capture (the `out1/out2` line carries two, and the scanner reports per LINE)
+  if [ "$red3_n" -eq 4 ]; then
+    pass=$((pass+1)); note "RED3: flagged all 4 lines that capture a cleanup-registering helper"
+  else
+    fail=1; note "RED3 FAILED: expected 4 flags, got ${red3_n}:"; printf '%s\n' "$red3_hits"
+  fi
+
+  # GREEN — the fix shape, plus the three things the scanner must NEVER flag: a helper whose array is
+  # `local` (per-call scratch, no cleanup contract), a plain non-captured call, and a comment.
+  cat >"${tmp}/green3.sh" <<'GREEN3'
+TMP_DIRS=()
+BG_PIDS=()
+new_tmpdir() {
+  NEW_TMPDIR="$(mktemp -d)"
+  TMP_DIRS+=("$NEW_TMPDIR")
+}
+start_mock() {
+  python3 "$s" >/dev/null 2>&1 &
+  NEW_BG_PID=$!; BG_PIDS+=("$NEW_BG_PID")
+}
+collect_files() {          # a LOCAL array: per-call scratch, nothing to clean up
+  local files=()
+  local f
+  while IFS= read -r f; do files+=("$f"); done < <(find . -name '*.rs')
+  printf '%s\n' "${files[@]}"
+}
+run_phase() {
+  local work; new_tmpdir; work="$NEW_TMPDIR"
+  new_tmpdir; local out="$NEW_TMPDIR"
+  start_mock 8080; local mock="$NEW_BG_PID"
+  local listing; listing="$(collect_files)"
+  # local bad; bad="$(new_tmpdir)"   <-- a comment SHOWING the antipattern, not code
+}
+GREEN3
+  local green3_hits; green3_hits="$(scan_lost_registrations "${tmp}/green3.sh" || true)"
+  if [ -z "$green3_hits" ]; then
+    pass=$((pass+1)); note "GREEN3: flagged none of the fixed / local-array / plain-call / commented forms"
+  else
+    fail=1; note "GREEN3 FAILED: expected 0 flags, got:"; printf '%s\n' "$green3_hits"
+  fi
+
+  note "self-test: ${pass}/4 fixture groups passed"
   if [ "$fail" -ne 0 ]; then
     note "release-script-lint SELF-TEST FAILED — the scanner would let the hang antipattern through"
     return 1
@@ -146,11 +287,36 @@ else
       note "GATE-HANG: $h"
     done <<<"$hits"
     note "→ a backgrounded server that inherits a \$(...) stdout pipe wedges the gate until the CI"
-    note "  timeout. Redirect the child's stdout: append \`>/dev/null 2>&1 &\` (keep the helper's own"
-    note "  \`echo \"\$pid\"\`, which still reaches the capture)."
+    note "  timeout. Redirect the child's stdout: append \`>/dev/null 2>&1 &\`. Required even when the"
+    note "  helper is not captured today — see rule 3, whose fix has launchers set \`\$NEW_BG_PID\`"
+    note "  rather than echo a pid, so a future \`\$(...)\` around one must not be able to wedge."
     fail=1
   else
     note "ok (${#scripts_to_scan[@]} script(s) scanned, no unredirected backgrounded server)"
+  fi
+fi
+
+# ── Rule 3: LOST-REGISTRATION — a cleanup registrar must not be called inside `$(...)` ────────────
+hdr "LOST-REGISTRATION (a helper that appends to a cleanup array must not be run in a subshell)"
+if [ ${#scripts_to_scan[@]} -eq 0 ]; then
+  note "no gate scripts found — nothing to scan"
+else
+  lr_hits="$(scan_lost_registrations "${scripts_to_scan[@]}" || true)"
+  if [ -n "$lr_hits" ]; then
+    while IFS= read -r h; do
+      note "LOST-REGISTRATION: $h"
+    done <<<"$lr_hits"
+    note "→ HOW TO FIX: a command substitution runs the helper in a SUBSHELL, so its \`ARR+=(...)\`"
+    note "  mutates a copy that dies with the subshell and the EXIT trap cleans up NOTHING. Change"
+    note "  the helper to SET a global instead of echoing, and read it on the caller's next"
+    note "  statement:"
+    note "      new_tmpdir() { NEW_TMPDIR=\"\$(mktemp -d ...)\"; TMP_DIRS+=(\"\$NEW_TMPDIR\"); }"
+    note "      new_tmpdir; work=\"\$NEW_TMPDIR\"        # NOT: work=\"\$(new_tmpdir)\""
+    note "  If the array is genuinely per-call scratch with no cleanup contract, declare it"
+    note "  \`local\` in the helper and this rule stops caring about it."
+    fail=1
+  else
+    note "ok (${#scripts_to_scan[@]} script(s) scanned, every cleanup registrar called in its caller's shell)"
   fi
 fi
 

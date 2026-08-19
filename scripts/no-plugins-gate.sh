@@ -107,9 +107,12 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Sets $NEW_TMPDIR rather than echoing the path: callers used to write `d="$(new_tmpdir)"`, and the
+# command substitution runs the function in a SUBSHELL, so the `TMP_DIRS+=` append was discarded and
+# `cleanup` always iterated an empty array (hundreds of leaked staging dirs, ~220 MB per run).
 new_tmpdir() {
-  local d; d="$(mktemp -d "${TMPDIR:-/tmp}/busbar-no-plugins-gate.XXXXXX")"
-  TMP_DIRS+=("$d"); echo "$d"
+  NEW_TMPDIR="$(mktemp -d "${TMPDIR:-/tmp}/busbar-no-plugins-gate.XXXXXX")"
+  TMP_DIRS+=("$NEW_TMPDIR")
 }
 
 # A free TCP port, claimed by binding and releasing — the same trick the rest of the repo's harnesses
@@ -133,7 +136,7 @@ code() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
 # than "some 200 from somewhere".
 start_mock_upstream() {
   local port="$1" marker="$2" script
-  script="$(new_tmpdir)/mock_upstream.py"
+  new_tmpdir; script="$NEW_TMPDIR/mock_upstream.py"
   cat >"$script" <<PYEOF
 import http.server, json
 MARKER = ${marker@Q}
@@ -234,7 +237,7 @@ ADMIN_READS="info keys hooks config audit groups auth admin-auth export config/v
 # any failed assertion (and records each one in FAILURES).
 run_axis() {
   local label="$1" bin="$2" plugins_dir="$3" out="$4"
-  local work; work="$(new_tmpdir)"
+  local work; new_tmpdir; work="$NEW_TMPDIR"
   local marker="no-plugins-gate-${label}-$$-${RANDOM}"
   local mock_port listen_port admin_port
   mock_port="$(free_port)"; listen_port="$(free_port)"; admin_port="$(free_port)"
@@ -489,7 +492,7 @@ run_fixture() {
 }
 
 expect_red() {
-  local what="$1" bin="$2" plugins_dir="$3" out; out="$(new_tmpdir)"
+  local what="$1" bin="$2" plugins_dir="$3" out; new_tmpdir; out="$NEW_TMPDIR"
   run_fixture "$what" "$bin" "$plugins_dir" "$out"
   if [ "$FIXTURE_CAUGHT" -gt 0 ] || [ "$FIXTURE_RC" -ne 0 ]; then
     ok "RED ${what}: the gate CAUGHT it — $(grep -m1 '\[FAIL\]' "${out}/log" | sed 's/^ *//')"
@@ -500,7 +503,7 @@ expect_red() {
 }
 
 expect_green() {
-  local what="$1" bin="$2" plugins_dir="$3" out; out="$(new_tmpdir)"
+  local what="$1" bin="$2" plugins_dir="$3" out; new_tmpdir; out="$NEW_TMPDIR"
   run_fixture "$what" "$bin" "$plugins_dir" "$out"
   if [ "$FIXTURE_CAUGHT" -eq 0 ] && [ "$FIXTURE_RC" -eq 0 ]; then
     ok "GREEN ${what}: the gate stayed SILENT, as it must"
@@ -524,8 +527,8 @@ build_binaries() {
 
 run_selftest() {
   hdr "no-plugins-gate SELF-TEST (the gate cannot be lied to)"
-  local stage; stage="$(new_tmpdir)"
-  local empty; empty="$(new_tmpdir)"
+  local stage; new_tmpdir; stage="$NEW_TMPDIR"
+  local empty; new_tmpdir; empty="$NEW_TMPDIR"
   local rc=0
 
   cargo build -p busbar --no-default-features --features proto-openai-chat --locked
@@ -593,12 +596,12 @@ PY
 }
 
 run_check() {
-  local stage; stage="$(new_tmpdir)"
+  local stage; new_tmpdir; stage="$NEW_TMPDIR"
   build_binaries "$stage"
 
   # ONE empty directory, shared by both axes: zero plugin artifacts on disk, everywhere.
-  local empty; empty="$(new_tmpdir)"
-  local out1 out2; out1="$(new_tmpdir)"; out2="$(new_tmpdir)"
+  local empty; new_tmpdir; empty="$NEW_TMPDIR"
+  local out1 out2; new_tmpdir; out1="$NEW_TMPDIR"; new_tmpdir; out2="$NEW_TMPDIR"
 
   run_axis "1-compiled-out"  "${stage}/busbar-no-default-features" "$empty" "$out1" || true
   run_axis "2-not-installed" "${stage}/busbar-default-features"    "$empty" "$out2" || true
