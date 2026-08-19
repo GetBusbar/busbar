@@ -114,6 +114,21 @@
 //! sealed with state busbar mints is the same rule that already makes busbar publish the operator's
 //! tool description rather than the upstream's — applied to the field where it matters most.
 
+/// THE MCP PLANE'S VOCABULARY DECLARATION, beside the code it describes. Folded into
+/// `plane::registry::BUILTIN_PLANE_DECLS`; every field replaces one arm of a `Plane::Mcp` `match`.
+///
+/// `wire_format_names` is the single JSON-RPC 2.0 dialect, carried over any of three transports — a
+/// transport is not a wire format, so this list has one entry and the plane earns no superset IR.
+pub(crate) const PLANE_DECL: crate::plane::registry::PlaneDecl =
+    crate::plane::registry::PlaneDecl {
+        key: "mcp",
+        config_section: "tools",
+        scope_kinds: &["mcp_server", "mcp_tool"],
+        subject_noun: "MCP server",
+        audit_kind: "mcp_server",
+        wire_format_names: || &[crate::plane::WIRE_JSONRPC],
+    };
+
 /// THE MCP PLANE'S ADMIN PROJECTION, and the plane's half of the shared trust verb surface —
 /// where an MCP registration is resolved from, what looking at one means, and the two derived reads
 /// (`changes`, `health`) that contact nothing. `connect` itself is

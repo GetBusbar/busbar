@@ -96,6 +96,7 @@ pub(crate) mod config;
 pub(crate) mod observe;
 pub(crate) mod provenance;
 pub(crate) mod quarantine;
+pub(crate) mod registry;
 pub(crate) mod taskstore;
 
 /// THE WIRE FORMAT both mounted planes speak: JSON-RPC 2.0. Named once, here, because it is read
@@ -136,21 +137,13 @@ impl Plane {
 
     /// The plane's short stable name, for logs, metrics labels and audit resources.
     pub(crate) fn key(self) -> &'static str {
-        match self {
-            Plane::Llm => "llm",
-            Plane::Mcp => "mcp",
-            Plane::A2a => "a2a",
-        }
+        self.decl().key
     }
 
     /// The top-level `config.yaml` section whose mere EXISTENCE declares this plane. The three are
     /// siblings of one shape, never cross-referencing sections.
     pub(crate) fn config_section(self) -> &'static str {
-        match self {
-            Plane::Llm => "pools",
-            Plane::Mcp => "tools",
-            Plane::A2a => "agents",
-        }
+        self.decl().config_section
     }
 
     /// The `ScopeRef` kinds that grant access ON this plane, gated through `scope_allowed`.
@@ -159,11 +152,7 @@ impl Plane {
     /// grants a whole server or a single tool. Cross-kind matching is fail-closed in the store, so
     /// these sets are what keep one plane's grant from admitting another plane's traffic.
     pub(crate) fn scope_kinds(self) -> &'static [&'static str] {
-        match self {
-            Plane::Llm => &["pool"],
-            Plane::Mcp => &["mcp_server", "mcp_tool"],
-            Plane::A2a => &["agent"],
-        }
+        self.decl().scope_kinds
     }
 
     /// WHAT ONE REGISTRATION ON THIS PLANE IS CALLED, in the words an operator reads back in a
@@ -174,11 +163,7 @@ impl Plane {
     /// The residual LLM plane has no registered upstream of its own; a pool is named by its own
     /// section and is not looked up through this rule.
     pub(crate) fn subject_noun(self) -> &'static str {
-        match self {
-            Plane::Llm => "pool",
-            Plane::Mcp => "MCP server",
-            Plane::A2a => "fronted agent",
-        }
+        self.decl().subject_noun
     }
 
     /// THE AUDIT RESOURCE KIND for a registration on this plane — the `kind` half of a
@@ -189,11 +174,7 @@ impl Plane {
     /// by audit queries and compliance exports, and two of them agreeing by coincidence is how one
     /// plane's records start answering another plane's question.
     pub(crate) fn audit_kind(self) -> &'static str {
-        match self {
-            Plane::Llm => "pool",
-            Plane::Mcp => "mcp_server",
-            Plane::A2a => "a2a_agent",
-        }
+        self.decl().audit_kind
     }
 
     /// The distinct WIRE FORMATS this plane translates between, named. Not transports.
@@ -204,34 +185,7 @@ impl Plane {
     /// them, and two planes agreeing by coincidence is how the LLM plane's `openai` and some other
     /// plane's `openai` end up in one series meaning two things.
     pub(crate) fn wire_format_names(self) -> &'static [&'static str] {
-        match self {
-            // Read off the real registry: the dialects busbar actually speaks are what earn this
-            // plane its IR, so adding one cannot silently leave the rule behind.
-            Plane::Llm => crate::proto::known_protocols(),
-            // JSON-RPC 2.0, over any of three transports.
-            Plane::Mcp => &[WIRE_JSONRPC],
-            // THREE BINDINGS OF ONE AGENT, which is how the specification itself models them
-            // (`supportedInterfaces[]`, not three agents): the JSON-RPC envelope, where a body
-            // member names the operation; HTTP+JSON, where the request line does; and the gRPC
-            // service, where a protobuf frame does. `serve::servable_bindings` reads this list to
-            // decide what a served card may advertise, so this line — not a hand-written card entry
-            // — is what publishes each of them.
-            //
-            // More than one entry also means `has_superset_ir` answers TRUE for this plane and
-            // `sole_wire_format` answers NONE. Both are DERIVED from this array's length and both
-            // were meant to move: the design's threshold for a plane earning a superset IR is two
-            // wire formats, and a plane with several can no longer be labelled FROM THE PLANE at the
-            // ingress boundary. Which door was knocked on still labels the ones that have their own
-            // (`PlaneDispatch::wire_format_of`, which is how the gRPC leg is counted), and
-            // `a2a::receive` labels the two that share `/a2a` from inside, where the dialect that
-            // spoke is known.
-            //
-            // ORDERED, and the order is read: the first entry is this plane's canonical binding —
-            // the shape `Ingress::shaping_wire_format` gives a refusal that reached no handler, and
-            // the first `supportedInterfaces` entry a served card publishes, which the specification
-            // makes the preferred one.
-            Plane::A2a => &[WIRE_JSONRPC, WIRE_HTTP_JSON, WIRE_GRPC],
-        }
+        (self.decl().wire_format_names)()
     }
 
     /// How many distinct WIRE FORMATS this plane translates between. DERIVED from

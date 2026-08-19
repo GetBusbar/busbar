@@ -2019,6 +2019,22 @@ pub(crate) fn known_protocols() -> &'static [&'static str] {
     registry::registry().codec_protocols()
 }
 
+/// THE LLM PLANE'S VOCABULARY DECLARATION, beside the protocol registry it reads. Folded into
+/// `plane::registry::BUILTIN_PLANE_DECLS`; every arm replaces one arm of a `Plane::Llm` `match`.
+///
+/// `wire_format_names` is [`known_protocols`] itself — the model plane's dialects are the registered
+/// protocols, so a seventh dialect moves that list with nothing edited here. It is the one field
+/// that is a function rather than a slice, and it is the reason the field is a function at all.
+pub(crate) const PLANE_DECL: crate::plane::registry::PlaneDecl =
+    crate::plane::registry::PlaneDecl {
+        key: "llm",
+        config_section: "pools",
+        scope_kinds: &["pool"],
+        subject_noun: "pool",
+        audit_kind: "pool",
+        wire_format_names: known_protocols,
+    };
+
 /// String-keyed registry mapping a provider's protocol name to a shared `Protocol` INSTANCE, built
 /// once at boot. Distinct from the declaration registry (`proto::registry`): this holds constructed
 /// codecs for the config/lane-build path, which wants one instance per protocol rather than a fresh
