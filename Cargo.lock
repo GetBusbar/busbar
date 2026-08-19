@@ -326,7 +326,6 @@ dependencies = [
  "busbar-mcp",
  "busbar-plugin-loader",
  "busbar-plugin-sign",
- "busbar-proto-mcp",
  "busbar-store-example-plugin",
  "bytes",
  "criterion",
@@ -502,6 +501,7 @@ dependencies = [
  "busbar-core",
  "bytes",
  "getrandom 0.3.4",
+ "rmcp",
  "serde_json",
  "tracing",
  "tracing-subscriber",
@@ -576,16 +576,6 @@ name = "busbar-plugin-testkit"
 version = "1.5.0"
 dependencies = [
  "busbar-api",
-]
-
-[[package]]
-name = "busbar-proto-mcp"
-version = "1.6.0"
-dependencies = [
- "busbar-core",
- "bytes",
- "rmcp",
- "serde_json",
 ]
 
 [[package]]

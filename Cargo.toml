@@ -4,7 +4,6 @@ members = [
     "crates/busbar",
     "crates/busbar-core",
     "crates/busbar-llm",
-    "crates/busbar-proto-mcp",
     "crates/busbar-mcp",
     "crates/busbar-a2a",
     "crates/api",

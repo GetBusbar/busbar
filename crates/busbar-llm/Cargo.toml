@@ -7,8 +7,8 @@
 # crates (`busbar-proto-anthropic`, `-openai-chat`, `-gemini`, and the bedrock/cohere/responses
 # extractions that were in flight) that got the granularity wrong.
 #
-# `busbar-proto-mcp` is DELIBERATELY NOT FOLDED IN: MCP is a different protocol, so it is a
-# different plugin, and a later plane-split step folds the MCP codec together with the MCP plane.
+# MCP is DELIBERATELY NOT FOLDED IN HERE: MCP is a different protocol, so it is a different plugin
+# (`busbar-mcp`), which carries the MCP codec today and folds in the MCP plane in a later step.
 #
 # The contract each dialect module keeps (unchanged from the per-crate shape): five files —
 # declaration, reader, writer, handler, tests — with everything consumed through busbar-core's

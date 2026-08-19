@@ -27,8 +27,8 @@
 #                    the build.
 #   CONTROL     — the DEFAULT build (every feature on) accepts the deleted dialect's config, proving
 #                 the gate measures the feature edge and not a broken fixture.
-#   MCP LEG     — the MCP protocol crate (busbar-proto-mcp), on its own feature axis:
-#                 `default minus proto-mcp` must build and BOOT and SERVE. This is a distinct axis
+#   MCP LEG     — the MCP protocol crate (busbar-mcp, its codec half), on its own feature axis:
+#                 `default minus plane-mcp` must build and BOOT and SERVE. This is a distinct axis
 #                 from level 2's --no-default-features (which drops every optional feature at once),
 #                 and it is what proves the protocol crates are independently droppable rather than
 #                 droppable only as a set.
@@ -38,7 +38,7 @@
 #   mount, gated by the `tools:` config section — and NOT by this protocol crate's cells. The crate
 #   carries MCP the PROTOCOL (its ProtocolDecl and the tools/call + subscribe codecs); the plane did
 #   not travel with it, because a `&'static ProtocolDecl` carries no AppState/config/boot handle and
-#   there is no plane-kind seam in core yet. So dropping `proto-mcp` removes MCP from the protocol
+#   there is no plane-kind seam in core yet. So dropping `plane-mcp` removes MCP from the protocol
 #   registry, and it does NOT change what `/mcp` answers. There is therefore no honest HTTP probe
 #   for this leg, and one is not invented here: the registry-level property is pinned by a unit test
 #   instead (proto/tests/registry_tests.rs::a_codec_less_declaration_does_not_move_the_operator_
@@ -318,7 +318,7 @@ run_gate() {
 # The deleted-ingress probe is anthropic's `/v1/messages`; every other dialect's URL space
 # (gemini's `/v1beta/...`, bedrock's `/model/{id}/converse`, `/v1/responses`, `/v2/chat`) is covered
 # by the same binary having no LLM handler at all.
-run_gate "anthropic" "proto-llm" "proto-mcp" \
+run_gate "anthropic" "proto-llm" "plane-mcp" \
   "" "" "/v1/messages" \
   "gemini openai bedrock responses cohere"
 
@@ -332,19 +332,19 @@ run_gate "anthropic" "proto-llm" "proto-mcp" \
 # had no feature-gated registration line for it.
 [ ! -e crates/busbar-core/src/handlers/mcp.rs ] \
   || die "crates/busbar-core/src/handlers/mcp.rs still exists: MCP the protocol has not left core"
-grep -q 'name: "mcp"' crates/busbar-proto-mcp/src/lib.rs \
-  || die "crates/busbar-proto-mcp must declare the mcp protocol (name: \"mcp\")"
-grep -q 'feature = "proto-mcp"' crates/busbar/src/main.rs \
-  || die "the composition root must register busbar_proto_mcp::DECL behind the proto-mcp feature"
+grep -q 'name: "mcp"' crates/busbar-mcp/src/codec/mod.rs \
+  || die "crates/busbar-mcp/src/codec must declare the mcp protocol (name: \"mcp\")"
+grep -q 'feature = "plane-mcp"' crates/busbar/src/main.rs \
+  || die "the composition root must register busbar_mcp::PROTO_DECL behind the plane-mcp feature"
 note "mcp-a static: mcp declared by the crate, absent from core, registered by the composition root"
 
 # ── mcp-b: the MCP protocol crate is independently droppable, and the binary still SERVES ────────
-# `default minus proto-mcp` — a real, separate feature axis, and the per-crate BUILD+BOOT proof
+# `default minus plane-mcp` — a real, separate feature axis, and the per-crate BUILD+BOOT proof
 # (R-D). It is NOT a behaviour discriminator and is not presented as one: mcp-a above is what goes
 # red without the move.
 MCP_TARGET="target/deletion-gate-mcp"
 MCP_KEEP="auth-admin-tokens,hooks-ranking,proto-llm"
-note "mcp-b build: cargo build -p busbar --no-default-features --features $MCP_KEEP (proto-mcp OFF)"
+note "mcp-b build: cargo build -p busbar --no-default-features --features $MCP_KEEP (plane-mcp OFF)"
 CARGO_TARGET_DIR="$MCP_TARGET" cargo build -q -p busbar \
   --no-default-features --features "$MCP_KEEP" \
   || die "the busbar binary must build with the mcp protocol crate deleted and the dialects kept"
@@ -357,7 +357,7 @@ note "mcp-b build: ok ($MCP_DELETED_BIN)"
 mk_providers "anthropic"; mk_config "127.0.0.1:0" "127.0.0.1:0"
 OUT=$(run_busbar "$MCP_DELETED_BIN" --validate 2>&1) \
   || die "the mcp-deleted binary must still accept protocol: anthropic; got: $OUT"
-note "mcp-b kept dialect: anthropic config validates clean with proto-mcp off"
+note "mcp-b kept dialect: anthropic config validates clean with plane-mcp off"
 
 # and it BOOTS and SERVES (R-D: fewer protocols is a valid busbar).
 PORT=$(free_port) || die "could not find a free port pair for the mcp-deleted boot"

@@ -1,23 +1,23 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! busbar-proto-mcp — the Model Context Protocol dialect, as a PROTOCOL CRATE.
+//! THE MCP PROTOCOL CODEC — the `codec` module of `busbar-mcp`.
 //!
-//! THE SECOND EXTRACTED PROTOCOL, on the seam the LLM protocol crate proved. The five files here
-//! are the per-dialect template `one-core-mcp-a2a-as-protocols.md` bars — this file (the
-//! declaration, the dialect's wire vocabulary and the notification codec), `handler.rs` (which
-//! operations it serves), `invoke.rs` and `subscribe.rs` (the two cells), and `tests/` (its own
-//! tests, nobody else's). Everything it consumes from the engine comes through `busbar-core`'s
-//! public surface; nothing in `busbar-core` names this crate (`git grep busbar_proto
-//! crates/busbar-core/src` is pinned at zero) — the `busbar` BINARY, the composition root, links it
-//! and hands [`DECL`] to `busbar_core::proto::registry::install_protocols` at boot. Delete the
-//! dependency edge and busbar still builds, boots, refuses `protocol: mcp` config with the
-//! unknown-protocol refusal, and serves the remaining dialects — that build is a gate, not a
-//! thought experiment.
+//! The MCP dialect, on the seam the LLM protocol crate proved. The files here are the per-dialect
+//! template `one-core-mcp-a2a-as-protocols.md` bars — this file (the declaration, the dialect's
+//! wire vocabulary and the notification codec), `handler.rs` (which operations it serves),
+//! `invoke.rs` and `subscribe.rs` (the two cells), and `tests/` (its own tests, nobody else's).
+//! Everything it consumes from the engine comes through `busbar-core`'s public surface; nothing in
+//! `busbar-core` names this crate in production (`git grep busbar_mcp crates/busbar-core/src` is
+//! pinned at zero) — the `busbar` BINARY, the composition root, links `busbar-mcp` and hands
+//! [`crate::PROTO_DECL`] (this module's [`DECL`]) to
+//! `busbar_core::proto::registry::install_protocols` at boot. Delete the dependency edge and busbar
+//! still builds, boots, refuses `protocol: mcp` config with the unknown-protocol refusal, and
+//! serves the remaining dialects — that build is a gate, not a thought experiment.
 //!
-//! ## WHAT THIS CRATE IS, AND — SAID PLAINLY — WHAT IT IS NOT
+//! ## WHAT THIS MODULE IS, AND — SAID PLAINLY — WHAT IT IS NOT
 //!
-//! This crate is MCP **the protocol**: the registry declaration, the JSON-RPC dialect, and the two
+//! This module is MCP **the protocol**: the registry declaration, the JSON-RPC dialect, and the two
 //! operation cells (`tools/call` and the subscription pair) that core resolves through the support
 //! matrix. That is the whole of what `handlers/mcp.rs` was, and it moved here intact.
 //!
@@ -27,14 +27,15 @@
 //! config section, boot hydration, the router mount and the admin API — 62 production call edges,
 //! none of which a `&'static ProtocolDecl` can carry, because a `ProtocolDecl` deliberately takes a
 //! handle to nothing (`design/protocol-plugin-abi.md` §"Not one method takes a handle to
-//! anything"). There is no plane-kind seam in core to leave through, so the plane stays in core and
-//! this crate does not pretend otherwise.
+//! anything"). There is no plane-kind seam in core to leave through yet, so the plane stays in core
+//! for now — it folds into `busbar-mcp` beside this codec in a later plane-split step, and this
+//! module does not pretend it has already arrived.
 //!
 //! **The consequence for the deletion gate, stated rather than discovered:** compiling this crate
 //! out removes MCP as a *protocol* — `protocol: mcp` stops resolving and its two cells stop
 //! existing. It does not remove the `tools:` plane's `/mcp` mount, which is gated by its own config
-//! section. Deleting the plane is the plane-kind seam's job, not this crate's, and the gate here
-//! measures exactly the edge this crate owns.
+//! section. Deleting the plane is the plane-kind seam's job, not this codec's, and the gate here
+//! measures exactly the edge this codec owns.
 //!
 //! ## DUAL COMPILATION
 //!
