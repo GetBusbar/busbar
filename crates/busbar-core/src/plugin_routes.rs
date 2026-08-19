@@ -40,10 +40,28 @@ use busbar_plugin_loader::{
 use std::collections::HashMap;
 use std::sync::Arc;
 
-/// The header-count cap applied to a plugin's relayed response, mirroring the bounded-header posture
-/// every other proxied response respects — a hostile/buggy plugin cannot flood the response with
-/// unbounded headers.
-const MAX_RELAY_RESPONSE_HEADERS: usize = 64;
+/// The header-count cap applied on BOTH directions of a plugin HTTP-endpoint route — the inbound
+/// projection forwarded to the plugin ([`project_request_headers`]) and the plugin's response relayed
+/// to the external client ([`relay_response`]) — mirroring the bounded-header posture every other
+/// proxied response respects: a hostile/buggy plugin (this module's own framing) cannot flood either
+/// side with unbounded headers.
+///
+/// Over-cap is NEVER a silent `.take(n)`: the OWNER PRINCIPLE for a security/audit product is that a
+/// consumer relying on this data (the plugin deciding auth/governance/routing, or the external client
+/// reading the response) must see either the WHOLE set or an explicit, counted, logged signal that it
+/// did not — never a quietly-shortened one it cannot tell from complete. See [`relay_response`] (which
+/// REJECTS with 502 over-cap — the response reaches an external client, so a partial header set must
+/// never leave the process) and [`project_request_headers`] (which counts, warns, and marks the
+/// projection over-cap — the request is still served, since a plugin route serving an inbound client
+/// should not itself hard-fail on the client's own header count, but the plugin can never mistake the
+/// cut set for a complete one).
+const MAX_PLUGIN_HEADERS: usize = 64;
+
+/// Synthetic header name [`project_request_headers`] appends to an over-cap projection so the
+/// receiving plugin has an explicit, in-band signal that the header set it was handed is INCOMPLETE —
+/// the same "never let an omission look complete" discipline `enforce_content_cap` uses for hook
+/// content (see `crate::proxy::hooks::enforce_content_cap`).
+const PLUGIN_REQUEST_HEADERS_TRUNCATED_MARKER: &str = "x-busbar-headers-truncated";
 
 /// The core paths a plugin route may NEVER claim (exact match), independent of kind. `/metrics` is
 /// deliberately ABSENT — it is the one well-known path a metrics `export` plugin MAY claim; a
@@ -193,17 +211,23 @@ impl PluginRouteTable {
 
     /// Resolve + dispatch a matched request to its owning plugin. `None` iff no plugin currently owns
     /// `(path, method)` — which, for a mounted route, means a hot-swap dropped it (→ the handler 404s),
-    /// never a hot-path miss.
+    /// never a hot-path miss. Returns the OWNER alongside the response so a fail-closed reject on the
+    /// relay side ([`relay_response`]) can name the offending plugin in its log line.
     fn dispatch(
         &self,
         path: &str,
         method: RouteMethod,
         app: &crate::state::App,
         req: &HttpEndpointRequest,
-    ) -> Option<HttpEndpointResponse> {
+    ) -> Option<(String, HttpEndpointResponse)> {
         self.by_path_method
             .get(&(path.to_string(), method))
-            .map(|reg| reg.dispatch.handle_http_with_app(app, req))
+            .map(|reg| {
+                (
+                    reg.owner.clone(),
+                    reg.dispatch.handle_http_with_app(app, req),
+                )
+            })
     }
 }
 
@@ -400,8 +424,9 @@ pub(crate) fn mount_plugin_routes(
 /// The ONE axum handler every mounted plugin route shares. It resolves the owning plugin from the
 /// CURRENT App snapshot ([`CurrentApp`]) on every request (scrape-time resolution, no handle is
 /// baked into the route closure), forwards a bounded projection of the request via `handle_http`, and
-/// relays the plugin's response subject to the header-count cap. The auth middleware already enforced
-/// the route's declared bar before this runs.
+/// relays the plugin's response, REJECTING (502) rather than truncating if it exceeds the header-count
+/// cap (see [`relay_response`]). The auth middleware already enforced the route's declared bar before
+/// this runs.
 async fn plugin_route_dispatch(
     CurrentApp(app): CurrentApp,
     method: Method,
@@ -427,7 +452,7 @@ async fn plugin_route_dispatch(
     let served = tokio::task::spawn_blocking(move || {
         app.plugin_routes
             .dispatch(&path, rm, &app, &ep_req)
-            .map(relay_response)
+            .map(|(owner, resp)| relay_response(&owner, &path, resp))
     })
     .await;
     match served {
@@ -441,8 +466,20 @@ async fn plugin_route_dispatch(
 
 /// Project the inbound header set into the bounded, pre-filtered list forwarded to the plugin. The raw
 /// `Authorization` header is NEVER forwarded — busbar enforced the grant before this point.
+///
+/// A plugin route may drive an auth/governance/routing decision (this module's own framing treats
+/// plugins as potentially hostile/buggy, but the DECISION-MAKER here is the plugin — an incomplete
+/// header set handed to it silently is itself audit-relevant). So an over-cap header set is never
+/// quietly cut: [`PLUGIN_REQUEST_HEADERS_TRUNCATED_MARKER`] is appended so the plugin can see, in-band,
+/// that what it was handed is incomplete, `busbar_plugin_request_headers_truncated_total` counts the
+/// occurrence, and a warning names the route. The request is still SERVED (not fail-closed) — unlike
+/// [`relay_response`], the truncation here never leaves the process to an external party, and hard-
+/// failing every request from a client whose own header count is high (proxies/CDNs/tracing headers are
+/// legitimate over-64 producers) would be a disproportionate response to a plugin-side decision-quality
+/// concern; failing closed instead lives with [`relay_response`], where the withheld data would
+/// otherwise reach an external client.
 fn project_request_headers(headers: &HeaderMap) -> Vec<(String, String)> {
-    headers
+    let mut projected: Vec<(String, String)> = headers
         .iter()
         .filter(|(name, _)| name.as_str() != "authorization")
         .filter_map(|(name, value)| {
@@ -451,18 +488,52 @@ fn project_request_headers(headers: &HeaderMap) -> Vec<(String, String)> {
                 .ok()
                 .map(|v| (name.as_str().to_string(), v.to_string()))
         })
-        .take(MAX_RELAY_RESPONSE_HEADERS)
-        .collect()
+        .collect();
+    if projected.len() > MAX_PLUGIN_HEADERS {
+        metrics::counter!(crate::metrics::PLUGIN_REQUEST_HEADERS_TRUNCATED_TOTAL).increment(1);
+        tracing::warn!(
+            header_count = projected.len(),
+            cap = MAX_PLUGIN_HEADERS,
+            "inbound request header count exceeded the plugin-route cap; truncating the projection \
+             forwarded to the plugin and marking it with {PLUGIN_REQUEST_HEADERS_TRUNCATED_MARKER} so \
+             the plugin cannot mistake an incomplete header set for a complete one"
+        );
+        projected.truncate(MAX_PLUGIN_HEADERS.saturating_sub(1));
+        projected.push((
+            PLUGIN_REQUEST_HEADERS_TRUNCATED_MARKER.to_string(),
+            "true".to_string(),
+        ));
+    }
+    projected
 }
 
-/// Relay a plugin's [`HttpEndpointResponse`] as an axum [`Response`], applying the header-count cap and
-/// dropping any header name/value that is not a valid HTTP header (a plugin cannot smuggle a malformed
-/// header onto the response path).
-fn relay_response(resp: HttpEndpointResponse) -> Response {
+/// Relay a plugin's [`HttpEndpointResponse`] as an axum [`Response`], dropping any header name/value
+/// that is not a valid HTTP header (a plugin cannot smuggle a malformed header onto the response path).
+///
+/// Over-cap headers are REJECTED WHOLE (a 502, never a truncated relay): this response reaches an
+/// EXTERNAL client, so the OWNER PRINCIPLE leaves no fallback here — a silently-shortened header set
+/// handed to an external party is exactly the failure mode this fix closes, and unlike the request
+/// direction ([`project_request_headers`]) there is no in-band marker an arbitrary external HTTP client
+/// is guaranteed to understand. `busbar_plugin_response_headers_rejected_total` counts the rejection and
+/// an error log names the offending plugin/route, so an operator can tell a hostile/buggy plugin from a
+/// cap that needs raising.
+fn relay_response(owner: &str, path: &str, resp: HttpEndpointResponse) -> Response {
     use axum::http::{HeaderName, HeaderValue};
+    if resp.headers.len() > MAX_PLUGIN_HEADERS {
+        metrics::counter!(crate::metrics::PLUGIN_RESPONSE_HEADERS_REJECTED_TOTAL).increment(1);
+        tracing::error!(
+            plugin = owner,
+            route = path,
+            header_count = resp.headers.len(),
+            cap = MAX_PLUGIN_HEADERS,
+            "plugin response exceeded the header-count cap; rejecting with 502 rather than silently \
+             relaying a truncated header set to the external client"
+        );
+        return StatusCode::BAD_GATEWAY.into_response_stub();
+    }
     let status = StatusCode::from_u16(resp.status).unwrap_or(StatusCode::BAD_GATEWAY);
     let mut builder = Response::builder().status(status);
-    for (name, value) in resp.headers.into_iter().take(MAX_RELAY_RESPONSE_HEADERS) {
+    for (name, value) in resp.headers {
         if let (Ok(n), Ok(v)) = (
             HeaderName::from_bytes(name.as_bytes()),
             HeaderValue::from_str(&value),

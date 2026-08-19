@@ -208,6 +208,26 @@ pub(crate) const ADMISSION_DENIED_TOTAL: &str = "busbar_admission_denied_total";
 // it streams verbatim; only the billing side-channel is capped.)
 pub(crate) const BILLING_TRUNCATED_TOTAL: &str = "busbar_billing_truncated_total"; // no labels
 
+// A plugin HTTP-endpoint route's INBOUND request header count exceeded
+// `plugin_routes::MAX_PLUGIN_HEADERS` before the projection was forwarded to the plugin's
+// `handle_http`. The projection is still sent (truncated, never silently — see
+// `plugin_routes::PLUGIN_REQUEST_HEADERS_TRUNCATED_MARKER`, which the plugin can inspect), so this
+// counts a plugin having made an auth/governance/routing decision on an INCOMPLETE header set.
+// Unlabeled: a global signal, not per-route. A steady non-zero rate means either a client's header
+// count is routinely large (raise the cap) or a route needs investigating for hostile flooding.
+pub(crate) const PLUGIN_REQUEST_HEADERS_TRUNCATED_TOTAL: &str =
+    "busbar_plugin_request_headers_truncated_total"; // no labels
+
+// A plugin HTTP-endpoint route's OUTBOUND response header count exceeded
+// `plugin_routes::MAX_PLUGIN_HEADERS`. Unlike the request-side counter above, this response reaches an
+// EXTERNAL client, so the OWNER PRINCIPLE (a consumer never receives a silently-shortened data set)
+// leaves no truncate-and-mark fallback: the whole response is REJECTED (502) instead, and this counter
+// records the rejection. Unlabeled: a global signal. A non-zero rate means a plugin is emitting an
+// over-cap header set — either the plugin is hostile/buggy (investigate the route named in the
+// accompanying error log) or the cap needs raising.
+pub(crate) const PLUGIN_RESPONSE_HEADERS_REJECTED_TOTAL: &str =
+    "busbar_plugin_response_headers_rejected_total"; // no labels
+
 // ── Scrape-time gauges (new in feat/observability-depth) ────────────────────────────────────────
 //
 // These are REFRESHED each scrape from in-process reads (governance SQLite + breaker state).
