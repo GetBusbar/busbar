@@ -526,6 +526,103 @@ async fn head_dispatches_to_the_declared_get_route() {
     );
 }
 
+// ── Header-count cap: NEVER a silent truncation ──────────────────────────────────────────────────
+//
+// `MAX_PLUGIN_HEADERS` (64) previously drove a bare `.take(64)` on BOTH the request projection
+// forwarded to a plugin and the plugin's response relayed to the external client — silently, with no
+// counter/warn/marker. These tests would have caught the regression: RED against the bare-`.take()`
+// shape (an over-cap set silently shortened with no observable signal), GREEN against the fix.
+
+/// The REQUEST direction: an inbound header set over the cap is never silently cut. The plugin
+/// projection is truncated to make room for an explicit marker header
+/// (`PLUGIN_REQUEST_HEADERS_TRUNCATED_MARKER`) so the plugin — which may make an auth/governance/
+/// routing decision on this projection — cannot mistake an incomplete set for a complete one.
+///
+/// RED against the pre-fix code (a bare `.take(MAX_RELAY_RESPONSE_HEADERS)` with no marker): the
+/// projection would contain exactly 64 headers, none of them the marker, and this assertion on the
+/// marker's presence fails. GREEN once the marker is appended.
+#[test]
+fn over_cap_request_headers_are_marked_not_silently_cut() {
+    let mut headers = HeaderMap::new();
+    for i in 0..100 {
+        headers.insert(
+            axum::http::HeaderName::try_from(format!("x-custom-{i}")).unwrap(),
+            axum::http::HeaderValue::from_static("v"),
+        );
+    }
+    let projected = project_request_headers(&headers);
+
+    assert!(
+        projected.len() <= MAX_PLUGIN_HEADERS,
+        "the projection stays bounded"
+    );
+    assert!(
+        projected
+            .iter()
+            .any(|(k, v)| k == PLUGIN_REQUEST_HEADERS_TRUNCATED_MARKER && v == "true"),
+        "an over-cap request header set MUST carry the truncation marker, never a silent cut \
+         (got: {projected:?})"
+    );
+}
+
+/// The under-cap case is UNCHANGED: no marker is injected when nothing was cut, so a plugin never
+/// sees a false-positive truncation signal.
+#[test]
+fn under_cap_request_headers_carry_no_marker() {
+    let mut headers = HeaderMap::new();
+    headers.insert("x-one", axum::http::HeaderValue::from_static("v1"));
+    headers.insert("x-two", axum::http::HeaderValue::from_static("v2"));
+    let projected = project_request_headers(&headers);
+
+    assert_eq!(projected.len(), 2);
+    assert!(
+        !projected
+            .iter()
+            .any(|(k, _)| k == PLUGIN_REQUEST_HEADERS_TRUNCATED_MARKER),
+        "no marker when nothing was truncated"
+    );
+}
+
+/// The RESPONSE direction: a plugin response over the header cap reaches an axum [`Response`] — this
+/// relay leaves the process to an EXTERNAL client, so the OWNER PRINCIPLE forbids a truncate-and-relay
+/// fallback. The whole response is REJECTED (502), never partially relayed.
+///
+/// RED against the pre-fix code (a bare `.take(MAX_RELAY_RESPONSE_HEADERS)`): the over-cap response
+/// would come back 200 with exactly 64 (of 100) headers silently kept, and this assertion on the
+/// status code fails. GREEN once the fix rejects it.
+#[test]
+fn over_cap_response_headers_are_rejected_not_silently_truncated() {
+    let headers: Vec<(String, String)> = (0..100)
+        .map(|i| (format!("x-resp-{i}"), "v".to_string()))
+        .collect();
+    let resp = HttpEndpointResponse {
+        status: 200,
+        headers,
+        body: b"hello".to_vec(),
+    };
+    let out = relay_response("some-plugin", "/exports/some-plugin/x", resp);
+    assert_eq!(
+        out.status(),
+        StatusCode::BAD_GATEWAY,
+        "an over-cap plugin response must be REJECTED (502), never relayed with a silently \
+         truncated header set"
+    );
+}
+
+/// The under-cap case relays exactly as before: status + all headers + body pass through unchanged.
+#[test]
+fn under_cap_response_headers_relay_unchanged() {
+    let resp = HttpEndpointResponse {
+        status: 201,
+        headers: vec![("x-a".into(), "1".into()), ("x-b".into(), "2".into())],
+        body: b"ok".to_vec(),
+    };
+    let out = relay_response("some-plugin", "/exports/some-plugin/x", resp);
+    assert_eq!(out.status(), StatusCode::CREATED);
+    assert_eq!(out.headers().get("x-a").unwrap(), "1");
+    assert_eq!(out.headers().get("x-b").unwrap(), "2");
+}
+
 // ── The RESTART-TO-APPLY signal ──────────────────────────────────────────────────────────────────
 
 /// [`paths_awaiting_restart`] names exactly the paths a config apply cannot make servable, in every
