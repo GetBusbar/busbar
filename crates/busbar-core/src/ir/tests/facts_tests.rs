@@ -435,3 +435,35 @@ fn cache_breakpoints_do_not_change_what_is_projected() {
     );
     assert_eq!(flatten(&r).1, vec![("user", "hello".to_string())]);
 }
+
+// ── ContentItem::screening_digest (incremental-scan piece identity) ──────────────────────────────
+
+#[test]
+fn screening_digest_distinguishes_the_same_text_in_different_slots() {
+    let a = ContentItem::Text { author: "user", slot: Slot::Turn(0), text: "payload".into() };
+    let b = ContentItem::Text { author: "user", slot: Slot::ToolResult(0), text: "payload".into() };
+    assert_ne!(a.screening_digest(), b.screening_digest());
+}
+
+#[test]
+fn screening_digest_distinguishes_authors() {
+    let a = ContentItem::Text { author: "user", slot: Slot::Turn(0), text: "x".into() };
+    let b = ContentItem::Text { author: "assistant", slot: Slot::Turn(0), text: "x".into() };
+    assert_ne!(a.screening_digest(), b.screening_digest());
+}
+
+/// Without length-prefix framing, `("ab","c")` and `("a","bc")` would hash the same concatenated
+/// bytes — and one session's cleared-set could skip-screen the other piece. Framing prevents it.
+#[test]
+fn screening_digest_framing_prevents_a_concatenation_collision() {
+    let a = ContentItem::Text { author: "ab", slot: Slot::Turn(0), text: "c".into() };
+    let b = ContentItem::Text { author: "a", slot: Slot::Turn(0), text: "bc".into() };
+    assert_ne!(a.screening_digest(), b.screening_digest());
+}
+
+#[test]
+fn screening_digest_is_deterministic() {
+    let a = ContentItem::Text { author: "user", slot: Slot::Turn(3), text: "same".into() };
+    let b = ContentItem::Text { author: "user", slot: Slot::Turn(3), text: "same".into() };
+    assert_eq!(a.screening_digest(), b.screening_digest());
+}

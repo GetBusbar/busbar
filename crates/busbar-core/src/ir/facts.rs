@@ -211,6 +211,39 @@ impl ContentItem<'_> {
             ContentItem::Opaque { marker, .. } => Cow::Borrowed(marker),
         }
     }
+
+    /// A collision-resistant identity for "have I screened this exact piece before" — over the author
+    /// label, the slot (kind + index, so the SAME text in a DIFFERENT slot is a distinct piece a
+    /// guardrail must re-see), and the screenable text.
+    ///
+    /// The fields are LENGTH-PREFIX framed before hashing (the same discipline `audit::Digest` uses),
+    /// so `("a","b")` can never hash-collide with `("ab","")`. A collision here would let one session's
+    /// cleared-set skip-screen a *different* piece — a security-adjacent skip (design D4) — which is
+    /// why this is a full SHA-256 over framed bytes, not a 64-bit fast hash. Used by the gate's
+    /// incremental-scan tenant of [`crate::session`]: the digest is what a session's scanned-set holds.
+    ///
+    /// NOTE: an [`ContentItem::Opaque`] piece digests its MARKER, not real content — the caller must
+    /// never cache an opaque piece as "cleared" (it is a presence signal, not screenable content); the
+    /// digest is defined here for uniformity, and the caller enforces the never-cache-opaque rule.
+    pub fn screening_digest(&self) -> String {
+        fn framed(buf: &mut Vec<u8>, bytes: &[u8]) {
+            buf.extend_from_slice(&(bytes.len() as u64).to_be_bytes());
+            buf.extend_from_slice(bytes);
+        }
+        let (slot_kind, slot_idx): (u8, u64) = match self.slot() {
+            Slot::System => (0, 0),
+            Slot::Turn(i) => (1, i as u64),
+            Slot::ToolArgs(i) => (2, i as u64),
+            Slot::ToolResult(i) => (3, i as u64),
+        };
+        let text = self.screenable_text();
+        let mut buf = Vec::new();
+        framed(&mut buf, &[slot_kind]);
+        framed(&mut buf, &slot_idx.to_be_bytes());
+        framed(&mut buf, self.author().as_bytes());
+        framed(&mut buf, text.as_bytes());
+        busbar_api::sha256_hex(&buf)
+    }
 }
 
 /// Counts and sizes. NO content — this is the bucket every hook gets whether or not it holds a
