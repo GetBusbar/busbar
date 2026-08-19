@@ -1,0 +1,49 @@
+# busbar-mcp — THE MCP (Model Context Protocol) PLUGIN CRATE SHELL.
+#
+# Step 3.A.0 of the plane split creates ONLY this shell: the manifest and a doc-only `src/lib.rs`.
+# No plane or codec code has moved here yet — that is later steps. When it does, this crate becomes
+# the MCP protocol codec (what `busbar-proto-mcp` holds today) FOLDED TOGETHER with the MCP plane
+# (today's `crates/busbar-core/src/mcp`, ~18k lines: the catalogue, the call log, the client pool and
+# its transports, the config sections, boot hydration, the router mount and the admin API) — ONE
+# PLUGIN PER PROTOCOL, and MCP the protocol and MCP the plane are the same protocol, so they end up
+# behind the same on/off switch rather than two.
+#
+# `busbar-core = { default-features = false }` mirrors `busbar-llm`/`busbar-proto-mcp`: the feature
+# decisions belong to the composition root, not to a plugin. `busbar-api` is named ahead of the code
+# that needs it, per 1.6.0's owner ruling R-E, which plans this crate to depend on `busbar-api` the
+# way `busbar-auth-admin-tokens` and `busbar-hooks-ranking` do today.
+[package]
+name = "busbar-mcp"
+version = "1.6.0"
+publish = false            # internal workspace crate; never goes to crates.io
+edition = "2021"
+# `rust-version` rationale: see busbar-core/Cargo.toml — one pinned number, set to what CI verifies.
+rust-version = "1.97"
+description = "The Model Context Protocol for busbar: the MCP codec and the MCP plane, as one removable plugin. Shell only — code has not moved here yet."
+license = "Apache-2.0"
+
+[lib]
+name = "busbar_mcp"
+path = "src/lib.rs"
+
+[dependencies]
+# The engine's public surface — the ONLY busbar crate this plugin may name today. `default-features
+# = false` for the same reason the binary does it: the feature decisions are the composition root's.
+busbar-core = { path = "../busbar-core", default-features = false }
+# The plugin contracts crate, named ahead of use per owner ruling R-E (see header).
+busbar-api = { path = "../api" }
+axum = { workspace = true }
+bytes = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+getrandom = { workspace = true }
+
+[features]
+# Pass-through so a dependent can ask for this crate's test fixtures without naming busbar-core
+# directly, the same shape `busbar-core` itself exposes to its own dependents.
+test-support = ["busbar-core/test-support"]
+
+[dev-dependencies]
+busbar-core = { path = "../busbar-core", features = ["test-support"] }
+serde_json = { workspace = true }
+tracing-subscriber = { workspace = true }

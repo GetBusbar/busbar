@@ -320,8 +320,10 @@ version = "1.6.0"
 dependencies = [
  "axum",
  "base64 0.23.1",
+ "busbar-a2a",
  "busbar-core",
  "busbar-llm",
+ "busbar-mcp",
  "busbar-plugin-loader",
  "busbar-plugin-sign",
  "busbar-proto-mcp",
@@ -339,6 +341,20 @@ dependencies = [
  "tikv-jemallocator",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "busbar-a2a"
+version = "1.6.0"
+dependencies = [
+ "axum",
+ "busbar-api",
+ "busbar-core",
+ "bytes",
+ "getrandom 0.3.4",
+ "serde_json",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -472,6 +488,20 @@ dependencies = [
  "bytes",
  "getrandom 0.3.4",
  "hex",
+ "serde_json",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "busbar-mcp"
+version = "1.6.0"
+dependencies = [
+ "axum",
+ "busbar-api",
+ "busbar-core",
+ "bytes",
+ "getrandom 0.3.4",
  "serde_json",
  "tracing",
  "tracing-subscriber",
