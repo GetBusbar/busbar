@@ -517,6 +517,16 @@ fn register_protocols() {
     busbar_core::proto::registry::install_protocols(installed);
 }
 
+/// REGISTER THE LINKED PLANE CRATES — the composition root's one write into the plane axis
+/// (`busbar_core::plane::registry::install_planes`), exactly `register_protocols`' shape on the
+/// plane axis. No plane has been extracted to a crate yet, so the extra slice is empty and every
+/// plane still reaches the process list through core's own built-in table
+/// (`busbar_core::plane::registry::BUILTIN_PLANE_DECLS`); this call exists so a plane that DOES
+/// become a crate joins by adding one line here, exactly as a protocol crate does above.
+fn register_planes() {
+    busbar_core::plane::registry::install_planes(&[]);
+}
+
 fn main() {
     // PROTOCOL REGISTRATION FIRST — before the CLI flags, because `--validate` reads the protocol
     // set. This is the composition root's whole knowledge of the protocol crates: one line per
@@ -524,6 +534,10 @@ fn main() {
     // the build (its feature off) is simply never registered, and a config that names it gets the
     // unknown-protocol refusal — the deletion test's runtime half (scripts/proto-deletion-gate.sh).
     register_protocols();
+    // PLANE REGISTRATION, same slot and the same reason: `--validate` (just below) reads the plane
+    // list through `plane::config::config_sections()`, so the plane axis must be installed before
+    // any reader — including the CLI flags — can run.
+    register_planes();
     // CLI flags next — BEFORE building any runtime. They must work without a configured deployment,
     // and `--version` / `--validate` should never spin up a thread pool.
     if let Some(code) = handle_cli_flags() {

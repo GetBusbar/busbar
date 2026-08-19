@@ -56,7 +56,12 @@ use super::Plane;
 /// strings it feeds, because these are the strings that must not agree by coincidence: two planes
 /// sharing a scope kind is how one plane's grant admits another plane's traffic, and two planes
 /// sharing an audit kind is how one plane's records start answering another plane's question.
-pub(crate) struct PlaneDecl {
+///
+/// The TYPE is `pub` — the composition root names it in [`install_planes`]' signature, and a private
+/// type cannot appear in a public one. Every FIELD stays `pub(crate)`: nothing outside this crate
+/// constructs or reads a `PlaneDecl` yet (the binary installs an empty extra slice), so no field is
+/// widened until a loaded plane crate actually needs to build one.
+pub struct PlaneDecl {
     /// The registry key, the metrics label, the log label and the audit resource prefix.
     /// **OPERATOR-VISIBLE.** Replaces `Plane::key`'s match.
     pub(crate) key: &'static str,
@@ -119,14 +124,15 @@ static INSTALLED: std::sync::OnceLock<&'static [&'static PlaneDecl]> = std::sync
 
 /// INSTALL PLANE DECLARATIONS — the composition root's one write into the plane axis, and the seam
 /// an extracted plane crate registers through. Exactly `crate::proto::registry::install_protocols`'
-/// shape and contract, on the plane axis.
+/// shape and contract, on the plane axis. `pub`, not `pub(crate)`: the `busbar` binary crate is the
+/// composition root and calls this from `main` (`register_planes`), before any config load or
+/// validation touches a plane.
 ///
 /// # Panics
 /// - if called twice: two composition roots is a wiring bug, not a merge to attempt.
 /// - if called after the plane list was first read: see the module header's INSTALL BEFORE FIRST
 ///   READ invariant.
-#[allow(dead_code)] // pub-widened for the composition root; no plane crate registers through it yet
-pub(crate) fn install_planes(decls: &'static [&'static PlaneDecl]) {
+pub fn install_planes(decls: &'static [&'static PlaneDecl]) {
     assert!(
         INSTALLED.set(decls).is_ok(),
         "install_planes called twice: there is one composition root, and it registers once"
