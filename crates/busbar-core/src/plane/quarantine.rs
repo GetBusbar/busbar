@@ -48,7 +48,8 @@
 //! everywhere else on this seam, a write's `Ok(())` is not evidence of durability: the engine finds
 //! out what its backend kept by READING IT BACK at boot.
 
-use busbar_api::{McpDemotionRow, Store};
+use crate::plane::store::PlaneStore;
+use busbar_api::McpDemotionRow;
 use std::sync::{Arc, Mutex};
 
 /// The durable demotion record's write side. No `Debug`: `dyn Store` is not `Debug`, deliberately —
@@ -56,7 +57,7 @@ use std::sync::{Arc, Mutex};
 /// could surface in a log.
 #[derive(Default)]
 pub(crate) struct PlaneQuarantine {
-    sink: Mutex<Option<Arc<dyn Store>>>,
+    sink: Mutex<Option<Arc<dyn PlaneStore>>>,
 }
 
 impl PlaneQuarantine {
@@ -67,14 +68,14 @@ impl PlaneQuarantine {
     /// Attach the configured governance store. Called once at boot, on the instance that is carried
     /// across every later config apply — a demotion is evidence, not intent, so an unrelated config
     /// edit must not be able to detach the thing that remembers it.
-    pub(crate) fn set_sink(&self, store: Arc<dyn Store>) {
+    pub(crate) fn set_sink(&self, store: Arc<dyn PlaneStore>) {
         *self.sink.lock().unwrap_or_else(|e| e.into_inner()) = Some(store);
     }
 
     /// Poison-recovering, like every other request-path lock in this process: the value behind it is
     /// an `Option<Arc<_>>` that a panic cannot have torn, and cascading the poison would take the
     /// quarantine record out of service for the life of the process over an unrelated panic.
-    fn sink(&self) -> Option<Arc<dyn Store>> {
+    fn sink(&self) -> Option<Arc<dyn PlaneStore>> {
         self.sink
             .lock()
             .unwrap_or_else(|e| e.into_inner())

@@ -38,7 +38,7 @@ use std::sync::Arc;
 async fn with_ledger() -> (Arc<EventLedger>, tokio::sync::MutexGuard<'static, ()>) {
     let guard = TASKS_SINK_LOCK.lock().await;
     let ledger = Arc::new(EventLedger::new());
-    TASKS.set_sink(ledger.clone());
+    TASKS.set_sink(crate::plane::store::PlaneStoreView::narrow(ledger.clone()));
     (ledger, guard)
 }
 

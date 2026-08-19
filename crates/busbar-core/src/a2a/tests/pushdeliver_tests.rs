@@ -643,7 +643,8 @@ async fn a_task_in_the_registry(
 ) {
     let guard = crate::plane::taskstore::TASKS_SINK_LOCK.lock().await;
     let ledger = Arc::new(crate::plane::taskstore::event_ledger::EventLedger::new());
-    crate::plane::taskstore::TASKS.set_sink(ledger.clone());
+    crate::plane::taskstore::TASKS
+        .set_sink(crate::plane::store::PlaneStoreView::narrow(ledger.clone()));
     let task = task_with_callback(task_id, state);
     crate::plane::taskstore::TASKS
         .submit(&task, "req-1")

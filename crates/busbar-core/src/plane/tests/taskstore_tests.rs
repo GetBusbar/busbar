@@ -165,7 +165,7 @@ fn ram_default() -> Arc<dyn busbar_api::Store> {
 /// with a real artifact cursor. Returns the registry so a caller can inspect it before dropping it.
 fn process_one(store: Arc<dyn busbar_api::Store>) -> TaskRegistry {
     let reg = TaskRegistry::new();
-    reg.set_sink(store);
+    reg.set_sink(crate::plane::store::PlaneStoreView::narrow(store));
 
     reg.submit(
         &Task::submitted("t-work", "ctx-a", "key-1", Direction::Inbound, NOW).unwrap(),
@@ -208,9 +208,9 @@ fn in_flight_tasks_survive_a_restart_over_a_durable_backend() {
     }
 
     let reg2 = TaskRegistry::new();
-    reg2.set_sink(handle.clone());
+    reg2.set_sink(crate::plane::store::PlaneStoreView::narrow(handle.clone()));
     let rehydrated = reg2
-        .restore_from_store(handle.as_ref())
+        .restore_from_store(crate::plane::store::PlaneStoreView::narrow(handle.clone()).as_ref())
         .expect("rehydrate must succeed");
 
     assert_eq!(rehydrated.active, 2, "both in-flight tasks came back");
@@ -258,8 +258,10 @@ fn the_ram_default_loses_every_in_flight_task_and_the_registry_says_so() {
         drop(reg1);
     }
     let reg2 = TaskRegistry::new();
-    reg2.set_sink(store.clone());
-    let rehydrated = reg2.restore_from_store(store.as_ref()).unwrap();
+    reg2.set_sink(crate::plane::store::PlaneStoreView::narrow(store.clone()));
+    let rehydrated = reg2
+        .restore_from_store(crate::plane::store::PlaneStoreView::narrow(store.clone()).as_ref())
+        .unwrap();
     assert_eq!(
         rehydrated,
         Rehydrated::default(),
@@ -285,8 +287,9 @@ fn an_interrupt_resumes_after_a_restart_and_its_chain_continues() {
     assert!(seq_before >= 4, "process 1 wrote a real chain");
 
     let reg2 = TaskRegistry::new();
-    reg2.set_sink(handle.clone());
-    reg2.restore_from_store(handle.as_ref()).unwrap();
+    reg2.set_sink(crate::plane::store::PlaneStoreView::narrow(handle.clone()));
+    reg2.restore_from_store(crate::plane::store::PlaneStoreView::narrow(handle.clone()).as_ref())
+        .unwrap();
 
     let resumed = reg2
         .transition("t-paused", TaskState::Working, NOW + 100, "req-resume")
@@ -325,7 +328,10 @@ fn the_verifier_detects_a_tampered_link_in_the_persisted_chain() {
 
     // GREEN first: the untouched chain verifies, and it verified over a chain with real length.
     let n = reg
-        .verify_task_chain(handle.as_ref(), "t-paused")
+        .verify_task_chain(
+            crate::plane::store::PlaneStoreView::narrow(handle.clone()).as_ref(),
+            "t-paused",
+        )
         .unwrap()
         .expect("an untouched chain verifies");
     assert!(n >= 4, "the chain that verified is not empty: {n} events");
@@ -336,7 +342,10 @@ fn the_verifier_detects_a_tampered_link_in_the_persisted_chain() {
     });
 
     let brk = reg
-        .verify_task_chain(handle.as_ref(), "t-paused")
+        .verify_task_chain(
+            crate::plane::store::PlaneStoreView::narrow(handle.clone()).as_ref(),
+            "t-paused",
+        )
         .unwrap()
         .expect_err("a tampered event MUST be detected");
     assert_eq!(brk.seq, 2, "the verifier names WHICH event was altered");
@@ -362,8 +371,10 @@ fn a_tampered_chain_is_reported_on_restore_and_the_task_is_still_restored() {
     store.tamper_event("t-paused", 1, |e| e.principal = "someone-else".to_string());
 
     let reg2 = TaskRegistry::new();
-    reg2.set_sink(handle.clone());
-    let out = reg2.restore_from_store(handle.as_ref()).unwrap();
+    reg2.set_sink(crate::plane::store::PlaneStoreView::narrow(handle.clone()));
+    let out = reg2
+        .restore_from_store(crate::plane::store::PlaneStoreView::narrow(handle.clone()).as_ref())
+        .unwrap();
 
     assert_eq!(out.active, 2, "both tasks are still restored");
     assert_eq!(out.chain_breaks.len(), 1, "exactly one chain failed");
@@ -466,8 +477,10 @@ fn a_terminal_task_is_counted_on_restore_and_deliberately_not_loaded() {
             .unwrap();
     }
     let reg2 = TaskRegistry::new();
-    reg2.set_sink(handle.clone());
-    let out = reg2.restore_from_store(handle.as_ref()).unwrap();
+    reg2.set_sink(crate::plane::store::PlaneStoreView::narrow(handle.clone()));
+    let out = reg2
+        .restore_from_store(crate::plane::store::PlaneStoreView::narrow(handle.clone()).as_ref())
+        .unwrap();
     assert_eq!(out.active, 1);
     assert_eq!(out.terminal, 1);
     assert_eq!(
@@ -495,7 +508,9 @@ fn an_unreadable_row_is_counted_rather_than_silently_dropped() {
     handle.put_task(&row).unwrap();
 
     let reg2 = TaskRegistry::new();
-    let out = reg2.restore_from_store(handle.as_ref()).unwrap();
+    let out = reg2
+        .restore_from_store(crate::plane::store::PlaneStoreView::narrow(handle.clone()).as_ref())
+        .unwrap();
     assert_eq!(out.unreadable, 1, "the row is COUNTED");
     assert_eq!(out.active, 1, "and the readable one still came back");
 }
@@ -547,7 +562,7 @@ fn a_failed_durable_write_leaves_the_working_set_agreeing_with_the_store() {
     let store: Arc<dyn busbar_api::Store> =
         Arc::new(RefusingStore(busbar_store_memory::MemoryStore::new()));
     let reg = TaskRegistry::new();
-    reg.set_sink(store);
+    reg.set_sink(crate::plane::store::PlaneStoreView::narrow(store));
     let task = Task::submitted("t-1", "ctx", "key-1", Direction::Inbound, NOW).unwrap();
     let err = reg
         .submit(&task, "req-1")
@@ -602,7 +617,8 @@ fn a_push_callback_survives_the_restart_with_its_task() {
         .unwrap();
     }
     let reg2 = TaskRegistry::new();
-    reg2.restore_from_store(handle.as_ref()).unwrap();
+    reg2.restore_from_store(crate::plane::store::PlaneStoreView::narrow(handle.clone()).as_ref())
+        .unwrap();
     assert_eq!(
         reg2.get_scoped("key-2", "t-paused").unwrap().push_callback,
         Some("https://caller.example/done".to_string())

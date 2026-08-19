@@ -691,7 +691,7 @@ async fn an_interrupt_the_relay_produced_rehydrates_only_where_the_store_is_dura
     let fresh = crate::plane::taskstore::TaskRegistry::new();
     let store = h.gov.store();
     let rehydrated = fresh
-        .restore_from_store(store.as_ref())
+        .restore_from_store(crate::plane::store::PlaneStoreView::narrow(store.clone()).as_ref())
         .expect("the rehydrate completes");
 
     if rehydrated.active == 0 {

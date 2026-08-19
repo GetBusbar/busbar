@@ -111,7 +111,8 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use busbar_api::{McpCallRecord, Store, StoreResult};
+use crate::plane::store::PlaneStore;
+use busbar_api::{McpCallRecord, StoreResult};
 
 use crate::audit::{verify_chain, ChainBreak, ChainLabels, ChainedRecord, Digest, Framing};
 
@@ -271,7 +272,7 @@ pub(crate) struct PlaneCallLog {
     /// Chain POSITIONS only, keyed by principal — a tail hash and a next sequence, never the
     /// records. The store owns the records.
     chains: Mutex<HashMap<String, CallChain>>,
-    sink: Mutex<Option<Arc<dyn Store>>>,
+    sink: Mutex<Option<Arc<dyn PlaneStore>>>,
 }
 
 /// THE PROCESS-WIDE CALL LOG. Process state, not config-derived state, so it lives as a global
@@ -295,7 +296,7 @@ impl PlaneCallLog {
         self.chains.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    fn sink(&self) -> Option<Arc<dyn Store>> {
+    fn sink(&self) -> Option<Arc<dyn PlaneStore>> {
         self.sink
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -307,7 +308,7 @@ impl PlaneCallLog {
     /// attached — or with a backend that implements none of these methods, which is the same thing
     /// from here — the log keeps chain positions in RAM and nothing survives a restart. That is the
     /// documented `store: memory` behaviour.
-    pub(crate) fn set_sink(&self, store: Arc<dyn Store>) {
+    pub(crate) fn set_sink(&self, store: Arc<dyn PlaneStore>) {
         *self.sink.lock().unwrap_or_else(|e| e.into_inner()) = Some(store);
     }
 
@@ -317,7 +318,7 @@ impl PlaneCallLog {
     /// This is the ONLY place durability is learned. A write's `Ok(())` proves nothing (the trait
     /// default accepts and keeps nothing), so the engine finds out what its backend actually kept by
     /// reading it back.
-    pub(crate) fn restore_from_store(&self, store: &dyn Store) -> StoreResult<Restored> {
+    pub(crate) fn restore_from_store(&self, store: &dyn PlaneStore) -> StoreResult<Restored> {
         let principals = store.list_mcp_call_principals()?;
         let mut out = Restored::default();
         let mut chains = self.chains();
@@ -419,7 +420,7 @@ impl PlaneCallLog {
     #[allow(dead_code)]
     pub(crate) fn read_back(
         &self,
-        store: &dyn Store,
+        store: &dyn PlaneStore,
         principal: &str,
     ) -> StoreResult<Vec<McpCallRecord>> {
         store.list_mcp_calls(principal)
@@ -437,7 +438,7 @@ impl PlaneCallLog {
     #[allow(dead_code)]
     pub(crate) fn verify_principal_chain(
         &self,
-        store: &dyn Store,
+        store: &dyn PlaneStore,
         principal: &str,
     ) -> StoreResult<Result<usize, ChainBreak>> {
         let records = store.list_mcp_calls(principal)?;
