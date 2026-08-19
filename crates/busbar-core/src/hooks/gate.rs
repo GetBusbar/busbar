@@ -255,7 +255,7 @@ fn project<'a>(
             messages: items
                 .iter()
                 .filter(|i| i.slot() != Slot::System)
-                .map(|i| (Cow::Borrowed(role_label(i.role())), i.screenable_text()))
+                .map(|i| (Cow::Borrowed(i.author()), i.screenable_text()))
                 .collect(),
         }),
         identity: send_user.then(|| crate::hooks::CallerIdentity {
@@ -290,18 +290,6 @@ fn join_system<'a>(items: &'a [ContentItem<'a>]) -> Option<Cow<'a, str>> {
         out.push_str(&p);
     }
     (!out.is_empty()).then_some(Cow::Owned(out))
-}
-
-/// The CANONICAL role vocabulary on the hook wire. One mapping, here, because the hook contract
-/// promises a normalized IR and a dialect's own spelling (`model`, `tool_use`) reaching a hook is
-/// how a rewrite hook echoed back a role its target protocol then mangled.
-fn role_label(role: crate::ir::IrRole) -> &'static str {
-    match role {
-        crate::ir::IrRole::System => "system",
-        crate::ir::IrRole::User => "user",
-        crate::ir::IrRole::Assistant => "assistant",
-        crate::ir::IrRole::Tool => "tool",
-    }
 }
 
 #[cfg(test)]

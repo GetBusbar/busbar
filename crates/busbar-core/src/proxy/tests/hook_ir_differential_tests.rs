@@ -46,7 +46,7 @@
 
 use super::*;
 use crate::ir::facts::IrFacts;
-use crate::ir::{IrRequest, IrRole};
+use crate::ir::IrRequest;
 use crate::proto::{known_protocols, ProtocolRegistry};
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -91,15 +91,6 @@ fn ir_view(f: &Fixture) -> Result<View, String> {
     Ok(project_ir(&ir))
 }
 
-fn role_name(r: IrRole) -> &'static str {
-    match r {
-        IrRole::System => "system",
-        IrRole::User => "user",
-        IrRole::Assistant => "assistant",
-        IrRole::Tool => "tool",
-    }
-}
-
 /// Reduce the successor projection to the same [`View`] the LHS reduces to.
 ///
 /// This is the ONLY place the differential still does any flattening of its own, and it is
@@ -122,7 +113,7 @@ fn project_ir(ir: &IrRequest) -> View {
                 while turns.len() <= i {
                     turns.push((String::new(), Vec::new()));
                 }
-                turns[i].0 = role_name(item.role()).to_string();
+                turns[i].0 = item.author().to_string();
                 turns[i].1.push(piece);
             }
         }

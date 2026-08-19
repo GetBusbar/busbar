@@ -152,7 +152,7 @@ impl Slot {
 pub enum ContentItem<'a> {
     /// Real, screenable text. Borrowed from the IR wherever the IR owns a `String`.
     Text {
-        role: IrRole,
+        author: &'static str,
         slot: Slot,
         text: Cow<'a, str>,
     },
@@ -160,14 +160,14 @@ pub enum ContentItem<'a> {
     /// the `Value` itself rather than pre-serialized, so a consumer that wants to walk it can, and
     /// one that wants text calls [`ContentItem::screenable_text`].
     Data {
-        role: IrRole,
+        author: &'static str,
         slot: Slot,
         label: &'a str,
         value: &'a Value,
     },
     /// Content busbar cannot read. `marker` stands in for it; the bytes never leave the IR.
     Opaque {
-        role: IrRole,
+        author: &'static str,
         slot: Slot,
         label: &'static str,
         marker: &'static str,
@@ -175,12 +175,15 @@ pub enum ContentItem<'a> {
 }
 
 impl ContentItem<'_> {
-    /// Who authored this content.
-    pub fn role(&self) -> IrRole {
+    /// Who authored this content — an OPAQUE label the producing walk chose, never a core enum. The
+    /// LLM walk uses `"system"`/`"user"`/`"assistant"`/`"tool"` (the strings the hook wire has always
+    /// carried); a non-chat plane uses its own words. Core reads this as the hook-wire bucket label a
+    /// screening consumer is shown and **branches on nothing** — the label carries no protocol.
+    pub fn author(&self) -> &'static str {
         match self {
-            ContentItem::Text { role, .. }
-            | ContentItem::Data { role, .. }
-            | ContentItem::Opaque { role, .. } => *role,
+            ContentItem::Text { author, .. }
+            | ContentItem::Data { author, .. }
+            | ContentItem::Opaque { author, .. } => author,
         }
     }
 
@@ -369,14 +372,14 @@ impl IrFacts for IrRequest {
 /// [`IrBlock::is_opaque`] is the one place that knows all three shapes, and it is asked first.
 pub fn project(req: &IrRequest) -> Vec<ContentItem<'_>> {
     let mut out = Vec::new();
-    walk(&req.system, IrRole::System, None, Slot::System, &mut out);
+    walk(&req.system, author_of(IrRole::System), None, Slot::System, &mut out);
     for (i, m) in req.messages.iter().enumerate() {
         let before = out.len();
-        walk(&m.content, m.role, Some(i), Slot::Turn(i), &mut out);
+        walk(&m.content, author_of(m.role), Some(i), Slot::Turn(i), &mut out);
         if out.len() == before {
             // The empty-turn rule. See this function's doc comment.
             out.push(ContentItem::Text {
-                role: m.role,
+                author: author_of(m.role),
                 slot: Slot::Turn(i),
                 text: Cow::Borrowed(""),
             });
@@ -385,11 +388,24 @@ pub fn project(req: &IrRequest) -> Vec<ContentItem<'_>> {
     out
 }
 
+/// The LLM family's author label for a chat role — the exact strings the hook wire has always
+/// carried. This is the ONE place `IrRole` becomes the neutral opaque label, and it lives with the
+/// walk (which moves to `busbar-llm` with the concrete IR), NOT with the neutral gate that reads the
+/// label. Pinned byte-identical by `role_label_is_byte_identical_to_the_seam` in the ir role tests.
+fn author_of(role: IrRole) -> &'static str {
+    match role {
+        IrRole::System => "system",
+        IrRole::User => "user",
+        IrRole::Assistant => "assistant",
+        IrRole::Tool => "tool",
+    }
+}
+
 /// One level of the block walk. `turn` is `None` for the system slot, where a tool call or tool
 /// result has no turn to be attributed to and keeps the slot it was reached through.
 fn walk<'a>(
     blocks: &'a [IrBlock],
-    role: IrRole,
+    author: &'static str,
     turn: Option<usize>,
     slot: Slot,
     out: &mut Vec<ContentItem<'a>>,
@@ -397,14 +413,14 @@ fn walk<'a>(
     for b in blocks {
         match b {
             IrBlock::Text { text, .. } => out.push(ContentItem::Text {
-                role,
+                author,
                 slot,
                 text: Cow::Borrowed(text.as_str()),
             }),
             IrBlock::Thinking { text, .. } => {
                 if b.is_opaque() {
                     out.push(ContentItem::Opaque {
-                        role,
+                        author,
                         slot,
                         label: LABEL_REASONING,
                         marker: OPAQUE_CONTENT_MARKER,
@@ -414,21 +430,21 @@ fn walk<'a>(
                     // a client replaying a multi-turn body sends this text to the provider, so a
                     // gate that cannot see it is a gate with a hole in it.
                     out.push(ContentItem::Text {
-                        role,
+                        author,
                         slot,
                         text: Cow::Borrowed(text.as_str()),
                     });
                 }
             }
             IrBlock::ToolUse { name, input, .. } => out.push(ContentItem::Data {
-                role,
+                author,
                 slot: turn.map_or(slot, Slot::ToolArgs),
                 label: name.as_str(),
                 value: input,
             }),
             IrBlock::ToolResult { content, .. } => walk(
                 content,
-                role,
+                author,
                 turn,
                 turn.map_or(slot, Slot::ToolResult),
                 out,
@@ -442,7 +458,7 @@ fn walk<'a>(
             // the module header records for image provenance.
             IrBlock::Image { .. } | IrBlock::Media { .. } => {}
             IrBlock::Json(v) => out.push(ContentItem::Data {
-                role,
+                author,
                 slot,
                 label: LABEL_JSON,
                 value: v,

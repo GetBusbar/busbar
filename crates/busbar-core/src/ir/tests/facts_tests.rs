@@ -35,22 +35,22 @@ fn req(system: Vec<IrBlock>, messages: Vec<IrMessage>) -> IrRequest {
 /// The flat rendering a consumer builds: system text, then one `(role, joined text)` per turn.
 /// Written here ONCE, the way [`project`]'s doc comment says to build it, so these tests exercise
 /// the documented grouping rather than a private one.
-fn flatten(r: &IrRequest) -> (Option<String>, Vec<(IrRole, String)>) {
+fn flatten(r: &IrRequest) -> (Option<String>, Vec<(&'static str, String)>) {
     let items = project(r);
     let sys: Vec<String> = items
         .iter()
         .filter(|i| i.slot() == Slot::System)
         .map(|i| i.screenable_text().into_owned())
         .collect();
-    let mut turns: Vec<(IrRole, Vec<String>)> = Vec::new();
+    let mut turns: Vec<(&'static str, Vec<String>)> = Vec::new();
     for i in &items {
         let Some(idx) = i.slot().turn_index() else {
             continue;
         };
         while turns.len() <= idx {
-            turns.push((IrRole::User, Vec::new()));
+            turns.push(("user", Vec::new()));
         }
-        turns[idx].0 = i.role();
+        turns[idx].0 = i.author();
         turns[idx].1.push(i.screenable_text().into_owned());
     }
     (
@@ -126,8 +126,8 @@ fn every_opaque_reasoning_shape_projects_the_marker_and_never_its_payload() {
             "{name}: the marker stands in for the payload"
         );
         assert_eq!(
-            items[0].role(),
-            IrRole::Assistant,
+            items[0].author(),
+            "assistant",
             "{name}: an opaque blob still has an author, and a policy asks who wrote it first"
         );
         let rendered = flatten(&r).1[0].1.clone();
@@ -160,10 +160,7 @@ fn readable_reasoning_is_projected_as_text() {
     );
     assert_eq!(
         flatten(&r).1,
-        vec![(
-            IrRole::Assistant,
-            "CHAIN OF THOUGHT\nthe answer".to_string()
-        )],
+        vec![("assistant", "CHAIN OF THOUGHT\nthe answer".to_string())],
         "block order is preserved and readable reasoning joins the turn's text"
     );
 }
@@ -194,9 +191,9 @@ fn a_turn_with_no_projectable_content_still_appears() {
     assert_eq!(
         flatten(&r).1,
         vec![
-            (IrRole::User, "before".to_string()),
-            (IrRole::User, String::new()),
-            (IrRole::Assistant, "after".to_string()),
+            ("user", "before".to_string()),
+            ("user", String::new()),
+            ("assistant", "after".to_string()),
         ],
         "the media-only turn keeps its entry, with its role, and reads as empty rather than \
          vanishing — a hook told there are two turns where the provider sees three has been told \
@@ -257,8 +254,8 @@ fn tool_arguments_and_results_carry_the_turn_they_belong_to() {
     );
     assert_eq!(items[2].screenable_text(), "TOOL RESULT PAYLOAD");
     assert_eq!(
-        items[2].role(),
-        IrRole::Tool,
+        items[2].author(),
+        "tool",
         "the result keeps the authoring role of the turn that carried it"
     );
 }
@@ -275,7 +272,7 @@ fn the_system_prompt_is_its_own_slot_and_never_a_turn() {
     );
     let (system, turns) = flatten(&r);
     assert_eq!(system.as_deref(), Some("one\ntwo"));
-    assert_eq!(turns, vec![(IrRole::User, "hi".to_string())]);
+    assert_eq!(turns, vec![("user", "hi".to_string())]);
     assert_eq!(
         r.shape().turn_count,
         1,
@@ -436,5 +433,5 @@ fn cache_breakpoints_do_not_change_what_is_projected() {
             }],
         )],
     );
-    assert_eq!(flatten(&r).1, vec![(IrRole::User, "hello".to_string())]);
+    assert_eq!(flatten(&r).1, vec![("user", "hello".to_string())]);
 }

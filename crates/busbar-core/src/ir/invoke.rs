@@ -143,7 +143,8 @@ impl crate::ir::facts::IrFacts for InvokeReq {
 
     fn content(&self) -> Vec<crate::ir::facts::ContentItem<'_>> {
         vec![crate::ir::facts::ContentItem::Data {
-            role: crate::ir::IrRole::User,
+            // The invocation family's author label — its own word for "the caller", not an LLM role.
+            author: "user",
             slot: crate::ir::facts::Slot::ToolArgs(0),
             label: self.tool.as_str(),
             value: &self.arguments,
