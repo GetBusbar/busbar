@@ -726,6 +726,10 @@ impl App {
     /// registered for this key, OR the plane is registered but this config generation did not
     /// configure it (see `App::plane_slots`) — the same absence a typed field's `None`/no-entry
     /// already means, reached through the key instead of the field name.
+    // The lib has no reader through the slot yet — core still reads the typed fields. The readers
+    // move to this accessor in a later seam step (when a plane's type leaves core and can no longer
+    // be named); until then it is exercised only by tests. Allow, don't delete: this IS the seam.
+    #[allow(dead_code)]
     pub(crate) fn plane_slot(&self, key: &str) -> Option<&Arc<dyn std::any::Any + Send + Sync>> {
         self.plane_slots.get(key)
     }
