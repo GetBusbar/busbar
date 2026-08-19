@@ -94,6 +94,27 @@ pub struct PlaneDecl {
     /// `Plane::wire_formats` and `Plane::has_superset_ir` stay DERIVED from this list's length, so
     /// the superset-IR rule remains a rule rather than a fact about today's planes.
     pub(crate) wire_format_names: fn() -> &'static [&'static str],
+
+    /// THE PATHS THIS PLANE ANSWERS ON, and the wire format each is spoken in, computed from the
+    /// plane's own RUNTIME OBJECT (its app slot, type-erased as `&dyn Any`). Every `(path, wire)`
+    /// this returns is mounted into [`super::PlaneDispatch`] and — since [`super::PlaneDispatch::admission_for`]
+    /// resolves the RFC 8707 audience THROUGH the mount table — becomes a path where a token's `aud`
+    /// is checked. A plane that answers on a path it does NOT return here has left a confused-deputy
+    /// hole: the door where any resource's token is admitted. So the invariant is stated as a
+    /// ratchet (`plane/tests`, R1): every path a plane answers on is a path it claims here. The A2A
+    /// plane returns TWO claims — `/a2a` and the gRPC service `/lf.a2a.v1.A2AService`, whose path a
+    /// gRPC client derives from the `.proto` and cannot be pointed elsewhere.
+    ///
+    /// Returns the empty vec when the plane mounts nothing (a delegation-only A2A deployment, or a
+    /// plane the operator did not configure — its slot is then absent and this is not called).
+    pub(crate) claims: fn(&dyn std::any::Any) -> Vec<(String, &'static str)>,
+
+    /// THE ADMISSION FACTS this plane binds — the audience a token presented at its door must carry,
+    /// and where a refused caller is sent to get one — computed from the same runtime object. `None`
+    /// when the plane has no RECEIVING side to admit anyone to (A2A without a `public_url`); a plane
+    /// that [`Self::claims`] a path but returns `None` here is refused at boot by
+    /// [`build_dispatch`] rather than left serving an unauthenticated resource (ratchet R2).
+    pub(crate) admission: fn(&dyn std::any::Any) -> Option<super::PlaneAdmission>,
 }
 
 /// THE BUILT-INS — one line per plane, and every line is DATA.
@@ -185,6 +206,57 @@ pub(crate) fn plane_decls() -> &'static [&'static PlaneDecl] {
 #[allow(dead_code)] // the by-key resolver a registered plane's admin/router surface will read
 pub(crate) fn plane_decl_for(key: &str) -> Option<&'static PlaneDecl> {
     plane_decls().iter().copied().find(|d| d.key == key)
+}
+
+/// FOLD THE DISPATCH TABLE from the registered plane declarations and the per-plane runtime objects
+/// (`slots`, each type-erased as `&dyn Any` and keyed by plane key). For every decl with a slot this
+/// reads the plane's declared claims and admission from its OWN object — the seam that lets a plane
+/// crate contribute its door without core naming its type — mounts each claim, and binds the
+/// admission.
+///
+/// Split from `appbuild` and taking its inputs by argument so the admission ratchets are drivable
+/// without booting an `App`, exactly as [`merged_boot_plane_decls`] is split from [`plane_decls`].
+///
+/// # The two security ratchets it enforces
+/// - **R1 (every claimed path is audience-checked):** each `(path, wire)` a plane declares is
+///   mounted, so [`super::PlaneDispatch::admission_for`] resolves an audience on it. A path a plane
+///   answers on but omits here is unreachable through this table's audience check — which is why the
+///   claim set, not the router, is the thing a test pins.
+/// - **R2 (mounted ⇒ admitted, or boot refuses):** a plane that claims a path but returns no
+///   admission would serve an audience-less — hence unauthenticated — resource. That is refused here
+///   with a named error rather than mounted, so a future plane cannot lower its own bar to nothing by
+///   omitting an admission.
+pub(crate) fn build_dispatch(
+    decls: &[&'static PlaneDecl],
+    slots: &std::collections::BTreeMap<&'static str, &dyn std::any::Any>,
+) -> Result<super::PlaneDispatch, String> {
+    let mut dispatch = super::PlaneDispatch::default();
+    for decl in decls {
+        // A plane the operator did not configure has no runtime object, mounts nothing, and binds
+        // no audience — skipped, exactly as the old `if let Some(..)` guards skipped it.
+        let Some(slot) = slots.get(decl.key).copied() else {
+            continue;
+        };
+        let claims = (decl.claims)(slot);
+        let admission = (decl.admission)(slot);
+        // R2: a claimed path with no admission is a door with no lock. Refuse the boot.
+        if !claims.is_empty() && admission.is_none() {
+            return Err(format!(
+                "plane `{}` mounts {} path(s) but bound no admission; a mounted plane must bind an \
+                 RFC 8707 audience (see PlaneDispatch::admission_for) or claim no path — serving a \
+                 claimed path with no audience admits a token minted for any other resource",
+                decl.key,
+                claims.len()
+            ));
+        }
+        for (path, wire) in claims {
+            dispatch = dispatch.mount_key(decl.key, &path, wire);
+        }
+        if let Some(admission) = admission {
+            dispatch = dispatch.admit_key(decl.key, admission);
+        }
+    }
+    Ok(dispatch)
 }
 
 impl Plane {

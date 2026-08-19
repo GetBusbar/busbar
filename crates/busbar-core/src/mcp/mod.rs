@@ -127,6 +127,22 @@ pub(crate) const PLANE_DECL: crate::plane::registry::PlaneDecl =
         subject_noun: "MCP server",
         audit_kind: "mcp_server",
         wire_format_names: || &[crate::plane::WIRE_JSONRPC],
+        // THE MCP DOOR, from the validated resource. One claim — the ingress mount — spoken in
+        // JSON-RPC, and the audience is that resource's canonical URI. Whenever `mcp:` is configured
+        // the plane both mounts and admits, so the ratchet's "mounted ⇒ admitted" holds by
+        // construction here; the boot-refuse in `build_dispatch` guards the planes that might not.
+        claims: |slot| {
+            let r = slot
+                .downcast_ref::<McpResource>()
+                .expect("the mcp plane's dispatch slot is an McpResource");
+            vec![(r.mount_path().to_string(), crate::plane::WIRE_JSONRPC)]
+        },
+        admission: |slot| {
+            let r = slot
+                .downcast_ref::<McpResource>()
+                .expect("the mcp plane's dispatch slot is an McpResource");
+            Some(r.admission())
+        },
     };
 
 /// THE MCP PLANE'S ADMIN PROJECTION, and the plane's half of the shared trust verb surface —

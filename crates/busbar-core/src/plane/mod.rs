@@ -271,12 +271,26 @@ impl Plane {
 ///
 /// The FIRST claim is the plane's CANONICAL mount ([`Self::mount_of`]) — the one an audience is
 /// derived from and the one a handler means when it asks for "its own path".
+///
+/// ## Why the table is keyed by plane KEY rather than by a typed field per plane
+///
+/// It used to be four fields — `mcp`, `a2a`, and an admission each — and that was the same closed
+/// set the `Plane` enum is: a plane not named here could not be dispatched, no matter who linked
+/// what. The claims and admission a plane contributes are now DATA, folded in from each plane's
+/// [`registry::PlaneDecl`] against that plane's own runtime object, so a plane extracted to a crate
+/// registers its door the same way it registers its vocabulary. The map is keyed by the plane's
+/// [`Plane::key`] — the one stable string every other plane surface is already keyed by — so a
+/// registered plane with no enum variant still has exactly one row here and exactly one audience.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PlaneDispatch {
-    mcp: Vec<Claim>,
-    a2a: Vec<Claim>,
-    mcp_admission: Option<PlaneAdmission>,
-    a2a_admission: Option<PlaneAdmission>,
+    /// The paths each plane answers on, keyed by plane key, canonical claim first. A key is present
+    /// only once the plane has MOUNTED at least one path; an absent key is an unmounted plane, which
+    /// [`Self::claims_of`] reads as the empty slice.
+    claims: std::collections::BTreeMap<&'static str, Vec<Claim>>,
+    /// The admission facts each mounted plane bound, keyed by plane key. Resolved THROUGH
+    /// [`Self::claims`] by [`Self::admission_for`], so an admission without a matching claim is inert
+    /// — it never lends its audience to a path the plane does not answer on.
+    admissions: std::collections::BTreeMap<&'static str, PlaneAdmission>,
 }
 
 /// ONE PATH A PLANE ANSWERS ON, and the WIRE FORMAT it is spoken in there.
@@ -342,12 +356,21 @@ impl PlaneDispatch {
     /// busbar key carries no audience at all, and the verifier rejects any token that does
     /// (`governance::signing`, the 1.6.0 plane boundary). Handing the residual an audience here
     /// would quietly make every unclaimed path an OAuth resource server.
-    pub(crate) fn admit(mut self, plane: Plane, admission: PlaneAdmission) -> Self {
-        match plane {
-            Plane::Llm => {}
-            Plane::Mcp => self.mcp_admission = Some(admission),
-            Plane::A2a => self.a2a_admission = Some(admission),
+    pub(crate) fn admit(self, plane: Plane, admission: PlaneAdmission) -> Self {
+        // The residual takes none — see the doc: an audience on an unmounted plane is inert, and one
+        // on the LLM plane would quietly make every unclaimed path an OAuth resource server.
+        if plane == Plane::Llm {
+            return self;
         }
+        self.admit_key(plane.key(), admission)
+    }
+
+    /// [`Self::admit`], keyed by plane key rather than by [`Plane`]. The seam the registry-driven
+    /// [`registry::build_dispatch`] folds an admission in through, so a plane with no enum variant
+    /// binds its audience the same way a built-in does. The residual guard lives on [`Self::admit`]:
+    /// a decl that returns `None` for its admission simply never reaches here.
+    pub(crate) fn admit_key(mut self, key: &'static str, admission: PlaneAdmission) -> Self {
+        self.admissions.insert(key, admission);
         self
     }
 
@@ -359,13 +382,9 @@ impl PlaneDispatch {
     /// deliberate in both directions — a sibling path must neither inherit the plane's grants nor
     /// its refusals.
     pub(crate) fn admission_for(&self, path: &str) -> Option<&PlaneAdmission> {
-        match self.mounted_plane_of(path)? {
-            // Unreachable by construction: the residual is never mounted, so it never claims a
-            // path. Written as an arm rather than a catch-all so a fourth plane must decide.
-            Plane::Llm => None,
-            Plane::Mcp => self.mcp_admission.as_ref(),
-            Plane::A2a => self.a2a_admission.as_ref(),
-        }
+        // Resolve the plane by MOUNT first — the residual is never mounted, so it never claims a
+        // path and never reaches the admission map — then read that plane's bound audience by key.
+        self.admissions.get(self.mounted_plane_of(path)?.key())
     }
     /// Mount `plane` at `path`. Mounting [`Plane::Llm`] is a no-op: it is the residual.
     ///
@@ -379,16 +398,25 @@ impl PlaneDispatch {
     /// canonical, so the order of these calls decides which path the plane calls its own. A repeated
     /// path is not claimed twice: mounting is idempotent, so a config apply that re-runs the same
     /// sequence cannot grow the table.
-    pub(crate) fn mount(mut self, plane: Plane, path: &str, wire: &'static str) -> Self {
+    pub(crate) fn mount(self, plane: Plane, path: &str, wire: &'static str) -> Self {
+        // Mounting the residual is a no-op: it IS the catch-all, so a second door to it is a
+        // precedence question with no good answer.
+        if plane == Plane::Llm {
+            return self;
+        }
+        self.mount_key(plane.key(), path, wire)
+    }
+
+    /// [`Self::mount`], keyed by plane key rather than by [`Plane`]. The seam
+    /// [`registry::build_dispatch`] folds each plane's declared claims in through, so a registered
+    /// plane claims a path the same way a built-in does. The residual guard lives on [`Self::mount`];
+    /// a plane's decl claims no path for the residual, so it never reaches here for the LLM plane.
+    pub(crate) fn mount_key(mut self, key: &'static str, path: &str, wire: &'static str) -> Self {
         let normalised = normalise_mount(path);
         if normalised.is_empty() {
             return self;
         }
-        let claims = match plane {
-            Plane::Llm => return self,
-            Plane::Mcp => &mut self.mcp,
-            Plane::A2a => &mut self.a2a,
-        };
+        let claims = self.claims.entry(key).or_default();
         if !claims.iter().any(|c| c.path == normalised) {
             claims.push(Claim {
                 path: normalised,
@@ -430,11 +458,19 @@ impl PlaneDispatch {
     /// matters is "which plane claims this path" ([`Self::mounted_plane_of`]) and "what is this
     /// plane's own path" ([`Self::mount_of`]), and handing out the list would invite a third reading.
     fn claims_of(&self, plane: Plane) -> &[Claim] {
-        match plane {
-            Plane::Llm => &[],
-            Plane::Mcp => &self.mcp,
-            Plane::A2a => &self.a2a,
-        }
+        // The residual is never mounted, so its key is never present and this is the empty slice —
+        // the same answer the old per-plane `Plane::Llm => &[]` arm gave, now by construction.
+        self.claims.get(plane.key()).map_or(&[], Vec::as_slice)
+    }
+
+    /// Every plane key that has MOUNTED at least one path in this table, in key order. Read by the
+    /// admission ratchets (`plane/tests`): R3 folds the collision check over the planes actually
+    /// DISPATCHED here rather than over the declared list, because a scope- or audit-kind collision
+    /// only admits another plane's traffic once both colliding planes have a door. Unlike
+    /// [`Self::mounted_plane_of`] this names a plane by its KEY, so it reports a registered plane
+    /// that has no [`Plane`] variant too.
+    pub(crate) fn mounted_keys(&self) -> Vec<&'static str> {
+        self.claims.keys().copied().collect()
     }
 
     /// THE RESOLVER: which plane `path` belongs to, and which WIRE DIALECT it is spoken in.

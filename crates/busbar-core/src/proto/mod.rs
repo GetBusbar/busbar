@@ -2033,6 +2033,11 @@ pub(crate) const PLANE_DECL: crate::plane::registry::PlaneDecl =
         subject_noun: "pool",
         audit_kind: "pool",
         wire_format_names: known_protocols,
+        // THE RESIDUAL MOUNTS NOTHING. It is the catch-all every unclaimed path falls through to, so
+        // it claims no path and binds no audience: a plain data-plane busbar key carries none, and an
+        // audience on the residual would make every unclaimed path an OAuth resource server.
+        claims: |_| Vec::new(),
+        admission: |_| None,
     };
 
 /// String-keyed registry mapping a provider's protocol name to a shared `Protocol` INSTANCE, built

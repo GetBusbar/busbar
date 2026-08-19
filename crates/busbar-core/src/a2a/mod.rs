@@ -83,6 +83,37 @@ pub(crate) const PLANE_DECL: crate::plane::registry::PlaneDecl =
                 crate::plane::WIRE_GRPC,
             ]
         },
+        // THE A2A DOOR — TWO claims, and only when the plane has a RECEIVING side. `/a2a` (canonical,
+        // JSON-RPC, the dialect a door refusal is shaped in) and the gRPC service
+        // `/lf.a2a.v1.A2AService`, whose path the vendored `.proto` dictates and a gRPC client cannot
+        // be pointed off of — so it is claimed here or it is a path where no token's `aud` is
+        // checked. Both claims are gated on `admission().is_some()`: a delegation-only deployment
+        // (no `public_url`) fronts nothing, mounts nothing, and binds no audience.
+        claims: |slot| {
+            let p = slot
+                .downcast_ref::<crate::a2a::plane::A2aPlane>()
+                .expect("the a2a plane's dispatch slot is an A2aPlane");
+            if p.admission().is_some() {
+                vec![
+                    (
+                        crate::a2a::serve::MOUNT_PATH.to_string(),
+                        crate::plane::WIRE_JSONRPC,
+                    ),
+                    (
+                        crate::a2a::serve::GRPC_MOUNT_PATH.to_string(),
+                        crate::plane::WIRE_GRPC,
+                    ),
+                ]
+            } else {
+                Vec::new()
+            }
+        },
+        admission: |slot| {
+            let p = slot
+                .downcast_ref::<crate::a2a::plane::A2aPlane>()
+                .expect("the a2a plane's dispatch slot is an A2aPlane");
+            p.admission()
+        },
     };
 
 pub(crate) mod anomaly;
