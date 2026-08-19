@@ -103,8 +103,7 @@ fn inventory(id: &AsIdentity) -> Vec<String> {
 fn served_paths(app: &crate::state::App) -> std::collections::BTreeSet<String> {
     crate::base_data_router(
         &app.plugin_routes,
-        app.mcp.as_deref(),
-        app.a2a.as_ref(),
+        &app.plane_slots,
         app.oauth_as.as_ref(),
     )
     .1

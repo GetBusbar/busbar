@@ -520,8 +520,7 @@ async fn without_the_config_block_the_plane_does_not_exist() {
     let app = TestApp::new().build();
     let core = crate::base_data_router(
         &app.plugin_routes,
-        app.mcp.as_deref(),
-        app.a2a.as_ref(),
+        &app.plane_slots,
         app.oauth_as.as_ref(),
     )
     .1;

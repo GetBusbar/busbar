@@ -31,6 +31,9 @@ static WIDGET_PLANE: PlaneDecl = PlaneDecl {
     claims: |_| Vec::new(),
     admission: |_| None,
     build: |_| None,
+    mount: None,
+    admin_routes: None,
+    openapi: None,
 };
 
 fn installed() -> Vec<&'static PlaneDecl> {
@@ -124,6 +127,9 @@ fn a_same_key_registration_is_skipped_and_the_first_copy_wins() {
         claims: |_| Vec::new(),
         admission: |_| None,
         build: |_| None,
+        mount: None,
+        admin_routes: None,
+        openapi: None,
     };
 
     let folded = merged_boot_plane_decls(&[&A2A_FROM_THE_CRATE], builtin_plane_decls());
@@ -378,6 +384,9 @@ fn r2_a_mounted_plane_with_no_admission_refuses_boot() {
         claims: |_| vec![("/widget".to_string(), "widgetrpc")],
         admission: |_| None,
         build: |_| None,
+        mount: None,
+        admin_routes: None,
+        openapi: None,
     };
     let unit = ();
     let mut slots: BTreeMap<&'static str, &dyn Any> = BTreeMap::new();
@@ -405,6 +414,9 @@ fn r2_a_mounted_plane_with_no_admission_refuses_boot() {
         claims: |_| Vec::new(),
         admission: |_| None,
         build: |_| None,
+        mount: None,
+        admin_routes: None,
+        openapi: None,
     };
     let dispatch = build_dispatch(&[&MOUNTS_NOTHING], &slots)
         .expect("a plane that claims no path needs no admission");
@@ -533,4 +545,32 @@ fn a_delegation_only_a2a_plane_mounts_nothing() {
         "a delegation-only deployment claims no path"
     );
     assert!(dispatch.admission_for("/a2a").is_none());
+}
+
+/// THE OpenAPI NON-VACUITY FLOOR. A silently-empty OpenAPI contribution reads to the drift guard as
+/// "this plane documents nothing", which passes vacuously — so a mounted admin verb could ship with
+/// no documented path and nothing would notice. This pins the floor: every plane that contributes
+/// admin verbs (`admin_routes: Some`) MUST also contribute at least one OpenAPI path, and both come
+/// from the SAME decl the router mounts from, so the document cannot omit a verb the surface serves.
+///
+/// Watched RED with a stubbed empty contributor (a decl whose `admin_routes` is `Some` but whose
+/// `openapi` returns an empty object): the floor fires. The real MCP and A2A decls pass it.
+#[test]
+fn a_plane_with_admin_verbs_documents_at_least_one_openapi_path() {
+    for decl in builtin_plane_decls() {
+        if decl.admin_routes.is_none() {
+            continue;
+        }
+        let openapi = decl
+            .openapi
+            .unwrap_or_else(|| panic!("plane `{}` contributes admin verbs but no OpenAPI fn", decl.key));
+        let doc = openapi();
+        let count = doc.as_object().map(|o| o.len()).unwrap_or(0);
+        assert!(
+            count > 0,
+            "plane `{}` contributes admin verbs but documents zero OpenAPI paths — a mounted verb \
+             would ship undocumented, and the drift guard passes vacuously over an empty fragment",
+            decl.key
+        );
+    }
 }
