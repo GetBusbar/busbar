@@ -13,8 +13,8 @@
 //!   might be matching nothing at all.
 
 use super::*;
-use crate::mcp::askstate::SpentAskStates;
 use crate::mcp::config::{AskEntryCfg, AskRoundCfg};
+use crate::plane::approvals::PlaneApprovals;
 
 const KEY: [u8; 32] = [3u8; 32];
 const NOW: u64 = 1_700_000_000;
@@ -82,7 +82,7 @@ fn decide_with(rounds: &[AskRoundCfg], caps: &serde_json::Value, retry: Retry<'_
         DIGEST,
         Approvals {
             sealer: Some(&sealer()),
-            spent: &SpentAskStates::new(),
+            spent: &PlaneApprovals::new(),
         },
     )
 }
@@ -279,13 +279,13 @@ fn one_callers_state_is_not_redeemable_by_another() {
         DIGEST,
         Approvals {
             sealer: Some(&sealer()),
-            spent: &SpentAskStates::new(),
+            spent: &PlaneApprovals::new(),
         },
     );
     assert!(matches!(
         got,
         AskDecision::Refuse(Refusal::StateRejected(
-            crate::mcp::askstate::Rejected::WrongPrincipal
+            crate::plane::approvals::Rejected::WrongPrincipal
         ))
     ));
 }
@@ -368,7 +368,7 @@ fn the_round_cap_is_hard_and_cannot_be_reset_by_replaying_an_earlier_state() {
             DIGEST,
             Approvals {
                 sealer: Some(&sealer()),
-                spent: &SpentAskStates::new(),
+                spent: &PlaneApprovals::new(),
             },
         )
         else {
@@ -391,7 +391,7 @@ fn the_round_cap_is_hard_and_cannot_be_reset_by_replaying_an_earlier_state() {
             DIGEST,
             Approvals {
                 sealer: Some(&sealer()),
-                spent: &SpentAskStates::new(),
+                spent: &PlaneApprovals::new(),
             },
         );
         assert!(
@@ -414,7 +414,7 @@ fn a_cap_of_zero_never_asks() {
         DIGEST,
         Approvals {
             sealer: Some(&sealer()),
-            spent: &SpentAskStates::new(),
+            spent: &PlaneApprovals::new(),
         },
     );
     assert!(matches!(
@@ -481,7 +481,7 @@ fn a_deployment_with_no_signing_key_refuses_rather_than_asking_with_unprotected_
         DIGEST,
         Approvals {
             sealer: None,
-            spent: &SpentAskStates::new(),
+            spent: &PlaneApprovals::new(),
         },
     );
     assert!(matches!(got, AskDecision::Refuse(Refusal::NoSealer { .. })));

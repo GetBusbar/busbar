@@ -46,7 +46,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use crate::audit::ChainBreak;
 
 use super::provenance::{self, EventInput, TaskChain};
-use super::task::{Task, TaskError, TaskState};
+use crate::a2a::task::{Task, TaskError, TaskState};
 use busbar_api::{Store, StoreError, StoreResult};
 
 /// One task plus its provenance chain position. The events themselves are NOT held in RAM — the
@@ -467,8 +467,8 @@ impl TaskRegistry {
     /// Register (or clear) this task's push-notification callback.
     ///
     /// THE FULL SSRF DECISION IS STILL MADE ELSEWHERE — twice, and both are load-bearing:
-    /// `ingress::invoke` runs [`super::pushnotify::validate`] against a live resolution before the
-    /// caller's registration is accepted at all, and [`super::pushdeliver`] runs it AGAIN against a
+    /// `ingress::invoke` runs [`crate::a2a::pushnotify::validate`] against a live resolution before the
+    /// caller's registration is accepted at all, and [`crate::a2a::pushdeliver`] runs it AGAIN against a
     /// fresh resolution before every single delivery, because a durable row outlives the DNS answer
     /// that was checked when it was written.
     ///
@@ -491,7 +491,7 @@ impl TaskRegistry {
         now: u64,
     ) -> Result<Task, TaskStoreError> {
         let callback = match callback {
-            Some(url) => match super::pushnotify::structural_refusal(&url) {
+            Some(url) => match crate::a2a::pushnotify::structural_refusal(&url) {
                 Some(refusal) => {
                     tracing::error!(
                         task = %task_id,

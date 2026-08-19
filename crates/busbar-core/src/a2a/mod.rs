@@ -79,7 +79,6 @@ pub(crate) mod meter;
 pub(crate) mod originate;
 pub(crate) mod pin;
 pub(crate) mod plane;
-pub(crate) mod provenance;
 /// BUSBAR'S OWN CALLBACK, the one it registers with a BACKEND so the backend never learns the
 /// caller's. The substitution [`pushdeliver`] delivers the other half of.
 pub(crate) mod pushback;
@@ -109,7 +108,6 @@ pub(crate) mod serve;
 pub(crate) mod sign;
 pub(crate) mod spki;
 pub(crate) mod task;
-pub(crate) mod taskstore;
 pub(crate) mod transport;
 pub(crate) mod verbs;
 pub(crate) mod verify;

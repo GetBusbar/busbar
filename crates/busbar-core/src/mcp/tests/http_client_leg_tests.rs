@@ -215,7 +215,7 @@ async fn every_owed_method_reaches_the_upstream_with_the_mirrored_headers_this_r
     let caller = key_with_scopes("k-http-sweep", &[("mcp_server", SERVER)]);
     let principal = caller.id.clone();
     let auth = authorise(&app, Some(&caller)).expect("a caller granted the server is admitted");
-    let before = crate::mcp::calllog::CALLS.next_seq(&principal);
+    let before = crate::plane::calllog::CALLS.next_seq(&principal);
 
     let verbs = verbs_here();
     for (n, verb) in verbs.iter().enumerate() {
@@ -316,7 +316,7 @@ async fn every_owed_method_reaches_the_upstream_with_the_mirrored_headers_this_r
     // operator asking "what did this key cause busbar to send" would be answered with the tool calls
     // and silence about everything else.
     assert_eq!(
-        crate::mcp::calllog::CALLS.next_seq(&principal) - before,
+        crate::plane::calllog::CALLS.next_seq(&principal) - before,
         verbs.len() as u64,
         "every issued verb must leave exactly one per-call record"
     );
@@ -529,7 +529,7 @@ async fn an_upstream_error_is_recorded_as_dispatched_with_the_upstream_failed_re
     let _ = principal;
     // The record's own fields are asserted through the chain the dispatcher wrote to, which is the
     // caller's — `issue` attributes to `auth.caller.id`.
-    let seq = crate::mcp::calllog::CALLS.next_seq(&caller.id);
+    let seq = crate::plane::calllog::CALLS.next_seq(&caller.id);
     assert!(
         seq > 1,
         "the failed verb still left a record: a call that went out and broke is exactly the call an \

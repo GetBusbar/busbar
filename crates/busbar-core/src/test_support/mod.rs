@@ -1407,7 +1407,7 @@ impl TestApp {
             mcp_servers: std::sync::Arc::new(self.tool_defs.clone()),
             mcp_pool: std::sync::Arc::new(crate::mcp::client::pool::McpConnectionPool::new()),
             mcp_sightings: self.mcp_sightings.clone().unwrap_or_default(),
-            mcp_spent_approvals: Default::default(),
+            plane_approvals: Default::default(),
             mcp_roots_epochs: Default::default(),
             mcp_sampling_spend: Default::default(),
             mcp_demotions: Default::default(),
@@ -1473,7 +1473,7 @@ impl TestApp {
         // replay the recorded demotions into the sightings cache BEFORE the app is handed to a
         // caller, which is where boot does it relative to binding a listener.
         if let Some(durable) = mcp_durable_store {
-            app.mcp_spent_approvals.set_sink(durable.clone());
+            app.plane_approvals.set_sink(durable.clone());
             app.mcp_demotions.set_sink(durable);
             crate::mcp::demotion::hydrate(&app);
         }

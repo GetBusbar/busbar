@@ -297,7 +297,7 @@ pub(super) async fn refresh_listed_tasks(
     // THE ROWS THIS CALLER OWNS ON THIS AGENT, and the backend's name for each. Built BEFORE the
     // hop, because it is also the whitelist: an id that is not in here is an id the answer cannot
     // move.
-    let ours: HashMap<String, String> = super::taskstore::TASKS
+    let ours: HashMap<String, String> = crate::plane::taskstore::TASKS
         .list_scoped(principal)
         .into_iter()
         .filter(|t| t.agent_id == admitted.dispatch.agent_id && !t.state.is_terminal())
@@ -363,7 +363,7 @@ pub(super) async fn refresh_listed_tasks(
         // A refusal is the table doing its job — a backend re-reporting a state busbar already
         // holds, or one the table forbids — and is not an error to raise at a caller who asked for
         // a list.
-        match super::taskstore::TASKS.transition(busbar_id, state, now, busbar_id) {
+        match crate::plane::taskstore::TASKS.transition(busbar_id, state, now, busbar_id) {
             Ok(task) => notify_push(&seam, task),
             Err(e) => {
                 tracing::trace!(task = %busbar_id, error = %e, "a2a: a listed state was not recordable")

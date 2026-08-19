@@ -286,7 +286,7 @@ pub(crate) async fn push_notification(
             "a push notification is one task document",
         );
     }
-    let Some(task) = super::taskstore::TASKS.get_unscoped(&task_id) else {
+    let Some(task) = crate::plane::taskstore::TASKS.get_unscoped(&task_id) else {
         // The token verified and the row is gone — a task compacted out from under a backend that
         // is still reporting on it. `401` and not `404`, for the reason `task_of` gives one answer:
         // whether a task exists is not something this endpoint tells its caller.
@@ -311,7 +311,7 @@ pub(crate) async fn push_notification(
         // a retry, and `transition` would refuse a move to the state it is already in.
         task
     } else {
-        match super::taskstore::TASKS.transition(&task_id, reported, now, &task_id) {
+        match crate::plane::taskstore::TASKS.transition(&task_id, reported, now, &task_id) {
             Ok(t) => t,
             Err(e) => {
                 // REPORTED, NEVER 5xx. The commonest arrival here is a push about a task busbar

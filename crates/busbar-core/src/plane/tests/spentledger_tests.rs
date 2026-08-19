@@ -23,7 +23,7 @@
 //! ## Judged through the real decision, and through the real plugin
 //!
 //! Every case below drives `callerask::decide` — the gate itself, the one production call site's
-//! only decision function — rather than calling `SpentAskStates::spend`. A test against `spend`
+//! only decision function — rather than calling `PlaneApprovals::spend`. A test against `spend`
 //! would prove the ledger and say nothing about whether the gate consults it, which is exactly the
 //! shape of "a complete subsystem with no production caller" this tree has already paid for once.
 //!
@@ -34,9 +34,9 @@
 //! at all, which is precisely how ten store methods were dropped at this seam earlier in the same
 //! release.
 
-use crate::mcp::askstate::{Sealer, SpentAskStates};
 use crate::mcp::callerask::{decide, Approvals, AskDecision, Bind, Refusal, Retry};
 use crate::mcp::config::{AskEntryCfg, AskRoundCfg};
+use crate::plane::approvals::{PlaneApprovals, Sealer};
 use crate::test_support::plugin_store::{durable_cfg, open_plugin};
 
 /// THE FLEET-SHARED SECRET. One key for every node below — that is the premise, not a shortcut: it
@@ -85,8 +85,8 @@ fn all_capabilities() -> serde_json::Value {
 
 /// ONE NODE of a deployment: its own in-process ledger, and its own `dlopen` of the shared store
 /// when there is one. `None` is a node that configures no durable store.
-fn node(cfg: Option<&str>) -> SpentAskStates {
-    let spent = SpentAskStates::new();
+fn node(cfg: Option<&str>) -> PlaneApprovals {
+    let spent = PlaneApprovals::new();
     if let Some(cfg) = cfg {
         spent.set_sink(open_plugin(cfg));
     }
@@ -94,7 +94,7 @@ fn node(cfg: Option<&str>) -> SpentAskStates {
 }
 
 /// Ask this node for an approval — the opening round, which mints the sealed state.
-fn ask(spent: &SpentAskStates) -> String {
+fn ask(spent: &PlaneApprovals) -> String {
     let rounds = confirm_round();
     match decide(
         &rounds,
@@ -114,7 +114,7 @@ fn ask(spent: &SpentAskStates) -> String {
 }
 
 /// Present `state` to this node as the answered confirmation — the redemption.
-fn redeem(spent: &SpentAskStates, state: &str) -> AskDecision {
+fn redeem(spent: &PlaneApprovals, state: &str) -> AskDecision {
     let rounds = confirm_round();
     let responses = serde_json::json!({ "confirm": { "action": "accept", "content": {} } });
     decide(
@@ -141,7 +141,7 @@ fn refused_as_spent(d: &AskDecision) -> bool {
     matches!(
         d,
         AskDecision::Refuse(Refusal::StateRejected(
-            crate::mcp::askstate::Rejected::AlreadySpent
+            crate::plane::approvals::Rejected::AlreadySpent
         ))
     )
 }
@@ -286,9 +286,9 @@ fn two_nodes_sharing_no_store_each_redeem_once_which_is_the_documented_ram_postu
 /// already-signed store plugin built before this method existed.
 #[test]
 fn the_memory_store_shares_no_ledger_which_is_the_documented_contract() {
-    let node_a = SpentAskStates::new();
+    let node_a = PlaneApprovals::new();
     node_a.set_sink(std::sync::Arc::new(busbar_store_memory::MemoryStore::new()));
-    let node_b = SpentAskStates::new();
+    let node_b = PlaneApprovals::new();
     node_b.set_sink(std::sync::Arc::new(busbar_store_memory::MemoryStore::new()));
 
     let state = ask(&node_a);

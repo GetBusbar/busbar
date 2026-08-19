@@ -167,9 +167,10 @@ async fn advertised(app: &Arc<crate::state::App>) -> Vec<String> {
 /// depends on. So the fallback is right for a server nobody has looked at and wrong for a server
 /// somebody looked at and demoted, and nothing told those two apart after a restart.
 ///
-/// What closes it is a durable record of the OBSERVATION, not of the state: `crate::mcp::demotion`
-/// writes "a live look at this server disagreed with the approval" through the store seam, and the
-/// boot replay puts it back as a `Sighting` the existing derivation runs on unchanged. Nothing
+/// What closes it is a durable record of the OBSERVATION, not of the state:
+/// `crate::plane::quarantine` writes "a live look at this server disagreed with the approval"
+/// through the store seam, and the boot replay (`crate::mcp::demotion::hydrate`) puts it back as a
+/// `Sighting` the existing derivation runs on unchanged. Nothing
 /// acquires a stored `Quarantined` that a later approval could not clear.
 ///
 /// ## The store here is the REAL plugin, `dlopen`ed twice

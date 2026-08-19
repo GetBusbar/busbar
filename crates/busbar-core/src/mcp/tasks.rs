@@ -192,7 +192,7 @@ pub(crate) struct McpTask {
 
 impl McpTask {
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
-        // Poison-recovering, for the reason `a2a::taskstore` gives for the same pattern: the data
+        // Poison-recovering, for the reason `plane::taskstore` gives for the same pattern: the data
         // behind this lock is a plain struct that is always consistent after a panic, and
         // cascading a poison would make every later task unreadable because one of them tripped.
         self.state.lock().unwrap_or_else(|e| e.into_inner())

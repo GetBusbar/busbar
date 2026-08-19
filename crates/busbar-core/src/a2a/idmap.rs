@@ -52,7 +52,7 @@
 //! enumeration protected, addressing not, which is the shape of an IDOR.
 //!
 //! So every lookup takes the PRINCIPAL, and the boundary it applies is not a second copy of the
-//! rule: it is [`super::taskstore::TaskRegistry::get_scoped`], the one predicate that already owns
+//! rule: it is [`crate::plane::taskstore::TaskRegistry::get_scoped`], the one predicate that already owns
 //! "may this caller see this task", asked here rather than re-derived. A caller that does not own an
 //! id gets no translation, so its request leaves with busbar's own id on it and the backend answers
 //! exactly what it answers for an id that never existed — A2A section 3.3.2's rule that a server
@@ -117,10 +117,10 @@ pub(crate) fn remember(busbar_id: &str, backend_id: &str) {
 /// callers ([`super::originate`]) pass the task's OWN `principal`, which is the owner by definition
 /// and therefore always admitted — they are not exceptions to the rule, they are instances of it.
 ///
-/// The boundary is [`super::taskstore::TaskRegistry::get_scoped`] and not a re-implementation of it.
+/// The boundary is [`crate::plane::taskstore::TaskRegistry::get_scoped`] and not a re-implementation of it.
 /// One predicate, one owner; see the module header.
 pub(crate) fn backend_id_for(principal: &str, busbar_id: &str) -> Option<String> {
-    super::taskstore::TASKS
+    crate::plane::taskstore::TASKS
         .get_scoped(principal, busbar_id)
         .ok()?;
     table().by_busbar_id.get(busbar_id).cloned()

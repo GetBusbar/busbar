@@ -310,7 +310,7 @@ pub(super) fn render_pin_mismatch(
         "a2a: the pool's members are not interchangeable; the submission is not accepted"
     );
     if !addressed {
-        match super::taskstore::TASKS.transition(
+        match crate::plane::taskstore::TASKS.transition(
             task_id,
             super::task::TaskState::Rejected,
             now,

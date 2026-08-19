@@ -603,7 +603,7 @@ pub(super) async fn call(
 /// The same drive, with the ATTRIBUTED PRINCIPAL chosen by the caller.
 ///
 /// It exists because the MCP per-call log chains records PER PRINCIPAL in a process-wide global that
-/// a config apply must not reset (see `mcp::calllog::CALLS`). Every test in this binary sharing one
+/// a config apply must not reset (see `plane::calllog::CALLS`). Every test in this binary sharing one
 /// principal therefore shares one chain, and a test asserting `seq == 1` against a fresh store would
 /// read the sequence a SIBLING test left behind — which is exactly what happened the first time.
 /// A test that needs a virgin chain asks for its own principal.

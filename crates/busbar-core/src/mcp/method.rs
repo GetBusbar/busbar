@@ -1023,9 +1023,9 @@ impl<'a> CallLog<'a> {
     }
 
     fn write(&self, outcome: &'static str, reason: &str) {
-        super::calllog::emit(
+        crate::plane::calllog::emit(
             self.principal,
-            super::calllog::CallInput {
+            crate::plane::calllog::CallInput {
                 ts: crate::store::now(),
                 server: self.server.clone(),
                 tool: self.tool.clone(),
@@ -1041,14 +1041,14 @@ impl<'a> CallLog<'a> {
     /// Record a refusal and hand the response back. Takes the response BY VALUE so the record and
     /// the answer are produced in one statement and a terminal cannot quietly skip the record.
     fn refused(&self, reason: &str, response: Response) -> Response {
-        self.write(super::calllog::OUTCOME_REFUSED, reason);
+        self.write(crate::plane::calllog::OUTCOME_REFUSED, reason);
         response
     }
 
     /// Record a call that WENT OUT and was answered. `reason` is empty on a dispatch, per the store
     /// contract — the field is a refusal token, not a description.
     fn dispatched(&self, response: Response) -> Response {
-        self.write(super::calllog::OUTCOME_DISPATCHED, "");
+        self.write(crate::plane::calllog::OUTCOME_DISPATCHED, "");
         response
     }
 
@@ -1060,7 +1060,7 @@ impl<'a> CallLog<'a> {
     /// as free on a dispatch rather than forbidden: what it forbids is a DESCRIPTION, and
     /// `upstream_failed` is a stable, greppable token exactly like the refusal ones beside it.
     fn dispatched_with_reason(&self, reason: &'static str, response: Response) -> Response {
-        self.write(super::calllog::OUTCOME_DISPATCHED, reason);
+        self.write(crate::plane::calllog::OUTCOME_DISPATCHED, reason);
         response
     }
 }
@@ -1078,7 +1078,7 @@ async fn tools_call(
         // what `McpCallRecord` documents as "a refusal that matched no registration".
         let log = CallLog::open(ctx, "", selected_gen);
         return log.refused(
-            super::calllog::REASON_MALFORMED,
+            crate::plane::calllog::REASON_MALFORMED,
             invalid_params(id, "`params.name` is required and must be a string."),
         );
     };
@@ -1236,7 +1236,7 @@ async fn tools_call(
                 ctx.actor,
             );
             return log.refused(
-                super::calllog::REASON_CALLER_ASK_PENDING,
+                crate::plane::calllog::REASON_CALLER_ASK_PENDING,
                 input_required_result(id, &asks, &request_state),
             );
         }
@@ -1361,13 +1361,13 @@ async fn tools_call(
                 "mcp tools/call refused by a hook gate"
             );
             return log.refused(
-                super::calllog::REASON_HOOK_REJECTED,
+                crate::plane::calllog::REASON_HOOK_REJECTED,
                 error(
                     StatusCode::from_u16(status).unwrap_or(StatusCode::FORBIDDEN),
                     id,
                     CODE_REFUSED,
                     &message,
-                    Some(serde_json::json!({ "reason": super::calllog::REASON_HOOK_REJECTED, "hook": hook })),
+                    Some(serde_json::json!({ "reason": crate::plane::calllog::REASON_HOOK_REJECTED, "hook": hook })),
                 ),
             );
         }
@@ -1583,7 +1583,7 @@ async fn tools_call(
                             ctx.actor,
                         );
                         return log.dispatched_with_reason(
-                            super::calllog::REASON_UPSTREAM_FAILED,
+                            crate::plane::calllog::REASON_UPSTREAM_FAILED,
                             result(
                                 id,
                                 upstream_failure_result(
@@ -1675,7 +1675,7 @@ async fn tools_call(
                 "mcp tools/call upstream failed"
             );
             log.dispatched_with_reason(
-                super::calllog::REASON_UPSTREAM_FAILED,
+                crate::plane::calllog::REASON_UPSTREAM_FAILED,
                 result(id, upstream_failure_result(&selected.server, &reason)),
             )
         }
@@ -1818,7 +1818,7 @@ async fn create_task(
     // moment this request is answered nothing has gone out. What the runner does next belongs to the
     // task's own provenance, not to a second per-call record under a request already answered.
     log.refused(
-        super::calllog::REASON_TASK_CREATED,
+        crate::plane::calllog::REASON_TASK_CREATED,
         task_result(id, created),
     )
 }
@@ -2410,7 +2410,7 @@ fn caller_ask_decision(
     // key ⇒ no sealer ⇒ the decision refuses rather than asking with unprotected state.
     let sealer = ctx
         .gov_signing_secret()
-        .map(|s| super::askstate::Sealer::derive(&s));
+        .map(|s| crate::plane::approvals::Sealer::derive(&s));
     callerask::decide(
         rounds,
         cap,
@@ -2444,10 +2444,10 @@ fn caller_ask_decision(
                 roots_epoch: ctx.app.mcp_roots_epochs.current(principal),
             }
         },
-        &super::askstate::digest_arguments(arguments),
+        &crate::plane::approvals::digest_arguments(arguments),
         callerask::Approvals {
             sealer: sealer.as_ref(),
-            spent: &ctx.app.mcp_spent_approvals,
+            spent: &ctx.app.plane_approvals,
         },
     )
 }

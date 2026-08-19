@@ -25,8 +25,8 @@
 //! | stream | scope of a chain | rate |
 //! |---|---|---|
 //! | [`crate::admin::audit`] — admin MUTATIONS | one chain, process-wide | operator-rate |
-//! | [`crate::mcp::calllog`] — MCP tool CALLS | one chain per PRINCIPAL | request-rate |
-//! | [`crate::a2a::provenance`] — A2A task EVENTS | one chain per TASK | task-rate |
+//! | [`crate::plane::calllog`] — MCP tool CALLS | one chain per PRINCIPAL | request-rate |
+//! | [`crate::plane::provenance`] — A2A task EVENTS | one chain per TASK | task-rate |
 //!
 //! `mcp/calllog.rs`'s own header records why the per-call event was moved OFF the admin ring: an
 //! admin mutation is operator-rate and a tool call is REQUEST-rate, so sharing one bounded ring

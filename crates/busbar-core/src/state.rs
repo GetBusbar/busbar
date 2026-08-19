@@ -516,9 +516,9 @@ pub struct App {
     /// mutation limiter are: this is ACCUMULATED evidence rather than intent, and rebuilding it on
     /// every apply would re-open every outstanding approval the instant an operator touched an
     /// unrelated section of config — which is the moment a caller holding a spent approval would
-    /// like it rebuilt. See [`crate::mcp::askstate::SpentAskStates`] for what a RESTART does to it
+    /// like it rebuilt. See [`crate::plane::approvals::PlaneApprovals`] for what a RESTART does to it
     /// and why that trade was taken.
-    pub(crate) mcp_spent_approvals: Arc<crate::mcp::askstate::SpentAskStates>,
+    pub(crate) plane_approvals: Arc<crate::plane::approvals::PlaneApprovals>,
     /// EACH PRINCIPAL'S ROOTS EPOCH — what a received `notifications/roots/list_changed` moves, and
     /// what a roots-bearing `requestState` is sealed against.
     ///
@@ -542,8 +542,8 @@ pub struct App {
     /// Arc-shared across config applies for the same reason the two fields above are, and with one
     /// extra: the durable sink is attached to it ONCE at boot, so an instance rebuilt on an apply
     /// would be an instance with no sink — a quarantine that stopped being written down because
-    /// somebody edited an unrelated section of config. See [`crate::mcp::demotion`].
-    pub(crate) mcp_demotions: Arc<crate::mcp::demotion::DurableDemotions>,
+    /// somebody edited an unrelated section of config. See [`crate::plane::quarantine`].
+    pub(crate) mcp_demotions: Arc<crate::plane::quarantine::PlaneQuarantine>,
     /// PLANE DISPATCH for this config generation: which plane an inbound path belongs to, and — for
     /// an audience-bound plane — what a token presented there must carry and where a refused caller
     /// is told to go. Consulted by the auth middleware on every request, which is why it is a

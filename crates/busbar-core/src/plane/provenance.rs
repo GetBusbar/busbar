@@ -62,7 +62,7 @@ pub(crate) const EV_REHYDRATED: &str = "task.rehydrated";
 
 // ── THE PUSH-NOTIFICATION DELIVERY EVENTS ───────────────────────────────────────────────────────
 //
-// WHAT WAS MISSING: `super::pushdeliver` connected to a caller's webhook, ran the full SSRF guard
+// WHAT WAS MISSING: `crate::a2a::pushdeliver` connected to a caller's webhook, ran the full SSRF guard
 // against a FRESH resolution before every delivery, and then disposed of the outcome with a
 // `tracing::warn!` at each of its three call sites. So **a delivery refused by the SSRF guard left
 // no record at all** — a security control that fires silently is one nobody can audit after the

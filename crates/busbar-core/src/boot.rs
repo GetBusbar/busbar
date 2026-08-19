@@ -3,8 +3,8 @@
 //!
 //! THE RULE: where the binary needs N internals to perform ONE boot action,
 //! expose one function here and leave the N internals crate-private. The alternative — widening
-//! `admin::audit::AUDIT`, its `set_sink`/`restore_from_store`, the `a2a::taskstore::TASKS` and
-//! `mcp::calllog::CALLS` statics, `governance::signing::TokenSigner`, and the trust sweeper's
+//! `admin::audit::AUDIT`, its `set_sink`/`restore_from_store`, the `plane::taskstore::TASKS` and
+//! `plane::calllog::CALLS` statics, `governance::signing::TokenSigner`, and the trust sweeper's
 //! machinery to `pub` — would put the one append-only hash chain's storage handle, the token
 //! master-key mint and the quarantine loop on the public surface of this crate, where a protocol
 //! crate could reach them. A split that forces twenty new `pub`s on security-relevant internals
@@ -71,9 +71,9 @@ pub fn hydrate_all(app: &Arc<crate::state::App>) {
     // audit log is. That is reported rather than papered over.
     if let Some(gov) = app.governance.as_ref() {
         let store = gov.store();
-        crate::a2a::taskstore::TASKS.set_sink(store.clone());
-        match crate::a2a::taskstore::TASKS.restore_from_store(store.as_ref()) {
-            Ok(r) if r == crate::a2a::taskstore::Rehydrated::default() => {}
+        crate::plane::taskstore::TASKS.set_sink(store.clone());
+        match crate::plane::taskstore::TASKS.restore_from_store(store.as_ref()) {
+            Ok(r) if r == crate::plane::taskstore::Rehydrated::default() => {}
             Ok(r) => {
                 tracing::info!(
                     active = r.active,
@@ -125,9 +125,9 @@ pub fn hydrate_all(app: &Arc<crate::state::App>) {
     // call log is ephemeral BY DESIGN there, exactly as the audit ring and the task table are.
     if let Some(gov) = app.governance.as_ref() {
         let store = gov.store();
-        crate::mcp::calllog::CALLS.set_sink(store.clone());
-        match crate::mcp::calllog::CALLS.restore_from_store(store.as_ref()) {
-            Ok(r) if r == crate::mcp::calllog::Restored::default() => {}
+        crate::plane::calllog::CALLS.set_sink(store.clone());
+        match crate::plane::calllog::CALLS.restore_from_store(store.as_ref()) {
+            Ok(r) if r == crate::plane::calllog::Restored::default() => {}
             Ok(r) => {
                 tracing::info!(
                     principals = r.principals,
@@ -180,7 +180,7 @@ pub fn hydrate_all(app: &Arc<crate::state::App>) {
     // remains — the same documented posture the audit ring, the task table and the call log have.
     if let Some(gov) = app.governance.as_ref() {
         let store = gov.store();
-        app.mcp_spent_approvals.set_sink(store.clone());
+        app.plane_approvals.set_sink(store.clone());
         app.mcp_demotions.set_sink(store.clone());
         match crate::mcp::demotion::hydrate(app) {
             0 => {}

@@ -121,13 +121,11 @@
 pub(crate) mod admin_view;
 /// THE SEALED `requestState` busbar mints for its OWN asks: HMAC over a payload binding the
 /// authenticated principal, the request, the catalogue generation, a round index and a TTL.
-pub(crate) mod askstate;
 /// BUSBAR'S OWN ask of its caller, composed from operator configuration alone.
 pub(crate) mod callerask;
 /// THE DURABLE PER-CALL LOG — one hash-chained record per tool call, written through to the
 /// configured store and read back at boot. Separate from the admin audit ring on purpose: see the
 /// module header.
-pub(crate) mod calllog;
 pub(crate) mod catalogue;
 /// The CLIENT direction: busbar calling OUT to external MCP tool servers. The other half of
 /// the same governance boundary this module's front door opens — same revision, same trust
