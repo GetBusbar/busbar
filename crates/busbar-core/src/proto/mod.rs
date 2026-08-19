@@ -2053,6 +2053,10 @@ pub(crate) const PLANE_DECL: crate::plane::registry::PlaneDecl =
         // state is RAM-only and re-learned from live traffic. So it hydrates nothing and starts no job.
         hydrate: None,
         start: None,
+        // NOTHING TO CARRY ACROSS A SWAP. The LLM plane holds no engine-owned object that outlives an
+        // apply through this seam — its reliability/breaker state rides the `App` fields the data
+        // plane reads directly, not reconciled here.
+        on_swap: None,
     };
 
 /// String-keyed registry mapping a provider's protocol name to a shared `Protocol` INSTANCE, built

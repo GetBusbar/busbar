@@ -790,19 +790,25 @@ impl AppHandle {
     /// drain, its probers exit, and active/dead health probing silently STOPS even though lanes/health are
     /// unchanged (before 1.4.0 only reload/apply re-spawned; the six hook/auth-mutation swaps did not).
     /// Doing it in `swap` itself makes it impossible for a future swap site to forget.
-    /// Also RETIRES every stdio MCP child whose registration is gone from `next`. Same reasoning as
-    /// the probers, one plane over: `mcp_pool` deliberately outlives an apply, so deleting a `tools:`
-    /// entry would otherwise leave its child process running forever — unreferenced, unreachable, and
-    /// with nothing on any surface an operator reads to say so. Doing it here rather than at each
-    /// apply site makes it impossible for a future swap site to forget.
+    /// Also lets each PLANE carry its engine-owned live state across the apply, through the plane's
+    /// own [`PlaneDecl::on_swap`](crate::plane::registry::PlaneDecl::on_swap) hook. Today the MCP
+    /// plane is the only one with such state: it RETIRES every stdio MCP child whose registration is
+    /// gone from `next`. Same reasoning as the probers, one plane over: an MCP connection pool
+    /// deliberately outlives an apply, so deleting a `tools:` entry would otherwise leave its child
+    /// process running forever — unreferenced, unreachable, and with nothing on any surface an
+    /// operator reads to say so. Doing it here, once, over the registered decls rather than by naming
+    /// each plane's concrete types makes it impossible for a future swap site to forget AND keeps this
+    /// method free of any one plane's types — the reconciliation lives beside the plane it belongs to.
     pub(crate) fn swap(&self, next: Arc<App>) {
-        next.mcp_pool.children.retain(
-            &next
-                .mcp_catalogue
-                .servers()
-                .map(|s| s.id.clone())
-                .collect::<std::collections::BTreeSet<_>>(),
-        );
+        // The snapshot being replaced, so a plane that must DIFF the two generations can; the MCP
+        // hook reconciles only `next` (its pool is Arc-carried onto `next` already). Read under a
+        // read lock that is released before the write lock below is taken.
+        let prior = self.load();
+        for decl in crate::plane::registry::plane_decls() {
+            if let Some(on_swap) = decl.on_swap {
+                on_swap(&*prior as &dyn std::any::Any, &*next as &dyn std::any::Any);
+            }
+        }
         *self.current.write().unwrap_or_else(|e| e.into_inner()) = next.clone();
         crate::health::spawn_probers(&next);
     }

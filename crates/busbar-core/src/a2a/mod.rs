@@ -128,6 +128,11 @@ pub(crate) const PLANE_DECL: crate::plane::registry::PlaneDecl =
         openapi: Some(openapi_fragment),
         hydrate: Some(a2a_hydrate),
         start: Some(a2a_start),
+        // NOTHING TO CARRY ACROSS A SWAP. The A2A plane's runtime object (`A2aPlane`) is rebuilt from
+        // `agents:`/`public_url` on every apply, and its durable task table is restored at boot
+        // through `hydrate`, not reconciled here — so there is no engine-owned live object that
+        // outlives an apply for this seam to carry.
+        on_swap: None,
     };
 
 /// RESTORE THE A2A PLANE'S DURABLE TASK STATE, BEFORE a listener binds. A2A is ASYNC BY DESIGN: a
