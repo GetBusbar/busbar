@@ -489,10 +489,23 @@ impl ProtocolReader for OpenAiReader {
             });
         }
 
-        let choice0 = data
-            .get("choices")
-            .and_then(|c| c.as_array())
-            .and_then(|a| a.first());
+        let choices_arr = data.get("choices").and_then(|c| c.as_array());
+        // A client can legally request n>1 (OpenAI `n`). This reader collapses to choices[0], which
+        // is all a CROSS-PROTOCOL (IR-rebuilt) hop can carry — the rest are dropped there. A
+        // same-protocol relay re-emits the upstream bytes verbatim and preserves all N; this reader is
+        // still invoked on that path as a usage side-channel, so the message is scoped to the
+        // cross-protocol case rather than asserting an unconditional drop. Warn ONCE per stream.
+        // Defense-in-depth: the engine now rejects n>1 up front on cross-protocol routes.
+        if let Some(arr) = choices_arr {
+            if arr.len() > 1 && !state.multi_candidate_warned {
+                state.multi_candidate_warned = true;
+                tracing::warn!(
+                    choices = arr.len(),
+                    "openai stream chunk carried multiple choices; only choices[0] survives IR translation — a cross-protocol hop drops the rest (a same-protocol relay preserves all)"
+                );
+            }
+        }
+        let choice0 = choices_arr.and_then(|a| a.first());
         let delta = choice0.and_then(|c| c.get("delta"));
 
         // 2. Reasoning (chain-of-thought) → a Thinking block at index 0, ahead of the answer. When
@@ -848,6 +861,19 @@ impl ProtocolReader for OpenAiReader {
                 provider_signal: Some(busbar_core::proto::SIGNAL_IR_PARSE.into()),
                 retry_after: None,
             });
+        }
+
+        // A client can legally request n>1 (OpenAI `n`). This reader collapses to choices[0], which
+        // is all a CROSS-PROTOCOL (IR-rebuilt) hop can carry — the rest are dropped there. A
+        // same-protocol relay re-emits the upstream body verbatim and preserves all N; this reader is
+        // still invoked on that path as a usage side-channel, so the message is scoped to the
+        // cross-protocol case rather than asserting an unconditional drop. Defense-in-depth: the
+        // engine now rejects n>1 up front on cross-protocol routes.
+        if choices.len() > 1 {
+            tracing::warn!(
+                choices = choices.len(),
+                "openai response carried multiple choices; only choices[0] survives IR translation — a cross-protocol hop drops the rest (a same-protocol relay preserves all)"
+            );
         }
 
         let choice = &choices[0];

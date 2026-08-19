@@ -1748,13 +1748,20 @@ async fn test_forward_once_cross_protocol_strips_source_only_extra_keys() {
         .on_exhausted("leastbad", crate::config::OnExhausted::LeastBad)
         .build();
 
+    // `n: 1` (NOT >1) on purpose: this test is about EXTRA-KEY STRIPPING on the degraded path, not
+    // about multiple candidates. A single-candidate `n` still exercises the "OpenAI-only `n` must not
+    // leak onto an Anthropic backend" assertion below (the Anthropic writer omits `n` regardless of
+    // value), while staying clear of the cross-protocol multi-candidate reject
+    // (`translate_request_cross_protocol` rejects n>1, since the single-candidate IR would drop the
+    // rest). Do NOT bump this above 1 — that would (correctly) turn this into a 400 and defeat the
+    // 200-passthrough this test asserts.
     let req_body = serde_json::to_vec(&json!({
         "model": "leastbad",
         "messages": [{"role": "user", "content": "hi"}],
         "max_tokens": 16,
         "logprobs": true,
         "top_logprobs": 5,
-        "n": 3
+        "n": 1
     }))
     .unwrap();
     let resp = forward_with_pool(
