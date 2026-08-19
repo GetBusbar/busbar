@@ -137,6 +137,9 @@ impl ClientCreds {
         let body = super::read_capped_token_response(resp).await?;
         if !status.is_success() {
             // Never echo the request (carries the client_secret); status + a short snippet only.
+            // Diagnostic-only snippet, not data-of-record: the request has already failed on `status`
+            // above, nothing downstream branches on the body text — this 200-char cap only bounds what
+            // a human sees in the propagated error/log line.
             return Err(format!(
                 "token endpoint returned {status}: {}",
                 body.chars().take(200).collect::<String>()

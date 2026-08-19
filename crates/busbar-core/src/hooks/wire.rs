@@ -331,8 +331,23 @@ pub(crate) fn valid_metric_name(name: &str) -> bool {
 
 /// Char-boundary-safe sanitize + cap (`String::truncate` takes BYTES and panics off a
 /// char boundary; `.chars().take(n)` is panic-free and matches the documented "≤ N chars" rule).
+///
+/// When the sanitized value is longer than `n`, the LAST char of the kept prefix is replaced by
+/// an ellipsis marker (mirrors `config::migrate::one_line`'s truncation marker) so a hook's
+/// over-cap name/label/help/unit string is never mistaken for the complete, real value once it
+/// reaches an admin API reader or a Prometheus scrape — the truncation is observable in the
+/// value itself, not silent. Total length stays ≤ `n` chars.
 fn sanitize_cap(raw: &str, n: usize) -> String {
-    sanitize_reject_message(raw).chars().take(n).collect()
+    let sanitized = sanitize_reject_message(raw);
+    let chars: Vec<char> = sanitized.chars().collect();
+    if chars.len() > n {
+        let keep = n.saturating_sub(1);
+        let mut capped: String = chars[..keep].iter().collect();
+        capped.push('…');
+        capped
+    } else {
+        sanitized
+    }
 }
 
 /// Parse + validate the metrics ARRAY of a `status` reply FAIL-OPEN: a malformed entry (bad
@@ -566,13 +581,17 @@ const REJECT_MESSAGE_DEFAULT: &str = "Request rejected by the routing policy.";
 /// them as newlines: a record-splitting vector like CRLF), and the invisible direction/zero-width
 /// formatting chars (bidi overrides U+202A..=U+202E and isolates U+2066..=U+2069 can visually
 /// spoof a log line in a terminal; zero-widths U+200B..=U+200F and U+FEFF hide content). Cap the
-/// length; fall back to the canned default when nothing printable survives.
+/// length; fall back to the canned default when nothing printable survives. When the sanitized
+/// message is longer than the cap, the last char of the kept prefix is replaced by an ellipsis
+/// marker so the caller who reads this back (the client error body AND the operator log line)
+/// can tell it was shortened, rather than reading a message that silently ends mid-word and
+/// looking complete.
 ///
 /// Shared by `normalize` (the transports' reply path) and by `forward`'s seam mapping (defense in
 /// depth for a `RoutingDecision::Reject` constructed directly by a policy impl), so the "safe to
 /// log, safe for the client" guarantee holds for EVERY producer of a rejection.
 pub(crate) fn sanitize_reject_message(raw: &str) -> String {
-    let message: String = raw
+    let filtered: Vec<char> = raw
         .chars()
         .filter(|c| {
             !c.is_control()
@@ -586,8 +605,15 @@ pub(crate) fn sanitize_reject_message(raw: &str) -> String {
                         | '\u{FEFF}'
                 )
         })
-        .take(REJECT_MESSAGE_MAX_CHARS)
         .collect();
+    let message: String = if filtered.len() > REJECT_MESSAGE_MAX_CHARS {
+        let keep = REJECT_MESSAGE_MAX_CHARS.saturating_sub(1);
+        let mut capped: String = filtered[..keep].iter().collect();
+        capped.push('…');
+        capped
+    } else {
+        filtered.into_iter().collect()
+    };
     if message.trim().is_empty() {
         REJECT_MESSAGE_DEFAULT.to_string()
     } else {

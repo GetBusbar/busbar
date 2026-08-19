@@ -422,6 +422,13 @@ pub(crate) async fn probe_lane(app: &Arc<App>, i: usize, timeout: Duration) {
 /// Read at most `PROBE_ERROR_BODY_CAP` bytes of a non-2xx probe response body for breaker
 /// classification. Streams chunk-by-chunk and stops once the cap is reached so a hostile or
 /// misconfigured upstream cannot force an unbounded allocation on the probe path.
+///
+/// Internal-only, not a silent-drop hazard: 64 KiB is far beyond any real error envelope (a
+/// truncated body would need a pathological/hostile upstream), the resulting breaker disposition
+/// (`HardDown`/`TransientUpstream`/…) is itself always logged (`tracing::warn!`/`info!` at each
+/// call site below) so a misclassification from an oversized body is observable through the
+/// breaker transition it produces, not silent — no user/hook/operator/audit-facing data is capped
+/// here, only this probe's own internal classification input.
 async fn read_capped_error_body(mut resp: reqwest::Response) -> Vec<u8> {
     let mut buf: Vec<u8> = Vec::new();
     loop {
