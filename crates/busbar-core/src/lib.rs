@@ -76,6 +76,7 @@ pub mod net_guard;
 pub mod oauth_as;
 pub mod observability;
 pub mod operation;
+pub mod lineage;
 pub mod plane;
 pub mod session;
 pub mod plugin_routes;
