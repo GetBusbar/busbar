@@ -47,7 +47,8 @@ use crate::audit::ChainBreak;
 
 use super::provenance::{self, EventInput, TaskChain};
 use crate::a2a::task::{Task, TaskError, TaskState};
-use busbar_api::{Store, StoreError, StoreResult};
+use crate::plane::store::PlaneStore;
+use busbar_api::{StoreError, StoreResult};
 
 /// One task plus its provenance chain position. The events themselves are NOT held in RAM — the
 /// store owns them, and holding every event of every long-running task would defeat the point of
@@ -92,7 +93,7 @@ pub(crate) struct Rehydrated {
 #[derive(Default)]
 pub(crate) struct TaskRegistry {
     tasks: Mutex<HashMap<String, Entry>>,
-    sink: Mutex<Option<Arc<dyn Store>>>,
+    sink: Mutex<Option<Arc<dyn PlaneStore>>>,
 }
 
 /// THE PROCESS-WIDE REGISTRY. Process state, not config-derived state, so it lives as a global
@@ -159,7 +160,7 @@ impl TaskRegistry {
         self.tasks.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    fn sink(&self) -> Option<Arc<dyn Store>> {
+    fn sink(&self) -> Option<Arc<dyn PlaneStore>> {
         self.sink
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -170,7 +171,7 @@ impl TaskRegistry {
     /// Attach the configured governance store as the DURABLE SINK. Called once at boot. With no
     /// sink attached (or with a backend that implements none of the task methods) the registry is a
     /// RAM cache and nothing survives a restart, which is the documented `store: memory` behaviour.
-    pub(crate) fn set_sink(&self, store: Arc<dyn Store>) {
+    pub(crate) fn set_sink(&self, store: Arc<dyn PlaneStore>) {
         *self.sink.lock().unwrap_or_else(|e| e.into_inner()) = Some(store);
     }
 
@@ -188,7 +189,7 @@ impl TaskRegistry {
     ///
     /// Terminal tasks are counted and left in the store: they are not in flight, and loading them
     /// would grow the working set without bound over a deployment's life for no resume value.
-    pub(crate) fn restore_from_store(&self, store: &dyn Store) -> StoreResult<Rehydrated> {
+    pub(crate) fn restore_from_store(&self, store: &dyn PlaneStore) -> StoreResult<Rehydrated> {
         let rows = store.list_tasks()?;
         let mut out = Rehydrated::default();
         let mut tasks = self.tasks();
@@ -604,7 +605,7 @@ impl TaskRegistry {
     /// nobody ever finds out that it does not.
     pub(crate) fn verify_task_chain(
         &self,
-        store: &dyn Store,
+        store: &dyn PlaneStore,
         task_id: &str,
     ) -> StoreResult<Result<usize, ChainBreak>> {
         let events = store.list_task_events(task_id)?;

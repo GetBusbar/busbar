@@ -70,9 +70,12 @@ pub fn hydrate_all(app: &Arc<crate::state::App>) {
     // the restore reads nothing — in-flight tasks are ephemeral BY DESIGN there, exactly as the
     // audit log is. That is reported rather than papered over.
     if let Some(gov) = app.governance.as_ref() {
-        let store = gov.store();
-        crate::plane::taskstore::TASKS.set_sink(store.clone());
-        match crate::plane::taskstore::TASKS.restore_from_store(store.as_ref()) {
+        // NARROWED to the plane surface at the seam: the task store is a PLANE, so it is handed an
+        // `Arc<dyn PlaneStore>` (task/provenance/mcp/demotion/spent methods only), never the
+        // `Arc<dyn Store>` that also carries `append_audit`. The wrapper forwards to the same backend.
+        let plane_store = crate::plane::store::PlaneStoreView::narrow(gov.store());
+        crate::plane::taskstore::TASKS.set_sink(plane_store.clone());
+        match crate::plane::taskstore::TASKS.restore_from_store(plane_store.as_ref()) {
             Ok(r) if r == crate::plane::taskstore::Rehydrated::default() => {}
             Ok(r) => {
                 tracing::info!(
@@ -124,9 +127,10 @@ pub fn hydrate_all(app: &Arc<crate::state::App>) {
     // byte). With `store: memory` nothing is implemented, the sink no-ops and this reports zero: the
     // call log is ephemeral BY DESIGN there, exactly as the audit ring and the task table are.
     if let Some(gov) = app.governance.as_ref() {
-        let store = gov.store();
-        crate::plane::calllog::CALLS.set_sink(store.clone());
-        match crate::plane::calllog::CALLS.restore_from_store(store.as_ref()) {
+        // NARROWED to the plane surface at the seam, exactly as the task block above.
+        let plane_store = crate::plane::store::PlaneStoreView::narrow(gov.store());
+        crate::plane::calllog::CALLS.set_sink(plane_store.clone());
+        match crate::plane::calllog::CALLS.restore_from_store(plane_store.as_ref()) {
             Ok(r) if r == crate::plane::calllog::Restored::default() => {}
             Ok(r) => {
                 tracing::info!(
@@ -179,9 +183,11 @@ pub fn hydrate_all(app: &Arc<crate::state::App>) {
     // With `store: memory` both no-op and the pre-existing process-local behaviour is exactly what
     // remains — the same documented posture the audit ring, the task table and the call log have.
     if let Some(gov) = app.governance.as_ref() {
-        let store = gov.store();
-        app.plane_approvals.set_sink(store.clone());
-        app.mcp_demotions.set_sink(store.clone());
+        // NARROWED to the plane surface at the seam: the spent-approval ledger and the MCP demotion
+        // record are plane trust state, so both take an `Arc<dyn PlaneStore>` off one wrapper.
+        let plane_store = crate::plane::store::PlaneStoreView::narrow(gov.store());
+        app.plane_approvals.set_sink(plane_store.clone());
+        app.mcp_demotions.set_sink(plane_store);
         match crate::mcp::demotion::hydrate(app) {
             0 => {}
             n => tracing::warn!(
