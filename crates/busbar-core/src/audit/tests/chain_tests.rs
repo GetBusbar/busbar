@@ -27,7 +27,7 @@ use super::*;
 
 use busbar_api::{McpCallRecord, TaskEventRow};
 
-use crate::a2a::provenance::EventInput;
+use crate::plane::provenance::EventInput;
 use crate::admin::audit::{AuditEntry, AuditInput};
 use crate::plane::calllog::CallInput;
 
@@ -445,7 +445,7 @@ fn the_a2a_task_event_digest_is_unchanged_by_the_unification() {
     let row = chain.append(
         "task-1",
         EventInput {
-            kind: crate::a2a::provenance::EV_SUBMITTED,
+            kind: crate::plane::provenance::EV_SUBMITTED,
             context_id: "ctx-1".to_string(),
             principal: "vk_alice".to_string(),
             agent_id: "planner".to_string(),

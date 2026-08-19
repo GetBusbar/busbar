@@ -1023,7 +1023,7 @@ async fn a_list_with_no_open_task_of_this_callers_makes_no_hop() {
 // outcomes are chained"), and it is what the two tests below close for the DELEGATION HOP: the leg
 // busbar itself issues to a registered backend agent.
 
-/// A task-event sink for the process-global [`crate::a2a::taskstore::TASKS`].
+/// A task-event sink for the process-global [`crate::plane::taskstore::TASKS`].
 ///
 /// The shipped `busbar-store-memory` implements NONE of the task methods — it is documented as
 /// genuinely ephemeral and the boot-restore path relies on that — so a sink is the only way to read
@@ -1128,9 +1128,9 @@ async fn the_delegation_hop_lands_in_the_per_task_chain_naming_the_agent_it_was_
     // reads back what IT wrote, and the registry is process state, so a concurrent test swapping
     // (or clearing) the sink mid-flight makes this one read an empty chain and fail for a reason
     // that has nothing to do with the client leg. See `taskstore::TASKS_SINK_LOCK`.
-    let _sink_guard = crate::a2a::taskstore::TASKS_SINK_LOCK.lock().await;
+    let _sink_guard = crate::plane::taskstore::TASKS_SINK_LOCK.lock().await;
     let sink = std::sync::Arc::new(ChainSink::new());
-    crate::a2a::taskstore::TASKS.set_sink(sink.clone());
+    crate::plane::taskstore::TASKS.set_sink(sink.clone());
 
     let h = harness_on(
         Outcome::AnswersCorrelated(200, backend_ok()),
@@ -1157,13 +1157,13 @@ async fn the_delegation_hop_lands_in_the_per_task_chain_naming_the_agent_it_was_
 
     let delegated: Vec<_> = events
         .iter()
-        .filter(|e| e.kind == crate::a2a::provenance::EV_DELEGATED)
+        .filter(|e| e.kind == crate::plane::provenance::EV_DELEGATED)
         .collect();
     assert_eq!(
         delegated.len(),
         1,
         "exactly one `{}` event for one hop; got kinds {:?}",
-        crate::a2a::provenance::EV_DELEGATED,
+        crate::plane::provenance::EV_DELEGATED,
         events.iter().map(|e| &e.kind).collect::<Vec<_>>()
     );
     assert_eq!(
@@ -1183,13 +1183,13 @@ async fn the_delegation_hop_lands_in_the_per_task_chain_naming_the_agent_it_was_
     assert!(
         events
             .iter()
-            .any(|e| e.kind == crate::a2a::provenance::EV_SUBMITTED),
+            .any(|e| e.kind == crate::plane::provenance::EV_SUBMITTED),
         "the hop's record must sit in the SAME chain as the submission it serves, not a second \
          log of its own: {:?}",
         events.iter().map(|e| &e.kind).collect::<Vec<_>>()
     );
 
-    crate::a2a::taskstore::TASKS
+    crate::plane::taskstore::TASKS
         .set_sink(std::sync::Arc::new(busbar_store_memory::MemoryStore::new()));
 }
 
@@ -1205,9 +1205,9 @@ async fn a_failed_hop_is_chained_too_and_the_chain_carries_its_terminal_outcome(
     // reads back what IT wrote, and the registry is process state, so a concurrent test swapping
     // (or clearing) the sink mid-flight makes this one read an empty chain and fail for a reason
     // that has nothing to do with the client leg. See `taskstore::TASKS_SINK_LOCK`.
-    let _sink_guard = crate::a2a::taskstore::TASKS_SINK_LOCK.lock().await;
+    let _sink_guard = crate::plane::taskstore::TASKS_SINK_LOCK.lock().await;
     let sink = std::sync::Arc::new(ChainSink::new());
-    crate::a2a::taskstore::TASKS.set_sink(sink.clone());
+    crate::plane::taskstore::TASKS.set_sink(sink.clone());
 
     // A backend that answers a transport-level failure to the hop busbar issues.
     let h = harness_on(
@@ -1245,7 +1245,7 @@ async fn a_failed_hop_is_chained_too_and_the_chain_carries_its_terminal_outcome(
     assert!(
         events
             .iter()
-            .any(|e| e.kind == crate::a2a::provenance::EV_DELEGATED),
+            .any(|e| e.kind == crate::plane::provenance::EV_DELEGATED),
         "the hop was ATTEMPTED, so it must be chained — the record is written before the socket \
          precisely so a hop that fails is not invisible: {:?}",
         events.iter().map(|e| &e.kind).collect::<Vec<_>>()
@@ -1253,7 +1253,7 @@ async fn a_failed_hop_is_chained_too_and_the_chain_carries_its_terminal_outcome(
     assert!(
         events
             .iter()
-            .any(|e| e.kind == crate::a2a::provenance::EV_TERMINAL),
+            .any(|e| e.kind == crate::plane::provenance::EV_TERMINAL),
         "a failed hop must END the task in the chain rather than leave it open forever: {:?}",
         events
             .iter()
@@ -1263,6 +1263,6 @@ async fn a_failed_hop_is_chained_too_and_the_chain_carries_its_terminal_outcome(
     crate::audit::verify_chain(&events)
         .expect("the failed leg's persisted chain must verify against its own hashes");
 
-    crate::a2a::taskstore::TASKS
+    crate::plane::taskstore::TASKS
         .set_sink(std::sync::Arc::new(busbar_store_memory::MemoryStore::new()));
 }

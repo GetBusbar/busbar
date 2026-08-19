@@ -27,7 +27,7 @@ use std::net::{IpAddr, Ipv4Addr};
 use std::sync::{Arc, Mutex};
 
 use super::super::fetch::{HttpResponse, Resolver};
-use super::super::provenance;
+use crate::plane::provenance;
 use super::super::pushdeliver::{self, PushRefusal};
 use super::super::pushnotify::{self, PushNotifyError};
 use super::super::relay::{ChunkFlow, RelaySeam, RelayTransport, StreamHead};
@@ -638,14 +638,14 @@ async fn a_task_in_the_registry(
     state: TaskState,
 ) -> (
     Task,
-    Arc<crate::a2a::taskstore::event_ledger::EventLedger>,
+    Arc<crate::plane::taskstore::event_ledger::EventLedger>,
     tokio::sync::MutexGuard<'static, ()>,
 ) {
-    let guard = crate::a2a::taskstore::TASKS_SINK_LOCK.lock().await;
-    let ledger = Arc::new(crate::a2a::taskstore::event_ledger::EventLedger::new());
-    crate::a2a::taskstore::TASKS.set_sink(ledger.clone());
+    let guard = crate::plane::taskstore::TASKS_SINK_LOCK.lock().await;
+    let ledger = Arc::new(crate::plane::taskstore::event_ledger::EventLedger::new());
+    crate::plane::taskstore::TASKS.set_sink(ledger.clone());
     let task = task_with_callback(task_id, state);
-    crate::a2a::taskstore::TASKS
+    crate::plane::taskstore::TASKS
         .submit(&task, "req-1")
         .expect("the task is admitted");
     (task, ledger, guard)
@@ -653,7 +653,7 @@ async fn a_task_in_the_registry(
 
 /// The kinds on a task's chain, oldest first, read back out of the store.
 fn kinds_of(
-    ledger: &crate::a2a::taskstore::event_ledger::EventLedger,
+    ledger: &crate::plane::taskstore::event_ledger::EventLedger,
     task_id: &str,
 ) -> Vec<String> {
     let events = ledger.events_for(task_id);
@@ -685,7 +685,7 @@ async fn a_delivery_the_ssrf_guard_refuses_lands_a_refusal_on_the_tasks_own_chai
     );
 
     let kinds = kinds_of(&ledger, id);
-    crate::a2a::taskstore::TASKS.clear_sink_for_test();
+    crate::plane::taskstore::TASKS.clear_sink_for_test();
     pushdeliver::forget(id);
     assert!(
         kinds.contains(&provenance::EV_PUSH_REFUSED.to_string()),
@@ -714,7 +714,7 @@ async fn a_delivered_notification_lands_a_delivered_record_on_the_tasks_own_chai
     assert_eq!(log.lock().unwrap().len(), 1, "the notification went out");
 
     let kinds = kinds_of(&ledger, id);
-    crate::a2a::taskstore::TASKS.clear_sink_for_test();
+    crate::plane::taskstore::TASKS.clear_sink_for_test();
     pushdeliver::forget(id);
     assert_eq!(
         kinds,
@@ -741,7 +741,7 @@ async fn a_receiver_that_answers_non_2xx_is_recorded_as_failed_and_not_as_refuse
     assert!(matches!(refusal, PushRefusal::Status(500)), "{refusal}");
 
     let kinds = kinds_of(&ledger, id);
-    crate::a2a::taskstore::TASKS.clear_sink_for_test();
+    crate::plane::taskstore::TASKS.clear_sink_for_test();
     pushdeliver::forget(id);
     assert!(
         kinds.contains(&provenance::EV_PUSH_FAILED.to_string())

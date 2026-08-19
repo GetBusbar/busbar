@@ -259,7 +259,7 @@ pub(crate) fn list_tasks(
     // SCOPED FIRST, filtered second. `list_scoped` is the authorization boundary of
     // THE SCOPING RULE: a caller can only ever be shown its own rows, and every filter
     // below narrows that set rather than widening it.
-    let mut rows: Vec<Task> = super::taskstore::TASKS
+    let mut rows: Vec<Task> = crate::plane::taskstore::TASKS
         .list_scoped(principal)
         .into_iter()
         .filter(|t| context_id.is_empty() || t.context_id == context_id)
@@ -338,7 +338,7 @@ fn configs() -> &'static Mutex<HashMap<String, PushConfig>> {
 /// map's lifetime a consequence of the store's rather than a second policy that can disagree.
 fn prune() {
     if let Ok(mut map) = configs().lock() {
-        map.retain(|task_id, _| super::taskstore::TASKS.get_unscoped(task_id).is_some());
+        map.retain(|task_id, _| crate::plane::taskstore::TASKS.get_unscoped(task_id).is_some());
     }
 }
 
@@ -455,7 +455,7 @@ pub(crate) fn delivery_auth(
 fn addressed(params: &serde_json::Value, principal: &str) -> Option<Task> {
     for name in ["taskId", "task_id", "id"] {
         if let Some(id) = params.get(name).and_then(serde_json::Value::as_str) {
-            if let Ok(task) = super::taskstore::TASKS.get_scoped(principal, id) {
+            if let Ok(task) = crate::plane::taskstore::TASKS.get_scoped(principal, id) {
                 return Some(task);
             }
         }
@@ -548,7 +548,7 @@ pub(crate) async fn create_push_config(
     };
 
     if let Err(e) =
-        super::taskstore::TASKS.set_push_callback(&task.task_id, Some(pinned.url.clone()), now)
+        crate::plane::taskstore::TASKS.set_push_callback(&task.task_id, Some(pinned.url.clone()), now)
     {
         tracing::error!(task = %task.task_id, error = %e, "a2a: a push config could not be recorded");
         return err(
@@ -677,7 +677,7 @@ pub(crate) fn delete_push_config(
         // THE DURABLE ROW GOES WITH IT. Leaving the callback on the row would mean a config the
         // caller deleted still receiving the task's completion, which is the one outcome a delete
         // exists to prevent.
-        let _ = super::taskstore::TASKS.set_push_callback(&task.task_id, None, now);
+        let _ = crate::plane::taskstore::TASKS.set_push_callback(&task.task_id, None, now);
         super::pushdeliver::forget(&task.task_id);
     }
     ok(rpc_id, serde_json::Value::Null)
@@ -701,7 +701,7 @@ pub(crate) fn subscribe_refusal(
     let named = ["id", "taskId", "task_id"]
         .iter()
         .find_map(|m| params.get(*m).and_then(serde_json::Value::as_str))?;
-    match super::taskstore::TASKS.get_scoped(principal, named) {
+    match crate::plane::taskstore::TASKS.get_scoped(principal, named) {
         // NOT BUSBAR'S, OR NOT THIS CALLER'S — one answer for both, because "there is no such task"
         // and "there is such a task and it is not yours" must not be distinguishable.
         Err(_) => Some(err(

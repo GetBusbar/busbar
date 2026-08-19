@@ -265,7 +265,7 @@ async fn battery(binding: &str, submission: serde_json::Value) {
     // `rejected`, with an id to poll: the row predates the hop, the refusal names it, and busbar's
     // own store holds the terminal state the spec reserves for work that was never accepted.
     let task_id = task_id_of(&b2);
-    let task = crate::a2a::taskstore::TASKS
+    let task = crate::plane::taskstore::TASKS
         .get_unscoped(&task_id)
         .unwrap_or_else(|| panic!("[{binding}] the named task must resolve in busbar's store"));
     assert_eq!(

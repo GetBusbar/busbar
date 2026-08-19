@@ -24,7 +24,7 @@
 
 use super::*;
 use crate::a2a::task::{Direction, Task};
-use crate::a2a::taskstore::TASKS;
+use crate::plane::taskstore::TASKS;
 use serde_json::json;
 
 /// Open a real task row owned by `principal`, so the scoped lookup has an ownership fact to read.

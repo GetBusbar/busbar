@@ -60,14 +60,14 @@
 //! guard left no record**. A security control that fires silently is one nobody can audit after the
 //! fact — and this control fires precisely when a callback that was legitimate at registration has
 //! been re-pointed at something that is not, which is the event an incident review goes looking for.
-//! Every attempt now appends to the TASK's own provenance chain (`super::provenance`'s three
+//! Every attempt now appends to the TASK's own provenance chain (`crate::plane::provenance`'s three
 //! `task.push_*` kinds), through the one mechanism in [`crate::audit`]. A log line is still emitted;
 //! it is no longer the only thing that happens.
 
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
-use super::provenance;
+use crate::plane::provenance;
 use super::pushnotify::{self, PinnedCallback, PushNotifyError};
 use super::relay::RelaySeam;
 use super::task::Task;
@@ -356,7 +356,7 @@ fn record_attempt(task: &Task, outcome: &Result<(), PushRefusal>) {
         Err(PushRefusal::Transport(_) | PushRefusal::Status(_)) => provenance::EV_PUSH_FAILED,
         Err(PushRefusal::NoCallback) => return,
     };
-    if let Err(e) = super::taskstore::TASKS.record_push_delivery(
+    if let Err(e) = crate::plane::taskstore::TASKS.record_push_delivery(
         &task.task_id,
         kind,
         crate::store::now(),

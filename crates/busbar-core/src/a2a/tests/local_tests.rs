@@ -5,7 +5,7 @@
 //!
 //! ## Why every test names its own principal
 //!
-//! `super::super::taskstore::TASKS` is a process-global and these tests run in parallel with every
+//! `crate::plane::taskstore::TASKS` is a process-global and these tests run in parallel with every
 //! other test in the crate. The tenancy boundary is the principal, so a test that invents its own
 //! principal is isolated by exactly the mechanism under test rather than by a lock somebody has to
 //! remember to take. Two of these tests then use that same mechanism as the ASSERTION — a second
@@ -22,7 +22,7 @@
 
 use super::super::local::{self, Dialect, LocalVerb};
 use super::super::task::{Direction, Task, TaskState};
-use super::super::taskstore::TASKS;
+use crate::plane::taskstore::TASKS;
 
 // ══ HELPERS ══════════════════════════════════════════════════════════════════════════════════════
 

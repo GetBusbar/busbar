@@ -353,7 +353,7 @@ async fn an_interrupt_from_the_backend_is_relayed_transparently_and_pauses_the_t
         "the contextId the resume depends on must be busbar's, and unchanged: {body}"
     );
 
-    let task = crate::a2a::taskstore::TASKS
+    let task = crate::plane::taskstore::TASKS
         .get_unscoped(&id)
         .expect("the task exists");
     assert_eq!(
@@ -392,7 +392,7 @@ async fn a_follow_up_on_the_same_context_resumes_the_paused_task_rather_than_ope
         .unwrap_or_default()
         .to_string();
     assert_eq!(
-        crate::a2a::taskstore::TASKS
+        crate::plane::taskstore::TASKS
             .get_unscoped(&first)
             .map(|t| t.state),
         Some(TaskState::AuthRequired)
@@ -424,7 +424,7 @@ async fn a_follow_up_on_the_same_context_resumes_the_paused_task_rather_than_ope
         assert!(
             events
                 .iter()
-                .any(|e| e.kind == crate::a2a::provenance::EV_RESUMED),
+                .any(|e| e.kind == crate::plane::provenance::EV_RESUMED),
             "a resume must be a chained event, not a silent state change: {events:?}"
         );
     }
@@ -574,7 +574,7 @@ async fn a_legitimate_push_callback_is_accepted_and_recorded_on_the_task() {
         .and_then(|v| v.as_str())
         .unwrap_or_default()
         .to_string();
-    let task = crate::a2a::taskstore::TASKS
+    let task = crate::plane::taskstore::TASKS
         .get_unscoped(&id)
         .expect("the task exists");
     assert_eq!(
@@ -688,7 +688,7 @@ async fn an_interrupt_the_relay_produced_rehydrates_only_where_the_store_is_dura
 
     // A FRESH REGISTRY, the way a restart gets one, rehydrated from the SAME store the running
     // deployment wrote through to.
-    let fresh = crate::a2a::taskstore::TaskRegistry::new();
+    let fresh = crate::plane::taskstore::TaskRegistry::new();
     let store = h.gov.store();
     let rehydrated = fresh
         .restore_from_store(store.as_ref())
@@ -747,7 +747,7 @@ async fn a_streamed_artifact_advances_the_durable_resume_cursor() {
     // The caller's handle comes off the STREAM, which is the only place it appears — and reading it
     // there is itself the assertion that every streamed event carries busbar's task identity.
     let id = first_task_id(&body).expect("the stream names busbar's task id");
-    let task = crate::a2a::taskstore::TASKS
+    let task = crate::plane::taskstore::TASKS
         .get_unscoped(&id)
         .expect("the streamed task exists");
     assert_eq!(

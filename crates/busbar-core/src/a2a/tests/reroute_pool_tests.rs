@@ -245,7 +245,7 @@ async fn an_accepted_task_stays_pinned_to_its_member_and_a_tripped_pin_refuses_t
         "nothing dispatched"
     );
     // The task row survives the refusal: a failed READ must not end live work.
-    let task = crate::a2a::taskstore::TASKS
+    let task = crate::plane::taskstore::TASKS
         .get_unscoped(&task_id)
         .expect("the task row survives a refused verb");
     assert_ne!(task.state, crate::a2a::task::TaskState::Rejected);

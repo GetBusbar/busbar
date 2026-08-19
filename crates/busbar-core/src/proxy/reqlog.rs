@@ -9,7 +9,7 @@
 //! `grep crate::audit` over `proxy/` and `handlers/` returned ZERO production hits. Model traffic
 //! landed in billing (`governance`), in telemetry (`/metrics`) and in the request-log export, and in
 //! NO tamper-evident chain — while the MCP plane chained every `tools/call` (`plane::calllog`) and the
-//! A2A plane chained every task event (`a2a::provenance`). The owner's ruling is that auditing is
+//! A2A plane chained every task event (`plane::provenance`). The owner's ruling is that auditing is
 //! core functionality and *"LLM == MCP == A2A — just different protocols, not a different pathway
 //! through the engine at all"*, so the flagship plane being the unaudited one is the doctrine
 //! inverted. Billing is not auditing: a usage counter answers "how much", it is a mutable aggregate,

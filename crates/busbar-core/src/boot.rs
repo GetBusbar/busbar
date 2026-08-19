@@ -3,7 +3,7 @@
 //!
 //! THE RULE: where the binary needs N internals to perform ONE boot action,
 //! expose one function here and leave the N internals crate-private. The alternative — widening
-//! `admin::audit::AUDIT`, its `set_sink`/`restore_from_store`, the `a2a::taskstore::TASKS` and
+//! `admin::audit::AUDIT`, its `set_sink`/`restore_from_store`, the `plane::taskstore::TASKS` and
 //! `plane::calllog::CALLS` statics, `governance::signing::TokenSigner`, and the trust sweeper's
 //! machinery to `pub` — would put the one append-only hash chain's storage handle, the token
 //! master-key mint and the quarantine loop on the public surface of this crate, where a protocol
@@ -71,9 +71,9 @@ pub fn hydrate_all(app: &Arc<crate::state::App>) {
     // audit log is. That is reported rather than papered over.
     if let Some(gov) = app.governance.as_ref() {
         let store = gov.store();
-        crate::a2a::taskstore::TASKS.set_sink(store.clone());
-        match crate::a2a::taskstore::TASKS.restore_from_store(store.as_ref()) {
-            Ok(r) if r == crate::a2a::taskstore::Rehydrated::default() => {}
+        crate::plane::taskstore::TASKS.set_sink(store.clone());
+        match crate::plane::taskstore::TASKS.restore_from_store(store.as_ref()) {
+            Ok(r) if r == crate::plane::taskstore::Rehydrated::default() => {}
             Ok(r) => {
                 tracing::info!(
                     active = r.active,

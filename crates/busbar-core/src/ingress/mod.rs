@@ -577,7 +577,7 @@ fn finish_inner(
     }
 
     // THE PLANE'S EVIDENCE, on the ONE chain in `crate::audit` — the same mechanism `plane::calllog`
-    // and `a2a::provenance` append to, with a record type of its own and nothing else of its own
+    // and `plane::provenance` append to, with a record type of its own and nothing else of its own
     // (`crate::proxy::reqlog`). Here, at the plane's single terminal, for the same reason the metric
     // emit is here: every model request passes through this function exactly once, admitted or
     // refused, so a record written here cannot be skipped by a path that forgot to write one — and
