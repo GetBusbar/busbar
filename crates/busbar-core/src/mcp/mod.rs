@@ -152,9 +152,9 @@ pub(crate) const PLANE_DECL: crate::plane::registry::PlaneDecl =
                 .cloned()
                 .map(|r| std::sync::Arc::new(r) as std::sync::Arc<dyn std::any::Any + Send + Sync>)
         },
-        mount: Some(mount),
-        admin_routes: Some(admin_routes),
-        openapi: Some(openapi_fragment),
+        mount: Some(mcp_mount),
+        admin_routes: Some(mcp_admin_routes),
+        openapi: Some(mcp_openapi_fragment),
     };
 
 /// MOUNT THE MCP PLANE'S DATA ROUTES from the validated resource (its dispatch slot). The paths are
@@ -164,7 +164,7 @@ pub(crate) const PLANE_DECL: crate::plane::registry::PlaneDecl =
 /// itself takes the normal key chain, where the plane's admission facts make the verifier require
 /// this deployment's canonical URI as the token audience. GET and DELETE answer 405 (no GET stream,
 /// no sessions this revision) behind the same key bar.
-pub(crate) fn mount(
+pub(crate) fn mcp_mount(
     router: crate::core_routes::CoreRouter,
     slot: &dyn std::any::Any,
 ) -> crate::core_routes::CoreRouter {
@@ -203,7 +203,7 @@ pub(crate) fn mount(
 /// the upstream behind a `tools` registration, additive on top of the generic `tools` CRUD.
 /// `connect` is the shared plane verb; `changes` and `health` are the two derived reads that contact
 /// nothing.
-pub(crate) fn admin_routes(
+pub(crate) fn mcp_admin_routes(
     router: axum::Router<std::sync::Arc<crate::state::AppHandle>>,
 ) -> axum::Router<std::sync::Arc<crate::state::AppHandle>> {
     use axum::routing::{get, post};
@@ -223,7 +223,7 @@ pub(crate) fn admin_routes(
 /// admin document. Kept beside the routes that answer them so the two cannot drift.
 // Read only by the OpenAPI generator (feature `openapi-schema`) and the non-vacuity floor test.
 #[cfg_attr(not(any(test, feature = "openapi-schema")), allow(dead_code))]
-pub(crate) fn openapi_fragment() -> serde_json::Value {
+pub(crate) fn mcp_openapi_fragment() -> serde_json::Value {
     let ap = |rel: &str| format!("{}{rel}", crate::admin::v1::contract::ADMIN_PREFIX);
     serde_json::json!({
         ap("/tools/{name}/connect"): {
