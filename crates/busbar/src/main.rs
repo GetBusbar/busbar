@@ -845,8 +845,9 @@ async fn run() {
     // rather than four widened statics: the sinks (`AUDIT`, `TASKS`, `CALLS`) and their
     // restore verbs stay crate-private in core, so nothing outside the engine can swap a sink
     // out from under the hash chains. The narration (which restore is a hiccup, which is
-    // tamper evidence) moved with the code; see busbar-core/src/boot.rs.
-    busbar_core::boot::hydrate_all(&app);
+    // tamper evidence) moved with the code; see busbar-core/src/boot.rs. A plane whose durable
+    // state cannot be restored REFUSES BOOT — `hydrate_all` propagates the plane hook's `Err`.
+    busbar_core::boot::hydrate_all(&app).unwrap_or_else(|e| die(e));
     // RELIABILITY STATE IS STATELESS (store-or-RAM rule): circuit breakers, cooldowns, latency EWMAs
     // and hard-down latches live in RAM only and are RE-LEARNED after a restart (a lane that is down
     // re-trips its breaker on request #1). Nothing is restored from disk — the durable config that
@@ -919,38 +920,16 @@ async fn run() {
         ));
     }
 
-    // THE MCP REFRESH JOB — the same defence as the A2A one below, on the other plane, and the
-    // reason it exists is that until it did, quarantine-on-drift needed an operator to be present.
-    // `mcp::connect::refresh` had exactly ONE production caller and it was the admin verb
-    // `POST /admin/tools/{name}/connect`, so an upstream that swapped a tool's schema against an
-    // unattended deployment was detected exactly never. Schema hash-pinning with automatic drift
-    // quarantine is the one defence the competitive survey found nobody else shipping; it is not
-    // automatic if it waits for a human.
-    //
-    // Spawned only when there is a registration to sweep — a deployment with no `tools:` servers
-    // starts no job — and spawned ONCE here rather than on apply, for the same reason the flusher
-    // and the A2A job are: a second job against the same registry would double every fetch and race
-    // every ledger stamp. It holds the HANDLE, not the app, so a config apply is picked up on the
-    // next tick rather than sweeping a generation the operator has already replaced.
-    //
-    // The decision itself lives in `mcp::spawn_refresh_job` rather than inline here, because
-    // `run()` binds real listeners and joins them and so nothing can test a line of it. While this
-    // was inline, the whole battery in `mcp/tests/timer_dispatch_tests.rs` called `refresh_sweep`
-    // by hand, and deleting this block would have failed exactly nothing.
-    //
-    // Handle intentionally dropped, exactly as the A2A job's is: it runs for the process lifetime
-    // and exits its own loop on the shutdown broadcast.
-    std::mem::drop(busbar_core::mcp::spawn_refresh_job(
-        &app_handle,
-        shutdown_tx.subscribe(),
-    ));
-
-    // THE A2A RE-VERIFICATION JOB — hydration's sibling: spawned once, here, and folded into
-    // `busbar_core::boot` so the sweeper, the live-fetch transport and the identity resolver
-    // stay crate-private in core (the widened surface is exactly where a plane-shaped API
-    // could grow). Fatal if an outbound client identity does not
-    // resolve, exactly as before — the refusal text is the boot function's.
-    busbar_core::boot::spawn_a2a_reverify(&app_handle, &shutdown_tx).unwrap_or_else(|e| die(e));
+    // START EVERY PLANE'S BACKGROUND WORK — the MCP tool-list refresh sweep and the A2A
+    // re-verification job — through ONE boot entry point that folds over the plane registry and calls
+    // each plane's declared `start` hook (MCP before A2A, the order they have always started in). Each
+    // job MOVED into its plane's own hook beside the code it starts, so the sweeper types, the
+    // live-fetch transport and the identity resolver stay crate-private in their planes rather than
+    // being reached here by name. Spawned ONCE, here, rather than on apply, for the reason the flusher
+    // is: a second job against the same registry would double every fetch and race every ledger stamp.
+    // Fatal if an A2A outbound client identity does not resolve, exactly as before — the refusal text
+    // is the plane hook's, propagated through `start_planes`.
+    busbar_core::boot::start_planes(&app_handle, &shutdown_tx).unwrap_or_else(|e| die(e));
 
     // THE STDIO SERVE MODE (`--mcp-stdio`). The SAME boot ran above — config load, plugin
     // preflight, governance, the flusher and the refresh jobs — and the SAME dispatch will serve

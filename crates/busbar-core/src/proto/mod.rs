@@ -2048,6 +2048,11 @@ pub(crate) const PLANE_DECL: crate::plane::registry::PlaneDecl =
         mount: None,
         admin_routes: None,
         openapi: None,
+        // NO DURABLE STATE, NO BACKGROUND WORK. The LLM plane's state is the many `App` fields the
+        // data plane reads directly (lanes, pools, cost, …), restored by nothing here; its reliability
+        // state is RAM-only and re-learned from live traffic. So it hydrates nothing and starts no job.
+        hydrate: None,
+        start: None,
     };
 
 /// String-keyed registry mapping a provider's protocol name to a shared `Protocol` INSTANCE, built

@@ -2112,6 +2112,55 @@ EOF
   [ "$ps_seam" -eq 0 ] && note "ok (${ps_count} plane sink(s), each narrowed to PlaneStore)"
 fi
 
+# ── THE BOOT-CTX SURFACE (invariant (a)): a plane boot hook sees PlaneStore, never the audit Store ──
+# `BootCtx` is what a plane's `hydrate`/`start` hook is handed at boot. Its store surface must be the
+# narrowed `PlaneStore` (plane methods only), never the audit-carrying `Store`, a chain handle, or the
+# governance context — a boot hook that could reach `append_audit` could forge the one hash chain, the
+# exact power invariant (a) forbids. This is the sibling of the plane-store-seam rule above, on the
+# boot seam rather than the sink attach: it fails red the moment a `BootCtx` field is widened to a
+# trait object that is not `PlaneStore`, or names `audit::Chain` / `GovCtx`.
+hdr "boot-ctx surface (a plane boot hook sees PlaneStore, never the audit-carrying Store / chain / gov)"
+BC_FILE="${CORE}/plane/registry.rs"
+if [ ! -f "$BC_FILE" ] || ! grep -q 'pub struct BootCtx' "$BC_FILE"; then
+  note "BOOTCTX-MISSING: no \`pub struct BootCtx\` in \`${BC_FILE}\`; the boot-hook seam moved or was renamed."
+  note "  Re-point this rule at its new home — do not drop it, it guards invariant (a) for boot hooks."
+  fail=1
+else
+  # The struct body only: from the `pub struct BootCtx` line to its closing brace at column 0. Field
+  # DOC prose is included and deliberately conservative — a doc that spelled `GovCtx` would over-flag,
+  # which is the safe direction for a rule guarding the audit chain.
+  bc_body=$(awk '/pub struct BootCtx/{f=1} f{print} f&&/^}/{exit}' "$BC_FILE")
+  bc_bad=0
+  # POSITIVE: the store surface must name the narrowed trait.
+  if ! printf '%s\n' "$bc_body" | grep -q 'PlaneStore'; then
+    note "BOOTCTX-NOT-NARROWED: \`BootCtx\` names no \`PlaneStore\` — a boot hook's store surface must be"
+    note "  the narrowed trait, not the audit-carrying \`Store\`."
+    fail=1; bc_bad=1
+  fi
+  # NEGATIVE (trait object): every `dyn ` bound in the struct must be PlaneStore. A widening to
+  # `dyn busbar_api::Store` (any spelling) lacks `PlaneStore` on its line and is caught here.
+  bc_dyn=$({ printf '%s\n' "$bc_body" | grep -n 'dyn ' | grep -v 'PlaneStore' || true; })
+  if [ -n "$bc_dyn" ]; then
+    note "BOOTCTX-WIDENED: a \`BootCtx\` field is a trait object that is NOT \`PlaneStore\` — a boot hook"
+    note "  could reach past the plane surface to the audit chain (invariant (a)):"
+    while IFS= read -r h; do [ -n "$h" ] && note "    ${h}"; done <<EOF
+$bc_dyn
+EOF
+    fail=1; bc_bad=1
+  fi
+  # NEGATIVE (named handles): the chain or the governance context, by name.
+  bc_wide=$({ printf '%s\n' "$bc_body" | grep -nE 'audit::Chain|GovCtx' || true; })
+  if [ -n "$bc_wide" ]; then
+    note "BOOTCTX-WIDENED: a \`BootCtx\` field names the audit chain / the governance context, which would"
+    note "  hand a plane boot hook the power to forge the audit chain (invariant (a)):"
+    while IFS= read -r h; do [ -n "$h" ] && note "    ${h}"; done <<EOF
+$bc_wide
+EOF
+    fail=1; bc_bad=1
+  fi
+  [ "$bc_bad" -eq 0 ] && note "ok (BootCtx surface names PlaneStore, never dyn Store / audit::Chain / GovCtx)"
+fi
+
 hdr "result"
 if [ "$fail" -ne 0 ]; then note "structure-lint FAILED — see docs/code-layout.md"; exit 1; fi
 note "structure-lint passed"

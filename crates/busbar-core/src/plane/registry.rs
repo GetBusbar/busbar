@@ -44,11 +44,13 @@
 //! label a plane — plus, as of [`PlaneDecl::build`], the app-state SLOT seam (how a plane's runtime
 //! object for one config generation is constructed and type-erased) and, as of [`PlaneDecl::mount`]
 //! / [`PlaneDecl::admin_routes`] / [`PlaneDecl::openapi`], the SURFACE seam: how a plane contributes
-//! its data-plane routes, its admin verbs, and its OpenAPI fragment. It does NOT yet carry the
-//! remaining seams a plane crate would also register through: boot hooks. Those are designed in
-//! `design/1.6.0-plane-kind-seam.md` and are NOT built here. This file is the proof that the
-//! control's mechanism transfers to the plane axis at all — the vocabulary half, joined by the slot
-//! half and the surface half — and the honest measure of how much of the plane problem is covered.
+//! its data-plane routes, its admin verbs, and its OpenAPI fragment; and, as of
+//! [`PlaneDecl::hydrate`] / [`PlaneDecl::start`], the BOOT seam: how a plane restores its durable
+//! state before a listener binds and starts its background work after. A plane's boot hooks read a
+//! [`BootCtx`] whose store surface is [`PlaneStore`](crate::plane::store::PlaneStore) and never the
+//! audit-carrying `Store` (invariant (a)). This file is the proof that the control's mechanism
+//! transfers to the plane axis — the vocabulary half, joined by the slot half, the surface half and
+//! the boot half — and the honest measure of how much of the plane problem is covered.
 
 use super::Plane;
 
@@ -66,6 +68,126 @@ pub(crate) struct BuildCtx<'a> {
     pub(crate) mcp: Option<&'a crate::mcp::McpResource>,
     pub(crate) agent_defs: &'a crate::a2a::config::AgentsCfg,
     pub(crate) public_url: Option<&'a str>,
+}
+
+/// THE CORE REVERIFY-SWEEP SPAWNER, handed to a plane's [`PlaneDecl::start`] hook as a fn-pointer so
+/// the one background sweep loop can be started WITHOUT `crate::trust::sweep::spawn` (the cadence +
+/// shutdown-select machinery) going public — invariant (a)'s doctrine on the trust internals, in the
+/// same spirit as the plane store narrowing: the seam hands a capability, not a handle to the engine.
+///
+/// It is typed on the A2A sweeper because `crate::trust::sweep::Sweeper` returns `impl Future` and so
+/// is NOT object-safe — it cannot be erased behind `dyn`, and a fn-pointer cannot be generic. That
+/// concrete type is the ONE residual coupling this seam carries into the eventual A2A extraction, and
+/// is flagged as such: when A2A becomes a crate this alias moves with `ReverifySweeper`, or the sweep
+/// job grows a `spawn_blocking`-free object-safe form the seam can erase. It is unrelated to the
+/// invariant-(a) surface rule, which is about `Store`/`audit::Chain`/`GovCtx`, none of which this
+/// names.
+pub(crate) type ReverifySpawn = fn(
+    crate::a2a::verify::ReverifySweeper,
+    tokio::sync::broadcast::Receiver<()>,
+) -> tokio::task::JoinHandle<()>;
+
+/// The one instance of [`ReverifySpawn`] — `crate::trust::sweep::spawn` monomorphised on the A2A
+/// sweeper. Named HERE, in the registry (which already names every built-in plane's `PLANE_DECL`),
+/// rather than in `boot.rs`, so `boot.rs`'s `start_planes` loop names NO plane type at all.
+const REVERIFY_SPAWN: ReverifySpawn = crate::trust::sweep::spawn::<crate::a2a::verify::ReverifySweeper>;
+
+/// BUSBAR'S PUBLISHED CARD-ISSUER KEY, computed core-side and handed to the A2A [`PlaneDecl::start`]
+/// hook as PUBLIC values ONLY — the `kid` and the base64 Ed25519 SPKI an operator hands a counterparty
+/// out of band to pin busbar by. Deliberately NOT the signer and NOT its seed: a boot hook publishes
+/// the public half, it never signs, so no signing material crosses this seam (invariant (a)). This is
+/// the plan's "sign-only" preference taken to its limit — there is nothing to sign at boot, so the
+/// seam carries strictly the public key rather than even a closure over the secret.
+#[derive(Clone)]
+pub(crate) struct CardIssuer {
+    pub(crate) kid: String,
+    pub(crate) issuer_spki_base64: String,
+}
+
+/// EVERYTHING A PLANE'S BOOT HOOKS ([`PlaneDecl::hydrate`], [`PlaneDecl::start`]) MAY READ, and
+/// DELIBERATELY nothing that carries the audit chain, the governance context or the signing seed
+/// (invariant (a)). Its surface names [`PlaneStore`](crate::plane::store::PlaneStore) — never
+/// `Store`, `audit::Chain` or `GovCtx` — so a hook can restore a plane's own durable state but cannot
+/// reach the append-only chain or the token mint through it.
+///
+/// The two boot phases run at different points with different context available (hydration precedes
+/// the listener; start follows it), so the phase-specific fields are `Option`: hydration supplies the
+/// store and the freshly-built app; start supplies the live handle, the shutdown broadcast and the
+/// public card-issuer key. A hook reads the field for its own phase.
+pub struct BootCtx<'a> {
+    /// The PLANE-NARROWED durable store — task / mcp-call / demotion / spent methods only, never the
+    /// audit-carrying `Store`. `Some` in the hydrate phase whenever governance configured a store;
+    /// `None` in the start phase (a start hook restores nothing).
+    pub(crate) store: Option<std::sync::Arc<dyn crate::plane::store::PlaneStore>>,
+
+    /// HYDRATE phase — the freshly-built `App`, off which a hydrate hook attaches its own
+    /// write-through sinks (`plane_approvals`, `mcp_demotions`) and restores them. `None` in the start
+    /// phase, where the app has been moved into the router builder and only the handle remains.
+    pub(crate) app: Option<&'a std::sync::Arc<crate::state::App>>,
+
+    /// START phase — the live app handle a start hook reads THIS config generation off (a config
+    /// apply is then picked up on the next tick rather than sweeping a replaced generation), and the
+    /// shutdown broadcast its spawned loop exits on. `None` in the hydrate phase (no listener yet).
+    pub(crate) handle: Option<&'a std::sync::Arc<crate::state::AppHandle>>,
+    pub(crate) shutdown: Option<&'a tokio::sync::broadcast::Sender<()>>,
+
+    /// The core reverify-sweep spawner (see [`ReverifySpawn`]). Always present; a hook that starts no
+    /// sweep simply never calls it.
+    pub(crate) spawn_reverify: ReverifySpawn,
+
+    /// The deployment's PUBLIC card-issuer key (see [`CardIssuer`]). `Some` in the start phase when
+    /// this deployment mints one; `None` in the hydrate phase and when no card is signed.
+    pub(crate) card_issuer: Option<CardIssuer>,
+}
+
+impl<'a> BootCtx<'a> {
+    /// THE HYDRATE-PHASE CONTEXT: the plane-narrowed store and the freshly-built app. No listener
+    /// exists yet, so there is no handle, no shutdown broadcast and no card-issuer key to publish.
+    pub(crate) fn for_hydrate(
+        store: Option<std::sync::Arc<dyn crate::plane::store::PlaneStore>>,
+        app: &'a std::sync::Arc<crate::state::App>,
+    ) -> Self {
+        BootCtx {
+            store,
+            app: Some(app),
+            handle: None,
+            shutdown: None,
+            spawn_reverify: REVERIFY_SPAWN,
+            card_issuer: None,
+        }
+    }
+
+    /// THE START-PHASE CONTEXT: the live handle, the shutdown broadcast, and the PUBLIC card-issuer
+    /// key (computed core-side; the seed never crosses). A start hook restores nothing, so no store.
+    pub(crate) fn for_start(
+        handle: &'a std::sync::Arc<crate::state::AppHandle>,
+        shutdown: &'a tokio::sync::broadcast::Sender<()>,
+        card_issuer: Option<CardIssuer>,
+    ) -> Self {
+        BootCtx {
+            store: None,
+            app: None,
+            handle: Some(handle),
+            shutdown: Some(shutdown),
+            spawn_reverify: REVERIFY_SPAWN,
+            card_issuer,
+        }
+    }
+
+    /// A ctx carrying no phase context, for the boot-hook FOLD tests (R2-boot): a hook that only
+    /// returns `Err` — or a `None`-hook plane — reads nothing off it. Defined here because the
+    /// `spawn_reverify` fn-pointer is module-private.
+    #[cfg(test)]
+    pub(crate) fn stub() -> BootCtx<'static> {
+        BootCtx {
+            store: None,
+            app: None,
+            handle: None,
+            shutdown: None,
+            spawn_reverify: REVERIFY_SPAWN,
+            card_issuer: None,
+        }
+    }
 }
 
 /// EVERYTHING CORE KNOWS ABOUT A PLANE'S VOCABULARY, declared once by the plane itself.
@@ -185,6 +307,23 @@ pub struct PlaneDecl {
     // default `--no-default-features` build has neither, so the field is genuinely unread there.
     #[cfg_attr(not(any(test, feature = "openapi-schema")), allow(dead_code))]
     pub(crate) openapi: Option<fn() -> serde_json::Value>,
+
+    /// RESTORE THIS PLANE'S DURABLE STATE, in order, BEFORE a listener is bound — the plane half of
+    /// [`crate::boot::hydrate_all`]. Handed a [`BootCtx`] whose store surface is [`PlaneStore`] and
+    /// nothing that carries the audit chain, so a hydrate hook can attach the plane's write-through
+    /// sinks and read them back but can never touch the append-only chain (invariant (a)). `None` for
+    /// a plane with no durable state to restore (the LLM plane). A hook returning `Err` REFUSES BOOT:
+    /// [`crate::boot::hydrate_all`] propagates it with `?`, so a plane cannot half-restore and serve.
+    pub(crate) hydrate: Option<fn(&BootCtx) -> Result<(), String>>,
+
+    /// START THIS PLANE'S BACKGROUND WORK, AFTER the listeners are built — the plane half of
+    /// [`crate::boot::start_planes`]. Handed the same [`BootCtx`], now carrying the live app handle
+    /// and the shutdown broadcast a spawned loop exits on, plus the core reverify-sweep spawner as a
+    /// fn-pointer (so `crate::trust::sweep::spawn` need not go public) and the deployment's PUBLIC
+    /// card-issuer key (never its seed). `None` for a plane that starts nothing. A hook returning
+    /// `Err` REFUSES BOOT — an outbound identity that does not resolve is a startup failure, never a
+    /// warning — so [`crate::boot::start_planes`] propagates it with `?`.
+    pub(crate) start: Option<fn(&BootCtx) -> Result<(), String>>,
 }
 
 /// THE BUILT-INS — one line per plane, and every line is DATA.

@@ -21,12 +21,20 @@ pub(crate) fn is_audit_restore_read_hiccup(e: &str) -> bool {
     e.starts_with("audit restore read failed")
 }
 
-/// DURABLE-STATE HYDRATION, whole and in order: the audit ring, the A2A task table, the MCP
-/// per-call log, and the MCP demotion + spent-approval records — restored from the configured
-/// governance store, sinks attached write-through, chain verification narrated (hiccup vs tamper)
-/// exactly as each block's comment states. Called ONCE from `run()`, BEFORE a listener is bound,
-/// so every restored quarantine and spent approval is in force for the first request.
-pub fn hydrate_all(app: &Arc<crate::state::App>) {
+/// DURABLE-STATE HYDRATION, whole and in order: the audit ring FIRST (core, the append-only chain),
+/// then every registered plane's own durable state through its [`PlaneDecl::hydrate`] hook — the A2A
+/// task table, the MCP per-call log, and the MCP demotion + spent-approval records. Called ONCE from
+/// `run()`, BEFORE a listener is bound, so every restored quarantine and spent approval is in force
+/// for the first request. A plane hook returning `Err` REFUSES BOOT (propagated with `?`): a plane
+/// that cannot restore its durable state must not go on to serve half of it.
+///
+/// The plane loop replaces four hand-written blocks that each named `crate::mcp::`/`crate::a2a::`
+/// directly. The blocks did not change — they MOVED, each into its plane's own `hydrate` hook beside
+/// the code it restores — and this function now names no plane: it folds over [`plane_decls`] and
+/// calls the hook each plane declared. What each hook may touch of the durable home is narrowed at the
+/// seam: [`BootCtx`]'s store is `PlaneStore`, never the `append_audit`-carrying `Store` (invariant
+/// (a)), so only the audit block below — which IS the chain — holds the full `Store`.
+pub fn hydrate_all(app: &Arc<crate::state::App>) -> Result<(), String> {
     // DURABLE AUDIT (#17): the audit log is STATEFUL, so its single durable home is the configured
     // governance store — never a side-car file (store-or-RAM rule). When a durable store is configured
     // (sqlite/postgres/valkey), attach it as the write-through SINK (every future admin mutation
@@ -35,6 +43,10 @@ pub fn hydrate_all(app: &Arc<crate::state::App>) {
     // The RAM default (`store: memory`) has no durable audit — the sink no-ops and the restore reads
     // nothing — so the log is ephemeral BY DESIGN, started fresh on every boot. A chain-verification
     // failure on restore is logged as a tamper signal; there is no file fallback to fall back to.
+    //
+    // This is NOT a plane and is deliberately NOT a `hydrate` hook: the audit ring IS the chain, so
+    // its sink is correctly the full `Store` — the one durable-state block that must hold what every
+    // plane hook is narrowed away from.
     if let Some(gov) = app.governance.as_ref() {
         let store = gov.store();
         crate::admin::audit::AUDIT.set_sink(store.clone());
@@ -59,217 +71,88 @@ pub fn hydrate_all(app: &Arc<crate::state::App>) {
         }
     }
 
-    // DURABLE A2A TASK STATE. A2A is ASYNC BY DESIGN: a task spans turns, can be interrupted
-    // waiting on a human, and can outlive the process that started it. An in-memory task table
-    // therefore loses every in-flight task and every interrupt on restart, which is the difference
-    // between a suspend/resume that is real and one that is nominal. Same shape as the durable audit
-    // above and for the same reasons: the configured governance store is the single durable home
-    // (store-or-RAM rule), attached as a write-through SINK and read back here.
-    //
-    // The RAM default (`store: memory`) implements none of the task methods, so the sink no-ops and
-    // the restore reads nothing — in-flight tasks are ephemeral BY DESIGN there, exactly as the
-    // audit log is. That is reported rather than papered over.
-    if let Some(gov) = app.governance.as_ref() {
-        // NARROWED to the plane surface at the seam: the task store is a PLANE, so it is handed an
-        // `Arc<dyn PlaneStore>` (task/provenance/mcp/demotion/spent methods only), never the
-        // `Arc<dyn Store>` that also carries `append_audit`. The wrapper forwards to the same backend.
-        let plane_store = crate::plane::store::PlaneStoreView::narrow(gov.store());
-        crate::plane::taskstore::TASKS.set_sink(plane_store.clone());
-        match crate::plane::taskstore::TASKS.restore_from_store(plane_store.as_ref()) {
-            Ok(r) if r == crate::plane::taskstore::Rehydrated::default() => {}
-            Ok(r) => {
-                tracing::info!(
-                    active = r.active,
-                    terminal = r.terminal,
-                    unreadable = r.unreadable,
-                    "A2A in-flight tasks rehydrated from the durable governance store"
-                );
-                // An UNREADABLE row is an in-flight task that this binary cannot resume. Reported
-                // separately and at WARN, because summing it into the restored count is how a task
-                // that silently ceased to exist across a deploy stays invisible.
-                if r.unreadable > 0 {
-                    tracing::warn!(
-                        rows = r.unreadable,
-                        "persisted A2A task rows could not be read back and are NOT resumable; \
-                         they were most likely written by a different engine version"
-                    );
-                }
-                // A chain break is TAMPER EVIDENCE and is a different event from a read hiccup, so
-                // it is logged at ERROR and names the task rather than being folded into a count.
-                for brk in &r.chain_breaks {
-                    tracing::error!(
-                        task_id = %brk.scope,
-                        break_detail = %brk,
-                        "A2A per-task provenance CHAIN VERIFICATION FAILED on restore"
-                    );
-                }
-            }
-            Err(e) => tracing::warn!(
-                error = %e,
-                "could not read durable A2A task state; in-flight tasks start empty"
-            ),
-        }
-    }
-
-    // DURABLE MCP PER-CALL LOG. The tamper-evident record of who called which tool, under which
-    // approved digest, and whether it went out — the Art 26(6) record-keeping pillar, and the thing
-    // that makes "tamper-evident audit" a property an operator can exercise rather than a sentence.
-    //
-    // Attached here for the same reason and in the same shape as the two blocks above: the
-    // configured governance store is the single durable home (store-or-RAM rule), attached as a
-    // write-through sink and READ BACK, because a write's `Ok(())` proves nothing about a trait
-    // whose defaults accept and keep nothing.
-    //
-    // THE RESTORE IS NOT A FORMALITY. It is the only place in a running deployment where a persisted
-    // chain is recomputed, so it is also the only place a tamper is detected — every break it finds
-    // is logged at ERROR, naming the principal, while the records stay restored (refusing to restore
-    // them would let anyone able to write to the store DELETE a caller's history by corrupting one
-    // byte). With `store: memory` nothing is implemented, the sink no-ops and this reports zero: the
-    // call log is ephemeral BY DESIGN there, exactly as the audit ring and the task table are.
-    if let Some(gov) = app.governance.as_ref() {
-        // NARROWED to the plane surface at the seam, exactly as the task block above.
-        let plane_store = crate::plane::store::PlaneStoreView::narrow(gov.store());
-        crate::plane::calllog::CALLS.set_sink(plane_store.clone());
-        match crate::plane::calllog::CALLS.restore_from_store(plane_store.as_ref()) {
-            Ok(r) if r == crate::plane::calllog::Restored::default() => {}
-            Ok(r) => {
-                tracing::info!(
-                    principals = r.principals,
-                    records = r.records,
-                    "MCP per-call log restored from the durable governance store"
-                );
-                // An ENUMERATED-BUT-EMPTY chain is the one shape the verifier cannot judge alone,
-                // and it is what one caller's evidence being deleted wholesale looks like. Counted
-                // and surfaced separately rather than summed into `principals`.
-                if r.empty_chains > 0 {
-                    tracing::warn!(
-                        principals = r.empty_chains,
-                        "the durable MCP call log enumerates these principals but holds NO records \
-                         for them; their chains reopen at seq 1"
-                    );
-                }
-                for brk in &r.chain_breaks {
-                    tracing::error!(
-                        break_detail = %brk,
-                        "MCP per-call CHAIN VERIFICATION FAILED on restore — TAMPER EVIDENCE"
-                    );
-                }
-            }
-            Err(e) => tracing::warn!(
-                error = %e,
-                "could not read the durable MCP per-call log; chains start at their persisted \
-                 tail being unknown, which means a principal with rows in the store may reopen at \
-                 seq 1 and collide"
-            ),
-        }
-    }
-
-    // THE DURABLE MCP DEMOTION RECORD, and the SPENT-APPROVAL LEDGER. Two security properties that
-    // were process-local, attached to the same single durable home for the same reason as the three
-    // blocks above, and each closing a window that a restart used to re-open:
-    //
-    //   * A DEMOTED UPSTREAM stays demoted. Drift quarantine is derived from a live observation, and
-    //     a restarted process has none — so a server nobody has looked at and a server somebody
-    //     looked at and demoted became indistinguishable, and the declarative fallback (which is
-    //     right for the first) handed the second its approval back. The record is replayed here,
-    //     BEFORE a listener is bound, so the quarantine is in force for the first request.
-    //
-    //   * A SPENT APPROVAL stays spent, across a restart AND across a fleet. The in-process ledger
-    //     makes a sealed confirmation single-use per node for the life of the process; two nodes
-    //     share the signing key, so they share the seal, and without a shared ledger one approval
-    //     was redeemable once per node. On a money-moving tool that is the defect the gate exists to
-    //     stop.
-    //
-    // With `store: memory` both no-op and the pre-existing process-local behaviour is exactly what
-    // remains — the same documented posture the audit ring, the task table and the call log have.
-    if let Some(gov) = app.governance.as_ref() {
-        // NARROWED to the plane surface at the seam: the spent-approval ledger and the MCP demotion
-        // record are plane trust state, so both take an `Arc<dyn PlaneStore>` off one wrapper.
-        let plane_store = crate::plane::store::PlaneStoreView::narrow(gov.store());
-        app.plane_approvals.set_sink(plane_store.clone());
-        app.mcp_demotions.set_sink(plane_store);
-        match crate::mcp::demotion::hydrate(app) {
-            0 => {}
-            n => tracing::warn!(
-                servers = n,
-                "MCP upstream demotions restored from the durable governance store: these servers \
-                 were quarantined before the last restart and are refused until an operator works \
-                 the change or a sweep observes them serving what was approved"
-            ),
-        }
-    }
+    // THE PLANE HYDRATION FOLD. Each plane restores its OWN durable state through the `hydrate` hook
+    // it declared, in plane-list order (the audit ring, above, already went first). The store handed
+    // to every hook is NARROWED to the plane surface at the seam: an `Arc<dyn PlaneStore>` (task /
+    // provenance / mcp-call / demotion / spent methods only), never the `Arc<dyn Store>` that also
+    // carries `append_audit`. It is `None` when governance configured no store — the same
+    // `if let Some(gov)` gate the four blocks used to have, hoisted to one narrowing here — so a hook
+    // then skips its restore and the plane's durable state is ephemeral BY DESIGN, exactly as the
+    // audit ring is.
+    let plane_store = app
+        .governance
+        .as_ref()
+        .map(|gov| crate::plane::store::PlaneStoreView::narrow(gov.store()));
+    let ctx = crate::plane::registry::BootCtx::for_hydrate(plane_store, app);
+    run_hydrate_hooks(crate::plane::registry::plane_decls(), &ctx)
 }
 
-/// THE A2A RE-VERIFICATION JOB. Spawned only when `agents:` defines a plane; resolves the outbound
-/// client identities ONCE (an identity that does not resolve is a boot refusal — the returned
-/// `Err` — never a warning), publishes busbar's card-issuer key beside the plane start, builds the
-/// per-agent transports once, and starts the one sweep loop. The sweeper type, the live-fetch
-/// transport and the identity resolver all stay `pub(crate)`: this function is the only doorway.
-pub fn spawn_a2a_reverify(
-    app_handle: &crate::state::AppHandle,
+/// THE HYDRATE FOLD. Split from [`hydrate_all`] and taking its decl list by argument for the reason
+/// [`crate::plane::registry::build_dispatch`] is split from `appbuild`: the boot-refuses-on-`Err`
+/// ratchet (R2-boot) is then drivable over an INJECTED decl — a plane whose `hydrate` returns `Err` —
+/// without the process plane `OnceLock`, which can be initialised only once per test binary. A hook's
+/// `Err` aborts the fold with `?`; a plane that half-restored its durable state must not serve.
+pub(crate) fn run_hydrate_hooks(
+    decls: &[&'static crate::plane::registry::PlaneDecl],
+    ctx: &crate::plane::registry::BootCtx,
+) -> Result<(), String> {
+    for decl in decls {
+        if let Some(hydrate) = decl.hydrate {
+            hydrate(ctx)?;
+        }
+    }
+    Ok(())
+}
+
+/// START EVERY REGISTERED PLANE'S BACKGROUND WORK, AFTER the listeners are built — the MCP tool-list
+/// refresh sweep and the A2A re-verification job — by folding over [`plane_decls`] and calling each
+/// plane's [`PlaneDecl::start`] hook in plane-list order (MCP before A2A, the order these two jobs
+/// have always started in). A hook returning `Err` REFUSES BOOT (propagated with `?`): an A2A
+/// outbound client identity that does not resolve is a startup failure naming its source, never a
+/// warning — a deployment that re-verifies nothing for an agent while reading as though mutual TLS
+/// were configured is exactly what booting past it would produce.
+///
+/// This function names no plane. Each plane's job MOVED into its own `start` hook beside the code it
+/// starts; the sweeper types, the live-fetch transport and the identity resolver all stay
+/// `pub(crate)` in their planes. Two capabilities the A2A hook needs without reaching into the engine
+/// are handed on the [`BootCtx`]: the core reverify-sweep spawner (a fn-pointer, so
+/// `crate::trust::sweep::spawn` need not go public) and busbar's PUBLIC card-issuer key (its `kid` and
+/// SPKI, computed core-side HERE — the signing seed never crosses the seam, invariant (a)).
+pub fn start_planes(
+    app_handle: &Arc<crate::state::AppHandle>,
     shutdown: &tokio::sync::broadcast::Sender<()>,
 ) -> Result<(), String> {
-    // THE A2A RE-VERIFICATION JOB. An approval is a statement about a document at a moment and
-    // nothing keeps it true; the pin catches a change only when somebody looks, and this is what
-    // makes somebody look. Spawned only when `agents:` defines a plane — a deployment that fronts
-    // no agents starts no job — and spawned once here rather than on apply, for the same reason the
-    // flusher is: a second job against the same registry would double every fetch and race every
-    // ledger stamp.
-    if let Some(plane) = app_handle.load().a2a.clone() {
-        tracing::info!(
-            agents = plane.len(),
-            tick_secs = crate::trust::sweep::SWEEP_TICK.as_secs(),
-            "a2a: re-verification job started"
-        );
-        // PUBLISH BUSBAR'S AGENT-CARD ISSUER KEY, once, at the one moment an operator is watching.
-        //
-        // busbar signs the cards it serves so external callers have something to pin it BY, and a
-        // pin is only a root if the pinning party got the key OUT OF BAND — which means a human has
-        // to be able to read it off this deployment and hand it over. It is a PUBLIC key, so a log
-        // line is the right place for it; the secret it is derived from never appears here or
-        // anywhere else. Logged beside the plane's start rather than at key resolution, because
-        // this value only means anything where an A2A plane is actually serving cards.
-        if let Some(signer) = app_handle
-            .load()
-            .governance
-            .as_ref()
-            .and_then(|g| g.a2a_card_signer())
-        {
-            tracing::info!(
-                kid = signer.kid(),
-                issuer_key = signer.issuer_spki_base64(),
-                "a2a: agent cards served by this deployment are signed with this key; give it to \
-                 callers out of band so they can pin busbar"
-            );
-        }
-        // THE OUTBOUND CLIENT CERTIFICATES, resolved ONCE, HERE, and fatal if they do not.
-        //
-        // Same discipline as `tls::build_server_config` on the inbound side: a cert/key that does
-        // not load is a startup failure naming its source, never a warning. A registration whose
-        // `client_identity:` did not resolve could never complete a handshake with its endpoint, so
-        // booting past it would produce a deployment that re-verifies nothing for that agent while
-        // reading, in config and in the admin API, as though mutual TLS were configured.
-        let a2a_identities = crate::a2a::transport::resolve_client_identities(
-            &app_handle.load().agent_defs,
-            &app_handle.load().secret_resolver,
-        )
-        .map_err(|e| format!("a2a: outbound client identity: {e}"))?;
-        // Handle intentionally dropped, exactly as the flusher's is: the job runs for the process
-        // lifetime and exits its own loop on the shutdown broadcast.
-        // THE PER-AGENT TRANSPORTS, BUILT ONCE for the job's lifetime rather than per tick. The
-        // identities were resolved at boot and the plane the job holds is this generation's, so
-        // rebuilding the bundle every thirty seconds would re-derive a constant — and, now that a
-        // transport can carry a private key, would do so with key material in hand on every tick.
-        let live = std::sync::Arc::new(crate::a2a::transport::LiveCardFetch::presenting(
-            plane.fetch_policy().clone(),
-            &a2a_identities,
-        ));
-        std::mem::drop(crate::trust::sweep::spawn(
-            crate::a2a::verify::ReverifySweeper { plane, live },
-            shutdown.subscribe(),
-        ));
-    }
+    // BUSBAR'S PUBLISHED CARD-ISSUER KEY, computed core-side from the card signer and reduced to its
+    // PUBLIC halves before it crosses the seam. The signer (and the seed it derives from) never
+    // leaves core; a start hook receives only the `kid` and the base64 SPKI it publishes for callers
+    // to pin busbar by. `None` when this deployment mints no card-issuer key.
+    let card_issuer = app_handle
+        .load()
+        .governance
+        .as_ref()
+        .and_then(|g| g.a2a_card_signer())
+        .map(|s| crate::plane::registry::CardIssuer {
+            kid: s.kid().to_string(),
+            issuer_spki_base64: s.issuer_spki_base64(),
+        });
+    let ctx = crate::plane::registry::BootCtx::for_start(app_handle, shutdown, card_issuer);
+    run_start_hooks(crate::plane::registry::plane_decls(), &ctx)
+}
 
+/// THE START FOLD. Split from [`start_planes`] and taking its decl list by argument, exactly as
+/// [`run_hydrate_hooks`] is, so R2-boot — a plane whose `start` returns `Err` REFUSES BOOT — is
+/// drivable over an injected decl without the process plane `OnceLock` and without booting real
+/// listeners. A hook's `Err` aborts the fold with `?`, which is how an A2A outbound identity that
+/// does not resolve stops the boot rather than yielding a deployment that re-verifies nothing.
+pub(crate) fn run_start_hooks(
+    decls: &[&'static crate::plane::registry::PlaneDecl],
+    ctx: &crate::plane::registry::BootCtx,
+) -> Result<(), String> {
+    for decl in decls {
+        if let Some(start) = decl.start {
+            start(ctx)?;
+        }
+    }
     Ok(())
 }
 
