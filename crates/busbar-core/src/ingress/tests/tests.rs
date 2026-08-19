@@ -37,6 +37,9 @@ fn minimal_app() -> Arc<App> {
         mcp: None,
         oauth_as: None,
         planes: Arc::new(crate::plane::PlaneDispatch::default()),
+        // No `mcp:`/`agents:` configured — no slot for either, the same absence `mcp`/`a2a` below
+        // encode in their own typed fields.
+        plane_slots: Default::default(),
         agent_defs: Default::default(),
         // No `agents:`, therefore no plane: the same `None` a deployment that fronts no agents gets.
         a2a: None,

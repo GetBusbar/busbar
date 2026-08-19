@@ -2038,6 +2038,10 @@ pub(crate) const PLANE_DECL: crate::plane::registry::PlaneDecl =
         // audience on the residual would make every unclaimed path an OAuth resource server.
         claims: |_| Vec::new(),
         admission: |_| None,
+        // NO SLOT. The LLM plane's runtime state is the many other `App` fields the data plane
+        // already reads directly (lanes, pools, cost, …), not one object this seam can erase —
+        // see `PlaneDecl::build`'s doc for why that is the right answer here rather than a gap.
+        build: |_| None,
     };
 
 /// String-keyed registry mapping a provider's protocol name to a shared `Protocol` INSTANCE, built

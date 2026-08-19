@@ -1270,6 +1270,9 @@ impl TestApp {
         // configures and the dispatch table that mounts it must come from one reading.
         let a2a_plane =
             crate::a2a::plane::A2aPlane::from_config(&self.agent_defs, self.public_url.as_deref());
+        // Lowered ONCE for the same reason: `mcp:`'s typed field and the type-erased slot map below
+        // must read the identical `Arc`, never two `Arc::new(self.mcp.clone())` calls.
+        let mcp_arc = self.mcp.clone().map(std::sync::Arc::new);
         // THE HOOK ENVIRONMENT, bound BEFORE the snapshot because two things read it: the App's own
         // control-plane surface, and the per-container gate resolution below.
         let hook_env = self.hook_env.clone().unwrap_or_else(|| {
@@ -1400,7 +1403,30 @@ impl TestApp {
 
                 dispatch
             }),
-            mcp: self.mcp.clone().map(std::sync::Arc::new),
+            // THE TYPE-ERASED SLOT MAP (Step 2.3), from the SAME two `Arc`s the typed fields below
+            // hold — `mcp_arc.clone()` / `a2a_plane.clone()`, not a second construction — so a test
+            // built through this fixture sees the identical "one object, two readers" property
+            // `build_app_from_config` gives production.
+            plane_slots: {
+                let mut m: std::collections::BTreeMap<
+                    &'static str,
+                    std::sync::Arc<dyn std::any::Any + Send + Sync>,
+                > = std::collections::BTreeMap::new();
+                if let Some(r) = mcp_arc.as_ref() {
+                    m.insert(
+                        crate::mcp::PLANE_DECL.key,
+                        r.clone() as std::sync::Arc<dyn std::any::Any + Send + Sync>,
+                    );
+                }
+                if let Some(p) = a2a_plane.as_ref() {
+                    m.insert(
+                        crate::a2a::PLANE_DECL.key,
+                        p.clone() as std::sync::Arc<dyn std::any::Any + Send + Sync>,
+                    );
+                }
+                m
+            },
+            mcp: mcp_arc.clone(),
             mcp_catalogue: std::sync::Arc::new(crate::mcp::catalogue::Catalogue::build(
                 &self.tool_defs,
             )),

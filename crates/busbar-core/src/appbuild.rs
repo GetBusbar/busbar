@@ -1310,12 +1310,31 @@ pub fn build_app_from_config(
         |p| p.boot_route_paths.clone(),
     );
 
-    // THE A2A PLANE, lowered ONCE and read twice below: as the registry the re-verification job
-    // sweeps, and as the source of the dispatch table's A2A admission facts. Lowering it twice would
-    // let the mounted surface and the registry behind it come from two different readings of one
-    // config generation.
-    let a2a_plane =
-        crate::a2a::plane::A2aPlane::from_config(&cfg.agent_defs, cfg.public_url.as_deref());
+    // THE PLANE SLOT MAP (Step 2.3's app-state seam): every registered plane's runtime object for
+    // THIS config generation, built ONCE via its own decl's `build` fn and type-erased into
+    // `Arc<dyn Any + Send + Sync>`. Built here, ahead of the `App` literal below, so both readers —
+    // the type-erased `plane_slots` map and each plane's still-present TYPED field (`App::mcp`,
+    // `App::a2a`) — are populated by downcasting the SAME `Arc` rather than by two separate
+    // constructions that could disagree. The MCP plane's object is already validated
+    // (`McpResource::from_cfg` ran at `RootCfg` construction), so its `build` fn is a wrap, not a
+    // second parse; the A2A plane's object is lowered here for the first time, exactly where
+    // `A2aPlane::from_config` used to be called directly — it is still lowered ONCE, now through the
+    // decl instead of by name, and read from `plane_slots` everywhere below (the dispatch table's
+    // admission facts, the registry the re-verification job sweeps, and `App::a2a`).
+    let plane_slots: std::collections::BTreeMap<
+        &'static str,
+        Arc<dyn std::any::Any + Send + Sync>,
+    > = {
+        let ctx = crate::plane::registry::BuildCtx {
+            mcp: cfg.mcp.as_ref(),
+            agent_defs: &cfg.agent_defs,
+            public_url: cfg.public_url.as_deref(),
+        };
+        crate::plane::registry::plane_decls()
+            .iter()
+            .filter_map(|decl| (decl.build)(&ctx).map(|obj| (decl.key, obj)))
+            .collect()
+    };
 
     // THE AUTHORIZATION SERVER, built ONCE, and only when the operator asked for one. Everything
     // this plane costs hangs off this `Option`: absent, nothing below runs, `App::oauth_as` is
@@ -1429,7 +1448,12 @@ pub fn build_app_from_config(
         // THIS generation's config on every apply, deliberately — a registration an operator
         // removed must stop being re-verified, and one whose pin they changed must be judged
         // against the pin they now declare.
-        a2a: a2a_plane.clone(),
+        //
+        // Downcast off the `plane_slots` map rather than a second `A2aPlane::from_config` call —
+        // this and `App::plane_slots["a2a"]` are the SAME `Arc`, not two lowerings of one config.
+        a2a: plane_slots
+            .get(crate::a2a::PLANE_DECL.key)
+            .and_then(|obj| obj.clone().downcast::<crate::a2a::plane::A2aPlane>().ok()),
         // History + rate windows are Arc-shared across applies (process-lifetime state).
         versions: prior.map_or_else(
             || Arc::new(admin::versions::VersionLog::new()),
@@ -1466,25 +1490,30 @@ pub fn build_app_from_config(
         // describe so an extracted plane crate contributes its own door. `build_dispatch` refuses the
         // boot if any plane claims a path but binds no audience (ratchet R2).
         //
-        // The slot lookup here still names `crate::mcp`/`crate::a2a`: until Step 2.3's type-erased
-        // App slot map lands, appbuild is where each plane's object is matched to its key. The
-        // CLAIMS and ADMISSION logic — the security-load-bearing part — has already left for the
-        // decls.
+        // The slot lookup reads `plane_slots` (built above, once, via each decl's `build` fn) rather
+        // than naming `crate::mcp`/`crate::a2a` directly — the CLAIMS and ADMISSION logic, and now
+        // the object the two are computed from, are all reached through the decl.
         planes: Arc::new({
-            let mut plane_slots: std::collections::BTreeMap<&'static str, &dyn std::any::Any> =
-                std::collections::BTreeMap::new();
-            if let Some(r) = cfg.mcp.as_ref() {
-                plane_slots.insert(crate::mcp::PLANE_DECL.key, r as &dyn std::any::Any);
-            }
-            if let Some(p) = a2a_plane.as_ref() {
-                plane_slots.insert(crate::a2a::PLANE_DECL.key, p.as_ref() as &dyn std::any::Any);
-            }
+            let ref_slots: std::collections::BTreeMap<&'static str, &dyn std::any::Any> =
+                plane_slots
+                    .iter()
+                    .map(|(k, v)| (*k, v.as_ref() as &dyn std::any::Any))
+                    .collect();
             crate::plane::registry::build_dispatch(
                 crate::plane::registry::plane_decls(),
-                &plane_slots,
+                &ref_slots,
             )?
         }),
-        mcp: cfg.mcp.clone().map(Arc::new),
+        // Downcast off the SAME `Arc` `plane_slots["mcp"]` holds — see the field's doc for why this
+        // and the type-erased map must never be two constructions of one config generation.
+        mcp: plane_slots
+            .get(crate::mcp::PLANE_DECL.key)
+            .and_then(|obj| obj.clone().downcast::<crate::mcp::McpResource>().ok()),
+        // THE TYPE-ERASED SLOT MAP ITSELF (Step 2.3). Moved in last: every typed field above that
+        // reads a plane's object does so by cloning out of this map first, so `plane_slots` and
+        // (e.g.) `mcp`/`a2a` are guaranteed to agree — there is no second `build` call anywhere that
+        // could disagree with what is stored here.
+        plane_slots,
         oauth_as: oauth_as_plane.clone(),
         // THE CATALOGUE SNAPSHOT, built here and only here. It takes the next PIN GENERATION on
         // construction, so every config apply — including one that changes nothing about `tools:` —
