@@ -533,6 +533,25 @@ impl OperationHandler for GeminiEmbeddings {
     fn taps_usage(&self) -> bool {
         true
     }
+    /// FAIL-CLOSED: Gemini `:embedContent` embeds a SINGLE input. A cross-protocol request carrying
+    /// N > 1 inputs (e.g. an OpenAI-family embeddings batch) can only embed the first here — silently
+    /// misaligning the caller's `inputs[i] <-> embeddings[i]` and returning HTTP 200 with one vector.
+    /// Reject it up front instead. (`:batchEmbedContents` support is the larger follow-up.)
+    fn egress_representable(&self, ir: &IrReq) -> Result<(), String> {
+        if let IrReq::Embeddings(r) = ir {
+            let n = match &r.input {
+                EmbInput::Text(v) => v.len(),
+                _ => 1,
+            };
+            if n > 1 {
+                return Err(format!(
+                    "Gemini :embedContent embeds a single input; a {n}-input embeddings request is \
+                     not supported on this cross-protocol route (send inputs one per request)"
+                ));
+            }
+        }
+        Ok(())
+    }
     fn read_request(&self, body: &[u8], _content_type: &str) -> Result<IrReq, IngressReject> {
         // gemini `:embedContent` wire → IR (gemini as INGRESS). Model rides the PATH (routing fills
         // it via `IrReq::set_model`); the body carries `content.parts[].text`.

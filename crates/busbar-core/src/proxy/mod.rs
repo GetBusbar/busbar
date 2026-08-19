@@ -263,3 +263,12 @@ mod ingress_reject_response_tests;
 #[cfg(test)]
 #[path = "tests/signal_catalog_tests.rs"]
 mod signal_catalog_tests;
+
+/// FAIL-CLOSED multi-candidate / batch-embeddings edge reject. Pins that a cross-protocol request
+/// asking for more than one candidate (OpenAI `n` / Gemini `candidateCount`) is REJECTED up front
+/// (rather than forced through the single-candidate IR and silently returned 1-of-N), while a
+/// same-protocol `n>1` request is left untouched (served verbatim). Also pins the multi-input
+/// embeddings → Gemini `:embedContent` reject.
+#[cfg(test)]
+#[path = "tests/multi_candidate_reject_tests.rs"]
+mod multi_candidate_reject_tests;

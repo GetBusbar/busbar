@@ -819,6 +819,22 @@ impl ProtocolReader for GeminiReader {
 
         let candidates = data.get("candidates").and_then(|c| c.as_array());
 
+        // A client can legally request candidateCount>1. This reader collapses to candidates[0],
+        // which is all a CROSS-PROTOCOL (IR-rebuilt) hop can carry — the rest are dropped there. A
+        // same-protocol relay re-emits the upstream bytes verbatim and preserves all N; this reader is
+        // still invoked on that path as a usage side-channel, so the message is scoped to the
+        // cross-protocol case rather than asserting an unconditional drop. Warn ONCE per stream.
+        // Defense-in-depth: the engine now rejects candidateCount>1 up front on cross-protocol routes.
+        if let Some(cands) = candidates {
+            if cands.len() > 1 && !state.multi_candidate_warned {
+                state.multi_candidate_warned = true;
+                tracing::warn!(
+                    candidates = cands.len(),
+                    "gemini stream chunk carried multiple candidates; only candidates[0] survives IR translation — a cross-protocol hop drops the rest (a same-protocol relay preserves all)"
+                );
+            }
+        }
+
         // Process ONLY the first candidate, mirroring the non-streaming `read_response` (which reads
         // `candidates[0]`). Gemini's `streamGenerateContent` honors
         // `generationConfig.candidateCount > 1`, so a chunk may carry N candidates each with its own

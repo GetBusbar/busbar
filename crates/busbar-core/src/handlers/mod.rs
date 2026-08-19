@@ -259,6 +259,18 @@ pub trait OperationHandler: Send + Sync {
         writer.egress_accept(wants_stream)
     }
 
+    /// Fail-closed guard for a cross-protocol request whose neutral IR cannot be written onto THIS
+    /// egress operation's wire without silently losing part of the caller's ask. Returns
+    /// `Err(reason)` to REJECT the request (4xx) up front rather than proceed to a `write_request`
+    /// that would drop data and return an HTTP 200. Default `Ok(())`; the Gemini embeddings handler
+    /// overrides it — Gemini `:embedContent` embeds a SINGLE input, so a multi-input embeddings
+    /// request routed to it can only embed the first, silently misaligning the caller's
+    /// `inputs[i] <-> embeddings[i]`. Consulted only at the cross-protocol request seam (a
+    /// same-protocol request never rebuilds its body from the IR, so it cannot hit this loss).
+    fn egress_representable(&self, _ir: &IrReq) -> Result<(), String> {
+        Ok(())
+    }
+
     /// Value-level codec bridges — for engine seams that already hold a PARSED JSON body (the
     /// streaming chat engine parses once for shim/intent reads). Defaults round-trip through the
     /// byte codecs (correct for every JSON operation); chat overrides them to call its proto

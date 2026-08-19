@@ -22,6 +22,17 @@ impl ProtocolWriter for GeminiWriter {
         GEMINI_PATH_BASE
     }
 
+    /// Gemini expresses the candidate count as `generationConfig.candidateCount` (the snake_case
+    /// `candidate_count` is also tolerated). `Some(k)` only for a genuine `k > 1` ask. See the trait
+    /// doc for why the engine rejects `k > 1` on a cross-protocol route (the single-candidate IR would
+    /// drop candidates `1..k`).
+    fn requested_candidate_count(&self, body: &serde_json::Value) -> Option<u64> {
+        body.pointer("/generationConfig/candidateCount")
+            .or_else(|| body.pointer("/generationConfig/candidate_count"))
+            .and_then(|v| v.as_u64())
+            .filter(|&k| k > 1)
+    }
+
     /// Gemini's URL embeds the model AND the stream mode. Streaming requests go to
     /// `:streamGenerateContent?alt=sse` (the gemini reader already decodes those SSE chunks);
     /// non-streaming to `:generateContent`.

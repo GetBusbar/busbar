@@ -1051,6 +1051,12 @@ pub struct StreamDecodeState {
     /// Empty for every other reader (which assign IR indices 1:1 or via `open_tools`/`text_index`
     /// directly and never need this lookup).
     pub tool_ir_index: std::collections::BTreeMap<usize, usize>,
+    /// One-way latch so the multi-candidate drop `warn!` fires ONCE per stream rather than once per
+    /// SSE chunk. Set the first time a streaming chunk is seen to carry more than one
+    /// choice/candidate (the single-candidate IR keeps `[0]` and drops the rest). Defense-in-depth:
+    /// the engine now rejects `n>1`/`candidateCount>1` on a cross-protocol route up front, so this
+    /// path should not be reached — but if a drop path survives, this makes it observable.
+    pub multi_candidate_warned: bool,
     /// Monotone next-free IR block index, for readers that allocate slots by ORDER OF FIRST
     /// APPEARANCE. NEVER reset for the life of the stream. The terminal branch's `mem::take` of
     /// `open_tools`/`tool_ir_index` (openai_chat reader) clears WHO IS OPEN — it must not also be

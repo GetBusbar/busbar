@@ -5,6 +5,14 @@ impl ProtocolWriter for OpenAiWriter {
         PATH_UPSTREAM
     }
 
+    /// OpenAI chat completions express the candidate count as top-level `n`. `Some(k)` only for a
+    /// genuine `k > 1` ask; absent/1/unparseable → `None`. See the trait doc for why the engine
+    /// rejects `n > 1` on a cross-protocol route (the single-candidate IR would drop candidates
+    /// `1..n`).
+    fn requested_candidate_count(&self, body: &serde_json::Value) -> Option<u64> {
+        body.get("n").and_then(|v| v.as_u64()).filter(|&k| k > 1)
+    }
+
     fn write_request(&self, req: &busbar_core::ir::IrRequest) -> serde_json::Value {
         let mut messages_array: Vec<serde_json::Value> = Vec::new();
 

@@ -1013,6 +1013,22 @@ pub trait ProtocolWriter: Send + Sync {
         false
     }
 
+    /// The number of response candidates THIS ingress request asks the backend to generate, when the
+    /// protocol expresses one and the caller set it above the single-candidate default. OpenAI-family
+    /// reads `n`; Gemini reads `candidateCount` / `candidate_count`. Returns `None` when the field is
+    /// absent, unparseable, or `<= 1` — i.e. `Some(k)` ONLY for a genuine `k > 1` ask.
+    ///
+    /// The engine consults this at the CROSS-PROTOCOL request seam. The busbar IR (`IrResponse`)
+    /// models exactly ONE assistant turn, so any response forced through it (every cross-protocol hop,
+    /// streaming or buffered) can carry only candidate `[0]` — the rest would be silently dropped with
+    /// an HTTP 200, the least-observable data loss in a security/audit product. Rather than return
+    /// 1-of-N, the engine REJECTS such a request up front (4xx). Same-protocol routes relay the
+    /// backend body verbatim and never touch the IR, so this is not consulted for them and an `n > 1`
+    /// same-protocol request keeps working unchanged.
+    fn requested_candidate_count(&self, _body: &serde_json::Value) -> Option<u64> {
+        None
+    }
+
     /// Clone this writer as a trait object.
     fn clone_box(&self) -> Box<dyn ProtocolWriter>;
 }

@@ -437,7 +437,7 @@ pub(crate) fn translate_request_cross_protocol(
         // fixed protocol×protocol slot table — no label allocation on the hop).
         crate::telemetry::translation(ingress_protocol, egress_name);
         // Cross-protocol: translate the request body through the superset IR.
-        let Some(_ingress_proto) = crate::proto::protocol_for(ingress_protocol) else {
+        let Some(ingress_proto) = crate::proto::protocol_for(ingress_protocol) else {
             return Err(Box::new(ingress_error(
                 ingress_protocol,
                 StatusCode::BAD_REQUEST,
@@ -445,6 +445,23 @@ pub(crate) fn translate_request_cross_protocol(
                 DETAIL_INTERNAL_ERROR,
             )));
         };
+        // FAIL-CLOSED multi-candidate guard. The busbar IR (`IrResponse`) models exactly ONE
+        // assistant turn, so a cross-protocol hop's response reader keeps candidate [0] and drops the
+        // rest. A same-protocol route never reaches here (it relays the backend body verbatim), so an
+        // `n>1` / `candidateCount>1` request served same-protocol is untouched and keeps returning all
+        // N. On a cross-protocol route we REJECT the request up front rather than silently return
+        // 1-of-N with an HTTP 200 — the least-observable data loss in a security/audit product.
+        if let Some(k) = ingress_proto.writer().requested_candidate_count(&body) {
+            if k > 1 {
+                return Err(Box::new(ingress_error(
+                    ingress_protocol,
+                    StatusCode::BAD_REQUEST,
+                    KIND_INVALID_REQUEST,
+                    "multiple candidates are not supported on a cross-protocol route; request a \
+                     single candidate (n=1 / candidateCount=1)",
+                )));
+            }
+        }
         // OPERATION-BLIND translate: the INGRESS operation handler parses its dialect into the
         // neutral IR; the IR applies its own cross-protocol semantics (`prepare_for_egress` — chat's
         // max-tokens default, tool-id decode, and the extra-key leak guard live INSIDE the IR,
@@ -499,6 +516,18 @@ pub(crate) fn translate_request_cross_protocol(
                         DETAIL_MODEL_UNSUPPORTED_OPERATION,
                     )));
                 };
+                // FAIL-CLOSED representability guard: reject a cross-protocol request whose IR cannot
+                // be written onto this egress operation's wire without silent loss (e.g. a multi-input
+                // embeddings request routed to Gemini `:embedContent`, which embeds a single input),
+                // rather than proceed to a `write_request` that would drop data and return HTTP 200.
+                if let Err(reason) = eh.egress_representable(&ir_req) {
+                    return Err(Box::new(ingress_error(
+                        ingress_protocol,
+                        StatusCode::BAD_REQUEST,
+                        KIND_INVALID_REQUEST,
+                        &reason,
+                    )));
+                }
                 match eh.write_request_value(&ir_req) {
                     Some(written) => body = written,
                     None => {
