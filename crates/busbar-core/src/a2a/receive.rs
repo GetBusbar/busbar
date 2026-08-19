@@ -1352,7 +1352,11 @@ async fn admitted(
     }
 
     if let Some(pinned) = callback.as_ref() {
-        let _ = crate::plane::taskstore::TASKS.set_push_callback(&task_id, Some(pinned.url.clone()), now);
+        let _ = crate::plane::taskstore::TASKS.set_push_callback(
+            &task_id,
+            Some(pinned.url.clone()),
+            now,
+        );
         // THE ADDRESSES THE GUARD JUST JUDGED, kept so the FIRST delivery is a `revalidate` — the
         // fresh answer must pass the guard AND still overlap this set — rather than a bare
         // `validate`. Process-local: see `pushdeliver::pins` for why it is not, and must not be
@@ -1752,7 +1756,12 @@ async fn stream_hop(
                 cursor = cursor.saturating_add(1);
                 // The resubscribe resume point, advanced durably per chunk. Monotonic in the store,
                 // so a duplicate delivery cannot rewind it.
-                let _ = crate::plane::taskstore::TASKS.advance_cursor(&task_id, cursor, now, &request_id);
+                let _ = crate::plane::taskstore::TASKS.advance_cursor(
+                    &task_id,
+                    cursor,
+                    now,
+                    &request_id,
+                );
             }
             // A caller that has gone away closes the receiver, and the hop stops there rather than
             // draining an upstream into a channel nobody is reading.

@@ -67,10 +67,10 @@
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
-use crate::plane::provenance;
 use super::pushnotify::{self, PinnedCallback, PushNotifyError};
 use super::relay::RelaySeam;
 use super::task::Task;
+use crate::plane::provenance;
 
 /// THE HEADER EVERY DELIVERY CARRIES, whatever else it carries.
 ///

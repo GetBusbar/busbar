@@ -34,9 +34,9 @@
 //! at all, which is precisely how ten store methods were dropped at this seam earlier in the same
 //! release.
 
-use crate::plane::approvals::{Sealer, PlaneApprovals};
 use crate::mcp::callerask::{decide, Approvals, AskDecision, Bind, Refusal, Retry};
 use crate::mcp::config::{AskEntryCfg, AskRoundCfg};
+use crate::plane::approvals::{PlaneApprovals, Sealer};
 use crate::test_support::plugin_store::{durable_cfg, open_plugin};
 
 /// THE FLEET-SHARED SECRET. One key for every node below — that is the premise, not a shortcut: it

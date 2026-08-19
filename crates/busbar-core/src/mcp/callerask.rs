@@ -62,8 +62,8 @@
 //! `InputRequiredResult`, so refusing is also the only conformant answer; but the security reason is
 //! the one that would still hold if the specification said nothing.
 
-use crate::plane::approvals::{self, AskState, Sealer};
 use super::config::{AskEntryCfg, AskRoundCfg};
+use crate::plane::approvals::{self, AskState, Sealer};
 
 /// The three client-side methods an ask may name, and the capability key each is gated by.
 ///
@@ -385,7 +385,9 @@ pub(crate) fn decide(
                 .roots_epoch
                 .is_some_and(|sealed| sealed != bind.roots_epoch)
             {
-                return AskDecision::Refuse(Refusal::StateRejected(approvals::Rejected::StaleRoots));
+                return AskDecision::Refuse(Refusal::StateRejected(
+                    approvals::Rejected::StaleRoots,
+                ));
             }
             presented = Some((
                 opened.nonce.clone(),

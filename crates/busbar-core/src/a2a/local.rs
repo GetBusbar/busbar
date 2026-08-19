@@ -338,7 +338,11 @@ fn configs() -> &'static Mutex<HashMap<String, PushConfig>> {
 /// map's lifetime a consequence of the store's rather than a second policy that can disagree.
 fn prune() {
     if let Ok(mut map) = configs().lock() {
-        map.retain(|task_id, _| crate::plane::taskstore::TASKS.get_unscoped(task_id).is_some());
+        map.retain(|task_id, _| {
+            crate::plane::taskstore::TASKS
+                .get_unscoped(task_id)
+                .is_some()
+        });
     }
 }
 
@@ -547,9 +551,11 @@ pub(crate) async fn create_push_config(
         Err(message) => return err(rpc_id, A2aError::InvalidParams, message),
     };
 
-    if let Err(e) =
-        crate::plane::taskstore::TASKS.set_push_callback(&task.task_id, Some(pinned.url.clone()), now)
-    {
+    if let Err(e) = crate::plane::taskstore::TASKS.set_push_callback(
+        &task.task_id,
+        Some(pinned.url.clone()),
+        now,
+    ) {
         tracing::error!(task = %task.task_id, error = %e, "a2a: a push config could not be recorded");
         return err(
             rpc_id,

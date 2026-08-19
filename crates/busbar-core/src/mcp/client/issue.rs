@@ -50,8 +50,10 @@ use super::identity::ServerId;
 use super::jsonrpc::{parse_response, RpcOutcome};
 use super::verb::UpstreamVerb;
 use super::wire::WireLeg;
-use crate::plane::calllog::{CallInput, OUTCOME_DISPATCHED, OUTCOME_REFUSED, REASON_UPSTREAM_FAILED};
 use crate::mcp::upstream::Authorised;
+use crate::plane::calllog::{
+    CallInput, OUTCOME_DISPATCHED, OUTCOME_REFUSED, REASON_UPSTREAM_FAILED,
+};
 
 /// WHAT ONE ISSUED VERB PRODUCED.
 ///

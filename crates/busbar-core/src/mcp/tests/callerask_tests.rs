@@ -13,8 +13,8 @@
 //!   might be matching nothing at all.
 
 use super::*;
-use crate::plane::approvals::PlaneApprovals;
 use crate::mcp::config::{AskEntryCfg, AskRoundCfg};
+use crate::plane::approvals::PlaneApprovals;
 
 const KEY: [u8; 32] = [3u8; 32];
 const NOW: u64 = 1_700_000_000;
