@@ -148,6 +148,15 @@ pub fn upstream_bool_env_override(env: Option<std::ffi::OsString>, config_val: b
     }
 }
 
+/// Hard cap on live per-session slots in the neutral session substrate (see [`crate::session`]). The
+/// memory-safety bound: on overflow the least-recently-used unpinned slot is evicted, so the store can
+/// never grow without limit however many distinct sessions arrive.
+const SESSION_STORE_CAPACITY: usize = 65_536;
+/// Default TTL for a session slot, in epoch millis of idle time. An hour of no touch and the slot is
+/// swept — long enough that an active multi-turn session keeps its cleared-scan set, short enough that
+/// abandoned sessions cost nothing.
+const SESSION_STORE_TTL_MS: u64 = 60 * 60 * 1_000;
+
 /// Everything the DISK half of configuration produces, shared by boot and runtime reload.
 pub struct LoadedConfig {
     pub deploy: config::DeployCfg,
@@ -1414,6 +1423,24 @@ pub fn build_app_from_config(
             || Arc::new(crate::store::PlaneBreakers::new()),
             |p| Arc::clone(&p.plane_breakers),
         ),
+        // The neutral per-session substrate: PROCESS-LIFETIME like `plane_breakers`, reused across an
+        // apply so a config swap never forgets a live session. Bounded (`SESSION_STORE_CAPACITY`
+        // slots, LRU-evicted) and TTL-defaulted so an idle session's state cannot accumulate — the
+        // memory-safety bound the substrate is built around.
+        session_store: prior.map_or_else(
+            || {
+                Arc::new(crate::session::SessionStore::new(
+                    SESSION_STORE_CAPACITY,
+                    Some(SESSION_STORE_TTL_MS),
+                ))
+            },
+            |p| Arc::clone(&p.session_store),
+        ),
+        // Operator opt-in for the gate's incremental-scan tenant. Env, not config: OFF (the default,
+        // and any value that is empty or "0") keeps every gate screening the full projection —
+        // byte-identical to 1.5.4 — while an operator can turn it on without a config-schema change.
+        incremental_scan: std::env::var_os("BUSBAR_INCREMENTAL_SCAN")
+            .is_some_and(|v| !v.is_empty() && v != "0"),
         // The failover pools, resolved-verbatim per generation (the CELLS above are process-
         // lifetime; the pool DECLARATIONS are config like any other).
         tool_pools: cfg.tool_pools.clone(),

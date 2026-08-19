@@ -1319,6 +1319,8 @@ impl TestApp {
             lanes,
             store: store.clone(),
             plane_breakers: std::sync::Arc::new(crate::store::PlaneBreakers::new()),
+            session_store: std::sync::Arc::new(crate::session::SessionStore::new(1024, None)),
+            incremental_scan: false,
             tool_pools: self.tool_pools,
             agent_pools: self.agent_pools,
             by_model,

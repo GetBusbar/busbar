@@ -258,6 +258,17 @@ pub struct App {
     /// `store`: learned reliability must survive a snapshot swap, or every apply un-trips every
     /// dead upstream. See [`crate::store::PlaneBreakers`] for why it is not the LLM store itself.
     pub(crate) plane_breakers: Arc<crate::store::PlaneBreakers>,
+    /// THE NEUTRAL PER-SESSION SUBSTRATE ([`crate::session::SessionStore`]) — PROCESS-LIFETIME, reused
+    /// across `build_app_from_config` applies exactly like `plane_breakers`, because a session's state
+    /// (today the gate's cleared-scan set; tomorrow any tenant) must survive a config swap or every
+    /// apply would forget every live session. Present unconditionally (an empty bounded map is cheap);
+    /// whether the gate hot path CONSULTS it is the operator opt-in `incremental_scan`.
+    pub(crate) session_store: Arc<crate::session::SessionStore>,
+    /// Operator opt-in (env `BUSBAR_INCREMENTAL_SCAN`) for the gate's incremental-scan tenant. `false`
+    /// (the default) ⇒ every gate screens the full projection every turn, byte-identical to 1.5.4; the
+    /// firing sites pass `incremental: None`. Env-driven, not config, so activating it does not touch
+    /// the frozen `config-schema.snapshot.json` / config-stability gate.
+    pub(crate) incremental_scan: bool,
     /// The `tool_pools:` failover pools — operator-declared interchangeable MCP server sets,
     /// carried resolved-verbatim onto the snapshot so the dispatch path's route builder
     /// (`mcp::reroute`) reads the SAME generation the request was admitted on. Empty ⇒ every

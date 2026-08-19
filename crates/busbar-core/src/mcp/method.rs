@@ -1339,7 +1339,26 @@ async fn tools_call(
                 // `next_request_id()` would hand the hook a number that joins to nothing.
                 request_id: log.request_id.parse().unwrap_or_default(),
                 key: ctx.gov.key.as_deref(),
-                incremental: None,
+                // Incremental scan (session substrate, G5): screen only pieces this session has not
+                // already had cleared for each hook. The session identity is the caller's
+                // `x-session-id` — a neutral per-session convention, hashed by the core (store) hash,
+                // never the LLM plane's affinity resolver. GATED: only when the operator opted in AND
+                // a non-empty id is present; an ABSENT id must stay `None` (full re-scan), never a
+                // constant key that would fold every sessionless caller into one shared cleared-set.
+                incremental: {
+                    let sid = ctx
+                        .headers
+                        .get("x-session-id")
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap_or("");
+                    (ctx.app.incremental_scan && !sid.is_empty()).then(|| {
+                        crate::hooks::gate::IncrementalScan {
+                            store: &ctx.app.session_store,
+                            session: crate::session::SessionKey(crate::store::fnv1a_u64(sid)),
+                            now_ms: crate::store::now_ms(),
+                        }
+                    })
+                },
             },
         )
         .await;

@@ -29,6 +29,8 @@ fn minimal_app() -> Arc<App> {
         mcp_demotions: Default::default(),
         mcp_pool: Default::default(),
         plane_breakers: Arc::new(crate::store::PlaneBreakers::new()),
+        session_store: Arc::new(crate::session::SessionStore::new(1024, None)),
+        incremental_scan: false,
         tool_pools: Default::default(),
         agent_pools: Default::default(),
         mcp_servers: Arc::new(Default::default()),

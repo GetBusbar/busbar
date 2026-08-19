@@ -1432,6 +1432,32 @@ fn a_rebuild_carries_the_probe_schedule() {
     );
 }
 
+/// The neutral session substrate is PROCESS-LIFETIME: a config apply must carry the SAME
+/// `SessionStore` `Arc` across the rebuild — otherwise every apply would forget every live session's
+/// cleared-scan set (and any future tenant's state), exactly the failure the probe-schedule carry
+/// guards against. Synchronous pointer identity, no clock. Also pins the operator default: with the
+/// env flag unset the gate hot path stays OFF (`incremental_scan == false`), i.e. byte-identical to
+/// 1.5.4.
+#[test]
+fn a_rebuild_carries_the_session_store_and_defaults_scan_off() {
+    crate::metrics::init();
+    let cfg = || {
+        cfg_with_provider_api_key(crate::config::SecretRef::env(
+            "BUSBAR_TEST_NO_SUCH_KEY_SESSION_STORE",
+        ))
+    };
+    let prior = build_once(cfg(), None).expect("boot");
+    assert!(
+        !prior.incremental_scan,
+        "with BUSBAR_INCREMENTAL_SCAN unset the gate incremental scan must default OFF"
+    );
+    let next = build_once(cfg(), Some(&prior)).expect("rebuild");
+    assert!(
+        std::sync::Arc::ptr_eq(&prior.session_store, &next.session_store),
+        "an apply must carry the process-lifetime session substrate across the rebuild"
+    );
+}
+
 /// Rotating the admin-token secret on disk and RE-APPLYING changes the credential the process
 /// accepts. RED without the re-resolution: the digest stays on `tok-v1` forever.
 #[cfg(feature = "auth-admin-tokens")]
