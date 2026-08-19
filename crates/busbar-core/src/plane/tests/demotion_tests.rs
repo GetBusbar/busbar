@@ -22,12 +22,12 @@
 //! `busbar_plugin_loader::load_store`, i.e. across the same C ABI a customer's postgres or sqlite
 //! plugin is reached over.
 
-use crate::mcp::demotion::DurableDemotions;
+use crate::plane::quarantine::PlaneQuarantine;
 use crate::test_support::plugin_store::{durable_cfg, open_plugin};
 
-/// A `DurableDemotions` with a freshly `dlopen`ed handle on `cfg`.
-fn node(cfg: &str) -> DurableDemotions {
-    let d = DurableDemotions::new();
+/// A `PlaneQuarantine` with a freshly `dlopen`ed handle on `cfg`.
+fn node(cfg: &str) -> PlaneQuarantine {
+    let d = PlaneQuarantine::new();
     d.set_sink(open_plugin(cfg));
     d
 }
@@ -136,7 +136,7 @@ fn clearing_an_absent_record_is_a_no_op() {
 /// `Pending` do not serve for reasons that already live in config and have nothing to do with drift.
 #[test]
 fn only_a_drift_demotion_writes_and_only_an_agreeing_observation_clears() {
-    use crate::mcp::demotion::settle;
+    use crate::plane::quarantine::settle;
     use crate::trust::TrustState;
 
     let (_file, cfg) = durable_cfg("demotion-settle");
@@ -189,11 +189,11 @@ fn only_a_drift_demotion_writes_and_only_an_agreeing_observation_clears() {
 #[test]
 fn with_no_durable_sink_a_demotion_is_recorded_nowhere() {
     let (_file, cfg) = durable_cfg("demotion-nosink");
-    let sinkless = DurableDemotions::new();
+    let sinkless = PlaneQuarantine::new();
     sinkless.record("fs", "quarantined", 100);
     assert!(
         sinkless.list().is_empty(),
-        "a `DurableDemotions` with no store must report nothing, because it has nothing"
+        "a `PlaneQuarantine` with no store must report nothing, because it has nothing"
     );
     assert!(
         open_plugin(&cfg)
@@ -211,7 +211,7 @@ fn with_no_durable_sink_a_demotion_is_recorded_nowhere() {
 /// plugin that predates these three methods.
 #[test]
 fn the_memory_store_keeps_no_demotions_which_is_the_documented_contract() {
-    let d = DurableDemotions::new();
+    let d = PlaneQuarantine::new();
     d.set_sink(std::sync::Arc::new(busbar_store_memory::MemoryStore::new()));
     d.record("fs", "quarantined", 100);
     assert!(

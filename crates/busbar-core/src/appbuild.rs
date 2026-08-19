@@ -1536,7 +1536,7 @@ pub fn build_app_from_config(
         // durable sink is attached to this instance once at boot, so rebuilding it on an apply would
         // silently detach it and every later quarantine would stop being written down.
         mcp_demotions: prior.map_or_else(
-            || Arc::new(crate::mcp::demotion::DurableDemotions::new()),
+            || Arc::new(crate::plane::quarantine::PlaneQuarantine::new()),
             |p| p.mcp_demotions.clone(),
         ),
         credential_cache: prior.map_or_else(
