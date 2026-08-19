@@ -99,35 +99,18 @@ pub(crate) fn secret_refs(cfg: &RootCfg) -> Vec<(String, &crate::config::SecretR
         // rather than declined here. It is the one secret on that plane, and it is the highest-value
         // one in the process: whoever holds it forges every token this deployment will ever issue.
         oauth_as,
-        // `tool_defs` DOES carry a credential, and the arm that said otherwise was correct only
-        // until RFC 8693 token exchange landed. It said, in as many words, "give a server a held
-        // credential and it will hold a `SecretRef`, at which point this arm must walk it" — and
-        // then `token_exchange.subject_token` appeared and layer 2 failed with the type named,
-        // `["TokenExchangeCfg"]`, before anybody re-read the comment. That is the guard working: the
-        // prediction and the enforcement were the same mechanism.
-        //
-        // Walked below. Everything else on a server stays declined, and each for a stated reason:
-        //   * `pin.key` is a VERIFICATION value (an issuer public key or a certificate SPKI hash).
-        //     Publishing it would cost nothing; it is the operator's trust root, not their secret.
-        //   * `aud` is an RFC 8707 resource indicator — an identifier the authorization server is
-        //     asked to mint FOR, and one that appears in a token any upstream can read.
-        //   * `upstream_credentials` is `Own | Passthrough`, a `Copy` mode selector.
-        //   * the three `*_allow` maps hold approved hashes, descriptions and schemas, all of which
-        //     are published verbatim in `tools/list`.
+        // `tool_defs` (the MCP `tools:` plane) DOES carry credentials — the RFC 8693 token-exchange
+        // subject token and a stdio child's `env:` references — but they are NO LONGER walked here.
+        // The exhaustive destructure that forces the secret/not-secret decision on every MCP field
+        // now lives in `ToolsCfg`'s `PlaneCfg::secret_refs` impl, beside the fields it guards, and
+        // this binding is handed to that impl by the plane loop below. It stays NAMED (not `_`) so a
+        // new TOP-LEVEL `RootCfg` field is still a compile error somebody has to answer.
         tool_defs,
-        // `agent_defs` NOW CARRIES A CREDENTIAL, and this arm walks it. It used to decline, with a
-        // note saying the decline was checkable and that the arm would have to start walking the
-        // moment leased outbound credentials landed. They landed;
-        // `AgentDefCfg::upstream_credential` holds an `OutboundCredential`, which holds a
-        // `SecretRef`, and layer 2 duly failed with `["OutboundCredential"]` named before this line
-        // was written. Nothing about it was remembered.
-        //
-        // What is still NOT a secret here, and why:
-        //   * `pin.key` is a VERIFICATION key (a JWS public key or a certificate SPKI hash).
-        //     Publishing it would cost nothing; it is the operator's trust root, not their secret.
-        //   * `upstream_credentials` is `Own | Passthrough` — a `Copy` mode selector, the same type
-        //     the top-level `upstream_credentials: _` above already declines for the same reason.
-        //     (`Passthrough` is refused outright on this plane; see `a2a::config`.)
+        // `agent_defs` (the A2A `agents:` plane) DOES carry credentials — each agent's leased outbound
+        // delegation secret and both halves of its outbound client identity — but, like `tool_defs`,
+        // they are gathered by the plane's own `AgentsCfg::secret_refs` impl through the loop below,
+        // not walked here. Bound by name for the same reason: the RootCfg destructure keeps forcing a
+        // decision on a new top-level field.
         agent_defs,
         // THE TWO FAILOVER POOL MAPS hold BARE NAMES and nothing else: a `members:` list of
         // registrations defined elsewhere, and a `repeatable:` list of operation names. Both are
@@ -175,79 +158,6 @@ pub(crate) fn secret_refs(cfg: &RootCfg) -> Vec<(String, &crate::config::SecretR
         }
     }
 
-    // MCP SERVERS: `tools.<name>.token_exchange.subject_token` is BUSBAR'S OWN token, the SUBJECT of
-    // an RFC 8693 exchange — never the caller's. It resolves through the same `env` / `file` /
-    // secret-plugin path every other credential does, so it must be enumerable here or `--validate`
-    // reports a config fine and the first tool call of the day fails on it.
-    for (name, server) in &tool_defs.servers {
-        let crate::mcp::config::McpServerDefCfg {
-            token_exchange,
-            // A STDIO CHILD'S ENVIRONMENT, and it is the second place on this plane a credential can
-            // be written. A pipe has no header block, so `token_exchange:` is refused on that
-            // transport and `env:` is the only channel a child gets a credential through — which
-            // makes it exactly as owed a `--validate` resolution as the subject token above.
-            env,
-            // Not credentials, each for the reason recorded at the destructure above.
-            url: _,
-            // The binary busbar spawns, its argv, and its working directory. Operator-authored
-            // paths and arguments; the SECRETS in a spawn are in `env` and nowhere else, which is
-            // deliberate — an argv is world-readable on every platform busbar runs on.
-            command: _,
-            args: _,
-            cwd: _,
-            pin: _,
-            // A duration string driving the refresh timer's cadence. Not a credential.
-            refresh_ttl: _,
-            // A duration string bounding one outbound leg to this server. Not a credential.
-            timeout: _,
-            transport: _,
-            aud: _,
-            grants: _,
-            // The filesystem roots busbar may disclose to this server on a granted `roots/list`
-            // ask. Operator-authored `file://` URIs and display names — locations, never
-            // credentials, so there is nothing here for `--validate` to resolve.
-            roots: _,
-            // The sampling policy a granted `sampling/createMessage` ask spends against: a pool
-            // name and two ceilings. Operator-authored routing and budget numbers, never a
-            // credential, so there is nothing here for `--validate` to resolve.
-            sampling: _,
-            max_input_required_rounds: _,
-            max_caller_ask_rounds: _,
-            upstream_credentials: _,
-            hooks: _,
-            // The SSRF posture for this server. A boolean, and the guard that reads it is the one
-            // place it means anything.
-            allow_private: _,
-            tools_allow: _,
-            prompts_allow: _,
-            resources_allow: _,
-            // The exposed capabilities. Each is operator-authored CONTENT — a description, a
-            // template, a typed message, a URI template and the bytes it answers with — and none of
-            // them is a credential reference: a resource's `blob:` is base64 media the operator
-            // pasted, not a pointer into a secret store, so there is nothing here for `--validate`
-            // to resolve. Named rather than covered by `..` so the compiler keeps asking.
-            resource_templates_allow: _,
-        } = server;
-        if let Some(tx) = token_exchange {
-            let crate::mcp::config::TokenExchangeCfg {
-                subject_token,
-                // A URL and an RFC 8693 token-type URN; neither is a secret.
-                token_url: _,
-                subject_token_type: _,
-            } = tx;
-            refs.push((
-                format!("tools.{name}.token_exchange.subject_token"),
-                subject_token,
-            ));
-        }
-        for (var, value) in env {
-            // The PLAIN arm is a literal the operator typed; there is nothing to resolve and nothing
-            // that can fail at runtime. Only the reference arm is owed a `--validate`.
-            if let crate::mcp::config::ChildEnvValue::Secret(r) = value {
-                refs.push((format!("tools.{name}.env.{var}"), r));
-            }
-        }
-    }
     for (name, p) in providers {
         let crate::config::ProviderCfg {
             api_key,
@@ -342,52 +252,22 @@ pub(crate) fn secret_refs(cfg: &RootCfg) -> Vec<(String, &crate::config::SecretR
         }
     }
 
-    // ── THE `agents:` PLANE. Exhaustive, no `..`, at both levels. ──
-    let crate::a2a::config::AgentsCfg {
-        // The all-agents attach list and credential MODE carry no reference: a hook name is a bare
-        // name into the top-level `hooks:` map, and the mode is a `Copy` selector.
-        all_agent_hooks: _,
-        all_agent_upstream_credentials: _,
-        agents,
-    } = agent_defs;
-    for (name, def) in agents {
-        let crate::a2a::config::AgentDefCfg {
-            upstream_credential,
-            client_identity,
-            // An endpoint URL, an out-of-band VERIFICATION pin, two cadence strings, a pinned
-            // protocol version, a private-address opt-in, a `Copy` credential-mode selector, egress
-            // scope names and bare hook names. None of them is a credential, and `pin.key` is the one that most looks like
-            // one: it is the public half of the operator's trust root, and an operator who cannot
-            // publish it has the wrong value in the field.
-            url: _,
-            pin: _,
-            reverify_ttl: _,
-            recovery_backoff: _,
-            protocol_version: _,
-            allow_private: _,
-            upstream_credentials: _,
-            egress_scopes: _,
-            hooks: _,
-        } = def;
-        if let Some(cred) = upstream_credential {
-            let crate::a2a::creds::OutboundCredential {
-                secret,
-                // Where the resolved value is placed on the wire, and how long the lease lasts.
-                // Neither is material.
-                placement: _,
-                lease_ttl_ms: _,
-            } = cred;
-            refs.push((format!("agents.{name}.upstream_credential.secret"), secret));
-        }
-        // THE OUTBOUND CLIENT IDENTITY. Both halves are references and both are walked: an
-        // unresolvable `cert:` fails the handshake exactly as an unresolvable `key:` does, and
-        // `--validate` that checked only the secret half would report a config that cannot connect
-        // as valid.
-        if let Some(identity) = client_identity {
-            let crate::a2a::config::ClientIdentityCfg { cert, key } = identity;
-            refs.push((format!("agents.{name}.client_identity.cert"), cert));
-            refs.push((format!("agents.{name}.client_identity.key"), key));
-        }
+    // ── THE PLANE SECTIONS, each asked for its OWN secret references. The exhaustive no-`..`
+    // destructure that forces a secret/not-secret decision on every new MCP / A2A field has moved
+    // OUT of this walk and INTO each plane's `PlaneCfg::secret_refs` impl, beside the fields it
+    // guards (`ToolsCfg`, `AgentsCfg`). Core no longer names the plane's credential-bearing types —
+    // `McpServerDefCfg`, `TokenExchangeCfg`, `AgentDefCfg`, `OutboundCredential`, `ClientIdentityCfg`
+    // — to enumerate them; it loops the trait over the section bindings the RootCfg destructure
+    // above already forced a decision on. Each impl returns FULLY-QUALIFIED paths
+    // (`tools.<name>.…`, `agents.<name>.…`), so nothing is prefixed here. Order within the returned
+    // list is not observed: every consumer (`validate`, `validate_secret_refs`,
+    // `validate_builtin_secrets_resolve`) is a per-reference check, and the coverage test compares by
+    // SET.
+    for plane_cfg in [
+        tool_defs as &dyn crate::plane::config::PlaneCfg,
+        agent_defs as &dyn crate::plane::config::PlaneCfg,
+    ] {
+        refs.extend(plane_cfg.secret_refs());
     }
 
     refs

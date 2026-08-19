@@ -180,23 +180,78 @@ fn field_named_secret_ref(code: &str) -> Option<String> {
     ty.contains("SecretRef").then(|| name.to_string())
 }
 
-/// The body of `secret_refs` plus the helpers it delegates its destructures to. Used to prove that a
-/// type CLAIMING to be `Walked` really is destructured, so the inventory cannot be satisfied by
-/// listing a type and never looking at it.
-fn secret_refs_source() -> String {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("src")
-        .join("config_validate")
-        .join("secret_refs.rs");
-    let text = std::fs::read_to_string(&path)
+/// The substring of `path` from the first occurrence of `from` up to (not including) `to`. Both
+/// markers must be present or the extraction PANICS: a scan that cannot find the region it is
+/// supposed to read has FAILED to determine its answer, and a check that cannot determine its answer
+/// is red, not green.
+fn read_between(path: &Path, from: &str, to: &str) -> String {
+    let text = std::fs::read_to_string(path)
         .unwrap_or_else(|e| panic!("read {} failed: {e}", path.display()));
     let start = text
-        .find("pub(crate) fn secret_refs(")
-        .unwrap_or_else(|| panic!("secret_refs is not in {}", path.display()));
+        .find(from)
+        .unwrap_or_else(|| panic!("`{from}` is not in {}", path.display()));
     let end = text[start..]
-        .find("pub(crate) const SECRET_BEARING_TYPES")
-        .unwrap_or_else(|| panic!("SECRET_BEARING_TYPES is not in {}", path.display()));
-    let body = text[start..start + end].to_string();
+        .find(to)
+        .unwrap_or_else(|| panic!("`{to}` is not in {}", path.display()));
+    text[start..start + end].to_string()
+}
+
+/// The brace-balanced text of an `impl` block, from its `header` line to the `}` that closes it.
+/// Panics if the header is absent or the braces never balance — the same fail-loud contract as
+/// [`read_between`], because a plane whose `secret_refs` impl the scan could not locate is a plane
+/// whose Walked types would go unchecked.
+fn extract_impl_block(path: &Path, header: &str) -> String {
+    let text = std::fs::read_to_string(path)
+        .unwrap_or_else(|e| panic!("read {} failed: {e}", path.display()));
+    let start = text
+        .find(header)
+        .unwrap_or_else(|| panic!("`{header}` is not in {}", path.display()));
+    let rest = &text[start..];
+    let open = rest
+        .find('{')
+        .unwrap_or_else(|| panic!("`{header}` has no opening brace in {}", path.display()));
+    let mut depth = 0i32;
+    for (i, ch) in rest[open..].char_indices() {
+        match ch {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return rest[..open + i + 1].to_string();
+                }
+            }
+            _ => {}
+        }
+    }
+    panic!("`{header}` block never closes in {}", path.display());
+}
+
+/// The body of `secret_refs`, the helpers it delegates its destructures to, AND the per-plane
+/// `PlaneCfg::secret_refs` impls the MCP and A2A sweeps now live in. Used to prove that a type
+/// CLAIMING to be `Walked` really is destructured somewhere this guard can see, so the inventory
+/// cannot be satisfied by listing a type and never looking at it.
+///
+/// The plane impls are folded in because that is where the exhaustive destructures for the A2A and
+/// MCP credential types moved: the core walk stopped naming `TokenExchangeCfg`, `OutboundCredential`
+/// and `ClientIdentityCfg` and now loops the trait, so `secret_refs.rs` alone would report those
+/// Walked types as undestructured — a false red that is really "look in the impl". This concatenation
+/// is what makes the Walked assertions track the destructure to wherever the plane put it.
+fn secret_refs_source() -> String {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let core = read_between(
+        &src.join("config_validate").join("secret_refs.rs"),
+        "pub(crate) fn secret_refs(",
+        "pub(crate) const SECRET_BEARING_TYPES",
+    );
+    let mcp = extract_impl_block(
+        &src.join("mcp").join("config.rs"),
+        "impl crate::plane::config::PlaneCfg for ToolsCfg",
+    );
+    let a2a = extract_impl_block(
+        &src.join("a2a").join("config.rs"),
+        "impl crate::plane::config::PlaneCfg for AgentsCfg",
+    );
+    let body = format!("{core}\n{mcp}\n{a2a}");
     assert!(
         body.len() > 500,
         "the extracted secret_refs region is only {} bytes; the extraction is broken and the \
