@@ -1,26 +1,34 @@
 #!/usr/bin/env python3
-"""Generate the README figures as committed SVG, and the README's own numbers.
+"""Generate the README FIGURES as committed SVG.
 
-  python3 assets/readme/generate.py                 # redraw the SVGs
-  python3 assets/readme/generate.py --readme        # ...and rewrite README.md's numeric blocks
-  python3 assets/readme/generate.py --check         # exit 1 if either is stale
+  python3 assets/readme/generate.py                 # redraw the SVGs into assets/readme/
+  python3 assets/readme/generate.py <outdir>        # ...into another directory (org-profile/assets)
 
-Every number is read from data.json, which is WRITTEN BY the website's
-metrics/onthebench.mjs from https://onthebench.ai/data.json, the same run the
-website's own facts.ts reads:
+Every number DRAWN IN A FIGURE is read from data.json, which is WRITTEN BY the
+website's metrics/onthebench.mjs from https://onthebench.ai/data.json, the same
+run the website's own facts.ts reads:
 
   node metrics/onthebench.mjs --readme-out <this repo>/assets/readme/data.json
-  python3 assets/readme/generate.py --readme
+  python3 assets/readme/generate.py
 
-so one re-measure moves the site and this README together. Image and install
+so one re-measure moves the site and these figures together. Image and install
 sizes are a different instrument and come from install.json (install-sizes.py).
 
-The README's figures AND its tables are generated. A figure regenerated beside a
-hand-typed table is a table that goes stale on the next re-measure, which is how
-docs/protocols.md came to be stamped "last verified against 1.2.0" on a 1.6.0
-tree. Nothing here is typed by hand except labels and prose.
+WHAT THIS SCRIPT DOES NOT DO, SAID PLAINLY BECAUSE IT ONCE CLAIMED OTHERWISE.
+It generates the FIGURES ONLY. README.md's comparison TABLES are typed by hand.
+They currently agree with data.json cell for cell, but nothing enforces that:
+this script is not run by CI or by any gate, it has no --check mode, and no gate
+in scripts/ reads README.md at all. So a re-measure that lands a new data.json
+will redraw the SVGs and leave the tables saying whatever they said before. If
+you re-measure, re-check the two tables in README.md and the summary sentence in
+org-profile/README.md by hand against data.json and install.json.
 
-No em dashes anywhere in the output (a build gate rejects them).
+(An earlier version of this docstring advertised `--readme` and `--check` flags.
+They were parsed and then never used: no README was ever rewritten and `--check`
+could never exit nonzero. The dead flags are gone rather than left to imply a
+guarantee that was not there.)
+
+No em dashes anywhere in the output, matching the READMEs' own house style.
 """
 import json, os, re, sys
 
@@ -29,9 +37,6 @@ REPO = os.path.dirname(os.path.dirname(HERE))
 D = json.load(open(os.path.join(HERE, "data.json")))
 INSTALL = json.load(open(os.path.join(HERE, "install.json")))
 ARGS = [a for a in sys.argv[1:] if not a.startswith("-")]
-FLAGS = {a for a in sys.argv[1:] if a.startswith("-")}
-DO_README = "--readme" in FLAGS or "--check" in FLAGS
-CHECK = "--check" in FLAGS
 OUT = ARGS[0] if ARGS else HERE
 os.makedirs(OUT, exist_ok=True)
 

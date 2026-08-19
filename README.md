@@ -4,7 +4,7 @@
 
 <h1 align="center">Busbar</h1>
 
-<p align="center"><strong>Your AI control plane, in one static Rust binary.</strong><br>
+<p align="center"><strong>Your AI control plane, in one self-contained Rust binary.</strong><br>
 Point any SDK at one URL, reach any provider, and keep serving when a provider does not.</p>
 
 <p align="center">
@@ -61,7 +61,7 @@ Self-hosted, always. No hosted service, no signup, nothing phones home. Your pro
 
 | | Container image | Install |
 |---|---|---|
-| Busbar | **5.74 MiB**, 3 layers | one **12.39 MiB** static binary |
+| Busbar | **5.74 MiB**, 3 layers | one **12.39 MiB** binary, no runtime |
 | LiteLLM | 360.77 MiB, 21 layers | **558 MiB** across 107 packages |
 
 Measured 2026-08-03 on an m7g.4xlarge pinned to 4 cores. Image sizes are compressed registry layers for `getbusbar/busbar:latest` and `ghcr.io/berriai/litellm:main-latest`, linux/amd64.
@@ -156,7 +156,7 @@ pools:
       max_hops: 2
 ```
 
-Your client never sees the hop, even mid-stream. The state machine, the fault classes and the recovery probe are in [Reliability](https://getbusbar.com/docs/reliability/).
+Your client never sees the hop, because the hop happens before the first byte reaches it, even on a streaming request. Once that first byte is out Busbar does not switch providers under your client: it records the fault against that lane and ends the stream with an error event, and the client retries. The state machine, the fault classes and the recovery probe are in [Reliability](https://getbusbar.com/docs/reliability/).
 
 ---
 
@@ -197,7 +197,7 @@ docker run --rm -p 8080:8080 -e ANTHROPIC_KEY -e BUSBAR_ADMIN_TOKEN getbusbar/bu
 
 ## Kubernetes
 
-One container, no sidecar, nothing to run beside it. The image is 5.74 MB compressed and the process idles at 7.3 MiB, both stamped in the comparison below, so it fits a 32Mi request and a 128Mi limit with room to spare.
+One container, no sidecar, nothing to run beside it. The image is 5.74 MiB compressed and the process idles at 7.3 MiB, both stamped in the comparison below, so it fits a 32Mi request and a 128Mi limit with room to spare.
 
 ```bash
 helm repo add busbar https://getbusbar.github.io/helm-charts
@@ -277,7 +277,7 @@ spec:
 
 ## What else is in the box
 
-Fault-attributed circuit breaking and in-flight failover, weighted pools with session affinity and per-lane concurrency caps, five built-in routing policies plus your own hook or an out-of-process sidecar, native TLS and mTLS with no reverse proxy in front, virtual keys with group budgets and spend tracking, a verified provider catalogue plus any provider on the six protocols in a few lines of YAML, and observability over open standards: Prometheus, OTLP and a per-request audit webhook.
+Fault-attributed circuit breaking and before-first-byte failover, weighted pools with session affinity and per-lane concurrency caps, five built-in routing policies plus your own signed in-process hook plugin, native TLS and mTLS with no reverse proxy in front, virtual keys with group budgets and spend tracking, a verified provider catalogue plus any provider on the six protocols in a few lines of YAML, and observability over open standards: Prometheus, OTLP and a per-request audit webhook.
 
 The SemVer-protected contract is the runtime: the data-plane HTTP surface and the six wire-protocol contracts do not break inside a major version. `config.yaml` is an operator artifact, outside that freeze, and changes always ship with `busbar --migrate-config` and a loud fail-closed boot rather than a silent behaviour change.
 
