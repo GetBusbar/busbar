@@ -110,6 +110,27 @@ impl OperationHandler for ChatOperation {
         writer.egress_accept(wants_stream)
     }
 
+    /// FAIL-CLOSED guard for a cross-protocol chat request whose stop-sequence list exceeds the
+    /// egress dialect's published cap (`ProtocolWriter::stop_sequence_cap`, e.g. Cohere's 5).
+    /// REJECTS with a reason naming the vendor and the cap rather than proceeding to
+    /// `write_request`, which would otherwise silently truncate and forward a WEAKER, DIFFERENT
+    /// instruction than the caller gave: a user relying on their Nth+ stop sequence to bound
+    /// generation would silently lose that guard. The correct set is small, so the caller can
+    /// trivially resubmit within the limit — reject, don't drop-whole.
+    fn egress_representable(&self, ir: &IrReq) -> Result<(), String> {
+        let IrReq::Chat(r) = ir else { return Ok(()) };
+        let Some(p) = self.proto() else { return Ok(()) };
+        if let Some((cap, name)) = p.writer().stop_sequence_cap() {
+            let provided = r.stop.len();
+            if provided > cap {
+                return Err(format!(
+                    "{name} accepts at most {cap} stop sequences; {provided} provided"
+                ));
+            }
+        }
+        Ok(())
+    }
+
     // ---- Value-level bridges: direct vtable calls (the engine seams hold parsed JSON) ----
 
     fn read_request_value(&self, v: &Value) -> Result<IrReq, IngressReject> {

@@ -251,43 +251,63 @@ fn req_with_stop(stop: Vec<String>) -> crate::ir::IrRequest {
 }
 
 /// The IR's `stop` is an unbounded `Vec<String>` (no protocol enforces a cap on ingress), so a
-/// cross-protocol request can carry more stop sequences than a smaller target vendor allows: OpenAI
-/// caps at 4, Gemini/Cohere at 5 — exceeding either is a guaranteed 400. Anthropic/Bedrock publish
-/// no fixed cap and are LEFT UNCHANGED (inventing one would be a new lossy behavior this fix does
-/// not license).
+/// cross-protocol request can carry more stop sequences than a smaller target vendor allows:
+/// OpenAI caps at 4, Gemini/Cohere at 5 — exceeding any is a guaranteed 400.
+///
+/// None of the three capped writers trim anymore: forwarding a truncated stop set is a WEAKER,
+/// DIFFERENT instruction than the one the caller gave (their Nth+ stop sequence silently stops
+/// bounding generation) — not a smaller-equivalent — so busbar (a security/audit product) REJECTS
+/// an over-cap request up front at the cross-protocol seam
+/// (`ChatOperation::egress_representable`, driven by each writer's `stop_sequence_cap`) instead of
+/// trimming in the writer. See `proxy::tests::stop_sequence_cap_reject_tests` for the reject
+/// coverage of all three vendors. Each writer's `write_request` itself no longer clamps — by the
+/// time it runs, the reject has already guaranteed `stop.len()` is within cap — so calling a
+/// writer directly (as below) with 8 entries legitimately forwards all 8; that is not a
+/// regression, it is each writer's new (narrower) job. This test pins the caps each writer
+/// PUBLISHES (what the reject path consults), not a trim performed here.
+///
+/// Anthropic/Bedrock publish no fixed cap and are LEFT UNCHANGED (inventing one would be a new
+/// lossy behavior this fix does not license) — still carrying all 8 when called directly.
 #[test]
 fn stop_sequences_clamped_per_vendor_cap() {
     let stops: Vec<String> = (0..8).map(|i| format!("STOP{i}")).collect();
     let req = req_with_stop(stops.clone());
 
-    let o = OpenAiWriter.write_request(&req);
+    let openai_writer = OpenAiWriter;
+    assert_eq!(
+        openai_writer.stop_sequence_cap(),
+        Some((4, "OpenAI")),
+        "openai must publish its documented stop-sequence cap of 4 for the reject path to consult"
+    );
+    let o = openai_writer.write_request(&req);
     let o_stop = o["stop"].as_array().expect("openai stop array");
-    assert!(
-        o_stop.len() <= 4,
-        "openai must clamp stop to its documented cap of 4; got {} entries: {o_stop:?}",
-        o_stop.len()
+    assert_eq!(
+        o_stop.len(),
+        8,
+        "OpenAiWriter::write_request no longer clamps; the reject seam enforces the cap upstream"
     );
 
     let gemini_writer = GeminiWriter;
+    assert_eq!(
+        gemini_writer.stop_sequence_cap(),
+        Some((5, "Gemini")),
+        "gemini must publish its documented stop-sequence cap of 5 for the reject path to consult"
+    );
     let g = gemini_writer.write_request(&req);
     let g_stop = g["generationConfig"]["stopSequences"]
         .as_array()
         .expect("gemini stopSequences array");
-    assert!(
-        g_stop.len() <= 5,
-        "gemini must clamp stopSequences to its documented cap of 5; got {} entries: {g_stop:?}",
-        g_stop.len()
+    assert_eq!(
+        g_stop.len(),
+        8,
+        "GeminiWriter::write_request no longer clamps; the reject seam enforces the cap upstream"
     );
 
     let cohere_writer = CohereWriter;
-    let c = cohere_writer.write_request(&req);
-    let c_stop = c["stop_sequences"]
-        .as_array()
-        .expect("cohere stop_sequences array");
-    assert!(
-        c_stop.len() <= 5,
-        "cohere must clamp stop_sequences to its documented cap of 5; got {} entries: {c_stop:?}",
-        c_stop.len()
+    assert_eq!(
+        cohere_writer.stop_sequence_cap(),
+        Some((5, "Cohere")),
+        "cohere must publish its documented stop-sequence cap of 5 for the reject path to consult"
     );
 
     // Anthropic and Bedrock publish no fixed cap — UNCHANGED, still carrying all 8.

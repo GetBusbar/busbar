@@ -559,6 +559,24 @@ pub trait ProtocolWriter: Send + Sync {
         false
     }
 
+    /// This dialect's published cap on the number of stop sequences a request may carry, and the
+    /// display name to name in a rejection message, or `None` if the dialect has no cap this
+    /// engine enforces. The IR carries an unbounded `Vec` (no protocol enforces a cap on ingress),
+    /// so a cross-protocol request can always exceed a smaller target's cap.
+    ///
+    /// FAIL-CLOSED, not fail-soft: a request over the cap is REJECTED at the cross-protocol seam
+    /// (`ChatOperation::egress_representable`) rather than silently truncated. A partial stop set
+    /// is a WEAKER, DIFFERENT instruction than the one the caller gave — not a smaller-equivalent
+    /// — so truncating and forwarding anyway would silently drop the user's guard against
+    /// over-generation. Reject, don't drop-whole either: the correct set is small and the caller
+    /// can trivially resubmit within the limit, so a 400 naming the cap is the honest answer.
+    /// Default `None` (no cap enforced — Anthropic/Bedrock publish no fixed cap). `CohereWriter`
+    /// and `GeminiWriter` override with `Some((5, "Cohere"/"Gemini"))`; `OpenAiWriter` with
+    /// `Some((4, "OpenAI"))`.
+    fn stop_sequence_cap(&self) -> Option<(usize, &'static str)> {
+        None
+    }
+
     /// Whether this writer projects the IR's `cache_control` breakpoints into a native wire
     /// marker that is MODEL-GATED — a schema key some deployed models hard-reject with a 400
     /// (Bedrock's `cachePoint`: Claude accepts it, Amazon Nova rejects it as "extraneous key
@@ -1841,30 +1859,6 @@ fn scan_json_value_end(bytes: &[u8], start: usize) -> Option<usize> {
             }
         }
     }
-}
-
-/// Truncate `stop` to the egress vendor's published cap. Vendors 400 on an over-length
-/// stop-sequence array and the IR carries an unbounded `Vec` (no protocol enforces a cap on
-/// ingress), so a cross-protocol request can always exceed a smaller target's cap. NON-SILENT:
-/// warns only when it actually truncates, naming `proto`, the cap, and how many sequences were
-/// dropped.
-pub fn clamp_stop(stop: &[String], cap: usize, proto: &'static str) -> Vec<String> {
-    if stop.len() <= cap {
-        return stop.to_vec();
-    }
-    let provided = stop.len();
-    // `stop.len() > cap` is guaranteed by the early return above, so this cannot underflow;
-    // `saturating_sub` would only imply a doubt that isn't there.
-    let dropped = provided - cap;
-    tracing::warn!(
-        proto,
-        cap,
-        provided,
-        dropped,
-        "truncating stop sequences to {proto}'s documented cap of {cap}; the request carried \
-         {provided}, so {dropped} were dropped"
-    );
-    stop[..cap].to_vec()
 }
 
 /// Append an IR-derived `(event_type, data)` to `out` as INGRESS SSE bytes. A non-empty
