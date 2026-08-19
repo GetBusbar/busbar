@@ -272,3 +272,12 @@ mod signal_catalog_tests;
 #[cfg(test)]
 #[path = "tests/multi_candidate_reject_tests.rs"]
 mod multi_candidate_reject_tests;
+
+/// FAIL-CLOSED stop-sequence-cap edge reject. Pins that a cross-protocol request whose stop
+/// sequences exceed the egress dialect's published cap (Cohere: 5) is REJECTED up front — naming
+/// the vendor and the cap — rather than silently truncated and forwarded
+/// (`busbar_core::proto::clamp_stop`'s old behaviour for this caller). A same-protocol Cohere
+/// request is left untouched (served verbatim), leaving the cap to Cohere's own native 400.
+#[cfg(test)]
+#[path = "tests/stop_sequence_cap_reject_tests.rs"]
+mod stop_sequence_cap_reject_tests;

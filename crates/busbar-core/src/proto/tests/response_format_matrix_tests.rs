@@ -252,9 +252,21 @@ fn req_with_stop(stop: Vec<String>) -> crate::ir::IrRequest {
 
 /// The IR's `stop` is an unbounded `Vec<String>` (no protocol enforces a cap on ingress), so a
 /// cross-protocol request can carry more stop sequences than a smaller target vendor allows: OpenAI
-/// caps at 4, Gemini/Cohere at 5 — exceeding either is a guaranteed 400. Anthropic/Bedrock publish
+/// caps at 4, Gemini at 5 — exceeding either is a guaranteed 400, so those two writers still
+/// TRIM-AND-WARN (`busbar_core::proto::clamp_stop`) rather than reject. Anthropic/Bedrock publish
 /// no fixed cap and are LEFT UNCHANGED (inventing one would be a new lossy behavior this fix does
 /// not license).
+///
+/// Cohere is DELIBERATELY EXCLUDED from the trim-and-warn assertion below: forwarding a truncated
+/// stop set is a WEAKER, DIFFERENT instruction than the one the caller gave (their 6th+ stop
+/// sequence silently stops bounding generation) — not a smaller-equivalent — so busbar (a
+/// security/audit product) now REJECTS an over-cap Cohere request up front at the cross-protocol
+/// seam (`ChatOperation::egress_representable`, driven by `CohereWriter::stop_sequence_cap`)
+/// instead of trimming here. See `proxy::tests::stop_sequence_cap_reject_tests` for the reject
+/// coverage. `CohereWriter::write_request` itself no longer clamps — by the time it runs the
+/// reject has already guaranteed `stop.len() <= 5`, so calling it directly (as below) with 8
+/// entries legitimately forwards all 8; that is not a regression, it is this writer's new
+/// (narrower) job.
 #[test]
 fn stop_sequences_clamped_per_vendor_cap() {
     let stops: Vec<String> = (0..8).map(|i| format!("STOP{i}")).collect();
@@ -279,15 +291,13 @@ fn stop_sequences_clamped_per_vendor_cap() {
         g_stop.len()
     );
 
+    // Cohere: no longer clamped by the writer — enforced by rejection at the seam instead. Pin
+    // the cap the writer PUBLISHES (what the reject path consults), not a trim in this function.
     let cohere_writer = CohereWriter;
-    let c = cohere_writer.write_request(&req);
-    let c_stop = c["stop_sequences"]
-        .as_array()
-        .expect("cohere stop_sequences array");
-    assert!(
-        c_stop.len() <= 5,
-        "cohere must clamp stop_sequences to its documented cap of 5; got {} entries: {c_stop:?}",
-        c_stop.len()
+    assert_eq!(
+        cohere_writer.stop_sequence_cap(),
+        Some((5, "Cohere")),
+        "cohere must publish its documented stop-sequence cap of 5 for the reject path to consult"
     );
 
     // Anthropic and Bedrock publish no fixed cap — UNCHANGED, still carrying all 8.

@@ -413,10 +413,14 @@ impl ProtocolWriter for CohereWriter {
             out.insert("k".to_string(), serde_json::json!(top_k));
         }
         if !req.stop.is_empty() {
-            out.insert(
-                "stop_sequences".to_string(),
-                serde_json::json!(busbar_core::proto::clamp_stop(&req.stop, 5, "Cohere")),
-            );
+            // NEVER truncate here: an over-cap `req.stop` is rejected up front, at the
+            // cross-protocol seam, by `ChatOperation::egress_representable` consulting
+            // `stop_sequence_cap()` below — before `write_request` ever runs. A same-protocol
+            // Cohere->Cohere request never rebuilds its body from the IR (verbatim relay), so it
+            // never reaches this writer either. By the time this line runs, `req.stop.len()` is
+            // guaranteed `<= 5`; forward it whole rather than re-deriving a silent, partial cap
+            // here that could drift from the reject's cap.
+            out.insert("stop_sequences".to_string(), serde_json::json!(req.stop));
         }
         // Sampling/output controls in Cohere v2's native (OpenAI-shaped) names. Emitted
         // before the `extra` overlay (the reader pulled these keys out of extra, so there is no
@@ -926,6 +930,13 @@ impl ProtocolWriter for CohereWriter {
 
     fn auth_failure_message(&self) -> &'static str {
         "invalid api token"
+    }
+
+    /// Cohere v2 caps `stop_sequences` at 5 and 400s on more. See `stop_sequence_cap`'s doc on
+    /// `ProtocolWriter` for why an over-cap request is REJECTED at the cross-protocol seam rather
+    /// than silently truncated.
+    fn stop_sequence_cap(&self) -> Option<(usize, &'static str)> {
+        Some((5, "Cohere"))
     }
 
     fn clone_box(&self) -> Box<dyn ProtocolWriter> {
