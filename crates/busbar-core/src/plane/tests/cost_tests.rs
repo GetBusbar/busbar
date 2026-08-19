@@ -112,3 +112,53 @@ fn children_cannot_exceed_their_parent() {
         }
     );
 }
+
+// ── CostHold: reserve → settle → refund ─────────────────────────────────────────────────────────
+
+/// Helper: a single-line breakdown of `n` nanodollars.
+fn charge(n: u128) -> CostBreakdown {
+    CostBreakdown::new(CostAmount(n), vec![CostComponent::top("charge", CostAmount(n))]).unwrap()
+}
+
+#[test]
+fn reserve_folds_the_flat_fee_in_once() {
+    let h = CostHold::reserve(CostAmount(1_000), CostAmount(50));
+    assert_eq!(h.reserved(), CostAmount(1_050));
+}
+
+#[test]
+fn finalize_ledgers_the_exact_settled_sum_and_refunds_the_unspent_reserve() {
+    let mut h = CostHold::reserve(CostAmount(1_000), CostAmount(0));
+    h.settle_partial(&charge(300));
+    let s = h.finalize();
+    assert_eq!(s.ledgered_total, CostAmount(300)); // the EXACT charge, not the reserve
+    assert_eq!(s.refund, CostAmount(700)); // reserved 1000 − settled 300
+}
+
+#[test]
+fn streamed_partials_accumulate_to_the_true_charge() {
+    let mut h = CostHold::reserve(CostAmount(1_000), CostAmount(0));
+    h.settle_partial(&charge(120));
+    h.settle_partial(&charge(80));
+    h.settle_partial(&charge(50));
+    let s = h.finalize();
+    assert_eq!(s.ledgered_total, CostAmount(250));
+    assert_eq!(s.refund, CostAmount(750));
+}
+
+#[test]
+fn an_over_settle_ledgers_the_true_amount_and_refunds_zero_never_negative() {
+    let mut h = CostHold::reserve(CostAmount(100), CostAmount(0));
+    h.settle_partial(&charge(250)); // the coarse estimate was low
+    let s = h.finalize();
+    assert_eq!(s.ledgered_total, CostAmount(250));
+    assert_eq!(s.refund, CostAmount(0));
+}
+
+#[test]
+fn a_hold_never_settled_refunds_the_whole_reserve() {
+    let h = CostHold::reserve(CostAmount(500), CostAmount(25));
+    let s = h.finalize();
+    assert_eq!(s.ledgered_total, CostAmount(0));
+    assert_eq!(s.refund, CostAmount(525));
+}

@@ -227,6 +227,78 @@ impl CostBreakdown {
     }
 }
 
+/// A coarse pre-admission magnitude: a number and the NAME of what is counted (`"tokens"`, `"bytes"`,
+/// `"tasks"`, …), for a HARD pre-admission budget cap via over-reservation. The plane fills it from
+/// its own [`crate::ir::facts`] projection; core reserves against it without knowing the unit's origin
+/// (owner ruling Q5 — accuracy comes from the exact *settlement*, not this coarse estimate).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Magnitude {
+    /// What is being counted — an opaque plugin word, never interpreted by core.
+    pub unit: &'static str,
+    /// How much of it, for the over-estimate.
+    pub amount: u64,
+    /// The caller's declared cap on `amount`, if any (a request asking for more is refused up front).
+    pub caller_cap: Option<u64>,
+}
+
+/// The outcome of finalizing a [`CostHold`]: the exact amount to ledger, and the refund owed back to
+/// the budget cell the reserve was taken from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Settlement {
+    /// The true charge — the sum of the plugin's exact [`CostBreakdown`] settlements. This is what the
+    /// ledger records; it is NEVER a core estimate.
+    pub ledgered_total: CostAmount,
+    /// `reserved − settled`, saturating at zero: the unspent reserve to return to the budget cell. Zero
+    /// when the exact charge met or exceeded the (coarse) reserve.
+    pub refund: CostAmount,
+}
+
+/// A cost reserve held across a request: reserve a coarse over-estimate at admit for a hard budget
+/// cap, settle the EXACT itemized charge as it becomes known, and reconcile the refund at the end.
+///
+/// This type owns the correctness of the *amounts* — the reserve total, the exact settled sum, the
+/// once-only flat fee, and the refund — but NOT the ledger: the caller applies `reserved` to its
+/// budget cell at [`CostHold::reserve`] and the [`Settlement`] at [`CostHold::finalize`]. Pinning the
+/// hold to a `(bucket, window)` so the refund lands where it was reserved is the caller's key choice;
+/// this value carries no clock and no cell.
+///
+/// **Accuracy invariant (Q5):** the ledgered charge is the sum of the exact `settle_partial`s, never
+/// the coarse reserve. **No double-count:** the flat per-request fee is folded into `reserved` once
+/// and never re-added on settle.
+#[derive(Debug)]
+pub struct CostHold {
+    reserved: CostAmount,
+    settled: CostAmount,
+}
+
+impl CostHold {
+    /// Open a hold reserving a coarse `estimate` plus the once-only flat per-request `fee`. The caller
+    /// debits `reserved()` from the budget cell now; the unspent part comes back at [`Self::finalize`].
+    pub fn reserve(estimate: CostAmount, fee: CostAmount) -> CostHold {
+        CostHold { reserved: estimate + fee, settled: CostAmount::ZERO }
+    }
+
+    /// The amount debited from the budget cell at admit (estimate + flat fee).
+    pub fn reserved(&self) -> CostAmount {
+        self.reserved
+    }
+
+    /// Record an EXACT increment the plugin computed (a streamed frame's cost, or the final usage).
+    /// Repeatable; the running sum is the true charge. Core does not derive it — the plugin supplies
+    /// the itemized [`CostBreakdown`] and its `total` is what accrues.
+    pub fn settle_partial(&mut self, exact: &CostBreakdown) {
+        self.settled = self.settled + exact.total();
+    }
+
+    /// Reconcile: the exact total to ledger, and the refund (`reserved − settled`, saturating). An
+    /// over-settle (exact charge above the coarse reserve — the estimate was low) ledgers the true
+    /// amount and refunds zero, never a negative.
+    pub fn finalize(self) -> Settlement {
+        let refund = CostAmount(self.reserved.0.saturating_sub(self.settled.0));
+        Settlement { ledgered_total: self.settled, refund }
+    }
+}
+
 #[cfg(test)]
 #[path = "tests/cost_tests.rs"]
 mod cost_tests;
