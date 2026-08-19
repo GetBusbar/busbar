@@ -93,6 +93,7 @@
 pub(crate) mod approvals;
 pub(crate) mod calllog;
 pub(crate) mod config;
+pub mod cost;
 pub(crate) mod observe;
 pub(crate) mod provenance;
 pub(crate) mod quarantine;
