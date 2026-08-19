@@ -53,23 +53,30 @@
 /// and any `>` would silently eat the middle of `if (a < b && c > d)` out of a code snippet a tool
 /// legitimately returned, and a sanitiser that corrupts honest payloads gets turned off.
 ///
-/// An UNTERMINATED `<` (no closing `>` before end of input) is dropped along with the rest of the
-/// string's tail, because a truncated tag is still a tag as far as anything that reassembles the
-/// stream is concerned, and keeping it would let `<system` + a later concatenation reconstitute one.
+/// An UNTERMINATED `<` (no closing `>` before end of input) is KEPT VERBATIM, `<` and the whole tail
+/// with it, because with no closing `>` in the string it cannot lex as a tag — it is a dangling `<`,
+/// i.e. ordinary text, exactly like the `a < b` case above. Dropping it would silently discard the
+/// rest of the value, and busbar is a security/audit product: a hook, a guardrail, a reviewer or the
+/// audit log must see 100% of what a tool returned, so truncate-and-continue is forbidden. The old
+/// justification — that `<system` plus a LATER concatenation could reconstitute a closed tag — does
+/// not apply here: `normalise` is the LAST pass over every served string (substitution and
+/// formatting run BEFORE it at every call site), so nothing is concatenated onto a normalised value
+/// and re-served; within the one string being normalised, an unterminated `<letter` provably has no
+/// `>` after it and stays inert.
 pub(crate) fn normalise(input: &str) -> String {
     let bytes = input.as_bytes();
     let mut out = String::with_capacity(input.len());
     let mut i = 0usize;
     while i < bytes.len() {
         if bytes[i] == b'<' && starts_tag(bytes, i) {
-            match find_tag_end(bytes, i) {
-                Some(end) => {
-                    i = end + 1;
-                    continue;
-                }
-                // Unterminated: everything from here on is inside a tag that never closed.
-                None => break,
+            if let Some(end) = find_tag_end(bytes, i) {
+                i = end + 1;
+                continue;
             }
+            // Unterminated: no `>` closes this `<` anywhere before end of input, so it is not a tag.
+            // Fall through and copy the `<` as ordinary text — never drop the tail. Every later
+            // `<letter` in this string is likewise `>`-less and takes the same inert path, so the
+            // remainder round-trips byte-for-byte.
         }
         // Copy one whole UTF-8 character, never one byte: slicing a multi-byte character in half
         // would produce invalid UTF-8, and `String::push_str` on a bad slice would panic.

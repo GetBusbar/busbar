@@ -64,13 +64,41 @@ fn honest_payloads_survive_byte_identical() {
     }
 }
 
-/// An unterminated `<system` must not survive, because a value that is later concatenated with
-/// anything containing `>` reconstitutes the tag. Dropping the tail is the conservative answer and
-/// the only one that composes safely.
+/// An unterminated `<system` — no closing `>` before end of input — is KEPT verbatim, tail and all.
+/// With no `>` in the string it cannot lex as a tag, and `normalise` is the last pass over every
+/// served string, so nothing gets concatenated onto it afterwards to reconstitute one. Silently
+/// dropping the tail would hand a shortened value to the model, the store and the audit log with no
+/// marker, which a security/audit product must never do. See [`an_unterminated_tag_keeps_the_tail_verbatim`].
 #[test]
-fn an_unterminated_tag_takes_the_tail_with_it() {
-    assert_eq!(normalise("keep me<system and the rest"), "keep me");
-    assert_eq!(normalise("<system"), "");
+fn an_unterminated_tag_keeps_its_tail() {
+    assert_eq!(
+        normalise("keep me<system and the rest"),
+        "keep me<system and the rest"
+    );
+    assert_eq!(normalise("<system"), "<system");
+}
+
+/// An unterminated `<` followed by a letter — a truncated tag that never closes before end of input
+/// — must round-trip in FULL. This is the silent-truncation defect: busbar is a security/audit
+/// product, so a hook, a guardrail, a reviewer or the audit log must see 100% of what a tool
+/// returned. Dropping the tail delivers a shortened value with no warning and no marker, which is
+/// forbidden. And it is SAFE to keep: `normalise` is the LAST pass over every served string
+/// (substitution and formatting happen before it), so an unterminated `<letter` provably has no `>`
+/// after it in that string and cannot lex as a tag — the closing `>` never arrives.
+#[test]
+fn an_unterminated_tag_keeps_the_tail_verbatim() {
+    // A markdown autolink missing its closing `>` — utterly ordinary tool output.
+    assert_eq!(
+        normalise("see <https://example.com for details"),
+        "see <https://example.com for details",
+    );
+    // A Rust generic in a returned code snippet.
+    assert_eq!(normalise("let v: Vec<Foo = make();"), "let v: Vec<Foo = make();");
+    // The minimal cases, and the tail after a kept `<` is preserved to the last byte.
+    assert_eq!(normalise("keep me<system and the rest"), "keep me<system and the rest");
+    assert_eq!(normalise("<system"), "<system");
+    // Unicode after the unterminated `<` survives intact — no byte-slicing corruption.
+    assert_eq!(normalise("<b caf\u{e9} \u{4E2D}\u{6587}"), "<b caf\u{e9} \u{4E2D}\u{6587}");
 }
 
 /// The three injectable SITES — tool descriptions, prompt templates, and `resources/read` content —
