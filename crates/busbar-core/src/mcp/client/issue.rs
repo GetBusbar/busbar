@@ -20,7 +20,7 @@
 //! | egress gate (transitive confused deputy) | `super::egress::plan_verb_credential` → `crate::egress_auth::gate` |
 //! | outbound credential, RFC 8693/8707 | the same planner, and NEVER the caller's busbar key |
 //! | the supervision breaker | inside the wire — a quarantined child refuses every verb, not just calls |
-//! | the durable per-call hash chain | `crate::mcp::calllog::emit`, at every terminal |
+//! | the durable per-call hash chain | `crate::plane::calllog::emit`, at every terminal |
 //! | JSON-RPC correlation | `super::jsonrpc::parse_response` with the id this call sent |
 //!
 //! ## The gate runs BEFORE any I/O, and the ordering is load-bearing
@@ -32,7 +32,7 @@
 //!
 //! ## WHAT IS RECORDED, and the one schema decision this file takes
 //!
-//! `crate::mcp::calllog`'s header states that `prompts/get` and `resources/read` were NOT written to
+//! `crate::plane::calllog`'s header states that `prompts/get` and `resources/read` were NOT written to
 //! the chain because `McpCallRecord.tool` is a TOOL ROUTING KEY and widening it to every capability
 //! is a schema decision rather than a wiring one. That decision is taken here, explicitly, and in the
 //! narrow direction: the record's `tool` field carries the METHOD NAME prefixed with `verb:` — for
@@ -50,7 +50,7 @@ use super::identity::ServerId;
 use super::jsonrpc::{parse_response, RpcOutcome};
 use super::verb::UpstreamVerb;
 use super::wire::WireLeg;
-use crate::mcp::calllog::{CallInput, OUTCOME_DISPATCHED, OUTCOME_REFUSED, REASON_UPSTREAM_FAILED};
+use crate::plane::calllog::{CallInput, OUTCOME_DISPATCHED, OUTCOME_REFUSED, REASON_UPSTREAM_FAILED};
 use crate::mcp::upstream::Authorised;
 
 /// WHAT ONE ISSUED VERB PRODUCED.
@@ -96,7 +96,7 @@ pub(crate) async fn issue(
     let method = verb.method();
     let principal = auth.caller.id.clone();
     let record = |outcome: &'static str, reason: String| {
-        crate::mcp::calllog::emit(
+        crate::plane::calllog::emit(
             &principal,
             CallInput {
                 ts: crate::store::now(),

@@ -126,7 +126,6 @@ pub(crate) mod callerask;
 /// THE DURABLE PER-CALL LOG — one hash-chained record per tool call, written through to the
 /// configured store and read back at boot. Separate from the admin audit ring on purpose: see the
 /// module header.
-pub(crate) mod calllog;
 pub(crate) mod catalogue;
 /// The CLIENT direction: busbar calling OUT to external MCP tool servers. The other half of
 /// the same governance boundary this module's front door opens — same revision, same trust

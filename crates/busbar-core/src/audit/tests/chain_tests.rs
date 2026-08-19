@@ -29,7 +29,7 @@ use busbar_api::{McpCallRecord, TaskEventRow};
 
 use crate::a2a::provenance::EventInput;
 use crate::admin::audit::{AuditEntry, AuditInput};
-use crate::mcp::calllog::CallInput;
+use crate::plane::calllog::CallInput;
 
 // ══ THE FOURTH STREAM ════════════════════════════════════════════════════════════════════════════
 //

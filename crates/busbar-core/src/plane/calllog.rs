@@ -56,7 +56,7 @@
 //! ## The RAM default really is lossy, and that is a product contract
 //!
 //! `store: memory` implements none of these methods, so the trait defaults apply, nothing persists,
-//! and [`McpCallLog::restore_from_store`] reports zero. That zero is the truth being reported, not a
+//! and [`PlaneCallLog::restore_from_store`] reports zero. That zero is the truth being reported, not a
 //! bug, and the engine must never paper over it — `tests/calllog_tests.rs` keeps a permanent paired
 //! NEGATIVE test asserting exactly that, because a durability test that has never seen a
 //! non-durable store has proven nothing.
@@ -96,7 +96,7 @@
 //
 // ── AND THE OPERATOR-FACING READ SURFACE IS STILL NOT MOUNTED ───────────────────────────────────
 //
-// `McpCallLog::verify_principal_chain`, `read_back`, `compact`, `next_seq` and `len` have NO
+// `PlaneCallLog::verify_principal_chain`, `read_back`, `compact`, `next_seq` and `len` have NO
 // production caller. Each carries its own `#[allow(dead_code)]` and its own note, individually
 // rather than under one module-wide blanket, so that the next thing to lose its caller BREAKS THE
 // BUILD instead of joining a silent amnesty — which is precisely how the writer itself went missing.
@@ -267,7 +267,7 @@ impl std::fmt::Display for CallLogError {
 /// THE PER-CALL LOG. No `Debug`: `dyn Store` is not `Debug` (a backend must not be obliged to render
 /// itself, and one that did would be a place a credential could surface in a log).
 #[derive(Default)]
-pub(crate) struct McpCallLog {
+pub(crate) struct PlaneCallLog {
     /// Chain POSITIONS only, keyed by principal — a tail hash and a next sequence, never the
     /// records. The store owns the records.
     chains: Mutex<HashMap<String, CallChain>>,
@@ -279,10 +279,10 @@ pub(crate) struct McpCallLog {
 /// for the same reason: a config apply must not reset the chain positions, because doing so would
 /// open a SECOND chain at seq 1 under a principal that already has one, and two chains that each
 /// verify and together describe nothing is strictly worse than no chain at all.
-pub(crate) static CALLS: std::sync::LazyLock<McpCallLog> =
-    std::sync::LazyLock::new(McpCallLog::new);
+pub(crate) static CALLS: std::sync::LazyLock<PlaneCallLog> =
+    std::sync::LazyLock::new(PlaneCallLog::new);
 
-impl McpCallLog {
+impl PlaneCallLog {
     pub(crate) fn new() -> Self {
         Self::default()
     }
@@ -471,7 +471,7 @@ impl McpCallLog {
 ///
 /// ## Why the failure is swallowed, loudly, instead of failing the call
 ///
-/// [`McpCallLog::record`] surfaces a durable-write failure precisely so the CALLER can decide, and
+/// [`PlaneCallLog::record`] surfaces a durable-write failure precisely so the CALLER can decide, and
 /// this is that decision, made once and in one place. A store hiccup must not turn into a refused
 /// tool call: the log is EVIDENCE, not ADMISSION, and a gateway whose data plane stops when its
 /// audit backend blinks has converted an observability dependency into an availability dependency.

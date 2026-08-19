@@ -10,7 +10,7 @@
 //!
 //! The per-call log had a complete substrate, a hash chain, a verifier, a restore path and its own
 //! passing battery — and **no production call site at all**. Everything was exercised by driving
-//! `McpCallLog` directly, so the whole subsystem could be, and was, correct and unreached. A test
+//! `PlaneCallLog` directly, so the whole subsystem could be, and was, correct and unreached. A test
 //! that calls `CALLS.record(..)` itself would have reproduced exactly that: it proves the substrate
 //! and says nothing about whether a customer's `tools/call` ever reaches it. So this battery does not
 //! touch the log's write surface. It drives `tools/call` and then LOOKS.
@@ -34,7 +34,7 @@
 //!
 //! ## The `CALLS` global is serialised here, deliberately
 //!
-//! [`crate::mcp::calllog::CALLS`] is process state (see its own header for why it must not ride the
+//! [`crate::plane::calllog::CALLS`] is process state (see its own header for why it must not ride the
 //! swappable `App`). Two tests in this binary attaching different sinks to it concurrently would
 //! interleave, so they take one lock — and each also uses its own principal, so a leaked chain
 //! position from a sibling cannot make a green.
@@ -43,7 +43,7 @@ use super::upstream_support::{
     call_as, exchanging_server, gov_with_scopes, mcp_cfg, Behaviour, Peer,
 };
 use crate::audit::verify_chain;
-use crate::mcp::calllog::{CALLS, OUTCOME_DISPATCHED, OUTCOME_REFUSED, REASON_UPSTREAM_FAILED};
+use crate::plane::calllog::{CALLS, OUTCOME_DISPATCHED, OUTCOME_REFUSED, REASON_UPSTREAM_FAILED};
 use crate::test_support::TestApp;
 use busbar_api::{McpCallRecord, Store};
 use std::path::PathBuf;

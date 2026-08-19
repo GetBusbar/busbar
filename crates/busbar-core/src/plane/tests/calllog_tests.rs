@@ -18,7 +18,7 @@
 //!    proven nothing at all.
 
 use super::super::calllog::{
-    CallChain, CallInput, McpCallLog, OUTCOME_DISPATCHED, OUTCOME_REFUSED,
+    CallChain, CallInput, PlaneCallLog, OUTCOME_DISPATCHED, OUTCOME_REFUSED,
 };
 // The chain, the verifier and the break vocabulary are CORE's — this plane supplies only the record
 // type — so the tests reach for them where they live rather than through a plane re-export.
@@ -253,7 +253,7 @@ fn refused(ts: u64, tool: &str, reason: &str) -> CallInput {
 /// Write three calls through a log attached to `store`, then DROP the log. Returns what was written,
 /// so the read-back can be compared against it field by field.
 fn write_then_drop(store: &Arc<dyn Store>) -> Vec<McpCallRecord> {
-    let log = McpCallLog::new();
+    let log = PlaneCallLog::new();
     log.set_sink(store.clone());
     let a = log
         .record(P, dispatched(1000, "fs_read", "sha256:aaa", 7))
@@ -313,7 +313,7 @@ fn a_durable_store_returns_every_record_field_for_field_across_a_restart() {
     let written = write_then_drop(&store);
 
     // Process 2: nothing carried over.
-    let log2 = McpCallLog::new();
+    let log2 = PlaneCallLog::new();
     log2.set_sink(store.clone());
     assert_eq!(
         log2.len(),
@@ -377,7 +377,7 @@ fn the_ram_default_accepts_every_write_and_keeps_nothing_and_says_so() {
     let written = write_then_drop(&store);
     assert_eq!(written.len(), 3, "all three writes returned Ok");
 
-    let log2 = McpCallLog::new();
+    let log2 = PlaneCallLog::new();
     log2.set_sink(store.clone());
     let restored = log2
         .restore_from_store(store.as_ref())
@@ -409,7 +409,7 @@ fn the_ram_default_accepts_every_write_and_keeps_nothing_and_says_so() {
 fn a_failed_durable_write_leaves_the_sequence_where_it_was() {
     let backing = Arc::new(DurableCallStore::new());
     let store: Arc<dyn Store> = backing.clone();
-    let log = McpCallLog::new();
+    let log = PlaneCallLog::new();
     log.set_sink(store.clone());
 
     log.record(P, dispatched(1000, "fs_read", "sha256:aaa", 7))
@@ -454,7 +454,7 @@ fn editing_a_persisted_row_is_reported_as_a_digest_mismatch_at_its_position() {
     let store: Arc<dyn Store> = backing.clone();
     write_then_drop(&store);
 
-    let log = McpCallLog::new();
+    let log = PlaneCallLog::new();
     assert!(
         log.verify_principal_chain(store.as_ref(), P)
             .expect("verify reads")
@@ -496,7 +496,7 @@ fn removing_a_persisted_row_is_reported_as_a_sequence_break() {
     write_then_drop(&store);
     backing.drop_row(P, 2);
 
-    let log = McpCallLog::new();
+    let log = PlaneCallLog::new();
     let brk = log
         .verify_principal_chain(store.as_ref(), P)
         .expect("verify reads")
@@ -551,7 +551,7 @@ fn rewriting_only_a_persisted_rows_link_is_reported_as_a_link_mismatch() {
         row.hash = rebuilt.hash.clone();
     });
 
-    let log = McpCallLog::new();
+    let log = PlaneCallLog::new();
     let brk = log
         .verify_principal_chain(store.as_ref(), P)
         .expect("verify reads")
@@ -607,7 +607,7 @@ fn a_boot_chain_break_is_reported_while_the_rows_are_still_restored() {
     let written = write_then_drop(&store);
     backing.tamper(P, 2, |row| row.tool = "fs_exfiltrate".to_string());
 
-    let log2 = McpCallLog::new();
+    let log2 = PlaneCallLog::new();
     log2.set_sink(store.clone());
     let restored = log2
         .restore_from_store(store.as_ref())
@@ -665,7 +665,7 @@ fn an_enumerated_principal_with_no_rows_is_reported_as_an_empty_chain() {
             .is_empty(),
         "with no rows at all an honest backend names no principals"
     );
-    let control = McpCallLog::new();
+    let control = PlaneCallLog::new();
     assert_eq!(
         control
             .restore_from_store(store.as_ref())
@@ -676,7 +676,7 @@ fn an_enumerated_principal_with_no_rows_is_reported_as_an_empty_chain() {
     );
 
     let store2: Arc<dyn Store> = Arc::new(NamesOnePrincipalWithNoRows);
-    let log2 = McpCallLog::new();
+    let log2 = PlaneCallLog::new();
     let restored = log2
         .restore_from_store(store2.as_ref())
         .expect("the restore reads");
@@ -893,7 +893,7 @@ fn field_boundaries_cannot_be_forged_by_moving_text_across_them() {
 fn an_occupied_chain_position_takes_the_retry_and_refuses_the_fork() {
     let backing = Arc::new(DurableCallStore::new());
     let store: Arc<dyn Store> = backing.clone();
-    let log = McpCallLog::new();
+    let log = PlaneCallLog::new();
     log.set_sink(store.clone());
     let first = log
         .record(P, dispatched(1000, "fs_read", "sha256:aaa", 7))
@@ -917,7 +917,7 @@ fn an_occupied_chain_position_takes_the_retry_and_refuses_the_fork() {
 fn retention_purges_rows_without_rewinding_the_chain() {
     let backing = Arc::new(DurableCallStore::new());
     let store: Arc<dyn Store> = backing.clone();
-    let log = McpCallLog::new();
+    let log = PlaneCallLog::new();
     log.set_sink(store.clone());
     log.record(P, dispatched(1000, "fs_read", "sha256:aaa", 7))
         .expect("records");
@@ -933,7 +933,7 @@ fn retention_purges_rows_without_rewinding_the_chain() {
     );
 
     // The RAM default has nothing to purge and reports exactly that, rather than claiming a number.
-    let ram = McpCallLog::new();
+    let ram = PlaneCallLog::new();
     ram.set_sink(Arc::new(RamDefaultStore::new()));
     assert_eq!(
         ram.compact(1500).expect("compact runs"),
