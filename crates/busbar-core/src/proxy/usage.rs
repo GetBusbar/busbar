@@ -43,6 +43,192 @@ pub(crate) fn record_resp_usage(
     }
 }
 
+/// Recover token usage from a TAIL-anchored same-protocol non-stream billing buffer
+/// (`response_body.rs`'s `nonstream_buf`) whose HEAD was dropped to keep it bounded at
+/// `max_translated_body_bytes()`. The retained slice is no longer a well-formed top-level JSON
+/// document (its opening structure — or a string it cut through — is gone), so the normal
+/// `Op::extract_usage` full-document parse reliably fails on it. But the `usage` object itself sits
+/// at (or near) the TAIL of every supported dialect's response and is a small, SELF-CONTAINED
+/// balanced `{...}` value, so it can be isolated and parsed on its own even though the surrounding
+/// document cannot be.
+///
+/// Scoped to the dialects with a documented, stable usage shape (openai/anthropic/gemini/
+/// openai_responses/cohere/bedrock share the field names below); an unrecognized protocol or a
+/// usage object that itself doesn't fit in the retained tail (never observed — a usage object is a
+/// handful of integer fields) returns `None`, which the caller already treats as "bill zero,
+/// counted+warned" — no worse than before this fix, just narrower than the common case it now
+/// recovers.
+pub(crate) fn recover_truncated_usage(
+    ingress_protocol: &str,
+    tail: &[u8],
+) -> Option<crate::ir::IrUsage> {
+    let key: &[u8] = if ingress_protocol == "gemini" {
+        b"\"usageMetadata\""
+    } else {
+        b"\"usage\""
+    };
+    let key_pos = find_last(tail, key)?;
+    let obj = balanced_object_after(tail, key_pos + key.len())?;
+    let v: serde_json::Value = crate::json::parse(obj).ok()?;
+    Some(usage_from_tapped_value(ingress_protocol, &v))
+}
+
+/// Find the LAST occurrence of `needle` in `hay` (there can be more than one `"usage"` substring —
+/// e.g. inside delivered assistant content — so anchoring on the last one biases toward the real
+/// trailing usage object, which is where every dialect places it).
+fn find_last(hay: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() || hay.len() < needle.len() {
+        return None;
+    }
+    (0..=hay.len() - needle.len())
+        .rev()
+        .find(|&i| &hay[i..i + needle.len()] == needle)
+}
+
+/// From just past a `"usage"`/`"usageMetadata"` key, skip the `:` and whitespace, then
+/// bracket-match the following `{...}` object (string- and escape-aware, so a `}` inside a quoted
+/// string value does not close the object early). Returns the byte span INCLUDING both braces.
+fn balanced_object_after(buf: &[u8], mut i: usize) -> Option<&[u8]> {
+    while i < buf.len() && (buf[i] as char).is_whitespace() {
+        i += 1;
+    }
+    if buf.get(i) != Some(&b':') {
+        return None;
+    }
+    i += 1;
+    while i < buf.len() && (buf[i] as char).is_whitespace() {
+        i += 1;
+    }
+    if buf.get(i) != Some(&b'{') {
+        return None;
+    }
+    let start = i;
+    let mut depth: i32 = 0;
+    let mut in_str = false;
+    let mut escape = false;
+    while i < buf.len() {
+        let c = buf[i];
+        if in_str {
+            if escape {
+                escape = false;
+            } else if c == b'\\' {
+                escape = true;
+            } else if c == b'"' {
+                in_str = false;
+            }
+        } else {
+            match c {
+                b'"' => in_str = true,
+                b'{' => depth += 1,
+                b'}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(&buf[start..=i]);
+                    }
+                }
+                _ => {}
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Decode an isolated usage object into `IrUsage`, mirroring each protocol reader's own
+/// `read_response` usage block (openai_chat.rs / anthropic/reader.rs / gemini/mod.rs's
+/// `gemini_usage` / openai_responses/reader.rs / cohere/reader.rs / bedrock/reader.rs) — duplicated
+/// here rather than reused because those readers operate on the WHOLE response body (they require
+/// `choices`/`candidates`/`content` to be present), which a tail-truncated buffer by definition does
+/// not have. Only the small set of fields billing actually needs is mirrored.
+fn usage_from_tapped_value(ingress_protocol: &str, v: &serde_json::Value) -> crate::ir::IrUsage {
+    let zero = || crate::ir::IrUsage {
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_creation_input_tokens: None,
+        cache_read_input_tokens: None,
+        detail: crate::ir::IrUsageDetail::default(),
+    };
+    let u64_field = |k: &str| v.get(k).and_then(|x| x.as_u64());
+    match ingress_protocol {
+        "anthropic" => crate::ir::IrUsage {
+            input_tokens: u64_field("input_tokens").unwrap_or(0),
+            output_tokens: u64_field("output_tokens").unwrap_or(0),
+            cache_creation_input_tokens: u64_field("cache_creation_input_tokens"),
+            cache_read_input_tokens: u64_field("cache_read_input_tokens"),
+            ..zero()
+        },
+        "gemini" => {
+            let cached = v.get("cachedContentTokenCount").and_then(|x| x.as_u64());
+            crate::ir::IrUsage {
+                input_tokens: v
+                    .get("promptTokenCount")
+                    .and_then(|x| x.as_u64())
+                    .unwrap_or(0)
+                    .saturating_sub(cached.unwrap_or(0)),
+                output_tokens: v
+                    .get("candidatesTokenCount")
+                    .and_then(|x| x.as_u64())
+                    .unwrap_or(0),
+                cache_read_input_tokens: cached,
+                ..zero()
+            }
+        }
+        "bedrock" => crate::ir::IrUsage {
+            input_tokens: u64_field("inputTokens").unwrap_or(0),
+            output_tokens: u64_field("outputTokens").unwrap_or(0),
+            cache_creation_input_tokens: u64_field("cacheWriteInputTokens"),
+            cache_read_input_tokens: u64_field("cacheReadInputTokens"),
+            ..zero()
+        },
+        "cohere" => {
+            let tokens = v.get("tokens");
+            crate::ir::IrUsage {
+                input_tokens: tokens
+                    .and_then(|t| t.get("input_tokens"))
+                    .and_then(|x| x.as_u64())
+                    .unwrap_or(0),
+                output_tokens: tokens
+                    .and_then(|t| t.get("output_tokens"))
+                    .and_then(|x| x.as_u64())
+                    .unwrap_or(0),
+                ..zero()
+            }
+        }
+        // openai_responses: input_tokens/output_tokens; openai (chat completions):
+        // prompt_tokens/completion_tokens. Both are grouped under the "openai"/"openai_responses"
+        // ingress names, so disambiguate on which field the object actually carries.
+        _ => {
+            if v.get("prompt_tokens").is_some() || v.get("completion_tokens").is_some() {
+                let cached = v
+                    .get("prompt_tokens_details")
+                    .and_then(|d| d.get("cached_tokens"))
+                    .and_then(|x| x.as_u64());
+                crate::ir::IrUsage {
+                    input_tokens: u64_field("prompt_tokens")
+                        .unwrap_or(0)
+                        .saturating_sub(cached.unwrap_or(0)),
+                    output_tokens: u64_field("completion_tokens").unwrap_or(0),
+                    cache_read_input_tokens: cached,
+                    ..zero()
+                }
+            } else {
+                let cached = v
+                    .get("input_tokens_details")
+                    .and_then(|d| d.get("cached_tokens"))
+                    .and_then(|x| x.as_u64());
+                crate::ir::IrUsage {
+                    input_tokens: u64_field("input_tokens")
+                        .unwrap_or(0)
+                        .saturating_sub(cached.unwrap_or(0)),
+                    output_tokens: u64_field("output_tokens").unwrap_or(0),
+                    cache_read_input_tokens: cached,
+                    ..zero()
+                }
+            }
+        }
+    }
+}
+
 /// Project the IR's normalized usage into the LEDGER'S four pricing tiers. Readers normalize
 /// `input_tokens` to UNCACHED and keep the cache fields ADDITIVE, so the mapping is direct:
 /// cache-creation is the rate card's `cache_write` tier.

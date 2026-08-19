@@ -109,10 +109,23 @@ pub(crate) struct FirstByteBody<S, P> {
     /// client byte-for-byte (each chunk passes through unchanged), but a bounded copy is retained here
     /// so the stream-end arm can run the EGRESS READER over the reassembled body and source `IrUsage`
     /// for billing. Same-proto means egress == ingress, so the body is in the ingress
-    /// protocol's native shape and `ingress_protocol`'s reader decodes it. Capped at
-    /// `MAX_TRANSLATED_BODY_BYTES` (dropping past the cap with a warn like the buffered guards). The
-    /// SSE / translation paths never touch this (they bill via `translate.usage()`).
-    nonstream_buf: Vec<u8>,
+    /// protocol's native shape and `ingress_protocol`'s reader decodes it.
+    ///
+    /// Capped at `MAX_TRANSLATED_BODY_BYTES`, but TAIL-anchored, not head-truncated: every dialect's
+    /// `usage` object sits at (or near) the END of the response JSON, so once the body exceeds the
+    /// cap this buffer drops from the FRONT (oldest bytes) rather than refusing new bytes, keeping
+    /// the LAST `cap` bytes at all times. A `VecDeque` so the drop is O(1) amortized per byte
+    /// (`pop_front`) instead of an O(cap) `Vec::drain` on every over-cap chunk. `taps_nonstream_usage`
+    /// gates this: the client stream is untouched either way (verbatim relay, below). The SSE /
+    /// translation paths never touch this (they bill via `translate.usage()`).
+    nonstream_buf: std::collections::VecDeque<u8>,
+    /// Set once `nonstream_buf` has dropped ANY front bytes for this response — the buffer is then a
+    /// TAIL FRAGMENT, not a well-formed top-level JSON document, so the stream-end arm routes usage
+    /// extraction through `usage::recover_truncated_usage` (isolates the self-contained `usage`
+    /// sub-object) instead of `Op::extract_usage` (which needs the whole document and would
+    /// otherwise reliably fail to parse a fragment). Also gates the truncation counter/warn to fire
+    /// ONCE per response rather than once per over-cap chunk.
+    nonstream_buf_truncated: bool,
 }
 
 impl<S, P> FirstByteBody<S, P>
@@ -167,7 +180,8 @@ where
             budget_spent,
             ended: false,
             stream_failed: false,
-            nonstream_buf: Vec::new(),
+            nonstream_buf: std::collections::VecDeque::new(),
+            nonstream_buf_truncated: false,
         }
     }
 }
@@ -230,35 +244,36 @@ where
                     if !this.is_sse && this.op.taps_nonstream_usage() && this.usage_sink.is_some() {
                         // SAME-PROTOCOL NON-STREAM `application/json` passthrough: the
                         // non-stream analog of read-for-IR-emit-verbatim. The body relays verbatim,
-                        // but a bounded copy is retained so the stream-end arm can run the egress reader
-                        // (`ingress_protocol`'s reader — same-proto, so egress == ingress) over the
-                        // reassembled body and source `IrUsage` for billing. Cap at
-                        // `MAX_TRANSLATED_BODY_BYTES`; past the cap, drop the overflow with a warn
-                        // (matching the buffered `read_capped` guards) — the tail `usage` may then be
-                        // missed, but the gap is observable, not a memory leak.
+                        // but a bounded copy is retained so the stream-end arm can source `IrUsage`
+                        // for billing from it. Cap at `MAX_TRANSLATED_BODY_BYTES`, but TAIL-anchored:
+                        // every dialect's `usage` object lives at (or near) the END of the response
+                        // JSON, so once the body exceeds the cap this buffer drops bytes from the
+                        // FRONT (oldest) to keep the LAST `cap` bytes, not the first `cap` bytes — the
+                        // usage object then survives an over-cap body instead of falling past a
+                        // head-truncated cap.
                         // ONE read of the live-reloadable cap: `INSTALLED` is a `RwLock` a config
                         // apply can mutate mid-response (`limits.rs:74-96`), so a second read
-                        // between this test and the subtraction could observe a LOWER cap and
-                        // underflow `remaining` (debug panic; release wraps to ~2^64 and silently
-                        // disables the cap for the rest of the response).
+                        // later in this same decision could observe a DIFFERENT cap mid-computation.
                         let cap = max_translated_body_bytes();
-                        if this.nonstream_buf.len() < cap {
-                            let remaining = cap - this.nonstream_buf.len();
-                            if chunk.len() <= remaining {
-                                this.nonstream_buf.extend_from_slice(&chunk);
-                            } else {
-                                this.nonstream_buf.extend_from_slice(&chunk[..remaining]);
-                                // Fires once per response (the next chunk sees buf == cap and skips
-                                // this arm). Count it so the undercount is alertable on a dashboard,
-                                // not just visible in a log line an operator has to be watching for.
+                        this.nonstream_buf.extend(chunk.iter().copied());
+                        if this.nonstream_buf.len() > cap {
+                            let excess = this.nonstream_buf.len() - cap;
+                            this.nonstream_buf.drain(..excess);
+                            if !this.nonstream_buf_truncated {
+                                // Fires ONCE per response (the flag stays set for every subsequent
+                                // over-cap chunk). Count it so an over-cap body is alertable on a
+                                // dashboard even though the tail-anchored buffer now recovers usage
+                                // for every dialect this fix covers — a residual undercount (an
+                                // unrecognized protocol, or a usage object so large it doesn't fit in
+                                // `cap` itself) is still observable here, not silent.
+                                this.nonstream_buf_truncated = true;
                                 metrics::counter!(crate::metrics::BILLING_TRUNCATED_TOTAL)
                                     .increment(1);
                                 tracing::warn!(
-                                    buffered = this.nonstream_buf.len(),
                                     cap,
                                     "same-protocol non-stream body exceeded the usage-tap reassembly \
-                                     cap; if the tail usage frame fell past the cap, this request's \
-                                     tokens are undercounted (TPM/spend may be undercharged)"
+                                     cap; retaining the TAIL (not the head) so the trailing usage \
+                                     object still bills correctly for a recognized dialect"
                                 );
                             }
                         }
@@ -542,8 +557,22 @@ where
                         // usage from the reassembled bytes. Chat runs the egress reader and
                         // reports IR usage (byte-identical to the previous inline read); a
                         // flat-fee op returns None and bills nothing.
-                        let buf = std::mem::take(&mut this.nonstream_buf);
-                        this.op.extract_usage(this.ingress_protocol, &buf)
+                        let truncated = this.nonstream_buf_truncated;
+                        let buf: Vec<u8> = std::mem::take(&mut this.nonstream_buf).into();
+                        if truncated {
+                            // The buffer is a TAIL FRAGMENT (its head was dropped to stay within
+                            // cap), not a well-formed top-level document — `Op::extract_usage`'s
+                            // full-document parse would reliably fail on it. Isolate and parse just
+                            // the self-contained `usage` sub-object instead (see
+                            // `usage::recover_truncated_usage`'s doc comment for why this is safe and
+                            // why it duplicates rather than reuses each reader's field mapping).
+                            crate::proxy::usage::recover_truncated_usage(
+                                this.ingress_protocol,
+                                &buf,
+                            )
+                        } else {
+                            this.op.extract_usage(this.ingress_protocol, &buf)
+                        }
                     } else {
                         None
                     };
