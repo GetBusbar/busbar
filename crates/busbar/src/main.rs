@@ -506,6 +506,9 @@ fn register_protocols() {
     // declarations core still carries, and the resulting sequence is both the "must be one of:"
     // tail on a bad `protocol:` and the list `telemetry` indexes its per-protocol metric families
     // by POSITION in. Appending keeps every existing index; inserting renumbers them.
+    // `mut` is used only under the protocol features below; with every protocol compiled out
+    // (`--no-default-features`) nothing pushes, so the binding is legitimately unmutated there.
+    #[allow(unused_mut)]
     let mut installed: Vec<&'static busbar_core::proto::ProtocolDecl> = Vec::new();
     #[cfg(feature = "proto-llm")]
     installed.extend_from_slice(busbar_llm::DECLS);
