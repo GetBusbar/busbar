@@ -70,6 +70,10 @@ pub(crate) struct BuildCtx<'a> {
     pub(crate) public_url: Option<&'a str>,
 }
 
+/// A PLANE BOOT HOOK — [`PlaneDecl::hydrate`] or [`PlaneDecl::start`]. Handed the [`BootCtx`] for its
+/// phase; an `Err` REFUSES BOOT (the fold propagates it with `?`).
+pub(crate) type BootHook = fn(&BootCtx) -> Result<(), String>;
+
 /// THE CORE REVERIFY-SWEEP SPAWNER, handed to a plane's [`PlaneDecl::start`] hook as a fn-pointer so
 /// the one background sweep loop can be started WITHOUT `crate::trust::sweep::spawn` (the cadence +
 /// shutdown-select machinery) going public — invariant (a)'s doctrine on the trust internals, in the
@@ -90,7 +94,8 @@ pub(crate) type ReverifySpawn = fn(
 /// The one instance of [`ReverifySpawn`] — `crate::trust::sweep::spawn` monomorphised on the A2A
 /// sweeper. Named HERE, in the registry (which already names every built-in plane's `PLANE_DECL`),
 /// rather than in `boot.rs`, so `boot.rs`'s `start_planes` loop names NO plane type at all.
-const REVERIFY_SPAWN: ReverifySpawn = crate::trust::sweep::spawn::<crate::a2a::verify::ReverifySweeper>;
+const REVERIFY_SPAWN: ReverifySpawn =
+    crate::trust::sweep::spawn::<crate::a2a::verify::ReverifySweeper>;
 
 /// BUSBAR'S PUBLISHED CARD-ISSUER KEY, computed core-side and handed to the A2A [`PlaneDecl::start`]
 /// hook as PUBLIC values ONLY — the `kid` and the base64 Ed25519 SPKI an operator hands a counterparty
@@ -314,7 +319,7 @@ pub struct PlaneDecl {
     /// sinks and read them back but can never touch the append-only chain (invariant (a)). `None` for
     /// a plane with no durable state to restore (the LLM plane). A hook returning `Err` REFUSES BOOT:
     /// [`crate::boot::hydrate_all`] propagates it with `?`, so a plane cannot half-restore and serve.
-    pub(crate) hydrate: Option<fn(&BootCtx) -> Result<(), String>>,
+    pub(crate) hydrate: Option<BootHook>,
 
     /// START THIS PLANE'S BACKGROUND WORK, AFTER the listeners are built — the plane half of
     /// [`crate::boot::start_planes`]. Handed the same [`BootCtx`], now carrying the live app handle
@@ -323,7 +328,7 @@ pub struct PlaneDecl {
     /// card-issuer key (never its seed). `None` for a plane that starts nothing. A hook returning
     /// `Err` REFUSES BOOT — an outbound identity that does not resolve is a startup failure, never a
     /// warning — so [`crate::boot::start_planes`] propagates it with `?`.
-    pub(crate) start: Option<fn(&BootCtx) -> Result<(), String>>,
+    pub(crate) start: Option<BootHook>,
 }
 
 /// THE BUILT-INS — one line per plane, and every line is DATA.

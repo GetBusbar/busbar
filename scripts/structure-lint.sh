@@ -13,9 +13,11 @@ cd "$(dirname "$0")/.."
 # binary). Every row below names the root it governs THROUGH these two variables, so the file move
 # is a one-variable flip of CORE rather than 46 silently stale paths — and each row's choice of
 # $CORE vs $BIN is a signed decision about which side of the seam that invariant watches. The
-# `boot-starts-the-quarantine-sweep` census row and the grandfathered `main.rs` are the two that
-# stay on $BIN: their whole job is to watch the binary. Census and axis rows whose subject is "the
-# tree" scope over BOTH roots as a comma-separated list.
+# grandfathered `main.rs` is what stays on $BIN: its whole job is to watch the binary. The
+# `boot-starts-the-quarantine-sweep` census row FOLLOWED its subject onto $CORE when plane step 3.0b
+# inverted the boot hooks — the sweep is now started by the MCP plane's `start` decl hook
+# (`mcp::mcp_start`), the boot loop's business, not a hardcoded line in `main`. Census and axis rows
+# whose subject is "the tree" scope over BOTH roots as a comma-separated list.
 CORE=crates/busbar-core/src
 BIN=crates/busbar/src
 # The extracted protocol crates (step 4 of 1.6.0; anthropic was the first, mcp the second, and six
@@ -1964,7 +1966,7 @@ DECLARATION_CENSUS=(
   #    debt today.
   'the-third-catalogue-walk|THIRD-CATALOGUE-WALK|fn[[:space:]]+visible_catalogue[^a-zA-Z0-9_]|1|'"$TREE"'|the outbound client leg still walks its own catalogue instead of crate::catalogue, filtering through the egress gate rather than the ordered validator; this row is that debt, and the count is 1 until somebody routes it through the one walk and deletes the row'
 
-  'boot-starts-the-quarantine-sweep|SWEEP-NOT-SPAWNED|spawn_refresh_job\(|1|'"$BIN"'/main.rs|the sweep is the only thing that quarantines a drifted upstream with no operator present; if boot stops calling it the defence is still fully implemented, fully tested, and never runs'
+  'boot-starts-the-quarantine-sweep|SWEEP-NOT-SPAWNED|spawn_refresh_job\(|1|'"$CORE"'/mcp/mod.rs|the sweep is the only thing that quarantines a drifted upstream with no operator present; boot starts it through the MCP plane`s start decl hook (mcp_start), and if that hook stops calling it the defence is still fully implemented, fully tested, and never runs'
 
   # ── THE ONE PARSE-TIME PLANE-BOUNDARY RULE. `refuse_cross_plane_reference` decides whether a hook
   #    reference reaches onto another config section, and `validate_section_hooks` applies it to a
