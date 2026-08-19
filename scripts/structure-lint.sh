@@ -1111,7 +1111,23 @@ CHOKE_POINTS=(
   # ── A ── persistence: one durable-write primitive. A 5th call site that re-hand-rolls the
   #         atomic-write dance would silently drop whichever facet (parent fsync / temp cleanup /
   #         0600 mode) its author forgot.
-  'A-persistence|DURABLE-BYPASS|crates/api/src/durable.rs (durable::write / write_with; AppHandle::commit_and_swap)|crates/api/src/tests/durable_tests.rs::fault_matrix_returns_err_untouched_target_no_temp_leak|route through crate::durable::write|fs::rename\(>>hand-rolled rename-to-publish>>crates/api/src/durable.rs;sync_[ad]>>hand-rolled fsync durability (sync_all/sync_data)>>crates/api/src/durable.rs;fs::create_dir_all\(>>directory creation that leaves the new entry non-durable>>crates/api/src/durable.rs,'"$CORE"'/test_support/mod.rs|persist-then-swap is only atomic if EVERY writer does the identical fsync/rename/cleanup dance'
+  #
+  #         LEDGERED EXEMPTION on the `fs::rename\(` rule for `$CORE/export/file.rs` (the
+  #         request-log-file sink's rotate-by-rename). `durable::write` owns "publish freshly
+  #         computed bytes so a reader never sees a torn write" — its fsync-before-rename dance
+  #         exists to protect a WRITE this module doesn't do. Rotation renames a file whose bytes
+  #         are already fully on disk (this sink's own appends are fire-and-forget, unfsynced,
+  #         "telemetry must not affect serving" — there was never a torn-write contract for a
+  #         concurrent tailer to begin with, and rotation weakens nothing that existed before it). A
+  #         crash mid-rename can only ever leave that content under its PRIOR name, never lose it —
+  #         `fs::rename` only moves a directory entry, it does not touch the bytes it points at, so
+  #         there is no torn/partial state for the file itself to land in. Routing this through
+  #         `durable::write` would mean reading the entire, operator-sized-via-`rotate_mb` log (can
+  #         legitimately be hundreds of MB) into memory to re-emit it as "new" bytes just to reuse a
+  #         dance built for small state/config artifacts — no correctness gained, real memory/IO
+  #         cost paid on every rotation. See `export::file::rotate` for the rename-failure posture
+  #         (never truncate un-archived data) that keeps this exemption honest.
+  'A-persistence|DURABLE-BYPASS|crates/api/src/durable.rs (durable::write / write_with; AppHandle::commit_and_swap)|crates/api/src/tests/durable_tests.rs::fault_matrix_returns_err_untouched_target_no_temp_leak|route through crate::durable::write|fs::rename\(>>hand-rolled rename-to-publish>>crates/api/src/durable.rs,'"$CORE"'/export/file.rs;sync_[ad]>>hand-rolled fsync durability (sync_all/sync_data)>>crates/api/src/durable.rs;fs::create_dir_all\(>>directory creation that leaves the new entry non-durable>>crates/api/src/durable.rs,'"$CORE"'/test_support/mod.rs|persist-then-swap is only atomic if EVERY writer does the identical fsync/rename/cleanup dance'
 
   # ── B ── plugin FFI/ABI: one export boundary. A hand-written #[no_mangle] skips the
   #         null-out-guard-before-alloc, the mandatory catch_unwind, and the total status map.

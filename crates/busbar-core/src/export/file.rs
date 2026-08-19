@@ -139,6 +139,22 @@ fn append_one(sink: &'static FileSink, line: String) {
 /// `rotate_mb` rather than losing what's already on disk. A stuck rename (permissions, cross-device
 /// archive dir, a racing external process) degrades to "rotation isn't happening", never to
 /// "history is gone."
+///
+/// ## Why this hand-rolls `fs::rename` instead of routing through `crate::durable::write`
+///
+/// `crate::durable::write` owns "publish freshly computed bytes so a reader never observes a torn
+/// write" — a fsync-the-content-before-rename dance built to protect a WRITE. This function does no
+/// write: it renames a file whose bytes are already fully on disk. There was never a torn-write
+/// contract to preserve here either — this sink's own appends (see [`append_one`]) are
+/// fire-and-forget and unfsynced by design ("telemetry must not affect serving"), so a concurrent
+/// tailer already has no atomicity guarantee across lines; rotation weakens nothing that existed
+/// before it. And `fs::rename` only repoints a directory entry — it never touches the bytes it
+/// names — so a crash mid-rotation can leave content under its PRIOR name but can never lose it or
+/// leave it torn, which is exactly the property [`FileSink`]'s truncate-free contract needs.
+/// Reusing `durable::write` here would mean reading the whole log — sized by the operator via
+/// `rotate_mb` and legitimately hundreds of MB — into memory just to re-emit it as "new" bytes, to
+/// buy a dance designed for small state/config artifacts. This is a LEDGERED exemption in
+/// `scripts/structure-lint.sh`'s choke-point registry (row A-persistence), not a silent bypass.
 fn rotate(path: &str) {
     // Free the oldest archive slot first so the shift below never collides with a still-occupied
     // name. Retention is a deliberate, documented bound (`ROTATE_ARCHIVE_LIMIT`) chosen by this
