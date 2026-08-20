@@ -234,6 +234,7 @@ const TELEX_DECL: ProtocolDecl = ProtocolDecl {
     auth_failure_message: "authentication failed",
     uses_array_stream_shim: false,
     has_native_path_not_found: false,
+    egress_stream_accept: crate::proxy::TEXT_EVENT_STREAM,
     models_list_envelope: None,
 };
 
@@ -411,6 +412,7 @@ const fn named_decl(name: &'static str) -> ProtocolDecl {
         auth_failure_message: "authentication failed",
         uses_array_stream_shim: false,
         has_native_path_not_found: false,
+        egress_stream_accept: crate::proxy::TEXT_EVENT_STREAM,
         models_list_envelope: None,
     }
 }

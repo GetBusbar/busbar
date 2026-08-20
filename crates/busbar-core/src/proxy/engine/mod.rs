@@ -1726,7 +1726,6 @@ pub(crate) async fn forward_with_pool_parsed_inner(
         };
 
         // per-request auth (SigV4 for Bedrock; static for others) needs the host/path/body.
-        let writer = app.lanes[i].protocol.writer();
         // The operation resolves its own upstream path from this lane: chat delegates to the
         // writer's stream-aware default (honoring any provider `path` override) — byte-identical to
         // the previous inline logic. `None` means this lane's protocol does not speak this
@@ -1791,10 +1790,10 @@ pub(crate) async fn forward_with_pool_parsed_inner(
             .header(USER_AGENT, crate::proxy::egress_user_agent(egress_name))
             // Native-SDK Accept for the egress protocol (eventstream/json/SSE by stream intent). A
             // native SDK always sends one; omitting it is a backend-side proxy fingerprint. The
-            // operation chooses it: chat defers to the writer vtable (`ProtocolWriter::egress_accept`,
+            // operation chooses it: chat reads the egress declaration (`ProtocolDecl::egress_stream_accept`,
             // byte-identical to before) so no `"bedrock"` branch lives here; an op with a non-JSON
             // response chooses its own. Not part of SigV4 SignedHeaders, so no signature impact.
-            .header(ACCEPT, op.egress_accept(writer, wants_stream))
+            .header(ACCEPT, op.egress_accept(egress_name, wants_stream))
             .body(payload);
         drop(_cb_reqwest);
         // reqwest's per-request `.timeout()` bounds the ENTIRE request lifecycle, INCLUDING reading

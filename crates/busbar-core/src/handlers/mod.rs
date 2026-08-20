@@ -287,10 +287,18 @@ pub trait OperationHandler: Send + Sync {
         crate::proxy::APPLICATION_JSON
     }
 
-    /// The egress `Accept` header for the upstream request. Default: the writer's stream-aware choice
-    /// (JSON / SSE / eventstream). A binary-response op (audio speech) overrides to `*/*`.
-    fn egress_accept(&self, writer: &dyn ProtocolWriter, wants_stream: bool) -> &'static str {
-        writer.egress_accept(wants_stream)
+    /// The egress `Accept` header for the upstream request, resolved from the egress protocol's
+    /// declaration (`ProtocolDecl::egress_stream_accept` when streaming, universal `application/json`
+    /// otherwise) — the pure per-protocol constant read off the declaration instead of an allocated
+    /// writer vtable. A binary-response op (audio speech) overrides to `*/*`.
+    fn egress_accept(&self, egress_protocol: &str, wants_stream: bool) -> &'static str {
+        if wants_stream {
+            crate::proto::decl_for(egress_protocol)
+                .map(|d| d.egress_stream_accept)
+                .unwrap_or(crate::proxy::TEXT_EVENT_STREAM)
+        } else {
+            crate::proxy::APPLICATION_JSON
+        }
     }
 
     /// Fail-closed guard for a cross-protocol request whose neutral IR cannot be written onto THIS
@@ -723,12 +731,8 @@ impl OpDispatch {
     ) -> Option<crate::billing::TokenUsage> {
         self.op_handler.extract_usage(ingress_protocol, body)
     }
-    pub(crate) fn egress_accept(
-        &self,
-        writer: &dyn ProtocolWriter,
-        wants_stream: bool,
-    ) -> &'static str {
-        self.op_handler.egress_accept(writer, wants_stream)
+    pub(crate) fn egress_accept(&self, egress_protocol: &str, wants_stream: bool) -> &'static str {
+        self.op_handler.egress_accept(egress_protocol, wants_stream)
     }
     /// The (protocol × operation) upstream path: lane override, else the lane's protocol
     /// `RequestHandler` renders it from resolved primitives (never the `Lane`). `None` only if the

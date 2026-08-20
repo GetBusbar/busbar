@@ -134,6 +134,9 @@ pub const DECL: busbar_core::proto::ProtocolDecl = busbar_core::proto::ProtocolD
     auth_failure_message: "authentication failed",
     uses_array_stream_shim: false,
     has_native_path_not_found: false,
+    // MCP ships no cross-dialect codec, so this is never consulted for a translated egress; it
+    // carries the neutral SSE default the by-name `egress_accept` fallback would have returned.
+    egress_stream_accept: busbar_core::proxy::TEXT_EVENT_STREAM,
     // MCP is not an LLM chat dialect and serves no `/v1/models` discovery surface.
     models_list_envelope: None,
 };

@@ -188,16 +188,16 @@ pub(crate) fn egress_user_agent(egress_protocol: &str) -> &'static str {
 /// (a busbar-proxied request carries none where a native one does). Set to what the real SDK emits so
 /// the backend cannot separate busbar traffic from native traffic on this header.
 ///
-/// Thin wrapper: dispatches through `ProtocolWriter::egress_accept` so the per-protocol logic (Bedrock
-/// → eventstream/json; all others → text/event-stream/json) lives in the writer vtable, not in this
-/// agnostic function. Call sites that already hold a resolved writer (`writer.egress_accept(stream)`)
-/// bypass this wrapper; it exists for test-code paths that look up by name.
+/// Thin wrapper: reads the per-protocol logic (Bedrock → eventstream/json; all others →
+/// text/event-stream/json) off the protocol DECLARATION (`ProtocolDecl::egress_stream_accept`) rather
+/// than allocating a codec to ask a `&'static` constant. The non-streaming value is universally
+/// `application/json`. The by-name lookup path (probes, forward-header assembly).
 pub(crate) fn egress_accept(egress_protocol: &str, wants_stream: bool) -> &'static str {
-    crate::proto::protocol_for(egress_protocol)
-        .map(|p| p.writer().egress_accept(wants_stream))
-        .unwrap_or(if wants_stream {
-            TEXT_EVENT_STREAM
-        } else {
-            APPLICATION_JSON
-        })
+    if wants_stream {
+        crate::proto::decl_for(egress_protocol)
+            .map(|d| d.egress_stream_accept)
+            .unwrap_or(TEXT_EVENT_STREAM)
+    } else {
+        APPLICATION_JSON
+    }
 }
