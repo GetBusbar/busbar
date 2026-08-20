@@ -1,4 +1,5 @@
 use super::*;
+use crate::handlers::TranslateCodec;
 
 /// Record the upstream round-trip (to response headers) for the current request so the
 /// `server_timing` middleware can subtract it from the total and report Busbar's own added latency.
@@ -374,6 +375,35 @@ pub(crate) fn strip_same_protocol_model_shim(v: &mut Value, ingress_protocol: &s
 /// Returns `Err(Response)` — an ingress-native error envelope with the right status — on the only two
 /// shaping failures (unknown ingress protocol, request translation error) and on the effectively
 /// infallible re-serialization, so neither caller can panic on the request path.
+///
+/// Project a [`crate::handlers::TranslateReqReject`] — the codec entrypoint's terminal outcome — into
+/// the caller-dialect error response. The ONE place that maps each reject arm to an HTTP shape, so the
+/// opaque and JSON request branches cannot drift: a refused body renders `ingress_reject_response`
+/// (its own 400/404 split); an egress that does not serve the operation is the 404
+/// (`DETAIL_MODEL_UNSUPPORTED_OPERATION`); an unrepresentable request is a 400 carrying the reason.
+fn map_translate_req_reject(
+    ingress_protocol: &str,
+    reject: crate::handlers::TranslateReqReject,
+) -> Response {
+    match reject {
+        crate::handlers::TranslateReqReject::Ingress(reject) => {
+            ingress_reject_response(ingress_protocol, &reject)
+        }
+        crate::handlers::TranslateReqReject::EgressUnsupported => ingress_error(
+            ingress_protocol,
+            StatusCode::NOT_FOUND,
+            KIND_NOT_FOUND,
+            DETAIL_MODEL_UNSUPPORTED_OPERATION,
+        ),
+        crate::handlers::TranslateReqReject::Unrepresentable(reason) => ingress_error(
+            ingress_protocol,
+            StatusCode::BAD_REQUEST,
+            KIND_INVALID_REQUEST,
+            &reason,
+        ),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn translate_request_cross_protocol(
     app: &Arc<App>,
@@ -399,11 +429,47 @@ pub(crate) fn translate_request_cross_protocol(
     caller_key_id: &str,
 ) -> Result<Bytes, Box<Response>> {
     let egress_name = app.lanes[i].protocol.name();
+    // The neutral cross-protocol egress-preparation param bag, built ONCE from RESOLVED lane
+    // primitives and ONLY on a cross-protocol hop (`.then` is lazy, so a same-protocol passthrough
+    // pays nothing). Shared by the opaque and JSON request branches below so the two cannot drift on
+    // which lane facts gate `prepare_for_egress`, and the SINGLE site outside `ir/` that names
+    // `EgressPrep` — `egress_prep.is_some()` is exactly "this hop is cross-protocol".
+    let egress_prep = (ingress_protocol != egress_name).then(|| crate::ir::variant::EgressPrep {
+        ingress_protocol,
+        egress_requires_max_tokens: app.lanes[i]
+            .protocol
+            .decl()
+            .is_some_and(|d| d.requires_max_tokens),
+        lane_default_max_tokens: app.lanes[i].default_max_tokens,
+        global_default_max_tokens: app.default_max_tokens,
+        reasoning_allowed,
+        reasoning_budgets: app.reasoning_effort_budgets,
+        // The cache twin of `reasoning_allowed`: a lane whose dialect's cache marker is model-gated
+        // (Bedrock) must assert `prompt_caching` to receive breakpoints.
+        prompt_caching_allowed: app.lanes[i].prompt_caching
+            || !app.lanes[i]
+                .protocol
+                .decl()
+                .is_some_and(|d| d.cache_markers_model_gated),
+        cache_control_cap: app.lanes[i]
+            .protocol
+            .decl()
+            .and_then(|d| d.max_cache_control_breakpoints),
+        // thoughtSignature sentinel fill — the DIALECT declares whether it fills one
+        // (`ProtocolDecl::fills_thought_signature`), ANDed with the LANE's URL shape: NEVER a
+        // Vertex-style path-model lane (`path_base.is_some()`), which is not confirmed to honor the
+        // sentinel bypass and has real reports of rejecting it.
+        thought_signature_fill: app.lanes[i]
+            .protocol
+            .decl()
+            .is_some_and(|d| d.fills_thought_signature)
+            && app.lanes[i].path_base.is_none(),
+    });
     // OPAQUE ingress body (multipart/binary — `None`): translate at the BYTE level through the
     // operation codecs (cross-protocol) or relay the pristine bytes verbatim (same-protocol) —
     // exactly the contract the JSON branch below implements at the Value level.
     let Some(mut body) = body else {
-        if ingress_protocol != egress_name {
+        if let Some(prep) = &egress_prep {
             let ingress_handler = crate::handlers::request_handler(ingress_protocol)
                 .and_then(|rh| rh.operation_handler(op.operation));
             let egress_handler = crate::handlers::request_handler(egress_name)
@@ -416,45 +482,28 @@ pub(crate) fn translate_request_cross_protocol(
                     DETAIL_MODEL_UNSUPPORTED_OPERATION,
                 )));
             };
-            let mut ir_req = match ih.read_request(hop_bytes, req_content_type) {
-                Ok(ir) => ir,
-                Err(reject) => {
-                    return Err(Box::new(ingress_reject_response(ingress_protocol, &reject)))
+            // OPAQUE cross-protocol: read→prepare_for_egress→set_model→write through the single
+            // translate entrypoint (byte codecs). Both codecs were 404-checked above, so the entrypoint
+            // never surfaces `EgressUnsupported` here; a refused body still renders as its reject.
+            let translated = ih
+                .translate_request(
+                    crate::handlers::TranslateReqInput::Opaque {
+                        bytes: hop_bytes,
+                        content_type: req_content_type,
+                    },
+                    Some(eh),
+                    prep,
+                    app.lanes[i].wire_model(),
+                )
+                .map_err(|e| Box::new(map_translate_req_reject(ingress_protocol, e)))?;
+            return match translated.wire {
+                crate::handlers::EgressWire::Bytes(b) => Ok(b),
+                // An opaque egress wire is always bytes; a JSON here is structurally impossible, but
+                // serialize it rather than panic on the request path.
+                crate::handlers::EgressWire::Json(v) => {
+                    Ok(Bytes::from(crate::json::to_vec(&v).unwrap_or_default()))
                 }
             };
-            ir_req.prepare_for_egress(&crate::ir::variant::EgressPrep {
-                ingress_protocol,
-                egress_requires_max_tokens: app.lanes[i]
-                    .protocol
-                    .decl()
-                    .is_some_and(|d| d.requires_max_tokens),
-                lane_default_max_tokens: app.lanes[i].default_max_tokens,
-                global_default_max_tokens: app.default_max_tokens,
-                reasoning_allowed,
-                reasoning_budgets: app.reasoning_effort_budgets,
-                // The cache twin of `reasoning_allowed`: a lane whose dialect's cache marker is
-                // model-gated (Bedrock) must assert `prompt_caching` to receive breakpoints.
-                prompt_caching_allowed: app.lanes[i].prompt_caching
-                    || !app.lanes[i]
-                        .protocol
-                        .decl()
-                        .is_some_and(|d| d.cache_markers_model_gated),
-                cache_control_cap: app.lanes[i]
-                    .protocol
-                    .decl()
-                    .and_then(|d| d.max_cache_control_breakpoints),
-                // thoughtSignature sentinel fill — the DIALECT declares whether it fills one
-                // (`ProtocolDecl::fills_thought_signature`), and this path ANDs it with the LANE's
-                // URL shape: NEVER a Vertex-style path-model lane (`path_base.is_some()`), which is
-                // not confirmed to honor the sentinel bypass and has real reports of rejecting it.
-                thought_signature_fill: app.lanes[i]
-                    .protocol
-                    .decl()
-                    .is_some_and(|d| d.fills_thought_signature)
-                    && app.lanes[i].path_base.is_none(),
-            });
-            ir_req.set_model(app.lanes[i].wire_model());
-            return Ok(eh.write_request(&ir_req));
         }
         // Same-protocol opaque relay: the retained bytes go upstream verbatim — refcount bump only.
         return Ok(hop_bytes.clone());
@@ -466,9 +515,10 @@ pub(crate) fn translate_request_cross_protocol(
     // (#1,#2), rewrite_model_if_needed (#3), strip_same_protocol_model_shim (#4) — each of which now
     // reports whether it truly changed the body.
     let mut pristine = true;
-    if ingress_protocol != egress_name {
+    if let Some(prep) = &egress_prep {
         // one cross-protocol translation hop for this request (telemetry bank: per-thread cell,
-        // fixed protocol×protocol slot table — no label allocation on the hop).
+        // fixed protocol×protocol slot table — no label allocation on the hop). `egress_prep.is_some()`
+        // is exactly `ingress_protocol != egress_name`.
         crate::telemetry::translation(ingress_protocol, egress_name);
         // Cross-protocol: translate the request body through the superset IR.
         let Some(ingress_proto) = crate::proto::protocol_for(ingress_protocol) else {
@@ -509,86 +559,43 @@ pub(crate) fn translate_request_cross_protocol(
                 DETAIL_ENDPOINT_UNSUPPORTED_OPERATION,
             )));
         };
-        match ingress_handler.read_request_value(&body) {
-            Ok(mut ir_req) => {
-                ir_req.prepare_for_egress(&crate::ir::variant::EgressPrep {
-                    ingress_protocol,
-                    egress_requires_max_tokens: app.lanes[i]
-                        .protocol
-                        .decl()
-                        .is_some_and(|d| d.requires_max_tokens),
-                    lane_default_max_tokens: app.lanes[i].default_max_tokens,
-                    global_default_max_tokens: app.default_max_tokens,
-                    reasoning_allowed,
-                    reasoning_budgets: app.reasoning_effort_budgets,
-                    prompt_caching_allowed: app.lanes[i].prompt_caching
-                        || !app.lanes[i]
-                            .protocol
-                            .decl()
-                            .is_some_and(|d| d.cache_markers_model_gated),
-                    cache_control_cap: app.lanes[i]
-                        .protocol
-                        .decl()
-                        .and_then(|d| d.max_cache_control_breakpoints),
-                    // thoughtSignature sentinel fill — the dialect's own declaration, ANDed with
-                    // the lane's URL shape. See the sibling `EgressPrep` construction above.
-                    thought_signature_fill: app.lanes[i]
-                        .protocol
-                        .decl()
-                        .is_some_and(|d| d.fills_thought_signature)
-                        && app.lanes[i].path_base.is_none(),
-                });
-                let Some(eh) = egress_handler else {
-                    return Err(Box::new(ingress_error(
-                        ingress_protocol,
-                        StatusCode::NOT_FOUND,
-                        KIND_NOT_FOUND,
-                        DETAIL_MODEL_UNSUPPORTED_OPERATION,
-                    )));
-                };
-                // FAIL-CLOSED representability guard: reject a cross-protocol request whose IR cannot
-                // be written onto this egress operation's wire without silent loss (e.g. a multi-input
-                // embeddings request routed to Gemini `:embedContent`, which embeds a single input),
-                // rather than proceed to a `write_request` that would drop data and return HTTP 200.
-                if let Err(reason) = eh.egress_representable(&ir_req) {
-                    return Err(Box::new(ingress_error(
-                        ingress_protocol,
-                        StatusCode::BAD_REQUEST,
-                        KIND_INVALID_REQUEST,
-                        &reason,
-                    )));
-                }
-                // AUDIT-AND-ALLOW: a caller control the egress dialect cannot natively represent is
-                // STILL forwarded (behavior unchanged), but each drop is recorded as a first-class,
-                // hash-chained audit event — not just the writer's `warn!` — so the degradation is
-                // visible in the audit trail. Emitted BEFORE the body rebuild; forwarding proceeds.
-                for control in eh.egress_dropped_controls(&ir_req) {
-                    crate::admin::audit::AUDIT.record_by(
-                        "egress.control_unrepresentable",
-                        &format!("{control} on {egress_name}"),
-                        crate::admin::audit::OUTCOME_DEGRADED,
-                        caller_key_id,
-                    );
-                }
-                match eh.write_request_value(&ir_req) {
-                    Some(written) => body = written,
-                    None => {
-                        // The EGRESS wire is not JSON (multipart transcription): the IR carries the
-                        // resolved model in-band, and the JSON-only post-shaping below (shim strips,
-                        // model rewrite) does not apply — emit the handler's bytes directly.
-                        ir_req.set_model(app.lanes[i].wire_model());
-                        return Ok(eh.write_request(&ir_req));
-                    }
-                }
-                // The body was fully rebuilt from the IR (read_request → write_request), so it bears
-                // no fixed relationship to `hop_bytes` — a cross-protocol hop is NEVER pristine and
-                // must serialize the rewritten `Value`, never short-circuit to the original bytes.
-                pristine = false;
-            }
-            Err(reject) => {
-                return Err(Box::new(ingress_reject_response(ingress_protocol, &reject)));
-            }
+        // OPERATION-BLIND translate through the single entrypoint: `ingress_handler` reads its dialect
+        // into the neutral IR, the IR applies its own cross-protocol semantics (`prepare_for_egress`),
+        // and the egress dialect writes. The representability guard + dropped-controls collection live
+        // BEHIND the entrypoint; the seam keeps telemetry (above), the audit-and-allow emission, and
+        // the error shaping (`map_translate_req_reject`) — none of which are the codec's business.
+        let translated = match ingress_handler.translate_request(
+            crate::handlers::TranslateReqInput::Json(&body),
+            egress_handler,
+            prep,
+            app.lanes[i].wire_model(),
+        ) {
+            Ok(t) => t,
+            Err(e) => return Err(Box::new(map_translate_req_reject(ingress_protocol, e))),
+        };
+        // AUDIT-AND-ALLOW: a caller control the egress dialect cannot natively represent is STILL
+        // forwarded (behavior unchanged), but each drop is recorded as a first-class, hash-chained
+        // audit event — not just the writer's `warn!` — so the degradation is visible in the audit
+        // trail. Emitted before the body is consumed; forwarding proceeds.
+        for control in translated.dropped_controls {
+            crate::admin::audit::AUDIT.record_by(
+                "egress.control_unrepresentable",
+                &format!("{control} on {egress_name}"),
+                crate::admin::audit::OUTCOME_DEGRADED,
+                caller_key_id,
+            );
         }
+        match translated.wire {
+            crate::handlers::EgressWire::Json(written) => body = written,
+            // The EGRESS wire is not JSON (multipart transcription): the IR carried the resolved model
+            // in-band, and the JSON-only post-shaping below (shim strips, model rewrite) does not
+            // apply — emit the handler's bytes directly.
+            crate::handlers::EgressWire::Bytes(b) => return Ok(b),
+        }
+        // The body was fully rebuilt from the IR (read_request → write_request), so it bears no fixed
+        // relationship to `hop_bytes` — a cross-protocol hop is NEVER pristine and must serialize the
+        // rewritten `Value`, never short-circuit to the original bytes.
+        pristine = false;
     }
     // Remove the never-native shim keys (gemini JSON-array key on every protocol; `stream` for
     // path-model EGRESS) on EVERY branch — same- AND cross-protocol. `model` is handled below,

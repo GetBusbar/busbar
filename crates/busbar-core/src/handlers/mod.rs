@@ -313,6 +313,257 @@ pub trait OperationHandler: Send + Sync {
     fn write_response(&self, ir: &IrResp) -> WireBody;
 }
 
+/// What a request-translation hop reads FROM — the two body shapes a hop can hold: a parsed JSON
+/// object `Value` (the value-codec fast path chat overrides to avoid a re-serialize), or opaque
+/// bytes + their content-type (a multipart/binary wire the byte codec owns). The [`TranslateCodec`]
+/// entrypoint branches on this exactly as the two pre-cutover call sites did.
+pub enum TranslateReqInput<'a> {
+    /// A JSON-object body — routed through the value codecs.
+    Json(&'a Value),
+    /// An opaque/binary body (multipart transcription, audio speech) — routed through the byte codecs.
+    Opaque {
+        bytes: &'a [u8],
+        content_type: &'a str,
+    },
+}
+
+/// The egress request wire a hop produced: a JSON `Value` still to be shim/model-shaped by the
+/// router before serialization, or a FINAL body (a non-JSON egress wire — multipart transcription /
+/// audio). Mirrors the pre-cutover `write_request_value` `Some(Value)` / `None`→`write_request` split.
+pub enum EgressWire {
+    /// A JSON egress body the router still post-shapes (shim-key strip, model rewrite, path-base).
+    Json(Value),
+    /// A final egress body a non-JSON wire already serialized.
+    Bytes(Bytes),
+}
+
+/// The neutral result of a cross-protocol request translation: the egress wire plus the caller
+/// controls the egress dialect dropped (surfaced for the seam's audit-and-allow event; empty on the
+/// opaque path, which carries no droppable controls).
+pub struct TranslatedRequest {
+    pub wire: EgressWire,
+    pub dropped_controls: Vec<&'static str>,
+}
+
+/// Why a cross-protocol request translation could not proceed — the three terminal outcomes the
+/// pre-cutover wire seam mapped to a response. The seam owns the projection into an ingress-native
+/// error (`ingress_reject_response` / 404 / 400) so the codec entrypoint names no HTTP shape.
+pub enum TranslateReqReject {
+    /// The ingress reader refused the body → the caller renders `ingress_reject_response`.
+    Ingress(IngressReject),
+    /// The egress protocol does not serve this operation → the caller renders the 404
+    /// (`DETAIL_MODEL_UNSUPPORTED_OPERATION`). Surfaced only AFTER read+prepare, preserving the exact
+    /// ordering the JSON branch always had (a malformed body still rejects as a 400, not a 404).
+    EgressUnsupported,
+    /// The egress dialect cannot represent the request without silent loss → the caller renders a 400
+    /// carrying `reason`.
+    Unrepresentable(String),
+}
+
+/// What a non-stream response-translation hop reads FROM — the upstream 2xx body, either a parsed
+/// JSON `Value` (the value-codec path) or opaque bytes (a non-JSON upstream wire — speech audio).
+/// The engine parses the body ONCE and branches into these, exactly as the pre-cutover arm did.
+pub enum TranslateRespInput<'a> {
+    Json(&'a Value),
+    Opaque(&'a [u8]),
+}
+
+/// The neutral outcome of a non-stream cross-protocol response translation. Mirrors every exit of the
+/// pre-cutover buffered-response arm: a delivered body (JSON / typed / synthesized native frames), or
+/// one of the two read-succeeded-but-undelivered terminals the caller still renders (404 / 500).
+pub enum TranslatedResponse {
+    /// A JSON ingress body (`application/json`) the caller still post-processes (native response-metrics
+    /// injection, gemini JSON-array wrap) before delivery.
+    Json(Value),
+    /// A final ingress body + its own content-type (a non-JSON ingress wire — speech audio — or the
+    /// opaque egress→ingress bridge).
+    Typed(WireBody),
+    /// Synthesized native stream frames (a wants-stream ingress answered by a BUFFERED upstream — e.g.
+    /// a Bedrock ConverseStream client served a non-SSE Converse body). Delivered under the ingress
+    /// stream content-type.
+    StreamFrames(Vec<u8>),
+    /// JSON path only: the ingress protocol does not serve this operation → the caller renders the 404
+    /// (`DETAIL_ENDPOINT_UNSUPPORTED_OPERATION`). The egress read still succeeded, so its usage bills.
+    IngressUnsupported,
+    /// Opaque path only: the egress read succeeded but the ingress handler is absent, so no client body
+    /// could be written → the caller falls through to its ingress-native untranslatable 500. The usage
+    /// still bills (the pre-cutover arm records it before this fall-through).
+    Untranslatable,
+}
+
+/// THE SINGLE NEUTRAL TRANSLATE ENTRYPOINT ON THE CODEC CELL (G6 step 4).
+///
+/// Every request/response hop flows through this trait so core never orchestrates the concrete
+/// read→prepare→write pipeline itself: `wire.rs`'s cross-protocol request seam calls
+/// [`Self::translate_request`], the engine's non-stream cross-protocol response arm calls
+/// [`Self::translate_response`], and the hook / lazy-body read side calls [`Self::read_facts`] /
+/// [`Self::read_facts_value`]. The streaming half already routes through the registry
+/// [`crate::proto::new_stream_translator`] factory (G6 step 3).
+///
+/// It is a NEUTRAL ENTRYPOINT wrapping the EXISTING concrete `IrReq`/`IrResp` codec pipeline
+/// UNCHANGED — the default methods read/prepare/write through the very same `OperationHandler`
+/// methods the pre-cutover call sites named inline, so every hop stays byte-identical. The concrete
+/// IR is dissolved onto `Box<dyn IrHandle>` in the ATOMIC relocation (step 5); here the internals are
+/// deliberately concrete.
+///
+/// Blanket-implemented for every [`OperationHandler`], so any codec cell (`&dyn OperationHandler`) is
+/// also a `TranslateCodec` with no per-cell wiring.
+pub trait TranslateCodec: OperationHandler {
+    /// CROSS-PROTOCOL request translation: `self` is the INGRESS codec (it reads), `egress` is the
+    /// lane's codec (it writes). Reproduces the pre-cutover pipeline exactly:
+    ///   - Opaque: read → `prepare_for_egress` → `set_model` → egress `write_request` (bytes). No
+    ///     representability guard / dropped-controls (an opaque body carries none); `egress` is
+    ///     resolved+404-checked by the caller before this is reached, so it is always `Some` here.
+    ///   - JSON: read → `prepare_for_egress` → (egress absent ⇒ [`TranslateReqReject::EgressUnsupported`])
+    ///     → representability guard → collect dropped controls → egress `write_request_value`
+    ///     (`Some` ⇒ a JSON body the router still post-shapes; `None` ⇒ `set_model` + `write_request`
+    ///     bytes).
+    ///
+    /// `prep` is the router-built neutral param bag; `model` is the resolved lane wire model.
+    fn translate_request(
+        &self,
+        input: TranslateReqInput<'_>,
+        egress: Option<&dyn OperationHandler>,
+        prep: &crate::ir::variant::EgressPrep,
+        model: &str,
+    ) -> Result<TranslatedRequest, TranslateReqReject> {
+        match input {
+            TranslateReqInput::Opaque {
+                bytes,
+                content_type,
+            } => {
+                let mut ir = self
+                    .read_request(bytes, content_type)
+                    .map_err(TranslateReqReject::Ingress)?;
+                ir.prepare_for_egress(prep);
+                // The opaque caller resolves + 404-checks `egress` before calling, so it is always
+                // `Some`; the guard preserves total-safety without a panic on the request path.
+                let egress = egress.ok_or(TranslateReqReject::EgressUnsupported)?;
+                ir.set_model(model);
+                Ok(TranslatedRequest {
+                    wire: EgressWire::Bytes(egress.write_request(&ir)),
+                    dropped_controls: Vec::new(),
+                })
+            }
+            TranslateReqInput::Json(v) => {
+                let mut ir = self
+                    .read_request_value(v)
+                    .map_err(TranslateReqReject::Ingress)?;
+                ir.prepare_for_egress(prep);
+                // Egress-absent surfaces only AFTER read+prepare, so a malformed body still rejects as
+                // a 400 (via `Ingress` above) rather than a 404, exactly as the pre-cutover branch did.
+                let egress = egress.ok_or(TranslateReqReject::EgressUnsupported)?;
+                if let Err(reason) = egress.egress_representable(&ir) {
+                    return Err(TranslateReqReject::Unrepresentable(reason));
+                }
+                let dropped_controls = egress.egress_dropped_controls(&ir);
+                let wire = match egress.write_request_value(&ir) {
+                    Some(written) => EgressWire::Json(written),
+                    None => {
+                        ir.set_model(model);
+                        EgressWire::Bytes(egress.write_request(&ir))
+                    }
+                };
+                Ok(TranslatedRequest {
+                    wire,
+                    dropped_controls,
+                })
+            }
+        }
+    }
+
+    /// Read the request facts the hook seam / lazy-body projects from — the ONE read, through this
+    /// codec's own reader, projected to the neutral [`crate::ir::facts::IrFacts`]. The value-codec
+    /// path (chat overrides it to call its proto reader directly — no re-serialize on the hot path).
+    fn read_facts_value(
+        &self,
+        v: &Value,
+    ) -> Result<Box<dyn crate::ir::facts::IrFacts + Send + Sync>, IngressReject> {
+        Ok(Box::new(self.read_request_value(v)?))
+    }
+
+    /// Byte-codec sibling of [`Self::read_facts_value`], for an opaque/multipart body whose caller
+    /// text is reachable only through the byte reader.
+    fn read_facts(
+        &self,
+        wire: &[u8],
+        content_type: &str,
+    ) -> Result<Box<dyn crate::ir::facts::IrFacts + Send + Sync>, IngressReject> {
+        Ok(Box::new(self.read_request(wire, content_type)?))
+    }
+
+    /// CROSS-PROTOCOL non-stream response translation: `self` is the EGRESS codec (it reads the
+    /// upstream 2xx body), `ingress_op`/`ingress_writer` write the caller's dialect. Reproduces the
+    /// pre-cutover buffered-response pipeline exactly:
+    ///   - read (`read_response` / `read_response_value`, `Err` ⇒ [`CodecError`]) → capture the
+    ///     billable usage from the PRE-`prepare_for_ingress` IR (byte-identical to the old
+    ///     `record_resp_usage(&ir)` placement) → `prepare_for_ingress` →
+    ///   - JSON, wants-stream: `wrap_buffered_as_stream` `Some` ⇒ [`TranslatedResponse::StreamFrames`];
+    ///   - JSON: ingress absent ⇒ [`TranslatedResponse::IngressUnsupported`]; else
+    ///     `write_response_value` (`Some` ⇒ [`TranslatedResponse::Json`], `None` ⇒
+    ///     [`TranslatedResponse::Typed`]);
+    ///   - Opaque: ingress present ⇒ [`TranslatedResponse::Typed`], absent ⇒
+    ///     [`TranslatedResponse::Untranslatable`].
+    ///
+    /// The returned usage is ALWAYS the read IR's usage (`ir.usage()`), which the caller bills before
+    /// rendering the outcome — so a read-succeeded-but-undelivered terminal (404 / 500) still bills,
+    /// exactly as the pre-cutover arm did. The caller keeps telemetry, the untranslatable-metadata warn,
+    /// billing, budget accounting, native response-metrics injection, the gemini-array wrap, and all
+    /// response building — none of which is the codec's business.
+    #[allow(clippy::too_many_arguments)]
+    fn translate_response(
+        &self,
+        input: TranslateRespInput<'_>,
+        ingress_op: Option<&dyn OperationHandler>,
+        // `Some` on the JSON path (the engine resolved the ingress protocol for the wants-stream
+        // synthesis); `None` on the opaque path, which never synthesizes native stream frames.
+        ingress_writer: Option<&dyn ProtocolWriter>,
+        ingress_protocol: &str,
+        now: u64,
+        wants_stream: bool,
+        elapsed_ms: Option<u64>,
+    ) -> Result<(Option<crate::billing::Billing>, TranslatedResponse), CodecError> {
+        match input {
+            TranslateRespInput::Opaque(bytes) => {
+                let mut ir = self.read_response(bytes)?;
+                let usage = ir.usage();
+                ir.prepare_for_ingress(ingress_protocol, now);
+                let delivery = match ingress_op {
+                    Some(h) => TranslatedResponse::Typed(h.write_response(&ir)),
+                    None => TranslatedResponse::Untranslatable,
+                };
+                Ok((usage, delivery))
+            }
+            TranslateRespInput::Json(v) => {
+                let mut ir = self.read_response_value(v)?;
+                let usage = ir.usage();
+                ir.prepare_for_ingress(ingress_protocol, now);
+                // Buffered-2xx-to-native-stream synthesis (a wants-stream ingress served a non-SSE
+                // upstream): try first; `None` falls through to the normal write. The JSON path always
+                // supplies the ingress writer, so this fork is reached exactly as before.
+                if wants_stream {
+                    if let Some(frames) =
+                        ingress_writer.and_then(|w| ir.wrap_buffered_as_stream(w, elapsed_ms))
+                    {
+                        return Ok((usage, TranslatedResponse::StreamFrames(frames)));
+                    }
+                }
+                let Some(h) = ingress_op else {
+                    return Ok((usage, TranslatedResponse::IngressUnsupported));
+                };
+                let delivery = match h.write_response_value(&ir) {
+                    Some(written) => TranslatedResponse::Json(written),
+                    // The ingress dialect's response is NOT JSON (binary speech): relay the WireBody.
+                    None => TranslatedResponse::Typed(h.write_response(&ir)),
+                };
+                Ok((usage, delivery))
+            }
+        }
+    }
+}
+
+impl<T: OperationHandler + ?Sized> TranslateCodec for T {}
+
 /// A protocol's dialect + its OperationHandlers (one impl per protocol).
 pub trait RequestHandler: Send + Sync {
     /// Stable protocol identity (matches `proto::Protocol::name()`). Called only from this crate's
