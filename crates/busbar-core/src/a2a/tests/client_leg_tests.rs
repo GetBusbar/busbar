@@ -1102,6 +1102,30 @@ impl busbar_api::Store for ChainSink {
             .cloned()
             .collect())
     }
+
+    // ── The neutral kind-tagged verbs, delegating to the named task-event methods above ──────────
+    fn append_plane_record(&self, record: &busbar_api::PlaneRecord) -> busbar_api::StoreResult<()> {
+        match record.kind.as_str() {
+            crate::plane::store::KIND_TASK_EVENT => {
+                self.append_task_event(&crate::plane::store::decode(&record.body)?)
+            }
+            _ => Ok(()),
+        }
+    }
+    fn list_plane_records(
+        &self,
+        kind: &str,
+        selector: &busbar_api::PlaneSelector,
+    ) -> busbar_api::StoreResult<Vec<Vec<u8>>> {
+        match (kind, selector) {
+            (crate::plane::store::KIND_TASK_EVENT, busbar_api::PlaneSelector::Parent(p)) => self
+                .list_task_events(p)?
+                .iter()
+                .map(crate::plane::store::encode)
+                .collect(),
+            _ => Ok(Vec::new()),
+        }
+    }
 }
 
 /// THE CELL. The hop busbar issues to a backend agent lands in the per-task tamper-evident chain,

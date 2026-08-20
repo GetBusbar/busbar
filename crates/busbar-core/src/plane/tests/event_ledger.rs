@@ -137,4 +137,50 @@ impl busbar_api::Store for EventLedger {
     fn list_metering(&self, _bucket: u64) -> StoreResult<Vec<busbar_api::MeteringRow>> {
         Ok(Vec::new())
     }
+
+    // ── The neutral kind-tagged verbs, delegating to the named task methods above ────────────────
+    fn upsert_plane_record(&self, record: &busbar_api::PlaneRecord) -> StoreResult<()> {
+        match record.kind.as_str() {
+            crate::plane::store::KIND_TASK => {
+                self.put_task(&crate::plane::store::decode(&record.body)?)
+            }
+            _ => Ok(()),
+        }
+    }
+    fn get_plane_record(&self, kind: &str, id: &str) -> StoreResult<Option<Vec<u8>>> {
+        match kind {
+            crate::plane::store::KIND_TASK => self
+                .get_task(id)?
+                .map(|r| crate::plane::store::encode(&r))
+                .transpose(),
+            _ => Ok(None),
+        }
+    }
+    fn append_plane_record(&self, record: &busbar_api::PlaneRecord) -> StoreResult<()> {
+        match record.kind.as_str() {
+            crate::plane::store::KIND_TASK_EVENT => {
+                self.append_task_event(&crate::plane::store::decode(&record.body)?)
+            }
+            _ => Ok(()),
+        }
+    }
+    fn list_plane_records(
+        &self,
+        kind: &str,
+        selector: &busbar_api::PlaneSelector,
+    ) -> StoreResult<Vec<Vec<u8>>> {
+        match (kind, selector) {
+            (crate::plane::store::KIND_TASK, busbar_api::PlaneSelector::All) => self
+                .list_tasks()?
+                .iter()
+                .map(crate::plane::store::encode)
+                .collect(),
+            (crate::plane::store::KIND_TASK_EVENT, busbar_api::PlaneSelector::Parent(p)) => self
+                .list_task_events(p)?
+                .iter()
+                .map(crate::plane::store::encode)
+                .collect(),
+            _ => Ok(Vec::new()),
+        }
+    }
 }

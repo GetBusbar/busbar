@@ -450,7 +450,7 @@ impl PlaneApprovals {
         let Some(store) = self.sink() else {
             return true;
         };
-        match store.redeem_ask_state(nonce, expires_at, now) {
+        match store.redeem_plane_token(crate::plane::store::KIND_ASK, nonce, expires_at, now) {
             Ok(fresh) => fresh,
             Err(e) => {
                 tracing::error!(

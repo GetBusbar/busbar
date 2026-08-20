@@ -147,6 +147,58 @@ impl busbar_api::Store for DurableTaskStore {
             .map(|(_, v)| v.clone())
             .collect())
     }
+
+    // ── The neutral kind-tagged verbs, delegating to the named task methods above ────────────────
+    fn upsert_plane_record(&self, record: &busbar_api::PlaneRecord) -> busbar_api::StoreResult<()> {
+        match record.kind.as_str() {
+            crate::plane::store::KIND_TASK => {
+                self.put_task(&crate::plane::store::decode(&record.body)?)
+            }
+            _ => Ok(()),
+        }
+    }
+    fn get_plane_record(&self, kind: &str, id: &str) -> busbar_api::StoreResult<Option<Vec<u8>>> {
+        match kind {
+            crate::plane::store::KIND_TASK => self
+                .get_task(id)?
+                .map(|r| crate::plane::store::encode(&r))
+                .transpose(),
+            _ => Ok(None),
+        }
+    }
+    fn append_plane_record(&self, record: &busbar_api::PlaneRecord) -> busbar_api::StoreResult<()> {
+        match record.kind.as_str() {
+            crate::plane::store::KIND_TASK_EVENT => {
+                self.append_task_event(&crate::plane::store::decode(&record.body)?)
+            }
+            _ => Ok(()),
+        }
+    }
+    fn list_plane_records(
+        &self,
+        kind: &str,
+        selector: &busbar_api::PlaneSelector,
+    ) -> busbar_api::StoreResult<Vec<Vec<u8>>> {
+        match (kind, selector) {
+            (crate::plane::store::KIND_TASK, busbar_api::PlaneSelector::All) => self
+                .list_tasks()?
+                .iter()
+                .map(crate::plane::store::encode)
+                .collect(),
+            (crate::plane::store::KIND_TASK_EVENT, busbar_api::PlaneSelector::Parent(p)) => self
+                .list_task_events(p)?
+                .iter()
+                .map(crate::plane::store::encode)
+                .collect(),
+            _ => Ok(Vec::new()),
+        }
+    }
+    fn purge_plane_records_before(&self, kind: &str, before: u64) -> busbar_api::StoreResult<u64> {
+        match kind {
+            crate::plane::store::KIND_TASK => self.purge_tasks_before(before),
+            _ => Ok(0),
+        }
+    }
 }
 
 fn durable() -> Arc<DurableTaskStore> {
@@ -556,6 +608,12 @@ fn a_failed_durable_write_leaves_the_working_set_agreeing_with_the_store() {
         }
         fn put_task(&self, _t: &TaskRow) -> busbar_api::StoreResult<()> {
             Err(busbar_api::StoreError("disk is full".to_string()))
+        }
+        fn upsert_plane_record(
+            &self,
+            record: &busbar_api::PlaneRecord,
+        ) -> busbar_api::StoreResult<()> {
+            self.put_task(&crate::plane::store::decode(&record.body)?)
         }
     }
 

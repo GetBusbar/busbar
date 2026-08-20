@@ -111,8 +111,8 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use crate::plane::store::PlaneStore;
-use busbar_api::{McpCallRecord, StoreResult};
+use crate::plane::store::{call_record, decode, PlaneStore, KIND_CALL};
+use busbar_api::{McpCallRecord, PlaneSelector, StoreResult};
 
 use crate::audit::{verify_chain, ChainBreak, ChainLabels, ChainedRecord, Digest, Framing};
 
@@ -319,11 +319,15 @@ impl PlaneCallLog {
     /// default accepts and keeps nothing), so the engine finds out what its backend actually kept by
     /// reading it back.
     pub(crate) fn restore_from_store(&self, store: &dyn PlaneStore) -> StoreResult<Restored> {
-        let principals = store.list_mcp_call_principals()?;
+        let principals = store.list_plane_record_parents(KIND_CALL)?;
         let mut out = Restored::default();
         let mut chains = self.chains();
         for principal in &principals {
-            let records = store.list_mcp_calls(principal)?;
+            let records: Vec<McpCallRecord> = store
+                .list_plane_records(KIND_CALL, &PlaneSelector::Parent(principal.clone()))?
+                .iter()
+                .map(|body| decode(body))
+                .collect::<StoreResult<_>>()?;
             if records.is_empty() {
                 // The store named this principal and then produced nothing for it. Reported, never
                 // silently skipped: it is exactly what one caller's evidence being deleted wholesale
@@ -382,8 +386,9 @@ impl PlaneCallLog {
         let mut candidate = chain.clone();
         let record = candidate.append(principal, input);
         if let Some(store) = self.sink() {
+            let plane = call_record(&record).map_err(CallLogError::Store)?;
             store
-                .append_mcp_call(&record)
+                .append_plane_record(&plane)
                 .map_err(CallLogError::Store)?;
         }
         *chain = candidate;
@@ -423,7 +428,11 @@ impl PlaneCallLog {
         store: &dyn PlaneStore,
         principal: &str,
     ) -> StoreResult<Vec<McpCallRecord>> {
-        store.list_mcp_calls(principal)
+        store
+            .list_plane_records(KIND_CALL, &PlaneSelector::Parent(principal.to_string()))?
+            .iter()
+            .map(|body| decode(body))
+            .collect()
     }
 
     /// VERIFY one principal's persisted chain, end to end, against the store.
@@ -441,7 +450,11 @@ impl PlaneCallLog {
         store: &dyn PlaneStore,
         principal: &str,
     ) -> StoreResult<Result<usize, ChainBreak>> {
-        let records = store.list_mcp_calls(principal)?;
+        let records: Vec<McpCallRecord> = store
+            .list_plane_records(KIND_CALL, &PlaneSelector::Parent(principal.to_string()))?
+            .iter()
+            .map(|body| decode(body))
+            .collect::<StoreResult<_>>()?;
         match verify_chain(&records) {
             Ok(()) => Ok(Ok(records.len())),
             Err(brk) => Ok(Err(brk)),
@@ -462,7 +475,7 @@ impl PlaneCallLog {
     #[allow(dead_code)]
     pub(crate) fn compact(&self, before: u64) -> StoreResult<u64> {
         match self.sink() {
-            Some(store) => store.purge_mcp_calls_before(before),
+            Some(store) => store.purge_plane_records_before(KIND_CALL, before),
             None => Ok(0),
         }
     }

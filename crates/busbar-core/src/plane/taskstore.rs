@@ -47,8 +47,10 @@ use crate::audit::ChainBreak;
 
 use super::provenance::{self, EventInput, TaskChain};
 use crate::a2a::task::{Task, TaskError, TaskState};
-use crate::plane::store::PlaneStore;
-use busbar_api::{StoreError, StoreResult};
+use crate::plane::store::{
+    decode, task_event_record, task_record, PlaneStore, KIND_TASK, KIND_TASK_EVENT,
+};
+use busbar_api::{PlaneSelector, StoreError, StoreResult, TaskEventRow, TaskRow};
 
 /// One task plus its provenance chain position. The events themselves are NOT held in RAM — the
 /// store owns them, and holding every event of every long-running task would defeat the point of
@@ -190,7 +192,11 @@ impl TaskRegistry {
     /// Terminal tasks are counted and left in the store: they are not in flight, and loading them
     /// would grow the working set without bound over a deployment's life for no resume value.
     pub(crate) fn restore_from_store(&self, store: &dyn PlaneStore) -> StoreResult<Rehydrated> {
-        let rows = store.list_tasks()?;
+        let rows: Vec<TaskRow> = store
+            .list_plane_records(KIND_TASK, &PlaneSelector::All)?
+            .iter()
+            .map(|body| decode(body))
+            .collect::<StoreResult<_>>()?;
         let mut out = Rehydrated::default();
         let mut tasks = self.tasks();
         for row in &rows {
@@ -214,7 +220,14 @@ impl TaskRegistry {
             // The chain is resumed from what is persisted, and VERIFIED first. A break is reported
             // and the chain continues from the broken tail: refusing to continue would mean anybody
             // who can corrupt one event can silently stop all further provenance for that task.
-            let events = store.list_task_events(&task.task_id)?;
+            let events: Vec<TaskEventRow> = store
+                .list_plane_records(
+                    KIND_TASK_EVENT,
+                    &PlaneSelector::Parent(task.task_id.clone()),
+                )?
+                .iter()
+                .map(|body| decode(body))
+                .collect::<StoreResult<_>>()?;
             let chain = match TaskChain::from_persisted(&events) {
                 Ok(c) => c,
                 Err(brk) => {
@@ -255,10 +268,10 @@ impl TaskRegistry {
         );
         if let Some(store) = self.sink() {
             store
-                .put_task(&task.to_row())
+                .upsert_plane_record(&task_record(&task.to_row()).map_err(TaskStoreError::Store)?)
                 .map_err(TaskStoreError::Store)?;
             store
-                .append_task_event(&ev)
+                .append_plane_record(&task_event_record(&ev).map_err(TaskStoreError::Store)?)
                 .map_err(TaskStoreError::Store)?;
         }
         self.tasks().insert(
@@ -314,10 +327,12 @@ impl TaskRegistry {
         );
         if let Some(store) = self.sink() {
             store
-                .put_task(&candidate.to_row())
+                .upsert_plane_record(
+                    &task_record(&candidate.to_row()).map_err(TaskStoreError::Store)?,
+                )
                 .map_err(TaskStoreError::Store)?;
             store
-                .append_task_event(&ev)
+                .append_plane_record(&task_event_record(&ev).map_err(TaskStoreError::Store)?)
                 .map_err(TaskStoreError::Store)?;
         }
         entry.task = candidate.clone();
@@ -358,10 +373,12 @@ impl TaskRegistry {
         );
         if let Some(store) = self.sink() {
             store
-                .put_task(&candidate.to_row())
+                .upsert_plane_record(
+                    &task_record(&candidate.to_row()).map_err(TaskStoreError::Store)?,
+                )
                 .map_err(TaskStoreError::Store)?;
             store
-                .append_task_event(&ev)
+                .append_plane_record(&task_event_record(&ev).map_err(TaskStoreError::Store)?)
                 .map_err(TaskStoreError::Store)?;
         }
         entry.task = candidate.clone();
@@ -410,7 +427,7 @@ impl TaskRegistry {
         );
         if let Some(store) = self.sink() {
             store
-                .append_task_event(&ev)
+                .append_plane_record(&task_event_record(&ev).map_err(TaskStoreError::Store)?)
                 .map_err(TaskStoreError::Store)?;
         }
         entry.chain = chain;
@@ -454,10 +471,12 @@ impl TaskRegistry {
         );
         if let Some(store) = self.sink() {
             store
-                .put_task(&candidate.to_row())
+                .upsert_plane_record(
+                    &task_record(&candidate.to_row()).map_err(TaskStoreError::Store)?,
+                )
                 .map_err(TaskStoreError::Store)?;
             store
-                .append_task_event(&ev)
+                .append_plane_record(&task_event_record(&ev).map_err(TaskStoreError::Store)?)
                 .map_err(TaskStoreError::Store)?;
         }
         entry.task = candidate.clone();
@@ -515,7 +534,9 @@ impl TaskRegistry {
         candidate.updated_at = now;
         if let Some(store) = self.sink() {
             store
-                .put_task(&candidate.to_row())
+                .upsert_plane_record(
+                    &task_record(&candidate.to_row()).map_err(TaskStoreError::Store)?,
+                )
                 .map_err(TaskStoreError::Store)?;
         }
         entry.task = candidate.clone();
@@ -590,7 +611,7 @@ impl TaskRegistry {
     /// subsystem of its own, so this file owns the mechanism and nothing about the window.
     pub(crate) fn compact(&self, before: u64) -> StoreResult<u64> {
         let removed = match self.sink() {
-            Some(store) => store.purge_tasks_before(before)?,
+            Some(store) => store.purge_plane_records_before(KIND_TASK, before)?,
             None => 0,
         };
         let mut tasks = self.tasks();
@@ -608,7 +629,11 @@ impl TaskRegistry {
         store: &dyn PlaneStore,
         task_id: &str,
     ) -> StoreResult<Result<usize, ChainBreak>> {
-        let events = store.list_task_events(task_id)?;
+        let events: Vec<TaskEventRow> = store
+            .list_plane_records(KIND_TASK_EVENT, &PlaneSelector::Parent(task_id.to_string()))?
+            .iter()
+            .map(|body| decode(body))
+            .collect::<StoreResult<_>>()?;
         match crate::audit::verify_chain(&events) {
             Ok(()) => Ok(Ok(events.len())),
             Err(brk) => Ok(Err(brk)),
