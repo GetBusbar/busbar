@@ -2905,7 +2905,8 @@ fn current_root_settings(
         }
         crate::config::overlay::OverlayReadState::Loaded(doc) => doc.root.unwrap_or_default(),
         crate::config::overlay::OverlayReadState::Unreadable => {
-            tracing::warn!(
+            crate::diagnostics::diag_warn!(
+                crate::diagnostics::CONFIG_SETTINGS_OVERLAY_UNREADABLE,
                 endpoint,
                 path = %p.display(),
                 "{endpoint} read the config overlay while it was unreadable/corrupt; reporting NO \
@@ -2914,7 +2915,8 @@ fn current_root_settings(
             crate::config::overlay::RootSettings::default()
         }
         crate::config::overlay::OverlayReadState::VersionTooNew(v) => {
-            tracing::warn!(
+            crate::diagnostics::diag_warn!(
+                crate::diagnostics::CONFIG_SETTINGS_OVERLAY_VERSION_TOO_NEW,
                 endpoint,
                 path = %p.display(),
                 overlay_version = v,
@@ -2960,7 +2962,11 @@ pub(crate) async fn get_config_settings(State(handle): State<Arc<AppHandle>>) ->
         // sibling `config_transaction` path and surface it as a 500 — NEVER a fabricated empty-settings
         // 200, which would misreport "the operator has set no overrides" when the read never completed.
         Err(e) => {
-            tracing::error!(error = %e, "GET /config/settings overlay read task failed to join");
+            crate::diagnostics::diag_error!(
+                crate::diagnostics::CONFIG_SETTINGS_READ_TASK_JOIN_FAILED,
+                error = %e,
+                "GET /config/settings overlay read task failed to join"
+            );
             return err_json(&AdminError::Internal);
         }
     };

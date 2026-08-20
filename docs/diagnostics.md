@@ -307,6 +307,72 @@ A provider is configured with a NON-EMPTY api_key while `upstream_credentials` i
 
 **What to do:** If you intended static-key gating, use `upstream_credentials: own` (plus an auth chain). Otherwise clear the referenced provider secret so the config reflects that no static key is used on that passthrough provider.
 
+<a id="cli-metadata-blocklist-config-unreadable"></a>
+### BUSBAR-3014 — --print-metadata-blocklist printed the built-in denylist only (config unreadable)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `cli-metadata-blocklist-config-unreadable`
+
+`busbar --print-metadata-blocklist` could not parse or env-interpolate config.yaml, so it printed the HARDCODED cloud-metadata denylist ALONE and skipped the operator's `security.blocked_metadata_hosts` additions. The list shown is therefore INCOMPLETE — it omits whatever the config would have added — even though the running gateway (once it boots on a valid config) would enforce the full union.
+
+**What to do:** Run `busbar` (or `busbar --validate`) normally to see the precise parse/interpolation error, fix config.yaml, then re-run the flag to see the full effective denylist. The error itself is not echoed here because it could quote a config value.
+
+<a id="cli-validate-config-invalid"></a>
+### BUSBAR-3015 — --validate rejected the config (load, resolve, semantic, or secret-resolution failure)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `cli-validate-config-invalid`
+
+`busbar --validate` ran the exact load → resolve → semantic-validate → strict-secret pipeline boot runs and the config did NOT pass at one of those phases, so it exits non-zero. Because `--validate` mirrors boot, this same config would fail to boot the gateway. The specific phase and offending entries are printed alongside this code.
+
+**What to do:** Fix the reported errors in config.yaml / providers.yaml (a parse/structure error, a cross-reference the resolver rejected, a semantic-validation failure, or an unset required secret) and re-run `--validate` until it reports `ok`.
+
+<a id="cli-list-plugins-config-unreadable"></a>
+### BUSBAR-3016 — --list-plugins fell back to the default plugins block (config unreadable)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `cli-list-plugins-config-unreadable`
+
+`busbar --list-plugins` could not read/parse config.yaml, so it inventoried the plugins directory using the DEFAULT `plugins:` block (default dir and trust policy) rather than the deployment's configured one. The inventory shown may not reflect the directory, trust policy, or store selection the running gateway would actually use.
+
+**What to do:** This is informational and best-effort pre-deployment. To inventory against the real config, fix config.yaml so it parses (run `busbar --validate` to see the error) and re-run `--list-plugins`.
+
+<a id="config-settings-overlay-unreadable"></a>
+### BUSBAR-3017 — Config-settings read found the overlay unreadable/corrupt (reported no root overrides)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `config-settings-overlay-unreadable`
+
+A `GET /config/settings` read found the persisted config overlay present but unreadable/corrupt, so it returned an EMPTY set of root overrides. Nothing is mutated, but the response cannot be distinguished from a genuine "no overrides set" — the operator's stored single-value overrides may exist on disk yet be absent from this answer.
+
+**What to do:** Fix or remove the corrupt overlay file to restore durable reads (see BUSBAR-3005 for the boot-time counterpart). Until then this endpoint under-reports the stored root settings.
+
+<a id="config-settings-overlay-version-too-new"></a>
+### BUSBAR-3018 — Config-settings read found a newer-busbar overlay (reported no root overrides)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `config-settings-overlay-version-too-new`
+
+A `GET /config/settings` read found the config overlay was written by a NEWER busbar than this binary, so — rather than misrepresent fields it cannot parse — it returned an EMPTY set of root overrides. The response cannot be distinguished from a genuine "no overrides set", so stored overrides may exist yet be absent from this answer.
+
+**What to do:** Read config settings from a busbar at least as new as the one that wrote the overlay, or roll the overlay back to a version this binary understands (see BUSBAR-3006 for the boot-time counterpart).
+
+<a id="config-settings-read-task-join-failed"></a>
+### BUSBAR-3019 — Config-settings overlay read task failed to join (500 rather than a fabricated 200)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `config-settings-read-task-join-failed`
+
+The blocking task that reads the config overlay for `GET /config/settings` failed to join — it panicked, or the runtime is shutting down — so busbar returns 500 rather than a fabricated empty-settings 200 that would misreport "no overrides set" when the read never completed. A panic here is a bug.
+
+**What to do:** Retry the request; a shutdown-race clears on its own. A repeatable failure is a panic in the overlay read path — capture the logged join error and file a bug.
+
 ## 4xxx — Auth & identity
 
 <a id="token-exchange-mint-failed"></a>
@@ -1114,6 +1180,17 @@ The breaker failure-recording path read an unexpected cell state (not Closed/Ope
 
 **What to do:** Capture the logged state value and file a bug — a breaker cell should never hold an unexpected state. The failure record is safely dropped; investigate for memory corruption if it persists.
 
+<a id="metadata-protection-disabled"></a>
+### BUSBAR-5045 — Cloud-metadata SSRF protection DISABLED (allow_all_metadata is set)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `metadata-protection-disabled`
+
+The deployment set the nuclear `allow_all_metadata` escape hatch, so busbar's cloud-metadata SSRF guard is OFF and EVERY cloud-metadata endpoint (e.g. 169.254.169.254, the GCP/Azure metadata hosts) is reachable through the proxy. That is a security-relevant degradation: a crafted upstream URL or a compromised plugin can reach the instance's credential endpoint. Emitted once at boot.
+
+**What to do:** Remove `allow_all_metadata` unless a specific, understood need requires it. If metadata access is genuinely needed, scope it with `security.blocked_metadata_hosts` instead of disabling the guard wholesale (`--print-metadata-blocklist` shows the effective list).
+
 ## 6xxx — Plugins
 
 <a id="plugins-fetch-reload-miss"></a>
@@ -1203,6 +1280,28 @@ A plugin rollback tried to persist the lowered version pin to the config overlay
 A plugin rollback's rebuild failed AFTER the lowered pin was persisted, and the compensating revert of that pin ALSO failed, so disk now carries the rolled-forward pin while the running engine still serves the prior plugin. A restart would honor the stale on-disk pin and contradict the running engine. Loud because disk and the live engine now disagree.
 
 **What to do:** Fix the config overlay so the version pin matches the plugin the running engine serves BEFORE restarting (the log names the plugin and both errors). Until then a restart would come up in a state the running engine rejected.
+
+<a id="cli-validate-plugin-preflight-failed"></a>
+### BUSBAR-6009 — --validate plugin pre-flight failed (structure, trust, conflict, or store resolution)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `cli-validate-plugin-preflight-failed`
+
+`busbar --validate` ran the same plugin pre-flight boot runs — consistency, trust-policy resolution, the three-phase scan of every tarball (structural → trust → conflict), and store resolution — and it FAILED. Because this is the boot pipeline (manifest-only, no dlopen), the same plugin set would fail the plugin half of boot.
+
+**What to do:** Fix the reported plugin problem: a malformed manifest, a signature/trust-policy rejection, an ABI-floor or version-floor violation, a name/alias conflict, or an unresolvable `store.module`. Re-run `--validate` until it reports `ok`.
+
+<a id="cli-list-plugins-trust-invalid"></a>
+### BUSBAR-6010 — --list-plugins could not build a trust policy (plugins.trust is invalid)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `cli-list-plugins-trust-invalid`
+
+`busbar --list-plugins` could not compile a trust policy from the `plugins.trust` block (e.g. an unparsable trust anchor or a malformed policy), so it cannot compute per-tarball signature verdicts and exits non-zero. The running gateway would reject this same `plugins.trust` at boot.
+
+**What to do:** Fix the `plugins.trust` block (the logged error names the problem), then re-run `--list-plugins` or `--validate`.
 
 ## 7xxx — Plane protocols
 
@@ -2121,6 +2220,17 @@ A durable governance store holds virtual keys, but the running auth chain does n
 
 **What to do:** Add `keys` to `auth.chain` so the durable keys actually gate traffic, or remove the keys if key-based governance is not intended. Until then, minted keys are dead weight.
 
+<a id="group-usage-read-failed"></a>
+### BUSBAR-8018 — Group usage read failed (could not derive a bucket's usage from the governance store)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `group-usage-read-failed`
+
+An admin group `/usage` read could not derive a bucket's usage from the governance store (a store read error while computing enforcement-matched spend), so the request returns 500 rather than a partial or understated usage view. No governance state is mutated; the read simply could not complete for the named group/bucket.
+
+**What to do:** Investigate the governance store's health for the logged group and bucket (reachability, the underlying store error). The condition is a read-path fault; usage reads recover once the store answers.
+
 ## 9xxx — Boot & lifecycle
 
 <a id="boot-audit-restore-read-failed"></a>
@@ -2188,4 +2298,59 @@ An event-stream `:exception-type` header exceeded the AWS type-7 string cap, so 
 An event-stream frame's total size exceeded MAX_FRAME_BYTES, so busbar dropped it rather than byte-truncate the payload (a truncated JSON body is worse for a native SDK than no frame). Unreachable for any real Bedrock ConverseStream delta; it only guards a pathological multi-MiB single event and fires per-frame, so it is emitted at debug.
 
 **What to do:** None — self-heals per frame; dropping is graceful (nothing is emitted for that event). Sustained occurrence would indicate an upstream emitting abnormally large single events, worth investigating that lane.
+
+<a id="boot-fatal-error"></a>
+### BUSBAR-9007 — Boot refused (fatal misconfiguration or startup error; process exits non-zero)
+
+- **Severity:** fatal
+- **Since:** 1.6.0
+- **Slug:** `boot-fatal-error`
+
+The binary hit a fatal startup condition — a misconfiguration or other boot-time failure the process cannot serve past — so it printed a single-line reason to stderr and exited non-zero rather than a Rust panic backtrace. The specific reason is printed alongside this code. This is a deliberate refusal, not a crash.
+
+**What to do:** Read the printed reason, fix the underlying config/environment problem, and restart. `busbar --validate` reproduces most boot refusals without binding a listener.
+
+<a id="worker-threads-invalid"></a>
+### BUSBAR-9008 — Configured worker-thread count is invalid (ignored; default used)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `worker-threads-invalid`
+
+An explicitly-set worker-thread count — `TOKIO_WORKER_THREADS`/`advanced.worker_threads` — is not a positive integer (e.g. `0`, or non-numeric), so busbar IGNORES it and boots on the default worker-thread count. The operator's intended thread count is NOT in effect. Emitted pre-tracing, to stderr, at boot.
+
+**What to do:** Set the worker-thread count to a positive integer (at least 1) or remove it to accept the default. The gateway runs, but on the default thread count, not the value provided.
+
+<a id="shutdown-signal-handler-install-failed"></a>
+### BUSBAR-9009 — Shutdown-signal handler not installed (that signal won't trigger graceful drain)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `shutdown-signal-handler-install-failed`
+
+A graceful-shutdown signal handler (SIGINT/ctrl_c, SIGTERM on unix, or CTRL_CLOSE/CTRL_SHUTDOWN on Windows) failed to register. busbar fails soft — that one branch parks forever so the others still trigger the drain — but a stop delivered ONLY via the failed signal will kill the process without draining in-flight requests.
+
+**What to do:** Investigate the logged registration error (an unusual sandbox or signal-handling environment). Other shutdown signals still drain; if the affected signal is your deployment's stop path, restart in an environment where it can register.
+
+<a id="jemalloc-idle-purge-fallback-unavailable"></a>
+### BUSBAR-9010 — jemalloc idle-purge fallback unavailable (idle RSS may not return to the OS)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `jemalloc-idle-purge-fallback-unavailable`
+
+The fallback idle-purge helper (for targets where jemalloc's background purge threads are compiled out, e.g. static-musl or macOS) could not start — its worker thread failed to spawn, or it could not read `opt.dirty_decay_ms`. A fully IDLE process may therefore hold freed-but-unpurged dirty pages and its RSS can ratchet at the last burst's peak until traffic resumes. Request behavior is unaffected.
+
+**What to do:** Usually benign — RSS is reclaimed the moment traffic resumes, and under load the helper does nothing. If steady idle RSS on a musl/macOS build matters, investigate the logged spawn/mallctl error; the gateway serves normally regardless.
+
+<a id="signing-key-generation-failed"></a>
+### BUSBAR-9011 — --generate-signing-key could not mint a key (OS entropy source unavailable)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `signing-key-generation-failed`
+
+`busbar --generate-signing-key` could not mint a fresh ed25519 signing secret because the OS entropy source was unavailable, so it printed nothing and exited non-zero. No key was generated and nothing was written.
+
+**What to do:** Retry on a host with a working RNG (`/dev/urandom` / `getrandom`). A persistent failure points at a broken or blocked entropy source in the environment.
 

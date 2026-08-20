@@ -3591,6 +3591,280 @@ pub const PLUGIN_ROLLBACK_REVERT_FAILED: Diagnostic = Diagnostic {
     retired: false,
 };
 
+// ── 1.6.0 bin crate (`crates/busbar`) + admin-read orphans ──────────────────────────────────────
+// Diagnostics emitted from the `busbar` binary (argument parsing, config LOCATION, boot/lifecycle)
+// and two admin READ paths in busbar-core that reached this catalog after their neighbours. Classed
+// by SUBJECT, not by the file they live in: a config-parse failure in `main.rs` is a 3000 code, a
+// metadata-SSRF posture line is 5000, a plugin-trust CLI check is 6000, boot/lifecycle is 9000.
+
+/// `--print-metadata-blocklist` could not read/parse config, so it printed the built-in denylist only.
+pub const CLI_METADATA_BLOCKLIST_CONFIG_UNREADABLE: Diagnostic = Diagnostic {
+    code: 3014,
+    class: Class::Config,
+    slug: "cli-metadata-blocklist-config-unreadable",
+    title: "--print-metadata-blocklist printed the built-in denylist only (config unreadable)",
+    severity: Severity::Actionable,
+    summary: "`busbar --print-metadata-blocklist` could not parse or env-interpolate config.yaml, so \
+              it printed the HARDCODED cloud-metadata denylist ALONE and skipped the operator's \
+              `security.blocked_metadata_hosts` additions. The list shown is therefore INCOMPLETE — it \
+              omits whatever the config would have added — even though the running gateway (once it \
+              boots on a valid config) would enforce the full union.",
+    action: "Run `busbar` (or `busbar --validate`) normally to see the precise parse/interpolation \
+             error, fix config.yaml, then re-run the flag to see the full effective denylist. The \
+             error itself is not echoed here because it could quote a config value.",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// `--validate` found config.yaml/providers.yaml invalid (load, resolve, semantic, or secret phase).
+pub const CLI_VALIDATE_CONFIG_INVALID: Diagnostic = Diagnostic {
+    code: 3015,
+    class: Class::Config,
+    slug: "cli-validate-config-invalid",
+    title: "--validate rejected the config (load, resolve, semantic, or secret-resolution failure)",
+    severity: Severity::Actionable,
+    summary:
+        "`busbar --validate` ran the exact load → resolve → semantic-validate → strict-secret \
+              pipeline boot runs and the config did NOT pass at one of those phases, so it exits \
+              non-zero. Because `--validate` mirrors boot, this same config would fail to boot the \
+              gateway. The specific phase and offending entries are printed alongside this code.",
+    action: "Fix the reported errors in config.yaml / providers.yaml (a parse/structure error, a \
+             cross-reference the resolver rejected, a semantic-validation failure, or an unset \
+             required secret) and re-run `--validate` until it reports `ok`.",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// `--list-plugins` could not read config, so it inventoried using the default plugins block.
+pub const CLI_LIST_PLUGINS_CONFIG_UNREADABLE: Diagnostic = Diagnostic {
+    code: 3016,
+    class: Class::Config,
+    slug: "cli-list-plugins-config-unreadable",
+    title: "--list-plugins fell back to the default plugins block (config unreadable)",
+    severity: Severity::Actionable,
+    summary: "`busbar --list-plugins` could not read/parse config.yaml, so it inventoried the plugins \
+              directory using the DEFAULT `plugins:` block (default dir and trust policy) rather than \
+              the deployment's configured one. The inventory shown may not reflect the directory, \
+              trust policy, or store selection the running gateway would actually use.",
+    action: "This is informational and best-effort pre-deployment. To inventory against the real \
+             config, fix config.yaml so it parses (run `busbar --validate` to see the error) and \
+             re-run `--list-plugins`.",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// GET /config/settings read the overlay while unreadable/corrupt and reported NO root overrides.
+pub const CONFIG_SETTINGS_OVERLAY_UNREADABLE: Diagnostic = Diagnostic {
+    code: 3017,
+    class: Class::Config,
+    slug: "config-settings-overlay-unreadable",
+    title: "Config-settings read found the overlay unreadable/corrupt (reported no root overrides)",
+    severity: Severity::Actionable,
+    summary: "A `GET /config/settings` read found the persisted config overlay present but \
+              unreadable/corrupt, so it returned an EMPTY set of root overrides. Nothing is mutated, \
+              but the response cannot be distinguished from a genuine \"no overrides set\" — the \
+              operator's stored single-value overrides may exist on disk yet be absent from this \
+              answer.",
+    action: "Fix or remove the corrupt overlay file to restore durable reads (see BUSBAR-3005 for the \
+             boot-time counterpart). Until then this endpoint under-reports the stored root settings.",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// GET /config/settings read the overlay written by a NEWER busbar and reported NO root overrides.
+pub const CONFIG_SETTINGS_OVERLAY_VERSION_TOO_NEW: Diagnostic = Diagnostic {
+    code: 3018,
+    class: Class::Config,
+    slug: "config-settings-overlay-version-too-new",
+    title: "Config-settings read found a newer-busbar overlay (reported no root overrides)",
+    severity: Severity::Actionable,
+    summary: "A `GET /config/settings` read found the config overlay was written by a NEWER busbar \
+              than this binary, so — rather than misrepresent fields it cannot parse — it returned an \
+              EMPTY set of root overrides. The response cannot be distinguished from a genuine \"no \
+              overrides set\", so stored overrides may exist yet be absent from this answer.",
+    action: "Read config settings from a busbar at least as new as the one that wrote the overlay, or \
+             roll the overlay back to a version this binary understands (see BUSBAR-3006 for the \
+             boot-time counterpart).",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// The spawn_blocking task backing GET /config/settings panicked or the runtime is shutting down.
+pub const CONFIG_SETTINGS_READ_TASK_JOIN_FAILED: Diagnostic = Diagnostic {
+    code: 3019,
+    class: Class::Config,
+    slug: "config-settings-read-task-join-failed",
+    title: "Config-settings overlay read task failed to join (500 rather than a fabricated 200)",
+    severity: Severity::Actionable,
+    summary: "The blocking task that reads the config overlay for `GET /config/settings` failed to \
+              join — it panicked, or the runtime is shutting down — so busbar returns 500 rather than \
+              a fabricated empty-settings 200 that would misreport \"no overrides set\" when the read \
+              never completed. A panic here is a bug.",
+    action: "Retry the request; a shutdown-race clears on its own. A repeatable failure is a panic in \
+             the overlay read path — capture the logged join error and file a bug.",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// The nuclear `allow_all_metadata` is set: the cloud-metadata SSRF guard is OFF. Security posture.
+pub const METADATA_PROTECTION_DISABLED: Diagnostic = Diagnostic {
+    code: 5045,
+    class: Class::Proxy,
+    slug: "metadata-protection-disabled",
+    title: "Cloud-metadata SSRF protection DISABLED (allow_all_metadata is set)",
+    severity: Severity::Actionable,
+    summary: "The deployment set the nuclear `allow_all_metadata` escape hatch, so busbar's \
+              cloud-metadata SSRF guard is OFF and EVERY cloud-metadata endpoint (e.g. \
+              169.254.169.254, the GCP/Azure metadata hosts) is reachable through the proxy. That is a \
+              security-relevant degradation: a crafted upstream URL or a compromised plugin can reach \
+              the instance's credential endpoint. Emitted once at boot.",
+    action: "Remove `allow_all_metadata` unless a specific, understood need requires it. If metadata \
+             access is genuinely needed, scope it with `security.blocked_metadata_hosts` instead of \
+             disabling the guard wholesale (`--print-metadata-blocklist` shows the effective list).",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// `--validate`'s plugin pre-flight (the exact pipeline boot runs) failed. Plugin-trust subject.
+pub const CLI_VALIDATE_PLUGIN_PREFLIGHT_FAILED: Diagnostic = Diagnostic {
+    code: 6009,
+    class: Class::Plugins,
+    slug: "cli-validate-plugin-preflight-failed",
+    title: "--validate plugin pre-flight failed (structure, trust, conflict, or store resolution)",
+    severity: Severity::Actionable,
+    summary: "`busbar --validate` ran the same plugin pre-flight boot runs — consistency, trust-policy \
+              resolution, the three-phase scan of every tarball (structural → trust → conflict), and \
+              store resolution — and it FAILED. Because this is the boot pipeline (manifest-only, no \
+              dlopen), the same plugin set would fail the plugin half of boot.",
+    action: "Fix the reported plugin problem: a malformed manifest, a signature/trust-policy rejection, \
+             an ABI-floor or version-floor violation, a name/alias conflict, or an unresolvable \
+             `store.module`. Re-run `--validate` until it reports `ok`.",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// `--list-plugins` could not build a trust policy from `plugins.trust` — the config is invalid.
+pub const CLI_LIST_PLUGINS_TRUST_INVALID: Diagnostic = Diagnostic {
+    code: 6010,
+    class: Class::Plugins,
+    slug: "cli-list-plugins-trust-invalid",
+    title: "--list-plugins could not build a trust policy (plugins.trust is invalid)",
+    severity: Severity::Actionable,
+    summary: "`busbar --list-plugins` could not compile a trust policy from the `plugins.trust` block \
+              (e.g. an unparsable trust anchor or a malformed policy), so it cannot compute per-tarball \
+              signature verdicts and exits non-zero. The running gateway would reject this same \
+              `plugins.trust` at boot.",
+    action: "Fix the `plugins.trust` block (the logged error names the problem), then re-run \
+             `--list-plugins` or `--validate`.",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// A group `/usage` read could not derive a bucket's usage from the governance store. Read-path fault.
+pub const GROUP_USAGE_READ_FAILED: Diagnostic = Diagnostic {
+    code: 8018,
+    class: Class::Governance,
+    slug: "group-usage-read-failed",
+    title: "Group usage read failed (could not derive a bucket's usage from the governance store)",
+    severity: Severity::Actionable,
+    summary: "An admin group `/usage` read could not derive a bucket's usage from the governance store \
+              (a store read error while computing enforcement-matched spend), so the request returns \
+              500 rather than a partial or understated usage view. No governance state is mutated; the \
+              read simply could not complete for the named group/bucket.",
+    action: "Investigate the governance store's health for the logged group and bucket (reachability, \
+             the underlying store error). The condition is a read-path fault; usage reads recover once \
+             the store answers.",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// A boot-time fatal error: the binary printed a one-line reason and exited non-zero (`die`).
+pub const BOOT_FATAL_ERROR: Diagnostic = Diagnostic {
+    code: 9007,
+    class: Class::Boot,
+    slug: "boot-fatal-error",
+    title: "Boot refused (fatal misconfiguration or startup error; process exits non-zero)",
+    severity: Severity::Fatal,
+    summary: "The binary hit a fatal startup condition — a misconfiguration or other boot-time failure \
+              the process cannot serve past — so it printed a single-line reason to stderr and exited \
+              non-zero rather than a Rust panic backtrace. The specific reason is printed alongside \
+              this code. This is a deliberate refusal, not a crash.",
+    action: "Read the printed reason, fix the underlying config/environment problem, and restart. \
+             `busbar --validate` reproduces most boot refusals without binding a listener.",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// An explicitly-set worker-thread count (env or config) is not a positive integer; default used.
+pub const WORKER_THREADS_INVALID: Diagnostic = Diagnostic {
+    code: 9008,
+    class: Class::Boot,
+    slug: "worker-threads-invalid",
+    title: "Configured worker-thread count is invalid (ignored; default used)",
+    severity: Severity::Actionable,
+    summary: "An explicitly-set worker-thread count — `TOKIO_WORKER_THREADS`/`advanced.worker_threads` \
+              — is not a positive integer (e.g. `0`, or non-numeric), so busbar IGNORES it and boots on \
+              the default worker-thread count. The operator's intended thread count is NOT in effect. \
+              Emitted pre-tracing, to stderr, at boot.",
+    action: "Set the worker-thread count to a positive integer (at least 1) or remove it to accept the \
+             default. The gateway runs, but on the default thread count, not the value provided.",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// A shutdown-signal handler could not be installed; that signal will not trigger graceful drain.
+pub const SHUTDOWN_SIGNAL_HANDLER_INSTALL_FAILED: Diagnostic = Diagnostic {
+    code: 9009,
+    class: Class::Boot,
+    slug: "shutdown-signal-handler-install-failed",
+    title: "Shutdown-signal handler not installed (that signal won't trigger graceful drain)",
+    severity: Severity::Actionable,
+    summary: "A graceful-shutdown signal handler (SIGINT/ctrl_c, SIGTERM on unix, or \
+              CTRL_CLOSE/CTRL_SHUTDOWN on Windows) failed to register. busbar fails soft — that one \
+              branch parks forever so the others still trigger the drain — but a stop delivered ONLY \
+              via the failed signal will kill the process without draining in-flight requests.",
+    action: "Investigate the logged registration error (an unusual sandbox or signal-handling \
+             environment). Other shutdown signals still drain; if the affected signal is your \
+             deployment's stop path, restart in an environment where it can register.",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// The jemalloc idle-purge fallback could not start; a fully idle process may hold freed RSS.
+pub const JEMALLOC_IDLE_PURGE_FALLBACK_UNAVAILABLE: Diagnostic = Diagnostic {
+    code: 9010,
+    class: Class::Boot,
+    slug: "jemalloc-idle-purge-fallback-unavailable",
+    title: "jemalloc idle-purge fallback unavailable (idle RSS may not return to the OS)",
+    severity: Severity::Actionable,
+    summary: "The fallback idle-purge helper (for targets where jemalloc's background purge threads \
+              are compiled out, e.g. static-musl or macOS) could not start — its worker thread failed \
+              to spawn, or it could not read `opt.dirty_decay_ms`. A fully IDLE process may therefore \
+              hold freed-but-unpurged dirty pages and its RSS can ratchet at the last burst's peak \
+              until traffic resumes. Request behavior is unaffected.",
+    action: "Usually benign — RSS is reclaimed the moment traffic resumes, and under load the helper \
+             does nothing. If steady idle RSS on a musl/macOS build matters, investigate the logged \
+             spawn/mallctl error; the gateway serves normally regardless.",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// `--generate-signing-key` could not obtain OS entropy to mint an ed25519 key.
+pub const SIGNING_KEY_GENERATION_FAILED: Diagnostic = Diagnostic {
+    code: 9011,
+    class: Class::Boot,
+    slug: "signing-key-generation-failed",
+    title: "--generate-signing-key could not mint a key (OS entropy source unavailable)",
+    severity: Severity::Actionable,
+    summary: "`busbar --generate-signing-key` could not mint a fresh ed25519 signing secret because \
+              the OS entropy source was unavailable, so it printed nothing and exited non-zero. No key \
+              was generated and nothing was written.",
+    action: "Retry on a host with a working RNG (`/dev/urandom` / `getrandom`). A persistent failure \
+             points at a broken or blocked entropy source in the environment.",
+    since: "1.6.0",
+    retired: false,
+};
+
 /// EVERY diagnostic, in ascending code order. The tests assert uniqueness and class alignment.
 pub static REGISTRY: &[&Diagnostic] = &[
     &DURABLE_WRITETHROUGH_BELOW_FLOOR,
@@ -3790,10 +4064,29 @@ pub static REGISTRY: &[&Diagnostic] = &[
     &PLUGIN_CATALOG_BLOCKING_TASK_FAILED,
     &PLUGIN_ROLLBACK_PIN_PERSIST_FAILED,
     &PLUGIN_ROLLBACK_REVERT_FAILED,
+    &CLI_METADATA_BLOCKLIST_CONFIG_UNREADABLE,
+    &CLI_VALIDATE_CONFIG_INVALID,
+    &CLI_LIST_PLUGINS_CONFIG_UNREADABLE,
+    &CONFIG_SETTINGS_OVERLAY_UNREADABLE,
+    &CONFIG_SETTINGS_OVERLAY_VERSION_TOO_NEW,
+    &CONFIG_SETTINGS_READ_TASK_JOIN_FAILED,
+    &METADATA_PROTECTION_DISABLED,
+    &CLI_VALIDATE_PLUGIN_PREFLIGHT_FAILED,
+    &CLI_LIST_PLUGINS_TRUST_INVALID,
+    &GROUP_USAGE_READ_FAILED,
+    &BOOT_FATAL_ERROR,
+    &WORKER_THREADS_INVALID,
+    &SHUTDOWN_SIGNAL_HANDLER_INSTALL_FAILED,
+    &JEMALLOC_IDLE_PURGE_FALLBACK_UNAVAILABLE,
+    &SIGNING_KEY_GENERATION_FAILED,
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
-// Emit macros. `pub(crate)` — internal to busbar-core. Sites `use crate::diagnostics::diag_warn;`.
+// Emit macros. `pub(crate)` — internal to busbar-core (a `macro_rules!` macro cannot be re-exported
+// across crates via `pub use` without `#[macro_export]`, which would pollute the crate root). The
+// `busbar` bin therefore emits coded diagnostics with the equivalent banner form directly:
+// `tracing::warn!(diag = %busbar_core::diagnostics::CONST.banner(), <fields>, "msg")`. Sites in this
+// crate use `use crate::diagnostics::diag_warn;`.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
 /// `warn!` carrying the `diag = "BUSBAR-NNNN"` field. First arg is the [`Diagnostic`] const.
