@@ -859,26 +859,27 @@ pub(crate) fn mid_stream_error_bytes(
         }
     }
     // SSE client: build the terminal error frame through the ingress protocol writer's STREAMING
-    // error path (`write_response_event(&IrStreamEvent::Error(..))`), NOT the non-stream
-    // `write_error()` HTTP envelope. The two are genuinely different shapes for some protocols and a
-    // native SDK decodes the STREAM event, not the HTTP body:
+    // error seam (`write_error_frame`), NOT the non-stream `write_error()` HTTP envelope. The two are
+    // genuinely different shapes for some protocols and a native SDK decodes the STREAM event, not the
+    // HTTP body:
     //   - Responses: the stream `response.failed` event wraps the error in a `response` object
     //     (`{"response":{...,"error":{...}}}`); the HTTP envelope is a top-level `{"error":...}` the
     //     SDK's stream decoder cannot locate via `event.response` (it would crash / silently swallow).
     //   - Anthropic: the stream `error` event is `{"type":"error","error":{...}}` (no HTTP-only
     //     `request_id`); the writer's event arm produces exactly that.
     //   - OpenAI/Cohere/Gemini: bare `data:` frame in each protocol's native in-band error shape.
-    // The writer returns `(event_type, data)`; we frame it identically to the happy-path SSE framer
+    // `write_error_frame` is the NEUTRAL seam: it returns `(event_type, data)` without core naming any
+    // concrete stream-event type, and we frame it identically to the happy-path SSE framer
     // (`proto::reframe_sse`): a non-empty `event_type` becomes an `event:` line, an empty one is a
     // bare `data:` frame. This guarantees the mid-stream error is byte-for-byte the same framing the
     // ingress protocol uses for every other event. The error carries `StatusClass::ServerError`
     // (mid-stream transport failure ≈ internal/5xx) with the human detail as `provider_signal`, which
     // each writer maps to its native error `type`/`message`.
-    let ev = crate::ir::IrStreamEvent::Error(err);
-    // Every SSE-framed writer (openai/anthropic/gemini/cohere/responses) returns `Some` for an
-    // `Error` event; the `None` fallback only guards a hypothetical future writer that declines to
-    // frame errors in-band, in which case we still emit a decodable bare `data:` error.
-    match proto.writer().write_response_event(&ev) {
+    //
+    // Every SSE-framed writer (openai/anthropic/gemini/cohere/responses) returns `Some`; the `None`
+    // fallback only guards a hypothetical future writer that declines to frame errors in-band, in
+    // which case we still emit a decodable bare `data:` error.
+    match proto.writer().write_error_frame(&err) {
         Some((event_type, data)) => {
             let data = crate::json::to_string(&data).unwrap_or_else(|_| {
                 serde_json::json!({ "error": { "message": message, "type": KIND_API_ERROR } })

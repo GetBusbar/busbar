@@ -1016,6 +1016,18 @@ impl ProtocolWriter for BedrockWriter {
         Some((exception_name.to_string(), message))
     }
 
+    fn write_error_frame(
+        &self,
+        err: &busbar_core::proto::IrError,
+    ) -> Option<(String, serde_json::Value)> {
+        // The streaming-error seam. A Bedrock-INGRESS stream never reaches here — its mid-stream
+        // error is a modeled-exception event-stream frame emitted via `write_response_exception`
+        // before the SSE framer runs. This override exists for a non-eventstream consumer driving a
+        // Bedrock writer, and delegates to the `write_response_event` Error arm (the documented
+        // fallback) so the two stay byte-identical.
+        self.write_response_event(&IrStreamEvent::Error(err.clone()))
+    }
+
     fn write_response(&self, resp: &busbar_core::ir::IrResponse) -> serde_json::Value {
         let mut content_arr: Vec<serde_json::Value> = Vec::new();
 

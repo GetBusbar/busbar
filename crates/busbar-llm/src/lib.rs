@@ -59,3 +59,7 @@ pub static DECLS: &[&busbar_core::proto::ProtocolDecl] = &[
     &openai_responses::DECL,
     &cohere::DECL,
 ];
+
+#[cfg(test)]
+#[path = "tests/write_error_frame_tests.rs"]
+mod write_error_frame_tests;

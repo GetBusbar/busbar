@@ -667,6 +667,26 @@ pub trait ProtocolWriter: Send + Sync {
         None
     }
 
+    /// Frame a mid-stream terminal `IrError` as this protocol's NATIVE in-band SSE STREAM-error event
+    /// — the streaming sibling of [`Self::write_error`] (which renders the non-stream HTTP envelope).
+    /// The pair is `(event_type, data)`, framed by the caller exactly like a normal event: a non-empty
+    /// `event_type` becomes an `event:` line, an empty one a bare `data:` frame. The two shapes are
+    /// genuinely different for some protocols (Responses' `response.failed` wraps the error in a
+    /// `response` object the SDK's stream decoder locates via `event.response`, NOT the top-level
+    /// `{"error":...}` HTTP body), so a native SDK on a stream must receive THIS shape.
+    ///
+    /// This is the NEUTRAL seam for [`crate::proxy::wire`]'s mid-stream error framer: core frames the
+    /// returned pair without naming any concrete stream-event type, so the concrete `IrStreamEvent`
+    /// need not exist in core at all. Every SSE-framed writer overrides this to reproduce, byte for
+    /// byte, what its `write_response_event` produces for an error event.
+    ///
+    /// Returns `None` by default so a future protocol without an override falls back to core's
+    /// dialect-free terminal frame — the same fallback the caller already applies when a writer
+    /// declines to frame an error in-band.
+    fn write_error_frame(&self, _err: &IrError) -> Option<(String, serde_json::Value)> {
+        None
+    }
+
     /// Write a whole (non-streaming) response to wire JSON.
     fn write_response(&self, resp: &crate::ir::IrResponse) -> serde_json::Value;
 

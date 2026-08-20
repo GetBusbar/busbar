@@ -910,6 +910,12 @@ impl ProtocolWriter for OpenAiWriter {
         })
     }
 
+    fn write_error_frame(&self, err: &IrError) -> Option<(String, serde_json::Value)> {
+        // The streaming-error seam: delegate to this dialect's own event writer so the mid-stream
+        // error frame is byte-for-byte what an `Error` event produces on this wire.
+        self.write_response_event(&IrStreamEvent::Error(err.clone()))
+    }
+
     fn write_response(&self, resp: &busbar_core::ir::IrResponse) -> serde_json::Value {
         let mut obj = serde_json::Map::new();
 
