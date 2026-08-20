@@ -215,7 +215,6 @@ impl HookFacts {
     }
 }
 
-
 /// Join one bucket's pieces with a newline, BORROWING the single-piece case (the common one). The
 /// separator is not counted by the size signal — a flattened rendering can therefore be longer than
 /// `total_chars` by one char per join, exactly as it was before the cutover.

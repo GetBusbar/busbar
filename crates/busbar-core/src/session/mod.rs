@@ -107,12 +107,19 @@ impl SessionStore {
         let expires_at_ms = if pinned {
             None
         } else {
-            ttl_ms.or(self.default_ttl_ms).map(|d| now_ms.saturating_add(d))
+            ttl_ms
+                .or(self.default_ttl_ms)
+                .map(|d| now_ms.saturating_add(d))
         };
         let mut map = self.lock();
         map.insert(
             (session, owner),
-            Slot { value, pinned, last_touch_ms: now_ms, expires_at_ms },
+            Slot {
+                value,
+                pinned,
+                last_touch_ms: now_ms,
+                expires_at_ms,
+            },
         );
         Self::sweep_and_bound(&mut map, self.capacity, now_ms);
     }
@@ -163,7 +170,9 @@ impl SessionStore {
                 slot.expires_at_ms = if pinned {
                     None
                 } else {
-                    ttl_ms.or(self.default_ttl_ms).map(|d| now_ms.saturating_add(d))
+                    ttl_ms
+                        .or(self.default_ttl_ms)
+                        .map(|d| now_ms.saturating_add(d))
                 };
                 true
             }

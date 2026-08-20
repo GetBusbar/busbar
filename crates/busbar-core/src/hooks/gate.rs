@@ -120,7 +120,8 @@ pub(crate) struct IncrementalScan<'a> {
 }
 
 /// hook name → the set of content-piece digests cleared for it this session.
-type ClearedSets = std::sync::Mutex<std::collections::HashMap<String, std::collections::HashSet<String>>>;
+type ClearedSets =
+    std::sync::Mutex<std::collections::HashMap<String, std::collections::HashSet<String>>>;
 
 impl IncrementalScan<'_> {
     const OWNER: crate::session::OwnerKey = "gate.screen";
@@ -128,12 +129,21 @@ impl IncrementalScan<'_> {
     /// Get-or-create this session's cleared-sets slot. The get-then-put is not atomic, but a lost race
     /// only drops a cleared entry (→ a re-screen), which is safe degradation.
     fn sets(&self) -> std::sync::Arc<ClearedSets> {
-        if let Some(m) = self.store.get::<ClearedSets>(self.session, Self::OWNER, self.now_ms) {
+        if let Some(m) = self
+            .store
+            .get::<ClearedSets>(self.session, Self::OWNER, self.now_ms)
+        {
             return m;
         }
         let m = std::sync::Arc::new(ClearedSets::default());
-        self.store
-            .put(self.session, Self::OWNER, m.clone(), self.now_ms, false, None);
+        self.store.put(
+            self.session,
+            Self::OWNER,
+            m.clone(),
+            self.now_ms,
+            false,
+            None,
+        );
         m
     }
 

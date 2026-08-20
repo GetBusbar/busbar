@@ -48,21 +48,33 @@ pub struct Lineage {
 impl Lineage {
     /// A root request — no inducing parent; it is the top of its own tree.
     pub fn root(self_id: RequestId) -> Lineage {
-        Lineage { root: self_id, parent: None, self_id }
+        Lineage {
+            root: self_id,
+            parent: None,
+            self_id,
+        }
     }
 
     /// Derive the lineage of a request this one INDUCES in another plane: same root, this request as
     /// the parent, and the child's own id. This is the cross-plane edge — the only way a tree grows —
     /// and it names no plane.
     pub fn induce(&self, child_id: RequestId) -> Lineage {
-        Lineage { root: self.root, parent: Some(self.self_id), self_id: child_id }
+        Lineage {
+            root: self.root,
+            parent: Some(self.self_id),
+            self_id: child_id,
+        }
     }
 
     /// Adopt a lineage continued from a TRUSTED inbound peer (distributed continuation). The caller is
     /// responsible for having verified peer trust (mTLS/signed) BEFORE calling this — an untrusted
     /// root is forgeable. Prefer [`Self::root`] for any untrusted ingress.
     pub fn adopt(root: RequestId, parent: Option<RequestId>, self_id: RequestId) -> Lineage {
-        Lineage { root, parent, self_id }
+        Lineage {
+            root,
+            parent,
+            self_id,
+        }
     }
 
     /// The root of the causal tree.

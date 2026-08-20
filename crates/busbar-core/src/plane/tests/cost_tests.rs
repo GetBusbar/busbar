@@ -32,27 +32,47 @@ fn owner_haiku_example_constructs_and_the_parts_add_up() {
 fn top_level_components_must_sum_to_total() {
     let err = CostBreakdown::new(
         CostAmount(100),
-        vec![CostComponent::top("a", CostAmount(60)), CostComponent::top("b", CostAmount(30))],
+        vec![
+            CostComponent::top("a", CostAmount(60)),
+            CostComponent::top("b", CostAmount(30)),
+        ],
     )
     .unwrap_err();
-    assert_eq!(err, CostError::TopLevelSumMismatch { total: 100, top_level_sum: 90 });
+    assert_eq!(
+        err,
+        CostError::TopLevelSumMismatch {
+            total: 100,
+            top_level_sum: 90
+        }
+    );
 }
 
 #[test]
 fn a_zero_component_is_rejected_so_breakdowns_stay_sparse() {
     let err = CostBreakdown::new(
         CostAmount(100),
-        vec![CostComponent::top("a", CostAmount(100)), CostComponent::top("cache", CostAmount(0))],
+        vec![
+            CostComponent::top("a", CostAmount(100)),
+            CostComponent::top("cache", CostAmount(0)),
+        ],
     )
     .unwrap_err();
-    assert_eq!(err, CostError::ZeroComponent { label: "cache".into() });
+    assert_eq!(
+        err,
+        CostError::ZeroComponent {
+            label: "cache".into()
+        }
+    );
 }
 
 #[test]
 fn duplicate_labels_are_rejected() {
     let err = CostBreakdown::new(
         CostAmount(100),
-        vec![CostComponent::top("a", CostAmount(50)), CostComponent::top("a", CostAmount(50))],
+        vec![
+            CostComponent::top("a", CostAmount(50)),
+            CostComponent::top("a", CostAmount(50)),
+        ],
     )
     .unwrap_err();
     assert_eq!(err, CostError::DuplicateLabel { label: "a".into() });
@@ -88,7 +108,10 @@ fn a_child_naming_a_missing_parent_is_rejected() {
     .unwrap_err();
     assert_eq!(
         err,
-        CostError::UnknownParent { label: "reasoning".into(), parent: "NoSuchLine".into() }
+        CostError::UnknownParent {
+            label: "reasoning".into(),
+            parent: "NoSuchLine".into()
+        }
     );
 }
 
@@ -117,7 +140,11 @@ fn children_cannot_exceed_their_parent() {
 
 /// Helper: a single-line breakdown of `n` nanodollars.
 fn charge(n: u128) -> CostBreakdown {
-    CostBreakdown::new(CostAmount(n), vec![CostComponent::top("charge", CostAmount(n))]).unwrap()
+    CostBreakdown::new(
+        CostAmount(n),
+        vec![CostComponent::top("charge", CostAmount(n))],
+    )
+    .unwrap()
 }
 
 #[test]

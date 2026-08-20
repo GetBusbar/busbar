@@ -554,35 +554,36 @@ where
                     // so this local and every accrual call name zero concrete IR. Byte-identical (the
                     // projection carries the four billed totals). At the cutover the producers return
                     // `TokenUsage`/`Billing` directly and the `.to_token_usage()` calls fall away.
-                    let token_usage: Option<crate::billing::TokenUsage> = if this.usage_sink.is_none() {
-                        None
-                    } else if let Some(t) = this.translate.as_ref() {
-                        t.usage().map(|u| u.to_token_usage())
-                    } else if !this.is_sse && !this.nonstream_buf.is_empty() {
-                        // Same-protocol non-stream body relayed verbatim; the operation reads
-                        // usage from the reassembled bytes. Chat runs the egress reader and
-                        // reports IR usage (byte-identical to the previous inline read); a
-                        // flat-fee op returns None and bills nothing.
-                        let truncated = this.nonstream_buf_truncated;
-                        let buf: Vec<u8> = std::mem::take(&mut this.nonstream_buf).into();
-                        if truncated {
-                            // The buffer is a TAIL FRAGMENT (its head was dropped to stay within
-                            // cap), not a well-formed top-level document — `Op::extract_usage`'s
-                            // full-document parse would reliably fail on it. Isolate and parse just
-                            // the self-contained `usage` sub-object instead (see
-                            // `usage::recover_truncated_usage`'s doc comment for why this is safe and
-                            // why it duplicates rather than reuses each reader's field mapping).
-                            crate::proxy::usage::recover_truncated_usage(
-                                this.ingress_protocol,
-                                &buf,
-                            )
-                            .map(|u| u.to_token_usage())
+                    let token_usage: Option<crate::billing::TokenUsage> =
+                        if this.usage_sink.is_none() {
+                            None
+                        } else if let Some(t) = this.translate.as_ref() {
+                            t.usage().map(|u| u.to_token_usage())
+                        } else if !this.is_sse && !this.nonstream_buf.is_empty() {
+                            // Same-protocol non-stream body relayed verbatim; the operation reads
+                            // usage from the reassembled bytes. Chat runs the egress reader and
+                            // reports IR usage (byte-identical to the previous inline read); a
+                            // flat-fee op returns None and bills nothing.
+                            let truncated = this.nonstream_buf_truncated;
+                            let buf: Vec<u8> = std::mem::take(&mut this.nonstream_buf).into();
+                            if truncated {
+                                // The buffer is a TAIL FRAGMENT (its head was dropped to stay within
+                                // cap), not a well-formed top-level document — `Op::extract_usage`'s
+                                // full-document parse would reliably fail on it. Isolate and parse just
+                                // the self-contained `usage` sub-object instead (see
+                                // `usage::recover_truncated_usage`'s doc comment for why this is safe and
+                                // why it duplicates rather than reuses each reader's field mapping).
+                                crate::proxy::usage::recover_truncated_usage(
+                                    this.ingress_protocol,
+                                    &buf,
+                                )
+                                .map(|u| u.to_token_usage())
+                            } else {
+                                this.op.extract_usage(this.ingress_protocol, &buf)
+                            }
                         } else {
-                            this.op.extract_usage(this.ingress_protocol, &buf)
-                        }
-                    } else {
-                        None
-                    };
+                            None
+                        };
                     // Charge this request's token usage to the virtual key's budget (once) — but ONLY
                     // for a cleanly-terminated stream. A stream that saw a reader-emitted terminal ERROR
                     // event (`translate.terminal_error()`) OR whose cross-protocol translate aborted

@@ -15,7 +15,9 @@ fn put_get_roundtrips_an_opaque_value_downcast_to_its_type() {
     let s = SessionStore::new(64, None);
     let set: BTreeSet<u64> = [1, 2, 3].into_iter().collect();
     s.put(SessionKey(7), GATE, Arc::new(set.clone()), 0, false, None);
-    let got = s.get::<BTreeSet<u64>>(SessionKey(7), GATE, 0).expect("present");
+    let got = s
+        .get::<BTreeSet<u64>>(SessionKey(7), GATE, 0)
+        .expect("present");
     assert_eq!(*got, set);
 }
 

@@ -373,8 +373,16 @@ async fn incremental_scan_skips_a_piece_already_cleared_this_session() {
     let facts = tool_call();
 
     // Turn 1: the piece is new — the spy sees it and abstains (clean), so it is cached.
-    let spy1 = Arc::new(Spy { reply: RoutingDecision::Abstain, seen: Mutex::new(None) });
-    let g1 = gate(spy1.clone(), crate::config::PolicyOnError::Weighted, true, true);
+    let spy1 = Arc::new(Spy {
+        reply: RoutingDecision::Abstain,
+        seen: Mutex::new(None),
+    });
+    let g1 = gate(
+        spy1.clone(),
+        crate::config::PolicyOnError::Weighted,
+        true,
+        true,
+    );
     let v1 = decide(
         &g1,
         &GateSubject {
@@ -383,16 +391,31 @@ async fn incremental_scan_skips_a_piece_already_cleared_this_session() {
             ingress_protocol: "mcp",
             request_id: 1,
             key: None,
-            incremental: Some(IncrementalScan { store: &store, session, now_ms: 0 }),
+            incremental: Some(IncrementalScan {
+                store: &store,
+                session,
+                now_ms: 0,
+            }),
         },
     )
     .await;
     assert!(matches!(v1, GateVerdict::Proceed));
-    assert!(spy1.seen.lock().unwrap().is_some(), "turn 1 screens the new piece");
+    assert!(
+        spy1.seen.lock().unwrap().is_some(),
+        "turn 1 screens the new piece"
+    );
 
     // Turn 2: same session, same content — the piece is already cleared, so the spy is NOT called.
-    let spy2 = Arc::new(Spy { reply: RoutingDecision::Abstain, seen: Mutex::new(None) });
-    let g2 = gate(spy2.clone(), crate::config::PolicyOnError::Weighted, true, true);
+    let spy2 = Arc::new(Spy {
+        reply: RoutingDecision::Abstain,
+        seen: Mutex::new(None),
+    });
+    let g2 = gate(
+        spy2.clone(),
+        crate::config::PolicyOnError::Weighted,
+        true,
+        true,
+    );
     let v2 = decide(
         &g2,
         &GateSubject {
@@ -401,7 +424,11 @@ async fn incremental_scan_skips_a_piece_already_cleared_this_session() {
             ingress_protocol: "mcp",
             request_id: 2,
             key: None,
-            incremental: Some(IncrementalScan { store: &store, session, now_ms: 0 }),
+            incremental: Some(IncrementalScan {
+                store: &store,
+                session,
+                now_ms: 0,
+            }),
         },
     )
     .await;
@@ -421,10 +448,18 @@ async fn a_rejected_piece_is_not_cached_and_is_rescreened() {
 
     // Turn 1: the gate REJECTS — the piece must NOT be recorded as cleared.
     let spy1 = Arc::new(Spy {
-        reply: RoutingDecision::Reject { status: 403, message: "blocked".to_string() },
+        reply: RoutingDecision::Reject {
+            status: 403,
+            message: "blocked".to_string(),
+        },
         seen: Mutex::new(None),
     });
-    let g1 = gate(spy1.clone(), crate::config::PolicyOnError::Weighted, true, true);
+    let g1 = gate(
+        spy1.clone(),
+        crate::config::PolicyOnError::Weighted,
+        true,
+        true,
+    );
     let v1 = decide(
         &g1,
         &GateSubject {
@@ -433,15 +468,27 @@ async fn a_rejected_piece_is_not_cached_and_is_rescreened() {
             ingress_protocol: "mcp",
             request_id: 1,
             key: None,
-            incremental: Some(IncrementalScan { store: &store, session, now_ms: 0 }),
+            incremental: Some(IncrementalScan {
+                store: &store,
+                session,
+                now_ms: 0,
+            }),
         },
     )
     .await;
     assert!(matches!(v1, GateVerdict::Reject { .. }));
 
     // Turn 2: same session/content — because the block was never cached, it is screened again.
-    let spy2 = Arc::new(Spy { reply: RoutingDecision::Abstain, seen: Mutex::new(None) });
-    let g2 = gate(spy2.clone(), crate::config::PolicyOnError::Weighted, true, true);
+    let spy2 = Arc::new(Spy {
+        reply: RoutingDecision::Abstain,
+        seen: Mutex::new(None),
+    });
+    let g2 = gate(
+        spy2.clone(),
+        crate::config::PolicyOnError::Weighted,
+        true,
+        true,
+    );
     let v2 = decide(
         &g2,
         &GateSubject {
@@ -450,7 +497,11 @@ async fn a_rejected_piece_is_not_cached_and_is_rescreened() {
             ingress_protocol: "mcp",
             request_id: 2,
             key: None,
-            incremental: Some(IncrementalScan { store: &store, session, now_ms: 0 }),
+            incremental: Some(IncrementalScan {
+                store: &store,
+                session,
+                now_ms: 0,
+            }),
         },
     )
     .await;

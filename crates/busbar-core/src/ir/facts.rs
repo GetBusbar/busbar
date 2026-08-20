@@ -405,10 +405,22 @@ impl IrFacts for IrRequest {
 /// [`IrBlock::is_opaque`] is the one place that knows all three shapes, and it is asked first.
 pub fn project(req: &IrRequest) -> Vec<ContentItem<'_>> {
     let mut out = Vec::new();
-    walk(&req.system, author_of(IrRole::System), None, Slot::System, &mut out);
+    walk(
+        &req.system,
+        author_of(IrRole::System),
+        None,
+        Slot::System,
+        &mut out,
+    );
     for (i, m) in req.messages.iter().enumerate() {
         let before = out.len();
-        walk(&m.content, author_of(m.role), Some(i), Slot::Turn(i), &mut out);
+        walk(
+            &m.content,
+            author_of(m.role),
+            Some(i),
+            Slot::Turn(i),
+            &mut out,
+        );
         if out.len() == before {
             // The empty-turn rule. See this function's doc comment.
             out.push(ContentItem::Text {

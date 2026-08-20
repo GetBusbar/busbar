@@ -84,7 +84,11 @@ pub struct CostComponent {
 impl CostComponent {
     /// A top-level component (contributes to the total).
     pub fn top(label: impl Into<String>, amount: CostAmount) -> CostComponent {
-        CostComponent { label: label.into(), amount, parent: None }
+        CostComponent {
+            label: label.into(),
+            amount,
+            parent: None,
+        }
     }
 
     /// A nested component contained within `parent` (does NOT contribute to the total).
@@ -93,7 +97,11 @@ impl CostComponent {
         amount: CostAmount,
         parent: impl Into<String>,
     ) -> CostComponent {
-        CostComponent { label: label.into(), amount, parent: Some(parent.into()) }
+        CostComponent {
+            label: label.into(),
+            amount,
+            parent: Some(parent.into()),
+        }
     }
 }
 
@@ -115,26 +123,43 @@ pub enum CostError {
     TopLevelSumMismatch { total: u128, top_level_sum: u128 },
     /// A parent's direct children sum to more than the parent — a sub-cost cannot exceed the line
     /// that contains it.
-    ChildrenExceedParent { parent: String, parent_amount: u128, children_sum: u128 },
+    ChildrenExceedParent {
+        parent: String,
+        parent_amount: u128,
+        children_sum: u128,
+    },
 }
 
 impl fmt::Display for CostError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             CostError::ZeroComponent { label } => {
-                write!(f, "cost component {label:?} is zero (omit it; breakdowns are sparse)")
+                write!(
+                    f,
+                    "cost component {label:?} is zero (omit it; breakdowns are sparse)"
+                )
             }
             CostError::DuplicateLabel { label } => {
                 write!(f, "duplicate cost component label {label:?}")
             }
             CostError::UnknownParent { label, parent } => {
-                write!(f, "cost component {label:?} names unknown parent {parent:?}")
+                write!(
+                    f,
+                    "cost component {label:?} names unknown parent {parent:?}"
+                )
             }
-            CostError::TopLevelSumMismatch { total, top_level_sum } => write!(
+            CostError::TopLevelSumMismatch {
+                total,
+                top_level_sum,
+            } => write!(
                 f,
                 "cost components do not add up: top-level sum {top_level_sum} != total {total}"
             ),
-            CostError::ChildrenExceedParent { parent, parent_amount, children_sum } => write!(
+            CostError::ChildrenExceedParent {
+                parent,
+                parent_amount,
+                children_sum,
+            } => write!(
                 f,
                 "children of {parent:?} sum to {children_sum} > parent {parent_amount}"
             ),
@@ -158,14 +183,21 @@ pub struct CostBreakdown {
 impl CostBreakdown {
     /// Build a breakdown, enforcing the invariants. Returns [`CostError`] if the parts do not add
     /// up (or any other rule is violated), so an ill-formed breakdown can never reach the ledger.
-    pub fn new(total: CostAmount, components: Vec<CostComponent>) -> Result<CostBreakdown, CostError> {
+    pub fn new(
+        total: CostAmount,
+        components: Vec<CostComponent>,
+    ) -> Result<CostBreakdown, CostError> {
         let mut labels: BTreeSet<&str> = BTreeSet::new();
         for c in &components {
             if c.amount == CostAmount::ZERO {
-                return Err(CostError::ZeroComponent { label: c.label.clone() });
+                return Err(CostError::ZeroComponent {
+                    label: c.label.clone(),
+                });
             }
             if !labels.insert(c.label.as_str()) {
-                return Err(CostError::DuplicateLabel { label: c.label.clone() });
+                return Err(CostError::DuplicateLabel {
+                    label: c.label.clone(),
+                });
             }
         }
 
@@ -182,8 +214,11 @@ impl CostBreakdown {
         }
 
         // Top-level lines (no parent) must sum to total.
-        let top_level_sum: u128 =
-            components.iter().filter(|c| c.parent.is_none()).map(|c| c.amount.0).sum();
+        let top_level_sum: u128 = components
+            .iter()
+            .filter(|c| c.parent.is_none())
+            .map(|c| c.amount.0)
+            .sum();
         if top_level_sum != total.0 {
             return Err(CostError::TopLevelSumMismatch {
                 total: total.0,
@@ -275,7 +310,10 @@ impl CostHold {
     /// Open a hold reserving a coarse `estimate` plus the once-only flat per-request `fee`. The caller
     /// debits `reserved()` from the budget cell now; the unspent part comes back at [`Self::finalize`].
     pub fn reserve(estimate: CostAmount, fee: CostAmount) -> CostHold {
-        CostHold { reserved: estimate + fee, settled: CostAmount::ZERO }
+        CostHold {
+            reserved: estimate + fee,
+            settled: CostAmount::ZERO,
+        }
     }
 
     /// The amount debited from the budget cell at admit (estimate + flat fee).
@@ -295,7 +333,10 @@ impl CostHold {
     /// amount and refunds zero, never a negative.
     pub fn finalize(self) -> Settlement {
         let refund = CostAmount(self.reserved.0.saturating_sub(self.settled.0));
-        Settlement { ledgered_total: self.settled, refund }
+        Settlement {
+            ledgered_total: self.settled,
+            refund,
+        }
     }
 }
 
