@@ -20,7 +20,8 @@
 
 use busbar_api::{
     AuditRecord, CredentialMeta, CredentialSecret, McpCallRecord, MeteringDelta, MeteringRow,
-    Store, StoreError, StoreResult, TaskEventRow, TaskRow, UsageDelta, UsageLedger, VirtualKey,
+    PlaneRecord, PlaneSelector, Store, StoreError, StoreResult, TaskEventRow, TaskRow, UsageDelta,
+    UsageLedger, VirtualKey,
 };
 use busbar_plugin_abi::{
     kind as abi_kind, symbol, CallFn, CloseFn, FreeFn, PluginKindFn, StoreRequest, StoreResponse,
@@ -1122,6 +1123,147 @@ impl Store for DynStore {
             // "This backend does not keep a ledger", which is the trait's own default and leaves
             // the engine's in-process ledger as the only guard - exactly where a deployment with no
             // durable store already is.
+            || Ok(true),
+        )
+    }
+
+    // ── THE NEUTRAL KIND-TAGGED PLANE-RECORD SURFACE (1.6.0, ADDITIVE) ────────────────────────
+    //
+    // EIGHT MORE OVERRIDES, for the reason every durable override above exists: without them
+    // `DynStore` would answer the neutral verbs from `Store`'s defaults, so a store plugin that
+    // implements them would have its every write DISCARDED at this seam while the call reported
+    // success. Each routes through `call_with_legacy_default` — the same choke point — because the
+    // wire variants are ADDITIVE: a plugin whose SDK predates them answers `STATUS_UNSUPPORTED`, and
+    // the honest response is the trait's own accept-and-keep-nothing default. NOTHING ELSE is
+    // defaulted: a real backend error, a caught panic and a caller-protocol violation all propagate.
+    //
+    // NOTHING CALLS THESE YET (1.6.0 Commit 1 is purely additive). This commit's wire carries only
+    // the fields each verb routes on; the typed sidecar columns of [`PlaneRecord`] that it does not
+    // yet carry (`ts`/`disposition`, and `parent`/`seq` on upsert) are relocated onto the wire in a
+    // later schema commit.
+
+    fn upsert_plane_record(&self, record: &PlaneRecord) -> StoreResult<()> {
+        self.call_with_legacy_default(
+            StoreRequest::UpsertPlaneRecord {
+                kind: record.kind.clone(),
+                id: record.id.clone(),
+                body: record.body.clone(),
+            },
+            |r| match r {
+                StoreResponse::Unit => Ok(()),
+                other => Err(unexpected(other)),
+            },
+            || Ok(()),
+        )
+    }
+
+    fn get_plane_record(&self, kind: &str, id: &str) -> StoreResult<Option<Vec<u8>>> {
+        self.call_with_legacy_default(
+            StoreRequest::GetPlaneRecord {
+                kind: kind.to_string(),
+                id: id.to_string(),
+            },
+            |r| match r {
+                StoreResponse::PlaneRecord(b) => Ok(b),
+                other => Err(unexpected(other)),
+            },
+            || Ok(None),
+        )
+    }
+
+    fn append_plane_record(&self, record: &PlaneRecord) -> StoreResult<()> {
+        self.call_with_legacy_default(
+            StoreRequest::AppendPlaneRecord {
+                kind: record.kind.clone(),
+                parent: record.parent.clone().unwrap_or_default(),
+                seq: record.seq,
+                body: record.body.clone(),
+            },
+            |r| match r {
+                StoreResponse::Unit => Ok(()),
+                other => Err(unexpected(other)),
+            },
+            || Ok(()),
+        )
+    }
+
+    fn list_plane_records(
+        &self,
+        kind: &str,
+        selector: &PlaneSelector,
+    ) -> StoreResult<Vec<Vec<u8>>> {
+        self.call_with_legacy_default(
+            StoreRequest::ListPlaneRecords {
+                kind: kind.to_string(),
+                selector: selector.clone(),
+            },
+            |r| match r {
+                StoreResponse::PlaneRecords(b) => Ok(b),
+                other => Err(unexpected(other)),
+            },
+            || Ok(Vec::new()),
+        )
+    }
+
+    fn list_plane_record_parents(&self, kind: &str) -> StoreResult<Vec<String>> {
+        self.call_with_legacy_default(
+            StoreRequest::ListPlaneRecordParents {
+                kind: kind.to_string(),
+            },
+            |r| match r {
+                StoreResponse::PlaneRecordParents(p) => Ok(p),
+                other => Err(unexpected(other)),
+            },
+            || Ok(Vec::new()),
+        )
+    }
+
+    fn purge_plane_records_before(&self, kind: &str, before: u64) -> StoreResult<u64> {
+        self.call_with_legacy_default(
+            StoreRequest::PurgePlaneRecordsBefore {
+                kind: kind.to_string(),
+                before,
+            },
+            |r| match r {
+                StoreResponse::Purged(n) => Ok(n),
+                other => Err(unexpected(other)),
+            },
+            || Ok(0),
+        )
+    }
+
+    fn delete_plane_record(&self, kind: &str, id: &str) -> StoreResult<()> {
+        self.call_with_legacy_default(
+            StoreRequest::DeletePlaneRecord {
+                kind: kind.to_string(),
+                id: id.to_string(),
+            },
+            |r| match r {
+                StoreResponse::Unit => Ok(()),
+                other => Err(unexpected(other)),
+            },
+            || Ok(()),
+        )
+    }
+
+    fn redeem_plane_token(
+        &self,
+        kind: &str,
+        token: &str,
+        expires_at: u64,
+        now: u64,
+    ) -> StoreResult<bool> {
+        self.call_with_legacy_default(
+            StoreRequest::RedeemPlaneToken {
+                kind: kind.to_string(),
+                token: token.to_string(),
+                expires_at,
+                now,
+            },
+            |r| match r {
+                StoreResponse::Redeemed(fresh) => Ok(fresh),
+                other => Err(unexpected(other)),
+            },
             || Ok(true),
         )
     }

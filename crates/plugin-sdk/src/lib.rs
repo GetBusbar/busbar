@@ -182,6 +182,63 @@ pub fn dispatch(store: &dyn Store, req: StoreRequest) -> Result<StoreResponse, S
             expires_at,
             now,
         } => R::Redeemed(store.redeem_ask_state(&nonce, expires_at, now)?),
+
+        // ── THE NEUTRAL KIND-TAGGED PLANE-RECORD SURFACE (1.6.0, ADDITIVE) ────────────────────
+        //
+        // Maps the eight kind-tagged wire variants onto the eight neutral trait methods. Upsert and
+        // append reconstitute a [`busbar_api::PlaneRecord`] from the fields this commit's wire
+        // carries; the typed sidecar columns the wire does not yet carry (`ts`/`disposition`, and
+        // `parent`/`seq` on upsert) default to their neutral values here — relocating the full
+        // sidecar onto the wire is the later schema commit. Nothing calls these yet.
+        Q::UpsertPlaneRecord { kind, id, body } => {
+            store.upsert_plane_record(&busbar_api::PlaneRecord {
+                kind,
+                id,
+                parent: None,
+                seq: 0,
+                ts: 0,
+                disposition: busbar_api::PlaneDisposition::Active,
+                body,
+            })?;
+            R::Unit
+        }
+        Q::GetPlaneRecord { kind, id } => R::PlaneRecord(store.get_plane_record(&kind, &id)?),
+        Q::AppendPlaneRecord {
+            kind,
+            parent,
+            seq,
+            body,
+        } => {
+            store.append_plane_record(&busbar_api::PlaneRecord {
+                kind,
+                id: String::new(),
+                parent: Some(parent),
+                seq,
+                ts: 0,
+                disposition: busbar_api::PlaneDisposition::Active,
+                body,
+            })?;
+            R::Unit
+        }
+        Q::ListPlaneRecords { kind, selector } => {
+            R::PlaneRecords(store.list_plane_records(&kind, &selector)?)
+        }
+        Q::ListPlaneRecordParents { kind } => {
+            R::PlaneRecordParents(store.list_plane_record_parents(&kind)?)
+        }
+        Q::PurgePlaneRecordsBefore { kind, before } => {
+            R::Purged(store.purge_plane_records_before(&kind, before)?)
+        }
+        Q::DeletePlaneRecord { kind, id } => {
+            store.delete_plane_record(&kind, &id)?;
+            R::Unit
+        }
+        Q::RedeemPlaneToken {
+            kind,
+            token,
+            expires_at,
+            now,
+        } => R::Redeemed(store.redeem_plane_token(&kind, &token, expires_at, now)?),
     })
 }
 

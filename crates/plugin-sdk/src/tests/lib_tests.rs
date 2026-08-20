@@ -636,6 +636,105 @@ fn dispatch_handles_audit_variants() {
     }
 }
 
+/// The neutral kind-tagged plane-record variants (1.6.0, ADDITIVE) round-trip through the ABI serde
+/// and dispatch onto the neutral trait methods. Each request is serialized to the on-wire JSON and
+/// deserialized back (proving the ABI enum carries them), then dispatched against the memory store —
+/// which does not override the neutral methods, so every one returns its DEFAULTED empty result.
+/// This proves the additive api+abi+sdk wiring compiles and is reachable end-to-end without any
+/// caller: a read comes back empty, a write comes back `Unit`, a purge `0`, a redeem `true`.
+#[test]
+fn dispatch_handles_neutral_plane_variants() {
+    use busbar_api::{PlaneDisposition, PlaneRecord, PlaneSelector};
+
+    let store = MemoryStore::new();
+
+    // Round-trip each request through the ABI JSON so the test exercises the wire, not just the enum.
+    let roundtrip = |req: &StoreRequest| -> StoreResponse {
+        let bytes = serde_json::to_vec(req).expect("neutral request serializes");
+        let decoded: StoreRequest =
+            serde_json::from_slice(&bytes).expect("neutral request decodes");
+        dispatch(&store, decoded).expect("dispatch")
+    };
+
+    let rec = PlaneRecord {
+        kind: "task".into(),
+        id: "t-1".into(),
+        parent: None,
+        seq: 0,
+        ts: 42,
+        disposition: PlaneDisposition::Terminal,
+        body: vec![1, 2, 3],
+    };
+
+    match roundtrip(&StoreRequest::UpsertPlaneRecord {
+        kind: rec.kind.clone(),
+        id: rec.id.clone(),
+        body: rec.body.clone(),
+    }) {
+        StoreResponse::Unit => {}
+        other => panic!("expected Unit, got {other:?}"),
+    }
+    match roundtrip(&StoreRequest::GetPlaneRecord {
+        kind: "task".into(),
+        id: "t-1".into(),
+    }) {
+        StoreResponse::PlaneRecord(b) => {
+            assert!(b.is_none(), "memory store persists no plane record")
+        }
+        other => panic!("expected PlaneRecord, got {other:?}"),
+    }
+    match roundtrip(&StoreRequest::AppendPlaneRecord {
+        kind: "call".into(),
+        parent: "p-1".into(),
+        seq: 7,
+        body: vec![9],
+    }) {
+        StoreResponse::Unit => {}
+        other => panic!("expected Unit, got {other:?}"),
+    }
+    match roundtrip(&StoreRequest::ListPlaneRecords {
+        kind: "call".into(),
+        selector: PlaneSelector::Parent("p-1".into()),
+    }) {
+        StoreResponse::PlaneRecords(v) => assert!(v.is_empty(), "no records to list"),
+        other => panic!("expected PlaneRecords, got {other:?}"),
+    }
+    match roundtrip(&StoreRequest::ListPlaneRecordParents {
+        kind: "call".into(),
+    }) {
+        StoreResponse::PlaneRecordParents(v) => assert!(v.is_empty(), "no parents to list"),
+        other => panic!("expected PlaneRecordParents, got {other:?}"),
+    }
+    match roundtrip(&StoreRequest::PurgePlaneRecordsBefore {
+        kind: "task".into(),
+        before: 100,
+    }) {
+        StoreResponse::Purged(n) => assert_eq!(n, 0, "nothing retained, nothing purged"),
+        other => panic!("expected Purged, got {other:?}"),
+    }
+    match roundtrip(&StoreRequest::DeletePlaneRecord {
+        kind: "demotion".into(),
+        id: "srv".into(),
+    }) {
+        StoreResponse::Unit => {}
+        other => panic!("expected Unit, got {other:?}"),
+    }
+    match roundtrip(&StoreRequest::RedeemPlaneToken {
+        kind: "ask".into(),
+        token: "n-1".into(),
+        expires_at: 200,
+        now: 1,
+    }) {
+        StoreResponse::Redeemed(fresh) => {
+            assert!(
+                fresh,
+                "no durable ledger, so the default reports first redemption"
+            )
+        }
+        other => panic!("expected Redeemed, got {other:?}"),
+    }
+}
+
 /// A constructor error surfaces as STATUS_ERR with the message in the error buffer.
 #[test]
 fn ffi_ctor_error_surfaces() {
