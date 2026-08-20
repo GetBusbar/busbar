@@ -44,7 +44,9 @@ async fn a_model_plane_request_is_counted_exactly_once() {
     let addr = listener.local_addr().unwrap();
     let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
 
-    let labels = [("plane", "llm"), ("pool", POOL)];
+    // The model plane's `busbar_requests_total` carries NO `plane` label (v1.5.4-identical); this
+    // pool name is unique to this test, so it alone pins the delta.
+    let labels = [("pool", POOL)];
     let before = metric_sum(crate::metrics::REQUESTS_TOTAL, &labels);
     // The upstream is a closed port, so this fails to forward — which is fine and deliberate. What
     // is under test is HOW MANY TIMES the request is counted, not what it returned.

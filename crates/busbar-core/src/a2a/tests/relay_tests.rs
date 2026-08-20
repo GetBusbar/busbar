@@ -1409,7 +1409,7 @@ async fn a_follow_up_naming_the_id_busbar_issued_reaches_the_backend_by_the_back
 /// actually relayed to a backend and answered `200` — the request an operator most needs a latency
 /// series for, and the one a test that only ever drove refusals would leave unproven.
 #[tokio::test]
-async fn an_admitted_agent_task_lands_in_the_shared_request_series() {
+async fn an_admitted_agent_task_lands_in_the_plane_request_series() {
     let h = harness(Outcome::Answers(200, backend_ok()), false).await;
     // `outcome="ok"` on this plane is only reachable through the whole admit → meter → egress-gate
     // → relay path, so no refusal in any concurrently-running test can produce it by accident.
@@ -1418,20 +1418,20 @@ async fn an_admitted_agent_task_lands_in_the_shared_request_series() {
         ("ingress_protocol", "jsonrpc"),
         ("outcome", "ok"),
     ];
-    let before = crate::test_support::metric_sum(crate::metrics::REQUESTS_TOTAL, &labels);
+    let before = crate::test_support::metric_sum(crate::metrics::PLANE_REQUESTS_TOTAL, &labels);
     let (status, body) = call(&h).await;
     assert_eq!(status, 200, "the admitted call must be served: {body}");
-    let after = crate::test_support::metric_sum(crate::metrics::REQUESTS_TOTAL, &labels);
+    let after = crate::test_support::metric_sum(crate::metrics::PLANE_REQUESTS_TOTAL, &labels);
 
     assert!(
         after > before,
         "a relayed agent task produced no `{}` sample on the a2a plane (before {before}, after \
          {after}) — the plane is invisible to an operator again",
-        crate::metrics::REQUESTS_TOTAL,
+        crate::metrics::PLANE_REQUESTS_TOTAL,
     );
     assert!(
         crate::test_support::metric_sum(
-            "busbar_request_duration_seconds_count",
+            "busbar_plane_request_duration_seconds_count",
             &[("plane", "a2a"), ("ingress_protocol", "jsonrpc")],
         ) > 0.0,
         "the agent plane must carry a latency series, not just a count"

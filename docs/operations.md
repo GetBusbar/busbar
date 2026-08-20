@@ -299,13 +299,15 @@ All metrics are Prometheus counters/histograms exposed at `/metrics`, which is o
 
 | Metric | Type | Labels | Watch for |
 |---|---|---|---|
-| `busbar_requests_total` | counter | `plane`, `ingress_protocol`, `pool`, `outcome` | `plane` is `llm` / `mcp` / `a2a`. Every plane's traffic is on this one family, so `sum by (plane) (rate(busbar_requests_total[5m]))` splits the whole gateway. `outcome` is `ok` / `client_error` / `exhausted` (503) / `error`. A rising `exhausted` means pools are running out of healthy members. |
+| `busbar_requests_total` | counter | `ingress_protocol`, `pool`, `outcome` | Model (LLM) plane only, unchanged from 1.5.4 (no `plane` label). `outcome` is `ok` / `client_error` / `exhausted` (503) / `error`. A rising `exhausted` means pools are running out of healthy members. |
+| `busbar_plane_requests_total` | counter | `plane`, `ingress_protocol`, `pool`, `outcome` | Mounted planes: `plane` is `mcp` / `a2a`, so `sum by (plane) (rate(busbar_plane_requests_total[5m]))` splits the mounted-plane traffic. Same `outcome` vocabulary as `busbar_requests_total`. |
 | `busbar_upstream_attempts_total` | counter | `pool`, `lane` | Real upstream calls (re-counted per failover hop). |
 | `busbar_upstream_failures_total` | counter | `pool`, `lane`, `disposition` | `disposition` is `transient_upstream` / `attempt_timeout` / `hard_down` / `context_length`. Concentration on one lane points at a sick backend. |
 | `busbar_breaker_trips_total` | counter | `pool`, `lane` | Each hard-down/trip. Spikes = a backend going down. |
 | `busbar_failovers_total` | counter | `pool`, `reason` | `reason` is `timeout` / `connect` / `transient_upstream` / `attempt_timeout` / `hard_down` / `context_length`. |
 | `busbar_translations_total` | counter | `from`, `to` | Cross-protocol translation hops. |
-| `busbar_request_duration_seconds` | histogram | `plane`, `ingress_protocol`, `pool` | End-to-end latency, on every plane. |
+| `busbar_request_duration_seconds` | histogram | `ingress_protocol`, `pool` | Model (LLM) plane only, unchanged from 1.5.4. End-to-end latency. |
+| `busbar_plane_request_duration_seconds` | histogram | `plane`, `ingress_protocol`, `pool` | Mounted planes (`mcp` / `a2a`). End-to-end latency for tool calls and agent tasks. |
 | `busbar_key_spend_cents` | gauge | `key` (+ mint labels) | Per-virtual-key derived spend in cents (all-time attribution bucket; spend derives from the token ledger x the current rate card at scrape time). |
 | `busbar_key_tokens_total` | gauge | `key` (+ mint labels) | Tokens consumed by each virtual key (all-time attribution bucket). |
 | `busbar_bucket_spend_cents` | gauge | `bucket`, `group`, `window` | Derived spend per (group, window) enforcement bucket (`bucket` = `group:<name>@<window>`). |

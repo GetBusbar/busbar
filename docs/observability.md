@@ -90,11 +90,15 @@ Scraping is not required for correctness. A gateway with metrics enabled and not
 
 ## Metrics to watch
 
-**Every plane is on the same two request families.** `busbar_requests_total` and
-`busbar_request_duration_seconds` carry a `plane` label (`llm`, `mcp`, `a2a`), so model traffic,
-tool calls and agent tasks are compared with one query rather than three vocabularies. On the `mcp`
-and `a2a` planes `pool` currently reads `unresolved` (the plane's door counts the request before
-its routing target is resolved).
+**The model plane keeps its original two request families; the mounted planes get their own.** On
+the model (LLM) plane `busbar_requests_total` and `busbar_request_duration_seconds` are exactly what
+they were in 1.5.4 — labelled `ingress_protocol`, `pool`, `outcome` (the counter) and
+`ingress_protocol`, `pool` (the histogram), with **no** `plane` label — so a pure-LLM deployment's
+`/metrics` output, and every 1.5.4 rule, alert and dashboard matching those series, is unchanged.
+The MCP and A2A planes emit a parallel pair, `busbar_plane_requests_total` and
+`busbar_plane_request_duration_seconds`, which add a `plane` label (`mcp`, `a2a`) so tool calls and
+agent tasks are compared with `sum by (plane)`. On those planes `pool` currently reads `unresolved`
+(the plane's door counts the request before its routing target is resolved).
 
 `ingress_protocol` reads `jsonrpc` on the `mcp` plane, because JSON-RPC 2.0 is the one wire format
 that plane speaks — a transport is not a wire format, and MCP over streamable HTTP and MCP over
@@ -102,7 +106,7 @@ stdio are the same message shape. **On the `a2a` plane it names the binding leg 
 actually arrived on**: `jsonrpc`, `http+json` or `grpc`. That plane declares three wire formats and
 labels its own requests from inside the reader, because two of the three are spoken at the same
 door and only the reader knows which one spoke, so `sum by (ingress_protocol)
-(rate(busbar_requests_total{plane="a2a"}[5m]))` compares the three bindings against each other
+(rate(busbar_plane_requests_total{plane="a2a"}[5m]))` compares the three bindings against each other
 directly. The one exception is a refusal issued *before* any A2A handler runs — an audience-bound
 `401`, a `413`, a `404` — which carries the binding the **door** declares: `jsonrpc` for everything
 under the `/a2a` mount (including the HTTP+JSON rows, which live under it), and `grpc` for the
@@ -110,18 +114,27 @@ under the `/a2a` mount (including the HTTP+JSON rows, which live under it), and 
 label of its own.
 
 A refusal issued before a plane's handler runs is counted too: a `401` on an audience-bound MCP
-endpoint appears as `busbar_requests_total{plane="mcp",outcome="client_error"}`. That is deliberate,
-and it is the signal an operator most often has nothing else to see.
+endpoint appears as `busbar_plane_requests_total{plane="mcp",outcome="client_error"}`. That is
+deliberate, and it is the signal an operator most often has nothing else to see.
+
+> **Migration note (1.6.0):** 1.6.0 adds the MCP and A2A planes. To keep the model plane's metrics
+> byte-identical to 1.5.4, `busbar_requests_total` and `busbar_request_duration_seconds` remain
+> model-plane-only and did **not** gain a `plane` label. Per-plane request counts for MCP and A2A
+> live on the new `busbar_plane_requests_total` / `busbar_plane_request_duration_seconds` families.
+> For one query spanning all three planes, sum the model and plane families together; their label
+> sets are identical apart from the `plane` label the new families add.
 
 | Metric | Type | Labels | What to watch for |
 |---|---|---|---|
-| `busbar_requests_total` | counter | `plane`, `ingress_protocol`, `pool`, `outcome` | `plane` is `llm` / `mcp` / `a2a`. `outcome=exhausted` rising → pools running out of healthy members. `outcome=error` → 5xx-class problems reaching the client; `outcome=client_error` → 4xx relayed to callers. |
+| `busbar_requests_total` | counter | `ingress_protocol`, `pool`, `outcome` | Model (LLM) plane only, unchanged from 1.5.4. `outcome=exhausted` rising → pools running out of healthy members. `outcome=error` → 5xx-class problems reaching the client; `outcome=client_error` → 4xx relayed to callers. |
+| `busbar_plane_requests_total` | counter | `plane`, `ingress_protocol`, `pool`, `outcome` | Mounted planes (`plane` is `mcp` / `a2a`). Same `outcome` vocabulary as the model counter. |
 | `busbar_upstream_attempts_total` | counter | `pool`, `lane` | Real upstream calls, re-counted per failover hop. Ratio to `busbar_requests_total` > 1 indicates failovers are happening. |
 | `busbar_upstream_failures_total` | counter | `pool`, `lane`, `disposition` | `disposition` is `transient_upstream`, `attempt_timeout`, `hard_down`, or `context_length`. `hard_down` requires intervention (auth/billing problem). |
 | `busbar_breaker_trips_total` | counter | `pool`, `lane` | One per Closed→Open trip (reopens don't count). A spike means a backend just went down. |
 | `busbar_failovers_total` | counter | `pool`, `reason` | `reason` is `timeout`, `connect`, `transient_upstream`, `attempt_timeout`, `hard_down`, or `context_length`. A high rate on one pool indicates a flapping member. |
 | `busbar_translations_total` | counter | `from`, `to` | Cross-protocol translation hops. Useful for auditing unexpected protocol conversion. |
-| `busbar_request_duration_seconds` | histogram | `plane`, `ingress_protocol`, `pool` | End-to-end latency including failover hops. |
+| `busbar_request_duration_seconds` | histogram | `ingress_protocol`, `pool` | Model (LLM) plane only, unchanged from 1.5.4. End-to-end latency including failover hops. |
+| `busbar_plane_request_duration_seconds` | histogram | `plane`, `ingress_protocol`, `pool` | Mounted planes (`plane` is `mcp` / `a2a`). End-to-end latency for tool calls and agent tasks. |
 | `busbar_key_spend_cents` | gauge | `key` + mint labels | Per-virtual-key DERIVED spend (abstract minor units, all-time attribution bucket), recomputed at scrape time from the token ledger x the current `rate_card` plus the flat fee (reprice-on-read). |
 | `busbar_bucket_spend_cents` | gauge | `bucket`, `group`, `window` | Derived spend per (group, window) enforcement bucket (`bucket` = `group:<name>@<window>`). |
 | `busbar_bucket_budget_remaining_cents` | gauge | `bucket`, `group`, `window` | Budget cap minus derived spend, only for buckets with a `budget` limit. Use for burn-rate alerting. |

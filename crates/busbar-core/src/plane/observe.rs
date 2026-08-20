@@ -88,13 +88,14 @@ use std::time::Instant;
 #[derive(Clone, Copy)]
 pub(crate) struct Counted;
 
-/// Emit `busbar_requests_total` + `busbar_request_duration_seconds` for one request served by a
-/// MOUNTED plane, labelled with the plane it arrived on.
+/// Emit `busbar_plane_requests_total` + `busbar_plane_request_duration_seconds` for one request
+/// served by a MOUNTED plane, labelled with the plane it arrived on.
 ///
-/// The same two families, the same `outcome` vocabulary and the same emit helper the model plane
-/// uses (`crate::telemetry::request_finished`) — a plane label, not a parallel vocabulary. An
-/// operator's existing panel keeps working and `sum by (plane) (rate(busbar_requests_total[5m]))`
-/// starts answering "which plane is this traffic on".
+/// The same `outcome` vocabulary and the same emit helper the model plane uses
+/// (`crate::telemetry::request_finished`), but a SEPARATE, plane-labelled family: the model plane's
+/// `busbar_requests_total` / `busbar_request_duration_seconds` stay byte-identical to v1.5.4 (no
+/// `plane` label), and the mounted planes answer `sum by (plane) (rate(busbar_plane_requests_total[5m]))`
+/// without ever changing the model series' label identity.
 ///
 /// A path on the RESIDUAL plane passes straight through: `/healthz`, `/metrics`, `/stats`, the
 /// admin surface and every protocol endpoint. The protocol endpoints emit their own, richer

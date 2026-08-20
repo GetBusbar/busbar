@@ -12,8 +12,10 @@
 use super::*;
 use crate::test_support::{metric_sum, LaneSpec, TestApp};
 
-/// The `plane` label every emission in this module carries. The bank registers the MODEL plane's
-/// routing tables, so this is the only value its fast path can hit.
+/// The plane every emission in this module drives: the MODEL plane, whose `busbar_requests_total` /
+/// `busbar_request_duration_seconds` families carry NO `plane` label (v1.5.4-identical) and are the
+/// only ones the bank's fast path serves. Mounted planes emit the separate `busbar_plane_*`
+/// families and are exercised in `plane::metrics_tests` / `a2a::relay_tests`.
 const LLM: &str = "llm";
 
 fn openai() -> crate::proto::Protocol {
@@ -141,6 +143,12 @@ fn test_request_finished_renders_premigration_names_and_labels() {
     assert!(
         counter_line.is_some(),
         "banked requests_total must render with the exact pre-migration labels; got:\n{out}"
+    );
+    // v1.5.4 LABEL IDENTITY: the model family carries NO `plane` label. Pinned so a future
+    // re-introduction of `plane` on this family (the BI-2 regression) fails here.
+    assert!(
+        !counter_line.unwrap().contains("plane=\""),
+        "busbar_requests_total must NOT carry a `plane` label (v1.5.4 identity); got:\n{out}"
     );
 
     // The duration histogram renders as the exporter's default summary: quantile lines plus

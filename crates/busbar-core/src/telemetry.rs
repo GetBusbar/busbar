@@ -598,10 +598,13 @@ struct LaneFamily {
 /// miss (custom protocol, label from a different generation, bare test `App`) falls back to the
 /// exact macro emission the site used before the bank, so `/metrics` output is preserved always.
 pub(crate) struct AppSlots {
-    /// The `plane` label every banked request family was registered under. The bank's inputs
-    /// (`lanes`, `pools`, `by_model`) are the MODEL plane's routing tables, so this is the plane
-    /// those tables belong to — carried as a field rather than assumed at the lookup, so a request
-    /// from another plane misses cleanly instead of landing in the wrong plane's series.
+    /// The plane this bank's request families belong to. The bank's inputs (`lanes`, `pools`,
+    /// `by_model`) are the MODEL plane's routing tables, so a request from any other plane must
+    /// miss the bank and take a different emission path — it is carried as a field rather than
+    /// assumed at the lookup so that guard is explicit. Note the banked `busbar_requests_total` /
+    /// `busbar_request_duration_seconds` families carry NO `plane` label (they are the model
+    /// plane's v1.5.4-identical series); the mounted planes emit their own `busbar_plane_*`
+    /// families from `request_finished` instead.
     banked_plane: &'static str,
     /// pool label (ingress convention: pools ∪ models ∪ "unresolved") → per-protocol request
     /// families, indexed by position in `proto::KNOWN_PROTOCOLS`.
@@ -649,7 +652,6 @@ impl AppSlots {
                         counter_slot(
                             REQUESTS_TOTAL,
                             &[
-                                ("plane", banked_plane),
                                 ("ingress_protocol", proto),
                                 ("pool", pool),
                                 ("outcome", OUTCOMES[oi]),
@@ -658,11 +660,7 @@ impl AppSlots {
                     }),
                     duration: histogram_slot(
                         REQUEST_DURATION_SECONDS,
-                        &[
-                            ("plane", banked_plane),
-                            ("ingress_protocol", proto),
-                            ("pool", pool),
-                        ],
+                        &[("ingress_protocol", proto), ("pool", pool)],
                     ),
                 })
                 .collect();
@@ -752,13 +750,19 @@ impl AppSlots {
 // ── Hot-path emit helpers (bank fast path, macro fallback) ──────────────────────────────────────
 
 /// `busbar_requests_total` + `busbar_request_duration_seconds` for one finished request, on ANY
-/// plane. THE single emission site for these two families: the model plane calls it from
-/// `ingress::finish_inner` and every mounted plane calls it from `plane::observe`, so a `plane`
-/// label is the whole of the difference between them rather than a second vocabulary.
+/// plane. The single emission site for the request families: the model plane calls it from
+/// `ingress::finish_inner` and every mounted plane calls it from `plane::observe`.
 ///
-/// Bank fast path when `(plane, ingress_protocol, pool)` is in this generation's registered set;
-/// otherwise the pre-existing cached-handle helpers in `metrics.rs` (byte-identical series either
-/// way).
+/// TWO SERIES, split so the model plane stays v1.5.4-identical. The MODEL plane
+/// (`plane == Plane::Llm`) emits `busbar_requests_total` / `busbar_request_duration_seconds` with
+/// exactly the v1.5.4 label set `{ingress_protocol, pool, outcome}` — NO `plane` label — so a
+/// pure-LLM `/metrics` scrape is byte-identical to v1.5.4. The MOUNTED planes (MCP, A2A) emit the
+/// parallel `busbar_plane_requests_total` / `busbar_plane_request_duration_seconds` families, which
+/// carry the extra `plane` label so `sum by (plane)` compares them — without ever altering the
+/// label identity of the two pre-existing model-plane families.
+///
+/// Bank fast path when `(plane, ingress_protocol, pool)` is in this generation's registered set (the
+/// bank holds only the model plane's label space); otherwise the cached-handle helpers in `metrics.rs`.
 pub(crate) fn request_finished(
     app: &App,
     plane: &str,
@@ -767,21 +771,25 @@ pub(crate) fn request_finished(
     outcome: &'static str,
     seconds: f64,
 ) {
-    // The bank holds ONE plane's registered label space (`banked_plane` in `AppSlots::build`).
-    // A request from any other plane misses on `ingress_protocol` — its dialect is not in
-    // `KNOWN_PROTOCOLS` — and takes the cached-handle path below, which is the same path an
-    // unregistered pool has always taken and renders a byte-identical series. That is not a
-    // special case for the newer planes: it is the pre-existing "a miss falls back to the exact
-    // macro emission" contract, doing its job for a label value it was never told about.
+    // Mounted (non-model) planes emit on their OWN `busbar_plane_*` families, keeping the two
+    // model-plane families label-identical to v1.5.4. The bank holds only the model plane's label
+    // space, so a mounted-plane request would miss it anyway; routing here is explicit rather than
+    // relying on that miss, and it targets the correct (plane-labelled) family.
+    if plane != crate::plane::Plane::Llm.key() {
+        crate::metrics::incr_plane_requests_total(plane, ingress_protocol, pool, outcome);
+        crate::metrics::record_plane_request_duration(plane, ingress_protocol, pool, seconds);
+        return;
+    }
+    // Model plane: bank fast path, else the cached-handle helpers — byte-identical series either way.
     let fam = app.tslots.request_family(plane, ingress_protocol, pool);
     let outcome_idx = OUTCOMES.iter().position(|o| *o == outcome);
     match (fam, outcome_idx) {
         (Some(fam), Some(oi)) if fam.requests[oi].is_valid() => fam.requests[oi].incr(),
-        _ => crate::metrics::incr_requests_total(plane, ingress_protocol, pool, outcome),
+        _ => crate::metrics::incr_requests_total(ingress_protocol, pool, outcome),
     }
     match fam {
         Some(fam) if fam.duration.is_valid() => fam.duration.record(seconds),
-        _ => crate::metrics::record_request_duration(plane, ingress_protocol, pool, seconds),
+        _ => crate::metrics::record_request_duration(ingress_protocol, pool, seconds),
     }
 }
 
