@@ -218,6 +218,8 @@ const MIGRATED_FILES: &[&str] = &[
     "src/plane/quarantine.rs",
     "src/plane/calllog.rs",
     "src/admin/mod.rs",
+    "src/admin/v1/service.rs",
+    "src/admin/v1/json/handlers.rs",
     "src/store/planes.rs",
     "src/store/in_memory/mod.rs",
     "src/store/in_memory/breaker.rs",

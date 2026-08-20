@@ -1192,8 +1192,11 @@ impl AdminService {
                     // budget, so operators saw more headroom than the enforcer actually allows.
                     .derived_bucket_usage(&self.app.cost, &b.bucket_id, b.window, true, now)
                     .map_err(|e| {
-                        tracing::error!(group = name, bucket = %b.bucket_id, err = %e,
-                            "group usage read failed");
+                        crate::diagnostics::diag_error!(
+                            crate::diagnostics::GROUP_USAGE_READ_FAILED,
+                            group = name, bucket = %b.bucket_id, err = %e,
+                            "group usage read failed"
+                        );
                         AdminError::Internal
                     })?,
                 None => Default::default(),
