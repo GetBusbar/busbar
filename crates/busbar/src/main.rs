@@ -446,7 +446,7 @@ fn mcp_stdio_requested(mut args: impl Iterator<Item = String>) -> bool {
     args.any(|a| a == "--mcp-stdio")
 }
 
-/// Cap on `BUSBAR_WORKER_THREADS`/`TOKIO_WORKER_THREADS` (see the `.min(MAX_WORKER_THREADS)` call in
+/// Cap on `advanced.worker_threads`/`TOKIO_WORKER_THREADS` (see the `.min(MAX_WORKER_THREADS)` call in
 /// `main()` for why this exists).
 const MAX_WORKER_THREADS: usize = 128;
 
@@ -620,18 +620,18 @@ fn main() {
             busbar_core::profile::dump();
         });
     }
-    // Worker-thread count. `BUSBAR_WORKER_THREADS` is the operator override; the DEFAULT is one worker
-    // per available core (`available_parallelism`, which respects CPU affinity and cgroup cpuset — but
-    // NOT the CFS bandwidth quota `cpu.max`, which it cannot see). So on a quota-limited pod (e.g. 2 CPUs
-    // of quota on a 64-core node) this defaults to the NODE's core count, oversubscribing the quota;
-    // such deployments should pin `BUSBAR_WORKER_THREADS` to their CPU limit. Uncapped-by-default is
-    // what lets throughput scale with cores: v1.3.1–1.3.3 capped the pool at `min(cores, 4)`, which
-    // pinned the data plane to ~4 cores and made throughput plateau no matter how big the box (v1.3.0
-    // itself was uncapped via `#[tokio::main]`; 1.4.0 restores that default explicitly). The request
-    // path is CPU-bound on JSON translate, so it genuinely uses the cores. Footprint-sensitive sidecars
-    // (the ~5 MB-idle case) should set `BUSBAR_WORKER_THREADS=1` (or 2): each worker carries a stack and
-    // its own allocator arena, so idle RSS grows with the count. Scale up by default, tune down (or to
-    // your CPU quota) deliberately.
+    // Worker-thread count. `advanced.worker_threads` in config.yaml is the operator override; the
+    // DEFAULT is one worker per available core (`available_parallelism`, which respects CPU affinity and
+    // cgroup cpuset — but NOT the CFS bandwidth quota `cpu.max`, which it cannot see). So on a
+    // quota-limited pod (e.g. 2 CPUs of quota on a 64-core node) this defaults to the NODE's core count,
+    // oversubscribing the quota; such deployments should pin `advanced.worker_threads` to their CPU
+    // limit. Uncapped-by-default is what lets throughput scale with cores: v1.3.1–1.3.3 capped the pool
+    // at `min(cores, 4)`, which pinned the data plane to ~4 cores and made throughput plateau no matter
+    // how big the box (v1.3.0 itself was uncapped via `#[tokio::main]`; 1.4.0 restores that default
+    // explicitly). The request path is CPU-bound on JSON translate, so it genuinely uses the cores.
+    // Footprint-sensitive sidecars (the ~5 MB-idle case) should set `advanced.worker_threads: 1` (or 2):
+    // each worker carries a stack and its own allocator arena, so idle RSS grows with the count. Scale
+    // up by default, tune down (or to your CPU quota) deliberately.
     // Resolve the worker-thread override, warning on an EXPLICITLY-SET but invalid value rather than
     // silently ignoring it. v1.3.0 ran under `#[tokio::main]`, which fail-fast panicked on a bad
     // `TOKIO_WORKER_THREADS`; 1.4.0 builds the runtime explicitly and would otherwise fall through to
@@ -640,19 +640,11 @@ fn main() {
     // who pinned it on 1.3.0 keeps the same pool size. `eprintln!` because this runs
     // before the tracing subscriber is installed.
     // See the `.min(MAX_WORKER_THREADS)` call below for why this exists.
-    // 1.5.3: `advanced.worker_threads` in config.yaml is the home for this knob. `BUSBAR_WORKER_THREADS`
-    // still works for one release (deprecation-warned in `worker_threads_from_env` when it parses), and
-    // wins when set so an existing pin is honored; else config.yaml; else the standard
-    // `TOKIO_WORKER_THREADS`; else one-per-core. The config read is a best-effort early parse (the real
-    // load + error reporting happens in `run()` after the runtime is up).
-    let worker_threads = worker_threads_from_env("BUSBAR_WORKER_THREADS")
-        .inspect(|_| {
-            eprintln!(
-                "[warn] BUSBAR_WORKER_THREADS is DEPRECATED; set `advanced.worker_threads` in \
-                 config.yaml instead (it is honored for now)."
-            )
-        })
-        .or_else(worker_threads_from_config)
+    // `advanced.worker_threads` in config.yaml is the home for this knob (config.yaml; else the standard
+    // `TOKIO_WORKER_THREADS`; else one-per-core). The `BUSBAR_WORKER_THREADS` env var was deprecated in
+    // 1.5.3 and removed in 1.6.0 — it no longer has any effect. The config read is a best-effort early
+    // parse (the real load + error reporting happens in `run()` after the runtime is up).
+    let worker_threads = worker_threads_from_config()
         .or_else(|| worker_threads_from_env("TOKIO_WORKER_THREADS"))
         .unwrap_or_else(|| {
             // Fall back to 1 (not 2) when core detection fails, matching v1.3.0's `#[tokio::main]`
@@ -666,7 +658,7 @@ fn main() {
         // with_limits`), so worker-thread count is the actual, if informal, upper bound a few
         // capacity arguments elsewhere lean on (e.g. `admin::audit::WRITE_THROUGH_HEADROOM`'s
         // pressure-valve reserve). An unclamped `available_parallelism()` on very large hardware, or
-        // an operator fat-fingering `BUSBAR_WORKER_THREADS`, would otherwise leave that bound
+        // an operator fat-fingering `advanced.worker_threads`, would otherwise leave that bound
         // unenforced. 128 is far above any realistic core count this process is deployed on and far
         // above what those capacity arguments need.
         .min(MAX_WORKER_THREADS);

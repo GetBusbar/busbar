@@ -252,7 +252,7 @@ The `groups:` limit tree, where every limit lives (keys are pure auth), is fully
 
 **Base groups are file-owned.** A group defined in config.yaml answers every mutation with a terminal `409 conflict`: the API cannot silently shadow operator file config (mirrors hooks). Edit config.yaml and reload instead.
 
-All group mutations honor `If-Match` against the config-plane ETag, are audited (including rejections), recorded in version history, and overlay-persisted. They are durable by default (1.5.3), so they survive a restart with no extra configuration (see the Persistence section above; the `BUSBAR_CONFIG_OVERLAY` env var is a deprecated alias for `config.overlay.file`, no longer required).
+All group mutations honor `If-Match` against the config-plane ETag, are audited (including rejections), recorded in version history, and overlay-persisted. They are durable by default (1.5.3), so they survive a restart with no extra configuration (see the Persistence section above; use `config.overlay.file` in config.yaml — the old `BUSBAR_CONFIG_OVERLAY` env var was removed in 1.6.0).
 
 ```bash
 # Raise one group's limits without touching the rest of its definition
@@ -282,7 +282,7 @@ config:
 - **`config.locked: true`** marks an immutable/GitOps deployment: every config-mutating admin call is **refused** (`400`, "config mutation refused: … config.locked: true"). Change config by editing `config.yaml` and calling `POST /config/reload`. There is no "apply in memory only" mode any more: a mutable config is always durable, a locked config always refuses, and the old silent-loss outcome is gone.
 - **Boot invariant**: a *mutable* config with no writable overlay (you set `config.overlay: false`, or the config directory is read-only) **refuses to boot** with an actionable message. This is what makes "applied but lost on restart" unreachable. (Migrating a read-only-config deployment? See the [upgrade note](migration-1.5.md#153-config-consolidation).)
 
-A missing or corrupt overlay is ignored at boot: a bad overlay can never brick startup. An overlay written by a NEWER Busbar is refused instead of ignored. It is intact and meaningful, so starting without it would silently drop your API-registered hooks and groups (security gates included); upgrade, or boot `--safe-mode` to run on `config.yaml` alone with the overlay left untouched. `GET /info` reports `config_persistence` (`true` = mutable + durable; `false` = locked) so tooling knows which mode it's in. *(The `BUSBAR_CONFIG_OVERLAY` env var still works for one release as a deprecated alias for `config.overlay.file`.)*
+A missing or corrupt overlay is ignored at boot: a bad overlay can never brick startup. An overlay written by a NEWER Busbar is refused instead of ignored. It is intact and meaningful, so starting without it would silently drop your API-registered hooks and groups (security gates included); upgrade, or boot `--safe-mode` to run on `config.yaml` alone with the overlay left untouched. `GET /info` reports `config_persistence` (`true` = mutable + durable; `false` = locked) so tooling knows which mode it's in. *(The `BUSBAR_CONFIG_OVERLAY` env var was removed in 1.6.0 — use `config.overlay.file` in config.yaml.)*
 
 ### The config plane
 

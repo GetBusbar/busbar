@@ -25,7 +25,7 @@ fn writable_dir(tag: &str) -> std::path::PathBuf {
 fn a_mutable_default_persists_across_a_simulated_restart_with_no_env_var() {
     let dir = writable_dir("durable-default");
     let config_path = dir.join("config.yaml");
-    let res = resolve_backend(&ConfigMgmtCfg::default(), &config_path, None, true)
+    let res = resolve_backend(&ConfigMgmtCfg::default(), &config_path, true)
         .expect("a mutable default config must resolve a writable overlay");
     assert!(!res.locked, "default config is mutable");
     let path = res
@@ -59,7 +59,6 @@ fn b_locked_config_has_no_overlay_and_refuses_a_mutation() {
             overlay: None,
         },
         std::path::Path::new("/etc/busbar/config.yaml"),
-        None,
         true,
     )
     .expect("a locked config resolves (overlay ignored)");
@@ -90,7 +89,6 @@ fn c_mutable_with_the_overlay_explicitly_disabled_refuses() {
             overlay: Some(OverlayCfg::Disabled(false)),
         },
         &config_path,
-        None,
         true,
     )
     .expect_err("mutable + overlay disabled must refuse");
@@ -100,47 +98,49 @@ fn c_mutable_with_the_overlay_explicitly_disabled_refuses() {
     );
 }
 
-/// (d) Overlay backend PRECEDENCE for the env→config migration: an explicit `config.overlay` WINS;
-/// else the deprecated `BUSBAR_CONFIG_OVERLAY` env override is honored; else the default next to
-/// config.yaml. Both the new config key AND the deprecated env fallback work.
+/// (d) Overlay backend PRECEDENCE: an explicit `config.overlay` WINS; else the default next to
+/// config.yaml. The `BUSBAR_CONFIG_OVERLAY` env var was deprecated in 1.5.3 and REMOVED in 1.6.0 — it
+/// no longer feeds `resolve_backend`, so setting it has NO effect on the resolved path.
 ///
-/// Pre-1.5.3 the ONLY source was the env var; `config.overlay` did not exist, so
-/// the "config wins" and "default next to config" cases had no code path.
+/// Pre-1.5.3 the ONLY source was the env var; in 1.5.3 it was a deprecated fallback; from 1.6.0 the
+/// config key (or the default next to config.yaml) is the only source.
 #[test]
-fn d_overlay_precedence_config_over_env_over_default() {
+fn d_overlay_precedence_config_over_default_env_var_is_ignored() {
     let dir = writable_dir("precedence");
     let config_path = dir.join("config.yaml");
-    let env = dir.join("env-overlay.json");
 
-    // config.overlay.file wins over the env override.
+    // Set the REMOVED env var to a path that WOULD have won pre-1.6.0; it must be ignored throughout.
+    let env_path = dir.join("env-overlay.json");
+    std::env::set_var("BUSBAR_CONFIG_OVERLAY", &env_path);
+
+    // config.overlay.file wins.
     let cfg_file = ConfigMgmtCfg {
         locked: false,
         overlay: Some(OverlayCfg::Backend(OverlayBackend {
             file: Some("chosen.json".into()),
         })),
     };
-    let r = resolve_backend(&cfg_file, &config_path, Some(&env), true).unwrap();
+    let r = resolve_backend(&cfg_file, &config_path, true).unwrap();
     assert_eq!(
         r.path.unwrap(),
         dir.join("chosen.json"),
         "config.overlay wins"
     );
 
-    // No config.overlay → the deprecated env override is used (back-compat).
-    let r2 = resolve_backend(&ConfigMgmtCfg::default(), &config_path, Some(&env), true).unwrap();
+    // No config.overlay → default next to config.yaml. The deprecated env var has NO effect.
+    let r2 = resolve_backend(&ConfigMgmtCfg::default(), &config_path, true).unwrap();
     assert_eq!(
+        r2.path.clone().unwrap(),
+        dir.join(DEFAULT_OVERLAY_FILENAME),
+        "default next to config — the removed BUSBAR_CONFIG_OVERLAY env var is not honored"
+    );
+    assert_ne!(
         r2.path.unwrap(),
-        env,
-        "env fallback is honored when config is silent"
+        env_path,
+        "the removed env var must NOT be honored"
     );
 
-    // Neither → default next to config.yaml.
-    let r3 = resolve_backend(&ConfigMgmtCfg::default(), &config_path, None, true).unwrap();
-    assert_eq!(
-        r3.path.unwrap(),
-        dir.join(DEFAULT_OVERLAY_FILENAME),
-        "default next to config"
-    );
+    std::env::remove_var("BUSBAR_CONFIG_OVERLAY");
 }
 
 /// (e) A BARE-FILENAME overlay (no directory component) in a writable cwd must be reported WRITABLE

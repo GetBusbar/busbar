@@ -131,18 +131,6 @@ pub fn resolve_model_context_max(
     Ok(resolved)
 }
 
-/// Resolve a boot-time boolean upstream knob under the env→config migration precedence: the DEPRECATED
-/// env var, when SET, wins (honored for one release) — `"0"` or empty means OFF, anything else ON; when
-/// UNSET, the config value (`advanced.upstream_*`, carried on `cfg.limits`) stands. The deprecation
-/// WARN is emitted at the call site (only when the env var is present). Module-level so the precedence
-/// is unit-testable without building the whole client; see `tests/tests.rs`.
-pub fn upstream_bool_env_override(env: Option<std::ffi::OsString>, config_val: bool) -> bool {
-    match env {
-        Some(v) => v != "0" && !v.is_empty(),
-        None => config_val,
-    }
-}
-
 /// Hard cap on live per-session slots in the neutral session substrate (see [`crate::session`]). The
 /// memory-safety bound: on overflow the least-recently-used unpinned slot is evicted, so the store can
 /// never grow without limit however many distinct sessions arrive.
@@ -257,21 +245,12 @@ pub fn load_config_from_disk(
         .map_err(|e| format!("providers.yaml: invalid YAML: {e}"))?;
 
     // 1.5.3: resolve the config-management posture + overlay backend from the `config:` block, and
-    // ENFORCE the boot invariant (`locked` XOR a writable overlay). The deprecated
-    // `BUSBAR_CONFIG_OVERLAY` env var is honored only when `config.overlay` is unset. The writability
-    // probe runs at boot/reload (Strict) but not under `--validate` (Lenient), which must stay
-    // side-effect-free.
-    let env_overlay = std::env::var("BUSBAR_CONFIG_OVERLAY")
-        .ok()
-        .filter(|s| !s.is_empty())
-        .map(std::path::PathBuf::from);
+    // ENFORCE the boot invariant (`locked` XOR a writable overlay). The writability probe runs at
+    // boot/reload (Strict) but not under `--validate` (Lenient), which must stay side-effect-free.
+    // (The `BUSBAR_CONFIG_OVERLAY` env var was deprecated in 1.5.3 and removed in 1.6.0 — use
+    // `config.overlay.file`.)
     let probe_fs = matches!(env_mode, config::EnvSubst::Strict);
-    let resolution = config::overlay::resolve_backend(
-        &deploy.config,
-        config_path,
-        env_overlay.as_deref(),
-        probe_fs,
-    )?;
+    let resolution = config::overlay::resolve_backend(&deploy.config, config_path, probe_fs)?;
     let overlay_path = resolution.path;
     let config_locked = resolution.locked;
     let config_read_only = resolution.read_only_backend;
@@ -792,18 +771,10 @@ pub fn build_app_from_config(
         // it exists so a cleartext h2c backend (e.g. the benchmark mock, or an in-mesh h2c service)
         // can exercise multiplexing without TLS. It FORCES h2, so every configured upstream must speak
         // h2c when set — never enable it against a mixed/h1 fleet. Read once at client-build time.
-        // 1.5.3: home is `advanced.upstream_h2_prior_knowledge` in config.yaml (carried on
-        // `cfg.limits`); the `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE` env var overrides it for one release,
-        // with a deprecation warn.
-        let h2_env = std::env::var_os("BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE");
-        if h2_env.is_some() {
-            tracing::warn!(
-                "BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE is DEPRECATED; set \
-                 `advanced.upstream_h2_prior_knowledge` in config.yaml (honored for now)."
-            );
-        }
-        let h2_prior_knowledge =
-            upstream_bool_env_override(h2_env, cfg.limits.upstream_h2_prior_knowledge);
+        // Home is `advanced.upstream_h2_prior_knowledge` in config.yaml (carried on `cfg.limits`). The
+        // `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE` env var was deprecated in 1.5.3 and removed in 1.6.0 — it
+        // no longer has any effect.
+        let h2_prior_knowledge = cfg.limits.upstream_h2_prior_knowledge;
         // Opt-out ESCAPE HATCH for the ALPN h2 default: `BUSBAR_UPSTREAM_HTTP1_ONLY=1` pins the
         // shared client to HTTP/1.1 (reqwest `.http1_only()`), so ALPN never offers h2 at all. This
         // is a PROCESS-WIDE, DEFAULT-OFF switch — production keeps the ALPN default (h2 where the
@@ -812,17 +783,10 @@ pub fn build_app_from_config(
         // keep-alive pings, intermediary bugs) and you need the pre-h2 wire behavior back without a
         // rebuild. Mutually exclusive in spirit with the h2c opt-in above (forcing h1 AND forcing
         // h2 makes no sense); if both are set, http1-only wins because it is applied last. Read
-        // once at client-build time. 1.5.3: home is `advanced.upstream_http1_only` in config.yaml
-        // (carried on `cfg.limits`); the `BUSBAR_UPSTREAM_HTTP1_ONLY` env var overrides it for one
-        // release, with a deprecation warn.
-        let http1_env = std::env::var_os("BUSBAR_UPSTREAM_HTTP1_ONLY");
-        if http1_env.is_some() {
-            tracing::warn!(
-                "BUSBAR_UPSTREAM_HTTP1_ONLY is DEPRECATED; set `advanced.upstream_http1_only` in \
-                 config.yaml (honored for now)."
-            );
-        }
-        let http1_only = upstream_bool_env_override(http1_env, cfg.limits.upstream_http1_only);
+        // once at client-build time. Home is `advanced.upstream_http1_only` in config.yaml (carried on
+        // `cfg.limits`). The `BUSBAR_UPSTREAM_HTTP1_ONLY` env var was deprecated in 1.5.3 and removed in
+        // 1.6.0 — it no longer has any effect.
+        let http1_only = cfg.limits.upstream_http1_only;
         let shard_count = crate::state::UpstreamClients::shard_count();
         // The per-host idle budget is divided across shards so the TOTAL kept-alive sockets
         // toward any single upstream stay at the configured value (never below 1 per shard).

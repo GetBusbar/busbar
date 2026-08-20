@@ -483,15 +483,15 @@ purpose.
 ### 1.5.3 config consolidation
 
 1.5.3 also moves operational config out of environment variables and **into `config.yaml`**, and makes admin-API
-config mutability explicit and **durable by default**. Every migrated env var still works for **one release**
-(each logs a deprecation warning). This is a soft migration, not a clean cut. Move each into config.yaml at
-your convenience before the next release removes the env var.
+config mutability explicit and **durable by default**. Every migrated env var was deprecated in 1.5.3, honored
+for one release, and **removed in 1.6.0** — on 1.6.0 and later the env vars no longer have any effect, so move
+each into config.yaml.
 
-#### Env var → config.yaml
+#### Env var → config.yaml (all removed in 1.6.0)
 
-| Deprecated env var | New home in config.yaml |
+| Removed env var | New home in config.yaml |
 |---|---|
-| `BUSBAR_PROVIDERS` | `providers_file:` (top-level; relative to config.yaml; default `providers.yaml` next to it), or the `--providers <path>` flag. **Removed in 1.6.0** — the env var no longer works. |
+| `BUSBAR_PROVIDERS` | `providers_file:` (top-level; relative to config.yaml; default `providers.yaml` next to it), or the `--providers <path>` flag. |
 | `BUSBAR_CONFIG_OVERLAY` | `config.overlay.file` |
 | `BUSBAR_WORKER_THREADS` | `advanced.worker_threads` |
 | `BUSBAR_UPSTREAM_HTTP1_ONLY` | `advanced.upstream_http1_only` |
