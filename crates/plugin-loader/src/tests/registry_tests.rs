@@ -24,6 +24,73 @@ fn supported_abi_auth_floor_admits_v1() {
     assert!(floor <= 2 && 2 <= max, "abi_version 2 is in range");
 }
 
+/// THE 1.6.0 FLOOR. The store payload schema bumped 2→3 when the fourteen protocol-named durable
+/// ops were deleted for the eight neutral kind-tagged verbs — a REAL breaking change, not the
+/// additive churn earlier 1.6.0 work rode. So the store range is a single point at the current
+/// `ABI_VERSION` (=3): floor == max == 3. A v2 artifact (which speaks only the deleted named
+/// variants) is below the floor and out of range.
+#[test]
+fn supported_abi_store_floor_is_v3() {
+    let range = supported_abi("store");
+    assert_eq!(
+        range,
+        &[
+            busbar_plugin_abi::ABI_VERSION,
+            busbar_plugin_abi::ABI_VERSION
+        ]
+    );
+    assert_eq!(
+        busbar_plugin_abi::ABI_VERSION,
+        3,
+        "store payload schema is v3"
+    );
+    let (floor, max) = (range[0], range[1]);
+    assert_eq!(
+        floor, 3,
+        "the floor MUST be 3 — a v2 named-only artifact is refused"
+    );
+    assert!(!(floor <= 2 && 2 <= max), "abi_version 2 is NOT in range");
+    assert!(floor <= 3 && 3 <= max, "abi_version 3 is in range");
+}
+
+/// FAIL-CLOSED, the C4 safety property: a signed, otherwise-valid store artifact whose manifest
+/// declares `abi_version: 2` (the old named-only wire) is REFUSED at load under the v3 floor — a
+/// HARD structural INVALID naming the file and the reason, never a partial registry and never
+/// answered from a default. A stale plugin that would silently drop every durable write fails LOUD
+/// instead. The trust signature is valid on purpose: the rejection is the ANTI-DOWNGRADE ABI floor,
+/// not a trust failure.
+#[test]
+fn a_v2_named_only_store_artifact_is_refused_at_load_under_the_v3_floor() {
+    let release = key(1);
+    let dir = tmpdir("v2-refused");
+    let mut m = manifest("busbar-store-legacy", "legacy", "busbar");
+    m.abi_version = 2; // the OLD named-only store wire, below the v3 floor
+    let m = sign(&release, m, b"legacy lib");
+    write_tarball(&dir, "legacy.tar.gz", &m, b"legacy lib");
+
+    let errs = scan_and_validate(&dir, &policy(&release)).unwrap_err();
+    assert_eq!(errs.len(), 1, "one artifact, one hard rejection: {errs:?}");
+    assert!(
+        errs[0].contains("legacy.tar.gz"),
+        "names the file: {}",
+        errs[0]
+    );
+    assert!(
+        errs[0].contains("abi_version 2 is not supported"),
+        "rejected by the ABI floor, not trust: {}",
+        errs[0]
+    );
+    assert!(errs[0].contains("store"), "names the kind: {}", errs[0]);
+
+    // And it never resolves — there is no partial registry the engine could still open it from.
+    let reg = scan_and_validate(&dir, &policy(&release));
+    assert!(
+        reg.is_err(),
+        "the WHOLE scan fails; no v2 store is loadable"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 fn manifest(name: &str, alias: &str, publisher: &str) -> Manifest {
     Manifest {
         name: name.into(),

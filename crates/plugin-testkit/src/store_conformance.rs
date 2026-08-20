@@ -38,7 +38,10 @@
 //! }
 //! ```
 
-use busbar_api::{AuditRecord, CredentialMeta, CredentialSecret, SecretForm, Store, VirtualKey};
+use busbar_api::{
+    AuditRecord, CredentialMeta, CredentialSecret, McpCallRecord, McpDemotionRow, PlaneDisposition,
+    PlaneRecord, PlaneSelector, SecretForm, Store, TaskEventRow, TaskRow, VirtualKey,
+};
 
 /// Every `VirtualKey` id the suite writes under `ns`. A shared-database backend must delete these
 /// (and their credential rows) before calling, and should clean them up afterwards.
@@ -249,5 +252,279 @@ pub fn assert_append_audit_duplicate_seq(store: &dyn Store, seq: u64) {
     assert_eq!(
         at_seq[0].action, "hook.register",
         "the rejected append must not have overwritten the stored record"
+    );
+}
+
+// ── THE NEUTRAL KIND-TAGGED PLANE-RECORD CONTRACT (1.6.0) ────────────────────────────────────────
+//
+// The eight neutral verbs (`upsert_plane_record`/…/`redeem_plane_token`) are the ONE durable-plane
+// surface every backend now shares (the fourteen protocol-named methods were deleted). These checks
+// pin the cross-plugin behaviour a plane depends on regardless of which store an operator deployed —
+// the `list_task_events`-orders-by-seq / `list_mcp_call_principals`-enumerates / single-use-ask
+// rulings that used to live only in each backend's own suite (and, before them, drifted).
+//
+// The opaque `body` is a serialized TYPED row exactly as core sends it (`serde_json`, the same the
+// backends decode with), and the `kind` strings match the reference `impl Store` verbatim. Read-back
+// is compared as the DECODED row, so a backend that stores typed columns and re-encodes conforms
+// without matching byte-for-byte on an incidental field order.
+//
+// SKIP on a backend that provides no durable plane state (the defaulted keep-nothing — e.g. the RAM
+// default). Namespacing follows the module doc: derive fixtures from `ns` and reset the plane tables
+// for that `ns` before calling on a shared-database backend.
+
+/// A minimal active (non-terminal) task row for `ns`.
+pub fn plane_task(ns: &str, state: &str) -> TaskRow {
+    TaskRow {
+        task_id: format!("{ns}_ptask_{state}"),
+        context_id: format!("{ns}_ctx"),
+        principal: format!("{ns}_vk"),
+        direction: "inbound".into(),
+        state: state.to_string(),
+        agent_id: format!("{ns}_agent"),
+        artifact_cursor: 0,
+        push_callback: String::new(),
+        created_at: 1_700_000_000,
+        updated_at: 1_700_000_100,
+    }
+}
+
+/// A minimal per-task provenance event.
+pub fn plane_event(task_id: &str, seq: u64) -> TaskEventRow {
+    TaskEventRow {
+        task_id: task_id.to_string(),
+        seq,
+        ts: 1_700_000_000 + seq,
+        kind: "task.working".into(),
+        context_id: "ctx".into(),
+        principal: "vk".into(),
+        agent_id: "agent".into(),
+        state: "working".into(),
+        request_id: format!("req-{seq}"),
+        prev_hash: String::new(),
+        hash: format!("h{seq}"),
+    }
+}
+
+/// A minimal MCP per-call record.
+pub fn plane_call(principal: &str, seq: u64, ts: u64) -> McpCallRecord {
+    McpCallRecord {
+        principal: principal.to_string(),
+        seq,
+        ts,
+        server: "srv".into(),
+        tool: "srv_do".into(),
+        outcome: "dispatched".into(),
+        reason: String::new(),
+        tool_digest: "sha256:d".into(),
+        pin_generation: 1,
+        request_id: format!("req-{seq}"),
+        prev_hash: String::new(),
+        hash: format!("h{seq}"),
+    }
+}
+
+/// A minimal MCP demotion record for `server`.
+pub fn plane_demotion(server: &str) -> McpDemotionRow {
+    McpDemotionRow {
+        server: server.to_string(),
+        reason: "drift".into(),
+        recorded_at: 1_700_000_000,
+    }
+}
+
+fn body<T: serde::Serialize>(row: &T) -> Vec<u8> {
+    serde_json::to_vec(row).expect("serialize a plane row into an opaque body")
+}
+
+/// **`upsert_plane_record`/`get_plane_record` (kind `task`) round-trip.** A task written through the
+/// neutral upsert reads back through the neutral point-read as the same row; an unknown id is `None`,
+/// not an error; and the row appears in the kind's unfiltered listing.
+pub fn assert_plane_task_upsert_get_list(store: &dyn Store, ns: &str) {
+    let task = plane_task(ns, "working");
+    store
+        .upsert_plane_record(&PlaneRecord {
+            kind: "task".into(),
+            id: task.task_id.clone(),
+            parent: None,
+            seq: 0,
+            ts: task.updated_at,
+            disposition: PlaneDisposition::Active,
+            body: body(&task),
+        })
+        .expect("upsert the task plane record");
+
+    let got = store
+        .get_plane_record("task", &task.task_id)
+        .expect("get the task plane record")
+        .expect("the task must be present after an upsert that reported success");
+    let decoded: TaskRow = serde_json::from_slice(&got).expect("decode the task body");
+    assert_eq!(
+        decoded, task,
+        "the round-tripped task row must be identical"
+    );
+
+    assert!(
+        store
+            .get_plane_record("task", &format!("{ns}_no_such_task"))
+            .expect("get an unknown task is not an error")
+            .is_none(),
+        "an unknown id must read back as None, not a fabricated row"
+    );
+
+    let listed = store
+        .list_plane_records("task", &PlaneSelector::All)
+        .expect("list the task plane records");
+    assert!(
+        listed
+            .iter()
+            .filter_map(|b| serde_json::from_slice::<TaskRow>(b).ok())
+            .any(|t| t.task_id == task.task_id),
+        "the upserted task must appear in the kind's unfiltered listing"
+    );
+}
+
+/// **`append_plane_record`/`list_plane_records(Parent)` (kind `task_event`) orders by `seq`.** Events
+/// appended OUT of order come back oldest-first — the property the engine's chain verifier depends
+/// on. This is exactly the cross-backend ruling that used to live only in each backend's own suite.
+pub fn assert_plane_event_chain_is_ordered_by_seq(store: &dyn Store, ns: &str) {
+    let parent = format!("{ns}_pchain");
+    // Append seq 2 BEFORE seq 1: a backend that returns insertion order rather than `seq` order fails.
+    for seq in [2u64, 1u64] {
+        let e = plane_event(&parent, seq);
+        store
+            .append_plane_record(&PlaneRecord {
+                kind: "task_event".into(),
+                id: e.task_id.clone(),
+                parent: Some(e.task_id.clone()),
+                seq: e.seq,
+                ts: e.ts,
+                disposition: PlaneDisposition::Active,
+                body: body(&e),
+            })
+            .expect("append a task-event plane record");
+    }
+    let seqs: Vec<u64> = store
+        .list_plane_records("task_event", &PlaneSelector::Parent(parent.clone()))
+        .expect("list the task events for the parent")
+        .iter()
+        .map(|b| {
+            serde_json::from_slice::<TaskEventRow>(b)
+                .expect("decode event")
+                .seq
+        })
+        .collect();
+    assert_eq!(seqs, vec![1, 2], "events must list oldest-first by seq");
+}
+
+/// **`list_plane_record_parents` (kind `call`) enumerates every parent with a record.** The boot
+/// enumeration a restart resumes chains from — it must find a principal this process never saw
+/// written.
+pub fn assert_plane_call_parents_enumerated(store: &dyn Store, ns: &str) {
+    let p1 = format!("{ns}_prinA");
+    let p2 = format!("{ns}_prinB");
+    for principal in [&p1, &p2] {
+        let c = plane_call(principal, 1, 10);
+        store
+            .append_plane_record(&PlaneRecord {
+                kind: "call".into(),
+                id: c.principal.clone(),
+                parent: Some(c.principal.clone()),
+                seq: c.seq,
+                ts: c.ts,
+                disposition: PlaneDisposition::Active,
+                body: body(&c),
+            })
+            .expect("append a call plane record");
+    }
+    let parents = store
+        .list_plane_record_parents("call")
+        .expect("enumerate the call parents");
+    assert!(
+        parents.contains(&p1),
+        "parent {p1} must be enumerated: {parents:?}"
+    );
+    assert!(
+        parents.contains(&p2),
+        "parent {p2} must be enumerated: {parents:?}"
+    );
+}
+
+/// **`upsert_plane_record`/`list_plane_records(All)`/`delete_plane_record` (kind `demotion`).** A
+/// demotion is recorded, listed, then dropped; deleting an ABSENT record is a no-op, not an error.
+pub fn assert_plane_demotion_upsert_list_delete(store: &dyn Store, ns: &str) {
+    let s1 = format!("{ns}_srvA");
+    let s2 = format!("{ns}_srvB");
+    for server in [&s1, &s2] {
+        let d = plane_demotion(server);
+        store
+            .upsert_plane_record(&PlaneRecord {
+                kind: "demotion".into(),
+                id: d.server.clone(),
+                parent: None,
+                seq: 0,
+                ts: d.recorded_at,
+                disposition: PlaneDisposition::Active,
+                body: body(&d),
+            })
+            .expect("upsert a demotion plane record");
+    }
+    let servers = |store: &dyn Store| -> Vec<String> {
+        store
+            .list_plane_records("demotion", &PlaneSelector::All)
+            .expect("list demotions")
+            .iter()
+            .filter_map(|b| serde_json::from_slice::<McpDemotionRow>(b).ok())
+            .map(|d| d.server)
+            .collect()
+    };
+    let listed = servers(store);
+    assert!(
+        listed.contains(&s1) && listed.contains(&s2),
+        "both demotions listed: {listed:?}"
+    );
+
+    store
+        .delete_plane_record("demotion", &s1)
+        .expect("delete a demotion plane record");
+    let after = servers(store);
+    assert!(
+        !after.contains(&s1),
+        "the deleted demotion is gone: {after:?}"
+    );
+    assert!(
+        after.contains(&s2),
+        "the other demotion survives: {after:?}"
+    );
+
+    store
+        .delete_plane_record("demotion", &format!("{ns}_no_such_server"))
+        .expect("deleting an absent demotion is an idempotent no-op, not an error");
+}
+
+/// **`redeem_plane_token` (kind `ask`) is a single-use test-and-set.** The FIRST redemption of a
+/// nonce is `true`, every later one is `false` — the durable ledger that makes a confirm-once tool
+/// execute once across a restart and across two nodes. A different nonce is still redeemable.
+pub fn assert_plane_token_is_single_use(store: &dyn Store, ns: &str) {
+    let token = format!("{ns}_asknonce");
+    let expires_at = 2_000_000_000;
+    let now = 1_700_000_000;
+    assert!(
+        store
+            .redeem_plane_token("ask", &token, expires_at, now)
+            .expect("first redemption"),
+        "the FIRST redemption of a nonce must report true"
+    );
+    assert!(
+        !store
+            .redeem_plane_token("ask", &token, expires_at, now)
+            .expect("second redemption"),
+        "a SECOND redemption of the same nonce must report false — this is the double-spend the \
+         ledger exists to refuse"
+    );
+    assert!(
+        store
+            .redeem_plane_token("ask", &format!("{ns}_othernonce"), expires_at, now)
+            .expect("a different nonce"),
+        "a different nonce is still redeemable"
     );
 }

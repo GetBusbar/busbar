@@ -17,6 +17,7 @@
 
 use super::*;
 use crate::a2a::task::{Direction, Task, TaskState};
+use crate::plane::store::StoreNamedTestExt;
 use busbar_api::{TaskEventRow, TaskRow};
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -92,62 +93,6 @@ impl busbar_api::Store for DurableTaskStore {
     fn list_metering(&self, bucket: u64) -> busbar_api::StoreResult<Vec<busbar_api::MeteringRow>> {
         self.inner.list_metering(bucket)
     }
-    fn put_task(&self, task: &TaskRow) -> busbar_api::StoreResult<()> {
-        self.tasks
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(task.task_id.clone(), task.clone());
-        Ok(())
-    }
-    fn get_task(&self, task_id: &str) -> busbar_api::StoreResult<Option<TaskRow>> {
-        Ok(self
-            .tasks
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(task_id)
-            .cloned())
-    }
-    fn list_tasks(&self) -> busbar_api::StoreResult<Vec<TaskRow>> {
-        Ok(self
-            .tasks
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .values()
-            .cloned()
-            .collect())
-    }
-    fn purge_tasks_before(&self, before: u64) -> busbar_api::StoreResult<u64> {
-        let mut tasks = self.tasks.lock().unwrap_or_else(|e| e.into_inner());
-        let before_count = tasks.len();
-        // The contract: TERMINAL rows only. An interrupt waiting on a human is exactly the row that
-        // legitimately sits still for a long time, and collecting it is losing the work.
-        tasks.retain(|_, t| {
-            let terminal = matches!(
-                t.state.as_str(),
-                "completed" | "failed" | "canceled" | "rejected"
-            );
-            !(terminal && t.updated_at < before)
-        });
-        Ok((before_count - tasks.len()) as u64)
-    }
-    fn append_task_event(&self, event: &TaskEventRow) -> busbar_api::StoreResult<()> {
-        self.events
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert((event.task_id.clone(), event.seq), event.clone());
-        Ok(())
-    }
-    fn list_task_events(&self, task_id: &str) -> busbar_api::StoreResult<Vec<TaskEventRow>> {
-        Ok(self
-            .events
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .iter()
-            .filter(|((t, _), _)| t == task_id)
-            .map(|(_, v)| v.clone())
-            .collect())
-    }
-
     // ── The neutral kind-tagged verbs, delegating to the named task methods above ────────────────
     fn upsert_plane_record(&self, record: &busbar_api::PlaneRecord) -> busbar_api::StoreResult<()> {
         match record.kind.as_str() {
@@ -198,6 +143,69 @@ impl busbar_api::Store for DurableTaskStore {
             crate::plane::store::KIND_TASK => self.purge_tasks_before(before),
             _ => Ok(0),
         }
+    }
+}
+
+impl DurableTaskStore {
+    fn put_task(&self, task: &TaskRow) -> busbar_api::StoreResult<()> {
+        self.tasks
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(task.task_id.clone(), task.clone());
+        Ok(())
+    }
+
+    fn get_task(&self, task_id: &str) -> busbar_api::StoreResult<Option<TaskRow>> {
+        Ok(self
+            .tasks
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(task_id)
+            .cloned())
+    }
+
+    fn list_tasks(&self) -> busbar_api::StoreResult<Vec<TaskRow>> {
+        Ok(self
+            .tasks
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+            .cloned()
+            .collect())
+    }
+
+    fn purge_tasks_before(&self, before: u64) -> busbar_api::StoreResult<u64> {
+        let mut tasks = self.tasks.lock().unwrap_or_else(|e| e.into_inner());
+        let before_count = tasks.len();
+        // The contract: TERMINAL rows only. An interrupt waiting on a human is exactly the row that
+        // legitimately sits still for a long time, and collecting it is losing the work.
+        tasks.retain(|_, t| {
+            let terminal = matches!(
+                t.state.as_str(),
+                "completed" | "failed" | "canceled" | "rejected"
+            );
+            !(terminal && t.updated_at < before)
+        });
+        Ok((before_count - tasks.len()) as u64)
+    }
+
+    fn append_task_event(&self, event: &TaskEventRow) -> busbar_api::StoreResult<()> {
+        self.events
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert((event.task_id.clone(), event.seq), event.clone());
+        Ok(())
+    }
+
+    fn list_task_events(&self, task_id: &str) -> busbar_api::StoreResult<Vec<TaskEventRow>> {
+        Ok(self
+            .events
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .filter(|((t, _), _)| t == task_id)
+            .map(|(_, v)| v.clone())
+            .collect())
     }
 }
 
@@ -606,14 +614,17 @@ fn a_failed_durable_write_leaves_the_working_set_agreeing_with_the_store() {
         fn list_metering(&self, b: u64) -> busbar_api::StoreResult<Vec<busbar_api::MeteringRow>> {
             self.0.list_metering(b)
         }
-        fn put_task(&self, _t: &TaskRow) -> busbar_api::StoreResult<()> {
-            Err(busbar_api::StoreError("disk is full".to_string()))
-        }
         fn upsert_plane_record(
             &self,
             record: &busbar_api::PlaneRecord,
         ) -> busbar_api::StoreResult<()> {
             self.put_task(&crate::plane::store::decode(&record.body)?)
+        }
+    }
+
+    impl RefusingStore {
+        fn put_task(&self, _t: &TaskRow) -> busbar_api::StoreResult<()> {
+            Err(busbar_api::StoreError("disk is full".to_string()))
         }
     }
 

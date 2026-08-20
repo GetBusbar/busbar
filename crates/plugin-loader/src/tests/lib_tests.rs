@@ -1352,7 +1352,89 @@ fn load_and_exercise_export_example_plugin() {
 /// in-tree workspace member that `cargo test --workspace` always builds, so its absence means a
 /// broken pipeline — and a silent skip here would restore exactly the situation this test exists to
 /// end: a green run that proved nothing about durability.
-use busbar_api::{McpCallRecord, TaskEventRow, TaskRow};
+use busbar_api::{McpCallRecord, PlaneDisposition, TaskEventRow, TaskRow};
+
+// ── the loader test speaks TYPED rows; the ABI speaks NEUTRAL kind-tagged plane records ──────────
+//
+// The fourteen protocol-named `Store` methods were deleted in the 1.6.0 14→8 collapse, so this suite
+// exercises the ONLY durable-plane surface there is: the eight neutral verbs. These free helpers
+// build the kind-tagged `PlaneRecord` envelope for a typed row and decode a body back, so the test
+// bodies stay readable while every call still crosses the real plugin ABI as a neutral verb — the
+// exact surface a deployment takes. The `kind` strings match the reference `impl Store` in
+// `store-example-plugin` verbatim.
+
+fn task_record(t: &TaskRow) -> PlaneRecord {
+    PlaneRecord {
+        kind: "task".into(),
+        id: t.task_id.clone(),
+        parent: None,
+        seq: 0,
+        ts: t.updated_at,
+        disposition: if matches!(
+            t.state.as_str(),
+            "completed" | "failed" | "canceled" | "rejected"
+        ) {
+            PlaneDisposition::Terminal
+        } else {
+            PlaneDisposition::Active
+        },
+        body: serde_json::to_vec(t).unwrap(),
+    }
+}
+
+fn event_record(e: &TaskEventRow) -> PlaneRecord {
+    PlaneRecord {
+        kind: "task_event".into(),
+        id: e.task_id.clone(),
+        parent: Some(e.task_id.clone()),
+        seq: e.seq,
+        ts: e.ts,
+        disposition: PlaneDisposition::Active,
+        body: serde_json::to_vec(e).unwrap(),
+    }
+}
+
+fn call_record(c: &McpCallRecord) -> PlaneRecord {
+    PlaneRecord {
+        kind: "call".into(),
+        id: c.principal.clone(),
+        parent: Some(c.principal.clone()),
+        seq: c.seq,
+        ts: c.ts,
+        disposition: PlaneDisposition::Active,
+        body: serde_json::to_vec(c).unwrap(),
+    }
+}
+
+fn n_get_task(s: &dyn busbar_api::Store, id: &str) -> StoreResult<Option<TaskRow>> {
+    Ok(s.get_plane_record("task", id)?
+        .map(|b| serde_json::from_slice(&b).unwrap()))
+}
+fn n_list_tasks(s: &dyn busbar_api::Store) -> StoreResult<Vec<TaskRow>> {
+    Ok(s.list_plane_records("task", &PlaneSelector::All)?
+        .iter()
+        .map(|b| serde_json::from_slice(b).unwrap())
+        .collect())
+}
+fn n_list_task_events(s: &dyn busbar_api::Store, id: &str) -> StoreResult<Vec<TaskEventRow>> {
+    Ok(
+        s.list_plane_records("task_event", &PlaneSelector::Parent(id.into()))?
+            .iter()
+            .map(|b| serde_json::from_slice(b).unwrap())
+            .collect(),
+    )
+}
+fn n_list_mcp_calls(s: &dyn busbar_api::Store, p: &str) -> StoreResult<Vec<McpCallRecord>> {
+    Ok(
+        s.list_plane_records("call", &PlaneSelector::Parent(p.into()))?
+            .iter()
+            .map(|b| serde_json::from_slice(b).unwrap())
+            .collect(),
+    )
+}
+fn n_list_call_principals(s: &dyn busbar_api::Store) -> StoreResult<Vec<String>> {
+    s.list_plane_record_parents("call")
+}
 
 fn store_example_plugin_path() -> Option<std::path::PathBuf> {
     let candidate = (|| {
@@ -1461,9 +1543,15 @@ fn task_state_written_through_a_plugin_store_survives_a_restart() {
     // its own test below, so that diagnostic is not lost, it just does not pre-empt this one.
     {
         let store = load_store(&lib, &cfg).expect("load store example plugin over the ABI");
-        store.put_task(&task).expect("put_task");
-        store.append_task_event(&event).expect("append_task_event");
-        store.append_mcp_call(&call).expect("append_mcp_call");
+        store
+            .upsert_plane_record(&task_record(&task))
+            .expect("upsert task");
+        store
+            .append_plane_record(&event_record(&event))
+            .expect("append task_event");
+        store
+            .append_plane_record(&call_record(&call))
+            .expect("append call");
         // Dropping the box closes the plugin handle and unloads the library. Everything the plugin
         // held in memory goes with it.
     }
@@ -1472,53 +1560,51 @@ fn task_state_written_through_a_plugin_store_survives_a_restart() {
     let store = load_store(&lib, &cfg).expect("re-load store example plugin after the restart");
 
     assert_eq!(
-        store.get_task("task-abc").expect("get_task after restart"),
+        n_get_task(store.as_ref(), "task-abc").expect("get_task after restart"),
         Some(task.clone()),
         "THE WHOLE POINT: a task written through the plugin ABI must still be there after a \
          restart. `None` here is the production defect — `put_task` reported success and the \
          engine kept nothing."
     );
     assert_eq!(
-        store.list_tasks().expect("list_tasks after restart"),
+        n_list_tasks(store.as_ref()).expect("list_tasks after restart"),
         vec![task.clone()]
     );
     assert_eq!(
-        store
-            .list_task_events("task-abc")
-            .expect("list_task_events after restart"),
+        n_list_task_events(store.as_ref(), "task-abc").expect("list_task_events after restart"),
         vec![event],
         "the provenance chain must survive with `hash`/`prev_hash` verbatim"
     );
     assert_eq!(
-        store
-            .list_mcp_calls("vk_owner")
-            .expect("list_mcp_calls after restart"),
+        n_list_mcp_calls(store.as_ref(), "vk_owner").expect("list_mcp_calls after restart"),
         vec![call]
     );
     assert_eq!(
-        store
-            .list_mcp_call_principals()
-            .expect("list_mcp_call_principals after restart"),
+        n_list_call_principals(store.as_ref()).expect("list_mcp_call_principals after restart"),
         vec!["vk_owner".to_string()],
         "the boot enumeration must find the principal whose chain this process never saw written"
     );
 
     // ── the two retention ops, which return a COUNT rather than `Ok(0)` from a defaulted no-op ──
     assert_eq!(
-        store.purge_tasks_before(3_000).expect("purge_tasks_before"),
+        store.purge_plane_records_before("task", 3_000).expect("purge_tasks_before"),
         0,
         "an `input-required` task is NEVER purged by age — it is exactly the row waiting on a human"
     );
     let terminal = sample_task_row("task-done", "completed", 2_000);
-    store.put_task(&terminal).expect("put_task terminal");
+    store
+        .upsert_plane_record(&task_record(&terminal))
+        .expect("put_task terminal");
     assert_eq!(
-        store.purge_tasks_before(3_000).expect("purge_tasks_before"),
+        store
+            .purge_plane_records_before("task", 3_000)
+            .expect("purge_tasks_before"),
         1,
         "the TERMINAL row is purged, and the count comes from the plugin, not a default"
     );
     assert_eq!(
         store
-            .purge_mcp_calls_before(2_000)
+            .purge_plane_records_before("call", 2_000)
             .expect("purge_mcp_calls_before"),
         1
     );
@@ -1527,12 +1613,11 @@ fn task_state_written_through_a_plugin_store_survives_a_restart() {
     drop(store);
     let store = load_store(&lib, &cfg).expect("re-load after the purge");
     assert_eq!(
-        store.list_tasks().expect("list_tasks").len(),
+        n_list_tasks(store.as_ref()).expect("list_tasks").len(),
         1,
         "the purge must have been written through, not just applied in the plugin's memory"
     );
-    assert!(store
-        .list_mcp_calls("vk_owner")
+    assert!(n_list_mcp_calls(store.as_ref(), "vk_owner")
         .expect("list_mcp_calls")
         .is_empty());
 
@@ -1560,9 +1645,11 @@ fn a_task_written_through_a_plugin_store_is_readable_back_through_it() {
 
     let store = load_store(&lib, &cfg).expect("load store example plugin over the ABI");
     let task = sample_task_row("task-rt", "working", 5_000);
-    store.put_task(&task).expect("put_task");
+    store
+        .upsert_plane_record(&task_record(&task))
+        .expect("put_task");
     assert_eq!(
-        store.get_task("task-rt").expect("get_task"),
+        n_get_task(store.as_ref(), "task-rt").expect("get_task"),
         Some(task),
         "`put_task` returned Ok — the task must actually be there. `None` means the write was \
          discarded at the ABI and the success was a lie."
@@ -1792,38 +1879,53 @@ fn a_plugin_predating_the_task_variants_still_gets_the_pre_existing_defaults() {
         hash: "h".into(),
     };
 
-    under_old_plugin_shapes(&store, |s| s.put_task(&task), (), "put_task");
-    under_old_plugin_shapes(&store, |s| s.get_task("task-old"), None, "get_task");
-    under_old_plugin_shapes(&store, |s| s.list_tasks(), Vec::new(), "list_tasks");
-    under_old_plugin_shapes(&store, |s| s.purge_tasks_before(9), 0, "purge_tasks_before");
     under_old_plugin_shapes(
         &store,
-        |s| s.append_task_event(&event),
+        |s| s.upsert_plane_record(&task_record(&task)),
+        (),
+        "upsert task",
+    );
+    under_old_plugin_shapes(&store, |s| n_get_task(s, "task-old"), None, "get_task");
+    under_old_plugin_shapes(&store, |s| n_list_tasks(s), Vec::new(), "list_tasks");
+    under_old_plugin_shapes(
+        &store,
+        |s| s.purge_plane_records_before("task", 9),
+        0,
+        "purge_tasks_before",
+    );
+    under_old_plugin_shapes(
+        &store,
+        |s| s.append_plane_record(&event_record(&event)),
         (),
         "append_task_event",
     );
     under_old_plugin_shapes(
         &store,
-        |s| s.list_task_events("task-old"),
+        |s| n_list_task_events(s, "task-old"),
         Vec::new(),
         "list_task_events",
     );
-    under_old_plugin_shapes(&store, |s| s.append_mcp_call(&call), (), "append_mcp_call");
     under_old_plugin_shapes(
         &store,
-        |s| s.list_mcp_calls("vk"),
+        |s| s.append_plane_record(&call_record(&call)),
+        (),
+        "append_mcp_call",
+    );
+    under_old_plugin_shapes(
+        &store,
+        |s| n_list_mcp_calls(s, "vk"),
         Vec::new(),
         "list_mcp_calls",
     );
     under_old_plugin_shapes(
         &store,
-        |s| s.list_mcp_call_principals(),
+        |s| n_list_call_principals(s),
         Vec::new(),
         "list_mcp_call_principals",
     );
     under_old_plugin_shapes(
         &store,
-        |s| s.purge_mcp_calls_before(9),
+        |s| s.purge_plane_records_before("call", 9),
         0,
         "purge_mcp_calls_before",
     );
@@ -1855,29 +1957,31 @@ fn no_plugin_failure_shape_can_launder_a_dropped_task_into_success() {
     for (status, body, what) in failures {
         FAKE_CALL_HANDLE.with(|c| c.set((*status, *body)));
         assert!(
-            store.put_task(&task).is_err(),
+            store.upsert_plane_record(&task_record(&task)).is_err(),
             "`put_task` must FAIL on {what}: silently returning Ok is the exact defect these \
              variants were added to close"
         );
         FAKE_CALL_HANDLE.with(|c| c.set((*status, *body)));
         assert!(
-            store.get_task("task-err").is_err(),
+            n_get_task(&store, "task-err").is_err(),
             "`get_task` must FAIL on {what}, never answer `None` — 'the task is gone' and 'the \
              backend is broken' are different answers"
         );
         FAKE_CALL_HANDLE.with(|c| c.set((*status, *body)));
         assert!(
-            store.append_task_event(&event_free_probe()).is_err(),
+            store
+                .append_plane_record(&event_record(&event_free_probe()))
+                .is_err(),
             "`append_task_event` must FAIL on {what}"
         );
         FAKE_CALL_HANDLE.with(|c| c.set((*status, *body)));
         assert!(
-            store.list_task_events("task-err").is_err(),
+            n_list_task_events(&store, "task-err").is_err(),
             "`list_task_events` must FAIL on {what}"
         );
         FAKE_CALL_HANDLE.with(|c| c.set((*status, *body)));
         assert!(
-            store.purge_tasks_before(9).is_err(),
+            store.purge_plane_records_before("task", 9).is_err(),
             "`purge_tasks_before` must FAIL on {what}, never report 0 purged"
         );
     }

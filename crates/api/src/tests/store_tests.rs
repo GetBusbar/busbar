@@ -663,19 +663,19 @@ fn default_list_audit_tail_keeps_exactly_the_last_limit_records() {
     assert_eq!(s.list_audit_tail(100).unwrap().len(), 5);
 }
 
-/// THE TASK-STORE DEFAULTS ARE BACKWARD-COMPATIBLE AND SILENT, and both halves matter.
+/// THE NEUTRAL PLANE-VERB DEFAULTS ARE BACKWARD-COMPATIBLE AND SILENT, and both halves matter.
 ///
-/// A store plugin is a SIGNED ARTIFACT that can predate this trait method by releases. If the task
-/// methods had no default, every existing backend would fail to compile against the new contract; if
-/// they defaulted to an ERROR, every task submission on such a backend would fail at runtime. So
-/// they default to "accepted, and nothing kept" — the RAM default's documented behaviour — and the
-/// engine learns whether a deployment actually has durability by READING A TASK BACK, never by
-/// trusting the write's return value. This test pins that, because a future change of the defaults
-/// to something louder would silently break every deployed plugin.
+/// A store plugin is a SIGNED ARTIFACT, and a backend that keeps no durable plane state overrides
+/// none of the eight neutral kind-tagged verbs. If those verbs had no default, such a backend would
+/// fail to compile against the contract; if they defaulted to an ERROR, every task submission on it
+/// would fail at runtime. So they default to "accepted, and nothing kept" — the RAM default's
+/// documented behaviour — and the engine learns whether a deployment actually has durability by
+/// READING A RECORD BACK, never by trusting the write's return value. This test pins that, because a
+/// future change of the defaults to something louder would silently break every such backend.
 #[test]
-fn the_task_store_methods_default_to_accepting_and_keeping_nothing() {
-    /// A backend written before the task methods existed: it implements the six REQUIRED methods
-    /// and nothing else. That it compiles at all is half the assertion.
+fn the_plane_record_verbs_default_to_accepting_and_keeping_nothing() {
+    /// A backend that keeps no durable plane state: it implements the six REQUIRED methods and
+    /// nothing else. That it compiles at all is half the assertion.
     struct PreTaskBackend;
     impl Store for PreTaskBackend {
         fn put_key(&self, _: &VirtualKey) -> StoreResult<()> {
@@ -732,14 +732,40 @@ fn the_task_store_methods_default_to_accepting_and_keeping_nothing() {
     };
 
     // The writes are ACCEPTED — a legacy backend must not fail a task submission.
-    assert!(s.put_task(&task).is_ok());
-    assert!(s.append_task_event(&event).is_ok());
+    assert!(s
+        .upsert_plane_record(&PlaneRecord {
+            kind: "task".into(),
+            id: task.task_id.clone(),
+            parent: None,
+            seq: 0,
+            ts: task.updated_at,
+            disposition: PlaneDisposition::Active,
+            body: serde_json::to_vec(&task).unwrap(),
+        })
+        .is_ok());
+    assert!(s
+        .append_plane_record(&PlaneRecord {
+            kind: "task_event".into(),
+            id: event.task_id.clone(),
+            parent: Some(event.task_id.clone()),
+            seq: event.seq,
+            ts: event.ts,
+            disposition: PlaneDisposition::Active,
+            body: serde_json::to_vec(&event).unwrap(),
+        })
+        .is_ok());
     // And nothing is kept. This is the assertion the durability layer is built on: the only honest
     // way to know a deployment is durable is to read back, and here the read-back is empty.
-    assert_eq!(s.get_task("t-1").unwrap(), None);
-    assert!(s.list_tasks().unwrap().is_empty());
-    assert!(s.list_task_events("t-1").unwrap().is_empty());
-    assert_eq!(s.purge_tasks_before(u64::MAX).unwrap(), 0);
+    assert_eq!(s.get_plane_record("task", "t-1").unwrap(), None);
+    assert!(s
+        .list_plane_records("task", &PlaneSelector::All)
+        .unwrap()
+        .is_empty());
+    assert!(s
+        .list_plane_records("task_event", &PlaneSelector::Parent("t-1".into()))
+        .unwrap()
+        .is_empty());
+    assert_eq!(s.purge_plane_records_before("task", u64::MAX).unwrap(), 0);
 }
 
 /// The task rows round-trip through serde unchanged. They cross a plugin ABI, so a field whose

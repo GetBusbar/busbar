@@ -28,6 +28,7 @@
 //! is the confused-deputy section at the bottom, and it would be satisfied by a relay that violates
 //! rule one and vice versa. Both hold; neither implies the other.
 
+use crate::plane::store::StoreNamedTestExt;
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::atomic::Ordering;
 

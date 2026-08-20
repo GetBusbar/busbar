@@ -19,6 +19,7 @@
 use super::relay_harness::*;
 use crate::a2a::relay::{read_event, SseReader};
 use crate::a2a::task::TaskState;
+use crate::plane::store::StoreNamedTestExt;
 
 /// A streaming envelope: `message/stream`, which is what makes `TaskShape::requires_streaming` true
 /// and therefore what makes the ingress take the streaming hop.

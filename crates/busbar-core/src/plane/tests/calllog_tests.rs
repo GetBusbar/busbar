@@ -20,6 +20,7 @@
 use super::super::calllog::{
     CallChain, CallInput, PlaneCallLog, OUTCOME_DISPATCHED, OUTCOME_REFUSED,
 };
+use crate::plane::store::StoreNamedTestExt;
 // The chain, the verifier and the break vocabulary are CORE's — this plane supplies only the record
 // type — so the tests reach for them where they live rather than through a plane re-export.
 use crate::audit::{verify_chain, ChainBreakKind};
@@ -121,6 +122,44 @@ impl Store for DurableCallStore {
         self.inner.list_metering(bucket)
     }
 
+    // ── The neutral kind-tagged verbs, delegating to the named call-log methods above ────────────
+    fn append_plane_record(&self, record: &busbar_api::PlaneRecord) -> busbar_api::StoreResult<()> {
+        match record.kind.as_str() {
+            crate::plane::store::KIND_CALL => {
+                self.append_mcp_call(&crate::plane::store::decode(&record.body)?)
+            }
+            _ => Ok(()),
+        }
+    }
+    fn list_plane_records(
+        &self,
+        kind: &str,
+        selector: &busbar_api::PlaneSelector,
+    ) -> busbar_api::StoreResult<Vec<Vec<u8>>> {
+        match (kind, selector) {
+            (crate::plane::store::KIND_CALL, busbar_api::PlaneSelector::Parent(p)) => self
+                .list_mcp_calls(p)?
+                .iter()
+                .map(crate::plane::store::encode)
+                .collect(),
+            _ => Ok(Vec::new()),
+        }
+    }
+    fn list_plane_record_parents(&self, kind: &str) -> busbar_api::StoreResult<Vec<String>> {
+        match kind {
+            crate::plane::store::KIND_CALL => self.list_mcp_call_principals(),
+            _ => Ok(Vec::new()),
+        }
+    }
+    fn purge_plane_records_before(&self, kind: &str, before: u64) -> busbar_api::StoreResult<u64> {
+        match kind {
+            crate::plane::store::KIND_CALL => self.purge_mcp_calls_before(before),
+            _ => Ok(0),
+        }
+    }
+}
+
+impl DurableCallStore {
     fn append_mcp_call(&self, record: &McpCallRecord) -> busbar_api::StoreResult<()> {
         if let Some(why) = self.fail_appends.lock().unwrap().as_ref() {
             return Err(busbar_api::StoreError(why.clone()));
@@ -166,42 +205,6 @@ impl Store for DurableCallStore {
         let before_len = calls.len();
         calls.retain(|_, r| r.ts >= before);
         Ok((before_len - calls.len()) as u64)
-    }
-
-    // ── The neutral kind-tagged verbs, delegating to the named call-log methods above ────────────
-    fn append_plane_record(&self, record: &busbar_api::PlaneRecord) -> busbar_api::StoreResult<()> {
-        match record.kind.as_str() {
-            crate::plane::store::KIND_CALL => {
-                self.append_mcp_call(&crate::plane::store::decode(&record.body)?)
-            }
-            _ => Ok(()),
-        }
-    }
-    fn list_plane_records(
-        &self,
-        kind: &str,
-        selector: &busbar_api::PlaneSelector,
-    ) -> busbar_api::StoreResult<Vec<Vec<u8>>> {
-        match (kind, selector) {
-            (crate::plane::store::KIND_CALL, busbar_api::PlaneSelector::Parent(p)) => self
-                .list_mcp_calls(p)?
-                .iter()
-                .map(crate::plane::store::encode)
-                .collect(),
-            _ => Ok(Vec::new()),
-        }
-    }
-    fn list_plane_record_parents(&self, kind: &str) -> busbar_api::StoreResult<Vec<String>> {
-        match kind {
-            crate::plane::store::KIND_CALL => self.list_mcp_call_principals(),
-            _ => Ok(Vec::new()),
-        }
-    }
-    fn purge_plane_records_before(&self, kind: &str, before: u64) -> busbar_api::StoreResult<u64> {
-        match kind {
-            crate::plane::store::KIND_CALL => self.purge_mcp_calls_before(before),
-            _ => Ok(0),
-        }
     }
 }
 
@@ -794,14 +797,17 @@ impl Store for NamesOnePrincipalWithNoRows {
     fn list_metering(&self, _bucket: u64) -> busbar_api::StoreResult<Vec<busbar_api::MeteringRow>> {
         Ok(Vec::new())
     }
-    fn list_mcp_call_principals(&self) -> busbar_api::StoreResult<Vec<String>> {
-        Ok(vec![P.to_string()])
-    }
     fn list_plane_record_parents(&self, kind: &str) -> busbar_api::StoreResult<Vec<String>> {
         match kind {
             crate::plane::store::KIND_CALL => self.list_mcp_call_principals(),
             _ => Ok(Vec::new()),
         }
+    }
+}
+
+impl NamesOnePrincipalWithNoRows {
+    fn list_mcp_call_principals(&self) -> busbar_api::StoreResult<Vec<String>> {
+        Ok(vec![P.to_string()])
     }
 }
 

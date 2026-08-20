@@ -13,9 +13,13 @@ license = "Apache-2.0"
 # into every plugin's dev tree (hook/auth/secret alike) for a module they never call would be a
 # gratuitous compile cost. No cycle — `busbar-api` depends on nothing in this crate.
 busbar-api = { path = "../api", optional = true }
+# Needed only by the neutral plane-record conformance helpers, which serialize a typed row into the
+# opaque `PlaneRecord` body exactly as core does — off unless the `store` feature is on.
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
 
 [features]
 default = []
 # The `Store` contract conformance suite (`store_conformance`). A store plugin turns this on in its
 # `[dev-dependencies]`.
-store = ["dep:busbar-api"]
+store = ["dep:busbar-api", "dep:serde", "dep:serde_json"]

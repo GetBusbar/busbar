@@ -1082,27 +1082,6 @@ impl busbar_api::Store for ChainSink {
     fn list_metering(&self, bucket: u64) -> busbar_api::StoreResult<Vec<busbar_api::MeteringRow>> {
         self.inner.list_metering(bucket)
     }
-    fn append_task_event(&self, event: &busbar_api::TaskEventRow) -> busbar_api::StoreResult<()> {
-        self.events
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .push(event.clone());
-        Ok(())
-    }
-    fn list_task_events(
-        &self,
-        task_id: &str,
-    ) -> busbar_api::StoreResult<Vec<busbar_api::TaskEventRow>> {
-        Ok(self
-            .events
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .iter()
-            .filter(|e| e.task_id == task_id)
-            .cloned()
-            .collect())
-    }
-
     // ── The neutral kind-tagged verbs, delegating to the named task-event methods above ──────────
     fn append_plane_record(&self, record: &busbar_api::PlaneRecord) -> busbar_api::StoreResult<()> {
         match record.kind.as_str() {
@@ -1125,6 +1104,30 @@ impl busbar_api::Store for ChainSink {
                 .collect(),
             _ => Ok(Vec::new()),
         }
+    }
+}
+
+impl ChainSink {
+    fn append_task_event(&self, event: &busbar_api::TaskEventRow) -> busbar_api::StoreResult<()> {
+        self.events
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(event.clone());
+        Ok(())
+    }
+
+    fn list_task_events(
+        &self,
+        task_id: &str,
+    ) -> busbar_api::StoreResult<Vec<busbar_api::TaskEventRow>> {
+        Ok(self
+            .events
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .filter(|e| e.task_id == task_id)
+            .cloned()
+            .collect())
     }
 }
 
@@ -1171,7 +1174,8 @@ async fn the_delegation_hop_lands_in_the_per_task_chain_naming_the_agent_it_was_
         "no outbound hop was recorded, so there is no client leg for the chain to be about"
     );
 
-    let events = busbar_api::Store::list_task_events(sink.as_ref(), &task_id)
+    let events = sink
+        .list_task_events(&task_id)
         .expect("the sink lists the events it was given");
     assert!(
         !events.is_empty(),
@@ -1267,7 +1271,8 @@ async fn a_failed_hop_is_chained_too_and_the_chain_carries_its_terminal_outcome(
          with the record busbar kept: {answer}"
     );
 
-    let events = busbar_api::Store::list_task_events(sink.as_ref(), &task_id)
+    let events = sink
+        .list_task_events(&task_id)
         .expect("the sink lists the events it was given");
     assert!(
         events

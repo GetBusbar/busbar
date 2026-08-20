@@ -43,8 +43,8 @@
 //! `Box<dyn AuthModule>`). From there kind is a Rust TYPE, not a wire tag.
 
 use busbar_api::{
-    AuditRecord, CredentialMeta, CredentialSecret, McpCallRecord, McpDemotionRow, MeteringDelta,
-    MeteringRow, PlaneSelector, TaskEventRow, TaskRow, UsageDelta, UsageLedger, VirtualKey,
+    AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, PlaneSelector,
+    UsageDelta, UsageLedger, VirtualKey,
 };
 use serde::{Deserialize, Serialize};
 use std::os::raw::c_void;
@@ -126,18 +126,16 @@ pub mod kind {
 /// a real breaking bump, correctly gated by the engine's `supported_abi` range check at load,
 /// unlike every other change on this axis so far.
 ///
-/// v2 STAYS v2 for the A2A task + MCP call-log ops (1.6.0): the ten
-/// `PutTask`/…/`PurgeMcpCallsBefore` request variants and their five response variants are
-/// ADDITIVE, so an already-signed v2 artifact that predates them still loads and still behaves
-/// exactly as it did. See the block comment on those variants in [`StoreRequest`] for the mechanism
-/// (undecodable variant -> `STATUS_UNSUPPORTED` -> the loader's legacy default, which for all ten is
-/// the trait's own accept-and-keep-nothing default).
-///
-/// v2 STAYS v2 for the durable MCP demotion record and the spent-approval ledger (1.6.0): the four
-/// `PutMcpDemotion`/`ListMcpDemotions`/`ClearMcpDemotion`/`RedeemAskState` request variants and their
-/// two response variants are ADDITIVE on the same mechanism, and each one's default is the behaviour
-/// a deployment already had.
-pub const ABI_VERSION: u32 = 2;
+/// v2 -> v3 (1.6.0, durable-plane genericization): the fourteen protocol-named durable request
+/// variants (`PutTask`/`GetTask`/…/`RedeemAskState`) and their seven named response variants
+/// (`Task`/`Tasks`/`TaskEvents`/`McpCalls`/`McpCallPrincipals`/`McpDemotions`/`Redeemed`) are
+/// REMOVED in favor of the eight kind-tagged neutral variants (`UpsertPlaneRecord`/…/
+/// `RedeemPlaneToken`, with `PlaneRecord`/`PlaneRecords`/`PlaneRecordParents`/`Redeemed` responses).
+/// This is a REAL breaking bump, not the additive churn the earlier 1.6.0 work rode: a v2 plugin
+/// that speaks only the named variants can no longer be called, so the engine's `supported_abi`
+/// FLOOR is raised to 3 and an old named-only artifact is REFUSED at load (fail-closed) rather than
+/// answered from a default — a stale plugin fails loud, it never silently drops a durable write.
+pub const ABI_VERSION: u32 = 3;
 
 /// The exported-symbol names the engine resolves after `dlopen`/`LoadLibrary`. A plugin of ANY kind
 /// MUST export all SIX with these exact (kind-NEUTRAL) names and the signatures in the `*Fn` type
@@ -345,83 +343,14 @@ pub enum StoreRequest {
     /// `list_denylist` - every denied subject id (boot hydrate). ADDITIVE.
     ListDenylist,
 
-    // ── A2A TASK STATE + the MCP CALL LOG ────────────────────────────────────────────────────
-    //
-    // ALL TEN ARE ADDITIVE (ABI stays v2). `StoreRequest` is externally tagged with no
-    // `deny_unknown_fields`, so a plugin built against an SDK that predates these variants simply
-    // cannot DECODE one: `store_dispatch`'s request-decode arm returns `BoundaryOutcome::Unsupported`
-    // -> `STATUS_UNSUPPORTED` -> the loader's `call_with_legacy_default`, which supplies exactly the
-    // trait default the engine would have got anyway. Every one of these ten trait methods is
-    // DEFAULTED accept-and-keep-nothing, so the fallback is byte-for-byte the pre-existing
-    // behaviour and an already-signed v2 artifact keeps loading and working unchanged. Same
-    // reasoning that kept `AppendAudit`/`ListAuditTail`/`AddDenylist` off the version axis.
-    //
-    // WHY THEY HAD TO BE ADDED. Without them `DynStore` — the `dyn Store` the engine holds for
-    // EVERY plugin-loaded backend, which is both the file-drop and the runtime-install path — fell
-    // through to those same defaults. A store plugin that implements `put_task` perfectly had its
-    // every task DISCARDED at the ABI, and `put_task` reported success while doing it. A unit test
-    // against the store crate cannot see that; only a test over the plugin path can.
-    /// `put_task` - UPSERT one A2A task row by `task_id`. See [`busbar_api::Store::put_task`].
-    PutTask(TaskRow),
-    /// `get_task` - the task row for this id, or `None`.
-    GetTask(String),
-    /// `list_tasks` - every persisted task row, terminal ones included (deliberately UNFILTERED).
-    ListTasks,
-    /// `purge_tasks_before` - retention: drop TERMINAL task rows older than `before`.
-    PurgeTasksBefore(u64),
-    /// `append_task_event` - one per-task provenance event, upserted on `(task_id, seq)`. The store
-    /// persists `hash`/`prev_hash` verbatim and never recomputes them.
-    AppendTaskEvent(TaskEventRow),
-    /// `list_task_events` - one task's provenance events, oldest-first by `seq`.
-    ListTaskEvents(String),
-    /// `append_mcp_call` - one MCP tool-call record, append-only within `record.principal`.
-    AppendMcpCall(McpCallRecord),
-    /// `list_mcp_calls` - one principal's call chain, oldest-first by `seq`.
-    ListMcpCalls(String),
-    /// `list_mcp_call_principals` - every principal with at least one record (the boot enumeration).
-    ListMcpCallPrincipals,
-    /// `purge_mcp_calls_before` - retention: drop call records with `ts < before`.
-    PurgeMcpCallsBefore(u64),
-
-    // ── THE DURABLE MCP DEMOTION RECORD + THE SPENT-APPROVAL LEDGER ──────────────────────────
-    //
-    // ADDITIVE, on exactly the mechanism the ten variants above ride: an SDK that predates them
-    // cannot DECODE one, which is `STATUS_UNSUPPORTED`, which is the loader's `call_with_legacy
-    // _default`, which supplies the trait's own default. All four defaults are the behaviour a
-    // deployment had before these existed - no durable demotion, and a spent-approval ledger that
-    // is the engine's in-process one - so an already-signed v2 artifact keeps loading and behaving
-    // exactly as it did.
-    //
-    // AND THEY MUST BE HERE, not only on the trait. `DynStore` is what the engine holds for every
-    // plugin-loaded backend; a trait method with no matching variant here is a method `DynStore`
-    // answers from the DEFAULT, which for these means a demotion that is written, reported
-    // successful and discarded - the same silent-no-op that dropped every task write while each
-    // backend's own unit tests passed.
-    /// `put_mcp_demotion` - UPSERT the demotion record for one upstream, keyed by `server`.
-    PutMcpDemotion(McpDemotionRow),
-    /// `list_mcp_demotions` - every recorded demotion (the boot read).
-    ListMcpDemotions,
-    /// `clear_mcp_demotion` - drop one upstream's demotion record; absent is a no-op.
-    ClearMcpDemotion(String),
-    /// `redeem_ask_state` - TEST-AND-SET one sealed approval by nonce. See
-    /// [`busbar_api::Store::redeem_ask_state`]: the answer is whether THIS call was the first
-    /// redemption, so it must be one round trip and not a read followed by a write.
-    RedeemAskState {
-        nonce: String,
-        expires_at: u64,
-        now: u64,
-    },
-
     // ── THE NEUTRAL KIND-TAGGED PLANE-RECORD SURFACE (1.6.0) ──────────────────────────────────
     //
-    // Eight KIND-TAGGED variants that will subsume the fourteen protocol-named durable ops above
-    // (put_task/…/redeem_ask_state) — the wire half of the 14→8 collapse in the 1.6.0 design. ALL
-    // EIGHT ARE ADDITIVE (ABI stays v2), on exactly the mechanism the A2A/MCP variants ride: an SDK
-    // that predates them cannot DECODE one, which is `STATUS_UNSUPPORTED`, which is the loader's
-    // `call_with_legacy_default`, which supplies the trait's own default — and every one of these
-    // eight trait methods is DEFAULTED accept-and-keep-nothing, so an already-signed v2 artifact
-    // keeps loading and behaving exactly as it did. NOTHING calls them in this commit; the
-    // protocol-named variants above are untouched.
+    // Eight KIND-TAGGED variants that SUBSUME the fourteen protocol-named durable ops
+    // (put_task/…/redeem_ask_state) the wire once carried — the wire half of the 14→8 collapse in
+    // the 1.6.0 design, now the ONLY durable-plane surface (the named variants are deleted and
+    // `ABI_VERSION` bumped to 3, so an old named-only artifact is refused at load, never mis-called).
+    // Every one maps to a DEFAULTED accept-and-keep-nothing trait method, so a backend that keeps no
+    // durable rows behaves exactly as the shipped RAM default does.
     //
     // The typed sidecar columns of the neutral record (`parent`/`seq`/`ts`/`disposition`) live on
     // the trait's [`busbar_api::PlaneRecord`] envelope; this commit's WIRE carries only the subset
@@ -505,43 +434,27 @@ pub enum StoreResponse {
     Audit(Vec<AuditRecord>),
     /// `list_denylist` - every denied subject id (1.5.0 signed-token revocation). ADDITIVE.
     Denylist(Vec<String>),
-    /// `get_task` - the task row, or `None` when this store holds none. ADDITIVE.
-    Task(Option<TaskRow>),
-    /// `list_tasks` - every persisted task row, unfiltered. ADDITIVE.
-    Tasks(Vec<TaskRow>),
-    /// `list_task_events` - one task's provenance chain, oldest-first by `seq`. ADDITIVE.
-    TaskEvents(Vec<TaskEventRow>),
-    /// `list_mcp_calls` - one principal's call chain, oldest-first by `seq`. ADDITIVE.
-    McpCalls(Vec<McpCallRecord>),
-    /// `list_mcp_call_principals` - the principals with a durable call chain. ADDITIVE, and
-    /// deliberately NOT folded into [`StoreResponse::Denylist`] even though both are `Vec<String>`:
-    /// a shared variant would let a plugin answer a denylist hydrate with a principal list (and the
-    /// reverse) with the loader none the wiser, and `unexpected()` is the guard that catches a
-    /// plugin returning the wrong shape for the request it was given.
-    McpCallPrincipals(Vec<String>),
-    /// `list_mcp_demotions` - every recorded upstream demotion. ADDITIVE.
-    McpDemotions(Vec<McpDemotionRow>),
-    /// `redeem_ask_state` - whether THIS redemption was the first. ADDITIVE, and its own variant
-    /// rather than a shared boolean for the reason [`StoreResponse::McpCallPrincipals`] is its own:
-    /// `unexpected()` can only catch a plugin answering the wrong shape if the shapes differ. Also
-    /// serves the neutral `RedeemPlaneToken`, whose "was this the first redemption" answer is the
-    /// same shape.
-    Redeemed(bool),
 
     // ── THE NEUTRAL KIND-TAGGED PLANE-RECORD SURFACE (1.6.0) ──────────────────────────────────
     //
-    // Three ADDITIVE response variants for the eight kind-tagged requests; `GetPlaneRecord`/
-    // `ListPlaneRecords`/`ListPlaneRecordParents` carry OPAQUE bodies (the store never decodes the
-    // protocol row), and the write/purge/redeem verbs reuse `Unit`/`Purged`/`Redeemed`. Each is its
-    // OWN variant rather than folded into a same-shaped sibling (e.g. `PlaneRecordParents` vs
-    // `McpCallPrincipals`, both `Vec<String>`) for the reason [`StoreResponse::McpCallPrincipals`]
-    // is its own: `unexpected()` only catches a plugin answering the wrong shape if the shapes differ.
+    // Four response variants for the eight kind-tagged requests, now the ONLY durable-plane
+    // responses (the named `Task`/`Tasks`/`TaskEvents`/`McpCalls`/`McpCallPrincipals`/`McpDemotions`
+    // variants are deleted and `ABI_VERSION` bumped to 3). `GetPlaneRecord`/`ListPlaneRecords`/
+    // `ListPlaneRecordParents` carry OPAQUE bodies (the store never decodes the protocol row); the
+    // write/purge verbs reuse `Unit`/`Purged`, and `RedeemPlaneToken` returns `Redeemed`. Each is its
+    // OWN variant rather than folded into a same-shaped sibling (e.g. `PlaneRecordParents` and
+    // `Denylist` are both `Vec<String>`) so `unexpected()` still catches a plugin answering the wrong
+    // shape — that guard only works if the shapes differ.
     /// `get_plane_record` — the opaque record body, or `None` when absent.
     PlaneRecord(Option<Vec<u8>>),
     /// `list_plane_records` — the selected records' opaque bodies, oldest-first for a parent selector.
     PlaneRecords(Vec<Vec<u8>>),
     /// `list_plane_record_parents` — every parent with a record of the kind.
     PlaneRecordParents(Vec<String>),
+    /// `redeem_plane_token` — whether THIS redemption was the first. Its own variant rather than a
+    /// shared boolean so `unexpected()` can catch a plugin answering the wrong shape (that guard only
+    /// works if the shapes differ).
+    Redeemed(bool),
 }
 
 // ── SECRET-plugin wire (`kind: secret`) ─────────────────────────────────────────────────────────

@@ -23,6 +23,7 @@
 //! plugin is reached over.
 
 use crate::plane::quarantine::PlaneQuarantine;
+use crate::plane::store::StoreNamedTestExt;
 use crate::test_support::plugin_store::{durable_cfg, open_plugin};
 
 /// A `PlaneQuarantine` with a freshly `dlopen`ed handle on `cfg`.
