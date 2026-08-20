@@ -67,6 +67,9 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     auth_failure_message: AUTH_FAILURE_MSG,
     uses_array_stream_shim: false,
     has_native_path_not_found: false,
+    // The Responses surface carries no list-models fingerprint of its own; a `/v1/models` GET
+    // resolves to the OpenAI Chat envelope.
+    models_list_envelope: None,
 };
 use std::sync::OnceLock;
 

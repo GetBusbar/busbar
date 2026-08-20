@@ -226,44 +226,25 @@ fn list_models_dialect(
     names.extend(models);
     names.dedup();
 
-    if headers.contains_key("anthropic-version") {
-        let data: Vec<Value> = names
-            .iter()
-            .map(|id| {
-                json!({
-                    "type": "model",
-                    "id": id,
-                    "display_name": id,
-                    "created_at": "1970-01-01T00:00:00Z"
-                })
-            })
-            .collect();
-        return Json(json!({
-            "data": data,
-            "has_more": false,
-            "first_id": names.first(),
-            "last_id": names.last(),
-        }))
-        .into_response();
+    // Neutral dispatch: core resolves WHICH dialect answers from the request fingerprint, then hands
+    // that dialect's declaration the visible name list and lets IT shape the envelope. The three
+    // list-models envelope shapes (OpenAI's `{object:"list",data}`, Anthropic's paginated `{data,
+    // has_more,…}`, Gemini's `{models}`) are LLM-specific and now live with the dialects in
+    // `busbar-llm` behind `ProtocolDecl::models_list_envelope` — core names none of them here.
+    let dialect = if headers.contains_key("anthropic-version") {
+        crate::proto::PROTO_ANTHROPIC
+    } else if gemini_path || headers.contains_key("x-goog-api-key") {
+        crate::proto::PROTO_GEMINI
+    } else {
+        crate::proto::PROTO_OPENAI
+    };
+    match crate::proto::decl_for(dialect).and_then(|d| d.models_list_envelope) {
+        Some(build) => Json(build(&names)).into_response(),
+        // Unreachable while the LLM protocols are installed (they always declare this builder). If a
+        // build ships without them, `/v1/models` still resolves but has no dialect to render for — an
+        // empty JSON object names no protocol and leaks no shape.
+        None => Json(json!({})).into_response(),
     }
-    if gemini_path || headers.contains_key("x-goog-api-key") {
-        let models: Vec<Value> = names
-            .iter()
-            .map(|id| {
-                json!({
-                    "name": format!("models/{id}"),
-                    "displayName": id,
-                    "supportedGenerationMethods": ["generateContent", "streamGenerateContent"]
-                })
-            })
-            .collect();
-        return Json(json!({ "models": models })).into_response();
-    }
-    let data: Vec<Value> = names
-        .iter()
-        .map(|id| json!({ "id": id, "object": "model", "created": 0, "owned_by": "busbar" }))
-        .collect();
-    Json(json!({ "object": "list", "data": data })).into_response()
 }
 
 pub(crate) async fn healthz(crate::state::CurrentApp(app): crate::state::CurrentApp) -> Response {

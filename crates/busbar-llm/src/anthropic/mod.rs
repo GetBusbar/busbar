@@ -56,6 +56,29 @@ fn egress_auth_headers(key: &str, ctx: &SigningContext) -> Vec<(HeaderName, Head
 /// only reader — where it used to sit in `proto/mod.rs` as a leaked per-dialect constant.
 const ANTHROPIC_PING_SSE_FRAME: &[u8] = b"event: ping\ndata: {\"type\":\"ping\"}\n\n";
 
+/// The [`ProtocolDecl::models_list_envelope`] builder: Anthropic's `GET /v1/models` shape. Each
+/// name becomes an Anthropic `model` object, wrapped in the paginated `{ "data": [...], "has_more":
+/// false, "first_id": ..., "last_id": ... }` envelope their SDK expects (a single, complete page).
+fn models_list_envelope(names: &[&str]) -> serde_json::Value {
+    let data: Vec<serde_json::Value> = names
+        .iter()
+        .map(|id| {
+            serde_json::json!({
+                "type": "model",
+                "id": id,
+                "display_name": id,
+                "created_at": "1970-01-01T00:00:00Z"
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "data": data,
+        "has_more": false,
+        "first_id": names.first(),
+        "last_id": names.last(),
+    })
+}
+
 /// ANTHROPIC'S DECLARATION — everything core knows about this protocol, stated here rather than
 /// discovered by a `match` in core. Handed to `install_protocols` by the composition root (the
 /// `busbar` binary); in `busbar-core`'s test/`test-support` builds it is instead the cfg-gated
@@ -102,6 +125,7 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     auth_failure_message: "invalid x-api-key",
     uses_array_stream_shim: false,
     has_native_path_not_found: false,
+    models_list_envelope: Some(models_list_envelope),
 };
 
 /// Value of the required `anthropic-version` request header (the Messages API version busbar

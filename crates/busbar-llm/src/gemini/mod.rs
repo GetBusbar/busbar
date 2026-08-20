@@ -23,6 +23,23 @@ pub fn protocol() -> Protocol {
     Protocol::new(PROTO_GEMINI, GeminiReader, GeminiWriter)
 }
 
+/// The [`ProtocolDecl::models_list_envelope`] builder: Gemini's `GET /v1(beta)/models` shape. Each
+/// name becomes a Gemini `Model` resource (`models/{id}` resource name, and the two generation
+/// methods busbar serves for it), wrapped in the `{ "models": [...] }` envelope their SDK expects.
+fn models_list_envelope(names: &[&str]) -> serde_json::Value {
+    let models: Vec<serde_json::Value> = names
+        .iter()
+        .map(|id| {
+            serde_json::json!({
+                "name": format!("models/{id}"),
+                "displayName": id,
+                "supportedGenerationMethods": ["generateContent", "streamGenerateContent"]
+            })
+        })
+        .collect();
+    serde_json::json!({ "models": models })
+}
+
 /// GEMINI'S DECLARATION. The only protocol declaring an array-stream shim key, and the reason that
 /// key is a DECLARATION rather than a literal in the agnostic strip: `proxy` removes every declared
 /// shim key without naming one.
@@ -75,6 +92,7 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     auth_failure_message: GEMINI_BAD_KEY_MESSAGE,
     uses_array_stream_shim: true,
     has_native_path_not_found: true,
+    models_list_envelope: Some(models_list_envelope),
 };
 
 /// Router-internal shim key the gemini ingress route injects into the request body when the client

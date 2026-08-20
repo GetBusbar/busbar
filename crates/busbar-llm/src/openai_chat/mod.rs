@@ -33,6 +33,18 @@ fn egress_auth_headers(key: &str, _ctx: &SigningContext) -> Vec<(HeaderName, Hea
     busbar_core::proto::bearer_auth_headers(PROTO_OPENAI, key)
 }
 
+/// The [`ProtocolDecl::models_list_envelope`] builder: OpenAI's `GET /v1/models` shape. Each name
+/// becomes an OpenAI `model` object (`owned_by: "busbar"`, `created: 0`), wrapped in the SDK's
+/// `{ "object": "list", "data": [...] }` list envelope that `client.models.list()` deserialises.
+/// Cohere's SDK carries no reliable discovery fingerprint and receives this shape too (documented).
+fn models_list_envelope(names: &[&str]) -> serde_json::Value {
+    let data: Vec<serde_json::Value> = names
+        .iter()
+        .map(|id| serde_json::json!({ "id": id, "object": "model", "created": 0, "owned_by": "busbar" }))
+        .collect();
+    serde_json::json!({ "object": "list", "data": data })
+}
+
 /// OPENAI'S DECLARATION. See `proto::registry` for what each field replaces.
 pub const DECL: ProtocolDecl = ProtocolDecl {
     name: PROTO_OPENAI,
@@ -82,6 +94,7 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     auth_failure_message: AUTH_FAILURE_MSG,
     uses_array_stream_shim: false,
     has_native_path_not_found: false,
+    models_list_envelope: Some(models_list_envelope),
 };
 
 /// Largest upstream `tool_calls[].index` we accept in a streaming chunk. OpenAI documents at most

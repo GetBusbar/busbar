@@ -134,6 +134,8 @@ pub const DECL: busbar_core::proto::ProtocolDecl = busbar_core::proto::ProtocolD
     auth_failure_message: "authentication failed",
     uses_array_stream_shim: false,
     has_native_path_not_found: false,
+    // MCP is not an LLM chat dialect and serves no `/v1/models` discovery surface.
+    models_list_envelope: None,
 };
 
 // ══ THE NOTIFICATION HALF ════════════════════════════════════════════════════════════════════════

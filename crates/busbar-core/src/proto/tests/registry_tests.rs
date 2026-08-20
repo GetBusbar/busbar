@@ -234,6 +234,7 @@ const TELEX_DECL: ProtocolDecl = ProtocolDecl {
     auth_failure_message: "authentication failed",
     uses_array_stream_shim: false,
     has_native_path_not_found: false,
+    models_list_envelope: None,
 };
 
 impl RequestHandler for TelexHandler {
@@ -410,6 +411,7 @@ const fn named_decl(name: &'static str) -> ProtocolDecl {
         auth_failure_message: "authentication failed",
         uses_array_stream_shim: false,
         has_native_path_not_found: false,
+        models_list_envelope: None,
     }
 }
 

@@ -263,6 +263,18 @@ pub struct ProtocolDecl {
     /// Replaces `ProtocolWriter::has_native_path_not_found()`. True when this protocol has a native
     /// path-not-found envelope with a protocol-specific message format (Gemini).
     pub has_native_path_not_found: bool,
+
+    /// This protocol's `GET /v1(beta)/models` (list-models) response ENVELOPE builder, or `None`
+    /// for a protocol that serves no model-discovery surface. Given the visible model/pool names
+    /// (already governance-filtered and ordered by core), it returns the dialect-shaped JSON body —
+    /// OpenAI's `{ "object": "list", "data": [...] }`, Anthropic's `{ "data": [...], "has_more":
+    /// false, "first_id": ..., "last_id": ... }`, Gemini's `{ "models": [...] }`.
+    ///
+    /// The ENVELOPE is LLM-specific, so it lives with the dialect (`busbar-llm`), not in core.
+    /// Core selects WHICH dialect answers from the request fingerprint and hands over the neutral
+    /// name list; the JSON shaping is the caller's, read here through `decl_for(name)`. This retires
+    /// the three inline `json!` envelope blocks that used to sit in `endpoints::list_models_dialect`.
+    pub models_list_envelope: Option<fn(&[&str]) -> serde_json::Value>,
 }
 
 impl ProtocolDecl {

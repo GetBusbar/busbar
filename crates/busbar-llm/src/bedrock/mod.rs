@@ -72,6 +72,8 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     auth_failure_message: "",
     uses_array_stream_shim: false,
     has_native_path_not_found: false,
+    // No list-models surface: Bedrock's model discovery is not a `/v1/models` GET.
+    models_list_envelope: None,
 };
 
 /// The two response headers a native AWS Bedrock endpoint ALWAYS emits (lowercase on the wire):
