@@ -1,14 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! FAIL-CLOSED edge reject for a cross-protocol stop-sequence list over the egress dialect's
-//! published cap (Cohere: 5, Gemini: 5, OpenAI: 4). Before this fix, `ProtocolWriter::write_request`
-//! (via a now-deleted proto-layer helper) silently truncated the list to the cap and forwarded
-//! the partial set upstream with only a `tracing::warn!` — a caller relying on their Nth+ stop
-//! sequence to bound generation silently lost that guard. The engine now REJECTS such a request
-//! up front, naming the vendor and the cap, so the caller can resubmit within the limit. A
-//! same-protocol request relays verbatim (never rebuilt from the IR), so an over-cap
-//! same-protocol request is untouched and left to that vendor's own native 400.
+//! v1.5.4-restored stop-sequence-cap cross-protocol degrade (Cohere: 5, Gemini: 5, OpenAI: 4).
+//! v1.5.4's `clamp_stop` TRUNCATED an over-cap list to the cap, emitted a `tracing::warn!` naming
+//! the vendor, cap, and dropped count, and forwarded the clamped set upstream at HTTP 200. 1.6.0
+//! briefly turned that silent-degrade into a hard 400; this restores the v1.5.4 outcome: the egress
+//! writer clamps to the cap and forwards. A same-protocol request relays verbatim (never rebuilt
+//! from the IR), so an over-cap same-protocol request is untouched and left to that vendor's own
+//! native 400.
 
 use super::translate_request_cross_protocol;
 use crate::proto::Protocol;
@@ -19,12 +18,12 @@ fn http() -> crate::transport::Transport {
     crate::transport::Transport::Http
 }
 
-// ---- CROSS-PROTOCOL over-cap stop list: REJECTED up front (was truncate-and-forward). ----
+// ---- CROSS-PROTOCOL over-cap stop list: CLAMPED to cap and forwarded at 200 (v1.5.4). ----
 
 #[test]
-fn openai_to_cohere_over_cap_stop_sequences_is_rejected() {
+fn openai_to_cohere_over_cap_stop_sequences_is_clamped_not_rejected() {
     // OpenAI ingress (unbounded `stop` array) → Cohere lane = cross-protocol. Cohere v2 caps
-    // `stop_sequences` at 5; a 6-item list must be rejected, not silently trimmed to 5.
+    // `stop_sequences` at 5; a 6-item list is CLAMPED to the first 5 and forwarded, not rejected.
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "command-r-plus",
@@ -38,7 +37,7 @@ fn openai_to_cohere_over_cap_stop_sequences_is_rejected() {
         "stop": ["a", "b", "c", "d", "e", "f"]
     });
     let hop_bytes = bytes::Bytes::from(crate::json::to_vec(&body).unwrap());
-    let result = translate_request_cross_protocol(
+    let out = translate_request_cross_protocol(
         &app,
         0,
         "openai",
@@ -48,21 +47,20 @@ fn openai_to_cohere_over_cap_stop_sequences_is_rejected() {
         true,
         &hop_bytes,
         "test-key",
-    );
-    let resp = result.expect_err(
-        "cross-protocol stop-sequence list over Cohere's cap of 5 must be rejected, not silently truncated",
-    );
+    )
+    .expect("cross-protocol over-cap stop list must be clamped and forwarded, not rejected");
+    let parsed: serde_json::Value = serde_json::from_slice(&out).unwrap();
     assert_eq!(
-        resp.status(),
-        axum::http::StatusCode::BAD_REQUEST,
-        "over-cap stop sequences must return a 4xx naming the vendor cap"
+        parsed.get("stop_sequences"),
+        Some(&json!(["a", "b", "c", "d", "e"])),
+        "an over-cap stop list must be clamped to Cohere's cap of 5 (v1.5.4 truncate-and-forward)"
     );
 }
 
 #[test]
 fn openai_to_cohere_exactly_cap_stop_sequences_is_allowed() {
-    // Guardrail: exactly 5 stop sequences is within Cohere's published cap and must succeed,
-    // forwarding the full set (not a further-truncated subset).
+    // Guardrail: exactly 5 stop sequences is within Cohere's published cap and must be forwarded
+    // whole (no clamp when at or under the cap).
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "command-r-plus",
@@ -92,14 +90,14 @@ fn openai_to_cohere_exactly_cap_stop_sequences_is_allowed() {
     assert_eq!(
         parsed.get("stop_sequences"),
         Some(&json!(["a", "b", "c", "d", "e"])),
-        "an at-cap stop list must be forwarded whole, not further truncated"
+        "an at-cap stop list must be forwarded whole, not truncated"
     );
 }
 
 #[test]
-fn openai_to_gemini_over_cap_stop_sequences_is_rejected() {
+fn openai_to_gemini_over_cap_stop_sequences_is_clamped_not_rejected() {
     // OpenAI ingress (unbounded `stop` array) → Gemini lane = cross-protocol. Gemini caps
-    // `stopSequences` at 5; a 6-item list must be rejected, not silently trimmed to 5.
+    // `stopSequences` at 5; a 6-item list is clamped to 5 and forwarded, not rejected.
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "gemini-1.5-pro",
@@ -113,7 +111,7 @@ fn openai_to_gemini_over_cap_stop_sequences_is_rejected() {
         "stop": ["a", "b", "c", "d", "e", "f"]
     });
     let hop_bytes = bytes::Bytes::from(crate::json::to_vec(&body).unwrap());
-    let result = translate_request_cross_protocol(
+    let out = translate_request_cross_protocol(
         &app,
         0,
         "openai",
@@ -123,21 +121,20 @@ fn openai_to_gemini_over_cap_stop_sequences_is_rejected() {
         true,
         &hop_bytes,
         "test-key",
-    );
-    let resp = result.expect_err(
-        "cross-protocol stop-sequence list over Gemini's cap of 5 must be rejected, not silently truncated",
-    );
+    )
+    .expect("cross-protocol over-cap stop list must be clamped and forwarded, not rejected");
+    let parsed: serde_json::Value = serde_json::from_slice(&out).unwrap();
     assert_eq!(
-        resp.status(),
-        axum::http::StatusCode::BAD_REQUEST,
-        "over-cap stop sequences must return a 4xx naming the vendor cap"
+        parsed.pointer("/generationConfig/stopSequences"),
+        Some(&json!(["a", "b", "c", "d", "e"])),
+        "an over-cap stop list must be clamped to Gemini's cap of 5 (v1.5.4 truncate-and-forward)"
     );
 }
 
 #[test]
-fn anthropic_to_openai_over_cap_stop_sequences_is_rejected() {
+fn anthropic_to_openai_over_cap_stop_sequences_is_clamped_not_rejected() {
     // Anthropic ingress (unbounded `stop_sequences` array) → OpenAI lane = cross-protocol. OpenAI
-    // Chat Completions caps `stop` at 4; a 5-item list must be rejected, not silently trimmed to 4.
+    // Chat Completions caps `stop` at 4; a 5-item list is clamped to 4 and forwarded, not rejected.
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "gpt-4o",
@@ -152,7 +149,7 @@ fn anthropic_to_openai_over_cap_stop_sequences_is_rejected() {
         "stop_sequences": ["a", "b", "c", "d", "e"]
     });
     let hop_bytes = bytes::Bytes::from(crate::json::to_vec(&body).unwrap());
-    let result = translate_request_cross_protocol(
+    let out = translate_request_cross_protocol(
         &app,
         0,
         "anthropic",
@@ -162,14 +159,13 @@ fn anthropic_to_openai_over_cap_stop_sequences_is_rejected() {
         true,
         &hop_bytes,
         "test-key",
-    );
-    let resp = result.expect_err(
-        "cross-protocol stop-sequence list over OpenAI's cap of 4 must be rejected, not silently truncated",
-    );
+    )
+    .expect("cross-protocol over-cap stop list must be clamped and forwarded, not rejected");
+    let parsed: serde_json::Value = serde_json::from_slice(&out).unwrap();
     assert_eq!(
-        resp.status(),
-        axum::http::StatusCode::BAD_REQUEST,
-        "over-cap stop sequences must return a 4xx naming the vendor cap"
+        parsed.get("stop"),
+        Some(&json!(["a", "b", "c", "d"])),
+        "an over-cap stop list must be clamped to OpenAI's cap of 4 (v1.5.4 truncate-and-forward)"
     );
 }
 
@@ -178,7 +174,7 @@ fn anthropic_to_openai_over_cap_stop_sequences_is_rejected() {
 #[test]
 fn cohere_to_cohere_over_cap_stop_sequences_is_preserved_verbatim() {
     // Cohere ingress → Cohere lane = same-protocol. The request relays verbatim (never rebuilt
-    // through the IR), so busbar's own cap guard never runs here; an over-cap list is left to
+    // through the IR), so busbar's own clamp never runs here; an over-cap list is left to
     // Cohere's own native 400 on the wire, not intercepted at this layer.
     let app = TestApp::new()
         .lane(LaneSpec::new(

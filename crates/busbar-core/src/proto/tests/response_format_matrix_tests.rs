@@ -254,20 +254,16 @@ fn req_with_stop(stop: Vec<String>) -> crate::ir::IrRequest {
 /// cross-protocol request can carry more stop sequences than a smaller target vendor allows:
 /// OpenAI caps at 4, Gemini/Cohere at 5 — exceeding any is a guaranteed 400.
 ///
-/// None of the three capped writers trim anymore: forwarding a truncated stop set is a WEAKER,
-/// DIFFERENT instruction than the one the caller gave (their Nth+ stop sequence silently stops
-/// bounding generation) — not a smaller-equivalent — so busbar (a security/audit product) REJECTS
-/// an over-cap request up front at the cross-protocol seam
-/// (`ChatOperation::egress_representable`, driven by each writer's `stop_sequence_cap`) instead of
-/// trimming in the writer. See `proxy::tests::stop_sequence_cap_reject_tests` for the reject
-/// coverage of all three vendors. Each writer's `write_request` itself no longer clamps — by the
-/// time it runs, the reject has already guaranteed `stop.len()` is within cap — so calling a
-/// writer directly (as below) with 8 entries legitimately forwards all 8; that is not a
-/// regression, it is each writer's new (narrower) job. This test pins the caps each writer
-/// PUBLISHES (what the reject path consults), not a trim performed here.
+/// v1.5.4-restored clamp: each capped writer TRUNCATES an over-cap stop list to its published cap
+/// (`busbar_core::ir::clamp_stop`) — with a `warn!` naming the dropped count — and forwards the
+/// clamped set at HTTP 200, rather than the cross-protocol seam rejecting the request with a 400.
+/// Fail-loud is a deliberate future opt-in, not a 1.6.0 default. See
+/// `proxy::tests::stop_sequence_cap_degrade_tests` for the end-to-end degrade coverage of all three
+/// vendors. This test pins both the caps each writer PUBLISHES (retained for the future opt-in) and
+/// the clamp each writer's `write_request` now performs.
 ///
 /// Anthropic/Bedrock publish no fixed cap and are LEFT UNCHANGED (inventing one would be a new
-/// lossy behavior this fix does not license) — still carrying all 8 when called directly.
+/// lossy behavior) — still carrying all 8 when called directly.
 #[test]
 fn stop_sequences_clamped_per_vendor_cap() {
     let stops: Vec<String> = (0..8).map(|i| format!("STOP{i}")).collect();
@@ -277,21 +273,21 @@ fn stop_sequences_clamped_per_vendor_cap() {
     assert_eq!(
         crate::proto::decl_for("openai").and_then(|d| d.stop_sequence_cap),
         Some((4, "OpenAI")),
-        "openai must publish its documented stop-sequence cap of 4 for the reject path to consult"
+        "openai must publish its documented stop-sequence cap of 4"
     );
     let o = openai_writer.write_request(&req);
     let o_stop = o["stop"].as_array().expect("openai stop array");
     assert_eq!(
         o_stop.len(),
-        8,
-        "OpenAiWriter::write_request no longer clamps; the reject seam enforces the cap upstream"
+        4,
+        "OpenAiWriter::write_request clamps an over-cap stop list to OpenAI's cap of 4 (v1.5.4 restore)"
     );
 
     let gemini_writer = GeminiWriter;
     assert_eq!(
         crate::proto::decl_for("gemini").and_then(|d| d.stop_sequence_cap),
         Some((5, "Gemini")),
-        "gemini must publish its documented stop-sequence cap of 5 for the reject path to consult"
+        "gemini must publish its documented stop-sequence cap of 5"
     );
     let g = gemini_writer.write_request(&req);
     let g_stop = g["generationConfig"]["stopSequences"]
@@ -299,14 +295,14 @@ fn stop_sequences_clamped_per_vendor_cap() {
         .expect("gemini stopSequences array");
     assert_eq!(
         g_stop.len(),
-        8,
-        "GeminiWriter::write_request no longer clamps; the reject seam enforces the cap upstream"
+        5,
+        "GeminiWriter::write_request clamps an over-cap stop list to Gemini's cap of 5 (v1.5.4 restore)"
     );
 
     assert_eq!(
         crate::proto::decl_for("cohere").and_then(|d| d.stop_sequence_cap),
         Some((5, "Cohere")),
-        "cohere must publish its documented stop-sequence cap of 5 for the reject path to consult"
+        "cohere must publish its documented stop-sequence cap of 5"
     );
 
     // Anthropic and Bedrock publish no fixed cap — UNCHANGED, still carrying all 8.

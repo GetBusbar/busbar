@@ -533,23 +533,13 @@ impl OperationHandler for GeminiEmbeddings {
     fn taps_usage(&self) -> bool {
         true
     }
-    /// FAIL-CLOSED: Gemini `:embedContent` embeds a SINGLE input. A cross-protocol request carrying
-    /// N > 1 inputs (e.g. an OpenAI-family embeddings batch) can only embed the first here — silently
-    /// misaligning the caller's `inputs[i] <-> embeddings[i]` and returning HTTP 200 with one vector.
-    /// Reject it up front instead. (`:batchEmbedContents` support is the larger follow-up.)
-    fn egress_representable(&self, ir: &IrReq) -> Result<(), String> {
-        if let IrReq::Embeddings(r) = ir {
-            let n = match &r.input {
-                EmbInput::Text(v) => v.len(),
-                _ => 1,
-            };
-            if n > 1 {
-                return Err(format!(
-                    "Gemini :embedContent embeds a single input; a {n}-input embeddings request is \
-                     not supported on this cross-protocol route (send inputs one per request)"
-                ));
-            }
-        }
+    /// Gemini `:embedContent` embeds a SINGLE input. v1.5.4-restored: a cross-protocol request
+    /// carrying N > 1 inputs (e.g. an OpenAI-family embeddings batch) is NOT rejected here. The
+    /// egress `write_request` embeds the FIRST input, emits a `warn!` naming how many were dropped,
+    /// and returns HTTP 200 with one vector — the silent-degrade v1.5.4 shipped. Fail-loud (a 400 up
+    /// front) is a deliberate future opt-in, not a 1.6.0 default, so this reports the request as
+    /// representable. (`:batchEmbedContents` support is the larger follow-up that would embed all N.)
+    fn egress_representable(&self, _ir: &IrReq) -> Result<(), String> {
         Ok(())
     }
     fn read_request(&self, body: &[u8], _content_type: &str) -> Result<IrReq, IngressReject> {
