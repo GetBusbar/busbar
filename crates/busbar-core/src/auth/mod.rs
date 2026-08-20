@@ -1237,8 +1237,18 @@ fn unauthorized_with_completion_taps(app: &crate::state::App, path: &str) -> Res
         // it), so it has no id from that path — stamp a fresh one here from the SAME process-wide
         // counter so this synthetic completion notification still carries a real, unique
         // correlation id rather than a misleading placeholder.
-        let shape =
-            crate::proxy::capture_stage_shape(None, "", proto, false, app.next_request_id());
+        // The pre-routing auth denial has no resolved operation and no readable body — `operation:
+        // None` short-circuits the seam to the zeroed shape before any read (MINOR-8).
+        let shape = crate::proxy::capture_stage_shape(
+            None,
+            &[],
+            "",
+            "",
+            proto,
+            None,
+            false,
+            app.next_request_id(),
+        );
         let status = auth_failure_status_and_kind(proto).0.as_u16();
         crate::proxy::fire_stage_taps(
             &app.tap_hooks_response,

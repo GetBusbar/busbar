@@ -31,3 +31,34 @@ fn ir_resp_usage_rerank_arm_projects_flat() {
     let ir = IrResp::Rerank(RerankResp::default());
     assert_eq!(ir.usage(), Some(Billing::Flat));
 }
+
+// ── IrFacts projection (close-non-chat-gate-blindness) ───────────────────────────────────────────
+
+use crate::ir::facts::{ContentItem, IrFacts};
+use crate::operation::Operation;
+
+#[test]
+fn rerank_projects_query_and_every_document() {
+    let req = RerankReq {
+        model: "rerank-v3".into(),
+        query: "the query".into(),
+        documents: vec!["doc one".into(), "doc two".into()],
+        ..Default::default()
+    };
+    assert_eq!(IrFacts::verb(&req), Operation::RERANK);
+    assert!(!IrFacts::wants_stream(&req));
+    let screened: Vec<String> = req
+        .content()
+        .iter()
+        .map(|i| i.screenable_text().into_owned())
+        .collect();
+    assert_eq!(screened, vec!["the query", "doc one", "doc two"]);
+    assert!(req
+        .content()
+        .iter()
+        .all(|i| matches!(i, ContentItem::Text { .. })));
+    assert_eq!(
+        req.shape().text_chars,
+        "the query".len() + "doc one".len() + "doc two".len()
+    );
+}

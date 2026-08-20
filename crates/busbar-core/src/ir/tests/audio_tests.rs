@@ -55,3 +55,75 @@ fn speech_carries_binary_out_and_char_or_token_billing() {
         Some(Billing::Characters { count: 11 })
     ));
 }
+
+// ── IrFacts projection (close-non-chat-gate-blindness) ───────────────────────────────────────────
+
+use crate::ir::facts::{ContentItem, IrFacts, OPAQUE_CONTENT_MARKER};
+use crate::operation::Operation;
+
+fn screened(items: &[ContentItem<'_>]) -> Vec<String> {
+    items
+        .iter()
+        .map(|i| i.screenable_text().into_owned())
+        .collect()
+}
+
+#[test]
+fn transcription_projects_prompt_as_text_and_audio_as_opaque() {
+    let req = TranscriptionReq {
+        audio: Some(crate::media::MediaBlob {
+            payload: crate::media::MediaPayload::B64("AAAA".into()),
+            mime_type: "audio/mp3".into(),
+            pcm: None,
+        }),
+        model: "whisper-1".into(),
+        prompt: Some("proper nouns to expect".into()),
+        stream: true,
+        ..Default::default()
+    };
+    assert_eq!(IrFacts::verb(&req), Operation::TRANSCRIPTION);
+    assert!(IrFacts::wants_stream(&req));
+    let items = req.content();
+    // The audio blob is opaque (present-but-unscreenable); the caller `prompt` is screenable text —
+    // reachable only through the byte-aware hook seam (FATAL-1), and it must not read as empty.
+    assert!(matches!(items[0], ContentItem::Opaque { .. }));
+    assert_eq!(items[0].screenable_text(), OPAQUE_CONTENT_MARKER);
+    assert!(screened(&items)
+        .iter()
+        .any(|t| t == "proper nouns to expect"));
+}
+
+#[test]
+fn speech_projects_input_instructions_and_speaker_names() {
+    let req = SpeechReq {
+        input: "hello world".into(),
+        model: "gpt-4o-mini-tts".into(),
+        voice: "alloy".into(),
+        instructions: Some("speak cheerfully".into()),
+        speakers: vec![("Dr. Smith".into(), "verse".into())],
+        stream: false,
+        ..Default::default()
+    };
+    assert_eq!(IrFacts::verb(&req), Operation::SPEECH);
+    let screened = screened(&req.content());
+    // FATAL-2: `instructions` is caller free-text forwarded verbatim; it must be screenable.
+    assert!(screened.iter().any(|t| t == "hello world"));
+    assert!(screened.iter().any(|t| t == "speak cheerfully"));
+    assert!(screened.iter().any(|t| t == "Dr. Smith"));
+    // The voice id is a provider knob, not caller free-text, and stays out of the gate view.
+    assert!(!screened.iter().any(|t| t == "verse"));
+}
+
+#[test]
+fn speech_instructions_alone_are_screened() {
+    // Forcing-function witness for FATAL-2: a request whose ONLY extra field is `instructions`
+    // surfaces it — a projection that dropped the field would fail here.
+    let req = SpeechReq {
+        input: "x".into(),
+        instructions: Some("SECRET-INSTRUCTIONS".into()),
+        ..Default::default()
+    };
+    assert!(screened(&req.content())
+        .iter()
+        .any(|t| t == "SECRET-INSTRUCTIONS"));
+}

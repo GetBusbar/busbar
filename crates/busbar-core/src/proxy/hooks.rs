@@ -81,12 +81,17 @@ pub(crate) fn apply_rewrite_to_body(
 // busbar-llm (G6), and a hooked request already pays a body read, so one pointer indirection on the
 // path that is only taken when a hook is configured is not a cost worth naming a plane's type to save.
 pub(crate) enum HookFacts {
-    /// A conversation request the ingress protocol's reader understood, seen through its neutral facts.
-    Chat(Box<dyn crate::ir::facts::IrFacts + Send + Sync>),
-    /// The body carries no readable conversation facts because it is not a JSON object at all — a
-    /// multipart/binary request, or the engine's absent-body sentinel. Projects as the zeroed shape
-    /// with no content, which is exactly what the seam projected for such a body before the cutover.
-    /// This is NOT the parse-failure case: a body the reader REFUSES is [`HookIrRejected`].
+    /// A request the ingress OPERATION's reader understood, seen through its neutral facts. Named
+    /// `Facts` and not `Chat` because the seam is operation-general now: a chat body reaches it as
+    /// `IrReq::Chat`, an embeddings/image/audio/rerank/moderation/subscribe body as its own family's
+    /// IR, and every one of them is screened through the SAME [`crate::ir::facts::IrFacts`] projection
+    /// — closing the hole where a non-chat operation forwarded past a content gate that saw nothing.
+    Facts(Box<dyn crate::ir::facts::IrFacts + Send + Sync>),
+    /// The body carries no readable facts for this seam: a JSON body with no resolvable operation
+    /// handler, an unregistered protocol, or the engine's absent-body sentinel with no bytes to read.
+    /// Projects as the zeroed shape with no content, which is exactly what the seam projected for such
+    /// a body before the cutover. This is NOT the parse-failure case: a body the reader REFUSES is
+    /// [`HookIrRejected`].
     Absent,
 }
 
@@ -118,16 +123,42 @@ pub(crate) struct HookIrRejected;
 /// with no hook configured pays nothing either way: no projection is built, so this is never called.
 pub(crate) fn read_hook_facts(
     v: &Value,
+    body: &[u8],
+    content_type: &str,
     ingress_protocol: &str,
+    operation: Option<crate::operation::Operation>,
 ) -> Result<HookFacts, HookIrRejected> {
-    if !v.is_object() {
-        return Ok(HookFacts::Absent);
-    }
-    let Some(protocol) = crate::proto::protocol_for(ingress_protocol) else {
+    // The op-less pre-routing site (auth's completion-tap capture, `operation == None`) never
+    // resolved an operation, so there is nothing to read and nothing to reject — the zeroed shape,
+    // exactly as before (MINOR-8).
+    let Some(operation) = operation else {
         return Ok(HookFacts::Absent);
     };
-    match protocol.reader().read_request(v) {
-        Ok(ir) => Ok(HookFacts::Chat(Box::new(ir))),
+    // Resolve THIS operation's codec: the same reader the cross-protocol translate path and the
+    // lazy-IR seam use, so the hook sees exactly the IR that will be built from these bytes. No
+    // handler (an unregistered protocol, or a protocol that does not serve this operation) is
+    // `Absent`: there is no reader to ask, which is not the same as a reader refusing.
+    let Some(handler) = crate::handlers::request_handler(ingress_protocol)
+        .and_then(|rh| rh.operation_handler(operation))
+    else {
+        return Ok(HookFacts::Absent);
+    };
+    // A JSON OBJECT body projects through the value reader (chat overrides it to call its proto
+    // reader directly — byte-identical to the pre-change seam). A non-object body is either a
+    // multipart/binary payload (transcription/speech audio) whose caller text is reachable ONLY
+    // through the byte reader (FATAL-1), or the engine's absent-body sentinel with no bytes at all.
+    let ir = if v.is_object() {
+        handler.read_request_value(v)
+    } else if body.is_empty() {
+        // Genuinely bodyless / the `Value::Null` sentinel: nothing to read, nothing to reject.
+        return Ok(HookFacts::Absent);
+    } else {
+        handler.read_request(body, content_type)
+    };
+    match ir {
+        Ok(ir) => Ok(HookFacts::Facts(Box::new(ir))),
+        // A body the operation's own reader REFUSES is the request's failure, per-operation — the
+        // same fail-closed ruling the chat seam already applied (parse-failure = request failure).
         Err(_) => Err(HookIrRejected),
     }
 }
@@ -136,7 +167,7 @@ impl HookFacts {
     /// The shape/size signal bucket every hook gets, granted or not.
     pub(crate) fn shape(&self) -> crate::ir::facts::Shape {
         match self {
-            HookFacts::Chat(ir) => ir.shape(),
+            HookFacts::Facts(ir) => ir.shape(),
             HookFacts::Absent => crate::ir::facts::Shape::EMPTY,
         }
     }
@@ -145,7 +176,7 @@ impl HookFacts {
     /// whichever field its dialect spells it in.
     pub(crate) fn end_user(&self) -> Option<String> {
         match self {
-            HookFacts::Chat(ir) => ir.end_user().map(str::to_string),
+            HookFacts::Facts(ir) => ir.end_user().map(str::to_string),
             HookFacts::Absent => None,
         }
     }
@@ -165,7 +196,7 @@ impl HookFacts {
     pub(crate) fn prompt(&self) -> crate::hooks::PromptProjection<'_> {
         use crate::ir::facts::{ContentItem, Slot};
         use std::borrow::Cow;
-        let HookFacts::Chat(ir) = self else {
+        let HookFacts::Facts(ir) = self else {
             return crate::hooks::PromptProjection {
                 system: None,
                 messages: Vec::new(),
@@ -348,6 +379,7 @@ pub(crate) async fn apply_global_rewrites(
     v: &mut Value,
     pool_name: &str,
     ingress_protocol: &str,
+    operation: crate::operation::Operation,
     wants_stream: bool,
     request_id: u64,
 ) -> Result<bool, (u16, String)> {
@@ -356,8 +388,16 @@ pub(crate) async fn apply_global_rewrites(
         // Re-READ the IR from the current body so a later hook sees the earlier rewrite — a true
         // transform chain. A body the reader refuses is the REQUEST's failure, not a best-effort
         // projection: screening a request busbar cannot read, and forwarding it anyway, is the
-        // fail-open shape.
-        let facts = match read_hook_facts(v, ingress_protocol) {
+        // fail-open shape. A rewrite chain only runs on a materialized JSON-object body (the caller
+        // gates on `v.as_mut()`), so the byte-reader arm of `read_hook_facts` is never taken here —
+        // the operation's value reader projects the current (post-rewrite) tree directly.
+        let facts = match read_hook_facts(
+            v,
+            &[],
+            crate::proxy::APPLICATION_JSON,
+            ingress_protocol,
+            Some(operation),
+        ) {
             Ok(f) => f,
             Err(HookIrRejected) => return Err((400, unreadable_body_message().to_string())),
         };
@@ -425,8 +465,11 @@ pub(crate) async fn decide_policy_order(
     cands: &[WeightedLane],
     request_ctx: &RequestCtx,
     v: &Value,
+    body: &[u8],
+    content_type: &str,
     pool_name: &str,
     ingress_protocol: &str,
+    operation: crate::operation::Operation,
     wants_stream: bool,
     caller_token: Option<&str>,
     resolved_gov_key: Option<&std::sync::Arc<crate::governance::VirtualKey>>,
@@ -507,7 +550,7 @@ pub(crate) async fn decide_policy_order(
     // id, and the content itself — comes from the IR the ingress protocol's own reader produced. A
     // body that reader REFUSES is the request's failure, surfaced as the gate's own first-class
     // rejection rather than screened as best-effort and forwarded upstream anyway.
-    let facts = match read_hook_facts(v, ingress_protocol) {
+    let facts = match read_hook_facts(v, body, content_type, ingress_protocol, Some(operation)) {
         Ok(f) => f,
         Err(HookIrRejected) => {
             return PolicyOutcome::RejectRequest {
@@ -861,11 +904,18 @@ pub(crate) struct StageShape<'a> {
     stream: bool,
 }
 
-/// Capture the stage-tap shape from the parsed body (`None` = an opaque/binary body: zeroed shape).
+/// Capture the stage-tap shape from the parsed body. `v == None` is an opaque/binary body (a
+/// multipart transcription/speech upload) OR the op-less pre-routing capture: the byte reader
+/// projects the former's shape when an operation + bytes are present, and the latter stays zeroed
+/// (`operation == None`, MINOR-8).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn capture_stage_shape<'a>(
     v: Option<&Value>,
+    body: &[u8],
+    content_type: &str,
     pool: &'a str,
     ingress_protocol: &'a str,
+    operation: Option<crate::operation::Operation>,
     stream: bool,
     request_id: u64,
 ) -> StageShape<'a> {
@@ -873,13 +923,19 @@ pub(crate) fn capture_stage_shape<'a>(
     // zeroed shape rather than failing anything: a stage tap is fire-and-forget OBSERVATION and can
     // never fail a request. The request itself is still rejected — by the gate/rewrite seams, which
     // read the same IR and do surface the parse failure — so this is not a fail-open hole, it is an
-    // observation path declining to invent facts it does not have.
-    let shape = match v {
-        Some(v) => read_hook_facts(v, ingress_protocol)
-            .map(|f| f.shape())
-            .unwrap_or(crate::ir::facts::Shape::EMPTY),
-        None => crate::ir::facts::Shape::EMPTY,
-    };
+    // observation path declining to invent facts it does not have. `v == None` stands in as
+    // `Value::Null` (a non-object body): with an op + bytes the byte reader engages (multipart), and
+    // with `operation == None` the seam short-circuits to the zeroed shape before any read.
+    let null = Value::Null;
+    let shape = read_hook_facts(
+        v.unwrap_or(&null),
+        body,
+        content_type,
+        ingress_protocol,
+        operation,
+    )
+    .map(|f| f.shape())
+    .unwrap_or(crate::ir::facts::Shape::EMPTY);
     StageShape {
         request_id,
         pool,

@@ -158,6 +158,10 @@ mod reqlog_dispatch_tests;
 #[path = "tests/usage_tap_tests.rs"]
 mod usage_tap_tests;
 
+#[cfg(test)]
+#[path = "tests/hook_non_chat_projection_tests.rs"]
+mod hook_non_chat_projection_tests;
+
 // There is no byte-scanning usage tap to unit-test here: billing sources `IrUsage` directly from the
 // per-protocol IR readers, which carry their OWN per-reader usage tests (usage extraction across
 // protocols, message_start input-token counting, terminal-error detection, eventstream

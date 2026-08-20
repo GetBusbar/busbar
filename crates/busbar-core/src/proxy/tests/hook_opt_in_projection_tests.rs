@@ -16,7 +16,16 @@ use crate::ir::facts::{IrFacts, OPAQUE_CONTENT_MARKER};
 
 /// Read the fixture body into the hook seam's facts, asserting the reader accepts it.
 fn facts(v: &Value, proto: &str) -> HookFacts {
-    match read_hook_facts(v, proto) {
+    // These fixtures are chat JSON bodies: the object arm reads through the CHAT operation handler,
+    // byte-identically to the pre-change seam (the `body`/`content_type` args are unused for an
+    // object body).
+    match read_hook_facts(
+        v,
+        &[],
+        APPLICATION_JSON,
+        proto,
+        Some(crate::operation::Operation::CHAT),
+    ) {
         Ok(f) => f,
         Err(HookIrRejected) => {
             panic!("the {proto} reader refused this fixture body; that is a finding, not a nit")
@@ -127,7 +136,14 @@ fn prompt_projection_keeps_empty_entries_aligned() {
 
     // A role no reader recognises is a 400, not a `role: ""` a guardrail is asked to screen.
     let v: Value = serde_json::json!({"messages": [{"role": "wizard", "content": "hi"}]});
-    assert!(read_hook_facts(&v, "openai").is_err());
+    assert!(read_hook_facts(
+        &v,
+        &[],
+        APPLICATION_JSON,
+        "openai",
+        Some(crate::operation::Operation::CHAT)
+    )
+    .is_err());
 }
 
 /// The SIZE signal and the content projection agree on a BLOCK-ARRAY system prompt: Anthropic

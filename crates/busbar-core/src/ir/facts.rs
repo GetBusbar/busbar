@@ -279,6 +279,25 @@ pub struct Shape {
 }
 
 impl Shape {
+    /// Sum the `text_chars` / `system_chars` size signals over an ALREADY-BUILT content projection —
+    /// the ONE place a non-chat family's size counts are derived, so the size signal can never walk a
+    /// different set of items than the gate is shown. The drift invariant `IrRequest`/`InvokeReq`
+    /// state inline (a size signal and a content projection computed by two functions can drift); the
+    /// non-chat families express the same invariant by summing over exactly the slice `content()`
+    /// returned rather than by a second walk.
+    pub fn counts_over(items: &[ContentItem<'_>]) -> (usize, usize) {
+        let mut text_chars = 0usize;
+        let mut system_chars = 0usize;
+        for item in items {
+            let n = item.screenable_text().chars().count();
+            text_chars += n;
+            if matches!(item.slot(), Slot::System) {
+                system_chars += n;
+            }
+        }
+        (text_chars, system_chars)
+    }
+
     /// The shape of a request that carries no readable conversation facts at all — a multipart or
     /// binary body, or one whose protocol has no reader registered. Named rather than
     /// `Default::default()`d so a consumer reads "nothing here" as a decision rather than as a

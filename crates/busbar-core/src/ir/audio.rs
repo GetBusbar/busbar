@@ -67,6 +67,61 @@ pub struct TranscriptionReq {
     pub extra: SourceScopedExtra,
 }
 
+/// THE TRANSCRIPTION FAMILY'S WALK — this IR's answer to [`crate::ir::facts::IrFacts`]. The audio
+/// blob is BINARY and unscreenable → one [`crate::ir::facts::ContentItem::Opaque`]
+/// (present-but-unscreenable, never silently empty). The `prompt` is caller free-text forwarded
+/// upstream — reachable ONLY through the byte-aware hook seam (a multipart body never reaches the
+/// `&Value` path; FATAL-1) → [`crate::ir::facts::ContentItem::Text`]. `source_language`/
+/// `target_language`/`response_format` are enum roles, not content.
+impl crate::ir::facts::IrFacts for TranscriptionReq {
+    fn verb(&self) -> crate::operation::Operation {
+        crate::operation::Operation::TRANSCRIPTION
+    }
+
+    fn wants_stream(&self) -> bool {
+        self.stream
+    }
+
+    fn end_user(&self) -> Option<&str> {
+        None
+    }
+
+    fn shape(&self) -> crate::ir::facts::Shape {
+        let items = crate::ir::facts::IrFacts::content(self);
+        let (text_chars, system_chars) = crate::ir::facts::Shape::counts_over(&items);
+        crate::ir::facts::Shape {
+            turn_count: 1,
+            has_tools: false,
+            tool_count: 0,
+            text_chars,
+            system_chars,
+            max_tokens: None,
+        }
+    }
+
+    fn content(&self) -> Vec<crate::ir::facts::ContentItem<'_>> {
+        use crate::ir::facts::{ContentItem, Slot, OPAQUE_CONTENT_MARKER};
+        use std::borrow::Cow;
+        let mut out = Vec::new();
+        if self.audio.is_some() {
+            out.push(ContentItem::Opaque {
+                author: "user",
+                slot: Slot::Turn(0),
+                label: "audio",
+                marker: OPAQUE_CONTENT_MARKER,
+            });
+        }
+        if let Some(prompt) = &self.prompt {
+            out.push(ContentItem::Text {
+                author: "user",
+                slot: Slot::Turn(0),
+                text: Cow::Borrowed(prompt.as_str()),
+            });
+        }
+        out
+    }
+}
+
 /// Transcription response IR.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct TranscriptionResp {
@@ -100,6 +155,64 @@ pub struct SpeechReq {
     pub speakers: Vec<(String, String)>, // Gemini multi-speaker (speaker, voice)
     pub stream: bool,
     pub extra: SourceScopedExtra,
+}
+
+/// THE SPEECH FAMILY'S WALK — this IR's answer to [`crate::ir::facts::IrFacts`]. Every caller
+/// free-text field is projected to [`crate::ir::facts::ContentItem::Text`]: the `input` to
+/// synthesize, the `instructions` style prompt when present (FATAL-2 — forwarded verbatim by both
+/// writers), and each multi-speaker NAME. The speaker VOICE and `response_format`/`speed` are
+/// provider knobs (voice ids, format enums), not caller free-text, and stay out.
+impl crate::ir::facts::IrFacts for SpeechReq {
+    fn verb(&self) -> crate::operation::Operation {
+        crate::operation::Operation::SPEECH
+    }
+
+    fn wants_stream(&self) -> bool {
+        self.stream
+    }
+
+    fn end_user(&self) -> Option<&str> {
+        None
+    }
+
+    fn shape(&self) -> crate::ir::facts::Shape {
+        let items = crate::ir::facts::IrFacts::content(self);
+        let (text_chars, system_chars) = crate::ir::facts::Shape::counts_over(&items);
+        crate::ir::facts::Shape {
+            turn_count: 1,
+            has_tools: false,
+            tool_count: 0,
+            text_chars,
+            system_chars,
+            max_tokens: None,
+        }
+    }
+
+    fn content(&self) -> Vec<crate::ir::facts::ContentItem<'_>> {
+        use crate::ir::facts::{ContentItem, Slot};
+        use std::borrow::Cow;
+        let mut out = Vec::new();
+        out.push(ContentItem::Text {
+            author: "user",
+            slot: Slot::Turn(0),
+            text: Cow::Borrowed(self.input.as_str()),
+        });
+        if let Some(instructions) = &self.instructions {
+            out.push(ContentItem::Text {
+                author: "user",
+                slot: Slot::Turn(0),
+                text: Cow::Borrowed(instructions.as_str()),
+            });
+        }
+        for (name, _voice) in &self.speakers {
+            out.push(ContentItem::Text {
+                author: "user",
+                slot: Slot::Turn(0),
+                text: Cow::Borrowed(name.as_str()),
+            });
+        }
+        out
+    }
 }
 
 /// Speech response IR (binary audio out).

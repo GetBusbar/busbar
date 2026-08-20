@@ -39,3 +39,34 @@ fn request_holds_mixed_text_and_image_inputs() {
     };
     assert_eq!(req.input.len(), 2);
 }
+
+// ── IrFacts projection (close-non-chat-gate-blindness) ───────────────────────────────────────────
+
+use crate::ir::facts::{ContentItem, IrFacts, OPAQUE_CONTENT_MARKER};
+use crate::operation::Operation;
+
+#[test]
+fn moderation_projects_text_and_marks_image_url_opaque() {
+    let req = ModerationReq {
+        model: "omni-moderation-latest".into(),
+        input: vec![
+            ModerationInput::Text("screen this text".into()),
+            ModerationInput::ImageUrl("https://example.com/x.png".into()),
+        ],
+        ..Default::default()
+    };
+    assert_eq!(IrFacts::verb(&req), Operation::MODERATION);
+    let items = req.content();
+    assert_eq!(items.len(), 2);
+    // The text is screenable; the ImageUrl is opaque, not the empty projection it was before (MAJOR-5).
+    assert!(matches!(items[0], ContentItem::Text { .. }));
+    assert_eq!(items[0].screenable_text(), "screen this text");
+    assert!(matches!(items[1], ContentItem::Opaque { .. }));
+    assert_eq!(items[1].screenable_text(), OPAQUE_CONTENT_MARKER);
+    // The image URL bytes never leak into the gate view.
+    assert!(!items[1].screenable_text().contains("example.com"));
+    assert_eq!(
+        req.shape().text_chars,
+        "screen this text".len() + OPAQUE_CONTENT_MARKER.len()
+    );
+}

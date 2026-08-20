@@ -72,6 +72,96 @@ pub struct EmbeddingsReq {
     pub extra: SourceScopedExtra,
 }
 
+/// THE EMBEDDINGS FAMILY'S WALK — this IR's answer to [`crate::ir::facts::IrFacts`], the
+/// family-blind seam the shared pipeline (hook/gate/tap) reads a request through. It lives HERE, in
+/// the module that owns the IR, for the reason [`crate::ir::invoke`]'s header states: one IR, one
+/// walk, one file — never folded into `facts.rs`, which carries the CHAT family's walk and would
+/// become a cross-family superset if a second family joined it.
+///
+/// Every CALLER-AUTHORED text field is projected to [`crate::ir::facts::ContentItem::Text`] so a
+/// `prompt: ro` screening gate sees it (the whole point of this change — an embeddings request was
+/// gate-blind before): each `input` string, and the Gemini retrieval `title` when present. Inputs
+/// that are present but UNSCREENABLE — a pre-tokenized token array, or an image reference — project
+/// [`crate::ir::facts::ContentItem::Opaque`] (present-but-unscreenable), never silently nothing.
+/// `input_type`/`task_type`/`truncate`/`dimensions` are enum/numeric ROLES, not caller free-text,
+/// and stay out.
+impl crate::ir::facts::IrFacts for EmbeddingsReq {
+    fn verb(&self) -> crate::operation::Operation {
+        crate::operation::Operation::EMBEDDINGS
+    }
+
+    fn wants_stream(&self) -> bool {
+        false
+    }
+
+    fn end_user(&self) -> Option<&str> {
+        self.user.as_deref()
+    }
+
+    fn shape(&self) -> crate::ir::facts::Shape {
+        let items = crate::ir::facts::IrFacts::content(self);
+        let (text_chars, system_chars) = crate::ir::facts::Shape::counts_over(&items);
+        crate::ir::facts::Shape {
+            turn_count: 1,
+            has_tools: false,
+            tool_count: 0,
+            text_chars,
+            system_chars,
+            max_tokens: None,
+        }
+    }
+
+    fn content(&self) -> Vec<crate::ir::facts::ContentItem<'_>> {
+        use crate::ir::facts::{ContentItem, Slot, OPAQUE_CONTENT_MARKER};
+        use std::borrow::Cow;
+        let mut out = Vec::new();
+        match &self.input {
+            EmbInput::Text(strings) => {
+                for s in strings {
+                    out.push(ContentItem::Text {
+                        author: "user",
+                        slot: Slot::Turn(0),
+                        text: Cow::Borrowed(s.as_str()),
+                    });
+                }
+            }
+            // Pre-tokenized input is content busbar cannot render back to screenable text — one
+            // opaque marker per array, present-but-unscreenable rather than silently empty.
+            EmbInput::Tokens(arrays) => {
+                for _ in arrays {
+                    out.push(ContentItem::Opaque {
+                        author: "user",
+                        slot: Slot::Turn(0),
+                        label: "tokens",
+                        marker: OPAQUE_CONTENT_MARKER,
+                    });
+                }
+            }
+            // Image references embed as binary/opaque input (MINOR-7): present-but-unscreenable.
+            EmbInput::Images(images) => {
+                for _ in images {
+                    out.push(ContentItem::Opaque {
+                        author: "user",
+                        slot: Slot::Turn(0),
+                        label: "image",
+                        marker: OPAQUE_CONTENT_MARKER,
+                    });
+                }
+            }
+        }
+        // FATAL-3: the Gemini RETRIEVAL_DOCUMENT title is caller free-text, read+written on the
+        // Gemini retrieval path, so a gate must see it.
+        if let Some(title) = &self.title {
+            out.push(ContentItem::Text {
+                author: "user",
+                slot: Slot::Turn(0),
+                text: Cow::Borrowed(title.as_str()),
+            });
+        }
+        out
+    }
+}
+
 /// One embedding, positionally aligned to the request input at `index`.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct EmbeddingItem {

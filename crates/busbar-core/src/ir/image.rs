@@ -76,6 +76,93 @@ pub struct ImageReq {
     pub extra: SourceScopedExtra,
 }
 
+/// THE IMAGE FAMILY'S WALK — this IR's answer to [`crate::ir::facts::IrFacts`]. Unlike an enum, a
+/// struct has no exhaustiveness check on its fields, so EVERY caller-text field is enumerated here by
+/// hand (MAJOR-6) and the `image_projection_covers_every_text_field` forcing-function test fails
+/// loudly if a new `String` field is added without a projection decision. Screenable text →
+/// [`crate::ir::facts::ContentItem::Text`]: `prompt`, `negative_prompt`, `mask_prompt`, and each
+/// `weighted_prompts` string (SDXL, which override `prompt`). Binary edit inputs →
+/// [`crate::ir::facts::ContentItem::Opaque`] (present-but-unscreenable, mirroring chat's image
+/// opacity): each `input_images` entry and the `mask`. The geometry / quality / sampling / provenance
+/// knobs are enum/numeric roles, not caller free-text, and stay out.
+impl crate::ir::facts::IrFacts for ImageReq {
+    fn verb(&self) -> crate::operation::Operation {
+        crate::operation::Operation::IMAGE
+    }
+
+    fn wants_stream(&self) -> bool {
+        false
+    }
+
+    fn end_user(&self) -> Option<&str> {
+        self.user.as_deref()
+    }
+
+    fn shape(&self) -> crate::ir::facts::Shape {
+        let items = crate::ir::facts::IrFacts::content(self);
+        let (text_chars, system_chars) = crate::ir::facts::Shape::counts_over(&items);
+        crate::ir::facts::Shape {
+            turn_count: 1,
+            has_tools: false,
+            tool_count: 0,
+            text_chars,
+            system_chars,
+            max_tokens: None,
+        }
+    }
+
+    fn content(&self) -> Vec<crate::ir::facts::ContentItem<'_>> {
+        use crate::ir::facts::{ContentItem, Slot, OPAQUE_CONTENT_MARKER};
+        use std::borrow::Cow;
+        let mut out = Vec::new();
+        if let Some(p) = &self.prompt {
+            out.push(ContentItem::Text {
+                author: "user",
+                slot: Slot::Turn(0),
+                text: Cow::Borrowed(p.as_str()),
+            });
+        }
+        if let Some(p) = &self.negative_prompt {
+            out.push(ContentItem::Text {
+                author: "user",
+                slot: Slot::Turn(0),
+                text: Cow::Borrowed(p.as_str()),
+            });
+        }
+        if let Some(p) = &self.mask_prompt {
+            out.push(ContentItem::Text {
+                author: "user",
+                slot: Slot::Turn(0),
+                text: Cow::Borrowed(p.as_str()),
+            });
+        }
+        for (p, _weight) in &self.weighted_prompts {
+            out.push(ContentItem::Text {
+                author: "user",
+                slot: Slot::Turn(0),
+                text: Cow::Borrowed(p.as_str()),
+            });
+        }
+        for _ in &self.input_images {
+            out.push(ContentItem::Opaque {
+                author: "user",
+                slot: Slot::Turn(0),
+                label: "image",
+                marker: OPAQUE_CONTENT_MARKER,
+            });
+        }
+        if self.mask.is_some() {
+            out.push(ContentItem::Opaque {
+                author: "user",
+                slot: Slot::Turn(0),
+                label: "mask",
+                marker: OPAQUE_CONTENT_MARKER,
+            });
+        }
+        out
+    }
+}
+
 /// For per-image providers that return no usage object — the gateway records what it billed from
 /// request params (priced by 1.3). Complements `usage` (token-metered models).
 #[derive(Debug, Clone, PartialEq, Default)]

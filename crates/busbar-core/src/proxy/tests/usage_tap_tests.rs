@@ -107,7 +107,14 @@ fn gemini_rewrite_role_round_trips_model_and_assistant() {
             {"role": "model", "parts": [{"text": "hello"}]}
         ]
     });
-    let f = super::read_hook_facts(&g_body, "gemini").expect("the gemini reader accepts this body");
+    let f = super::read_hook_facts(
+        &g_body,
+        &[],
+        super::APPLICATION_JSON,
+        "gemini",
+        Some(crate::operation::Operation::CHAT),
+    )
+    .expect("the gemini reader accepts this body");
     let p = f.prompt();
     assert_eq!(
         p.messages[1].0, "assistant",
@@ -192,9 +199,17 @@ async fn apply_global_rewrites_chains_in_order() {
         ),
     ];
     let mut v = serde_json::json!({"messages": [{"role": "user", "content": "orig"}]});
-    super::apply_global_rewrites(&hooks, &mut v, "pool", "anthropic", false, 1)
-        .await
-        .expect("no rewrite hook rejected");
+    super::apply_global_rewrites(
+        &hooks,
+        &mut v,
+        "pool",
+        "anthropic",
+        crate::operation::Operation::CHAT,
+        false,
+        1,
+    )
+    .await
+    .expect("no rewrite hook rejected");
     // Last hook in the chain wins; B ran on A's rewritten body.
     assert_eq!(v["messages"][0]["content"], "B");
 }

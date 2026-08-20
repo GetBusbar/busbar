@@ -427,6 +427,84 @@ impl IrReq {
     }
 }
 
+/// THE OPERATION-BLIND PROJECTION DISPATCH — the hook/gate/tap seam reads a request through
+/// [`crate::ir::facts::IrFacts`], and this is the one place the parent enum forwards to the inner
+/// family's walk. Every arm is enumerated with NO catch-all, deliberately: a `_ =>` would silently
+/// re-blind the next operation added to the tree (the exact hole this change closes), so a new
+/// `IrReq` variant is a compile error here until it has projected its screenable content — the same
+/// forcing-function every other exhaustive match in this file relies on.
+impl crate::ir::facts::IrFacts for IrReq {
+    fn verb(&self) -> Operation {
+        match self {
+            IrReq::Chat(r) => r.verb(),
+            IrReq::Embeddings(r) => r.verb(),
+            IrReq::Moderation(r) => r.verb(),
+            IrReq::Image(r) => r.verb(),
+            IrReq::Transcription(r) => r.verb(),
+            IrReq::Speech(r) => r.verb(),
+            IrReq::Rerank(r) => r.verb(),
+            IrReq::Invoke(r) => r.verb(),
+            IrReq::Subscribe(r) => r.verb(),
+        }
+    }
+
+    fn wants_stream(&self) -> bool {
+        match self {
+            IrReq::Chat(r) => crate::ir::facts::IrFacts::wants_stream(r),
+            IrReq::Embeddings(r) => crate::ir::facts::IrFacts::wants_stream(r),
+            IrReq::Moderation(r) => crate::ir::facts::IrFacts::wants_stream(r),
+            IrReq::Image(r) => crate::ir::facts::IrFacts::wants_stream(r),
+            IrReq::Transcription(r) => crate::ir::facts::IrFacts::wants_stream(r),
+            IrReq::Speech(r) => crate::ir::facts::IrFacts::wants_stream(r),
+            IrReq::Rerank(r) => crate::ir::facts::IrFacts::wants_stream(r),
+            IrReq::Invoke(r) => crate::ir::facts::IrFacts::wants_stream(r),
+            IrReq::Subscribe(r) => crate::ir::facts::IrFacts::wants_stream(r),
+        }
+    }
+
+    fn end_user(&self) -> Option<&str> {
+        match self {
+            IrReq::Chat(r) => r.end_user(),
+            IrReq::Embeddings(r) => r.end_user(),
+            IrReq::Moderation(r) => r.end_user(),
+            IrReq::Image(r) => r.end_user(),
+            IrReq::Transcription(r) => r.end_user(),
+            IrReq::Speech(r) => r.end_user(),
+            IrReq::Rerank(r) => r.end_user(),
+            IrReq::Invoke(r) => r.end_user(),
+            IrReq::Subscribe(r) => r.end_user(),
+        }
+    }
+
+    fn shape(&self) -> crate::ir::facts::Shape {
+        match self {
+            IrReq::Chat(r) => r.shape(),
+            IrReq::Embeddings(r) => r.shape(),
+            IrReq::Moderation(r) => r.shape(),
+            IrReq::Image(r) => r.shape(),
+            IrReq::Transcription(r) => r.shape(),
+            IrReq::Speech(r) => r.shape(),
+            IrReq::Rerank(r) => r.shape(),
+            IrReq::Invoke(r) => r.shape(),
+            IrReq::Subscribe(r) => r.shape(),
+        }
+    }
+
+    fn content(&self) -> Vec<crate::ir::facts::ContentItem<'_>> {
+        match self {
+            IrReq::Chat(r) => r.content(),
+            IrReq::Embeddings(r) => r.content(),
+            IrReq::Moderation(r) => r.content(),
+            IrReq::Image(r) => r.content(),
+            IrReq::Transcription(r) => r.content(),
+            IrReq::Speech(r) => r.content(),
+            IrReq::Rerank(r) => r.content(),
+            IrReq::Invoke(r) => r.content(),
+            IrReq::Subscribe(r) => r.content(),
+        }
+    }
+}
+
 /// Response-side IR — one variant per operation. `Chat` reuses the existing `IrResponse` verbatim.
 #[derive(Debug, Clone)]
 pub enum IrResp {

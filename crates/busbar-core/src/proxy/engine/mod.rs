@@ -172,8 +172,11 @@ pub(crate) async fn forward_with_pool_parsed(
         };
         Some(capture_stage_shape(
             dom,
+            &body,
+            req_content_type,
             pool_name,
             ingress_protocol,
+            Some(op.operation),
             stream,
             request_id,
         ))
@@ -771,6 +774,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                 parsed,
                 pool_name,
                 ingress_protocol,
+                op.operation,
                 wants_stream,
                 request_id,
             )
@@ -784,6 +788,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                 parsed,
                 pool_name,
                 ingress_protocol,
+                op.operation,
                 wants_stream,
                 request_id,
             )
@@ -842,10 +847,13 @@ pub(crate) async fn forward_with_pool_parsed_inner(
     // Hoisted empty check (mirrors `fire_global_taps`'s own first-line early return) so the DOM is
     // only materialized when a tap is actually configured — ZERO COST stays zero-parse.
     if !app.tap_hooks.is_empty() {
-        if let Some(Ok(body)) = v.as_mut().map(|l| l.ensure_dom()) {
+        if let Some(Ok(dom)) = v.as_mut().map(|l| l.ensure_dom()) {
             fire_global_taps(
                 &app,
-                body,
+                dom,
+                &body,
+                req_content_type,
+                op.operation,
                 pool_name,
                 ingress_protocol,
                 wants_stream,
@@ -996,8 +1004,11 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                     &cands,
                     &request_ctx,
                     gate_body,
+                    &body,
+                    req_content_type,
                     pool_name,
                     ingress_protocol,
+                    op.operation,
                     wants_stream,
                     caller_token,
                     resolved_gov_key,
@@ -1185,8 +1196,11 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                     &cands,
                     &request_ctx,
                     policy_body,
+                    &body,
+                    req_content_type,
                     pool_name,
                     ingress_protocol,
+                    op.operation,
                     wants_stream,
                     caller_token,
                     resolved_gov_key,
@@ -1360,8 +1374,11 @@ pub(crate) async fn forward_with_pool_parsed_inner(
         };
         Some(capture_stage_shape(
             dom,
+            &body,
+            req_content_type,
             pool_name,
             ingress_protocol,
+            Some(op.operation),
             wants_stream,
             request_ctx.request_id,
         ))
@@ -2513,9 +2530,13 @@ fn inject_openai_stream_include_usage_pristine(payload: Bytes) -> Bytes {
 /// `prompt: ro` tap gets the prompt-content projection, a `prompt: no` (default) tap gets shape-only.
 /// At most TWO projections are built (shape-only + with-prompt) regardless of tap count. ZERO COST
 /// when no tap is configured (the empty-list early return).
+#[allow(clippy::too_many_arguments)]
 fn fire_global_taps(
     app: &Arc<App>,
     body: &Value,
+    raw_body: &[u8],
+    content_type: &str,
+    operation: crate::operation::Operation,
     pool_name: &str,
     ingress_protocol: &str,
     wants_stream: bool,
@@ -2543,8 +2564,14 @@ fn fire_global_taps(
     // refuses yields the zeroed shape here rather than failing anything: request-stage taps are
     // fire-and-forget observation, and the gate/rewrite seams — which read the same IR — are where
     // an unreadable request is actually rejected.
-    let facts = crate::proxy::hooks::read_hook_facts(body, ingress_protocol)
-        .unwrap_or(crate::proxy::hooks::HookFacts::Absent);
+    let facts = crate::proxy::hooks::read_hook_facts(
+        body,
+        raw_body,
+        content_type,
+        ingress_protocol,
+        Some(operation),
+    )
+    .unwrap_or(crate::proxy::hooks::HookFacts::Absent);
     let build_proj = |with_prompt: bool| {
         let req = build_rewrite_request(
             &facts,

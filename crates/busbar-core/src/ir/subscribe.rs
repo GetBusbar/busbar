@@ -61,6 +61,46 @@ pub struct SubscribeReq {
     pub extra: crate::lossless::SourceScopedExtra,
 }
 
+/// THE SUBSCRIBE FAMILY'S WALK — this IR's answer to [`crate::ir::facts::IrFacts`]. The one
+/// caller-authored thing on the operation is the `target` name (a resource URI on MCP), forwarded
+/// upstream verbatim, so it projects to [`crate::ir::facts::ContentItem::Text`] for a screening gate.
+/// `wants_stream` is `false` (FATAL-4): registering is answered once with an acknowledgement — the
+/// events that follow are a separate channel, not an incremental rendering of this request.
+impl crate::ir::facts::IrFacts for SubscribeReq {
+    fn verb(&self) -> crate::operation::Operation {
+        crate::operation::Operation::SUBSCRIBE
+    }
+
+    fn wants_stream(&self) -> bool {
+        false
+    }
+
+    fn end_user(&self) -> Option<&str> {
+        None
+    }
+
+    fn shape(&self) -> crate::ir::facts::Shape {
+        let items = crate::ir::facts::IrFacts::content(self);
+        let (text_chars, system_chars) = crate::ir::facts::Shape::counts_over(&items);
+        crate::ir::facts::Shape {
+            turn_count: 1,
+            has_tools: false,
+            tool_count: 0,
+            text_chars,
+            system_chars,
+            max_tokens: None,
+        }
+    }
+
+    fn content(&self) -> Vec<crate::ir::facts::ContentItem<'_>> {
+        vec![crate::ir::facts::ContentItem::Text {
+            author: "user",
+            slot: crate::ir::facts::Slot::Turn(0),
+            text: std::borrow::Cow::Borrowed(self.target.as_str()),
+        }]
+    }
+}
+
 /// WHAT A SUBSCRIPTION REQUEST PRODUCED. The response half.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SubscribeResp {
@@ -70,4 +110,35 @@ pub struct SubscribeResp {
     pub registration: Option<Value>,
     /// Unmodelled response members, source-keyed for the same reason as the request's.
     pub extra: crate::lossless::SourceScopedExtra,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ir::facts::{ContentItem, IrFacts};
+    use crate::operation::Operation;
+
+    #[test]
+    fn subscribe_projects_target_name_and_never_streams() {
+        let req = SubscribeReq {
+            intent: SubscribeIntent::Register,
+            target: "mcp://resource/inbox".into(),
+            extra: Default::default(),
+        };
+        assert_eq!(IrFacts::verb(&req), Operation::SUBSCRIBE);
+        // FATAL-4: registering is answered once — it is NOT a stream.
+        assert!(!IrFacts::wants_stream(&req));
+        let items = req.content();
+        assert_eq!(items.len(), 1);
+        assert!(matches!(items[0], ContentItem::Text { .. }));
+        assert_eq!(items[0].screenable_text(), "mcp://resource/inbox");
+        assert_eq!(req.shape().text_chars, "mcp://resource/inbox".len());
+        // The same projection holds for a deregister — one shape, one intent field.
+        let dereg = SubscribeReq {
+            intent: SubscribeIntent::Deregister,
+            target: "mcp://resource/inbox".into(),
+            extra: Default::default(),
+        };
+        assert_eq!(dereg.content()[0].screenable_text(), "mcp://resource/inbox");
+    }
 }

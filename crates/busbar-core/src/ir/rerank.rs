@@ -22,6 +22,56 @@ pub struct RerankReq {
     pub extra: SourceScopedExtra,
 }
 
+/// THE RERANK FAMILY'S WALK — this IR's answer to [`crate::ir::facts::IrFacts`]. Both the `query`
+/// and every `document` are caller free-text sent upstream verbatim, so both project to
+/// [`crate::ir::facts::ContentItem::Text`] for a screening gate. `top_n`/`max_tokens_per_doc` are
+/// numeric knobs, not content.
+impl crate::ir::facts::IrFacts for RerankReq {
+    fn verb(&self) -> crate::operation::Operation {
+        crate::operation::Operation::RERANK
+    }
+
+    fn wants_stream(&self) -> bool {
+        false
+    }
+
+    fn end_user(&self) -> Option<&str> {
+        None
+    }
+
+    fn shape(&self) -> crate::ir::facts::Shape {
+        let items = crate::ir::facts::IrFacts::content(self);
+        let (text_chars, system_chars) = crate::ir::facts::Shape::counts_over(&items);
+        crate::ir::facts::Shape {
+            turn_count: 1,
+            has_tools: false,
+            tool_count: 0,
+            text_chars,
+            system_chars,
+            max_tokens: None,
+        }
+    }
+
+    fn content(&self) -> Vec<crate::ir::facts::ContentItem<'_>> {
+        use crate::ir::facts::{ContentItem, Slot};
+        use std::borrow::Cow;
+        let mut out = Vec::with_capacity(1 + self.documents.len());
+        out.push(ContentItem::Text {
+            author: "user",
+            slot: Slot::Turn(0),
+            text: Cow::Borrowed(self.query.as_str()),
+        });
+        for doc in &self.documents {
+            out.push(ContentItem::Text {
+                author: "user",
+                slot: Slot::Turn(0),
+                text: Cow::Borrowed(doc.as_str()),
+            });
+        }
+        out
+    }
+}
+
 /// One ranked hit: the index into the REQUEST's `documents` and its relevance.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct RerankResult {
