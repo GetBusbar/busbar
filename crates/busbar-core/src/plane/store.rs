@@ -11,15 +11,28 @@
 //! let it append audit records and forge a record's `prev_hash`/`hash` — the one thing the chain
 //! exists to make impossible.
 //!
-//! [`PlaneStore`] is the narrower of the two. It declares ONLY the plane methods, with the SAME
-//! names and signatures they carry on `Store`, and NONE of the audit-chain, credential, key, usage
-//! or metering methods. It is a NEW trait owned by core, not a re-hierarching of `Store`: the
-//! external store plugins (sqlite/postgres/valkey/mysql) still `impl busbar_api::Store` unchanged, so
-//! nothing about the signed plugin ABI moves.
+//! [`PlaneStore`] is the narrower of the two. It declares ONLY the eight neutral kind-tagged
+//! PLANE-RECORD verbs (`upsert_plane_record`/`append_plane_record`/… over the [`PlaneRecord`]
+//! envelope), and NONE of the audit-chain, credential, key, usage or metering methods. It is a NEW
+//! trait owned by core, not a re-hierarching of `Store`: the external store plugins
+//! (sqlite/postgres/valkey/mysql) still `impl busbar_api::Store` unchanged, so nothing about the
+//! signed plugin ABI moves.
+//!
+//! ## Neutral kind-tagged verbs, typed rows on either side
+//!
+//! Core speaks in TYPED rows (`TaskRow`, `TaskEventRow`, `McpCallRecord`, `McpDemotionRow`); the
+//! neutral verbs speak in an OPAQUE `body: Vec<u8>` carried on a [`PlaneRecord`] whose every other
+//! field is a typed sidecar column. The mapping between the two — which plane concept is which
+//! `kind`, and how a typed row is serialized into (and back out of) an opaque body — lives in the
+//! free helpers at the bottom of this module ([`task_record`], [`decode`], the `KIND_*` constants,
+//! …), so a consumer builds a [`PlaneRecord`] with one call and reads a body back with one call. The
+//! serde is `serde_json`, byte-for-byte the same the store plugins decode it with, so a body written
+//! through this seam reads back identically no matter which side of the plugin ABI persisted it.
 //!
 //! [`PlaneStoreView`] is the one bridge across the seam. It wraps an `Arc<dyn Store>` and forwards
-//! each plane method to it. Boot constructs exactly one and hands the plane state types an
-//! `Arc<dyn PlaneStore>`; from there no plane ever sees an `Arc<dyn Store>` again.
+//! each neutral verb to the store's matching neutral verb, one-to-one. Boot constructs exactly one
+//! and hands the plane state types an `Arc<dyn PlaneStore>`; from there no plane ever sees an
+//! `Arc<dyn Store>` again.
 //!
 //! ## Digests are computed BEFORE they cross this seam
 //!
@@ -32,56 +45,49 @@
 //! method ever needed a digest computed at the seam, it would be computed HERE, inside the wrapper,
 //! against engine-owned material — never by handing the plane the material to compute it itself.
 
-use busbar_api::{McpCallRecord, McpDemotionRow, Store, StoreResult, TaskEventRow, TaskRow};
+use busbar_api::{
+    McpCallRecord, McpDemotionRow, PlaneDisposition, PlaneRecord, PlaneSelector, Store, StoreError,
+    StoreResult, TaskEventRow, TaskRow,
+};
 use std::sync::Arc;
 
-/// The PLANE-FACING durable sink: exactly the plane methods of [`busbar_api::Store`], and provably
-/// none of its audit-chain / key / credential / usage authority. A plane persists its trust state
-/// through this and cannot reach [`Store::append_audit`] because the method is not on the trait.
+/// The PLANE-FACING durable sink: exactly the eight neutral kind-tagged verbs of
+/// [`busbar_api::Store`], and provably none of its audit-chain / key / credential / usage authority.
+/// A plane persists its trust state through this and cannot reach [`Store::append_audit`] because the
+/// method is not on the trait.
 ///
-/// The method names and signatures MIRROR `Store`'s so a `Store` implementation forwards to them
-/// one-to-one (see [`PlaneStoreView`]); the mirroring is deliberate and is NOT a modification of
-/// `Store` — this is an additional, strictly-narrower trait owned by core.
+/// The method names and signatures MIRROR `Store`'s neutral verbs so a `Store` implementation
+/// forwards to them one-to-one (see [`PlaneStoreView`]); the mirroring is deliberate and is NOT a
+/// modification of `Store` — this is an additional, strictly-narrower trait owned by core.
 pub(crate) trait PlaneStore: Send + Sync + 'static {
-    // ── A2A TASK STATE ───────────────────────────────────────────────────────────────────────
-    /// See [`Store::put_task`].
-    fn put_task(&self, task: &TaskRow) -> StoreResult<()>;
-    /// See [`Store::get_task`].
-    fn get_task(&self, task_id: &str) -> StoreResult<Option<TaskRow>>;
-    /// See [`Store::list_tasks`].
-    fn list_tasks(&self) -> StoreResult<Vec<TaskRow>>;
-    /// See [`Store::purge_tasks_before`].
-    fn purge_tasks_before(&self, before: u64) -> StoreResult<u64>;
-    /// See [`Store::append_task_event`].
-    fn append_task_event(&self, event: &TaskEventRow) -> StoreResult<()>;
-    /// See [`Store::list_task_events`].
-    fn list_task_events(&self, task_id: &str) -> StoreResult<Vec<TaskEventRow>>;
-
-    // ── MCP PER-CALL LOG ─────────────────────────────────────────────────────────────────────
-    /// See [`Store::append_mcp_call`].
-    fn append_mcp_call(&self, record: &McpCallRecord) -> StoreResult<()>;
-    /// See [`Store::list_mcp_calls`].
-    fn list_mcp_calls(&self, principal: &str) -> StoreResult<Vec<McpCallRecord>>;
-    /// See [`Store::list_mcp_call_principals`].
-    fn list_mcp_call_principals(&self) -> StoreResult<Vec<String>>;
-    /// See [`Store::purge_mcp_calls_before`].
-    fn purge_mcp_calls_before(&self, before: u64) -> StoreResult<u64>;
-
-    // ── MCP DEMOTION RECORD ──────────────────────────────────────────────────────────────────
-    /// See [`Store::put_mcp_demotion`].
-    fn put_mcp_demotion(&self, row: &McpDemotionRow) -> StoreResult<()>;
-    /// See [`Store::list_mcp_demotions`].
-    fn list_mcp_demotions(&self) -> StoreResult<Vec<McpDemotionRow>>;
-    /// See [`Store::clear_mcp_demotion`].
-    fn clear_mcp_demotion(&self, server: &str) -> StoreResult<()>;
-
-    // ── SPENT-APPROVAL LEDGER ────────────────────────────────────────────────────────────────
-    /// See [`Store::redeem_ask_state`].
-    fn redeem_ask_state(&self, nonce: &str, expires_at: u64, now: u64) -> StoreResult<bool>;
+    /// See [`Store::upsert_plane_record`] — the neutral upsert (kind `task` / `demotion`).
+    fn upsert_plane_record(&self, record: &PlaneRecord) -> StoreResult<()>;
+    /// See [`Store::get_plane_record`] — the neutral point read (kind `task`).
+    fn get_plane_record(&self, kind: &str, id: &str) -> StoreResult<Option<Vec<u8>>>;
+    /// See [`Store::append_plane_record`] — the neutral append (kind `task_event` / `call`).
+    fn append_plane_record(&self, record: &PlaneRecord) -> StoreResult<()>;
+    /// See [`Store::list_plane_records`] — the neutral list (kind × selector).
+    fn list_plane_records(&self, kind: &str, selector: &PlaneSelector)
+        -> StoreResult<Vec<Vec<u8>>>;
+    /// See [`Store::list_plane_record_parents`] — the neutral parent enumeration (kind `call`).
+    fn list_plane_record_parents(&self, kind: &str) -> StoreResult<Vec<String>>;
+    /// See [`Store::purge_plane_records_before`] — the neutral retention purge (kind `task` /
+    /// `call`, honoring the terminal-only-vs-all-older split per kind).
+    fn purge_plane_records_before(&self, kind: &str, before: u64) -> StoreResult<u64>;
+    /// See [`Store::delete_plane_record`] — the neutral delete (kind `demotion`).
+    fn delete_plane_record(&self, kind: &str, id: &str) -> StoreResult<()>;
+    /// See [`Store::redeem_plane_token`] — the neutral single-use test-and-set (kind `ask`).
+    fn redeem_plane_token(
+        &self,
+        kind: &str,
+        token: &str,
+        expires_at: u64,
+        now: u64,
+    ) -> StoreResult<bool>;
 }
 
 /// The one bridge across the plane store seam: wraps the real [`busbar_api::Store`] and forwards
-/// each plane method to it, exposing ONLY [`PlaneStore`]. Boot builds one per configured store via
+/// each neutral verb to it, exposing ONLY [`PlaneStore`]. Boot builds one per configured store via
 /// [`PlaneStoreView::narrow`] and every plane state type holds the resulting `Arc<dyn PlaneStore>`,
 /// so a plane's durable writes reach the same backend the engine uses while its handle carries none
 /// of the audit-chain authority `Store` also holds.
@@ -99,48 +105,139 @@ impl PlaneStoreView {
 }
 
 impl PlaneStore for PlaneStoreView {
-    fn put_task(&self, task: &TaskRow) -> StoreResult<()> {
-        self.0.put_task(task)
+    fn upsert_plane_record(&self, record: &PlaneRecord) -> StoreResult<()> {
+        self.0.upsert_plane_record(record)
     }
-    fn get_task(&self, task_id: &str) -> StoreResult<Option<TaskRow>> {
-        self.0.get_task(task_id)
+    fn get_plane_record(&self, kind: &str, id: &str) -> StoreResult<Option<Vec<u8>>> {
+        self.0.get_plane_record(kind, id)
     }
-    fn list_tasks(&self) -> StoreResult<Vec<TaskRow>> {
-        self.0.list_tasks()
+    fn append_plane_record(&self, record: &PlaneRecord) -> StoreResult<()> {
+        self.0.append_plane_record(record)
     }
-    fn purge_tasks_before(&self, before: u64) -> StoreResult<u64> {
-        self.0.purge_tasks_before(before)
+    fn list_plane_records(
+        &self,
+        kind: &str,
+        selector: &PlaneSelector,
+    ) -> StoreResult<Vec<Vec<u8>>> {
+        self.0.list_plane_records(kind, selector)
     }
-    fn append_task_event(&self, event: &TaskEventRow) -> StoreResult<()> {
-        self.0.append_task_event(event)
+    fn list_plane_record_parents(&self, kind: &str) -> StoreResult<Vec<String>> {
+        self.0.list_plane_record_parents(kind)
     }
-    fn list_task_events(&self, task_id: &str) -> StoreResult<Vec<TaskEventRow>> {
-        self.0.list_task_events(task_id)
+    fn purge_plane_records_before(&self, kind: &str, before: u64) -> StoreResult<u64> {
+        self.0.purge_plane_records_before(kind, before)
     }
-    fn append_mcp_call(&self, record: &McpCallRecord) -> StoreResult<()> {
-        self.0.append_mcp_call(record)
+    fn delete_plane_record(&self, kind: &str, id: &str) -> StoreResult<()> {
+        self.0.delete_plane_record(kind, id)
     }
-    fn list_mcp_calls(&self, principal: &str) -> StoreResult<Vec<McpCallRecord>> {
-        self.0.list_mcp_calls(principal)
+    fn redeem_plane_token(
+        &self,
+        kind: &str,
+        token: &str,
+        expires_at: u64,
+        now: u64,
+    ) -> StoreResult<bool> {
+        self.0.redeem_plane_token(kind, token, expires_at, now)
     }
-    fn list_mcp_call_principals(&self) -> StoreResult<Vec<String>> {
-        self.0.list_mcp_call_principals()
-    }
-    fn purge_mcp_calls_before(&self, before: u64) -> StoreResult<u64> {
-        self.0.purge_mcp_calls_before(before)
-    }
-    fn put_mcp_demotion(&self, row: &McpDemotionRow) -> StoreResult<()> {
-        self.0.put_mcp_demotion(row)
-    }
-    fn list_mcp_demotions(&self) -> StoreResult<Vec<McpDemotionRow>> {
-        self.0.list_mcp_demotions()
-    }
-    fn clear_mcp_demotion(&self, server: &str) -> StoreResult<()> {
-        self.0.clear_mcp_demotion(server)
-    }
-    fn redeem_ask_state(&self, nonce: &str, expires_at: u64, now: u64) -> StoreResult<bool> {
-        self.0.redeem_ask_state(nonce, expires_at, now)
-    }
+}
+
+// ── THE KIND↔CONCEPT MAPPING (the 14→8 table's row-per-concept, made concrete) ─────────────────
+//
+// One constant per plane concept, so a consumer names a `kind` in exactly one place and a typo is a
+// missing symbol rather than a silently-inert string. These are the on-wire tags a store branches
+// on; they match the reference `impl Store` in `store-example-plugin` verbatim.
+
+/// The A2A task row kind — the neutral `put_task`/`get_task`/`list_tasks`/`purge_tasks_before`.
+pub(crate) const KIND_TASK: &str = "task";
+/// The A2A per-task provenance event kind — the neutral `append_task_event`/`list_task_events`.
+pub(crate) const KIND_TASK_EVENT: &str = "task_event";
+/// The MCP per-call log record kind — the neutral `append_mcp_call`/`list_mcp_calls`/… .
+pub(crate) const KIND_CALL: &str = "call";
+/// The MCP demotion record kind — the neutral `put_mcp_demotion`/`list_mcp_demotions`/… .
+pub(crate) const KIND_DEMOTION: &str = "demotion";
+/// The spent-approval ledger kind — the neutral `redeem_ask_state` (a single-use token).
+pub(crate) const KIND_ASK: &str = "ask";
+
+/// The A2A task states that are FINAL — the terminal set the task kind's retention contract drops.
+/// Kept beside the mapping (not re-derived at each call site) so the `disposition` a record carries
+/// and the purge that reads it agree by construction.
+const TERMINAL_TASK_STATES: [&str; 4] = ["completed", "failed", "canceled", "rejected"];
+
+/// Serialize a typed plane row into an opaque [`PlaneRecord::body`]. `serde_json`, matching the
+/// store plugins' decode, so the bytes round-trip identically across the plugin ABI.
+pub(crate) fn encode<T: serde::Serialize>(row: &T) -> StoreResult<Vec<u8>> {
+    serde_json::to_vec(row).map_err(|e| StoreError(format!("plane body encode: {e}")))
+}
+
+/// Decode an opaque [`PlaneRecord::body`] back into its typed plane row — the exact inverse of
+/// [`encode`]. A malformed body is a STORE ERROR the caller sees, never a silently-dropped read.
+pub(crate) fn decode<T: serde::de::DeserializeOwned>(body: &[u8]) -> StoreResult<T> {
+    serde_json::from_slice(body).map_err(|e| StoreError(format!("plane body decode: {e}")))
+}
+
+/// Build the neutral upsert envelope for an A2A task row (kind `task`). `ts` is the row's
+/// `updated_at` (the axis retention compares against) and `disposition` is `Terminal` exactly when
+/// the task's state is final, so `purge_plane_records_before` can honor the terminal-only contract
+/// from the typed sidecar without decoding the body.
+pub(crate) fn task_record(row: &TaskRow) -> StoreResult<PlaneRecord> {
+    let disposition = if TERMINAL_TASK_STATES.contains(&row.state.as_str()) {
+        PlaneDisposition::Terminal
+    } else {
+        PlaneDisposition::Active
+    };
+    Ok(PlaneRecord {
+        kind: KIND_TASK.to_string(),
+        id: row.task_id.clone(),
+        parent: None,
+        seq: 0,
+        ts: row.updated_at,
+        disposition,
+        body: encode(row)?,
+    })
+}
+
+/// Build the neutral append envelope for a per-task provenance event (kind `task_event`), hung off
+/// its task via `parent` and ordered by the event's own `seq`.
+pub(crate) fn task_event_record(event: &TaskEventRow) -> StoreResult<PlaneRecord> {
+    Ok(PlaneRecord {
+        kind: KIND_TASK_EVENT.to_string(),
+        id: event.task_id.clone(),
+        parent: Some(event.task_id.clone()),
+        seq: event.seq,
+        ts: event.ts,
+        disposition: PlaneDisposition::Active,
+        body: encode(event)?,
+    })
+}
+
+/// Build the neutral append envelope for an MCP per-call record (kind `call`), hung off its
+/// principal via `parent` and ordered by the record's own `seq`. The `call` kind's retention drops
+/// ALL rows older than a cutoff, so its disposition is immaterial to the purge and is left `Active`.
+pub(crate) fn call_record(record: &McpCallRecord) -> StoreResult<PlaneRecord> {
+    Ok(PlaneRecord {
+        kind: KIND_CALL.to_string(),
+        id: record.principal.clone(),
+        parent: Some(record.principal.clone()),
+        seq: record.seq,
+        ts: record.ts,
+        disposition: PlaneDisposition::Active,
+        body: encode(record)?,
+    })
+}
+
+/// Build the neutral upsert envelope for an MCP demotion record (kind `demotion`), keyed by its
+/// server. Demotions are never purged by age (they clear on an agreeing observation, not a cutoff),
+/// so the disposition is immaterial and left `Active`.
+pub(crate) fn demotion_record(row: &McpDemotionRow) -> StoreResult<PlaneRecord> {
+    Ok(PlaneRecord {
+        kind: KIND_DEMOTION.to_string(),
+        id: row.server.clone(),
+        parent: None,
+        seq: 0,
+        ts: row.recorded_at,
+        disposition: PlaneDisposition::Active,
+        body: encode(row)?,
+    })
 }
 
 #[cfg(test)]

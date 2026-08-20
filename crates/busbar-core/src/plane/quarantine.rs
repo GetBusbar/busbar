@@ -48,8 +48,8 @@
 //! everywhere else on this seam, a write's `Ok(())` is not evidence of durability: the engine finds
 //! out what its backend kept by READING IT BACK at boot.
 
-use crate::plane::store::PlaneStore;
-use busbar_api::McpDemotionRow;
+use crate::plane::store::{decode, demotion_record, PlaneStore, KIND_DEMOTION};
+use busbar_api::{McpDemotionRow, PlaneSelector};
 use std::sync::{Arc, Mutex};
 
 /// The durable demotion record's write side. No `Debug`: `dyn Store` is not `Debug`, deliberately —
@@ -99,7 +99,7 @@ impl PlaneQuarantine {
             reason: reason.to_string(),
             recorded_at: now,
         };
-        if let Err(e) = store.put_mcp_demotion(&row) {
+        if let Err(e) = demotion_record(&row).and_then(|rec| store.upsert_plane_record(&rec)) {
             tracing::error!(
                 server = %server,
                 reason = %reason,
@@ -117,7 +117,7 @@ impl PlaneQuarantine {
         let Some(store) = self.sink() else {
             return;
         };
-        if let Err(e) = store.clear_mcp_demotion(server) {
+        if let Err(e) = store.delete_plane_record(KIND_DEMOTION, server) {
             tracing::error!(
                 server = %server,
                 error = %e,
@@ -135,7 +135,10 @@ impl PlaneQuarantine {
         let Some(store) = self.sink() else {
             return Vec::new();
         };
-        match store.list_mcp_demotions() {
+        let read = store
+            .list_plane_records(KIND_DEMOTION, &PlaneSelector::All)
+            .and_then(|bodies| bodies.iter().map(|body| decode(body)).collect());
+        match read {
             Ok(rows) => rows,
             Err(e) => {
                 tracing::error!(

@@ -167,6 +167,42 @@ impl Store for DurableCallStore {
         calls.retain(|_, r| r.ts >= before);
         Ok((before_len - calls.len()) as u64)
     }
+
+    // ── The neutral kind-tagged verbs, delegating to the named call-log methods above ────────────
+    fn append_plane_record(&self, record: &busbar_api::PlaneRecord) -> busbar_api::StoreResult<()> {
+        match record.kind.as_str() {
+            crate::plane::store::KIND_CALL => {
+                self.append_mcp_call(&crate::plane::store::decode(&record.body)?)
+            }
+            _ => Ok(()),
+        }
+    }
+    fn list_plane_records(
+        &self,
+        kind: &str,
+        selector: &busbar_api::PlaneSelector,
+    ) -> busbar_api::StoreResult<Vec<Vec<u8>>> {
+        match (kind, selector) {
+            (crate::plane::store::KIND_CALL, busbar_api::PlaneSelector::Parent(p)) => self
+                .list_mcp_calls(p)?
+                .iter()
+                .map(crate::plane::store::encode)
+                .collect(),
+            _ => Ok(Vec::new()),
+        }
+    }
+    fn list_plane_record_parents(&self, kind: &str) -> busbar_api::StoreResult<Vec<String>> {
+        match kind {
+            crate::plane::store::KIND_CALL => self.list_mcp_call_principals(),
+            _ => Ok(Vec::new()),
+        }
+    }
+    fn purge_plane_records_before(&self, kind: &str, before: u64) -> busbar_api::StoreResult<u64> {
+        match kind {
+            crate::plane::store::KIND_CALL => self.purge_mcp_calls_before(before),
+            _ => Ok(0),
+        }
+    }
 }
 
 /// THE RAM DEFAULT, verbatim: a store that overrides NONE of the call-log methods, so every one of
@@ -760,6 +796,12 @@ impl Store for NamesOnePrincipalWithNoRows {
     }
     fn list_mcp_call_principals(&self) -> busbar_api::StoreResult<Vec<String>> {
         Ok(vec![P.to_string()])
+    }
+    fn list_plane_record_parents(&self, kind: &str) -> busbar_api::StoreResult<Vec<String>> {
+        match kind {
+            crate::plane::store::KIND_CALL => self.list_mcp_call_principals(),
+            _ => Ok(Vec::new()),
+        }
     }
 }
 
