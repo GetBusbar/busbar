@@ -11,6 +11,11 @@ use axum::{
 };
 
 use crate::config::AuthCfg;
+use crate::diagnostics::{
+    diag_debug, diag_error, diag_warn, ADMIN_CHAIN_STALLED, ADMIN_FORBIDDEN_SUPPRESSED,
+    ADMIN_MODULE_UNRESOLVED, ADMIN_OFFLOAD_SATURATED, AUTH_CHAIN_OPEN_RELAY, AUTH_CHAIN_PANICKED,
+    AUTH_OFFLOAD_SATURATED, KEYS_IN_CHAIN_PASSTHROUGH_CONFLICT,
+};
 use crate::sigv4::{SIGV4_ALGORITHM, X_AMZ_CONTENT_SHA256, X_AMZ_DATE};
 
 /// The two non-`Authorization` headers that native vendor SDKs use to carry their API key:
@@ -350,7 +355,8 @@ impl AuthMiddleware {
         }
 
         if chain.is_empty() && !keys_in_chain {
-            tracing::warn!(
+            diag_warn!(
+                AUTH_CHAIN_OPEN_RELAY,
                 "auth.chain is empty (open relay) - only acceptable for dev; reject in production"
             );
         }
@@ -548,20 +554,39 @@ impl AuthMiddleware {
                 expected_aud.as_deref(),
             );
         }
-        let permit =
-            match tokio::time::timeout(AUTH_OFFLOAD_WAIT, AUTH_OFFLOAD_PERMITS.acquire()).await {
-                Ok(Ok(p)) => p,
-                // Timed out waiting, or the semaphore was closed. Either way the chain never ran, so
-                // the credential is unverified — deny.
-                _ => {
-                    tracing::warn!(
+        // Warn-once transition latch: a saturated auth offload persists per request until the wedged
+        // plugin recovers, and the data plane is high-cadence, so warn on the TRANSITION into the
+        // saturated state and hold subsequent denials at debug. Reset when a permit is acquired again.
+        static AUTH_OFFLOAD_SATURATED_WARNED: std::sync::atomic::AtomicBool =
+            std::sync::atomic::AtomicBool::new(false);
+        let permit = match tokio::time::timeout(AUTH_OFFLOAD_WAIT, AUTH_OFFLOAD_PERMITS.acquire())
+            .await
+        {
+            Ok(Ok(p)) => {
+                AUTH_OFFLOAD_SATURATED_WARNED.store(false, std::sync::atomic::Ordering::Relaxed);
+                p
+            }
+            // Timed out waiting, or the semaphore was closed. Either way the chain never ran, so
+            // the credential is unverified — deny.
+            _ => {
+                if !AUTH_OFFLOAD_SATURATED_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                    diag_warn!(
+                        AUTH_OFFLOAD_SATURATED,
                         "auth chain offload could not be started within {AUTH_OFFLOAD_WAIT:?} \
                      ({AUTH_OFFLOAD_MAX_INFLIGHT} already in flight); an auth plugin is not \
                      returning. Denying (fail-closed) rather than admitting unverified."
                     );
-                    return ChainVerdict::Denied;
+                } else {
+                    diag_debug!(
+                        AUTH_OFFLOAD_SATURATED,
+                        "auth chain offload could not be started within {AUTH_OFFLOAD_WAIT:?} \
+                     ({AUTH_OFFLOAD_MAX_INFLIGHT} already in flight); an auth plugin is not \
+                     returning. Denying (fail-closed) rather than admitting unverified."
+                    );
                 }
-            };
+                return ChainVerdict::Denied;
+            }
+        };
         let (auth, cache) = (auth.clone(), cache.clone());
         let joined = tokio::task::spawn_blocking(move || {
             let verdict = auth.run_chain_cached(
@@ -577,10 +602,21 @@ impl AuthMiddleware {
             verdict
         })
         .await;
+        // Warn-once transition latch on the panic path: a panicking chain recurs per request until
+        // the plugin bug is fixed. Warn on the transition; hold the rest at debug; reset on a clean join.
+        static AUTH_CHAIN_PANICKED_WARNED: std::sync::atomic::AtomicBool =
+            std::sync::atomic::AtomicBool::new(false);
         match joined {
-            Ok(verdict) => verdict,
+            Ok(verdict) => {
+                AUTH_CHAIN_PANICKED_WARNED.store(false, std::sync::atomic::Ordering::Relaxed);
+                verdict
+            }
             Err(e) => {
-                tracing::warn!(error = %e, "auth chain panicked; denying (fail-closed)");
+                if !AUTH_CHAIN_PANICKED_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                    diag_warn!(AUTH_CHAIN_PANICKED, error = %e, "auth chain panicked; denying (fail-closed)");
+                } else {
+                    diag_debug!(AUTH_CHAIN_PANICKED, error = %e, "auth chain panicked; denying (fail-closed)");
+                }
                 ChainVerdict::Denied
             }
         }
@@ -977,7 +1013,8 @@ fn run_admin_chain(
             other => match app.admin_modules.modules.get(other) {
                 Some(module) => module.authenticate(bearer.or(header)),
                 None => {
-                    tracing::error!(
+                    diag_error!(
+                        ADMIN_MODULE_UNRESOLVED,
                         module = other,
                         "admin_auth names a module with no resolved plugin; skipping (boot resolves \
                          every non-builtin admin module, fail-closed)"
@@ -1032,18 +1069,36 @@ async fn run_admin_chain_maybe_offloaded(
         // No blocking admin plugin: run inline (admin-tokens + any compiled-in test stand-in).
         return run_admin_chain(app, bearer.as_deref(), header.as_deref());
     }
-    let permit =
-        match tokio::time::timeout(ADMIN_OFFLOAD_WAIT, ADMIN_OFFLOAD_PERMITS.acquire()).await {
-            Ok(Ok(p)) => p,
-            _ => {
-                tracing::warn!(
+    // Warn-once transition latch: a saturated admin offload persists per request until the wedged
+    // plugin recovers. Warn on the transition; hold the rest at debug; reset on a fresh permit.
+    static ADMIN_OFFLOAD_SATURATED_WARNED: std::sync::atomic::AtomicBool =
+        std::sync::atomic::AtomicBool::new(false);
+    let permit = match tokio::time::timeout(ADMIN_OFFLOAD_WAIT, ADMIN_OFFLOAD_PERMITS.acquire())
+        .await
+    {
+        Ok(Ok(p)) => {
+            ADMIN_OFFLOAD_SATURATED_WARNED.store(false, std::sync::atomic::Ordering::Relaxed);
+            p
+        }
+        _ => {
+            if !ADMIN_OFFLOAD_SATURATED_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                diag_warn!(
+                    ADMIN_OFFLOAD_SATURATED,
                     "admin auth chain offload could not be started within {ADMIN_OFFLOAD_WAIT:?} \
                      ({ADMIN_OFFLOAD_MAX_INFLIGHT} already in flight); an admin auth plugin is not \
                      returning. Denying (fail-closed) rather than admitting unverified."
                 );
-                return (ChainVerdict::Denied, None);
+            } else {
+                diag_debug!(
+                    ADMIN_OFFLOAD_SATURATED,
+                    "admin auth chain offload could not be started within {ADMIN_OFFLOAD_WAIT:?} \
+                     ({ADMIN_OFFLOAD_MAX_INFLIGHT} already in flight); an admin auth plugin is not \
+                     returning. Denying (fail-closed) rather than admitting unverified."
+                );
             }
-        };
+            return (ChainVerdict::Denied, None);
+        }
+    };
     let app = app.clone();
     let joined = tokio::task::spawn_blocking(move || {
         let verdict = run_admin_chain(&app, bearer.as_deref(), header.as_deref());
@@ -1053,15 +1108,31 @@ async fn run_admin_chain_maybe_offloaded(
         drop(permit);
         verdict
     });
+    // Warn-once transition latch: a stalled/panicking admin chain recurs per request until the
+    // plugin recovers. Warn on the transition; hold the rest at debug; reset on a clean completion.
+    static ADMIN_CHAIN_STALLED_WARNED: std::sync::atomic::AtomicBool =
+        std::sync::atomic::AtomicBool::new(false);
     match tokio::time::timeout(ADMIN_OFFLOAD_WAIT, joined).await {
-        Ok(Ok(v)) => v,
+        Ok(Ok(v)) => {
+            ADMIN_CHAIN_STALLED_WARNED.store(false, std::sync::atomic::Ordering::Relaxed);
+            v
+        }
         // Join error (the plugin panicked) or a timeout waiting for it: fail closed. The wedged
         // blocking task keeps its permit until it eventually finishes, bounding the leak.
         _ => {
-            tracing::warn!(
-                "admin auth chain did not complete within {ADMIN_OFFLOAD_WAIT:?} (or panicked); \
+            if !ADMIN_CHAIN_STALLED_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                diag_warn!(
+                    ADMIN_CHAIN_STALLED,
+                    "admin auth chain did not complete within {ADMIN_OFFLOAD_WAIT:?} (or panicked); \
                  denying (fail-closed)."
-            );
+                );
+            } else {
+                diag_debug!(
+                    ADMIN_CHAIN_STALLED,
+                    "admin auth chain did not complete within {ADMIN_OFFLOAD_WAIT:?} (or panicked); \
+                 denying (fail-closed)."
+                );
+            }
             (ChainVerdict::Denied, None)
         }
     }
@@ -1428,7 +1499,7 @@ pub(crate) async fn auth_middleware(
                 );
             } else {
                 // Suppressed records still leave a per-request signal, at zero I/O cost.
-                tracing::warn!(principal = %actor, path = %path, required = %required.as_str(),
+                diag_debug!(ADMIN_FORBIDDEN_SUPPRESSED, principal = %actor, path = %path, required = %required.as_str(),
                     "admin request forbidden (audit suppressed: already recorded this window)");
             }
             return Err(forbidden_response(required));
@@ -1511,7 +1582,8 @@ pub(crate) async fn auth_middleware(
     if app.auth.keys_in_chain && app.upstream_creds() == UpstreamCreds::Passthrough {
         static WARN_ONCE: std::sync::Once = std::sync::Once::new();
         WARN_ONCE.call_once(|| {
-            tracing::warn!(
+            diag_warn!(
+                KEYS_IN_CHAIN_PASSTHROUGH_CONFLICT,
                 "auth.chain names `keys` with upstream_credentials: passthrough: the keys verifier \
                  requires a valid virtual key on every request and supersedes passthrough's \
                  accept-and-forward-caller-credential intent. Use upstream_credentials: own (or omit \

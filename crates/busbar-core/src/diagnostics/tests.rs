@@ -173,6 +173,15 @@ const MIGRATED_FILES: &[&str] = &[
     "src/handlers/chat.rs",
     "src/handlers/mod.rs",
     "src/metrics.rs",
+    "src/auth/exchange.rs",
+    "src/auth/token.rs",
+    "src/auth/mod.rs",
+    "src/auth/self_keys.rs",
+    "src/egress_auth/mod.rs",
+    "src/egress_auth/bearer_token.rs",
+    "src/trust/sweep.rs",
+    "src/oauth_as/plane.rs",
+    "src/sigv4.rs",
 ];
 
 #[test]

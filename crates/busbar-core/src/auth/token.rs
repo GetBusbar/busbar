@@ -37,6 +37,7 @@ use busbar_api::{
 use super::self_keys::{issue_key, resolve_exchange, DeterministicEd25519Keys, HandleProvisioner};
 use super::ChainVerdict;
 use crate::config::AuthCfg;
+use crate::diagnostics::{diag_debug, diag_warn, LOGIN_OFFLOAD_SATURATED, LOGIN_PLUGIN_PANICKED};
 use crate::state::{App, AppHandle};
 
 /// The login-state cookie name. Scoped to `/auth/token` (Path), HttpOnly + Secure + SameSite=Lax.
@@ -145,19 +146,38 @@ async fn offload_login_call<F>(
 where
     F: FnOnce(&LoginMethod) -> LoginOutcome + Send + 'static,
 {
+    // Warn-once transition latch: a saturated login offload persists per request until the wedged
+    // plugin recovers, and this path is anonymously reachable, so warn on the TRANSITION into the
+    // saturated state and hold subsequent rejections at debug. Reset when a permit is acquired again.
+    static LOGIN_OFFLOAD_SATURATED_WARNED: std::sync::atomic::AtomicBool =
+        std::sync::atomic::AtomicBool::new(false);
     let permit = match tokio::time::timeout(LOGIN_OFFLOAD_WAIT, LOGIN_OFFLOAD_PERMITS.acquire())
         .await
     {
-        Ok(Ok(p)) => p,
+        Ok(Ok(p)) => {
+            LOGIN_OFFLOAD_SATURATED_WARNED.store(false, std::sync::atomic::Ordering::Relaxed);
+            p
+        }
         // Timed out waiting, or the semaphore was closed. Either way the plugin never ran, so no
         // identity was established — reject.
         _ => {
-            tracing::warn!(
-                method = %method, op,
-                "login plugin offload could not be started within {LOGIN_OFFLOAD_WAIT:?} \
-                 ({LOGIN_OFFLOAD_MAX_INFLIGHT} already in flight); a login plugin is not \
-                 returning. Rejecting (fail-closed) rather than completing a login it never ran."
-            );
+            if !LOGIN_OFFLOAD_SATURATED_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                diag_warn!(
+                    LOGIN_OFFLOAD_SATURATED,
+                    method = %method, op,
+                    "login plugin offload could not be started within {LOGIN_OFFLOAD_WAIT:?} \
+                     ({LOGIN_OFFLOAD_MAX_INFLIGHT} already in flight); a login plugin is not \
+                     returning. Rejecting (fail-closed) rather than completing a login it never ran."
+                );
+            } else {
+                diag_debug!(
+                    LOGIN_OFFLOAD_SATURATED,
+                    method = %method, op,
+                    "login plugin offload could not be started within {LOGIN_OFFLOAD_WAIT:?} \
+                     ({LOGIN_OFFLOAD_MAX_INFLIGHT} already in flight); a login plugin is not \
+                     returning. Rejecting (fail-closed) rather than completing a login it never ran."
+                );
+            }
             return LoginOutcome::Reject;
         }
     };
@@ -179,7 +199,7 @@ where
     match joined {
         Ok(outcome) => outcome,
         Err(e) => {
-            tracing::warn!(method = %method, op, error = %e, "login plugin call panicked; rejecting (fail-closed)");
+            diag_warn!(LOGIN_PLUGIN_PANICKED, method = %method, op, error = %e, "login plugin call panicked; rejecting (fail-closed)");
             LoginOutcome::Reject
         }
     }

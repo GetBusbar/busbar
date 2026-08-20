@@ -44,6 +44,11 @@ use std::time::Duration;
 
 use super::reverify::Due;
 use super::Drift;
+use crate::diagnostics::{
+    diag_debug, diag_error, diag_warn, TRUST_RECOVERY_HELD, TRUST_REGISTRATION_SUSPENDED,
+    TRUST_SWEEP_CONTACT_FAILED, TRUST_SWEEP_NOT_ATTEMPTED, TRUST_SWEEP_PANICKED,
+    TRUST_UPSTREAM_DRIFTED,
+};
 use crate::plane::Plane;
 
 /// HOW OFTEN EVERY PLANE'S SWEEP LOOKS FOR WORK. A constant, for every plane, and deliberately not
@@ -123,14 +128,16 @@ pub(crate) fn report<D: SweepDetail>(plane: Plane, outcomes: &[SweepOutcome<D>])
         let subject = outcome.subject.as_str();
         for event in outcome.detail.events() {
             match event {
-                SweepEvent::NotAttempted { reason } => tracing::warn!(
+                SweepEvent::NotAttempted { reason } => diag_warn!(
+                    TRUST_SWEEP_NOT_ATTEMPTED,
                     plane = plane.key(),
                     subject = %subject,
                     error = %reason,
                     "a scheduled trust sweep could not be ATTEMPTED; the registration was NOT \
                      contacted and its trust state is unchanged"
                 ),
-                SweepEvent::ContactFailed { reason } => tracing::warn!(
+                SweepEvent::ContactFailed { reason } => diag_warn!(
+                    TRUST_SWEEP_CONTACT_FAILED,
                     plane = plane.key(),
                     subject = %subject,
                     due = ?outcome.due,
@@ -140,7 +147,8 @@ pub(crate) fn report<D: SweepDetail>(plane: Plane, outcomes: &[SweepOutcome<D>])
                 ),
                 // THE LINE THIS WHOLE MODULE EXISTS TO EMIT. Nobody asked for it, and it is the
                 // operator's first notice that an upstream changed something underneath an approval.
-                SweepEvent::Drifted { state, drift } => tracing::warn!(
+                SweepEvent::Drifted { state, drift } => diag_warn!(
+                    TRUST_UPSTREAM_DRIFTED,
                     plane = plane.key(),
                     subject = %subject,
                     due = ?outcome.due,
@@ -152,13 +160,15 @@ pub(crate) fn report<D: SweepDetail>(plane: Plane, outcomes: &[SweepOutcome<D>])
                     "the upstream DRIFTED from the approved pin; the registration is demoted and \
                      stops serving until an operator re-approves"
                 ),
-                SweepEvent::RecoveryHeld => tracing::info!(
+                SweepEvent::RecoveryHeld => diag_debug!(
+                    TRUST_RECOVERY_HELD,
                     plane = plane.key(),
                     subject = %subject,
                     "a clean observation was made but is not yet believed; the recovery backoff \
                      since the last drift has not elapsed"
                 ),
-                SweepEvent::Suspended { reason } => tracing::warn!(
+                SweepEvent::Suspended { reason } => diag_warn!(
+                    TRUST_REGISTRATION_SUSPENDED,
                     plane = plane.key(),
                     subject = %subject,
                     reason = %reason,
@@ -227,7 +237,8 @@ pub(crate) fn spawn<S: Sweeper>(
                     let swept = std::panic::AssertUnwindSafe(async move { held.sweep(now).await });
                     match futures::FutureExt::catch_unwind(swept).await {
                         Ok(outcomes) => report(plane, &outcomes),
-                        Err(_) => tracing::error!(
+                        Err(_) => diag_error!(
+                            TRUST_SWEEP_PANICKED,
                             plane = plane.key(),
                             "a scheduled trust sweep panicked; the job continues"
                         ),

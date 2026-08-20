@@ -24,6 +24,8 @@ use std::sync::Arc;
 use oauth_as::server::{AuthorizationServer, ServerConfig, SystemClock};
 use oauth_as::store::MemoryStorage;
 
+use crate::diagnostics::{diag_debug, diag_warn, OAUTH_AS_SWEEP_FAILED};
+
 use super::config::AsIdentity;
 use super::signer::{RingEs256Key, RingEs256Verifier};
 
@@ -218,17 +220,38 @@ pub(crate) fn spawn_sweeper(server: Arc<AsServer>, every: std::time::Duration) {
             // The trait must be in scope for the call; `Storage` is imported here rather than at the
             // module top so nothing else in this file can reach for a raw store operation.
             use oauth_as::store::Storage as _;
+            // Warn-once transition latch: the sweep runs every tick and a store fault persists, so
+            // warn on the TRANSITION into the failing state and hold subsequent ticks at debug.
+            // Reset on any successful sweep so a future outage re-warns.
+            static SWEEP_FAILED_WARNED: std::sync::atomic::AtomicBool =
+                std::sync::atomic::AtomicBool::new(false);
             match server
                 .store()
                 .sweep_expired(std::time::SystemTime::now())
                 .await
             {
-                Ok(0) => {}
-                Ok(n) => tracing::debug!(reclaimed = n, "oauth_as: swept expired records"),
-                Err(e) => tracing::warn!(
-                    error = %e,
-                    "oauth_as: sweeping expired records failed; retrying on the next tick"
-                ),
+                Ok(0) => {
+                    SWEEP_FAILED_WARNED.store(false, std::sync::atomic::Ordering::Relaxed);
+                }
+                Ok(n) => {
+                    SWEEP_FAILED_WARNED.store(false, std::sync::atomic::Ordering::Relaxed);
+                    tracing::debug!(reclaimed = n, "oauth_as: swept expired records");
+                }
+                Err(e) => {
+                    if !SWEEP_FAILED_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                        diag_warn!(
+                            OAUTH_AS_SWEEP_FAILED,
+                            error = %e,
+                            "oauth_as: sweeping expired records failed; retrying on the next tick"
+                        );
+                    } else {
+                        diag_debug!(
+                            OAUTH_AS_SWEEP_FAILED,
+                            error = %e,
+                            "oauth_as: sweeping expired records failed; retrying on the next tick"
+                        );
+                    }
+                }
             }
         }
     });
