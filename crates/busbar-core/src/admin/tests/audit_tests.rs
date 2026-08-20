@@ -1415,13 +1415,14 @@ async fn flush_durable_is_silent_and_idempotent_once_the_ring_top_is_durable() {
     assert!(log.verify(), "the chain is untouched by the idle ticks");
 }
 
-/// The other half of the same fix: silencing the IDLE caller must NOT silence the arm's real case.
-/// The "below the durable floor" warning exists for a genuine concurrent-recorder race — a second
-/// recorder allocated a HIGHER seq, won `durable_lock` first, and its range backfill already
-/// persisted (and advanced `durable_high` past) THIS recorder's seq. That stale write-through must
-/// still be skipped AND still be reported.
+/// The below-the-durable-floor write-through is a benign, EXPECTED skip — either a concurrent-recorder
+/// race (a second recorder won `durable_lock` and its backfill already advanced `durable_high` past
+/// this seq) or a boot that recovered a floor ABOVE a freshly-numbered ring seq. The code's own comment
+/// says skipping is correct (the entry is already durable), so it must NOT warn: on the boot-recovery
+/// case the periodic flusher re-offers the same seq every ~10/s, and a WARN there spams the console. It
+/// is logged at DEBUG. This pins that it is SILENT at WARN level and still correctly skipped.
 #[test]
-fn durable_write_through_still_warns_on_the_concurrent_recorder_race() {
+fn durable_write_through_below_floor_skip_is_silent_at_warn() {
     use crate::test_support::warn_capture::WarnCapture;
     use tracing_subscriber::layer::SubscriberExt as _;
 
@@ -1438,18 +1439,14 @@ fn durable_write_through_still_warns_on_the_concurrent_recorder_race() {
         2
     );
 
-    // The LOSING recorder now arrives with its own, lower seq — the race the arm was written for.
+    // A recorder arrives with its own, lower seq — the below-floor skip. It must be SILENT at WARN.
     let cap = WarnCapture::default();
     let sub = tracing_subscriber::registry().with(cap.clone());
     tracing::subscriber::with_default(sub, || log.durable_write_through(store.as_ref(), 1));
     assert!(
-        cap.contains("predates the recovered durable floor"),
-        "the genuine concurrent-recorder race must STILL warn; captured: {:?}",
-        cap.messages()
-    );
-    assert!(
-        cap.contains("seq=1") && cap.contains("durable_floor=3"),
-        "the warning must still carry the stale seq and the floor; captured: {:?}",
+        cap.messages().is_empty(),
+        "the below-floor skip is benign/expected and must NOT warn (it is debug — a WARN spams ~10/s \
+         on the boot-recovery case); captured: {:?}",
         cap.messages()
     );
     assert_eq!(
