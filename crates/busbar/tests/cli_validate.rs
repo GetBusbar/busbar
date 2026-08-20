@@ -693,9 +693,27 @@ fn generate_signing_key_emits_a_usable_referenced_key() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Run busbar with an ADDITIONAL `BUSBAR_CONFIG_OVERLAY` pointing at a fixture overlay file — the
-/// 1.5.0 full-config-coverage persistence path a real deployment uses.
+/// Run busbar against a fixture whose config.yaml points `config.overlay.file` at the given overlay —
+/// the full-config-coverage persistence path a real deployment uses. (Pre-1.6.0 this used the
+/// `BUSBAR_CONFIG_OVERLAY` env var; that var was deprecated in 1.5.3 and removed in 1.6.0, so the
+/// overlay is now named the same way production names it: `config.overlay.file` in config.yaml. This
+/// helper REWRITES config.yaml to append that pointer, so callers can keep writing a plain config via
+/// `write_configs(&dir, "")` first.)
 fn run_busbar_with_overlay(dir: &Path, overlay: &Path, args: &[&str]) -> (i32, String, String) {
+    // Append the overlay pointer to the fixture's config.yaml. Single-quoted YAML scalar so a Windows
+    // backslash path is never treated as an escape (mirrors `plugins_block`).
+    let config_path = dir.join("config.yaml");
+    let mut config = std::fs::read_to_string(&config_path).expect("read fixture config.yaml");
+    // Idempotent: some tests run this helper twice against the same fixture dir (e.g. once plain, once
+    // `--safe-mode`); appending the block twice would duplicate the top-level `config:` key.
+    if !config.contains("\nconfig:\n") {
+        config.push_str(&format!(
+            "\nconfig:\n  overlay:\n    file: '{}'\n",
+            overlay.display()
+        ));
+        std::fs::write(&config_path, config)
+            .expect("rewrite fixture config.yaml with overlay pointer");
+    }
     let out = Command::new(env!("CARGO_BIN_EXE_busbar"))
         .args(args)
         // `--validate` RESOLVES built-in secret refs, so the fixture's referenced var must be set.
@@ -706,7 +724,6 @@ fn run_busbar_with_overlay(dir: &Path, overlay: &Path, args: &[&str]) -> (i32, S
         )
         .env("BUSBAR_CONFIG", dir.join("config.yaml"))
         .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
-        .env("BUSBAR_CONFIG_OVERLAY", overlay)
         .output()
         .expect("run busbar");
     (
@@ -764,6 +781,43 @@ fn validate_ok_on_valid_root_overlay() {
     let (code, stdout, stderr) = run_busbar_with_overlay(&dir, &overlay, &["--validate"]);
     assert_eq!(code, 0, "a valid root overlay validates clean: {stderr}");
     assert!(stdout.contains("ok: config valid"), "got {stdout}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The `BUSBAR_CONFIG_OVERLAY` env var was deprecated in 1.5.3 and REMOVED in 1.6.0: it no longer
+/// selects the overlay. Point it at a BAD overlay (one that would fail `--validate` if applied) and
+/// set NO `config.overlay.file`; validate must pass, proving the env var is ignored. Pre-1.6.0 the
+/// env var would have applied the overlay and this run would exit 1.
+#[test]
+fn validate_ignores_removed_busbar_config_overlay_env_var() {
+    let dir = fixture_dir("ovlenvgone");
+    write_configs(&dir, "");
+    let bad_overlay = dir.join("bad-overlay.json");
+    std::fs::write(
+        &bad_overlay,
+        r#"{"version":1,"root":{"limits":{"reasoning_effort_budgets":{"minimal":16384,"low":8192,"medium":4096,"high":1024}}}}"#,
+    )
+    .unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_busbar"))
+        .args(["--validate"])
+        .env("MOCK_KEY", "test-key-value")
+        .env(
+            "BUSBAR_SIGNING_KEY",
+            "0000000000000000000000000000000000000000000000000000000000000001",
+        )
+        .env("BUSBAR_CONFIG", dir.join("config.yaml"))
+        .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
+        // The removed env var — must have NO effect on overlay resolution.
+        .env("BUSBAR_CONFIG_OVERLAY", &bad_overlay)
+        .output()
+        .expect("run busbar");
+    let code = out.status.code().unwrap_or(-1);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(
+        code, 0,
+        "the removed BUSBAR_CONFIG_OVERLAY env var must be ignored, so the bad overlay is NOT \
+         applied and validate passes: {stderr}"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 

@@ -68,7 +68,7 @@ fn a_read_only_config_dir_boots_without_an_overlay_instead_of_refusing() {
     std::fs::write(&config_path, "models: {}\n").unwrap();
 
     let res = with_read_only_dir(&dir, || {
-        resolve_backend(&ConfigMgmtCfg::default(), &config_path, None, true)
+        resolve_backend(&ConfigMgmtCfg::default(), &config_path, true)
     })
     .expect("a read-only config dir must NOT refuse to boot");
 
@@ -100,7 +100,7 @@ fn b_a_degraded_backend_refuses_a_persist_rather_than_silently_dropping_it() {
     std::fs::write(&config_path, "models: {}\n").unwrap();
 
     let res = with_read_only_dir(&dir, || {
-        resolve_backend(&ConfigMgmtCfg::default(), &config_path, None, true)
+        resolve_backend(&ConfigMgmtCfg::default(), &config_path, true)
     })
     .expect("a read-only config dir must resolve");
 
@@ -123,7 +123,7 @@ fn c_a_writable_config_dir_still_resolves_a_durable_backend() {
     let config_path = dir.join("config.yaml");
     std::fs::write(&config_path, "models: {}\n").unwrap();
 
-    let res = resolve_backend(&ConfigMgmtCfg::default(), &config_path, None, true)
+    let res = resolve_backend(&ConfigMgmtCfg::default(), &config_path, true)
         .expect("a writable config dir resolves");
 
     assert_eq!(
@@ -154,7 +154,7 @@ fn d_an_explicit_overlay_path_in_an_unwritable_dir_degrades_too() {
         })),
     };
 
-    let res = with_read_only_dir(&ro, || resolve_backend(&cfg, &config_path, None, true))
+    let res = with_read_only_dir(&ro, || resolve_backend(&cfg, &config_path, true))
         .expect("an unwritable explicit overlay path must degrade, not refuse");
     assert!(res.path.is_none());
     assert!(res.read_only_backend);
@@ -176,7 +176,6 @@ fn e_mutable_with_the_overlay_explicitly_disabled_is_still_a_boot_refusal() {
             overlay: Some(OverlayCfg::Disabled(false)),
         },
         &config_path,
-        None,
         true,
     )
     .expect_err("a self-contradictory config must still refuse");
@@ -194,7 +193,6 @@ fn f_validate_does_not_probe_and_never_reports_a_degraded_backend() {
     let res = resolve_backend(
         &ConfigMgmtCfg::default(),
         std::path::Path::new("/nonexistent-by-design/etc/busbar/config.yaml"),
-        None,
         false,
     )
     .expect("--validate resolves without touching the filesystem");

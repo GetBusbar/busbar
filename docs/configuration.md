@@ -74,7 +74,7 @@ Busbar at config.yaml, taking precedence over `BUSBAR_CONFIG`; `--providers <pat
 `--providers=<path>`) points it at the provider catalog, taking precedence over `providers_file:`.
 See [Operations → Process configuration](operations.md#process-configuration).
 
-**Operational env vars moved into `config.yaml` (1.5.3).** `BUSBAR_CONFIG_OVERLAY` → `config.overlay.file`, `BUSBAR_WORKER_THREADS` → `advanced.worker_threads`, `BUSBAR_UPSTREAM_HTTP1_ONLY` → `advanced.upstream_http1_only`, and `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE` → `advanced.upstream_h2_prior_knowledge`. Each old env var still works for one release (with a deprecation warning). `BUSBAR_PROVIDERS` → `providers_file:` was on this list in 1.5.3 and **was removed in 1.6.0**: use the `--providers` flag or `providers_file:`. Only `BUSBAR_CONFIG` (bootstrap), secret `{ env: NAME }` references, and `RUST_LOG` remain env-native. See the [`config`](#config) and [`advanced`](#advanced) sections and the [upgrade note](migration-1.5.md#153-config-consolidation).
+**Operational env vars moved into `config.yaml` (1.5.3), removed in 1.6.0.** `BUSBAR_CONFIG_OVERLAY` → `config.overlay.file`, `BUSBAR_WORKER_THREADS` → `advanced.worker_threads`, `BUSBAR_UPSTREAM_HTTP1_ONLY` → `advanced.upstream_http1_only`, `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE` → `advanced.upstream_h2_prior_knowledge`, and `BUSBAR_PROVIDERS` → `providers_file:` (or the `--providers` flag). Each was deprecated in 1.5.3, honored for one release, and **removed in 1.6.0** — setting any of them now has no effect; use the config.yaml key. Only `BUSBAR_CONFIG` (bootstrap), secret `{ env: NAME }` references, and `RUST_LOG` remain env-native (`TOKIO_WORKER_THREADS` is still a fallback for `advanced.worker_threads`). See the [`config`](#config) and [`advanced`](#advanced) sections and the [upgrade note](migration-1.5.md#153-config-consolidation).
 
 ### `config`
 
@@ -1661,9 +1661,9 @@ Internal tuning knobs, normally omitted; each field defaults to its historical v
 advanced:
   rate_sweep_interval: 256          # rate-limiter stale-entry sweep amortization (every Nth check_rate)
   usage_flush_interval_ms: 100      # write-behind flush cadence for in-memory usage/budget counters
-  worker_threads: 4                 # tokio worker pool size (1.5.3 ← BUSBAR_WORKER_THREADS); omit ⇒ one per core
-  upstream_http1_only: false        # pin the upstream client to HTTP/1.1 (1.5.3 ← BUSBAR_UPSTREAM_HTTP1_ONLY)
-  upstream_h2_prior_knowledge: false # force h2c prior-knowledge to cleartext upstreams (1.5.3 ← BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE)
+  worker_threads: 4                 # tokio worker pool size (was BUSBAR_WORKER_THREADS, removed 1.6.0); omit ⇒ one per core
+  upstream_http1_only: false        # pin the upstream client to HTTP/1.1 (was BUSBAR_UPSTREAM_HTTP1_ONLY, removed 1.6.0)
+  upstream_h2_prior_knowledge: false # force h2c prior-knowledge to cleartext upstreams (was BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE, removed 1.6.0)
   response_headers:                 # every busbar-injected response header, opt-in, default OFF
     server_timing: false            # `Server-Timing: busbar;dur=<ms>` (formerly observability.emit_server_timing)
     route_policy: false             # `x-busbar-route-policy` / `x-busbar-route-target`

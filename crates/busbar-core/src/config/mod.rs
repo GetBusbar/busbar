@@ -3420,19 +3420,20 @@ pub struct AdvancedCfg {
     /// Tokio worker-thread count (`advanced.worker_threads`, migrated from `BUSBAR_WORKER_THREADS`).
     /// A BOOT-TIME knob read once before the runtime is built — not runtime-mutable via the overlay.
     /// Absent (`None`) ⇒ one worker per available core (`available_parallelism`, capped at
-    /// `MAX_WORKER_THREADS`). The env var still works as a deprecated fallback for one release.
+    /// `MAX_WORKER_THREADS`). The `BUSBAR_WORKER_THREADS` env var was deprecated in 1.5.3 and removed
+    /// in 1.6.0.
     #[serde(default)]
     pub worker_threads: Option<usize>,
     /// Pin the shared upstream client to HTTP/1.1 (`advanced.upstream_http1_only`, migrated from
     /// `BUSBAR_UPSTREAM_HTTP1_ONLY`). BOOT-TIME (client-build) knob; default `false` (ALPN default:
-    /// h2 where the backend accepts it, h1 otherwise). The env var still works as a deprecated
-    /// fallback for one release.
+    /// h2 where the backend accepts it, h1 otherwise). The `BUSBAR_UPSTREAM_HTTP1_ONLY` env var was
+    /// deprecated in 1.5.3 and removed in 1.6.0.
     #[serde(default)]
     pub(crate) upstream_http1_only: bool,
     /// Force HTTP/2 prior-knowledge to cleartext upstreams (`advanced.upstream_h2_prior_knowledge`,
     /// migrated from `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE`). BOOT-TIME (client-build) knob; default
-    /// `false` — prior-knowledge h2c measurably HURT throughput in perf testing. The env var still
-    /// works as a deprecated fallback for one release.
+    /// `false` — prior-knowledge h2c measurably HURT throughput in perf testing. The
+    /// `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE` env var was deprecated in 1.5.3 and removed in 1.6.0.
     #[serde(default)]
     pub(crate) upstream_h2_prior_knowledge: bool,
     /// The `advanced.response_headers:` block — opt-in toggles for every busbar-INJECTED response
@@ -4274,11 +4275,11 @@ pub struct LimitsResolved {
     pub(crate) usage_flush_interval_ms: u64,
     /// Pin the shared upstream client to HTTP/1.1 (`advanced.upstream_http1_only`). BOOT-TIME knob
     /// read once at client build. Carried here (like `rate_sweep_interval`) so the client-build wiring
-    /// reads a flat struct; the `BUSBAR_UPSTREAM_HTTP1_ONLY` env var overrides it for one release.
+    /// reads a flat struct. (The `BUSBAR_UPSTREAM_HTTP1_ONLY` env var was removed in 1.6.0.)
     pub(crate) upstream_http1_only: bool,
     /// Force HTTP/2 prior-knowledge to cleartext upstreams (`advanced.upstream_h2_prior_knowledge`).
-    /// BOOT-TIME knob; default off. The `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE` env var overrides it for
-    /// one release.
+    /// BOOT-TIME knob; default off. (The `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE` env var was removed in
+    /// 1.6.0.)
     pub(crate) upstream_h2_prior_knowledge: bool,
     pub(crate) default_probe_interval_secs: u64,
     pub(crate) default_probe_timeout_secs: u64,

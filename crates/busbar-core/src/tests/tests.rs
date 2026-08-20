@@ -4,10 +4,7 @@ use crate::test_support::EnvVarGuard;
 // those items in appbuild/preflight/router/boot; this block restores the same names to this file's
 // scope. Allowed-unused as one block: which of these a given test build exercises varies by cfg.
 #[allow(unused_imports)]
-use crate::appbuild::{
-    inert_durable_keys_banner, open_relay_banner, resolve_model_context_max,
-    upstream_bool_env_override,
-};
+use crate::appbuild::{inert_durable_keys_banner, open_relay_banner, resolve_model_context_max};
 #[allow(unused_imports)]
 use crate::boot::is_audit_restore_read_hiccup;
 #[allow(unused_imports)]
@@ -2123,37 +2120,6 @@ fn migrate_config_then_load_config_from_disk_boots_the_real_migrated_file() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// `upstream_bool_env_override`: the env→config migration precedence for the boot-time upstream
-/// booleans. When the deprecated env var is UNSET, the config value stands; when SET, it wins (`"0"`
-/// or empty = off, anything else = on). Dropping the `None => config_val` arm (so the
-/// config key stops being honored) fails the "env absent → config value" cases.
-#[test]
-fn upstream_bool_env_override_precedence() {
-    use std::ffi::OsString;
-    // Env unset → the config value stands (both directions).
-    assert!(
-        upstream_bool_env_override(None, true),
-        "unset → config true"
-    );
-    assert!(
-        !upstream_bool_env_override(None, false),
-        "unset → config false"
-    );
-    // Env set → it wins over the config value.
-    assert!(
-        upstream_bool_env_override(Some(OsString::from("1")), false),
-        "env `1` overrides config false → on"
-    );
-    assert!(
-        !upstream_bool_env_override(Some(OsString::from("0")), true),
-        "env `0` overrides config true → off"
-    );
-    assert!(
-        !upstream_bool_env_override(Some(OsString::from("")), true),
-        "env empty → off (overrides config true)"
-    );
-}
-
 /// Proves the restore survives a PANIC between
 /// `set_var` and the end of scope, not just the happy path. Before introducing the `Drop` guard, a
 /// failed assertion in `worker_threads_from_config_reads_a_real_file` would unwind past its manual
@@ -2403,20 +2369,30 @@ fn plugins_boot_logging_wording_present() {
 /// does not resolve, so empty maps are fine).
 const BOOT_MINIMAL_CONFIG: &str = "providers: {}\nmodels: {}\n";
 
-/// 1.5.3 durable-by-default at the BOOT path: with NO `config:` section and NO `BUSBAR_CONFIG_OVERLAY`,
-/// `load_config_from_disk` resolves a writable overlay next to config.yaml and reports the config
-/// mutable. Pre-1.5.3 an unset env var meant `overlay_path: None` (RAM-only).
+/// 1.5.3 durable-by-default at the BOOT path: with NO `config:` section the default overlay lands next
+/// to config.yaml and the config is reported mutable. Also pins that the `BUSBAR_CONFIG_OVERLAY` env
+/// var — deprecated in 1.5.3, REMOVED in 1.6.0 — has NO effect: it is set here to a bogus path and the
+/// resolved overlay is still the default next to config.yaml.
 #[test]
 fn boot_default_config_resolves_a_durable_overlay_next_to_config() {
     let (dir, config_path, _providers_path) = boot_config_dir("durable", BOOT_MINIMAL_CONFIG);
-    // Note: this test does not set BUSBAR_CONFIG_OVERLAY; the default must still be durable.
+    // The removed env var must be ignored. Guarded so its value is restored on drop (incl. panic).
+    let bogus = dir.join("env-overlay-should-be-ignored.json");
+    let _guard = EnvVarGuard::capture("BUSBAR_CONFIG_OVERLAY");
+    std::env::set_var("BUSBAR_CONFIG_OVERLAY", &bogus);
     let loaded = load_config_from_disk(&config_path, None, false, crate::config::EnvSubst::Strict)
         .expect("a mutable default config must boot");
     assert!(!loaded.config_locked, "default config is mutable");
     assert_eq!(
         loaded.overlay_path.as_deref(),
         Some(dir.join("busbar-overlay.json").as_path()),
-        "durable-by-default: overlay next to config.yaml"
+        "durable-by-default: overlay next to config.yaml — the removed BUSBAR_CONFIG_OVERLAY env \
+         var must not redirect it"
+    );
+    assert_ne!(
+        loaded.overlay_path.as_deref(),
+        Some(bogus.as_path()),
+        "the removed BUSBAR_CONFIG_OVERLAY env var must have no effect"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }

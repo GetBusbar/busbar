@@ -38,6 +38,12 @@ If you run dashboards, read the metrics breaking change first: both request fami
   `--providers <path>` flag or the top-level `providers_file:` key in config.yaml instead. Setting
   `BUSBAR_PROVIDERS` now does nothing; the catalog resolves from `--providers`, then
   `providers_file:`, then `providers.yaml` next to the config. `BUSBAR_CONFIG` is unchanged.
+- **The four remaining deprecated operational env vars are removed.** Deprecated in 1.5.3 and honored
+  for one release, `BUSBAR_CONFIG_OVERLAY`, `BUSBAR_WORKER_THREADS`, `BUSBAR_UPSTREAM_HTTP1_ONLY` and
+  `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE` no longer have any effect. Set the config.yaml key instead:
+  `config.overlay.file`, `advanced.worker_threads`, `advanced.upstream_http1_only` and
+  `advanced.upstream_h2_prior_knowledge` respectively. `TOKIO_WORKER_THREADS` still works as a
+  fallback for `advanced.worker_threads`, and `BUSBAR_CONFIG` is unchanged.
 
 ### Added
 
@@ -285,10 +291,11 @@ change; [config at a glance](docs/config-at-a-glance.md) shows the finished shap
 
 ### Changed
 
-- Operational settings that were environment variables are now config keys: `BUSBAR_PROVIDERS`,
-  `BUSBAR_CONFIG_OVERLAY`, `BUSBAR_WORKER_THREADS`, `BUSBAR_UPSTREAM_HTTP1_ONLY` and
-  `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE`. Each still works for one more release and the config key wins
-  if you set both. `BUSBAR_CONFIG` is unchanged.
+- Operational settings that were environment variables are now config keys under `config:` and
+  `advanced:` (`config.overlay.file`, `advanced.worker_threads`, `advanced.upstream_http1_only`,
+  `advanced.upstream_h2_prior_knowledge`), and the provider catalog moves to `providers_file:` / the
+  `--providers` flag. The old env vars are honored for one more release, with the config key winning
+  when both are set; all were removed in 1.6.0. `BUSBAR_CONFIG` is unchanged.
 - The `persist` field on admin config calls is ignored; durability is a property of the deployment.
 - The admin hooks API calls the field `module` rather than `plugin`, matching the config file.
   `plugin` is still accepted.
