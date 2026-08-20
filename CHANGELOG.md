@@ -6,6 +6,26 @@ All notable changes to Busbar are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.5.5], 2026-08-20
+
+An emergency log-spam hotfix. 1.5.4 is otherwise fine, but if you run Busbar with a durable audit store
+(`store: sqlite`/`postgres`) it floods the log with WARN lines — up to ~10 per second — for a condition
+that is expected and harmless. There is no config change and no behaviour change; only the log severity
+of two durable-audit write-through cases changes.
+
+### Fixed
+
+- **The durable-audit write-through no longer spams the log.** The periodic write-behind flusher
+  re-offers the audit tail to the durable store every tick (~10/s), and two of its skip paths logged a
+  WARN on every one of those ticks:
+  - A recovered durable floor sitting ABOVE a freshly-numbered RAM-ring seq — the normal state right
+    after a restart against a durable store — made the write-through skip that already-durable seq and
+    WARN each time. This is expected and benign, so it is now logged at DEBUG.
+  - A permanent hash-chain gap (a seq pruned from the RAM ring before it could be persisted, which can
+    never be backfilled in-process) is a genuine data-loss signal, but it was re-WARNed on every flush
+    forever. It now WARNs exactly ONCE for a given gap seq (with the seq), and logs at DEBUG on every
+    subsequent flush of the same hole.
+
 ## [1.5.4], 2026-08-14
 
 A hotfix. 1.5.3's Docker image does not start, so if you run Busbar in a container, upgrade. There is
