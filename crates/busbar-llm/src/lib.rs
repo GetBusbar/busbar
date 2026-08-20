@@ -45,6 +45,9 @@ pub mod openai_responses;
 /// `recover_truncated_usage` override.
 pub(crate) mod usage_tail;
 
+/// The OpenAI-family citation `annotations` mapping shared by the Chat and Responses codecs.
+pub(crate) mod openai_annotations;
+
 /// EVERY DIALECT THIS PLUGIN DECLARES, in the order an operator sees.
 ///
 /// THE ORDER IS LOAD-BEARING AND IT IS NOT ALPHABETICAL. The composition root hands this slice to

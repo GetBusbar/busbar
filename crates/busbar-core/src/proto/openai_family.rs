@@ -211,10 +211,12 @@ pub fn openai_classify(status: StatusCode, body: &[u8]) -> crate::breaker::Canon
 /// `MAX_COMPLETION_TOKENS_SENTINEL` (openai_chat-only, stays in that crate).
 pub const MESSAGE_NAMES_SENTINEL: &str = "__busbar_openai_message_names";
 
-// SHARED ACROSS THE OPENAI-FAMILY DIALECTS AND COHERE (tool-call argument stringification, url
-// citation projection) — these do NOT move into the `busbar-llm` plugin; cohere's and
-// openai_responses' writers/readers call them too, so they stay at this shared crossing rather
-// than becoming a cross-protocol-crate dependency once openai_chat is extracted.
+// SHARED ACROSS THE OPENAI-FAMILY DIALECTS AND COHERE (tool-call argument stringification): cohere's
+// and the openai writers/readers call this too, so it stays at this shared crossing rather than
+// becoming a cross-protocol-crate dependency. It names no concrete IR, so it is a neutral string
+// helper that legitimately lives in core. (The url-citation projection that used to sit here HAS
+// moved to `busbar-llm/src/openai_annotations.rs` — it names `IrCitation`, so it belongs beside the
+// openai codecs that own it, reached through the reader/writer vtable.)
 /// Render an IR ToolUse `input` value as the OpenAI `function.arguments` string.
 ///
 /// OpenAI carries tool-call arguments as a *string* of JSON. The reader stores well-formed
@@ -223,138 +225,6 @@ pub const MESSAGE_NAMES_SENTINEL: &str = "__busbar_openai_message_names";
 /// such a `Value::String` via `crate::json::to_string` would JSON-encode the string a second time —
 /// emitting an escaped, quoted blob on the wire (double-encoding). Emit a `Value::String` verbatim
 /// so the original argument text round-trips unchanged; any other `Value` is serialized normally.
-/// Build an OpenAI `annotations` array from the IR citations that annotate a span of assistant
-/// text. Shared by the Chat and Responses writers, which use the same `url_citation` shape.
-///
-/// `text` is the ONE block the citations annotate, and `base` is where that block starts inside the
-/// message's full content string — Chat joins every text block into one string, while Responses
-/// keeps one part per block and so always passes `0`. Both the carried offsets and the ones
-/// recovered from a quote are block-relative, so `base` applies uniformly to either.
-///
-/// The wire shape is `url_citation`, which requires `url`, `title`, `start_index` and `end_index`.
-/// The IR's sources do not all carry those: an Anthropic `web_search_result_location` has a url and
-/// a title but NO character offsets, and a Gemini `citationSources[]` entry has offsets but no
-/// title. So a faithful mapping has to choose what to do about the gaps, and the choice here is
-/// deliberate: **never invent a fact.**
-///
-/// - `url` is required outright. A citation without one is a document reference, which is a
-///   different wire shape (`file_citation`) keyed by a `file_id` the IR does not carry — so it is
-///   omitted rather than mis-shaped.
-/// - Offsets are taken from the citation when present, and otherwise RECOVERED by locating the
-///   quoted `cited_text` in the assembled text. A quote that does not appear, or appears more than
-///   once, is ambiguous — omitted rather than guessed.
-/// - `title` falls back to the url. That is the same datum re-presented, not a fabricated one, and
-///   it is what a client renders anyway when a source has no title.
-///
-/// The alternative — emitting `start_index: 0, end_index: 0` or a placeholder title — trades a
-/// silent drop for silent fabrication, which is worse for a translation layer whose claim is
-/// fidelity. What is dropped here is dropped because the source genuinely lacks it.
-pub fn url_annotations(
-    text: &str,
-    base: usize,
-    citations: &[crate::ir::IrCitation],
-) -> Vec<serde_json::Value> {
-    let mut out = Vec::new();
-    for c in citations {
-        let Some(url) = c.url.as_deref().filter(|u| !u.is_empty()) else {
-            continue;
-        };
-        let span = match (c.start_index, c.end_index) {
-            // `saturating_add` (not `+`): `s`/`e` are upstream-controlled `i64` (only sign-checked
-            // above), so `i64::MAX + base` would panic in debug / wrap in release — an
-            // upstream-triggered crash on the response path. Same cure `billable_tokens` already
-            // establishes for upstream-controlled counts (`ir/mod.rs`).
-            (Some(s), Some(e)) if s >= 0 && e >= s => {
-                Some((s.saturating_add(base as i64), e.saturating_add(base as i64)))
-            }
-            // Recover the span from the quote when the source carried no offsets, but only when it
-            // occurs exactly once — two matches make the anchor ambiguous.
-            _ => c
-                .cited_text
-                .as_deref()
-                .filter(|q| !q.is_empty())
-                .and_then(|q| {
-                    // `str::find` and `q.len()` are BYTE offsets/lengths; the IR contract is
-                    // CHARACTERS, not bytes (see `IrCitation::start_index`). `find` always returns
-                    // a char boundary, so the byte slice below stays valid — only the emitted span
-                    // needs converting.
-                    let first = text.find(q)?;
-                    if text[first + q.len()..].contains(q) {
-                        return None;
-                    }
-                    let start_ch = text[..first].chars().count();
-                    let len_ch = q.chars().count();
-                    Some(((base + start_ch) as i64, (base + start_ch + len_ch) as i64))
-                }),
-        };
-        let Some((start, end)) = span else {
-            continue;
-        };
-        out.push(serde_json::json!({
-            "type": "url_citation",
-            "url": url,
-            "title": c.title.as_deref().filter(|t| !t.is_empty()).unwrap_or(url),
-            "start_index": start,
-            "end_index": end,
-        }));
-    }
-    out
-}
-
-/// Read an OpenAI-family `annotations` array (`url_citation` entries) into IR citations. Shared by
-/// the Chat and Responses readers, mirroring `url_annotations` above in the write direction.
-///
-/// KNOWN LIMITATION — offsets are deliberately NOT carried. `IrCitation::start_index`/`end_index`
-/// are CHARACTER offsets by contract (`ir/mod.rs`), and OpenAI does not document whether its
-/// `start_index`/`end_index` count bytes or characters. Copying them across unconverted would
-/// silently assert one of the two, and on non-ASCII text that is a wrong span — the same class of
-/// defect the Gemini byte/char conversion (`gemini/mod.rs`) exists to prevent. Dropping an offset
-/// we cannot interpret is a gap; asserting a unit we cannot verify is a lie. Until the unit is
-/// established (one upstream response with a multi-byte character ahead of the cited span settles
-/// it), the url and title — which need no unit — are preserved and the span is left `None`, which
-/// every writer already treats as optional.
-pub fn read_url_annotations(annotations: &serde_json::Value) -> Vec<crate::ir::IrCitation> {
-    let mut out = Vec::new();
-    let Some(arr) = annotations.as_array() else {
-        return out;
-    };
-    for entry in arr {
-        if entry.get("type").and_then(|t| t.as_str()) != Some("url_citation") {
-            continue;
-        }
-        let Some(citation) = entry.get("url_citation") else {
-            continue;
-        };
-        // Never invent a fact: an entry with no usable url is skipped, symmetric with
-        // `url_annotations`' own rule in the write direction (a citation with no url is not
-        // emitted there either).
-        let Some(url) = citation
-            .get("url")
-            .and_then(|u| u.as_str())
-            .filter(|u| !u.is_empty())
-        else {
-            continue;
-        };
-        let title = citation
-            .get("title")
-            .and_then(|t| t.as_str())
-            .filter(|t| !t.is_empty())
-            .map(String::from);
-        out.push(crate::ir::IrCitation {
-            kind: Some("web_search_result_location".to_string()),
-            cited_text: None,
-            title,
-            url: Some(url.to_string()),
-            document_index: None,
-            start_index: None,
-            end_index: None,
-            encrypted_index: None,
-            raw: None,
-        });
-    }
-    out
-}
-
 pub fn tool_arguments_to_string(input: &serde_json::Value) -> String {
     match input {
         serde_json::Value::String(s) => s.clone(),

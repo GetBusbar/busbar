@@ -880,7 +880,7 @@ impl ProtocolWriter for ResponsesWriter {
                     // empty content array.
                     let item_id = self.item_id_for(ITEM_ID_PREFIX_MSG, *index);
                     let text = self.take_text_accum(*index);
-                    let annotations = busbar_core::proto::openai_family::url_annotations(
+                    let annotations = super::super::openai_annotations::url_annotations(
                         &text,
                         0,
                         &self.take_citation_accum(*index),
@@ -1144,7 +1144,7 @@ impl ProtocolWriter for ResponsesWriter {
                         continue;
                     }
                     let annotations =
-                        busbar_core::proto::openai_family::url_annotations(text, 0, citations);
+                        super::super::openai_annotations::url_annotations(text, 0, citations);
                     // Match the native message-item shape the STREAMING `output_item.done` emits: an
                     // item-level `id` (`msg_…`), a `status`, and `annotations: []` on the `output_text`
                     // content part. Omitting them is a proxy tell — a typed SDK reading `item.id` /

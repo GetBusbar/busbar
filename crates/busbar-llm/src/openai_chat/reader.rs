@@ -939,7 +939,7 @@ impl ProtocolReader for OpenAiReader {
                     // `read_url_annotations` for why offsets are deliberately not carried.
                     let citations = message_val
                         .get("annotations")
-                        .map(busbar_core::proto::openai_family::read_url_annotations)
+                        .map(super::super::openai_annotations::read_url_annotations)
                         .unwrap_or_default();
                     content.push(busbar_core::ir::IrBlock::Text {
                         text: text.to_string(),

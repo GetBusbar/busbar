@@ -1978,6 +1978,14 @@ pub mod registry;
 #[path = "../../../busbar-llm/src/usage_tail.rs"]
 pub mod usage_tail;
 
+/// THE EXTRACTED OPENAI-FAMILY CITATION MAPPING, compiled back in for TEST BUILDS ONLY. Sources live
+/// in `crates/busbar-llm/src/openai_annotations.rs` (the openai Chat/Responses codecs call it via
+/// `super::super::openai_annotations`); same `#[path]` dual-compile mechanism as `mod anthropic` and
+/// `usage_tail` above. Production core drives the codecs through the vtable and never names it.
+#[cfg(any(test, feature = "test-support"))]
+#[path = "../../../busbar-llm/src/openai_annotations.rs"]
+pub mod openai_annotations;
+
 // Private imports (NOT re-exports) for the symbols mod.rs references by bare name: the registry
 // constructs each Reader/Writer below, and a test synthesizes an Anthropic request id. Every other
 // caller references these at their owning module path (e.g. `crate::proto::bedrock::...`).

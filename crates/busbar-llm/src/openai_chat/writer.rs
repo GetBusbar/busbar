@@ -980,7 +980,7 @@ impl ProtocolWriter for OpenAiWriter {
                 text, citations, ..
             } = block
             {
-                annotations.extend(busbar_core::proto::openai_family::url_annotations(
+                annotations.extend(super::super::openai_annotations::url_annotations(
                     text, base, citations,
                 ));
                 // CHARACTERS, not bytes: the IR citation contract (`IrCitation::start_index`/
