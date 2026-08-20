@@ -199,7 +199,7 @@ advanced:                       # internal tuning (normally omitted)  → #advan
     response_headers: { server_timing: false, route_policy: false } }  # opt-in headers → observability.md#response-headers
 config:                         # config-management policy (durable-by-default)  → #config
   { locked: false, overlay: { file: busbar-overlay.json } }
-providers_file: providers.yaml  # provider catalog pointer (1.5.3 ← BUSBAR_PROVIDERS)
+providers_file: providers.yaml  # provider catalog pointer (overridden by the --providers flag)
 ```
 
 ## Not config, but adjacent

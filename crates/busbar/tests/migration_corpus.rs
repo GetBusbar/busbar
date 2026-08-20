@@ -163,9 +163,12 @@ fn validate(yaml: &str, tmp: &Path, providers: &Path) -> Result<(), String> {
     // corpus spans every shipped release, so enumerating the names here would rot; extract them
     // from the config under test instead.
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_busbar"));
+    // 1.6.0: the shared root catalog is not next to the temp config, so point busbar at it with the
+    // `--providers` flag (the removed `BUSBAR_PROVIDERS` env var no longer works).
     cmd.arg("--validate")
+        .arg("--providers")
+        .arg(providers)
         .env("BUSBAR_CONFIG", tmp)
-        .env("BUSBAR_PROVIDERS", providers)
         .env("BUSBAR_TEST_SIGNING_KEY", "a".repeat(64))
         .env("BUSBAR_TEST_ADMIN_TOKEN", "corpus-admin-token");
     // `file:` refs name PRODUCTION paths (`/var/lib/busbar/signing.key`) that cannot exist in CI.

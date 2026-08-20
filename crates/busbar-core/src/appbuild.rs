@@ -33,11 +33,6 @@ use crate::{
 // threaded from `cfg.limits` into the client builder and router below; the egress translate-body cap
 // is COUPLED to `request_body_max_bytes` via `crate::limits::translate_body_max_bytes`.
 
-/// DEPRECATED (1.5.3) environment variable name for the providers.yaml path — migrated to the
-/// top-level `providers_file:` key in config.yaml. Still honored for one release (see
-/// [`providers_override_from_env`]).
-pub const ENV_PROVIDERS: &str = "BUSBAR_PROVIDERS";
-
 /// Environment variable name for the config.yaml path — the one irreducible bootstrap env var.
 pub const ENV_CONFIG: &str = "BUSBAR_CONFIG";
 
@@ -162,7 +157,7 @@ pub struct LoadedConfig {
     pub deploy: config::DeployCfg,
     pub defs: HashMap<String, config::ProviderDef>,
     /// The RESOLVED providers-catalog path actually read (1.5.3): `config.providers_file` relative to
-    /// the config dir, the deprecated `BUSBAR_PROVIDERS` override, or `providers.yaml` next to the
+    /// the config dir, the `--providers` flag override, or `providers.yaml` next to the
     /// config. Carried so callers display / re-use the same file across a reload.
     pub providers_path: std::path::PathBuf,
     /// The resolved config-overlay backend path (1.5.3): `Some` = a writable file backend (mutable
@@ -188,8 +183,8 @@ pub struct LoadedConfig {
     pub unset_env_vars: Vec<String>,
 }
 
-/// `providers_override`: the DEPRECATED `BUSBAR_PROVIDERS` path (Some ⇒ set), or the live
-/// providers path a runtime reload wants to re-use. When `None`, the catalog path is resolved from
+/// `providers_override`: the `--providers` flag path (Some ⇒ passed), or the live providers path a
+/// runtime reload wants to re-use. When `None`, the catalog path is resolved from
 /// `config.providers_file` (relative to the config dir) or defaults to `providers.yaml` next to the
 /// resolved config.yaml (1.5.3).
 pub fn load_config_from_disk(
@@ -229,8 +224,8 @@ pub fn load_config_from_disk(
         )
     })?;
 
-    // 1.5.3: resolve the providers CATALOG path. Precedence: the explicit override (the deprecated
-    // `BUSBAR_PROVIDERS` env var, or a runtime reload re-using its boot path) > `config.providers_file`
+    // 1.6.0: resolve the providers CATALOG path. Precedence: the explicit override (the `--providers`
+    // flag, or a runtime reload re-using its boot path) > `config.providers_file`
     // (relative to the config dir) > `providers.yaml` next to the resolved config.yaml.
     let config_dir = config_path
         .parent()
@@ -251,7 +246,7 @@ pub fn load_config_from_disk(
     };
     let raw_providers = std::fs::read_to_string(&providers_path).map_err(|e| {
         format!(
-            "cannot read providers file '{}': {e} (set `providers_file:` in config.yaml, or {ENV_PROVIDERS})",
+            "cannot read providers file '{}': {e} (pass `--providers <path>`, or set `providers_file:` in config.yaml)",
             providers_path.display()
         )
     })?;

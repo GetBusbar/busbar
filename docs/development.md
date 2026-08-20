@@ -123,12 +123,12 @@ binaries: everything runs under `cargo test`. See [testing.md](testing.md).
 
 ## Running locally
 
-Busbar reads two YAML files, located via env vars:
+Busbar reads two YAML files, located via CLI flags (with an env/config fallback):
 
-| Env var | Default | Purpose |
-|---|---|---|
-| `BUSBAR_PROVIDERS` | `/etc/busbar/providers.yaml` | The verified provider catalog (shipped). |
-| `BUSBAR_CONFIG` | `/etc/busbar/config.yaml` | Your deployment. |
+| File | Flag | Fallback | Default |
+|---|---|---|---|
+| Provider catalog | `--providers <path>` | `providers_file:` in config.yaml | `providers.yaml` next to config.yaml |
+| Your deployment | `-c`/`--config <path>` | `BUSBAR_CONFIG` env | `/etc/busbar/config.yaml` |
 
 Both files support `${VAR}` interpolation expanded at load time; an unset
 referenced variable is a hard startup failure. Provider keys are supplied via the

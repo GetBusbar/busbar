@@ -63,7 +63,7 @@ use busbar_core::{admin, config, config_validate, export, health, metrics, obser
 use busbar_core::{
     build_app_from_config, build_split_routers_with_limits, load_config_from_disk,
     preflight_plugins_and_secrets, validate_builtin_secrets_resolve, LoadedConfig,
-    DEFAULT_CONFIG_PATH, ENV_CONFIG, ENV_PROVIDERS,
+    DEFAULT_CONFIG_PATH, ENV_CONFIG,
 };
 // Read only by the jemalloc idle-purge fallback below, which is itself
 // `#[cfg(not(target_env = "msvc"))]` — windows-msvc has no jemalloc, so importing this
@@ -90,8 +90,7 @@ fn handle_cli_flags() -> Option<i32> {
             // the operator extension is appended best-effort if BUSBAR_CONFIG is readable + parseable,
             // so the flag is useful even before a deployment is wired up. One entry per line, exit 0.
             let mut entries = config_validate::metadata_denylist_entries();
-            let config_path =
-                std::env::var(ENV_CONFIG).unwrap_or_else(|_| DEFAULT_CONFIG_PATH.into());
+            let config_path = resolve_config_path(config_path_flag().as_deref());
             if let Ok(raw) = std::fs::read_to_string(&config_path) {
                 match config::interpolate_env(&raw) {
                     Ok(interpolated) => {
@@ -146,7 +145,9 @@ fn handle_cli_flags() -> Option<i32> {
                 "busbar {ver} — native-protocol LLM gateway
 
 USAGE:
-    busbar              run the gateway (configured entirely via environment + YAML)
+    busbar [-c <path>] [--providers <path>]
+                        run the gateway (configured via environment + YAML; the two optional flags
+                        point busbar at its config.yaml / providers.yaml — see CONFIG INPUTS below)
     busbar --help       print this help
     busbar --version    print the version
     busbar --validate   parse + validate config.yaml/providers.yaml AND every plugin manifest
@@ -167,10 +168,17 @@ USAGE:
     busbar --print-metadata-blocklist
                         print the effective cloud-metadata SSRF denylist and exit
 
+CONFIG INPUTS:
+    -c, --config <path> path to config.yaml. Precedence: this flag > BUSBAR_CONFIG env >
+                        /etc/busbar/config.yaml (default). Accepts `-c <path>`, `--config <path>`,
+                        and `--config=<path>`.
+    --providers <path>  path to providers.yaml. Precedence: this flag > `providers_file:` in
+                        config.yaml > providers.yaml next to the resolved config.yaml (default).
+                        Accepts `--providers <path>` and `--providers=<path>`.
+
 ENVIRONMENT:
-    BUSBAR_CONFIG       path to config.yaml     (default: /etc/busbar/config.yaml)
-    BUSBAR_PROVIDERS    path to providers.yaml  (DEPRECATED — set `providers_file:` in config.yaml;
-                        default: providers.yaml next to the resolved config.yaml)
+    BUSBAR_CONFIG       path to config.yaml     (default: /etc/busbar/config.yaml; overridden by
+                        -c/--config)
     RUST_LOG            log level: error|warn|info|debug|trace  (default: info)
 
 Flags:
@@ -201,6 +209,20 @@ Docs: https://getbusbar.com   ·   Source: https://github.com/GetBusbar/busbar",
             );
             Some(0)
         }
+        // `-c`/`--config`/`--providers` (value-taking flags) as the FIRST argument mean "run the
+        // gateway with these config/providers paths" — proceed to boot. `run()` (and each command
+        // path) scans the FULL arg list for their values, so they are honored wherever they appear;
+        // recognizing them here only stops the leading one from being rejected as an unknown argument.
+        // The unknown-flag rejection below is unchanged.
+        Some(a)
+            if a == "-c"
+                || a == "--config"
+                || a == "--providers"
+                || a.starts_with("--config=")
+                || a.starts_with("--providers=") =>
+        {
+            None
+        }
         Some(other) => {
             eprintln!("busbar: unrecognized argument '{other}'. Try 'busbar --help'.");
             Some(2)
@@ -212,13 +234,12 @@ Docs: https://getbusbar.com   ·   Source: https://github.com/GetBusbar/busbar",
 /// same load -> resolve -> validate the gateway runs at boot (so a clean `--validate` means a clean
 /// boot), but never binds a listener, writes state, spawns a task, opens TLS, or makes a network call,
 /// and does NOT require provider secrets (validation is STRUCTURE, not reachability — the nginx -t rule).
-/// Honors BUSBAR_CONFIG/BUSBAR_PROVIDERS/--safe-mode. Prints an OK summary + exits 0 when valid;
+/// Honors `-c`/`--config`, `--providers`, `BUSBAR_CONFIG`, and `--safe-mode` exactly as boot does.
+/// Prints an OK summary + exits 0 when valid;
 /// prints every error (same text boot prints) + exits 1 when not.
 fn validate_config_command() -> i32 {
-    let providers_override = providers_override_from_env();
-    let config_path = std::path::PathBuf::from(
-        std::env::var(ENV_CONFIG).unwrap_or_else(|_| DEFAULT_CONFIG_PATH.into()),
-    );
+    let providers_override = providers_override();
+    let config_path = std::path::PathBuf::from(resolve_config_path(config_path_flag().as_deref()));
     let safe_mode = safe_mode_requested(std::env::args());
 
     let mut loaded = match load_config_from_disk(
@@ -321,10 +342,8 @@ fn validate_config_command() -> i32 {
 /// reason and which one `store.module` selects). NEVER `dlopen`s anything, so an untrusted
 /// plugin's code cannot run from listing it. Exit 0 (informational; `--validate` is the gate).
 fn list_plugins_command() -> i32 {
-    let providers_override = providers_override_from_env();
-    let config_path = std::path::PathBuf::from(
-        std::env::var(ENV_CONFIG).unwrap_or_else(|_| DEFAULT_CONFIG_PATH.into()),
-    );
+    let providers_override = providers_override();
+    let config_path = std::path::PathBuf::from(resolve_config_path(config_path_flag().as_deref()));
     // Best-effort config read (lenient env): a missing/broken config falls back to the default
     // plugins block so the inventory still works pre-deployment.
     let (plugins_cfg, store_ref) = match load_config_from_disk(
@@ -456,7 +475,7 @@ fn worker_threads_from_env(name: &str) -> Option<usize> {
 /// caller falls through to the standard worker-thread default, and `run()` surfaces the real error.
 /// Lenient env interpolation so an unset `${VAR}` elsewhere in the file does not abort this probe.
 fn worker_threads_from_config() -> Option<usize> {
-    let config_path = std::env::var(ENV_CONFIG).unwrap_or_else(|_| DEFAULT_CONFIG_PATH.into());
+    let config_path = resolve_config_path(config_path_flag().as_deref());
     let raw = std::fs::read_to_string(&config_path).ok()?;
     let mut unset = Vec::new();
     let interpolated =
@@ -666,10 +685,19 @@ async fn run() {
 
     // Locate the two config files (env-overridable paths) and run the shared disk-load pipeline —
     // the SAME pipeline `POST /api/v1/admin/config/reload` re-runs at runtime.
-    let providers_override = providers_override_from_env();
-    let config_path = std::path::PathBuf::from(
-        std::env::var(ENV_CONFIG).unwrap_or_else(|_| DEFAULT_CONFIG_PATH.into()),
-    );
+    let cli_config = config_path_flag();
+    // 1.6.0 effective-source notice: only when the `--config` flag actually OVERRIDES a DIFFERENT
+    // `BUSBAR_CONFIG` the operator also set (never on a bare flag / equal values), so a config value
+    // that was ignored is explained rather than silent. Pre-subscriber, so it goes to stderr like the
+    // other boot diagnostics.
+    if let Some(notice) = config_override_notice(
+        cli_config.as_deref(),
+        std::env::var(ENV_CONFIG).ok().as_deref(),
+    ) {
+        eprintln!("[info] {notice}");
+    }
+    let providers_override = providers_override();
+    let config_path = std::path::PathBuf::from(resolve_config_path(cli_config.as_deref()));
     let safe_mode = safe_mode_requested(std::env::args());
     let loaded = load_config_from_disk(
         &config_path,
@@ -688,6 +716,17 @@ async fn run() {
         overlay_doc,
         unset_env_vars: _,
     } = loaded;
+
+    // 1.6.0 effective-source notice for the PROVIDERS catalog: the confusing case is a config.yaml
+    // that declares `providers_file:` while the operator ALSO passed `--providers` — the flag wins, so
+    // name both rather than let the config value silently lose. Only fires when both are set (and
+    // differ); a bare `--providers` with no `providers_file:` in config is unambiguous and silent.
+    if let Some(notice) = providers_override_notice(
+        value_flag(std::env::args().skip(1), "--providers", None).as_deref(),
+        deploy.providers_file(),
+    ) {
+        eprintln!("[info] {notice}");
+    }
 
     // 1.5.0 full-config coverage: apply the overlay's `root` section (API-set single-value config —
     // listen/tls/rate_card/store/security/limits/…) onto the base `DeployCfg` BEFORE `resolve`, so
@@ -1265,18 +1304,80 @@ Review the output, then run `busbar --validate` on it before deploying.         
     }
 }
 
-/// Resolve the DEPRECATED `BUSBAR_PROVIDERS` override, warning once when it is set. `None` ⇒ let
-/// [`load_config_from_disk`] resolve the catalog from `config.providers_file` or the default
-/// (`providers.yaml` next to config.yaml). One-release back-compat for the env→config migration.
-fn providers_override_from_env() -> Option<std::path::PathBuf> {
-    let v = std::env::var(ENV_PROVIDERS)
-        .ok()
-        .filter(|s| !s.is_empty())?;
-    eprintln!(
-        "[warn] {ENV_PROVIDERS} is DEPRECATED; set `providers_file:` in config.yaml instead (it is \
-         honored for now)."
-    );
-    Some(std::path::PathBuf::from(v))
+/// Resolve the config.yaml path under the flag-first precedence (1.6.0):
+/// `-c`/`--config <path>` flag > `BUSBAR_CONFIG` env > compiled-in `DEFAULT_CONFIG_PATH`. The ONE
+/// resolver every config-path consumer routes through, so the precedence is stated once. `cli` is the
+/// value of the `--config` flag (scanned from the process args via [`config_path_flag`]); `None` ⇒
+/// no flag passed, fall through to the env layer and then the default.
+fn resolve_config_path(cli: Option<&str>) -> String {
+    match cli {
+        Some(p) => p.to_string(),
+        None => std::env::var(ENV_CONFIG).unwrap_or_else(|_| DEFAULT_CONFIG_PATH.into()),
+    }
+}
+
+/// Scan an arg iterator for a value-taking flag and return the LAST occurrence's value. Accepts
+/// `--long value`, `--long=value`, and (when `short` is `Some("-x")`) the short `-x value` form.
+/// Takes the iterator as a parameter (like `safe_mode_requested`) so it is unit-testable against a
+/// synthetic arg list rather than the process environment.
+fn value_flag(
+    args: impl Iterator<Item = String>,
+    long: &str,
+    short: Option<&str>,
+) -> Option<String> {
+    let eq_prefix = format!("{long}=");
+    let mut result = None;
+    let mut iter = args;
+    while let Some(a) = iter.next() {
+        if let Some(v) = a.strip_prefix(&eq_prefix) {
+            result = Some(v.to_string());
+        } else if a == long || short == Some(a.as_str()) {
+            if let Some(v) = iter.next() {
+                result = Some(v);
+            }
+        }
+    }
+    result
+}
+
+/// The `-c`/`--config <path>` flag value from the process args (`None` ⇒ not passed). See
+/// [`resolve_config_path`] for the precedence this feeds.
+fn config_path_flag() -> Option<String> {
+    value_flag(std::env::args().skip(1), "--config", Some("-c"))
+}
+
+/// The `--providers <path>` flag value from the process args, as the override handed to
+/// [`load_config_from_disk`] (`None` ⇒ not passed, so the catalog resolves from `providers_file:` or
+/// the default next to config.yaml). 1.6.0 replaced the removed `BUSBAR_PROVIDERS` env var: providers
+/// precedence is now `--providers` flag > `providers_file:` config key > `providers.yaml` default.
+fn providers_override() -> Option<std::path::PathBuf> {
+    value_flag(std::env::args().skip(1), "--providers", None).map(std::path::PathBuf::from)
+}
+
+/// The config-path override notice (1.6.0): `Some(msg)` when BOTH the `--config` flag and the
+/// `BUSBAR_CONFIG` env var are set to DIFFERENT paths — the flag wins, so an operator whose env value
+/// was ignored is told why. `None` when the flag is absent, the env is unset, or the two are equal (no
+/// real override to explain). Pure so the "REAL override only" rule is unit-testable.
+fn config_override_notice(flag: Option<&str>, env: Option<&str>) -> Option<String> {
+    match (flag, env) {
+        (Some(f), Some(e)) if f != e => Some(format!(
+            "config: using --config '{f}' (overrides BUSBAR_CONFIG='{e}')"
+        )),
+        _ => None,
+    }
+}
+
+/// The providers-catalog override notice (1.6.0): `Some(msg)` when the `--providers` flag is set AND
+/// config.yaml ALSO declares a DIFFERENT `providers_file:` — the flag wins, so name both. `None` when
+/// the flag is absent, the config declared no `providers_file:`, or the two are equal. Pure for
+/// unit-testing the "flag alone / matching values ⇒ no notice" rule.
+fn providers_override_notice(flag: Option<&str>, providers_file: Option<&str>) -> Option<String> {
+    match (flag, providers_file) {
+        (Some(f), Some(pf)) if f != pf => Some(format!(
+            "providers catalog: using --providers '{f}' (overrides providers_file: '{pf}' from config.yaml)"
+        )),
+        _ => None,
+    }
 }
 
 /// `--generate-signing-key`: mint a fresh ed25519 signing secret from the OS RNG and PRINT it (as 64

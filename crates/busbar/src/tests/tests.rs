@@ -129,6 +129,98 @@ fn safe_mode_requested_matches_the_exact_flag_only() {
     assert!(!safe_mode_requested(std::iter::empty()));
 }
 
+/// `value_flag`: extracts a value-taking flag in all accepted forms — `--long value`, `--long=value`,
+/// and the short `-x value` — returning the LAST occurrence, and `None` when the flag is absent.
+#[test]
+fn value_flag_parses_all_accepted_forms() {
+    let v = |a: &[&str], long: &str, short: Option<&str>| {
+        value_flag(a.iter().map(|s| s.to_string()), long, short)
+    };
+    // `--config value`
+    assert_eq!(
+        v(&["--config", "/a/config.yaml"], "--config", Some("-c")),
+        Some("/a/config.yaml".to_string())
+    );
+    // `--config=value`
+    assert_eq!(
+        v(&["--config=/b/config.yaml"], "--config", Some("-c")),
+        Some("/b/config.yaml".to_string())
+    );
+    // `-c value` (short)
+    assert_eq!(
+        v(&["-c", "/c/config.yaml"], "--config", Some("-c")),
+        Some("/c/config.yaml".to_string())
+    );
+    // LAST occurrence wins.
+    assert_eq!(
+        v(
+            &["-c", "/first", "--config", "/second"],
+            "--config",
+            Some("-c")
+        ),
+        Some("/second".to_string())
+    );
+    // Absent ⇒ None. `--providers` has no short form.
+    assert_eq!(v(&["--validate"], "--providers", None), None);
+    assert_eq!(
+        v(&["--providers", "/p/providers.yaml"], "--providers", None),
+        Some("/p/providers.yaml".to_string())
+    );
+}
+
+/// `resolve_config_path`: the flag, when passed, wins over everything (the env layer is only consulted
+/// when the flag is `None`). The flag-present arm is deterministic (no env dependence), so it is the
+/// safe half to unit-test without racing the process environment.
+#[test]
+fn resolve_config_path_flag_wins() {
+    assert_eq!(
+        resolve_config_path(Some("/flag/config.yaml")),
+        "/flag/config.yaml".to_string()
+    );
+}
+
+/// `config_override_notice`: fires ONLY when both the `--config` flag and `BUSBAR_CONFIG` are set to
+/// DIFFERENT paths (a real override to explain) — never on a bare flag, a bare env, or equal values.
+#[test]
+fn config_override_notice_fires_only_on_a_real_override() {
+    // Both set + differ ⇒ notice naming both.
+    let n = config_override_notice(Some("/flag.yaml"), Some("/env.yaml")).expect("notice");
+    assert!(
+        n.contains("/flag.yaml") && n.contains("/env.yaml"),
+        "got {n}"
+    );
+    // Equal ⇒ no notice.
+    assert_eq!(
+        config_override_notice(Some("/same.yaml"), Some("/same.yaml")),
+        None
+    );
+    // Flag alone ⇒ no notice.
+    assert_eq!(config_override_notice(Some("/flag.yaml"), None), None);
+    // Env alone ⇒ no notice.
+    assert_eq!(config_override_notice(None, Some("/env.yaml")), None);
+}
+
+/// `providers_override_notice`: fires when `--providers` is set AND config.yaml ALSO declares a
+/// DIFFERENT `providers_file:` — naming both — and is silent for a bare flag or matching values.
+#[test]
+fn providers_override_notice_names_both_only_on_a_real_override() {
+    // Flag set + providers_file set (and differ) ⇒ notice naming BOTH.
+    let n = providers_override_notice(Some("/flag.yaml"), Some("catalog.yaml")).expect("notice");
+    assert!(
+        n.contains("/flag.yaml") && n.contains("catalog.yaml") && n.contains("providers_file"),
+        "the notice must name both the flag and the config's providers_file: {n}"
+    );
+    // Flag alone (no providers_file in config) ⇒ no notice.
+    assert_eq!(providers_override_notice(Some("/flag.yaml"), None), None);
+    // Matching values ⇒ no notice.
+    assert_eq!(
+        providers_override_notice(Some("catalog.yaml"), Some("catalog.yaml")),
+        None
+    );
+    // No flag ⇒ no notice regardless of providers_file.
+    assert_eq!(providers_override_notice(None, Some("catalog.yaml")), None);
+}
+
 /// `recv_shutdown`: a `-> ()` mutant would resolve immediately regardless of the channel — the
 /// real function must genuinely BLOCK until something is sent (or the sender is dropped), then
 /// resolve promptly once it is.

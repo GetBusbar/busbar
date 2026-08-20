@@ -2457,11 +2457,10 @@ fn boot_locked_config_has_no_overlay() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// 1.5.3 providers migration (`BUSBAR_PROVIDERS` → `providers_file:`): the top-level `providers_file:`
-/// pointer names the catalog (resolved relative to config.yaml), honored with NO env var; and an
-/// explicit override (the deprecated env var, or a reload's live path) still wins. Pre-1.5.3 the
-/// catalog path came ONLY from `BUSBAR_PROVIDERS` / the hardcoded default; a config-file pointer had
-/// no code path.
+/// Providers catalog resolution: the top-level `providers_file:` pointer names the catalog (resolved
+/// relative to config.yaml), honored with NO env var; and an explicit override (the `--providers`
+/// flag, or a reload's live path) still wins. Pre-1.5.3 the catalog path came only from a hardcoded
+/// default; a config-file pointer had no code path.
 #[test]
 fn boot_providers_file_pointer_is_honored_and_override_wins() {
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -2489,7 +2488,7 @@ fn boot_providers_file_pointer_is_honored_and_override_wins() {
         "the providers_file pointer must be honored"
     );
 
-    // An explicit override (deprecated BUSBAR_PROVIDERS, or a reload's live path) wins.
+    // An explicit override (the `--providers` flag, or a reload's live path) wins.
     let other = dir.join("other-catalog.yaml");
     std::fs::write(&other, "{}\n").unwrap();
     let loaded2 = load_config_from_disk(
