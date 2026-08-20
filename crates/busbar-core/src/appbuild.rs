@@ -10,6 +10,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::auth::AuthMiddleware;
+use crate::diagnostics::{
+    diag_error, diag_warn, DURABLE_KEYS_INERT, GOVERNANCE_STORE_EPHEMERAL,
+    OAUTH_AS_EPHEMERAL_SIGNING_KEY, OPEN_RELAY_NO_AUTH, PLUGINS_FETCH_RELOAD_MISS,
+    PROVIDER_API_KEY_UNRESOLVED, SAFE_MODE_OVERLAY_QUARANTINED, STORE_SECRET_REF_UNRESOLVED,
+};
 use crate::preflight::{
     build_secret_resolver, plugin_fetch_downloader, plugins_preflight, resolve_admin_token,
     resolve_signing_key, validate_secret_refs,
@@ -259,7 +264,8 @@ pub fn load_config_from_disk(
         // `--safe-mode`: boot on the operator-owned base config ALONE — the persisted overlay
         // (API-registered hooks) is quarantined, not deleted. The escape hatch for "an applied
         // hook is harming traffic and re-applies itself every boot".
-        tracing::warn!(
+        diag_warn!(
+            SAFE_MODE_OVERLAY_QUARANTINED,
             "SAFE MODE: config overlay NOT merged — running on base config.yaml alone (the \
              overlay file is untouched; boot without --safe-mode to re-apply it)"
         );
@@ -386,7 +392,8 @@ pub fn build_app_from_config(
                     tracing::info!(filename, "plugins.fetch: downloaded + verified")
                 }
                 busbar_plugin_loader::FetchOutcome::Warned { url, error } => {
-                    tracing::warn!(
+                    diag_warn!(
+                        PLUGINS_FETCH_RELOAD_MISS,
                         url,
                         error,
                         "plugins.fetch: miss on reload; keeping current artifact"
@@ -473,7 +480,7 @@ pub fn build_app_from_config(
             match secret_resolver.resolve_string(&provider_cfg.api_key) {
                 Ok(k) => k,
                 Err(e) => {
-                    tracing::warn!(provider = %mc.provider, "provider api_key did not resolve: {e}");
+                    diag_warn!(PROVIDER_API_KEY_UNRESOLVED, provider = %mc.provider, "provider api_key did not resolve: {e}");
                     String::new()
                 }
             }
@@ -697,7 +704,7 @@ pub fn build_app_from_config(
     // AND unconditionally on stderr, so the open-relay state cannot be masked by log configuration.
     if let Some(banner) = open_relay_banner(auth_cfg.chain.is_empty(), cfg.auth.is_some()) {
         eprintln!("[error] {banner}");
-        tracing::error!("{banner}");
+        diag_error!(OPEN_RELAY_NO_AUTH, "{banner}");
     }
 
     // FAIL-CLOSED: the auth chain resolves every non-builtin `auth.chain` module as a `kind: auth`
@@ -886,7 +893,8 @@ pub fn build_app_from_config(
     // exactly that. Rejecting here would make the store stricter than the block beside it.
     if let Some(store_cfg) = cfg.store.as_ref() {
         if let Err(e) = config::secret::resolve_settings(&store_cfg.settings, &secret_resolver) {
-            tracing::warn!(
+            diag_warn!(
+                STORE_SECRET_REF_UNRESOLVED,
                 store = %store_cfg.module,
                 error = %e,
                 "store settings hold a secret reference that does not resolve here; the store is \
@@ -1056,7 +1064,8 @@ pub fn build_app_from_config(
         let g = cfg.store.clone().unwrap_or_default();
         let store: Arc<dyn governance::Store> =
             if g.module == crate::config::GOVERNANCE_STORE_MEMORY {
-                tracing::warn!(
+                diag_warn!(
+                    GOVERNANCE_STORE_EPHEMERAL,
                     "store: in-memory (ephemeral) - keys, groups' usage, and ledgers reset on \
                      restart; configure a durable store plugin for persistence"
                 );
@@ -1142,7 +1151,7 @@ pub fn build_app_from_config(
                     inert_durable_keys_banner(store_is_durable, key_count, keys_in_chain)
                 {
                     eprintln!("[error] {banner}");
-                    tracing::error!("{banner}");
+                    diag_error!(DURABLE_KEYS_INERT, "{banner}");
                 }
                 Some(gs)
             }
@@ -1318,7 +1327,8 @@ pub fn build_app_from_config(
         Some(identity) => {
             let key_material = match identity.signing_key() {
                 None => {
-                    tracing::warn!(
+                    diag_warn!(
+                        OAUTH_AS_EPHEMERAL_SIGNING_KEY,
                         "oauth_as: no signing_key configured, so an EPHEMERAL ES256 key was \
                          generated. Every token this deployment issues stops verifying when the \
                          process restarts. Set `oauth_as.signing_key` for anything but a trial."

@@ -327,6 +327,17 @@ Initializing HMAC-SHA256 for AWS SigV4 signing failed. This is documented as unr
 
 **What to do:** Capture the logged error and file a bug; this should not be possible. SigV4-signed egress (e.g. Bedrock) fails to authenticate until it is resolved.
 
+<a id="oauth-as-ephemeral-signing-key"></a>
+### BUSBAR-4025 — oauth_as generated an ephemeral ES256 signing key (tokens die on restart)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `oauth-as-ephemeral-signing-key`
+
+The oauth_as authorization server has no `signing_key` configured, so busbar generated an EPHEMERAL ES256 key at boot. Every token this deployment issues is signed with that in-memory key and stops verifying the moment the process restarts, because a new key is generated on the next boot. Acceptable only for a trial or local development.
+
+**What to do:** Set `oauth_as.signing_key` to a durable key reference before relying on issued tokens across restarts. Until then, every restart invalidates all outstanding oauth_as tokens.
+
 ## 5xxx — Proxy & routing
 
 <a id="usage-tap-reassembly-cap-exceeded"></a>
@@ -735,4 +746,206 @@ During a /metrics scrape, reading one virtual key's usage from the store failed,
 During a /metrics scrape, reading a group budget bucket's ledger from the store failed, so busbar skips that bucket's gauges for this scrape and continues. Per-bucket, per-scrape.
 
 **What to do:** None — self-heals on the next scrape. Sustained failures indicate a governance-store problem.
+
+## 6xxx — Plugins
+
+<a id="plugins-fetch-reload-miss"></a>
+### BUSBAR-6001 — plugins.fetch missed on reload (keeping the current artifact)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `plugins-fetch-reload-miss`
+
+During a reload, fetching a pinned plugin artifact missed (the source did not return a usable download for the pinned spec), so busbar kept the artifact already on disk and continued the reload. The running plugin is unchanged; the intended refresh did not land.
+
+**What to do:** Check the plugin source (registry/URL) and the pinned spec for the named artifact — a transient fetch miss self-heals on the next reload, a persistent one means the pin no longer resolves. busbar keeps serving the current artifact until a fetch succeeds.
+
+## 8xxx — Governance & cost
+
+<a id="revocation-resync-outstanding"></a>
+### BUSBAR-8001 — Revocation denylist re-sync still outstanding from an earlier window
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `revocation-resync-outstanding`
+
+A revocation-denylist re-sync launched in an earlier window has not returned — the governance store has not answered for at least a full sync window — so busbar keeps serving the last-known revocations and does not start a second overlapping read. A peer's revoke may not be visible on this node until the store recovers. The CAS bound rate-limits this warning to once per window.
+
+**What to do:** Investigate the governance store's health and latency. Revocations already known stay enforced (fail-closed); the risk is a NEW revoke made elsewhere not yet reaching this node. Re-sync resumes automatically once the store answers.
+
+<a id="revocation-resync-failed"></a>
+### BUSBAR-8002 — Revocation denylist re-sync failed (keeping the previously-known revocations)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `revocation-resync-failed`
+
+A revocation-denylist re-sync read from the governance store returned an error, so busbar keeps the previously-known revocations in place (fail-closed: a store blip never widens access) and leaves the set marked stale so the next window retries. A peer's revoke may not be visible on this node until a later sync succeeds.
+
+**What to do:** Investigate the governance store — a transient error self-heals on the next window's retry; sustained failures mean the store is unreachable and cross-node revocations are not propagating.
+
+<a id="governance-key-reserved-namespace-collision"></a>
+### BUSBAR-8003 — Refused to synthesize a governance key (principal id collides with a reserved namespace)
+
+- **Severity:** benign_recurring
+- **Since:** 1.6.0
+- **Slug:** `governance-key-reserved-namespace-collision`
+
+A principal id (attacker-influenceable at the IdP) starts with a reserved ledger-bucket prefix (`group:` or `vk_`), which would alias a group's or a real virtual key's ledger and rate bucket. busbar fails closed and synthesizes NO key for that principal rather than mint a colliding bucket. This is a per-request, caller-side signal, not an operator problem, so it is emitted at debug.
+
+**What to do:** None — self-heals; the principal is correctly refused data-plane access. If a legitimate identity is being rejected, its IdP subject must be reshaped to avoid the reserved `group:` and `vk_` prefixes.
+
+<a id="limit-window-unrecognized"></a>
+### BUSBAR-8004 — Unrecognized limit window (enforcing as all-time 'total')
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `limit-window-unrecognized`
+
+A limit's window word was not recognized — it can only arise from a corrupt or foreign store row, since config parse rejects unknown windows. busbar fails SAFE and enforces the limit as the all-time ('total') window, the tightest enforcement, never wider, and surfaces the value so the corruption is visible instead of silent.
+
+**What to do:** Inspect the governance store row for the named window value — it was written by something other than a validated config load. Enforcement is safe (all-time) in the meantime; correct the row so the intended window applies.
+
+<a id="refresh-self-inconsistent-binding"></a>
+### BUSBAR-8005 — Self-serve refresh left an inconsistent binding (tombstone AND rollback both failed)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `refresh-self-inconsistent-binding`
+
+During a self-serve key refresh, tombstoning the prior binding failed and the compensating rollback of the newly-minted binding ALSO failed, so the subject may now have TWO live bindings in the store for one identity. busbar exhausted its best-effort recovery and surfaces the inconsistent state for inspection. Rare.
+
+**What to do:** Inspect the governance store for the named subject — it may hold two live bindings (old_id and new_id). Tombstone whichever is not intended so the subject has exactly one valid credential.
+
+<a id="refresh-self-cache-refresh-failed"></a>
+### BUSBAR-8006 — Self-serve refresh: cache reconcile failed after tombstoning the prior binding
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `refresh-self-cache-refresh-failed`
+
+During a self-serve key refresh, the store tombstone of the prior binding committed but the follow-up cache reconcile (a store round-trip) failed. busbar evicted the prior binding directly from the cache so its old token stops verifying immediately; the store is consistent, but the rest of the cache may be stale until the next successful refresh.
+
+**What to do:** Investigate the governance store's reachability — the durable state is correct and the old credential no longer verifies. The cache self-heals on the next successful reconcile; sustained failures mean the store is unhealthy.
+
+<a id="accrual-group-missing"></a>
+### BUSBAR-8007 — Group missing at accrual (tokens ledgered to the key bucket only)
+
+- **Severity:** benign_recurring
+- **Since:** 1.6.0
+- **Slug:** `accrual-group-missing`
+
+A group referenced by a key was gone by the time usage was accrued (the group was deleted between admission and accrual), so busbar degrades to ledgering the tokens on the key's own bucket only rather than lose them. The request was already admitted and served; nothing is lost. This is a per-request, self-degrading path, so it is emitted at debug.
+
+**What to do:** None — self-heals; tokens are preserved on the key bucket. Frequent occurrence for one key means a group is being deleted out from under active keys; reconcile the key's group assignment.
+
+<a id="metering-flush-partial-failure"></a>
+### BUSBAR-8008 — Metering flush: some keys failed to persist this tick (retained for retry)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `metering-flush-partial-failure`
+
+A metering flush tick could not persist one or more keys' usage deltas to the store. busbar retains the failed deltas and retries them on the next tick, so no usage is lost. This is already collapsed to ONE aggregate warning per tick (per-key detail is at debug), so it fires at a human cadence, not per key.
+
+**What to do:** Investigate the governance store if the failure count stays non-zero across ticks — a transient store hiccup self-heals on the next flush. Usage is retained and re-tried, so billing is not lost, only delayed.
+
+<a id="delete-key-cache-reconcile-failed"></a>
+### BUSBAR-8009 — delete_key: tombstone committed and key evicted, but cache reconcile failed
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `delete-key-cache-reconcile-failed`
+
+An admin key deletion committed the tombstone in the store and evicted the deleted key from the in-memory caches (it no longer authenticates), but the follow-up full cache reconcile failed. The deletion is durable and the key is dead; only OTHER cache entries may be stale until the next successful refresh. Rare admin path.
+
+**What to do:** Investigate the governance store's reachability — the deletion itself is complete and safe. The cache self-heals on the next successful refresh; sustained failures indicate an unhealthy store.
+
+<a id="rotate-key-cache-reconcile-failed"></a>
+### BUSBAR-8010 — rotate_key: new generation committed, but cache reconcile failed (new secret not returned)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `rotate-key-cache-reconcile-failed`
+
+An admin key rotation committed the new generation in the store — so the PREVIOUS credential is permanently dead — and evicted the key from the caches, but the follow-up cache reconcile failed, so the freshly-minted secret could not be returned to the admin. The rotation IS durable; the new secret is simply lost from this response. Rare admin path.
+
+**What to do:** Re-rotate the key to obtain a fresh secret — the previous credential is already dead and will not come back. Investigate the governance store's reachability, which is why the reconcile failed.
+
+<a id="budget-flush-partial-failure"></a>
+### BUSBAR-8011 — Budget flush: some buckets failed to persist this tick (re-marked dirty for retry)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `budget-flush-partial-failure`
+
+A budget flush tick could not persist one or more group-budget buckets to the store. busbar re-marks those buckets dirty and retries them on the next tick, so no spend is lost. This is already collapsed to ONE aggregate warning per tick (per-bucket detail is at debug), so it fires at a human cadence, not per bucket.
+
+**What to do:** Investigate the governance store if the failure count stays non-zero across ticks — a transient store hiccup self-heals on the next flush. Spend is retained and re-tried, so budgets are not lost, only delayed.
+
+<a id="safe-mode-overlay-quarantined"></a>
+### BUSBAR-8012 — SAFE MODE: config overlay not merged (running on base config.yaml alone)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `safe-mode-overlay-quarantined`
+
+busbar was booted with `--safe-mode`, so the persisted config overlay (API-registered hooks) was NOT merged and busbar is running on the operator-owned base config.yaml alone. This is the intentional escape hatch for an applied hook that harms traffic and re-applies itself every boot. The overlay file is untouched, not deleted.
+
+**What to do:** This is an operator-requested state. Repair or remove the offending overlay entry, then boot WITHOUT `--safe-mode` to re-apply the overlay. Until then, API-registered hooks are not in effect.
+
+<a id="provider-api-key-unresolved"></a>
+### BUSBAR-8013 — Provider api_key did not resolve (degraded to an empty key)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `provider-api-key-unresolved`
+
+A provider's `api_key` secret reference did not resolve at boot, so busbar degraded that provider to an empty key. This is legitimate for keyless local upstreams (ollama/vLLM), but for a real provider it means egress will be unauthenticated and the upstream will reject with 401.
+
+**What to do:** If the provider needs a key, fix its `api_key` secret reference (the secret is missing or the resolver could not read it) and restart. If the upstream is genuinely keyless, no action is needed.
+
+<a id="open-relay-no-auth"></a>
+### BUSBAR-8014 — auth.chain is empty — OPEN RELAY (every request admitted unauthenticated)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `open-relay-no-auth`
+
+The auth chain is empty (either explicitly, or because the `auth:` block is absent and serde-defaults to none), so every data-plane request is admitted unauthenticated — an OPEN RELAY forwarding anyone's traffic on your upstream credentials. Emitted at ERROR (not warn, which RUST_LOG=error would suppress) and unconditionally on stderr so the state cannot be masked by log configuration. Acceptable only for local development.
+
+**What to do:** Configure `auth.chain` (a `keys` verifier and/or an auth plugin) before exposing busbar to any untrusted network. This is the same open-relay condition as BUSBAR-4004, surfaced at boot.
+
+<a id="store-secret-ref-unresolved"></a>
+### BUSBAR-8015 — Store settings hold a secret reference that does not resolve here
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `store-secret-ref-unresolved`
+
+A governance-store `settings` value holds a secret reference that does not resolve on this boot. busbar warns rather than fails, because the store is restart-to-apply and staging a ref whose secret the orchestrator mounts on the next deploy is a legitimate workflow. But if the secret is still absent at the next restart, THAT restart will fail in resolve_settings before serving.
+
+**What to do:** Ensure the named store secret reference resolves before the next restart. If you are staging it for an upcoming deploy, no action now; otherwise fix the reference so the next restart does not die resolving it.
+
+<a id="governance-store-ephemeral"></a>
+### BUSBAR-8016 — Governance store is in-memory (ephemeral) — state resets on restart
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `governance-store-ephemeral`
+
+busbar selected the in-memory (ephemeral) governance store, so virtual keys, groups' usage, and ledgers live only in RAM and are LOST on restart. This is the default when no durable store plugin is configured — fine for a trial or local development, but not for anything that must retain keys or spend across restarts.
+
+**What to do:** Configure a durable governance store plugin for persistence if keys, usage, or budgets must survive a restart. No action is needed for ephemeral/dev use.
+
+<a id="durable-keys-inert"></a>
+### BUSBAR-8017 — Durable keys are inert (keys exist but `keys` is not in the running auth chain)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `durable-keys-inert`
+
+A durable governance store holds virtual keys, but the running auth chain does not include the `keys` verifier, so those keys enforce nothing — every request bypasses key-based governance. Emitted at ERROR (not warn, which RUST_LOG=error would suppress) and unconditionally on stderr, the same pattern as the open-relay banner, so the inert state cannot be masked by log configuration.
+
+**What to do:** Add `keys` to `auth.chain` so the durable keys actually gate traffic, or remove the keys if key-based governance is not intended. Until then, minted keys are dead weight.
 

@@ -182,6 +182,10 @@ const MIGRATED_FILES: &[&str] = &[
     "src/trust/sweep.rs",
     "src/oauth_as/plane.rs",
     "src/sigv4.rs",
+    "src/governance/mod.rs",
+    "src/governance/revocation.rs",
+    "src/governance/state.rs",
+    "src/appbuild.rs",
 ];
 
 #[test]

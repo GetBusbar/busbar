@@ -1,5 +1,12 @@
 use super::*;
 
+use crate::diagnostics::{
+    diag_debug, diag_error, diag_warn, ACCRUAL_GROUP_MISSING, BUDGET_FLUSH_PARTIAL_FAILURE,
+    DELETE_KEY_CACHE_RECONCILE_FAILED, METERING_FLUSH_PARTIAL_FAILURE,
+    REFRESH_SELF_CACHE_REFRESH_FAILED, REFRESH_SELF_INCONSISTENT_BINDING,
+    ROTATE_KEY_CACHE_RECONCILE_FAILED,
+};
+
 /// Prefix on the DEGRADED-BUT-APPLIED error [`GovState::delete_key`] returns when the durable
 /// tombstone committed but the full cache reconcile did not. A stable, greppable marker so an
 /// operator (and the admin surface, and the tests) can tell "the revocation IS durable, only the
@@ -658,7 +665,8 @@ impl GovState {
                         Err(rollback_err) => {
                             // Best effort exhausted: loudly flag the inconsistent state (TWO
                             // possibly-live bindings for one subject) for operator/store inspection.
-                            tracing::error!(
+                            diag_error!(
+                                REFRESH_SELF_INCONSISTENT_BINDING,
                                 user_sub = %user_sub,
                                 old_id = %old,
                                 new_id = %out.0.id,
@@ -694,7 +702,8 @@ impl GovState {
                     // so the specific hazard (the OLD token still verifying) is closed immediately,
                     // even though the rest of the cache may now be stale until the next successful
                     // refresh.
-                    tracing::error!(
+                    diag_error!(
+                        REFRESH_SELF_CACHE_REFRESH_FAILED,
                         user_sub = %user_sub,
                         old_id = %old,
                         new_id = %out.0.id,
@@ -756,7 +765,7 @@ impl GovState {
         let chain = match cost.chain_for(key) {
             Ok(c) => c,
             Err(missing) => {
-                tracing::warn!(key = %key.id, group = missing,
+                diag_debug!(ACCRUAL_GROUP_MISSING, key = %key.id, group = missing,
                     "group missing at accrual; tokens ledgered to the key bucket only");
                 self.accrue_bucket(&key.id, super::WINDOW_TOTAL, model, tokens, now);
                 return;
@@ -913,7 +922,8 @@ impl GovState {
             }
         }
         if failed > 0 {
-            tracing::warn!(
+            diag_warn!(
+                METERING_FLUSH_PARTIAL_FAILURE,
                 failed,
                 flushed,
                 error = last_error.as_deref().unwrap_or(""),
@@ -1233,7 +1243,8 @@ impl GovState {
         // ledger rows; whether that re-creates a durable row depends on the delta being non-zero.
         self.budget.write(id).remove(id);
         if let Err(refresh_err) = refreshed {
-            tracing::error!(
+            diag_error!(
+                DELETE_KEY_CACHE_RECONCILE_FAILED,
                 key_id = %id,
                 refresh_err = %refresh_err,
                 "delete_key: the tombstone is COMMITTED in the store and the key was evicted from \
@@ -1350,7 +1361,8 @@ impl GovState {
         // lost — which is a RE-ROTATE, not a retry-because-nothing-happened.
         if let Err(refresh_err) = self.refresh() {
             self.evict_key_from_caches(id);
-            tracing::error!(
+            diag_error!(
+                ROTATE_KEY_CACHE_RECONCILE_FAILED,
                 key_id = %id,
                 refresh_err = %refresh_err,
                 "rotate_key: the new generation is COMMITTED in the store (the previous credential \
@@ -2132,7 +2144,8 @@ impl GovState {
             }
         }
         if failed > 0 {
-            tracing::warn!(
+            diag_warn!(
+                BUDGET_FLUSH_PARTIAL_FAILURE,
                 failed,
                 flushed,
                 error = last_error.as_deref().unwrap_or(""),
