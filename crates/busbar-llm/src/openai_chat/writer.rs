@@ -72,7 +72,7 @@ impl ProtocolWriter for OpenAiWriter {
                             // Responses `file_id` / Bedrock `s3Location` reference has no `image_url`
                             // projection (image_url_from_ir returns None) — SKIP it with a warn rather
                             // than corrupt the block.
-                            match busbar_core::proto::image_url_from_ir(source) {
+                            match super::super::ir_encode::image_url_from_ir(source) {
                                 Some(url) => content_arr.push(serde_json::json!({
                                     "type": "image_url",
                                     "image_url": { "url": url }
@@ -220,7 +220,7 @@ impl ProtocolWriter for OpenAiWriter {
                                         // analog. Drop it WITH a warn so the loss is observable
                                         // (matches the drop-with-warn convention) rather than vanishing
                                         // silently.
-                                        if super::is_json_tool_result_block(b) {
+                                        if super::super::ir_encode::is_json_tool_result_block(b) {
                                             tracing::warn!(
                                                 "dropping structured json tool-result block on \
                                                  OpenAI egress: a Bedrock `{{\"json\":...}}` \

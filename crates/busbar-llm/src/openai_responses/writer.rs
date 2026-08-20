@@ -103,7 +103,9 @@ impl ProtocolWriter for ResponsesWriter {
                                 }
                                 // A URL/base64 image reconstructs the original `image_url`.
                                 url_or_b64 => {
-                                    if let Some(image_url) = super::image_url_from_ir(url_or_b64) {
+                                    if let Some(image_url) =
+                                        super::super::ir_encode::image_url_from_ir(url_or_b64)
+                                    {
                                         content_arr.push(serde_json::json!({
                                             "type": "input_image",
                                             "image_url": image_url
@@ -229,7 +231,7 @@ impl ProtocolWriter for ResponsesWriter {
                                         // sentinel with no Responses analog. Drop WITH a warn
                                         // (drop-with-warn convention) instead of vanishing silently.
                                         other => {
-                                            if super::is_json_tool_result_block(other) {
+                                            if super::super::ir_encode::is_json_tool_result_block(other) {
                                                 tracing::warn!(
                                                     "dropping structured json tool-result block on \
                                                      Responses egress: a Bedrock `{{\"json\":...}}` \
@@ -354,7 +356,7 @@ impl ProtocolWriter for ResponsesWriter {
                                     // sentinel with no Responses analog. Drop WITH a warn
                                     // (drop-with-warn convention) instead of vanishing silently.
                                     other => {
-                                        if super::is_json_tool_result_block(other) {
+                                        if super::super::ir_encode::is_json_tool_result_block(other) {
                                             tracing::warn!(
                                                 "dropping structured json tool-result block on \
                                                  Responses egress: a Bedrock `{{\"json\":...}}` \

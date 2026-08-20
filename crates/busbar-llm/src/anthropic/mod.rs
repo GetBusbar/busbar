@@ -1269,7 +1269,7 @@ fn write_block(block: &busbar_core::ir::IrBlock) -> serde_json::Value {
                 let kept: Vec<serde_json::Value> = content
                     .iter()
                     .filter(|b| {
-                        if busbar_core::proto::is_json_tool_result_block(b) {
+                        if super::ir_encode::is_json_tool_result_block(b) {
                             tracing::warn!(
                                 "dropping structured json tool-result block on Anthropic egress: a \
                                  Bedrock `{{\"json\":...}}` tool-result has no cross-protocol analog \
@@ -1458,7 +1458,7 @@ fn write_message(
             if let busbar_core::ir::IrBlock::Image { source, .. } = block {
                 // A Responses `file_id` / Bedrock `s3Location` image is an unresolvable cross-vendor
                 // reference with no Anthropic projection. SKIP it rather than emit a corrupt block.
-                if busbar_core::proto::is_unresolvable_image_ref(source) {
+                if super::ir_encode::is_unresolvable_image_ref(source) {
                     dropped_file_id_image += 1;
                     return None;
                 }

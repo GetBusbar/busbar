@@ -609,7 +609,10 @@ impl ProtocolWriter for BedrockWriter {
             .and_then(|v| v.as_object())
             .cloned()
             .unwrap_or_default();
-        busbar_core::proto::warn_dropped_tool_strict(&req.tools, busbar_core::proto::PROTO_BEDROCK);
+        super::super::ir_encode::warn_dropped_tool_strict(
+            &req.tools,
+            busbar_core::proto::PROTO_BEDROCK,
+        );
         if !req.tools.is_empty() {
             let mut tools_arr: Vec<serde_json::Value> = Vec::new();
             for tool in &req.tools {

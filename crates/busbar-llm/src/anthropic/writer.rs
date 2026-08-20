@@ -196,7 +196,7 @@ impl ProtocolWriter for AnthropicWriter {
             "messages".to_string(),
             serde_json::Value::Array(messages_array),
         );
-        busbar_core::proto::warn_dropped_tool_strict(
+        super::super::ir_encode::warn_dropped_tool_strict(
             &req.tools,
             busbar_core::proto::PROTO_ANTHROPIC,
         );

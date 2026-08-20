@@ -1351,7 +1351,10 @@ fn read_block_https_url_kept_verbatim_with_sentinel() {
 fn image_url_round_trips_through_writer() {
     for url in ["data:image/png;base64,AAAB", "https://example.com/cat.png"] {
         let source = super::parse_image_url(url);
-        assert_eq!(super::image_url_from_ir(&source).as_deref(), Some(url));
+        assert_eq!(
+            super::super::ir_encode::image_url_from_ir(&source).as_deref(),
+            Some(url)
+        );
     }
 }
 

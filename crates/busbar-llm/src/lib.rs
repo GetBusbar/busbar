@@ -48,6 +48,10 @@ pub(crate) mod usage_tail;
 /// The OpenAI-family citation `annotations` mapping shared by the Chat and Responses codecs.
 pub(crate) mod openai_annotations;
 
+/// IR → wire encode helpers (image source, tool-result detection, strict-drop warn) shared by the
+/// dialect writers.
+pub(crate) mod ir_encode;
+
 /// EVERY DIALECT THIS PLUGIN DECLARES, in the order an operator sees.
 ///
 /// THE ORDER IS LOAD-BEARING AND IT IS NOT ALPHABETICAL. The composition root hands this slice to

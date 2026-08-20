@@ -220,7 +220,7 @@ impl ProtocolWriter for GeminiWriter {
                                 // with no Gemini analog. Drop WITH a warn (drop-with-warn convention)
                                 // instead of vanishing silently.
                                 other => {
-                                    if super::is_json_tool_result_block(other) {
+                                    if super::super::ir_encode::is_json_tool_result_block(other) {
                                         tracing::warn!(
                                             "dropping structured json tool-result block on Gemini \
                                              egress: a Bedrock `{{\"json\":...}}` tool-result has no \
@@ -355,7 +355,10 @@ impl ProtocolWriter for GeminiWriter {
         }
 
         // tools → tools[0].functionDeclarations[]
-        busbar_core::proto::warn_dropped_tool_strict(&req.tools, busbar_core::proto::PROTO_GEMINI);
+        super::super::ir_encode::warn_dropped_tool_strict(
+            &req.tools,
+            busbar_core::proto::PROTO_GEMINI,
+        );
         if !req.tools.is_empty() {
             let func_decls: Vec<_> = req
                 .tools

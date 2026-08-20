@@ -80,7 +80,7 @@ impl ProtocolWriter for CohereWriter {
                         // A URL/base64 image projects to an `image_url`; a Responses `file_id` or
                         // Bedrock `s3Location` reference has no Cohere projection (returns None) and
                         // is skipped with a warn rather than corrupting the block.
-                        match super::image_url_from_ir(source) {
+                        match super::super::ir_encode::image_url_from_ir(source) {
                             Some(url) => Some(serde_json::json!({
                                 "type": "image_url", "image_url": { "url": url }
                             })),
@@ -168,7 +168,7 @@ impl ProtocolWriter for CohereWriter {
                                     // A non-Text ToolResult block is a Bedrock json-tool-result
                                     // sentinel with no Cohere analog. Drop WITH a warn (drop-with-warn
                                     // convention) instead of vanishing silently.
-                                    if super::is_json_tool_result_block(b) {
+                                    if super::super::ir_encode::is_json_tool_result_block(b) {
                                         tracing::warn!(
                                             "dropping structured json tool-result block on Cohere \
                                              egress: a Bedrock `{{\"json\":...}}` tool-result has no \
@@ -314,7 +314,10 @@ impl ProtocolWriter for CohereWriter {
             serde_json::Value::Array(messages_arr),
         );
 
-        busbar_core::proto::warn_dropped_tool_strict(&req.tools, busbar_core::proto::PROTO_COHERE);
+        super::super::ir_encode::warn_dropped_tool_strict(
+            &req.tools,
+            busbar_core::proto::PROTO_COHERE,
+        );
         if !req.tools.is_empty() {
             let mut tools_arr: Vec<serde_json::Value> = Vec::new();
             for tool in &req.tools {
