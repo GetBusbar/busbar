@@ -19,9 +19,8 @@
 //! the time-of-check/time-of-use gap a `verify(path)` + `dlopen(path)` pair would leave open.
 
 use busbar_api::{
-    AuditRecord, CredentialMeta, CredentialSecret, McpCallRecord, MeteringDelta, MeteringRow,
-    PlaneRecord, PlaneSelector, Store, StoreError, StoreResult, TaskEventRow, TaskRow, UsageDelta,
-    UsageLedger, VirtualKey,
+    AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, PlaneRecord,
+    PlaneSelector, Store, StoreError, StoreResult, UsageDelta, UsageLedger, VirtualKey,
 };
 use busbar_plugin_abi::{
     kind as abi_kind, symbol, CallFn, CloseFn, FreeFn, PluginKindFn, StoreRequest, StoreResponse,
@@ -939,208 +938,21 @@ impl Store for DynStore {
         )
     }
 
-    // ── A2A TASK STATE + the MCP CALL LOG ────────────────────────────────────────────────────
+    // ── THE NEUTRAL KIND-TAGGED PLANE-RECORD SURFACE (1.6.0) ─────────────────────────────────
     //
-    // THESE TEN OVERRIDES ARE THE POINT. Without them `DynStore` inherited `Store`'s defaults —
-    // `put_task` returns `Ok(())` having kept nothing, `get_task` returns `None` — so a store plugin
-    // that implements durable tasks flawlessly had every write DISCARDED at this seam while the call
-    // reported success. `DynStore` is what the engine holds for BOTH plugin install paths, so that
-    // was the production behaviour, and a test against a store crate directly cannot see it.
+    // THE EIGHT DURABLE-PLANE OVERRIDES, and now the ONLY ones — the fourteen protocol-named
+    // overrides they replaced are deleted, `ABI_VERSION` is 3, and the store `supported_abi` floor
+    // is 3, so a stale named-only (v2) artifact is REFUSED at load and can never reach this seam.
+    // Without these overrides `DynStore` would answer the neutral verbs from `Store`'s defaults, so a
+    // store plugin that implements them would have its every write DISCARDED here while the call
+    // reported success. Each still routes through `call_with_legacy_default`, the one choke point, so
+    // a real backend error, a caught panic and a caller-protocol violation all propagate rather than
+    // collapsing to an empty read; the `STATUS_UNSUPPORTED` legacy arm is now defensive only (a
+    // loaded v3 plugin knows every one of these variants).
     //
-    // Every one routes through `call_with_legacy_default` — the same choke point the denylist and
-    // audit ops use — because the wire variants are ADDITIVE: a plugin whose SDK predates them
-    // answers `STATUS_UNSUPPORTED`, and the honest response to "this backend does not know the op"
-    // is the trait's own default, which for all ten is accept-and-keep-nothing. NOTHING ELSE is
-    // defaulted: a real backend error, a caught panic and a caller-protocol violation all propagate,
-    // so a durability failure can never be laundered into an empty read.
-
-    fn put_task(&self, task: &TaskRow) -> StoreResult<()> {
-        self.call_with_legacy_default(
-            StoreRequest::PutTask(task.clone()),
-            |r| match r {
-                StoreResponse::Unit => Ok(()),
-                other => Err(unexpected(other)),
-            },
-            || Ok(()),
-        )
-    }
-
-    fn get_task(&self, task_id: &str) -> StoreResult<Option<TaskRow>> {
-        self.call_with_legacy_default(
-            StoreRequest::GetTask(task_id.to_string()),
-            |r| match r {
-                StoreResponse::Task(t) => Ok(t),
-                other => Err(unexpected(other)),
-            },
-            || Ok(None),
-        )
-    }
-
-    fn list_tasks(&self) -> StoreResult<Vec<TaskRow>> {
-        self.call_with_legacy_default(
-            StoreRequest::ListTasks,
-            |r| match r {
-                StoreResponse::Tasks(t) => Ok(t),
-                other => Err(unexpected(other)),
-            },
-            || Ok(Vec::new()),
-        )
-    }
-
-    fn purge_tasks_before(&self, before: u64) -> StoreResult<u64> {
-        self.call_with_legacy_default(
-            StoreRequest::PurgeTasksBefore(before),
-            |r| match r {
-                StoreResponse::Purged(n) => Ok(n),
-                other => Err(unexpected(other)),
-            },
-            || Ok(0),
-        )
-    }
-
-    fn append_task_event(&self, event: &TaskEventRow) -> StoreResult<()> {
-        self.call_with_legacy_default(
-            StoreRequest::AppendTaskEvent(event.clone()),
-            |r| match r {
-                StoreResponse::Unit => Ok(()),
-                other => Err(unexpected(other)),
-            },
-            || Ok(()),
-        )
-    }
-
-    fn list_task_events(&self, task_id: &str) -> StoreResult<Vec<TaskEventRow>> {
-        self.call_with_legacy_default(
-            StoreRequest::ListTaskEvents(task_id.to_string()),
-            |r| match r {
-                StoreResponse::TaskEvents(e) => Ok(e),
-                other => Err(unexpected(other)),
-            },
-            || Ok(Vec::new()),
-        )
-    }
-
-    fn append_mcp_call(&self, record: &McpCallRecord) -> StoreResult<()> {
-        self.call_with_legacy_default(
-            StoreRequest::AppendMcpCall(record.clone()),
-            |r| match r {
-                StoreResponse::Unit => Ok(()),
-                other => Err(unexpected(other)),
-            },
-            || Ok(()),
-        )
-    }
-
-    fn list_mcp_calls(&self, principal: &str) -> StoreResult<Vec<McpCallRecord>> {
-        self.call_with_legacy_default(
-            StoreRequest::ListMcpCalls(principal.to_string()),
-            |r| match r {
-                StoreResponse::McpCalls(c) => Ok(c),
-                other => Err(unexpected(other)),
-            },
-            || Ok(Vec::new()),
-        )
-    }
-
-    fn list_mcp_call_principals(&self) -> StoreResult<Vec<String>> {
-        self.call_with_legacy_default(
-            StoreRequest::ListMcpCallPrincipals,
-            |r| match r {
-                StoreResponse::McpCallPrincipals(p) => Ok(p),
-                other => Err(unexpected(other)),
-            },
-            || Ok(Vec::new()),
-        )
-    }
-
-    fn purge_mcp_calls_before(&self, before: u64) -> StoreResult<u64> {
-        self.call_with_legacy_default(
-            StoreRequest::PurgeMcpCallsBefore(before),
-            |r| match r {
-                StoreResponse::Purged(n) => Ok(n),
-                other => Err(unexpected(other)),
-            },
-            || Ok(0),
-        )
-    }
-
-    // ── THE DURABLE MCP DEMOTION RECORD + THE SPENT-APPROVAL LEDGER ──────────────────────────
-    //
-    // FOUR MORE OVERRIDES, for the reason the ten above are overrides. A demotion that `DynStore`
-    // answered from the trait default is a demotion accepted, reported successful and discarded, so
-    // the restart it exists to survive would re-open the upstream anyway — and the write would have
-    // said `Ok(())` the whole time. Same for the ledger: a `redeem_ask_state` answered from the
-    // default says "first redemption" to every node of a fleet, which is the double-spend the
-    // durable ledger is here to stop, delivered with a green write.
-    //
-    // Each routes through `call_with_legacy_default` and nothing else is defaulted: a real backend
-    // error, a caught panic and a caller-protocol violation all propagate.
-
-    fn put_mcp_demotion(&self, row: &busbar_api::McpDemotionRow) -> StoreResult<()> {
-        self.call_with_legacy_default(
-            StoreRequest::PutMcpDemotion(row.clone()),
-            |r| match r {
-                StoreResponse::Unit => Ok(()),
-                other => Err(unexpected(other)),
-            },
-            || Ok(()),
-        )
-    }
-
-    fn list_mcp_demotions(&self) -> StoreResult<Vec<busbar_api::McpDemotionRow>> {
-        self.call_with_legacy_default(
-            StoreRequest::ListMcpDemotions,
-            |r| match r {
-                StoreResponse::McpDemotions(d) => Ok(d),
-                other => Err(unexpected(other)),
-            },
-            || Ok(Vec::new()),
-        )
-    }
-
-    fn clear_mcp_demotion(&self, server: &str) -> StoreResult<()> {
-        self.call_with_legacy_default(
-            StoreRequest::ClearMcpDemotion(server.to_string()),
-            |r| match r {
-                StoreResponse::Unit => Ok(()),
-                other => Err(unexpected(other)),
-            },
-            || Ok(()),
-        )
-    }
-
-    fn redeem_ask_state(&self, nonce: &str, expires_at: u64, now: u64) -> StoreResult<bool> {
-        self.call_with_legacy_default(
-            StoreRequest::RedeemAskState {
-                nonce: nonce.to_string(),
-                expires_at,
-                now,
-            },
-            |r| match r {
-                StoreResponse::Redeemed(fresh) => Ok(fresh),
-                other => Err(unexpected(other)),
-            },
-            // "This backend does not keep a ledger", which is the trait's own default and leaves
-            // the engine's in-process ledger as the only guard - exactly where a deployment with no
-            // durable store already is.
-            || Ok(true),
-        )
-    }
-
-    // ── THE NEUTRAL KIND-TAGGED PLANE-RECORD SURFACE (1.6.0, ADDITIVE) ────────────────────────
-    //
-    // EIGHT MORE OVERRIDES, for the reason every durable override above exists: without them
-    // `DynStore` would answer the neutral verbs from `Store`'s defaults, so a store plugin that
-    // implements them would have its every write DISCARDED at this seam while the call reported
-    // success. Each routes through `call_with_legacy_default` — the same choke point — because the
-    // wire variants are ADDITIVE: a plugin whose SDK predates them answers `STATUS_UNSUPPORTED`, and
-    // the honest response is the trait's own accept-and-keep-nothing default. NOTHING ELSE is
-    // defaulted: a real backend error, a caught panic and a caller-protocol violation all propagate.
-    //
-    // NOTHING CALLS THESE YET (1.6.0 Commit 1 is purely additive). This commit's wire carries only
-    // the fields each verb routes on; the typed sidecar columns of [`PlaneRecord`] that it does not
-    // yet carry (`ts`/`disposition`, and `parent`/`seq` on upsert) are relocated onto the wire in a
-    // later schema commit.
+    // This commit's wire carries only the fields each verb routes on; the typed sidecar columns of
+    // [`PlaneRecord`] it does not yet carry (`ts`/`disposition`, and `parent`/`seq` on upsert) are
+    // relocated onto the wire in a later schema commit.
 
     fn upsert_plane_record(&self, record: &PlaneRecord) -> StoreResult<()> {
         self.call_with_legacy_default(

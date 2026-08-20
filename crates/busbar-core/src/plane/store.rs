@@ -240,6 +240,78 @@ pub(crate) fn demotion_record(row: &McpDemotionRow) -> StoreResult<PlaneRecord> 
     })
 }
 
+/// TEST-ONLY convenience reads/writes in the OLD protocol-named vocabulary, expressed over the
+/// neutral kind-tagged `Store` verbs. The named `Store` trait methods were deleted in the 1.6.0
+/// 14→8 collapse; the plane test suites still read and write in typed-row terms
+/// (`get_task`/`list_mcp_calls`/…), and this blanket-impl'd extension keeps those call sites terse
+/// and byte-identical to the neutral path without re-introducing anything on the shipped trait. It
+/// exists only under `cfg(test)`. A test double that keeps its own typed map provides INHERENT
+/// methods of the same names, which win method resolution over this blanket impl (so a double reads
+/// its own storage), while a bare `dyn Store` resolves here.
+#[cfg(test)]
+#[allow(dead_code)] // a complete named-vocabulary surface; not every method is exercised by every suite
+pub(crate) trait StoreNamedTestExt: Store {
+    fn put_task(&self, task: &TaskRow) -> StoreResult<()> {
+        self.upsert_plane_record(&task_record(task)?)
+    }
+    fn get_task(&self, task_id: &str) -> StoreResult<Option<TaskRow>> {
+        self.get_plane_record(KIND_TASK, task_id)?
+            .map(|b| decode(&b))
+            .transpose()
+    }
+    fn list_tasks(&self) -> StoreResult<Vec<TaskRow>> {
+        self.list_plane_records(KIND_TASK, &PlaneSelector::All)?
+            .iter()
+            .map(|b| decode(b))
+            .collect()
+    }
+    fn purge_tasks_before(&self, before: u64) -> StoreResult<u64> {
+        self.purge_plane_records_before(KIND_TASK, before)
+    }
+    fn append_task_event(&self, event: &TaskEventRow) -> StoreResult<()> {
+        self.append_plane_record(&task_event_record(event)?)
+    }
+    fn list_task_events(&self, task_id: &str) -> StoreResult<Vec<TaskEventRow>> {
+        self.list_plane_records(KIND_TASK_EVENT, &PlaneSelector::Parent(task_id.to_string()))?
+            .iter()
+            .map(|b| decode(b))
+            .collect()
+    }
+    fn append_mcp_call(&self, record: &McpCallRecord) -> StoreResult<()> {
+        self.append_plane_record(&call_record(record)?)
+    }
+    fn list_mcp_calls(&self, principal: &str) -> StoreResult<Vec<McpCallRecord>> {
+        self.list_plane_records(KIND_CALL, &PlaneSelector::Parent(principal.to_string()))?
+            .iter()
+            .map(|b| decode(b))
+            .collect()
+    }
+    fn list_mcp_call_principals(&self) -> StoreResult<Vec<String>> {
+        self.list_plane_record_parents(KIND_CALL)
+    }
+    fn purge_mcp_calls_before(&self, before: u64) -> StoreResult<u64> {
+        self.purge_plane_records_before(KIND_CALL, before)
+    }
+    fn put_mcp_demotion(&self, row: &McpDemotionRow) -> StoreResult<()> {
+        self.upsert_plane_record(&demotion_record(row)?)
+    }
+    fn list_mcp_demotions(&self) -> StoreResult<Vec<McpDemotionRow>> {
+        self.list_plane_records(KIND_DEMOTION, &PlaneSelector::All)?
+            .iter()
+            .map(|b| decode(b))
+            .collect()
+    }
+    fn clear_mcp_demotion(&self, server: &str) -> StoreResult<()> {
+        self.delete_plane_record(KIND_DEMOTION, server)
+    }
+    fn redeem_ask_state(&self, nonce: &str, expires_at: u64, now: u64) -> StoreResult<bool> {
+        self.redeem_plane_token(KIND_ASK, nonce, expires_at, now)
+    }
+}
+
+#[cfg(test)]
+impl<T: Store + ?Sized> StoreNamedTestExt for T {}
+
 #[cfg(test)]
 #[path = "tests/store_seam_tests.rs"]
 mod store_seam_tests;

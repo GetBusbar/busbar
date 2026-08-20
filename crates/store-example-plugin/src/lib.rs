@@ -164,38 +164,12 @@ impl FileStore {
     }
 }
 
-impl Store for FileStore {
-    // ── delegated to the inner MemoryStore (the methods the trait requires) ──────────────────
-    fn put_key(&self, key: &VirtualKey) -> StoreResult<()> {
-        self.inner.put_key(key)
-    }
-    fn get_key(&self, id: &str) -> StoreResult<Option<VirtualKey>> {
-        self.inner.get_key(id)
-    }
-    fn list_keys(&self) -> StoreResult<Vec<VirtualKey>> {
-        self.inner.list_keys()
-    }
-    fn delete_key(&self, id: &str) -> StoreResult<()> {
-        self.inner.delete_key(id)
-    }
-    fn get_usage(&self, bucket_id: &str, window_start: u64) -> StoreResult<UsageLedger> {
-        self.inner.get_usage(bucket_id, window_start)
-    }
-    fn put_usage(
-        &self,
-        bucket_id: &str,
-        window_start: u64,
-        ledger: &UsageLedger,
-    ) -> StoreResult<()> {
-        self.inner.put_usage(bucket_id, window_start, ledger)
-    }
-    fn add_metering(&self, delta: &MeteringDelta) -> StoreResult<()> {
-        self.inner.add_metering(delta)
-    }
-    fn list_metering(&self, bucket: u64) -> StoreResult<Vec<MeteringRow>> {
-        self.inner.list_metering(bucket)
-    }
-
+/// The durable A2A-task / MCP-call-log / demotion / spent-ledger operations, kept as PRIVATE
+/// inherent helpers now that the `Store` trait surface is neutral-only (1.6.0 Commit 4): the
+/// eight neutral verbs in `impl Store` below delegate to these, and this crate's tests read
+/// back through them to prove the neutral surface shares one on-disk table with them. The logic
+/// is unchanged from when they were the protocol-named trait methods.
+impl FileStore {
     // ── the durable ones: A2A task state ─────────────────────────────────────────────────────
     fn put_task(&self, task: &TaskRow) -> StoreResult<()> {
         self.mutate(|d| {
@@ -332,6 +306,39 @@ impl Store for FileStore {
             d.spent_ask_states.push((nonce.to_string(), expires_at));
             true
         })
+    }
+}
+
+impl Store for FileStore {
+    // ── delegated to the inner MemoryStore (the methods the trait requires) ──────────────────
+    fn put_key(&self, key: &VirtualKey) -> StoreResult<()> {
+        self.inner.put_key(key)
+    }
+    fn get_key(&self, id: &str) -> StoreResult<Option<VirtualKey>> {
+        self.inner.get_key(id)
+    }
+    fn list_keys(&self) -> StoreResult<Vec<VirtualKey>> {
+        self.inner.list_keys()
+    }
+    fn delete_key(&self, id: &str) -> StoreResult<()> {
+        self.inner.delete_key(id)
+    }
+    fn get_usage(&self, bucket_id: &str, window_start: u64) -> StoreResult<UsageLedger> {
+        self.inner.get_usage(bucket_id, window_start)
+    }
+    fn put_usage(
+        &self,
+        bucket_id: &str,
+        window_start: u64,
+        ledger: &UsageLedger,
+    ) -> StoreResult<()> {
+        self.inner.put_usage(bucket_id, window_start, ledger)
+    }
+    fn add_metering(&self, delta: &MeteringDelta) -> StoreResult<()> {
+        self.inner.add_metering(delta)
+    }
+    fn list_metering(&self, bucket: u64) -> StoreResult<Vec<MeteringRow>> {
+        self.inner.list_metering(bucket)
     }
 
     // ── THE NEUTRAL KIND-TAGGED PLANE-RECORD VERBS (1.6.0, Commit 2) ──────────────────────────

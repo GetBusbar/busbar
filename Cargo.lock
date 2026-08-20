@@ -576,6 +576,8 @@ name = "busbar-plugin-testkit"
 version = "1.5.0"
 dependencies = [
  "busbar-api",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

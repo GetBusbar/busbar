@@ -44,6 +44,7 @@ use super::upstream_support::{
 };
 use crate::audit::verify_chain;
 use crate::plane::calllog::{CALLS, OUTCOME_DISPATCHED, OUTCOME_REFUSED, REASON_UPSTREAM_FAILED};
+use crate::plane::store::StoreNamedTestExt;
 use crate::test_support::TestApp;
 use busbar_api::{McpCallRecord, Store};
 use std::path::PathBuf;

@@ -53,45 +53,6 @@ impl EventLedger {
 
 impl busbar_api::Store for EventLedger {
     // ── The task surface: the only part of this double that keeps anything ──────────────────────
-    fn put_task(&self, task: &TaskRow) -> StoreResult<()> {
-        self.tasks
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(task.task_id.clone(), task.clone());
-        Ok(())
-    }
-
-    fn get_task(&self, task_id: &str) -> StoreResult<Option<TaskRow>> {
-        Ok(self
-            .tasks
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(task_id)
-            .cloned())
-    }
-
-    fn list_tasks(&self) -> StoreResult<Vec<TaskRow>> {
-        Ok(self
-            .tasks
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .values()
-            .cloned()
-            .collect())
-    }
-
-    fn append_task_event(&self, event: &TaskEventRow) -> StoreResult<()> {
-        self.events
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert((event.task_id.clone(), event.seq), event.clone());
-        Ok(())
-    }
-
-    fn list_task_events(&self, task_id: &str) -> StoreResult<Vec<TaskEventRow>> {
-        Ok(self.events_for(task_id))
-    }
-
     // ── Everything else: the methods the trait requires and this double has no business having ──
     //
     // The registry only ever reaches a sink for tasks and task events, so these exist to satisfy the
@@ -182,5 +143,46 @@ impl busbar_api::Store for EventLedger {
                 .collect(),
             _ => Ok(Vec::new()),
         }
+    }
+}
+
+impl EventLedger {
+    fn put_task(&self, task: &TaskRow) -> StoreResult<()> {
+        self.tasks
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(task.task_id.clone(), task.clone());
+        Ok(())
+    }
+
+    fn get_task(&self, task_id: &str) -> StoreResult<Option<TaskRow>> {
+        Ok(self
+            .tasks
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(task_id)
+            .cloned())
+    }
+
+    fn list_tasks(&self) -> StoreResult<Vec<TaskRow>> {
+        Ok(self
+            .tasks
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+            .cloned()
+            .collect())
+    }
+
+    fn append_task_event(&self, event: &TaskEventRow) -> StoreResult<()> {
+        self.events
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert((event.task_id.clone(), event.seq), event.clone());
+        Ok(())
+    }
+
+    fn list_task_events(&self, task_id: &str) -> StoreResult<Vec<TaskEventRow>> {
+        Ok(self.events_for(task_id))
     }
 }

@@ -149,47 +149,15 @@ pub fn dispatch(store: &dyn Store, req: StoreRequest) -> Result<StoreResponse, S
             R::Unit
         }
         Q::ListDenylist => R::Denylist(store.list_denylist()?),
-        Q::PutTask(t) => {
-            store.put_task(&t)?;
-            R::Unit
-        }
-        Q::GetTask(task_id) => R::Task(store.get_task(&task_id)?),
-        Q::ListTasks => R::Tasks(store.list_tasks()?),
-        Q::PurgeTasksBefore(before) => R::Purged(store.purge_tasks_before(before)?),
-        Q::AppendTaskEvent(e) => {
-            store.append_task_event(&e)?;
-            R::Unit
-        }
-        Q::ListTaskEvents(task_id) => R::TaskEvents(store.list_task_events(&task_id)?),
-        Q::AppendMcpCall(rec) => {
-            store.append_mcp_call(&rec)?;
-            R::Unit
-        }
-        Q::ListMcpCalls(principal) => R::McpCalls(store.list_mcp_calls(&principal)?),
-        Q::ListMcpCallPrincipals => R::McpCallPrincipals(store.list_mcp_call_principals()?),
-        Q::PurgeMcpCallsBefore(before) => R::Purged(store.purge_mcp_calls_before(before)?),
-        Q::PutMcpDemotion(row) => {
-            store.put_mcp_demotion(&row)?;
-            R::Unit
-        }
-        Q::ListMcpDemotions => R::McpDemotions(store.list_mcp_demotions()?),
-        Q::ClearMcpDemotion(server) => {
-            store.clear_mcp_demotion(&server)?;
-            R::Unit
-        }
-        Q::RedeemAskState {
-            nonce,
-            expires_at,
-            now,
-        } => R::Redeemed(store.redeem_ask_state(&nonce, expires_at, now)?),
 
-        // ── THE NEUTRAL KIND-TAGGED PLANE-RECORD SURFACE (1.6.0, ADDITIVE) ────────────────────
+        // ── THE NEUTRAL KIND-TAGGED PLANE-RECORD SURFACE (1.6.0) ─────────────────────────────
         //
-        // Maps the eight kind-tagged wire variants onto the eight neutral trait methods. Upsert and
-        // append reconstitute a [`busbar_api::PlaneRecord`] from the fields this commit's wire
-        // carries; the typed sidecar columns the wire does not yet carry (`ts`/`disposition`, and
-        // `parent`/`seq` on upsert) default to their neutral values here — relocating the full
-        // sidecar onto the wire is the later schema commit. Nothing calls these yet.
+        // Maps the eight kind-tagged wire variants onto the eight neutral trait methods — the ONLY
+        // durable-plane surface now (the fourteen protocol-named arms are deleted, `ABI_VERSION` is
+        // 3). Upsert and append reconstitute a [`busbar_api::PlaneRecord`] from the fields this
+        // commit's wire carries; the typed sidecar columns the wire does not yet carry
+        // (`ts`/`disposition`, and `parent`/`seq` on upsert) default to their neutral values here —
+        // relocating the full sidecar onto the wire is the later schema commit.
         Q::UpsertPlaneRecord { kind, id, body } => {
             store.upsert_plane_record(&busbar_api::PlaneRecord {
                 kind,
