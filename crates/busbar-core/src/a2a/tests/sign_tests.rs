@@ -18,7 +18,6 @@
 //! signed, down to the byte, or the first card containing a number in an unusual form silently
 //! stops verifying at somebody else's gateway.
 
-use base64::Engine as _;
 use ed25519_dalek::{Verifier, VerifyingKey};
 use serde_json::{json, Value};
 

@@ -1272,6 +1272,10 @@ fn unauthorized_with_completion_taps(app: &crate::state::App, path: &str) -> Res
 }
 
 /// Axum middleware layer that validates auth before routing.
+// Both arms are `Response` (axum requires the Err arm to be an IntoResponse we can return
+// directly); `Response` exceeds clippy's result_large_err threshold but boxing it would break the
+// middleware signature, so the large-Err is intrinsic here, not a smell.
+#[allow(clippy::result_large_err)]
 pub(crate) async fn auth_middleware(
     crate::state::CurrentApp(app): crate::state::CurrentApp,
     axum::Extension(core_routes): axum::Extension<

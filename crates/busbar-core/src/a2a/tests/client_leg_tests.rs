@@ -159,11 +159,7 @@ async fn open_a_task(h: &Harness, submission: &serde_json::Value) -> String {
 /// One JSON-RPC hop, asserted whole: the verb, the endpoint, and the method the envelope names.
 fn assert_jsonrpc(r: &Recorded, method: &str) {
     assert_eq!(r.http_method, "POST", "JSON-RPC is a POST to one endpoint");
-    assert_eq!(
-        r.url,
-        format!("{BASE}"),
-        "the operator's endpoint, verbatim"
-    );
+    assert_eq!(r.url, BASE.to_string(), "the operator's endpoint, verbatim");
     let body = body_json(r);
     assert_eq!(
         body.get("method").and_then(serde_json::Value::as_str),
