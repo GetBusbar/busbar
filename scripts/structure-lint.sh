@@ -1034,6 +1034,9 @@ ${CORE}/admin/v1/json/handlers.rs
 ${CORE}/config/mod.rs
 ${CORE}/config/migrate.rs
 ${CORE}/proxy/engine/mod.rs
+${CORE}/diagnostics/mod.rs
+${CORE}/a2a/receive.rs
+${CORE}/mcp/method.rs
 "
 # There is no grandfathered list for test locality. There was one, of 7 files, and it was deleted
 # rather than shrunk: the rule it was suspending is "tests in their own file always", every entry on
