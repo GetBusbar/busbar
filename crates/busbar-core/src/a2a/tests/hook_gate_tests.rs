@@ -39,7 +39,6 @@ fn gate(settings: serde_json::Value) -> HookCfg {
         prompt: PromptAccess::Ro,
         user: UserAccess::Ro,
         priority: 0,
-        at: None,
         settings: settings.as_object().cloned().unwrap_or_default(),
         on_empty: None,
         global: false,

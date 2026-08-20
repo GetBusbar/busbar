@@ -7,7 +7,7 @@ use super::*;
 
 fn gate() -> HookCfg {
     serde_json::from_value(serde_json::json!({
-        "kind": "gate", "plugin": "test-hook", "prompt": "rw", "global": true
+        "kind": "gate", "module": "test-hook", "prompt": "rw", "global": true
     }))
     .unwrap()
 }
@@ -834,4 +834,98 @@ fn plugin_versions_section_parses() {
         Some(OverlaySection::PluginVersions)
     );
     assert_eq!(OverlaySection::PluginVersions.as_str(), "plugin_versions");
+}
+
+/// 1.6.0 CLEAN SLATE, SAFETY: a persisted overlay written by a PRE-1.6.0 build whose hook entries
+/// still spell the plugin reference `plugin:` (the removed alias) and pin the stage with the removed
+/// single-stage `at:` key must NOT brick boot. `read` auto-migrates the raw document BEFORE the
+/// `deny_unknown_fields` `HookCfg` deserialize would reject those keys: `plugin:` → `module:` and
+/// `at: <stage>` → `phase: [<stage>]` (behavior-preserving). Without the boot migration this file is
+/// classified `Unreadable` and every API-registered hook — security gates included — silently
+/// vanishes.
+#[test]
+fn read_auto_migrates_a_legacy_plugin_and_at_overlay() {
+    let dir = std::env::temp_dir();
+    let path = dir.join(format!("busbar-overlay-legacy-{}.json", std::process::id()));
+    // A pre-1.6.0 overlay: `plugin:` (not `module:`) and the single-stage `at:` key.
+    std::fs::write(
+        &path,
+        serde_json::json!({
+            "version": OVERLAY_VERSION,
+            "hooks": {
+                "audit": { "kind": "tap", "plugin": "audit-hook", "at": "response" }
+            },
+            "global_hooks": ["audit"]
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let doc = read(&path).expect("a legacy plugin:/at: overlay must still load, not brick boot");
+    let hook = doc.hooks.get("audit").expect("the migrated hook loads");
+    assert_eq!(
+        hook.plugin, "audit-hook",
+        "`plugin:` migrated onto the module field"
+    );
+    assert_eq!(
+        hook.phase,
+        vec![crate::config::HookStage::Response],
+        "the single-stage `at: response` migrated into a `phase:` list, behavior-preserving"
+    );
+    std::fs::remove_file(&path).ok();
+}
+
+/// The at→phase overlay migration honors the SAME hard stage-value rename `--migrate-config` uses
+/// (`completion` → `response`), so a very old overlay pinned with a retired stage vocabulary loads
+/// at the renamed stage rather than bricking.
+#[test]
+fn read_migrates_a_retired_stage_value_in_a_legacy_at_overlay() {
+    let dir = std::env::temp_dir();
+    let path = dir.join(format!(
+        "busbar-overlay-oldstage-{}.json",
+        std::process::id()
+    ));
+    std::fs::write(
+        &path,
+        serde_json::json!({
+            "version": OVERLAY_VERSION,
+            "hooks": { "audit": { "kind": "tap", "module": "audit-hook", "at": "completion" } }
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let doc = read(&path).expect("loads");
+    assert_eq!(
+        doc.hooks["audit"].phase,
+        vec![crate::config::HookStage::Response],
+        "`at: completion` migrates to `phase: [response]` (the 1.5.3 stage rename)"
+    );
+    std::fs::remove_file(&path).ok();
+}
+
+/// A non-empty `phase:` on a legacy overlay entry is AUTHORITATIVE: a stray `at:` alongside it is
+/// dropped, not merged (matching the old `fires_at_stage` precedence where the list won).
+#[test]
+fn read_drops_at_when_phase_is_already_present() {
+    let dir = std::env::temp_dir();
+    let path = dir.join(format!("busbar-overlay-both-{}.json", std::process::id()));
+    std::fs::write(
+        &path,
+        serde_json::json!({
+            "version": OVERLAY_VERSION,
+            "hooks": {
+                "audit": { "kind": "tap", "module": "audit-hook", "at": "request",
+                           "phase": ["response"] }
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let doc = read(&path).expect("loads");
+    assert_eq!(
+        doc.hooks["audit"].phase,
+        vec![crate::config::HookStage::Response],
+        "the explicit `phase:` list wins; the stray `at:` is dropped"
+    );
+    std::fs::remove_file(&path).ok();
 }

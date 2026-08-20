@@ -3149,7 +3149,6 @@ fn gate_hook(plugin: &str, timeout_ms: u64) -> config::HookCfg {
         prompt: config::PromptAccess::No,
         user: config::UserAccess::No,
         priority: 0,
-        at: None,
         settings: serde_json::Map::new(),
         on_empty: None,
         global: false,

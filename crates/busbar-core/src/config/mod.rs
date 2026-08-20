@@ -2091,9 +2091,12 @@ pub struct HookCfg {
     /// plugin backs this instance" everywhere (`hooks.<n>.module`, `identity-providers.<n>.module`,
     /// `export.<n>.module`, `store.module`). The Rust field keeps the older `plugin` spelling only
     /// because it is referenced at ~100 internal sites; nothing user-facing says `plugin:` any more.
-    /// `alias = "plugin"` is READ-ONLY back-compat so a config overlay written by an earlier build
-    /// still loads — serialization always emits `module`.
-    #[serde(rename = "module", alias = "plugin")]
+    /// 1.6.0 CLEAN SLATE: the `alias = "plugin"` READ-ONLY back-compat was REMOVED — the only wire
+    /// spelling is `module`. A persisted OVERLAY written by a pre-1.6.0 build that still spells this
+    /// `plugin:` is auto-migrated to `module:` at boot ([`crate::config::overlay::migrate_legacy_hook_keys`]),
+    /// and `busbar --migrate-config` rewrites `plugin:` → `module:` in a config file, so removing the
+    /// alias never bricks a durable overlay.
+    #[serde(rename = "module")]
     pub(crate) plugin: String,
     // ── shared runtime knobs ─────────────────────────────────────────────────────────────────────
     /// Hard wall-clock deadline for a gate decision, in milliseconds (default 1). An in-process gate
@@ -2126,12 +2129,6 @@ pub struct HookCfg {
     /// ties keep globals before pool gates, then config order.
     #[serde(default)]
     pub(crate) priority: u16,
-    /// TAP observation stage (`request`/`route`/`attempt`/`completion`; unset = `request`).
-    /// `request` observes the (post-rewrite) request; `route` the post-reconcile candidate set;
-    /// `attempt` every dispatch attempt (the failover story); `completion` the outcome — including
-    /// the SYNTHETIC rejected completion, so audit taps see denials. Inert on a gate.
-    #[serde(default)]
-    pub(crate) at: Option<HookStage>,
     /// GATE restrict empty-intersection behavior (default `reject`, fail-closed; `weighted` is the
     /// advisory escape — the gate's restriction is skipped). Applied per gate in the phase-2
     /// reconcile.
@@ -2179,13 +2176,14 @@ pub struct HookCfg {
     /// [`caller_in_hook_groups`]. Immutable after registration.
     #[serde(default)]
     pub(crate) groups: Vec<String>,
-    /// 1.5.3 named-hook PHASE set: the pipeline stages this hook fires at. GENERALIZES the single
-    /// tap `at:` to a list. EMPTY (the default) falls back to `at:`, which pins exactly one stage and
-    /// so preserves today's single-stage behavior byte-for-byte; with BOTH omitted the hook fires at
-    /// THE FOUR CORE STAGES and only those — the frozen meaning of an omitted `phase:`, see FREEZE
-    /// BLOCKER on [`CORE_HOOK_PHASES`]. (`--migrate-config` therefore writes an EXPLICIT
-    /// `phase: [request]` onto a legacy tap that carried neither, so migrating never widens one.)
-    /// Consulted by [`HookCfg::fires_at_stage`]. Inert on a gate (gates fire at every decision point).
+    /// 1.5.3 named-hook PHASE set: the pipeline stages this hook fires at. This is the SOLE stage-
+    /// scoping spelling in 1.6.0 (the legacy single tap `at:` key it once generalized was REMOVED —
+    /// clean slate). EMPTY (the default) means the hook fires at THE FOUR CORE STAGES and only those —
+    /// the frozen meaning of an omitted `phase:`, see FREEZE BLOCKER on [`CORE_HOOK_PHASES`].
+    /// (`busbar --migrate-config` rewrites a legacy `at: <stage>` into `phase: [<stage>]` so a
+    /// single-stage tap keeps firing at exactly one stage; a persisted overlay is auto-migrated the
+    /// same way at boot.) Consulted by [`HookCfg::fires_at_stage`]. Inert on a gate (gates fire at
+    /// every decision point).
     #[serde(default)]
     pub(crate) phase: Vec<HookStage>,
 }
@@ -2193,31 +2191,24 @@ pub struct HookCfg {
 impl HookCfg {
     /// Whether this hook observes at `stage` (freeze blocker — see [`CORE_HOOK_PHASES`]).
     ///
-    /// Precedence, frozen:
+    /// Precedence, frozen (1.6.0 dropped the legacy single `at:` rung — clean slate):
     /// 1. a non-empty `phase:` LIST is authoritative — the hook fires at exactly those stages;
-    /// 2. otherwise the legacy single `at:` (the admin-API registration surface still carries it),
-    ///    which pins one stage;
-    /// 3. otherwise — BOTH omitted — the hook fires at THE FOUR CORE STAGES, and only those. Never
+    /// 2. otherwise — `phase:` omitted — the hook fires at THE FOUR CORE STAGES, and only those. Never
     ///    "every stage that will ever exist": a stage added by a later release is not in
     ///    [`CORE_HOOK_PHASES`], so it cannot retroactively widen a hook that already shipped.
     pub(crate) fn fires_at_stage(&self, stage: HookStage) -> bool {
         if !self.phase.is_empty() {
             return self.phase.contains(&stage);
         }
-        match self.at {
-            Some(at) => at == stage,
-            None => CORE_HOOK_PHASES.contains(&stage),
-        }
+        CORE_HOOK_PHASES.contains(&stage)
     }
 
     /// The RESOLVED stage set: every stage this hook ACTUALLY fires at, in pipeline order.
     ///
     /// This is the honest answer to the only question an operator asks about stage scoping, and
-    /// neither `phase:` nor `at:` answers it alone. Reading `phase:` back tells you which of the two
-    /// spellings happened to be used, not what it resolves to: an EMPTY `phase:` is ambiguous between
-    /// "falls back to `at:`" and "falls back to the four core stages", and `at:` is `None` for every
-    /// hook written in the current (1.5.3 named-definition) grammar, because `hook_cfg_from_def`
-    /// never sets it. So the admin read projects this alongside both spellings.
+    /// `phase:` does not answer it alone. Reading `phase:` back tells you the literal echo, not what it
+    /// resolves to: an EMPTY `phase:` means "the four core stages", which the raw field does not say.
+    /// So the admin read projects this alongside the literal `phase:` spelling.
     ///
     /// Computed by asking [`Self::fires_at_stage`], the SAME predicate the firing path consults,
     /// once per stage, so the read cannot drift from the behavior it describes. A future stage is
@@ -4376,8 +4367,6 @@ fn hook_cfg_from_def(def: &HookDefCfg) -> Result<HookCfg, String> {
         prompt: def.prompt.unwrap_or_default(),
         user: def.user.unwrap_or_default(),
         priority: def.priority.unwrap_or(0),
-        // `phase:` is the 1.5.3 stage set; the legacy single `at:` is unused by a named definition.
-        at: None,
         on_empty: def.on_empty.clone(),
         settings: def.settings.clone(),
         // A named-definition shorthand has no `signals:` sub-key in this pass.

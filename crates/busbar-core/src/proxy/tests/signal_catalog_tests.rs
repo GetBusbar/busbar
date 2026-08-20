@@ -50,7 +50,6 @@ fn declaring_hook(signals: Vec<Signal>) -> crate::config::HookCfg {
         prompt: crate::config::PromptAccess::No,
         user: crate::config::UserAccess::No,
         priority: 0,
-        at: None,
         settings: serde_json::Map::new(),
         on_empty: None,
         global: false,

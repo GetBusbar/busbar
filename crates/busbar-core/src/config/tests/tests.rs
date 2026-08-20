@@ -135,12 +135,16 @@ fn augment_config_error_adds_hook_stage_rename_hint() {
             "hint must point at the migrator: {augmented}"
         );
     }
-    // End-to-end: a config with an old `at: completion` tap surfaces the loud-fail through the parse
-    // path — the HARD rename has no back-compat alias, so it must NOT parse silently.
-    let legacy = "kind: tap\nplugin: p\nat: completion\n";
+    // End-to-end: an old stage VALUE (`completion`) written into the surviving `phase:` list surfaces
+    // the loud-fail through the parse path — the HARD rename has no back-compat alias, so it must NOT
+    // parse silently. (1.6.0 removed the `at:` KEY itself; the stage-value vocab it once carried now
+    // only reaches the parser through `phase:`.)
+    let legacy = "kind: tap\nmodule: p\nphase: [completion]\n";
     let err = serde_yaml::from_str::<HookCfg>(legacy)
         .map_err(crate::config::augment_config_error)
-        .expect_err("an old-form `at: completion` must fail to parse (HARD rename, no alias)");
+        .expect_err(
+            "an old-form `completion` stage value must fail to parse (HARD rename, no alias)",
+        );
     assert!(
         err.contains("`completion`") && err.contains("`response`") && err.contains("1.5.3"),
         "end-to-end error names the rename and version: {err}"
@@ -155,7 +159,7 @@ fn augment_config_error_adds_hook_stage_rename_hint() {
 fn hook_cfg_round_trips_for_overlay_persistence() {
     let src = serde_json::json!({
         "kind": "gate",
-        "plugin": "test-hook",
+        "module": "test-hook",
         "prompt": "rw",
         "user": "ro",
         "priority": 7,
@@ -828,7 +832,7 @@ fn test_pool_member_model_key_and_removed_keys() {
 /// A hook's `prompt:` / `user:` grants parse the trust ladder; absent defaults to `no`.
 #[test]
 fn test_hook_access_grants_parse() {
-    let hook: HookCfg = serde_yaml::from_str("kind: gate\nplugin: p\nprompt: rw\nuser: ro\n")
+    let hook: HookCfg = serde_yaml::from_str("kind: gate\nmodule: p\nprompt: rw\nuser: ro\n")
         .expect("grants must parse");
     assert_eq!(hook.prompt, PromptAccess::Rw);
     assert!(hook.prompt.sends_prompt() && hook.prompt.can_rewrite());
@@ -836,7 +840,7 @@ fn test_hook_access_grants_parse() {
     assert!(hook.user.sends_user());
 
     let bare: HookCfg =
-        serde_yaml::from_str("kind: tap\nplugin: p\n").expect("bare hook must parse");
+        serde_yaml::from_str("kind: tap\nmodule: p\n").expect("bare hook must parse");
     assert_eq!(bare.prompt, PromptAccess::No, "prompt defaults to no");
     assert_eq!(bare.user, UserAccess::No, "user defaults to no");
     assert!(!bare.prompt.sends_prompt());

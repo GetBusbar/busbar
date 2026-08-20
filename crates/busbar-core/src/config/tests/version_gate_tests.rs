@@ -19,7 +19,7 @@ fn an_overlay_from_a_newer_busbar_is_refused_not_ignored() {
         &path,
         serde_json::json!({
             "version": OVERLAY_VERSION + 1,
-            "hooks": { "gate": { "kind": "gate", "plugin": "x" } }
+            "hooks": { "gate": { "kind": "gate", "module": "x" } }
         })
         .to_string(),
     )

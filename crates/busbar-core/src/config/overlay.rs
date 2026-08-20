@@ -878,17 +878,80 @@ pub(crate) fn read_state(path: &Path) -> OverlayReadState {
     match std::fs::read(path) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => OverlayReadState::Absent,
         Err(_) => OverlayReadState::Unreadable,
-        Ok(bytes) => match serde_json::from_slice::<Box<OverlayDoc>>(&bytes) {
-            // A newer overlay may have added a section this binary drops, or changed how an existing
-            // one is represented — neither is visible as a parse error, so the version is the only
-            // signal. 1.5.0 is the first release that can refuse one; a binary without this check
-            // never can, whatever number is stamped.
-            Ok(doc) if doc.version > OVERLAY_VERSION => {
-                OverlayReadState::VersionTooNew(doc.version)
+        // Parse to a generic `Value` FIRST so a pre-1.6.0 overlay whose hook entries still use the
+        // retired `plugin:`/`at:` spellings can be rewritten to `module:`/`phase:` BEFORE the typed,
+        // `deny_unknown_fields` `HookCfg` deserialize would reject them. This is the boot-time
+        // half of the 1.6.0 clean-slate migration (the config-file half is `--migrate-config`); it is
+        // what keeps removing the `plugin` alias + the `at` key from bricking a durable overlay. The
+        // next `persist` rewrites the file in the new spelling, so the migration runs at most once.
+        Ok(bytes) => match serde_json::from_slice::<serde_json::Value>(&bytes) {
+            Ok(mut value) => {
+                migrate_legacy_hook_keys(&mut value);
+                match serde_json::from_value::<Box<OverlayDoc>>(value) {
+                    // A newer overlay may have added a section this binary drops, or changed how an
+                    // existing one is represented — neither is visible as a parse error, so the
+                    // version is the only signal. 1.5.0 is the first release that can refuse one; a
+                    // binary without this check never can, whatever number is stamped.
+                    Ok(doc) if doc.version > OVERLAY_VERSION => {
+                        OverlayReadState::VersionTooNew(doc.version)
+                    }
+                    Ok(doc) => OverlayReadState::Loaded(doc),
+                    Err(_) => OverlayReadState::Unreadable,
+                }
             }
-            Ok(doc) => OverlayReadState::Loaded(doc),
             Err(_) => OverlayReadState::Unreadable,
         },
+    }
+}
+
+/// Rewrite the RETIRED hook-key spellings in a raw overlay document IN PLACE so a pre-1.6.0 overlay
+/// still loads after the 1.6.0 clean slate removed the `plugin` alias and the single-stage `at:` key
+/// from [`HookCfg`]:
+///   * a hook entry's `plugin:` → `module:` (the one wire spelling), unless `module:` is already set;
+///   * a hook entry's `at: <stage>` → `phase: [<stage>]` (stage-renamed via the shared
+///     [`crate::config::RENAMED_HOOK_STAGES`] table, matching `--migrate-config`), unless a non-empty
+///     `phase:` is already present, in which case `at:` is simply dropped (the list wins, exactly as
+///     the old `fires_at_stage` precedence resolved it).
+///
+/// A no-op on an overlay already in the 1.6.0 spelling, so it is safe to run on every read. Only the
+/// `hooks` section carries [`HookCfg`] entries; every other section is left untouched.
+fn migrate_legacy_hook_keys(value: &mut serde_json::Value) {
+    let Some(hooks) = value
+        .get_mut("hooks")
+        .and_then(serde_json::Value::as_object_mut)
+    else {
+        return;
+    };
+    for entry in hooks.values_mut() {
+        let Some(obj) = entry.as_object_mut() else {
+            continue;
+        };
+        // `plugin:` → `module:` (a persisted overlay that already carries `module:` wins).
+        if let Some(plugin) = obj.remove("plugin") {
+            obj.entry("module".to_string()).or_insert(plugin);
+        }
+        // `at: <stage>` → `phase: [<stage>]`, unless a non-empty `phase:` is already authoritative.
+        if let Some(at) = obj.remove("at") {
+            let phase_present = obj
+                .get("phase")
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|a| !a.is_empty());
+            if !phase_present {
+                if let Some(stage) = at.as_str() {
+                    let renamed = crate::config::RENAMED_HOOK_STAGES
+                        .iter()
+                        .find(|(old, _)| *old == stage)
+                        .map(|(_, new)| *new)
+                        .unwrap_or(stage);
+                    obj.insert(
+                        "phase".to_string(),
+                        serde_json::Value::Array(vec![serde_json::Value::String(
+                            renamed.to_string(),
+                        )]),
+                    );
+                }
+            }
+        }
     }
 }
 

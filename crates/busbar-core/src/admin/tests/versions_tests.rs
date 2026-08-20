@@ -12,7 +12,7 @@ fn reg(names: &[&str]) -> HashMap<String, crate::config::HookCfg> {
             (
                 n.to_string(),
                 serde_yaml::from_str::<crate::config::HookCfg>(&format!(
-                    "kind: tap\nplugin: test-hook-{n}\n"
+                    "kind: tap\nmodule: test-hook-{n}\n"
                 ))
                 .expect("hook parses"),
             )
