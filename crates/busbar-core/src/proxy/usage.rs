@@ -14,15 +14,16 @@ use super::*;
 /// the additive-cache convention). Non-token meters (duration/characters/images/flat) are carried in
 /// the client-visible body today and priced by the 1.3 engine; nothing to record here yet.
 pub(crate) fn record_resp_usage(
-    ir: &crate::ir::variant::IrResp,
+    usage: Option<crate::billing::Billing>,
     usage_sink: &Option<UsageSink>,
     lane: Option<&crate::state::Lane>,
 ) {
-    if let Some(crate::billing::Billing::Tokens(t)) = ir.usage() {
-        // `ir.usage()` is ALREADY the neutral `Billing::Tokens(TokenUsage)` projection — bill straight
-        // from it. The prior code re-packed it into a concrete `IrUsage` only to have the consumer read
-        // the same four totals back out; that round-trip is deleted (byte-identical: the ledger/meter
-        // sinks read only input/output/cache-read/cache-write).
+    if let Some(crate::billing::Billing::Tokens(t)) = usage {
+        // `usage` is ALREADY the neutral `Billing::Tokens(TokenUsage)` projection the response codec
+        // captured from the read IR (before `prepare_for_ingress`) and handed back through
+        // `TranslateCodec::translate_response` — bill straight from it. This seam never holds the
+        // concrete IR (byte-identical: the ledger/meter sinks read only
+        // input/output/cache-read/cache-write).
         record_token_usage(&t, usage_sink, lane);
     } else if let Some(sink) = usage_sink {
         // A delivered response with NO token usage (a flat-fee op, e.g. moderations) still METERS as

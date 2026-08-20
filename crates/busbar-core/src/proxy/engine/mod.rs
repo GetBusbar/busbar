@@ -5,6 +5,9 @@ use super::*;
 // keyword segment (it parses a bare `Ident`/`Path`, and `crate` is not one), so the constant is
 // imported here and referenced unqualified at each instrument site instead.
 use crate::observability::HOTPATH_LEVEL;
+// The single neutral translate entrypoint (G6 step 4): the non-stream cross-protocol response arm
+// routes its read→prepare_for_ingress→write core through `TranslateCodec::translate_response`.
+use crate::handlers::TranslateCodec;
 
 /// Forward with pool name context for on_exhausted config lookup.
 /// Thin wrapper: parse the body ONCE for callers that only hold bytes (tests, ad-hoc routes), then
@@ -388,125 +391,47 @@ async fn translate_response_cross_protocol(
     // returns a translated response.
     let egress_op = crate::handlers::request_handler(egress_name)
         .and_then(|rh| rh.operation_handler(op.operation));
+    // The ingress operation handler that writes the client's dialect (chat delegates to the same
+    // writer vtable — byte-identical). Resolved once, shared by both the opaque and JSON arms.
+    let ingress_op = crate::handlers::request_handler(ingress_protocol)
+        .and_then(|rh| rh.operation_handler(op.operation));
     // OPAQUE (non-JSON) egress body — e.g. binary speech audio: bridge at the BYTE level through the
     // operation codecs and relay the ingress handler's WireBody (bytes + ITS content-type) verbatim.
     // JSON bodies take the Value path below. Parse the 2xx body ONCE, then branch on JSON vs opaque.
+    // Every hop's read→prepare_for_ingress→write core routes through the single
+    // `TranslateCodec::translate_response` entrypoint; the engine keeps telemetry, the
+    // untranslatable-metadata warn, billing, budget accounting, native-metrics injection, the
+    // gemini-array wrap, and all response building.
     let body_json = crate::json::parse::<Value>(&bytes);
     if body_json.is_err() {
-        let decoded = egress_op.map(|h| h.read_response(&bytes));
-        if let Some(Err(ref e)) = decoded {
-            // A binary/opaque upstream body the egress codec cannot decode: log the CodecError so a
-            // repeated wall of 500s has a visible root cause instead of only the generic warn below.
-            tracing::warn!(
-                ingress = %ingress_protocol,
-                egress = %egress_name,
-                error = ?e,
-                degraded,
-                "cross-protocol binary response failed the egress codec (read_response); returning ingress-native 500",
-            );
-        }
-        if let Some(Ok(mut ir)) = decoded {
-            record_resp_usage(&ir, &usage_sink, app.lanes.get(i));
-            // Tokens are now committed to this key; keep the lane unit too rather than refund it out
-            // from under an already-billed request.
-            budget_guard.disarm();
-            ir.prepare_for_ingress(ingress_protocol, now());
-            if let Some(wire) = crate::handlers::request_handler(ingress_protocol)
-                .and_then(|rh| rh.operation_handler(op.operation))
-                .map(|h| h.write_response(&ir))
-            {
-                let rb = Response::builder()
-                    .status(status)
-                    .header(CONTENT_TYPE, wire.content_type);
-                let rb = maybe_attach_response_request_id(rb, ingress_protocol, None);
-                let rb = maybe_attach_route_policy(rb, chosen_policy_name, &app.lanes[i].model);
-                return rb
-                    .body(Body::from(wire.bytes))
-                    .unwrap_or_else(|_| status.into_response());
-            }
-        }
-    }
-    if let Ok(rv) = &body_json {
-        let decoded = egress_op.map(|h| h.read_response_value(rv));
-        if let Some(Err(ref e)) = decoded {
-            // A JSON 2xx whose shape the egress codec rejects (e.g. a missing `embedding` array): log
-            // the CodecError before the generic 500 so the operator can tell a broken upstream from a
-            // new/renamed response field.
-            tracing::warn!(
-                ingress = %ingress_protocol,
-                egress = %egress_name,
-                error = ?e,
-                degraded,
-                "cross-protocol JSON response failed the egress codec (read_response_value); returning ingress-native 500",
-            );
-        }
-        if let Some(Ok(mut ir)) = decoded {
-            if let Some(ingress_proto) = crate::proto::protocol_for(ingress_protocol) {
-                // RESPONSE-side twin of `IrReq::prepare_for_egress`'s dropped-keys warn. The reader
-                // has just discarded any vendor-scoped response metadata the caller's protocol has
-                // no shape for (a Bedrock guardrail `trace`, a Gemini `safetyRatings`); this is the
-                // one place that still holds the upstream body AND knows the hop is cross-protocol,
-                // so it is where the drop gets named. Same-protocol routes never reach this function.
-                if let Ok(ref upstream_body) = body_json {
-                    crate::proto::warn_untranslatable_response_metadata(
-                        egress_name,
-                        ingress_protocol,
-                        upstream_body,
+        if let Some(eh) = egress_op {
+            match eh.translate_response(
+                crate::handlers::TranslateRespInput::Opaque(&bytes),
+                ingress_op,
+                None,
+                ingress_protocol,
+                now(),
+                false,
+                None,
+            ) {
+                Err(ref e) => {
+                    // A binary/opaque upstream body the egress codec cannot decode: log the CodecError
+                    // so a repeated wall of 500s has a visible root cause instead of only the generic
+                    // warn below.
+                    tracing::warn!(
+                        ingress = %ingress_protocol,
+                        egress = %egress_name,
+                        error = ?e,
+                        degraded,
+                        "cross-protocol binary response failed the egress codec (read_response); returning ingress-native 500",
                     );
                 }
-                // Token accounting: we are now committed to translating and delivering this body
-                // (every exit from this block is a delivered response). No FirstByteBody on this
-                // buffered path, so bill here — straight from the IR usage the egress reader just
-                // decoded.
-                record_resp_usage(&ir, &usage_sink, app.lanes.get(i));
-                // Tokens are now committed to this key; keep the lane unit too rather than refund it
-                // out from under an already-billed request.
-                budget_guard.disarm();
-                // OPERATION-BLIND ingress preparation: the IR reshapes ITSELF for delivery in the
-                // caller's dialect (chat: native-identity strip, the protocol-agnostic `created`
-                // boundary signal, tool-id remap — see `IrResp::prepare_for_ingress`).
-                ir.prepare_for_ingress(ingress_protocol, now());
-                // Bedrock ingress that requested ConverseStream (`wants_stream`) but got a BUFFERED
-                // (non-SSE) 2xx upstream: a native AWS SDK ConverseStream decoder expects binary
-                // `eventstream` frames, NOT an `application/json` Converse (non-stream) body.
-                // Synthesize the native frame sequence from the single translated response and emit
-                // it under `application/vnd.amazon.eventstream` instead.
-                if wants_stream {
-                    let elapsed_ms = u64::try_from(upstream_started.elapsed().as_millis()).ok();
-                    if let Some(frames) =
-                        ir.wrap_buffered_as_stream(ingress_proto.writer(), elapsed_ms)
-                    {
-                        let rb = Response::builder().status(status).header(
-                            CONTENT_TYPE,
-                            crate::proxy::ingress_stream_content_type(ingress_protocol)
-                                .unwrap_or(crate::proxy::TEXT_EVENT_STREAM),
-                        );
-                        let rb = maybe_attach_response_request_id(rb, ingress_protocol, None);
-                        let rb =
-                            maybe_attach_route_policy(rb, chosen_policy_name, &app.lanes[i].model);
-                        return rb
-                            .body(Body::from(frames))
-                            .unwrap_or_else(|_| status.into_response());
-                    }
-                }
-                // The INGRESS operation handler writes its dialect (chat's delegates to the same
-                // writer vtable — byte-identical).
-                let ingress_op = crate::handlers::request_handler(ingress_protocol)
-                    .and_then(|rh| rh.operation_handler(op.operation));
-                let Some(ingress_op) = ingress_op else {
-                    return ingress_error(
-                        ingress_protocol,
-                        StatusCode::NOT_FOUND,
-                        KIND_NOT_FOUND,
-                        DETAIL_ENDPOINT_UNSUPPORTED_OPERATION,
-                    );
-                };
-                let mut translated = match ingress_op.write_response_value(&ir) {
-                    Some(t) => t,
-                    None => {
-                        // The ingress dialect's response is NOT JSON (binary speech): relay the
-                        // WireBody — bytes + its content-type.
-                        let wire = ingress_op.write_response(&ir);
+                Ok((usage, delivery)) => {
+                    record_resp_usage(usage, &usage_sink, app.lanes.get(i));
+                    // Tokens are now committed to this key; keep the lane unit too rather than refund
+                    // it out from under an already-billed request.
+                    budget_guard.disarm();
+                    if let crate::handlers::TranslatedResponse::Typed(wire) = delivery {
                         let rb = Response::builder()
                             .status(status)
                             .header(CONTENT_TYPE, wire.content_type);
@@ -517,51 +442,170 @@ async fn translate_response_cross_protocol(
                             .body(Body::from(wire.bytes))
                             .unwrap_or_else(|_| status.into_response());
                     }
-                };
-                // A native AWS Bedrock Converse (non-stream) response ALWAYS populates
-                // `metrics.latencyMs`; the bedrock writer's `write_response` deliberately emits only
-                // output/stopReason/usage, so a bedrock-ingress non-stream client would read
-                // `metrics == None` — the same proxy tell the streaming path already injects against.
-                // Mirror the streaming policy: inject the real request elapsed wall-clock here, and
-                // OMIT `metrics` rather than fabricate a tell-tale `0` if timing is unavailable.
-                ingress_proto.writer().inject_response_metrics(
-                    &mut translated,
-                    u64::try_from(upstream_started.elapsed().as_millis()).ok(),
-                );
-                // Gemini JSON-array streaming (`:streamGenerateContent` WITHOUT `?alt=sse`) answered
-                // by a BUFFERED non-SSE 2xx: the native non-`alt=sse` endpoint returns a JSON ARRAY of
-                // chunk objects, so a single bare `{...}` is undecodable by a Gemini SDK parsing the
-                // body as an array. Wrap the single translated object in a one-element array.
-                if gemini_json_array && wants_stream {
-                    let arr = Value::Array(vec![translated]);
-                    let rb = Response::builder()
-                        .status(status)
-                        .header(CONTENT_TYPE, APPLICATION_JSON);
-                    let rb = maybe_attach_route_policy(rb, chosen_policy_name, &app.lanes[i].model);
-                    return rb
-                        .body(Body::from(
-                            crate::json::to_vec(&arr)
-                                .unwrap_or_else(|_| arr.to_string().into_bytes()),
-                        ))
-                        .unwrap_or_else(|_| status.into_response());
+                    // `Untranslatable` (ingress handler absent): fall through to the 500, exactly as
+                    // the pre-cutover arm did after billing.
                 }
-                // Content-Type is the INGRESS JSON CT, not the upstream's — the body is now in the
-                // client's native non-stream shape.
-                let rb = Response::builder()
-                    .status(status)
-                    .header(CONTENT_TYPE, APPLICATION_JSON);
-                // The ingress writer's vtable attaches its native response request-id header. This is
-                // the CROSS-protocol translate path (ingress != egress), so there is no upstream id to
-                // forward — `None` makes the writer synthesize one.
-                let rb = maybe_attach_response_request_id(rb, ingress_protocol, None);
-                let rb = maybe_attach_route_policy(rb, chosen_policy_name, &app.lanes[i].model);
-                // sonic-rs: SIMD serialize of the translated client body (the response-path hot spot);
-                // fall back to serde_json on the effectively-impossible serialize error.
-                let body_bytes = crate::json::to_vec(&translated)
-                    .unwrap_or_else(|_| translated.to_string().into_bytes());
-                return rb
-                    .body(Body::from(body_bytes))
-                    .unwrap_or_else(|_| status.into_response());
+            }
+        }
+    }
+    if let Ok(rv) = &body_json {
+        if let Some(eh) = egress_op {
+            if let Some(ingress_proto) = crate::proto::protocol_for(ingress_protocol) {
+                // Read the wall-clock elapsed once for the wants-stream frame-synthesis fork (a
+                // Bedrock ConverseStream client served a buffered Converse body); the JSON-body path
+                // reads its own fresh elapsed for `inject_response_metrics` below, matching the two
+                // independent clock reads the pre-cutover arm made.
+                let stream_elapsed_ms = u64::try_from(upstream_started.elapsed().as_millis()).ok();
+                match eh.translate_response(
+                    crate::handlers::TranslateRespInput::Json(rv),
+                    ingress_op,
+                    Some(ingress_proto.writer()),
+                    ingress_protocol,
+                    now(),
+                    wants_stream,
+                    stream_elapsed_ms,
+                ) {
+                    Err(ref e) => {
+                        // A JSON 2xx whose shape the egress codec rejects (e.g. a missing `embedding`
+                        // array): log the CodecError before the generic 500 so the operator can tell a
+                        // broken upstream from a new/renamed response field.
+                        tracing::warn!(
+                            ingress = %ingress_protocol,
+                            egress = %egress_name,
+                            error = ?e,
+                            degraded,
+                            "cross-protocol JSON response failed the egress codec (read_response_value); returning ingress-native 500",
+                        );
+                    }
+                    Ok((usage, delivery)) => {
+                        // RESPONSE-side twin of `IrReq::prepare_for_egress`'s dropped-keys warn. The
+                        // reader has just discarded any vendor-scoped response metadata the caller's
+                        // protocol has no shape for (a Bedrock guardrail `trace`, a Gemini
+                        // `safetyRatings`); this is the one place that still holds the upstream body
+                        // AND knows the hop is cross-protocol, so it is where the drop gets named.
+                        // Same-protocol routes never reach this function.
+                        if let Ok(ref upstream_body) = body_json {
+                            crate::proto::warn_untranslatable_response_metadata(
+                                egress_name,
+                                ingress_protocol,
+                                upstream_body,
+                            );
+                        }
+                        // Token accounting: we are now committed to translating and delivering this
+                        // body. No FirstByteBody on this buffered path, so bill here — straight from
+                        // the IR usage the egress reader decoded (captured before `prepare_for_ingress`).
+                        record_resp_usage(usage, &usage_sink, app.lanes.get(i));
+                        // Tokens are now committed to this key; keep the lane unit too rather than
+                        // refund it out from under an already-billed request.
+                        budget_guard.disarm();
+                        match delivery {
+                            // Bedrock ingress that requested ConverseStream but got a BUFFERED 2xx: a
+                            // native AWS SDK decoder expects binary `eventstream` frames, delivered
+                            // under `application/vnd.amazon.eventstream`.
+                            crate::handlers::TranslatedResponse::StreamFrames(frames) => {
+                                let rb = Response::builder().status(status).header(
+                                    CONTENT_TYPE,
+                                    crate::proxy::ingress_stream_content_type(ingress_protocol)
+                                        .unwrap_or(crate::proxy::TEXT_EVENT_STREAM),
+                                );
+                                let rb =
+                                    maybe_attach_response_request_id(rb, ingress_protocol, None);
+                                let rb = maybe_attach_route_policy(
+                                    rb,
+                                    chosen_policy_name,
+                                    &app.lanes[i].model,
+                                );
+                                return rb
+                                    .body(Body::from(frames))
+                                    .unwrap_or_else(|_| status.into_response());
+                            }
+                            crate::handlers::TranslatedResponse::IngressUnsupported => {
+                                return ingress_error(
+                                    ingress_protocol,
+                                    StatusCode::NOT_FOUND,
+                                    KIND_NOT_FOUND,
+                                    DETAIL_ENDPOINT_UNSUPPORTED_OPERATION,
+                                );
+                            }
+                            // The ingress dialect's response is NOT JSON (binary speech): relay the
+                            // WireBody — bytes + its content-type.
+                            crate::handlers::TranslatedResponse::Typed(wire) => {
+                                let rb = Response::builder()
+                                    .status(status)
+                                    .header(CONTENT_TYPE, wire.content_type);
+                                let rb =
+                                    maybe_attach_response_request_id(rb, ingress_protocol, None);
+                                let rb = maybe_attach_route_policy(
+                                    rb,
+                                    chosen_policy_name,
+                                    &app.lanes[i].model,
+                                );
+                                return rb
+                                    .body(Body::from(wire.bytes))
+                                    .unwrap_or_else(|_| status.into_response());
+                            }
+                            crate::handlers::TranslatedResponse::Json(mut translated) => {
+                                // A native AWS Bedrock Converse (non-stream) response ALWAYS populates
+                                // `metrics.latencyMs`; the bedrock writer's `write_response` emits only
+                                // output/stopReason/usage, so a bedrock-ingress non-stream client would
+                                // read `metrics == None` — the proxy tell the streaming path already
+                                // injects against. Inject the real request elapsed wall-clock, and OMIT
+                                // `metrics` rather than fabricate a tell-tale `0` if timing is missing.
+                                ingress_proto.writer().inject_response_metrics(
+                                    &mut translated,
+                                    u64::try_from(upstream_started.elapsed().as_millis()).ok(),
+                                );
+                                // Gemini JSON-array streaming (`:streamGenerateContent` WITHOUT
+                                // `?alt=sse`) answered by a BUFFERED non-SSE 2xx: the native endpoint
+                                // returns a JSON ARRAY of chunk objects, so a single bare `{...}` is
+                                // undecodable by a Gemini SDK parsing the body as an array. Wrap the
+                                // single translated object in a one-element array.
+                                if gemini_json_array && wants_stream {
+                                    let arr = Value::Array(vec![translated]);
+                                    let rb = Response::builder()
+                                        .status(status)
+                                        .header(CONTENT_TYPE, APPLICATION_JSON);
+                                    let rb = maybe_attach_route_policy(
+                                        rb,
+                                        chosen_policy_name,
+                                        &app.lanes[i].model,
+                                    );
+                                    return rb
+                                        .body(Body::from(
+                                            crate::json::to_vec(&arr)
+                                                .unwrap_or_else(|_| arr.to_string().into_bytes()),
+                                        ))
+                                        .unwrap_or_else(|_| status.into_response());
+                                }
+                                // Content-Type is the INGRESS JSON CT, not the upstream's — the body is
+                                // now in the client's native non-stream shape.
+                                let rb = Response::builder()
+                                    .status(status)
+                                    .header(CONTENT_TYPE, APPLICATION_JSON);
+                                // The ingress writer's vtable attaches its native response request-id
+                                // header. This is the CROSS-protocol translate path (ingress !=
+                                // egress), so there is no upstream id to forward — `None` makes the
+                                // writer synthesize one.
+                                let rb =
+                                    maybe_attach_response_request_id(rb, ingress_protocol, None);
+                                let rb = maybe_attach_route_policy(
+                                    rb,
+                                    chosen_policy_name,
+                                    &app.lanes[i].model,
+                                );
+                                // sonic-rs: SIMD serialize of the translated client body (the
+                                // response-path hot spot); fall back on the impossible serialize error.
+                                let body_bytes = crate::json::to_vec(&translated)
+                                    .unwrap_or_else(|_| translated.to_string().into_bytes());
+                                return rb
+                                    .body(Body::from(body_bytes))
+                                    .unwrap_or_else(|_| status.into_response());
+                            }
+                            // Opaque-only terminal; unreachable on the JSON path.
+                            crate::handlers::TranslatedResponse::Untranslatable => {}
+                        }
+                    }
+                }
             }
         }
     }

@@ -148,11 +148,14 @@ enum Body {
 /// materialized ONLY when a hook is granted the request's content. See the module docs.
 pub(crate) struct LazyBody {
     body: Body,
-    /// The request IR, parsed from the DOM by the ingress operation's reader and memoized here so
-    /// one request costs one read. `None` until [`Self::ensure_ir`] is called and successful, and
-    /// dropped again whenever [`Self::ensure_dom`] hands out a mutable body — see that method for
-    /// why that invalidation is the invariant rather than a precaution.
-    ir: Option<crate::ir::variant::IrReq>,
+    /// The request facts, projected from the DOM by the ingress operation's reader (through the
+    /// neutral [`crate::handlers::TranslateCodec::read_facts_value`] entrypoint) and memoized here so
+    /// one request costs one read. Held behind the [`crate::ir::facts::IrFacts`] projection, NOT the
+    /// concrete IR, so this seam never names the LLM plane's representation. `None` until
+    /// [`Self::ensure_ir`] is called and successful, and dropped again whenever [`Self::ensure_dom`]
+    /// hands out a mutable body — see that method for why that invalidation is the invariant rather
+    /// than a precaution.
+    ir: Option<Box<dyn crate::ir::facts::IrFacts + Send + Sync>>,
 }
 
 impl LazyBody {
@@ -214,13 +217,16 @@ impl LazyBody {
         }
     }
 
-    /// Materialize (memoized) the request IR — the parse the PROTOCOL performs, as distinct from
-    /// the JSON parse [`Self::ensure_dom`] performs — and return it.
+    /// Materialize (memoized) the request FACTS — the parse the PROTOCOL performs, as distinct from
+    /// the JSON parse [`Self::ensure_dom`] performs — projected to the neutral
+    /// [`crate::ir::facts::IrFacts`], and return it.
     ///
-    /// The IR is read by the ingress operation's own handler, so it is the SAME parse the
-    /// cross-protocol translate path performs, not a second reading of the wire. `None` when the
-    /// body cannot be materialized or the ingress protocol/operation has no handler or rejects the
-    /// body: a caller that cannot get an IR falls back to what it does today, never to a guess.
+    /// The facts are read by the ingress operation's own handler through the single
+    /// [`crate::handlers::TranslateCodec::read_facts_value`] entrypoint, so it is the SAME parse the
+    /// cross-protocol translate path and the hook seam perform, not a second reading of the wire.
+    /// `None` when the body cannot be materialized or the ingress protocol/operation has no handler or
+    /// rejects the body: a caller that cannot get the facts falls back to what it does today, never to
+    /// a guess.
     ///
     /// COST: the caller decides whether to call this at all, and the deployment-wide answer is
     /// `App::any_content_hook`. This method deliberately does NOT consult that flag itself — a
@@ -229,16 +235,17 @@ impl LazyBody {
         &mut self,
         ingress_protocol: &str,
         op: crate::handlers::Op,
-    ) -> Option<&crate::ir::variant::IrReq> {
+    ) -> Option<&(dyn crate::ir::facts::IrFacts + Send + Sync)> {
+        use crate::handlers::TranslateCodec;
         if self.ir.is_none() {
             let handler = crate::handlers::request_handler(ingress_protocol)
                 .and_then(|rh| rh.operation_handler(op.operation))?;
-            // `ensure_dom` clears the memo, so read the IR from the materialized tree and only then
-            // install it — the order matters and is the reason this is not two statements.
+            // `ensure_dom` clears the memo, so read the facts from the materialized tree and only then
+            // install them — the order matters and is the reason this is not two statements.
             let dom = self.ensure_dom().ok()?;
-            self.ir = handler.read_request_value(dom).ok();
+            self.ir = handler.read_facts_value(dom).ok();
         }
-        self.ir.as_ref()
+        self.ir.as_deref()
     }
 
     /// Consume into the full DOM (memoized parse if not yet materialized). Same infallibility note

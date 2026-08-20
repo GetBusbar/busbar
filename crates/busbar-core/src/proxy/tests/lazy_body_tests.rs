@@ -200,22 +200,15 @@ fn ensure_dom_materializes_and_probe_tracks_mutation() {
     );
 }
 
-/// The first user-turn text in a chat IR — the read these tests use to tell one parse of a body
-/// from another.
-fn first_user_text(ir: &crate::ir::variant::IrReq) -> String {
-    let crate::ir::variant::IrReq::Chat(req) = ir else {
-        panic!("a chat operation must read into the chat IR");
-    };
-    match req.messages.first().map(|m| &m.content) {
-        Some(blocks) => blocks
-            .iter()
-            .filter_map(|b| match b {
-                crate::ir::IrBlock::Text { text, .. } => Some(text.as_str()),
-                _ => None,
-            })
-            .collect(),
-        None => String::new(),
-    }
+/// The first user-turn text projected from a request's facts — the read these tests use to tell one
+/// parse of a body from another. Reads through the neutral [`crate::ir::facts::IrFacts`] projection
+/// (turn 0's content items) rather than the concrete IR, mirroring `ensure_ir`'s facts return.
+fn first_user_text(ir: &(dyn crate::ir::facts::IrFacts + Send + Sync)) -> String {
+    ir.content()
+        .into_iter()
+        .filter(|it| it.slot().turn_index() == Some(0))
+        .map(|it| it.screenable_text().into_owned())
+        .collect()
 }
 
 /// `ensure_ir` reads the body through the INGRESS operation's own handler, so the hook seam's view
@@ -230,16 +223,13 @@ fn ensure_ir_reads_the_body_through_the_ingress_reader() {
     let ir = lazy
         .ensure_ir(crate::proto::PROTO_OPENAI, crate::handlers::CHAT)
         .expect("a well-formed openai chat body must read into the IR");
-    let crate::ir::variant::IrReq::Chat(req) = ir else {
-        panic!("a chat operation must read into the chat IR");
-    };
+    let shape = ir.shape();
     assert_eq!(
-        req.messages.len(),
-        1,
-        "the system turn is hoisted out of `messages`"
+        shape.turn_count, 1,
+        "the system turn is hoisted out of the conversation turns"
     );
     assert!(
-        !req.system.is_empty(),
+        shape.system_chars > 0,
         "the system turn is hoisted into the system slot"
     );
     assert_eq!(first_user_text(ir), "hi");

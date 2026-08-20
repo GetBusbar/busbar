@@ -147,16 +147,22 @@ pub(crate) fn read_hook_facts(
     // reader directly — byte-identical to the pre-change seam). A non-object body is either a
     // multipart/binary payload (transcription/speech audio) whose caller text is reachable ONLY
     // through the byte reader (FATAL-1), or the engine's absent-body sentinel with no bytes at all.
-    let ir = if v.is_object() {
-        handler.read_request_value(v)
+    use crate::handlers::TranslateCodec;
+    // THE ONE READ, through the codec cell's neutral `read_facts` entrypoint — the same reader the
+    // cross-protocol translate path uses, projected straight to `IrFacts` so this seam never holds the
+    // concrete IR. A JSON OBJECT body takes the value-codec fast path (chat calls its proto reader
+    // directly — no re-serialize); a non-object body is either the byte-reader path (multipart /
+    // binary) or the absent-body sentinel.
+    let facts = if v.is_object() {
+        handler.read_facts_value(v)
     } else if body.is_empty() {
         // Genuinely bodyless / the `Value::Null` sentinel: nothing to read, nothing to reject.
         return Ok(HookFacts::Absent);
     } else {
-        handler.read_request(body, content_type)
+        handler.read_facts(body, content_type)
     };
-    match ir {
-        Ok(ir) => Ok(HookFacts::Facts(Box::new(ir))),
+    match facts {
+        Ok(facts) => Ok(HookFacts::Facts(facts)),
         // A body the operation's own reader REFUSES is the request's failure, per-operation — the
         // same fail-closed ruling the chat seam already applied (parse-failure = request failure).
         Err(_) => Err(HookIrRejected),
