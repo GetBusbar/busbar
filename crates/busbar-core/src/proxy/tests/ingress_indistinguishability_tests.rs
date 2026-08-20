@@ -1107,7 +1107,7 @@ async fn test_cross_protocol_stream_delivers_trailing_usage_gemini_json_array() 
         0,
         Arc::new(crate::store::BreakerCfg::default()),
         "pa",
-        Some(translate),
+        Some(Box::new(translate)),
         Some(json_array),
         None,  // usage_sink
         false, // budget_spent
@@ -1176,7 +1176,7 @@ async fn test_cross_protocol_stream_delivers_trailing_usage_anthropic_sse() {
         0,
         Arc::new(crate::store::BreakerCfg::default()),
         "pa",
-        Some(translate),
+        Some(Box::new(translate)),
         None, // plain SSE — no json-array framer
         None,
         false,
@@ -1281,7 +1281,7 @@ async fn test_mid_stream_transport_error_does_not_bill_partial_usage() {
         0,
         Arc::new(crate::store::BreakerCfg::default()),
         "pa",
-        Some(translate),
+        Some(Box::new(translate)),
         None,
         sink,
         false,
@@ -3327,7 +3327,7 @@ async fn test_streaming_translate_abort_trips_breaker_and_skips_billing() {
         0,
         breaker_cfg,
         "p",
-        Some(translate),
+        Some(Box::new(translate)),
         None,
         sink,
         false, // budget_spent: irrelevant to this arm
@@ -3441,7 +3441,7 @@ async fn test_cancel_drop_bills_partial_tokens() {
             0,
             Arc::new(BreakerCfg::default()),
             "p",
-            Some(translate),
+            Some(Box::new(translate)),
             None,
             sink,
             false,
@@ -3548,7 +3548,7 @@ async fn test_cancel_drop_skips_billing_on_aborted_translate() {
             0,
             Arc::new(BreakerCfg::default()),
             "p",
-            Some(translate),
+            Some(Box::new(translate)),
             None,
             sink,
             false,

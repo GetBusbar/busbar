@@ -854,16 +854,12 @@ pub(crate) async fn forward_once(
             // pool's resolved breaker cfg (mirrors `forward_with_pool`) — NOT the default `""` cell —
             // so a fallback/least-bad stream that fails mid-flight reopens the pool cell it was
             // selected against, never the unrelated default cell.
-            let translate = if is_sse && cross_protocol {
-                crate::proto::StreamTranslate::new(ingress_protocol, egress_name)
-            } else if is_sse && !cross_protocol {
-                // SAME-PROTOCOL SSE/event-stream on the degraded path: mirror
-                // the main `forward_with_pool` wiring — the verbatim same-proto translator (byte-exact
-                // re-emit + IR usage A-tap). `None` for an unknown protocol → legacy passthrough.
-                crate::proto::StreamTranslate::new_same_proto(ingress_protocol)
-            } else {
-                None
-            };
+            // ONE registry-resolved factory, IDENTICAL to the hot `forward_with_pool` path (extracted
+            // so the two cannot drift): cross-protocol SSE builds the reframing translator,
+            // same-protocol SSE the verbatim same-proto translator (byte-exact re-emit + IR usage
+            // A-tap), `!is_sse`/unknown-protocol yields `None` → legacy passthrough.
+            let translate =
+                crate::proto::new_stream_translator(ingress_protocol, egress_name, is_sse);
             let json_array = (gemini_json_array && is_sse)
                 .then(|| {
                     crate::proto::protocol_for(ingress_protocol)
