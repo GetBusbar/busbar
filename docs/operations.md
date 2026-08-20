@@ -84,7 +84,7 @@ edited on a live host before you reload it. It does read the files your `file:` 
 name, because since 1.5.3 it resolves those references rather than only checking their shape.
 
 ```sh
-BUSBAR_CONFIG=./config.yaml BUSBAR_PROVIDERS=./providers.yaml busbar --validate
+BUSBAR_CONFIG=./config.yaml busbar --validate
 # ok: config valid [...] 2 provider(s), 2 model(s), 1 pool(s)
 #   note: 1 env var(s) referenced but unset here [...] required at runtime: BUSBAR_CLIENT_TOKEN
 ```

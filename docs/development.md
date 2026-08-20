@@ -137,7 +137,7 @@ env vars (or files/secret plugins) named by each provider's `api_key` secret ref
 ```bash
 export BUSBAR_CLIENT_TOKEN=dev-token
 export ANTHROPIC_KEY=sk-ant-...
-BUSBAR_PROVIDERS=./providers.yaml BUSBAR_CONFIG=./config.yaml cargo run
+BUSBAR_CONFIG=./config.yaml cargo run
 curl -s localhost:8080/healthz
 curl -s -H "Authorization: Bearer $BUSBAR_CLIENT_TOKEN" localhost:8080/stats | jq
 ```

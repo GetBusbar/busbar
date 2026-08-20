@@ -172,7 +172,7 @@ Save this as `config.yaml` in your working directory.
 # the actual secret, this is what `api_key: { env: ANTHROPIC_KEY` } in config.yaml points at
 export ANTHROPIC_KEY=sk-ant-...
 
-BUSBAR_PROVIDERS=./providers.yaml BUSBAR_CONFIG=./config.yaml ./busbar
+BUSBAR_CONFIG=./config.yaml ./busbar
 ```
 
 Busbar logs a startup event indicating the listen address (`busbar listening`, with the bound address as a field). It accepts requests immediately: Prometheus/TSC calibration is deferred to a background thread, so it never blocks the hot path at boot.
@@ -310,7 +310,7 @@ export ANTHROPIC_KEY=sk-ant-...
 export OPENAI_KEY=sk-...
 export BUSBAR_ADMIN_TOKEN=your-admin-token
 
-BUSBAR_PROVIDERS=./providers.yaml BUSBAR_CONFIG=./config.yaml ./busbar
+BUSBAR_CONFIG=./config.yaml ./busbar
 
 # Mint a signed key for your app (expires in 90 days by default):
 BUSBAR_CLIENT_TOKEN=$(curl -s -X POST http://127.0.0.1:8081/api/v1/admin/keys \

@@ -624,7 +624,7 @@ pools:
 ```bash
 export BUSBAR_ADMIN_TOKEN=my-admin-token
 export ANTHROPIC_KEY=sk-ant-...
-BUSBAR_PROVIDERS=./providers.yaml BUSBAR_CONFIG=./config.yaml ./busbar
+BUSBAR_CONFIG=./config.yaml ./busbar
 
 # Mint a caller key (the signed token is shown once):
 BUSBAR_TOKEN=$(curl -s -X POST http://127.0.0.1:8081/api/v1/admin/keys \
