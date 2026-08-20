@@ -73,6 +73,8 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::diagnostics::{diag_warn, A2A_CARD_CERT_NO_SPKI};
+
 use super::fetch::{FetchPolicy, HttpResponse, Resolver, Transport};
 use super::relay::{ChunkFlow, RelayTransport, StreamHead};
 use super::verify::CardTransports;
@@ -220,7 +222,7 @@ fn peer_spki_of(resp: &reqwest::Response) -> Option<String> {
     match super::spki::spki_pin(der) {
         Ok(pin) => Some(pin),
         Err(e) => {
-            tracing::warn!(error = %e, "a2a: the card endpoint's certificate yielded no SPKI pin");
+            diag_warn!(A2A_CARD_CERT_NO_SPKI, error = %e, "a2a: the card endpoint's certificate yielded no SPKI pin");
             None
         }
     }

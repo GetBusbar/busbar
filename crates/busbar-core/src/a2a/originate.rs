@@ -24,6 +24,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::receive::{notify_push, plane_of, Admitted};
+use crate::diagnostics::{diag_warn, A2A_OUTBOUND_CRED_UNLEASED};
 use crate::state::App;
 
 /// EVERYTHING ONE BUSBAR-ORIGINATED HOP NEEDS that is neither the document nor the verb.
@@ -79,7 +80,7 @@ fn originate(
         Some(cred) => match super::creds::mint_from(&grant, cred, &app.secret_resolver, now_ms) {
             Ok(lease) => Some(lease),
             Err(e) => {
-                tracing::error!(agent = %admitted.dispatch.agent_id, error = %e, "a2a: the outbound credential could not be leased");
+                diag_warn!(A2A_OUTBOUND_CRED_UNLEASED, agent = %admitted.dispatch.agent_id, error = %e, "a2a: the outbound credential could not be leased");
                 return None;
             }
         },

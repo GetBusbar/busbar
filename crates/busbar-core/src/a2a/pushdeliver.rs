@@ -70,6 +70,7 @@ use std::sync::{Mutex, OnceLock};
 use super::pushnotify::{self, PinnedCallback, PushNotifyError};
 use super::relay::RelaySeam;
 use super::task::Task;
+use crate::diagnostics::{diag_debug, A2A_PUSH_OUTCOME_UNCHAINED};
 use crate::plane::provenance;
 
 /// THE HEADER EVERY DELIVERY CARRIES, whatever else it carries.
@@ -364,7 +365,8 @@ fn record_attempt(task: &Task, outcome: &Result<(), PushRefusal>) {
         // the digest for exactly this reason (see `provenance::digest_fields`).
         "",
     ) {
-        tracing::warn!(
+        diag_debug!(
+            A2A_PUSH_OUTCOME_UNCHAINED,
             task = %task.task_id,
             kind = kind,
             error = %e,

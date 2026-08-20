@@ -70,6 +70,10 @@ use std::sync::OnceLock;
 
 use axum::response::{IntoResponse as _, Response};
 
+use crate::diagnostics::{
+    diag_debug, diag_error, A2A_NO_CSPRNG_CALLBACK, A2A_PUSHBACK_NOT_DELIVERED,
+};
+
 use super::task::TaskState;
 
 /// The path busbar's own callback is served at, under [`super::serve::MOUNT_PATH`].
@@ -103,7 +107,7 @@ fn secret() -> Option<&'static [u8; 32]> {
             match getrandom::fill(&mut buf) {
                 Ok(()) => Some(buf),
                 Err(e) => {
-                    tracing::error!(error = %e, "a2a: no CSPRNG, so busbar will register no callback of its own with any backend");
+                    diag_error!(A2A_NO_CSPRNG_CALLBACK, error = %e, "a2a: no CSPRNG, so busbar will register no callback of its own with any backend");
                     None
                 }
             }
@@ -333,7 +337,7 @@ pub(crate) async fn push_notification(
         tokio::task::spawn_blocking(move || {
             let id = moved.task_id.clone();
             if let Err(e) = super::pushdeliver::deliver(seam.as_ref(), &moved) {
-                tracing::warn!(task = %id, error = %e, "a2a: a pushed state was not delivered onward");
+                diag_debug!(A2A_PUSHBACK_NOT_DELIVERED, task = %id, error = %e, "a2a: a pushed state was not delivered onward");
             }
         });
     }
