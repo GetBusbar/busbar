@@ -73,15 +73,16 @@ pub(crate) fn apply_rewrite_to_body(
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
 /// What the hook seam knows about a request, read from the IR.
-// The variants differ in size by the width of a whole `IrRequest`, and boxing to even them out
-// would be the wrong trade: `Chat` is the overwhelmingly common case, this value is a per-request
-// LOCAL that is never stored in a collection and never moved after it is built, and a `Box` here
-// would add one heap allocation to every hooked request to shrink a stack temporary. The lint is
-// right about the shape and wrong about the cost.
-#[allow(clippy::large_enum_variant)]
+//
+// `Chat` holds the request behind the neutral [`crate::ir::facts::IrFacts`] trait, NOT a concrete
+// `IrRequest`: this seam consumes only the projection (`shape`/`end_user`/`content`), so naming the
+// concrete chat type here would be core reaching into the LLM plane's representation for no gain. The
+// box is the price of the trait object, and it is the RIGHT price now — the concrete IR belongs to
+// busbar-llm (G6), and a hooked request already pays a body read, so one pointer indirection on the
+// path that is only taken when a hook is configured is not a cost worth naming a plane's type to save.
 pub(crate) enum HookFacts {
-    /// A conversation request the ingress protocol's reader understood.
-    Chat(crate::ir::IrRequest),
+    /// A conversation request the ingress protocol's reader understood, seen through its neutral facts.
+    Chat(Box<dyn crate::ir::facts::IrFacts + Send + Sync>),
     /// The body carries no readable conversation facts because it is not a JSON object at all — a
     /// multipart/binary request, or the engine's absent-body sentinel. Projects as the zeroed shape
     /// with no content, which is exactly what the seam projected for such a body before the cutover.
@@ -126,7 +127,7 @@ pub(crate) fn read_hook_facts(
         return Ok(HookFacts::Absent);
     };
     match protocol.reader().read_request(v) {
-        Ok(ir) => Ok(HookFacts::Chat(ir)),
+        Ok(ir) => Ok(HookFacts::Chat(Box::new(ir))),
         Err(_) => Err(HookIrRejected),
     }
 }
@@ -135,10 +136,7 @@ impl HookFacts {
     /// The shape/size signal bucket every hook gets, granted or not.
     pub(crate) fn shape(&self) -> crate::ir::facts::Shape {
         match self {
-            HookFacts::Chat(ir) => {
-                use crate::ir::facts::IrFacts;
-                ir.shape()
-            }
+            HookFacts::Chat(ir) => ir.shape(),
             HookFacts::Absent => crate::ir::facts::Shape::EMPTY,
         }
     }
@@ -147,10 +145,7 @@ impl HookFacts {
     /// whichever field its dialect spells it in.
     pub(crate) fn end_user(&self) -> Option<String> {
         match self {
-            HookFacts::Chat(ir) => {
-                use crate::ir::facts::IrFacts;
-                ir.end_user().map(str::to_string)
-            }
+            HookFacts::Chat(ir) => ir.end_user().map(str::to_string),
             HookFacts::Absent => None,
         }
     }
@@ -181,7 +176,7 @@ impl HookFacts {
         // more allocate the join, exactly as the flattening this replaces did.
         let mut system: Vec<Cow<'_, str>> = Vec::new();
         let mut turns: Vec<(&'static str, Vec<Cow<'_, str>>)> = Vec::new();
-        for item in crate::ir::facts::project(ir) {
+        for item in ir.content() {
             let piece = match item {
                 ContentItem::Text { ref text, .. } => match text {
                     Cow::Borrowed(t) => Cow::Borrowed(*t),
@@ -194,7 +189,12 @@ impl HookFacts {
                 slot => {
                     let i = slot.turn_index().unwrap_or(0);
                     while turns.len() <= i {
-                        turns.push((role_name(ir.messages[turns.len()].role), Vec::new()));
+                        // The turn label comes from the projected item's own neutral author, not from
+                        // `IrRequest::messages[i].role`: `project` guarantees one item per turn in turn
+                        // order (the empty-turn rule), so the item creating turn `i` is a turn-`i` item
+                        // and its `author()` is exactly what `author_of(messages[i].role)` produced.
+                        // That keeps this seam off the concrete IR — it reads only the trait projection.
+                        turns.push((item.author(), Vec::new()));
                     }
                     turns[i].1.push(piece);
                 }
@@ -215,17 +215,6 @@ impl HookFacts {
     }
 }
 
-/// The canonical role vocabulary the hook contract promises on EVERY dialect. It is the IR's own
-/// enum rendered as text, so a dialect's native spelling (an assistant turn spelled `model` on one
-/// wire) can never reach a hook and can never be echoed back into a corrupted turn.
-fn role_name(role: crate::ir::IrRole) -> &'static str {
-    match role {
-        crate::ir::IrRole::System => "system",
-        crate::ir::IrRole::User => "user",
-        crate::ir::IrRole::Assistant => "assistant",
-        crate::ir::IrRole::Tool => "tool",
-    }
-}
 
 /// Join one bucket's pieces with a newline, BORROWING the single-piece case (the common one). The
 /// separator is not counted by the size signal — a flattened rendering can therefore be longer than
