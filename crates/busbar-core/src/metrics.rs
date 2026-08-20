@@ -214,6 +214,14 @@ pub(crate) const TAP_NOTIFICATIONS_DROPPED_TOTAL: &str = "busbar_tap_notificatio
 // shown; raise the ceiling or narrow what reaches the hook.
 pub(crate) const HOOK_CONTENT_TRUNCATED_TOTAL: &str = "busbar_hook_content_truncated_total";
 
+// A same-protocol 2xx response body the usage tap could not decode into token usage, so the request
+// was billed 0 tokens. Labeled by `protocol` (the ingress protocol, a fixed enumeration) and
+// `reason` (`unknown_protocol` / `bad_json` / `decode`). This is the per-request VOLUME signal for the
+// tap-decode fault class: the log site is warn-once-per-(protocol,reason) to avoid per-request spam,
+// so this counter — not the log — is what an operator alerts on. A steady non-zero rate means a live
+// protocol/dialect the tap reader cannot decode, i.e. silent under-billing.
+pub(crate) const BILLING_TAP_DECODE_FAIL_TOTAL: &str = "busbar_billing_tap_decode_fail_total"; // labels: protocol, reason
+
 // A request/task denied entry by a `limits::admission::AdmissionGate` because its permit cap was
 // saturated. Labeled `gate` = the gate's fixed name (`"inbound"`/`"webhook"`/`"tap"`/
 // `"request-log-file"` today — one
@@ -544,6 +552,10 @@ fn describe() {
     describe_counter!(
         TRANSLATIONS_TOTAL,
         "Cross-protocol translations, by source and target protocol"
+    );
+    describe_counter!(
+        BILLING_TAP_DECODE_FAIL_TOTAL,
+        "Same-protocol 2xx bodies the usage tap could not decode (billed 0 tokens), by protocol and reason"
     );
     describe_histogram!(
         REQUEST_DURATION_SECONDS,

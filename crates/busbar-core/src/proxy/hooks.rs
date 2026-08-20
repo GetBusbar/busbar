@@ -319,7 +319,9 @@ pub(crate) fn enforce_content_cap(
         return Some(p);
     }
     metrics::counter!(crate::metrics::HOOK_CONTENT_TRUNCATED_TOTAL).increment(1);
-    tracing::warn!(
+    // Per-request condition on a configured ceiling; the HOOK_CONTENT_TRUNCATED_TOTAL counter above
+    // is the operator-facing signal, so log the detail at `debug!` rather than warn-spamming per call.
+    tracing::debug!(
         content_bytes = bytes,
         cap,
         "hook content projection exceeded limits.hook_content_max_bytes; the content is OMITTED \
@@ -467,6 +469,35 @@ pub(crate) fn reject_kind_for_status(status: u16) -> &'static str {
 /// semaphore, `budget_remaining` from the lane budget, and `rate_headroom` from the caller key's
 /// governance rate window. A policy error/timeout NEVER reaches the client: it degrades per `on_error`
 /// (weighted / reject / first).
+/// Process-lifetime warn-once latch for routing-policy fault windows, keyed `policy@pool`. A broken
+/// hook (down / deadline-exceeded / replying garbage) fails on EVERY request, so an unlatched `warn!`
+/// spams per request; the bounded ROUTE_POLICY counters carry the per-request volume. A key present
+/// in the set is "currently in a fault window": the first failure warns and inserts; subsequent
+/// failures log `debug!`; the first SUCCESS removes the key so the next fault re-warns.
+static POLICY_FAULT_WINDOW: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashSet<String>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashSet::new()));
+
+/// Enter the fault window for `key`; returns `true` if this is the transition INTO the window (warn),
+/// `false` if it was already open (debug).
+fn policy_fault_enter(key: &str) -> bool {
+    let mut set = POLICY_FAULT_WINDOW
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    set.insert(key.to_string())
+}
+
+/// Clear the fault window for `key` on a success, so the next fault re-warns. Cheap no-op when the
+/// key was never in a fault window (the steady-state healthy path).
+fn policy_fault_clear(key: &str) {
+    let mut set = POLICY_FAULT_WINDOW
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if !set.is_empty() {
+        set.remove(key);
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn decide_policy_order(
     app: &Arc<App>,
@@ -701,17 +732,33 @@ pub(crate) async fn decide_policy_order(
     )
     .await
     {
-        Ok(Ok(d)) => d,
+        Ok(Ok(d)) => {
+            // Success clears the fault window so a future fault re-warns on its first occurrence.
+            policy_fault_clear(&format!("{}@{}", policy.name(), pool_name));
+            d
+        }
         // Policy errored: apply on_error — but LOG the error first. A hook binary that is down,
         // deadline-exceeded, or replying garbage would otherwise fail silently on every request
         // (the pool degrades to on_error with no operator-visible signal that the hook is broken).
+        // Warn ONCE per fault window (reset on the next success); continued failures log `debug!` —
+        // the bounded ROUTE_POLICY counters carry the per-request volume.
         Ok(Err(e)) => {
-            tracing::warn!(
-                policy = policy.name(),
-                pool = pool_name,
-                error = %e,
-                "routing policy failed; applying on_error fallback"
-            );
+            let key = format!("{}@{}", policy.name(), pool_name);
+            if policy_fault_enter(&key) {
+                tracing::warn!(
+                    policy = policy.name(),
+                    pool = pool_name,
+                    error = %e,
+                    "routing policy failed; applying on_error fallback"
+                );
+            } else {
+                tracing::debug!(
+                    policy = policy.name(),
+                    pool = pool_name,
+                    error = %e,
+                    "routing policy still failing; applying on_error fallback"
+                );
+            }
             return run_on_error_chain(
                 on_error_chain,
                 on_error,
@@ -726,12 +773,22 @@ pub(crate) async fn decide_policy_order(
         // Timed out at the seam's own hard deadline: same fallback, same visibility. The policy/
         // transport stays cancel-safe — a dropped future on timeout is fine.
         Err(_) => {
-            tracing::warn!(
-                policy = policy.name(),
-                pool = pool_name,
-                timeout_ms = timeout.as_millis() as u64,
-                "routing policy deadline exceeded; applying on_error fallback"
-            );
+            let key = format!("{}@{}", policy.name(), pool_name);
+            if policy_fault_enter(&key) {
+                tracing::warn!(
+                    policy = policy.name(),
+                    pool = pool_name,
+                    timeout_ms = timeout.as_millis() as u64,
+                    "routing policy deadline exceeded; applying on_error fallback"
+                );
+            } else {
+                tracing::debug!(
+                    policy = policy.name(),
+                    pool = pool_name,
+                    timeout_ms = timeout.as_millis() as u64,
+                    "routing policy deadline still exceeded; applying on_error fallback"
+                );
+            }
             return run_on_error_chain(
                 on_error_chain,
                 on_error,
@@ -786,6 +843,8 @@ pub(crate) async fn run_on_error_chain(
         .await
         {
             Ok(Ok(decision)) => {
+                // Success clears this fallback's fault window so a future fault re-warns.
+                policy_fault_clear(&format!("{}@{}", fb.policy.name(), pool_name));
                 tracing::info!(
                     policy = failed_policy_name,
                     fallback = fb.policy.name(),
@@ -795,22 +854,43 @@ pub(crate) async fn run_on_error_chain(
                 return map_decision(decision, fb.policy.name(), candidates, &fb.on_empty);
             }
             // This link failed too — follow the chain to the next (its own on_error was flattened
-            // into this chain at resolution).
+            // into this chain at resolution). Warn ONCE per fallback fault window (reset on the next
+            // success); continued failures log `debug!`.
             Ok(Err(e)) => {
-                tracing::warn!(
-                    fallback = fb.policy.name(),
-                    pool = pool_name,
-                    error = %e,
-                    "on_error fallback hook failed; continuing down the chain"
-                );
+                let key = format!("{}@{}", fb.policy.name(), pool_name);
+                if policy_fault_enter(&key) {
+                    tracing::warn!(
+                        fallback = fb.policy.name(),
+                        pool = pool_name,
+                        error = %e,
+                        "on_error fallback hook failed; continuing down the chain"
+                    );
+                } else {
+                    tracing::debug!(
+                        fallback = fb.policy.name(),
+                        pool = pool_name,
+                        error = %e,
+                        "on_error fallback hook still failing; continuing down the chain"
+                    );
+                }
             }
             Err(_) => {
-                tracing::warn!(
-                    fallback = fb.policy.name(),
-                    pool = pool_name,
-                    timeout_ms = fb.timeout.as_millis() as u64,
-                    "on_error fallback hook deadline exceeded; continuing down the chain"
-                );
+                let key = format!("{}@{}", fb.policy.name(), pool_name);
+                if policy_fault_enter(&key) {
+                    tracing::warn!(
+                        fallback = fb.policy.name(),
+                        pool = pool_name,
+                        timeout_ms = fb.timeout.as_millis() as u64,
+                        "on_error fallback hook deadline exceeded; continuing down the chain"
+                    );
+                } else {
+                    tracing::debug!(
+                        fallback = fb.policy.name(),
+                        pool = pool_name,
+                        timeout_ms = fb.timeout.as_millis() as u64,
+                        "on_error fallback hook deadline still exceeded; continuing down the chain"
+                    );
+                }
             }
         }
     }

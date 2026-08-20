@@ -859,6 +859,11 @@ impl GovState {
             std::mem::take(&mut *pending)
         };
         let mut flushed = 0usize;
+        // Aggregate failures: during a store outage EVERY pending key fails on the same tick, so a
+        // per-key `warn!` spams. Emit exactly ONE throttled warn per tick carrying the failed count;
+        // the per-key detail (key + error) stays at `debug!`.
+        let mut failed = 0usize;
+        let mut last_error: Option<String> = None;
         for ((key_id, bucket, model, provider), counts) in taken {
             if counts.requests == 0
                 && counts.tokens_input == 0
@@ -885,7 +890,9 @@ impl GovState {
             match self.store.add_metering(&delta) {
                 Ok(()) => flushed += 1,
                 Err(e) => {
-                    tracing::warn!(key = %key_id, error = %e, "metering flush failed; will retry next tick");
+                    failed += 1;
+                    tracing::debug!(key = %key_id, error = %e, "metering flush failed for key; will retry next tick");
+                    last_error = Some(e.to_string());
                     let mut pending = self
                         .pending_metering
                         .lock()
@@ -904,6 +911,15 @@ impl GovState {
                         .saturating_add(counts.tokens_cache_write);
                 }
             }
+        }
+        if failed > 0 {
+            tracing::warn!(
+                failed,
+                flushed,
+                error = last_error.as_deref().unwrap_or(""),
+                "metering flush: {failed} key(s) failed to persist this tick; retained and will \
+                 retry next tick (per-key detail at debug)"
+            );
         }
         flushed
     }
@@ -2065,6 +2081,11 @@ impl GovState {
             }
         }
         let mut flushed = 0usize;
+        // Aggregate failures: during a store outage every dirty bucket fails on the same tick, so a
+        // per-bucket `warn!` spams. Emit exactly ONE throttled warn per tick with the failed count;
+        // per-bucket detail (bucket + error) stays at `debug!`.
+        let mut failed = 0usize;
+        let mut last_error: Option<String> = None;
         for snap in dirty {
             let outcome = if snap.delta.is_zero() {
                 // Nothing new since the last acked flush (e.g. a charge fully refunded back to the
@@ -2095,7 +2116,9 @@ impl GovState {
                     }
                 }
                 Err(e) => {
-                    tracing::warn!(bucket = %snap.bucket_id, error = %e, "budget flush failed; will retry next tick");
+                    failed += 1;
+                    tracing::debug!(bucket = %snap.bucket_id, error = %e, "budget flush failed for bucket; will retry next tick");
+                    last_error = Some(e.to_string());
                     // RE-MARK dirty so the delta is not lost — only if the cell still exists for
                     // the SAME window (after a rollover the old window's unacked delta is dropped
                     // with the cell, exactly as the pre-additive flusher behaved).
@@ -2107,6 +2130,15 @@ impl GovState {
                     }
                 }
             }
+        }
+        if failed > 0 {
+            tracing::warn!(
+                failed,
+                flushed,
+                error = last_error.as_deref().unwrap_or(""),
+                "budget flush: {failed} bucket(s) failed to persist this tick; re-marked dirty and \
+                 will retry next tick (per-bucket detail at debug)"
+            );
         }
         flushed
     }

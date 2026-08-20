@@ -491,7 +491,10 @@ fn project_request_headers(headers: &HeaderMap) -> Vec<(String, String)> {
         .collect();
     if projected.len() > MAX_PLUGIN_HEADERS {
         metrics::counter!(crate::metrics::PLUGIN_REQUEST_HEADERS_TRUNCATED_TOTAL).increment(1);
-        tracing::warn!(
+        // Per-request on a client whose header count is legitimately high (proxies/CDNs/tracing
+        // headers), so an unlatched warn spams. The PLUGIN_REQUEST_HEADERS_TRUNCATED_TOTAL counter
+        // above is the operator signal; log the detail at `debug!`.
+        tracing::debug!(
             header_count = projected.len(),
             cap = MAX_PLUGIN_HEADERS,
             "inbound request header count exceeded the plugin-route cap; truncating the projection \
@@ -521,14 +524,35 @@ fn relay_response(owner: &str, path: &str, resp: HttpEndpointResponse) -> Respon
     use axum::http::{HeaderName, HeaderValue};
     if resp.headers.len() > MAX_PLUGIN_HEADERS {
         metrics::counter!(crate::metrics::PLUGIN_RESPONSE_HEADERS_REJECTED_TOTAL).increment(1);
-        tracing::error!(
-            plugin = owner,
-            route = path,
-            header_count = resp.headers.len(),
-            cap = MAX_PLUGIN_HEADERS,
-            "plugin response exceeded the header-count cap; rejecting with 502 rather than silently \
-             relaying a truncated header set to the external client"
-        );
+        // Fail-closed 502 is UNCHANGED. Rate-limit the log to warn-once-per-(plugin,route): a
+        // buggy/hostile plugin over-caps on every response, and the PLUGIN_RESPONSE_HEADERS_REJECTED
+        // counter above carries the per-request volume. Warn on the first occurrence per key; log
+        // `debug!` thereafter.
+        static REJECT_WARNED: std::sync::LazyLock<
+            std::sync::Mutex<std::collections::HashSet<String>>,
+        > = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashSet::new()));
+        let first = {
+            let mut set = REJECT_WARNED.lock().unwrap_or_else(|e| e.into_inner());
+            set.insert(format!("{owner}:{path}"))
+        };
+        if first {
+            tracing::error!(
+                plugin = owner,
+                route = path,
+                header_count = resp.headers.len(),
+                cap = MAX_PLUGIN_HEADERS,
+                "plugin response exceeded the header-count cap; rejecting with 502 rather than \
+                 silently relaying a truncated header set to the external client"
+            );
+        } else {
+            tracing::debug!(
+                plugin = owner,
+                route = path,
+                header_count = resp.headers.len(),
+                cap = MAX_PLUGIN_HEADERS,
+                "plugin response again exceeded the header-count cap; rejecting with 502"
+            );
+        }
         return StatusCode::BAD_GATEWAY.into_response_stub();
     }
     let status = StatusCode::from_u16(resp.status).unwrap_or(StatusCode::BAD_GATEWAY);

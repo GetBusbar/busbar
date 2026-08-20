@@ -49,6 +49,25 @@ pub mod chat;
 #[path = "../../../busbar-mcp/src/codec/mod.rs"]
 pub(crate) mod mcp;
 
+/// Process-lifetime warn-once latch for the usage-tap decode fault class, keyed `protocol:reason`. A
+/// live protocol/dialect the tap reader cannot decode fails on EVERY 2xx body of that shape, so an
+/// unlatched `warn!` spams per request; [`crate::metrics::BILLING_TAP_DECODE_FAIL_TOTAL`] carries the
+/// per-request volume. This records the fault (increments the counter) and returns `true` only the
+/// FIRST time a given `(protocol, reason)` is seen, so the caller warns once and logs `debug!`
+/// thereafter.
+pub(crate) fn usage_tap_decode_fail_should_warn(protocol: &str, reason: &'static str) -> bool {
+    metrics::counter!(
+        crate::metrics::BILLING_TAP_DECODE_FAIL_TOTAL,
+        "protocol" => protocol.to_string(),
+        "reason" => reason,
+    )
+    .increment(1);
+    static SEEN: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+        std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashSet::new()));
+    let mut seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
+    seen.insert(format!("{protocol}:{reason}"))
+}
+
 /// The protocol's `RequestHandler`, by name (matches `router` / `proto::Protocol::name()`). A
 /// registered handler may still return `None` from `operation_handler` for an op it lacks — that IS
 /// the no-handler 404.
@@ -230,19 +249,31 @@ pub trait OperationHandler: Send + Sync {
     /// as the cross-protocol path. Chat overrides this to run the egress protocol's chat reader.
     fn extract_usage(
         &self,
-        _ingress_protocol: &str,
+        ingress_protocol: &str,
         body: &[u8],
     ) -> Option<crate::billing::TokenUsage> {
         match self.read_response(body) {
             Ok(r) => r.token_usage(),
             Err(e) => {
-                // A same-protocol 2xx body the op's own codec cannot decode: log it (like the
+                // A same-protocol 2xx body the op's own codec cannot decode: record it (like the
                 // cross-protocol seam) rather than silently bill 0 tokens with no operator signal.
-                tracing::warn!(
-                    error = ?e,
-                    "usage tap: read_response failed to decode a same-protocol 2xx body; \
-                     billing 0 tokens for this request"
-                );
+                // Warn-once-per-(protocol,reason); the BILLING_TAP_DECODE_FAIL_TOTAL counter carries
+                // the per-request volume so the log does not spam.
+                if usage_tap_decode_fail_should_warn(ingress_protocol, "decode") {
+                    tracing::warn!(
+                        protocol = ingress_protocol,
+                        error = ?e,
+                        "usage tap: read_response failed to decode a same-protocol 2xx body; \
+                         billing 0 tokens for this request"
+                    );
+                } else {
+                    tracing::debug!(
+                        protocol = ingress_protocol,
+                        error = ?e,
+                        "usage tap: read_response still failing to decode a same-protocol 2xx body; \
+                         billing 0 tokens for this request"
+                    );
+                }
                 None
             }
         }

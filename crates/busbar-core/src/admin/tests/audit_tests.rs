@@ -1415,14 +1415,20 @@ async fn flush_durable_is_silent_and_idempotent_once_the_ring_top_is_durable() {
     assert!(log.verify(), "the chain is untouched by the idle ticks");
 }
 
-/// The below-the-durable-floor write-through is a benign, EXPECTED skip — either a concurrent-recorder
-/// race (a second recorder won `durable_lock` and its backfill already advanced `durable_high` past
-/// this seq) or a boot that recovered a floor ABOVE a freshly-numbered ring seq. The code's own comment
-/// says skipping is correct (the entry is already durable), so it must NOT warn: on the boot-recovery
-/// case the periodic flusher re-offers the same seq every ~10/s, and a WARN there spams the console. It
-/// is logged at DEBUG. This pins that it is SILENT at WARN level and still correctly skipped.
+/// The below-the-durable-floor write-through is a benign, EXPECTED skip (the entry is already durable),
+/// so it never re-upserts. But the two sub-cases SIGNAL differently, and both must be spam-free:
+///
+///   - `new_seq < durable_high` — a genuine concurrent-recorder race (a second recorder won the lock
+///     and its backfill advanced the floor PAST this seq). Worth exactly ONE line per stale seq, then
+///     latched to `debug!` so a pathological re-offer of the same seq can't spam ~10/s.
+///   - `new_seq == durable_high` — the durable TOP re-offered (boot recovered a floor still in the RAM
+///     ring, re-offered on flush). Benign and EXPECTED — always `debug!`, never a WARN. This is the
+///     case that produced the original ~10/s console spam.
+///
+/// This pins the split: the stale seq warns ONCE and then latches silent, and the at-floor re-offer is
+/// silent from the first offer. Either way the store is never re-written.
 #[test]
-fn durable_write_through_below_floor_skip_is_silent_at_warn() {
+fn durable_write_through_below_floor_split_warns_once_then_latches_silent() {
     use crate::test_support::warn_capture::WarnCapture;
     use tracing_subscriber::layer::SubscriberExt as _;
 
@@ -1439,19 +1445,152 @@ fn durable_write_through_below_floor_skip_is_silent_at_warn() {
         2
     );
 
-    // A recorder arrives with its own, lower seq — the below-floor skip. It must be SILENT at WARN.
-    let cap = WarnCapture::default();
-    let sub = tracing_subscriber::registry().with(cap.clone());
+    // (a) A strictly-stale seq (1 < durable_high 2): the genuine race. It warns EXACTLY ONCE.
+    let first = WarnCapture::default();
+    let sub = tracing_subscriber::registry().with(first.clone());
+    tracing::subscriber::with_default(sub, || log.durable_write_through(store.as_ref(), 1));
+    assert_eq!(
+        first.messages().len(),
+        1,
+        "the first strictly-stale offer is a real (if benign) integrity event worth one WARN; got: {:?}",
+        first.messages()
+    );
+    assert!(
+        first.messages()[0].contains("predates the recovered durable floor"),
+        "the stale-seq WARN names the condition; got: {:?}",
+        first.messages()
+    );
+
+    // (b) The SAME stale seq re-offered: latched to `debug!` — SILENT at WARN (this is the anti-spam).
+    let repeat = WarnCapture::default();
+    let sub = tracing_subscriber::registry().with(repeat.clone());
     tracing::subscriber::with_default(sub, || log.durable_write_through(store.as_ref(), 1));
     assert!(
-        cap.messages().is_empty(),
-        "the below-floor skip is benign/expected and must NOT warn (it is debug — a WARN spams ~10/s \
-         on the boot-recovery case); captured: {:?}",
-        cap.messages()
+        repeat.messages().is_empty(),
+        "a re-offer of the same stale seq must latch silent (a WARN here spams ~10/s); got: {:?}",
+        repeat.messages()
     );
+
+    // (c) The at-floor re-offer (seq == durable_high 2): benign/expected, SILENT at WARN from the start.
+    let at_floor = WarnCapture::default();
+    let sub = tracing_subscriber::registry().with(at_floor.clone());
+    tracing::subscriber::with_default(sub, || log.durable_write_through(store.as_ref(), 2));
+    assert!(
+        at_floor.messages().is_empty(),
+        "the at-floor re-offer is the original spam case and must NOT warn (it is debug); got: {:?}",
+        at_floor.messages()
+    );
+
     assert_eq!(
         store.list_audit().unwrap().len(),
         2,
-        "the stale write-through is skipped, not re-upserted"
+        "every below-floor write-through is skipped, not re-upserted"
+    );
+}
+
+// ── LOG-SPAM REGRESSION GUARD: durable-backfill warn-once latches ─────────────────────────────
+//
+// During a durable-store outage the write-through is retried on every mutation (~10/s in prod). Two
+// benign-but-recurring conditions used to `warn!` on every retry: the `append_audit` failure and,
+// once the un-persisted seq is pruned from the RAM ring, the "unrepairable gap" backfill signal.
+// Both are now warn-once (transition / latched-on-seq): the FIRST occurrence warns, the rest demote
+// to `debug!`. This is the regression guard.
+
+/// A store whose `append_audit` always FAILS (a persistent metering/audit-store outage) while reads
+/// and everything else delegate to a real in-memory durable double.
+struct AppendFailStore {
+    inner: DurableTestStore,
+}
+
+impl Store for AppendFailStore {
+    fn put_key(&self, key: &busbar_api::VirtualKey) -> busbar_api::StoreResult<()> {
+        self.inner.put_key(key)
+    }
+    fn get_key(&self, id: &str) -> busbar_api::StoreResult<Option<busbar_api::VirtualKey>> {
+        self.inner.get_key(id)
+    }
+    fn list_keys(&self) -> busbar_api::StoreResult<Vec<busbar_api::VirtualKey>> {
+        self.inner.list_keys()
+    }
+    fn delete_key(&self, id: &str) -> busbar_api::StoreResult<()> {
+        self.inner.delete_key(id)
+    }
+    fn get_usage(
+        &self,
+        bucket_id: &str,
+        window_start: u64,
+    ) -> busbar_api::StoreResult<busbar_api::UsageLedger> {
+        self.inner.get_usage(bucket_id, window_start)
+    }
+    fn put_usage(
+        &self,
+        bucket_id: &str,
+        window_start: u64,
+        ledger: &busbar_api::UsageLedger,
+    ) -> busbar_api::StoreResult<()> {
+        self.inner.put_usage(bucket_id, window_start, ledger)
+    }
+    fn add_metering(&self, delta: &busbar_api::MeteringDelta) -> busbar_api::StoreResult<()> {
+        self.inner.add_metering(delta)
+    }
+    fn list_metering(&self, bucket: u64) -> busbar_api::StoreResult<Vec<busbar_api::MeteringRow>> {
+        self.inner.list_metering(bucket)
+    }
+    fn append_audit(&self, _entry: &busbar_api::AuditRecord) -> busbar_api::StoreResult<()> {
+        Err(busbar_api::StoreError("audit store unavailable".into()))
+    }
+    fn list_audit(&self) -> busbar_api::StoreResult<Vec<busbar_api::AuditRecord>> {
+        self.inner.list_audit()
+    }
+    fn list_audit_tail(&self, limit: u64) -> busbar_api::StoreResult<Vec<busbar_api::AuditRecord>> {
+        self.inner.list_audit_tail(limit)
+    }
+}
+
+/// The durable write-through's `append_audit`-failure warn fires ONCE on the transition into the
+/// failing state, and the "unrepairable gap" warn fires ONCE (latched on the stuck seq) even though
+/// every one of the many mutations after the ring prunes that seq re-enters the gap branch. The
+/// unguarded code warned on EVERY retry (~10/s); this asserts one warn each, not N.
+#[test]
+fn durable_backfill_warn_once_latches_do_not_spam() {
+    use crate::test_support::warn_capture::WarnCapture;
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    let store: Arc<dyn Store> = Arc::new(AppendFailStore {
+        inner: DurableTestStore::new(),
+    });
+    let log = AuditLog::new();
+    log.set_sink(store);
+
+    let cap = WarnCapture::default();
+    let subscriber = tracing_subscriber::registry().with(cap.clone());
+    tracing::subscriber::with_default(subscriber, || {
+        // Record more than the ring bound so the earliest (never-persisted) seq is PRUNED, which is
+        // what forces the backfill into the unrepairable-gap branch on every subsequent mutation.
+        // With `append_audit` failing, `durable_high` never advances, so the backfill always starts
+        // at seq 1 — the pruned seq — once the ring rolls past it.
+        for i in 0..(MAX_AUDIT_ENTRIES + 20) {
+            log.record_by(
+                "hook.register",
+                &format!("hook:{i}"),
+                OUTCOME_APPLIED,
+                "admin",
+            );
+        }
+    });
+
+    // The append-failure warn fired exactly once (transition), not once per mutation.
+    assert_eq!(
+        cap.count("durable audit write-through failed"),
+        1,
+        "append_audit failure warns once on the transition, not per retry: {:?}",
+        cap.count("durable audit write-through failed"),
+    );
+    // The unrepairable-gap warn fired exactly once (latched on the stuck seq), though every mutation
+    // after the prune re-enters the gap branch.
+    assert_eq!(
+        cap.count("unrepairable gap"),
+        1,
+        "the unrepairable-gap warn is latched on the seq and fires once, not ~10/s",
     );
 }
