@@ -1,13 +1,21 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! ONE PROMETHEUS SERIES SHAPE, THREE PLANES — asserted on a REAL `/metrics` scrape.
+//! MOUNTED-PLANE REQUEST SERIES, asserted on a REAL `/metrics` scrape — WITHOUT disturbing the
+//! model plane's v1.5.4-identical families.
 //!
 //! Before this module, `busbar_requests_total` and `busbar_request_duration_seconds` were emitted
 //! from `ingress::finish_inner` and nowhere else, which is the MODEL plane's ingress only. A tool
 //! call and an agent task were not under-labelled on `/metrics` — they were ABSENT. An operator
 //! watching a dashboard saw model traffic and had no signal at all that the MCP or A2A plane was
 //! failing.
+//!
+//! The fix keeps the model plane's two families byte-identical to v1.5.4 — `busbar_requests_total`
+//! and `busbar_request_duration_seconds` carry NO `plane` label, exactly as in 1.5.4 — and gives
+//! the mounted planes their OWN parallel families, `busbar_plane_requests_total` and
+//! `busbar_plane_request_duration_seconds`, which carry the `plane` label so `sum by (plane)`
+//! compares MCP and A2A. This module proves both halves on one scrape: the mounted planes are
+//! visible, and the model series' label identity is untouched.
 //!
 //! ## Why this drives the router and scrapes `/metrics` rather than calling the emit helper
 //!
@@ -85,13 +93,37 @@ fn series_for<'a>(exposition: &'a str, family: &str, plane: &str) -> Vec<&'a str
         .collect()
 }
 
-/// A TOOL CALL and an AGENT TASK each produce a `busbar_requests_total` and a
-/// `busbar_request_duration_seconds` series on a real `/metrics` scrape, labelled with the plane
-/// they arrived on.
+/// Every non-comment `/metrics` line for `family` (no plane filter) — used for the model-plane
+/// families, which carry no `plane` label.
+fn lines_for<'a>(exposition: &'a str, family: &str) -> Vec<&'a str> {
+    exposition
+        .lines()
+        .filter(|l| !l.starts_with('#') && l.starts_with(family))
+        .collect()
+}
+
+/// The sorted label KEYS of one exposition line.
+fn keys_of(line: &str) -> Vec<String> {
+    line.split_once('{')
+        .and_then(|(_, rest)| rest.rsplit_once('}'))
+        .map(|(inner, _)| {
+            let mut ks: Vec<String> = inner
+                .split(',')
+                .filter_map(|kv| kv.split_once('=').map(|(k, _)| k.trim().to_string()))
+                .collect();
+            ks.sort();
+            ks
+        })
+        .unwrap_or_default()
+}
+
+/// A TOOL CALL and an AGENT TASK each produce a `busbar_plane_requests_total` and a
+/// `busbar_plane_request_duration_seconds` series on a real `/metrics` scrape, labelled with the
+/// plane they arrived on — WHILE the model plane's `busbar_requests_total` stays v1.5.4-identical
+/// (no `plane` label).
 ///
-/// Delete the observation layer and this test fails on its very first assertion: without it,
-/// `plane` is not a label on any series and no MCP or A2A request reaches an emission site at all.
-/// That is what the test is for — the two planes were invisible on `/metrics`, not under-labelled.
+/// Delete the observation layer and this test fails: without it, no MCP or A2A request reaches an
+/// emission site at all. That is what the test is for — the two planes were invisible on `/metrics`.
 #[tokio::test]
 async fn mcp_and_a2a_traffic_appear_on_a_real_metrics_scrape() {
     crate::metrics::init();
@@ -155,58 +187,75 @@ async fn mcp_and_a2a_traffic_appear_on_a_real_metrics_scrape() {
     let exposition = scrape.text().await.unwrap();
     server.abort();
 
-    // ONE FAMILY, THREE PLANES. Asserted over all three together rather than over the two new ones,
-    // because the claim being made is that an operator can write
-    // `sum by (plane) (rate(busbar_requests_total[5m]))` and see the whole gateway — which is false
-    // the moment any plane answers in a vocabulary of its own.
-    for plane in ["llm", "mcp", "a2a"] {
-        let counters = series_for(&exposition, crate::metrics::REQUESTS_TOTAL, plane);
+    // THE MOUNTED PLANES ARE VISIBLE. MCP and A2A each land on `busbar_plane_requests_total` /
+    // `busbar_plane_request_duration_seconds`, labelled with the plane they arrived on, so an
+    // operator can write `sum by (plane) (rate(busbar_plane_requests_total[5m]))`.
+    for plane in ["mcp", "a2a"] {
+        let counters = series_for(&exposition, crate::metrics::PLANE_REQUESTS_TOTAL, plane);
         assert!(
             !counters.is_empty(),
             "no `{}` series for plane=\"{plane}\" after driving real traffic \
              (mcp {mcp_status}, a2a {a2a_status}, llm {llm_status}). Exposition:\n{exposition}",
-            crate::metrics::REQUESTS_TOTAL,
+            crate::metrics::PLANE_REQUESTS_TOTAL,
         );
-        let durations = series_for(&exposition, crate::metrics::REQUEST_DURATION_SECONDS, plane);
+        let durations = series_for(
+            &exposition,
+            crate::metrics::PLANE_REQUEST_DURATION_SECONDS,
+            plane,
+        );
         assert!(
             !durations.is_empty(),
             "no `{}` series for plane=\"{plane}\" after driving real traffic. Exposition:\n{exposition}",
-            crate::metrics::REQUEST_DURATION_SECONDS,
+            crate::metrics::PLANE_REQUEST_DURATION_SECONDS,
         );
-    }
-
-    // The two new planes did NOT arrive as a second vocabulary: their series carry exactly the
-    // label keys the model plane's do, so a panel written against one works against all three.
-    let keys_of = |line: &str| -> Vec<String> {
-        line.split_once('{')
-            .and_then(|(_, rest)| rest.rsplit_once('}'))
-            .map(|(inner, _)| {
-                let mut ks: Vec<String> = inner
-                    .split(',')
-                    .filter_map(|kv| kv.split_once('=').map(|(k, _)| k.trim().to_string()))
-                    .collect();
-                ks.sort();
-                ks
-            })
-            .unwrap_or_default()
-    };
-    let llm_keys = keys_of(series_for(&exposition, crate::metrics::REQUESTS_TOTAL, "llm")[0]);
-    assert_eq!(
-        llm_keys,
-        vec![
-            "ingress_protocol".to_string(),
-            "outcome".to_string(),
-            "plane".to_string(),
-            "pool".to_string()
-        ],
-        "the model plane's label set is the contract the other two are held to"
-    );
-    for plane in ["mcp", "a2a"] {
-        for line in series_for(&exposition, crate::metrics::REQUESTS_TOTAL, plane) {
+        // The mounted planes' family carries exactly {plane, ingress_protocol, pool, outcome}.
+        for line in &counters {
             assert_eq!(
                 keys_of(line),
-                llm_keys,
+                vec![
+                    "ingress_protocol".to_string(),
+                    "outcome".to_string(),
+                    "plane".to_string(),
+                    "pool".to_string()
+                ],
                 "plane=\"{plane}\" invented a differently-shaped series: {line}"
+            );
+        }
+    }
+
+    // THE MODEL PLANE STAYS v1.5.4-IDENTICAL. `busbar_requests_total` carries the exact 1.5.4 label
+    // set {ingress_protocol, pool, outcome} and NO `plane` label — the whole point of the split.
+    // (The recorder is process-global and shared across the whole test binary, so other tests'
+    // model-plane series are present too; the positive claim is that a correctly-shaped one exists,
+    // and the byte-identity guard below then holds for EVERY model-family line regardless of origin.)
+    let llm_counters = lines_for(&exposition, crate::metrics::REQUESTS_TOTAL);
+    assert!(
+        llm_counters.iter().any(|line| keys_of(line)
+            == vec![
+                "ingress_protocol".to_string(),
+                "outcome".to_string(),
+                "pool".to_string()
+            ]),
+        "no v1.5.4-shaped `{}` series {{ingress_protocol,pool,outcome}} after driving model traffic \
+         (llm {llm_status}). Exposition:\n{exposition}",
+        crate::metrics::REQUESTS_TOTAL,
+    );
+    assert!(
+        !lines_for(&exposition, crate::metrics::REQUEST_DURATION_SECONDS).is_empty(),
+        "no `{}` series after driving model traffic. Exposition:\n{exposition}",
+        crate::metrics::REQUEST_DURATION_SECONDS,
+    );
+    // BYTE-IDENTITY GUARD: the two model families never carry a `plane` label anywhere in the whole
+    // exposition. This is the assertion that fails if the BI-2 regression (a `plane` label on these
+    // pre-existing families) is ever reintroduced by any emission site.
+    for family in [
+        crate::metrics::REQUESTS_TOTAL,
+        crate::metrics::REQUEST_DURATION_SECONDS,
+    ] {
+        for line in lines_for(&exposition, family) {
+            assert!(
+                !line.contains("plane=\""),
+                "a `plane` label leaked onto the v1.5.4 model family `{family}`: {line}"
             );
         }
     }

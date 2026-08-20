@@ -485,16 +485,16 @@ A tripped server answers:
 
 ## Observability
 
-The MCP plane emits on **the same two request families the model plane does**, with a `plane` label, from a layer on the mount rather than a call in the handler (`crates/busbar-core/src/plane/observe.rs:104-153`).
+The MCP plane emits on **its own pair of request families** — `busbar_plane_requests_total` and `busbar_plane_request_duration_seconds`, which carry a `plane` label — from a layer on the mount rather than a call in the handler (`crates/busbar-core/src/plane/observe.rs:104-153`). These are kept separate from the model plane's `busbar_requests_total` / `busbar_request_duration_seconds` precisely so those stay byte-identical to 1.5.4 (no `plane` label).
 
 | Metric | Type | Labels | On this plane |
 |---|---|---|---|
-| `busbar_requests_total` | counter | `plane`, `ingress_protocol`, `pool`, `outcome` | `plane="mcp"`, `ingress_protocol="jsonrpc"`, `pool="unresolved"` |
-| `busbar_request_duration_seconds` | histogram | `plane`, `ingress_protocol`, `pool` | same |
+| `busbar_plane_requests_total` | counter | `plane`, `ingress_protocol`, `pool`, `outcome` | `plane="mcp"`, `ingress_protocol="jsonrpc"`, `pool="unresolved"` |
+| `busbar_plane_request_duration_seconds` | histogram | `plane`, `ingress_protocol`, `pool` | same |
 
 `pool` reads `unresolved` because the door counts the request **before** its routing target is resolved, and handing the door a caller-supplied tool name would be an unbounded label — one valid credential could mint a new time series per distinct tool name, which is the memory-exhaustion DoS the sentinel exists to close (`crates/busbar-core/src/plane/observe.rs:140-151`). Narrowing it to the configured server name is future work and belongs where the target is resolved.
 
-`sum by (plane) (rate(busbar_requests_total[5m]))` answers "which plane is this traffic on". Existing model-plane panels keep working; add `plane="llm"` to a selector to keep it describing exactly what it described before.
+`sum by (plane) (rate(busbar_plane_requests_total[5m]))` answers "which mounted plane is this traffic on". Existing model-plane panels over `busbar_requests_total` keep working unchanged; to span all planes in one query, sum `busbar_requests_total` and `busbar_plane_requests_total` together.
 
 **A refusal issued before any handler runs is counted too.** The audience-bound `401`, an oversized-body `413`, a `404` — all of them reach no handler, and counting them here is the case an operator most needs to see and the one a handler-level emit could never reach (`crates/busbar-core/src/plane/observe.rs:51-65`).
 

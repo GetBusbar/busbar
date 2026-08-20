@@ -575,8 +575,11 @@ fn finish_inner(
     // The MODEL plane labels its own requests from in here rather than at the plane ingress
     // boundary (`plane::observe`), and that is a consequence of the spine's rule rather than a
     // carve-out: this plane speaks six dialects, so `ingress_protocol` is a fact only its reader
-    // knows (`Plane::sole_wire_format` is `None` for it). Same two families, same helper, same
-    // `outcome` vocabulary as every other plane — one `plane` label apart.
+    // knows (`Plane::sole_wire_format` is `None` for it). This is the v1.5.4 request path: it emits
+    // `busbar_requests_total` / `busbar_request_duration_seconds` with the exact 1.5.4 label set
+    // `{ingress_protocol, pool, outcome}` and NO `plane` label, so a pure-LLM `/metrics` scrape is
+    // byte-identical to 1.5.4. The mounted planes (MCP/A2A) emit their own `busbar_plane_*` families
+    // from `plane::observe` instead — same helper, same `outcome` vocabulary, one family apart.
     let elapsed = started.elapsed();
     crate::telemetry::request_finished(
         app,

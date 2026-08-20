@@ -144,13 +144,22 @@ pub(crate) fn retaining_from(
 /// webhook field that mirrors `pool`. The `lane`, `reason`, `disposition`, `outcome`,
 /// `ingress_protocol`, `from`, and `to` labels are likewise drawn from fixed enumerations, never
 /// from free-form client input.
-pub(crate) const REQUESTS_TOTAL: &str = "busbar_requests_total"; // labels: plane, ingress_protocol, pool (bounded), outcome
+pub(crate) const REQUESTS_TOTAL: &str = "busbar_requests_total"; // labels: ingress_protocol, pool (bounded), outcome
 pub(crate) const UPSTREAM_ATTEMPTS_TOTAL: &str = "busbar_upstream_attempts_total"; // labels: pool (bounded), lane
 pub(crate) const UPSTREAM_FAILURES_TOTAL: &str = "busbar_upstream_failures_total"; // labels: pool (bounded), lane, disposition
 pub(crate) const BREAKER_TRIPS_TOTAL: &str = "busbar_breaker_trips_total"; // labels: pool (bounded), lane
 pub(crate) const FAILOVERS_TOTAL: &str = "busbar_failovers_total"; // labels: pool (bounded), reason
-pub(crate) const REQUEST_DURATION_SECONDS: &str = "busbar_request_duration_seconds"; // histogram; labels: plane, ingress_protocol, pool (bounded)
+pub(crate) const REQUEST_DURATION_SECONDS: &str = "busbar_request_duration_seconds"; // histogram; labels: ingress_protocol, pool (bounded)
 pub(crate) const TRANSLATIONS_TOTAL: &str = "busbar_translations_total"; // labels: from, to
+
+// Per-plane request families for the MOUNTED (non-model) planes — MCP and A2A. Kept SEPARATE from
+// the two families above precisely so the model-plane series `busbar_requests_total` /
+// `busbar_request_duration_seconds` stay byte-for-byte label-identical to v1.5.4 (which had no
+// `plane` label and knew only the model plane). A pure-LLM deployment never emits these, so its
+// `/metrics` exposition is unchanged; a deployment that mounts MCP/A2A gets per-plane counts here
+// via `sum by (plane)` without ever touching the pre-existing model series' label set.
+pub(crate) const PLANE_REQUESTS_TOTAL: &str = "busbar_plane_requests_total"; // labels: plane, ingress_protocol, pool (bounded), outcome
+pub(crate) const PLANE_REQUEST_DURATION_SECONDS: &str = "busbar_plane_request_duration_seconds"; // histogram; labels: plane, ingress_protocol, pool (bounded)
 
 // Routing-policy selections: incremented once per request whose pool resolved a non-default routing
 // policy that produced a ranked order (Prefer / on_error: first). `policy` is the native/transport
@@ -508,6 +517,10 @@ fn describe() {
         "Total ingress requests, by ingress protocol, pool, and outcome"
     );
     describe_counter!(
+        PLANE_REQUESTS_TOTAL,
+        "Total mounted-plane (MCP/A2A) requests, by plane, ingress protocol, pool, and outcome"
+    );
+    describe_counter!(
         UPSTREAM_ATTEMPTS_TOTAL,
         "Upstream call attempts, by pool and lane"
     );
@@ -536,6 +549,11 @@ fn describe() {
         REQUEST_DURATION_SECONDS,
         Unit::Seconds,
         "End-to-end request duration in seconds"
+    );
+    describe_histogram!(
+        PLANE_REQUEST_DURATION_SECONDS,
+        Unit::Seconds,
+        "End-to-end mounted-plane (MCP/A2A) request duration in seconds, by plane"
     );
     // Scrape-time gauges.
     describe_gauge!(
@@ -628,6 +646,13 @@ const CACHE_KEY_SEP: char = '\u{1f}';
 
 static REQUESTS_HANDLES: OnceLock<RwLock<HashMap<Box<str>, metrics::Counter>>> = OnceLock::new();
 static DURATION_HANDLES: OnceLock<RwLock<HashMap<Box<str>, metrics::Histogram>>> = OnceLock::new();
+// The mounted-plane (MCP/A2A) families keep their OWN caches: the `plane` label makes their key
+// space distinct from the model series above, and keeping them separate is what lets the model
+// series stay label-identical to v1.5.4.
+static PLANE_REQUESTS_HANDLES: OnceLock<RwLock<HashMap<Box<str>, metrics::Counter>>> =
+    OnceLock::new();
+static PLANE_DURATION_HANDLES: OnceLock<RwLock<HashMap<Box<str>, metrics::Histogram>>> =
+    OnceLock::new();
 
 /// True once the global Prometheus recorder is INSTALLED (not merely that `init()` was attempted).
 /// Gating handle caching on this guarantees a cached handle can never be bound to the no-op recorder
@@ -637,16 +662,13 @@ pub(crate) fn recorder_installed() -> bool {
     matches!(HANDLE.get(), Some(Some(_)))
 }
 
-/// Increment `REQUESTS_TOTAL` for `(plane, ingress_protocol, pool, outcome)` via a CACHED counter handle —
+/// Increment `REQUESTS_TOTAL` for `(ingress_protocol, pool, outcome)` via a CACHED counter handle —
 /// no registry lookup and no per-request `Label`/`Key` construction on the steady-state path. Falls
 /// back to the plain macro until the recorder is installed (see the cache-module note above).
-/// Byte-for-byte the same series and value the macro produced.
-pub(crate) fn incr_requests_total(
-    plane: &str,
-    ingress_protocol: &str,
-    pool: &str,
-    outcome: &'static str,
-) {
+/// Byte-for-byte the same series and value the macro produced. This is the MODEL plane's family and
+/// carries NO `plane` label, so its exposition is identical to v1.5.4 (`incr_plane_requests_total`
+/// is the mounted-plane counterpart).
+pub(crate) fn incr_requests_total(ingress_protocol: &str, pool: &str, outcome: &'static str) {
     // This `!recorder_installed()` branch is real (it exists so pre-install traffic never caches a
     // handle bound to the no-op recorder), but it is NOT practically unit-testable in this crate
     // as it stands. `ENABLED`/`HANDLE` are process-global `OnceLock`s that install (via `init()`)
@@ -666,7 +688,6 @@ pub(crate) fn incr_requests_total(
         // Pre-install: don't cache (would bind to the no-op recorder). The macro is itself a no-op.
         metrics::counter!(
             REQUESTS_TOTAL,
-            "plane" => plane.to_string(),
             "ingress_protocol" => ingress_protocol.to_string(),
             "pool" => pool.to_string(),
             "outcome" => outcome
@@ -675,9 +696,7 @@ pub(crate) fn incr_requests_total(
         return;
     }
     let cache = REQUESTS_HANDLES.get_or_init(|| RwLock::new(HashMap::new()));
-    let key = format!(
-        "{plane}{CACHE_KEY_SEP}{ingress_protocol}{CACHE_KEY_SEP}{pool}{CACHE_KEY_SEP}{outcome}"
-    );
+    let key = format!("{ingress_protocol}{CACHE_KEY_SEP}{pool}{CACHE_KEY_SEP}{outcome}");
     // Fast path: shared-read hit (the common case — a bounded, quickly-saturated key set).
     if let Some(h) = cache
         .read()
@@ -690,6 +709,52 @@ pub(crate) fn incr_requests_total(
     // Cold path (first time this label set is seen): register the handle once, then cache it.
     let handle = metrics::counter!(
         REQUESTS_TOTAL,
+        "ingress_protocol" => ingress_protocol.to_string(),
+        "pool" => pool.to_string(),
+        "outcome" => outcome
+    );
+    handle.increment(1);
+    cache
+        .write()
+        .unwrap_or_else(|p| p.into_inner())
+        .entry(key.into_boxed_str())
+        .or_insert(handle);
+}
+
+/// Increment `PLANE_REQUESTS_TOTAL` for `(plane, ingress_protocol, pool, outcome)` — the mounted-plane
+/// (MCP/A2A) counterpart of [`incr_requests_total`]. SEPARATE family and SEPARATE cache so the model
+/// series stays label-identical to v1.5.4; same cached-handle contract otherwise.
+pub(crate) fn incr_plane_requests_total(
+    plane: &str,
+    ingress_protocol: &str,
+    pool: &str,
+    outcome: &'static str,
+) {
+    if !recorder_installed() {
+        metrics::counter!(
+            PLANE_REQUESTS_TOTAL,
+            "plane" => plane.to_string(),
+            "ingress_protocol" => ingress_protocol.to_string(),
+            "pool" => pool.to_string(),
+            "outcome" => outcome
+        )
+        .increment(1);
+        return;
+    }
+    let cache = PLANE_REQUESTS_HANDLES.get_or_init(|| RwLock::new(HashMap::new()));
+    let key = format!(
+        "{plane}{CACHE_KEY_SEP}{ingress_protocol}{CACHE_KEY_SEP}{pool}{CACHE_KEY_SEP}{outcome}"
+    );
+    if let Some(h) = cache
+        .read()
+        .unwrap_or_else(|p| p.into_inner())
+        .get(key.as_str())
+    {
+        h.increment(1);
+        return;
+    }
+    let handle = metrics::counter!(
+        PLANE_REQUESTS_TOTAL,
         "plane" => plane.to_string(),
         "ingress_protocol" => ingress_protocol.to_string(),
         "pool" => pool.to_string(),
@@ -703,18 +768,13 @@ pub(crate) fn incr_requests_total(
         .or_insert(handle);
 }
 
-/// Record a `REQUEST_DURATION_SECONDS` observation for `(plane, ingress_protocol, pool)` via a CACHED
-/// histogram handle. Same caching contract as [`incr_requests_total`].
-pub(crate) fn record_request_duration(
-    plane: &str,
-    ingress_protocol: &str,
-    pool: &str,
-    seconds: f64,
-) {
+/// Record a `REQUEST_DURATION_SECONDS` observation for `(ingress_protocol, pool)` via a CACHED
+/// histogram handle. Same caching contract as [`incr_requests_total`]; the model plane's family,
+/// with NO `plane` label (see [`record_plane_request_duration`] for the mounted-plane counterpart).
+pub(crate) fn record_request_duration(ingress_protocol: &str, pool: &str, seconds: f64) {
     if !recorder_installed() {
         metrics::histogram!(
             REQUEST_DURATION_SECONDS,
-            "plane" => plane.to_string(),
             "ingress_protocol" => ingress_protocol.to_string(),
             "pool" => pool.to_string()
         )
@@ -722,7 +782,7 @@ pub(crate) fn record_request_duration(
         return;
     }
     let cache = DURATION_HANDLES.get_or_init(|| RwLock::new(HashMap::new()));
-    let key = format!("{plane}{CACHE_KEY_SEP}{ingress_protocol}{CACHE_KEY_SEP}{pool}");
+    let key = format!("{ingress_protocol}{CACHE_KEY_SEP}{pool}");
     if let Some(h) = cache
         .read()
         .unwrap_or_else(|p| p.into_inner())
@@ -733,6 +793,47 @@ pub(crate) fn record_request_duration(
     }
     let handle = metrics::histogram!(
         REQUEST_DURATION_SECONDS,
+        "ingress_protocol" => ingress_protocol.to_string(),
+        "pool" => pool.to_string()
+    );
+    handle.record(seconds);
+    cache
+        .write()
+        .unwrap_or_else(|p| p.into_inner())
+        .entry(key.into_boxed_str())
+        .or_insert(handle);
+}
+
+/// Record a `PLANE_REQUEST_DURATION_SECONDS` observation for `(plane, ingress_protocol, pool)` — the
+/// mounted-plane (MCP/A2A) counterpart of [`record_request_duration`], in a SEPARATE family/cache.
+pub(crate) fn record_plane_request_duration(
+    plane: &str,
+    ingress_protocol: &str,
+    pool: &str,
+    seconds: f64,
+) {
+    if !recorder_installed() {
+        metrics::histogram!(
+            PLANE_REQUEST_DURATION_SECONDS,
+            "plane" => plane.to_string(),
+            "ingress_protocol" => ingress_protocol.to_string(),
+            "pool" => pool.to_string()
+        )
+        .record(seconds);
+        return;
+    }
+    let cache = PLANE_DURATION_HANDLES.get_or_init(|| RwLock::new(HashMap::new()));
+    let key = format!("{plane}{CACHE_KEY_SEP}{ingress_protocol}{CACHE_KEY_SEP}{pool}");
+    if let Some(h) = cache
+        .read()
+        .unwrap_or_else(|p| p.into_inner())
+        .get(key.as_str())
+    {
+        h.record(seconds);
+        return;
+    }
+    let handle = metrics::histogram!(
+        PLANE_REQUEST_DURATION_SECONDS,
         "plane" => plane.to_string(),
         "ingress_protocol" => ingress_protocol.to_string(),
         "pool" => pool.to_string()

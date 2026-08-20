@@ -480,18 +480,18 @@ Separately from the breaker, a registration can be suspended on operator-configu
 
 ## Observability
 
-The A2A plane emits on **the same two request families the model plane does**, and it labels its own requests **from inside**, because two of its three bindings are spoken at the same door and only the reader knows which one spoke (`crates/busbar-core/src/a2a/receive.rs:671-712`).
+The A2A plane emits on **its own pair of request families** — `busbar_plane_requests_total` and `busbar_plane_request_duration_seconds` (the `plane`-labelled counterparts of the model plane's `busbar_requests_total` / `busbar_request_duration_seconds`, kept separate so those stay byte-identical to 1.5.4) — and it labels its own requests **from inside**, because two of its three bindings are spoken at the same door and only the reader knows which one spoke (`crates/busbar-core/src/a2a/receive.rs:671-712`).
 
 | Metric | Type | Labels | On this plane |
 |---|---|---|---|
-| `busbar_requests_total` | counter | `plane`, `ingress_protocol`, `pool`, `outcome` | `plane="a2a"`; `ingress_protocol` is **`jsonrpc`, `http+json` or `grpc`** — the binding the request actually arrived on; `pool="unresolved"` |
-| `busbar_request_duration_seconds` | histogram | `plane`, `ingress_protocol`, `pool` | same |
+| `busbar_plane_requests_total` | counter | `plane`, `ingress_protocol`, `pool`, `outcome` | `plane="a2a"`; `ingress_protocol` is **`jsonrpc`, `http+json` or `grpc`** — the binding the request actually arrived on; `pool="unresolved"` |
+| `busbar_plane_request_duration_seconds` | histogram | `plane`, `ingress_protocol`, `pool` | same |
 
 That per-binding label is what makes a per-binding number readable from Busbar's own telemetry rather than only from a conformance suite's stdout (`crates/busbar-core/src/transport.rs:172-183`). `pool` is pinned to the `unresolved` sentinel because the routing target is client-supplied and an unbounded label value is a memory-exhaustion DoS one valid credential can drive.
 
 A handled response is stamped so the plane's mount-level boundary does not count it a second time (`receive.rs:705-712`). **A refusal that reached no handler is still counted** — the audience-bound `401`, a `413`, a `404` — and on the gRPC binding, which has a door of its own, it is counted with the `grpc` label off the claim without any handler running (`crates/busbar-core/src/plane/observe.rs:51-70`).
 
-**No metric family is defined inside the A2A tree.** There are no A2A-specific counters, histograms or gauges: the plane's only emission is the shared request pair above. Anomaly evaluation and provenance produce audit rows, chain events and log lines, not metrics.
+**No metric family is defined inside the A2A tree.** There are no A2A-specific counters, histograms or gauges: the plane's only emission is the mounted-plane request pair above. Anomaly evaluation and provenance produce audit rows, chain events and log lines, not metrics.
 
 **There is no `operation` metric label**, on this plane or any other. `invoke` / `catalogue` / `fetch` / `task` / `subscribe` / `control` are `OpShape::as_str()` values — a closed internal vocabulary for the *shape* of an exchange (`crates/busbar-core/src/operation.rs:174-183`). No metric family carries them (`crates/busbar-core/src/metrics.rs:147-153`).
 
