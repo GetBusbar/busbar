@@ -1,6 +1,27 @@
 use super::*;
 
 impl ProtocolReader for CohereReader {
+    fn recover_truncated_usage(&self, tail: &[u8]) -> Option<busbar_core::billing::TokenUsage> {
+        let v = super::super::usage_tail::isolate_tail_usage_object(tail, b"\"usage\"")?;
+        let tokens = v.get("tokens");
+        Some(
+            busbar_core::ir::IrUsage {
+                input_tokens: tokens
+                    .and_then(|t| t.get("input_tokens"))
+                    .and_then(|x| x.as_u64())
+                    .unwrap_or(0),
+                output_tokens: tokens
+                    .and_then(|t| t.get("output_tokens"))
+                    .and_then(|x| x.as_u64())
+                    .unwrap_or(0),
+                cache_creation_input_tokens: None,
+                cache_read_input_tokens: None,
+                detail: busbar_core::ir::IrUsageDetail::default(),
+            }
+            .to_token_usage(),
+        )
+    }
+
     fn extract_error(
         &self,
         status: StatusCode,

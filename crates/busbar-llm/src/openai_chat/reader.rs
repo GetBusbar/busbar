@@ -1,6 +1,27 @@
 use super::*;
 
 impl ProtocolReader for OpenAiReader {
+    fn recover_truncated_usage(&self, tail: &[u8]) -> Option<busbar_core::billing::TokenUsage> {
+        let v = super::super::usage_tail::isolate_tail_usage_object(tail, b"\"usage\"")?;
+        let u64_field = |k: &str| v.get(k).and_then(|x| x.as_u64());
+        let cached = v
+            .get("prompt_tokens_details")
+            .and_then(|d| d.get("cached_tokens"))
+            .and_then(|x| x.as_u64());
+        Some(
+            busbar_core::ir::IrUsage {
+                input_tokens: u64_field("prompt_tokens")
+                    .unwrap_or(0)
+                    .saturating_sub(cached.unwrap_or(0)),
+                output_tokens: u64_field("completion_tokens").unwrap_or(0),
+                cache_creation_input_tokens: None,
+                cache_read_input_tokens: cached,
+                detail: busbar_core::ir::IrUsageDetail::default(),
+            }
+            .to_token_usage(),
+        )
+    }
+
     fn extract_error(
         &self,
         status: StatusCode,

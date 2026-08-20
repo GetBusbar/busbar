@@ -356,6 +356,17 @@ pub trait ProtocolReader: Send + Sync {
     /// Read an IR request from wire JSON.
     fn read_request(&self, body: &serde_json::Value) -> Result<crate::ir::IrRequest, IrError>;
 
+    /// Recover neutral token totals from a HEAD-truncated non-stream response tail. The retained
+    /// slice is NOT a well-formed document (its opening structure — or a string it cut through — is
+    /// gone), so the normal full-document parse reliably fails on it; instead isolate the
+    /// self-contained trailing `usage` object and map THIS dialect's fields onto the neutral
+    /// [`crate::billing::TokenUsage`]. Returns `None` for a dialect/tail without a recognizable usage
+    /// object (the caller treats that as "bill zero, counted+warned"). Defaulted to `None` so a
+    /// non-LLM dialect need not implement it.
+    fn recover_truncated_usage(&self, _tail: &[u8]) -> Option<crate::billing::TokenUsage> {
+        None
+    }
+
     /// Read a single response/stream event from already-de-framed SSE data.
     ///
     /// Default: delegate to the canonical fan-out [`read_response_events`] over a fresh decode
@@ -1958,6 +1969,14 @@ pub mod openai_responses;
 /// THE REGISTRY: `ProtocolDecl`, the built-in declaration table, and the by-name lookup that
 /// replaced `protocol_for`'s match.
 pub mod registry;
+
+/// THE EXTRACTED TAIL-USAGE ISOLATION HELPER, compiled back in for TEST BUILDS ONLY. Sources live in
+/// `crates/busbar-llm/src/usage_tail.rs` (the dialect readers' `recover_truncated_usage` overrides
+/// call it via `super::super::usage_tail`); see the `mod anthropic` doc above — same mechanism, same
+/// crate. Production core drives the readers through the vtable and never names this module directly.
+#[cfg(any(test, feature = "test-support"))]
+#[path = "../../../busbar-llm/src/usage_tail.rs"]
+pub mod usage_tail;
 
 // Private imports (NOT re-exports) for the symbols mod.rs references by bare name: the registry
 // constructs each Reader/Writer below, and a test synthesizes an Anthropic request id. Every other

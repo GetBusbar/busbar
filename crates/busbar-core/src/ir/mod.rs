@@ -947,7 +947,7 @@ impl IrUsage {
     /// projection is billing-lossless (byte-identical to the previous `&IrUsage` consumers). Lives
     /// with `IrUsage`, so it follows it to busbar-llm at the cutover, where it becomes an
     /// `impl From<&IrUsage> for busbar_core::billing::TokenUsage`.
-    pub(crate) fn to_token_usage(&self) -> crate::billing::TokenUsage {
+    pub fn to_token_usage(&self) -> crate::billing::TokenUsage {
         crate::billing::TokenUsage {
             input: self.input_tokens,
             output: self.output_tokens,

@@ -1,6 +1,21 @@
 use super::*;
 
 impl ProtocolReader for BedrockReader {
+    fn recover_truncated_usage(&self, tail: &[u8]) -> Option<busbar_core::billing::TokenUsage> {
+        let v = super::super::usage_tail::isolate_tail_usage_object(tail, b"\"usage\"")?;
+        let u64_field = |k: &str| v.get(k).and_then(|x| x.as_u64());
+        Some(
+            busbar_core::ir::IrUsage {
+                input_tokens: u64_field("inputTokens").unwrap_or(0),
+                output_tokens: u64_field("outputTokens").unwrap_or(0),
+                cache_creation_input_tokens: u64_field("cacheWriteInputTokens"),
+                cache_read_input_tokens: u64_field("cacheReadInputTokens"),
+                detail: busbar_core::ir::IrUsageDetail::default(),
+            }
+            .to_token_usage(),
+        )
+    }
+
     fn extract_error(
         &self,
         status: StatusCode,

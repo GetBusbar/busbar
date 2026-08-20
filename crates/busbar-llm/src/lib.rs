@@ -41,6 +41,10 @@ pub mod gemini;
 pub mod openai_chat;
 pub mod openai_responses;
 
+/// The dialect-neutral tail-usage isolation helper shared by every reader's
+/// `recover_truncated_usage` override.
+pub(crate) mod usage_tail;
+
 /// EVERY DIALECT THIS PLUGIN DECLARES, in the order an operator sees.
 ///
 /// THE ORDER IS LOAD-BEARING AND IT IS NOT ALPHABETICAL. The composition root hands this slice to
