@@ -16,6 +16,9 @@
 //! (`read_response_events`/`write_response_event`), reached through the engine only after the
 //! dispatch has resolved THIS handler.
 
+use crate::diagnostics::{
+    diag_debug, diag_warn, USAGE_TAP_BAD_JSON, USAGE_TAP_DECODE_FAILED, USAGE_TAP_UNKNOWN_PROTOCOL,
+};
 use crate::handlers::{CodecError, IngressReject, OperationHandler, WireBody};
 use crate::ir::variant::{IrReq, IrResp};
 use crate::proto::ProtocolWriter;
@@ -83,13 +86,15 @@ impl OperationHandler for ChatOperation {
                 ingress_protocol,
                 "unknown_protocol",
             ) {
-                tracing::warn!(
+                diag_warn!(
+                    USAGE_TAP_UNKNOWN_PROTOCOL,
                     protocol = ingress_protocol,
                     "usage tap: unknown ingress protocol for a same-protocol 2xx body; \
                      billing 0 tokens for this request"
                 );
             } else {
-                tracing::debug!(
+                diag_debug!(
+                    USAGE_TAP_UNKNOWN_PROTOCOL,
                     protocol = ingress_protocol,
                     "usage tap: unknown ingress protocol for a same-protocol 2xx body; \
                      billing 0 tokens for this request"
@@ -105,14 +110,16 @@ impl OperationHandler for ChatOperation {
                 // doc comment and every other `crate::json::parse` call site in this crate).
                 if crate::handlers::usage_tap_decode_fail_should_warn(ingress_protocol, "bad_json")
                 {
-                    tracing::warn!(
+                    diag_warn!(
+                        USAGE_TAP_BAD_JSON,
                         protocol = ingress_protocol,
                         error = %crate::json::parse_err_log(body.len()),
                         "usage tap: failed to parse a same-protocol 2xx body as JSON; \
                          billing 0 tokens for this request"
                     );
                 } else {
-                    tracing::debug!(
+                    diag_debug!(
+                        USAGE_TAP_BAD_JSON,
                         protocol = ingress_protocol,
                         error = %crate::json::parse_err_log(body.len()),
                         "usage tap: failed to parse a same-protocol 2xx body as JSON; \
@@ -129,14 +136,16 @@ impl OperationHandler for ChatOperation {
             Ok(ir) => Some(ir.usage.to_token_usage()),
             Err(e) => {
                 if crate::handlers::usage_tap_decode_fail_should_warn(ingress_protocol, "decode") {
-                    tracing::warn!(
+                    diag_warn!(
+                        USAGE_TAP_DECODE_FAILED,
                         protocol = ingress_protocol,
                         error = ?e,
                         "usage tap: read_response failed to decode a same-protocol 2xx body; \
                          billing 0 tokens for this request"
                     );
                 } else {
-                    tracing::debug!(
+                    diag_debug!(
+                        USAGE_TAP_DECODE_FAILED,
                         protocol = ingress_protocol,
                         error = ?e,
                         "usage tap: read_response still failing to decode a same-protocol 2xx body; \

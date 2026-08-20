@@ -1,5 +1,10 @@
 use super::*;
 
+use crate::diagnostics::{
+    diag_debug, UPSTREAM_MIDSTREAM_TRANSPORT_ERROR, UPSTREAM_PREFIRSTBYTE_TRANSPORT_ERROR,
+    USAGE_TAP_REASSEMBLY_CAP_EXCEEDED,
+};
+
 /// Where to charge a request's token usage when its response stream completes (the resolved virtual
 /// key + its budget period + the governance store). `None` when governance is off or no key resolved.
 #[derive(Clone)]
@@ -269,7 +274,8 @@ where
                                 this.nonstream_buf_truncated = true;
                                 metrics::counter!(crate::metrics::BILLING_TRUNCATED_TOTAL)
                                     .increment(1);
-                                tracing::warn!(
+                                diag_debug!(
+                                    USAGE_TAP_REASSEMBLY_CAP_EXCEEDED,
                                     cap,
                                     "same-protocol non-stream body exceeded the usage-tap reassembly \
                                      cap; retaining the TAIL (not the head) so the trailing usage \
@@ -326,7 +332,8 @@ where
                         // Log the real cause server-side for operator observability, then put only a
                         // static, vendor-neutral detail into the client-facing frame. A native vendor
                         // mid-stream interruption carries a generic message, never a backend URL.
-                        tracing::warn!(
+                        diag_debug!(
+                            UPSTREAM_MIDSTREAM_TRANSPORT_ERROR,
                             ingress = %this.ingress_protocol,
                             error = %e,
                             "mid-stream upstream transport error; returning generic interruption to client"
@@ -363,7 +370,8 @@ where
                         // raw reqwest error (with its embedded backend URL / hyper internals) must not
                         // ride out on the io::Error either — log the real cause server-side and surface
                         // only a generic, vendor-neutral message on the stream item.
-                        tracing::warn!(
+                        diag_debug!(
+                            UPSTREAM_PREFIRSTBYTE_TRANSPORT_ERROR,
                             ingress = %this.ingress_protocol,
                             error = %e,
                             "pre-first-byte upstream transport error; terminating body stream generically"

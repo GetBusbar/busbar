@@ -84,6 +84,7 @@ pub fn request_handler(protocol: &str) -> Option<&'static dyn RequestHandler> {
 #[path = "tests/registry_tests.rs"]
 mod registry_tests;
 
+use crate::diagnostics::{diag_debug, diag_warn, USAGE_TAP_DECODE_FAILED};
 use crate::ir::variant::{IrReq, IrResp};
 use crate::operation::Operation;
 use crate::proto::ProtocolWriter;
@@ -260,14 +261,16 @@ pub trait OperationHandler: Send + Sync {
                 // Warn-once-per-(protocol,reason); the BILLING_TAP_DECODE_FAIL_TOTAL counter carries
                 // the per-request volume so the log does not spam.
                 if usage_tap_decode_fail_should_warn(ingress_protocol, "decode") {
-                    tracing::warn!(
+                    diag_warn!(
+                        USAGE_TAP_DECODE_FAILED,
                         protocol = ingress_protocol,
                         error = ?e,
                         "usage tap: read_response failed to decode a same-protocol 2xx body; \
                          billing 0 tokens for this request"
                     );
                 } else {
-                    tracing::debug!(
+                    diag_debug!(
+                        USAGE_TAP_DECODE_FAILED,
                         protocol = ingress_protocol,
                         error = ?e,
                         "usage tap: read_response still failing to decode a same-protocol 2xx body; \

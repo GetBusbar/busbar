@@ -1,5 +1,7 @@
 use super::*;
 
+use crate::diagnostics::{diag_warn, LANE_BREAKER_TRIPPED};
+
 /// Charge a non-streaming response's token usage to the virtual key's budget, sourced from the
 /// IR. The streaming path bills from `translate.usage()` inside `FirstByteBody`; buffered
 /// (non-streaming) cross-protocol responses already decode the egress body egress→IR→ingress, so the
@@ -146,7 +148,7 @@ pub(crate) fn metric_pool_label<'a>(app: &'a Arc<App>, pool_name: &'a str, i: us
 /// the default (`""`) cell (see `metric_pool_label`) so it correlates with REQUESTS_TOTAL.
 pub(crate) fn emit_breaker_trip(app: &Arc<App>, pool_name: &str, i: usize) {
     crate::telemetry::breaker_trip(app, metric_pool_label(app, pool_name, i), i);
-    tracing::warn!(pool = %pool_name, lane = %app.lanes[i].model, "lane breaker tripped (Closed→Open)");
+    diag_warn!(LANE_BREAKER_TRIPPED, pool = %pool_name, lane = %app.lanes[i].model, "lane breaker tripped (Closed→Open)");
 }
 
 /// The effective per-attempt time-to-response-headers cap for pool member `i`: the pool-member

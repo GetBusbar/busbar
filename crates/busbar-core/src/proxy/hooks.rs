@@ -1,5 +1,11 @@
 use super::*;
 
+use crate::diagnostics::{
+    diag_debug, diag_warn, ON_ERROR_FALLBACK_ANSWERED, ON_ERROR_FALLBACK_DEADLINE_EXCEEDED,
+    ON_ERROR_FALLBACK_HOOK_FAILED, ROUTING_POLICY_DEADLINE_EXCEEDED,
+    ROUTING_POLICY_FAILED_ON_ERROR_FALLBACK,
+};
+
 /// The coerced result of running a routing policy at the seam — what the ordered walk should do.
 pub(crate) enum PolicyOutcome {
     /// Use this ranked order (the policy returned `Prefer`, or `on_error == first` produced the
@@ -745,14 +751,16 @@ pub(crate) async fn decide_policy_order(
         Ok(Err(e)) => {
             let key = format!("{}@{}", policy.name(), pool_name);
             if policy_fault_enter(&key) {
-                tracing::warn!(
+                diag_warn!(
+                    ROUTING_POLICY_FAILED_ON_ERROR_FALLBACK,
                     policy = policy.name(),
                     pool = pool_name,
                     error = %e,
                     "routing policy failed; applying on_error fallback"
                 );
             } else {
-                tracing::debug!(
+                diag_debug!(
+                    ROUTING_POLICY_FAILED_ON_ERROR_FALLBACK,
                     policy = policy.name(),
                     pool = pool_name,
                     error = %e,
@@ -775,14 +783,16 @@ pub(crate) async fn decide_policy_order(
         Err(_) => {
             let key = format!("{}@{}", policy.name(), pool_name);
             if policy_fault_enter(&key) {
-                tracing::warn!(
+                diag_warn!(
+                    ROUTING_POLICY_DEADLINE_EXCEEDED,
                     policy = policy.name(),
                     pool = pool_name,
                     timeout_ms = timeout.as_millis() as u64,
                     "routing policy deadline exceeded; applying on_error fallback"
                 );
             } else {
-                tracing::debug!(
+                diag_debug!(
+                    ROUTING_POLICY_DEADLINE_EXCEEDED,
                     policy = policy.name(),
                     pool = pool_name,
                     timeout_ms = timeout.as_millis() as u64,
@@ -845,7 +855,8 @@ pub(crate) async fn run_on_error_chain(
             Ok(Ok(decision)) => {
                 // Success clears this fallback's fault window so a future fault re-warns.
                 policy_fault_clear(&format!("{}@{}", fb.policy.name(), pool_name));
-                tracing::info!(
+                diag_debug!(
+                    ON_ERROR_FALLBACK_ANSWERED,
                     policy = failed_policy_name,
                     fallback = fb.policy.name(),
                     pool = pool_name,
@@ -859,14 +870,16 @@ pub(crate) async fn run_on_error_chain(
             Ok(Err(e)) => {
                 let key = format!("{}@{}", fb.policy.name(), pool_name);
                 if policy_fault_enter(&key) {
-                    tracing::warn!(
+                    diag_warn!(
+                        ON_ERROR_FALLBACK_HOOK_FAILED,
                         fallback = fb.policy.name(),
                         pool = pool_name,
                         error = %e,
                         "on_error fallback hook failed; continuing down the chain"
                     );
                 } else {
-                    tracing::debug!(
+                    diag_debug!(
+                        ON_ERROR_FALLBACK_HOOK_FAILED,
                         fallback = fb.policy.name(),
                         pool = pool_name,
                         error = %e,
@@ -877,14 +890,16 @@ pub(crate) async fn run_on_error_chain(
             Err(_) => {
                 let key = format!("{}@{}", fb.policy.name(), pool_name);
                 if policy_fault_enter(&key) {
-                    tracing::warn!(
+                    diag_warn!(
+                        ON_ERROR_FALLBACK_DEADLINE_EXCEEDED,
                         fallback = fb.policy.name(),
                         pool = pool_name,
                         timeout_ms = fb.timeout.as_millis() as u64,
                         "on_error fallback hook deadline exceeded; continuing down the chain"
                     );
                 } else {
-                    tracing::debug!(
+                    diag_debug!(
+                        ON_ERROR_FALLBACK_DEADLINE_EXCEEDED,
                         fallback = fb.policy.name(),
                         pool = pool_name,
                         timeout_ms = fb.timeout.as_millis() as u64,
