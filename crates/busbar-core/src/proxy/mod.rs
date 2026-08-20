@@ -270,22 +270,23 @@ mod signal_catalog_tests;
 
 /// FAIL-CLOSED multi-candidate / batch-embeddings edge reject. Pins that a cross-protocol request
 /// asking for more than one candidate (OpenAI `n` / Gemini `candidateCount`) is REJECTED up front
-/// (rather than forced through the single-candidate IR and silently returned 1-of-N), while a
-/// same-protocol `n>1` request is left untouched (served verbatim). Also pins the multi-input
-/// embeddings → Gemini `:embedContent` reject.
+/// v1.5.4-restored multi-candidate cross-protocol degrade. Pins that a cross-protocol `n>1` /
+/// `candidateCount>1` request is FORWARDED and returns the first candidate at HTTP 200 (the
+/// single-candidate IR reads candidate `[0]`), not rejected with a 400, while a same-protocol
+/// `n>1` request is left untouched (served verbatim, all N preserved). Also pins the multi-input
+/// embeddings → Gemini `:embedContent` first-input degrade.
 #[cfg(test)]
-#[path = "tests/multi_candidate_reject_tests.rs"]
-mod multi_candidate_reject_tests;
+#[path = "tests/multi_candidate_degrade_tests.rs"]
+mod multi_candidate_degrade_tests;
 
-/// FAIL-CLOSED stop-sequence-cap edge reject. Pins that a cross-protocol request whose stop
-/// sequences exceed the egress dialect's published cap (Cohere: 5, Gemini: 5, OpenAI: 4) is
-/// REJECTED up front — naming the vendor and the cap — rather than silently truncated and
-/// forwarded (the removed proto-layer trim-and-warn helper's old behaviour for all three). A
+/// v1.5.4-restored stop-sequence-cap cross-protocol degrade. Pins that a cross-protocol request
+/// whose stop sequences exceed the egress dialect's published cap (Cohere: 5, Gemini: 5, OpenAI: 4)
+/// is CLAMPED to the cap (with a `warn!`) and forwarded at HTTP 200 — not rejected with a 400. A
 /// same-protocol request to any of the three is left untouched (served verbatim), leaving the cap
 /// to that vendor's own native 400.
 #[cfg(test)]
-#[path = "tests/stop_sequence_cap_reject_tests.rs"]
-mod stop_sequence_cap_reject_tests;
+#[path = "tests/stop_sequence_cap_degrade_tests.rs"]
+mod stop_sequence_cap_degrade_tests;
 
 /// AUDIT-AND-ALLOW for the two cross-dialect egress controls with no native target representation
 /// (`response_format`, `tool_choice:none`): the request still forwards, but each drop is recorded as

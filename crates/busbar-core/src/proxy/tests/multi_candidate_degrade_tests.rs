@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! FAIL-CLOSED edge reject for requests whose response would be forced through the
-//! single-candidate IR (`IrResponse` models exactly ONE assistant turn). A cross-protocol hop's
-//! response reader keeps candidate `[0]` and drops the rest; before this fix that happened
-//! silently with an HTTP 200. The engine now REJECTS such a request up front. A same-protocol
-//! route relays the backend body verbatim (never through the IR), so an `n>1` request there is
-//! untouched and must keep working.
+//! v1.5.4-restored multi-candidate cross-protocol degrade. The busbar IR (`IrResponse`) models
+//! exactly ONE assistant turn, so a cross-protocol hop's response reader keeps candidate `[0]` and
+//! drops the rest. v1.5.4 forwarded such a request and returned that first candidate at HTTP 200;
+//! 1.6.0 briefly turned that silent-degrade into a hard 400. This restores the v1.5.4 outcome:
+//! `n>1` / `candidateCount>1` is FORWARDED (1-of-N at 200), not rejected. A same-protocol route
+//! relays the backend body verbatim (never through the IR), so an `n>1` request there keeps all N.
 
 use super::translate_request_cross_protocol;
 use crate::operation::Operation;
@@ -18,12 +18,13 @@ fn http() -> crate::transport::Transport {
     crate::transport::Transport::Http
 }
 
-// ---- CROSS-PROTOCOL multi-candidate: REJECTED up front (was 200-with-1). ----
+// ---- CROSS-PROTOCOL multi-candidate: FORWARDED, first candidate at 200 (v1.5.4 degrade). ----
 
 #[test]
-fn openai_to_anthropic_n_gt_1_is_rejected() {
-    // OpenAI ingress → Anthropic lane = a cross-protocol hop whose response would be read through
-    // the single-candidate IR. `n:3` therefore cannot be honored; reject rather than return 1-of-3.
+fn openai_to_anthropic_n_gt_1_is_forwarded_not_rejected() {
+    // OpenAI ingress → Anthropic lane = a cross-protocol hop whose response is read through the
+    // single-candidate IR. v1.5.4 forwarded `n:3` and returned candidate [0]; restore that. The
+    // request must translate to a valid Anthropic body (Anthropic models no `n`, so it is dropped).
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "claude-3-5-sonnet",
@@ -38,7 +39,7 @@ fn openai_to_anthropic_n_gt_1_is_rejected() {
         "n": 3
     });
     let hop_bytes = bytes::Bytes::from(crate::json::to_vec(&body).unwrap());
-    let result = translate_request_cross_protocol(
+    let out = translate_request_cross_protocol(
         &app,
         0,
         "openai",
@@ -48,19 +49,26 @@ fn openai_to_anthropic_n_gt_1_is_rejected() {
         true,
         &hop_bytes,
         "test-key",
+    )
+    .expect("cross-protocol n>1 must be forwarded (1-of-N at 200), not rejected");
+    let parsed: serde_json::Value = serde_json::from_slice(&out).unwrap();
+    // Anthropic has no multi-candidate control, so `n` does not cross; the translated body is a
+    // well-formed single-turn Anthropic request the backend accepts.
+    assert!(
+        parsed.get("n").is_none(),
+        "Anthropic models no candidate count; `n` must not appear on the egress body"
     );
-    let resp = result.expect_err("cross-protocol n>1 must be rejected, not silently truncated");
-    assert_eq!(
-        resp.status(),
-        axum::http::StatusCode::BAD_REQUEST,
-        "cross-protocol n>1 must return a 4xx naming the limitation"
+    assert!(
+        parsed.get("messages").is_some(),
+        "the translated Anthropic body must carry the messages"
     );
 }
 
 #[test]
-fn gemini_ingress_to_openai_candidate_count_gt_1_is_rejected() {
-    // Gemini ingress → OpenAI lane = cross-protocol. `generationConfig.candidateCount:2` cannot be
-    // represented through the single-candidate IR.
+fn gemini_ingress_to_openai_candidate_count_gt_1_is_forwarded_not_rejected() {
+    // Gemini ingress → OpenAI lane = cross-protocol. v1.5.4 forwarded `candidateCount:2` and read
+    // candidate [0] back. OpenAI models `n`, so the ask crosses; the response reader still keeps
+    // only the first candidate. Either way it must NOT be rejected with a 400.
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "gpt-4o",
@@ -73,7 +81,7 @@ fn gemini_ingress_to_openai_candidate_count_gt_1_is_rejected() {
         "generationConfig": { "candidateCount": 2 }
     });
     let hop_bytes = bytes::Bytes::from(crate::json::to_vec(&body).unwrap());
-    let result = translate_request_cross_protocol(
+    let out = translate_request_cross_protocol(
         &app,
         0,
         "gemini",
@@ -83,10 +91,13 @@ fn gemini_ingress_to_openai_candidate_count_gt_1_is_rejected() {
         true,
         &hop_bytes,
         "test-key",
+    )
+    .expect("cross-protocol candidateCount>1 must be forwarded, not rejected");
+    let parsed: serde_json::Value = serde_json::from_slice(&out).unwrap();
+    assert!(
+        parsed.get("messages").is_some(),
+        "the translated OpenAI body must carry the messages"
     );
-    let resp = result
-        .expect_err("cross-protocol candidateCount>1 must be rejected, not silently truncated");
-    assert_eq!(resp.status(), axum::http::StatusCode::BAD_REQUEST);
 }
 
 // ---- SAME-PROTOCOL multi-candidate: UNTOUCHED (served verbatim, all N preserved). ----
@@ -130,7 +141,7 @@ fn openai_to_openai_n_gt_1_is_preserved_verbatim() {
 }
 
 #[test]
-fn same_protocol_n_1_and_absent_are_not_rejected_cross_protocol() {
+fn single_candidate_cross_protocol_is_not_rejected() {
     // Guardrail: a genuine single-candidate cross-protocol request (n=1, or n absent) must succeed.
     let app = TestApp::new()
         .lane(LaneSpec::new(
@@ -162,12 +173,13 @@ fn same_protocol_n_1_and_absent_are_not_rejected_cross_protocol() {
     }
 }
 
-// ---- BATCH EMBEDDINGS → Gemini :embedContent: REJECTED (was 200-with-one). ----
+// ---- BATCH EMBEDDINGS → Gemini :embedContent: FORWARDED, first input at 200 (v1.5.4). ----
 
 #[test]
-fn multi_input_embeddings_to_gemini_is_rejected() {
+fn multi_input_embeddings_to_gemini_embeds_first_not_rejected() {
     // OpenAI embeddings (multi-input) → Gemini lane. Gemini `:embedContent` embeds a SINGLE input;
-    // reducing to the first would silently misalign inputs[i] <-> embeddings[i]. Reject instead.
+    // v1.5.4 embedded the FIRST input (with a `warn!`) and returned 200. Restore that: forward with
+    // the first input on the wire, do not reject.
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "text-embedding-004",
@@ -182,7 +194,7 @@ fn multi_input_embeddings_to_gemini_is_rejected() {
         "input": ["alpha", "beta", "gamma"]
     });
     let hop_bytes = bytes::Bytes::from(crate::json::to_vec(&body).unwrap());
-    let result = translate_request_cross_protocol(
+    let out = translate_request_cross_protocol(
         &app,
         0,
         "openai",
@@ -192,9 +204,16 @@ fn multi_input_embeddings_to_gemini_is_rejected() {
         true,
         &hop_bytes,
         "test-key",
+    )
+    .expect(
+        "multi-input embeddings → Gemini :embedContent must forward the first input, not reject",
     );
-    let resp = result.expect_err("multi-input embeddings → Gemini :embedContent must be rejected");
-    assert_eq!(resp.status(), axum::http::StatusCode::BAD_REQUEST);
+    let parsed: serde_json::Value = serde_json::from_slice(&out).unwrap();
+    assert_eq!(
+        parsed.pointer("/content/parts/0/text"),
+        Some(&json!("alpha")),
+        "the FIRST input must be embedded (v1.5.4 first-input degrade)"
+    );
 }
 
 #[test]

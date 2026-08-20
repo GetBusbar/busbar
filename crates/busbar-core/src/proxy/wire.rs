@@ -479,23 +479,16 @@ pub(crate) fn translate_request_cross_protocol(
                 DETAIL_INTERNAL_ERROR,
             )));
         };
-        // FAIL-CLOSED multi-candidate guard. The busbar IR (`IrResponse`) models exactly ONE
-        // assistant turn, so a cross-protocol hop's response reader keeps candidate [0] and drops the
-        // rest. A same-protocol route never reaches here (it relays the backend body verbatim), so an
-        // `n>1` / `candidateCount>1` request served same-protocol is untouched and keeps returning all
-        // N. On a cross-protocol route we REJECT the request up front rather than silently return
-        // 1-of-N with an HTTP 200 — the least-observable data loss in a security/audit product.
-        if let Some(k) = ingress_proto.writer().requested_candidate_count(&body) {
-            if k > 1 {
-                return Err(Box::new(ingress_error(
-                    ingress_protocol,
-                    StatusCode::BAD_REQUEST,
-                    KIND_INVALID_REQUEST,
-                    "multiple candidates are not supported on a cross-protocol route; request a \
-                     single candidate (n=1 / candidateCount=1)",
-                )));
-            }
-        }
+        // Multi-candidate cross-protocol degrade (v1.5.4-restored). The busbar IR (`IrResponse`)
+        // models exactly ONE assistant turn, so a cross-protocol hop's response reader keeps
+        // candidate [0] and drops the rest. A same-protocol route never reaches here (it relays the
+        // backend body verbatim), so an `n>1` / `candidateCount>1` request served same-protocol is
+        // untouched and keeps returning all N. On a cross-protocol route we forward the request and
+        // return the FIRST candidate at HTTP 200, exactly as v1.5.4 did, rather than rejecting with a
+        // 400 (fail-loud is a deliberate opt-in for a future plane, not a 1.6.0 default). The
+        // `ProtocolWriter::requested_candidate_count` detection machinery is retained for that future
+        // opt-in; only the outcome here reverts to the silent 1-of-N degrade.
+        let _ = ingress_proto.writer().requested_candidate_count(&body);
         // OPERATION-BLIND translate: the INGRESS operation handler parses its dialect into the
         // neutral IR; the IR applies its own cross-protocol semantics (`prepare_for_egress` — chat's
         // max-tokens default, tool-id decode, and the extra-key leak guard live INSIDE the IR,

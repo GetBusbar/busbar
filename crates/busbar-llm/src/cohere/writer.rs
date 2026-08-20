@@ -422,14 +422,16 @@ impl ProtocolWriter for CohereWriter {
             out.insert("k".to_string(), serde_json::json!(top_k));
         }
         if !req.stop.is_empty() {
-            // NEVER truncate here: an over-cap `req.stop` is rejected up front, at the
-            // cross-protocol seam, by `ChatOperation::egress_representable` consulting
-            // `stop_sequence_cap()` below — before `write_request` ever runs. A same-protocol
+            // v1.5.4 silent-degrade (restored): a cross-protocol request whose stop list exceeds
+            // Cohere's cap of 5 is CLAMPED to the cap here (with a `warn!` naming what was dropped)
+            // and forwarded at HTTP 200, rather than rejected up front with a 400. A same-protocol
             // Cohere->Cohere request never rebuilds its body from the IR (verbatim relay), so it
-            // never reaches this writer either. By the time this line runs, `req.stop.len()` is
-            // guaranteed `<= 5`; forward it whole rather than re-deriving a silent, partial cap
-            // here that could drift from the reject's cap.
-            out.insert("stop_sequences".to_string(), serde_json::json!(req.stop));
+            // never reaches this writer and is never clamped. The published cap in the declaration
+            // (`stop_sequence_cap`) is retained for other planes.
+            out.insert(
+                "stop_sequences".to_string(),
+                serde_json::json!(busbar_core::ir::clamp_stop(&req.stop, 5, "Cohere")),
+            );
         }
         // Sampling/output controls in Cohere v2's native (OpenAI-shaped) names. Emitted
         // before the `extra` overlay (the reader pulled these keys out of extra, so there is no

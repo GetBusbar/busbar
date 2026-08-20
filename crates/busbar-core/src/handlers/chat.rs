@@ -116,24 +116,15 @@ impl OperationHandler for ChatOperation {
         writer.egress_accept(wants_stream)
     }
 
-    /// FAIL-CLOSED guard for a cross-protocol chat request whose stop-sequence list exceeds the
-    /// egress dialect's published cap (`ProtocolWriter::stop_sequence_cap`, e.g. Cohere's 5).
-    /// REJECTS with a reason naming the vendor and the cap rather than proceeding to
-    /// `write_request`, which would otherwise silently truncate and forward a WEAKER, DIFFERENT
-    /// instruction than the caller gave: a user relying on their Nth+ stop sequence to bound
-    /// generation would silently lose that guard. The correct set is small, so the caller can
-    /// trivially resubmit within the limit — reject, don't drop-whole.
-    fn egress_representable(&self, ir: &IrReq) -> Result<(), String> {
-        let IrReq::Chat(r) = ir else { return Ok(()) };
-        let Some(p) = self.proto() else { return Ok(()) };
-        if let Some((cap, name)) = p.decl().and_then(|d| d.stop_sequence_cap) {
-            let provided = r.stop.len();
-            if provided > cap {
-                return Err(format!(
-                    "{name} accepts at most {cap} stop sequences; {provided} provided"
-                ));
-            }
-        }
+    /// Cross-protocol chat representability check. v1.5.4-restored: a stop-sequence list that
+    /// exceeds the egress dialect's published cap (`stop_sequence_cap`, e.g. Cohere's 5) is NOT
+    /// rejected here. Instead the egress writer CLAMPS the list to the cap, emits a `warn!` naming
+    /// how many sequences were dropped (`busbar_core::ir::clamp_stop`), and forwards the request at
+    /// HTTP 200 — the silent-degrade v1.5.4 shipped. Fail-loud (a 400 up front) is a deliberate
+    /// future opt-in, not a 1.6.0 default, so this check reports the chat request as representable;
+    /// the published caps in each declaration are retained for that future plane and consumed by the
+    /// writers' clamp.
+    fn egress_representable(&self, _ir: &IrReq) -> Result<(), String> {
         Ok(())
     }
 

@@ -186,6 +186,35 @@ pub fn read_stop_sequences(val: Option<&Value>) -> Vec<String> {
     }
 }
 
+/// Truncate `stop` to the egress vendor's published cap. Vendors 400 on an over-length
+/// stop-sequence array and the IR carries an unbounded `Vec` (no protocol enforces a cap on
+/// ingress), so a cross-protocol request can always exceed a smaller target's cap. NON-SILENT:
+/// warns only when it actually truncates, naming `proto`, the cap, and how many sequences were
+/// dropped.
+///
+/// This restores the v1.5.4 silent-degrade (clamp-to-cap + `warn!` + forward at HTTP 200) on a
+/// cross-protocol chat route, in place of a 1.6.0 hard 400. The published caps in each protocol's
+/// declaration (`stop_sequence_cap`) are retained for other planes; this is the write-side clamp
+/// that consumes them.
+pub fn clamp_stop(stop: &[String], cap: usize, proto: &'static str) -> Vec<String> {
+    if stop.len() <= cap {
+        return stop.to_vec();
+    }
+    let provided = stop.len();
+    // `stop.len() > cap` is guaranteed by the early return above, so this cannot underflow;
+    // `saturating_sub` would only imply a doubt that isn't there.
+    let dropped = provided - cap;
+    tracing::warn!(
+        proto,
+        cap,
+        provided,
+        dropped,
+        "truncating stop sequences to {proto}'s documented cap of {cap}; the request carried \
+         {provided}, so {dropped} were dropped"
+    );
+    stop[..cap].to_vec()
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum IrStreamEvent {
     MessageStart {

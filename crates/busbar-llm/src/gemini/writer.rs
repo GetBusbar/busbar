@@ -476,14 +476,16 @@ impl ProtocolWriter for GeminiWriter {
             gen_config.insert("topK".to_string(), serde_json::json!(top_k));
         }
         if !req.stop.is_empty() {
-            // NEVER truncate here: an over-cap `req.stop` is rejected up front, at the
-            // cross-protocol seam, by `ChatOperation::egress_representable` consulting
-            // `stop_sequence_cap()` below — before `write_request` ever runs. A same-protocol
+            // v1.5.4 silent-degrade (restored): a cross-protocol request whose stop list exceeds
+            // Gemini's cap of 5 is CLAMPED to the cap here (with a `warn!` naming what was dropped)
+            // and forwarded at HTTP 200, rather than rejected up front with a 400. A same-protocol
             // Gemini->Gemini request never rebuilds its body from the IR (verbatim relay), so it
-            // never reaches this writer either. By the time this line runs, `req.stop.len()` is
-            // guaranteed `<= 5`; forward it whole rather than re-deriving a silent, partial cap
-            // here that could drift from the reject's cap.
-            gen_config.insert("stopSequences".to_string(), serde_json::json!(req.stop));
+            // never reaches this writer and is never clamped. The published cap in the declaration
+            // (`stop_sequence_cap`) is retained for other planes.
+            gen_config.insert(
+                "stopSequences".to_string(),
+                serde_json::json!(busbar_core::ir::clamp_stop(&req.stop, 5, "Gemini")),
+            );
         }
         // Promoted sampling controls in Gemini's native generationConfig shape (cross-protocol
         // survival, inverse of the reader's promotion). `n` → `candidateCount` (Gemini's name).
