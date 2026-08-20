@@ -45,24 +45,6 @@ pub(crate) struct OauthAsCfg {
     #[serde(default)]
     pub(crate) key_id: Option<String>,
 
-    /// THE REMOVED TOGGLE, kept as GRAMMAR and nothing else. NOT A SWITCH: no value of this field
-    /// turns anything off or on.
-    ///
-    /// The 1.6.0 ruling is that client registration ships ALL THREE ways a client obtains a
-    /// `client_id` — pre-registration, Client ID Metadata Documents, and RFC 7591 Dynamic Client
-    /// Registration — with no switches. Writing `oauth_as:` at all is the decision a reviewer can
-    /// find; what makes an always-on anonymous registration endpoint safe is that registration
-    /// confers no authority (see `policy`): the `default_grant` ceiling below is the whole of what
-    /// a self-registered client gets, and it is EMPTY until an operator widens it.
-    ///
-    /// The KEY stays parseable because the config grammar is FROZEN additive-only after 1.5.3
-    /// (`config-stability-gate`); the TOGGLE is gone because the ruling says so. The two meet
-    /// here: `true` parses and is INERT (registration was on, is on); `false` is a BOOT REFUSAL
-    /// naming the ruling, because an operator who wrote it is owed the sentence "this no longer
-    /// turns registration off" at boot rather than an open `/register` they believe is closed.
-    #[serde(default)]
-    pub(crate) dynamic_registration: Option<bool>,
-
     /// THE CEILING. What a client that registered itself — by any mechanism — is allowed to ask
     /// for, and it is the whole of what it gets.
     ///
@@ -95,8 +77,6 @@ pub(crate) enum AsCfgError {
     IssuerHasTrailingSlash(String),
     /// `default_grant` names a scope that is not a legal RFC 6749 §3.3 scope token.
     ScopeNotAToken(String),
-    /// `dynamic_registration: false` is written, and there is nothing for it to turn off any more.
-    RegistrationToggleRemoved,
 }
 
 impl std::fmt::Display for AsCfgError {
@@ -128,14 +108,6 @@ impl std::fmt::Display for AsCfgError {
                 f,
                 "oauth_as.default_grant entry `{v}` is not a scope token. RFC 6749 section 3.3 \
                  allows printable ASCII except space, double quote and backslash."
-            ),
-            AsCfgError::RegistrationToggleRemoved => f.write_str(
-                "oauth_as.dynamic_registration no longer turns registration off: as of 1.6.0, \
-                 all three client registration mechanisms (pre-registration, client ID metadata \
-                 documents, RFC 7591 dynamic registration) are ON whenever `oauth_as:` is \
-                 configured. What a self-registered client GETS is still bounded by \
-                 `default_grant`, which is empty until you widen it. Delete the \
-                 `dynamic_registration:` line."
             ),
         }
     }
@@ -192,12 +164,6 @@ impl AsIdentity {
     /// Validate and derive. Every refusal is at BOOT rather than at first request: an operator finds
     /// out from a process that will not start, not from an agent that cannot log in.
     pub(crate) fn from_cfg(cfg: &OauthAsCfg) -> Result<Self, AsCfgError> {
-        // The removed toggle, first: `false` is refused BEFORE anything is derived, because the
-        // operator who wrote it believes registration is off and must not get a booted server
-        // whose `/register` answers. `true` and absent are the same fact — registration is on.
-        if cfg.dynamic_registration == Some(false) {
-            return Err(AsCfgError::RegistrationToggleRemoved);
-        }
         let issuer = cfg.issuer.trim();
         if issuer.is_empty() {
             return Err(AsCfgError::MissingIssuer);

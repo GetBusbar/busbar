@@ -1048,10 +1048,6 @@
           "optional": true,
           "type": "Vec<String>"
         },
-        "dynamic_registration": {
-          "optional": true,
-          "type": "bool"
-        },
         "issuer": {
           "optional": false,
           "type": "String"

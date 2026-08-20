@@ -10,7 +10,6 @@ fn cfg(issuer: &str) -> OauthAsCfg {
         issuer: issuer.to_string(),
         signing_key: None,
         key_id: None,
-        dynamic_registration: None,
         default_grant: Vec::new(),
         access_token_ttl_secs: None,
     }
@@ -97,33 +96,10 @@ fn a_default_grant_entry_that_is_not_a_scope_token_is_refused_at_boot() {
     ));
 }
 
-/// THE REMOVED TOGGLE IS GRAMMAR, NOT A SWITCH. `false` is a boot refusal that names the ruling —
-/// the operator who wrote it believes registration is off, and must not get a booted server whose
-/// `/register` answers — while `true` and absence are the same fact: registration is on.
-#[test]
-fn the_removed_registration_toggle_cannot_turn_registration_off() {
-    let mut c = cfg("https://gw.example.com");
-    c.dynamic_registration = Some(false);
-    assert!(matches!(
-        AsIdentity::from_cfg(&c),
-        Err(AsCfgError::RegistrationToggleRemoved)
-    ));
-
-    c.dynamic_registration = Some(true);
-    assert_eq!(
-        AsIdentity::from_cfg(&c)
-            .expect("`true` parses and is inert")
-            .register_path(),
-        "/register",
-        "`true` asked for what is now always the case"
-    );
-}
-
-/// THE REGISTRATION PATH IS ALWAYS DERIVED. This test used to pin the path to the
-/// `dynamic_registration` toggle; the 1.6.0 ruling deleted the toggle, so it now pins the
-/// opposite: every validated identity carries a registration path, under the issuer's own prefix,
-/// with nothing to switch. Mirrors the metadata document, which is what `oauth-as` routes from;
-/// the two must agree or busbar mounts a path the service does not answer.
+/// THE REGISTRATION PATH IS ALWAYS DERIVED. Every validated identity carries a registration path,
+/// under the issuer's own prefix, with nothing to switch. Mirrors the metadata document, which is
+/// what `oauth-as` routes from; the two must agree or busbar mounts a path the service does not
+/// answer.
 #[test]
 fn the_registration_path_is_always_derived() {
     assert_eq!(

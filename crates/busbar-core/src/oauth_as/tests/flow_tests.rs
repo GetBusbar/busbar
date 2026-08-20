@@ -260,7 +260,6 @@ async fn serve_with_admin_chain(admin_chain: Vec<String>) -> (String, Arc<crate:
         issuer: origin.clone(),
         signing_key: None,
         key_id: None,
-        dynamic_registration: None,
         default_grant: vec![SCOPE.to_string()],
         access_token_ttl_secs: None,
     };
@@ -371,7 +370,6 @@ fn the_session_cookie_carries_exactly_the_attributes_it_should() {
             issuer: issuer.to_string(),
             signing_key: None,
             key_id: None,
-            dynamic_registration: None,
             default_grant: Vec::new(),
             access_token_ttl_secs: None,
         };
