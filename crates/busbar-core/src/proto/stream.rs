@@ -1025,6 +1025,79 @@ impl StreamTranslate {
     }
 }
 
+/// Neutral streaming byte-in/byte-out translator seam (G6). The WHOLE [`StreamTranslate`] relocates
+/// behind this trait UNCHANGED so emission ORDER is preserved verbatim — the streaming forward path
+/// (`FirstByteBody`) holds an `Option<Box<dyn StreamTranslator>>` and never names the concrete
+/// translator. `usage()` returns an OWNED [`crate::billing::TokenUsage`] (the billing consumers read
+/// the four token totals, not the concrete `&IrUsage` borrow), so the seam names zero concrete IR;
+/// the projection is billing-lossless. The other methods forward 1:1 to `StreamTranslate`'s inherent
+/// methods, so behavior is byte-identical to the pre-trait direct calls.
+pub(crate) trait StreamTranslator: Send {
+    /// Feed a chunk of EGRESS bytes; return the translated INGRESS bytes for whatever COMPLETE frames
+    /// are now available (empty if only a partial frame is buffered).
+    fn feed(&mut self, chunk: &[u8]) -> Vec<u8>;
+    /// Call once at end-of-stream; returns the INGRESS terminator plus any deferred terminal frames.
+    fn finish(&mut self) -> Vec<u8>;
+    /// The terminal token usage accumulated for this stream, projected to the neutral billing total,
+    /// or `None` if no usage-bearing terminal event was seen. The streaming billing arm reads this
+    /// for the per-request token fee.
+    fn usage(&self) -> Option<crate::billing::TokenUsage>;
+    /// The terminal stream ERROR message, or `None` for a clean stream — the breaker/billing gate.
+    fn terminal_error(&self) -> Option<&str>;
+    /// True once this translator abandoned its stream (reassembly overflow / malformed prelude).
+    fn aborted(&self) -> bool;
+    /// Record whether the ORIGINAL client request opted into streaming usage.
+    fn set_client_include_usage(&mut self, include: bool);
+}
+
+impl StreamTranslator for StreamTranslate {
+    // Each method forwards to the same-named INHERENT method — Rust's method resolution prefers an
+    // inherent method over a trait method, so `self.feed(..)` here calls the concrete `StreamTranslate`
+    // impl, never this trait method (no recursion). Behavior is byte-identical to the pre-trait direct
+    // calls; only `usage` projects the concrete `&IrUsage` to the neutral OWNED billing total.
+    fn feed(&mut self, chunk: &[u8]) -> Vec<u8> {
+        self.feed(chunk)
+    }
+    fn finish(&mut self) -> Vec<u8> {
+        self.finish()
+    }
+    fn usage(&self) -> Option<crate::billing::TokenUsage> {
+        self.usage().map(|u| u.to_token_usage())
+    }
+    fn terminal_error(&self) -> Option<&str> {
+        self.terminal_error()
+    }
+    fn aborted(&self) -> bool {
+        self.aborted()
+    }
+    fn set_client_include_usage(&mut self, include: bool) {
+        self.set_client_include_usage(include)
+    }
+}
+
+/// Registry-resolved streaming-translator factory — the SINGLE construction seam both the hot
+/// (`engine/mod.rs`) and degraded (`engine/walk.rs`) forward paths call, so their translator wiring
+/// cannot drift. Resolves the ingress→egress pair through the registry via [`StreamTranslate`]:
+/// same-protocol builds the verbatim same-proto translator (byte-exact re-emit + IR usage A-tap);
+/// cross-protocol builds the reframing translator. Returns `None` (legacy raw passthrough) when the
+/// response is not an incremental stream (`!is_sse`), or for an unknown protocol with no reader to
+/// drive the IR. Byte-identical to the two inlined `StreamTranslate::new*` sites it replaces.
+pub(crate) fn new_stream_translator(
+    ingress: &str,
+    egress: &str,
+    is_sse: bool,
+) -> Option<Box<dyn StreamTranslator>> {
+    if !is_sse {
+        return None;
+    }
+    let st = if ingress == egress {
+        StreamTranslate::new_same_proto(ingress)
+    } else {
+        StreamTranslate::new(ingress, egress)
+    }?;
+    Some(Box::new(st))
+}
+
 /// Rewrite a same-protocol OpenAI SSE frame's bytes with its top-level `usage` member removed,
 /// preserving every other byte (the `data:` prefix, the exact terminator, and the rest of the JSON).
 /// `frame` is the ORIGINAL complete frame bytes (including the `data:` line and terminator);

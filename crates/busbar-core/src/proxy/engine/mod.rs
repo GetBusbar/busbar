@@ -2299,24 +2299,16 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                 // Use FirstByteBody wrapper to track first byte and emit SSE error events on mid-stream failures
                 // on a cross-protocol SSE response, translate egress frames → ingress frames.
                 let egress_name_for_translate = app.lanes[i].protocol.name();
-                let translate = if is_sse {
-                    if ingress_protocol == egress_name_for_translate {
-                        // SAME-PROTOCOL SSE/event-stream: always run the
-                        // verbatim same-proto translator (byte-exact re-emit + IR usage A-tap). The
-                        // universal path is unconditional — billing now sources `translate.usage()`, so
-                        // there is no longer a passthrough that bypasses the IR. `new_same_proto` is
-                        // `None` only for an unknown protocol, where there is no reader to drive the IR;
-                        // that falls back to the legacy raw-chunk passthrough (`None`).
-                        crate::proto::StreamTranslate::new_same_proto(ingress_protocol)
-                    } else {
-                        crate::proto::StreamTranslate::new(
-                            ingress_protocol,
-                            egress_name_for_translate,
-                        )
-                    }
-                } else {
-                    None
-                };
+                // ONE registry-resolved factory, IDENTICAL to the degraded `walk.rs` path (extracted so
+                // the two cannot drift): same-protocol SSE builds the verbatim same-proto translator
+                // (byte-exact re-emit + IR usage A-tap; billing sources `translate.usage()`, no IR
+                // bypass), cross-protocol builds the reframing translator, `!is_sse`/unknown-protocol
+                // yields `None` → legacy raw-chunk passthrough.
+                let translate = crate::proto::new_stream_translator(
+                    ingress_protocol,
+                    egress_name_for_translate,
+                    is_sse,
+                );
                 // Thread the client's streaming-usage opt-in to the framing. Busbar
                 // always injected `include_usage` UPSTREAM, so the upstream stream carries a trailing
                 // usage chunk; the OpenAI-ingress framing surfaces it to the client ONLY when the client

@@ -76,8 +76,10 @@ pub(crate) struct FirstByteBody<S, P> {
     /// the degraded path → the lane-default cell).
     pool: Box<str>,
     /// when Some, translate each egress SSE chunk to the caller's ingress protocol.
-    /// None = native passthrough (same-protocol or non-SSE).
-    translate: Option<crate::proto::StreamTranslate>,
+    /// None = native passthrough (same-protocol or non-SSE). Held behind the neutral
+    /// [`crate::proto::StreamTranslator`] seam so this streaming body never names the concrete
+    /// translator (G6).
+    translate: Option<Box<dyn crate::proto::StreamTranslator>>,
     /// When set (gemini ingress streaming WITHOUT `?alt=sse`), the SSE bytes — whether from a
     /// same-protocol passthrough or the cross-protocol `translate` stage above, both of which are
     /// gemini SSE here — are reframed into the JSON-array streaming format the native non-`alt=sse`
@@ -143,7 +145,7 @@ where
         lane_idx: usize,
         breaker_cfg: Arc<crate::store::BreakerCfg>,
         pool: &str,
-        translate: Option<crate::proto::StreamTranslate>,
+        translate: Option<Box<dyn crate::proto::StreamTranslator>>,
         json_array: Option<Box<dyn crate::proto::JsonArrayFramer>>,
         usage_sink: Option<UsageSink>,
         budget_spent: bool,
@@ -546,17 +548,17 @@ where
                     // Skip usage extraction ENTIRELY when there is no sink to bill (governance off /
                     // no key): the terminal-usage clone and the non-stream reader run only to feed
                     // `record_tokens`, which the `usage_sink.take()` gate below no-ops.
-                    // Projected to the neutral `billing::TokenUsage` at the boundary: the producers
-                    // (`translate.usage()`, the truncated-tail recovery, `op.extract_usage`) still hand
-                    // back the concrete `IrUsage`, but the billing consumers below speak token totals,
-                    // so this local and every accrual call name zero concrete IR. Byte-identical (the
-                    // projection carries the four billed totals). At the cutover the producers return
-                    // `TokenUsage`/`Billing` directly and the `.to_token_usage()` calls fall away.
+                    // Projected to the neutral `billing::TokenUsage` at the boundary: the streaming
+                    // producer (`translate.usage()`, now the `StreamTranslator` seam) hands back the
+                    // OWNED token totals directly; the non-stream producers (the truncated-tail
+                    // recovery, `op.extract_usage`) still hand back the concrete `IrUsage`, projected
+                    // here. Either way the billing consumers below speak token totals and name zero
+                    // concrete IR. Byte-identical (the projection carries the four billed totals).
                     let token_usage: Option<crate::billing::TokenUsage> =
                         if this.usage_sink.is_none() {
                             None
                         } else if let Some(t) = this.translate.as_ref() {
-                            t.usage().map(|u| u.to_token_usage())
+                            t.usage()
                         } else if !this.is_sse && !this.nonstream_buf.is_empty() {
                             // Same-protocol non-stream body relayed verbatim; the operation reads
                             // usage from the reassembled bytes. Chat runs the egress reader and
@@ -677,11 +679,7 @@ impl<S, P> Drop for FirstByteBody<S, P> {
         {
             return;
         }
-        let usage = self
-            .translate
-            .as_ref()
-            .and_then(|t| t.usage())
-            .map(|u| u.to_token_usage());
+        let usage = self.translate.as_ref().and_then(|t| t.usage());
         let tier = usage
             .as_ref()
             .map(crate::proxy::usage::tier_tokens)

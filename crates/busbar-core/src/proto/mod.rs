@@ -1269,6 +1269,11 @@ pub(crate) fn decode_request_tool_ids(
 }
 
 pub(crate) mod stream;
+pub(crate) use stream::{new_stream_translator, StreamTranslator};
+// The production forward path now constructs translators through `new_stream_translator` and holds
+// them behind `dyn StreamTranslator`, so the concrete `StreamTranslate` is named only by the proto /
+// proxy test suites (the streaming witnesses drive it directly). Re-export it for those.
+#[cfg(test)]
 pub(crate) use stream::StreamTranslate;
 
 /// Find the first SSE frame terminator (a blank line) in `buf`, returning `(offset, terminator_len)`
