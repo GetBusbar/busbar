@@ -812,33 +812,11 @@ impl ProtocolWriter for OpenAiWriter {
         }
     }
 
-    fn egress_user_agent(&self) -> &'static str {
-        // OpenAI Python SDK UA shape — pinned, see `EGRESS_UA_OPENAI` in proxy engine.
-        busbar_core::proxy::EGRESS_UA_OPENAI
-    }
-
-    fn emits_sse_done_terminator(&self) -> bool {
-        // OpenAI Chat Completions SSE ends with a literal `data: [DONE]` frame; busbar reproduces it
-        // when emitting an openai-format stream to an openai-ingress client.
-        true
-    }
-
     fn new_stream_framing(&self) -> Box<dyn super::StreamFraming> {
         // OpenAI INGRESS per-stream framing: replays the latched stream identity onto every
         // `chat.completion.chunk` and un-folds the include_usage trailing-usage chunk. Lives here, in
         // the OpenAI module, so the agnostic translator names no OpenAI wire shape.
         Box::<OpenAiStreamFraming>::default()
-    }
-
-    fn auth_failure_message(&self) -> &'static str {
-        AUTH_FAILURE_MSG
-    }
-
-    /// OpenAI Chat Completions caps `stop` at 4 and 400s on more. See `stop_sequence_cap`'s doc on
-    /// `ProtocolWriter` for why an over-cap request is REJECTED at the cross-protocol seam rather
-    /// than silently truncated.
-    fn stop_sequence_cap(&self) -> Option<(usize, &'static str)> {
-        Some((4, "OpenAI"))
     }
 
     fn clone_box(&self) -> Box<dyn ProtocolWriter> {

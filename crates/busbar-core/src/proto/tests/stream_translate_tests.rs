@@ -176,7 +176,7 @@ fn emit_via_framing(
 }
 
 fn encode_ir_events_as_wire(proto: &Protocol, events: &[crate::ir::IrStreamEvent]) -> Vec<u8> {
-    let is_es = proto.writer().ingress_is_eventstream();
+    let is_es = proto.decl().is_some_and(|d| d.ingress_is_eventstream);
     let mut framing = proto.writer().new_stream_framing();
     framing.set_client_include_usage(true);
     let mut out = Vec::new();
@@ -318,7 +318,9 @@ fn test_all_protocol_pairs_stream_translate_roundtrip_preserves_text_and_termina
             }
             let ingress_proto = protocol_for(ingress).expect("known ingress protocol");
             let egress_proto = protocol_for(egress).expect("known egress protocol");
-            let ingress_is_es = ingress_proto.writer().ingress_is_eventstream();
+            let ingress_is_es = ingress_proto
+                .decl()
+                .is_some_and(|d| d.ingress_is_eventstream);
 
             let wire = encode_ir_events_as_wire(&egress_proto, &events);
             assert!(

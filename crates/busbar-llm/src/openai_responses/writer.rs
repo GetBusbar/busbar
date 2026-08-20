@@ -1361,16 +1361,6 @@ impl ProtocolWriter for ResponsesWriter {
         })
     }
 
-    fn egress_user_agent(&self) -> &'static str {
-        // Responses API is served by the same OpenAI SDK/UA as the Chat Completions surface.
-        // Pinned — see `EGRESS_UA_OPENAI` in proxy engine.
-        busbar_core::proxy::EGRESS_UA_OPENAI
-    }
-
-    fn auth_failure_message(&self) -> &'static str {
-        AUTH_FAILURE_MSG
-    }
-
     fn clone_box(&self) -> Box<dyn ProtocolWriter> {
         Box::new(self.clone())
     }

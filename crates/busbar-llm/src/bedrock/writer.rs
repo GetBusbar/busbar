@@ -110,24 +110,6 @@ impl ProtocolWriter for BedrockWriter {
         "/model"
     }
 
-    /// Bedrock's `ContentBlockDelta.citation` member is a SINGLE `CitationsDelta` object per frame
-    /// (the union holds one citation, not an array), so a multi-citation `CitationsDelta` — e.g. one
-    /// Gemini chunk batching several `citationSources[]` — must be fanned out into one
-    /// `contentBlockDelta` frame each at the framing seam rather than serialized as an array a
-    /// Bedrock SDK's union decoder rejects. Same constraint, same mechanism as Anthropic's
-    /// `citations_delta`. See `StreamTranslate`.
-    fn max_citations_per_delta(&self) -> Option<usize> {
-        Some(1)
-    }
-
-    /// Converse's `cachePoint` marker is validated per-model: Anthropic Claude accepts it, Amazon
-    /// Nova 400s with "extraneous key [cachePoint] is not permitted". Cross-protocol cache asks
-    /// therefore need the lane's `prompt_caching` capability assertion before this writer may
-    /// project them (see `cache_markers_model_gated` on the trait).
-    fn cache_markers_model_gated(&self) -> bool {
-        true
-    }
-
     fn upstream_path_for(&self, model: &str) -> String {
         format!("/model/{}/converse", model)
     }
@@ -1200,12 +1182,6 @@ impl ProtocolWriter for BedrockWriter {
         })
     }
 
-    fn quota_exceeded_status(&self) -> StatusCode {
-        // AWS Bedrock surfaces an over-quota condition as `ServiceQuotaExceededException`, a
-        // 400-class error — NOT the 429 every other vendor uses.
-        StatusCode::BAD_REQUEST
-    }
-
     fn attach_error_response_headers(
         &self,
         headers: &mut axum::http::HeaderMap,
@@ -1219,24 +1195,11 @@ impl ProtocolWriter for BedrockWriter {
         attach_bedrock_error_headers(headers, kind);
     }
 
-    fn ingress_is_eventstream(&self) -> bool {
-        // A native AWS SDK Bedrock client decodes a BINARY `application/vnd.amazon.eventstream`
-        // body, not SSE text. Mid-stream errors must be binary exception frames (not SSE `event:`
-        // text) — writing SSE text into a binary eventstream body yields an undecodable prelude/CRC.
-        true
-    }
-
     fn new_stream_framing(&self) -> Box<dyn super::StreamFraming> {
         // Bedrock-ingress per-stream framing: the messageStop/metadata two-frame deferral and the
         // exactly-one-metadata invariant. Lives here, in the Bedrock module, so the agnostic
         // translator names no Bedrock wire shape.
         Box::<BedrockStreamFraming>::default()
-    }
-
-    fn egress_user_agent(&self) -> &'static str {
-        // AWS Bedrock is reached via boto3/botocore; the SDK's UA is the backend-facing fingerprint
-        // guard. Pinned — see `EGRESS_UA_BEDROCK` in proxy engine.
-        busbar_core::proxy::EGRESS_UA_BEDROCK
     }
 
     fn egress_accept(&self, wants_stream: bool) -> &'static str {
@@ -1247,20 +1210,6 @@ impl ProtocolWriter for BedrockWriter {
         } else {
             busbar_core::proxy::APPLICATION_JSON
         }
-    }
-
-    fn has_model_in_url(&self) -> bool {
-        // Bedrock encodes the model in the URL path (`/model/{id}/converse`), NOT the body.
-        // The body `model` field must be stripped on the same-protocol passthrough path so the
-        // native Converse backend does not see an unexpected field.
-        true
-    }
-
-    fn auth_failure_status_and_kind(&self) -> (axum::http::StatusCode, &'static str) {
-        // A real AWS SigV4 rejection returns HTTP 403 AccessDenied (NOT 401). The AWS SDK keys
-        // its typed `AccessDeniedException` off the 403 status, so returning 401 here would be
-        // a deterministic proxy tell and a mismatched typed-exception class on the SDK side.
-        (axum::http::StatusCode::FORBIDDEN, "auth")
     }
 
     fn wrap_buffered_as_stream(
@@ -1293,13 +1242,6 @@ impl ProtocolWriter for BedrockWriter {
         }
     }
 
-    fn ingress_relays_amzn_headers(&self) -> bool {
-        // A real AWS Bedrock endpoint ALWAYS carries `x-amzn-RequestId` (the only request-id surface
-        // the AWS SDK exposes via `*Output::request_id()`) and `x-amzn-errortype` on every response.
-        // Their absence is a detectable proxy tell and leaves the SDK's `request_id()` returning None.
-        true
-    }
-
     fn ingress_response_request_id(
         &self,
         upstream_request_id: Option<&str>,
@@ -1313,18 +1255,6 @@ impl ProtocolWriter for BedrockWriter {
             .map(String::from)
             .or_else(synth_amzn_request_id)
             .map(|id| (HDR_AMZN_REQUEST_ID, id))
-    }
-
-    fn ingress_relayed_response_header_names(&self) -> &'static [&'static str] {
-        // Forwarded VERBATIM on a same-protocol bedrock passthrough: `x-amzn-RequestId` and
-        // `x-amzn-errortype` (AWS SDKs dispatch the typed exception from errortype BEFORE the body
-        // `__type`; absence is a detectable tell).
-        &[HDR_AMZN_REQUEST_ID, HDR_AMZN_ERROR_TYPE]
-    }
-
-    fn auth_failure_message(&self) -> &'static str {
-        // AWS conveys AccessDenied via `__type` / `x-amzn-errortype`, not message prose.
-        ""
     }
 
     fn clone_box(&self) -> Box<dyn ProtocolWriter> {

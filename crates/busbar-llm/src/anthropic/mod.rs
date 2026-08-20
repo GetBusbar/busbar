@@ -79,6 +79,29 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     // operation through the `RequestHandler` and serves it on the universal ingress.
     path_ingress: None,
     stream_usage_requires_opt_in: false,
+    // ── Promoted writer facts (G6 step A1): the same constants the `AnthropicWriter` methods returned.
+    requires_max_tokens: true,
+    stop_sequence_cap: None,
+    cache_markers_model_gated: false,
+    fills_thought_signature: false,
+    frame_after_message_start: Some(ANTHROPIC_PING_SSE_FRAME),
+    reshapes_body_at_path_base: true,
+    max_cache_control_breakpoints: Some(4),
+    quota_exceeded_status: axum::http::StatusCode::TOO_MANY_REQUESTS,
+    ingress_is_eventstream: false,
+    emits_sse_done_terminator: false,
+    max_citations_per_delta: Some(1),
+    egress_user_agent: busbar_core::proxy::EGRESS_UA_ANTHROPIC,
+    has_model_in_url: false,
+    auth_failure_status_and_kind: (
+        axum::http::StatusCode::UNAUTHORIZED,
+        busbar_core::proto::openai_family::ERR_TYPE_AUTHENTICATION,
+    ),
+    ingress_relays_amzn_headers: false,
+    ingress_relayed_response_header_names: &[HDR_REQUEST_ID],
+    auth_failure_message: "invalid x-api-key",
+    uses_array_stream_shim: false,
+    has_native_path_not_found: false,
 };
 
 /// Value of the required `anthropic-version` request header (the Messages API version busbar

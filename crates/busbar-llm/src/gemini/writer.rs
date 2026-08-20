@@ -1345,48 +1345,11 @@ impl ProtocolWriter for GeminiWriter {
         out
     }
 
-    fn egress_user_agent(&self) -> &'static str {
-        // Google GenAI SDK UA shape — pinned, see `EGRESS_UA_GEMINI` in proxy engine.
-        busbar_core::proxy::EGRESS_UA_GEMINI
-    }
-
-    fn has_model_in_url(&self) -> bool {
-        // Gemini encodes the model in the URL path (`/v1beta/models/{model}:generateContent`),
-        // NOT the body. The body `model` field must be stripped on the same-protocol passthrough
-        // path so the native generateContent backend does not see an unexpected field.
-        true
-    }
-
-    fn auth_failure_status_and_kind(&self) -> (axum::http::StatusCode, &'static str) {
-        // The Generative Language API does NOT return 401/UNAUTHENTICATED for a bad API key;
-        // it returns HTTP 400 with `error.status: "INVALID_ARGUMENT"`. The gemini writer maps
-        // `invalid_request_error` → INVALID_ARGUMENT and echoes `code: 400`, so a 401 body
-        // would be a tell the google-genai SDK never sees from real Google on the bad-key path.
-        (
-            axum::http::StatusCode::BAD_REQUEST,
-            ERR_TYPE_INVALID_REQUEST,
-        )
-    }
-
-    fn uses_array_stream_shim(&self) -> bool {
-        // Gemini clients that send `:streamGenerateContent` WITHOUT `?alt=sse` expect a JSON-array
-        // streamed body, not SSE. The route layer signals this via the GEMINI_JSON_ARRAY_SHIM_KEY;
-        // this predicate gates the shim so only genuine Gemini ingress enables it — preventing a
-        // body-model client from smuggling the key to force JSON-array reframing of its SSE stream.
-        true
-    }
-
     fn make_array_stream_framer(&self) -> Option<Box<dyn busbar_core::proto::JsonArrayFramer>> {
         // Gemini `:streamGenerateContent` WITHOUT `?alt=sse` expects a JSON-array streamed body; this
         // builds the framer that reframes the (gemini-shape) SSE bytes into that array. The forward
         // path engages it only when `uses_array_stream_shim()` AND `wants_array_stream(body)` hold.
         Some(Box::new(GeminiJsonArrayFramer::new()))
-    }
-
-    fn fills_thought_signature(&self) -> bool {
-        // Gemini 3 emits a `thoughtSignature` on reasoning parts and rejects a follow-up turn that
-        // drops it; the sentinel fill is this dialect's own request shaping.
-        true
     }
 
     fn wants_array_stream(&self, body: &serde_json::Value) -> bool {
@@ -1396,24 +1359,6 @@ impl ProtocolWriter for GeminiWriter {
         body.get(GEMINI_JSON_ARRAY_SHIM_KEY)
             .and_then(|b| b.as_bool())
             .unwrap_or(false)
-    }
-
-    fn has_native_path_not_found(&self) -> bool {
-        // Gemini native NOT_FOUND responses carry a structured message naming the resource path
-        // and API version (e.g. "Invalid resource path: models/{rest} is not found for API
-        // version {api_version}."). All other protocols use the canonical OpenAI-shape NOT_FOUND.
-        true
-    }
-
-    fn auth_failure_message(&self) -> &'static str {
-        GEMINI_BAD_KEY_MESSAGE
-    }
-
-    /// Gemini caps `stopSequences` at 5 and 400s on more. See `stop_sequence_cap`'s doc on
-    /// `ProtocolWriter` for why an over-cap request is REJECTED at the cross-protocol seam rather
-    /// than silently truncated.
-    fn stop_sequence_cap(&self) -> Option<(usize, &'static str)> {
-        Some((5, "Gemini"))
     }
 
     fn clone_box(&self) -> Box<dyn ProtocolWriter> {

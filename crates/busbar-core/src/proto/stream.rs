@@ -154,9 +154,15 @@ impl StreamTranslate {
         // method `FirstByteBody` already dispatches through (so the two can never drift from it), and
         // `emit_done` reads `emits_sse_done_terminator()`. This constructor carries no provider-name
         // branch; a 7th protocol gets the safe `false` defaults.
-        let emit_done = ingress_proto.writer().emits_sse_done_terminator();
-        let ingress_eventstream = ingress_proto.writer().ingress_is_eventstream();
-        let egress_eventstream = egress_proto.writer().ingress_is_eventstream();
+        let emit_done = ingress_proto
+            .decl()
+            .is_some_and(|d| d.emits_sse_done_terminator);
+        let ingress_eventstream = ingress_proto
+            .decl()
+            .is_some_and(|d| d.ingress_is_eventstream);
+        let egress_eventstream = egress_proto
+            .decl()
+            .is_some_and(|d| d.ingress_is_eventstream);
         // The per-stream framing is keyed to the INGRESS writer — it produces the client-facing wire.
         // A protocol with no per-stream framing quirk yields the inert PassthroughFraming.
         let framing = ingress_proto.writer().new_stream_framing();
@@ -450,7 +456,8 @@ impl StreamTranslate {
             // "anthropic"` name-branch: Gemini legitimately coalesces N sources into one candidate-level
             // `citationMetadata` chunk (None → no fan-out). A single-citation delta (the common case)
             // is within any limit and takes the untouched fall-through below.
-            if let Some(max_per_event) = self.ingress.writer().max_citations_per_delta() {
+            if let Some(max_per_event) = self.ingress.decl().and_then(|d| d.max_citations_per_delta)
+            {
                 if let crate::ir::IrStreamEvent::BlockDelta {
                     index,
                     delta: crate::ir::IrDelta::CitationsDelta(citations),
@@ -478,7 +485,11 @@ impl StreamTranslate {
             // cross-protocol only (`ingress != egress`, enforced by `new`), so a same-protocol
             // passthrough (which carries the upstream's own frames verbatim) cannot double-emit.
             if is_message_start {
-                if let Some(frame) = self.ingress.writer().frame_after_message_start() {
+                if let Some(frame) = self
+                    .ingress
+                    .decl()
+                    .and_then(|d| d.frame_after_message_start)
+                {
                     out.extend_from_slice(frame);
                 }
             }

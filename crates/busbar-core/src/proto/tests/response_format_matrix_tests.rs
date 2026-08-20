@@ -275,7 +275,7 @@ fn stop_sequences_clamped_per_vendor_cap() {
 
     let openai_writer = OpenAiWriter;
     assert_eq!(
-        openai_writer.stop_sequence_cap(),
+        crate::proto::decl_for("openai").and_then(|d| d.stop_sequence_cap),
         Some((4, "OpenAI")),
         "openai must publish its documented stop-sequence cap of 4 for the reject path to consult"
     );
@@ -289,7 +289,7 @@ fn stop_sequences_clamped_per_vendor_cap() {
 
     let gemini_writer = GeminiWriter;
     assert_eq!(
-        gemini_writer.stop_sequence_cap(),
+        crate::proto::decl_for("gemini").and_then(|d| d.stop_sequence_cap),
         Some((5, "Gemini")),
         "gemini must publish its documented stop-sequence cap of 5 for the reject path to consult"
     );
@@ -303,9 +303,8 @@ fn stop_sequences_clamped_per_vendor_cap() {
         "GeminiWriter::write_request no longer clamps; the reject seam enforces the cap upstream"
     );
 
-    let cohere_writer = CohereWriter;
     assert_eq!(
-        cohere_writer.stop_sequence_cap(),
+        crate::proto::decl_for("cohere").and_then(|d| d.stop_sequence_cap),
         Some((5, "Cohere")),
         "cohere must publish its documented stop-sequence cap of 5 for the reject path to consult"
     );

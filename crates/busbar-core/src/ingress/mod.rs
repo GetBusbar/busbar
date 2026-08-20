@@ -283,8 +283,8 @@ fn admit_check(
                 // Native quota status differs by vendor (Bedrock's
                 // ServiceQuotaExceededException is 400; every other vendor surfaces
                 // over-quota as 429). The writer owns that mapping.
-                crate::proto::protocol_for(proto)
-                    .map(|p| p.writer().quota_exceeded_status())
+                crate::proto::decl_for(proto)
+                    .map(|d| d.quota_exceeded_status)
                     .unwrap_or(StatusCode::TOO_MANY_REQUESTS),
                 crate::proxy::KIND_INSUFFICIENT_QUOTA,
                 format!(
@@ -332,8 +332,8 @@ fn admit_check(
             // FAIL-CLOSED: a key bound to a group this node's config does not know is not
             // admitted; the message names the missing bucket so the operator can fix it.
             LimitBlocked::MissingGroup(group) => (
-                crate::proto::protocol_for(proto)
-                    .map(|p| p.writer().quota_exceeded_status())
+                crate::proto::decl_for(proto)
+                    .map(|d| d.quota_exceeded_status)
                     .unwrap_or(StatusCode::TOO_MANY_REQUESTS),
                 crate::proxy::KIND_INSUFFICIENT_QUOTA,
                 format!(
@@ -999,10 +999,7 @@ pub(crate) async fn gemini_ingress(
             // rejection observable in metrics + the webhook instead of a silent early-return.
             let envelope_proto =
                 crate::ingress::native::envelope_dialect(app.planes.ingress_of(uri.path()));
-            if crate::proto::protocol_for(envelope_proto)
-                .map(|p| p.writer().has_native_path_not_found())
-                .unwrap_or(false)
-            {
+            if crate::proto::decl_for(envelope_proto).is_some_and(|d| d.has_native_path_not_found) {
                 return finish_rejected(
                     &app,
                     &gov,
@@ -1070,10 +1067,7 @@ pub(crate) async fn gemini_ingress(
             // and the bounded `"unresolved"` pool label, keeping it observable in metrics + webhook.
             let envelope_proto =
                 crate::ingress::native::envelope_dialect(app.planes.ingress_of(uri.path()));
-            if crate::proto::protocol_for(envelope_proto)
-                .map(|p| p.writer().has_native_path_not_found())
-                .unwrap_or(false)
-            {
+            if crate::proto::decl_for(envelope_proto).is_some_and(|d| d.has_native_path_not_found) {
                 return finish_rejected(
                     &app,
                     &gov,

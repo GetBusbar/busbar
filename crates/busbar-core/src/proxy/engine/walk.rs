@@ -483,14 +483,15 @@ pub(crate) async fn forward_once(
     // Gemini ingress streaming WITHOUT `?alt=sse` → JSON-array streamed body (see main path). GATED
     // on `uses_array_stream_shim()` (true only for GeminiWriter) so a body-model client cannot
     // smuggle the shim key to force JSON-array reframing of its SSE stream.
-    let gemini_json_array = crate::proto::protocol_for(ingress_protocol)
-        .map(|p| {
-            p.writer().uses_array_stream_shim()
-                && v.as_ref()
+    let gemini_json_array = crate::proto::decl_for(ingress_protocol)
+        .is_some_and(|d| d.uses_array_stream_shim)
+        && crate::proto::protocol_for(ingress_protocol)
+            .map(|p| {
+                v.as_ref()
                     .map(|v| p.writer().wants_array_stream(v))
                     .unwrap_or(false)
-        })
-        .unwrap_or(false);
+            })
+            .unwrap_or(false);
     let egress_name = app.lanes[i].protocol.name();
 
     // Breaker config for THIS degraded attempt's routing pool cell — resolved the same way the main
@@ -597,7 +598,7 @@ pub(crate) async fn forward_once(
         .header(CONTENT_TYPE, egress_ct)
         // Native-SDK User-Agent for the egress protocol (mirrors the main forward path). Dispatched
         // through the writer vtable (`ProtocolWriter::egress_user_agent`) — writer resolved above.
-        .header(USER_AGENT, writer.egress_user_agent())
+        .header(USER_AGENT, crate::proxy::egress_user_agent(egress_name))
         // Native-SDK Accept for the egress protocol (mirrors the main forward path). Dispatched
         // through the writer vtable (`ProtocolWriter::egress_accept`) — no `"bedrock"` branch here.
         .header(ACCEPT, op.egress_accept(writer, wants_stream))

@@ -126,7 +126,7 @@ impl OperationHandler for ChatOperation {
     fn egress_representable(&self, ir: &IrReq) -> Result<(), String> {
         let IrReq::Chat(r) = ir else { return Ok(()) };
         let Some(p) = self.proto() else { return Ok(()) };
-        if let Some((cap, name)) = p.writer().stop_sequence_cap() {
+        if let Some((cap, name)) = p.decl().and_then(|d| d.stop_sequence_cap) {
             let provided = r.stop.len();
             if provided > cap {
                 return Err(format!(

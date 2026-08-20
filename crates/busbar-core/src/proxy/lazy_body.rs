@@ -287,7 +287,7 @@ pub(crate) fn head_provably_pristine(app: &App, i: usize, probe: &Value) -> bool
         return false;
     }
     let lane = &app.lanes[i];
-    let model_in_url = lane.protocol.writer().has_model_in_url();
+    let model_in_url = lane.protocol.decl().is_some_and(|d| d.has_model_in_url);
     // #2: `stream` is a path shim for a path-model egress (same-proto ⇒ egress == this lane).
     if model_in_url && obj.contains_key("stream") {
         return false;
@@ -299,7 +299,12 @@ pub(crate) fn head_provably_pristine(app: &App, i: usize, probe: &Value) -> bool
     }
     // A dialect that reshapes its body at a path-model URL always mutates an object body, so such
     // a request can never be a pristine passthrough. Asked of the WRITER before any DOM exists.
-    if lane.path_base.is_some() && lane.protocol.writer().reshapes_body_at_path_base() {
+    if lane.path_base.is_some()
+        && lane
+            .protocol
+            .decl()
+            .is_some_and(|d| d.reshapes_body_at_path_base)
+    {
         return false;
     }
     // #4: a same-protocol path-model body `model` is stripped after the rewrite.

@@ -52,6 +52,26 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     // the native 404 for anything else beneath it. All four were a name-matched arm in core.
     path_ingress: Some(busbar_core::ingress::bedrock_arrival),
     stream_usage_requires_opt_in: false,
+    // ── Promoted writer facts (G6 step A1): the same constants the `BedrockWriter` methods returned.
+    requires_max_tokens: false,
+    stop_sequence_cap: None,
+    cache_markers_model_gated: true,
+    fills_thought_signature: false,
+    frame_after_message_start: None,
+    reshapes_body_at_path_base: false,
+    max_cache_control_breakpoints: None,
+    quota_exceeded_status: axum::http::StatusCode::BAD_REQUEST,
+    ingress_is_eventstream: true,
+    emits_sse_done_terminator: false,
+    max_citations_per_delta: Some(1),
+    egress_user_agent: busbar_core::proxy::EGRESS_UA_BEDROCK,
+    has_model_in_url: true,
+    auth_failure_status_and_kind: (axum::http::StatusCode::FORBIDDEN, "auth"),
+    ingress_relays_amzn_headers: true,
+    ingress_relayed_response_header_names: &[HDR_AMZN_REQUEST_ID, HDR_AMZN_ERROR_TYPE],
+    auth_failure_message: "",
+    uses_array_stream_shim: false,
+    has_native_path_not_found: false,
 };
 
 /// The two response headers a native AWS Bedrock endpoint ALWAYS emits (lowercase on the wire):

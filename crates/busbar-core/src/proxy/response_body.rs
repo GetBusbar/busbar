@@ -160,10 +160,8 @@ where
             // Whether the client expects a binary event-stream body (Bedrock) rather than SSE text.
             // Dispatches through the `ingress_is_eventstream` vtable method so this constructor carries
             // no `== "bedrock"` branch — a future protocol with binary framing just overrides it.
-            ingress_eventstream: ingress_proto
-                .as_ref()
-                .map(|p| p.writer().ingress_is_eventstream())
-                .unwrap_or(false),
+            ingress_eventstream: crate::proto::decl_for(ingress_protocol)
+                .is_some_and(|d| d.ingress_is_eventstream),
             ingress_protocol: ingress_proto
                 .as_ref()
                 .map(|p| p.name_static())

@@ -52,6 +52,29 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     // dialect's own statement about its own URL space.
     path_ingress: Some(busbar_core::ingress::gemini_arrival),
     stream_usage_requires_opt_in: false,
+    // ── Promoted writer facts (G6 step A1): the same constants the `GeminiWriter` methods returned.
+    requires_max_tokens: false,
+    stop_sequence_cap: Some((5, "Gemini")),
+    cache_markers_model_gated: false,
+    fills_thought_signature: true,
+    frame_after_message_start: None,
+    reshapes_body_at_path_base: false,
+    max_cache_control_breakpoints: None,
+    quota_exceeded_status: axum::http::StatusCode::TOO_MANY_REQUESTS,
+    ingress_is_eventstream: false,
+    emits_sse_done_terminator: false,
+    max_citations_per_delta: None,
+    egress_user_agent: busbar_core::proxy::EGRESS_UA_GEMINI,
+    has_model_in_url: true,
+    auth_failure_status_and_kind: (
+        axum::http::StatusCode::BAD_REQUEST,
+        ERR_TYPE_INVALID_REQUEST,
+    ),
+    ingress_relays_amzn_headers: false,
+    ingress_relayed_response_header_names: &[],
+    auth_failure_message: GEMINI_BAD_KEY_MESSAGE,
+    uses_array_stream_shim: true,
+    has_native_path_not_found: true,
 };
 
 /// Router-internal shim key the gemini ingress route injects into the request body when the client

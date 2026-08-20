@@ -237,8 +237,8 @@ pub(crate) fn residual_dialect_for_path(path: &str) -> Option<&'static str> {
 /// lives in the writer vtable, not in this agnostic function. An unknown future proto falls back to
 /// the default generic copy.
 pub(crate) fn vendor_auth_failure_message(proto: &str) -> &'static str {
-    protocol_for(proto)
-        .map(|p| p.writer().auth_failure_message())
+    registry::decl_for(proto)
+        .map(|d| d.auth_failure_message)
         .unwrap_or("authentication failed")
 }
 
@@ -473,35 +473,6 @@ pub trait ProtocolWriter: Send + Sync {
         true
     }
 
-    /// Whether this protocol REQUIRES `max_tokens` on every request. The Anthropic Messages API
-    /// hard-rejects (400 `max_tokens: Field required`) a request without it, whereas OpenAI Chat
-    /// Completions treats it as optional (the server applies a default) — and Bedrock Converse
-    /// likewise defaults it. When this returns `true` and a cross-protocol-translated request
-    /// carries no `max_tokens`, the forward path injects the lane's `default_max_tokens` (or
-    /// `DEFAULT_MAX_TOKENS`) so source-optional clients keep working across the translation
-    /// boundary. Default: `false` (source-optional == target-optional).
-    fn requires_max_tokens(&self) -> bool {
-        false
-    }
-
-    /// This dialect's published cap on the number of stop sequences a request may carry, and the
-    /// display name to name in a rejection message, or `None` if the dialect has no cap this
-    /// engine enforces. The IR carries an unbounded `Vec` (no protocol enforces a cap on ingress),
-    /// so a cross-protocol request can always exceed a smaller target's cap.
-    ///
-    /// FAIL-CLOSED, not fail-soft: a request over the cap is REJECTED at the cross-protocol seam
-    /// (`ChatOperation::egress_representable`) rather than silently truncated. A partial stop set
-    /// is a WEAKER, DIFFERENT instruction than the one the caller gave — not a smaller-equivalent
-    /// — so truncating and forwarding anyway would silently drop the user's guard against
-    /// over-generation. Reject, don't drop-whole either: the correct set is small and the caller
-    /// can trivially resubmit within the limit, so a 400 naming the cap is the honest answer.
-    /// Default `None` (no cap enforced — Anthropic/Bedrock publish no fixed cap). `CohereWriter`
-    /// and `GeminiWriter` override with `Some((5, "Cohere"/"Gemini"))`; `OpenAiWriter` with
-    /// `Some((4, "OpenAI"))`.
-    fn stop_sequence_cap(&self) -> Option<(usize, &'static str)> {
-        None
-    }
-
     /// The caller controls this writer will DROP for `req` on cross-protocol egress because the target
     /// dialect has no native representation (audit-and-allow: the request still forwards, but each drop
     /// is recorded as a first-class audit event by the cross-protocol seam). Default: none.
@@ -509,68 +480,12 @@ pub trait ProtocolWriter: Send + Sync {
         Vec::new()
     }
 
-    /// Whether this writer projects the IR's `cache_control` breakpoints into a native wire
-    /// marker that is MODEL-GATED — a schema key some deployed models hard-reject with a 400
-    /// (Bedrock's `cachePoint`: Claude accepts it, Amazon Nova rejects it as "extraneous key
-    /// [cachePoint] is not permitted"). When true, the cross-protocol seam clears the cache ask
-    /// unless the lane declares the `prompt_caching` capability — the same operator-asserted
-    /// posture as `reasoning`, so a translation can never 400 a model over a marker the caller's
-    /// dialect allowed. Writers whose cache form is universally accepted by their API (Anthropic
-    /// `cache_control`), or who emit no cache marker at all, keep the default `false` and need no
-    /// capability flag. Same-protocol passthrough never consults this (byte-identical proxying:
-    /// a caller speaking the egress dialect natively gets exactly what a direct call would).
-    fn cache_markers_model_gated(&self) -> bool {
-        false
-    }
-
-    /// Whether this protocol's egress fills the Gemini 3 `thoughtSignature` SENTINEL on a
-    /// translated request. A writer-vtable fact, not a `name == "gemini"` comparison in the
-    /// agnostic forward path: the shaping is this dialect's, so the answer is this dialect's.
-    /// The lane's URL shape stays the CALLER's question — the sentinel bypass is not confirmed to
-    /// be honoured by Vertex-style path-model deployments — so the call site ANDs this with
-    /// `path_base.is_none()`. Default `false`; `GeminiWriter` overrides.
-    fn fills_thought_signature(&self) -> bool {
-        false
-    }
-
-    /// A framed wire frame this dialect emits IMMEDIATELY AFTER `message_start` on a TRANSLATED
-    /// stream, or `None` (the default) for a dialect that emits none. A native Anthropic stream
-    /// sends `event: ping` there and a translated one did not, which is both a fingerprintable proxy
-    /// tell and closes part of the idle-timeout gap a native stream survives. The frame is the
-    /// dialect's own wire, so it lives with the writer rather than as a `name == "anthropic"` branch
-    /// in the cross-protocol translator. Same-protocol passthrough is byte-verbatim and already
-    /// carries the upstream's own frames, so this is never consulted there.
-    fn frame_after_message_start(&self) -> Option<&'static [u8]> {
-        None
-    }
-
-    /// Whether this protocol's body must be RESHAPED when the lane carries a `path_base` (a
-    /// Vertex-style URL that names the model in the path). Claude-on-Vertex is the one case: the
-    /// body must OMIT `model` and instead carry Vertex's required `anthropic_version`
-    /// discriminator. Predicted here — [`crate::proxy::lazy_body`] asks BEFORE materializing a DOM,
-    /// to know that such a body can never be a pristine passthrough — and performed by
-    /// [`Self::reshape_for_path_base`]. Default `false`; `AnthropicWriter` overrides.
-    fn reshapes_body_at_path_base(&self) -> bool {
-        false
-    }
-
-    /// PERFORM the `path_base` body reshape [`Self::reshapes_body_at_path_base`] promised, returning
+    /// PERFORM the `path_base` body reshape `ProtocolDecl::reshapes_body_at_path_base` promised, returning
     /// whether the body changed. The mutation is the protocol's own wire knowledge and lives with
     /// the writer, so the agnostic forward path applies "whatever this dialect needs at a path-model
     /// URL" without knowing that anything named `anthropic_version` exists. Default: no-op, `false`.
     fn reshape_for_path_base(&self, _body: &mut serde_json::Value) -> bool {
         false
-    }
-
-    /// The maximum number of `cache_control` breakpoints this writer's dialect accepts on a single
-    /// request, or `None` when the vendor publishes no fixed cap (Bedrock's cap is model-specific,
-    /// not protocol-wide, so it is deliberately left `None` here rather than guessed). Anthropic
-    /// documents a hard cap of 4 (`"A maximum of 4 blocks with cache_control may be provided"`).
-    /// The IR carries breakpoints as an unbounded per-block `Option<IrCacheControl>`, so a
-    /// cross-protocol request (same-protocol Anthropic is a verbatim passthrough that never reaches
-    /// a writer) can exceed a smaller target's cap; `prepare_for_egress` clamps against this.
-    fn max_cache_control_breakpoints(&self) -> Option<usize> {
-        None
     }
 
     /// Write a response/stream event to wire (event_type, data).
@@ -646,16 +561,6 @@ pub trait ProtocolWriter: Send + Sync {
         })
     }
 
-    /// Native HTTP status a quota/budget-exhaustion rejection maps to for THIS protocol. Most vendors
-    /// surface over-quota as `429 Too Many Requests` (the default); Bedrock's
-    /// `ServiceQuotaExceededException` is a `400`-class error. The agnostic governance guard calls
-    /// this through the writer vtable instead of branching on the protocol name, so a 7th protocol
-    /// gets the default until it overrides. The wrong status here is a vendor-indistinguishability
-    /// tell on an over-budget rejection.
-    fn quota_exceeded_status(&self) -> StatusCode {
-        StatusCode::TOO_MANY_REQUESTS
-    }
-
     /// Attach any protocol-specific RESPONSE HEADERS a native endpoint always carries on an error
     /// response, given the already-built error `envelope` and canonical `kind`. Default no-op (most
     /// protocols carry the error entirely in the body). Bedrock attaches `x-amzn-RequestId` +
@@ -668,55 +573,6 @@ pub trait ProtocolWriter: Send + Sync {
         _kind: &str,
         _envelope: &serde_json::Value,
     ) {
-    }
-
-    /// True when this protocol's INGRESS client decodes a binary `application/vnd.amazon.eventstream`
-    /// body (a native AWS SDK Bedrock client). A mid-stream error must then be a BINARY exception
-    /// frame, not an SSE `event: error` text frame — writing SSE text into a binary eventstream body
-    /// yields an undecodable prelude/CRC for the SDK's decoder. The agnostic `FirstByteBody`
-    /// constructor calls this through the writer vtable instead of `ingress_protocol == "bedrock"`,
-    /// so the eventstream path is gated by the protocol itself, not by its name.
-    ///
-    /// Default: `false` (every SSE-framed protocol). Only `BedrockWriter` overrides to `true`.
-    fn ingress_is_eventstream(&self) -> bool {
-        false
-    }
-
-    /// True when THIS protocol's streamed (SSE) response ends with the literal `data: [DONE]`
-    /// terminator — the OpenAI Chat Completions convention. busbar reproduces it when emitting an
-    /// openai-format stream back to an openai-ingress client on a cross-protocol hop. Default `false`
-    /// (Responses uses typed terminal events; Anthropic/Gemini/Cohere have their own framing; Bedrock
-    /// is binary eventstream); OpenAiWriter overrides → true. Consulted via the vtable by
-    /// `StreamTranslate::new` so that constructor carries no `ingress == "openai"` name-branch.
-    fn emits_sse_done_terminator(&self) -> bool {
-        false
-    }
-
-    /// The MAXIMUM number of citations this protocol's streamed `citations_delta`-equivalent wire
-    /// event may carry, or `None` for no limit. Anthropic frames EXACTLY ONE `citation` per
-    /// `citations_delta` SSE event (a native SDK `JSON.parse`s one object per `data:` line and crashes
-    /// on an array), so `AnthropicWriter` overrides → `Some(1)`; `StreamTranslate` then fans a multi-
-    /// citation `CitationsDelta` into N single-citation deltas at the framing seam. Default `None`
-    /// (Gemini legitimately coalesces N sources into one candidate-level `citationMetadata` chunk; the
-    /// others have no per-event citation limit). Consulted via the vtable so the translator carries no
-    /// `ingress == "anthropic"` name-branch for this wire constraint.
-    fn max_citations_per_delta(&self) -> Option<usize> {
-        None
-    }
-
-    /// Plausible native-SDK `User-Agent` for THIS EGRESS protocol. reqwest sends NO default
-    /// User-Agent unless one is set, so without this every proxied upstream request reaches the
-    /// backend with no UA at all — a trivial backend-side fingerprint distinguishing busbar-proxied
-    /// traffic from a native vendor SDK (which always sends a recognizable UA). Each writer returns
-    /// the string its real first-party SDK emits. The agnostic forward path calls this through the
-    /// writer vtable instead of the name-match in `egress_user_agent`, so adding a 7th protocol
-    /// only requires an override here, not a new branch in the core.
-    ///
-    /// Default: `EGRESS_UA_DEFAULT` from proxy engine — a generic-but-present UA for unknown egress
-    /// (better than none). Each registered writer overrides with its own pinned SDK UA string (see
-    /// `EGRESS_UA_*` in proxy engine for the per-protocol UA strings that must be kept current).
-    fn egress_user_agent(&self) -> &'static str {
-        crate::proxy::EGRESS_UA_DEFAULT
     }
 
     /// Native-SDK `Accept` header for THIS EGRESS protocol, given the caller's stream intent.
@@ -734,47 +590,6 @@ pub trait ProtocolWriter: Send + Sync {
         } else {
             crate::proxy::APPLICATION_JSON
         }
-    }
-
-    /// True when this protocol carries the model identifier IN THE URL PATH rather than in the
-    /// request body. Gemini encodes it as `/v1beta/models/{model}:generateContent` and Bedrock as
-    /// `/model/{id}/converse`; for both, the body `model` field must be STRIPPED on the same-protocol
-    /// passthrough path (the native backend rejects an unexpected body field and the model is already
-    /// encoded in the signed/constructed URL). Body-model protocols (anthropic/openai/responses/cohere)
-    /// return `false` (the default) and keep the field untouched. The agnostic
-    /// `strip_same_protocol_model_shim` calls this through the writer vtable instead of
-    /// `matches!(ingress_protocol, "gemini" | "bedrock")`, so a 7th url-model protocol only needs an
-    /// override here, not a new arm in the core.
-    ///
-    /// Default: `false` (body-model protocols). Only `GeminiWriter` and `BedrockWriter` override to
-    /// `true`.
-    fn has_model_in_url(&self) -> bool {
-        false
-    }
-
-    /// The HTTP status and protocol-agnostic error `kind` a bad/missing credential yields for THIS
-    /// protocol. The pair is chosen to match what the genuine vendor returns for a bad API key,
-    /// because the status code and the writer-mapped `error.type`/`error.status` are both deterministic
-    /// protocol tells a native SDK keys its typed exception off:
-    ///   - bedrock → HTTP 403 + "auth": a real SigV4 rejection is 403 AccessDenied (NOT 401).
-    ///   - gemini  → HTTP 400 + "invalid_request_error": the Generative Language API does NOT return
-    ///     401/UNAUTHENTICATED for a bad API key; it returns HTTP 400 with `error.status:
-    ///     "INVALID_ARGUMENT"` (google.rpc.Code; the gemini writer maps `invalid_request_error` →
-    ///     INVALID_ARGUMENT and echoes `code: 400`). A 401/UNAUTHENTICATED body would be a tell.
-    ///   - openai / responses → HTTP 401 + "authentication_error": the genuine OpenAI/Responses
-    ///     bad-key 401 body carries `error.code: "invalid_api_key"`. We pass `authentication_error`
-    ///     so the wire body carries the real `code: "invalid_api_key"` pairing.
-    ///   - anthropic / cohere / unknown → HTTP 401 + "authentication_error": the standard
-    ///     bad-credential shape for those vendors.
-    ///
-    /// `BedrockWriter` and `GeminiWriter` override; all other writers use the default. The agnostic
-    /// `auth::auth_failure_status_and_kind` dispatches through this vtable instead of a match on the
-    /// protocol name, so the core never branches on `"bedrock"` or `"gemini"` for auth-failure shaping.
-    ///
-    /// Default: `(StatusCode::UNAUTHORIZED, "authentication_error")` (openai/responses/anthropic/
-    /// cohere/unknown).
-    fn auth_failure_status_and_kind(&self) -> (StatusCode, &'static str) {
-        (StatusCode::UNAUTHORIZED, crate::proxy::KIND_AUTHENTICATION)
     }
 
     /// When a Bedrock-ingress client requested a STREAMING response (`wants_stream`) but the upstream
@@ -812,23 +627,6 @@ pub trait ProtocolWriter: Send + Sync {
     /// `Some` AND `value` is a JSON object (same double-`Some` guard the original inline branches use).
     fn inject_response_metrics(&self, _value: &mut serde_json::Value, _elapsed_ms: Option<u64>) {}
 
-    /// True when this protocol's INGRESS client expects `x-amzn-RequestId` (and, on error paths,
-    /// `x-amzn-errortype`) on every response — 2xx, stream, and error. A real AWS Bedrock endpoint
-    /// always sends these headers; their absence is a detectable proxy tell and leaves the AWS SDK's
-    /// `request_id()` returning `None`.
-    ///
-    /// Used as the predicate at the four category-3 sites in `proxy engine` (header capture before body
-    /// consumption, 2xx buffered attach, streaming 2xx attach, degraded error attach). The header-attach
-    /// bodies remain inline; only the name-branch `if ingress_protocol == "bedrock"` is replaced with
-    /// `if writer.ingress_relays_amzn_headers()`, removing the provider-name string from the
-    /// agnostic core while keeping the intricate `Builder`-move header flow untouched.
-    ///
-    /// Default: `false` (all non-Bedrock protocols never emit `x-amzn-*` headers).
-    /// `BedrockWriter` overrides: `true`.
-    fn ingress_relays_amzn_headers(&self) -> bool {
-        false
-    }
-
     /// The request-id RESPONSE HEADER (name + value) to ATTACH to a 2xx/relay response on THIS
     /// protocol's INGRESS path, or `None` when no header is attached. This is the SUCCESS-path analog
     /// of `attach_error_response_headers`, dispatched through the writer vtable so the agnostic forward
@@ -848,58 +646,6 @@ pub trait ProtocolWriter: Send + Sync {
         _upstream_request_id: Option<&str>,
     ) -> Option<(&'static str, String)> {
         None
-    }
-
-    /// The UPSTREAM response header NAMES this protocol's same-protocol passthrough forwards VERBATIM
-    /// on a relay (read from the upstream response, re-emitted on the client response). Exposed through
-    /// the vtable so the agnostic forward path reads/forwards them by iterating this list, naming no
-    /// protocol module.
-    ///
-    /// - `BedrockWriter` → `["x-amzn-requestid", "x-amzn-errortype"]` (a native Bedrock response carries
-    ///   both; AWS SDKs dispatch the typed exception from `x-amzn-errortype` BEFORE the body `__type`).
-    /// - `AnthropicWriter` → `["request-id"]`.
-    ///
-    /// Default: `&[]` (no relayed headers).
-    fn ingress_relayed_response_header_names(&self) -> &'static [&'static str] {
-        &[]
-    }
-
-    /// The vendor-plausible auth-failure wire MESSAGE for THIS protocol — the per-vendor prose that
-    /// lands verbatim in the native error body on a bad/missing credential. Dispatched through the
-    /// vtable so `auth.rs` names no protocol string for this decision. Strings sampled from real
-    /// 401/403 bodies (see the former `vendor_auth_failure_message` doc). Default: a generic
-    /// `"authentication failed"`; each vendor writer overrides with its sampled copy.
-    fn auth_failure_message(&self) -> &'static str {
-        "authentication failed"
-    }
-
-    /// True when this protocol's INGRESS client expects a STREAMING response body in the JSON-array
-    /// streaming format (NOT SSE). Gemini clients that send a `:streamGenerateContent` request
-    /// WITHOUT `?alt=sse` expect an array-framed JSON stream; the route layer signals this via the
-    /// `GEMINI_JSON_ARRAY_SHIM_KEY` in the request body, and the forward path gates on this predicate
-    /// (AND the shim key) to enable `GeminiJsonArrayFramer`. Gating on the vtable — not the name
-    /// string — prevents a body-model client from smuggling the shim key to force JSON-array reframing
-    /// of its own SSE stream (that would be undecodable and a router behaviour no native backend
-    /// exhibits).
-    ///
-    /// Default: `false` (openai/anthropic/bedrock/cohere/responses all use SSE or binary framing).
-    /// `GeminiWriter` overrides: `true`.
-    fn uses_array_stream_shim(&self) -> bool {
-        false
-    }
-
-    /// True when this protocol has a NATIVE path-not-found error envelope with a protocol-specific
-    /// message format, as opposed to the canonical `not_found_error` OpenAI-shape used by all other
-    /// protocols. Gemini native NOT_FOUND responses carry a structured message naming the resource
-    /// path and API version; for all other protocols the generic envelope is correct.
-    ///
-    /// Used at two sites in `ingress` (no-colon path and unsupported-action path) to gate the
-    /// Gemini-native NOT_FOUND envelope without branching on the name string `"gemini"`.
-    ///
-    /// Default: `false` (all non-Gemini protocols use the canonical OpenAI-shape NOT_FOUND).
-    /// `GeminiWriter` overrides: `true`.
-    fn has_native_path_not_found(&self) -> bool {
-        false
     }
 
     /// Serialize the one-token "ping" probe request through THIS dialect's own `write_request`, as a
@@ -1226,6 +972,14 @@ impl Protocol {
     /// owned copy — the value points into the process-lifetime protocol table, not the request.
     pub(crate) fn name_static(&self) -> &'static str {
         self.name
+    }
+
+    /// This protocol's DECLARATION — the promoted constant facts (`ProtocolDecl`) core now reads by
+    /// FIELD rather than through the writer vtable (G6 step A1). Always `Some` for a registered codec
+    /// protocol (every `Protocol` resolves from a declaration); the `Option` mirrors [`decl_for`]'s
+    /// signature so a caller holding a `Protocol` reads a fact exactly as a by-name caller does.
+    pub(crate) fn decl(&self) -> Option<&'static registry::ProtocolDecl> {
+        registry::decl_for(self.name)
     }
 
     /// Returns the reader for this protocol.

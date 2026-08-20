@@ -41,8 +41,8 @@ pub(crate) fn maybe_attach_response_request_id(
 /// `"bedrock"`, so the agnostic forward path never contains a hard-coded protocol string for this
 /// decision. Unknown protocols fall back to `false` (no `x-amzn-*` headers emitted).
 pub(crate) fn ingress_relays_amzn_headers(ingress_protocol: &str) -> bool {
-    crate::proto::protocol_for(ingress_protocol)
-        .map(|p| p.writer().ingress_relays_amzn_headers())
+    crate::proto::decl_for(ingress_protocol)
+        .map(|d| d.ingress_relays_amzn_headers)
         .unwrap_or(false)
 }
 
@@ -54,8 +54,8 @@ pub(crate) fn ingress_relays_amzn_headers(ingress_protocol: &str) -> bool {
 pub(crate) fn ingress_relayed_response_header_names(
     ingress_protocol: &str,
 ) -> &'static [&'static str] {
-    crate::proto::protocol_for(ingress_protocol)
-        .map(|p| p.writer().ingress_relayed_response_header_names())
+    crate::proto::decl_for(ingress_protocol)
+        .map(|d| d.ingress_relayed_response_header_names)
         .unwrap_or(&[])
 }
 
@@ -309,8 +309,8 @@ pub(crate) fn strip_router_shim_keys(v: &mut Value, egress_protocol: &str) -> bo
         // model both ride the URL there; `has_model_in_url()` covers both). For body-model egress
         // `stream` is the writer-authored field the backend needs to start streaming, so it must be
         // PRESERVED. Gate on egress, never ingress.
-        if crate::proto::protocol_for(egress_protocol)
-            .map(|p| p.writer().has_model_in_url())
+        if crate::proto::decl_for(egress_protocol)
+            .map(|d| d.has_model_in_url)
             .unwrap_or(false)
             && obj.remove("stream").is_some()
         {
@@ -338,8 +338,8 @@ pub(crate) fn strip_router_shim_keys(v: &mut Value, egress_protocol: &str) -> bo
 /// original carries a `model` the native backend must not see). A same-proto path-model request that
 /// arrived without a body `model` is left untouched and stays pristine.
 pub(crate) fn strip_same_protocol_model_shim(v: &mut Value, ingress_protocol: &str) -> bool {
-    let model_in_url = crate::proto::protocol_for(ingress_protocol)
-        .map(|p| p.writer().has_model_in_url())
+    let model_in_url = crate::proto::decl_for(ingress_protocol)
+        .map(|d| d.has_model_in_url)
         .unwrap_or(false);
     if model_in_url {
         if let Some(obj) = v.as_object_mut() {
@@ -424,24 +424,33 @@ pub(crate) fn translate_request_cross_protocol(
             };
             ir_req.prepare_for_egress(&crate::ir::variant::EgressPrep {
                 ingress_protocol,
-                egress_requires_max_tokens: app.lanes[i].protocol.writer().requires_max_tokens(),
+                egress_requires_max_tokens: app.lanes[i]
+                    .protocol
+                    .decl()
+                    .is_some_and(|d| d.requires_max_tokens),
                 lane_default_max_tokens: app.lanes[i].default_max_tokens,
                 global_default_max_tokens: app.default_max_tokens,
                 reasoning_allowed,
                 reasoning_budgets: app.reasoning_effort_budgets,
-                // The cache twin of `reasoning_allowed`: a lane whose writer's cache marker is
+                // The cache twin of `reasoning_allowed`: a lane whose dialect's cache marker is
                 // model-gated (Bedrock) must assert `prompt_caching` to receive breakpoints.
                 prompt_caching_allowed: app.lanes[i].prompt_caching
-                    || !app.lanes[i].protocol.writer().cache_markers_model_gated(),
+                    || !app.lanes[i]
+                        .protocol
+                        .decl()
+                        .is_some_and(|d| d.cache_markers_model_gated),
                 cache_control_cap: app.lanes[i]
                     .protocol
-                    .writer()
-                    .max_cache_control_breakpoints(),
+                    .decl()
+                    .and_then(|d| d.max_cache_control_breakpoints),
                 // thoughtSignature sentinel fill — the DIALECT declares whether it fills one
-                // (`ProtocolWriter::fills_thought_signature`), and this path ANDs it with the LANE's
+                // (`ProtocolDecl::fills_thought_signature`), and this path ANDs it with the LANE's
                 // URL shape: NEVER a Vertex-style path-model lane (`path_base.is_some()`), which is
                 // not confirmed to honor the sentinel bypass and has real reports of rejecting it.
-                thought_signature_fill: app.lanes[i].protocol.writer().fills_thought_signature()
+                thought_signature_fill: app.lanes[i]
+                    .protocol
+                    .decl()
+                    .is_some_and(|d| d.fills_thought_signature)
                     && app.lanes[i].path_base.is_none(),
             });
             ir_req.set_model(app.lanes[i].wire_model());
@@ -513,24 +522,27 @@ pub(crate) fn translate_request_cross_protocol(
                     ingress_protocol,
                     egress_requires_max_tokens: app.lanes[i]
                         .protocol
-                        .writer()
-                        .requires_max_tokens(),
+                        .decl()
+                        .is_some_and(|d| d.requires_max_tokens),
                     lane_default_max_tokens: app.lanes[i].default_max_tokens,
                     global_default_max_tokens: app.default_max_tokens,
                     reasoning_allowed,
                     reasoning_budgets: app.reasoning_effort_budgets,
                     prompt_caching_allowed: app.lanes[i].prompt_caching
-                        || !app.lanes[i].protocol.writer().cache_markers_model_gated(),
+                        || !app.lanes[i]
+                            .protocol
+                            .decl()
+                            .is_some_and(|d| d.cache_markers_model_gated),
                     cache_control_cap: app.lanes[i]
                         .protocol
-                        .writer()
-                        .max_cache_control_breakpoints(),
+                        .decl()
+                        .and_then(|d| d.max_cache_control_breakpoints),
                     // thoughtSignature sentinel fill — the dialect's own declaration, ANDed with
                     // the lane's URL shape. See the sibling `EgressPrep` construction above.
                     thought_signature_fill: app.lanes[i]
                         .protocol
-                        .writer()
-                        .fills_thought_signature()
+                        .decl()
+                        .is_some_and(|d| d.fills_thought_signature)
                         && app.lanes[i].path_base.is_none(),
                 });
                 let Some(eh) = egress_handler else {

@@ -938,22 +938,6 @@ impl ProtocolWriter for CohereWriter {
         })
     }
 
-    fn egress_user_agent(&self) -> &'static str {
-        // Cohere Python SDK UA shape — pinned, see `EGRESS_UA_COHERE` in proxy engine.
-        busbar_core::proxy::EGRESS_UA_COHERE
-    }
-
-    fn auth_failure_message(&self) -> &'static str {
-        "invalid api token"
-    }
-
-    /// Cohere v2 caps `stop_sequences` at 5 and 400s on more. See `stop_sequence_cap`'s doc on
-    /// `ProtocolWriter` for why an over-cap request is REJECTED at the cross-protocol seam rather
-    /// than silently truncated.
-    fn stop_sequence_cap(&self) -> Option<(usize, &'static str)> {
-        Some((5, "Cohere"))
-    }
-
     fn clone_box(&self) -> Box<dyn ProtocolWriter> {
         Box::new(self.clone())
     }

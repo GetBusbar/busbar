@@ -41,7 +41,7 @@ fn per_model_then_global_then_4096() {
     let prep = |lane: &Lane, global: u32| EgressPrep {
         thought_signature_fill: false,
         ingress_protocol: "openai",
-        egress_requires_max_tokens: lane.protocol.writer().requires_max_tokens(),
+        egress_requires_max_tokens: lane.protocol.decl().is_some_and(|d| d.requires_max_tokens),
         lane_default_max_tokens: lane.default_max_tokens,
         global_default_max_tokens: global,
         reasoning_allowed: true,

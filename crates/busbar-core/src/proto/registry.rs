@@ -177,6 +177,92 @@ pub struct ProtocolDecl {
     /// the injection is a fact about what THIS dialect does with a streaming request, and the engine
     /// only needed to know whether to do it.
     pub stream_usage_requires_opt_in: bool,
+
+    // ── PROMOTED WRITER FACTS (G6 step A1) ─────────────────────────────────────────────────────────
+    // Constant, no-argument, IR-free facts that used to be answered off the `ProtocolWriter` vtable
+    // (`protocol_for(name).writer().<method>()`, two `Box` allocations to read a `&'static` constant).
+    // Each field carries THIS dialect's value; core now reads it via `decl_for(name).<field>`. The
+    // value is the SAME constant the method returned — a relocation, not a behavior change. The
+    // per-request / stateful writer methods (`new_stream_framing`, `reshape_for_path_base`,
+    // `write_*`, `wants_array_stream`, …) stay on the vtable.
+    /// Replaces `ProtocolWriter::requires_max_tokens()`. Whether this dialect hard-rejects a request
+    /// with no `max_tokens` (Anthropic Messages 400s; the forward path injects the lane default).
+    pub requires_max_tokens: bool,
+
+    /// Replaces `ProtocolWriter::stop_sequence_cap()`. The published cap on stop sequences and the
+    /// display name to cite in a rejection, or `None` when the dialect enforces none.
+    pub stop_sequence_cap: Option<(usize, &'static str)>,
+
+    /// Replaces `ProtocolWriter::cache_markers_model_gated()`. Whether this dialect's native cache
+    /// marker is model-gated (Bedrock `cachePoint`), so the cross-protocol seam clears the cache ask
+    /// unless the lane declares `prompt_caching`.
+    pub cache_markers_model_gated: bool,
+
+    /// Replaces `ProtocolWriter::fills_thought_signature()`. Whether egress fills the Gemini 3
+    /// `thoughtSignature` sentinel on a translated request.
+    pub fills_thought_signature: bool,
+
+    /// Replaces `ProtocolWriter::frame_after_message_start()`. A framed wire frame this dialect emits
+    /// immediately after `message_start` on a translated stream (Anthropic's `event: ping`), or `None`.
+    pub frame_after_message_start: Option<&'static [u8]>,
+
+    /// Replaces `ProtocolWriter::reshapes_body_at_path_base()` (the PREDICATE only — its paired
+    /// mutator `reshape_for_path_base(&mut Value)` stays a vtable method). Whether this dialect's body
+    /// must be reshaped when the lane carries a `path_base` (Claude-on-Vertex).
+    pub reshapes_body_at_path_base: bool,
+
+    /// Replaces `ProtocolWriter::max_cache_control_breakpoints()`. The maximum `cache_control`
+    /// breakpoints this dialect accepts on one request, or `None` when the vendor publishes no cap.
+    pub max_cache_control_breakpoints: Option<usize>,
+
+    /// Replaces `ProtocolWriter::quota_exceeded_status()`. The native HTTP status a quota/budget
+    /// exhaustion maps to (429 for most; Bedrock's `ServiceQuotaExceededException` is 400).
+    pub quota_exceeded_status: axum::http::StatusCode,
+
+    /// Replaces `ProtocolWriter::ingress_is_eventstream()`. True when this protocol's ingress client
+    /// decodes a binary `application/vnd.amazon.eventstream` body (native AWS SDK Bedrock).
+    pub ingress_is_eventstream: bool,
+
+    /// Replaces `ProtocolWriter::emits_sse_done_terminator()`. True when this protocol's streamed
+    /// response ends with the literal `data: [DONE]` terminator (OpenAI Chat Completions).
+    pub emits_sse_done_terminator: bool,
+
+    /// Replaces `ProtocolWriter::max_citations_per_delta()`. The maximum citations one streamed
+    /// `citations_delta`-equivalent event may carry (Anthropic frames exactly one), or `None`.
+    pub max_citations_per_delta: Option<usize>,
+
+    /// Replaces `ProtocolWriter::egress_user_agent()`. The plausible native-SDK `User-Agent` for THIS
+    /// egress protocol (a backend-facing fingerprint guard).
+    pub egress_user_agent: &'static str,
+
+    /// Replaces `ProtocolWriter::has_model_in_url()`. True when this protocol carries the model in the
+    /// URL path rather than the body (Gemini, Bedrock), so a same-protocol passthrough strips body
+    /// `model`.
+    pub has_model_in_url: bool,
+
+    /// Replaces `ProtocolWriter::auth_failure_status_and_kind()`. The HTTP status and error `kind` a
+    /// bad/missing credential yields, matched to what the genuine vendor returns.
+    pub auth_failure_status_and_kind: (axum::http::StatusCode, &'static str),
+
+    /// Replaces `ProtocolWriter::ingress_relays_amzn_headers()`. True when this protocol's ingress
+    /// client expects `x-amzn-RequestId` (and `x-amzn-errortype` on errors) on every response.
+    pub ingress_relays_amzn_headers: bool,
+
+    /// Replaces `ProtocolWriter::ingress_relayed_response_header_names()`. The upstream response
+    /// header names a same-protocol passthrough forwards verbatim.
+    pub ingress_relayed_response_header_names: &'static [&'static str],
+
+    /// Replaces `ProtocolWriter::auth_failure_message()`. The vendor-plausible auth-failure wire
+    /// message this dialect lands verbatim in the native error body.
+    pub auth_failure_message: &'static str,
+
+    /// Replaces `ProtocolWriter::uses_array_stream_shim()`. True when this protocol's ingress client
+    /// expects a JSON-array (non-SSE) streamed body (Gemini without `?alt=sse`).
+    pub uses_array_stream_shim: bool,
+
+    /// Replaces `ProtocolWriter::has_native_path_not_found()`. True when this protocol has a native
+    /// path-not-found envelope with a protocol-specific message format (Gemini).
+    pub has_native_path_not_found: bool,
 }
 
 impl ProtocolDecl {

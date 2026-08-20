@@ -299,11 +299,10 @@ fn test_requires_max_tokens_per_protocol() {
         ("responses", false),
         ("cohere", false),
     ] {
-        let proto = protocol_for(name).unwrap();
         assert_eq!(
-            proto.writer().requires_max_tokens(),
+            crate::proto::decl_for(name).is_some_and(|d| d.requires_max_tokens),
             want,
-            "{name}: requires_max_tokens() mismatch"
+            "{name}: requires_max_tokens mismatch"
         );
     }
 }
@@ -599,8 +598,8 @@ fn cache_breakpoints_gated_by_lane_capability_on_bedrock() {
     let registry = ProtocolRegistry::with_builtins();
     let anthropic = registry.get("anthropic").unwrap();
     let bedrock = registry.get("bedrock").unwrap();
-    assert!(bedrock.writer().cache_markers_model_gated());
-    assert!(!anthropic.writer().cache_markers_model_gated());
+    assert!(crate::proto::decl_for("bedrock").is_some_and(|d| d.cache_markers_model_gated));
+    assert!(crate::proto::decl_for("anthropic").is_some_and(|d| !d.cache_markers_model_gated));
 
     let body = serde_json::json!({
         "model": "claude", "max_tokens": 64,

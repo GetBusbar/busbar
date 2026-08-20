@@ -44,6 +44,29 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     // operation through the `RequestHandler` and serves it on the universal ingress.
     path_ingress: None,
     stream_usage_requires_opt_in: false,
+    // ── Promoted writer facts (G6 step A1): the same constants the `ResponsesWriter` methods returned.
+    requires_max_tokens: false,
+    stop_sequence_cap: None,
+    cache_markers_model_gated: false,
+    fills_thought_signature: false,
+    frame_after_message_start: None,
+    reshapes_body_at_path_base: false,
+    max_cache_control_breakpoints: None,
+    quota_exceeded_status: axum::http::StatusCode::TOO_MANY_REQUESTS,
+    ingress_is_eventstream: false,
+    emits_sse_done_terminator: false,
+    max_citations_per_delta: None,
+    egress_user_agent: busbar_core::proxy::EGRESS_UA_OPENAI,
+    has_model_in_url: false,
+    auth_failure_status_and_kind: (
+        axum::http::StatusCode::UNAUTHORIZED,
+        busbar_core::proto::openai_family::ERR_TYPE_AUTHENTICATION,
+    ),
+    ingress_relays_amzn_headers: false,
+    ingress_relayed_response_header_names: &[],
+    auth_failure_message: AUTH_FAILURE_MSG,
+    uses_array_stream_shim: false,
+    has_native_path_not_found: false,
 };
 use std::sync::OnceLock;
 

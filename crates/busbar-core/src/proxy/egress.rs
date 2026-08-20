@@ -159,8 +159,11 @@ pub const EGRESS_UA_GEMINI: &str = "google-genai-sdk/0.8.0 gl-python/3.11";
 pub const EGRESS_UA_BEDROCK: &str = "Boto3/1.35.0 md/Botocore#1.35.0";
 // Cohere Python SDK shape (api.cohere.com).
 pub const EGRESS_UA_COHERE: &str = "cohere-python/5.11.0";
-// Unknown/foreign egress protocol: a generic-but-present UA still beats sending none.
-pub(crate) const EGRESS_UA_DEFAULT: &str = "okhttp/4.12.0";
+// Unknown/foreign egress protocol: a generic-but-present UA still beats sending none. `pub` (not
+// `pub(crate)`) so a codec-less protocol declaration in an extracted crate (`busbar-mcp`) can state
+// it as its `ProtocolDecl::egress_user_agent` default — MCP has no writer, so its promoted UA fact is
+// the trait default, and the plugin crate must be able to name it.
+pub const EGRESS_UA_DEFAULT: &str = "okhttp/4.12.0";
 
 /// Plausible native-SDK `User-Agent` for the chosen EGRESS protocol. reqwest sends NO default
 /// User-Agent unless one is set, so without this every proxied upstream request reaches the backend
@@ -174,8 +177,8 @@ pub(crate) const EGRESS_UA_DEFAULT: &str = "okhttp/4.12.0";
 /// writer (`writer.egress_user_agent()`) bypass this wrapper; it exists for test-code paths that
 /// look up by name.
 pub(crate) fn egress_user_agent(egress_protocol: &str) -> &'static str {
-    crate::proto::protocol_for(egress_protocol)
-        .map(|p| p.writer().egress_user_agent())
+    crate::proto::decl_for(egress_protocol)
+        .map(|d| d.egress_user_agent)
         .unwrap_or(EGRESS_UA_DEFAULT)
 }
 

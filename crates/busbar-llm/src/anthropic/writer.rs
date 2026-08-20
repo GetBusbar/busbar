@@ -15,23 +15,6 @@ impl ProtocolWriter for AnthropicWriter {
         PATH_UPSTREAM
     }
 
-    /// Anthropic's streamed `citations_delta` SSE event carries EXACTLY ONE `citation` object (a
-    /// native SDK `JSON.parse`s one object per `data:` line and crashes on an array), so a multi-
-    /// citation `CitationsDelta` must be fanned out into one event each. See `StreamTranslate`.
-    fn max_citations_per_delta(&self) -> Option<usize> {
-        Some(1)
-    }
-
-    fn requires_max_tokens(&self) -> bool {
-        // Anthropic Messages 400s with `max_tokens: Field required` when absent.
-        true
-    }
-
-    fn max_cache_control_breakpoints(&self) -> Option<usize> {
-        // Anthropic: "A maximum of 4 blocks with cache_control may be provided".
-        Some(4)
-    }
-
     fn write_error(&self, status: u16, kind: &str, message: &str) -> serde_json::Value {
         // Native Anthropic error envelope: `{"type":"error","error":{"type":<kind>,"message":<msg>}}`
         // (see the Anthropic SDK / API error shape — the `anthropic.APIStatusError` family decodes
@@ -109,14 +92,6 @@ impl ProtocolWriter for AnthropicWriter {
             .map(|id| (HDR_REQUEST_ID, id))
     }
 
-    fn frame_after_message_start(&self) -> Option<&'static [u8]> {
-        Some(super::ANTHROPIC_PING_SSE_FRAME)
-    }
-
-    fn reshapes_body_at_path_base(&self) -> bool {
-        true
-    }
-
     fn reshape_for_path_base(&self, body: &mut serde_json::Value) -> bool {
         // CLAUDE-ON-VERTEX. An Anthropic-protocol lane at a Vertex `path_base` carries the model in
         // the URL (`:rawPredict`), so the body must OMIT `model` and instead carry
@@ -133,20 +108,6 @@ impl ProtocolWriter for AnthropicWriter {
             }
             None => false,
         }
-    }
-
-    fn ingress_relayed_response_header_names(&self) -> &'static [&'static str] {
-        // Forwarded VERBATIM on a same-protocol anthropic passthrough: `request-id`.
-        &[HDR_REQUEST_ID]
-    }
-
-    fn auth_failure_message(&self) -> &'static str {
-        "invalid x-api-key"
-    }
-
-    fn egress_user_agent(&self) -> &'static str {
-        // Anthropic Python SDK UA shape — pinned, see `EGRESS_UA_ANTHROPIC` in proxy engine.
-        busbar_core::proxy::EGRESS_UA_ANTHROPIC
     }
 
     fn dropped_egress_controls(&self, req: &busbar_core::ir::IrRequest) -> Vec<&'static str> {

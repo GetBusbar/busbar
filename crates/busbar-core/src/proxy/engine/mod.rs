@@ -874,13 +874,13 @@ pub(crate) async fn forward_with_pool_parsed_inner(
     // Additionally gated on `op.streaming()`: a non-streaming operation never frames a JSON-array
     // stream (chat streams, so this is a no-op for chat — `true && x == x`).
     let gemini_json_array = op.streaming()
+        && crate::proto::decl_for(ingress_protocol).is_some_and(|d| d.uses_array_stream_shim)
         && crate::proto::protocol_for(ingress_protocol)
             .map(|p| {
-                p.writer().uses_array_stream_shim()
-                    && v.as_ref()
-                        // The shim key is a captured head key — `probe()` answers without a DOM.
-                        .map(|l| p.writer().wants_array_stream(l.probe()))
-                        .unwrap_or(false)
+                v.as_ref()
+                    // The shim key is a captured head key — `probe()` answers without a DOM.
+                    .map(|l| p.writer().wants_array_stream(l.probe()))
+                    .unwrap_or(false)
             })
             .unwrap_or(false);
 
@@ -1721,7 +1721,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
             // Native-SDK User-Agent for the egress protocol. The shared client sets none, so without
             // this the backend sees a UA-less request — a proxy fingerprint. Dispatched through the
             // writer vtable (`ProtocolWriter::egress_user_agent`) — `writer` is already resolved above.
-            .header(USER_AGENT, writer.egress_user_agent())
+            .header(USER_AGENT, crate::proxy::egress_user_agent(egress_name))
             // Native-SDK Accept for the egress protocol (eventstream/json/SSE by stream intent). A
             // native SDK always sends one; omitting it is a backend-side proxy fingerprint. The
             // operation chooses it: chat defers to the writer vtable (`ProtocolWriter::egress_accept`,

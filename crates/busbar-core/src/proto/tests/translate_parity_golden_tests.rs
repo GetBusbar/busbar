@@ -73,7 +73,7 @@ fn translate_request_a2o(body: &str) -> Vec<u8> {
     req.prepare_for_egress(&EgressPrep {
         thought_signature_fill: false,
         ingress_protocol: "anthropic",
-        egress_requires_max_tokens: openai.writer().requires_max_tokens(),
+        egress_requires_max_tokens: openai.decl().is_some_and(|d| d.requires_max_tokens),
         lane_default_max_tokens: None,
         global_default_max_tokens: 4096,
         reasoning_allowed: true,
