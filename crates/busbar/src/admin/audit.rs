@@ -168,6 +168,15 @@ pub(crate) struct AuditLog {
     /// log self-heals — reconciling the ring's nondurable suffix onto the recovered tail — the moment
     /// the store answers with a tail that verifies.
     durable_unreconciled: std::sync::atomic::AtomicBool,
+    /// WARN-ONCE latch for the unrepairable-gap path in `durable_write_through`. When a seq has been
+    /// PRUNED from the RAM ring before it could be persisted, the durable chain has a permanent hole
+    /// that can never be backfilled in-process — a genuine data-loss signal worth exactly ONE `warn!`.
+    /// But the periodic write-behind flusher re-offers the same top seq every tick (~10/s), so a blind
+    /// `warn!` there spams the console forever for a single, already-reported condition. This holds the
+    /// gap seq most recently WARNed about (0 = none yet): the first time a given gap seq is seen it is
+    /// WARNed and latched; while it remains the current hole, repeats log at DEBUG instead. Relaxed is
+    /// sufficient — this is a best-effort dedupe of a log line, not a correctness invariant.
+    last_warned_gap_seq: std::sync::atomic::AtomicU64,
 }
 
 impl AuditLog {
@@ -179,6 +188,7 @@ impl AuditLog {
             durable_high: std::sync::atomic::AtomicU64::new(0),
             durable_lock: std::sync::Mutex::new(()),
             durable_unreconciled: std::sync::atomic::AtomicBool::new(false),
+            last_warned_gap_seq: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -566,16 +576,20 @@ impl AuditLog {
             // This entry's seq is BELOW the durable floor. With `rebase_nondurable_suffix` always
             // returning a top `>= durable_max + 1` and `start = durable_high + 1` (`durable_high >=
             // durable_max` once the recovery branch above has run), this is NOT the floor-recovery
-            // mutation itself — that case is already resolved by the rebase. It is the ordinary
-            // concurrent-recorder race: a second recorder allocated a HIGHER seq, won `durable_lock`
-            // first, and its backfill already persisted (and advanced `durable_high` past) THIS
-            // seq — so writing it now would be a redundant, stale keyed upsert. Skipping is correct:
-            // this entry is already durable under its own seq.
-            tracing::warn!(
+            // mutation itself — that case is already resolved by the rebase. Two benign causes reach
+            // here: (a) the ordinary concurrent-recorder race — a second recorder allocated a HIGHER
+            // seq, won `durable_lock` first, and its backfill already persisted (and advanced
+            // `durable_high` past) THIS seq; and (b) a boot that recovered a durable floor ABOVE a
+            // seq still retained in a freshly-numbered RAM ring, which is then re-offered on every
+            // flush. Either way writing it now would be a redundant, stale keyed upsert. Skipping is
+            // correct: this entry is already durable under its own seq. This is EXPECTED and benign,
+            // so it is logged at DEBUG — a WARN here spams the console ~10x/s in case (b) for a
+            // condition that is not a problem.
+            tracing::debug!(
                 seq = new_seq,
                 durable_floor = start,
-                "durable audit write-through skipped: this entry's seq predates the recovered \
-                 durable floor (it is retained in the RAM ring)"
+                "durable audit write-through skipped: seq is at/below the durable floor (already \
+                 durable; retained in the RAM ring)"
             );
             return;
         }
@@ -592,12 +606,33 @@ impl AuditLog {
                 // `durable_high` PAST the unpersisted seq and claims a durable chain that has a hole
                 // at `seq`, which is then never re-attempted. Only genuinely-persisted seqs (the
                 // `fetch_max` after a successful `append_audit` below) may advance `durable_high`.
-                tracing::warn!(
-                    seq,
-                    durable_high = self.durable_high.load(std::sync::atomic::Ordering::Relaxed),
-                    "durable audit backfill: seq no longer in the RAM ring; the durable chain has an \
-                     unrepairable gap here — stopping catch-up and holding durable_high below the hole"
-                );
+                // WARN-ONCE: this is a genuine data-loss signal (a permanent, in-process-unrepairable
+                // hole in the durable chain), so the FIRST time we see a given gap seq is worth one
+                // `warn!`. But the periodic write-behind flusher re-offers this same top seq every tick
+                // (~10/s), and the gap never heals in-process, so a blind `warn!` here would spam the
+                // console forever for one already-reported condition. Latch the gap seq: WARN only when
+                // it differs from the last-warned seq, DEBUG on every repeat of the same hole.
+                let durable_high = self.durable_high.load(std::sync::atomic::Ordering::Relaxed);
+                let already_warned = self
+                    .last_warned_gap_seq
+                    .swap(seq, std::sync::atomic::Ordering::Relaxed)
+                    == seq;
+                if already_warned {
+                    tracing::debug!(
+                        seq,
+                        durable_high,
+                        "durable audit backfill: seq still pruned from the RAM ring; durable chain gap \
+                         persists (already warned) — holding durable_high below the hole"
+                    );
+                } else {
+                    tracing::warn!(
+                        seq,
+                        durable_high,
+                        "durable audit backfill: seq no longer in the RAM ring; the durable chain has \
+                         an unrepairable gap here — stopping catch-up and holding durable_high below \
+                         the hole"
+                    );
+                }
                 return;
             };
             if let Err(e) = store.append_audit(&record) {
@@ -924,6 +959,79 @@ mod tests {
         );
         // And the store now has 4 (the write-through of the post-restore entry landed).
         assert_eq!(store.list_audit().unwrap().len(), 4);
+    }
+
+    /// 1.5.5 log-spam hotfix — the below-the-durable-floor write-through skip (a concurrent-recorder
+    /// race, or a recovered floor above a freshly-numbered ring seq) is benign and idempotent: it must
+    /// be skipped WITHOUT re-upserting and WITHOUT moving `durable_high`. The hotfix downgraded its
+    /// per-tick WARN to DEBUG; this pins the functional skip so the fix can't regress into a stale
+    /// re-write (and the ~10/s flusher re-offering it stays a no-op).
+    #[test]
+    fn below_floor_write_through_is_an_idempotent_skip() {
+        let store: Arc<dyn Store> = Arc::new(DurableTestStore::new());
+        let log = AuditLog::new();
+        log.set_sink(store.clone());
+        log.record_by("hook.register", "hook:a", OUTCOME_APPLIED, "admin");
+        log.record_by("hook.register", "hook:b", OUTCOME_APPLIED, "admin");
+        assert_eq!(store.list_audit().unwrap().len(), 2);
+        let floor = log.durable_high.load(std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(floor, 2);
+
+        // Re-offer seq 1 (below the floor) repeatedly — the boot-recovery / race case the flusher hits.
+        for _ in 0..5 {
+            log.durable_write_through(store.as_ref(), 1);
+        }
+        assert_eq!(
+            store.list_audit().unwrap().len(),
+            2,
+            "the below-floor seq is skipped, never re-upserted"
+        );
+        assert_eq!(
+            log.durable_high.load(std::sync::atomic::Ordering::Relaxed),
+            floor,
+            "the below-floor skip does not move the durable floor"
+        );
+    }
+
+    /// 1.5.5 log-spam hotfix — the permanent-gap warn is LATCHED. A seq pruned from the RAM ring before
+    /// it could persist is a real (in-process-unrepairable) data-loss signal worth ONE warn, but the
+    /// ~10/s flusher re-offers the same hole forever. The hotfix warns once per gap seq via
+    /// `last_warned_gap_seq`, then DEBUGs on repeats. This pins the latch: the hole is recorded once,
+    /// does not re-trip on re-offer, and `durable_high` stays BELOW the hole across every re-offer.
+    #[test]
+    fn permanent_gap_warn_is_latched_once_per_seq() {
+        use std::sync::atomic::Ordering::Relaxed;
+        let store: Arc<dyn Store> = Arc::new(DurableTestStore::new());
+        let log = AuditLog::new();
+        log.set_sink(store.clone());
+        // durable_high starts at 0 and the ring holds no seq 1, so offering seq 1 hits the pruned-gap
+        // branch (`start = 1`, `1..=1`, ring miss).
+        assert_eq!(log.durable_high.load(Relaxed), 0);
+        assert_eq!(log.last_warned_gap_seq.load(Relaxed), 0);
+
+        log.durable_write_through(store.as_ref(), 1);
+        assert_eq!(
+            log.last_warned_gap_seq.load(Relaxed),
+            1,
+            "the first sighting of the gap latches its seq (the single warn)"
+        );
+        let high_after_first = log.durable_high.load(Relaxed);
+        assert!(high_after_first < 1, "durable_high is held BELOW the hole");
+
+        // Re-offer the SAME hole many times (the flusher's ~10/s re-entry): no re-latch, no advance.
+        for _ in 0..10 {
+            log.durable_write_through(store.as_ref(), 1);
+        }
+        assert_eq!(
+            log.last_warned_gap_seq.load(Relaxed),
+            1,
+            "re-offering the same hole does not re-trip the latch (DEBUG on repeats, not WARN)"
+        );
+        assert_eq!(
+            log.durable_high.load(Relaxed),
+            high_after_first,
+            "durable_high stays below the hole across every re-offer"
+        );
     }
 
     /// A REWOUND sequence counter must never clobber durable history. The durable write-through is
@@ -1770,6 +1878,163 @@ mod tests {
             "only seq 1 is durable; no entry past the hole leaked into the store"
         );
     }
+
+    // ── log-spam hotfix (1.5.5): durable write-through severity ───────────────────────────────────
+
+    /// A minimal tracing `Layer` that captures every event's level + `message` field into a shared
+    /// vec, so a test can assert on the SEVERITY of the durable-audit write-through's log lines
+    /// (the whole point of the 1.5.5 hotfix). tracing-subscriber is already a normal dependency, so
+    /// this needs no extra dev-dependency.
+    #[derive(Clone, Default)]
+    struct LogCapture {
+        events: Arc<std::sync::Mutex<Vec<(tracing::Level, String)>>>,
+    }
+
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for LogCapture {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _ctx: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            struct MsgVisitor(String);
+            impl tracing::field::Visit for MsgVisitor {
+                fn record_debug(
+                    &mut self,
+                    field: &tracing::field::Field,
+                    value: &dyn std::fmt::Debug,
+                ) {
+                    if field.name() == "message" {
+                        self.0 = format!("{value:?}");
+                    }
+                }
+            }
+            let mut v = MsgVisitor(String::new());
+            event.record(&mut v);
+            self.events
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push((*event.metadata().level(), v.0));
+        }
+    }
+
+    /// Run `f` with a scoped subscriber that captures its log events, and return them (level + message).
+    fn capture_logs<F: FnOnce()>(f: F) -> Vec<(tracing::Level, String)> {
+        use tracing_subscriber::layer::SubscriberExt;
+        let capture = LogCapture::default();
+        let subscriber = tracing_subscriber::registry().with(capture.clone());
+        tracing::subscriber::with_default(subscriber, f);
+        let events = capture.events.lock().unwrap_or_else(|e| e.into_inner());
+        events.clone()
+    }
+
+    /// LOG-SPAM HOTFIX (a): a below-the-durable-floor write-through — the normal state right after a
+    /// restart against a durable store, where a recovered floor sits ABOVE a seq still retained in a
+    /// freshly-numbered RAM ring — is re-offered on every flush (~10/s). It is expected and benign, so
+    /// it must log at DEBUG. Assert that repeated flushes emit ZERO WARN and at least one DEBUG for it.
+    #[test]
+    fn below_floor_write_through_is_debug_not_warn() {
+        let events = capture_logs(|| {
+            let log = AuditLog::new();
+            // Fill the RAM ring with a few entries WITHOUT a sink attached (no write-through yet).
+            log.record_by("hook.register", "hook:a", OUTCOME_APPLIED, "admin"); // seq 1
+            log.record_by("hook.register", "hook:b", OUTCOME_APPLIED, "admin"); // seq 2
+            log.record_by("hook.register", "hook:c", OUTCOME_APPLIED, "admin"); // seq 3
+
+            // Simulate a boot that recovered a durable floor ABOVE the ring's top seq (case b): the
+            // durable store already holds seqs up to 5, so `durable_high` sits above the ring's top
+            // (seq 3). Every flush then re-offers seq 3, which is below the floor.
+            log.durable_high
+                .store(5, std::sync::atomic::Ordering::Relaxed);
+            let store: Arc<dyn Store> = Arc::new(DurableTestStore::new());
+            log.set_sink(store);
+
+            // The periodic flusher re-offers the same below-floor top on every tick.
+            for _ in 0..25 {
+                log.flush_durable();
+            }
+        });
+
+        let floor_marker = "at/below the durable floor";
+        let warns = events
+            .iter()
+            .filter(|(lvl, msg)| *lvl == tracing::Level::WARN && msg.contains(floor_marker))
+            .count();
+        let debugs = events
+            .iter()
+            .filter(|(lvl, msg)| *lvl == tracing::Level::DEBUG && msg.contains(floor_marker))
+            .count();
+        assert_eq!(
+            warns, 0,
+            "a below-floor write-through must NOT warn (it spammed the log ~10/s in 1.5.4)"
+        );
+        assert!(
+            debugs >= 1,
+            "the below-floor skip is expected/benign — it should log at DEBUG"
+        );
+        // Nothing in this benign scenario should WARN at all.
+        assert_eq!(
+            events
+                .iter()
+                .filter(|(lvl, _)| *lvl == tracing::Level::WARN)
+                .count(),
+            0,
+            "the benign below-floor path must emit no WARN of any kind"
+        );
+    }
+
+    /// LOG-SPAM HOTFIX (b): a PERMANENT hash-chain gap (a seq pruned from the RAM ring before it could
+    /// be persisted) is a genuine data-loss signal worth exactly ONE warn — but the flusher re-offers
+    /// the same top seq every tick, so 1.5.4 re-WARNed it forever. Assert the gap WARNs EXACTLY ONCE
+    /// for a given gap seq across the whole scenario, then logs at DEBUG on every subsequent flush.
+    #[test]
+    fn permanent_gap_warns_once_then_debug() {
+        let events = capture_logs(|| {
+            let store = std::sync::Arc::new(FlakyAuditStore {
+                inner: DurableTestStore::new(),
+                fail_seqs: std::sync::Mutex::new([2u64].into_iter().collect()), // seq 2 fails forever
+            });
+            let log = AuditLog::new();
+            log.set_sink(store.clone());
+
+            // Record past the ring cap so seq 2 (whose write-through fails forever) is pruned from the
+            // RAM ring — the permanent, in-process-unrepairable gap.
+            let total = MAX_AUDIT_ENTRIES + 5;
+            for i in 0..total {
+                log.record_by(
+                    "hook.register",
+                    &format!("hook:{i}"),
+                    OUTCOME_APPLIED,
+                    "admin",
+                );
+            }
+
+            // The periodic flusher re-offers the ring top every tick; the catch-up keeps hitting the
+            // pruned seq-2 gap.
+            for _ in 0..20 {
+                log.flush_durable();
+            }
+        });
+
+        let gap_warn_marker = "unrepairable gap here";
+        let gap_debug_marker = "gap persists";
+        let gap_warns = events
+            .iter()
+            .filter(|(lvl, msg)| *lvl == tracing::Level::WARN && msg.contains(gap_warn_marker))
+            .count();
+        let gap_debugs = events
+            .iter()
+            .filter(|(lvl, msg)| *lvl == tracing::Level::DEBUG && msg.contains(gap_debug_marker))
+            .count();
+        assert_eq!(
+            gap_warns, 1,
+            "a permanent gap is a data-loss signal worth exactly ONE warn (1.5.4 re-warned every tick)"
+        );
+        assert!(
+            gap_debugs >= 1,
+            "subsequent flushes of the same hole must log at DEBUG, not WARN"
+        );
+    }
+
     /// The durable audit log has exactly ONE legitimate writer. Seqs are allocated process-locally,
     /// so a second busbar pointed at the same store allocates the SAME seqs, and the store's keyed
     /// upsert destroys whichever row lost the race — then the next boot reports the resulting break
