@@ -551,8 +551,8 @@ fn main() {
     // Best-effort and VERIFIED at runtime rather than assumed: some platforms/builds lack background-
     // thread support (macOS keeps only foreground purge; jemalloc also flags it as potentially
     // unavailable on musl — and the SHIPPED release is static musl). Read the flag back after writing and
-    // WARN if it did not enable, so the plateau-then-fall-back-to-idle behavior is an observed fact, not a
-    // silent assumption. Even when the background thread is absent, jemalloc's FOREGROUND decay purge
+    // report it (at info — it is expected on macOS/musl, not a fault) if it did not enable, so the
+    // plateau-then-fall-back-to-idle behavior is an observed fact, not a silent assumption. Even when the background thread is absent, jemalloc's FOREGROUND decay purge
     // still bounds RSS under load; only the proactive purge during full idle is lost.
     //
     // This runs in `main()` BEFORE the tracing subscriber is installed (that happens in `run()` after the
@@ -567,16 +567,17 @@ fn main() {
             Ok(true) => true, // enabled — RSS falls back to idle; nothing to report
             Ok(false) => {
                 eprintln!(
-                    "[warn] jemalloc background purge thread did NOT enable on this target (no \
-                     background-thread support); enabling busbar's idle purge fallback so RSS still \
-                     returns to idle after a load burst"
+                    "[info] jemalloc background purge thread not enabled on this build (static-musl \
+                     compiles it out; foreground-only decay) — EXPECTED, not an error; busbar's \
+                     idle-purge fallback keeps RSS returning to idle after a load burst"
                 );
                 false
             }
             Err(e) => {
                 eprintln!(
-                    "[warn] could not enable jemalloc background purge thread ({e}); enabling \
-                     busbar's idle purge fallback so RSS still returns to idle after a load burst"
+                    "[info] jemalloc background purge thread unavailable on this target ({e}) — \
+                     EXPECTED on macOS, which has no background-thread mallctl; busbar's idle-purge \
+                     fallback keeps RSS returning to idle after a load burst"
                 );
                 false
             }
