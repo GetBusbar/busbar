@@ -1154,7 +1154,10 @@ pub(crate) async fn handle_least_bad(
         return handle_status_503(app, cands, now, pool, ingress_protocol);
     };
 
-    tracing::warn!(
+    // least-bad is a DESIGNED degraded mode, entered per-request whenever the pool is exhausted, so a
+    // per-request `warn!` spams under sustained load for expected behavior. Log at `debug!`; the
+    // exhaustion signal proper is the 503 shed path + breaker telemetry.
+    tracing::debug!(
         pool = %pool,
         lane = %app.lanes[soonest_idx].model,
         cooldown_remaining_s = app.store.cooldown_remaining_in(pool, soonest_idx, now),

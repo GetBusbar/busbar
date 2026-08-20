@@ -4334,3 +4334,92 @@ fn an_admin_rotate_then_a_pools_change_does_not_fork_the_binding() {
         "the changed pools must be persisted on the surviving binding"
     );
 }
+
+// ── LOG-SPAM REGRESSION GUARD: metering-flush failure aggregation ─────────────────────────────
+//
+// A store outage fails EVERY pending metering key on the same flush tick. The flusher must emit
+// exactly ONE aggregate `warn!` carrying the failed count (per-key detail demoted to `debug!`),
+// not one warn per key. This is the regression guard for the per-tick log-spam class.
+
+/// A `Store` that FAILS `add_metering` (a metering-store outage) while delegating everything else to
+/// a real in-memory store, so `flush_metering` exercises its failure/aggregation path deterministically.
+struct MeteringFailStore {
+    inner: MemoryStore,
+}
+
+impl Store for MeteringFailStore {
+    fn put_key(&self, key: &busbar_api::VirtualKey) -> busbar_api::StoreResult<()> {
+        self.inner.put_key(key)
+    }
+    fn get_key(&self, id: &str) -> busbar_api::StoreResult<Option<busbar_api::VirtualKey>> {
+        self.inner.get_key(id)
+    }
+    fn list_keys(&self) -> busbar_api::StoreResult<Vec<busbar_api::VirtualKey>> {
+        self.inner.list_keys()
+    }
+    fn delete_key(&self, id: &str) -> busbar_api::StoreResult<()> {
+        self.inner.delete_key(id)
+    }
+    fn get_usage(
+        &self,
+        bucket_id: &str,
+        window_start: u64,
+    ) -> busbar_api::StoreResult<busbar_api::UsageLedger> {
+        self.inner.get_usage(bucket_id, window_start)
+    }
+    fn put_usage(
+        &self,
+        bucket_id: &str,
+        window_start: u64,
+        ledger: &busbar_api::UsageLedger,
+    ) -> busbar_api::StoreResult<()> {
+        self.inner.put_usage(bucket_id, window_start, ledger)
+    }
+    fn add_metering(&self, _delta: &busbar_api::MeteringDelta) -> busbar_api::StoreResult<()> {
+        Err(busbar_api::StoreError("metering store unavailable".into()))
+    }
+    fn list_metering(&self, bucket: u64) -> busbar_api::StoreResult<Vec<busbar_api::MeteringRow>> {
+        self.inner.list_metering(bucket)
+    }
+}
+
+#[test]
+fn flush_metering_failure_warns_once_per_tick_not_per_key() {
+    use crate::test_support::warn_capture::WarnCapture;
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    let store: Arc<dyn Store> = Arc::new(MeteringFailStore {
+        inner: MemoryStore::new(),
+    });
+    let gov = GovState::new(store, None).unwrap();
+    let now = 1_700_000_500;
+    // Five DISTINCT pending metering keys — all will fail to persist on the same tick.
+    for k in ["vk_a", "vk_b", "vk_c", "vk_d", "vk_e"] {
+        gov.record_metering(k, "model-x", "prov", None, now);
+    }
+
+    let cap = WarnCapture::default();
+    let subscriber = tracing_subscriber::registry().with(cap.clone());
+    let flushed = tracing::subscriber::with_default(subscriber, || gov.flush_metering());
+
+    assert_eq!(flushed, 0, "every key failed to persist");
+    assert_eq!(
+        cap.count("metering flush:"),
+        1,
+        "exactly ONE aggregate warn per tick, not one per failed key: {:?}",
+        cap.messages()
+    );
+    // And the aggregate warn carries the failed COUNT (5), proving it aggregated rather than
+    // emitting per key.
+    assert!(
+        cap.contains("failed=5"),
+        "the aggregate warn reports the failed-key count: {:?}",
+        cap.messages()
+    );
+    // The retained deltas are still pending for the next tick (not lost on the store error).
+    assert_eq!(
+        gov.flush_metering(),
+        0,
+        "the deltas are retained and retried, still failing while the store is down"
+    );
+}

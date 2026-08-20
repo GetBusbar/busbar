@@ -2148,10 +2148,17 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                             // on every recovery-probe cycle (a HalfOpen reopen, not a fresh trip); gating
                             // on `newly_tripped` stops BREAKER_TRIPS_TOTAL inflating once per cooldown
                             // for a stuck lane (the metric's "once per logical trip" contract).
+                            // Gate the warn on the LOGICAL Closed→Open trip, mirroring the
+                            // BREAKER_TRIPS_TOTAL gating just above: a persistently-dead lane re-enters
+                            // this arm on every recovery-probe cycle, so an ungated warn spams once per
+                            // cooldown for a stuck lane. Warn on the fresh trip; the recurring
+                            // still-down probe logs at `debug!`.
                             if newly_tripped {
                                 crate::telemetry::breaker_trip(&app, metric_pool, i);
+                                tracing::warn!(pool = %pool_name, lane = %app.lanes[i].model, reason = %reason, "lane hard-down (breaker trip)");
+                            } else {
+                                tracing::debug!(pool = %pool_name, lane = %app.lanes[i].model, reason = %reason, "lane still hard-down (recovery probe re-tripped)");
                             }
-                            tracing::warn!(pool = %pool_name, lane = %app.lanes[i].model, reason = %reason, "lane hard-down (breaker trip)");
                             crate::telemetry::upstream_failure(
                                 &app,
                                 metric_pool,

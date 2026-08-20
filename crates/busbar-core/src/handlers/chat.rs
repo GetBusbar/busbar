@@ -75,12 +75,26 @@ impl OperationHandler for ChatOperation {
         // logged at its own site so a same-protocol 2xx body that fails to decode is never a
         // silent 0-tokens bill (mirrors the default `OperationHandler::extract_usage`'s
         // diagnostic, which chat would otherwise lose by overriding it).
+        // Each of the three failure points below is rate-limited by a warn-once-per-(protocol,reason)
+        // latch; the BILLING_TAP_DECODE_FAIL_TOTAL counter carries the per-request volume so the log
+        // never spams a same-protocol dialect the tap cannot decode.
         let Some(p) = crate::proto::protocol_for(ingress_protocol) else {
-            tracing::warn!(
-                protocol = ingress_protocol,
-                "usage tap: unknown ingress protocol for a same-protocol 2xx body; \
-                 billing 0 tokens for this request"
-            );
+            if crate::handlers::usage_tap_decode_fail_should_warn(
+                ingress_protocol,
+                "unknown_protocol",
+            ) {
+                tracing::warn!(
+                    protocol = ingress_protocol,
+                    "usage tap: unknown ingress protocol for a same-protocol 2xx body; \
+                     billing 0 tokens for this request"
+                );
+            } else {
+                tracing::debug!(
+                    protocol = ingress_protocol,
+                    "usage tap: unknown ingress protocol for a same-protocol 2xx body; \
+                     billing 0 tokens for this request"
+                );
+            }
             return None;
         };
         let v = match crate::json::parse::<Value>(body) {
@@ -89,11 +103,22 @@ impl OperationHandler for ChatOperation {
                 // Never log the raw sonic-rs `Display`/`Debug` here — it embeds a fragment of the
                 // offending body, which can carry secrets/PII (see `crate::json::parse_err_log`'s
                 // doc comment and every other `crate::json::parse` call site in this crate).
-                tracing::warn!(
-                    error = %crate::json::parse_err_log(body.len()),
-                    "usage tap: failed to parse a same-protocol 2xx body as JSON; \
-                     billing 0 tokens for this request"
-                );
+                if crate::handlers::usage_tap_decode_fail_should_warn(ingress_protocol, "bad_json")
+                {
+                    tracing::warn!(
+                        protocol = ingress_protocol,
+                        error = %crate::json::parse_err_log(body.len()),
+                        "usage tap: failed to parse a same-protocol 2xx body as JSON; \
+                         billing 0 tokens for this request"
+                    );
+                } else {
+                    tracing::debug!(
+                        protocol = ingress_protocol,
+                        error = %crate::json::parse_err_log(body.len()),
+                        "usage tap: failed to parse a same-protocol 2xx body as JSON; \
+                         billing 0 tokens for this request"
+                    );
+                }
                 return None;
             }
         };
@@ -103,11 +128,21 @@ impl OperationHandler for ChatOperation {
             // seam's return names no concrete IR.
             Ok(ir) => Some(ir.usage.to_token_usage()),
             Err(e) => {
-                tracing::warn!(
-                    error = ?e,
-                    "usage tap: read_response failed to decode a same-protocol 2xx body; \
-                     billing 0 tokens for this request"
-                );
+                if crate::handlers::usage_tap_decode_fail_should_warn(ingress_protocol, "decode") {
+                    tracing::warn!(
+                        protocol = ingress_protocol,
+                        error = ?e,
+                        "usage tap: read_response failed to decode a same-protocol 2xx body; \
+                         billing 0 tokens for this request"
+                    );
+                } else {
+                    tracing::debug!(
+                        protocol = ingress_protocol,
+                        error = ?e,
+                        "usage tap: read_response still failing to decode a same-protocol 2xx body; \
+                         billing 0 tokens for this request"
+                    );
+                }
                 None
             }
         }

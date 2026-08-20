@@ -31,6 +31,16 @@ impl WarnCapture {
     pub fn contains(&self, needle: &str) -> bool {
         self.messages().iter().any(|m| m.contains(needle))
     }
+
+    /// How many captured WARN/ERROR messages contain `needle`. The regression guard for the
+    /// log-spam class: a warn-once latch or a per-tick aggregation asserts this stays at 1 across
+    /// repeated ticks / many keys, where the unguarded code would have produced N.
+    pub fn count(&self, needle: &str) -> usize {
+        self.messages()
+            .iter()
+            .filter(|m| m.contains(needle))
+            .count()
+    }
 }
 
 impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for WarnCapture {

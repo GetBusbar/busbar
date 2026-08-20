@@ -386,7 +386,10 @@ impl Storage for CimdStore {
         let body = match self.fetcher().fetch(url).await {
             Ok(body) => body,
             Err(why) => {
-                tracing::warn!(
+                // A routine authz denial, one per request for an unknown/unreachable client id — not
+                // an operator-actionable fault, so `debug!` (a `warn!` here spams on every probe for a
+                // client id that isn't a valid CIMD document).
+                tracing::debug!(
                     client_id = url,
                     %why,
                     "oauth_as: the client metadata document fetch was refused or failed; the \
@@ -398,7 +401,9 @@ impl Storage for CimdStore {
         match materialize(url, &body, &self.ceiling) {
             Ok(client) => Ok(Some(Arc::new(client))),
             Err(why) => {
-                tracing::warn!(
+                // Routine authz denial (a fetched document that fails validation), one per request —
+                // `debug!`, not `warn!`, for the same reason as the fetch-failure arm above.
+                tracing::debug!(
                     client_id = url,
                     %why,
                     "oauth_as: the client metadata document failed validation; the client is \

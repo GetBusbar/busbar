@@ -250,6 +250,26 @@ pub(crate) struct AuditLog {
     /// log self-heals — reconciling the ring's nondurable suffix onto the recovered tail — the moment
     /// the store answers with a tail that verifies.
     durable_unreconciled: std::sync::atomic::AtomicBool,
+    /// Warn-once latch for the UNREPAIRABLE-gap signal in the backfill: the seq of the last gap that
+    /// was warned about. The gap (a pruned, never-persisted seq) is re-offered on every flush during
+    /// a store outage, so an unlatched `warn!` would spam ~10×/s. The FIRST occurrence of a given gap
+    /// seq is a real data-loss signal and warns; the same gap on later ticks logs at `debug!`.
+    last_warned_gap_seq: std::sync::atomic::AtomicU64,
+    /// Warn-once latch for the genuine concurrent-recorder race in the seq-below-floor arm: the seq of
+    /// the last STALE offer that was warned about. The benign at-floor re-offer stays `debug!`; a seq
+    /// that strictly PREDATES the durable floor (a losing recorder whose winner already persisted and
+    /// advanced the floor past it) is a real, if benign, integrity signal and warns — once per stale
+    /// seq, so a repeated re-offer of the same stale seq cannot spam.
+    last_warned_stale_seq: std::sync::atomic::AtomicU64,
+    /// Transition latch for `append_audit` failures. During a store outage every ~10/s flush retries
+    /// the append and fails, so an unlatched `warn!` spams. Warn only on the TRANSITION into failing;
+    /// continued failures log at `debug!`; the recovery (a later successful append) logs `info!` once.
+    append_failing: std::sync::atomic::AtomicBool,
+    /// Warn-once latch for the durable-unreconciled retry. While the ring is unreconciled every
+    /// write-through retries the tail read; a failing read would otherwise `warn!` every tick. Warn
+    /// once on entry into the failing-retry state; subsequent failing retries log `debug!`. Cleared on
+    /// reconciliation (the recovery is already logged `info!`).
+    unreconciled_warned: std::sync::atomic::AtomicBool,
 }
 
 impl AuditLog {
@@ -261,6 +281,10 @@ impl AuditLog {
             durable_high: std::sync::atomic::AtomicU64::new(0),
             durable_lock: std::sync::Mutex::new(()),
             durable_unreconciled: std::sync::atomic::AtomicBool::new(false),
+            last_warned_gap_seq: std::sync::atomic::AtomicU64::new(0),
+            last_warned_stale_seq: std::sync::atomic::AtomicU64::new(0),
+            append_failing: std::sync::atomic::AtomicBool::new(false),
+            unreconciled_warned: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -595,6 +619,10 @@ impl AuditLog {
                         .fetch_max(durable_max + 1, std::sync::atomic::Ordering::Relaxed);
                     self.durable_unreconciled
                         .store(false, std::sync::atomic::Ordering::SeqCst);
+                    // Reconciled: clear the warn-once latch so a FUTURE unreconciled episode warns
+                    // again on its first failing retry.
+                    self.unreconciled_warned
+                        .store(false, std::sync::atomic::Ordering::Relaxed);
                     tracing::info!(
                         durable_max,
                         resume_at = new_seq,
@@ -602,14 +630,29 @@ impl AuditLog {
                     );
                 }
                 Err(e) => {
-                    tracing::warn!(
-                        error = %e.0,
-                        "durable audit write-through skipped: this process's ring is not yet \
-                         reconciled with the durable tail (the boot restore did not read or verify \
-                         it, and this retry read failed too). The entry is retained in the RAM ring \
-                         (write-through backfills it on a later success); writing now could \
-                         overwrite durable history."
-                    );
+                    // Warn-once-until-reconciled: this retry runs on every write-through while the
+                    // ring is unreconciled (~10/s during a store outage). Warn only on the TRANSITION
+                    // into the failing-retry state; hold at `debug!` while it persists. The latch is
+                    // cleared on reconciliation above (recovery is logged `info!` there).
+                    if !self
+                        .unreconciled_warned
+                        .swap(true, std::sync::atomic::Ordering::Relaxed)
+                    {
+                        tracing::warn!(
+                            error = %e.0,
+                            "durable audit write-through skipped: this process's ring is not yet \
+                             reconciled with the durable tail (the boot restore did not read or \
+                             verify it, and this retry read failed too). The entry is retained in \
+                             the RAM ring (write-through backfills it on a later success); writing \
+                             now could overwrite durable history."
+                        );
+                    } else {
+                        tracing::debug!(
+                            error = %e.0,
+                            "durable audit write-through still skipped: ring not yet reconciled with \
+                             the durable tail (retry read still failing)"
+                        );
+                    }
                     return;
                 }
             }
@@ -649,26 +692,56 @@ impl AuditLog {
             }
         }
 
-        let start = self.durable_high.load(std::sync::atomic::Ordering::Relaxed) + 1;
+        let durable_high = self.durable_high.load(std::sync::atomic::Ordering::Relaxed);
+        let start = durable_high + 1;
         if new_seq < start {
-            // This entry's seq is BELOW the durable floor. With `rebase_nondurable_suffix` always
-            // returning a top `>= durable_max + 1` and `start = durable_high + 1` (`durable_high >=
-            // durable_max` once the recovery branch above has run), this is NOT the floor-recovery
-            // mutation itself — that case is already resolved by the rebase. Two benign causes reach
-            // here: (a) the ordinary concurrent-recorder race — a second recorder allocated a HIGHER
-            // seq, won `durable_lock` first, and its backfill already persisted (and advanced
-            // `durable_high` past) THIS seq; and (b) a boot that recovered a durable floor ABOVE a
-            // seq still retained in a freshly-numbered RAM ring, which is then re-offered on every
-            // flush. Either way writing it now would be a redundant, stale keyed upsert. Skipping is
-            // correct: this entry is already durable under its own seq. This is EXPECTED and benign,
-            // so it is logged at DEBUG — a WARN here spams the console 10×/s in case (b) for a
-            // condition that is not a problem.
-            tracing::debug!(
-                seq = new_seq,
-                durable_floor = start,
-                "durable audit write-through skipped: seq is at/below the durable floor (already \
-                 durable; retained in the RAM ring)"
-            );
+            // This entry's seq is AT OR BELOW the durable floor. With `rebase_nondurable_suffix`
+            // always returning a top `>= durable_max + 1` and `start = durable_high + 1`
+            // (`durable_high >= durable_max` once the recovery branch above has run), this is NOT the
+            // floor-recovery mutation itself — that case is already resolved by the rebase. Either way
+            // writing it now would be a redundant, stale keyed upsert; skipping is correct (the entry
+            // is already durable under its own seq). The two sub-cases differ in what they SIGNAL:
+            if new_seq < durable_high {
+                // GENUINE concurrent-recorder race: a second recorder allocated a HIGHER seq, won
+                // `durable_lock` first, and its range backfill already persisted (and advanced
+                // `durable_high` PAST) this recorder's seq — so this offer strictly PREDATES the
+                // floor. It is skipped correctly, but it is a real (if benign) integrity event worth
+                // one line. Warn ONCE per stale seq: the idle-tick spam that made this arm noisy is
+                // filtered upstream (`flush_durable` only calls in when `top > durable_high`), and the
+                // latch stops even a pathological repeated re-offer of the same stale seq from
+                // spamming ~10×/s. A different stale seq warns again.
+                if self
+                    .last_warned_stale_seq
+                    .swap(new_seq, std::sync::atomic::Ordering::Relaxed)
+                    != new_seq
+                {
+                    tracing::warn!(
+                        seq = new_seq,
+                        durable_floor = start,
+                        "durable audit write-through skipped: seq predates the recovered durable \
+                         floor (a concurrent recorder already persisted it and advanced the floor \
+                         past it; retained in the RAM ring)"
+                    );
+                } else {
+                    tracing::debug!(
+                        seq = new_seq,
+                        durable_floor = start,
+                        "durable audit write-through skipped: seq still predates the recovered \
+                         durable floor (already durable; retained in the RAM ring)"
+                    );
+                }
+            } else {
+                // new_seq == durable_high: the exact durable TOP re-offered (e.g. a boot that
+                // recovered a floor at a seq still retained in the RAM ring, re-offered on flush).
+                // Benign and EXPECTED — `debug!`, never a WARN, since this is the case that used to
+                // spam the console.
+                tracing::debug!(
+                    seq = new_seq,
+                    durable_floor = start,
+                    "durable audit write-through skipped: seq is at the durable floor (already \
+                     durable; retained in the RAM ring)"
+                );
+            }
             return;
         }
         for seq in start..=new_seq {
@@ -684,25 +757,70 @@ impl AuditLog {
                 // `durable_high` PAST the unpersisted seq and claims a durable chain that has a hole
                 // at `seq`, which is then never re-attempted. Only genuinely-persisted seqs (the
                 // `fetch_max` after a successful `append_audit` below) may advance `durable_high`.
-                tracing::warn!(
-                    seq,
-                    durable_high = self.durable_high.load(std::sync::atomic::Ordering::Relaxed),
-                    "durable audit backfill: seq no longer in the RAM ring; the durable chain has an \
-                     unrepairable gap here — stopping catch-up and holding durable_high below the hole"
-                );
+                // Warn-once per gap seq: this pruned seq is re-offered on every flush, so an
+                // unlatched warn spams ~10×/s during a store outage. The FIRST time a given gap seq
+                // surfaces is a real data-loss signal and warns; the same gap on later ticks logs at
+                // `debug!`. A DIFFERENT gap seq (the hole moved) warns again.
+                let durable_high = self.durable_high.load(std::sync::atomic::Ordering::Relaxed);
+                if self
+                    .last_warned_gap_seq
+                    .swap(seq, std::sync::atomic::Ordering::Relaxed)
+                    != seq
+                {
+                    tracing::warn!(
+                        seq,
+                        durable_high,
+                        "durable audit backfill: seq no longer in the RAM ring; the durable chain \
+                         has an unrepairable gap here — stopping catch-up and holding durable_high \
+                         below the hole"
+                    );
+                } else {
+                    tracing::debug!(
+                        seq,
+                        durable_high,
+                        "durable audit backfill: unrepairable gap persists at this seq — still \
+                         holding durable_high below the hole"
+                    );
+                }
                 return;
             };
             if let Err(e) = store.append_audit(&record) {
-                tracing::warn!(
-                    seq,
-                    action = %record.action,
-                    error = %e.0,
-                    "durable audit write-through failed (entry retained in the in-memory ring + state \
-                     snapshot; will backfill on the next successful write-through)"
-                );
+                // Transition-only warn: during a store outage this append is retried on every ~10/s
+                // flush and keeps failing. Warn on the TRANSITION into failing; hold continued
+                // failures at `debug!`. Recovery (a later successful append) logs `info!` below.
+                if !self
+                    .append_failing
+                    .swap(true, std::sync::atomic::Ordering::Relaxed)
+                {
+                    tracing::warn!(
+                        seq,
+                        action = %record.action,
+                        error = %e.0,
+                        "durable audit write-through failed (entry retained in the in-memory ring + \
+                         state snapshot; will backfill on the next successful write-through)"
+                    );
+                } else {
+                    tracing::debug!(
+                        seq,
+                        action = %record.action,
+                        error = %e.0,
+                        "durable audit write-through still failing (entry retained; will backfill on \
+                         the next successful write-through)"
+                    );
+                }
                 // Stop the catch-up here; `durable_high` stays put so the next mutation retries from
                 // this seq, keeping the durable chain contiguous once the store recovers.
                 return;
+            }
+            // A successful append: if we were in the failing state, this is the recovery edge.
+            if self
+                .append_failing
+                .swap(false, std::sync::atomic::Ordering::Relaxed)
+            {
+                tracing::info!(
+                    seq,
+                    "durable audit write-through recovered; the store is accepting appends again"
+                );
             }
             self.durable_high
                 .fetch_max(seq, std::sync::atomic::Ordering::Relaxed);

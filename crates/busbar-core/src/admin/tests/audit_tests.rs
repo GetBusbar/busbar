@@ -1458,3 +1458,110 @@ fn durable_write_through_still_warns_on_the_concurrent_recorder_race() {
         "the stale write-through is skipped, not re-upserted"
     );
 }
+
+// ── LOG-SPAM REGRESSION GUARD: durable-backfill warn-once latches ─────────────────────────────
+//
+// During a durable-store outage the write-through is retried on every mutation (~10/s in prod). Two
+// benign-but-recurring conditions used to `warn!` on every retry: the `append_audit` failure and,
+// once the un-persisted seq is pruned from the RAM ring, the "unrepairable gap" backfill signal.
+// Both are now warn-once (transition / latched-on-seq): the FIRST occurrence warns, the rest demote
+// to `debug!`. This is the regression guard.
+
+/// A store whose `append_audit` always FAILS (a persistent metering/audit-store outage) while reads
+/// and everything else delegate to a real in-memory durable double.
+struct AppendFailStore {
+    inner: DurableTestStore,
+}
+
+impl Store for AppendFailStore {
+    fn put_key(&self, key: &busbar_api::VirtualKey) -> busbar_api::StoreResult<()> {
+        self.inner.put_key(key)
+    }
+    fn get_key(&self, id: &str) -> busbar_api::StoreResult<Option<busbar_api::VirtualKey>> {
+        self.inner.get_key(id)
+    }
+    fn list_keys(&self) -> busbar_api::StoreResult<Vec<busbar_api::VirtualKey>> {
+        self.inner.list_keys()
+    }
+    fn delete_key(&self, id: &str) -> busbar_api::StoreResult<()> {
+        self.inner.delete_key(id)
+    }
+    fn get_usage(
+        &self,
+        bucket_id: &str,
+        window_start: u64,
+    ) -> busbar_api::StoreResult<busbar_api::UsageLedger> {
+        self.inner.get_usage(bucket_id, window_start)
+    }
+    fn put_usage(
+        &self,
+        bucket_id: &str,
+        window_start: u64,
+        ledger: &busbar_api::UsageLedger,
+    ) -> busbar_api::StoreResult<()> {
+        self.inner.put_usage(bucket_id, window_start, ledger)
+    }
+    fn add_metering(&self, delta: &busbar_api::MeteringDelta) -> busbar_api::StoreResult<()> {
+        self.inner.add_metering(delta)
+    }
+    fn list_metering(&self, bucket: u64) -> busbar_api::StoreResult<Vec<busbar_api::MeteringRow>> {
+        self.inner.list_metering(bucket)
+    }
+    fn append_audit(&self, _entry: &busbar_api::AuditRecord) -> busbar_api::StoreResult<()> {
+        Err(busbar_api::StoreError("audit store unavailable".into()))
+    }
+    fn list_audit(&self) -> busbar_api::StoreResult<Vec<busbar_api::AuditRecord>> {
+        self.inner.list_audit()
+    }
+    fn list_audit_tail(&self, limit: u64) -> busbar_api::StoreResult<Vec<busbar_api::AuditRecord>> {
+        self.inner.list_audit_tail(limit)
+    }
+}
+
+/// The durable write-through's `append_audit`-failure warn fires ONCE on the transition into the
+/// failing state, and the "unrepairable gap" warn fires ONCE (latched on the stuck seq) even though
+/// every one of the many mutations after the ring prunes that seq re-enters the gap branch. The
+/// unguarded code warned on EVERY retry (~10/s); this asserts one warn each, not N.
+#[test]
+fn durable_backfill_warn_once_latches_do_not_spam() {
+    use crate::test_support::warn_capture::WarnCapture;
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    let store: Arc<dyn Store> = Arc::new(AppendFailStore {
+        inner: DurableTestStore::new(),
+    });
+    let log = AuditLog::new();
+    log.set_sink(store);
+
+    let cap = WarnCapture::default();
+    let subscriber = tracing_subscriber::registry().with(cap.clone());
+    tracing::subscriber::with_default(subscriber, || {
+        // Record more than the ring bound so the earliest (never-persisted) seq is PRUNED, which is
+        // what forces the backfill into the unrepairable-gap branch on every subsequent mutation.
+        // With `append_audit` failing, `durable_high` never advances, so the backfill always starts
+        // at seq 1 — the pruned seq — once the ring rolls past it.
+        for i in 0..(MAX_AUDIT_ENTRIES + 20) {
+            log.record_by(
+                "hook.register",
+                &format!("hook:{i}"),
+                OUTCOME_APPLIED,
+                "admin",
+            );
+        }
+    });
+
+    // The append-failure warn fired exactly once (transition), not once per mutation.
+    assert_eq!(
+        cap.count("durable audit write-through failed"),
+        1,
+        "append_audit failure warns once on the transition, not per retry: {:?}",
+        cap.count("durable audit write-through failed"),
+    );
+    // The unrepairable-gap warn fired exactly once (latched on the stuck seq), though every mutation
+    // after the prune re-enters the gap branch.
+    assert_eq!(
+        cap.count("unrepairable gap"),
+        1,
+        "the unrepairable-gap warn is latched on the seq and fires once, not ~10/s",
+    );
+}
