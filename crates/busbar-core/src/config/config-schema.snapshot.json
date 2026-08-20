@@ -340,10 +340,6 @@
           "optional": true,
           "type": "AdvancedCfg"
         },
-        "agent_pools": {
-          "optional": true,
-          "type": "std::collections::BTreeMap<String, crate::failover::CandidatePoolCfg>"
-        },
         "agents": {
           "optional": true,
           "type": "crate::a2a::config::AgentsCfg"
@@ -443,10 +439,6 @@
         "tls": {
           "optional": true,
           "type": "TlsCfg"
-        },
-        "tool_pools": {
-          "optional": true,
-          "type": "std::collections::BTreeMap<String, crate::failover::CandidatePoolCfg>"
         },
         "tools": {
           "optional": true,
@@ -1286,39 +1278,9 @@
       "kind": "struct"
     },
     "PoolMember": {
-      "deny_unknown_fields": true,
-      "fields": {
-        "attempt_timeout_ms": {
-          "optional": true,
-          "type": "u64"
-        },
-        "context_max": {
-          "optional": true,
-          "type": "usize"
-        },
-        "model": {
-          "optional": false,
-          "type": "String"
-        },
-        "reasoning": {
-          "optional": true,
-          "type": "bool"
-        },
-        "tags": {
-          "optional": true,
-          "type": "Vec<String>"
-        },
-        "tier": {
-          "optional": true,
-          "type": "String"
-        },
-        "weight": {
-          "optional": true,
-          "type": "u32"
-        }
-      },
-      "kind": "struct",
-      "transparent": false
+      "deserialize": "manual",
+      "fields": {},
+      "kind": "struct"
     },
     "PoolPolicy": {
       "deny_unknown_fields": false,
@@ -1658,6 +1620,10 @@
           "optional": true,
           "type": "AffinityCfg"
         },
+        "attempt_timeout_ms": {
+          "optional": true,
+          "type": "u64"
+        },
         "breaker": {
           "optional": true,
           "type": "BreakerCfg"
@@ -1678,9 +1644,21 @@
           "optional": true,
           "type": "OnExhaustedCfg"
         },
+        "repeatable": {
+          "optional": true,
+          "type": "Vec<String>"
+        },
+        "tier": {
+          "optional": true,
+          "type": "String"
+        },
         "upstream_credentials": {
           "optional": true,
           "type": "crate::auth::UpstreamCreds"
+        },
+        "weights": {
+          "optional": true,
+          "type": "std::collections::BTreeMap<String, u32>"
         }
       },
       "kind": "struct",
@@ -1769,6 +1747,41 @@
         "server_timing": {
           "optional": true,
           "type": "bool"
+        }
+      },
+      "kind": "struct",
+      "transparent": false
+    },
+    "RichMember": {
+      "deny_unknown_fields": true,
+      "fields": {
+        "attempt_timeout_ms": {
+          "optional": true,
+          "type": "u64"
+        },
+        "context_max": {
+          "optional": true,
+          "type": "usize"
+        },
+        "model": {
+          "optional": false,
+          "type": "String"
+        },
+        "reasoning": {
+          "optional": true,
+          "type": "bool"
+        },
+        "tags": {
+          "optional": true,
+          "type": "Vec<String>"
+        },
+        "tier": {
+          "optional": true,
+          "type": "String"
+        },
+        "weight": {
+          "optional": true,
+          "type": "u32"
         }
       },
       "kind": "struct",
@@ -2188,6 +2201,11 @@
       ]
     },
     "manual-de PoolCfg": {
+      "fields": {},
+      "kind": "manual",
+      "wire_keys": []
+    },
+    "manual-de PoolMember": {
       "fields": {},
       "kind": "manual",
       "wire_keys": []

@@ -356,6 +356,11 @@ pub fn migrate_config(raw: &str) -> Result<MigrateOutput, String> {
     migrate_providers(&mut root, &mut changes);
     migrate_hooks_block(&mut root, &mut changes, &mut todos);
     migrate_pools(&mut root, &mut changes, &mut todos);
+    // 1.6.0 UNIFIED POOLS. Runs AFTER `migrate_pools` (which has already renamed `members[].target`
+    // -> `model` and folded `policy:` -> `hooks:`), so this only ever sees the settled LLM pool
+    // shape when it lifts rich members to the uniform grammar. It also folds the unreleased
+    // 1.6.0-dev `tool_pools:`/`agent_pools:` sections into the ONE neutral `pools:` map.
+    migrate_unified_pools(&mut root, &mut changes, &mut todos);
     // 1.5.3 HARD rename of the tap `at:` vocabulary. Runs AFTER migrate_hooks_block (which builds
     // the inline-ref lists carrying the `at:` field) so every hook ref exists to rewrite.
     migrate_hook_stages(&mut root, &mut changes);
@@ -1640,6 +1645,139 @@ fn migrate_hooks_block(root: &mut Mapping, changes: &mut Vec<String>, todos: &mu
 }
 
 /// Pool member/breaker/failover mechanical renames + cost-off-members.
+/// 1.5.4/1.6.0-dev → 1.6.0 UNIFIED `pools:`. Two mechanical moves, both zero-behaviour-change:
+///
+/// 1. FOLD `tool_pools:`/`agent_pools:` INTO `pools:`. These are unreleased (1.6.0-dev) and already
+///    carry the uniform grammar (`members: [bare-name]` + `repeatable:`), so the fold is a plain map
+///    merge into the ONE neutral `pools:` section. A pool-name collision across the three sections is
+///    left for the operator (a todo) — it is a real ambiguity, not something the tool may silently pick.
+/// 2. LIFT rich-object LLM `pools:` members to the uniform shape. A member that carries ONLY
+///    `model` (+ `weight`) becomes a bare name, and any non-default weight is lifted to a pool-level
+///    `weights: { name: n }` map. A member that also carries per-member capabilities
+///    (`context_max`/`reasoning`/`tier`/`attempt_timeout_ms`/`tags`) is LEFT rich (still valid 1.6.0
+///    grammar) with a todo pointing at where each capability now belongs (the `models:` noun, or a
+///    single pool-level `tier:`/`attempt_timeout_ms:`) — lifting it blindly would drop or flatten a
+///    per-member value, so the conservative move keeps behaviour byte-identical.
+fn migrate_unified_pools(root: &mut Mapping, changes: &mut Vec<String>, todos: &mut Vec<String>) {
+    // (1) Fold the two renamed sections into `pools:`.
+    for section in ["tool_pools", "agent_pools"] {
+        let Some(Value::Mapping(folded)) = take(root, section) else {
+            continue;
+        };
+        // Ensure a `pools:` mapping exists to merge into.
+        if !matches!(root.get(Value::from("pools")), Some(Value::Mapping(_))) {
+            root.insert("pools".into(), Value::Mapping(Mapping::new()));
+        }
+        let Some(Value::Mapping(pools)) = root.get_mut(Value::from("pools")) else {
+            // Unreachable given the insert above, but keep the section rather than dropping it.
+            root.insert(section.into(), Value::Mapping(folded));
+            continue;
+        };
+        // Un-foldable (name-collision) entries are collected and re-attached under the old section
+        // key AFTER the `pools` borrow ends — `--validate` then rejects the stale section loudly.
+        let mut collisions: Mapping = Mapping::new();
+        for (name, def) in folded {
+            if pools.contains_key(&name) {
+                todos.push(format!(
+                    "`{section}.{}` could not be folded into `pools:`: a pool of that name already \
+                     exists. 1.6.0 has ONE neutral `pools:` map with globally-unique names — rename \
+                     one of the two and re-run `--migrate-config`.",
+                    name.as_str().unwrap_or("?")
+                ));
+                collisions.insert(name, def);
+            } else {
+                changes.push(format!(
+                    "{section}.{} -> pools.{} (unified `pools:`)",
+                    name.as_str().unwrap_or("?"),
+                    name.as_str().unwrap_or("?")
+                ));
+                pools.insert(name, def);
+            }
+        }
+        if !collisions.is_empty() {
+            root.insert(section.into(), Value::Mapping(collisions));
+        }
+    }
+
+    // (2) Lift rich LLM members to the uniform shape.
+    let Some(Value::Mapping(pools)) = root.get_mut(Value::from("pools")) else {
+        return;
+    };
+    // The reserved section-level keys are not pools.
+    let reserved = ["hooks", "upstream_credentials"];
+    for (pname, p) in pools.iter_mut() {
+        let pname = pname.as_str().unwrap_or("?").to_string();
+        if reserved.contains(&pname.as_str()) {
+            continue;
+        }
+        let Value::Mapping(p) = p else { continue };
+        let Some(Value::Sequence(members)) = p.get_mut(Value::from("members")) else {
+            continue;
+        };
+        let mut lifted_weights: Mapping = Mapping::new();
+        let mut any_lift = false;
+        for mem in members.iter_mut() {
+            // Already a bare name — nothing to lift.
+            let Value::Mapping(m) = mem else { continue };
+            let Some(model) = m
+                .get(Value::from("model"))
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+            else {
+                continue;
+            };
+            let has_caps = [
+                "context_max",
+                "reasoning",
+                "tier",
+                "attempt_timeout_ms",
+                "tags",
+            ]
+            .iter()
+            .any(|k| m.contains_key(Value::from(*k)));
+            if has_caps {
+                todos.push(format!(
+                    "pools.{pname}: member `{model}` carries per-member capabilities \
+                     (context_max/reasoning move to the `models:` entry; a single tier / \
+                     attempt_timeout_ms can move to the pool). Left as a rich member (valid 1.6.0) \
+                     — flatten it by hand if you want the uniform bare-name grammar."
+                ));
+                continue;
+            }
+            // Weight-only (or model-only) member: lift to a bare name, and record any non-default
+            // weight on the pool-level `weights:` map.
+            if let Some(w) = m.get(Value::from("weight")).and_then(|v| v.as_u64()) {
+                if w != 1 {
+                    lifted_weights.insert(model.as_str().into(), Value::from(w));
+                }
+            }
+            *mem = Value::from(model);
+            any_lift = true;
+        }
+        if !lifted_weights.is_empty() {
+            // Merge into an existing `weights:` if the operator already wrote one (operator's own
+            // entries win — we only ADD the ones we lifted).
+            match p.get_mut(Value::from("weights")) {
+                Some(Value::Mapping(existing)) => {
+                    for (k, v) in lifted_weights {
+                        existing.entry(k).or_insert(v);
+                    }
+                }
+                _ => {
+                    p.insert("weights".into(), Value::Mapping(lifted_weights));
+                }
+            }
+            changes.push(format!(
+                "pools.{pname}.members[].weight -> pools.{pname}.weights (uniform members)"
+            ));
+        } else if any_lift {
+            changes.push(format!(
+                "pools.{pname}.members[] rich objects -> uniform bare names"
+            ));
+        }
+    }
+}
+
 fn migrate_pools(root: &mut Mapping, changes: &mut Vec<String>, todos: &mut Vec<String>) {
     let Some(Value::Mapping(pools)) = root.get_mut(Value::from("pools")) else {
         return;

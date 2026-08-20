@@ -110,6 +110,7 @@ fn make_pool(members: Vec<config::PoolMember>) -> config::PoolCfg {
         policy: config::PoolPolicy::default(),
         gates: Vec::new(),
         base_named: false,
+        ..Default::default()
     }
 }
 
@@ -5138,4 +5139,77 @@ fn the_empty_set_the_validator_refuses_is_the_one_an_empty_registry_produces() {
         "and names the build: {}",
         errors[0]
     );
+}
+
+// ══ 1.6.0 UNIFIED `pools:` — GLOBAL-NAME VALIDATOR ═══════════════════════════════════════════════
+//
+// The neutral `pools:` map infers a pool's kind from its members and resolves members by NAME ALONE.
+// `validate_unified_pool_names` is the guard that keeps that name-only resolution unambiguous.
+
+/// A minimal `tools:` registry holding one server id, for the collision tests below.
+fn tools_with(id: &str) -> crate::mcp::config::ToolsCfg {
+    let mut td = crate::mcp::config::ToolsCfg::default();
+    td.servers.insert(
+        id.to_string(),
+        serde_yaml::from_str("{url: 'https://x.example/mcp', pin: {mechanism: unpinned}}")
+            .expect("a minimal server"),
+    );
+    td
+}
+
+/// A name defined in TWO nouns makes a bare member ambiguous — the router could not tell which plane
+/// `shared` belongs to. Refused so kind inference stays name-only.
+#[test]
+fn a_name_defined_in_two_nouns_is_refused() {
+    let mut models = HashMap::new();
+    models.insert("shared".to_string(), make_model_unbounded("prov"));
+    let mut cfg = make_root_cfg(HashMap::new(), models, HashMap::new());
+    cfg.tool_defs = tools_with("shared");
+
+    let mut errors = Vec::new();
+    super::validate_unified_pool_names(&cfg, &mut errors);
+    assert!(
+        errors.iter().any(|e| e.contains("`shared`")
+            && e.contains("`models:`")
+            && e.contains("`tools:`")
+            && e.contains("at most ONE noun")),
+        "the collision names the two nouns: {errors:?}"
+    );
+}
+
+/// A pool name that collides with a registration on the plane it routes to would alias that
+/// registration's breaker cell. Refused, cross-checked against every noun (the map is not kind-scoped).
+#[test]
+fn a_pool_named_like_a_tools_registration_is_refused() {
+    let mut cfg = make_root_cfg(HashMap::new(), HashMap::new(), HashMap::new());
+    cfg.tool_defs = tools_with("search");
+    cfg.tool_pools.insert(
+        "search".to_string(),
+        crate::failover::CandidatePoolCfg {
+            members: vec!["search-eu".into(), "search-us".into()],
+            repeatable: Vec::new(),
+        },
+    );
+
+    let mut errors = Vec::new();
+    super::validate_unified_pool_names(&cfg, &mut errors);
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.contains("pool name 'search'") && e.contains("`tools:` registration")),
+        "a pool sharing a registration name is refused: {errors:?}"
+    );
+}
+
+/// The clean case: distinct names across every noun and pool, no collision — zero errors.
+#[test]
+fn distinct_names_across_nouns_and_pools_pass() {
+    let mut models = HashMap::new();
+    models.insert("gpt".to_string(), make_model_unbounded("prov"));
+    let mut cfg = make_root_cfg(HashMap::new(), models, HashMap::new());
+    cfg.tool_defs = tools_with("fs-server");
+
+    let mut errors = Vec::new();
+    super::validate_unified_pool_names(&cfg, &mut errors);
+    assert!(errors.is_empty(), "no collisions: {errors:?}");
 }

@@ -229,6 +229,13 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
         }
     }
 
+    // UNIFIED `pools:` NEUTRALITY (1.6.0, design `1.6.0-unified-pools.md` §7-8). The single neutral
+    // `pools:` map infers each pool's KIND from its members and resolves members by NAME ALONE, which
+    // is sound only if names are GLOBALLY UNIQUE: no name defined in two nouns, and no pool name
+    // colliding with a noun/member name. Checked here (over the resolved `RootCfg`) so a clean
+    // `--validate` is a clean boot — the same reason the context_max conflict moved here.
+    validate_unified_pool_names(cfg, &mut errors);
+
     // The same reserved-prefix collision applies to PROVIDER names: a provider named `admin` is
     // reachable via the adhoc route `POST /admin/<model>/v1/messages`, which the auth middleware
     // intercepts as an admin request for the identical reason. Reject it symmetrically.
@@ -1452,6 +1459,60 @@ fn reserved_admin_name(name: &str) -> bool {
 }
 
 /// Resolve the single `on_exhausted: fallback_pool:<name>` edge out of `pool_name`, if it has one.
+/// UNIFIED `pools:` GLOBAL-NAME VALIDATOR (1.6.0). The neutral `pools:` map infers a pool's kind
+/// from its members and resolves every member by NAME ALONE. That is sound only when names are
+/// globally unique, so this refuses:
+///
+/// 1. A name defined in TWO nouns (`models:`/`tools:`/`agents:`) — kind inference could not decide
+///    which plane a member of that name belongs to, and the router would silently pick one.
+/// 2. A POOL name that collides with a member/registration name on the same keyspace — already
+///    partly covered for models above; here it is extended to the MCP/A2A nouns.
+///
+/// (Homogeneity — all of a pool's members being one noun — and unresolvable members are enforced at
+/// resolution, in `config::resolve`, where the members are still visible before projection; this
+/// function is the name-uniqueness half that makes that inference unambiguous.)
+fn validate_unified_pool_names(cfg: &RootCfg, errors: &mut Vec<String>) {
+    use std::collections::BTreeSet;
+    let models: BTreeSet<&str> = cfg.models.keys().map(|s| s.as_str()).collect();
+    let tools: BTreeSet<&str> = cfg.tool_defs.servers.keys().map(|s| s.as_str()).collect();
+    let agents: BTreeSet<&str> = cfg.agent_defs.agents.keys().map(|s| s.as_str()).collect();
+
+    // (1) No name may be defined in two nouns — the kind of a bare member must be decidable by name.
+    for (a, b, name_a, name_b) in [
+        (&models, &tools, "models", "tools"),
+        (&models, &agents, "models", "agents"),
+        (&tools, &agents, "tools", "agents"),
+    ] {
+        for dup in a.intersection(b) {
+            errors.push(format!(
+                "`{dup}` is defined in both the top-level `{name_a}:` and `{name_b}:` maps. Pool \
+                 member names are resolved by name alone (a pool's kind is inferred from its \
+                 members), so a name may live in at most ONE noun. Rename one of them."
+            ));
+        }
+    }
+
+    // (2) A pool name must not collide with a registration name on the plane it routes to (the pool
+    // and the registration share the breaker keyspace). Cross-checked against every noun, since a
+    // single neutral `pools:` map is not scoped by kind.
+    for pool_name in cfg
+        .pools
+        .keys()
+        .chain(cfg.tool_pools.keys())
+        .chain(cfg.agent_pools.keys())
+    {
+        for (set, noun) in [(&tools, "tools"), (&agents, "agents")] {
+            if set.contains(pool_name.as_str()) {
+                errors.push(format!(
+                    "pool name '{pool_name}' conflicts with a `{noun}:` registration of the same \
+                     name; a pool and a registration share the failover breaker keyspace, so their \
+                     names must be distinct. Rename the pool."
+                ));
+            }
+        }
+    }
+}
+
 /// Returns `Some(target)` only for a well-formed FallbackPool action; `None` for a pool with no
 /// `on_exhausted`, a non-fallback action (reject/least_bad), or an unparseable action (already
 /// rejected elsewhere at parse time). The returned name is owned because it lives inside the parsed
