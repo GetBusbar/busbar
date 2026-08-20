@@ -44,7 +44,7 @@
 
 use busbar_api::{
     AuditRecord, CredentialMeta, CredentialSecret, McpCallRecord, McpDemotionRow, MeteringDelta,
-    MeteringRow, TaskEventRow, TaskRow, UsageDelta, UsageLedger, VirtualKey,
+    MeteringRow, PlaneSelector, TaskEventRow, TaskRow, UsageDelta, UsageLedger, VirtualKey,
 };
 use serde::{Deserialize, Serialize};
 use std::os::raw::c_void;
@@ -411,6 +411,69 @@ pub enum StoreRequest {
         expires_at: u64,
         now: u64,
     },
+
+    // ── THE NEUTRAL KIND-TAGGED PLANE-RECORD SURFACE (1.6.0) ──────────────────────────────────
+    //
+    // Eight KIND-TAGGED variants that will subsume the fourteen protocol-named durable ops above
+    // (put_task/…/redeem_ask_state) — the wire half of the 14→8 collapse in the 1.6.0 design. ALL
+    // EIGHT ARE ADDITIVE (ABI stays v2), on exactly the mechanism the A2A/MCP variants ride: an SDK
+    // that predates them cannot DECODE one, which is `STATUS_UNSUPPORTED`, which is the loader's
+    // `call_with_legacy_default`, which supplies the trait's own default — and every one of these
+    // eight trait methods is DEFAULTED accept-and-keep-nothing, so an already-signed v2 artifact
+    // keeps loading and behaving exactly as it did. NOTHING calls them in this commit; the
+    // protocol-named variants above are untouched.
+    //
+    // The typed sidecar columns of the neutral record (`parent`/`seq`/`ts`/`disposition`) live on
+    // the trait's [`busbar_api::PlaneRecord`] envelope; this commit's WIRE carries only the subset
+    // each verb needs to route (`kind`/`id`/`body`, plus append's `parent`/`seq`). Relocating the
+    // full sidecar onto the wire is the later schema commit — see the 1.6.0 design's retention note.
+    /// UPSERT one plane record by `(kind, id)` — the neutral `PutTask`/`PutMcpDemotion`.
+    UpsertPlaneRecord {
+        kind: String,
+        id: String,
+        body: Vec<u8>,
+    },
+    /// GET the opaque body for `(kind, id)`, or `None` — the neutral `GetTask`.
+    GetPlaneRecord {
+        kind: String,
+        id: String,
+    },
+    /// APPEND one child record within `parent`, ordered by `seq` — the neutral
+    /// `AppendTaskEvent`/`AppendMcpCall`.
+    AppendPlaneRecord {
+        kind: String,
+        parent: String,
+        seq: u64,
+        body: Vec<u8>,
+    },
+    /// LIST a kind's records, narrowed by `selector` — the neutral `ListTasks`/`ListMcpDemotions`
+    /// ([`PlaneSelector::All`]) and `ListTaskEvents`/`ListMcpCalls` ([`PlaneSelector::Parent`]).
+    ListPlaneRecords {
+        kind: String,
+        selector: PlaneSelector,
+    },
+    /// LIST every parent with a record of `kind` — the neutral `ListMcpCallPrincipals`.
+    ListPlaneRecordParents {
+        kind: String,
+    },
+    /// RETENTION purge for `kind`, honoring that kind's terminal-only-vs-all contract — the neutral
+    /// `PurgeTasksBefore`/`PurgeMcpCallsBefore`.
+    PurgePlaneRecordsBefore {
+        kind: String,
+        before: u64,
+    },
+    /// DELETE the record `(kind, id)`; absent is a no-op — the neutral `ClearMcpDemotion`.
+    DeletePlaneRecord {
+        kind: String,
+        id: String,
+    },
+    /// TEST-AND-SET one single-use token of `kind` — the neutral `RedeemAskState`.
+    RedeemPlaneToken {
+        kind: String,
+        token: String,
+        expires_at: u64,
+        now: u64,
+    },
 }
 
 /// The success payload for a `call`, matched to the request variant. Store-level errors do NOT ride
@@ -460,8 +523,25 @@ pub enum StoreResponse {
     McpDemotions(Vec<McpDemotionRow>),
     /// `redeem_ask_state` - whether THIS redemption was the first. ADDITIVE, and its own variant
     /// rather than a shared boolean for the reason [`StoreResponse::McpCallPrincipals`] is its own:
-    /// `unexpected()` can only catch a plugin answering the wrong shape if the shapes differ.
+    /// `unexpected()` can only catch a plugin answering the wrong shape if the shapes differ. Also
+    /// serves the neutral `RedeemPlaneToken`, whose "was this the first redemption" answer is the
+    /// same shape.
     Redeemed(bool),
+
+    // ── THE NEUTRAL KIND-TAGGED PLANE-RECORD SURFACE (1.6.0) ──────────────────────────────────
+    //
+    // Three ADDITIVE response variants for the eight kind-tagged requests; `GetPlaneRecord`/
+    // `ListPlaneRecords`/`ListPlaneRecordParents` carry OPAQUE bodies (the store never decodes the
+    // protocol row), and the write/purge/redeem verbs reuse `Unit`/`Purged`/`Redeemed`. Each is its
+    // OWN variant rather than folded into a same-shaped sibling (e.g. `PlaneRecordParents` vs
+    // `McpCallPrincipals`, both `Vec<String>`) for the reason [`StoreResponse::McpCallPrincipals`]
+    // is its own: `unexpected()` only catches a plugin answering the wrong shape if the shapes differ.
+    /// `get_plane_record` — the opaque record body, or `None` when absent.
+    PlaneRecord(Option<Vec<u8>>),
+    /// `list_plane_records` — the selected records' opaque bodies, oldest-first for a parent selector.
+    PlaneRecords(Vec<Vec<u8>>),
+    /// `list_plane_record_parents` — every parent with a record of the kind.
+    PlaneRecordParents(Vec<String>),
 }
 
 // ── SECRET-plugin wire (`kind: secret`) ─────────────────────────────────────────────────────────

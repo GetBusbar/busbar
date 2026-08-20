@@ -43,7 +43,7 @@ pub use secret::{SecretError, SecretErrorKind, SecretModule, SecretResult};
 pub use signal::{Signal, SignalBag, SignalValue};
 pub use store::{
     AuditRecord, CredentialMeta, CredentialSecret, McpCallRecord, McpDemotionRow, MeteringDelta,
-    MeteringRow, ModelTokens, ModelTokensDelta, ScopeRef, SecretForm, Store, StoreError,
-    StoreResult, TaskEventRow, TaskRow, TierTokens, TierTokensDelta, UsageDelta, UsageLedger,
-    VirtualKey,
+    MeteringRow, ModelTokens, ModelTokensDelta, PlaneDisposition, PlaneRecord, PlaneSelector,
+    ScopeRef, SecretForm, Store, StoreError, StoreResult, TaskEventRow, TaskRow, TierTokens,
+    TierTokensDelta, UsageDelta, UsageLedger, VirtualKey,
 };
