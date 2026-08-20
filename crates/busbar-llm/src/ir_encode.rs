@@ -96,3 +96,42 @@ pub fn warn_dropped_tool_strict(tools: &[busbar_core::ir::IrTool], egress: &'sta
          Validate tool arguments on this route, or pin the request to an openai/responses lane"
     );
 }
+
+/// The minimal one-token "ping" IR request an active health probe serializes through a dialect's own
+/// `write_request` — so every protocol gets a valid probe body for free, no per-protocol probe code.
+/// Shared by every writer's `probe_request` seam; the model is stamped afterward by the caller's
+/// `rewrite_model_if_needed`, so this carries none.
+pub fn ping_request() -> busbar_core::ir::IrRequest {
+    use busbar_core::ir::{IrBlock, IrMessage, IrRequest, IrRole};
+    IrRequest {
+        reasoning: None,
+        reasoning_budgets: None,
+        logprobs: None,
+        top_logprobs: None,
+        user: None,
+        parallel_tool_calls: None,
+        system: vec![],
+        messages: vec![IrMessage {
+            role: IrRole::User,
+            content: vec![IrBlock::Text {
+                text: "ping".to_string(),
+                cache_control: None,
+                citations: vec![],
+            }],
+        }],
+        tools: vec![],
+        max_tokens: Some(1),
+        temperature: None,
+        top_p: None,
+        top_k: None,
+        stop: vec![],
+        tool_choice: None,
+        stream: false,
+        frequency_penalty: None,
+        presence_penalty: None,
+        seed: None,
+        n: None,
+        response_format: None,
+        extra: serde_json::Map::new(),
+    }
+}

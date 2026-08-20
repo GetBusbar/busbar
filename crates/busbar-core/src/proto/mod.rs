@@ -902,43 +902,17 @@ pub trait ProtocolWriter: Send + Sync {
         false
     }
 
+    /// Serialize the one-token "ping" probe request through THIS dialect's own `write_request`, as a
+    /// wire `Value`. The concrete ping IR is built by the owning plugin (busbar-llm's `ir_encode`),
+    /// so core's `probe_body` orchestration below names no concrete IR. The model is stamped
+    /// afterward by [`Self::rewrite_model_if_needed`], so the ping itself carries none.
+    fn probe_request(&self) -> serde_json::Value;
+
     /// Build a minimal, protocol-correct request body for an active health probe of `model`.
-    /// Serializes a one-token "ping" through this protocol's own `write_request`, so every protocol
-    /// gets a valid probe body for free — no per-protocol probe code, no extra dependency.
+    /// Serializes a one-token "ping" through this protocol's own [`Self::probe_request`], so every
+    /// protocol gets a valid probe body for free — no per-protocol probe code, no extra dependency.
     fn probe_body(&self, model: &str) -> Vec<u8> {
-        use crate::ir::{IrBlock, IrMessage, IrRequest, IrRole};
-        let ir = IrRequest {
-            reasoning: None,
-            reasoning_budgets: None,
-            logprobs: None,
-            top_logprobs: None,
-            user: None,
-            parallel_tool_calls: None,
-            system: vec![],
-            messages: vec![IrMessage {
-                role: IrRole::User,
-                content: vec![IrBlock::Text {
-                    text: "ping".to_string(),
-                    cache_control: None,
-                    citations: vec![],
-                }],
-            }],
-            tools: vec![],
-            max_tokens: Some(1),
-            temperature: None,
-            top_p: None,
-            top_k: None,
-            stop: vec![],
-            tool_choice: None,
-            stream: false,
-            frequency_penalty: None,
-            presence_penalty: None,
-            seed: None,
-            n: None,
-            response_format: None,
-            extra: serde_json::Map::new(),
-        };
-        let mut body = self.write_request(&ir);
+        let mut body = self.probe_request();
         let _ = self.rewrite_model_if_needed(&mut body, model);
         crate::json::to_vec(&body).unwrap_or_default()
     }

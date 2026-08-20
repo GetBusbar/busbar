@@ -1,6 +1,12 @@
 use super::*;
 
 impl ProtocolWriter for CohereWriter {
+    fn probe_request(&self) -> serde_json::Value {
+        // The ping IR is built by the plugin (ir_encode::ping_request); this dialect serializes it
+        // through its own write_request, so the probe body matches a real request on this wire.
+        self.write_request(&super::super::ir_encode::ping_request())
+    }
+
     fn upstream_path(&self) -> &str {
         PATH_UPSTREAM
     }
