@@ -26,6 +26,11 @@
 use serde::Serialize;
 
 use crate::audit::{ChainLabels, ChainedRecord, Digest, Framing};
+use crate::diagnostics::{
+    diag_debug, diag_error, diag_warn, DURABLE_AUDIT_BACKFILL_GAP, DURABLE_AUDIT_RING_UNRECONCILED,
+    DURABLE_AUDIT_WRITETHROUGH_FAILED, DURABLE_SECOND_WRITER_DETACH,
+    DURABLE_WRITETHROUGH_BELOW_FLOOR,
+};
 
 /// One admin audit record. `outcome` is a stable token tooling can branch on. The record is
 /// HASH-CHAINED for tamper-EVIDENCE: `hash = sha256(prev_hash | seq | ts | action | resource |
@@ -638,7 +643,8 @@ impl AuditLog {
                         .unreconciled_warned
                         .swap(true, std::sync::atomic::Ordering::Relaxed)
                     {
-                        tracing::warn!(
+                        diag_warn!(
+                            DURABLE_AUDIT_RING_UNRECONCILED,
                             error = %e.0,
                             "durable audit write-through skipped: this process's ring is not yet \
                              reconciled with the durable tail (the boot restore did not read or \
@@ -647,7 +653,8 @@ impl AuditLog {
                              now could overwrite durable history."
                         );
                     } else {
-                        tracing::debug!(
+                        diag_debug!(
+                            DURABLE_AUDIT_RING_UNRECONCILED,
                             error = %e.0,
                             "durable audit write-through still skipped: ring not yet reconciled with \
                              the durable tail (retry read still failing)"
@@ -679,7 +686,8 @@ impl AuditLog {
         if let Ok(tail) = store.list_audit_tail(1) {
             let observed = tail.iter().map(|r| r.seq).max().unwrap_or(0);
             if observed > persisted {
-                tracing::error!(
+                diag_error!(
+                    DURABLE_SECOND_WRITER_DETACH,
                     observed_tail = observed,
                     this_node_persisted = persisted,
                     "durable audit log has another writer — detaching this node's durable sink. It \
@@ -715,7 +723,8 @@ impl AuditLog {
                     .swap(new_seq, std::sync::atomic::Ordering::Relaxed)
                     != new_seq
                 {
-                    tracing::warn!(
+                    diag_warn!(
+                        DURABLE_WRITETHROUGH_BELOW_FLOOR,
                         seq = new_seq,
                         durable_floor = start,
                         "durable audit write-through skipped: seq predates the recovered durable \
@@ -723,7 +732,8 @@ impl AuditLog {
                          past it; retained in the RAM ring)"
                     );
                 } else {
-                    tracing::debug!(
+                    diag_debug!(
+                        DURABLE_WRITETHROUGH_BELOW_FLOOR,
                         seq = new_seq,
                         durable_floor = start,
                         "durable audit write-through skipped: seq still predates the recovered \
@@ -735,7 +745,8 @@ impl AuditLog {
                 // recovered a floor at a seq still retained in the RAM ring, re-offered on flush).
                 // Benign and EXPECTED — `debug!`, never a WARN, since this is the case that used to
                 // spam the console.
-                tracing::debug!(
+                diag_debug!(
+                    DURABLE_WRITETHROUGH_BELOW_FLOOR,
                     seq = new_seq,
                     durable_floor = start,
                     "durable audit write-through skipped: seq is at the durable floor (already \
@@ -767,7 +778,8 @@ impl AuditLog {
                     .swap(seq, std::sync::atomic::Ordering::Relaxed)
                     != seq
                 {
-                    tracing::warn!(
+                    diag_warn!(
+                        DURABLE_AUDIT_BACKFILL_GAP,
                         seq,
                         durable_high,
                         "durable audit backfill: seq no longer in the RAM ring; the durable chain \
@@ -775,7 +787,8 @@ impl AuditLog {
                          below the hole"
                     );
                 } else {
-                    tracing::debug!(
+                    diag_debug!(
+                        DURABLE_AUDIT_BACKFILL_GAP,
                         seq,
                         durable_high,
                         "durable audit backfill: unrepairable gap persists at this seq — still \
@@ -792,7 +805,8 @@ impl AuditLog {
                     .append_failing
                     .swap(true, std::sync::atomic::Ordering::Relaxed)
                 {
-                    tracing::warn!(
+                    diag_warn!(
+                        DURABLE_AUDIT_WRITETHROUGH_FAILED,
                         seq,
                         action = %record.action,
                         error = %e.0,
@@ -800,7 +814,8 @@ impl AuditLog {
                          state snapshot; will backfill on the next successful write-through)"
                     );
                 } else {
-                    tracing::debug!(
+                    diag_debug!(
+                        DURABLE_AUDIT_WRITETHROUGH_FAILED,
                         seq,
                         action = %record.action,
                         error = %e.0,

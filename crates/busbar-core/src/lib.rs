@@ -51,6 +51,7 @@ pub mod config;
 pub mod config_validate;
 pub mod core_routes;
 pub mod cost;
+pub mod diagnostics;
 // The durable-write choke point moved to the shared `busbar-api` crate so the plugin-loader
 // (plugins.fetch cache write) can route through the SAME primitive. Re-exported here so every
 // existing `crate::durable::*` call site in this binary resolves unchanged.
