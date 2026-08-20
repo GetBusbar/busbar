@@ -1,4 +1,3 @@
-use super::super::*;
 use super::*;
 
 /// Bounded sliding window of recent request outcomes, each tagged success/error, used to compute
