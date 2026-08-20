@@ -815,16 +815,46 @@ fn apply_rewrite_to_body_echoes_redacted_marker_as_visible_text() {
     assert!(!v.to_string().contains("OPAQUE_CIPHERTEXT_BYTES"));
 }
 
-/// The content ceiling (`limits.hook_content_max_bytes`): over-cap content is OMITTED WHOLE — never
-/// truncated mid-value, because a guardrail that screens half a payload and passes it is worse than
-/// one that refuses — and the grant is still honoured, so the hook receives a PRESENT-but-EMPTY
-/// content projection rather than the absence an ungranted hook sees. The always-present size bucket
-/// still reports the real total, so the omission is stated in the payload rather than hidden.
+/// The content ceiling (`limits.hook_content_max_bytes`), in two halves, run in ONE test because the
+/// ceiling is a process-global atomic and mutating it from parallel tests would race.
+///
+/// 1. DEFAULT is UNLIMITED (`== 0`): the LLM prompt projection is sent UNCAPPED, byte-for-byte as
+///    v1.5.4 did. This pins the fail-open-is-GONE contract — with the cap OFF (the default) a large
+///    body is projected in FULL, so a `prompt: rw` redaction gate SEES the content it must redact
+///    instead of being handed an empty projection while the ORIGINAL body sails upstream.
+/// 2. The ceiling stays available as an OPT-IN: when an operator sets a non-zero ceiling, over-cap
+///    content is OMITTED WHOLE — never truncated mid-value, because a guardrail that screens half a
+///    payload and passes it is worse than one that refuses — and the grant is still honoured, so the
+///    hook receives a PRESENT-but-EMPTY projection rather than the absence an ungranted hook sees.
+///    The always-present size bucket still reports the real total, so the omission is visible.
 #[test]
-fn hook_content_cap_omits_whole_and_keeps_the_grant_visible() {
+fn hook_content_uncapped_by_default_and_omits_whole_when_opted_in() {
     let big = "x".repeat(200_000);
     let v: Value = serde_json::json!({"messages": [{"role": "user", "content": big}]});
     let f = facts(&v, "openai");
+
+    // 1. DEFAULT (unlimited): the over-64KiB body is projected in FULL — not blanked (v1.5.4 parity).
+    crate::proxy::set_hook_content_max_bytes(crate::proxy::DEFAULT_HOOK_CONTENT_MAX_BYTES);
+    assert_eq!(
+        crate::proxy::DEFAULT_HOOK_CONTENT_MAX_BYTES,
+        0,
+        "the LLM prompt projection default is UNLIMITED (0); anything else is fail-open regression"
+    );
+    let req = build_rewrite_request(&f, None, "p", "openai", false, true, 1);
+    let prompt = req
+        .prompt
+        .as_ref()
+        .expect("a rewrite gate always gets the prompt projection");
+    assert_eq!(
+        prompt.messages.len(),
+        1,
+        "with the cap OFF by default the body is projected in FULL — a redaction gate must SEE the \
+         content it screens, never be fail-open no-op'd"
+    );
+    assert_eq!(prompt.messages[0].1.len(), 200_000, "content sent uncapped");
+
+    // 2. OPT-IN ceiling: over-cap content is omitted WHOLE, grant stays visible (present-but-empty).
+    crate::proxy::set_hook_content_max_bytes(64 * 1024);
     let req = build_rewrite_request(&f, None, "p", "openai", false, true, 1);
     let prompt = req.prompt.as_ref().expect(
         "the grant is honoured: an over-cap projection is EMPTY, never absent — absence is what an \
@@ -836,4 +866,7 @@ fn hook_content_cap_omits_whole_and_keeps_the_grant_visible() {
         req.total_chars, 200_000,
         "the size bucket still reports the real total, so the omission is visible"
     );
+
+    // Restore the unlimited default for other tests sharing the process-global ceiling.
+    crate::proxy::set_hook_content_max_bytes(crate::proxy::DEFAULT_HOOK_CONTENT_MAX_BYTES);
 }

@@ -259,11 +259,14 @@ fn join_pieces(mut pieces: Vec<std::borrow::Cow<'_, str>>) -> Option<std::borrow
 
 /// The DEFAULT ceiling, in bytes, on the content a hook is shown in one projection.
 ///
-/// Informed by nothing measured, deliberately conservative, and paired with a counter
-/// (`busbar_hook_content_truncated_total`) so the number can be chosen by a metric rather than by a
-/// guess. It matters most for the largest untrusted blob in a modern agent request — a tool result —
-/// which is bounded by neither a context window nor a token count.
-pub(crate) const DEFAULT_HOOK_CONTENT_MAX_BYTES: usize = 64 * 1024;
+/// `0` = UNLIMITED (the default): the LLM prompt projection is sent UNCAPPED, byte-for-byte as
+/// v1.5.4 did. A non-zero ceiling is an OPT-IN an operator sets via `limits.hook_content_max_bytes`;
+/// when set, it is paired with a counter (`busbar_hook_content_truncated_total`) so the number can be
+/// chosen by a metric rather than by a guess. It matters most for the largest untrusted blob in a
+/// modern agent request — a tool result — which is bounded by neither a context window nor a token
+/// count. It stays OFF by default because blanking the projection out from under a `prompt: rw`
+/// redaction gate is fail-OPEN: the gate no-ops and the ORIGINAL unredacted body is forwarded.
+pub(crate) const DEFAULT_HOOK_CONTENT_MAX_BYTES: usize = 0;
 
 /// The effective content ceiling for this config generation, resolved once at config apply
 /// (`limits.hook_content_max_bytes`) and read here with a single relaxed load — never recomputed per

@@ -218,7 +218,9 @@ For `kind: hook` plugins, the manifest `needs` field (set with `--needs-prompt r
 > - **A body busbar cannot read is rejected with a 400**, not forwarded with a best-effort
 >   projection. A turn with a role no protocol recognises is a client error, and screening it as
 >   `role: ""` while it went upstream anyway was a fail-open shape.
-> - **Content is bounded** by `limits.hook_content_max_bytes` (default 65536). Over-cap content is
+> - **Content is bounded** by `limits.hook_content_max_bytes` (default `0` = unlimited; the
+>   projection is sent uncapped unless an operator opts in to a ceiling). When a ceiling is set,
+>   over-cap content is
 >   omitted WHOLE — never truncated mid-value — and your hook receives a present-but-empty content
 >   projection while the size fields still report the real totals, so an omission is visible in the
 >   payload rather than silent. `busbar_hook_content_truncated_total` counts it.
