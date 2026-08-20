@@ -88,6 +88,7 @@ use axum::response::Response;
 
 use super::rpcerror::A2aError;
 use super::task::{Task, TaskState};
+use crate::diagnostics::{diag_debug, diag_error, A2A_PUSH_CONFIG_UNRECORDED};
 
 /// WHICH SPELLING OF THE PUSH-CONFIG VERBS A CALLER USED, because the two dialects disagree about
 /// the SHAPE of a config and not merely about the method name.
@@ -556,7 +557,16 @@ pub(crate) async fn create_push_config(
         Some(pinned.url.clone()),
         now,
     ) {
-        tracing::error!(task = %task.task_id, error = %e, "a2a: a push config could not be recorded");
+        // Error-once latch: a store that cannot record a push config is a STABLE condition (a store
+        // outage persists across every registration) and this path runs per request. Error on the
+        // transition into the failing state; hold subsequent failures at debug so it cannot spam.
+        static PUSH_CONFIG_UNRECORDED_WARNED: std::sync::atomic::AtomicBool =
+            std::sync::atomic::AtomicBool::new(false);
+        if !PUSH_CONFIG_UNRECORDED_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            diag_error!(A2A_PUSH_CONFIG_UNRECORDED, task = %task.task_id, error = %e, "a2a: a push config could not be recorded");
+        } else {
+            diag_debug!(A2A_PUSH_CONFIG_UNRECORDED, task = %task.task_id, error = %e, "a2a: a push config could not be recorded");
+        }
         return err(
             rpc_id,
             A2aError::Internal,

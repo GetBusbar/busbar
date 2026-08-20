@@ -142,6 +142,11 @@ pub(crate) const PLANE_DECL: crate::plane::registry::PlaneDecl =
 /// the plane-narrowed `Arc<dyn PlaneStore>` (task/provenance methods only), never the `Store` that
 /// also carries `append_audit`. With `store: memory` `ctx.store` is `None` and in-flight tasks are
 /// ephemeral BY DESIGN, exactly as the audit ring is.
+use crate::diagnostics::{
+    diag_error, diag_warn, A2A_TASK_CHAIN_VERIFY_FAILED, A2A_TASK_ROWS_UNREADABLE,
+    A2A_TASK_STATE_UNREAD,
+};
+
 pub(crate) fn a2a_hydrate(ctx: &crate::plane::registry::BootCtx) -> Result<(), String> {
     let Some(plane_store) = ctx.store.clone() else {
         return Ok(());
@@ -160,7 +165,8 @@ pub(crate) fn a2a_hydrate(ctx: &crate::plane::registry::BootCtx) -> Result<(), S
             // separately and at WARN, because summing it into the restored count is how a task that
             // silently ceased to exist across a deploy stays invisible.
             if r.unreadable > 0 {
-                tracing::warn!(
+                diag_warn!(
+                    A2A_TASK_ROWS_UNREADABLE,
                     rows = r.unreadable,
                     "persisted A2A task rows could not be read back and are NOT resumable; \
                      they were most likely written by a different engine version"
@@ -169,14 +175,16 @@ pub(crate) fn a2a_hydrate(ctx: &crate::plane::registry::BootCtx) -> Result<(), S
             // A chain break is TAMPER EVIDENCE and is a different event from a read hiccup, so it is
             // logged at ERROR and names the task rather than being folded into a count.
             for brk in &r.chain_breaks {
-                tracing::error!(
+                diag_error!(
+                    A2A_TASK_CHAIN_VERIFY_FAILED,
                     task_id = %brk.scope,
                     break_detail = %brk,
                     "A2A per-task provenance CHAIN VERIFICATION FAILED on restore"
                 );
             }
         }
-        Err(e) => tracing::warn!(
+        Err(e) => diag_warn!(
+            A2A_TASK_STATE_UNREAD,
             error = %e,
             "could not read durable A2A task state; in-flight tasks start empty"
         ),

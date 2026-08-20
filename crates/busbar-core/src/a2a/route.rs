@@ -20,6 +20,10 @@
 //!   behaviour.
 
 use super::relay::RelayBreaker;
+use crate::diagnostics::{
+    diag_debug, diag_error, diag_warn, A2A_EXTENDED_CARD_BUILD_FAILED, A2A_PIN_REFUSAL_UNRECORDED,
+    A2A_POOL_NOT_INTERCHANGEABLE,
+};
 use crate::state::App;
 use axum::response::{IntoResponse as _, Response};
 use std::sync::Arc;
@@ -304,7 +308,8 @@ pub(super) fn render_pin_mismatch(
     now: u64,
     reason: String,
 ) -> Response {
-    tracing::warn!(
+    diag_debug!(
+        A2A_POOL_NOT_INTERCHANGEABLE,
         task = %task_id,
         %reason,
         "a2a: the pool's members are not interchangeable; the submission is not accepted"
@@ -318,7 +323,17 @@ pub(super) fn render_pin_mismatch(
         ) {
             Ok(task) => super::receive::notify_push(seam, task),
             Err(e) => {
-                tracing::error!(task = %task_id, error = %e, "a2a: a pin-refused task could not be recorded as rejected");
+                // Error-once latch: a store that refuses the `rejected` transition is a STABLE
+                // condition (a store outage persists across every refused submission), and this
+                // path runs per request. Error on the TRANSITION into the failing state; hold
+                // subsequent failures at debug so a store outage cannot spam the log.
+                static PIN_REFUSAL_UNRECORDED_WARNED: std::sync::atomic::AtomicBool =
+                    std::sync::atomic::AtomicBool::new(false);
+                if !PIN_REFUSAL_UNRECORDED_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                    diag_error!(A2A_PIN_REFUSAL_UNRECORDED, task = %task_id, error = %e, "a2a: a pin-refused task could not be recorded as rejected");
+                } else {
+                    diag_debug!(A2A_PIN_REFUSAL_UNRECORDED, task = %task_id, error = %e, "a2a: a pin-refused task could not be recorded as rejected");
+                }
             }
         }
     }
@@ -415,7 +430,7 @@ pub(super) fn extended_agent_card(
         // here are a `public_url` that will not parse and a signing key that will not sign, and
         // both would otherwise publish a card asserting something busbar cannot stand behind.
         Some(Err(e)) => {
-            tracing::error!(error = %e, "a2a: could not build the extended agent card");
+            diag_warn!(A2A_EXTENDED_CARD_BUILD_FAILED, error = %e, "a2a: could not build the extended agent card");
             super::rpcerror::respond(
                 rpc_id,
                 super::rpcerror::A2aError::Internal,

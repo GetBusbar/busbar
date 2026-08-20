@@ -194,6 +194,17 @@ const MIGRATED_FILES: &[&str] = &[
     "src/config/overlay.rs",
     "src/config/mod.rs",
     "src/config_validate/mod.rs",
+    "src/a2a/mod.rs",
+    "src/a2a/serve.rs",
+    "src/a2a/route.rs",
+    "src/a2a/transport.rs",
+    "src/a2a/pushback.rs",
+    "src/a2a/receive.rs",
+    "src/a2a/local.rs",
+    "src/a2a/verbs.rs",
+    "src/a2a/pushdeliver.rs",
+    "src/a2a/originate.rs",
+    "src/a2a/plane.rs",
 ];
 
 #[test]

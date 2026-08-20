@@ -39,6 +39,7 @@ use std::sync::{Arc, RwLock};
 use super::config::{AgentPinCfg, AgentsCfg, DEFAULT_RECOVERY_BACKOFF_MS};
 use super::fetch::FetchPolicy;
 use super::registry::AgentRegistration;
+use crate::diagnostics::{diag_warn, A2A_REVERIFY_CADENCE_UNPARSED};
 
 /// THE PLANE. Built once per config generation; `None` when this deployment fronts no agents.
 pub(crate) struct A2aPlane {
@@ -168,7 +169,8 @@ impl A2aPlane {
             }
             match super::config::policy_for(def, DEFAULT_RECOVERY_BACKOFF_MS) {
                 Ok(policy) => reg.reverify = policy,
-                Err(e) => tracing::warn!(
+                Err(e) => diag_warn!(
+                    A2A_REVERIFY_CADENCE_UNPARSED,
                     agent = %name,
                     error = %e,
                     "the re-verification cadence did not parse; this registration keeps the release \

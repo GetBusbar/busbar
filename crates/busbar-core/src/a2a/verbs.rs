@@ -72,6 +72,7 @@ use super::reverify::{self, Due, Ledger, Policy};
 use crate::admin::planeverbs::{self, PlaneTrust};
 use crate::admin::v1::contract::taxonomy::Cond;
 use crate::admin::v1::contract::AdminError;
+use crate::diagnostics::{diag_error, A2A_CARD_FETCH_PANICKED};
 use crate::plane::Plane;
 use crate::state::AppHandle;
 use crate::trust::{Approval, Drift, Observation, Sighting, TrustState};
@@ -474,7 +475,7 @@ async fn look(subject: &A2aSubject) -> Result<ConnectPreview, AdminError> {
         // A PANIC IN THE FETCH IS NOT A TRUST ANSWER. Reported as an internal failure rather than
         // folded into the preview, because a preview that reads `error` is a statement about the
         // upstream and this is a statement about busbar.
-        tracing::error!(error = %e, "a2a: the card fetch panicked during an operator-driven verb");
+        diag_error!(A2A_CARD_FETCH_PANICKED, error = %e, "a2a: the card fetch panicked during an operator-driven verb");
         AdminError::Internal
     })
 }

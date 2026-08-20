@@ -39,6 +39,14 @@ use std::sync::Arc;
 
 use super::inbound::{Dispatch, CREDENTIAL_KIND_A2A_INBOUND};
 use super::words::{plane_absent, refuse_admission, A2aWords};
+use crate::diagnostics::{
+    diag_debug, diag_error, diag_warn, A2A_AGENT_BINDING_UNSPEAKABLE,
+    A2A_BREAKER_REFUSAL_UNRECORDED, A2A_FAILURE_UNRECORDED, A2A_INBOUND_TASK_UNOPENED,
+    A2A_INBOUND_TASK_UNRECORDED, A2A_INTERRUPTED_TASK_UNRESUMED, A2A_OUTBOUND_CRED_UNLEASED,
+    A2A_OWN_CARD_BUILD_FAILED, A2A_PUSH_NOTIFY_UNDELIVERED, A2A_REFUSE_SERVE_CARD,
+    A2A_RELAYED_OUTCOME_UNRECORDED, A2A_RELAYED_STREAM_REFUSED, A2A_RELAYED_SUBMISSION_FAILED,
+    A2A_RELAY_THREAD_INCOMPLETE, A2A_STREAM_EMPTY, A2A_STREAM_RELAY_INCOMPLETE,
+};
 use crate::plane::taskstore;
 use crate::state::{App, CurrentApp};
 
@@ -99,7 +107,7 @@ pub(crate) async fn well_known_card(CurrentApp(app): CurrentApp) -> Response {
         // is a `public_url` that will not parse, and answering with a hollow document would publish
         // a card asserting an endpoint nobody can reach.
         Err(e) => {
-            tracing::error!(error = %e, "could not build busbar's own agent card");
+            diag_error!(A2A_OWN_CARD_BUILD_FAILED, error = %e, "could not build busbar's own agent card");
             (
                 axum::http::StatusCode::INTERNAL_SERVER_ERROR,
                 axum::Json(serde_json::json!({
@@ -583,7 +591,7 @@ pub(crate) async fn card(
             // A leak refusal is a REFUSAL TO SERVE, never a warning: a served card that names the
             // backend hands a caller the way around every control busbar applies. It is a
             // server-side fault, so it answers 502 and the detail stays in the log.
-            tracing::error!(agent = %admitted.dispatch.agent_id, error = %e, "a2a: refusing to serve an agent card");
+            diag_warn!(A2A_REFUSE_SERVE_CARD, agent = %admitted.dispatch.agent_id, error = %e, "a2a: refusing to serve an agent card");
             (
                 axum::http::StatusCode::BAD_GATEWAY,
                 axum::Json(serde_json::json!({
@@ -1309,7 +1317,7 @@ async fn admitted(
         if let Err(e) =
             taskstore::TASKS.transition(&task_id, super::task::TaskState::Working, now, &request_id)
         {
-            tracing::error!(task = %task_id, error = %e, "a2a: an interrupted task could not be resumed");
+            diag_warn!(A2A_INTERRUPTED_TASK_UNRESUMED, task = %task_id, error = %e, "a2a: an interrupted task could not be resumed");
             return (
                 axum::http::StatusCode::CONFLICT,
                 axum::Json(super::rpcerror::body(
@@ -1333,12 +1341,32 @@ async fn admitted(
         ) {
             Ok(t) => t,
             Err(e) => {
-                tracing::error!(error = ?e, "a2a: could not open an inbound task");
+                // Error-once latch: a store that cannot open an inbound task is a STABLE condition
+                // (a store outage persists across every inbound submission), and this path runs per
+                // request. Error on the TRANSITION into the failing state; hold subsequent failures
+                // at debug so a store outage cannot spam the log.
+                static INBOUND_TASK_UNOPENED_WARNED: std::sync::atomic::AtomicBool =
+                    std::sync::atomic::AtomicBool::new(false);
+                if !INBOUND_TASK_UNOPENED_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                    diag_error!(A2A_INBOUND_TASK_UNOPENED, error = ?e, "a2a: could not open an inbound task");
+                } else {
+                    diag_debug!(A2A_INBOUND_TASK_UNOPENED, error = ?e, "a2a: could not open an inbound task");
+                }
                 return plane_absent();
             }
         };
         if let Err(e) = taskstore::TASKS.submit(&task, &request_id) {
-            tracing::error!(error = %e, "a2a: the inbound task could not be recorded");
+            // Error-once latch: a store that refuses the submit is a STABLE condition (a store
+            // outage persists across every inbound submission), and this path runs per request.
+            // Error on the TRANSITION into the failing state; hold subsequent failures at debug so
+            // a store outage cannot spam the log.
+            static INBOUND_TASK_UNRECORDED_WARNED: std::sync::atomic::AtomicBool =
+                std::sync::atomic::AtomicBool::new(false);
+            if !INBOUND_TASK_UNRECORDED_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                diag_error!(A2A_INBOUND_TASK_UNRECORDED, error = %e, "a2a: the inbound task could not be recorded");
+            } else {
+                diag_debug!(A2A_INBOUND_TASK_UNRECORDED, error = %e, "a2a: the inbound task could not be recorded");
+            }
             return (
                 axum::http::StatusCode::SERVICE_UNAVAILABLE,
                 axum::Json(super::rpcerror::body(
@@ -1436,7 +1464,7 @@ async fn admitted(
         Some(cred) => match super::creds::mint_from(&grant, cred, &app.secret_resolver, now_ms) {
             Ok(lease) => Some(lease),
             Err(e) => {
-                tracing::error!(agent = %target_agent, error = %e, "a2a: the outbound credential could not be leased");
+                diag_warn!(A2A_OUTBOUND_CRED_UNLEASED, agent = %target_agent, error = %e, "a2a: the outbound credential could not be leased");
                 return fail_task(&seam, &rpc_id, &task_id, &request_id, now, 502);
             }
         },
@@ -1461,7 +1489,8 @@ async fn admitted(
         // publishes only a binding this build cannot speak is unreachable, and saying so names the
         // word an operator has to act on; sending it an envelope it never offered to read would
         // produce a `400` from the backend and an operator hunting the wrong end of the hop.
-        tracing::error!(
+        diag_warn!(
+            A2A_AGENT_BINDING_UNSPEAKABLE,
             agent = %admitted.dispatch.agent_id,
             binding = %binding,
             "a2a: the registered agent's card declares no binding busbar can speak"
@@ -1646,7 +1675,7 @@ async fn unary_hop(
         Ok(Ok(reply)) => reply,
         Ok(Err(refusal)) => return refuse_hop(&ctx, &refusal),
         Err(join) => {
-            tracing::error!(task = %ctx.task_id, error = %join, "a2a: the relay thread did not complete");
+            diag_error!(A2A_RELAY_THREAD_INCOMPLETE, task = %ctx.task_id, error = %join, "a2a: the relay thread did not complete");
             return fail_task(
                 &ctx.seam,
                 &ctx.rpc_id,
@@ -1750,7 +1779,7 @@ async fn stream_hop(
                 if let Ok(task) = taskstore::TASKS.transition(&task_id, state, now, &request_id) {
                     if task.push_callback.is_some() {
                         if let Err(e) = super::pushdeliver::deliver(notify_seam.as_ref(), &task) {
-                            tracing::warn!(task = %task.task_id, error = %e, "a2a: the push notification was not delivered");
+                            diag_debug!(A2A_PUSH_NOTIFY_UNDELIVERED, task = %task.task_id, error = %e, "a2a: the push notification was not delivered");
                         }
                     }
                 }
@@ -1841,7 +1870,7 @@ async fn stream_hop(
             // A stream that produced no event at all is not a served task. Reported as a hop
             // failure rather than as an empty 200, which would tell the caller the work was done.
             Ok(Ok(super::relay::RelayStream::Streamed)) => {
-                tracing::warn!(task = %ctx.task_id, "a2a: the backend's stream carried no event");
+                diag_debug!(A2A_STREAM_EMPTY, task = %ctx.task_id, "a2a: the backend's stream carried no event");
                 fail_task(
                     &ctx.seam,
                     &ctx.rpc_id,
@@ -1853,7 +1882,7 @@ async fn stream_hop(
             }
             Ok(Err(refusal)) => refuse_hop(&ctx, &refusal),
             Err(join) => {
-                tracing::error!(task = %ctx.task_id, error = %join, "a2a: the relay thread did not complete");
+                diag_error!(A2A_RELAY_THREAD_INCOMPLETE, task = %ctx.task_id, error = %join, "a2a: the relay thread did not complete");
                 fail_task(
                     &ctx.seam,
                     &ctx.rpc_id,
@@ -1876,7 +1905,7 @@ async fn stream_hop(
         match handle.await {
             Ok(Ok(_)) => {}
             Ok(Err(refusal)) => {
-                tracing::warn!(task = %watched_task, error = %refusal, "a2a: the relayed stream ended in a refusal");
+                diag_debug!(A2A_RELAYED_STREAM_REFUSED, task = %watched_task, error = %refusal, "a2a: the relayed stream ended in a refusal");
                 // A BROKEN STREAM IS A TERMINAL FAILURE and the caller is told, for the same
                 // reason `fail_task` tells them: silence and "still working" are the same thing to
                 // a receiver, and this is the case where they are most different.
@@ -1890,7 +1919,7 @@ async fn stream_hop(
                 }
             }
             Err(join) => {
-                tracing::error!(task = %watched_task, error = %join, "a2a: the streaming relay thread did not complete");
+                diag_error!(A2A_STREAM_RELAY_INCOMPLETE, task = %watched_task, error = %join, "a2a: the streaming relay thread did not complete");
             }
         }
     });
@@ -1935,7 +1964,15 @@ fn record_state(ctx: &HopContext, state: super::task::TaskState) {
             // Reported, never fatal: the hop SUCCEEDED and the caller is owed its answer. A store
             // that refused the transition is an operator problem, not a reason to discard a
             // completed piece of work the caller has already been billed for.
-            tracing::error!(task = %ctx.task_id, error = %e, "a2a: the relayed task's outcome could not be recorded");
+            // Error-once latch: a store outage persists across every relayed outcome and this path
+            // runs per request. Error on the transition; hold subsequent failures at debug.
+            static RELAYED_OUTCOME_UNRECORDED_WARNED: std::sync::atomic::AtomicBool =
+                std::sync::atomic::AtomicBool::new(false);
+            if !RELAYED_OUTCOME_UNRECORDED_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                diag_error!(A2A_RELAYED_OUTCOME_UNRECORDED, task = %ctx.task_id, error = %e, "a2a: the relayed task's outcome could not be recorded");
+            } else {
+                diag_debug!(A2A_RELAYED_OUTCOME_UNRECORDED, task = %ctx.task_id, error = %e, "a2a: the relayed task's outcome could not be recorded");
+            }
         }
     }
 }
@@ -1964,7 +2001,7 @@ pub(super) fn notify_push(seam: &Arc<dyn super::relay::RelaySeam>, task: super::
             // the caller's poll will find it; a webhook that is down is the caller's problem to
             // read in this log line.
             Err(e) => {
-                tracing::warn!(task = %task_id, error = %e, "a2a: the push notification was not delivered")
+                diag_debug!(A2A_PUSH_NOTIFY_UNDELIVERED, task = %task_id, error = %e, "a2a: the push notification was not delivered")
             }
         }
     });
@@ -1997,7 +2034,7 @@ fn refuse_hop_early(rpc_id: &serde_json::Value, refusal: &super::relay::RelayRef
 }
 
 fn refuse_hop(ctx: &HopContext, refusal: &super::relay::RelayRefusal) -> Response {
-    tracing::warn!(agent = %ctx.agent_id, task = %ctx.task_id, error = %refusal, "a2a: the relayed task submission failed");
+    diag_debug!(A2A_RELAYED_SUBMISSION_FAILED, agent = %ctx.agent_id, task = %ctx.task_id, error = %refusal, "a2a: the relayed task submission failed");
     if let super::relay::RelayRefusal::BreakerOpen {
         retry_after_secs, ..
     } = refusal
@@ -2018,7 +2055,17 @@ fn refuse_hop(ctx: &HopContext, refusal: &super::relay::RelayRefusal) -> Respons
             ) {
                 Ok(task) => notify_push(&ctx.seam, task),
                 Err(e) => {
-                    tracing::error!(task = %ctx.task_id, error = %e, "a2a: a breaker-refused task could not be recorded as rejected");
+                    // Error-once latch: a store outage persists across every breaker refusal and
+                    // this path runs per request. Error on the transition; hold the rest at debug.
+                    static BREAKER_REFUSAL_UNRECORDED_WARNED: std::sync::atomic::AtomicBool =
+                        std::sync::atomic::AtomicBool::new(false);
+                    if !BREAKER_REFUSAL_UNRECORDED_WARNED
+                        .swap(true, std::sync::atomic::Ordering::Relaxed)
+                    {
+                        diag_error!(A2A_BREAKER_REFUSAL_UNRECORDED, task = %ctx.task_id, error = %e, "a2a: a breaker-refused task could not be recorded as rejected");
+                    } else {
+                        diag_debug!(A2A_BREAKER_REFUSAL_UNRECORDED, task = %ctx.task_id, error = %e, "a2a: a breaker-refused task could not be recorded as rejected");
+                    }
                 }
             }
         }
@@ -2137,7 +2184,15 @@ fn end_task(seam: &Arc<dyn super::relay::RelaySeam>, task_id: &str, request_id: 
         // work that will never finish — as silence indistinguishable from work still in progress.
         Ok(task) => notify_push(seam, task),
         Err(e) => {
-            tracing::error!(task = %task_id, error = %e, "a2a: a failed task could not be recorded as failed");
+            // Error-once latch: a store outage persists across every terminal failure and this
+            // path runs per request. Error on the transition; hold subsequent failures at debug.
+            static FAILURE_UNRECORDED_WARNED: std::sync::atomic::AtomicBool =
+                std::sync::atomic::AtomicBool::new(false);
+            if !FAILURE_UNRECORDED_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                diag_error!(A2A_FAILURE_UNRECORDED, task = %task_id, error = %e, "a2a: a failed task could not be recorded as failed");
+            } else {
+                diag_debug!(A2A_FAILURE_UNRECORDED, task = %task_id, error = %e, "a2a: a failed task could not be recorded as failed");
+            }
         }
     }
 }

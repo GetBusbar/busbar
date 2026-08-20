@@ -88,6 +88,7 @@
 //! busbar's `securityRequirements` would publish the backend's auth posture beside busbar's — the
 //! exact leak the replacement exists to prevent, surviving under the other name.
 
+use crate::diagnostics::{diag_debug, A2A_EXTENDED_CARD_AGENT_OMITTED};
 use serde_json::{json, Map, Value};
 
 use super::card::CardError;
@@ -831,7 +832,8 @@ fn agent_skill(agent: &EntitledAgent<'_>) -> Option<Value> {
     if mentions.is_empty() {
         Some(skill)
     } else {
-        tracing::warn!(
+        diag_debug!(
+            A2A_EXTENDED_CARD_AGENT_OMITTED,
             agent = %agent.agent_id,
             at = ?mentions,
             "a2a: an agent is omitted from the extended card because its card names the backend \
