@@ -184,9 +184,16 @@ async fn a_tripped_pool_primary_reroutes_the_next_tools_call_to_its_twin_and_sta
 #[tokio::test]
 async fn an_unreachable_primary_is_rerouted_before_first_byte_within_one_call() {
     crate::metrics::init();
-    let peer_a = Peer::start(Behaviour::Result, "unused").await;
-    let dead_url = peer_a.mcp_url();
-    drop(peer_a); // the listener closes; the URL now refuses connections.
+    // A's endpoint is a loopback port bound and then SYNCHRONOUSLY released: a std `TcpListener`
+    // closes its socket the instant it drops, so a connect to `dead_url` refuses deterministically
+    // on every platform. Binding a `Peer` and dropping it instead only ABORTS its async accept task
+    // — cancellation the runtime completes later — so on Windows the still-draining listener accepts
+    // the connection from its backlog and then resets it AFTER the request is sent (os error 10054):
+    // an after-dispatch failure, which is NOT the connect-refused-before-first-byte condition this
+    // test exists to exercise (Unix closes fast enough to dodge the window, hence the flake).
+    let dead = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let dead_url = format!("http://{}/mcp", dead.local_addr().unwrap());
+    drop(dead);
     let peer_b = Peer::start(Behaviour::Result, "unused").await;
     let app = pooled_app(
         plain_server(&dead_url),
