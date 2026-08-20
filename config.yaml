@@ -73,9 +73,7 @@ listen: "0.0.0.0:8080"
 #   # obtains a client_id are ON: pre-registration, Client ID Metadata Documents, and RFC 7591
 #   # dynamic client registration at {issuer}/register. What keeps that safe is the ceiling
 #   # above: registration confers nothing beyond `default_grant`, which is empty until you
-#   # widen it. The old `dynamic_registration:` key still parses (the config grammar is frozen
-#   # additive-only) but is not a switch: `true` is inert, and `false` refuses to boot, naming
-#   # this ruling — delete the line.
+#   # widen it.
 #
 #   # Access token lifetime in seconds; default 600. Short on purpose - clients refresh.
 #   access_token_ttl_secs: 600

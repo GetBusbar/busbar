@@ -26,9 +26,6 @@ If you run dashboards, read the metrics breaking change first: both request fami
 - **An `mcp:` block with an empty `auth.chain` now refuses to start.** An anonymous MCP request
   is never narrowed by a key, so it would run with wildcard grants over every registered server.
   Close the data-plane chain, or drop the `mcp:` block.
-- **`oauth_as.dynamic_registration` is no longer a switch.** The key still parses, but `true` is
-  inert and `false` is a boot refusal — an operator who wrote it believes registration is off and
-  must not get a server whose `/register` answers.
 - **Hooks now fire on the normalized IR**, the same representation the upstream request is built
   from, so a screening hook can no longer be shown a different payload than the provider receives.
   A client's in-band `{role: "system"}` turn now arrives in `system`, so **`message_count` is one

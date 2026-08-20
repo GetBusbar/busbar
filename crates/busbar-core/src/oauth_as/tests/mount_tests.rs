@@ -46,14 +46,12 @@ use crate::test_support::TestApp;
 const ISSUER: &str = "https://as.example.com";
 
 /// An `oauth_as:` block as an operator would write it. There is deliberately nothing to vary:
-/// the 1.6.0 ruling removed the `dynamic_registration` toggle, so ONE config produces the whole
-/// mounted set — `/register` included, unconditionally.
+/// ONE config produces the whole mounted set — `/register` included, unconditionally.
 fn cfg() -> OauthAsCfg {
     OauthAsCfg {
         issuer: ISSUER.to_string(),
         signing_key: None,
         key_id: None,
-        dynamic_registration: None,
         default_grant: Vec::new(),
         access_token_ttl_secs: None,
     }
@@ -181,10 +179,8 @@ fn the_inventory_is_exactly_what_the_mount_registers() {
         !expected.is_empty(),
         "an empty inventory would make the gating test pass by asserting nothing"
     );
-    // THE FLIPPED ASSERTION. This line used to pin `/register` to the operator's
-    // `dynamic_registration` toggle; the 1.6.0 ruling deleted the toggle, so the same line now
-    // pins the UNCONDITIONAL mount: an AS plane without its registration endpoint is a shortfall
-    // this test names, exactly as its accidental presence used to be.
+    // THE UNCONDITIONAL MOUNT: an AS plane without its registration endpoint is a shortfall this
+    // test names.
     assert!(
         expected.contains("/register"),
         "`/register` is mounted whenever the plane is: registration is one of the three always-on \
