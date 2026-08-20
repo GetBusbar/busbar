@@ -24,8 +24,8 @@
 
 use busbar_api::{McpCallRecord, McpDemotionRow};
 use busbar_api::{
-    MeteringDelta, MeteringRow, Store, StoreError, StoreResult, TaskEventRow, TaskRow, UsageLedger,
-    VirtualKey,
+    MeteringDelta, MeteringRow, PlaneRecord, PlaneSelector, Store, StoreError, StoreResult,
+    TaskEventRow, TaskRow, UsageLedger, VirtualKey,
 };
 use busbar_store_memory::MemoryStore;
 use std::path::PathBuf;
@@ -333,6 +333,110 @@ impl Store for FileStore {
             true
         })
     }
+
+    // ── THE NEUTRAL KIND-TAGGED PLANE-RECORD VERBS (1.6.0, Commit 2) ──────────────────────────
+    //
+    // These implement the eight neutral verbs over the SAME on-disk tables the protocol-named
+    // methods above own. Each maps its `kind` to a table, decodes the opaque `body` into that
+    // table's typed row, and DELEGATES to the matching named method (re-encoding rows on the read
+    // path) — so a write through the neutral surface and a read through the named one see one and the
+    // same row, and behaviour is byte-identical to the named path (including the retention split:
+    // `task` purges only terminal rows via `purge_tasks_before`, `call` purges all older via
+    // `purge_mcp_calls_before`). A `kind` this store does not recognise falls through to the neutral
+    // trait default (inert), exactly as an un-overridden backend would behave.
+    fn upsert_plane_record(&self, record: &PlaneRecord) -> StoreResult<()> {
+        match record.kind.as_str() {
+            "task" => self.put_task(&decode(&record.body)?),
+            "demotion" => self.put_mcp_demotion(&decode(&record.body)?),
+            _ => Ok(()),
+        }
+    }
+
+    fn get_plane_record(&self, kind: &str, id: &str) -> StoreResult<Option<Vec<u8>>> {
+        match kind {
+            "task" => self.get_task(id)?.map(|r| encode(&r)).transpose(),
+            _ => Ok(None),
+        }
+    }
+
+    fn append_plane_record(&self, record: &PlaneRecord) -> StoreResult<()> {
+        match record.kind.as_str() {
+            "task_event" => self.append_task_event(&decode(&record.body)?),
+            "call" => self.append_mcp_call(&decode(&record.body)?),
+            _ => Ok(()),
+        }
+    }
+
+    fn list_plane_records(
+        &self,
+        kind: &str,
+        selector: &PlaneSelector,
+    ) -> StoreResult<Vec<Vec<u8>>> {
+        match (kind, selector) {
+            ("task", PlaneSelector::All) => self.list_tasks()?.iter().map(encode).collect(),
+            ("demotion", PlaneSelector::All) => {
+                self.list_mcp_demotions()?.iter().map(encode).collect()
+            }
+            ("task_event", PlaneSelector::Parent(p)) => {
+                self.list_task_events(p)?.iter().map(encode).collect()
+            }
+            ("call", PlaneSelector::Parent(p)) => {
+                self.list_mcp_calls(p)?.iter().map(encode).collect()
+            }
+            _ => Ok(Vec::new()),
+        }
+    }
+
+    fn list_plane_record_parents(&self, kind: &str) -> StoreResult<Vec<String>> {
+        match kind {
+            "call" => self.list_mcp_call_principals(),
+            _ => Ok(Vec::new()),
+        }
+    }
+
+    fn purge_plane_records_before(&self, kind: &str, before: u64) -> StoreResult<u64> {
+        match kind {
+            "task" => self.purge_tasks_before(before),
+            "call" => self.purge_mcp_calls_before(before),
+            _ => Ok(0),
+        }
+    }
+
+    fn delete_plane_record(&self, kind: &str, id: &str) -> StoreResult<()> {
+        match kind {
+            "demotion" => self.clear_mcp_demotion(id),
+            _ => Ok(()),
+        }
+    }
+
+    fn redeem_plane_token(
+        &self,
+        kind: &str,
+        token: &str,
+        expires_at: u64,
+        now: u64,
+    ) -> StoreResult<bool> {
+        match kind {
+            "ask" => self.redeem_ask_state(token, expires_at, now),
+            _ => Ok(true),
+        }
+    }
+}
+
+/// Decode an opaque plane `body` into the typed row a kind's table holds. A malformed body is a
+/// STORE ERROR the caller sees, never a silently-dropped write.
+fn decode<T: serde::de::DeserializeOwned>(body: &[u8]) -> StoreResult<T> {
+    serde_json::from_slice(body).map_err(|e| StoreError(format!("plane body decode: {e}")))
+}
+
+/// Re-encode a typed row back to an opaque `body` on the read path — the exact inverse of [`decode`],
+/// so a body written through the neutral surface reads back byte-for-byte.
+fn encode<T: serde::Serialize>(row: &T) -> StoreResult<Vec<u8>> {
+    serde_json::to_vec(row).map_err(|e| StoreError(e.to_string()))
 }
 
 busbar_plugin_sdk::export_store_plugin!(open);
+
+#[cfg(test)]
+#[path = "tests.rs"]
+mod tests;
