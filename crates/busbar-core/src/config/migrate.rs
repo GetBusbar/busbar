@@ -364,6 +364,11 @@ pub fn migrate_config(raw: &str) -> Result<MigrateOutput, String> {
     // 1.5.3 HARD rename of the tap `at:` vocabulary. Runs AFTER migrate_hooks_block (which builds
     // the inline-ref lists carrying the `at:` field) so every hook ref exists to rewrite.
     migrate_hook_stages(&mut root, &mut changes);
+    // 1.6.0 CLEAN SLATE: rewrite the retired hook-DEFINITION key spellings on the settled top-level
+    // `hooks:` named map — `plugin:` → `module:` and the single-stage `at:` → `phase:`. Runs AFTER
+    // migrate_hooks_block (which has already lifted every legacy registry/inline surface into that
+    // map) so it sees the final definition shape; idempotent on a config already in the 1.6.0 spelling.
+    migrate_hook_def_keys(&mut root, &mut changes);
     migrate_observability(&mut root, &mut changes);
     migrate_response_headers(&mut root, &mut changes, &mut todos);
     // 1.5.3 observability→export lift-out. Runs AFTER migrate_observability (otlp rename) and
@@ -2112,6 +2117,57 @@ fn migrate_hook_stages(root: &mut Mapping, changes: &mut Vec<String>) {
             };
             let loc = format!("pools.{}.hooks", pname.as_str().unwrap_or("?"));
             rewrite_list(hooks, &loc, changes);
+        }
+    }
+}
+
+/// 1.6.0 CLEAN SLATE: rewrite the two retired hook-DEFINITION key spellings on every entry of the
+/// top-level `hooks:` named map so a config using the pre-1.6.0 spellings validates on 1.6.0:
+///   * `plugin:` → `module:` (the sole wire spelling now the `alias = "plugin"` is gone), unless
+///     `module:` is already present (it wins — the operator's current statement of intent);
+///   * `at: <stage>` → `phase: [<stage>]` (stage-renamed via [`crate::config::RENAMED_HOOK_STAGES`],
+///     matching the overlay boot-migration), unless a non-empty `phase:` is already present, in which
+///     case `at:` is dropped — the list is authoritative under the old `fires_at_stage` precedence.
+///
+/// IDEMPOTENT: an entry already spelled `module:`/`phase:` has nothing to rewrite. Complements
+/// [`hook_entry_to_def`] (which performs the same conversion when LIFTING a legacy registry/inline
+/// hook); this pass catches a `hooks:` map that was ALREADY the named-def shape yet still carried a
+/// retired key, which `migrate_hooks_block` passes through untouched.
+fn migrate_hook_def_keys(root: &mut Mapping, changes: &mut Vec<String>) {
+    let Some(Value::Mapping(hooks)) = root.get_mut(Value::from("hooks")) else {
+        return;
+    };
+    for (name, entry) in hooks.iter_mut() {
+        let Value::Mapping(def) = entry else { continue };
+        let hook_name = name.as_str().unwrap_or("?").to_string();
+        // `plugin:` → `module:` (an existing `module:` wins).
+        if let Some(plugin) = take(def, "plugin") {
+            if !def.contains_key(Value::from("module")) {
+                def.insert("module".into(), plugin);
+                changes.push(format!("hooks.{hook_name}: `plugin:` -> `module:` (1.6.0)"));
+            } else {
+                changes.push(format!(
+                    "hooks.{hook_name}: retired `plugin:` dropped (`module:` already set, 1.6.0)"
+                ));
+            }
+        }
+        // `at: <stage>` → `phase: [<stage>]` unless a non-empty `phase:` already stands.
+        if let Some(at) = take(def, "at") {
+            let phase_present = def
+                .get(Value::from("phase"))
+                .and_then(|v| v.as_sequence())
+                .is_some_and(|s| !s.is_empty());
+            if phase_present {
+                changes.push(format!(
+                    "hooks.{hook_name}: retired `at:` dropped (`phase:` already set, 1.6.0)"
+                ));
+            } else if let Some(phase) = at_to_phase(&at) {
+                def.insert("phase".into(), phase);
+                changes.push(format!(
+                    "hooks.{hook_name}: single-stage `at: {}` -> `phase:` list (1.6.0)",
+                    at.as_str().unwrap_or("?")
+                ));
+            }
         }
     }
 }

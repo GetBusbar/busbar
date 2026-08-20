@@ -631,10 +631,6 @@
     "HookCfg": {
       "deny_unknown_fields": true,
       "fields": {
-        "at": {
-          "optional": true,
-          "type": "HookStage"
-        },
         "default": {
           "optional": true,
           "type": "bool"

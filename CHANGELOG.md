@@ -44,6 +44,23 @@ If you run dashboards, read the metrics breaking change first: both request fami
   `config.overlay.file`, `advanced.worker_threads`, `advanced.upstream_http1_only` and
   `advanced.upstream_h2_prior_knowledge` respectively. `TOKIO_WORKER_THREADS` still works as a
   fallback for `advanced.worker_threads`, and `BUSBAR_CONFIG` is unchanged.
+- **Clean-slate removal of five deprecated back-compat surfaces.** 1.x is a clean slate, so 1.6.0
+  drops the retired spellings 1.5.x still accepted. Every removal ships with a migration path — no
+  persisted state or boot is bricked. See [the 1.6.0 migration guide](docs/migration-1.6.md).
+  - **Hook `plugin:` key** (the read-only alias of `module:`) is removed. `busbar --migrate-config`
+    rewrites `plugin:` → `module:`, a persisted config overlay is auto-migrated at boot, and the
+    Admin API `POST`/`PUT /hooks` bodies must now name `module:`.
+  - **Hook `at: <stage>` key** (the single-stage tap, superseded by the `phase:` list) is removed.
+    `busbar --migrate-config` rewrites `at: <stage>` → `phase: [<stage>]` (behavior-preserving) and a
+    persisted overlay is auto-migrated at boot. (The `at:` **value** vocabulary was already removed in
+    1.5.3; this removes the **key**.)
+  - **`persist:` field on `PUT /api/v1/admin/config/settings`** (accepted-then-ignored since 1.5.3)
+    is removed. A pre-1.5.3 client that still sends it now gets a `400` naming `persist` as an
+    unknown field instead of a silent accept-and-ignore.
+  - **`at` response field on `GET /api/v1/admin/hooks[/{name}]`** is removed; read `fires_at` (the
+    resolved stage set) or `phase` (the literal echo).
+  - **`limit` field on the `/stats` lane/endpoint status JSON** (an alias of `max_concurrent`) is
+    removed; read `max_concurrent`.
 
 ### Added
 

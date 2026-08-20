@@ -8,14 +8,9 @@
 //! but `HookView` projected neither. So an operator could configure a hook's stage and caller
 //! scoping through the API and then not read it back through the API.
 //!
-//! Worse than a missing field: the ONE stage field the view did carry, `at`, is `None` for every
-//! hook written in the current top-level `hooks:` grammar, because `config::hook_cfg_from_def`
-//! hard-codes `at: None` and `--migrate-config` rewrites a legacy `at:` into `phase:`. The read
-//! therefore reported `at: null` for a tap pinned to a single stage, under a doc comment that said
-//! `null` meant "a gate".
-//!
-//! These tests pin the fix at the projection: both spellings are echoed, and the RESOLVED set is
-//! projected beside them through the same predicate the firing path uses.
+//! 1.6.0 CLEAN SLATE removed the legacy single `at:` field entirely; `phase:` is the sole stage
+//! spelling. These tests pin the projection: the `phase:` list is echoed, and the RESOLVED set is
+//! projected beside it through the same predicate the firing path uses.
 
 use crate::admin::v1::service::project_hook_view;
 use crate::config::{
@@ -32,7 +27,6 @@ fn hook() -> HookCfg {
         prompt: PromptAccess::No,
         user: UserAccess::No,
         priority: 0,
-        at: None,
         settings: serde_json::Map::new(),
         on_empty: None,
         global: false,
@@ -60,31 +54,9 @@ fn a_phase_scoped_hook_reads_back_its_stages() {
         vec!["response"],
         "and resolved: a non-empty `phase:` wins outright"
     );
-    assert_eq!(
-        view.at, None,
-        "the legacy `at:` stays null for a phase-scoped hook, which is exactly why it cannot be \
-         the field an operator reads"
-    );
 }
 
-/// Precedence rung 2: `phase:` empty, legacy `at:` set. The resolved set is that one stage.
-#[test]
-fn a_legacy_at_hook_resolves_to_exactly_that_one_stage() {
-    let cfg = HookCfg {
-        at: Some(HookStage::Request),
-        ..hook()
-    };
-    let view = project_hook_view("logger", &cfg, &[]);
-
-    assert_eq!(view.at, Some("request"));
-    assert!(
-        view.phase.is_empty(),
-        "no `phase:` was written, so the echo is empty; the resolved set carries the answer"
-    );
-    assert_eq!(view.fires_at, vec!["request"]);
-}
-
-/// Precedence rung 3: BOTH omitted. The resolved set is the four core stages, and only those,
+/// Precedence rung 2: `phase:` omitted. The resolved set is the four core stages, and only those,
 /// never "every stage that will ever exist" (the frozen meaning of an omitted `phase:`). An empty
 /// `phase` echo is therefore ambiguous on its own, which is the argument for projecting the
 /// resolved set beside it rather than instead of it.
@@ -93,7 +65,6 @@ fn an_unscoped_hook_resolves_to_the_four_core_stages() {
     let view = project_hook_view("unscoped", &hook(), &[]);
 
     assert!(view.phase.is_empty());
-    assert_eq!(view.at, None);
     assert_eq!(
         view.fires_at,
         CORE_HOOK_PHASES
@@ -112,16 +83,10 @@ fn the_resolved_set_agrees_with_the_firing_predicate_for_every_stage() {
     for cfg in [
         hook(),
         HookCfg {
-            at: Some(HookStage::Routing),
-            ..hook()
-        },
-        HookCfg {
             phase: vec![HookStage::Request, HookStage::Response],
             ..hook()
         },
         HookCfg {
-            // `phase:` wins even when `at:` disagrees with it.
-            at: Some(HookStage::Request),
             phase: vec![HookStage::Candidate],
             ..hook()
         },

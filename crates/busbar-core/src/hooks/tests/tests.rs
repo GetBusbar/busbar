@@ -270,7 +270,6 @@ fn base_gate() -> HookCfg {
         prompt: PromptAccess::No,
         user: UserAccess::No,
         priority: 0,
-        at: None,
         settings: serde_json::Map::new(),
         on_empty: None,
         global: false,
@@ -1110,35 +1109,36 @@ fn resolve_gate_hooks_admits_only_decision_gates() {
     );
 }
 
-/// `resolve_tap_hooks` admits ONLY `kind: tap` hooks observing at the REQUESTED stage (unset
-/// `at:` defaults to request). A gate is excluded (it fires on the gate seam, not the tap
-/// fan-out).
+/// `resolve_tap_hooks` admits ONLY `kind: tap` hooks observing at the REQUESTED stage. Stage
+/// pinning is the `phase:` list (1.6.0 removed the legacy single `at:`); an EMPTY `phase:` fires
+/// at the four core stages. A gate is excluded (it fires on the gate seam, not the tap fan-out).
 #[test]
 fn resolve_tap_hooks_admits_only_request_stage_taps() {
+    use crate::config::HookStage;
     let Some(env) = test_env() else {
         eprintln!("skip: hook cdylib not built (run under --workspace)");
         return;
     };
-    let mk = |kind: HookKind, at: Option<crate::config::HookStage>| HookCfg {
+    let mk = |kind: HookKind, phase: Vec<HookStage>| HookCfg {
         kind,
-        at,
+        phase,
         global: true,
         ..base_gate()
     };
     let mut hooks = HashMap::new();
     hooks.insert(
         "tap-req".to_string(),
-        mk(HookKind::Tap, Some(crate::config::HookStage::Request)),
+        mk(HookKind::Tap, vec![HookStage::Request]),
     );
-    // FREEZE BLOCKER: a tap with NEITHER `phase:` nor `at:` fires at THE FOUR CORE STAGES (not
-    // just `request`, and not "every stage that will ever exist") — so it is admitted at request AND
+    // FREEZE BLOCKER: a tap with an EMPTY `phase:` fires at THE FOUR CORE STAGES (not just
+    // `request`, and not "every stage that will ever exist") — so it is admitted at request AND
     // response below. See `CORE_HOOK_PHASES`.
-    hooks.insert("tap-unset".to_string(), mk(HookKind::Tap, None));
+    hooks.insert("tap-unset".to_string(), mk(HookKind::Tap, Vec::new()));
     hooks.insert(
         "tap-completion".to_string(),
-        mk(HookKind::Tap, Some(crate::config::HookStage::Response)),
+        mk(HookKind::Tap, vec![HookStage::Response]),
     );
-    hooks.insert("a-gate".to_string(), mk(HookKind::Gate, None));
+    hooks.insert("a-gate".to_string(), mk(HookKind::Gate, Vec::new()));
     let global = vec![
         "tap-req".to_string(),
         "tap-unset".to_string(),
@@ -2299,7 +2299,7 @@ fn settings_drift_reports_only_key_names_and_never_resolves_a_secret() {
     std::env::set_var(var, "hunter2-resolved");
     let mut hook: HookCfg = serde_json::from_value(serde_json::json!({
         "kind": "gate",
-        "plugin": "test-hook",
+        "module": "test-hook",
         "timeout_ms": 5,
         "on_error": "weighted"
     }))
@@ -2387,7 +2387,7 @@ fn settings_drift_never_compares_a_secret_ref_field() {
     std::env::set_var(var, "the-real-secret");
     let mut hook: HookCfg = serde_json::from_value(serde_json::json!({
         "kind": "gate",
-        "plugin": "test-hook",
+        "module": "test-hook",
         "timeout_ms": 5,
         "on_error": "weighted"
     }))

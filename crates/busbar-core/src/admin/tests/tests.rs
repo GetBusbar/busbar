@@ -757,7 +757,7 @@ async fn test_admin_v1_hook_settings_patch_commit_on_ack_and_schema() {
         .body(
             serde_json::json!({
                 "name": "cfg-hook",
-                "config": {"kind": "gate", "plugin": "test-hook"}
+                "config": {"kind": "gate", "module": "test-hook"}
             })
             .to_string(),
         )
@@ -772,7 +772,7 @@ async fn test_admin_v1_hook_settings_patch_commit_on_ack_and_schema() {
     // See `hooks::resolution` for why that race was real (a 5.9 s median load under a full test run)
     // and why widening the deadline was the wrong answer.
     let warm: crate::config::HookCfg = serde_json::from_value(serde_json::json!({
-        "kind": "gate", "plugin": "test-hook", "settings": {"ratio": 0.4}
+        "kind": "gate", "module": "test-hook", "settings": {"ratio": 0.4}
     }))
     .expect("hook cfg");
     assert!(
@@ -870,7 +870,7 @@ async fn test_admin_v1_plugin_schema_falls_back_to_manifest_when_describe_answer
         .body(
             serde_json::json!({
                 "name": "fallback-hook",
-                "config": {"kind": "gate", "plugin": "test-hook-fallback"}
+                "config": {"kind": "gate", "module": "test-hook-fallback"}
             })
             .to_string(),
         )
@@ -882,7 +882,7 @@ async fn test_admin_v1_plugin_schema_falls_back_to_manifest_when_describe_answer
     // resolution serves both the PATCH's `configure` and the `/schema` read that follows it, since
     // the committed settings are the ones warmed here.
     let warm: crate::config::HookCfg = serde_json::from_value(serde_json::json!({
-        "kind": "gate", "plugin": "test-hook-fallback", "settings": {"empty_management": true}
+        "kind": "gate", "module": "test-hook-fallback", "settings": {"empty_management": true}
     }))
     .expect("hook cfg");
     assert!(
@@ -1287,7 +1287,7 @@ async fn test_admin_v1_scope_ladder_e2e_with_group_mapped_principals() {
     };
     let hook_body = serde_json::json!({
         "name": "scoped-hook",
-        "config": {"kind": "tap", "plugin": "test-hook"}
+        "config": {"kind": "tap", "module": "test-hook"}
     })
     .to_string();
     let key_body = serde_json::json!({"name": "k"}).to_string();
@@ -2534,7 +2534,7 @@ async fn test_admin_v1_put_hook_replaces_live_with_guards() {
 
     // PUT on an unknown name is 404 (PUT replaces; POST creates).
     let missing = admin(client.put(format!("http://{addr}/api/v1/admin/hooks/nope")))
-        .body(serde_json::json!({"config": {"kind": "tap", "plugin": "test-hook"}}).to_string())
+        .body(serde_json::json!({"config": {"kind": "tap", "module": "test-hook"}}).to_string())
         .send()
         .await
         .unwrap();
@@ -2545,7 +2545,7 @@ async fn test_admin_v1_put_hook_replaces_live_with_guards() {
         .body(
             serde_json::json!({
                 "name": "rep",
-                "config": {"kind": "tap", "plugin": "test-hook"}
+                "config": {"kind": "tap", "module": "test-hook"}
             })
             .to_string(),
         )
@@ -2554,7 +2554,7 @@ async fn test_admin_v1_put_hook_replaces_live_with_guards() {
         .unwrap();
     assert_eq!(created.status().as_u16(), 201);
     let replaced = admin(client.put(format!("http://{addr}/api/v1/admin/hooks/rep")))
-        .body(serde_json::json!({"config": {"kind": "tap", "plugin": "test-hook-v2"}}).to_string())
+        .body(serde_json::json!({"config": {"kind": "tap", "module": "test-hook-v2"}}).to_string())
         .send()
         .await
         .unwrap();
@@ -2574,7 +2574,7 @@ async fn test_admin_v1_put_hook_replaces_live_with_guards() {
     // Grant change via PUT is a 409 (immutability holds on the replace path too).
     let escalate = admin(client.put(format!("http://{addr}/api/v1/admin/hooks/rep")))
         .body(
-            serde_json::json!({"config": {"kind": "gate", "plugin": "test-hook", "prompt": "rw"}})
+            serde_json::json!({"config": {"kind": "gate", "module": "test-hook", "prompt": "rw"}})
                 .to_string(),
         )
         .send()
@@ -2587,7 +2587,7 @@ async fn test_admin_v1_put_hook_replaces_live_with_guards() {
         .header("if-match", "\"0\"")
         .body(
             serde_json::json!({
-                "config": {"kind": "tap", "plugin": "test-hook"},
+                "config": {"kind": "tap", "module": "test-hook"},
             })
             .to_string(),
         )
@@ -2611,7 +2611,7 @@ async fn test_admin_v1_put_hook_replaces_live_with_guards() {
         .header("if-match", etag)
         .body(
             serde_json::json!({
-                "config": {"kind": "tap", "plugin": "test-hook"},
+                "config": {"kind": "tap", "module": "test-hook"},
             })
             .to_string(),
         )
@@ -2646,7 +2646,7 @@ async fn test_admin_v1_config_versions_rollback_and_diff() {
     // v1: register a hook. v2: delete it. (Boot floor is v0.)
     let body = serde_json::json!({
         "name": "rbk",
-        "config": {"kind": "tap", "plugin": "test-hook"}
+        "config": {"kind": "tap", "module": "test-hook"}
     });
     let created = admin(client.post(format!("http://{addr}/api/v1/admin/hooks")))
         .header("content-type", "application/json")
@@ -2761,7 +2761,7 @@ async fn test_admin_v1_register_hook_takes_effect_live() {
         "name": "compress",
         "config": {
             "kind": "gate",
-            "plugin": "test-hook",
+            "module": "test-hook",
             "prompt": "rw",
             "global": true
         }
@@ -2833,7 +2833,7 @@ async fn test_admin_v1_register_hook_takes_effect_live() {
             .body(
                 serde_json::json!({
                     "name": reserved,
-                    "config": {"kind": "gate", "plugin": "test-hook"}
+                    "config": {"kind": "gate", "module": "test-hook"}
                 })
                 .to_string(),
             )
@@ -2859,7 +2859,7 @@ async fn test_admin_v1_register_hook_takes_effect_live() {
         .body(
             serde_json::json!({
                 "name": "bad",
-                "config": {"kind": "tap", "plugin": "test-hook", "prompt": "rw"}
+                "config": {"kind": "tap", "module": "test-hook", "prompt": "rw"}
             })
             .to_string(),
         )
@@ -2881,7 +2881,7 @@ async fn test_admin_v1_register_hook_takes_effect_live() {
         .body(
             serde_json::json!({
                 "name": "compress",
-                "config": {"kind": "gate", "plugin": "test-hook", "prompt": "ro"}
+                "config": {"kind": "gate", "module": "test-hook", "prompt": "ro"}
             })
             .to_string(),
         )
@@ -2925,7 +2925,7 @@ async fn test_admin_v1_audit_records_mutations() {
         .body(
             serde_json::json!({
                 "name": name,
-                "config": {"kind": "tap", "plugin": "test-hook", "global": true}
+                "config": {"kind": "tap", "module": "test-hook", "global": true}
             })
             .to_string(),
         )
@@ -3010,7 +3010,7 @@ async fn test_admin_v1_hook_mutation_404_is_audited() {
         .put(format!("http://{addr}/api/v1/admin/hooks/{put_name}"))
         .header("x-admin-token", "admintok")
         .header("content-type", "application/json")
-        .body(serde_json::json!({"config": {"kind": "tap", "plugin": "test-hook"}}).to_string())
+        .body(serde_json::json!({"config": {"kind": "tap", "module": "test-hook"}}).to_string())
         .send()
         .await
         .unwrap();
@@ -3272,7 +3272,7 @@ async fn test_admin_v1_config_plane_golden_path() {
         .header("content-type", "application/json")
         .body(
             serde_json::json!({"name": name, "config":
-                    {"kind": "gate", "plugin": "test-hook", "global": true}})
+                    {"kind": "gate", "module": "test-hook", "global": true}})
             .to_string(),
         )
         .send()
@@ -3360,7 +3360,7 @@ async fn test_admin_v1_hook_register_persists_to_overlay() {
         .body(
             serde_json::json!({
                 "name": "persisted_gate",
-                "config": {"kind": "gate", "plugin": "test-hook", "global": true}
+                "config": {"kind": "gate", "module": "test-hook", "global": true}
             })
             .to_string(),
         )
@@ -3539,7 +3539,7 @@ async fn test_admin_v1_base_hook_is_read_only_via_api() {
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let base: crate::config::HookCfg = serde_json::from_value(serde_json::json!({
-        "kind": "gate", "plugin": "test-hook", "prompt": "no", "global": true
+        "kind": "gate", "module": "test-hook", "prompt": "no", "global": true
     }))
     .unwrap();
     let app = TestApp::new()
@@ -3560,7 +3560,7 @@ async fn test_admin_v1_base_hook_is_read_only_via_api() {
         .body(
             serde_json::json!({
                 "name": "pii-guard",
-                "config": {"kind": "gate", "plugin": "test-hook", "prompt": "no", "global": true}
+                "config": {"kind": "gate", "module": "test-hook", "prompt": "no", "global": true}
             })
             .to_string(),
         )
@@ -3613,7 +3613,7 @@ async fn base_hook_delete_conflict_outranks_a_stale_if_match() {
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let base: crate::config::HookCfg = serde_json::from_value(serde_json::json!({
-        "kind": "gate", "plugin": "test-hook", "prompt": "no", "global": true
+        "kind": "gate", "module": "test-hook", "prompt": "no", "global": true
     }))
     .unwrap();
     let app = TestApp::new()
@@ -3664,7 +3664,7 @@ async fn test_admin_v1_delete_hook_takes_effect_live() {
         .body(
             serde_json::json!({
                 "name": "logger",
-                "config": {"kind": "tap", "plugin": "test-hook", "global": true}
+                "config": {"kind": "tap", "module": "test-hook", "global": true}
             })
             .to_string(),
         )
@@ -3723,7 +3723,6 @@ async fn test_admin_v1_hooks_read_surface() {
         prompt: crate::config::PromptAccess::Rw,
         user: crate::config::UserAccess::Ro,
         priority: 7,
-        at: None,
         settings: serde_json::Map::new(),
         on_empty: None,
         global: false,
@@ -3808,7 +3807,6 @@ async fn test_admin_v1_hook_health_best_effort() {
         prompt: crate::config::PromptAccess::No,
         user: crate::config::UserAccess::No,
         priority: 0,
-        at: None,
         settings: serde_json::Map::new(),
         on_empty: None,
         global: false,
@@ -3887,7 +3885,6 @@ async fn test_admin_v1_plugins_catalog_by_type() {
         prompt: crate::config::PromptAccess::No,
         user: crate::config::UserAccess::No,
         priority: 0,
-        at: None,
         settings: serde_json::Map::new(),
         on_empty: None,
         global: false,
@@ -4113,7 +4110,6 @@ async fn test_admin_v1_config_effective_snapshot_no_secrets() {
         prompt: crate::config::PromptAccess::No,
         user: crate::config::UserAccess::No,
         priority: 0,
-        at: None,
         settings: serde_json::Map::new(),
         on_empty: None,
         global: false,
@@ -8848,7 +8844,7 @@ async fn test_admin_v1_overlay_reset_hooks_reverts_to_base() {
         .body(
             serde_json::json!({
                 "name": "runtime_gate",
-                "config": {"kind": "gate", "plugin": "test-hook", "global": true}
+                "config": {"kind": "gate", "module": "test-hook", "global": true}
             })
             .to_string(),
         )
@@ -10271,10 +10267,8 @@ async fn test_admin_v1_config_settings_put_on_locked_config_is_refused() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// 1.5.3: `"persist": true` on a LOCKED config must REFUSE (400) naming the locked/overlay posture —
-/// not the old `BUSBAR_CONFIG_OVERLAY` precondition, and NOT the `deny_unknown_fields` 400 (`persist`
-/// is stripped before the typed parse). The assertion is on the message, since the status alone does
-/// not discriminate.
+/// A settings PUT on a LOCKED config must REFUSE (400) naming the locked/overlay posture. The
+/// assertion is on the message, since the status alone does not discriminate.
 #[tokio::test]
 async fn test_admin_v1_config_settings_put_refuses_when_persistence_is_explicitly_requested_and_unavailable(
 ) {
@@ -10284,7 +10278,7 @@ async fn test_admin_v1_config_settings_put_refuses_when_persistence_is_explicitl
 
     let put = admin(client.put(format!("http://{addr}/api/v1/admin/config/settings")))
         .header("content-type", "application/json")
-        .body(serde_json::json!({ "listen": "127.0.0.1:0", "persist": true }).to_string())
+        .body(serde_json::json!({ "listen": "127.0.0.1:0" }).to_string())
         .send()
         .await
         .unwrap();
@@ -10295,18 +10289,13 @@ async fn test_admin_v1_config_settings_put_refuses_when_persistence_is_explicitl
         msg.contains("config.locked") || msg.contains("no writable config overlay"),
         "the refusal must name the locked/no-overlay posture, not just be a generic 400: {body}"
     );
-    assert!(
-        !msg.contains("unknown field"),
-        "this must be the locked-config refusal, not the OLD deny_unknown_fields 400 \
-         that fires on this body today: {body}"
-    );
 
     handle.abort();
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The positive half of case 3: `"persist": true` WITH an overlay present must still persist
-/// exactly as an implicit persist does today.
+/// A settings PUT WITH an overlay present persists to disk (durable-by-default; there is no explicit
+/// `persist:` control any more — 1.6.0 removed the accepted-then-ignored field).
 #[tokio::test]
 async fn test_admin_v1_config_settings_put_with_persist_true_still_persists_when_overlay_exists() {
     let (dir, overlay, addr, handle) = settings_test_app("persist-true").await;
@@ -10315,7 +10304,7 @@ async fn test_admin_v1_config_settings_put_with_persist_true_still_persists_when
 
     let put = admin(client.put(format!("http://{addr}/api/v1/admin/config/settings")))
         .header("content-type", "application/json")
-        .body(serde_json::json!({ "per_request_fee": 7, "persist": true }).to_string())
+        .body(serde_json::json!({ "per_request_fee": 7 }).to_string())
         .send()
         .await
         .unwrap();
@@ -10326,16 +10315,16 @@ async fn test_admin_v1_config_settings_put_with_persist_true_still_persists_when
     assert_eq!(
         on_disk.per_request_fee,
         Some(7),
-        "persist:true with an overlay present stores the value on disk"
+        "a settings PUT with an overlay present stores the value on disk"
     );
 
     handle.abort();
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// `"persist"` rejects a non-boolean — the message must name it, discriminating from the OLD
-/// `unknown field` 400 the same body triggers today (status alone does not discriminate here
-/// either, since both are 400s).
+/// 1.6.0 CLEAN SLATE: the removed `persist:` field is now an UNKNOWN field. A pre-1.5.3 client that
+/// still sends it gets a `deny_unknown_fields` 400 naming it (see `docs/migration-1.6.md`), instead
+/// of the old accept-then-ignore.
 #[tokio::test]
 async fn test_admin_v1_config_settings_put_rejects_a_non_boolean_persist() {
     let (dir, addr, handle) = settings_test_app_no_overlay("nonbool").await;
@@ -10344,7 +10333,7 @@ async fn test_admin_v1_config_settings_put_rejects_a_non_boolean_persist() {
 
     let put = admin(client.put(format!("http://{addr}/api/v1/admin/config/settings")))
         .header("content-type", "application/json")
-        .body(serde_json::json!({ "persist": "yes" }).to_string())
+        .body(serde_json::json!({ "persist": true }).to_string())
         .send()
         .await
         .unwrap();
@@ -10352,17 +10341,17 @@ async fn test_admin_v1_config_settings_put_rejects_a_non_boolean_persist() {
     let body: serde_json::Value = put.json().await.unwrap();
     let msg = body["error"]["message"].as_str().unwrap_or_default();
     assert!(
-        msg.contains("persist") && msg.contains("boolean"),
-        "the refusal must name `persist` as needing a boolean: {body}"
+        msg.contains("unknown field") && msg.contains("persist"),
+        "the removed `persist` field must be rejected as an unknown field: {body}"
     );
 
     handle.abort();
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// REGRESSION PROOF (passes before AND after): stripping `persist` before the typed parse must NOT
-/// weaken `deny_unknown_fields` — a TYPO of the control key is still a loud 400, which is the whole
-/// justification for choosing a body field over a query param (the in-tree
+/// REGRESSION PROOF: `deny_unknown_fields` rejects a key the typed `RootSettings` does not know — a
+/// TYPO (or the removed `persist` control key) is a loud 400, never a silently-ignored request, which
+/// is the whole justification for a body field over a query param (the in-tree
 /// `Query<HashMap<String,String>>` idiom drops unknown keys silently).
 #[tokio::test]
 async fn test_admin_v1_config_settings_put_still_rejects_an_unknown_field_including_persist_typo() {
@@ -11012,7 +11001,6 @@ async fn admin_error_fixture() -> (std::net::SocketAddr, tokio::task::JoinHandle
                 prompt: crate::config::PromptAccess::No,
                 user: crate::config::UserAccess::No,
                 priority: 0,
-                at: None,
                 settings: serde_json::Map::new(),
                 on_empty: None,
                 global: false,
@@ -11035,7 +11023,7 @@ async fn admin_error_fixture() -> (std::net::SocketAddr, tokio::task::JoinHandle
         ),
         (
             "/hooks",
-            r#"{"name":"oh","config":{"kind":"gate","plugin":"test-hook"}}"#,
+            r#"{"name":"oh","config":{"kind":"gate","module":"test-hook"}}"#,
         ),
     ] {
         let created = client
@@ -11234,7 +11222,7 @@ async fn drive_admin_error_surface() {
             "POST",
             "/hooks",
             Some(STALE),
-            Some(r#"{"name":"h2","config":{"kind":"gate","plugin":"test-hook"}}"#),
+            Some(r#"{"name":"h2","config":{"kind":"gate","module":"test-hook"}}"#),
             409,
             "version_conflict",
         ),
@@ -11243,7 +11231,7 @@ async fn drive_admin_error_surface() {
             "PUT",
             "/hooks/oh",
             Some(BAD_ETAG),
-            Some(r#"{"config":{"kind":"gate","plugin":"test-hook"}}"#),
+            Some(r#"{"config":{"kind":"gate","module":"test-hook"}}"#),
             400,
             "invalid_request",
         ),
@@ -11576,7 +11564,7 @@ async fn drive_admin_error_surface() {
             "POST",
             "/hooks",
             Some(BAD_ETAG),
-            Some(r#"{"name":"h3","config":{"kind":"gate","plugin":"test-hook"}}"#),
+            Some(r#"{"name":"h3","config":{"kind":"gate","module":"test-hook"}}"#),
             400,
             "invalid_request",
         ),
@@ -11585,7 +11573,7 @@ async fn drive_admin_error_surface() {
             "POST",
             "/hooks",
             None,
-            Some(r#"{"name":"basehook","config":{"kind":"gate","plugin":"test-hook"}}"#),
+            Some(r#"{"name":"basehook","config":{"kind":"gate","module":"test-hook"}}"#),
             409,
             "conflict",
         ),
@@ -11594,7 +11582,7 @@ async fn drive_admin_error_surface() {
             "POST",
             "/hooks",
             None,
-            Some(r#"{"name":"oh","config":{"kind":"tap","plugin":"test-hook"}}"#),
+            Some(r#"{"name":"oh","config":{"kind":"tap","module":"test-hook"}}"#),
             409,
             "conflict",
         ),
@@ -11603,7 +11591,7 @@ async fn drive_admin_error_surface() {
             "PUT",
             "/hooks/ghost",
             None,
-            Some(r#"{"config":{"kind":"gate","plugin":"test-hook"}}"#),
+            Some(r#"{"config":{"kind":"gate","module":"test-hook"}}"#),
             404,
             "not_found",
         ),
@@ -11612,7 +11600,7 @@ async fn drive_admin_error_surface() {
             "PUT",
             "/hooks/basehook",
             None,
-            Some(r#"{"config":{"kind":"gate","plugin":"test-hook"}}"#),
+            Some(r#"{"config":{"kind":"gate","module":"test-hook"}}"#),
             409,
             "conflict",
         ),
@@ -11621,7 +11609,7 @@ async fn drive_admin_error_surface() {
             "PUT",
             "/hooks/oh",
             Some(STALE),
-            Some(r#"{"config":{"kind":"gate","plugin":"test-hook"}}"#),
+            Some(r#"{"config":{"kind":"gate","module":"test-hook"}}"#),
             409,
             "version_conflict",
         ),
@@ -12578,7 +12566,7 @@ async fn limit_zero_does_not_produce_a_self_referential_cursor() {
     let created = admin(client.post(format!("http://{addr}/api/v1/admin/hooks")))
         .header("content-type", "application/json")
         .body(
-            serde_json::json!({"name": "lz-hook", "config": {"kind": "tap", "plugin": "test-hook"}})
+            serde_json::json!({"name": "lz-hook", "config": {"kind": "tap", "module": "test-hook"}})
                 .to_string(),
         )
         .send()
@@ -14288,7 +14276,7 @@ async fn test_admin_v1_hook_reads_project_settings_keys_never_values() {
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let mut cfg: crate::config::HookCfg = serde_json::from_value(serde_json::json!({
         "kind": "gate",
-        "plugin": "test-hook",
+        "module": "test-hook",
         "timeout_ms": 5,
         "on_error": "weighted"
     }))

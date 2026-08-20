@@ -2409,3 +2409,137 @@ fn migrate_lifts_weighted_members_and_leaves_capability_members_rich() {
         out.todos
     );
 }
+
+/// 1.6.0: an ALREADY-named-shape `hooks:` map (every entry names `module:`) that still carries the
+/// retired single-stage `at:` key is rewritten to `phase:` by `migrate_hook_def_keys` — the pass that
+/// catches a config `migrate_hooks_block` passes through untouched because it is already new-shaped.
+#[test]
+fn migrate_rewrites_a_lingering_at_key_on_a_named_hook_def() {
+    let raw = "providers: {}\nmodels: {}\npools: {}\n\
+               hooks:\n  audit:\n    kind: tap\n    module: audit-hook\n    at: response\n";
+    let (out, doc) = migrate_to_value(raw);
+    assert_eq!(
+        dig(&doc, &["hooks", "audit", "phase"]).unwrap(),
+        &serde_yaml::from_str::<serde_yaml::Value>("[response]").unwrap(),
+        "the single-stage `at:` became a `phase:` list"
+    );
+    assert!(
+        dig(&doc, &["hooks", "audit", "at"]).is_none(),
+        "the retired `at:` key is gone"
+    );
+    assert!(
+        serde_yaml::from_str::<crate::config::DeployCfg>(&out.yaml).is_ok(),
+        "the rewritten config boot-parses on 1.6.0"
+    );
+}
+
+/// END-TO-END, 1.6.0: a COMPLETE 1.5.x-shaped config that uses EVERY deprecated spelling at once —
+/// a hook written with the retired `plugin:` key AND the retired single-stage `at:` key, an LLM pool
+/// with RICH weight-only members, and the unreleased `tool_pools:`/`agent_pools:` sections — runs
+/// through `busbar --migrate-config` and the output (a) parses into the 1.6.0 `DeployCfg`, (b)
+/// `config::resolve` + `config_validate::validate` clean, and (c) contains NONE of the deprecated
+/// spellings. This migrate→validate round-trip on a full config is the only thing that proves the
+/// migrator is comprehensive: a code read of what it "thinks" it handles is not enough.
+#[test]
+fn end_to_end_a_full_legacy_config_migrates_validates_and_drops_every_deprecated_spelling() {
+    let raw = r#"
+listen: "0.0.0.0:8080"
+providers:
+  openai:
+    api_key: { env: BUSBAR_T_E2E_OPENAI }
+models:
+  fast-a:
+    provider: openai
+  fast-b:
+    provider: openai
+hooks:
+  audit:
+    kind: gate
+    plugin: audit-hook
+    at: request
+tools:
+  search-eu:
+    url: "https://eu.example/mcp"
+    pin: { mechanism: unpinned }
+  search-us:
+    url: "https://us.example/mcp"
+    pin: { mechanism: unpinned }
+agents:
+  planner-eu:
+    url: "https://a1.example/card"
+    pin: { mechanism: unpinned }
+  planner-us:
+    url: "https://a2.example/card"
+    pin: { mechanism: unpinned }
+pools:
+  fast:
+    members:
+      - { model: fast-a, weight: 3 }
+      - { model: fast-b }
+    hooks: [audit]
+tool_pools:
+  search:
+    members: [search-eu, search-us]
+agent_pools:
+  planner:
+    members: [planner-eu, planner-us]
+"#;
+
+    let out = migrate_config(raw).expect("the full legacy config migrates");
+
+    // (c) NONE of the deprecated spellings survive anywhere in the migrated document.
+    for needle in ["plugin:", "at: ", "tool_pools:", "agent_pools:"] {
+        assert!(
+            !out.yaml.contains(needle),
+            "the migrated config still contains the deprecated spelling `{needle}`:\n{}",
+            out.yaml
+        );
+    }
+    // The hook keys were rewritten to their 1.6.0 spelling.
+    assert!(
+        out.yaml.contains("module: audit-hook"),
+        "`plugin: audit-hook` must become `module: audit-hook`:\n{}",
+        out.yaml
+    );
+    assert!(
+        out.yaml.contains("phase:"),
+        "the single-stage `at: request` must become a `phase:` list:\n{}",
+        out.yaml
+    );
+
+    // (a) It parses into the 1.6.0 DeployCfg (deny_unknown_fields is the real gate: a surviving
+    // `plugin:`/`at:`/rich member/tool_pools would fail HERE).
+    let deploy: crate::config::DeployCfg = serde_yaml::from_str(&out.yaml).unwrap_or_else(|e| {
+        panic!(
+            "migrated config must boot-parse on 1.6.0: {e}\n{}",
+            out.yaml
+        )
+    });
+
+    // (b) It resolves and validates clean on 1.6.0.
+    let defs: std::collections::HashMap<String, crate::config::ProviderDef> =
+        serde_yaml::from_str("openai:\n  protocol: openai\n  base_url: https://api.openai.com\n")
+            .expect("provider defs parse");
+    let cfg = crate::config::resolve(&deploy, &defs)
+        .unwrap_or_else(|e| panic!("migrated config must resolve on 1.6.0: {e:?}"));
+    crate::config_validate::validate(&cfg)
+        .unwrap_or_else(|e| panic!("migrated config must validate clean on 1.6.0: {e:?}"));
+
+    // The tool/agent pools folded into the ONE neutral `pools:` map and resolve by INFERRED kind:
+    // `search` (tool members) onto the MCP failover plane, `planner` (agent members) onto the A2A
+    // plane, and the LLM pool `fast` onto the model plane.
+    assert!(
+        cfg.tool_pools.contains_key("search"),
+        "the folded tool pool resolves onto the MCP failover plane: {:?}",
+        cfg.tool_pools.keys().collect::<Vec<_>>()
+    );
+    assert!(
+        cfg.agent_pools.contains_key("planner"),
+        "the folded agent pool resolves onto the A2A failover plane: {:?}",
+        cfg.agent_pools.keys().collect::<Vec<_>>()
+    );
+    assert!(
+        cfg.pools.contains_key("fast"),
+        "the LLM pool resolves onto the model plane"
+    );
+}

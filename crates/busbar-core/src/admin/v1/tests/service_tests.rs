@@ -16,7 +16,6 @@ fn hook(kind: HookKind, global: bool) -> HookCfg {
         prompt: PromptAccess::No,
         user: UserAccess::No,
         priority: 0,
-        at: None,
         settings: serde_json::Map::new(),
         on_empty: None,
         global,
