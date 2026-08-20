@@ -1404,7 +1404,7 @@ impl<'de> Deserialize<'de> for OnErrorCfg {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct PoolCfg {
     pub(crate) members: Vec<PoolMember>,
     /// Per-pool OVERRIDE of the all-pools `pools.upstream_credentials:` default (a
@@ -1436,6 +1436,23 @@ pub struct PoolCfg {
     /// the operator picked a base, so the `default:` hook does NOT override it. `policy` alone can't
     /// carry this — it defaults to `Weighted` indistinguishably from an explicit `weighted`.
     pub(crate) base_named: bool,
+    /// NEUTRAL ROUTING KNOB (1.6.0): pool-level member weights, `{ member-name: weight }`. When
+    /// present, the pool load-balances by these weights; when absent, the pool fails over in member
+    /// order (first = primary). This is the uniform-grammar way to weight members without per-member
+    /// rich objects; on the LLM plane a per-member `weight:` still wins for byte-identity, and this
+    /// map refines any member the operator did not weight inline. Empty ⇒ ordered failover.
+    pub(crate) weights: std::collections::BTreeMap<String, u32>,
+    /// NEUTRAL ROUTING KNOB (1.6.0): the pool's routing tier label (`large`/`small`/…), a plane-neutral
+    /// hint read by ranking policies. Applies to every member lacking its own inline `tier:`. `None` ⇒
+    /// no pool tier.
+    pub(crate) tier: Option<String>,
+    /// NEUTRAL ROUTING KNOB (1.6.0): pool-level per-attempt response-headers cap (ms), applied to every
+    /// member lacking an inline `attempt_timeout_ms:`. `None` ⇒ the model-level default stands.
+    pub(crate) attempt_timeout_ms: Option<u64>,
+    /// NEUTRAL ROUTING KNOB: the operations that may be performed TWICE after a dispatch has gone out
+    /// (reads/searches/queries). Plane-neutral field; the values name the plugin's verbs. EMPTY BY
+    /// DEFAULT = fail-safe (reroute-before-first-byte only). Read on the MCP/A2A planes; inert on LLM.
+    pub(crate) repeatable: Vec<String>,
 }
 
 /// Whether `name` is one of the native ordering strategies (usable BARE in a pool `hooks:` list).
@@ -1494,6 +1511,15 @@ impl<'de> Deserialize<'de> for PoolCfg {
             /// Per-pool override of the all-pools `pools.upstream_credentials:` default.
             #[serde(default)]
             upstream_credentials: Option<crate::auth::UpstreamCreds>,
+            /// NEUTRAL 1.6.0 routing knobs. See [`PoolCfg`].
+            #[serde(default)]
+            weights: std::collections::BTreeMap<String, u32>,
+            #[serde(default)]
+            tier: Option<String>,
+            #[serde(default)]
+            attempt_timeout_ms: Option<u64>,
+            #[serde(default)]
+            repeatable: Vec<String>,
         }
 
         let raw = RawPoolCfg::deserialize(deserializer)?;
@@ -1537,6 +1563,10 @@ impl<'de> Deserialize<'de> for PoolCfg {
             policy,
             gates,
             base_named,
+            weights: raw.weights,
+            tier: raw.tier,
+            attempt_timeout_ms: raw.attempt_timeout_ms,
+            repeatable: raw.repeatable,
         })
     }
 }
@@ -2241,37 +2271,114 @@ fn default_policy_timeout_ms() -> u64 {
     DEFAULT_POLICY_TIMEOUT_MS
 }
 
-#[derive(Debug, Deserialize, Clone)]
-#[serde(deny_unknown_fields)] // a typo'd pool-member key must fail boot, not be silently ignored.
+#[derive(Debug, Clone)]
 pub(crate) struct PoolMember {
-    /// The member's MODEL (a `models:` key). Reference fields name the referenced thing
-    /// (renamed from the 1.4.x `target:`).
+    /// The member's REFERENCED NAME — a `models:` key on the LLM plane, a `tools:` key on the MCP
+    /// plane, an `agents:` key on the A2A plane. Named `model` for the LLM byte-identity path that
+    /// reads it; the [`PoolMember::name`] accessor is the plane-neutral reader. 1.6.0: a member may
+    /// be written as a BARE NAME (uniform grammar across every plane) or, on the LLM plane, as the
+    /// legacy rich object `{ model, weight, context_max, tier, attempt_timeout_ms, reasoning, tags }`.
     pub(crate) model: String,
-    #[serde(default = "default_weight")]
     pub(crate) weight: u32,
-    #[serde(default)]
     pub(crate) context_max: Option<usize>,
     /// Operator-declared routing tier (e.g. `"large"`/`"small"`/`"primary"`/`"overflow"`). Projected
     /// into the routing `Candidate` (via `MemberMeta`) and read by hook plugin policies.
-    #[serde(default)]
     pub(crate) tier: Option<String>,
     /// Per-ATTEMPT time-to-response-headers cap (ms) for THIS member in THIS pool — overrides the
     /// model-level `attempt_timeout_ms`, so one model can be patient in an image pool (10000) and
     /// ruthless in a realtime pool (50). See `ModelCfg::attempt_timeout_ms` for semantics.
-    #[serde(default)]
     pub(crate) attempt_timeout_ms: Option<u64>,
     /// Per-pool override of the model-level `reasoning` capability flag (member wins), so the same
     /// lane can allow thinking in a research pool and refuse it in a latency-critical one. See
     /// `ModelCfg::reasoning` for semantics.
-    #[serde(default)]
     pub(crate) reasoning: Option<bool>,
     /// Free-form operator tags (e.g. `["opus"]`) a policy can match on. Projected into the routing
     /// `Candidate` and read by hook plugin policies.
     ///
     /// NOTE: the 1.4.x `cost_per_mtok:` member field is REMOVED: `rate_card` is the ONLY cost
     /// source, and routing (`cheapest`) derives its scalar from the member's model's rate entry.
-    #[serde(default)]
     pub(crate) tags: Vec<String>,
+}
+
+impl PoolMember {
+    /// The plane-neutral reader of the member's referenced name (the bare name that resolves into a
+    /// plugin noun — `models:`/`tools:`/`agents:`). The struct field is spelled `model` for the LLM
+    /// hot path; this is the name every plane-neutral caller (kind inference, the validator) uses.
+    pub(crate) fn name(&self) -> &str {
+        &self.model
+    }
+}
+
+/// Manual `Deserialize` for [`PoolMember`]: the 1.6.0 uniform grammar admits a member written as a
+/// BARE NAME (`- gpt4o-openai`) on EVERY plane, while the LLM plane also still accepts the legacy
+/// rich object (`{ model: gpt4o, weight: 3, tier: large, ... }`). A bare name lowers to the same
+/// struct with every knob defaulted — identical to writing `{ model: <name> }`.
+impl<'de> Deserialize<'de> for PoolMember {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)] // a typo'd pool-member key must fail boot, not be silently ignored.
+        struct RichMember {
+            model: String,
+            #[serde(default = "default_weight")]
+            weight: u32,
+            #[serde(default)]
+            context_max: Option<usize>,
+            #[serde(default)]
+            tier: Option<String>,
+            #[serde(default)]
+            attempt_timeout_ms: Option<u64>,
+            #[serde(default)]
+            reasoning: Option<bool>,
+            #[serde(default)]
+            tags: Vec<String>,
+        }
+
+        // A hand-written visitor (NOT `#[serde(untagged)]`): untagged would swallow the rich
+        // object's `deny_unknown_fields` diagnostic into a generic "did not match any variant",
+        // hiding the exact typo'd key. The visitor dispatches on the YAML node shape and forwards a
+        // MAP straight to `RichMember`, so a bad key still fails boot with its own name.
+        struct MemberVisitor;
+        impl<'de> serde::de::Visitor<'de> for MemberVisitor {
+            type Value = PoolMember;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a bare member name, or a member object `{ model, weight, ... }`")
+            }
+
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<PoolMember, E> {
+                Ok(PoolMember {
+                    model: v.to_string(),
+                    weight: default_weight(),
+                    context_max: None,
+                    tier: None,
+                    attempt_timeout_ms: None,
+                    reasoning: None,
+                    tags: Vec::new(),
+                })
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                map: A,
+            ) -> Result<PoolMember, A::Error> {
+                let r = RichMember::deserialize(serde::de::value::MapAccessDeserializer::new(map))?;
+                Ok(PoolMember {
+                    model: r.model,
+                    weight: r.weight,
+                    context_max: r.context_max,
+                    tier: r.tier,
+                    attempt_timeout_ms: r.attempt_timeout_ms,
+                    reasoning: r.reasoning,
+                    tags: r.tags,
+                })
+            }
+        }
+
+        deserializer.deserialize_any(MemberVisitor)
+    }
 }
 
 fn default_weight() -> u32 {
@@ -2845,28 +2952,12 @@ pub struct DeployCfg {
     /// entry on another plane. Absent ⇒ no agent is registered and nothing can be delegated to.
     #[serde(default)]
     pub(crate) agents: crate::a2a::config::AgentsCfg,
-    /// The top-level `tool_pools:` map (1.6.0) — MCP FAILOVER, and OPT-IN. Pool name →
-    /// [`crate::failover::CandidatePoolCfg`], whose `members:` are bare names from `tools:`.
-    ///
-    /// The same concept as `pools:` on the model plane, deliberately spelled with the same words, so
-    /// an operator learns "a pool is a set of interchangeable upstreams" ONCE. ABSENT ⇒ no MCP
-    /// failover anywhere, which is every deployment that exists today.
-    ///
-    /// It is a SEPARATE top-level section rather than a reserved key inside `tools:` for one reason:
-    /// adding a reserved word to an existing section container retroactively outlaws a server name
-    /// that is legal today, and the config grammar is additive-only after 1.5.3.
-    #[serde(default)]
-    pub(crate) tool_pools: std::collections::BTreeMap<String, crate::failover::CandidatePoolCfg>,
-    /// The top-level `agent_pools:` map (1.6.0) — A2A FAILOVER, and OPT-IN. Pool name →
-    /// [`crate::failover::CandidatePoolCfg`], whose `members:` are bare names from `agents:`.
-    ///
-    /// The A2A twin of `tool_pools:`, sharing its type rather than copying its shape: a second struct
-    /// would be a second grammar for one idea, and the two would diverge the first time either grew a
-    /// key. Which registry a bare name resolves against is decided by the SECTION it is written in,
-    /// exactly as `tools:` and `agents:` already decide which plane an entry is on — so there is no
-    /// selector that could disagree with the section, and no pool can straddle two planes.
-    #[serde(default)]
-    pub(crate) agent_pools: std::collections::BTreeMap<String, crate::failover::CandidatePoolCfg>,
+    // 1.6.0 UNIFIED POOLS: the separate `tool_pools:` and `agent_pools:` sections are GONE. There is
+    // ONE neutral top-level `pools:` (above); a pool's kind is INFERRED from its members and MCP/A2A
+    // pools are projected to their plane carriers in `resolve`. A 1.5.4/1.6.0-dev config still
+    // carrying `tool_pools:`/`agent_pools:` LOUD-FAILS here (unknown field) with the
+    // `--migrate-config` breadcrumb, exactly as the retired `observability:` block does — the
+    // migrator folds them into `pools:`.
     /// The dynamic plugin subsystem (`plugins:` block, top-level). Absent = disabled (the default
     /// `enabled: false` master switch): no plugin is ever discovered or loaded.
     #[serde(default)]
@@ -4408,6 +4499,123 @@ pub fn resolve(
     for pool in pools.values_mut() {
         pool.gates = entity_only_hook_refs(&deploy.pools.all_pool_hooks, &pool.gates);
     }
+    // ── UNIFIED `pools:` KIND INFERENCE (1.6.0). The single neutral `pools:` map holds pools of
+    // every plane; a pool's KIND is INFERRED from its members (never declared), and the pool is
+    // routed to the plane that owns those members. LLM pools stay in `pools` (their rich members and
+    // routing knobs are read by the model plane exactly as before — byte-identical); MCP and A2A
+    // pools are projected to the neutral `CandidatePoolCfg` carriers the two non-LLM planes already
+    // consume. HOMOGENEITY is enforced here (a pool whose members span two nouns is refused) and an
+    // unresolvable member is refused — the two checks the design puts before resolution so that a
+    // clean `--validate` is a clean boot. This is the ONLY place a pool's plane is decided.
+    let mut tool_pools_derived: std::collections::BTreeMap<
+        String,
+        crate::failover::CandidatePoolCfg,
+    > = std::collections::BTreeMap::new();
+    let mut agent_pools_derived: std::collections::BTreeMap<
+        String,
+        crate::failover::CandidatePoolCfg,
+    > = std::collections::BTreeMap::new();
+    {
+        let member_kind = |name: &str| -> Option<crate::plane::Plane> {
+            // Global-unique noun names make this a name-only lookup — the router never asks "which
+            // kind of `x`?". A name defined in two nouns is a collision the validator rejects.
+            if deploy.models.contains_key(name) {
+                Some(crate::plane::Plane::Llm)
+            } else if deploy.tools.servers.contains_key(name) {
+                Some(crate::plane::Plane::Mcp)
+            } else if deploy.agents.agents.contains_key(name) {
+                Some(crate::plane::Plane::A2a)
+            } else {
+                None
+            }
+        };
+        let mut non_llm: Vec<String> = Vec::new();
+        for (pool_name, pool) in pools.iter() {
+            // The pool's kind = its members' shared kind. Determine it from the FIRST resolvable
+            // member, then require every other member to agree (homogeneity).
+            let mut kind: Option<crate::plane::Plane> = None;
+            let mut homogeneous = true;
+            for m in &pool.members {
+                match member_kind(m.name()) {
+                    None => {
+                        errors.push(format!(
+                            "pools.{pool_name}: member `{}` is not defined in any of the top-level \
+                             `models:`, `tools:`, or `agents:` maps. Define it there, or remove it \
+                             from the pool.",
+                            m.name()
+                        ));
+                    }
+                    Some(k) => match kind {
+                        None => kind = Some(k),
+                        Some(prev) if prev == k => {}
+                        Some(_) => {
+                            homogeneous = false;
+                        }
+                    },
+                }
+            }
+            if !homogeneous {
+                errors.push(format!(
+                    "pools.{pool_name}: members resolve to more than one plane (a mix of \
+                     `models:`/`tools:`/`agents:`). A pool's kind is INFERRED from its members, so \
+                     every member of a pool must be the same kind. Split the pool by plane."
+                ));
+                continue;
+            }
+            match kind {
+                Some(crate::plane::Plane::Mcp) => {
+                    tool_pools_derived.insert(
+                        pool_name.clone(),
+                        crate::failover::CandidatePoolCfg {
+                            members: pool.members.iter().map(|m| m.model.clone()).collect(),
+                            repeatable: pool.repeatable.clone(),
+                        },
+                    );
+                    non_llm.push(pool_name.clone());
+                }
+                Some(crate::plane::Plane::A2a) => {
+                    agent_pools_derived.insert(
+                        pool_name.clone(),
+                        crate::failover::CandidatePoolCfg {
+                            members: pool.members.iter().map(|m| m.model.clone()).collect(),
+                            repeatable: pool.repeatable.clone(),
+                        },
+                    );
+                    non_llm.push(pool_name.clone());
+                }
+                // LLM pools (or an all-unresolvable pool that already pushed errors) stay in `pools`.
+                _ => {}
+            }
+        }
+        // A pool that is NOT an LLM pool must not remain in the LLM `pools` map (its bare members do
+        // not resolve to `models:` and would fail the model-lane build). Remove the projected ones.
+        for name in non_llm {
+            pools.remove(&name);
+        }
+    }
+    // NEUTRAL POOL-LEVEL ROUTING KNOBS → members (1.6.0, LLM plane). `weights:`/`tier:`/
+    // `attempt_timeout_ms:` on the pool refine any member that did NOT state the value inline (an
+    // inline per-member value WINS, for byte-identity with 1.5.4 rich-member configs). This lets a
+    // uniform bare-name LLM pool carry weights/tier/timeouts without per-member rich objects. On the
+    // MCP/A2A planes these knobs are carried on the pool but their ordered-failover engines do not yet
+    // read `weights:` — the projection to `CandidatePoolCfg` above is deliberately behaviour-neutral.
+    for pool in pools.values_mut() {
+        for m in pool.members.iter_mut() {
+            if let Some(&w) = pool.weights.get(&m.model) {
+                // A member left at the default weight (1) takes the pool-level weight; an inline
+                // non-default weight is the operator's explicit per-member choice and stands.
+                if m.weight == default_weight() {
+                    m.weight = w;
+                }
+            }
+            if m.tier.is_none() {
+                m.tier = pool.tier.clone();
+            }
+            if m.attempt_timeout_ms.is_none() {
+                m.attempt_timeout_ms = pool.attempt_timeout_ms;
+            }
+        }
+    }
     // THE A2A PLANE'S SECTION-LEVEL ATTACH, judged by the same rule its per-agent lists are. The
     // per-agent lists are checked at parse (`a2a::config::validate_agent`); the section list has no
     // per-entry parse to hang off, so it is checked here, where every other cross-reference is.
@@ -4440,10 +4648,10 @@ pub fn resolve(
     // agent named in a tool pool fails here rather than at dispatch — and the message says which
     // section the name actually lives in, because "not found" would send an operator looking for a
     // typo they did not make.
-    for (pool, def) in &deploy.tool_pools {
+    for (pool, def) in &tool_pools_derived {
         check_failover_pool(
             &mut errors,
-            "tool_pools",
+            "pools",
             pool,
             def,
             |m| deploy.tools.servers.contains_key(m),
@@ -4452,10 +4660,10 @@ pub fn resolve(
             "agents",
         );
     }
-    for (pool, def) in &deploy.agent_pools {
+    for (pool, def) in &agent_pools_derived {
         check_failover_pool(
             &mut errors,
-            "agent_pools",
+            "pools",
             pool,
             def,
             |m| deploy.agents.agents.contains_key(m),
@@ -4469,8 +4677,8 @@ pub fn resolve(
     // histories for one upstream with the winner chosen by map iteration order — a nondeterminism
     // an operator cannot see. Refused as config, where the ambiguity was written.
     for (section, pools) in [
-        ("tool_pools", &deploy.tool_pools),
-        ("agent_pools", &deploy.agent_pools),
+        ("pools", &tool_pools_derived),
+        ("pools", &agent_pools_derived),
     ] {
         let mut owner: std::collections::BTreeMap<&str, &str> = std::collections::BTreeMap::new();
         for (pool, def) in pools {
@@ -4620,8 +4828,8 @@ pub fn resolve(
             mcp,
             oauth_as,
             tool_defs: deploy.tools.clone(),
-            tool_pools: deploy.tool_pools.clone(),
-            agent_pools: deploy.agent_pools.clone(),
+            tool_pools: tool_pools_derived,
+            agent_pools: agent_pools_derived,
             tls: deploy.tls.clone(),
             admin_listen: deploy.admin_listen.clone(),
             admin_tls: deploy.admin_tls.clone(),

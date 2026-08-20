@@ -196,6 +196,7 @@ fn pool(members: Vec<PoolMember>) -> PoolCfg {
         policy: crate::config::PoolPolicy::default(),
         gates: Vec::new(),
         base_named: false,
+        ..Default::default()
     }
 }
 

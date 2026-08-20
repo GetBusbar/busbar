@@ -193,19 +193,15 @@ fn migrate_14x_round_trips_into_deploy_cfg() {
         get(&["providers", "anthropic", "api_key", "env"]).as_str(),
         Some("ANTHROPIC_KEY")
     );
-    // target -> model; cost off members; alias renames.
+    // target -> model; cost off members; alias renames. 1.6.0 unified pools then LIFTS a weight-1,
+    // capability-free member to the UNIFORM BARE NAME (`- claude`) — the rich object is gone, so
+    // `target`/`cost_per_mtok`/`model` no longer appear as member keys at all.
     let members = get(&["pools", "fast", "members"]);
-    let member = members.as_sequence().unwrap()[0].as_mapping().unwrap();
     assert_eq!(
-        member
-            .get(serde_yaml::Value::from("model"))
-            .and_then(|v| v.as_str()),
-        Some("claude")
+        members.as_sequence().unwrap()[0].as_str(),
+        Some("claude"),
+        "the member is now a bare name under the unified `pools:` grammar"
     );
-    assert!(member.get(serde_yaml::Value::from("target")).is_none());
-    assert!(member
-        .get(serde_yaml::Value::from("cost_per_mtok"))
-        .is_none());
     assert_eq!(
         get(&["pools", "fast", "breaker", "trip", "window_secs"]).as_u64(),
         Some(30)
@@ -2323,6 +2319,93 @@ fn migrate_export_flags_the_retired_audit_stream() {
             .iter()
             .any(|t| t.contains("export.soc2") && t.contains("audit")),
         "the retired `audit` stream must be flagged; got {:?}",
+        out.todos
+    );
+}
+
+// ══ 1.6.0 UNIFIED POOLS MIGRATOR ═════════════════════════════════════════════════════════════════
+
+/// The unreleased 1.6.0-dev `tool_pools:`/`agent_pools:` sections FOLD into the ONE neutral `pools:`
+/// map, verbatim (they already carry the uniform `members:`/`repeatable:` grammar), and the old
+/// section keys disappear.
+#[test]
+fn migrate_folds_tool_and_agent_pools_into_pools() {
+    let raw = "providers: {}\nmodels: {}\npools:\n  fast:\n    members: [claude, gpt]\n\
+               tool_pools:\n  search:\n    members: [search-eu, search-us]\n    repeatable: [find]\n\
+               agent_pools:\n  planner:\n    members: [planner-eu, planner-us]\n";
+    let (out, doc) = migrate_to_value(raw);
+    assert!(
+        dig(&doc, &["tool_pools"]).is_none() && dig(&doc, &["agent_pools"]).is_none(),
+        "the renamed sections are gone"
+    );
+    assert_eq!(
+        dig(&doc, &["pools", "search", "members"]).unwrap(),
+        &serde_yaml::from_str::<serde_yaml::Value>("[search-eu, search-us]").unwrap(),
+        "the tool pool folded into `pools:` verbatim"
+    );
+    assert_eq!(
+        dig(&doc, &["pools", "search", "repeatable"]).unwrap(),
+        &serde_yaml::from_str::<serde_yaml::Value>("[find]").unwrap(),
+        "the neutral `repeatable:` knob is carried"
+    );
+    assert!(
+        dig(&doc, &["pools", "planner", "members"]).is_some(),
+        "the agent pool folded in too"
+    );
+    assert!(
+        out.changes
+            .iter()
+            .any(|c| c.contains("tool_pools.search -> pools.search"))
+            && out
+                .changes
+                .iter()
+                .any(|c| c.contains("agent_pools.planner -> pools.planner")),
+        "the fold is announced: {:?}",
+        out.changes
+    );
+}
+
+/// A rich, weight-only LLM member LIFTS to the uniform bare-name grammar with its non-default weight
+/// moved to a pool-level `weights:` map. A member carrying per-member CAPABILITIES stays rich (valid
+/// 1.6.0) with a todo, because flattening it would drop or collapse a per-member value.
+#[test]
+fn migrate_lifts_weighted_members_and_leaves_capability_members_rich() {
+    let raw = "providers: {}\nmodels: {}\npools:\n  gpt4o:\n    members:\n\
+               \x20     - { model: gpt4o-openai, weight: 3 }\n\
+               \x20     - { model: gpt4o-azure, weight: 1 }\n\
+               \x20     - { model: gpt4o-eu, tier: large }\n";
+    let (out, doc) = migrate_to_value(raw);
+    let members = dig(&doc, &["pools", "gpt4o", "members"])
+        .unwrap()
+        .as_sequence()
+        .unwrap();
+    // The two weight-only members became bare names; the capability member stayed a mapping.
+    assert_eq!(
+        members[0].as_str(),
+        Some("gpt4o-openai"),
+        "weight-only member is now bare"
+    );
+    assert_eq!(
+        members[1].as_str(),
+        Some("gpt4o-azure"),
+        "weight-1 member is now bare"
+    );
+    assert!(
+        members[2].is_mapping(),
+        "the tier-carrying member is left rich"
+    );
+    // The non-default weight moved to a pool-level `weights:` map; the weight-1 member is not listed
+    // (default is implicit).
+    assert_eq!(
+        dig(&doc, &["pools", "gpt4o", "weights", "gpt4o-openai"]).and_then(|v| v.as_u64()),
+        Some(3),
+        "the non-default weight lifted to `weights:`"
+    );
+    assert!(
+        out.todos
+            .iter()
+            .any(|t| t.contains("gpt4o-eu") && t.contains("capabilities")),
+        "the capability member is flagged for a hand flatten: {:?}",
         out.todos
     );
 }

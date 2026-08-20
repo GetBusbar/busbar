@@ -240,6 +240,7 @@ fn pool_policy(policy: PoolPolicy) -> crate::config::PoolCfg {
         policy,
         gates: Vec::new(),
         base_named: true,
+        ..Default::default()
     }
 }
 
@@ -255,6 +256,7 @@ fn pool_with_hook(name: &str) -> crate::config::PoolCfg {
         policy: PoolPolicy::Weighted,
         gates: vec![name.to_string()],
         base_named: false,
+        ..Default::default()
     }
 }
 

@@ -43,8 +43,6 @@ pub(crate) fn base_deploy() -> DeployCfg {
     DeployCfg {
         tools: Default::default(),
         agents: Default::default(),
-        tool_pools: Default::default(),
-        agent_pools: Default::default(),
         listen: DEFAULT_LISTEN_ADDR.into(),
         // Not an MCP server.
         mcp: None,
@@ -3711,26 +3709,31 @@ fn failover_pools_are_absent_by_default() {
 }
 
 /// A member naming nothing is an operator believing a request has somewhere to go when it does not.
+/// 1.6.0: the pool lives in the ONE neutral `pools:` map; kind is INFERRED from the resolvable
+/// member (`search-eu` → a `tools:` server), so the dangling `search-us` is named against `tools:`.
 #[test]
 fn a_tool_pool_member_that_names_no_server_is_refused() {
     let mut deploy = base_deploy();
-    deploy.tool_pools.insert(
+    deploy.tools.servers.insert(
+        "search-eu".to_string(),
+        serde_yaml::from_str("{url: 'https://eu.example/mcp', pin: {mechanism: unpinned}}")
+            .expect("a minimal server"),
+    );
+    deploy.pools.pools.insert(
         "search".to_string(),
-        crate::failover::CandidatePoolCfg {
-            members: vec!["search-eu".into(), "search-us".into()],
-            repeatable: Vec::new(),
-        },
+        serde_yaml::from_str::<crate::config::PoolCfg>("{members: [search-eu, search-us]}")
+            .expect("a bare-name pool"),
     );
     let errs = resolve(&deploy, &HashMap::new()).expect_err("a dangling member must refuse boot");
     assert!(
         errs.iter()
-            .any(|e| e.contains("search-eu") && e.contains("`tools:`")),
+            .any(|e| e.contains("search-us") && e.contains("`tools:`")),
         "the message names the missing entry and the section it belongs in: {errs:?}"
     );
 }
 
-/// NO POOL MAY STRADDLE TWO PLANES, and the refusal says which section the name actually lives in —
-/// "not found" would send an operator hunting a typo they did not make.
+/// KIND IS INFERRED, SO A POOL MUST BE HOMOGENEOUS: a pool whose members span two nouns cannot be
+/// assigned a single plane and is refused with the homogeneity error.
 #[test]
 fn a_pool_may_not_straddle_two_planes() {
     let mut deploy = base_deploy();
@@ -3739,19 +3742,22 @@ fn a_pool_may_not_straddle_two_planes() {
         serde_yaml::from_str("{url: 'https://a.example/card', pin: {mechanism: unpinned}}")
             .expect("a minimal agent"),
     );
-    deploy.tool_pools.insert(
+    deploy.tools.servers.insert(
+        "search-eu".to_string(),
+        serde_yaml::from_str("{url: 'https://eu.example/mcp', pin: {mechanism: unpinned}}")
+            .expect("a minimal server"),
+    );
+    deploy.pools.pools.insert(
         "mixed".to_string(),
-        crate::failover::CandidatePoolCfg {
-            members: vec!["planner".into(), "planner".into()],
-            repeatable: Vec::new(),
-        },
+        serde_yaml::from_str::<crate::config::PoolCfg>("{members: [planner, search-eu]}")
+            .expect("a bare-name pool"),
     );
     let errs =
         resolve(&deploy, &HashMap::new()).expect_err("a cross-plane member must refuse boot");
     assert!(
         errs.iter()
-            .any(|e| e.contains("straddle") && e.contains("`agents:`")),
-        "the message names the plane the entry is really on: {errs:?}"
+            .any(|e| e.contains("more than one plane") && e.contains("same kind")),
+        "the message says the pool's members are not all one kind: {errs:?}"
     );
 }
 
@@ -3759,12 +3765,15 @@ fn a_pool_may_not_straddle_two_planes() {
 #[test]
 fn a_failover_pool_needs_two_members() {
     let mut deploy = base_deploy();
-    deploy.agent_pools.insert(
+    deploy.agents.agents.insert(
+        "only-one".to_string(),
+        serde_yaml::from_str("{url: 'https://a.example/card', pin: {mechanism: unpinned}}")
+            .expect("a minimal agent"),
+    );
+    deploy.pools.pools.insert(
         "planner".to_string(),
-        crate::failover::CandidatePoolCfg {
-            members: vec!["only-one".into()],
-            repeatable: Vec::new(),
-        },
+        serde_yaml::from_str::<crate::config::PoolCfg>("{members: [only-one]}")
+            .expect("a bare-name pool"),
     );
     let errs = resolve(&deploy, &HashMap::new()).expect_err("a one-member pool must refuse boot");
     assert!(

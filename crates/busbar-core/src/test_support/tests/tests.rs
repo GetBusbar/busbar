@@ -3443,6 +3443,7 @@ mod disposition_matrix_tests {
             policy: crate::config::PoolPolicy::default(),
             gates: Vec::new(),
             base_named: false,
+            ..Default::default()
         };
         let make = |error_map: std::collections::HashMap<String, String>| {
             let mut providers = HashMap::new();
