@@ -24,11 +24,16 @@ CORE="crates/busbar-core/src"
 # matched. Excludes the neutral surface that STAYS: IrFacts, ContentItem, Slot, Shape, Operation,
 # IrError (= breaker::CanonicalSignal alias), and the genuinely-neutral cross-plane IRs InvokeReq/
 # InvokeResp/SubscribeReq/SubscribeResp (used by mcp+a2a per the 2+-planes decision rule).
+#
+# The `IrReq`/`IrResp` hub enums are NOT listed: they do not relocate as a family — they DISSOLVE into
+# a neutral core-owned opaque handle plus the core-owned invoke/subscribe leaves. Counting them here
+# conflates "enum dissolved" with "concrete family named" and inflates the count while it still exists,
+# masking per-leaf progress; their removal is asserted by a separate structural check.
 TYPES=(
   IrRequest IrResponse IrMessage IrBlock IrBlockMeta IrRole IrTool IrToolChoice
   IrUsage IrUsageDetail IrDelta IrStreamEvent IrStopReason IrMediaKind IrCitation
   IrResponseFormat CacheControl CacheKind StreamDecodeState EgressPrep
-  IrReq IrResp
+  IrImageSource IrReasoningAsk IrReasoningEffort IrTokenLogprob IrTopLogprob
   StreamTranslate StreamFraming JsonArrayFramer
   EmbeddingsReq EmbeddingsResp ModerationReq ModerationResp ImageReq ImageResp
   TranscriptionReq TranscriptionResp SpeechReq SpeechResp RerankReq RerankResp
