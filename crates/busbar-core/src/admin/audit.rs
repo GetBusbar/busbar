@@ -654,16 +654,20 @@ impl AuditLog {
             // This entry's seq is BELOW the durable floor. With `rebase_nondurable_suffix` always
             // returning a top `>= durable_max + 1` and `start = durable_high + 1` (`durable_high >=
             // durable_max` once the recovery branch above has run), this is NOT the floor-recovery
-            // mutation itself — that case is already resolved by the rebase. It is the ordinary
-            // concurrent-recorder race: a second recorder allocated a HIGHER seq, won `durable_lock`
-            // first, and its backfill already persisted (and advanced `durable_high` past) THIS
-            // seq — so writing it now would be a redundant, stale keyed upsert. Skipping is correct:
-            // this entry is already durable under its own seq.
-            tracing::warn!(
+            // mutation itself — that case is already resolved by the rebase. Two benign causes reach
+            // here: (a) the ordinary concurrent-recorder race — a second recorder allocated a HIGHER
+            // seq, won `durable_lock` first, and its backfill already persisted (and advanced
+            // `durable_high` past) THIS seq; and (b) a boot that recovered a durable floor ABOVE a
+            // seq still retained in a freshly-numbered RAM ring, which is then re-offered on every
+            // flush. Either way writing it now would be a redundant, stale keyed upsert. Skipping is
+            // correct: this entry is already durable under its own seq. This is EXPECTED and benign,
+            // so it is logged at DEBUG — a WARN here spams the console 10×/s in case (b) for a
+            // condition that is not a problem.
+            tracing::debug!(
                 seq = new_seq,
                 durable_floor = start,
-                "durable audit write-through skipped: this entry's seq predates the recovered \
-                 durable floor (it is retained in the RAM ring)"
+                "durable audit write-through skipped: seq is at/below the durable floor (already \
+                 durable; retained in the RAM ring)"
             );
             return;
         }
