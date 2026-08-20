@@ -491,7 +491,7 @@ your convenience before the next release removes the env var.
 
 | Deprecated env var | New home in config.yaml |
 |---|---|
-| `BUSBAR_PROVIDERS` | `providers_file:` (top-level; relative to config.yaml; default `providers.yaml` next to it) |
+| `BUSBAR_PROVIDERS` | `providers_file:` (top-level; relative to config.yaml; default `providers.yaml` next to it), or the `--providers <path>` flag. **Removed in 1.6.0** — the env var no longer works. |
 | `BUSBAR_CONFIG_OVERLAY` | `config.overlay.file` |
 | `BUSBAR_WORKER_THREADS` | `advanced.worker_threads` |
 | `BUSBAR_UPSTREAM_HTTP1_ONLY` | `advanced.upstream_http1_only` |

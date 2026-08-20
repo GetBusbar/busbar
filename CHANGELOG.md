@@ -33,8 +33,22 @@ If you run dashboards, read the metrics breaking change first: both request fami
   the content a hook holding a `prompt: ro` or `prompt: rw` grant is shown, so a gate written to
   screen a prompt screens them through the field it already reads; and a request body Busbar cannot
   read is rejected with a `400` rather than forwarded. See [the hooks guide](docs/hooks.md).
+- **The deprecated `BUSBAR_PROVIDERS` env var is removed.** Deprecated in 1.5.3 and honored for
+  one release, it no longer has any effect. Point Busbar at its provider catalog with the new
+  `--providers <path>` flag or the top-level `providers_file:` key in config.yaml instead. Setting
+  `BUSBAR_PROVIDERS` now does nothing; the catalog resolves from `--providers`, then
+  `providers_file:`, then `providers.yaml` next to the config. `BUSBAR_CONFIG` is unchanged.
 
 ### Added
+
+- **`-c`/`--config` and `--providers` flags make config input flag-first.** `-c <path>` /
+  `--config <path>` (also `--config=<path>`) names config.yaml with precedence **flag >
+  `BUSBAR_CONFIG` env > `/etc/busbar/config.yaml`**; `--providers <path>` (also `--providers=<path>`)
+  names the provider catalog with precedence **flag > `providers_file:` in config.yaml >
+  `providers.yaml` next to the config**. Both are additive and fully backward-compatible for anyone
+  on `BUSBAR_CONFIG` or the default path. When a flag actually overrides a lower layer the operator
+  also set (a different `BUSBAR_CONFIG`, or a `providers_file:` in config.yaml), Busbar logs a terse
+  boot notice naming both so an ignored value is never silent.
 
 - **Failover for MCP servers and A2A agents, declared as a pool.** Run the same server image in
   two regions, or a hosted instance beside its self-hosted twin, and list them under a top-level

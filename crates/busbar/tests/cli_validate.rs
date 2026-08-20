@@ -944,3 +944,157 @@ fn the_operator_visible_protocol_order_is_exactly_the_shipped_one() {
          config-error string, so this is not cosmetic — see this test's doc. Got: {all}"
     );
 }
+
+/// Run the real binary with the standard secret env + a CHOSEN `BUSBAR_CONFIG` (or none), plus
+/// arbitrary extra args and env pairs — the flexible harness the 1.6.0 flag-precedence tests need
+/// (they vary the config/providers inputs beyond what `run_busbar` fixes). Returns (code, stdout,
+/// stderr).
+fn run_cli(
+    config_env: Option<&Path>,
+    args: &[&str],
+    extra_env: &[(&str, &str)],
+) -> (i32, String, String) {
+    let mut c = Command::new(env!("CARGO_BIN_EXE_busbar"));
+    c.args(args).env("MOCK_KEY", "test-key-value").env(
+        "BUSBAR_SIGNING_KEY",
+        "0000000000000000000000000000000000000000000000000000000000000001",
+    );
+    match config_env {
+        Some(p) => {
+            c.env("BUSBAR_CONFIG", p);
+        }
+        None => {
+            c.env_remove("BUSBAR_CONFIG");
+        }
+    }
+    for (k, v) in extra_env {
+        c.env(k, v);
+    }
+    let out = c.output().expect("run busbar");
+    (
+        out.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+/// 1.6.0 FLAG-FIRST (config): `-c`/`--config <path>` OVERRIDES `BUSBAR_CONFIG` and the compiled-in
+/// default. `BUSBAR_CONFIG` points at a BOGUS (nonexistent) path; the flag names the real config, and
+/// `--validate` must succeed AND report the flag's path — proving the flag won over the env layer.
+#[test]
+fn config_flag_overrides_env_and_default() {
+    let dir = fixture_dir("cfgflag");
+    // Real config (+ providers.yaml next to it, the default catalog location) in its own subdir.
+    let real = dir.join("real");
+    std::fs::create_dir_all(real.join("plugins")).unwrap();
+    write_configs(&real, "");
+    let real_config = real.join("config.yaml");
+    let bogus = dir.join("bogus").join("config.yaml"); // never created
+
+    let (code, stdout, stderr) = run_cli(
+        Some(&bogus),
+        &["--validate", "-c", real_config.to_str().unwrap()],
+        &[],
+    );
+    assert_eq!(
+        code, 0,
+        "-c/--config must override a (bogus) BUSBAR_CONFIG and the default: stdout={stdout} stderr={stderr}"
+    );
+    assert!(stdout.contains("ok: config valid"), "got {stdout}");
+    assert!(
+        stdout.contains(real_config.to_str().unwrap()),
+        "the validate output must name the FLAG's config path, proving it won over BUSBAR_CONFIG: {stdout}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 1.6.0 FLAG-FIRST (providers): `--providers <path>` OVERRIDES `providers_file:` in config.yaml and
+/// the default catalog. The config declares a NONEXISTENT `providers_file:` and has NO providers.yaml
+/// beside it, so without the flag `--validate` fails; with `--providers <real>` it succeeds and reports
+/// the flag's catalog — proving the flag won over `providers_file:`.
+#[test]
+fn providers_flag_overrides_providers_file_and_default() {
+    let dir = fixture_dir("provflag");
+    // config in its own dir, declaring a providers_file that does not exist, and NO providers.yaml
+    // beside it (so neither providers_file nor the default catalog resolves).
+    let cfgdir = dir.join("cfg");
+    std::fs::create_dir_all(&cfgdir).unwrap();
+    let config = cfgdir.join("config.yaml");
+    std::fs::write(
+        &config,
+        "listen: \"127.0.0.1:0\"\n\
+         providers:\n\
+         \x20 mock:\n\
+         \x20   api_key: { env: MOCK_KEY }\n\
+         models:\n\
+         \x20 test-model:\n\
+         \x20   provider: mock\n\
+         providers_file: does-not-exist.yaml\n",
+    )
+    .unwrap();
+    // The REAL catalog lives elsewhere, reachable ONLY via --providers.
+    let real_catalog = dir.join("real-providers.yaml");
+    std::fs::write(
+        &real_catalog,
+        "mock:\n  protocol: anthropic\n  base_url: \"http://127.0.0.1:9\"\n  api_key_env: MOCK_KEY\n",
+    )
+    .unwrap();
+
+    // Baseline: without --providers, the nonexistent providers_file fails validation.
+    let (code, _stdout, stderr) = run_cli(Some(&config), &["--validate"], &[]);
+    assert_eq!(
+        code, 1,
+        "a providers_file pointing at a missing catalog must fail --validate: {stderr}"
+    );
+
+    // --providers overrides providers_file → validate OK, naming the flag's catalog.
+    let (code, stdout, stderr) = run_cli(
+        Some(&config),
+        &["--validate", "--providers", real_catalog.to_str().unwrap()],
+        &[],
+    );
+    assert_eq!(
+        code, 0,
+        "--providers must override providers_file: stdout={stdout} stderr={stderr}"
+    );
+    assert!(stdout.contains("ok: config valid"), "got {stdout}");
+    assert!(
+        stdout.contains(real_catalog.to_str().unwrap()),
+        "the validate output must name the FLAG's catalog, proving it won over providers_file: {stdout}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 1.6.0 REMOVAL: the `BUSBAR_PROVIDERS` env var is NO LONGER honored. With it set to a BOGUS
+/// (nonexistent) path but a valid providers.yaml at the DEFAULT location (next to config.yaml),
+/// `--validate` must still succeed and use the DEFAULT catalog — if the env var were still read, the
+/// bogus path would fail the load. This pins the deprecation removal (deprecated 1.5.3, removed 1.6.0).
+#[test]
+fn busbar_providers_env_is_no_longer_honored() {
+    let dir = fixture_dir("provenvgone");
+    write_configs(&dir, ""); // config.yaml + providers.yaml (the default catalog) both in `dir`
+    let config = dir.join("config.yaml");
+    let default_catalog = dir.join("providers.yaml");
+    let bogus = dir.join("bogus-providers.yaml"); // never created
+
+    let (code, stdout, stderr) = run_cli(
+        Some(&config),
+        &["--validate"],
+        &[("BUSBAR_PROVIDERS", bogus.to_str().unwrap())],
+    );
+    assert_eq!(
+        code, 0,
+        "BUSBAR_PROVIDERS must be IGNORED in 1.6.0; the default providers.yaml next to config must \
+         resolve despite the bogus env value: stdout={stdout} stderr={stderr}"
+    );
+    assert!(stdout.contains("ok: config valid"), "got {stdout}");
+    assert!(
+        stdout.contains(default_catalog.to_str().unwrap()),
+        "the default catalog (next to config) must be used, NOT the bogus BUSBAR_PROVIDERS value: {stdout}"
+    );
+    assert!(
+        !stdout.contains(bogus.to_str().unwrap()),
+        "the removed BUSBAR_PROVIDERS value must not appear anywhere: {stdout}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

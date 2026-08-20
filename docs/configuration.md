@@ -2,10 +2,14 @@
 
 Busbar reads **two YAML files** at startup:
 
-| File | Default path | Env override | Purpose |
+| File | Default path | Override | Purpose |
 |---|---|---|---|
-| Provider catalog | `/etc/busbar/providers.yaml` | `BUSBAR_PROVIDERS` | Shipped map of provider names → protocol, base URL, error map. Operators rarely edit this. |
-| Deployment config | `/etc/busbar/config.yaml` | `BUSBAR_CONFIG` | Your site's providers (with secret references for credentials), models, pools, auth, groups, pricing, store, and telemetry export. |
+| Provider catalog | `providers.yaml` next to config.yaml | `--providers <path>` flag, or `providers_file:` in config.yaml | Shipped map of provider names → protocol, base URL, error map. Operators rarely edit this. |
+| Deployment config | `/etc/busbar/config.yaml` | `-c`/`--config <path>` flag, or `BUSBAR_CONFIG` env | Your site's providers (with secret references for credentials), models, pools, auth, groups, pricing, store, and telemetry export. |
+
+**Flag-first (1.6.0).** The config path resolves **`-c`/`--config` flag > `BUSBAR_CONFIG` env >
+`/etc/busbar/config.yaml`**; the provider-catalog path resolves **`--providers` flag > `providers_file:`
+in config.yaml > `providers.yaml` next to the resolved config.yaml**.
 
 Both files support `${VAR}` environment interpolation before YAML is parsed. A missing or malformed env var reference is a fatal startup error, Busbar refuses to boot rather than run with an incomplete config.
 
@@ -58,15 +62,19 @@ These are the only environment variables read by Busbar (excluding test-only `BU
 
 | Variable | Where read | Purpose / default |
 |---|---|---|
-| `BUSBAR_CONFIG` | `main.rs` | Path to `config.yaml`. Default: `/etc/busbar/config.yaml`. **The one bootstrap env var**: it locates config.yaml itself. |
-| `BUSBAR_PROVIDERS` | `main.rs` | **Deprecated (1.5.3)**. Use the top-level `providers_file:` key. Path to `providers.yaml`; still honored (with a warning) for one release. Default: `providers.yaml` next to `config.yaml`. |
+| `BUSBAR_CONFIG` | `main.rs` | Path to `config.yaml`. Default: `/etc/busbar/config.yaml`. **The one bootstrap env var**: it locates config.yaml itself. Overridden by the `-c`/`--config` flag. |
 | `RUST_LOG` | `observability.rs` | Log level: `error`, `warn`, `info`, `debug`, or `trace`. Default: `info`. |
 | *(each provider's `api_key: { env: VAR }` reference)* | `main.rs` | The env var **named by** the secret reference holds that provider's upstream credential. Resolved once at boot per provider. |
 | *(any `${VAR}` in `config.yaml`)* | `config.rs` | Expanded before YAML is parsed. Unset → fatal boot error. |
 
 `BUSBAR_ADMIN_TOKEN` is not special-cased in the code. It appears in the shipped `config.yaml` only because the file references `{ env: BUSBAR_ADMIN_TOKEN }` under `auth.admin_auth`. Any variable name works.
 
-**Operational env vars moved into `config.yaml` (1.5.3).** `BUSBAR_PROVIDERS` → `providers_file:`, `BUSBAR_CONFIG_OVERLAY` → `config.overlay.file`, `BUSBAR_WORKER_THREADS` → `advanced.worker_threads`, `BUSBAR_UPSTREAM_HTTP1_ONLY` → `advanced.upstream_http1_only`, and `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE` → `advanced.upstream_h2_prior_knowledge`. Each old env var still works for one release (with a deprecation warning). Only `BUSBAR_CONFIG` (bootstrap), secret `{ env: NAME }` references, and `RUST_LOG` remain env-native. See the [`config`](#config) and [`advanced`](#advanced) sections and the [upgrade note](migration-1.5.md#153-config-consolidation).
+**CLI flags for the input files (1.6.0).** `-c`/`--config <path>` (also `--config=<path>`) points
+Busbar at config.yaml, taking precedence over `BUSBAR_CONFIG`; `--providers <path>` (also
+`--providers=<path>`) points it at the provider catalog, taking precedence over `providers_file:`.
+See [Operations → Process configuration](operations.md#process-configuration).
+
+**Operational env vars moved into `config.yaml` (1.5.3).** `BUSBAR_CONFIG_OVERLAY` → `config.overlay.file`, `BUSBAR_WORKER_THREADS` → `advanced.worker_threads`, `BUSBAR_UPSTREAM_HTTP1_ONLY` → `advanced.upstream_http1_only`, and `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE` → `advanced.upstream_h2_prior_knowledge`. Each old env var still works for one release (with a deprecation warning). `BUSBAR_PROVIDERS` → `providers_file:` was on this list in 1.5.3 and **was removed in 1.6.0**: use the `--providers` flag or `providers_file:`. Only `BUSBAR_CONFIG` (bootstrap), secret `{ env: NAME }` references, and `RUST_LOG` remain env-native. See the [`config`](#config) and [`advanced`](#advanced) sections and the [upgrade note](migration-1.5.md#153-config-consolidation).
 
 ### `config`
 
@@ -1674,9 +1682,10 @@ restart. Full catalogue, rationale for defaulting off, and exactly when each hea
 
 ### `providers_file`
 
-Top-level pointer to the provider catalog (1.5.3 ← `BUSBAR_PROVIDERS`). Relative paths resolve against the
-config.yaml directory; absent ⇒ `providers.yaml` next to config.yaml. The two-file model is unchanged. This
-just names the catalog that config.yaml's `providers:` map references.
+Top-level pointer to the provider catalog. Relative paths resolve against the config.yaml directory;
+absent ⇒ `providers.yaml` next to config.yaml. The `--providers <path>` CLI flag (1.6.0) overrides this
+key. The two-file model is unchanged. This just names the catalog that config.yaml's `providers:` map
+references.
 
 ```yaml
 providers_file: providers.yaml

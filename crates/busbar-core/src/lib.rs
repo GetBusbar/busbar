@@ -108,7 +108,7 @@ mod tests;
 pub use appbuild::{
     build_app_from_config, inert_durable_keys_banner, load_config_from_disk, open_relay_banner,
     resolve_model_context_max, upstream_bool_env_override, GovCredentialRotation, LoadedConfig,
-    DEFAULT_CONFIG_PATH, ENV_CONFIG, ENV_PROVIDERS,
+    DEFAULT_CONFIG_PATH, ENV_CONFIG,
 };
 pub use preflight::{
     plugins_preflight, preflight_plugins_and_secrets, validate_builtin_secrets_resolve,

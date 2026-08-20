@@ -9,9 +9,22 @@ governance/admin usage, and troubleshooting.
 Busbar is a single native binary configured by two YAML files and environment
 variables.
 
+**Pointing Busbar at its files (flag-first, 1.6.0).** Two optional CLI flags name the input files;
+each takes precedence over the env/config layer below it:
+
+- `-c <path>` / `--config <path>` (also `--config=<path>`) — path to config.yaml.
+  Precedence: **`-c`/`--config` flag > `BUSBAR_CONFIG` env > `/etc/busbar/config.yaml`** (default).
+- `--providers <path>` (also `--providers=<path>`) — path to the provider catalog.
+  Precedence: **`--providers` flag > `providers_file:` in config.yaml > `providers.yaml` next to the
+  resolved config.yaml** (default).
+
+When a flag actually overrides a lower layer the operator also set — a different `BUSBAR_CONFIG`, or a
+`providers_file:` in config.yaml — Busbar logs a terse boot notice naming both, so an ignored value is
+never silent.
+
 | Env var | Default | Purpose |
 |---|---|---|
-| `BUSBAR_CONFIG` | `/etc/busbar/config.yaml` | Path to the deployment config. **The one bootstrap env var**: it locates config.yaml itself. |
+| `BUSBAR_CONFIG` | `/etc/busbar/config.yaml` | Path to the deployment config. **The one bootstrap env var**: it locates config.yaml itself. Overridden by `-c`/`--config`. |
 | Provider key vars | n/a | Named by each provider's `api_key: { env: ... }` reference (e.g. `ANTHROPIC_KEY`). |
 | Token/secret vars | n/a | Anything referenced via `${VAR}` in either file (client tokens, admin token, …). |
 
@@ -22,13 +35,15 @@ path, not the home:
 
 | Deprecated env var | New config.yaml key |
 |---|---|
-| `BUSBAR_PROVIDERS` | `providers_file:` (top-level; default `providers.yaml` next to config.yaml) |
 | `BUSBAR_CONFIG_OVERLAY` | `config.overlay.file` (see [config mutability](#config-mutability-locked--overlay)) |
 | `BUSBAR_WORKER_THREADS` | `advanced.worker_threads` |
 | `BUSBAR_UPSTREAM_HTTP1_ONLY` | `advanced.upstream_http1_only` |
 | `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE` | `advanced.upstream_h2_prior_knowledge` |
 
 `TOKIO_WORKER_THREADS` is still honored as a fallback for `advanced.worker_threads`.
+
+**`BUSBAR_PROVIDERS` was removed in 1.6.0** (deprecated in 1.5.3, honored for one release). It no
+longer has any effect — use the `--providers <path>` flag or the `providers_file:` key instead.
 
 ### Config mutability (`locked` + `overlay`)
 
@@ -84,7 +99,7 @@ edited on a live host before you reload it. It does read the files your `file:` 
 name, because since 1.5.3 it resolves those references rather than only checking their shape.
 
 ```sh
-BUSBAR_CONFIG=./config.yaml BUSBAR_PROVIDERS=./providers.yaml busbar --validate
+busbar --validate -c ./config.yaml --providers ./providers.yaml
 # ok: config valid [...] 2 provider(s), 2 model(s), 1 pool(s)
 #   note: 1 env var(s) referenced but unset here [...] required at runtime: BUSBAR_CLIENT_TOKEN
 ```
@@ -108,8 +123,8 @@ the middle bullets before you wire this into CI.
   Boot is unchanged: an unresolvable reference logs a warning and Busbar serves, with every request
   to that provider failing upstream. It checks *structure* and secret resolution, never upstream
   reachability.
-- Honors `BUSBAR_CONFIG`, `BUSBAR_PROVIDERS`, and `--safe-mode` exactly as boot does. Because it reuses
-  the boot path, a clean `--validate` means a clean boot.
+- Honors `-c`/`--config`, `--providers`, `BUSBAR_CONFIG`, and `--safe-mode` exactly as boot does.
+  Because it reuses the boot path, a clean `--validate` means a clean boot.
 
 ### Inspecting the SSRF denylist (`busbar --print-metadata-blocklist`)
 

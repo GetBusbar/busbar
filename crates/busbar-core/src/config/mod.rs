@@ -2846,11 +2846,11 @@ pub struct DeployCfg {
     /// config.yaml). See [`ConfigMgmtCfg`].
     #[serde(default)]
     pub(crate) config: ConfigMgmtCfg,
-    /// Optional pointer to the providers CATALOG file (`providers_file:`, 1.5.3 — migrated from the
-    /// `BUSBAR_PROVIDERS` env var). Relative paths resolve against the config.yaml directory. Absent ⇒
-    /// `providers.yaml` next to the resolved config.yaml (the `BUSBAR_PROVIDERS` env var still works as
-    /// a deprecated fallback for one release). The two-file model is preserved: this names the vetted,
-    /// shippable catalog that config.yaml's `providers:` map references.
+    /// Optional pointer to the providers CATALOG file (`providers_file:`, 1.5.3). Relative paths
+    /// resolve against the config.yaml directory. Absent ⇒ `providers.yaml` next to the resolved
+    /// config.yaml. The `--providers <path>` CLI flag overrides this (1.6.0). The two-file model is
+    /// preserved: this names the vetted, shippable catalog that config.yaml's `providers:` map
+    /// references.
     #[serde(default)]
     pub(crate) providers_file: Option<String>,
     /// The top-level `mcp:` block (1.6.0): busbar's own MCP endpoint, as an OAuth 2.1 resource
@@ -2977,6 +2977,15 @@ pub struct DeployCfg {
     /// Routing global default policy timeout (per-policy override still wins).
     #[serde(default)]
     pub(crate) routing: RoutingCfg,
+}
+
+impl DeployCfg {
+    /// The operator-declared `providers_file:` pointer, if any — read by the bin's 1.6.0
+    /// providers-override startup notice (the `providers_file` field is `pub(crate)`, so the bin
+    /// crate needs this accessor). `None` ⇒ the key is absent from config.yaml.
+    pub fn providers_file(&self) -> Option<&str> {
+        self.providers_file.as_deref()
+    }
 }
 
 /// Operator-owned security controls (config.yaml `security:` block).
