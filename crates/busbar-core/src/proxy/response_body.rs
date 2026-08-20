@@ -78,7 +78,7 @@ pub(crate) struct FirstByteBody<S, P> {
     /// when Some, translate each egress SSE chunk to the caller's ingress protocol.
     /// None = native passthrough (same-protocol or non-SSE). Held behind the neutral
     /// [`crate::proto::StreamTranslator`] seam so this streaming body never names the concrete
-    /// translator (G6).
+    /// translator.
     translate: Option<Box<dyn crate::proto::StreamTranslator>>,
     /// When set (gemini ingress streaming WITHOUT `?alt=sse`), the SSE bytes — whether from a
     /// same-protocol passthrough or the cross-protocol `translate` stage above, both of which are

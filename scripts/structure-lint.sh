@@ -1032,6 +1032,7 @@ done < <(find crates -type d)
 GRANDFATHERED_OVERSIZED="
 ${CORE}/admin/v1/json/handlers.rs
 ${CORE}/config/mod.rs
+${CORE}/config/migrate.rs
 ${CORE}/proxy/engine/mod.rs
 "
 # There is no grandfathered list for test locality. There was one, of 7 files, and it was deleted

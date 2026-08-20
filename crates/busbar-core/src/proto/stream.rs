@@ -1025,8 +1025,8 @@ impl StreamTranslate {
     }
 }
 
-/// Neutral streaming byte-in/byte-out translator seam (G6). The WHOLE [`StreamTranslate`] relocates
-/// behind this trait UNCHANGED so emission ORDER is preserved verbatim — the streaming forward path
+/// Neutral streaming byte-in/byte-out translator seam. The WHOLE [`StreamTranslate`] sits
+/// behind this trait so emission ORDER is preserved verbatim — the streaming forward path
 /// (`FirstByteBody`) holds an `Option<Box<dyn StreamTranslator>>` and never names the concrete
 /// translator. `usage()` returns an OWNED [`crate::billing::TokenUsage`] (the billing consumers read
 /// the four token totals, not the concrete `&IrUsage` borrow), so the seam names zero concrete IR;

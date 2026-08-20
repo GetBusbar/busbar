@@ -599,7 +599,7 @@ def catalog_for(config_text, siblings):
 PLACEHOLDER_SECRET = "0" * 63 + "1"
 
 _ENV_REF = re.compile(r"env:\s*([A-Za-z_][A-Za-z0-9_]*)")
-_FILE_REF = re.compile(r"file:\s*[^}\s]+")
+_FILE_REF = re.compile(r"(?<![A-Za-z0-9_])file:\s*[^}\s]+")
 
 
 def _referenced_env_names(*texts):
