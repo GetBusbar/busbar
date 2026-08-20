@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! `plane::cost` — the neutral, protocol-blind itemized cost breakdown a plane settles through the
-//! engine ledger. See `docs/design/1.6.0-protocol-plugin-abi.md` §4.3.1.
+//! engine ledger.
 //!
 //! # Why this is neutral
 //!
@@ -297,7 +297,7 @@ pub struct Settlement {
 /// hold to a `(bucket, window)` so the refund lands where it was reserved is the caller's key choice;
 /// this value carries no clock and no cell.
 ///
-/// **Accuracy invariant (Q5):** the ledgered charge is the sum of the exact `settle_partial`s, never
+/// **Accuracy invariant:** the ledgered charge is the sum of the exact `settle_partial`s, never
 /// the coarse reserve. **No double-count:** the flat per-request fee is folded into `reserved` once
 /// and never re-added on settle.
 #[derive(Debug)]

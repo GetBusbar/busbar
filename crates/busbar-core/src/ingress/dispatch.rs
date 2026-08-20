@@ -284,7 +284,7 @@ pub(crate) async fn operation_resolved(
 /// Everything the catch-all had already extracted, handed to the protocol that declared it can
 /// serve this path. It is a struct rather than eight arguments because it crosses a FUNCTION
 /// POINTER: a declaration cannot name a signature that grows, and this is the shape the ABI's
-/// `Wire` becomes when the protocols leave core (`design/protocol-plugin-abi.md` §1).
+/// `Wire` becomes when the protocols leave core.
 pub struct Arrival {
     pub(crate) app: Arc<App>,
     /// The request path, already `to_string`ed by the catch-all. The protocol parses ITS OWN model

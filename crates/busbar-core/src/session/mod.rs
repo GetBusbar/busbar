@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! `session` — the neutral, protocol-blind session substrate. See
-//! `docs/design/1.6.0-abi-solidification.md` (primitive A / gap G5) and
-//! `docs/design/1.6.0-foundation-what-features-reveal.md` §2a.
+//! `session` — the neutral, protocol-blind session substrate.
 //!
 //! # What this is, and why it is CORE
 //!

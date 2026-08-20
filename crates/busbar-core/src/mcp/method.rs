@@ -1339,7 +1339,7 @@ async fn tools_call(
                 // `next_request_id()` would hand the hook a number that joins to nothing.
                 request_id: log.request_id.parse().unwrap_or_default(),
                 key: ctx.gov.key.as_deref(),
-                // Incremental scan (session substrate, G5): screen only pieces this session has not
+                // Incremental scan (session substrate): screen only pieces this session has not
                 // already had cleared for each hook. The session identity is the caller's
                 // `x-session-id` — a neutral per-session convention, hashed by the core (store) hash,
                 // never the LLM plane's affinity resolver. GATED: only when the operator opted in AND

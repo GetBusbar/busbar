@@ -78,7 +78,7 @@ pub(crate) fn apply_rewrite_to_body(
 // `IrRequest`: this seam consumes only the projection (`shape`/`end_user`/`content`), so naming the
 // concrete chat type here would be core reaching into the LLM plane's representation for no gain. The
 // box is the price of the trait object, and it is the RIGHT price now — the concrete IR belongs to
-// busbar-llm (G6), and a hooked request already pays a body read, so one pointer indirection on the
+// busbar-llm, and a hooked request already pays a body read, so one pointer indirection on the
 // path that is only taken when a hook is configured is not a cost worth naming a plane's type to save.
 pub(crate) enum HookFacts {
     /// A request the ingress OPERATION's reader understood, seen through its neutral facts. Named

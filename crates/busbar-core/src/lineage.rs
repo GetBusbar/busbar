@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! `lineage` — the neutral cross-plane request-lineage id. See
-//! `docs/design/1.6.0-abi-solidification.md` (primitive B / gap G4).
+//! `lineage` — the neutral cross-plane request-lineage id.
 //!
 //! # What this is, and why it is CORE
 //!
@@ -22,7 +21,7 @@
 //! internal span tree (export `TraceId/SpanId`): those describe execution spans; this describes which
 //! governed request caused which.
 //!
-//! # Trust (owner-ruled, D6)
+//! # Trust (owner-ruled)
 //!
 //! A [`Lineage`] value is a fact core threads, not something a caller dictates. Core mints a fresh
 //! root ([`Lineage::root`]) unless the inbound peer is trusted (mTLS/signed); it must NOT adopt a

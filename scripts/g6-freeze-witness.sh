@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # G6 freeze witness — the objective gate for "core names zero concrete LLM family type".
 #
-# The neutral-IR cutover (docs/design/1.6.0-neutral-ir.md) is complete for a family only when
+# The neutral-IR cutover is complete for a family only when
 # busbar-core's PRODUCTION code references none of that family's concrete IR types — core reads the
 # request only through the neutral projection (IrFacts / RouteView / TokenUsage) and drives translation
 # through the plugin vtable. This script counts the remaining concrete-family references so the number

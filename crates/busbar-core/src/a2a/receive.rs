@@ -908,7 +908,7 @@ async fn admitted(
                 ingress_protocol: crate::plane::Plane::A2a.key(),
                 request_id: app.next_request_id(),
                 key: Some(key.as_ref()),
-                // Incremental scan (session substrate, G5): the A2A session identity is the
+                // Incremental scan (session substrate): the A2A session identity is the
                 // `contextId` (this plane deliberately extracts NO `HeaderMap`, so there is no
                 // `x-session-id` to read — the context IS the session). Hashed by the core (store)
                 // hash. GATED: only when the operator opted in AND a `contextId` is present; an empty

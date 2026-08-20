@@ -3,12 +3,10 @@
 
 //! `plane::host` — the inbound host-capability seam: what a plane calls BACK into core.
 //!
-//! See `docs/design/1.6.0-protocol-plugin-abi.md` §5.1 and `docs/design/1.6.0-abi-solidification.md`
-//! (gap G2). The plugin ABI's outbound direction (host→plugin: `busbar_call` etc.) already exists;
-//! the **inbound** direction — a plane asking core to `govern_admit`, `meter_charge`,
-//! `journal_append`, `egress_open`, … — did not. G2 is that direction, and it is gate item #1
-//! ("unblocks everything": every governance/audit/egress capability is compiled-in-only until a plane
-//! can reach it).
+//! The plugin ABI's outbound direction (host→plugin: `busbar_call` etc.) already exists; the
+//! **inbound** direction — a plane asking core to `govern_admit`, `meter_charge`, `journal_append`,
+//! `egress_open`, … — did not. This seam is that direction: every governance/audit/egress capability
+//! is compiled-in-only until a plane can reach it.
 //!
 //! # In-process for 1.6.0 (owner ruling D8)
 //!
@@ -66,9 +64,9 @@ pub type HostCallResult = Result<Vec<u8>, HostCallError>;
 /// [`HostCallError::NotGranted`]; a host grants a capability by overriding its method. `Send + Sync`
 /// because a plane may hold the host across `.await` and across its worker threads.
 ///
-/// The eleven capabilities mirror the design's vtable (§5.1). `secrets_resolve` is deliberately ABSENT
-/// — a `Redacted<String>` survives no boundary; secret resolution is by-reference at `egress_open`
-/// (§5.3), so a plane names a secret ref, never receives the secret.
+/// The eleven capabilities are the plane→core vtable. `secrets_resolve` is deliberately ABSENT
+/// — a `Redacted<String>` survives no boundary; secret resolution is by-reference at `egress_open`,
+/// so a plane names a secret ref, never receives the secret.
 pub trait PlaneHost: Send + Sync {
     /// Admit (authorize + budget-reserve) a unit of work; returns a grant the plane spends. Rate-
     /// limited per plane by core.
@@ -107,7 +105,7 @@ pub trait PlaneHost: Send + Sync {
         Err(HostCallError::NotGranted)
     }
     /// Open a duplex upstream by POOL (never a URL) — core keeps the SSRF guard, breaker, failover,
-    /// and resolves any secret ref at the socket (§5.3).
+    /// and resolves any secret ref at the socket.
     fn egress_open(&self, _req: &[u8]) -> HostCallResult {
         Err(HostCallError::NotGranted)
     }
