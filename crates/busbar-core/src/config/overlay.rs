@@ -17,6 +17,12 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::diagnostics::{
+    diag_error, diag_warn, CONFIG_OVERLAY_CORRUPT_BASE_ONLY, CONFIG_OVERLAY_CORRUPT_REFUSE_WRITE,
+    CONFIG_OVERLAY_NOT_WRITABLE, CONFIG_OVERLAY_PATCH_UNPARSABLE, CONFIG_OVERLAY_PROBE_LEAK,
+    CONFIG_OVERLAY_VERSION_TOO_NEW, CONFIG_OVERLAY_VERSION_TOO_NEW_RMW,
+};
+
 use super::{
     ConfigMgmtCfg, DeployCfg, GroupCfg, HookCfg, OverlayCfg, RateEntryCfg, RootCfg, StoreCfg,
     TlsCfg,
@@ -125,7 +131,8 @@ pub(crate) fn resolve_backend(
         // apply in RAM and silently revert. Logged at WARN here (and again at boot in `main`) because
         // an operator who DID intend to drive this busbar by admin API must not discover it at the
         // first mutation.
-        tracing::warn!(
+        diag_warn!(
+            CONFIG_OVERLAY_NOT_WRITABLE,
             overlay = %p.display(),
             "the config overlay backend is NOT WRITABLE (is the config directory mounted read-only?) \
              — busbar is starting WITHOUT a durable config overlay: it serves traffic normally, but \
@@ -191,7 +198,8 @@ fn is_backend_writable(p: &Path) -> bool {
             if let Err(e) = std::fs::remove_file(&probe) {
                 // The probe name is pid-scoped, so a leaked probe is never reclaimed by a later boot.
                 // Surface it (WARN) rather than swallowing the error silently.
-                tracing::warn!(
+                diag_warn!(
+                    CONFIG_OVERLAY_PROBE_LEAK,
                     probe = %probe.display(), error = %e,
                     "could not remove the overlay writability probe file after creating it; it may be \
                      left behind in the config directory"
@@ -284,7 +292,8 @@ fn load_for_rmw(p: &Path) -> Option<OverlayDoc> {
         OverlayReadState::Absent => Some(OverlayDoc::default()),
         OverlayReadState::Loaded(doc) => Some(*doc),
         OverlayReadState::Unreadable => {
-            tracing::error!(
+            diag_error!(
+                CONFIG_OVERLAY_CORRUPT_REFUSE_WRITE,
                 path = %p.display(),
                 "config overlay exists but is unreadable/corrupt; REFUSING to overwrite it (would \
                  drop hook AND group deletion tombstones and could resurrect a deleted item). This \
@@ -293,7 +302,8 @@ fn load_for_rmw(p: &Path) -> Option<OverlayDoc> {
             None
         }
         OverlayReadState::VersionTooNew(v) => {
-            tracing::error!(
+            diag_error!(
+                CONFIG_OVERLAY_VERSION_TOO_NEW_RMW,
                 path = %p.display(), overlay_version = v, understood = OVERLAY_VERSION,
                 "config overlay was written by a NEWER busbar; REFUSING to overwrite it — this \
                  binary cannot represent everything it holds, so a write would silently discard \
@@ -823,7 +833,8 @@ pub(crate) fn read(path: &Path) -> Option<OverlayDoc> {
             // who registered a gate via the API must not silently lose it to a corrupt overlay without a
             // diagnostic. (We still fail-soft on boot — a corrupt overlay must never brick startup — but
             // never silently.)
-            tracing::warn!(
+            diag_warn!(
+                CONFIG_OVERLAY_CORRUPT_BASE_ONLY,
                 path = %path.display(),
                 "config overlay is present but unreadable/corrupt; starting on base config.yaml ALONE \
                  — API-applied hooks (INCLUDING security GATES that enforce admission control), groups, \
@@ -836,7 +847,8 @@ pub(crate) fn read(path: &Path) -> Option<OverlayDoc> {
             // NOT the corrupt path: this overlay is intact and meaningful. Ignoring it would run
             // without hooks and groups the operator believes are persisted — security gates
             // included — so the boot caller refuses to start rather than silently disarming them.
-            tracing::error!(
+            diag_error!(
+                CONFIG_OVERLAY_VERSION_TOO_NEW,
                 path = %path.display(), overlay_version = v, understood = OVERLAY_VERSION,
                 "config overlay was written by a NEWER busbar than this one"
             );
@@ -1062,7 +1074,8 @@ pub(crate) fn apply_named_maps_to_deploy(deploy: &mut DeployCfg, doc: &OverlayDo
             // did not move: a patch is judged by the same structs `config.yaml` is, and a patch that
             // would produce an invalid entry is dropped WHOLE rather than half-applied.
             if let Err(e) = section.insert(deploy, name, &merged) {
-                tracing::error!(
+                diag_error!(
+                    CONFIG_OVERLAY_PATCH_UNPARSABLE,
                     section = section.key(), entry = %name, error = %e,
                     "config overlay holds a `{}` patch that does not produce a definition this \
                      binary can parse; it is NOT applied (edit or remove it, then reload)",

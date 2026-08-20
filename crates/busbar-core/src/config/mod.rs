@@ -25,6 +25,9 @@ pub(crate) use secret::SecretRef;
 
 // Re-export status_class_from_str for config validation
 pub(crate) use crate::breaker::status_class_from_str;
+use crate::diagnostics::{
+    diag_warn, CONFIG_ANTIDOWNGRADE_FLOOR_INVALID, CONFIG_FIRSTPARTY_FLOOR_INVALID,
+};
 use crate::proto::PROTO_ANTHROPIC;
 
 /// Reject an env-var value that could break out of the surrounding YAML scalar when substituted
@@ -3279,7 +3282,8 @@ impl PluginsCfg {
         // it is armed should not have to discover that from a missing `--list-plugins` row.
         for (name, floor) in &self.min_versions {
             if !floor.is_empty() && !busbar_plugin_sign::valid_semver(floor) {
-                tracing::warn!(
+                diag_warn!(
+                    CONFIG_ANTIDOWNGRADE_FLOOR_INVALID,
                     key = %format!("plugins.min_versions['{name}']"),
                     value = %floor,
                     "anti-downgrade floor is not a valid MAJOR.MINOR.PATCH version (no leading \
@@ -3290,7 +3294,8 @@ impl PluginsCfg {
         }
         for (name, floor) in &self.first_party_floors {
             if !floor.is_empty() && !busbar_plugin_sign::valid_semver(floor) {
-                tracing::warn!(
+                diag_warn!(
+                    CONFIG_FIRSTPARTY_FLOOR_INVALID,
                     key = %format!("plugins.first_party_floors['{name}']"),
                     value = %floor,
                     "anti-downgrade floor is not a valid MAJOR.MINOR.PATCH version (no leading \

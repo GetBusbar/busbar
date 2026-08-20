@@ -59,6 +59,8 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
+use crate::diagnostics::{diag_warn, TELEMETRY_SLOT_TABLE_FULL};
+
 use crate::state::{App, Lane, WeightedLane};
 
 // ── Capacity ─────────────────────────────────────────────────────────────────────────────────────
@@ -335,7 +337,8 @@ impl<H> SlotTable<H> {
             static WARNED: std::sync::atomic::AtomicBool =
                 std::sync::atomic::AtomicBool::new(false);
             if !WARNED.swap(true, Ordering::Relaxed) {
-                tracing::warn!(
+                diag_warn!(
+                    TELEMETRY_SLOT_TABLE_FULL,
                     metric = name,
                     cap = max,
                     "telemetry bank slot table full; further label sets fall back to the metrics macros"

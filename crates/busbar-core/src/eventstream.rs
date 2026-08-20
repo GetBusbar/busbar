@@ -43,6 +43,11 @@
 /// and `StreamTranslate::MAX_BUF` in sync.
 pub const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 
+use crate::diagnostics::{
+    diag_debug, EVENTSTREAM_EVENTTYPE_HEADER_OVERSIZE, EVENTSTREAM_EXCEPTIONTYPE_HEADER_OVERSIZE,
+    EVENTSTREAM_FRAME_OVERSIZE,
+};
+
 /// Outcome of a [`drain_frames_checked`] pass: WHY the decoder stopped pulling frames from the
 /// buffer. This is the DISTINCT abandonment signal the egress reassembler (`StreamTranslate::feed`)
 /// must key off — previously it inferred a malformed-prelude abort by observing that `drain_frames`
@@ -346,7 +351,8 @@ pub fn encode_frame(event_type: &str, payload: &[u8]) -> Vec<u8> {
         // but must be OBSERVABLE rather than a silent empty-Vec: log it so a dropped streaming frame
         // is diagnosable. `:event-type` is the only caller-supplied (and thus possibly oversized)
         // value, so name it; the other two are fixed literals well under the cap.
-        tracing::warn!(
+        diag_debug!(
+            EVENTSTREAM_EVENTTYPE_HEADER_OVERSIZE,
             event_type_len = event_type.len(),
             "event-stream :event-type header exceeds the type-7 string cap; dropping frame"
         );
@@ -377,7 +383,8 @@ pub(crate) fn encode_exception_frame(exception_type: &str, message: &str) -> Vec
     {
         // `:exception-type` is the caller-supplied value; an oversized one drops the frame. Log so a
         // dropped exception frame (a swallowed mid-stream error signal) is observable, not silent.
-        tracing::warn!(
+        diag_debug!(
+            EVENTSTREAM_EXCEPTIONTYPE_HEADER_OVERSIZE,
             exception_type_len = exception_type.len(),
             "event-stream :exception-type header exceeds the type-7 string cap; dropping frame"
         );
@@ -447,7 +454,8 @@ fn frame_close(mut frame: Vec<u8>, payload: &[u8]) -> Vec<u8> {
         // real Bedrock ConverseStream delta; this only guards a pathological multi-MiB single event.
         // Dropping a frame is graceful (the caller appends the empty result and emits nothing for
         // this event); a CRC-valid frame carrying truncated, unparseable JSON would be worse.
-        tracing::warn!(
+        diag_debug!(
+            EVENTSTREAM_FRAME_OVERSIZE,
             total_len,
             cap = MAX_FRAME_BYTES,
             "event-stream frame exceeds MAX_FRAME_BYTES; dropping"

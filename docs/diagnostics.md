@@ -61,6 +61,164 @@ A durable-chain sequence number is no longer in the in-memory ring (it was prune
 
 **What to do:** Recent entries remain in the in-memory ring, but the DURABLE log has a permanent gap at the named seq. Resolve the store outage that caused it; restore the durable store from a backup if the durable chain's completeness is required for compliance.
 
+## 2xxx — Audit chain
+
+<a id="audit-chain-verify-failed"></a>
+### BUSBAR-2001 — Durable audit chain failed hash-chain verification at boot (tamper evidence)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `audit-chain-verify-failed`
+
+The persisted durable audit log was read at boot but does NOT verify against its own hash chain, so busbar started with an empty in-memory ring rather than trust a log whose integrity is broken. This is distinct from a store read hiccup (BUSBAR-9001): the bytes were read and the chain does not add up, which is tamper evidence — the durable log was altered out from under busbar, or its store is corrupt.
+
+**What to do:** Treat the durable audit store as compromised until explained: capture it for forensic review before it is overwritten. A verification failure means someone or something rewrote persisted audit history; restore the store from a trusted backup once the cause is understood. The running node audits only to its ephemeral ring until a verifiable durable log is restored.
+
+## 3xxx — Config
+
+<a id="config-overlay-not-writable"></a>
+### BUSBAR-3001 — Config overlay backend is not writable (admin-API config mutations refused)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `config-overlay-not-writable`
+
+The config overlay backend is NOT writable at boot (typically the config directory is mounted read-only), so busbar starts WITHOUT a durable config overlay: it serves traffic normally, but every admin-API config mutation is refused, because a change that cannot be persisted would silently revert on restart.
+
+**What to do:** If a read-only config is intended, set `config.locked: true` to say so and silence this warning. If you want a mutable config, point `config.overlay.file` at a writable path (mount a writable volume and set e.g. `config.overlay.file: /var/lib/busbar/busbar-overlay.json`).
+
+<a id="config-overlay-probe-leak"></a>
+### BUSBAR-3002 — Overlay writability probe file could not be removed (may be left behind)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `config-overlay-probe-leak`
+
+After creating a temporary probe file to test overlay writability, busbar could not remove it. The probe name is pid-scoped, so a leaked probe is never reclaimed by a later boot and slowly accumulates stray files in the config directory. Minor, but surfaced rather than swallowed.
+
+**What to do:** Remove the leaked probe file(s) from the config directory and investigate why unlink failed there (permissions, a network filesystem without delete-on-close). Overlay writes still work; only the probe cleanup failed.
+
+<a id="config-overlay-corrupt-refuse-write"></a>
+### BUSBAR-3003 — Config overlay unreadable/corrupt on apply (refusing to overwrite)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `config-overlay-corrupt-refuse-write`
+
+An admin apply tried to read-modify-write the config overlay but found the existing overlay present yet unreadable/corrupt, so busbar REFUSED to overwrite it — a blind overwrite would drop the hook AND group deletion tombstones every section carries and could resurrect a deleted item. This apply was NOT persisted.
+
+**What to do:** Fix or remove the corrupt overlay file to restore durability, then re-apply. Until then admin config mutations cannot be persisted (they are refused, not silently lost).
+
+<a id="config-overlay-version-too-new-rmw"></a>
+### BUSBAR-3004 — Config overlay written by a newer busbar on apply (refusing to overwrite)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `config-overlay-version-too-new-rmw`
+
+An admin apply found the config overlay was written by a NEWER busbar than this binary, so busbar REFUSED to overwrite it: this binary cannot represent everything the newer overlay holds, and a write would silently discard whatever it does not understand. This apply was NOT persisted.
+
+**What to do:** Apply config mutations from a busbar at least as new as the one that wrote the overlay, or roll the overlay back to a version this binary understands. This binary serves on the overlay it can read but cannot persist changes to it.
+
+<a id="config-overlay-corrupt-base-only"></a>
+### BUSBAR-3005 — Config overlay corrupt at boot (starting on base config.yaml alone)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `config-overlay-corrupt-base-only`
+
+At boot the config overlay is present but unreadable/corrupt, so busbar fails soft and starts on the base config.yaml ALONE — API-applied hooks (INCLUDING security GATES that enforce admission control), groups, and plugin version pins are NOT restored. Any gate registered only via the admin API is now ABSENT until re-applied. busbar never bricks boot on a corrupt overlay, but it must not disarm those gates silently.
+
+**What to do:** Fix or remove the corrupt overlay file to restore durability, then restart so the API-applied hooks and gates are re-loaded. Until then, re-apply any admin-API gates the deployment depends on, or run on base config.yaml deliberately.
+
+<a id="config-overlay-version-too-new"></a>
+### BUSBAR-3006 — Config overlay written by a newer busbar (boot refuses to start)
+
+- **Severity:** fatal
+- **Since:** 1.6.0
+- **Slug:** `config-overlay-version-too-new`
+
+At boot the config overlay is intact and meaningful but was written by a NEWER busbar than this one. Ignoring it would run without hooks and groups the operator believes are persisted — security gates included — so the boot caller REFUSES to start rather than silently disarm them.
+
+**What to do:** Boot a busbar at least as new as the one that wrote the overlay, or roll the overlay back to a version this binary understands. This is a deliberate boot refusal, not a crash — resolve the version mismatch and restart.
+
+<a id="config-overlay-patch-unparsable"></a>
+### BUSBAR-3007 — Config overlay patch does not parse (entry not applied)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `config-overlay-patch-unparsable`
+
+The config overlay holds a named-map patch that, merged against base config, does not produce a definition this binary can parse (it faces the same typed `deny_unknown_fields` parse config.yaml does). busbar drops the entry WHOLE rather than half-apply it, so that named definition is never applied and sits inert in the overlay.
+
+**What to do:** Edit or remove the offending overlay entry (the log names the section and entry), then reload. The operator's stored data is untouched; the entry is simply not applied until it parses.
+
+<a id="config-antidowngrade-floor-invalid"></a>
+### BUSBAR-3008 — plugins.min_versions floor is not valid semver (anti-downgrade disarmed)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `config-antidowngrade-floor-invalid`
+
+A `plugins.min_versions` anti-downgrade floor is not a valid MAJOR.MINOR.PATCH version (e.g. a stray leading `v`). It cannot be satisfied, so the floored plugin is refused, and — more subtly — an operator who believes the anti-downgrade control is armed does not get the protection they configured.
+
+**What to do:** Fix or remove the named `plugins.min_versions` entry so the floor is a bare MAJOR.MINOR.PATCH version. Until then that plugin is refused and the anti-downgrade floor for it is effectively disarmed.
+
+<a id="config-firstparty-floor-invalid"></a>
+### BUSBAR-3009 — plugins.first_party_floors floor is not valid semver (plugin refused unconditionally)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `config-firstparty-floor-invalid`
+
+A `plugins.first_party_floors` floor is not a valid MAJOR.MINOR.PATCH version. It cannot be satisfied, and because a first-party floor REPLACES the binary-version floor, the named plugin is refused UNCONDITIONALLY until this is fixed — a stricter failure than an invalid `min_versions` floor.
+
+**What to do:** Fix or remove the named `plugins.first_party_floors` entry so the floor is a bare MAJOR.MINOR.PATCH version. Until then that first-party plugin is refused on every boot.
+
+<a id="config-pool-heterogeneous"></a>
+### BUSBAR-3010 — Heterogeneous pool (cross-protocol failover may not preserve all features)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `config-pool-heterogeneous`
+
+A pool's members span more than one upstream protocol, so cross-protocol failover within the pool translates requests and responses via busbar's internal representation (IR) and may not preserve every provider-specific feature. Advisory: the pool is valid and serves, but mixed protocols carry a fidelity caveat.
+
+**What to do:** None required if intentional. If a feature is being lost across failover, split the pool so each pool is single-protocol, keeping cross-protocol members in a fallback tier rather than the same failover pool.
+
+<a id="config-auth-chain-full-scope"></a>
+### BUSBAR-3011 — auth.chain entry grants max_admin_scope: full
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `config-auth-chain-full-scope`
+
+An auth chain entry sets `max_admin_scope: full`, so every principal identified by that module can hold FULL admin authority — the default ceiling is read-only. A security advisory: a compromised or over-broad identity source behind that module becomes an admin-authority source.
+
+**What to do:** Confirm the named module's chain is trusted end to end and that granting full admin to everyone it identifies is intended. Lower `max_admin_scope` (or scope the module's principals) if full admin is broader than needed.
+
+<a id="config-open-admin-mint"></a>
+### BUSBAR-3012 — auth.chain names `keys` with an empty admin_auth (anyone can mint virtual keys)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `config-open-admin-mint`
+
+The auth chain names the built-in `keys` verifier while `auth.admin_auth` is explicitly empty, so the admin API has no credential gating it — ANYONE can mint virtual keys through it. Acceptable only for local development.
+
+**What to do:** Configure `auth.admin_auth` (an `admin-tokens` entry with a `token:`, or an admin module granting `mint`/`full`) before exposing busbar's admin API to any untrusted network, so key minting is gated by an operator credential.
+
+<a id="config-passthrough-unused-apikey"></a>
+### BUSBAR-3013 — passthrough provider has a non-empty api_key that is never forwarded (inert config)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `config-passthrough-unused-apikey`
+
+A provider is configured with a NON-EMPTY api_key while `upstream_credentials` is `passthrough`, under which the upstream key is the caller's own token (or empty), so the configured api_key is NEVER forwarded — it is inert dead config. A legitimate Bedrock-ingress passthrough provider signs per-request via SigV4 and needs no static key, hence a warning rather than a hard reject.
+
+**What to do:** If you intended static-key gating, use `upstream_credentials: own` (plus an auth chain). Otherwise clear the referenced provider secret so the config reflects that no static key is used on that passthrough provider.
+
 ## 4xxx — Auth & identity
 
 <a id="token-exchange-mint-failed"></a>
@@ -760,6 +918,28 @@ During a reload, fetching a pinned plugin artifact missed (the source did not re
 
 **What to do:** Check the plugin source (registry/URL) and the pinned spec for the named artifact — a transient fetch miss self-heals on the next reload, a persistent one means the pin no longer resolves. busbar keeps serving the current artifact until a fetch succeeds.
 
+<a id="plugin-skipped-trust-policy"></a>
+### BUSBAR-6002 — Plugin present but NOT loaded (skipped by trust policy)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `plugin-skipped-trust-policy`
+
+A plugin artifact is present in the plugins directory but was NOT loaded because the configured trust policy skipped it (unsigned, an untrusted publisher, or a failed signature/floor check). busbar fails closed: an untrusted plugin is left inert rather than loaded. Emitted once per skipped plugin at boot.
+
+**What to do:** If the plugin should load, sign it with a trusted publisher key or add that publisher to `plugins.trust` (the log names the plugin, file, and reason). If the skip is intended, remove the artifact from the directory to silence the notice.
+
+<a id="plugin-loaded-unverified"></a>
+### BUSBAR-6003 — Plugin loaded UNVERIFIED (permitted by an explicit plugins.trust opt-in)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `plugin-loaded-unverified`
+
+A plugin was loaded even though its signature is UNVERIFIED — its code is running unauthenticated, permitted only because an explicit `plugins.trust` opt-in (`allow_unsigned`/`allow_third_party`) let it through. Security-relevant: unverified plugin code runs in-process with busbar's privileges. Emitted once per such plugin at boot.
+
+**What to do:** Prefer a signed artifact from a trusted publisher and remove the `plugins.trust` opt-in once you no longer need it. If running unverified is a deliberate, understood choice (e.g. a locally-built plugin), the opt-in is what keeps it explicit.
+
 ## 8xxx — Governance & cost
 
 <a id="revocation-resync-outstanding"></a>
@@ -948,4 +1128,72 @@ busbar selected the in-memory (ephemeral) governance store, so virtual keys, gro
 A durable governance store holds virtual keys, but the running auth chain does not include the `keys` verifier, so those keys enforce nothing — every request bypasses key-based governance. Emitted at ERROR (not warn, which RUST_LOG=error would suppress) and unconditionally on stderr, the same pattern as the open-relay banner, so the inert state cannot be masked by log configuration.
 
 **What to do:** Add `keys` to `auth.chain` so the durable keys actually gate traffic, or remove the keys if key-based governance is not intended. Until then, minted keys are dead weight.
+
+## 9xxx — Boot & lifecycle
+
+<a id="boot-audit-restore-read-failed"></a>
+### BUSBAR-9001 — Durable audit log could not be read at boot (starting with an empty ring)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `boot-audit-restore-read-failed`
+
+busbar could not READ the durable audit log from the governance store at boot — a store hiccup, not a chain-verification failure — so it started with an empty in-memory audit ring. This is deliberately distinct from BUSBAR-2001 (chain verification failed): here the bytes could not be read at all, so there is no tamper signal, just a store that did not answer.
+
+**What to do:** Investigate the governance store's reachability at boot. If the store recovers, restart so the durable history is restored into the ring; a transient hiccup needs no action beyond confirming the store is healthy.
+
+<a id="tls-accept-persistent-failure"></a>
+### BUSBAR-9002 — TLS accept loop failing persistently (backing off)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `tls-accept-persistent-failure`
+
+The TLS listener's accept loop is failing persistently — commonly file-descriptor exhaustion — so busbar backs off before retrying rather than spin hot on the error. The warning is already rate-limited by the backoff delay, so it fires at a human cadence, not per failed accept.
+
+**What to do:** Investigate the accept failure — most often the process fd limit (raise `ulimit -n` / the systemd `LimitNOFILE`) or a resource leak holding sockets open. The listener keeps retrying with backoff and recovers on its own once accepts succeed.
+
+<a id="telemetry-slot-table-full"></a>
+### BUSBAR-9003 — Telemetry slot table full (further label sets fall back to the metrics macros)
+
+- **Severity:** benign_recurring
+- **Since:** 1.6.0
+- **Slug:** `telemetry-slot-table-full`
+
+The telemetry bank's pre-registered slot table reached its cap, so further label sets fall back to the ordinary metrics macros instead of a reserved slot — correct, just slower on that path. Warned ONCE per table (a latch), never per registration, so it cannot spam.
+
+**What to do:** None — self-heals; the fallback path is correct. If a deployment legitimately needs more distinct label sets than the slot cap, that cap is a build-time bound; the metrics remain accurate via the fallback in the meantime.
+
+<a id="eventstream-eventtype-header-oversize"></a>
+### BUSBAR-9004 — Event-stream :event-type header exceeds the string cap (frame dropped)
+
+- **Severity:** benign_recurring
+- **Since:** 1.6.0
+- **Slug:** `eventstream-eventtype-header-oversize`
+
+An event-stream `:event-type` header exceeded the AWS type-7 string cap, so busbar dropped the frame rather than emit a malformed one. This is unreachable for any real Bedrock event name (the only caller-supplied value on the frame); it guards the data path and fires per-frame, so it is emitted at debug.
+
+**What to do:** None — self-heals per frame; a real Bedrock event name never trips it. Sustained occurrence would mean a caller is supplying an over-long event-type, worth checking the ingress path.
+
+<a id="eventstream-exceptiontype-header-oversize"></a>
+### BUSBAR-9005 — Event-stream :exception-type header exceeds the string cap (frame dropped)
+
+- **Severity:** benign_recurring
+- **Since:** 1.6.0
+- **Slug:** `eventstream-exceptiontype-header-oversize`
+
+An event-stream `:exception-type` header exceeded the AWS type-7 string cap, so busbar dropped the exception frame — a swallowed mid-stream error signal — rather than emit a malformed one. It fires per-frame on the streaming data path and is near-unreachable for a real exception type, so it is emitted at debug.
+
+**What to do:** None — self-heals per frame. If it recurs, an upstream mid-stream error carried an over-long exception-type name; check the egress dialect mapping for that upstream.
+
+<a id="eventstream-frame-oversize"></a>
+### BUSBAR-9006 — Event-stream frame exceeds MAX_FRAME_BYTES (frame dropped)
+
+- **Severity:** benign_recurring
+- **Since:** 1.6.0
+- **Slug:** `eventstream-frame-oversize`
+
+An event-stream frame's total size exceeded MAX_FRAME_BYTES, so busbar dropped it rather than byte-truncate the payload (a truncated JSON body is worse for a native SDK than no frame). Unreachable for any real Bedrock ConverseStream delta; it only guards a pathological multi-MiB single event and fires per-frame, so it is emitted at debug.
+
+**What to do:** None — self-heals per frame; dropping is graceful (nothing is emitted for that event). Sustained occurrence would indicate an upstream emitting abnormally large single events, worth investigating that lane.
 

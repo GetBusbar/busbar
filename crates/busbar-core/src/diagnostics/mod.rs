@@ -268,6 +268,275 @@ pub const DURABLE_AUDIT_BACKFILL_GAP: Diagnostic = Diagnostic {
     retired: false,
 };
 
+// ── 2000 — Audit chain ────────────────────────────────────────────────────────────────────────
+
+/// The durable audit log failed hash-chain verification at boot — tamper evidence, not a read hiccup.
+/// Lives in `boot.rs`, but the subject is the audit chain's integrity, so it is a 2000 code.
+pub const AUDIT_CHAIN_VERIFY_FAILED: Diagnostic = Diagnostic {
+    code: 2001,
+    class: Class::Audit,
+    slug: "audit-chain-verify-failed",
+    title: "Durable audit chain failed hash-chain verification at boot (tamper evidence)",
+    severity: Severity::Actionable,
+    summary:
+        "The persisted durable audit log was read at boot but does NOT verify against its own \
+              hash chain, so busbar started with an empty in-memory ring rather than trust a log \
+              whose integrity is broken. This is distinct from a store read hiccup (BUSBAR-9001): \
+              the bytes were read and the chain does not add up, which is tamper evidence — the \
+              durable log was altered out from under busbar, or its store is corrupt.",
+    action:
+        "Treat the durable audit store as compromised until explained: capture it for forensic \
+             review before it is overwritten. A verification failure means someone or something \
+             rewrote persisted audit history; restore the store from a trusted backup once the \
+             cause is understood. The running node audits only to its ephemeral ring until a \
+             verifiable durable log is restored.",
+    since: "1.6.0",
+    retired: false,
+};
+
+// ── 3000 — Config ─────────────────────────────────────────────────────────────────────────────
+
+/// The config overlay backend is not writable at boot; busbar serves but refuses config mutations.
+pub const CONFIG_OVERLAY_NOT_WRITABLE: Diagnostic = Diagnostic {
+    code: 3001,
+    class: Class::Config,
+    slug: "config-overlay-not-writable",
+    title: "Config overlay backend is not writable (admin-API config mutations refused)",
+    severity: Severity::Actionable,
+    summary:
+        "The config overlay backend is NOT writable at boot (typically the config directory is \
+              mounted read-only), so busbar starts WITHOUT a durable config overlay: it serves \
+              traffic normally, but every admin-API config mutation is refused, because a change \
+              that cannot be persisted would silently revert on restart.",
+    action:
+        "If a read-only config is intended, set `config.locked: true` to say so and silence this \
+             warning. If you want a mutable config, point `config.overlay.file` at a writable path \
+             (mount a writable volume and set e.g. `config.overlay.file: \
+             /var/lib/busbar/busbar-overlay.json`).",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// The overlay writability probe file could not be removed after being created; it may leak.
+pub const CONFIG_OVERLAY_PROBE_LEAK: Diagnostic = Diagnostic {
+    code: 3002,
+    class: Class::Config,
+    slug: "config-overlay-probe-leak",
+    title: "Overlay writability probe file could not be removed (may be left behind)",
+    severity: Severity::Actionable,
+    summary: "After creating a temporary probe file to test overlay writability, busbar could not \
+              remove it. The probe name is pid-scoped, so a leaked probe is never reclaimed by a \
+              later boot and slowly accumulates stray files in the config directory. Minor, but \
+              surfaced rather than swallowed.",
+    action: "Remove the leaked probe file(s) from the config directory and investigate why unlink \
+             failed there (permissions, a network filesystem without delete-on-close). Overlay \
+             writes still work; only the probe cleanup failed.",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// A read-modify-write apply found the overlay unreadable/corrupt; refuses to overwrite it.
+pub const CONFIG_OVERLAY_CORRUPT_REFUSE_WRITE: Diagnostic = Diagnostic {
+    code: 3003,
+    class: Class::Config,
+    slug: "config-overlay-corrupt-refuse-write",
+    title: "Config overlay unreadable/corrupt on apply (refusing to overwrite)",
+    severity: Severity::Actionable,
+    summary: "An admin apply tried to read-modify-write the config overlay but found the existing \
+              overlay present yet unreadable/corrupt, so busbar REFUSED to overwrite it — a blind \
+              overwrite would drop the hook AND group deletion tombstones every section carries and \
+              could resurrect a deleted item. This apply was NOT persisted.",
+    action: "Fix or remove the corrupt overlay file to restore durability, then re-apply. Until then \
+             admin config mutations cannot be persisted (they are refused, not silently lost).",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// A read-modify-write apply found the overlay written by a NEWER busbar; refuses to overwrite it.
+pub const CONFIG_OVERLAY_VERSION_TOO_NEW_RMW: Diagnostic = Diagnostic {
+    code: 3004,
+    class: Class::Config,
+    slug: "config-overlay-version-too-new-rmw",
+    title: "Config overlay written by a newer busbar on apply (refusing to overwrite)",
+    severity: Severity::Actionable,
+    summary: "An admin apply found the config overlay was written by a NEWER busbar than this \
+              binary, so busbar REFUSED to overwrite it: this binary cannot represent everything the \
+              newer overlay holds, and a write would silently discard whatever it does not \
+              understand. This apply was NOT persisted.",
+    action: "Apply config mutations from a busbar at least as new as the one that wrote the overlay, \
+             or roll the overlay back to a version this binary understands. This binary serves on \
+             the overlay it can read but cannot persist changes to it.",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// At boot the overlay is present but corrupt; busbar starts on base config.yaml alone.
+pub const CONFIG_OVERLAY_CORRUPT_BASE_ONLY: Diagnostic = Diagnostic {
+    code: 3005,
+    class: Class::Config,
+    slug: "config-overlay-corrupt-base-only",
+    title: "Config overlay corrupt at boot (starting on base config.yaml alone)",
+    severity: Severity::Actionable,
+    summary: "At boot the config overlay is present but unreadable/corrupt, so busbar fails soft and \
+              starts on the base config.yaml ALONE — API-applied hooks (INCLUDING security GATES \
+              that enforce admission control), groups, and plugin version pins are NOT restored. Any \
+              gate registered only via the admin API is now ABSENT until re-applied. busbar never \
+              bricks boot on a corrupt overlay, but it must not disarm those gates silently.",
+    action: "Fix or remove the corrupt overlay file to restore durability, then restart so the \
+             API-applied hooks and gates are re-loaded. Until then, re-apply any admin-API gates the \
+             deployment depends on, or run on base config.yaml deliberately.",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// At boot the overlay was written by a NEWER busbar; the boot caller refuses to start (fatal).
+pub const CONFIG_OVERLAY_VERSION_TOO_NEW: Diagnostic = Diagnostic {
+    code: 3006,
+    class: Class::Config,
+    slug: "config-overlay-version-too-new",
+    title: "Config overlay written by a newer busbar (boot refuses to start)",
+    severity: Severity::Fatal,
+    summary:
+        "At boot the config overlay is intact and meaningful but was written by a NEWER busbar \
+              than this one. Ignoring it would run without hooks and groups the operator believes \
+              are persisted — security gates included — so the boot caller REFUSES to start rather \
+              than silently disarm them.",
+    action: "Boot a busbar at least as new as the one that wrote the overlay, or roll the overlay \
+             back to a version this binary understands. This is a deliberate boot refusal, not a \
+             crash — resolve the version mismatch and restart.",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// An overlay patch does not parse against this binary's structs; the entry is dropped whole.
+pub const CONFIG_OVERLAY_PATCH_UNPARSABLE: Diagnostic = Diagnostic {
+    code: 3007,
+    class: Class::Config,
+    slug: "config-overlay-patch-unparsable",
+    title: "Config overlay patch does not parse (entry not applied)",
+    severity: Severity::Actionable,
+    summary: "The config overlay holds a named-map patch that, merged against base config, does not \
+              produce a definition this binary can parse (it faces the same typed \
+              `deny_unknown_fields` parse config.yaml does). busbar drops the entry WHOLE rather \
+              than half-apply it, so that named definition is never applied and sits inert in the \
+              overlay.",
+    action: "Edit or remove the offending overlay entry (the log names the section and entry), then \
+             reload. The operator's stored data is untouched; the entry is simply not applied until \
+             it parses.",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// A plugins.min_versions anti-downgrade floor is not valid semver; the control is disarmed.
+pub const CONFIG_ANTIDOWNGRADE_FLOOR_INVALID: Diagnostic = Diagnostic {
+    code: 3008,
+    class: Class::Config,
+    slug: "config-antidowngrade-floor-invalid",
+    title: "plugins.min_versions floor is not valid semver (anti-downgrade disarmed)",
+    severity: Severity::Actionable,
+    summary: "A `plugins.min_versions` anti-downgrade floor is not a valid MAJOR.MINOR.PATCH version \
+              (e.g. a stray leading `v`). It cannot be satisfied, so the floored plugin is refused, \
+              and — more subtly — an operator who believes the anti-downgrade control is armed does \
+              not get the protection they configured.",
+    action: "Fix or remove the named `plugins.min_versions` entry so the floor is a bare \
+             MAJOR.MINOR.PATCH version. Until then that plugin is refused and the anti-downgrade \
+             floor for it is effectively disarmed.",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// A plugins.first_party_floors floor is not valid semver; the plugin is refused unconditionally.
+pub const CONFIG_FIRSTPARTY_FLOOR_INVALID: Diagnostic = Diagnostic {
+    code: 3009,
+    class: Class::Config,
+    slug: "config-firstparty-floor-invalid",
+    title: "plugins.first_party_floors floor is not valid semver (plugin refused unconditionally)",
+    severity: Severity::Actionable,
+    summary: "A `plugins.first_party_floors` floor is not a valid MAJOR.MINOR.PATCH version. It \
+              cannot be satisfied, and because a first-party floor REPLACES the binary-version floor, \
+              the named plugin is refused UNCONDITIONALLY until this is fixed — a stricter failure \
+              than an invalid `min_versions` floor.",
+    action: "Fix or remove the named `plugins.first_party_floors` entry so the floor is a bare \
+             MAJOR.MINOR.PATCH version. Until then that first-party plugin is refused on every boot.",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// A pool mixes upstream protocols; cross-protocol failover translates via the IR and may lose features.
+pub const CONFIG_POOL_HETEROGENEOUS: Diagnostic = Diagnostic {
+    code: 3010,
+    class: Class::Config,
+    slug: "config-pool-heterogeneous",
+    title: "Heterogeneous pool (cross-protocol failover may not preserve all features)",
+    severity: Severity::Actionable,
+    summary: "A pool's members span more than one upstream protocol, so cross-protocol failover \
+              within the pool translates requests and responses via busbar's internal representation \
+              (IR) and may not preserve every provider-specific feature. Advisory: the pool is valid \
+              and serves, but mixed protocols carry a fidelity caveat.",
+    action: "None required if intentional. If a feature is being lost across failover, split the \
+             pool so each pool is single-protocol, keeping cross-protocol members in a fallback tier \
+             rather than the same failover pool.",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// An auth chain entry grants max_admin_scope: full — principals it identifies hold full admin.
+pub const CONFIG_AUTH_CHAIN_FULL_SCOPE: Diagnostic = Diagnostic {
+    code: 3011,
+    class: Class::Config,
+    slug: "config-auth-chain-full-scope",
+    title: "auth.chain entry grants max_admin_scope: full",
+    severity: Severity::Actionable,
+    summary:
+        "An auth chain entry sets `max_admin_scope: full`, so every principal identified by that \
+              module can hold FULL admin authority — the default ceiling is read-only. A security \
+              advisory: a compromised or over-broad identity source behind that module becomes an \
+              admin-authority source.",
+    action:
+        "Confirm the named module's chain is trusted end to end and that granting full admin to \
+             everyone it identifies is intended. Lower `max_admin_scope` (or scope the module's \
+             principals) if full admin is broader than needed.",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// auth.chain names `keys` and auth.admin_auth is explicitly empty — anyone can mint keys.
+pub const CONFIG_OPEN_ADMIN_MINT: Diagnostic = Diagnostic {
+    code: 3012,
+    class: Class::Config,
+    slug: "config-open-admin-mint",
+    title: "auth.chain names `keys` with an empty admin_auth (anyone can mint virtual keys)",
+    severity: Severity::Actionable,
+    summary:
+        "The auth chain names the built-in `keys` verifier while `auth.admin_auth` is explicitly \
+              empty, so the admin API has no credential gating it — ANYONE can mint virtual keys \
+              through it. Acceptable only for local development.",
+    action: "Configure `auth.admin_auth` (an `admin-tokens` entry with a `token:`, or an admin \
+             module granting `mint`/`full`) before exposing busbar's admin API to any untrusted \
+             network, so key minting is gated by an operator credential.",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// upstream_credentials: passthrough with a non-empty configured api_key on a provider; key is inert.
+pub const CONFIG_PASSTHROUGH_UNUSED_APIKEY: Diagnostic = Diagnostic {
+    code: 3013,
+    class: Class::Config,
+    slug: "config-passthrough-unused-apikey",
+    title: "passthrough provider has a non-empty api_key that is never forwarded (inert config)",
+    severity: Severity::Actionable,
+    summary: "A provider is configured with a NON-EMPTY api_key while `upstream_credentials` is \
+              `passthrough`, under which the upstream key is the caller's own token (or empty), so \
+              the configured api_key is NEVER forwarded — it is inert dead config. A legitimate \
+              Bedrock-ingress passthrough provider signs per-request via SigV4 and needs no static \
+              key, hence a warning rather than a hard reject.",
+    action: "If you intended static-key gating, use `upstream_credentials: own` (plus an auth \
+             chain). Otherwise clear the referenced provider secret so the config reflects that no \
+             static key is used on that passthrough provider.",
+    since: "1.6.0",
+    retired: false,
+};
+
 // ── 4000 — Auth & identity ──────────────────────────────────────────────────────────────────────
 
 /// Token-exchange could not mint a self-serve key — a keystore/HMAC fault, not a client error.
@@ -1350,6 +1619,45 @@ pub const PLUGINS_FETCH_RELOAD_MISS: Diagnostic = Diagnostic {
     retired: false,
 };
 
+/// A plugin is present in the directory but not loaded because the trust policy skips it.
+/// Lives in `preflight.rs`, but the subject is plugin trust, so it is a 6000 code.
+pub const PLUGIN_SKIPPED_TRUST_POLICY: Diagnostic = Diagnostic {
+    code: 6002,
+    class: Class::Plugins,
+    slug: "plugin-skipped-trust-policy",
+    title: "Plugin present but NOT loaded (skipped by trust policy)",
+    severity: Severity::Actionable,
+    summary: "A plugin artifact is present in the plugins directory but was NOT loaded because the \
+              configured trust policy skipped it (unsigned, an untrusted publisher, or a failed \
+              signature/floor check). busbar fails closed: an untrusted plugin is left inert rather \
+              than loaded. Emitted once per skipped plugin at boot.",
+    action: "If the plugin should load, sign it with a trusted publisher key or add that publisher \
+             to `plugins.trust` (the log names the plugin, file, and reason). If the skip is \
+             intended, remove the artifact from the directory to silence the notice.",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// A plugin was loaded but its signature is UNVERIFIED, permitted by an explicit plugins.trust opt-in.
+/// Lives in `preflight.rs`, but the subject is plugin trust, so it is a 6000 code.
+pub const PLUGIN_LOADED_UNVERIFIED: Diagnostic = Diagnostic {
+    code: 6003,
+    class: Class::Plugins,
+    slug: "plugin-loaded-unverified",
+    title: "Plugin loaded UNVERIFIED (permitted by an explicit plugins.trust opt-in)",
+    severity: Severity::Actionable,
+    summary: "A plugin was loaded even though its signature is UNVERIFIED — its code is running \
+              unauthenticated, permitted only because an explicit `plugins.trust` opt-in \
+              (`allow_unsigned`/`allow_third_party`) let it through. Security-relevant: unverified \
+              plugin code runs in-process with busbar's privileges. Emitted once per such plugin at \
+              boot.",
+    action: "Prefer a signed artifact from a trusted publisher and remove the `plugins.trust` \
+             opt-in once you no longer need it. If running unverified is a deliberate, understood \
+             choice (e.g. a locally-built plugin), the opt-in is what keeps it explicit.",
+    since: "1.6.0",
+    retired: false,
+};
+
 // ── 8000 — Governance & cost ────────────────────────────────────────────────────────────────────
 
 /// A revocation denylist re-sync is still outstanding from an earlier window; store hasn't answered.
@@ -1664,6 +1972,116 @@ pub const DURABLE_KEYS_INERT: Diagnostic = Diagnostic {
     retired: false,
 };
 
+// ── 9000 — Boot & lifecycle ─────────────────────────────────────────────────────────────────────
+
+/// The durable audit log could not be READ at boot (a store hiccup); busbar starts on an empty ring.
+pub const BOOT_AUDIT_RESTORE_READ_FAILED: Diagnostic = Diagnostic {
+    code: 9001,
+    class: Class::Boot,
+    slug: "boot-audit-restore-read-failed",
+    title: "Durable audit log could not be read at boot (starting with an empty ring)",
+    severity: Severity::Actionable,
+    summary: "busbar could not READ the durable audit log from the governance store at boot — a \
+              store hiccup, not a chain-verification failure — so it started with an empty in-memory \
+              audit ring. This is deliberately distinct from BUSBAR-2001 (chain verification \
+              failed): here the bytes could not be read at all, so there is no tamper signal, just a \
+              store that did not answer.",
+    action: "Investigate the governance store's reachability at boot. If the store recovers, restart \
+             so the durable history is restored into the ring; a transient hiccup needs no action \
+             beyond confirming the store is healthy.",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// The TLS accept loop is failing persistently (fd exhaustion?); busbar backs off. Backoff-latched.
+pub const TLS_ACCEPT_PERSISTENT_FAILURE: Diagnostic = Diagnostic {
+    code: 9002,
+    class: Class::Boot,
+    slug: "tls-accept-persistent-failure",
+    title: "TLS accept loop failing persistently (backing off)",
+    severity: Severity::Actionable,
+    summary: "The TLS listener's accept loop is failing persistently — commonly file-descriptor \
+              exhaustion — so busbar backs off before retrying rather than spin hot on the error. \
+              The warning is already rate-limited by the backoff delay, so it fires at a human \
+              cadence, not per failed accept.",
+    action: "Investigate the accept failure — most often the process fd limit (raise `ulimit -n` / \
+             the systemd `LimitNOFILE`) or a resource leak holding sockets open. The listener keeps \
+             retrying with backoff and recovers on its own once accepts succeed.",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// The telemetry bank's slot table is full; further label sets fall back to the metrics macros. Warn-once.
+pub const TELEMETRY_SLOT_TABLE_FULL: Diagnostic = Diagnostic {
+    code: 9003,
+    class: Class::Boot,
+    slug: "telemetry-slot-table-full",
+    title: "Telemetry slot table full (further label sets fall back to the metrics macros)",
+    severity: Severity::BenignRecurring,
+    summary: "The telemetry bank's pre-registered slot table reached its cap, so further label sets \
+              fall back to the ordinary metrics macros instead of a reserved slot — correct, just \
+              slower on that path. Warned ONCE per table (a latch), never per registration, so it \
+              cannot spam.",
+    action: "None — self-heals; the fallback path is correct. If a deployment legitimately needs \
+             more distinct label sets than the slot cap, that cap is a build-time bound; the metrics \
+             remain accurate via the fallback in the meantime.",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// An oversized `:event-type` header dropped an event-stream frame. Per-request data path; debug.
+pub const EVENTSTREAM_EVENTTYPE_HEADER_OVERSIZE: Diagnostic = Diagnostic {
+    code: 9004,
+    class: Class::Boot,
+    slug: "eventstream-eventtype-header-oversize",
+    title: "Event-stream :event-type header exceeds the string cap (frame dropped)",
+    severity: Severity::BenignRecurring,
+    summary: "An event-stream `:event-type` header exceeded the AWS type-7 string cap, so busbar \
+              dropped the frame rather than emit a malformed one. This is unreachable for any real \
+              Bedrock event name (the only caller-supplied value on the frame); it guards the data \
+              path and fires per-frame, so it is emitted at debug.",
+    action: "None — self-heals per frame; a real Bedrock event name never trips it. Sustained \
+             occurrence would mean a caller is supplying an over-long event-type, worth checking the \
+             ingress path.",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// An oversized `:exception-type` header dropped an event-stream exception frame. Per-request; debug.
+pub const EVENTSTREAM_EXCEPTIONTYPE_HEADER_OVERSIZE: Diagnostic = Diagnostic {
+    code: 9005,
+    class: Class::Boot,
+    slug: "eventstream-exceptiontype-header-oversize",
+    title: "Event-stream :exception-type header exceeds the string cap (frame dropped)",
+    severity: Severity::BenignRecurring,
+    summary: "An event-stream `:exception-type` header exceeded the AWS type-7 string cap, so busbar \
+              dropped the exception frame — a swallowed mid-stream error signal — rather than emit a \
+              malformed one. It fires per-frame on the streaming data path and is near-unreachable \
+              for a real exception type, so it is emitted at debug.",
+    action: "None — self-heals per frame. If it recurs, an upstream mid-stream error carried an \
+             over-long exception-type name; check the egress dialect mapping for that upstream.",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// An event-stream frame exceeded MAX_FRAME_BYTES; busbar drops it rather than truncate. Per-request; debug.
+pub const EVENTSTREAM_FRAME_OVERSIZE: Diagnostic = Diagnostic {
+    code: 9006,
+    class: Class::Boot,
+    slug: "eventstream-frame-oversize",
+    title: "Event-stream frame exceeds MAX_FRAME_BYTES (frame dropped)",
+    severity: Severity::BenignRecurring,
+    summary: "An event-stream frame's total size exceeded MAX_FRAME_BYTES, so busbar dropped it \
+              rather than byte-truncate the payload (a truncated JSON body is worse for a native SDK \
+              than no frame). Unreachable for any real Bedrock ConverseStream delta; it only guards \
+              a pathological multi-MiB single event and fires per-frame, so it is emitted at debug.",
+    action: "None — self-heals per frame; dropping is graceful (nothing is emitted for that event). \
+             Sustained occurrence would indicate an upstream emitting abnormally large single \
+             events, worth investigating that lane.",
+    since: "1.6.0",
+    retired: false,
+};
+
 /// EVERY diagnostic, in ascending code order. The tests assert uniqueness and class alignment.
 pub static REGISTRY: &[&Diagnostic] = &[
     &DURABLE_WRITETHROUGH_BELOW_FLOOR,
@@ -1671,6 +2089,20 @@ pub static REGISTRY: &[&Diagnostic] = &[
     &DURABLE_AUDIT_RING_UNRECONCILED,
     &DURABLE_AUDIT_WRITETHROUGH_FAILED,
     &DURABLE_AUDIT_BACKFILL_GAP,
+    &AUDIT_CHAIN_VERIFY_FAILED,
+    &CONFIG_OVERLAY_NOT_WRITABLE,
+    &CONFIG_OVERLAY_PROBE_LEAK,
+    &CONFIG_OVERLAY_CORRUPT_REFUSE_WRITE,
+    &CONFIG_OVERLAY_VERSION_TOO_NEW_RMW,
+    &CONFIG_OVERLAY_CORRUPT_BASE_ONLY,
+    &CONFIG_OVERLAY_VERSION_TOO_NEW,
+    &CONFIG_OVERLAY_PATCH_UNPARSABLE,
+    &CONFIG_ANTIDOWNGRADE_FLOOR_INVALID,
+    &CONFIG_FIRSTPARTY_FLOOR_INVALID,
+    &CONFIG_POOL_HETEROGENEOUS,
+    &CONFIG_AUTH_CHAIN_FULL_SCOPE,
+    &CONFIG_OPEN_ADMIN_MINT,
+    &CONFIG_PASSTHROUGH_UNUSED_APIKEY,
     &TOKEN_EXCHANGE_MINT_FAILED,
     &LOGIN_OFFLOAD_SATURATED,
     &LOGIN_PLUGIN_PANICKED,
@@ -1734,6 +2166,8 @@ pub static REGISTRY: &[&Diagnostic] = &[
     &METRICS_SCRAPE_KEY_USAGE_READ_FAILED,
     &METRICS_SCRAPE_GROUP_LEDGER_READ_FAILED,
     &PLUGINS_FETCH_RELOAD_MISS,
+    &PLUGIN_SKIPPED_TRUST_POLICY,
+    &PLUGIN_LOADED_UNVERIFIED,
     &REVOCATION_RESYNC_OUTSTANDING,
     &REVOCATION_RESYNC_FAILED,
     &GOVERNANCE_KEY_RESERVED_NAMESPACE_COLLISION,
@@ -1751,6 +2185,12 @@ pub static REGISTRY: &[&Diagnostic] = &[
     &STORE_SECRET_REF_UNRESOLVED,
     &GOVERNANCE_STORE_EPHEMERAL,
     &DURABLE_KEYS_INERT,
+    &BOOT_AUDIT_RESTORE_READ_FAILED,
+    &TLS_ACCEPT_PERSISTENT_FAILURE,
+    &TELEMETRY_SLOT_TABLE_FULL,
+    &EVENTSTREAM_EVENTTYPE_HEADER_OVERSIZE,
+    &EVENTSTREAM_EXCEPTIONTYPE_HEADER_OVERSIZE,
+    &EVENTSTREAM_FRAME_OVERSIZE,
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
