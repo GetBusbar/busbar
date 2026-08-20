@@ -1,5 +1,10 @@
 use super::*;
 
+use crate::diagnostics::{
+    diag_debug, diag_warn, BREAKER_UNEXPECTED_STATE_CLASSIFY, BREAKER_UNEXPECTED_STATE_PROBE,
+    BREAKER_UNEXPECTED_STATE_READ, BREAKER_UNEXPECTED_STATE_RECORD_FAILURE,
+};
+
 /// Bounded sliding window of recent request outcomes, each tagged success/error, used to compute
 /// the error-rate trip signal. Backed by a `VecDeque` so dropping the oldest entry at capacity is
 /// O(1). Memory is bounded by `capacity`.
@@ -239,10 +244,24 @@ pub(crate) fn breaker_verdict(c: &dyn BreakerCellAccess, now: u64) -> BreakerVer
         }
         ST_HALF_OPEN => BreakerVerdict::HalfOpen,
         other => {
-            tracing::error!(
-                state = other,
-                "unexpected breaker state; treating cell as Open (deny admission)"
-            );
+            // Warn-once latch: this "impossible" (atomic-sentinel invariant) state is on the
+            // request path, so an unlatched warn would spam if the invariant ever broke. Warn once
+            // per process on first sighting; hold subsequent sightings at debug.
+            static WARNED: std::sync::atomic::AtomicBool =
+                std::sync::atomic::AtomicBool::new(false);
+            if !WARNED.swap(true, Ordering::Relaxed) {
+                diag_warn!(
+                    BREAKER_UNEXPECTED_STATE_CLASSIFY,
+                    state = other,
+                    "unexpected breaker state; treating cell as Open (deny admission)"
+                );
+            } else {
+                diag_debug!(
+                    BREAKER_UNEXPECTED_STATE_CLASSIFY,
+                    state = other,
+                    "unexpected breaker state; treating cell as Open (deny admission)"
+                );
+            }
             // Fail SAFE: never-elapsing Open so both `classify` and `try_admit` deny admission.
             BreakerVerdict::Open { until: u64::MAX }
         }
@@ -630,10 +649,22 @@ impl HealthState {
             // than `unreachable!()`-panicking the dispatching task. Not reachable under today's
             // atomic-sentinel invariant; this only guards a future/corrupt encoding gracefully.
             other => {
-                tracing::error!(
-                    state = other,
-                    "unexpected breaker state; refusing probe acquisition"
-                );
+                // Warn-once latch (request path; impossible under the atomic-sentinel invariant).
+                static WARNED: std::sync::atomic::AtomicBool =
+                    std::sync::atomic::AtomicBool::new(false);
+                if !WARNED.swap(true, Ordering::Relaxed) {
+                    diag_warn!(
+                        BREAKER_UNEXPECTED_STATE_PROBE,
+                        state = other,
+                        "unexpected breaker state; refusing probe acquisition"
+                    );
+                } else {
+                    diag_debug!(
+                        BREAKER_UNEXPECTED_STATE_PROBE,
+                        state = other,
+                        "unexpected breaker state; refusing probe acquisition"
+                    );
+                }
                 false
             }
         }
@@ -651,7 +682,22 @@ impl HealthState {
             // Not reachable under the atomic-sentinel invariant; report the benign Closed default
             // rather than panic, keeping this read total and side-effect-free for any encoding.
             other => {
-                tracing::error!(state = other, "unexpected breaker state; reporting Closed");
+                // Warn-once latch (total, side-effect-free read; impossible under the invariant).
+                static WARNED: std::sync::atomic::AtomicBool =
+                    std::sync::atomic::AtomicBool::new(false);
+                if !WARNED.swap(true, Ordering::Relaxed) {
+                    diag_warn!(
+                        BREAKER_UNEXPECTED_STATE_READ,
+                        state = other,
+                        "unexpected breaker state; reporting Closed"
+                    );
+                } else {
+                    diag_debug!(
+                        BREAKER_UNEXPECTED_STATE_READ,
+                        state = other,
+                        "unexpected breaker state; reporting Closed"
+                    );
+                }
                 BreakerState::Closed
             }
         }
@@ -762,10 +808,22 @@ impl HealthState {
             // (like the already-Open case) rather than `unreachable!()`-panicking the task. Not
             // reachable under the atomic-sentinel invariant; this is the graceful backstop.
             other => {
-                tracing::error!(
-                    state = other,
-                    "unexpected breaker state in record_failure; no-op"
-                );
+                // Warn-once latch (request path; impossible under the atomic-sentinel invariant).
+                static WARNED: std::sync::atomic::AtomicBool =
+                    std::sync::atomic::AtomicBool::new(false);
+                if !WARNED.swap(true, Ordering::Relaxed) {
+                    diag_warn!(
+                        BREAKER_UNEXPECTED_STATE_RECORD_FAILURE,
+                        state = other,
+                        "unexpected breaker state in record_failure; no-op"
+                    );
+                } else {
+                    diag_debug!(
+                        BREAKER_UNEXPECTED_STATE_RECORD_FAILURE,
+                        state = other,
+                        "unexpected breaker state in record_failure; no-op"
+                    );
+                }
                 false
             }
         }

@@ -104,7 +104,10 @@ fn push_target(
             projection,
         }),
         Ok(None) => {}
-        Err(msg) => tracing::error!("{msg}; disabling this webhook exporter"),
+        Err(msg) => crate::diagnostics::diag_error!(
+            crate::diagnostics::WEBHOOK_EXPORTER_DISABLED,
+            "{msg}; disabling this webhook exporter"
+        ),
     }
 }
 
@@ -170,12 +173,14 @@ pub(crate) fn warn_webhook_delivery_failed(
     outcome: Result<reqwest::StatusCode, reqwest::Error>,
 ) {
     match outcome {
-        Ok(status) => tracing::warn!(
+        Ok(status) => crate::diagnostics::diag_debug!(
+            crate::diagnostics::WEBHOOK_DELIVERY_NON_2XX,
             webhook_url = mask_userinfo(url),
             status = status.as_u16(),
             "request-log webhook delivery returned a non-2xx status; this log was dropped"
         ),
-        Err(e) => tracing::warn!(
+        Err(e) => crate::diagnostics::diag_debug!(
+            crate::diagnostics::WEBHOOK_DELIVERY_TRANSPORT_ERROR,
             webhook_url = mask_userinfo(url),
             error_kind = %e.without_url(),
             "request-log webhook delivery failed (transport error); this log was dropped"

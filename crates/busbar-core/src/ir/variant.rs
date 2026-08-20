@@ -124,7 +124,8 @@ impl IrReq {
                 // SAME-protocol passthrough never reaches here (the body is forwarded verbatim), so
                 // `n>1` still works end-to-end where the response is not funneled through the IR.
                 if ir.n.is_some_and(|n| n > 1) {
-                    tracing::warn!(
+                    crate::diagnostics::diag_debug!(
+                        crate::diagnostics::IR_CLAMP_N_TO_1,
                         ingress = %prep.ingress_protocol,
                         "clamping n>1 to 1 on the cross-protocol seam: the neutral response IR carries \
                          a single candidate, so extra choices would be generated, billed, and then \
@@ -139,7 +140,8 @@ impl IrReq {
                     if prep.reasoning_allowed {
                         ir.reasoning_budgets = Some(prep.reasoning_budgets);
                     } else {
-                        tracing::warn!(
+                        crate::diagnostics::diag_debug!(
+                            crate::diagnostics::IR_DROP_REASONING,
                             ingress = %prep.ingress_protocol,
                             "dropping cross-protocol reasoning/thinking ask: the target lane does \
                              not declare the capability; set `reasoning: true` on the model (or \
@@ -178,7 +180,8 @@ impl IrReq {
                         cleared |= t.cache_control.take().is_some();
                     }
                     if cleared {
-                        tracing::warn!(
+                        crate::diagnostics::diag_debug!(
+                            crate::diagnostics::IR_DROP_PROMPT_CACHE,
                             ingress = %prep.ingress_protocol,
                             "dropping cross-protocol prompt-cache breakpoints: the target lane's \
                              dialect gates its cache marker per model and the lane does not \
@@ -233,7 +236,8 @@ impl IrReq {
                         }
                     }
                     if dropped > 0 {
-                        tracing::warn!(
+                        crate::diagnostics::diag_debug!(
+                            crate::diagnostics::IR_DROP_CACHE_CONTROL_OVER_CAP,
                             ingress = %prep.ingress_protocol,
                             cap,
                             dropped,
@@ -255,7 +259,8 @@ impl IrReq {
                 let hosted_dropped = ir.tools.iter().filter(|t| t.hosted.is_some()).count();
                 if hosted_dropped > 0 {
                     ir.tools.retain(|t| t.hosted.is_none());
-                    tracing::warn!(
+                    crate::diagnostics::diag_debug!(
+                        crate::diagnostics::IR_DROP_HOSTED_TOOLS,
                         ingress = %prep.ingress_protocol,
                         dropped = hosted_dropped,
                         "dropping cross-protocol hosted (built-in) tool(s): a Responses hosted tool \
@@ -322,7 +327,8 @@ impl IrReq {
                     .and_then(|v| v.as_object())
                     .map(serde_json::Map::len)
                 {
-                    tracing::warn!(
+                    crate::diagnostics::diag_debug!(
+                        crate::diagnostics::IR_DROP_MESSAGE_NAME,
                         ingress = %prep.ingress_protocol,
                         messages = n,
                         "dropping OpenAI `messages[].name` on the cross-protocol seam: no target \
@@ -332,7 +338,8 @@ impl IrReq {
                     );
                 }
                 if ir.extra.contains_key("cachedContent") {
-                    tracing::warn!(
+                    crate::diagnostics::diag_debug!(
+                        crate::diagnostics::IR_DROP_CACHED_CONTENT,
                         ingress = %prep.ingress_protocol,
                         key = "cachedContent",
                         "dropping Gemini `cachedContent` on the cross-protocol seam: the referenced \
@@ -365,7 +372,8 @@ impl IrReq {
                 if !ir.extra.is_empty() {
                     let mut cleared: Vec<&str> = ir.extra.keys().map(String::as_str).collect();
                     cleared.sort_unstable();
-                    tracing::warn!(
+                    crate::diagnostics::diag_debug!(
+                        crate::diagnostics::IR_DROP_UNMODELED_KEYS,
                         ingress = %prep.ingress_protocol,
                         keys = %cleared.join(","),
                         count = cleared.len(),

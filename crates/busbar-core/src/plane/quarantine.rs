@@ -100,7 +100,8 @@ impl PlaneQuarantine {
             recorded_at: now,
         };
         if let Err(e) = demotion_record(&row).and_then(|rec| store.upsert_plane_record(&rec)) {
-            tracing::error!(
+            crate::diagnostics::diag_error!(
+                crate::diagnostics::PLANE_DEMOTION_WRITE_FAILED,
                 server = %server,
                 reason = %reason,
                 error = %e,
@@ -118,7 +119,8 @@ impl PlaneQuarantine {
             return;
         };
         if let Err(e) = store.delete_plane_record(KIND_DEMOTION, server) {
-            tracing::error!(
+            crate::diagnostics::diag_error!(
+                crate::diagnostics::PLANE_DEMOTION_CLEAR_FAILED,
                 server = %server,
                 error = %e,
                 "the durable MCP demotion record for this upstream could NOT be cleared: it is \
@@ -141,7 +143,8 @@ impl PlaneQuarantine {
         match read {
             Ok(rows) => rows,
             Err(e) => {
-                tracing::error!(
+                crate::diagnostics::diag_error!(
+                    crate::diagnostics::PLANE_DEMOTIONS_UNREAD,
                     error = %e,
                     "the durable MCP demotion records could NOT be read at boot; any upstream this \
                      deployment had demoted is re-opened until the first sweep looks again"

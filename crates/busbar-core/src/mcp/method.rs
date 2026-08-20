@@ -1546,7 +1546,8 @@ async fn tools_call(
             // a result that says it is unfinished is not a finished result, and handing the caller a
             // silently-truncated one would be answering a question nobody asked.
             if let Some(field) = upstream_ask_field(&value) {
-                tracing::error!(
+                crate::diagnostics::diag_error!(
+                    crate::diagnostics::MCP_ASK_RECOGNISER_MISSED,
                     tool = %selected.namespaced,
                     field,
                     "an upstream's input-required result reached the terminal check: the ask \
@@ -1591,7 +1592,8 @@ async fn tools_call(
             if let Some(schema) = &selected.output_schema {
                 if let Some(structured) = value.get("structuredContent") {
                     if let Err(why) = super::outputschema::check(structured, schema) {
-                        tracing::warn!(
+                        crate::diagnostics::diag_debug!(
+                            crate::diagnostics::MCP_OUTPUT_SCHEMA_VIOLATION,
                             tool = %selected.namespaced,
                             why = %why,
                             "mcp upstream returned structuredContent violating the published outputSchema"
@@ -1639,7 +1641,8 @@ async fn tools_call(
                 crate::admin::audit::OUTCOME_REJECTED,
                 ctx.actor,
             );
-            tracing::warn!(
+            crate::diagnostics::diag_debug!(
+                crate::diagnostics::MCP_TOOLCALL_REFUSED,
                 tool = %selected.namespaced,
                 reason = refusal.audit_reason(),
                 "mcp tools/call refused"
@@ -1689,7 +1692,8 @@ async fn tools_call(
                 crate::admin::audit::OUTCOME_REJECTED,
                 ctx.actor,
             );
-            tracing::warn!(
+            crate::diagnostics::diag_debug!(
+                crate::diagnostics::MCP_TOOLCALL_UPSTREAM_FAILED,
                 tool = %selected.namespaced,
                 reason = %reason,
                 "mcp tools/call upstream failed"
@@ -2025,7 +2029,8 @@ fn refuse_setup(
         crate::admin::audit::OUTCOME_REJECTED,
         ctx.actor,
     );
-    tracing::warn!(
+    crate::diagnostics::diag_debug!(
+        crate::diagnostics::MCP_TOOLCALL_REFUSED_PRE_UPSTREAM,
         tool = %namespaced,
         reason = denied.audit_reason(),
         "mcp tools/call refused before the upstream"
@@ -2343,7 +2348,8 @@ fn refuse_ask(
         crate::admin::audit::OUTCOME_REJECTED,
         ctx.actor,
     );
-    tracing::warn!(
+    crate::diagnostics::diag_debug!(
+        crate::diagnostics::MCP_CALLER_ASK_REFUSED,
         capability = %resource,
         reason = refusal.audit_reason(),
         "mcp caller-ask refused"

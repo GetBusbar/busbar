@@ -203,7 +203,8 @@ impl TaskRegistry {
             let task = match Task::from_row(row) {
                 Ok(t) => t,
                 Err(e) => {
-                    tracing::error!(
+                    crate::diagnostics::diag_error!(
+                        crate::diagnostics::PLANE_TASK_ROW_UNREADABLE,
                         task_id = %row.task_id,
                         error = %e,
                         "a persisted A2A task row could not be read back; it is NOT resumable and \
@@ -231,7 +232,8 @@ impl TaskRegistry {
             let chain = match TaskChain::from_persisted(&events) {
                 Ok(c) => c,
                 Err(brk) => {
-                    tracing::error!(
+                    crate::diagnostics::diag_error!(
+                        crate::diagnostics::PLANE_TASK_CHAIN_VERIFY_FAILED,
                         task_id = %task.task_id,
                         break_detail = %brk,
                         "A2A per-task provenance CHAIN VERIFICATION FAILED on restore — the \
@@ -513,7 +515,8 @@ impl TaskRegistry {
         let callback = match callback {
             Some(url) => match crate::a2a::pushnotify::structural_refusal(&url) {
                 Some(refusal) => {
-                    tracing::error!(
+                    crate::diagnostics::diag_error!(
+                        crate::diagnostics::PLANE_SSRF_CALLBACK_AT_STORE,
                         task = %task_id,
                         error = %refusal,
                         "a2a: a push callback the SSRF guard refuses reached the task store and was \

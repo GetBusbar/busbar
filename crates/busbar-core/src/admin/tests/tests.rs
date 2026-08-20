@@ -5044,17 +5044,18 @@ async fn test_patch_key_three_state_group_and_enabled() {
     handle.abort();
 }
 #[test]
-fn test_create_key_warns_on_unconfigured_allowed_pool() {
-    // Create_key accepted `allowed_pools` with NO ingress
-    // diagnostic, unlike its sibling validations. An entry naming no configured pool must NOT be
-    // a 400 (minting a key before its pool exists is a supported forward-reference workflow), but
-    // it MUST surface a NON-FATAL `tracing::warn!` so a typo (`"smrt"` for `"smart"`) is visible.
-    // Against the old code (no warn) the unknown-pool assertion FAILS; it passes once the
-    // diagnostic is emitted. We also assert the key is still created (201) and that a configured
-    // pool produces NO warning (no false positive on the legitimate path).
+fn test_create_key_unconfigured_allowed_pool_is_nonfatal_and_quiet() {
+    // Create_key accepts `allowed_pools` naming a pool that is not (yet) configured. This must NOT
+    // be a 400 (minting a key before its pool exists is a supported forward-reference workflow),
+    // and — post diagnostics migration — the unknown-pool hint (BUSBAR-4028 `createkey-unknown-pool`)
+    // is a per-request, caller-side, benign_recurring signal that lives at `debug!`, NOT an operator
+    // WARN. So the correct behavior now is: both keys still mint (201) AND the WARN channel stays
+    // SILENT for this benign case (no log-spam on the request path). The debug-level diagnostic
+    // still carries the typo detail for anyone running at debug; the operator-facing regression
+    // guard here is that it never reaches WARN.
     //
     // The diagnostic fires synchronously in the handler BEFORE the `spawn_blocking().await`, so a
-    // thread-local subscriber (`with_default`) on a current-thread runtime captures it — we call
+    // thread-local subscriber (`with_default`) on a current-thread runtime would see it — we call
     // the handler directly rather than through the HTTP server (whose task would run on a
     // different thread, out of the subscriber's reach).
     use tracing_subscriber::layer::SubscriberExt as _;
@@ -5131,25 +5132,17 @@ fn test_create_key_warns_on_unconfigured_allowed_pool() {
     );
 
     let msgs = cap.messages();
-    // Exactly one warning, naming the typo'd pool — "smart" (configured) must NOT warn.
+    // The unknown-pool hint is now a benign_recurring DEBUG diagnostic, so it must NEVER reach the
+    // WARN channel (WarnCapture records WARN/ERROR only). Assert-silent: no allowed_pools warning is
+    // emitted at all — the request path stays quiet for this supported forward-reference case.
     let pool_warns: Vec<&String> = msgs
         .iter()
         .filter(|m| m.contains("allowed_pools entry names no configured pool"))
         .collect();
     assert_eq!(
         pool_warns.len(),
-        1,
-        "exactly one allowed_pools diagnostic expected (only the typo'd entry): {msgs:?}"
-    );
-    assert!(
-        pool_warns[0].contains("smrt"),
-        "the warning must name the typo'd pool 'smrt': {:?}",
-        pool_warns[0]
-    );
-    assert!(
-        !pool_warns[0].contains("smart\""),
-        "the configured pool 'smart' must NOT be reported as unconfigured: {:?}",
-        pool_warns[0]
+        0,
+        "the unconfigured allowed_pool hint is benign (debug), so it must NOT surface at WARN: {msgs:?}"
     );
 }
 

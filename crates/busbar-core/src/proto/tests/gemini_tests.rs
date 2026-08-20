@@ -752,14 +752,17 @@ fn gemini_cached_content_warns_naming_truncation_and_billing() {
         cache_control_cap: None,
     };
 
-    let cap = WarnCapture::default();
+    // The cachedContent drop was reclassified benign-recurring (per-request cross-protocol seam) and
+    // now emits at `diag_debug!` (BUSBAR-7084), so capture at DEBUG to preserve the both-consequences
+    // content coverage rather than assert on a level the diagnostic no longer uses.
+    let cap = WarnCapture::capturing_debug();
     let subscriber = tracing_subscriber::registry().with(cap.clone());
     let mut req = IrReq::Chat(ir);
     tracing::subscriber::with_default(subscriber, || req.prepare_for_egress(&prep));
 
     assert!(
         cap.contains("VISIBLE history") && cap.contains("UNCACHED"),
-        "the warn must name BOTH consequences (truncated history AND full billing): {:?}",
+        "the diagnostic must name BOTH consequences (truncated history AND full billing): {:?}",
         cap.messages()
     );
 
@@ -768,7 +771,7 @@ fn gemini_cached_content_warns_naming_truncation_and_billing() {
         "contents": [{"role": "user", "parts": [{"text": "hi"}]}]
     });
     let ir2 = GeminiReader.read_request(&body2).expect("parses");
-    let cap2 = WarnCapture::default();
+    let cap2 = WarnCapture::capturing_debug();
     let subscriber2 = tracing_subscriber::registry().with(cap2.clone());
     let mut req2 = IrReq::Chat(ir2);
     tracing::subscriber::with_default(subscriber2, || req2.prepare_for_egress(&prep));

@@ -2,8 +2,9 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! A `tracing::Layer` that records the messages (and other structured fields) of WARN-and-ABOVE
-//! events (WARN, ERROR), so a test can assert a particular `tracing::warn!`/`tracing::error!` fired
-//! without a global subscriber.
+//! events (WARN, ERROR) by default, so a test can assert a particular `diag_warn!`/`diag_error!`
+//! fired without a global subscriber. [`WarnCapture::capturing_debug`] lowers the threshold to
+//! DEBUG for a diagnostic that was reclassified benign and now emits at `diag_debug!`.
 //!
 //! Driving idiom (unchanged from the four call sites this replaces):
 //! ```ignore
@@ -18,13 +19,37 @@
 //! driven with `block_on` INSIDE the closure, never a multi-threaded runtime or an HTTP
 //! round-trip), or the capture comes back empty.
 
-#[derive(Clone, Default)]
-pub struct WarnCapture(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+#[derive(Clone)]
+pub struct WarnCapture {
+    messages: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    /// The least-severe level admitted. `WARN` (the default) captures WARN+ERROR; `DEBUG` captures
+    /// DEBUG-and-above — used by tests of a diagnostic that was reclassified benign and now emits at
+    /// `diag_debug!`, so the log-content coverage is preserved rather than deleted.
+    max_level: tracing::Level,
+}
+
+impl Default for WarnCapture {
+    fn default() -> Self {
+        Self {
+            messages: std::sync::Arc::default(),
+            max_level: tracing::Level::WARN,
+        }
+    }
+}
 
 impl WarnCapture {
-    /// Every WARN message recorded so far, each as `"{message} {field}={value} ..."`.
+    /// A capture that admits DEBUG-and-above (DEBUG, INFO, WARN, ERROR), for asserting on a
+    /// benign-recurring diagnostic that emits at `diag_debug!`.
+    pub fn capturing_debug() -> Self {
+        Self {
+            messages: std::sync::Arc::default(),
+            max_level: tracing::Level::DEBUG,
+        }
+    }
+
+    /// Every captured message recorded so far, each as `"{message} {field}={value} ..."`.
     pub fn messages(&self) -> Vec<String> {
-        self.0.lock().map(|m| m.clone()).unwrap_or_default()
+        self.messages.lock().map(|m| m.clone()).unwrap_or_default()
     }
 
     /// True when some captured WARN message contains `needle`.
@@ -49,9 +74,10 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for WarnCapture {
         event: &tracing::Event<'_>,
         _ctx: tracing_subscriber::layer::Context<'_, S>,
     ) {
-        if *event.metadata().level() > tracing::Level::WARN {
-            // `tracing::Level` orders ERROR < WARN < INFO < ... (lower = more severe), so this
-            // admits WARN and ERROR and still excludes INFO/DEBUG/TRACE.
+        if *event.metadata().level() > self.max_level {
+            // `tracing::Level` orders ERROR < WARN < INFO < ... (lower = more severe), so a WARN
+            // threshold admits WARN+ERROR and excludes INFO/DEBUG/TRACE; a DEBUG threshold admits
+            // everything down to DEBUG.
             return;
         }
         // Capture the rendered `message` AND every other field (e.g. a structured `pool`/`hook`
@@ -85,7 +111,7 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for WarnCapture {
         }
         let mut vis = Vis::default();
         event.record(&mut vis);
-        if let Ok(mut msgs) = self.0.lock() {
+        if let Ok(mut msgs) = self.messages.lock() {
             msgs.push(format!("{} {}", vis.message, vis.fields));
         }
     }

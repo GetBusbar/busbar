@@ -120,11 +120,11 @@ fn append_one(sink: &'static FileSink, line: String) {
         match opened {
             Ok(mut file) => {
                 if let Err(e) = writeln!(file, "{line}") {
-                    tracing::warn!(path = %sink.path, error = %e, "request-log file append failed; this log was dropped");
+                    crate::diagnostics::diag_warn!(crate::diagnostics::FILE_LOG_APPEND_FAILED, path = %sink.path, error = %e, "request-log file append failed; this log was dropped");
                 }
             }
             Err(e) => {
-                tracing::warn!(path = %sink.path, error = %e, "request-log file open failed; this log was dropped");
+                crate::diagnostics::diag_warn!(crate::diagnostics::FILE_LOG_OPEN_FAILED, path = %sink.path, error = %e, "request-log file open failed; this log was dropped");
             }
         }
     });
@@ -162,7 +162,8 @@ fn rotate(path: &str) {
     let oldest = format!("{path}.{ROTATE_ARCHIVE_LIMIT}");
     if std::path::Path::new(&oldest).exists() {
         if let Err(e) = std::fs::remove_file(&oldest) {
-            tracing::warn!(
+            crate::diagnostics::diag_warn!(
+                crate::diagnostics::FILE_LOG_RETENTION_FAILED,
                 archive = %oldest, error = %e,
                 "request-log archive retention cleanup failed; the archive series may exceed ROTATE_ARCHIVE_LIMIT"
             );
@@ -175,7 +176,8 @@ fn rotate(path: &str) {
         if std::path::Path::new(&from).exists() {
             let to = format!("{path}.{}", i + 1);
             if let Err(e) = std::fs::rename(&from, &to) {
-                tracing::warn!(
+                crate::diagnostics::diag_warn!(
+                    crate::diagnostics::FILE_LOG_SHIFT_FAILED,
                     from = %from, to = %to, error = %e,
                     "request-log archive shift failed; older archive left in place rather than lost"
                 );
@@ -190,7 +192,8 @@ fn rotate(path: &str) {
             metrics::counter!(crate::metrics::FILE_LOGS_ROTATED_TOTAL).increment(1);
         }
         Err(e) => {
-            tracing::warn!(
+            crate::diagnostics::diag_warn!(
+                crate::diagnostics::FILE_LOG_ROTATE_RENAME_FAILED,
                 path = %path, error = %e,
                 "request-log file rotation rename failed; continuing to APPEND to the current file \
                  rather than truncate it, so no recorded data is lost — the file will exceed rotate_mb \

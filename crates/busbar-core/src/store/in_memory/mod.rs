@@ -1,5 +1,7 @@
 use super::*;
 
+use crate::diagnostics::{diag_warn, LANE_HARD_DOWN};
+
 mod availability;
 mod breaker;
 pub(crate) use breaker::*;
@@ -838,7 +840,8 @@ impl HealthState {
         // probe. We do NOT set `dead` (that would block recovery). Per (pool, lane): only the
         // routing pool's view is tripped; other pools discover the bad upstream independently.
         *lock_recover(&ls.dead_reason) = reason.to_string();
-        tracing::warn!(
+        diag_warn!(
+            LANE_HARD_DOWN,
             model = %ls.model,
             reason,
             cooldown_secs = self.hard_down_cooldown_secs,

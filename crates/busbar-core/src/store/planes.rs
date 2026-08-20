@@ -45,6 +45,7 @@
 
 use super::in_memory::{BreakerCfg, HealthState, LaneData};
 use super::{LaneRuntime, Unavailable};
+use crate::diagnostics::{diag_warn, PLANE_BREAKER_HARD_DOWN, PLANE_BREAKER_TRIPPED};
 use std::sync::Arc;
 
 /// One process-lifetime handle: every registered MCP server's and A2A agent's availability cell.
@@ -237,7 +238,8 @@ impl PlaneBreakers {
                 // line a trip says "plane-target" and the operator learns which server is down
                 // from a user. Emitted once per logical Closed→Open trip, never per failure.
                 if tripped {
-                    tracing::warn!(
+                    diag_warn!(
+                        PLANE_BREAKER_TRIPPED,
                         target_key = key,
                         "plane breaker tripped: the upstream target is failing and further \
                          dispatches will fast-fail until the half-open probe recovers it"
@@ -250,7 +252,8 @@ impl PlaneBreakers {
                     lane,
                     sig.provider_signal.as_deref().unwrap_or("hard_down"),
                 );
-                tracing::warn!(
+                diag_warn!(
+                    PLANE_BREAKER_HARD_DOWN,
                     target_key = key,
                     "plane breaker tripped hard-down: the upstream target answered a definitive \
                      failure (auth/billing); dispatches fast-fail for the sticky cooldown"

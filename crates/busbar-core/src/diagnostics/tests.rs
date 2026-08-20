@@ -205,6 +205,23 @@ const MIGRATED_FILES: &[&str] = &[
     "src/a2a/pushdeliver.rs",
     "src/a2a/originate.rs",
     "src/a2a/plane.rs",
+    "src/mcp/mod.rs",
+    "src/mcp/stdio_serve.rs",
+    "src/mcp/method.rs",
+    "src/export/webhook.rs",
+    "src/export/file.rs",
+    "src/ir/mod.rs",
+    "src/ir/variant.rs",
+    "src/proto/mod.rs",
+    "src/plane/taskstore.rs",
+    "src/plane/approvals.rs",
+    "src/plane/quarantine.rs",
+    "src/plane/calllog.rs",
+    "src/admin/mod.rs",
+    "src/store/planes.rs",
+    "src/store/in_memory/mod.rs",
+    "src/store/in_memory/breaker.rs",
+    "src/store/in_memory/availability.rs",
 ];
 
 #[test]

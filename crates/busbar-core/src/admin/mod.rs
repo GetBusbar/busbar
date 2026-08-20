@@ -32,6 +32,10 @@ where
 
 use crate::admin::v1::contract::taxonomy::Cond;
 use crate::admin::v1::contract::AdminError;
+use crate::diagnostics::{
+    diag_debug, diag_error, ADMIN_CREATEKEY_MALFORMED_BODY, ADMIN_STORE_OPERATION_FAILED,
+    ADMIN_STORE_TASK_JOIN_FAILED, ADMIN_UPDATEKEY_MALFORMED_BODY, CREATEKEY_UNKNOWN_POOL,
+};
 use crate::governance::{NewKeySpec, VirtualKey};
 
 /// Process-wide gate serializing the existence-sensitive critical sections of the key store.
@@ -317,7 +321,7 @@ fn record_key_refusal(who: KeyAudit<'_>) {
 /// the HTTP body carries only a generic message so internal storage details are never disclosed to
 /// the client (even an authenticated admin). `op` names the operation for log correlation.
 fn internal_error(op: &str, e: &crate::governance::StoreError) -> Response {
-    tracing::error!(operation = op, error = %e, "admin store operation failed");
+    diag_error!(ADMIN_STORE_OPERATION_FAILED, operation = op, error = %e, "admin store operation failed");
     crate::admin::v1::json::err_json(&AdminError::Internal)
 }
 
@@ -494,7 +498,7 @@ mod reject_overlong_id_tests;
 /// blocking store closures here don't panic in normal operation, but a `JoinError` must NOT
 /// propagate as an `unwrap()` on the request path — map it to a generic 500 (details logged).
 fn join_error(op: &str, e: &tokio::task::JoinError) -> Response {
-    tracing::error!(operation = op, error = %e, "admin store task failed to join");
+    diag_error!(ADMIN_STORE_TASK_JOIN_FAILED, operation = op, error = %e, "admin store task failed to join");
     crate::admin::v1::json::err_json(&AdminError::Internal)
 }
 
@@ -701,7 +705,11 @@ pub(crate) async fn create_key(
     let req: CreateKeyReq = match crate::json::parse(&body) {
         Ok(req) => req,
         Err(_) => {
-            tracing::warn!("create_key: {}", crate::json::parse_err_log(body.len()));
+            diag_debug!(
+                ADMIN_CREATEKEY_MALFORMED_BODY,
+                "create_key: {}",
+                crate::json::parse_err_log(body.len())
+            );
             return key_err(
                 who,
                 &AdminError::Validation("invalid JSON".into()),
@@ -772,7 +780,8 @@ pub(crate) async fn create_key(
     let allowed_pools = req.allowed_pools;
     for pool in allowed_pools.iter().flatten() {
         if !app.pools.contains_key(pool) {
-            tracing::warn!(
+            diag_debug!(
+                CREATEKEY_UNKNOWN_POOL,
                 pool = %pool,
                 key_name = %req.name,
                 "create_key: allowed_pools entry names no configured pool (possible typo; \
@@ -921,7 +930,7 @@ pub(crate) async fn create_key(
                 }
             })()
             .map_err(|e| {
-                tracing::error!(operation = "create_key", error = %e, "admin store operation failed");
+                diag_error!(ADMIN_STORE_OPERATION_FAILED, operation = "create_key", error = %e, "admin store operation failed");
                 AdminError::Internal
             })?;
             Ok(crate::admin::v1::json::Outcome::Value((
@@ -1104,7 +1113,11 @@ pub(crate) async fn update_key(
     let req: UpdateKeyReq = match crate::json::parse(&body) {
         Ok(req) => req,
         Err(_) => {
-            tracing::warn!("update_key: {}", crate::json::parse_err_log(body.len()));
+            diag_debug!(
+                ADMIN_UPDATEKEY_MALFORMED_BODY,
+                "update_key: {}",
+                crate::json::parse_err_log(body.len())
+            );
             return key_err(
                 who,
                 &AdminError::Validation("invalid JSON".into()),
@@ -1232,7 +1245,7 @@ pub(crate) async fn update_key(
                 })
             })()
             .map_err(|e| {
-                tracing::error!(operation = "update_key", error = %e, "admin store operation failed");
+                diag_error!(ADMIN_STORE_OPERATION_FAILED, operation = "update_key", error = %e, "admin store operation failed");
                 AdminError::Internal
             })?;
             Ok(crate::admin::v1::json::Outcome::Value(outcome))

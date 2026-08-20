@@ -50,16 +50,17 @@ pub type IrError = crate::breaker::CanonicalSignal;
 /// injected). The previous per-writer `unwrap_or_else(HeaderValue::from_static(""))` SILENTLY emitted
 /// a syntactically empty `Authorization: ` header — the upstream then 401s every request on the lane
 /// with no proxy-side signal, and the empty-Bearer form is itself a fingerprinting tell a backend can
-/// compare against well-formed tokens. Instead we surface a `tracing::warn!` (naming the protocol so
-/// the operator can locate the misconfigured lane) and OMIT the header entirely (empty Vec). The
-/// request is still sent (the trait can't refuse it here) and the upstream answers 401, but the warn
-/// line tells the operator the lane's credential bytes are invalid. The key is NEVER logged (it is the
+/// compare against well-formed tokens. Instead we surface a coded diagnostic (BUSBAR-7087, naming the
+/// protocol so the operator can locate the misconfigured lane) and OMIT the header entirely (empty
+/// Vec). The request is still sent (the trait can't refuse it here) and the upstream answers 401, but
+/// the log line tells the operator the lane's credential bytes are invalid. The key is NEVER logged (it is the
 /// secret); only the protocol name and the fact that the bytes are malformed.
 pub fn bearer_auth_headers(proto: &str, key: &str) -> Vec<(HeaderName, HeaderValue)> {
     match HeaderValue::from_str(&format!("Bearer {key}")) {
         Ok(value) => vec![(HeaderName::from_static(HDR_AUTHORIZATION), value)],
         Err(_) => {
-            tracing::warn!(
+            crate::diagnostics::diag_debug!(
+                crate::diagnostics::PROTO_AUTH_INVALID_HEADER_BYTES,
                 protocol = proto,
                 "authorization credential contains invalid header bytes (ASCII control character); \
                  omitting auth header — upstream will reject with 401"
@@ -111,7 +112,8 @@ pub(crate) fn warn_untranslatable_response_metadata(
     if present.is_empty() {
         return;
     }
-    tracing::warn!(
+    crate::diagnostics::diag_debug!(
+        crate::diagnostics::PROTO_DROP_PROVIDER_METADATA,
         egress = %egress,
         ingress = %ingress,
         fields = %present.join(","),

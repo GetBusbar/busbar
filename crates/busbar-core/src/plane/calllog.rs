@@ -332,7 +332,8 @@ impl PlaneCallLog {
                 // The store named this principal and then produced nothing for it. Reported, never
                 // silently skipped: it is exactly what one caller's evidence being deleted wholesale
                 // looks like, and the verifier alone cannot tell it from "never called".
-                tracing::error!(
+                crate::diagnostics::diag_error!(
+                    crate::diagnostics::PLANE_CALLLOG_EMPTY_CHAIN,
                     principal = %principal,
                     "the durable MCP call log enumerates this principal but returned NO records \
                      for it; the chain is being reopened at seq 1 and the discrepancy is reported \
@@ -348,7 +349,8 @@ impl PlaneCallLog {
                 Err(brk) => {
                     // REPORTED, and the records stay restored. See the module header: refusing here
                     // would convert a detection control into a deletion primitive.
-                    tracing::error!(
+                    crate::diagnostics::diag_error!(
+                        crate::diagnostics::PLANE_CALLLOG_CHAIN_VERIFY_FAILED,
                         principal = %principal,
                         break_detail = %brk,
                         "MCP per-call CHAIN VERIFICATION FAILED on restore — the persisted records \
@@ -509,27 +511,54 @@ pub(crate) fn emit(principal: &str, input: CallInput) {
         input.outcome,
         input.request_id.clone(),
     );
+    // Transition latch: a durable-store write failure here recurs per served call during an outage,
+    // so surface the ERROR only on the TRANSITION into the failing state and hold subsequent
+    // failures at debug. A successful write clears the latch so a future outage re-errors. (Same
+    // shape as the metrics scrape's `KEY_GAUGE_LIMIT_WARNED` latch.)
+    static WRITE_FAILED_LATCHED: std::sync::atomic::AtomicBool =
+        std::sync::atomic::AtomicBool::new(false);
     match CALLS.record(principal, input) {
-        Ok(record) => tracing::debug!(
-            principal = %principal,
-            request_id = %request_id,
-            seq = record.seq,
-            server = %server,
-            tool = %tool,
-            outcome = %outcome,
-            "mcp per-call record appended"
-        ),
-        Err(e) => tracing::error!(
-            principal = %principal,
-            request_id = %request_id,
-            server = %server,
-            tool = %tool,
-            outcome = %outcome,
-            error = %e,
-            "the durable MCP per-call record could NOT be written: this call is being served and \
-             its evidence is being LOST. The chain position is unchanged, so the chain stays \
-             contiguous — what is missing is this record, not the ones after it."
-        ),
+        Ok(record) => {
+            WRITE_FAILED_LATCHED.store(false, std::sync::atomic::Ordering::Relaxed);
+            tracing::debug!(
+                principal = %principal,
+                request_id = %request_id,
+                seq = record.seq,
+                server = %server,
+                tool = %tool,
+                outcome = %outcome,
+                "mcp per-call record appended"
+            );
+        }
+        Err(e) => {
+            if !WRITE_FAILED_LATCHED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                crate::diagnostics::diag_error!(
+                    crate::diagnostics::PLANE_CALLLOG_WRITE_FAILED,
+                    principal = %principal,
+                    request_id = %request_id,
+                    server = %server,
+                    tool = %tool,
+                    outcome = %outcome,
+                    error = %e,
+                    "the durable MCP per-call record could NOT be written: this call is being served and \
+                     its evidence is being LOST. The chain position is unchanged, so the chain stays \
+                     contiguous — what is missing is this record, not the ones after it."
+                );
+            } else {
+                crate::diagnostics::diag_debug!(
+                    crate::diagnostics::PLANE_CALLLOG_WRITE_FAILED,
+                    principal = %principal,
+                    request_id = %request_id,
+                    server = %server,
+                    tool = %tool,
+                    outcome = %outcome,
+                    error = %e,
+                    "the durable MCP per-call record could NOT be written: this call is being served and \
+                     its evidence is being LOST. The chain position is unchanged, so the chain stays \
+                     contiguous — what is missing is this record, not the ones after it."
+                );
+            }
+        }
     }
 }
 

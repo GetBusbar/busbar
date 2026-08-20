@@ -1,5 +1,7 @@
 use super::*;
 
+use crate::diagnostics::{diag_warn, LANE_HARD_DOWN_ALL_CELLS};
+
 impl HealthState {
     /// Aggregate the per-cell [`breaker_verdict`](breaker_verdict) (the SINGLE decoder)
     /// across the cells production actually routes through — the SAME cell-selection rule as
@@ -528,7 +530,8 @@ impl LaneRuntime for HealthState {
         // NOT set `dead` (that would block recovery). Record the reason once, lane-wide.
         *lock_recover(&ls.dead_reason) = reason.to_string();
         let hard_down_cooldown_secs = self.hard_down_cooldown_secs;
-        tracing::warn!(
+        diag_warn!(
+            LANE_HARD_DOWN_ALL_CELLS,
             model = %ls.model,
             reason,
             cooldown_secs = hard_down_cooldown_secs,

@@ -182,7 +182,10 @@ fn cache_control_breakpoints_clamped_to_four_on_anthropic_egress() {
         cache_control_cap: Some(4),
     };
 
-    let cap = WarnCapture::default();
+    // The cache_control over-cap drop was reclassified benign-recurring (per-request cross-protocol
+    // seam) and now emits at `diag_debug!` (BUSBAR-7081), so capture at DEBUG to preserve the
+    // cap/dropped-count content coverage rather than assert on a level the diagnostic no longer uses.
+    let cap = WarnCapture::capturing_debug();
     let subscriber = tracing_subscriber::registry().with(cap.clone());
     let mut req = IrReq::Chat(ir);
     tracing::subscriber::with_default(subscriber, || req.prepare_for_egress(&prep));

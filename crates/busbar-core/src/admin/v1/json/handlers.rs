@@ -1,5 +1,10 @@
 use super::*;
 
+use crate::diagnostics::{
+    diag_error, diag_warn, ADMIN_AUTH_CHAIN_EMPTY, PLUGIN_ROLLBACK_PIN_PERSIST_FAILED,
+    PLUGIN_ROLLBACK_REVERT_FAILED,
+};
+
 /// `GET /api/v1/admin/info` — version, compiled-in plugin proof, uptime, topology.
 pub(crate) async fn info(State(handle): State<Arc<AppHandle>>) -> Response {
     respond(StatusCode::OK, service(&handle).info().await)
@@ -484,7 +489,7 @@ pub(crate) async fn rollback_plugin(
             if let Err(e) =
                 crate::config::overlay::try_persist_plugin_versions(Some(&overlay_path), &pins)
             {
-                tracing::error!(plugin = %audit_resource, error = %e, "plugin rollback: persisting the version pin failed; nothing swapped");
+                diag_error!(PLUGIN_ROLLBACK_PIN_PERSIST_FAILED, plugin = %audit_resource, error = %e, "plugin rollback: persisting the version pin failed; nothing swapped");
                 return Err(AdminError::Validation(format!(
                     "plugin rollback could not persist the version pin to the overlay: {e}; nothing \
                      was changed (the running engine still serves the current plugin)"
@@ -505,7 +510,8 @@ pub(crate) async fn rollback_plugin(
                         Some(&overlay_path),
                         &prior_pins,
                     ) {
-                        tracing::error!(
+                        diag_error!(
+                            PLUGIN_ROLLBACK_REVERT_FAILED,
                             plugin = %audit_resource, rebuild_error = %e, revert_error = %revert_err,
                             "plugin rollback rebuild failed AND reverting the persisted version pin \
                              failed; the running engine still serves the prior plugin, but disk now \
@@ -2165,7 +2171,8 @@ pub(crate) async fn put_auth(
             }
         }
         if req.admin_auth.is_empty() {
-            tracing::warn!(
+            diag_warn!(
+                ADMIN_AUTH_CHAIN_EMPTY,
                 "PUT /api/v1/admin/admin-auth applied an EMPTY admin_auth chain — the admin API is \
                  now the open (anonymous, full-authority) dev posture"
             );

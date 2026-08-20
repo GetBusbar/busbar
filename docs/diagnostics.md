@@ -61,6 +61,50 @@ A durable-chain sequence number is no longer in the in-memory ring (it was prune
 
 **What to do:** Recent entries remain in the in-memory ring, but the DURABLE log has a permanent gap at the named seq. Resolve the store outage that caused it; restore the durable store from a backup if the durable chain's completeness is required for compliance.
 
+<a id="admin-store-operation-failed"></a>
+### BUSBAR-1006 — Admin store operation failed (generic 500; store detail logged server-side)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `admin-store-operation-failed`
+
+An admin API CRUD or read operation against the governance/durable store returned an error, so busbar answers the admin request with a generic 500. The store's own error (which may embed SQL fragments or backend paths) is logged server-side only — the HTTP body carries no store internals. The `operation` field names which call failed.
+
+**What to do:** Investigate the durable/governance store's health and reachability for the named operation. A transient store hiccup self-heals on retry; sustained failures mean the store backend is unhealthy and admin mutations/reads cannot complete.
+
+<a id="admin-store-task-join-failed"></a>
+### BUSBAR-1007 — Admin store blocking task failed to join (cancelled or panicked)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `admin-store-task-join-failed`
+
+An admin store operation ran on a `spawn_blocking` task that failed to join — the blocking store closure was cancelled or panicked — so busbar maps it to a generic 500 rather than let a JoinError propagate as an unwrap on the request path. The blocking store closures do not panic in normal operation.
+
+**What to do:** Investigate the logged operation and store backend — a panic in a blocking store closure is a bug or a resource failure. Capture the error and file a bug if it recurs; the request was safely failed, not mis-served.
+
+<a id="group-delete-key-read-failed"></a>
+### BUSBAR-1008 — Group delete could not read keys to check bindings (admin 500)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `group-delete-key-read-failed`
+
+Deleting a group requires a full key scan to count how many keys are still bound to it, and that store read failed, so busbar answers the admin delete with a generic 500 rather than delete a group with unknown live bindings. No group state was changed.
+
+**What to do:** Investigate the governance store's reachability — the key scan could not complete. Retry the delete once the store is healthy; a transient read error self-heals.
+
+<a id="usage-blocking-task-join-failed"></a>
+### BUSBAR-1009 — Admin /usage blocking task failed to join (cancelled or panicked)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `usage-blocking-task-join-failed`
+
+The admin /usage read ran on a `spawn_blocking` task that failed to join (cancelled or panicked), so busbar answers the request with a generic 500. Distinct from a store error returned by the read itself (BUSBAR-1006): here the blocking task did not complete at all.
+
+**What to do:** Investigate the logged context and store backend — a blocking-task panic is a bug or a resource failure. Capture the error and file a bug if it recurs; the request was safely failed.
+
 ## 2xxx — Audit chain
 
 <a id="audit-chain-verify-failed"></a>
@@ -84,6 +128,39 @@ The persisted durable audit log was read at boot but does NOT verify against its
 A persisted A2A task row was read back at boot but its per-task provenance chain does NOT verify against its own hashes, so the task is NOT resumed. This is distinct from a row that merely could not be read (BUSBAR-7024): the bytes were read and the chain does not add up, which is tamper evidence — the durable task state was altered out from under busbar, or its store is corrupt. Emitted once per affected task at boot.
 
 **What to do:** Treat the durable A2A task store as compromised until explained: capture it for forensic review before it is overwritten, and restore it from a trusted backup once the cause is understood. The named task is not resumed; other in-flight tasks continue.
+
+<a id="mcp-calllog-chain-verify-failed"></a>
+### BUSBAR-2040 — MCP per-call log failed hash-chain verification on restore (tamper evidence)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `mcp-calllog-chain-verify-failed`
+
+The persisted MCP per-call log was read at boot but does NOT verify against its own hash chain, which is tamper evidence — a persisted call record was altered out from under busbar, or its store is corrupt. The records are still restored and the chain resumes from the broken tail, because refusing to restore would let anyone able to write to the store DELETE a caller's history by corrupting one record.
+
+**What to do:** Treat the durable governance store as compromised until explained: capture it for forensic review before it is overwritten, then restore from a trusted backup once the cause is understood.
+
+<a id="plane-task-chain-verify-failed"></a>
+### BUSBAR-2041 — A2A per-task provenance chain failed hash-chain verification on restore (tamper)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `plane-task-chain-verify-failed`
+
+A persisted A2A task's provenance events were read at boot but do NOT verify against their own hash chain, which is tamper evidence — the persisted events were altered, or the store is corrupt. The chain is resumed from the broken tail rather than refused, so that corrupting one event cannot silently stop all further provenance for the task.
+
+**What to do:** Treat the durable governance store as compromised until explained: capture it for forensic review before it is overwritten, then restore from a trusted backup once the cause is understood.
+
+<a id="plane-calllog-chain-verify-failed"></a>
+### BUSBAR-2042 — MCP per-call records failed hash-chain verification on restore (tamper evidence)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `plane-calllog-chain-verify-failed`
+
+A principal's persisted MCP per-call records were read at boot but do NOT verify against their own hash chain, which is tamper evidence. They are still restored and the chain resumes from the broken tail, because refusing here would convert a detection control into a deletion primitive — anyone able to write to the store could delete a caller's history by corrupting one record.
+
+**What to do:** Treat the durable governance store as compromised until explained: capture it for forensic review before it is overwritten, then restore from a trusted backup once the cause is understood.
 
 ## 3xxx — Config
 
@@ -507,6 +584,50 @@ The oauth_as authorization server has no `signing_key` configured, so busbar gen
 
 **What to do:** Set `oauth_as.signing_key` to a durable key reference before relying on issued tokens across restarts. Until then, every restart invalidates all outstanding oauth_as tokens.
 
+<a id="admin-auth-chain-empty"></a>
+### BUSBAR-4026 — Admin API admin_auth chain set EMPTY (open, anonymous, full-authority posture)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `admin-auth-chain-empty`
+
+A PUT to `/api/v1/admin/admin-auth` applied an EMPTY admin_auth chain, so the admin API now has NO credential gating it — every admin request is admitted anonymously with full authority. This is the open dev posture; it is a deliberate security-posture change, not a per-request event.
+
+**What to do:** Configure a non-empty `admin_auth` (an `admin-tokens` entry with a `token:`, or an admin module) before exposing the admin API to any untrusted network. Leave it empty only for local development.
+
+<a id="admin-createkey-malformed-body"></a>
+### BUSBAR-4027 — create_key request body failed to parse (client 400)
+
+- **Severity:** benign_recurring
+- **Since:** 1.6.0
+- **Slug:** `admin-createkey-malformed-body`
+
+A create_key request body did not parse as valid JSON, so busbar returns a generic 400. The body carries secrets (an AWS secret_access_key, the bearer being minted), so only its byte length is logged, never the raw error or an input fragment. This is a CLIENT-side bad request, not an operator problem, so it is emitted at debug.
+
+**What to do:** None — self-heals; the client must send well-formed JSON. Persistent volume from one caller indicates a broken client worth fixing, but it is not a busbar fault.
+
+<a id="createkey-unknown-pool"></a>
+### BUSBAR-4028 — create_key allowed_pools names an unconfigured pool (key still created)
+
+- **Severity:** benign_recurring
+- **Since:** 1.6.0
+- **Slug:** `createkey-unknown-pool`
+
+A create_key request listed an `allowed_pools` entry that names no configured pool — a likely typo. The key is still created (the entry activates if the pool is configured later), so this is a non-fatal advisory. It is a per-request, caller-side signal, so it is emitted at debug.
+
+**What to do:** None required — the key was created. If the pool name was a typo, correct it or configure the named pool so the allowed_pools entry takes effect.
+
+<a id="admin-updatekey-malformed-body"></a>
+### BUSBAR-4029 — update_key request body failed to parse (client 400)
+
+- **Severity:** benign_recurring
+- **Since:** 1.6.0
+- **Slug:** `admin-updatekey-malformed-body`
+
+An update_key request body did not parse as valid JSON, so busbar returns a generic 400, logging only the body's byte length (never the raw serde error or an input fragment). Mirror of BUSBAR-4027 for the update path. This is a CLIENT-side bad request, so it is emitted at debug.
+
+**What to do:** None — self-heals; the client must send well-formed JSON. Persistent volume from one caller indicates a broken client worth fixing.
+
 ## 5xxx — Proxy & routing
 
 <a id="usage-tap-reassembly-cap-exceeded"></a>
@@ -916,6 +1037,83 @@ During a /metrics scrape, reading a group budget bucket's ledger from the store 
 
 **What to do:** None — self-heals on the next scrape. Sustained failures indicate a governance-store problem.
 
+<a id="plane-breaker-tripped"></a>
+### BUSBAR-5038 — Plane breaker tripped (upstream target failing; dispatches fast-fail)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `plane-breaker-tripped`
+
+A non-LLM plane target's circuit breaker transitioned Closed→Open because the upstream target is failing, so further dispatches fast-fail until the half-open probe recovers it. Names the specific target (every plane target shares one degenerate lane, so without this the operator would not learn WHICH server is down). Emitted once per logical trip, not per failure.
+
+**What to do:** Investigate the named plane target's health (the tool/agent/MCP server it fronts). Traffic to it fast-fails until the breaker's half-open probe finds it healthy again.
+
+<a id="plane-breaker-hard-down"></a>
+### BUSBAR-5039 — Plane breaker tripped hard-down (definitive auth/billing failure; sticky cooldown)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `plane-breaker-hard-down`
+
+A non-LLM plane target answered a DEFINITIVE failure (auth/billing), so busbar trips its breaker hard-down: dispatches fast-fail for a sticky cooldown rather than keep retrying a target that will keep rejecting. Emitted per hard-down disposition for the named target.
+
+**What to do:** Fix the named target's credentials or billing/quota with its provider — a hard-down is a definitive rejection, not a transient blip. It recovers via the half-open probe once the underlying auth/billing fault is resolved.
+
+<a id="lane-hard-down-all-cells"></a>
+### BUSBAR-5040 — Lane hard-down across all cells (sticky cooldown; recovers via half-open probe)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `lane-hard-down-all-cells`
+
+A lane was recorded hard-down across ALL its per-pool cells at once (the all-cells variant of BUSBAR-5026) — every pool's view of the lane is tripped Open with a sticky cooldown. The lane is RECOVERABLE via the half-open probe (it is not marked dead), so it re-admits once a probe succeeds.
+
+**What to do:** Investigate the named upstream/model lane's health — a hard-down across all cells means a definitive lane-wide fault. Traffic fails over automatically; the lane recovers via the half-open probe once the upstream is healthy.
+
+<a id="breaker-unexpected-state-classify"></a>
+### BUSBAR-5041 — Unexpected breaker state on classify (fail-safe: deny admission)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `breaker-unexpected-state-classify`
+
+The breaker classify path read a cell state that is not one of the three valid encodings (Closed/Open/HalfOpen). This is IMPOSSIBLE under the atomic-sentinel invariant, so reaching it means a real invariant break or memory corruption. busbar fails SAFE — treats the cell as never-elapsing Open so admission is denied — rather than panic the dispatching task. Warned once per process; recurrence logs at debug.
+
+**What to do:** Capture the logged state value and file a bug — a breaker cell should never hold an unexpected state. Requests to that cell are safely denied (fail-closed) until it is re-armed; investigate for memory corruption if it persists.
+
+<a id="breaker-unexpected-state-probe"></a>
+### BUSBAR-5042 — Unexpected breaker state on probe acquisition (fail-safe: refuse)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `breaker-unexpected-state-probe`
+
+The breaker probe-acquisition path read an unexpected cell state (not Closed/Open/HalfOpen). Impossible under the atomic-sentinel invariant; busbar refuses the probe acquisition (admits nobody) rather than panic the dispatching task. Same invariant-break family as BUSBAR-5041. Warned once per process; recurrence logs at debug.
+
+**What to do:** Capture the logged state value and file a bug. Probe acquisition is safely refused; investigate for memory corruption if it persists.
+
+<a id="breaker-unexpected-state-read"></a>
+### BUSBAR-5043 — Unexpected breaker state on state read (reporting Closed)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `breaker-unexpected-state-read`
+
+A breaker cell state read (a total, side-effect-free projection) found an unexpected encoding. Impossible under the atomic-sentinel invariant; busbar reports the benign Closed default rather than panic, keeping the read total for any encoding. Same family as BUSBAR-5041. Warned once per process; recurrence logs at debug.
+
+**What to do:** Capture the logged state value and file a bug — this read should never see an unexpected state. The projection is safe; investigate for memory corruption if it persists.
+
+<a id="breaker-unexpected-state-record-failure"></a>
+### BUSBAR-5044 — Unexpected breaker state in record_failure (no-op)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `breaker-unexpected-state-record-failure`
+
+The breaker failure-recording path read an unexpected cell state (not Closed/Open/HalfOpen). Impossible under the atomic-sentinel invariant; busbar treats it as a no-op (like the already-Open case) rather than panic the task. Same family as BUSBAR-5041. Warned once per process; recurrence logs at debug.
+
+**What to do:** Capture the logged state value and file a bug — a breaker cell should never hold an unexpected state. The failure record is safely dropped; investigate for memory corruption if it persists.
+
 ## 6xxx — Plugins
 
 <a id="plugins-fetch-reload-miss"></a>
@@ -950,6 +1148,61 @@ A plugin artifact is present in the plugins directory but was NOT loaded because
 A plugin was loaded even though its signature is UNVERIFIED — its code is running unauthenticated, permitted only because an explicit `plugins.trust` opt-in (`allow_unsigned`/`allow_third_party`) let it through. Security-relevant: unverified plugin code runs in-process with busbar's privileges. Emitted once per such plugin at boot.
 
 **What to do:** Prefer a signed artifact from a trusted publisher and remove the `plugins.trust` opt-in once you no longer need it. If running unverified is a deliberate, understood choice (e.g. a locally-built plugin), the opt-in is what keeps it explicit.
+
+<a id="plugins-dir-fingerprint-failed"></a>
+### BUSBAR-6004 — Cannot fingerprint the plugins dir (bypassing the catalog cache)
+
+- **Severity:** benign_recurring
+- **Since:** 1.6.0
+- **Slug:** `plugins-dir-fingerprint-failed`
+
+A real I/O error (not a missing directory) meant the plugins directory could not be fingerprinted, so its content-hash freshness signal cannot be trusted and busbar bypasses the catalog cache for this read, falling through to the real scan. Self-healing: it clears once the directory is readable. Warned once on entry to the failing state; recurrence logs at debug.
+
+**What to do:** Investigate the plugins directory's readability (permissions, a stale/hung mount). The catalog read still works via the direct scan; the cache re-engages once the directory fingerprints cleanly again.
+
+<a id="plugin-catalog-scan-gate-timeout"></a>
+### BUSBAR-6005 — Plugin catalog scan gate not acquired within the wait bound (retryable 503)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `plugin-catalog-scan-gate-timeout`
+
+A plugin catalog scan could not acquire the scan gate within its bounded wait, which signals a PRIOR scan is not returning — typically a stale or hung plugins_dir mount. busbar answers with a retryable Unavailable (503) rather than hang this request behind the wedged scan.
+
+**What to do:** Investigate the plugins_dir mount — a hung scan usually means the directory's filesystem is stalled (e.g. an unresponsive network mount). Resolve the mount; the gate frees once the prior scan returns or is unwedged.
+
+<a id="plugin-catalog-blocking-task-failed"></a>
+### BUSBAR-6006 — Plugin catalog blocking task failed to join (fail-soft to the compiled-in row)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `plugin-catalog-blocking-task-failed`
+
+The plugin catalog store scan ran on a `spawn_blocking` task that failed to join (cancelled or panicked). busbar fails SOFT to the always-true compiled-in catalog row rather than a 500 — this is just a plugin CATALOG read — the same posture it takes on an unparseable plugins_cfg. Rare.
+
+**What to do:** Investigate the logged context if it recurs — a blocking-task join failure on the catalog read is unusual. The catalog is served fail-soft in the meantime, so the admin read still returns.
+
+<a id="plugin-rollback-pin-persist-failed"></a>
+### BUSBAR-6007 — Plugin rollback could not persist the version pin (nothing swapped, fail-closed)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `plugin-rollback-pin-persist-failed`
+
+A plugin rollback tried to persist the lowered version pin to the config overlay and the write failed, so busbar FAILS CLOSED and swaps nothing — the running engine still serves the current plugin. Persisting the pin is the whole point of the rollback: a swallowed failure would swap the live engine while disk still carried the rolled-forward state, so a restart would silently re-upgrade.
+
+**What to do:** Investigate the config overlay's writability (the log names the plugin). Fix the overlay path/permissions and re-issue the rollback; nothing was changed, so it is safe to retry.
+
+<a id="plugin-rollback-revert-failed"></a>
+### BUSBAR-6008 — Plugin rollback rebuild failed AND reverting the version pin failed (disk out of sync)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `plugin-rollback-revert-failed`
+
+A plugin rollback's rebuild failed AFTER the lowered pin was persisted, and the compensating revert of that pin ALSO failed, so disk now carries the rolled-forward pin while the running engine still serves the prior plugin. A restart would honor the stale on-disk pin and contradict the running engine. Loud because disk and the live engine now disagree.
+
+**What to do:** Fix the config overlay so the version pin matches the plugin the running engine serves BEFORE restarting (the log names the plugin and both errors). Until then a restart would come up in a state the running engine rejected.
 
 ## 7xxx — Plane protocols
 
@@ -1271,6 +1524,413 @@ When fetching an agent card over TLS, the endpoint's certificate yielded no SPKI
 The outcome of a push-notification delivery could not be appended to its provenance chain. The delivery itself already happened (or was already refused); only the record-keeping append failed. Per-request and benign to the delivery path, so surfaced at debug.
 
 **What to do:** None — self-heals for delivery. If it recurs, investigate the durable provenance store, since delivery outcomes are then going unchained.
+
+<a id="mcp-calllog-empty-chains"></a>
+### BUSBAR-7060 — Durable MCP call log enumerates principals with NO records
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `mcp-calllog-empty-chains`
+
+At boot the durable MCP per-call log named one or more principals but returned no records for them, so their chains reopen at seq 1. The verifier cannot distinguish this from a caller's evidence being deleted wholesale, so it is surfaced rather than summed silently into the restored total.
+
+**What to do:** Confirm whether these principals were expected to have call history. If they were, treat the durable governance store as possibly tampered and capture it for review before it is overwritten.
+
+<a id="mcp-calllog-unread"></a>
+### BUSBAR-7061 — Durable MCP per-call log could not be read at boot
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `mcp-calllog-unread`
+
+The durable MCP per-call log could not be read back at boot, so the persisted tail is unknown and a principal that already has rows in the store may reopen its chain at seq 1 and collide with a persisted sequence number.
+
+**What to do:** Check the durable governance store's health and connectivity. Once it answers, restart so the per-call chains restore from a known tail.
+
+<a id="mcp-demotions-restored"></a>
+### BUSBAR-7062 — MCP upstream demotions restored from the durable store
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `mcp-demotions-restored`
+
+One or more MCP upstream servers were quarantined before the last restart and their demotion records were replayed from the durable governance store, so they are refused until an operator works the change or a sweep observes them serving what was approved.
+
+**What to do:** Investigate why each named server was demoted and either remediate it or clear its demotion. Until then, requests routed to it are refused by design.
+
+<a id="mcp-stdio-read-error"></a>
+### BUSBAR-7063 — MCP stdio serve read error on stdin (session ending)
+
+- **Severity:** benign_recurring
+- **Since:** 1.6.0
+- **Slug:** `mcp-stdio-read-error`
+
+The MCP stdio server hit a read error on stdin and is shutting the session down. This is the expected outcome when the peer closes the pipe, so it is logged at debug rather than as an operator alert.
+
+**What to do:** None — self-heals. Expected when a stdio MCP client disconnects.
+
+<a id="mcp-ask-recogniser-missed"></a>
+### BUSBAR-7064 — MCP input-required result reached the terminal check (ask recogniser missed)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `mcp-ask-recogniser-missed`
+
+An upstream MCP tool returned an input-required result that reached the terminal check without the ask recogniser catching it — an internal invariant breach, since such a result should have been recognised and handled earlier. The call is refused rather than handing the caller an upstream's demand for a secret.
+
+**What to do:** Report the named tool and field: the ask-recognition path has a gap that let an input-required shape through. This is a code-level fix, not an operator misconfig.
+
+<a id="mcp-output-schema-violation"></a>
+### BUSBAR-7065 — MCP upstream structuredContent violates the published outputSchema
+
+- **Severity:** benign_recurring
+- **Since:** 1.6.0
+- **Slug:** `mcp-output-schema-violation`
+
+An upstream MCP tool returned `structuredContent` that does not validate against the tool's own published `outputSchema`, so the result is refused. This is an upstream contract violation that can recur per request, so it is logged at debug to avoid spam.
+
+**What to do:** If a specific tool trips this repeatedly, report the schema mismatch to that MCP server's operator. No local action is needed.
+
+<a id="mcp-toolcall-refused"></a>
+### BUSBAR-7066 — MCP tools/call refused by policy
+
+- **Severity:** benign_recurring
+- **Since:** 1.6.0
+- **Slug:** `mcp-toolcall-refused`
+
+An MCP `tools/call` was refused by busbar's policy (budget, gate, or capability). This is a routine per-request governance outcome, logged at debug so a busy caller cannot spam the operator log.
+
+**What to do:** None — self-heals. The refusal reason is recorded in the audit and call log if a specific caller needs to be understood.
+
+<a id="mcp-toolcall-upstream-failed"></a>
+### BUSBAR-7067 — MCP tools/call upstream failed
+
+- **Severity:** benign_recurring
+- **Since:** 1.6.0
+- **Slug:** `mcp-toolcall-upstream-failed`
+
+An MCP `tools/call` was dispatched and the upstream server failed to execute it. This is reported to the model as a tool execution error (not a busbar refusal) and can recur per request, so it is logged at debug.
+
+**What to do:** None locally — self-heals. If a specific upstream fails persistently, check that server's health.
+
+<a id="mcp-toolcall-refused-pre-upstream"></a>
+### BUSBAR-7068 — MCP tools/call refused before the upstream
+
+- **Severity:** benign_recurring
+- **Since:** 1.6.0
+- **Slug:** `mcp-toolcall-refused-pre-upstream`
+
+An MCP `tools/call` was refused before it reached the upstream (a pre-dispatch policy denial). Routine per-request governance, logged at debug to avoid spamming the operator log under load.
+
+**What to do:** None — self-heals. The refusal reason is in the audit and call log.
+
+<a id="mcp-caller-ask-refused"></a>
+### BUSBAR-7069 — MCP caller-ask refused
+
+- **Severity:** benign_recurring
+- **Since:** 1.6.0
+- **Slug:** `mcp-caller-ask-refused`
+
+A caller's MCP ask for a capability was refused by policy. This is a routine per-request governance outcome, logged at debug so it cannot spam the operator log.
+
+**What to do:** None — self-heals. The refusal reason is recorded in the audit and call log.
+
+<a id="webhook-exporter-disabled"></a>
+### BUSBAR-7070 — Webhook log exporter disabled (invalid configuration)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `webhook-exporter-disabled`
+
+A request-log webhook exporter could not be built from its configuration and has been disabled, so its request logs are NOT delivered. This is a config problem surfaced at boot, not a transient delivery failure.
+
+**What to do:** Fix the named webhook exporter's configuration (URL, auth header, or projection) and restart to re-enable delivery.
+
+<a id="webhook-delivery-non-2xx"></a>
+### BUSBAR-7071 — Webhook log delivery returned non-2xx (log dropped)
+
+- **Severity:** benign_recurring
+- **Since:** 1.6.0
+- **Slug:** `webhook-delivery-non-2xx`
+
+A request-log webhook delivery got a non-2xx response from the sink, so that one log line was dropped (deliveries are fire-and-forget and never retried). This can recur per request when a sink is unhealthy, so it is logged at debug.
+
+**What to do:** If logs are being lost, check the webhook sink's health and the delivery counters. `WEBHOOK_LOGS_DROPPED_TOTAL` tracks the volume.
+
+<a id="webhook-delivery-transport-error"></a>
+### BUSBAR-7072 — Webhook log delivery transport error (log dropped)
+
+- **Severity:** benign_recurring
+- **Since:** 1.6.0
+- **Slug:** `webhook-delivery-transport-error`
+
+A request-log webhook delivery failed with a transport error (connection/timeout/DNS), so that one log line was dropped. Deliveries are fire-and-forget and never retried; this can recur per request when a sink is unreachable, so it is logged at debug.
+
+**What to do:** If logs are being lost, check the webhook sink's reachability and the delivery counters. `WEBHOOK_LOGS_DROPPED_TOTAL` tracks the volume.
+
+<a id="file-log-append-failed"></a>
+### BUSBAR-7073 — Request-log file append failed (log dropped)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `file-log-append-failed`
+
+Writing a line to the request-log file failed, so that log line was dropped. Telemetry writes are fire-and-forget and never block serving, but a persistent failure means request logs are being lost — usually a disk-full or permission problem.
+
+**What to do:** Check the log file's path for free space and write permission. Serving is unaffected; only request-log durability is.
+
+<a id="file-log-open-failed"></a>
+### BUSBAR-7074 — Request-log file open failed (log dropped)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `file-log-open-failed`
+
+The request-log file could not be opened for append, so that log line was dropped. A persistent failure means request logs are being lost — usually a missing directory, a permission problem, or a full disk.
+
+**What to do:** Ensure the log file's directory exists and is writable, and that the disk is not full. Serving is unaffected; only request-log durability is.
+
+<a id="file-log-retention-failed"></a>
+### BUSBAR-7075 — Request-log archive retention cleanup failed
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `file-log-retention-failed`
+
+During rotation, deleting the oldest request-log archive failed, so the archive series may grow past its retention limit and consume more disk than intended. No log data is lost by this failure itself.
+
+**What to do:** Check the log directory's permissions and free space so retention cleanup can remove the oldest archive on the next rotation.
+
+<a id="file-log-shift-failed"></a>
+### BUSBAR-7076 — Request-log archive shift failed during rotation
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `file-log-shift-failed`
+
+Renaming an archived request-log file to its next slot during rotation failed, so the older archive was left in place rather than lost. Rotation degrades but no recorded data is discarded.
+
+**What to do:** Check the log directory's permissions and that no external process holds the archive files, so the shift can complete on the next rotation.
+
+<a id="file-log-rotate-rename-failed"></a>
+### BUSBAR-7077 — Request-log rotation rename failed (file grows past cap)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `file-log-rotate-rename-failed`
+
+Renaming the current request-log file to its first archive slot failed, so busbar keeps APPENDING to the current file rather than truncating it — no recorded data is lost, but the file will grow past its `rotate_mb` cap until this is resolved.
+
+**What to do:** Check the log directory's permissions and free space so the rotation rename can succeed. No data is lost in the meantime; the file simply exceeds its size cap.
+
+<a id="ir-clamp-n-to-1"></a>
+### BUSBAR-7078 — Cross-protocol transcode clamped n>1 to 1
+
+- **Severity:** benign_recurring
+- **Since:** 1.6.0
+- **Slug:** `ir-clamp-n-to-1`
+
+On a cross-protocol hop the neutral response IR carries a single candidate, so a request asking for n>1 completions is clamped to n=1 before the egress writer emits it — otherwise extra choices would be generated, billed, and then dropped. Fires per request on the affected seam, so it is logged at debug.
+
+**What to do:** None — self-heals. To use n>1, route the request to a same-protocol lane where the body is forwarded verbatim.
+
+<a id="ir-drop-reasoning"></a>
+### BUSBAR-7079 — Cross-protocol transcode dropped a reasoning/thinking ask
+
+- **Severity:** benign_recurring
+- **Since:** 1.6.0
+- **Slug:** `ir-drop-reasoning`
+
+A request's reasoning/thinking parameter was dropped on the cross-protocol seam because the target lane does not declare the reasoning capability; the request proceeds at the backend's default thinking level. Fires per request on the affected seam, logged at debug.
+
+**What to do:** None — self-heals. Set `reasoning: true` on the model or pool member if the backend accepts thinking params.
+
+<a id="ir-drop-prompt-cache"></a>
+### BUSBAR-7080 — Cross-protocol transcode dropped prompt-cache breakpoints
+
+- **Severity:** benign_recurring
+- **Since:** 1.6.0
+- **Slug:** `ir-drop-prompt-cache`
+
+Prompt-cache breakpoints were cleared on the cross-protocol seam because the target lane's dialect gates its cache marker per model and the lane does not declare the capability; the request proceeds uncached. Fires per request on the affected seam, logged at debug.
+
+**What to do:** None — self-heals. Set `prompt_caching: true` on the model if the backend accepts cache markers (e.g. Claude on Bedrock).
+
+<a id="ir-drop-cache-control-over-cap"></a>
+### BUSBAR-7081 — Cross-protocol transcode dropped cache_control breakpoints past the dialect cap
+
+- **Severity:** benign_recurring
+- **Since:** 1.6.0
+- **Slug:** `ir-drop-cache-control-over-cap`
+
+The request carried more cache_control breakpoints than the egress dialect allows (the target vendor 400s past its documented cap), so the breakpoints past the cap were dropped before the writer emitted them. Reachable only cross-protocol; fires per request, logged at debug.
+
+**What to do:** None — self-heals. Reduce the number of cache breakpoints, or route to a same-protocol lane if the full set is load-bearing.
+
+<a id="ir-drop-hosted-tools"></a>
+### BUSBAR-7082 — Cross-protocol transcode dropped hosted (built-in) tools
+
+- **Severity:** benign_recurring
+- **Since:** 1.6.0
+- **Slug:** `ir-drop-hosted-tools`
+
+One or more Responses hosted (built-in) tools were dropped on the cross-protocol seam because they have no function-tool equivalent for a non-Responses backend; forwarding them would emit a malformed empty-name function tool the upstream rejects. Fires per request, logged at debug.
+
+**What to do:** None — self-heals. Route hosted-tool requests to a Responses lane to use them.
+
+<a id="ir-drop-message-name"></a>
+### BUSBAR-7083 — Cross-protocol transcode dropped OpenAI messages[].name
+
+- **Severity:** benign_recurring
+- **Since:** 1.6.0
+- **Slug:** `ir-drop-message-name`
+
+OpenAI per-message participant names (`messages[].name`) were dropped on the cross-protocol seam because no target protocol models a per-message speaker name, so a multi-speaker transcript reaches the backend with its speaker labels removed. Fires per request, logged at debug.
+
+**What to do:** None — self-heals. Put the speaker in the message text, or route to an openai lane.
+
+<a id="ir-drop-cached-content"></a>
+### BUSBAR-7084 — Cross-protocol transcode dropped Gemini cachedContent
+
+- **Severity:** benign_recurring
+- **Since:** 1.6.0
+- **Slug:** `ir-drop-cached-content`
+
+A Gemini `cachedContent` reference was dropped on the cross-protocol seam because the referenced context cache lives server-side at Google and cannot be projected into `contents`: the backend answers on the visible history only and the caller is billed full uncached input. Fires per request, logged at debug.
+
+**What to do:** None — self-heals. Route cachedContent requests to a Gemini lane to use the cache.
+
+<a id="ir-drop-unmodeled-keys"></a>
+### BUSBAR-7085 — Cross-protocol transcode dropped unmodeled request keys
+
+- **Severity:** benign_recurring
+- **Since:** 1.6.0
+- **Slug:** `ir-drop-unmodeled-keys`
+
+The source dialect's unmodeled top-level request keys were dropped on the cross-protocol seam because no target writer can re-emit a foreign dialect's key, so every key named in the log is not forwarded to the backend. Fires per request; only key names are logged (never their values), at debug.
+
+**What to do:** None — self-heals. Route to a same-protocol lane (which forwards the caller's original bytes verbatim) if a named field is load-bearing.
+
+<a id="ir-truncate-stop-sequences"></a>
+### BUSBAR-7086 — Stop sequences truncated to the protocol's documented cap
+
+- **Severity:** benign_recurring
+- **Since:** 1.6.0
+- **Slug:** `ir-truncate-stop-sequences`
+
+The request carried more stop sequences than the target protocol's documented cap allows, so the excess were dropped before forwarding. Fires per request on the affected seam, logged at debug.
+
+**What to do:** None — self-heals. Reduce the number of stop sequences, or route to a same-protocol lane if the full set is required.
+
+<a id="proto-auth-invalid-header-bytes"></a>
+### BUSBAR-7087 — Egress credential has invalid header bytes (auth header omitted)
+
+- **Severity:** benign_recurring
+- **Since:** 1.6.0
+- **Slug:** `proto-auth-invalid-header-bytes`
+
+An egress authorization credential contained bytes that are not valid in an HTTP header (e.g. an ASCII control character), so the Authorization header was omitted entirely rather than sent malformed — the upstream will reject the request with 401. The key itself is never logged, only the protocol name. This is a bad-credential misconfig that can recur per request, so it is logged at debug.
+
+**What to do:** Fix the misconfigured lane's credential — the configured secret contains invalid header bytes. The protocol name in the log line locates the lane.
+
+<a id="proto-drop-provider-metadata"></a>
+### BUSBAR-7088 — Cross-protocol transcode dropped response-side provider metadata
+
+- **Severity:** benign_recurring
+- **Since:** 1.6.0
+- **Slug:** `proto-drop-provider-metadata`
+
+Response-side provider metadata (a Bedrock guardrail `trace`, a Gemini `safetyRatings`) was dropped on the cross-protocol seam because it is a vendor-scoped artifact the caller's protocol has no shape to receive. Fires per response on the affected seam, logged at debug.
+
+**What to do:** None — self-heals. If this metadata is compliance evidence, route the request to a same-protocol lane where the upstream body reaches the client verbatim.
+
+<a id="plane-task-row-unreadable"></a>
+### BUSBAR-7089 — Persisted A2A task row could not be read back (not resumable)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `plane-task-row-unreadable`
+
+A persisted A2A task row could not be decoded at boot, so that task is NOT resumable and is reported rather than skipped silently. Usually an engine-version mismatch or a corrupt row.
+
+**What to do:** Note the task id. If many rows are unreadable, suspect a store format mismatch after an upgrade or downgrade; capture the store for review.
+
+<a id="plane-ssrf-callback-at-store"></a>
+### BUSBAR-7090 — SSRF-refused push callback reached the task store (dropped)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `plane-ssrf-callback-at-store`
+
+A push callback URL that the SSRF guard refuses reached the A2A task store and was dropped there. The store is the last line of defence — a callback should have been validated by the caller before it got this far, so reaching the store means a caller path skipped validation.
+
+**What to do:** Find the caller that stored this callback without validating it (a code-level defect in a submission path) and add the SSRF check before the store.
+
+<a id="approval-ledger-unreachable-refused"></a>
+### BUSBAR-7091 — Spent-approval ledger unreachable — redemption refused
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `approval-ledger-unreachable-refused`
+
+The shared spent-approval ledger could not be reached, so an approval redemption was REFUSED: a ledger that cannot say whether an approval was already spent must not be read as saying it was not (a double-spend on a money-moving tool is the defect the gate exists to stop).
+
+**What to do:** Restore connectivity to the shared spent-approval ledger's durable store. Until then, approval redemptions fail closed by design.
+
+<a id="plane-calllog-empty-chain"></a>
+### BUSBAR-7092 — Durable MCP call log enumerates a principal with NO records
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `plane-calllog-empty-chain`
+
+The durable MCP call log named a principal and then produced no records for it, so its chain is reopened at seq 1 and the discrepancy is reported rather than skipped. The verifier alone cannot distinguish this from a caller's evidence being deleted wholesale.
+
+**What to do:** Confirm whether this principal was expected to have call history. If it was, treat the store as possibly tampered and capture it for review before it is overwritten.
+
+<a id="plane-calllog-write-failed"></a>
+### BUSBAR-7093 — Durable MCP per-call record could not be written (evidence lost)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `plane-calllog-write-failed`
+
+The durable MCP per-call record could NOT be written, so this call is being served but its evidence is being lost. The chain position is unchanged, so the chain stays contiguous — what is missing is this one record, not the ones after it. This can recur per request during a store outage, so it warns on the transition into the failing state and holds subsequent occurrences at debug.
+
+**What to do:** Restore the durable governance store's write path. Once writes succeed again the latch resets and a future outage re-warns.
+
+<a id="plane-demotion-write-failed"></a>
+### BUSBAR-7094 — Durable MCP demotion record could not be written
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `plane-demotion-write-failed`
+
+The durable MCP demotion record could NOT be written, so this upstream is demoted only in the current process and a restart will re-open it until the next sweep looks again. Usually a durable store-write outage.
+
+**What to do:** Restore the durable governance store's write path so demotions persist across restarts.
+
+<a id="plane-demotion-clear-failed"></a>
+### BUSBAR-7095 — Durable MCP demotion record could not be cleared
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `plane-demotion-clear-failed`
+
+The durable MCP demotion record for an upstream could NOT be cleared even though it is serving again in the current process, so a restart would re-establish a quarantine the operator has already worked. Usually a durable store-write outage.
+
+**What to do:** Restore the durable governance store's write path so a cleared demotion does not reappear after a restart.
+
+<a id="plane-demotions-unread"></a>
+### BUSBAR-7096 — Durable MCP demotion records could not be read at boot
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `plane-demotions-unread`
+
+The durable MCP demotion records could NOT be read at boot, so any upstream this deployment had demoted is re-opened until the first sweep looks again. Usually a durable store-read outage.
+
+**What to do:** Restore the durable governance store's read path and restart so persisted demotions are re-applied before a listener binds.
 
 ## 8xxx — Governance & cost
 

@@ -14,6 +14,11 @@ use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
+use crate::diagnostics::{
+    diag_debug, diag_error, diag_warn, ADMIN_STORE_OPERATION_FAILED, GROUP_DELETE_KEY_READ_FAILED,
+    PLUGINS_DIR_FINGERPRINT_FAILED, PLUGIN_CATALOG_BLOCKING_TASK_FAILED,
+    PLUGIN_CATALOG_SCAN_GATE_TIMEOUT, USAGE_BLOCKING_TASK_JOIN_FAILED,
+};
 use crate::state::App;
 
 use super::contract::{
@@ -644,7 +649,7 @@ pub(crate) fn count_keys_bound_to(app: &App, group: &str) -> Result<usize, Admin
     Ok(gov
         .all_keys()
         .map_err(|e| {
-            tracing::error!(group = %group, error = %e, "group delete: cannot read keys to check bindings");
+            diag_error!(GROUP_DELETE_KEY_READ_FAILED, group = %group, error = %e, "group delete: cannot read keys to check bindings");
             AdminError::Internal
         })?
         .into_iter()
@@ -1438,14 +1443,34 @@ impl AdminService {
         // the real scan, whose own `discover()` call fails the same way and surfaces the
         // `INVALID: cannot read plugins dir` row — on EVERY call, honestly, until the directory
         // becomes readable again, rather than silently serving whatever was cached before.
+        // Warn-once transition latch: this read runs on every catalog GET, so an unlatched warn
+        // would spam while the dir stays unreadable. Warn on entry into the failing state; hold
+        // subsequent failing reads at debug; clear on the next clean fingerprint so a future outage
+        // re-warns.
+        static FINGERPRINT_WARNED: std::sync::atomic::AtomicBool =
+            std::sync::atomic::AtomicBool::new(false);
         let before = match plugins_dir_fingerprint(&self.app.plugins_dir) {
-            Ok(fp) => Some(fp),
+            Ok(fp) => {
+                FINGERPRINT_WARNED.store(false, std::sync::atomic::Ordering::Relaxed);
+                Some(fp)
+            }
             Err(e) => {
-                tracing::warn!(
-                    dir = %self.app.plugins_dir.display(),
-                    error = %e,
-                    "cannot fingerprint plugins dir; bypassing the catalog cache for this read"
-                );
+                if !FINGERPRINT_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                    diag_warn!(
+                        PLUGINS_DIR_FINGERPRINT_FAILED,
+                        dir = %self.app.plugins_dir.display(),
+                        error = %e,
+                        "cannot fingerprint plugins dir; bypassing the catalog cache for this read"
+                    );
+                } else {
+                    diag_debug!(
+                        PLUGINS_DIR_FINGERPRINT_FAILED,
+                        dir = %self.app.plugins_dir.display(),
+                        error = %e,
+                        "cannot fingerprint plugins dir; still bypassing the catalog cache for this \
+                         read (dir not yet readable)"
+                    );
+                }
                 None
             }
         };
@@ -1603,7 +1628,8 @@ impl AdminService {
         {
             Ok(guard) => guard,
             Err(_elapsed) => {
-                tracing::warn!(
+                diag_warn!(
+                    PLUGIN_CATALOG_SCAN_GATE_TIMEOUT,
                     operation = "list_plugins.store",
                     wait = ?CATALOG_SCAN_GATE_WAIT,
                     "catalog scan gate could not be acquired within the wait bound; a prior scan \
@@ -1621,7 +1647,8 @@ impl AdminService {
         {
             Ok(rows) => Ok(rows),
             Err(join_err) => {
-                tracing::error!(
+                diag_warn!(
+                    PLUGIN_CATALOG_BLOCKING_TASK_FAILED,
                     operation = "list_plugins.store",
                     error = %join_err,
                     "admin blocking task failed"
@@ -2137,11 +2164,12 @@ impl AdminService {
             // store failure. `operation` distinguishes which of the two reads failed, since each has
             // a different remediation.
             Ok(Err((operation, e))) => {
-                tracing::error!(operation, error = %e, "admin store operation failed");
+                diag_error!(ADMIN_STORE_OPERATION_FAILED, operation, error = %e, "admin store operation failed");
                 return Err(AdminError::Internal);
             }
             Err(join_err) => {
-                tracing::error!(
+                diag_error!(
+                    USAGE_BLOCKING_TASK_JOIN_FAILED,
                     operation = "usage",
                     error = %join_err,
                     "admin blocking task failed"
