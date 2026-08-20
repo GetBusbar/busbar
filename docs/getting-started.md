@@ -50,7 +50,7 @@ This guide takes you from zero to a working request in about five minutes.
   <path d="M373,198 C373,174 455,174 455,198" fill="none" stroke="#94a3b8" stroke-width="1.6" stroke-dasharray="4 3" marker-end="url(#gs-fail)"/>
   <text x="414" y="171" text-anchor="middle" fill="#94a3b8" font-size="9.5">failover</text>
   <rect x="248" y="198" width="150" height="54" rx="10" fill="#1a2740" stroke="#f87171" stroke-opacity="0.55" stroke-width="1.5"/>
-  <text x="323" y="221" text-anchor="middle" fill="#e6edf7" font-size="11.5" font-weight="700">claude-sonnet</text>
+  <text x="323" y="221" text-anchor="middle" fill="#e6edf7" font-size="11.5" font-weight="700">claude-sonnet-4-5</text>
   <circle cx="278" cy="238" r="3.5" fill="#f87171"/>
   <text x="333" y="241" text-anchor="middle" fill="#fca5a5" font-size="10">breaker open</text>
   <rect x="430" y="198" width="150" height="54" rx="10" fill="#1a2740" stroke="#2c3a52"/>
@@ -142,7 +142,7 @@ providers:
     api_key: { env: ANTHROPIC_KEY }   # the NAME of the env var to read the key from, NOT the key itself
 
 models:
-  claude-sonnet:
+  claude-sonnet-4-5:
     provider: anthropic
 ```
 
@@ -195,7 +195,7 @@ curl -s http://localhost:8080/healthz
 The model name goes in the URL path: `POST /<model-name>/v1/messages`. Busbar resolves `<model-name>` against your configured pools first, then your models, and routes the request to the matching lane.
 
 ```bash
-curl -s http://localhost:8080/claude-sonnet/v1/messages \
+curl -s http://localhost:8080/claude-sonnet-4-5/v1/messages \
   -H "Content-Type: application/json" \
   -d '{
     "max_tokens": 256,
@@ -213,7 +213,7 @@ The model name goes in the request body: `POST /v1/chat/completions`. This works
 curl -s http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "claude-sonnet",
+    "model": "claude-sonnet-4-5",
     "messages": [{"role": "user", "content": "What is a busbar?"}]
   }' | jq .
 ```
@@ -231,13 +231,13 @@ client = OpenAI(
 )
 
 response = client.chat.completions.create(
-    model="claude-sonnet",     # busbar model name, not OpenAI's
+    model="claude-sonnet-4-5",     # busbar model name, not OpenAI's
     messages=[{"role": "user", "content": "What is a busbar?"}],
 )
 print(response.choices[0].message.content)
 ```
 
-The OpenAI SDK has no idea it's talking to an Anthropic backend. Swap `model="claude-sonnet"` to any model or pool name you configured; no other change required.
+The OpenAI SDK has no idea it's talking to an Anthropic backend. Swap `model="claude-sonnet-4-5"` to any model or pool name you configured; no other change required.
 
 ### Via the Anthropic Python SDK
 
@@ -250,7 +250,7 @@ client = anthropic.Anthropic(
 )
 
 message = client.messages.create(
-    model="claude-sonnet",     # the model name from your config
+    model="claude-sonnet-4-5",     # the model name from your config
     max_tokens=256,
     messages=[{"role": "user", "content": "What is a busbar?"}],
 )
@@ -284,7 +284,7 @@ providers:
     api_key: { env: OPENAI_KEY }
 
 models:
-  claude-sonnet:
+  claude-sonnet-4-5:
     provider: anthropic
     max_concurrent: 20
   gpt-4o:
@@ -294,7 +294,7 @@ models:
 pools:
   smart:
     members:
-      - model: claude-sonnet
+      - model: claude-sonnet-4-5
         weight: 2
       - model: gpt-4o
         weight: 1
@@ -334,11 +334,11 @@ curl -s http://localhost:8080/smart/v1/messages \
   -d '{"max_tokens": 256, "messages": [{"role": "user", "content": "Hello!"}]}'
 ```
 
-With `weight: 2` on `claude-sonnet` and `weight: 1` on `gpt-4o`, Busbar distributes via smooth weighted round-robin, roughly two of every three requests go to Claude and one to GPT-4o. If `claude-sonnet`'s breaker trips (on upstream 5xx, 429, timeout, or network errors), Busbar fails the request over to `gpt-4o`, provided the failure happens before the first byte of the response reaches your client. After the first byte, in-flight failover is no longer possible.
+With `weight: 2` on `claude-sonnet-4-5` and `weight: 1` on `gpt-4o`, Busbar distributes via smooth weighted round-robin, roughly two of every three requests go to Claude and one to GPT-4o. If `claude-sonnet-4-5`'s breaker trips (on upstream 5xx, 429, timeout, or network errors), Busbar fails the request over to `gpt-4o`, provided the failure happens before the first byte of the response reaches your client. After the first byte, in-flight failover is no longer possible.
 
 ### What "cross-protocol" means here
 
-`claude-sonnet` speaks Anthropic; `gpt-4o` speaks OpenAI. A client using OpenAI-format ingress (`/v1/chat/completions`) is making an OpenAI request. When Busbar routes that request to `claude-sonnet`, it translates the request from OpenAI to Anthropic format, and the response back, through its intermediate representation: every modelled field arrives in the other protocol's native shape, and what has no place to go is dropped at the seam rather than forwarded in a shape either end would reject. What that does and does not cover, including what is still lost in 1.6.0, is defined in [Protocols and translation](https://getbusbar.com/docs/protocols/#what-lossless-means-here). When it routes to `gpt-4o`, it passes through natively, byte-for-byte. Your client never needs to know.
+`claude-sonnet-4-5` speaks Anthropic; `gpt-4o` speaks OpenAI. A client using OpenAI-format ingress (`/v1/chat/completions`) is making an OpenAI request. When Busbar routes that request to `claude-sonnet-4-5`, it translates the request from OpenAI to Anthropic format, and the response back, through its intermediate representation: every modelled field arrives in the other protocol's native shape, and what has no place to go is dropped at the seam rather than forwarded in a shape either end would reject. What that does and does not cover, including what is still lost in 1.6.0, is defined in [Protocols and translation](https://getbusbar.com/docs/protocols/#what-lossless-means-here). When it routes to `gpt-4o`, it passes through natively, byte-for-byte. Your client never needs to know.
 
 ---
 
@@ -424,7 +424,7 @@ If you route OpenAI-format requests to an Anthropic backend, Anthropic's API req
 
 ```yaml
 models:
-  claude-sonnet:
+  claude-sonnet-4-5:
     provider: anthropic
     max_concurrent: 20
     default_max_tokens: 8192
