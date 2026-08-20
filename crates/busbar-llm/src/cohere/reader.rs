@@ -271,7 +271,10 @@ impl ProtocolReader for CohereReader {
                                                 .and_then(|u| u.as_str())
                                             {
                                                 msg_content.push(busbar_core::ir::IrBlock::Image {
-                                                    source: super::parse_image_url(url),
+                                                    source:
+                                                        super::super::ir_encode::parse_image_url(
+                                                            url,
+                                                        ),
                                                     cache_control: None,
                                                 });
                                             }

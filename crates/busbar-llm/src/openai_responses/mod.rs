@@ -568,7 +568,7 @@ fn responses_block(block_val: &serde_json::Value) -> Result<busbar_core::ir::IrB
                 .and_then(|v| v.as_str())
                 .filter(|s| !s.is_empty())
             {
-                busbar_core::proto::parse_image_url(data_uri)
+                super::ir_encode::parse_image_url(data_uri)
             } else if let Some(url) = obj
                 .get("file_url")
                 .and_then(|v| v.as_str())
@@ -628,7 +628,7 @@ fn responses_input_image_block(item: &serde_json::Value) -> Option<busbar_core::
     let image_url = item.get("image_url").and_then(|u| u.as_str());
     if let Some(url) = image_url.filter(|u| !u.is_empty()) {
         return Some(busbar_core::ir::IrBlock::Image {
-            source: busbar_core::proto::parse_image_url(url),
+            source: super::ir_encode::parse_image_url(url),
             cache_control: None,
         });
     }

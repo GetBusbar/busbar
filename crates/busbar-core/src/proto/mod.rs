@@ -69,32 +69,6 @@ pub fn bearer_auth_headers(proto: &str, key: &str) -> Vec<(HeaderName, HeaderVal
     }
 }
 
-/// Decompose an OpenAI/Responses `image_url` string into the IR `(media_type, data)` pair. Shared
-/// verbatim by `openai_chat.rs` and `openai_responses.rs` (both surfaces use the same `image_url` wire shape).
-///
-/// A `data:<mime>;base64,<payload>` URI is decomposed into its real MIME type ("image/png") and raw
-/// base64 payload, matching the IR contract the Anthropic reader/writer use for base64 images. Any
-/// other URL (an https reference, or a data URI we cannot confidently split) is preserved verbatim in
-/// `data` with an "image_url" media_type sentinel so the writer can reconstruct the exact original
-/// `image_url` on a same-protocol round-trip rather than mangling it.
-pub fn parse_image_url(url: &str) -> crate::ir::IrImageSource {
-    if let Some(rest) = url.strip_prefix("data:") {
-        if let Some((meta, payload)) = rest.split_once(',') {
-            // meta is e.g. "image/png;base64" or "image/png" — keep only the MIME type.
-            let media_type = meta.split(';').next().unwrap_or("").to_string();
-            if meta.contains("base64") && !media_type.is_empty() {
-                return crate::ir::IrImageSource::Base64 {
-                    media_type,
-                    data: payload.to_string(),
-                };
-            }
-        }
-    }
-    // Non-data URL (https://...) or an unrecognized data URI: keep it verbatim as a URL reference so
-    // the writer round-trips it as-is rather than mangling it.
-    crate::ir::IrImageSource::Url(url.to_string())
-}
-
 /// Signal the RESPONSE-side provider metadata that this egress dialect carries and no ingress
 /// dialect can express, so it does not vanish from a translated response with nothing in the logs.
 ///

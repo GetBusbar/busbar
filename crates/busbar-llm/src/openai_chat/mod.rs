@@ -576,7 +576,7 @@ fn read_openai_block(block_val: &serde_json::Value) -> Result<busbar_core::ir::I
                 }
             }
             Ok(busbar_core::ir::IrBlock::Image {
-                source: busbar_core::proto::parse_image_url(url),
+                source: super::ir_encode::parse_image_url(url),
                 cache_control: None,
             })
         }
@@ -636,7 +636,7 @@ fn read_openai_block(block_val: &serde_json::Value) -> Result<busbar_core::ir::I
                 .and_then(|v| v.as_str())
                 .filter(|s| !s.is_empty())
             {
-                Some(data_uri) => busbar_core::proto::parse_image_url(data_uri),
+                Some(data_uri) => super::ir_encode::parse_image_url(data_uri),
                 None => {
                     let file_id = file_obj
                         .get("file_id")

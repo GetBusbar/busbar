@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! IR → wire ENCODE helpers shared across the LLM dialect writers.
+//! IR ↔ wire projection helpers shared across the LLM dialect codecs.
 //!
-//! Small pure projections of concrete IR onto wire-shape decisions (image source → `image_url`
-//! string, structured-json tool-result detection, the `tools[].strict` drop warning). They name
-//! concrete IR, so they belong beside the codecs that use them rather than in the neutral router;
-//! every caller is a `busbar-llm` writer reached through the vtable, so core never names them.
+//! Small pure projections between concrete IR and wire-shape decisions: the image-source pair
+//! (`image_url` string ↔ IR, both directions), structured-json tool-result detection, and the
+//! `tools[].strict` drop warning. They name concrete IR, so they belong beside the codecs that use
+//! them rather than in the neutral router; every caller is a `busbar-llm` reader/writer reached
+//! through the vtable, so core never names them.
 
 /// Reconstruct an OpenAI/Responses `image_url` string from an [`busbar_core::ir::IrImageSource`] —
 /// the inverse of core's `parse_image_url`. A `Url` is emitted verbatim; a `Base64` is re-wrapped
@@ -21,6 +22,33 @@ pub fn image_url_from_ir(source: &busbar_core::ir::IrImageSource) -> Option<Stri
         // An opaque vendor reference has no neutral `image_url` projection.
         busbar_core::ir::IrImageSource::Vendor { .. } => None,
     }
+}
+
+/// Decompose an OpenAI/Responses `image_url` string into the IR image source — the inverse of
+/// [`image_url_from_ir`]. Shared verbatim by the Chat and Responses readers (both surfaces use the
+/// same `image_url` wire shape).
+///
+/// A `data:<mime>;base64,<payload>` URI is decomposed into its real MIME type ("image/png") and raw
+/// base64 payload, matching the IR contract the Anthropic reader/writer use for base64 images. Any
+/// other URL (an https reference, or a data URI we cannot confidently split) is preserved verbatim in
+/// `data` with an "image_url" media_type sentinel so the writer can reconstruct the exact original
+/// `image_url` on a same-protocol round-trip rather than mangling it.
+pub fn parse_image_url(url: &str) -> busbar_core::ir::IrImageSource {
+    if let Some(rest) = url.strip_prefix("data:") {
+        if let Some((meta, payload)) = rest.split_once(',') {
+            // meta is e.g. "image/png;base64" or "image/png" — keep only the MIME type.
+            let media_type = meta.split(';').next().unwrap_or("").to_string();
+            if meta.contains("base64") && !media_type.is_empty() {
+                return busbar_core::ir::IrImageSource::Base64 {
+                    media_type,
+                    data: payload.to_string(),
+                };
+            }
+        }
+    }
+    // Non-data URL (https://...) or an unrecognized data URI: keep it verbatim as a URL reference so
+    // the writer round-trips it as-is rather than mangling it.
+    busbar_core::ir::IrImageSource::Url(url.to_string())
 }
 
 /// True when an image source is a vendor-scoped reference with no neutral form — a foreign writer
