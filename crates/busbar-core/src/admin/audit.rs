@@ -157,7 +157,7 @@ impl ChainedRecord for AuditEntry {
 /// [`crate::audit::vocab`]. They are core's, not the admin surface's: the ruling put the whole
 /// vocabulary in core so a fourth stream inherits it instead of inventing a fourth spelling. The
 /// re-export keeps the existing import path for the hundred-odd call sites that name them.
-pub(crate) use crate::audit::vocab::{OUTCOME_APPLIED, OUTCOME_REJECTED};
+pub(crate) use crate::audit::vocab::{OUTCOME_APPLIED, OUTCOME_DEGRADED, OUTCOME_REJECTED};
 
 /// How many entries the in-memory ring retains. Bounds RAM, not history — a durable sink keeps the
 /// full log. `pub(crate)` so a test asking for "every matching row that can exist" names this rather

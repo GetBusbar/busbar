@@ -35,6 +35,9 @@
 pub(crate) const OUTCOME_APPLIED: &str = "applied";
 /// Admin stream: validation or conflict, and NOTHING changed.
 pub(crate) const OUTCOME_REJECTED: &str = "rejected";
+/// Cross-protocol egress: the request STILL FORWARDED, but a caller control with no native target
+/// representation was dropped (audit-and-allow). Recorded as a first-class event, not just a log warn.
+pub(crate) const OUTCOME_DEGRADED: &str = "degraded";
 /// Call stream: THE CALL WENT OUT. It may still carry a `reason` — see [`REASON_UPSTREAM_FAILED`].
 pub(crate) const OUTCOME_DISPATCHED: &str = "dispatched";
 /// Call stream: the call did NOT go out.

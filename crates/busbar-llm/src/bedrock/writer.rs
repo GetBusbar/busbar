@@ -169,6 +169,20 @@ impl ProtocolWriter for BedrockWriter {
         true
     }
 
+    fn dropped_egress_controls(&self, req: &busbar_core::ir::IrRequest) -> Vec<&'static str> {
+        // Mirrors the two `write_request` warns: Bedrock Converse has no native `response_format`
+        // field, and no "do NOT call a tool" (`IrToolChoice::None`) directive — a cross-protocol
+        // request carrying either has that control dropped on egress.
+        let mut dropped = Vec::new();
+        if req.response_format.is_some() {
+            dropped.push("response_format");
+        }
+        if matches!(req.tool_choice, Some(busbar_core::ir::IrToolChoice::None)) {
+            dropped.push("tool_choice=none");
+        }
+        dropped
+    }
+
     fn write_request(&self, req: &busbar_core::ir::IrRequest) -> serde_json::Value {
         // The reasoning carry has no Bedrock Converse shape in this pass; dropped observably (matching
         // the penalties/top_k convention) rather than silently.

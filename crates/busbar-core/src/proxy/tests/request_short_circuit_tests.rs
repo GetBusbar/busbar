@@ -31,6 +31,7 @@ fn shape_same_proto(
         crate::proxy::APPLICATION_JSON,
         true,
         &hop_bytes,
+        "test-key",
     )
     .expect("same-proto shaping is infallible for a valid body")
     .to_vec()
@@ -100,6 +101,7 @@ fn upstream_model_override_rewrites_body_and_url_model() {
         crate::proxy::APPLICATION_JSON,
         true,
         &hop_bytes,
+        "test-key",
     )
     .expect("same-proto shaping is infallible for a valid body");
     let parsed: serde_json::Value = serde_json::from_slice(&out).unwrap();
@@ -154,6 +156,7 @@ fn claude_on_vertex_drops_model_and_injects_anthropic_version() {
         crate::proxy::APPLICATION_JSON,
         true,
         &hop_bytes,
+        "test-key",
     )
     .expect("anthropic-vertex shaping is infallible for a valid body");
     let v: serde_json::Value = serde_json::from_slice(&out).unwrap();

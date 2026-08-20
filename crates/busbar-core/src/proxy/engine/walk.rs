@@ -519,6 +519,9 @@ pub(crate) async fn forward_once(
         // `effective_reasoning`), falling back to the lane-level flag.
         reasoning_override.unwrap_or(app.lanes[i].reasoning),
         body,
+        // This degraded/fallback path resolves no governance key (and `caller_token` is a raw bearer
+        // secret, never a principal id), so the audit principal is `"anonymous"`.
+        "anonymous",
     ) {
         Ok(p) => p,
         Err(resp) => {

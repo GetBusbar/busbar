@@ -139,6 +139,7 @@ fn head_pristine_matches_translate_output() {
             APPLICATION_JSON,
             true,
             &hop_bytes,
+            "test-key",
         )
         .expect("same-proto shaping is infallible for a valid body");
         if head_says {

@@ -137,6 +137,20 @@ impl OperationHandler for ChatOperation {
         Ok(())
     }
 
+    /// The caller controls the egress writer will DROP on cross-protocol translation (e.g.
+    /// `response_format`, `tool_choice=none`) — surfaced from the writer vtable so the seam can emit
+    /// a first-class audit event per drop. Audit-and-allow: never rejects (unlike
+    /// `egress_representable`); the request still forwards.
+    fn egress_dropped_controls(&self, ir: &IrReq) -> Vec<&'static str> {
+        let IrReq::Chat(r) = ir else {
+            return Vec::new();
+        };
+        let Some(p) = self.proto() else {
+            return Vec::new();
+        };
+        p.writer().dropped_egress_controls(r)
+    }
+
     // ---- Value-level bridges: direct vtable calls (the engine seams hold parsed JSON) ----
 
     fn read_request_value(&self, v: &Value) -> Result<IrReq, IngressReject> {

@@ -282,3 +282,10 @@ mod multi_candidate_reject_tests;
 #[cfg(test)]
 #[path = "tests/stop_sequence_cap_reject_tests.rs"]
 mod stop_sequence_cap_reject_tests;
+
+/// AUDIT-AND-ALLOW for the two cross-dialect egress controls with no native target representation
+/// (`response_format`, `tool_choice:none`): the request still forwards, but each drop is recorded as
+/// a first-class `egress.control_unrepresentable` / `degraded` audit event, not just a `warn!`.
+#[cfg(test)]
+#[path = "tests/egress_dropped_controls_audit_tests.rs"]
+mod egress_dropped_controls_audit_tests;

@@ -1568,6 +1568,9 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                 req_content_type,
                 effective_reasoning(&cands, i, app.lanes[i].reasoning),
                 &body,
+                resolved_gov_key
+                    .map(|k| k.id.as_str())
+                    .unwrap_or("anonymous"),
             ) {
                 Ok(p) => p,
                 Err(resp) => {

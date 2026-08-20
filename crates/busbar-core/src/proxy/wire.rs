@@ -393,6 +393,10 @@ pub(crate) fn translate_request_cross_protocol(
     // `&Bytes` (not `&[u8]`) so the short-circuit re-emit is a REFCOUNT BUMP (`Bytes::clone`), never
     // an O(body) `to_vec` memcpy — the return type is `Bytes` for the same reason.
     hop_bytes: &Bytes,
+    // The resolved caller/governance key id (or `"anonymous"`) — the PRINCIPAL recorded on any
+    // `egress.control_unrepresentable` audit event this translation emits (audit-and-allow: a dropped
+    // caller control is a first-class, hash-chained event, not just a log warn).
+    caller_key_id: &str,
 ) -> Result<Bytes, Box<Response>> {
     let egress_name = app.lanes[i].protocol.name();
     // OPAQUE ingress body (multipart/binary — `None`): translate at the BYTE level through the
@@ -548,6 +552,18 @@ pub(crate) fn translate_request_cross_protocol(
                         KIND_INVALID_REQUEST,
                         &reason,
                     )));
+                }
+                // AUDIT-AND-ALLOW: a caller control the egress dialect cannot natively represent is
+                // STILL forwarded (behavior unchanged), but each drop is recorded as a first-class,
+                // hash-chained audit event — not just the writer's `warn!` — so the degradation is
+                // visible in the audit trail. Emitted BEFORE the body rebuild; forwarding proceeds.
+                for control in eh.egress_dropped_controls(&ir_req) {
+                    crate::admin::audit::AUDIT.record_by(
+                        "egress.control_unrepresentable",
+                        &format!("{control} on {egress_name}"),
+                        crate::admin::audit::OUTCOME_DEGRADED,
+                        caller_key_id,
+                    );
                 }
                 match eh.write_request_value(&ir_req) {
                     Some(written) => body = written,

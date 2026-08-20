@@ -143,6 +143,16 @@ impl ProtocolWriter for AnthropicWriter {
         busbar_core::proxy::EGRESS_UA_ANTHROPIC
     }
 
+    fn dropped_egress_controls(&self, req: &busbar_core::ir::IrRequest) -> Vec<&'static str> {
+        // Mirrors the `write_request` warn: Anthropic's Messages API has no native `response_format`
+        // field, so a cross-protocol request carrying one has that structured-output directive dropped.
+        if req.response_format.is_some() {
+            vec!["response_format"]
+        } else {
+            Vec::new()
+        }
+    }
+
     fn write_request(&self, req: &busbar_core::ir::IrRequest) -> serde_json::Value {
         let mut out = serde_json::Map::new();
         // Anthropic's Messages API has NO `system` role inside `messages` — system content lives in

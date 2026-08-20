@@ -47,6 +47,7 @@ fn openai_to_anthropic_n_gt_1_is_rejected() {
         crate::proxy::APPLICATION_JSON,
         true,
         &hop_bytes,
+        "test-key",
     );
     let resp = result.expect_err("cross-protocol n>1 must be rejected, not silently truncated");
     assert_eq!(
@@ -81,6 +82,7 @@ fn gemini_ingress_to_openai_candidate_count_gt_1_is_rejected() {
         crate::proxy::APPLICATION_JSON,
         true,
         &hop_bytes,
+        "test-key",
     );
     let resp = result
         .expect_err("cross-protocol candidateCount>1 must be rejected, not silently truncated");
@@ -116,6 +118,7 @@ fn openai_to_openai_n_gt_1_is_preserved_verbatim() {
         crate::proxy::APPLICATION_JSON,
         true,
         &hop_bytes,
+        "test-key",
     )
     .expect("same-protocol n>1 is legitimate and must NOT be rejected");
     let parsed: serde_json::Value = serde_json::from_slice(&out).unwrap();
@@ -150,6 +153,7 @@ fn same_protocol_n_1_and_absent_are_not_rejected_cross_protocol() {
             crate::proxy::APPLICATION_JSON,
             true,
             &hop_bytes,
+            "test-key",
         );
         assert!(
             r.is_ok(),
@@ -187,6 +191,7 @@ fn multi_input_embeddings_to_gemini_is_rejected() {
         crate::proxy::APPLICATION_JSON,
         true,
         &hop_bytes,
+        "test-key",
     );
     let resp = result.expect_err("multi-input embeddings → Gemini :embedContent must be rejected");
     assert_eq!(resp.status(), axum::http::StatusCode::BAD_REQUEST);
@@ -215,6 +220,7 @@ fn single_input_embeddings_to_gemini_is_allowed() {
         crate::proxy::APPLICATION_JSON,
         true,
         &hop_bytes,
+        "test-key",
     );
     assert!(r.is_ok(), "single-input embeddings → Gemini must succeed");
 }

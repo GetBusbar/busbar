@@ -228,7 +228,11 @@ pub trait OperationHandler: Send + Sync {
     /// end, only when [`Self::taps_usage`] is true). Default: run THIS operation's own reader over the
     /// body and project its token usage — so a token-metered non-chat op (embeddings) bills the same
     /// as the cross-protocol path. Chat overrides this to run the egress protocol's chat reader.
-    fn extract_usage(&self, _ingress_protocol: &str, body: &[u8]) -> Option<crate::billing::TokenUsage> {
+    fn extract_usage(
+        &self,
+        _ingress_protocol: &str,
+        body: &[u8],
+    ) -> Option<crate::billing::TokenUsage> {
         match self.read_response(body) {
             Ok(r) => r.token_usage(),
             Err(e) => {
@@ -265,6 +269,14 @@ pub trait OperationHandler: Send + Sync {
     /// same-protocol request never rebuilds its body from the IR, so it cannot hit this loss).
     fn egress_representable(&self, _ir: &IrReq) -> Result<(), String> {
         Ok(())
+    }
+
+    /// The caller controls this egress operation will DROP for `ir` on cross-protocol translation
+    /// because the target dialect has no native representation (audit-and-allow: the request still
+    /// forwards, but each drop is recorded as a first-class audit event by the cross-protocol seam —
+    /// unlike `egress_representable`, this never rejects). Default: none (non-chat operations).
+    fn egress_dropped_controls(&self, _ir: &IrReq) -> Vec<&'static str> {
+        Vec::new()
     }
 
     /// Value-level codec bridges — for engine seams that already hold a PARSED JSON body (the
@@ -386,6 +398,12 @@ impl OpDispatch {
         body: &[u8],
     ) -> crate::breaker::RawUpstreamError {
         self.op_handler.extract_error(status, body)
+    }
+    /// Forwarder for [`OperationHandler::egress_dropped_controls`] — the caller controls this egress
+    /// operation drops on cross-protocol translation, surfaced for the seam's audit event.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn egress_dropped_controls(&self, ir: &IrReq) -> Vec<&'static str> {
+        self.op_handler.egress_dropped_controls(ir)
     }
     /// Can this cell produce a client-facing incremental stream?
     ///

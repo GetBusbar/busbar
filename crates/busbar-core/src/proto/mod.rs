@@ -577,6 +577,13 @@ pub trait ProtocolWriter: Send + Sync {
         None
     }
 
+    /// The caller controls this writer will DROP for `req` on cross-protocol egress because the target
+    /// dialect has no native representation (audit-and-allow: the request still forwards, but each drop
+    /// is recorded as a first-class audit event by the cross-protocol seam). Default: none.
+    fn dropped_egress_controls(&self, _req: &crate::ir::IrRequest) -> Vec<&'static str> {
+        Vec::new()
+    }
+
     /// Whether this writer projects the IR's `cache_control` breakpoints into a native wire
     /// marker that is MODEL-GATED — a schema key some deployed models hard-reject with a 400
     /// (Bedrock's `cachePoint`: Claude accepts it, Amazon Nova rejects it as "extraneous key

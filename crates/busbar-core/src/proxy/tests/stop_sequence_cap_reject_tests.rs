@@ -47,6 +47,7 @@ fn openai_to_cohere_over_cap_stop_sequences_is_rejected() {
         crate::proxy::APPLICATION_JSON,
         true,
         &hop_bytes,
+        "test-key",
     );
     let resp = result.expect_err(
         "cross-protocol stop-sequence list over Cohere's cap of 5 must be rejected, not silently truncated",
@@ -84,6 +85,7 @@ fn openai_to_cohere_exactly_cap_stop_sequences_is_allowed() {
         crate::proxy::APPLICATION_JSON,
         true,
         &hop_bytes,
+        "test-key",
     )
     .expect("exactly-cap stop-sequence list must not be rejected");
     let parsed: serde_json::Value = serde_json::from_slice(&out).unwrap();
@@ -120,6 +122,7 @@ fn openai_to_gemini_over_cap_stop_sequences_is_rejected() {
         crate::proxy::APPLICATION_JSON,
         true,
         &hop_bytes,
+        "test-key",
     );
     let resp = result.expect_err(
         "cross-protocol stop-sequence list over Gemini's cap of 5 must be rejected, not silently truncated",
@@ -158,6 +161,7 @@ fn anthropic_to_openai_over_cap_stop_sequences_is_rejected() {
         crate::proxy::APPLICATION_JSON,
         true,
         &hop_bytes,
+        "test-key",
     );
     let resp = result.expect_err(
         "cross-protocol stop-sequence list over OpenAI's cap of 4 must be rejected, not silently truncated",
@@ -198,7 +202,8 @@ fn cohere_to_cohere_over_cap_stop_sequences_is_preserved_verbatim() {
         crate::proxy::APPLICATION_JSON,
         true,
         &hop_bytes,
-    )
+        "test-key",
+)
     .expect("same-protocol over-cap stop list must NOT be rejected by busbar (Cohere's own API guards it)");
     let parsed: serde_json::Value = serde_json::from_slice(&out).unwrap();
     assert_eq!(
