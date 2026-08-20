@@ -17,6 +17,7 @@
 //! This module owns the *dispatch*. Those same free functions
 //! are what the byte-pinning auth tests call, so a credential and its test can never diverge.
 
+use crate::diagnostics::{diag_warn, EGRESS_APIKEY_INVALID_BYTES};
 use crate::proto::SigningContext;
 use axum::http::{HeaderName, HeaderValue};
 use std::sync::Arc;
@@ -237,7 +238,8 @@ pub fn api_key_headers(header: &'static str, key: &str) -> Vec<(HeaderName, Head
     match HeaderValue::from_str(key) {
         Ok(v) => vec![(HeaderName::from_static(header), v)],
         Err(_) => {
-            tracing::warn!(
+            diag_warn!(
+                EGRESS_APIKEY_INVALID_BYTES,
                 header,
                 "egress credential contains invalid header bytes (ASCII control character); \
                  omitting auth header — upstream will reject with 401"

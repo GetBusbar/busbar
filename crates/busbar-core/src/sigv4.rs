@@ -6,6 +6,7 @@
 //! verified against AWS's published worked example (GET iam ListUsers, 20150830) in the tests, so
 //! the canonical-request → string-to-sign → signature chain is known-correct.
 
+use crate::diagnostics::{diag_error, SIGV4_HMAC_INIT_FAILED};
 use hmac::digest::KeyInit;
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
@@ -53,7 +54,8 @@ fn hmac(key: &[u8], data: &[u8]) -> Vec<u8> {
             mac.finalize().into_bytes().to_vec()
         }
         Err(e) => {
-            tracing::error!(
+            diag_error!(
+                SIGV4_HMAC_INIT_FAILED,
                 "HMAC-SHA256 init failed (unreachable: HMAC accepts any key length): {e}"
             );
             Vec::new()

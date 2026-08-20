@@ -268,6 +268,434 @@ pub const DURABLE_AUDIT_BACKFILL_GAP: Diagnostic = Diagnostic {
     retired: false,
 };
 
+// ── 4000 — Auth & identity ──────────────────────────────────────────────────────────────────────
+
+/// Token-exchange could not mint a self-serve key — a keystore/HMAC fault, not a client error.
+pub const TOKEN_EXCHANGE_MINT_FAILED: Diagnostic = Diagnostic {
+    code: 4001,
+    class: Class::Auth,
+    slug: "token-exchange-mint-failed",
+    title: "Token-exchange could not mint a self-serve key",
+    severity: Severity::Actionable,
+    summary: "An authenticated, authorized token-exchange request could not be completed because \
+              minting the self-serve key failed inside busbar (a keystore write or HMAC/signing \
+              fault), so the caller receives a 500. The identity was valid; the failure is on \
+              busbar's side, not the client's.",
+    action: "Investigate the keystore / signing subsystem — check disk, permissions, and the \
+             key-derivation secret. The condition is rare; capture the logged detail and file a \
+             bug if it recurs.",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// A login plugin is not returning, so its offload permit could not be acquired. Warn-once (latched).
+pub const LOGIN_OFFLOAD_SATURATED: Diagnostic = Diagnostic {
+    code: 4002,
+    class: Class::Auth,
+    slug: "login-offload-saturated",
+    title: "Login plugin offload saturated (permit not acquired; login rejected fail-closed)",
+    severity: Severity::Actionable,
+    summary: "A login-plugin call could not obtain a blocking-offload permit within the wait \
+              window because the offload budget is fully in flight — a login plugin is wedged and \
+              not returning. busbar rejects the login fail-closed rather than complete a login it \
+              never ran. Warned once on entry to the saturated state; recurrence logs at debug.",
+    action: "Investigate the login plugin (LDAP/AD bind, an OIDC token/userinfo round-trip) — it \
+             is blocking past its timeout. Restore or restart it; the saturation clears once calls \
+             return within budget.",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// A login plugin's blocking call panicked; the login is rejected fail-closed.
+pub const LOGIN_PLUGIN_PANICKED: Diagnostic = Diagnostic {
+    code: 4003,
+    class: Class::Auth,
+    slug: "login-plugin-panicked",
+    title: "Login plugin call panicked (login rejected fail-closed)",
+    severity: Severity::Actionable,
+    summary: "A login plugin's blocking call panicked (the offloaded task returned a join error), \
+              so busbar rejects the login fail-closed rather than complete a login it never \
+              verified. A panicking plugin is a plugin bug.",
+    action:
+        "Fix the login plugin — a panic on the login path is a bug in that plugin. Capture the \
+             logged method/op context and the plugin's own logs; logins via that method fail until \
+             it is corrected.",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// The auth chain is empty (open relay) — acceptable only in dev. Boot-time config warning.
+pub const AUTH_CHAIN_OPEN_RELAY: Diagnostic = Diagnostic {
+    code: 4004,
+    class: Class::Auth,
+    slug: "auth-chain-open-relay",
+    title: "auth.chain is empty (open relay)",
+    severity: Severity::Actionable,
+    summary: "The auth chain was built with no verifiers and no keys-in-chain, so every data-plane \
+              request is admitted unauthenticated — an OPEN RELAY. This is acceptable only for \
+              local development. Emitted once when the chain is built.",
+    action: "Configure `auth.chain` (a `keys` verifier and/or an auth plugin) before exposing \
+             busbar to any untrusted network. An open relay in production forwards anyone's traffic \
+             on your upstream credentials.",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// An auth plugin is not returning, so the chain offload permit could not be acquired. Warn-once.
+pub const AUTH_OFFLOAD_SATURATED: Diagnostic = Diagnostic {
+    code: 4005,
+    class: Class::Auth,
+    slug: "auth-offload-saturated",
+    title: "Auth chain offload saturated (permit not acquired; request denied fail-closed)",
+    severity: Severity::Actionable,
+    summary: "The auth chain could not obtain a blocking-offload permit within the wait window \
+              because the offload budget is fully in flight — an auth plugin is wedged and not \
+              returning. The chain never ran, so the credential is unverified and busbar denies \
+              fail-closed. Warned once on entry to the saturated state; recurrence logs at debug.",
+    action: "Investigate the auth plugin — it is blocking past its timeout and starving the \
+             offload budget. Restore or restart it; the saturation clears once chain calls return \
+             within budget.",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// The auth chain's blocking task panicked; the request is denied fail-closed. Warn-once (latched).
+pub const AUTH_CHAIN_PANICKED: Diagnostic = Diagnostic {
+    code: 4006,
+    class: Class::Auth,
+    slug: "auth-chain-panicked",
+    title: "Auth chain panicked (request denied fail-closed)",
+    severity: Severity::Actionable,
+    summary: "The auth chain's blocking task panicked, so busbar denies the request fail-closed \
+              rather than admit an unverified credential. A panicking chain is a plugin bug. Warned \
+              once on entry to the panicking state; recurrence logs at debug.",
+    action: "Fix the auth plugin — a panic in the chain is a bug in one of its modules. Capture the \
+             logged error and the plugin's own logs; requests are denied until it is corrected.",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// admin_auth names a module with no resolved plugin — a post-boot invariant breach.
+pub const ADMIN_MODULE_UNRESOLVED: Diagnostic = Diagnostic {
+    code: 4007,
+    class: Class::Auth,
+    slug: "admin-module-unresolved",
+    title: "admin_auth names a module with no resolved plugin",
+    severity: Severity::Actionable,
+    summary: "The admin auth chain named a module that has no resolved plugin, and busbar skipped \
+              it fail-closed. This is supposed to be impossible after a successful boot — \
+              `AdminAuthChain::build` fails closed on any unresolvable name — so reaching it means \
+              the admin-module table drifted from the configured chain.",
+    action: "Investigate the admin auth configuration and plugin load state; a named admin module \
+             is missing at runtime. Restart busbar so boot re-resolves the chain, and file a bug \
+             with the logged module name if it persists.",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// An admin auth plugin is not returning; the admin offload permit could not be acquired. Warn-once.
+pub const ADMIN_OFFLOAD_SATURATED: Diagnostic = Diagnostic {
+    code: 4008,
+    class: Class::Auth,
+    slug: "admin-offload-saturated",
+    title: "Admin auth offload saturated (permit not acquired; request denied fail-closed)",
+    severity: Severity::Actionable,
+    summary: "The admin auth chain could not obtain a blocking-offload permit within the wait \
+              window because the admin offload budget is fully in flight — an admin auth plugin is \
+              wedged and not returning. The chain never ran, so busbar denies fail-closed. Warned \
+              once on entry to the saturated state; recurrence logs at debug.",
+    action: "Investigate the admin auth plugin — it is blocking past its timeout. Restore or \
+             restart it; admin access is denied until admin-chain calls return within budget.",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// The admin auth chain did not complete within its deadline (or panicked); denied. Warn-once.
+pub const ADMIN_CHAIN_STALLED: Diagnostic = Diagnostic {
+    code: 4009,
+    class: Class::Auth,
+    slug: "admin-chain-stalled",
+    title: "Admin auth chain did not complete in time (request denied fail-closed)",
+    severity: Severity::Actionable,
+    summary: "The admin auth chain's offloaded task did not complete within its deadline, or it \
+              panicked, so busbar denies the admin request fail-closed rather than admit an \
+              unverified operator. Warned once on entry to the stalled state; recurrence logs at \
+              debug.",
+    action:
+        "Investigate the admin auth plugin — it is slow or crashing on the admin path. Restore \
+             or restart it; admin access is denied until the chain completes within its deadline.",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// An admin request was forbidden but its audit record was suppressed (already recorded this window).
+pub const ADMIN_FORBIDDEN_SUPPRESSED: Diagnostic = Diagnostic {
+    code: 4010,
+    class: Class::Auth,
+    slug: "admin-forbidden-suppressed",
+    title: "Admin request forbidden (audit record suppressed this window)",
+    severity: Severity::BenignRecurring,
+    summary: "An admin request was forbidden (insufficient scope for the path), and a durable audit \
+              record for it was suppressed because one was already written for this principal in \
+              the current rate window. This is a per-request signal of a CLIENT-side authorization \
+              failure, not an operator problem, so it is emitted at debug to avoid log spam under a \
+              client that keeps retrying a forbidden call.",
+    action: "None — self-heals; the client is being correctly refused. Persistent volume from one \
+             principal indicates a misconfigured client or a probe; the durable audit chain already \
+             carries the first occurrence per window.",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// `keys` in the auth chain configured alongside upstream_credentials: passthrough. Warn-once (latched).
+pub const KEYS_IN_CHAIN_PASSTHROUGH_CONFLICT: Diagnostic = Diagnostic {
+    code: 4011,
+    class: Class::Auth,
+    slug: "keys-in-chain-passthrough-conflict",
+    title: "auth.chain names `keys` alongside upstream_credentials: passthrough",
+    severity: Severity::Actionable,
+    summary: "The auth chain names the `keys` verifier while `upstream_credentials` is set to \
+              `passthrough`. keys-in-chain requires a valid virtual key on every request and \
+              supersedes passthrough's accept-and-forward-the-caller-credential intent, so \
+              passthrough never takes effect. Warned once at first request.",
+    action: "Resolve the config conflict: use `upstream_credentials: own` (or omit it) alongside \
+             `keys`, or drop `keys` from the chain if you genuinely want to forward caller \
+             credentials. The two settings are mutually exclusive.",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// A client presented a principal id unsafe to use as a self-serve subject — a client error.
+pub const SELF_SUBJECT_UNSAFE: Diagnostic = Diagnostic {
+    code: 4012,
+    class: Class::Auth,
+    slug: "self-subject-unsafe",
+    title: "Token-exchange refused an unsafe self-serve subject",
+    severity: Severity::BenignRecurring,
+    summary: "A token-exchange request presented a principal id that is unsafe as a self-serve \
+              subject — empty, containing a '/' route separator or a control character, or carrying \
+              a reserved `vk_`/`user:`/`group:` prefix — so busbar refused it with a 403. This is a \
+              CLIENT-supplied bad value, not an operator problem, so it is emitted at debug to avoid \
+              spam from a misbehaving client.",
+    action: "None — self-heals; the client must present a valid subject id. If a legitimate \
+             identity is being rejected, its id needs to be reshaped to avoid the reserved prefixes \
+             and separators.",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// A configured egress API key contains bytes invalid for an HTTP header value.
+pub const EGRESS_APIKEY_INVALID_BYTES: Diagnostic = Diagnostic {
+    code: 4013,
+    class: Class::Auth,
+    slug: "egress-apikey-invalid-bytes",
+    title: "Egress API key contains invalid header bytes (auth header omitted)",
+    severity: Severity::Actionable,
+    summary: "A configured egress credential (a static `api-key`/`x-goog-api-key`) contains bytes \
+              that are invalid in an HTTP header value (typically an ASCII control character), so \
+              busbar omits the auth header entirely and the upstream will reject with 401. The \
+              credential is misconfigured.",
+    action: "Fix the configured egress credential — remove stray whitespace/control characters \
+             (often a trailing newline from how the secret was pasted or injected). Requests to \
+             that upstream 401 until the key is a valid header value.",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// A minted OAuth token contains bytes invalid for an HTTP header value.
+pub const EGRESS_OAUTH_TOKEN_INVALID_BYTES: Diagnostic = Diagnostic {
+    code: 4014,
+    class: Class::Auth,
+    slug: "egress-oauth-token-invalid-bytes",
+    title: "Minted OAuth token contains invalid header bytes (auth header omitted)",
+    severity: Severity::Actionable,
+    summary: "An OAuth token minted for egress contains bytes invalid in an HTTP header value, so \
+              busbar omits the `Bearer` auth header and the upstream will reject with 401. Fires on \
+              mint (per refresh), not per request, and is near-unreachable for a well-formed token \
+              endpoint.",
+    action: "Investigate the OAuth token endpoint — it returned an access token with control or \
+             non-ASCII bytes. Requests to that upstream 401 until it mints a header-safe token.",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// The OAuth token endpoint returned a 200 with an empty access_token. Warn-once (latched).
+pub const EGRESS_OAUTH_EMPTY_TOKEN: Diagnostic = Diagnostic {
+    code: 4015,
+    class: Class::Auth,
+    slug: "egress-oauth-empty-token",
+    title: "OAuth token endpoint returned a 200 with an empty access_token",
+    severity: Severity::Actionable,
+    summary: "The upstream OAuth token endpoint answered 200 but with an EMPTY access_token. busbar \
+              treats it as a (retryable) mint failure rather than storing it, because an empty \
+              token collides with the pre-first-mint sentinel and would wedge the lane permanently. \
+              It retries on the refresh cadence.",
+    action: "Investigate the OAuth token endpoint / client-credentials configuration — a 200 with \
+             no token usually means a misconfigured client, scope, or audience. Egress to that \
+             upstream 401s until a non-empty token is minted.",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// An OAuth token mint (background refresh) failed; busbar keeps the current token and retries.
+pub const EGRESS_OAUTH_MINT_FAILED: Diagnostic = Diagnostic {
+    code: 4016,
+    class: Class::Auth,
+    slug: "egress-oauth-mint-failed",
+    title: "OAuth token mint (refresh) failed; retrying",
+    severity: Severity::Actionable,
+    summary: "The background OAuth token refresh failed to mint a new token. busbar keeps serving \
+              the current token and retries soon; if retries keep failing past expiry, egress \
+              requests carry a stale/empty token and the upstream 401s. Fires on the refresh \
+              cadence, not per request.",
+    action: "Investigate the OAuth token endpoint — a transient outage self-heals on the next \
+             retry; sustained failures mean a credential/endpoint/network problem that will 401 \
+             egress once the current token expires.",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// A scheduled trust sweep could not be ATTEMPTED for a subject; its trust state is unchanged.
+pub const TRUST_SWEEP_NOT_ATTEMPTED: Diagnostic = Diagnostic {
+    code: 4017,
+    class: Class::Auth,
+    slug: "trust-sweep-not-attempted",
+    title: "Scheduled trust sweep could not be attempted (registration not contacted)",
+    severity: Severity::Actionable,
+    summary: "A scheduled trust sweep could not even be ATTEMPTED for a registration (a local \
+              precondition failed before any contact), so the upstream was not contacted and its \
+              trust state is unchanged. The registration is not re-verified this tick.",
+    action: "Investigate the logged reason for the named subject — typically a local resource or \
+             config problem preventing the sweep from starting. Trust state is preserved, not \
+             demoted; resolve the cause so the registration is re-verified on schedule.",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// A scheduled trust sweep could not authenticate the upstream; recorded as a failed contact.
+pub const TRUST_SWEEP_CONTACT_FAILED: Diagnostic = Diagnostic {
+    code: 4018,
+    class: Class::Auth,
+    slug: "trust-sweep-contact-failed",
+    title: "Scheduled trust sweep could not authenticate the upstream (failed contact recorded)",
+    severity: Severity::Actionable,
+    summary:
+        "A scheduled trust sweep reached the upstream but could not authenticate it, so busbar \
+              records a failed contact against the registration. Repeated failed contacts feed the \
+              anomaly breaker toward suspension (see BUSBAR-4021).",
+    action:
+        "Investigate the named upstream's reachability and credentials for the logged subject. \
+             A transient failure is recorded and self-heals on a later clean sweep; persistent \
+             failures will suspend the registration.",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// The upstream DRIFTED from the approved pin; the registration is demoted until re-approved.
+pub const TRUST_UPSTREAM_DRIFTED: Diagnostic = Diagnostic {
+    code: 4019,
+    class: Class::Auth,
+    slug: "trust-upstream-drifted",
+    title: "Upstream drifted from the approved pin (registration demoted)",
+    severity: Severity::Actionable,
+    summary: "A scheduled trust sweep found the upstream DRIFTED from its approved pin — something \
+              changed underneath a standing approval — so busbar demoted the registration and it \
+              stops serving until an operator re-approves. This is the headline trust diagnostic: \
+              the operator's first notice that a pinned upstream changed.",
+    action: "Review the logged drift (pin change, added/removed/changed attributes) for the named \
+             subject. If the change is expected, re-approve the registration to restore service; if \
+             not, treat it as a potential compromise of that upstream.",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// A clean trust observation was made but is not yet believed (recovery backoff pending).
+pub const TRUST_RECOVERY_HELD: Diagnostic = Diagnostic {
+    code: 4020,
+    class: Class::Auth,
+    slug: "trust-recovery-held",
+    title: "Clean trust observation held (recovery backoff not yet elapsed)",
+    severity: Severity::BenignRecurring,
+    summary:
+        "A scheduled trust sweep made a clean observation, but the recovery backoff since the \
+              last drift has not yet elapsed, so the observation is not yet believed and the \
+              registration stays demoted for now. This is the expected self-healing backoff, so it \
+              is emitted at debug.",
+    action: "None — self-heals. The registration recovers automatically once enough consecutive \
+             clean observations accumulate past the recovery backoff.",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// The anomaly breaker suspended a registration after repeated failures.
+pub const TRUST_REGISTRATION_SUSPENDED: Diagnostic = Diagnostic {
+    code: 4021,
+    class: Class::Auth,
+    slug: "trust-registration-suspended",
+    title: "Anomaly breaker suspended a trust registration",
+    severity: Severity::Actionable,
+    summary: "The trust anomaly breaker suspended a registration — accumulated failed contacts or \
+              drift crossed its threshold — so the registration stops serving until the condition \
+              clears or an operator intervenes. A transition event, emitted once per suspension.",
+    action: "Investigate the named subject's upstream (see the preceding contact-failure or drift \
+             diagnostics for the cause). Resolve the underlying fault; the registration recovers or \
+             requires re-approval depending on why it was suspended.",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// A scheduled trust sweep task panicked; the sweep job continues.
+pub const TRUST_SWEEP_PANICKED: Diagnostic = Diagnostic {
+    code: 4022,
+    class: Class::Auth,
+    slug: "trust-sweep-panicked",
+    title: "Scheduled trust sweep panicked (job continues)",
+    severity: Severity::Actionable,
+    summary: "A scheduled trust sweep pass panicked. busbar catches the panic and CONTINUES the \
+              sweep job — exiting would turn one bad upstream into a deployment that silently never \
+              sweeps again — but that tick's registrations were not all swept. A panicking sweep is \
+              a code bug.",
+    action: "Capture the logged plane context and file a bug — a sweep pass should never panic. The \
+             job keeps running, but investigate promptly since the panicking tick left some \
+             registrations un-swept.",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// oauth_as expired-record sweep failed; retried on the next tick. Warn-once (latched, transition-only).
+pub const OAUTH_AS_SWEEP_FAILED: Diagnostic = Diagnostic {
+    code: 4023,
+    class: Class::Auth,
+    slug: "oauth-as-sweep-failed",
+    title: "oauth_as expired-record sweep failed (retrying next tick)",
+    severity: Severity::BenignRecurring,
+    summary: "The oauth_as authorization-server sweep of expired records failed for a tick — \
+              typically a transient store hiccup — so busbar retries on the next tick. Expired \
+              records simply linger until a sweep succeeds. Warned once on entry to the failing \
+              state; recurrence logs at debug so a persistent store problem cannot spam.",
+    action: "None if it clears on the next tick. Sustained failures indicate an oauth_as store \
+             problem worth investigating; expired records accumulate until a sweep succeeds.",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// HMAC-SHA256 init failed during SigV4 signing — documented unreachable.
+pub const SIGV4_HMAC_INIT_FAILED: Diagnostic = Diagnostic {
+    code: 4024,
+    class: Class::Auth,
+    slug: "sigv4-hmac-init-failed",
+    title: "SigV4 HMAC-SHA256 init failed (documented unreachable)",
+    severity: Severity::Actionable,
+    summary: "Initializing HMAC-SHA256 for AWS SigV4 signing failed. This is documented as \
+              unreachable — HMAC-SHA256 accepts a key of any length — so reaching it indicates a \
+              serious crypto-library inconsistency. busbar returns an empty signature, which the \
+              upstream rejects.",
+    action: "Capture the logged error and file a bug; this should not be possible. SigV4-signed \
+             egress (e.g. Bedrock) fails to authenticate until it is resolved.",
+    since: "1.6.0",
+    retired: false,
+};
+
 // ── 5000 — Proxy & routing ──────────────────────────────────────────────────────────────────────
 
 /// Same-protocol non-stream billing copy hit the reassembly cap; the tail (with usage) is kept.
@@ -890,6 +1318,30 @@ pub static REGISTRY: &[&Diagnostic] = &[
     &DURABLE_AUDIT_RING_UNRECONCILED,
     &DURABLE_AUDIT_WRITETHROUGH_FAILED,
     &DURABLE_AUDIT_BACKFILL_GAP,
+    &TOKEN_EXCHANGE_MINT_FAILED,
+    &LOGIN_OFFLOAD_SATURATED,
+    &LOGIN_PLUGIN_PANICKED,
+    &AUTH_CHAIN_OPEN_RELAY,
+    &AUTH_OFFLOAD_SATURATED,
+    &AUTH_CHAIN_PANICKED,
+    &ADMIN_MODULE_UNRESOLVED,
+    &ADMIN_OFFLOAD_SATURATED,
+    &ADMIN_CHAIN_STALLED,
+    &ADMIN_FORBIDDEN_SUPPRESSED,
+    &KEYS_IN_CHAIN_PASSTHROUGH_CONFLICT,
+    &SELF_SUBJECT_UNSAFE,
+    &EGRESS_APIKEY_INVALID_BYTES,
+    &EGRESS_OAUTH_TOKEN_INVALID_BYTES,
+    &EGRESS_OAUTH_EMPTY_TOKEN,
+    &EGRESS_OAUTH_MINT_FAILED,
+    &TRUST_SWEEP_NOT_ATTEMPTED,
+    &TRUST_SWEEP_CONTACT_FAILED,
+    &TRUST_UPSTREAM_DRIFTED,
+    &TRUST_RECOVERY_HELD,
+    &TRUST_REGISTRATION_SUSPENDED,
+    &TRUST_SWEEP_PANICKED,
+    &OAUTH_AS_SWEEP_FAILED,
+    &SIGV4_HMAC_INIT_FAILED,
     &USAGE_TAP_REASSEMBLY_CAP_EXCEEDED,
     &UPSTREAM_MIDSTREAM_TRANSPORT_ERROR,
     &UPSTREAM_PREFIRSTBYTE_TRANSPORT_ERROR,

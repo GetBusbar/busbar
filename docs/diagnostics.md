@@ -61,6 +61,272 @@ A durable-chain sequence number is no longer in the in-memory ring (it was prune
 
 **What to do:** Recent entries remain in the in-memory ring, but the DURABLE log has a permanent gap at the named seq. Resolve the store outage that caused it; restore the durable store from a backup if the durable chain's completeness is required for compliance.
 
+## 4xxx — Auth & identity
+
+<a id="token-exchange-mint-failed"></a>
+### BUSBAR-4001 — Token-exchange could not mint a self-serve key
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `token-exchange-mint-failed`
+
+An authenticated, authorized token-exchange request could not be completed because minting the self-serve key failed inside busbar (a keystore write or HMAC/signing fault), so the caller receives a 500. The identity was valid; the failure is on busbar's side, not the client's.
+
+**What to do:** Investigate the keystore / signing subsystem — check disk, permissions, and the key-derivation secret. The condition is rare; capture the logged detail and file a bug if it recurs.
+
+<a id="login-offload-saturated"></a>
+### BUSBAR-4002 — Login plugin offload saturated (permit not acquired; login rejected fail-closed)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `login-offload-saturated`
+
+A login-plugin call could not obtain a blocking-offload permit within the wait window because the offload budget is fully in flight — a login plugin is wedged and not returning. busbar rejects the login fail-closed rather than complete a login it never ran. Warned once on entry to the saturated state; recurrence logs at debug.
+
+**What to do:** Investigate the login plugin (LDAP/AD bind, an OIDC token/userinfo round-trip) — it is blocking past its timeout. Restore or restart it; the saturation clears once calls return within budget.
+
+<a id="login-plugin-panicked"></a>
+### BUSBAR-4003 — Login plugin call panicked (login rejected fail-closed)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `login-plugin-panicked`
+
+A login plugin's blocking call panicked (the offloaded task returned a join error), so busbar rejects the login fail-closed rather than complete a login it never verified. A panicking plugin is a plugin bug.
+
+**What to do:** Fix the login plugin — a panic on the login path is a bug in that plugin. Capture the logged method/op context and the plugin's own logs; logins via that method fail until it is corrected.
+
+<a id="auth-chain-open-relay"></a>
+### BUSBAR-4004 — auth.chain is empty (open relay)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `auth-chain-open-relay`
+
+The auth chain was built with no verifiers and no keys-in-chain, so every data-plane request is admitted unauthenticated — an OPEN RELAY. This is acceptable only for local development. Emitted once when the chain is built.
+
+**What to do:** Configure `auth.chain` (a `keys` verifier and/or an auth plugin) before exposing busbar to any untrusted network. An open relay in production forwards anyone's traffic on your upstream credentials.
+
+<a id="auth-offload-saturated"></a>
+### BUSBAR-4005 — Auth chain offload saturated (permit not acquired; request denied fail-closed)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `auth-offload-saturated`
+
+The auth chain could not obtain a blocking-offload permit within the wait window because the offload budget is fully in flight — an auth plugin is wedged and not returning. The chain never ran, so the credential is unverified and busbar denies fail-closed. Warned once on entry to the saturated state; recurrence logs at debug.
+
+**What to do:** Investigate the auth plugin — it is blocking past its timeout and starving the offload budget. Restore or restart it; the saturation clears once chain calls return within budget.
+
+<a id="auth-chain-panicked"></a>
+### BUSBAR-4006 — Auth chain panicked (request denied fail-closed)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `auth-chain-panicked`
+
+The auth chain's blocking task panicked, so busbar denies the request fail-closed rather than admit an unverified credential. A panicking chain is a plugin bug. Warned once on entry to the panicking state; recurrence logs at debug.
+
+**What to do:** Fix the auth plugin — a panic in the chain is a bug in one of its modules. Capture the logged error and the plugin's own logs; requests are denied until it is corrected.
+
+<a id="admin-module-unresolved"></a>
+### BUSBAR-4007 — admin_auth names a module with no resolved plugin
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `admin-module-unresolved`
+
+The admin auth chain named a module that has no resolved plugin, and busbar skipped it fail-closed. This is supposed to be impossible after a successful boot — `AdminAuthChain::build` fails closed on any unresolvable name — so reaching it means the admin-module table drifted from the configured chain.
+
+**What to do:** Investigate the admin auth configuration and plugin load state; a named admin module is missing at runtime. Restart busbar so boot re-resolves the chain, and file a bug with the logged module name if it persists.
+
+<a id="admin-offload-saturated"></a>
+### BUSBAR-4008 — Admin auth offload saturated (permit not acquired; request denied fail-closed)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `admin-offload-saturated`
+
+The admin auth chain could not obtain a blocking-offload permit within the wait window because the admin offload budget is fully in flight — an admin auth plugin is wedged and not returning. The chain never ran, so busbar denies fail-closed. Warned once on entry to the saturated state; recurrence logs at debug.
+
+**What to do:** Investigate the admin auth plugin — it is blocking past its timeout. Restore or restart it; admin access is denied until admin-chain calls return within budget.
+
+<a id="admin-chain-stalled"></a>
+### BUSBAR-4009 — Admin auth chain did not complete in time (request denied fail-closed)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `admin-chain-stalled`
+
+The admin auth chain's offloaded task did not complete within its deadline, or it panicked, so busbar denies the admin request fail-closed rather than admit an unverified operator. Warned once on entry to the stalled state; recurrence logs at debug.
+
+**What to do:** Investigate the admin auth plugin — it is slow or crashing on the admin path. Restore or restart it; admin access is denied until the chain completes within its deadline.
+
+<a id="admin-forbidden-suppressed"></a>
+### BUSBAR-4010 — Admin request forbidden (audit record suppressed this window)
+
+- **Severity:** benign_recurring
+- **Since:** 1.6.0
+- **Slug:** `admin-forbidden-suppressed`
+
+An admin request was forbidden (insufficient scope for the path), and a durable audit record for it was suppressed because one was already written for this principal in the current rate window. This is a per-request signal of a CLIENT-side authorization failure, not an operator problem, so it is emitted at debug to avoid log spam under a client that keeps retrying a forbidden call.
+
+**What to do:** None — self-heals; the client is being correctly refused. Persistent volume from one principal indicates a misconfigured client or a probe; the durable audit chain already carries the first occurrence per window.
+
+<a id="keys-in-chain-passthrough-conflict"></a>
+### BUSBAR-4011 — auth.chain names `keys` alongside upstream_credentials: passthrough
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `keys-in-chain-passthrough-conflict`
+
+The auth chain names the `keys` verifier while `upstream_credentials` is set to `passthrough`. keys-in-chain requires a valid virtual key on every request and supersedes passthrough's accept-and-forward-the-caller-credential intent, so passthrough never takes effect. Warned once at first request.
+
+**What to do:** Resolve the config conflict: use `upstream_credentials: own` (or omit it) alongside `keys`, or drop `keys` from the chain if you genuinely want to forward caller credentials. The two settings are mutually exclusive.
+
+<a id="self-subject-unsafe"></a>
+### BUSBAR-4012 — Token-exchange refused an unsafe self-serve subject
+
+- **Severity:** benign_recurring
+- **Since:** 1.6.0
+- **Slug:** `self-subject-unsafe`
+
+A token-exchange request presented a principal id that is unsafe as a self-serve subject — empty, containing a '/' route separator or a control character, or carrying a reserved `vk_`/`user:`/`group:` prefix — so busbar refused it with a 403. This is a CLIENT-supplied bad value, not an operator problem, so it is emitted at debug to avoid spam from a misbehaving client.
+
+**What to do:** None — self-heals; the client must present a valid subject id. If a legitimate identity is being rejected, its id needs to be reshaped to avoid the reserved prefixes and separators.
+
+<a id="egress-apikey-invalid-bytes"></a>
+### BUSBAR-4013 — Egress API key contains invalid header bytes (auth header omitted)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `egress-apikey-invalid-bytes`
+
+A configured egress credential (a static `api-key`/`x-goog-api-key`) contains bytes that are invalid in an HTTP header value (typically an ASCII control character), so busbar omits the auth header entirely and the upstream will reject with 401. The credential is misconfigured.
+
+**What to do:** Fix the configured egress credential — remove stray whitespace/control characters (often a trailing newline from how the secret was pasted or injected). Requests to that upstream 401 until the key is a valid header value.
+
+<a id="egress-oauth-token-invalid-bytes"></a>
+### BUSBAR-4014 — Minted OAuth token contains invalid header bytes (auth header omitted)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `egress-oauth-token-invalid-bytes`
+
+An OAuth token minted for egress contains bytes invalid in an HTTP header value, so busbar omits the `Bearer` auth header and the upstream will reject with 401. Fires on mint (per refresh), not per request, and is near-unreachable for a well-formed token endpoint.
+
+**What to do:** Investigate the OAuth token endpoint — it returned an access token with control or non-ASCII bytes. Requests to that upstream 401 until it mints a header-safe token.
+
+<a id="egress-oauth-empty-token"></a>
+### BUSBAR-4015 — OAuth token endpoint returned a 200 with an empty access_token
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `egress-oauth-empty-token`
+
+The upstream OAuth token endpoint answered 200 but with an EMPTY access_token. busbar treats it as a (retryable) mint failure rather than storing it, because an empty token collides with the pre-first-mint sentinel and would wedge the lane permanently. It retries on the refresh cadence.
+
+**What to do:** Investigate the OAuth token endpoint / client-credentials configuration — a 200 with no token usually means a misconfigured client, scope, or audience. Egress to that upstream 401s until a non-empty token is minted.
+
+<a id="egress-oauth-mint-failed"></a>
+### BUSBAR-4016 — OAuth token mint (refresh) failed; retrying
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `egress-oauth-mint-failed`
+
+The background OAuth token refresh failed to mint a new token. busbar keeps serving the current token and retries soon; if retries keep failing past expiry, egress requests carry a stale/empty token and the upstream 401s. Fires on the refresh cadence, not per request.
+
+**What to do:** Investigate the OAuth token endpoint — a transient outage self-heals on the next retry; sustained failures mean a credential/endpoint/network problem that will 401 egress once the current token expires.
+
+<a id="trust-sweep-not-attempted"></a>
+### BUSBAR-4017 — Scheduled trust sweep could not be attempted (registration not contacted)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `trust-sweep-not-attempted`
+
+A scheduled trust sweep could not even be ATTEMPTED for a registration (a local precondition failed before any contact), so the upstream was not contacted and its trust state is unchanged. The registration is not re-verified this tick.
+
+**What to do:** Investigate the logged reason for the named subject — typically a local resource or config problem preventing the sweep from starting. Trust state is preserved, not demoted; resolve the cause so the registration is re-verified on schedule.
+
+<a id="trust-sweep-contact-failed"></a>
+### BUSBAR-4018 — Scheduled trust sweep could not authenticate the upstream (failed contact recorded)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `trust-sweep-contact-failed`
+
+A scheduled trust sweep reached the upstream but could not authenticate it, so busbar records a failed contact against the registration. Repeated failed contacts feed the anomaly breaker toward suspension (see BUSBAR-4021).
+
+**What to do:** Investigate the named upstream's reachability and credentials for the logged subject. A transient failure is recorded and self-heals on a later clean sweep; persistent failures will suspend the registration.
+
+<a id="trust-upstream-drifted"></a>
+### BUSBAR-4019 — Upstream drifted from the approved pin (registration demoted)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `trust-upstream-drifted`
+
+A scheduled trust sweep found the upstream DRIFTED from its approved pin — something changed underneath a standing approval — so busbar demoted the registration and it stops serving until an operator re-approves. This is the headline trust diagnostic: the operator's first notice that a pinned upstream changed.
+
+**What to do:** Review the logged drift (pin change, added/removed/changed attributes) for the named subject. If the change is expected, re-approve the registration to restore service; if not, treat it as a potential compromise of that upstream.
+
+<a id="trust-recovery-held"></a>
+### BUSBAR-4020 — Clean trust observation held (recovery backoff not yet elapsed)
+
+- **Severity:** benign_recurring
+- **Since:** 1.6.0
+- **Slug:** `trust-recovery-held`
+
+A scheduled trust sweep made a clean observation, but the recovery backoff since the last drift has not yet elapsed, so the observation is not yet believed and the registration stays demoted for now. This is the expected self-healing backoff, so it is emitted at debug.
+
+**What to do:** None — self-heals. The registration recovers automatically once enough consecutive clean observations accumulate past the recovery backoff.
+
+<a id="trust-registration-suspended"></a>
+### BUSBAR-4021 — Anomaly breaker suspended a trust registration
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `trust-registration-suspended`
+
+The trust anomaly breaker suspended a registration — accumulated failed contacts or drift crossed its threshold — so the registration stops serving until the condition clears or an operator intervenes. A transition event, emitted once per suspension.
+
+**What to do:** Investigate the named subject's upstream (see the preceding contact-failure or drift diagnostics for the cause). Resolve the underlying fault; the registration recovers or requires re-approval depending on why it was suspended.
+
+<a id="trust-sweep-panicked"></a>
+### BUSBAR-4022 — Scheduled trust sweep panicked (job continues)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `trust-sweep-panicked`
+
+A scheduled trust sweep pass panicked. busbar catches the panic and CONTINUES the sweep job — exiting would turn one bad upstream into a deployment that silently never sweeps again — but that tick's registrations were not all swept. A panicking sweep is a code bug.
+
+**What to do:** Capture the logged plane context and file a bug — a sweep pass should never panic. The job keeps running, but investigate promptly since the panicking tick left some registrations un-swept.
+
+<a id="oauth-as-sweep-failed"></a>
+### BUSBAR-4023 — oauth_as expired-record sweep failed (retrying next tick)
+
+- **Severity:** benign_recurring
+- **Since:** 1.6.0
+- **Slug:** `oauth-as-sweep-failed`
+
+The oauth_as authorization-server sweep of expired records failed for a tick — typically a transient store hiccup — so busbar retries on the next tick. Expired records simply linger until a sweep succeeds. Warned once on entry to the failing state; recurrence logs at debug so a persistent store problem cannot spam.
+
+**What to do:** None if it clears on the next tick. Sustained failures indicate an oauth_as store problem worth investigating; expired records accumulate until a sweep succeeds.
+
+<a id="sigv4-hmac-init-failed"></a>
+### BUSBAR-4024 — SigV4 HMAC-SHA256 init failed (documented unreachable)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `sigv4-hmac-init-failed`
+
+Initializing HMAC-SHA256 for AWS SigV4 signing failed. This is documented as unreachable — HMAC-SHA256 accepts a key of any length — so reaching it indicates a serious crypto-library inconsistency. busbar returns an empty signature, which the upstream rejects.
+
+**What to do:** Capture the logged error and file a bug; this should not be possible. SigV4-signed egress (e.g. Bedrock) fails to authenticate until it is resolved.
+
 ## 5xxx — Proxy & routing
 
 <a id="usage-tap-reassembly-cap-exceeded"></a>

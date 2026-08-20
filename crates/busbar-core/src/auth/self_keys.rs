@@ -22,6 +22,7 @@ use async_trait::async_trait;
 
 use super::{ChainVerdict, Principal};
 use crate::config::RoleBindings;
+use crate::diagnostics::{diag_debug, SELF_SUBJECT_UNSAFE};
 use crate::governance::GovState;
 
 /// One issued self-serve key. The `secret` is the full busbar token (shown to the caller); `key_id`
@@ -265,7 +266,8 @@ fn sanitize_self_sub(sub: &str) -> Result<(), ExchangeError> {
         || sub.chars().any(|c| c.is_control())
         || leading_reserved
     {
-        tracing::warn!(
+        diag_debug!(
+            SELF_SUBJECT_UNSAFE,
             sub = %sub,
             "token-exchange: refusing a principal id unsafe as a self-serve subject (empty, a '/' \
              route separator, a control char, or a leading reserved 'vk_'/'user:'/'group:' prefix)"

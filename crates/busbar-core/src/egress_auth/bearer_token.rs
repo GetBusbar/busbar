@@ -13,6 +13,9 @@
 //! so a config reload that drops the lane also stops its refresher (no task leak).
 
 use super::CredentialProvider;
+use crate::diagnostics::{
+    diag_warn, EGRESS_OAUTH_EMPTY_TOKEN, EGRESS_OAUTH_MINT_FAILED, EGRESS_OAUTH_TOKEN_INVALID_BYTES,
+};
 use crate::proto::SigningContext;
 use axum::http::{HeaderName, HeaderValue};
 use std::future::Future;
@@ -52,7 +55,8 @@ impl CachedToken {
             match HeaderValue::from_str(&format!("Bearer {token}")) {
                 Ok(v) => Some(v),
                 Err(_) => {
-                    tracing::warn!(
+                    diag_warn!(
+                        EGRESS_OAUTH_TOKEN_INVALID_BYTES,
                         "minted an OAuth token with bytes invalid for an HTTP header value; omitting \
                          the auth header — upstream will reject with 401"
                     );
@@ -163,7 +167,8 @@ async fn refresh_loop(minter: Minter, weak: Weak<BearerToken>) {
             // (organic traffic 401s forever) — a permanent wedge with no self-healing. Retry at
             // MIN_SLEEP instead, exactly like a mint error.
             Ok(fresh) if fresh.token.expose_secret().is_empty() => {
-                tracing::warn!(
+                diag_warn!(
+                    EGRESS_OAUTH_EMPTY_TOKEN,
                     "OAuth token endpoint returned a 200 with an empty access_token; treating as a \
                      mint failure and will retry"
                 );
@@ -187,7 +192,7 @@ async fn refresh_loop(minter: Minter, weak: Weak<BearerToken>) {
                 // Keep serving whatever token is current; retry soon. If retries keep failing past
                 // expiry, `headers_for` emits a stale/empty token → upstream 401, classified like any
                 // auth failure by the breaker.
-                tracing::warn!(error = %e, "OAuth token mint failed; will retry");
+                diag_warn!(EGRESS_OAUTH_MINT_FAILED, error = %e, "OAuth token mint failed; will retry");
                 if weak.upgrade().is_none() {
                     return;
                 }
