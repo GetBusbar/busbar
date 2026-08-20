@@ -55,7 +55,7 @@ fn token_usage_maps_token_meter_and_none_for_flat() {
     let tu = IrResp::Embeddings(e)
         .token_usage()
         .expect("token-metered op yields Some");
-    assert_eq!(tu.input_tokens, 12);
+    assert_eq!(tu.input, 12);
     // A flat-metered moderation response has no token usage.
     assert!(IrResp::Moderation(Default::default())
         .token_usage()

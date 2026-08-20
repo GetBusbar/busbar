@@ -18,7 +18,6 @@
 
 use crate::handlers::{CodecError, IngressReject, OperationHandler, WireBody};
 use crate::ir::variant::{IrReq, IrResp};
-use crate::ir::IrUsage;
 use crate::proto::ProtocolWriter;
 use bytes::Bytes;
 use serde_json::Value;
@@ -66,7 +65,11 @@ impl OperationHandler for ChatOperation {
             .and_then(|s| s.as_str())
             .filter(|s| !s.is_empty())
     }
-    fn extract_usage(&self, ingress_protocol: &str, body: &[u8]) -> Option<IrUsage> {
+    fn extract_usage(
+        &self,
+        ingress_protocol: &str,
+        body: &[u8],
+    ) -> Option<crate::billing::TokenUsage> {
         // Same-protocol usage tap: run the egress (== ingress) reader over the reassembled body.
         // Three distinct failure points (unknown protocol / bad JSON / decode failure) — each is
         // logged at its own site so a same-protocol 2xx body that fails to decode is never a
@@ -95,7 +98,10 @@ impl OperationHandler for ChatOperation {
             }
         };
         match p.reader().read_response(&v) {
-            Ok(ir) => Some(ir.usage),
+            // The dialect reader still yields the concrete `IrResponse` (that codec RELOCATEs to
+            // busbar-llm at the cutover); project its usage into the neutral token totals here so the
+            // seam's return names no concrete IR.
+            Ok(ir) => Some(ir.usage.to_token_usage()),
             Err(e) => {
                 tracing::warn!(
                     error = ?e,

@@ -66,7 +66,6 @@ pub fn request_handler(protocol: &str) -> Option<&'static dyn RequestHandler> {
 mod registry_tests;
 
 use crate::ir::variant::{IrReq, IrResp};
-use crate::ir::IrUsage;
 use crate::operation::Operation;
 use crate::proto::ProtocolWriter;
 use bytes::Bytes;
@@ -229,7 +228,7 @@ pub trait OperationHandler: Send + Sync {
     /// end, only when [`Self::taps_usage`] is true). Default: run THIS operation's own reader over the
     /// body and project its token usage — so a token-metered non-chat op (embeddings) bills the same
     /// as the cross-protocol path. Chat overrides this to run the egress protocol's chat reader.
-    fn extract_usage(&self, _ingress_protocol: &str, body: &[u8]) -> Option<IrUsage> {
+    fn extract_usage(&self, _ingress_protocol: &str, body: &[u8]) -> Option<crate::billing::TokenUsage> {
         match self.read_response(body) {
             Ok(r) => r.token_usage(),
             Err(e) => {
@@ -414,7 +413,11 @@ impl OpDispatch {
     pub(crate) fn taps_nonstream_usage(&self) -> bool {
         self.op_handler.taps_usage()
     }
-    pub(crate) fn extract_usage(&self, ingress_protocol: &str, body: &[u8]) -> Option<IrUsage> {
+    pub(crate) fn extract_usage(
+        &self,
+        ingress_protocol: &str,
+        body: &[u8],
+    ) -> Option<crate::billing::TokenUsage> {
         self.op_handler.extract_usage(ingress_protocol, body)
     }
     pub(crate) fn egress_accept(

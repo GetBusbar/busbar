@@ -578,9 +578,7 @@ where
                             )
                             .map(|u| u.to_token_usage())
                         } else {
-                            this.op
-                                .extract_usage(this.ingress_protocol, &buf)
-                                .map(|u| u.to_token_usage())
+                            this.op.extract_usage(this.ingress_protocol, &buf)
                         }
                     } else {
                         None

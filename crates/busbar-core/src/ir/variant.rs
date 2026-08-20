@@ -589,19 +589,15 @@ impl IrResp {
         }
     }
 
-    /// The token usage for this response as an [`IrUsage`], if it is token-metered. Used by the
-    /// same-protocol non-stream usage tap (`OperationHandler::extract_usage`) so a token-metered
-    /// non-chat op (embeddings) bills its virtual key's TPM/spend the same way chat does — and the
-    /// same way the cross-protocol path already bills. Flat/duration/character meters return `None`.
-    pub fn token_usage(&self) -> Option<crate::ir::IrUsage> {
+    /// The token usage for this response as the neutral [`crate::billing::TokenUsage`], if it is
+    /// token-metered. Used by the same-protocol non-stream usage tap
+    /// (`OperationHandler::extract_usage`) so a token-metered non-chat op (embeddings) bills its
+    /// virtual key's TPM/spend the same way chat does — and the same way the cross-protocol path
+    /// already bills. Flat/duration/character meters return `None`. This IS the neutral projection
+    /// (`usage()`) with the token variant unwrapped; it names no concrete IR (G6 inversion).
+    pub fn token_usage(&self) -> Option<TokenUsage> {
         match self.usage() {
-            Some(Billing::Tokens(t)) => Some(crate::ir::IrUsage {
-                input_tokens: t.input,
-                output_tokens: t.output,
-                cache_read_input_tokens: t.cache_read,
-                cache_creation_input_tokens: t.cache_creation,
-                detail: crate::ir::IrUsageDetail::default(),
-            }),
+            Some(Billing::Tokens(t)) => Some(t),
             _ => None,
         }
     }

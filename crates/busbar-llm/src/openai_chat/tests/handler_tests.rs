@@ -300,13 +300,13 @@ fn transcription_egress_field_strips_crlf_injection() {
 #[test]
 fn embeddings_taps_usage_and_extract_usage_reads_prompt_tokens() {
     // Embeddings is token-metered same-protocol: it must tap usage, and the default
-    // extract_usage (read_response + token_usage) must surface prompt_tokens as input_tokens.
+    // extract_usage (read_response + token_usage) must surface prompt_tokens as the neutral `input`.
     assert!(OpenAiEmbeddings.taps_usage());
     let body = br#"{"object":"list","data":[{"object":"embedding","index":0,"embedding":[0.1,0.2]}],"usage":{"prompt_tokens":7,"total_tokens":7}}"#;
     let usage = OpenAiEmbeddings
         .extract_usage("openai", body)
         .expect("token-metered embeddings yields usage");
-    assert_eq!(usage.input_tokens, 7);
+    assert_eq!(usage.input, 7);
 }
 
 #[test]
