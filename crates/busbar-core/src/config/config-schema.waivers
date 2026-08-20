@@ -22,26 +22,3 @@
 # line here, the change needs a human decision, not a config edit.
 #
 # EMPTY BY DEFAULT. It should stay that way.
-
-# ── 1.6.0 UNIFIED POOLS (design: 1.6.0-unified-pools.md, owner "GO", 2026-08-20) ─────────────────
-# The three failover config grammars collapse into ONE neutral top-level `pools:`. Two deliberate,
-# owner-ratified deltas the additive gate flags — both ZERO operator impact:
-#
-# 1. `tool_pools:`/`agent_pools:` are UNRELEASED 1.6.0-dev sections (latest tag is v1.5.4, which never
-#    had them). They fold into the single neutral `pools:` map (kind inferred from members). Removing
-#    an unreleased section breaks no shipped config.
-DeployCfg.tool_pools = 1.6.0 unified pools: unreleased 1.6.0-dev section folded into the neutral `pools:` map (kind inferred). Zero operator impact; the migrator carries it.
-DeployCfg.agent_pools = 1.6.0 unified pools: unreleased 1.6.0-dev section folded into the neutral `pools:` map (kind inferred). Zero operator impact; the migrator carries it.
-#
-# 2. `PoolMember` gained a hand-written Deserialize that accepts a BARE NAME on every plane OR the
-#    legacy rich object. The rich object's fields now live on the `RichMember` shape the visitor
-#    forwards a map to (see the `additive OK RichMember` / `RawPoolCfg.*` lines), so EVERY former
-#    `PoolMember.*` key is still accepted with the same type — the grammar is a SUPERSET, not a break.
-#    The generator only sees the fields relocated off the now-manual `PoolMember` type.
-PoolMember.model = 1.6.0 unified pools: still accepted via RichMember (map arm of the new PoolMember visitor); grammar is a superset (also accepts a bare name).
-PoolMember.weight = 1.6.0 unified pools: still accepted via RichMember; grammar is a superset (bare name or rich object).
-PoolMember.context_max = 1.6.0 unified pools: still accepted via RichMember; grammar is a superset (bare name or rich object).
-PoolMember.tier = 1.6.0 unified pools: still accepted via RichMember; grammar is a superset (bare name or rich object).
-PoolMember.attempt_timeout_ms = 1.6.0 unified pools: still accepted via RichMember; grammar is a superset (bare name or rich object).
-PoolMember.reasoning = 1.6.0 unified pools: still accepted via RichMember; grammar is a superset (bare name or rich object).
-PoolMember.tags = 1.6.0 unified pools: still accepted via RichMember; grammar is a superset (bare name or rich object).
