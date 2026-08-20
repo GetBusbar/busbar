@@ -45,6 +45,13 @@ use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 use std::sync::OnceLock;
 use std::time::Duration;
 
+use crate::diagnostics::{
+    diag_debug, diag_error, diag_warn, METRICS_KEY_GAUGE_LIMIT_EXCEEDED,
+    METRICS_MAINTENANCE_THREAD_SPAWN_FAILED, METRICS_SCRAPE_GROUP_LEDGER_READ_FAILED,
+    METRICS_SCRAPE_KEY_USAGE_READ_FAILED, METRICS_SCRAPE_LIST_KEYS_FAILED,
+    PROMETHEUS_RECORDER_INSTALL_FAILED,
+};
+
 use crate::state::App;
 
 // `Option` inside the cell so the (run-exactly-once) initializer can record an install FAILURE
@@ -391,7 +398,10 @@ pub(crate) fn init_with(buffer: Duration) {
             Some(handle)
         }
         Err(e) => {
-            tracing::error!("prometheus recorder install failed; /metrics will be empty: {e}");
+            diag_error!(
+                PROMETHEUS_RECORDER_INSTALL_FAILED,
+                "prometheus recorder install failed; /metrics will be empty: {e}"
+            );
             None
         }
     });
@@ -510,7 +520,8 @@ fn spawn_maintenance(interval: Duration) {
             drain_pending();
         });
     if let Err(e) = spawned {
-        tracing::warn!(
+        diag_warn!(
+            METRICS_MAINTENANCE_THREAD_SPAWN_FAILED,
             error = %e,
             "could not spawn the metrics maintenance thread; buffered observations now drain only \
              on a /metrics scrape"
@@ -905,7 +916,7 @@ pub(crate) fn refresh_scrape_gauges(app: &App) {
         let keys = match gov.all_keys() {
             Ok(ks) => ks,
             Err(e) => {
-                tracing::warn!(error = %e, "metrics scrape: failed to list virtual keys; skipping per-key spend/token gauges");
+                diag_debug!(METRICS_SCRAPE_LIST_KEYS_FAILED, error = %e, "metrics scrape: failed to list virtual keys; skipping per-key spend/token gauges");
                 Vec::new()
             }
         };
@@ -916,13 +927,35 @@ pub(crate) fn refresh_scrape_gauges(app: &App) {
         // limit / top-N-by-spend selection is a v1.x refinement.)
         // Operator-tunable via `metrics.key_gauge_limit` (default 2000).
         let key_gauge_limit = crate::limits::key_gauge_limit();
+        // Warn-once latch: the key count exceeding the gauge limit is an actionable but STABLE
+        // condition (it persists across every scrape until the operator tunes
+        // `metrics.key_gauge_limit` or the key count drops), and this scrape runs on every /metrics
+        // pull. Warn on the TRANSITION into the over-limit state; hold subsequent scrapes at debug so
+        // a busy scrape cadence cannot spam. Cleared when the count falls back under the limit so a
+        // future breach re-warns.
+        static KEY_GAUGE_LIMIT_WARNED: std::sync::atomic::AtomicBool =
+            std::sync::atomic::AtomicBool::new(false);
         if keys.len() > key_gauge_limit {
-            tracing::warn!(
-                key_count = keys.len(),
-                limit = key_gauge_limit,
-                "metrics scrape: virtual-key count exceeds per-key gauge limit; emitting gauges for \
-                 only the first `limit` keys to bound cardinality and scrape-path DB load",
-            );
+            if !KEY_GAUGE_LIMIT_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                diag_warn!(
+                    METRICS_KEY_GAUGE_LIMIT_EXCEEDED,
+                    key_count = keys.len(),
+                    limit = key_gauge_limit,
+                    "metrics scrape: virtual-key count exceeds per-key gauge limit; emitting gauges \
+                     for only the first `limit` keys to bound cardinality and scrape-path DB load",
+                );
+            } else {
+                diag_debug!(
+                    METRICS_KEY_GAUGE_LIMIT_EXCEEDED,
+                    key_count = keys.len(),
+                    limit = key_gauge_limit,
+                    "metrics scrape: virtual-key count still exceeds per-key gauge limit; emitting \
+                     gauges for only the first `limit` keys to bound cardinality and scrape-path DB \
+                     load",
+                );
+            }
+        } else {
+            KEY_GAUGE_LIMIT_WARNED.store(false, std::sync::atomic::Ordering::Relaxed);
         }
         for key in keys.iter().take(key_gauge_limit) {
             // `usage_for` queries the SQLite store for the key's current-window counters.
@@ -930,7 +963,7 @@ pub(crate) fn refresh_scrape_gauges(app: &App) {
                 Ok(Some(u)) => u,
                 Ok(None) => continue, // key vanished between list and get — skip
                 Err(e) => {
-                    tracing::warn!(key = %key.id, error = %e, "metrics scrape: usage read failed; skipping key");
+                    diag_debug!(METRICS_SCRAPE_KEY_USAGE_READ_FAILED, key = %key.id, error = %e, "metrics scrape: usage read failed; skipping key");
                     continue;
                 }
             };
@@ -995,7 +1028,7 @@ pub(crate) fn refresh_scrape_gauges(app: &App) {
                 ) {
                     Ok(u) => u,
                     Err(e) => {
-                        tracing::warn!(bucket = %bucket.bucket_id, error = %e, "metrics scrape: group ledger read failed; skipping");
+                        diag_debug!(METRICS_SCRAPE_GROUP_LEDGER_READ_FAILED, bucket = %bucket.bucket_id, error = %e, "metrics scrape: group ledger read failed; skipping");
                         continue;
                     }
                 };

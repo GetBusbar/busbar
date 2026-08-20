@@ -7,6 +7,15 @@ use super::*;
 use crate::observability::HOTPATH_LEVEL;
 // The single neutral translate entrypoint (G6 step 4): the non-stream cross-protocol response arm
 // routes its read→prepare_for_ingress→write core through `TranslateCodec::translate_response`.
+use crate::diagnostics::{
+    diag_debug, diag_error, diag_warn, ATTEMPT_TIMEOUT_FAILOVER, CROSSPROTO_BINARY_CODEC_FAILED,
+    CROSSPROTO_JSON_CODEC_FAILED, CROSSPROTO_NONSTREAM_MIDTRANSFER_FAILED,
+    CROSSPROTO_RESPONSE_NOT_TRANSLATABLE, CROSSPROTO_RESPONSE_NOT_TRANSLATABLE_DEGRADED,
+    CROSSPROTO_TRANSLATION_CAP_EXCEEDED, DECISION_GATE_REJECTED, DECISION_GATE_RESTRICT_REJECT,
+    DECISION_GATE_RESTRICT_WEIGHTED_ESCAPE, LANE_HARD_DOWN, REWRITE_BODY_MATERIALIZE_FAILED,
+    REWRITE_GATE_REJECTED, REWRITE_RESERIALIZE_FAILED, ROUTING_POLICY_REJECTED,
+    ROUTING_POLICY_RESTRICT_REJECT, ROUTING_POLICY_RESTRICT_WEIGHTED_ESCAPE,
+};
 use crate::handlers::TranslateCodec;
 
 /// Forward with pool name context for on_exhausted config lookup.
@@ -339,7 +348,8 @@ async fn translate_response_cross_protocol(
         // transient failure so the breaker sees the transfer as failed, AND refund the request budget
         // unit spent on the headers — no usable response was delivered, so a failed body transfer
         // must not permanently drain the lane's `max_requests` budget.
-        tracing::warn!(
+        diag_debug!(
+            CROSSPROTO_NONSTREAM_MIDTRANSFER_FAILED,
             ingress = %ingress_protocol,
             egress = %egress_name,
             "cross-protocol non-stream upstream body failed mid-transfer; \
@@ -367,7 +377,8 @@ async fn translate_response_cross_protocol(
         // charging the key's TPM/spend budget for a completion the client never received is incorrect.
         // Unlike TransportError this is OUR cap, not an upstream fault, so the optimistic breaker
         // success recorded on the 2xx headers stands and the request budget unit is NOT refunded.
-        tracing::warn!(
+        diag_debug!(
+            CROSSPROTO_TRANSLATION_CAP_EXCEEDED,
             ingress = %ingress_protocol,
             egress = %egress_name,
             cap = max_translated_body_bytes(),
@@ -418,7 +429,8 @@ async fn translate_response_cross_protocol(
                     // A binary/opaque upstream body the egress codec cannot decode: log the CodecError
                     // so a repeated wall of 500s has a visible root cause instead of only the generic
                     // warn below.
-                    tracing::warn!(
+                    diag_debug!(
+                        CROSSPROTO_BINARY_CODEC_FAILED,
                         ingress = %ingress_protocol,
                         egress = %egress_name,
                         error = ?e,
@@ -469,7 +481,8 @@ async fn translate_response_cross_protocol(
                         // A JSON 2xx whose shape the egress codec rejects (e.g. a missing `embedding`
                         // array): log the CodecError before the generic 500 so the operator can tell a
                         // broken upstream from a new/renamed response field.
-                        tracing::warn!(
+                        diag_debug!(
+                            CROSSPROTO_JSON_CODEC_FAILED,
                             ingress = %ingress_protocol,
                             egress = %egress_name,
                             error = ?e,
@@ -615,14 +628,16 @@ async fn translate_response_cross_protocol(
     // response is an immediate proxy tell and a functional failure. Return an ingress-native 500
     // instead. (Same-protocol passthrough never enters this function.)
     if degraded {
-        tracing::warn!(
+        diag_debug!(
+            CROSSPROTO_RESPONSE_NOT_TRANSLATABLE_DEGRADED,
             ingress = %ingress_protocol,
             egress = %egress_name,
             status = status.as_u16(),
             "degraded cross-protocol response not translatable; returning ingress-native error"
         );
     } else {
-        tracing::warn!(
+        diag_debug!(
+            CROSSPROTO_RESPONSE_NOT_TRANSLATABLE,
             ingress = %ingress_protocol,
             egress = %egress_name,
             status = status.as_u16(),
@@ -790,7 +805,8 @@ pub(crate) async fn forward_with_pool_parsed_inner(
             // A rewrite hook's REJECT stops the request here — the same client shaping a decide-
             // path gate rejection gets (clamped status, sanitized message, native envelope).
             let reject = |status: u16, message: String| {
-                tracing::info!(
+                diag_debug!(
+                    REWRITE_GATE_REJECTED,
                     pool = pool_name,
                     status,
                     message = %message,
@@ -807,7 +823,8 @@ pub(crate) async fn forward_with_pool_parsed_inner(
             // parse). The unreachable-in-practice parse failure (these bytes already validated)
             // fails CLOSED, matching the rewrite guarantee's serialize guard below.
             let Ok(parsed) = lazy.ensure_dom() else {
-                tracing::error!(
+                diag_error!(
+                    REWRITE_BODY_MATERIALIZE_FAILED,
                     "materializing the validated request body for the rewrite pass failed; \
                      rejecting rather than forwarding un-rewritten"
                 );
@@ -856,7 +873,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                     // leak the un-rewritten body to a fallback lane. (Not realistically reachable;
                     // defense-in-depth for the rewrite invariant.)
                     Err(e) => {
-                        tracing::error!(error = %e, "re-serializing a committed rewrite failed; rejecting to avoid forwarding the un-rewritten request on failover");
+                        diag_error!(REWRITE_RESERIALIZE_FAILED, error = %e, "re-serializing a committed rewrite failed; rejecting to avoid forwarding the un-rewritten request on failover");
                         return reject(500, "request rewrite could not be applied".to_string());
                     }
                 }
@@ -1078,7 +1095,8 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                         "status" => status.to_string(),
                     )
                     .increment(1);
-                    tracing::info!(
+                    diag_debug!(
+                        DECISION_GATE_REJECTED,
                         policy = name,
                         pool = pool_name,
                         status,
@@ -1136,7 +1154,8 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                     .collect();
                 if restricted.is_empty() {
                     if matches!(on_empty, crate::config::PolicyOnError::Weighted) {
-                        tracing::info!(
+                        diag_debug!(
+                            DECISION_GATE_RESTRICT_WEIGHTED_ESCAPE,
                             policy = name,
                             pool = pool_name,
                             "decision gate restrict left no eligible lane; on_empty: weighted \
@@ -1151,7 +1170,8 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                             "status" => "503".to_string(),
                         )
                         .increment(1);
-                        tracing::info!(
+                        diag_debug!(
+                            DECISION_GATE_RESTRICT_REJECT,
                             policy = name,
                             pool = pool_name,
                             "decision gate restrict left no eligible lane (on_empty: reject)"
@@ -1299,7 +1319,8 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                         // The message is safe to log: the seam that built this outcome sanitized it
                         // (control/invisible chars stripped, length capped — for EVERY producer, not
                         // just the wire transports), and it is the exact string the CLIENT receives.
-                        tracing::info!(
+                        diag_debug!(
+                            ROUTING_POLICY_REJECTED,
                             policy = name,
                             pool = pool_name,
                             status,
@@ -1352,7 +1373,8 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                             // (leave `cands` as the full pool → SWRR); default (and `First`, which has no
                             // eligible "first") is fail-closed reject.
                             if matches!(on_empty, crate::config::PolicyOnError::Weighted) {
-                                tracing::info!(
+                                diag_debug!(
+                                ROUTING_POLICY_RESTRICT_WEIGHTED_ESCAPE,
                                 policy = name,
                                 pool = pool_name,
                                 "routing policy restrict left no eligible lane; on_empty: weighted \
@@ -1367,7 +1389,8 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                                     "status" => "503".to_string(),
                                 )
                                 .increment(1);
-                                tracing::info!(
+                                diag_debug!(
+                                ROUTING_POLICY_RESTRICT_REJECT,
                                 policy = name,
                                 pool = pool_name,
                                 "routing policy restrict left no eligible lane (on_empty: reject)"
@@ -1831,7 +1854,8 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                             DISPOSITION_ATTEMPT_TIMEOUT,
                         );
                         crate::telemetry::failover(&app, metric_pool, DISPOSITION_ATTEMPT_TIMEOUT);
-                        tracing::warn!(
+                        diag_debug!(
+                            ATTEMPT_TIMEOUT_FAILOVER,
                             pool = %pool_name,
                             lane = %app.lanes[i].model,
                             attempt_timeout_ms = ms,
@@ -2155,9 +2179,9 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                             // still-down probe logs at `debug!`.
                             if newly_tripped {
                                 crate::telemetry::breaker_trip(&app, metric_pool, i);
-                                tracing::warn!(pool = %pool_name, lane = %app.lanes[i].model, reason = %reason, "lane hard-down (breaker trip)");
+                                diag_warn!(LANE_HARD_DOWN, pool = %pool_name, lane = %app.lanes[i].model, reason = %reason, "lane hard-down (breaker trip)");
                             } else {
-                                tracing::debug!(pool = %pool_name, lane = %app.lanes[i].model, reason = %reason, "lane still hard-down (recovery probe re-tripped)");
+                                diag_debug!(LANE_HARD_DOWN, pool = %pool_name, lane = %app.lanes[i].model, reason = %reason, "lane still hard-down (recovery probe re-tripped)");
                             }
                             crate::telemetry::upstream_failure(
                                 &app,

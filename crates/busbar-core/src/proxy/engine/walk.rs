@@ -8,6 +8,10 @@
 //! and the admission all live in core, identically for llm, mcp and a2a.
 
 use super::*;
+
+use crate::diagnostics::{
+    diag_debug, ATTEMPT_TIMEOUT_DEGRADED, FALLBACK_RESTRICT_NO_ELIGIBLE_LANE,
+};
 // See `engine::mod`'s identical import for why this is a bare, unqualified import rather than a
 // `crate::observability::HOTPATH_LEVEL` path spelled out at the instrument site: `level = <path>`
 // rejects a leading `crate` keyword segment.
@@ -623,7 +627,8 @@ pub(crate) async fn forward_once(
                 Ok(r) => r,
                 Err(_elapsed) => {
                     record_upstream_rtt(upstream_started.elapsed());
-                    tracing::warn!(
+                    diag_debug!(
+                        ATTEMPT_TIMEOUT_DEGRADED,
                         pool = %pool,
                         lane = %app.lanes[i].model,
                         attempt_timeout_ms = ms,
@@ -990,7 +995,8 @@ pub(crate) async fn handle_fallback_pool(
     let fallback_cands = match request_ctx.enforce_restricts(&app, pool_name, fallback_cands) {
         Ok(c) => c,
         Err(name) => {
-            tracing::info!(
+            diag_debug!(
+                FALLBACK_RESTRICT_NO_ELIGIBLE_LANE,
                 policy = name,
                 pool = pool_name,
                 "compliance restrict left no eligible lane in the fallback pool; fail closed \

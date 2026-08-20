@@ -163,7 +163,17 @@ fn committed_json_matches_registry() {
 // whole app, at which point coverage is total. This is what forces the audit to completion.
 
 /// Paths relative to `crates/busbar-core` (this crate's manifest dir).
-const MIGRATED_FILES: &[&str] = &["src/admin/audit.rs"];
+const MIGRATED_FILES: &[&str] = &[
+    "src/admin/audit.rs",
+    "src/proxy/response_body.rs",
+    "src/proxy/usage.rs",
+    "src/proxy/hooks.rs",
+    "src/proxy/engine/mod.rs",
+    "src/proxy/engine/walk.rs",
+    "src/handlers/chat.rs",
+    "src/handlers/mod.rs",
+    "src/metrics.rs",
+];
 
 #[test]
 fn migrated_files_have_no_uncoded_warn_or_error() {
