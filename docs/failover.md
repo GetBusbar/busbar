@@ -8,27 +8,35 @@ This page is the **LLM plane's** failover. The MCP and A2A planes have their own
 
 ## The first-byte boundary
 
-<svg viewBox="0 0 760 210" role="img" aria-label="A timeline split at the first byte reaching the client: before it, Busbar can transparently reroute connect errors, timeouts, 429s, and 5xxs; after it, no failover is possible because the client already holds tokens." style="width:100%;height:auto;max-width:760px;font-family:ui-sans-serif,system-ui,sans-serif;">
-  <rect x="0" y="0" width="760" height="210" fill="#ffffff"/>
+<svg viewBox="0 0 760 250" role="img" aria-label="A timeline split at the first byte reaching the client: before it, Busbar can transparently reroute connect errors, timeouts, 429s, and 5xxs, bounded by a per-request failover budget (max_hops 3, timeout_secs, and a per-attempt attempt_timeout_ms cap); after it, no failover is possible because the client already holds tokens. A dashed amber pre-release buffer, on the roadmap and not yet built, would hold the first K tokens or T ms and slide the boundary to the right." style="width:100%;height:auto;max-width:760px;font-family:ui-sans-serif,system-ui,sans-serif;">
+  <rect x="0" y="0" width="760" height="250" fill="#111a2e"/>
   <!-- divider marker -->
-  <text x="420" y="34" text-anchor="middle" fill="#334155" font-size="12" font-weight="700">first byte reaches client</text>
-  <line x1="420" y1="42" x2="420" y2="150" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="4 4"/>
+  <text x="420" y="24" text-anchor="middle" fill="#e6edf7" font-size="12" font-weight="700">first byte reaches client</text>
+  <line x1="420" y1="32" x2="420" y2="200" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="4 4"/>
   <!-- green (before) -->
-  <rect x="56" y="56" width="360" height="64" rx="12" fill="#f0fdf4" stroke="#16a34a" stroke-width="2"/>
-  <text x="236" y="84" text-anchor="middle" fill="#166534" font-size="15" font-weight="700">Failover window</text>
-  <text x="236" y="105" text-anchor="middle" fill="#15803d" font-size="10.5">connect · timeout · 429 · 5xx  →  reroute</text>
+  <rect x="56" y="46" width="360" height="72" rx="12" fill="#16210b" stroke="#a3e635" stroke-opacity="0.5" stroke-width="2"/>
+  <text x="236" y="70" text-anchor="middle" fill="#bef264" font-size="15" font-weight="700">Failover window</text>
+  <text x="236" y="89" text-anchor="middle" fill="#bef264" font-size="10.5">connect · timeout · 429 · 5xx  →  reroute</text>
+  <text x="236" y="108" text-anchor="middle" fill="#bef264" font-size="9" fill-opacity="0.85">bounded: max_hops 3 · timeout_secs 120s · attempt_timeout_ms cap</text>
   <!-- red (after) -->
-  <rect x="424" y="56" width="280" height="64" rx="12" fill="#fef2f2" stroke="#dc2626" stroke-width="2"/>
-  <text x="564" y="84" text-anchor="middle" fill="#991b1b" font-size="15" font-weight="700">No failover</text>
-  <text x="564" y="105" text-anchor="middle" fill="#b91c1c" font-size="10.5">client already holds tokens</text>
+  <rect x="424" y="46" width="280" height="72" rx="12" fill="#2a1416" stroke="#f87171" stroke-opacity="0.55" stroke-width="2"/>
+  <text x="564" y="76" text-anchor="middle" fill="#fca5a5" font-size="15" font-weight="700">No failover</text>
+  <text x="564" y="97" text-anchor="middle" fill="#fca5a5" font-size="10.5">client already holds tokens</text>
+  <!-- pre-release buffer (roadmap, not yet built): boundary can slide right -->
+  <rect x="420" y="46" width="92" height="72" rx="4" fill="#fbbf24" fill-opacity="0.07" stroke="#fbbf24" stroke-opacity="0.8" stroke-width="1.5" stroke-dasharray="5 4"/>
+  <line x1="512" y1="32" x2="512" y2="200" stroke="#fbbf24" stroke-opacity="0.8" stroke-width="1.5" stroke-dasharray="5 4"/>
+  <line x1="424" y1="156" x2="504" y2="156" stroke="#fbbf24" stroke-width="1.5" stroke-dasharray="5 4"/>
+  <polygon points="504,151 514,156 504,161" fill="#fbbf24"/>
+  <text x="468" y="176" text-anchor="middle" fill="#fcd34d" font-size="9.5" font-weight="700">pre-release buffer (roadmap, not yet built)</text>
+  <text x="468" y="189" text-anchor="middle" fill="#fcd34d" font-size="9">holds first K tokens / T ms → boundary slides right (opt-in, default off)</text>
   <!-- captions -->
-  <text x="236" y="150" text-anchor="middle" fill="#475569" font-size="11">The bulk of real provider failures land here.</text>
-  <text x="564" y="150" text-anchor="middle" fill="#475569" font-size="11">Mid-stream death → SSE error; client retries.</text>
+  <text x="236" y="138" text-anchor="middle" fill="#94a3b8" font-size="11">The bulk of real provider failures land here.</text>
+  <text x="600" y="138" text-anchor="middle" fill="#94a3b8" font-size="11">Mid-stream death → SSE error; client retries.</text>
   <!-- time axis -->
-  <line x1="56" y1="180" x2="700" y2="180" stroke="#cbd5e1" stroke-width="1.5"/>
-  <polygon points="700,175 712,180 700,185" fill="#cbd5e1"/>
-  <text x="56" y="198" text-anchor="start" fill="#94a3b8" font-size="10.5">request starts</text>
-  <text x="712" y="198" text-anchor="end" fill="#94a3b8" font-size="10.5">time →</text>
+  <line x1="56" y1="210" x2="700" y2="210" stroke="#94a3b8" stroke-width="1.5"/>
+  <polygon points="700,205 712,210 700,215" fill="#94a3b8"/>
+  <text x="56" y="228" text-anchor="start" fill="#94a3b8" font-size="10.5">request starts</text>
+  <text x="712" y="228" text-anchor="end" fill="#94a3b8" font-size="10.5">time →</text>
 </svg>
 
 Failover is bounded by when the upstream starts streaming a response body to the client. Before the first upstream byte reaches the client, any transport or pre-response failure (connect error, timeout waiting for headers, transient upstream response) transparently fails over to another pool member. From the client's perspective, the request is still in flight.

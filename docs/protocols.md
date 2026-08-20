@@ -17,17 +17,24 @@ This document covers:
 
 ## One protocol in, any backend out
 
-<svg viewBox="0 0 760 400" role="img" aria-label="Any of six client protocols enters Busbar, is translated through a superset intermediate representation, and reaches any of six backend protocols, in both directions." style="width:100%;height:auto;max-width:760px;font-family:ui-sans-serif,system-ui,sans-serif;">
+<svg viewBox="0 0 760 434" role="img" aria-label="Any of six client protocols enters Busbar and is translated through a superset intermediate representation to reach any of six backend protocols, in both directions. When the client and backend speak the same protocol the hop is a byte-for-byte passthrough that skips the IR; cross-protocol hops are translated, and a few provider-only fields such as safetySettings, guardrailConfig, documents, previous_response_id, top_k and seed do not cross." style="width:100%;height:auto;max-width:760px;font-family:ui-sans-serif,system-ui,sans-serif;">
   <defs>
     <marker id="ir-both" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
       <path d="M0,0 L10,5 L0,10 z" fill="#94a3b8"/>
     </marker>
+    <marker id="pt-both" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#a3e635"/>
+    </marker>
   </defs>
-  <rect x="0" y="0" width="760" height="400" fill="#ffffff"/>
-  <text x="102" y="26" text-anchor="middle" fill="#64748b" font-size="12" font-weight="700" letter-spacing="0.04em">CLIENT SPEAKS</text>
-  <text x="658" y="26" text-anchor="middle" fill="#64748b" font-size="12" font-weight="700" letter-spacing="0.04em">BACKEND SPEAKS</text>
+  <rect x="0" y="0" width="760" height="434" fill="#111a2e"/>
+  <text x="102" y="26" text-anchor="middle" fill="#94a3b8" font-size="12" font-weight="700" letter-spacing="0.04em">CLIENT SPEAKS</text>
+  <text x="658" y="26" text-anchor="middle" fill="#94a3b8" font-size="12" font-weight="700" letter-spacing="0.04em">BACKEND SPEAKS</text>
+  <!-- passthrough lane: same protocol in and out bypasses the hub, byte-for-byte -->
+  <line x1="184" y1="62" x2="576" y2="62" stroke="#a3e635" stroke-width="1.5" stroke-opacity="0.9" stroke-dasharray="5 4" marker-start="url(#pt-both)" marker-end="url(#pt-both)"/>
+  <rect x="296" y="52" width="168" height="20" rx="6" fill="#111a2e"/>
+  <text x="380" y="66" text-anchor="middle" fill="#a3e635" font-size="10.5" letter-spacing="0.02em">same protocol: passthrough</text>
   <!-- spokes (drawn first, under the chips) -->
-  <g stroke="#cbd5e1" stroke-width="1.5" marker-start="url(#ir-both)" marker-end="url(#ir-both)">
+  <g stroke="#94a3b8" stroke-width="1.5" marker-start="url(#ir-both)" marker-end="url(#ir-both)">
     <line x1="184" y1="62"  x2="296" y2="200"/>
     <line x1="184" y1="120" x2="296" y2="200"/>
     <line x1="184" y1="178" x2="296" y2="200"/>
@@ -42,29 +49,38 @@ This document covers:
     <line x1="464" y1="200" x2="576" y2="352"/>
   </g>
   <!-- hub -->
-  <rect x="300" y="152" width="160" height="96" rx="16" fill="#0f172a" stroke="#a3e635" stroke-width="2.5"/>
+  <rect x="300" y="152" width="160" height="96" rx="16" fill="#a3e635" fill-opacity="0.05" stroke="#a3e635" stroke-width="2.5" stroke-opacity="0.5"/>
   <text x="380" y="196" text-anchor="middle" fill="#ffffff" font-size="16" font-weight="700">Superset IR</text>
   <text x="380" y="216" text-anchor="middle" fill="#a3e635" font-size="10.5" letter-spacing="0.02em">both ways, natively</text>
   <!-- protocol chips -->
-  <g font-size="13" font-weight="600" fill="#0f172a">
+  <g font-size="13" font-weight="600" fill="#e6edf7">
     <g>
-      <rect x="24"  y="40"  width="160" height="44" rx="10" fill="#f8fafc" stroke="#e2e8f0"/><text x="104" y="66"  text-anchor="middle">OpenAI</text>
-      <rect x="24"  y="98"  width="160" height="44" rx="10" fill="#f8fafc" stroke="#e2e8f0"/><text x="104" y="124" text-anchor="middle">Anthropic</text>
-      <rect x="24"  y="156" width="160" height="44" rx="10" fill="#f8fafc" stroke="#e2e8f0"/><text x="104" y="182" text-anchor="middle">Gemini</text>
-      <rect x="24"  y="214" width="160" height="44" rx="10" fill="#f8fafc" stroke="#e2e8f0"/><text x="104" y="240" text-anchor="middle">Bedrock</text>
-      <rect x="24"  y="272" width="160" height="44" rx="10" fill="#f8fafc" stroke="#e2e8f0"/><text x="104" y="298" text-anchor="middle">Cohere</text>
-      <rect x="24"  y="330" width="160" height="44" rx="10" fill="#f8fafc" stroke="#e2e8f0"/><text x="104" y="356" text-anchor="middle">Responses</text>
+      <rect x="24"  y="40"  width="160" height="44" rx="10" fill="#1a2740" stroke="#2c3a52"/><text x="104" y="66"  text-anchor="middle">OpenAI</text>
+      <rect x="24"  y="98"  width="160" height="44" rx="10" fill="#1a2740" stroke="#2c3a52"/><text x="104" y="124" text-anchor="middle">Anthropic</text>
+      <rect x="24"  y="156" width="160" height="44" rx="10" fill="#1a2740" stroke="#2c3a52"/><text x="104" y="182" text-anchor="middle">Gemini</text>
+      <rect x="24"  y="214" width="160" height="44" rx="10" fill="#1a2740" stroke="#2c3a52"/><text x="104" y="240" text-anchor="middle">Bedrock</text>
+      <rect x="24"  y="272" width="160" height="44" rx="10" fill="#1a2740" stroke="#2c3a52"/><text x="104" y="298" text-anchor="middle">Cohere</text>
+      <rect x="24"  y="330" width="160" height="44" rx="10" fill="#1a2740" stroke="#2c3a52"/><text x="104" y="356" text-anchor="middle">Responses</text>
     </g>
     <g>
-      <rect x="576" y="40"  width="160" height="44" rx="10" fill="#f8fafc" stroke="#e2e8f0"/><text x="656" y="66"  text-anchor="middle">OpenAI</text>
-      <rect x="576" y="98"  width="160" height="44" rx="10" fill="#f8fafc" stroke="#e2e8f0"/><text x="656" y="124" text-anchor="middle">Anthropic</text>
-      <rect x="576" y="156" width="160" height="44" rx="10" fill="#f8fafc" stroke="#e2e8f0"/><text x="656" y="182" text-anchor="middle">Gemini</text>
-      <rect x="576" y="214" width="160" height="44" rx="10" fill="#f8fafc" stroke="#e2e8f0"/><text x="656" y="240" text-anchor="middle">Bedrock</text>
-      <rect x="576" y="272" width="160" height="44" rx="10" fill="#f8fafc" stroke="#e2e8f0"/><text x="656" y="298" text-anchor="middle">Cohere</text>
-      <rect x="576" y="330" width="160" height="44" rx="10" fill="#f8fafc" stroke="#e2e8f0"/><text x="656" y="356" text-anchor="middle">Responses</text>
+      <rect x="576" y="40"  width="160" height="44" rx="10" fill="#1a2740" stroke="#2c3a52"/><text x="656" y="66"  text-anchor="middle">OpenAI</text>
+      <rect x="576" y="98"  width="160" height="44" rx="10" fill="#1a2740" stroke="#2c3a52"/><text x="656" y="124" text-anchor="middle">Anthropic</text>
+      <rect x="576" y="156" width="160" height="44" rx="10" fill="#1a2740" stroke="#2c3a52"/><text x="656" y="182" text-anchor="middle">Gemini</text>
+      <rect x="576" y="214" width="160" height="44" rx="10" fill="#1a2740" stroke="#2c3a52"/><text x="656" y="240" text-anchor="middle">Bedrock</text>
+      <rect x="576" y="272" width="160" height="44" rx="10" fill="#1a2740" stroke="#2c3a52"/><text x="656" y="298" text-anchor="middle">Cohere</text>
+      <rect x="576" y="330" width="160" height="44" rx="10" fill="#1a2740" stroke="#2c3a52"/><text x="656" y="356" text-anchor="middle">Responses</text>
     </g>
   </g>
+  <!-- legend: passthrough vs translated -->
+  <g font-size="11" letter-spacing="0.01em">
+    <line x1="60" y1="408" x2="92" y2="408" stroke="#a3e635" stroke-width="1.5" stroke-opacity="0.9" stroke-dasharray="5 4"/>
+    <text x="100" y="412" fill="#94a3b8">same protocol: <tspan fill="#a3e635">passthrough</tspan>, skips the IR</text>
+    <line x1="430" y1="408" x2="462" y2="408" stroke="#94a3b8" stroke-width="1.5"/>
+    <text x="470" y="412" fill="#94a3b8">cross-protocol: translated through the IR</text>
+  </g>
 </svg>
+
+*Same-protocol hops (an aligned in/out pair) are byte-for-byte passthrough and skip the IR; only cross-protocol hops are translated. A few provider-only fields (`safetySettings`, `guardrailConfig`, `documents`, `previous_response_id`, `top_k`, `seed`, ...) do not cross a protocol hop, see [What survives translation and what does not](#what-survives-translation-and-what-does-not).*
 
 Each request Busbar receives speaks **one** protocol, the one the client chose. You can pick *any* of the six on the way in, but a single request is exactly one of them. The important part: a pool has **no fixed input protocol**. It's just a routing target. So different clients can reach the *same* pool, each in its own protocol, and Busbar fans each request out to whichever backend in the pool serves it, translating both ways when they differ.
 

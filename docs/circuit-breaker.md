@@ -56,42 +56,50 @@ One important guard: a `context_length` mapping in `error_map` is **suppressed o
 
 ## Breaker state machine
 
-<svg viewBox="0 0 720 340" role="img" aria-label="Breaker state machine: Closed trips to Open when the trip condition is met; Open moves to HalfOpen when the cooldown expires; HalfOpen returns to Closed if the recovery probe succeeds, or back to Open with an escalated cooldown if the probe fails." style="width:100%;height:auto;max-width:720px;font-family:ui-sans-serif,system-ui,sans-serif;">
+<svg viewBox="0 -76 720 416" role="img" aria-label="Breaker state machine: Closed trips to Open when the trip condition is met; Open moves to HalfOpen when the cooldown expires; HalfOpen returns to Closed if the recovery probe succeeds, or back to Open with an escalated cooldown if the probe fails. Two extra paths: a Closed self-loop where a sub-threshold failure arms a brief skip but leaves the cell Closed; and a direct hard-down entry that drives an auth or billing fault straight to Open immediately with a 30-minute sticky cooldown, bypassing the trip condition." style="width:100%;height:auto;max-width:720px;font-family:ui-sans-serif,system-ui,sans-serif;">
   <defs>
     <marker id="brk-arw" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-      <path d="M0,0 L10,5 L0,10 z" fill="#64748b"/>
+      <path d="M0,0 L10,5 L0,10 z" fill="#94a3b8"/>
     </marker>
     <marker id="brk-ok" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-      <path d="M0,0 L10,5 L0,10 z" fill="#16a34a"/>
+      <path d="M0,0 L10,5 L0,10 z" fill="#a3e635"/>
     </marker>
     <marker id="brk-fail" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-      <path d="M0,0 L10,5 L0,10 z" fill="#dc2626"/>
+      <path d="M0,0 L10,5 L0,10 z" fill="#f87171"/>
     </marker>
   </defs>
-  <rect x="0" y="0" width="720" height="340" fill="#ffffff"/>
+  <rect x="0" y="-76" width="720" height="416" fill="#111a2e"/>
   <!-- nodes -->
-  <rect x="48" y="48" width="180" height="64" rx="12" fill="#f0fdf4" stroke="#16a34a" stroke-width="2"/>
-  <text x="138" y="80" text-anchor="middle" fill="#166534" font-size="16" font-weight="700">Closed</text>
-  <text x="138" y="99" text-anchor="middle" fill="#15803d" font-size="11">healthy, serving</text>
-  <rect x="492" y="48" width="180" height="64" rx="12" fill="#fef2f2" stroke="#dc2626" stroke-width="2"/>
-  <text x="582" y="80" text-anchor="middle" fill="#991b1b" font-size="16" font-weight="700">Open</text>
-  <text x="582" y="99" text-anchor="middle" fill="#b91c1c" font-size="11">tripped, skipped</text>
-  <rect x="270" y="236" width="180" height="64" rx="12" fill="#fffbeb" stroke="#d97706" stroke-width="2"/>
-  <text x="360" y="268" text-anchor="middle" fill="#92400e" font-size="16" font-weight="700">HalfOpen</text>
-  <text x="360" y="287" text-anchor="middle" fill="#b45309" font-size="11">one probe admitted</text>
+  <rect x="48" y="48" width="180" height="64" rx="12" fill="#16210b" stroke="#a3e635" stroke-opacity="0.5" stroke-width="2"/>
+  <text x="138" y="80" text-anchor="middle" fill="#bef264" font-size="16" font-weight="700">Closed</text>
+  <text x="138" y="99" text-anchor="middle" fill="#bef264" font-size="11">healthy, serving</text>
+  <rect x="492" y="48" width="180" height="64" rx="12" fill="#2a1416" stroke="#f87171" stroke-opacity="0.55" stroke-width="2"/>
+  <text x="582" y="80" text-anchor="middle" fill="#fca5a5" font-size="16" font-weight="700">Open</text>
+  <text x="582" y="99" text-anchor="middle" fill="#fca5a5" font-size="11">tripped, skipped</text>
+  <rect x="270" y="236" width="180" height="64" rx="12" fill="#2a2410" stroke="#fbbf24" stroke-opacity="0.55" stroke-width="2"/>
+  <text x="360" y="268" text-anchor="middle" fill="#fcd34d" font-size="16" font-weight="700">HalfOpen</text>
+  <text x="360" y="287" text-anchor="middle" fill="#fcd34d" font-size="11">one probe admitted</text>
   <!-- Closed -> Open -->
-  <line x1="228" y1="80" x2="486" y2="80" stroke="#64748b" stroke-width="2" marker-end="url(#brk-arw)"/>
-  <text paint-order="stroke" stroke="#ffffff" stroke-width="5" stroke-linejoin="round" x="357" y="70" text-anchor="middle" fill="#334155" font-size="12" font-weight="600">trip condition met</text>
+  <line x1="228" y1="80" x2="486" y2="80" stroke="#94a3b8" stroke-width="2" marker-end="url(#brk-arw)"/>
+  <text paint-order="stroke" stroke="#111a2e" stroke-width="5" stroke-linejoin="round" x="357" y="70" text-anchor="middle" fill="#e6edf7" font-size="12" font-weight="600">trip condition met</text>
   <!-- Open -> HalfOpen -->
-  <path d="M540,112 Q470,160 452,236" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#brk-arw)"/>
-  <text paint-order="stroke" stroke="#ffffff" stroke-width="5" stroke-linejoin="round" x="470" y="176" text-anchor="middle" fill="#334155" font-size="12" font-weight="600">cooldown expires</text>
+  <path d="M540,112 Q470,160 452,236" fill="none" stroke="#94a3b8" stroke-width="2" marker-end="url(#brk-arw)"/>
+  <text paint-order="stroke" stroke="#111a2e" stroke-width="5" stroke-linejoin="round" x="470" y="176" text-anchor="middle" fill="#e6edf7" font-size="12" font-weight="600">cooldown expires</text>
   <!-- HalfOpen -> Closed -->
-  <path d="M270,258 Q168,202 150,116" fill="none" stroke="#16a34a" stroke-width="2" marker-end="url(#brk-ok)"/>
-  <text paint-order="stroke" stroke="#ffffff" stroke-width="5" stroke-linejoin="round" x="176" y="182" text-anchor="middle" fill="#166534" font-size="12" font-weight="600">probe succeeds</text>
+  <path d="M270,258 Q168,202 150,116" fill="none" stroke="#a3e635" stroke-width="2" marker-end="url(#brk-ok)"/>
+  <text paint-order="stroke" stroke="#111a2e" stroke-width="5" stroke-linejoin="round" x="176" y="182" text-anchor="middle" fill="#bef264" font-size="12" font-weight="600">probe succeeds</text>
   <!-- HalfOpen -> Open (fail) -->
-  <path d="M452,272 Q642,236 582,116" fill="none" stroke="#dc2626" stroke-width="2" stroke-dasharray="5 4" marker-end="url(#brk-fail)"/>
-  <text paint-order="stroke" stroke="#ffffff" stroke-width="5" stroke-linejoin="round" x="632" y="204" text-anchor="middle" fill="#991b1b" font-size="12" font-weight="600">probe fails</text>
-  <text paint-order="stroke" stroke="#ffffff" stroke-width="5" stroke-linejoin="round" x="632" y="220" text-anchor="middle" fill="#b91c1c" font-size="11">(escalated cooldown)</text>
+  <path d="M452,272 Q642,236 582,116" fill="none" stroke="#f87171" stroke-width="2" stroke-dasharray="5 4" marker-end="url(#brk-fail)"/>
+  <text paint-order="stroke" stroke="#111a2e" stroke-width="5" stroke-linejoin="round" x="632" y="204" text-anchor="middle" fill="#fca5a5" font-size="12" font-weight="600">probe fails</text>
+  <text paint-order="stroke" stroke="#111a2e" stroke-width="5" stroke-linejoin="round" x="632" y="220" text-anchor="middle" fill="#fca5a5" font-size="11">(escalated cooldown)</text>
+  <!-- Closed self-loop: a sub-threshold failure arms a brief skip but stays Closed -->
+  <path d="M118,48 C106,6 96,-14 138,-14 C180,-14 172,6 158,48" fill="none" stroke="#94a3b8" stroke-width="2" marker-end="url(#brk-arw)"/>
+  <text paint-order="stroke" stroke="#111a2e" stroke-width="5" stroke-linejoin="round" x="138" y="-52" text-anchor="middle" fill="#94a3b8" font-size="11" font-weight="600">sub-threshold failure</text>
+  <text paint-order="stroke" stroke="#111a2e" stroke-width="5" stroke-linejoin="round" x="138" y="-37" text-anchor="middle" fill="#94a3b8" font-size="11">brief skip, stays Closed</text>
+  <!-- Hard-down direct entry into Open: auth/billing trips immediately, bypassing the trip condition -->
+  <path d="M582,-14 L582,44" fill="none" stroke="#f87171" stroke-width="2" stroke-dasharray="5 4" marker-end="url(#brk-fail)"/>
+  <text paint-order="stroke" stroke="#111a2e" stroke-width="5" stroke-linejoin="round" x="582" y="-52" text-anchor="middle" fill="#fca5a5" font-size="11" font-weight="600">hard-down (auth/billing)</text>
+  <text paint-order="stroke" stroke="#111a2e" stroke-width="5" stroke-linejoin="round" x="582" y="-37" text-anchor="middle" fill="#fca5a5" font-size="11">immediate, 30-min sticky</text>
 </svg>
 
 **Closed**: the lane is healthy and receives traffic. Failures are recorded against the window/streak. A single failure that does not meet the trip condition arms a brief cooldown on the cell (the lane is temporarily deprioritized) but the breaker stays Closed.

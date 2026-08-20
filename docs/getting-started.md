@@ -6,36 +6,56 @@ It does the same job as LiteLLM or OpenRouter (one API in front of every model a
 
 This guide takes you from zero to a working request in about five minutes.
 
-<svg viewBox="0 0 800 130" role="img" aria-label="Four steps to a working request: install the binary, write a minimal config, run Busbar, then send a request." style="width:100%;height:auto;max-width:800px;font-family:ui-sans-serif,system-ui,sans-serif;">
+<svg viewBox="0 0 820 300" role="img" aria-label="The Busbar request path: a client SDK using OpenAI, Anthropic, or Gemini ingress sends to Busbar on port 8080, which authenticates the caller, routes by model name to a pool, translates through its intermediate representation when the ingress and egress protocols differ, and picks a lane by weighted smooth round-robin with per-lane circuit breaking before calling the provider (Anthropic, OpenAI, Bedrock, and others). When a lane's breaker is open the in-flight request fails over to a sibling member of the pool." style="width:100%;height:auto;max-width:820px;font-family:ui-sans-serif,system-ui,sans-serif;">
   <defs>
-    <marker id="gs-arw" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+    <marker id="gs-flow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#a3e635"/>
+    </marker>
+    <marker id="gs-fail" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
       <path d="M0,0 L10,5 L0,10 z" fill="#94a3b8"/>
     </marker>
   </defs>
-  <rect x="0" y="0" width="800" height="130" fill="#ffffff"/>
-  <g stroke="#94a3b8" stroke-width="2" marker-end="url(#gs-arw)">
-    <line x1="185" y1="68" x2="203" y2="68"/>
-    <line x1="375" y1="68" x2="393" y2="68"/>
-    <line x1="565" y1="68" x2="583" y2="68"/>
+  <rect x="0" y="0" width="820" height="300" fill="#111a2e"/>
+  <!-- primary request flow -->
+  <g stroke="#a3e635" stroke-width="2.5">
+    <line x1="168" y1="150" x2="206" y2="150" marker-end="url(#gs-flow)"/>
+    <line x1="612" y1="150" x2="650" y2="150" marker-end="url(#gs-flow)"/>
   </g>
+  <!-- client -->
+  <rect x="16" y="110" width="150" height="80" rx="12" fill="#1a2740" stroke="#2c3a52"/>
+  <text x="91" y="142" text-anchor="middle" fill="#e6edf7" font-size="14" font-weight="700">Client SDK</text>
+  <text x="91" y="161" text-anchor="middle" fill="#94a3b8" font-size="10">OpenAI / Anthropic /</text>
+  <text x="91" y="175" text-anchor="middle" fill="#94a3b8" font-size="10">Gemini ingress</text>
+  <!-- provider -->
+  <rect x="652" y="110" width="152" height="80" rx="12" fill="#1a2740" stroke="#2c3a52"/>
+  <text x="728" y="142" text-anchor="middle" fill="#e6edf7" font-size="14" font-weight="700">Provider</text>
+  <text x="728" y="161" text-anchor="middle" fill="#94a3b8" font-size="10">Anthropic / OpenAI /</text>
+  <text x="728" y="175" text-anchor="middle" fill="#94a3b8" font-size="10">Bedrock ...</text>
+  <!-- busbar core -->
+  <rect x="208" y="28" width="404" height="244" rx="14" fill="#a3e635" fill-opacity="0.05" stroke="#a3e635" stroke-opacity="0.5" stroke-width="2"/>
+  <text x="410" y="53" text-anchor="middle" fill="#ffffff" font-size="15" font-weight="700">Busbar  :8080</text>
+  <!-- internal pipeline -->
   <g>
-    <rect x="15"  y="30" width="170" height="76" rx="12" fill="#f8fafc" stroke="#e2e8f0"/>
-    <circle cx="43"  cy="60" r="14" fill="#a3e635"/><text x="43"  y="65" text-anchor="middle" fill="#1a2e05" font-size="13" font-weight="700">1</text>
-    <text x="66"  y="57" fill="#0f172a" font-size="14" font-weight="700">Install</text>
-    <text x="66"  y="77" fill="#64748b" font-size="10.5">one-line script</text>
-    <rect x="205" y="30" width="170" height="76" rx="12" fill="#f8fafc" stroke="#e2e8f0"/>
-    <circle cx="233" cy="60" r="14" fill="#a3e635"/><text x="233" y="65" text-anchor="middle" fill="#1a2e05" font-size="13" font-weight="700">2</text>
-    <text x="256" y="57" fill="#0f172a" font-size="14" font-weight="700">Configure</text>
-    <text x="256" y="77" fill="#64748b" font-size="10.5">one provider + model</text>
-    <rect x="395" y="30" width="170" height="76" rx="12" fill="#f8fafc" stroke="#e2e8f0"/>
-    <circle cx="423" cy="60" r="14" fill="#a3e635"/><text x="423" y="65" text-anchor="middle" fill="#1a2e05" font-size="13" font-weight="700">3</text>
-    <text x="446" y="57" fill="#0f172a" font-size="14" font-weight="700">Run</text>
-    <text x="446" y="77" fill="#64748b" font-size="10.5">serves on :8080</text>
-    <rect x="585" y="30" width="170" height="76" rx="12" fill="#f8fafc" stroke="#e2e8f0"/>
-    <circle cx="613" cy="60" r="14" fill="#a3e635"/><text x="613" y="65" text-anchor="middle" fill="#1a2e05" font-size="13" font-weight="700">4</text>
-    <text x="636" y="57" fill="#0f172a" font-size="14" font-weight="700">Request</text>
-    <text x="636" y="77" fill="#64748b" font-size="10.5">point any SDK at it</text>
+    <circle cx="244" cy="74" r="7" fill="#a3e635"/><text x="244" y="78" text-anchor="middle" fill="#1a2e05" font-size="9" font-weight="700">1</text>
+    <text x="262" y="78" fill="#e6edf7" font-size="11.5">Authenticate the caller</text>
+    <circle cx="244" cy="102" r="7" fill="#a3e635"/><text x="244" y="106" text-anchor="middle" fill="#1a2e05" font-size="9" font-weight="700">2</text>
+    <text x="262" y="106" fill="#e6edf7" font-size="11.5">Route by model name to a pool</text>
+    <circle cx="244" cy="130" r="7" fill="#a3e635"/><text x="244" y="134" text-anchor="middle" fill="#1a2e05" font-size="9" font-weight="700">3</text>
+    <text x="262" y="134" fill="#e6edf7" font-size="11.5">IR translate<tspan fill="#94a3b8"> if ingress != egress</tspan></text>
+    <circle cx="244" cy="158" r="7" fill="#a3e635"/><text x="244" y="162" text-anchor="middle" fill="#1a2e05" font-size="9" font-weight="700">4</text>
+    <text x="262" y="162" fill="#e6edf7" font-size="11.5">Pick a lane<tspan fill="#94a3b8"> via weighted SWRR + breaker</tspan></text>
   </g>
+  <!-- pool lanes with failover -->
+  <text x="232" y="192" fill="#94a3b8" font-size="10" font-weight="600">pool</text>
+  <path d="M373,198 C373,174 455,174 455,198" fill="none" stroke="#94a3b8" stroke-width="1.6" stroke-dasharray="4 3" marker-end="url(#gs-fail)"/>
+  <text x="414" y="171" text-anchor="middle" fill="#94a3b8" font-size="9.5">failover</text>
+  <rect x="248" y="198" width="150" height="54" rx="10" fill="#1a2740" stroke="#f87171" stroke-opacity="0.55" stroke-width="1.5"/>
+  <text x="323" y="221" text-anchor="middle" fill="#e6edf7" font-size="11.5" font-weight="700">claude-sonnet</text>
+  <circle cx="278" cy="238" r="3.5" fill="#f87171"/>
+  <text x="333" y="241" text-anchor="middle" fill="#fca5a5" font-size="10">breaker open</text>
+  <rect x="430" y="198" width="150" height="54" rx="10" fill="#1a2740" stroke="#2c3a52"/>
+  <text x="505" y="221" text-anchor="middle" fill="#e6edf7" font-size="11.5" font-weight="700">gpt-4o</text>
+  <text x="505" y="241" text-anchor="middle" fill="#94a3b8" font-size="10">sibling member</text>
 </svg>
 
 ---

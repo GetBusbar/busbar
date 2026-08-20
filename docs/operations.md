@@ -354,45 +354,86 @@ A successful active health probe (it tests the shared upstream) clears the break
 
 ### States
 
-<svg viewBox="0 0 700 260" role="img" aria-label="Circuit-breaker state machine. Closed serves traffic and trips to Open when the trip condition is met. Open is skipped during selection until the cooldown expires, which moves the lane to HalfOpen. HalfOpen admits exactly one probe: a successful probe returns the lane to Closed, while a failed probe returns it to Open with a longer cooldown." style="width:100%;height:auto;max-width:700px;font-family:ui-sans-serif,system-ui,sans-serif;">
-  <defs>
-    <marker id="cb-arw" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-      <path d="M0,0 L10,5 L0,10 z" fill="#94a3b8"/>
-    </marker>
-  </defs>
-  <rect x="0" y="0" width="700" height="260" fill="#ffffff"/>
+The canonical Closed/Open/HalfOpen transition graph (the FSM itself) lives on
+[circuit-breaker.md](circuit-breaker.md#states), the source of truth. What an operator watching
+`/stats` and `/metrics` sees is not that graph but **two independent axes**: the breaker state and
+the lane's spare capacity, each exposed as its own field and never collapsed into one. The matrix
+below reads them together, so a saturated Open lane shows up as **both** open **and** at capacity.
 
-  <!-- Return arc: HalfOpen &#8594; Closed (recovery, over the top) -->
-  <path d="M600,110 C600,40 100,40 100,110" fill="none" stroke="#94a3b8" stroke-width="2" marker-end="url(#cb-arw)"/>
-  <text x="350" y="34" text-anchor="middle" fill="#64748b" font-size="11">probe succeeds &#8594; back to Closed</text>
+<svg viewBox="0 0 720 470" role="img" aria-label="Observability matrix for a lane. Columns are the breaker axis, the busbar_lane_state gauge: 0 Closed, 1 HalfOpen, 2 Open. Rows are the capacity axis, at_capacity and busbar_lane_available_permits: top row at_capacity false with free permits, bottom row at_capacity true with zero permits. The two axes are exposed independently, so each of the six cells reports a breaker value and a capacity value at once. The bottom-right cell, lane_state 2 and at_capacity true, shows a saturated Open lane reading both open and at capacity, whose recovery probe can never win a dispatch. Each cell also emits busbar_lane_recovery_hint_ms: 0 when serving, the breaker cooldown for an Open lane, a 2000ms floor for a saturated one." style="width:100%;height:auto;max-width:720px;font-family:ui-sans-serif,system-ui,sans-serif;">
+  <rect x="0" y="0" width="720" height="470" fill="#111a2e"/>
 
-  <!-- Return arc: HalfOpen &#8594; Open (below) -->
-  <path d="M600,166 C600,232 350,232 350,166" fill="none" stroke="#94a3b8" stroke-width="2" marker-end="url(#cb-arw)"/>
-  <text x="480" y="248" text-anchor="middle" fill="#64748b" font-size="11">probe fails (longer cooldown)</text>
+  <!-- Title -->
+  <text x="360" y="30" text-anchor="middle" fill="#e6edf7" font-size="16" font-weight="700">What an operator sees: two independent axes</text>
+  <text x="360" y="52" text-anchor="middle" fill="#94a3b8" font-size="12">breaker state and lane capacity are exposed separately, never collapsed into one signal</text>
 
-  <!-- Forward arrows -->
-  <g stroke="#94a3b8" stroke-width="2" marker-end="url(#cb-arw)">
-    <line x1="162" y1="138" x2="248" y2="138"/>
-    <line x1="422" y1="138" x2="518" y2="138"/>
-  </g>
-  <text x="205" y="130" text-anchor="middle" fill="#64748b" font-size="11">trip condition</text>
-  <text x="470" y="130" text-anchor="middle" fill="#64748b" font-size="11">cooldown expires</text>
+  <!-- Top axis label (breaker) -->
+  <text x="425" y="82" text-anchor="middle" fill="#94a3b8" font-size="11" font-weight="600">busbar_lane_state gauge (breaker axis) / stats: breaker_state</text>
 
-  <!-- Closed -->
-  <rect x="40" y="116" width="122" height="44" rx="22" fill="#ecfccb" stroke="#d9f99d"/>
-  <text x="101" y="143" text-anchor="middle" fill="#35510b" font-size="14" font-weight="700">Closed</text>
+  <!-- Column headers: lane_state 0 / 1 / 2 -->
+  <rect x="170" y="90" width="160" height="48" rx="8" fill="#16210b" stroke="#a3e635" stroke-opacity="0.5"/>
+  <text x="250" y="110" text-anchor="middle" fill="#94a3b8" font-size="11">lane_state 0</text>
+  <text x="250" y="128" text-anchor="middle" fill="#bef264" font-size="14" font-weight="700">Closed</text>
 
-  <!-- Open -->
-  <rect x="248" y="116" width="122" height="44" rx="22" fill="#fee2e2" stroke="#fecaca"/>
-  <text x="309" y="143" text-anchor="middle" fill="#b91c1c" font-size="14" font-weight="700">Open</text>
+  <rect x="350" y="90" width="160" height="48" rx="8" fill="#2a2410" stroke="#fbbf24" stroke-opacity="0.55"/>
+  <text x="430" y="110" text-anchor="middle" fill="#94a3b8" font-size="11">lane_state 1</text>
+  <text x="430" y="128" text-anchor="middle" fill="#fcd34d" font-size="14" font-weight="700">HalfOpen</text>
 
-  <!-- HalfOpen -->
-  <rect x="518" y="116" width="122" height="44" rx="22" fill="#fef9c3" stroke="#fde68a"/>
-  <text x="579" y="143" text-anchor="middle" fill="#a16207" font-size="14" font-weight="700">HalfOpen</text>
+  <rect x="530" y="90" width="160" height="48" rx="8" fill="#2a1416" stroke="#f87171" stroke-opacity="0.55"/>
+  <text x="610" y="110" text-anchor="middle" fill="#94a3b8" font-size="11">lane_state 2</text>
+  <text x="610" y="128" text-anchor="middle" fill="#fca5a5" font-size="14" font-weight="700">Open</text>
 
-  <!-- Subtle self-note near Closed -->
-  <text x="101" y="182" text-anchor="middle" fill="#94a3b8" font-size="10">single sub-threshold failure</text>
-  <text x="101" y="195" text-anchor="middle" fill="#94a3b8" font-size="10">&#8594; brief skip, stays Closed</text>
+  <!-- Left axis label (capacity), rotated -->
+  <text x="16" y="312" text-anchor="middle" fill="#94a3b8" font-size="11" font-weight="600" transform="rotate(-90 16 312)">at_capacity / busbar_lane_available_permits (capacity axis)</text>
+
+  <!-- Row header: at_capacity false -->
+  <rect x="34" y="152" width="130" height="120" rx="8" fill="#16210b" stroke="#a3e635" stroke-opacity="0.5"/>
+  <text x="99" y="200" text-anchor="middle" fill="#94a3b8" font-size="11">at_capacity</text>
+  <text x="99" y="218" text-anchor="middle" fill="#bef264" font-size="14" font-weight="700">false</text>
+  <text x="99" y="240" text-anchor="middle" fill="#94a3b8" font-size="10">permits available</text>
+
+  <!-- Row header: at_capacity true -->
+  <rect x="34" y="282" width="130" height="120" rx="8" fill="#2a1416" stroke="#f87171" stroke-opacity="0.55"/>
+  <text x="99" y="330" text-anchor="middle" fill="#94a3b8" font-size="11">at_capacity</text>
+  <text x="99" y="348" text-anchor="middle" fill="#fca5a5" font-size="14" font-weight="700">true</text>
+  <text x="99" y="370" text-anchor="middle" fill="#94a3b8" font-size="10">0 permits, shedding</text>
+
+  <!-- Row 1 cells: at_capacity false -->
+  <rect x="170" y="152" width="160" height="120" rx="8" fill="#1a2740" stroke="#2c3a52"/>
+  <text x="250" y="196" text-anchor="middle" fill="#e6edf7" font-size="12" font-weight="600">Serving</text>
+  <text x="250" y="216" text-anchor="middle" fill="#94a3b8" font-size="10">would admit a request</text>
+  <text x="250" y="252" text-anchor="middle" fill="#94a3b8" font-size="10">recovery_hint_ms: 0</text>
+
+  <rect x="350" y="152" width="160" height="120" rx="8" fill="#1a2740" stroke="#2c3a52"/>
+  <text x="430" y="196" text-anchor="middle" fill="#e6edf7" font-size="12" font-weight="600">Probe in flight</text>
+  <text x="430" y="216" text-anchor="middle" fill="#94a3b8" font-size="10">single-flight recovery</text>
+  <text x="430" y="252" text-anchor="middle" fill="#94a3b8" font-size="10">recovery_hint_ms: probe wait</text>
+
+  <rect x="530" y="152" width="160" height="120" rx="8" fill="#1a2740" stroke="#2c3a52"/>
+  <text x="610" y="196" text-anchor="middle" fill="#e6edf7" font-size="12" font-weight="600">Tripped, cooling</text>
+  <text x="610" y="216" text-anchor="middle" fill="#94a3b8" font-size="10">skipped in selection</text>
+  <text x="610" y="252" text-anchor="middle" fill="#94a3b8" font-size="10">recovery_hint_ms: breaker until</text>
+
+  <!-- Row 2 cells: at_capacity true -->
+  <rect x="170" y="282" width="160" height="120" rx="8" fill="#1a2740" stroke="#2c3a52"/>
+  <text x="250" y="326" text-anchor="middle" fill="#e6edf7" font-size="12" font-weight="600">Healthy but full</text>
+  <text x="250" y="346" text-anchor="middle" fill="#94a3b8" font-size="10">breaker fine, sheds now</text>
+  <text x="250" y="382" text-anchor="middle" fill="#94a3b8" font-size="10">recovery_hint_ms: 2000 floor</text>
+
+  <rect x="350" y="282" width="160" height="120" rx="8" fill="#1a2740" stroke="#2c3a52"/>
+  <text x="430" y="326" text-anchor="middle" fill="#e6edf7" font-size="12" font-weight="600">Recovering, full</text>
+  <text x="430" y="346" text-anchor="middle" fill="#94a3b8" font-size="10">probe or spill</text>
+  <text x="430" y="382" text-anchor="middle" fill="#94a3b8" font-size="10">recovery_hint_ms: 2000 floor</text>
+
+  <rect x="530" y="282" width="160" height="120" rx="8" fill="#20090c" stroke="#f87171" stroke-opacity="0.7" stroke-width="2"/>
+  <text x="610" y="322" text-anchor="middle" fill="#fca5a5" font-size="12" font-weight="700">Open AND at_capacity</text>
+  <text x="610" y="342" text-anchor="middle" fill="#94a3b8" font-size="10">both axes fire at once</text>
+  <text x="610" y="360" text-anchor="middle" fill="#94a3b8" font-size="10">probe cannot win a slot</text>
+  <text x="610" y="384" text-anchor="middle" fill="#94a3b8" font-size="10">recovery_hint_ms: breaker until</text>
+
+  <!-- Footer legend -->
+  <text x="360" y="440" text-anchor="middle" fill="#94a3b8" font-size="11">Read the column and the row together: each lane reports its breaker value and its capacity value independently.</text>
+  <text x="360" y="458" text-anchor="middle" fill="#94a3b8" font-size="10">/metrics: busbar_lane_state, busbar_lane_available_permits, busbar_lane_recovery_hint_ms   /   /stats: breaker_state, at_capacity, available, recovery_hint_ms</text>
 </svg>
 
 - **Closed**: the lane serves traffic. A single upstream failure that does **not**
