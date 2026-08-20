@@ -939,6 +939,23 @@ impl IrUsage {
             .saturating_add(self.cache_creation_input_tokens.unwrap_or(0))
             .saturating_add(self.output_tokens)
     }
+
+    /// Project the four normalized token totals into the neutral, core-resident
+    /// [`crate::billing::TokenUsage`] — the currency the billing/metering consumers speak so they
+    /// need not name this concrete IR type (G6 inversion). The per-modality/attribution buckets are
+    /// deliberately not carried: the ledger and metering sinks read only these four totals, so the
+    /// projection is billing-lossless (byte-identical to the previous `&IrUsage` consumers). Lives
+    /// with `IrUsage`, so it follows it to busbar-llm at the cutover, where it becomes an
+    /// `impl From<&IrUsage> for busbar_core::billing::TokenUsage`.
+    pub(crate) fn to_token_usage(&self) -> crate::billing::TokenUsage {
+        crate::billing::TokenUsage {
+            input: self.input_tokens,
+            output: self.output_tokens,
+            cache_read: self.cache_read_input_tokens,
+            cache_creation: self.cache_creation_input_tokens,
+            ..Default::default()
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

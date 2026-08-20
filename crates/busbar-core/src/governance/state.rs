@@ -812,7 +812,7 @@ impl GovState {
         key_id: &str,
         model: &str,
         provider: &str,
-        usage: Option<&crate::ir::IrUsage>,
+        usage: Option<&crate::billing::TokenUsage>,
         now: u64,
     ) {
         let key = (
@@ -829,18 +829,16 @@ impl GovState {
         entry.requests = entry.requests.saturating_add(1);
         entry.tokens_input = entry
             .tokens_input
-            .saturating_add(usage.map(|u| u.input_tokens).unwrap_or(0));
+            .saturating_add(usage.map(|u| u.input).unwrap_or(0));
         entry.tokens_output = entry
             .tokens_output
-            .saturating_add(usage.map(|u| u.output_tokens).unwrap_or(0));
+            .saturating_add(usage.map(|u| u.output).unwrap_or(0));
         entry.tokens_cache_read = entry
             .tokens_cache_read
-            .saturating_add(usage.and_then(|u| u.cache_read_input_tokens).unwrap_or(0));
-        entry.tokens_cache_write = entry.tokens_cache_write.saturating_add(
-            usage
-                .and_then(|u| u.cache_creation_input_tokens)
-                .unwrap_or(0),
-        );
+            .saturating_add(usage.and_then(|u| u.cache_read).unwrap_or(0));
+        entry.tokens_cache_write = entry
+            .tokens_cache_write
+            .saturating_add(usage.and_then(|u| u.cache_creation).unwrap_or(0));
     }
 
     /// Drain `pending_metering` and write each entry to the store as one `MeteringDelta`. A DRAIN,

@@ -629,12 +629,12 @@ async fn test_admin_v1_usage_meters_by_model_and_key() {
         )
         .unwrap();
     // Two responses metered against one model (split preserved), one against another model.
-    let usage = crate::ir::IrUsage {
-        input_tokens: 700,
-        output_tokens: 200,
-        cache_read_input_tokens: Some(100),
-        cache_creation_input_tokens: None,
-        detail: crate::ir::IrUsageDetail::default(),
+    let usage = crate::billing::TokenUsage {
+        input: 700,
+        output: 200,
+        cache_read: Some(100),
+        cache_creation: None,
+        ..Default::default()
     };
     // `record_metering` only accumulates into `pending_metering` (write-behind); an explicit
     // `flush_metering()` is required so the GET below deterministically sees them in the store.

@@ -1,5 +1,5 @@
-use super::{record_ir_usage, stable_hash, UsageSink};
-use crate::ir::IrUsage;
+use super::{record_token_usage, stable_hash, UsageSink};
+use crate::billing::TokenUsage;
 use std::sync::Arc;
 
 /// `apply_rewrite_to_body` replaces the `messages` array + injects tools on a chat-shaped body,
@@ -282,14 +282,12 @@ fn test_nonstream_token_fee_uses_charged_at_window_not_clock() {
 
     // A buffered completion carrying 600 input + 400 output = 1000 tokens, sourced from IrUsage
     // (Billing reads the IR usage the egress reader decoded, not a byte-scan).
-    let usage = IrUsage {
-        input_tokens: 600,
-        output_tokens: 400,
-        cache_creation_input_tokens: None,
-        cache_read_input_tokens: None,
-        detail: crate::ir::IrUsageDetail::default(),
+    let usage = TokenUsage {
+        input: 600,
+        output: 400,
+        ..Default::default()
     };
-    record_ir_usage(&usage, &sink, Some(&lane));
+    record_token_usage(&usage, &sink, Some(&lane));
 
     // The 1000 tokens must be ledgered in the charged_at day's window of the GROUP day bucket...
     let in_window = gov
@@ -367,15 +365,13 @@ fn test_nonstream_token_sum_saturates_no_panic_on_overflow() {
     let lane = lane_app.lanes[0].clone();
 
     // input_tokens + output_tokens overflows u64: u64::MAX + 5 would panic under an unchecked `+`.
-    let usage = IrUsage {
-        input_tokens: u64::MAX,
-        output_tokens: 5,
-        cache_creation_input_tokens: None,
-        cache_read_input_tokens: None,
-        detail: crate::ir::IrUsageDetail::default(),
+    let usage = TokenUsage {
+        input: u64::MAX,
+        output: 5,
+        ..Default::default()
     };
     // Must NOT panic (the assertion is reaching this line at all under a debug-overflow build).
-    record_ir_usage(&usage, &sink, Some(&lane));
+    record_token_usage(&usage, &sink, Some(&lane));
 }
 
 #[test]
@@ -479,13 +475,11 @@ fn ledger_prices_an_aliased_lane_at_the_rate_card() {
         "test precondition: the lane must be ALIASED, or the bug is masked"
     );
 
-    record_ir_usage(
-        &IrUsage {
-            input_tokens: 600,
-            output_tokens: 400,
-            cache_creation_input_tokens: None,
-            cache_read_input_tokens: None,
-            detail: crate::ir::IrUsageDetail::default(),
+    record_token_usage(
+        &TokenUsage {
+            input: 600,
+            output: 400,
+            ..Default::default()
         },
         &sink,
         Some(&lane),

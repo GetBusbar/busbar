@@ -548,10 +548,16 @@ where
                     // Skip usage extraction ENTIRELY when there is no sink to bill (governance off /
                     // no key): the terminal-usage clone and the non-stream reader run only to feed
                     // `record_tokens`, which the `usage_sink.take()` gate below no-ops.
-                    let ir_usage: Option<crate::ir::IrUsage> = if this.usage_sink.is_none() {
+                    // Projected to the neutral `billing::TokenUsage` at the boundary: the producers
+                    // (`translate.usage()`, the truncated-tail recovery, `op.extract_usage`) still hand
+                    // back the concrete `IrUsage`, but the billing consumers below speak token totals,
+                    // so this local and every accrual call name zero concrete IR. Byte-identical (the
+                    // projection carries the four billed totals). At the cutover the producers return
+                    // `TokenUsage`/`Billing` directly and the `.to_token_usage()` calls fall away.
+                    let token_usage: Option<crate::billing::TokenUsage> = if this.usage_sink.is_none() {
                         None
                     } else if let Some(t) = this.translate.as_ref() {
-                        t.usage().cloned()
+                        t.usage().map(|u| u.to_token_usage())
                     } else if !this.is_sse && !this.nonstream_buf.is_empty() {
                         // Same-protocol non-stream body relayed verbatim; the operation reads
                         // usage from the reassembled bytes. Chat runs the egress reader and
@@ -570,8 +576,11 @@ where
                                 this.ingress_protocol,
                                 &buf,
                             )
+                            .map(|u| u.to_token_usage())
                         } else {
-                            this.op.extract_usage(this.ingress_protocol, &buf)
+                            this.op
+                                .extract_usage(this.ingress_protocol, &buf)
+                                .map(|u| u.to_token_usage())
                         }
                     } else {
                         None
@@ -606,7 +615,7 @@ where
                             // actually answered, post-failover) through the one accrual seam.
                             // Readers normalize `input_tokens` to UNCACHED and keep the cache
                             // fields ADDITIVE, so the four tiers are correct provider-agnostically.
-                            let tier = ir_usage
+                            let tier = token_usage
                                 .as_ref()
                                 .map(crate::proxy::usage::tier_tokens)
                                 .unwrap_or_default();
@@ -616,7 +625,7 @@ where
                                 crate::proxy::usage::ledger_and_meter(
                                     &sink,
                                     lane,
-                                    ir_usage.as_ref(),
+                                    token_usage.as_ref(),
                                     &tier,
                                 );
                             }
@@ -674,7 +683,11 @@ impl<S, P> Drop for FirstByteBody<S, P> {
         {
             return;
         }
-        let usage = self.translate.as_ref().and_then(|t| t.usage()).cloned();
+        let usage = self
+            .translate
+            .as_ref()
+            .and_then(|t| t.usage())
+            .map(|u| u.to_token_usage());
         let tier = usage
             .as_ref()
             .map(crate::proxy::usage::tier_tokens)

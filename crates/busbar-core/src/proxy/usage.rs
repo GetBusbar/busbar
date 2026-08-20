@@ -19,14 +19,11 @@ pub(crate) fn record_resp_usage(
     lane: Option<&crate::state::Lane>,
 ) {
     if let Some(crate::billing::Billing::Tokens(t)) = ir.usage() {
-        let usage = crate::ir::IrUsage {
-            input_tokens: t.input,
-            output_tokens: t.output,
-            cache_creation_input_tokens: t.cache_creation,
-            cache_read_input_tokens: t.cache_read,
-            detail: crate::ir::IrUsageDetail::default(),
-        };
-        record_ir_usage(&usage, usage_sink, lane);
+        // `ir.usage()` is ALREADY the neutral `Billing::Tokens(TokenUsage)` projection — bill straight
+        // from it. The prior code re-packed it into a concrete `IrUsage` only to have the consumer read
+        // the same four totals back out; that round-trip is deleted (byte-identical: the ledger/meter
+        // sinks read only input/output/cache-read/cache-write).
+        record_token_usage(&t, usage_sink, lane);
     } else if let Some(sink) = usage_sink {
         // A delivered response with NO token usage (a flat-fee op, e.g. moderations) still METERS as
         // one request against the serving model — FinOps consumers count requests per model even
@@ -232,12 +229,12 @@ fn usage_from_tapped_value(ingress_protocol: &str, v: &serde_json::Value) -> cra
 /// Project the IR's normalized usage into the LEDGER'S four pricing tiers. Readers normalize
 /// `input_tokens` to UNCACHED and keep the cache fields ADDITIVE, so the mapping is direct:
 /// cache-creation is the rate card's `cache_write` tier.
-pub(crate) fn tier_tokens(u: &crate::ir::IrUsage) -> busbar_api::TierTokens {
+pub(crate) fn tier_tokens(u: &crate::billing::TokenUsage) -> busbar_api::TierTokens {
     busbar_api::TierTokens {
-        input: u.input_tokens,
-        output: u.output_tokens,
-        cache_read: u.cache_read_input_tokens.unwrap_or(0),
-        cache_write: u.cache_creation_input_tokens.unwrap_or(0),
+        input: u.input,
+        output: u.output,
+        cache_read: u.cache_read.unwrap_or(0),
+        cache_write: u.cache_creation.unwrap_or(0),
     }
 }
 
@@ -267,7 +264,7 @@ pub(crate) fn tier_tokens(u: &crate::ir::IrUsage) -> busbar_api::TierTokens {
 pub(crate) fn ledger_and_meter(
     sink: &UsageSink,
     lane: &crate::state::Lane,
-    usage: Option<&crate::ir::IrUsage>,
+    usage: Option<&crate::billing::TokenUsage>,
     tier: &busbar_api::TierTokens,
 ) {
     // Ledger the TIER SPLIT (uncached input / output / cache-read / cache-write — each prices
@@ -297,8 +294,8 @@ pub(crate) fn ledger_and_meter(
 /// series (see [`ledger_and_meter`], which owns the choice of key).
 /// `None` (an unknown/unresolvable lane) can attribute tokens to no model, so nothing is ledgered
 /// or metered (unreachable in production: every delivered response has a serving lane).
-pub(crate) fn record_ir_usage(
-    usage: &crate::ir::IrUsage,
+pub(crate) fn record_token_usage(
+    usage: &crate::billing::TokenUsage,
     usage_sink: &Option<UsageSink>,
     lane: Option<&crate::state::Lane>,
 ) {

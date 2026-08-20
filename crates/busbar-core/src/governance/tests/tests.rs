@@ -477,12 +477,12 @@ fn test_record_metering_from_ir_usage_and_flat() {
     let store = Arc::new(MemoryStore::new());
     let gov = GovState::new(store, None).unwrap();
     let now = 1_700_000_500;
-    let usage = crate::ir::IrUsage {
-        input_tokens: 11,
-        output_tokens: 22,
-        cache_read_input_tokens: Some(5),
-        cache_creation_input_tokens: None,
-        detail: crate::ir::IrUsageDetail::default(),
+    let usage = crate::billing::TokenUsage {
+        input: 11,
+        output: 22,
+        cache_read: Some(5),
+        cache_creation: None,
+        ..Default::default()
     };
     gov.record_metering("vk_m", "claude-z", "anthropic", Some(&usage), now);
     gov.record_metering("vk_m", "claude-z", "anthropic", None, now); // flat-fee op
@@ -3187,12 +3187,10 @@ mod metering_fanout {
         for i in 0..n {
             let gov = gov.clone();
             handles.push(tokio::spawn(async move {
-                let usage = crate::ir::IrUsage {
-                    input_tokens: 1,
-                    output_tokens: 1,
-                    cache_read_input_tokens: None,
-                    cache_creation_input_tokens: None,
-                    detail: crate::ir::IrUsageDetail::default(),
+                let usage = crate::billing::TokenUsage {
+                    input: 1,
+                    output: 1,
+                    ..Default::default()
                 };
                 gov.record_metering(&format!("vk_{i}"), "m", "p", Some(&usage), now);
             }));
@@ -3227,12 +3225,10 @@ mod metering_fanout {
         let store = std::sync::Arc::new(CountingStore::new(1)); // fail exactly once
         let gov = GovState::new(store.clone(), None).unwrap();
         let now = 1_700_200_000u64;
-        let usage = crate::ir::IrUsage {
-            input_tokens: 10,
-            output_tokens: 5,
-            cache_read_input_tokens: None,
-            cache_creation_input_tokens: None,
-            detail: crate::ir::IrUsageDetail::default(),
+        let usage = crate::billing::TokenUsage {
+            input: 10,
+            output: 5,
+            ..Default::default()
         };
         gov.record_metering("vk_err", "m", "p", Some(&usage), now);
 
