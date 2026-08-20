@@ -549,9 +549,11 @@ fn test_encode_frame_byte_for_byte_matches_reference() {
 use crate::test_support::warn_capture::WarnCapture;
 
 /// When an oversized `:event-type` makes
-/// `push_string_header` reject the header, `encode_frame` drops the frame — but that drop MUST be
-/// observable via a `tracing::warn!`, not a silent empty `Vec`. This test captures WARN events:
-/// against the old (silent) code it FAILS (no warning), and passes once the warn! is emitted.
+/// `push_string_header` reject the header, `encode_frame` drops the frame. The drop stays OBSERVABLE
+/// in the diagnostics catalog — it now carries `BUSBAR-9004` at `debug!` (a per-request data-path
+/// event that is unreachable for any real Bedrock event name, so it must not spam operator WARN
+/// logs). This test pins two things: the frame is dropped (empty `Vec`), and the drop is SILENT at
+/// WARN — it must not surface as an unlatched per-frame warning.
 #[test]
 fn test_encode_frame_oversized_event_type_warns() {
     use tracing_subscriber::layer::SubscriberExt as _;
@@ -577,14 +579,16 @@ fn test_encode_frame_oversized_event_type_warns() {
     );
     let msgs = cap.messages();
     assert!(
-        msgs.iter().any(|m| m.contains(":event-type")), // golden wire-contract literal (kept bare on purpose)
-        "dropping an oversized :event-type frame must emit an observable warn!, got: {msgs:?}"
+        msgs.is_empty(),
+        "dropping an oversized :event-type frame is a per-frame data-path event (BUSBAR-9004) and \
+         must stay at debug, never an unlatched WARN, got: {msgs:?}"
     );
 }
 
-/// The same observability guarantee for
-/// `encode_exception_frame` — an oversized `:exception-type` drops the frame but must warn, so a
-/// swallowed mid-stream error-signal frame is not silent.
+/// The same guarantee for
+/// `encode_exception_frame` — an oversized `:exception-type` drops the frame. The drop is observable
+/// as `BUSBAR-9005` at `debug!` (a swallowed mid-stream error-signal frame, near-unreachable per
+/// request), so this pins the drop AND that it stays SILENT at WARN rather than spamming per frame.
 #[test]
 fn test_encode_exception_frame_oversized_type_warns() {
     use tracing_subscriber::layer::SubscriberExt as _;
@@ -602,8 +606,9 @@ fn test_encode_exception_frame_oversized_type_warns() {
     );
     let msgs = cap.messages();
     assert!(
-        msgs.iter().any(|m| m.contains(":exception-type")), // golden wire-contract literal (kept bare on purpose)
-        "dropping an oversized :exception-type frame must emit an observable warn!, got: {msgs:?}"
+        msgs.is_empty(),
+        "dropping an oversized :exception-type frame is a per-frame data-path event (BUSBAR-9005) \
+         and must stay at debug, never an unlatched WARN, got: {msgs:?}"
     );
 }
 

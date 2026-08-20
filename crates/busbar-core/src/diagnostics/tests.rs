@@ -186,6 +186,14 @@ const MIGRATED_FILES: &[&str] = &[
     "src/governance/revocation.rs",
     "src/governance/state.rs",
     "src/appbuild.rs",
+    "src/boot.rs",
+    "src/eventstream.rs",
+    "src/preflight.rs",
+    "src/telemetry.rs",
+    "src/tls.rs",
+    "src/config/overlay.rs",
+    "src/config/mod.rs",
+    "src/config_validate/mod.rs",
 ];
 
 #[test]

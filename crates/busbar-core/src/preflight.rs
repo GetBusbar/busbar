@@ -7,6 +7,8 @@
 
 use std::sync::Arc;
 
+use crate::diagnostics::{diag_warn, PLUGIN_LOADED_UNVERIFIED, PLUGIN_SKIPPED_TRUST_POLICY};
+
 #[allow(unused_imports)]
 use crate::{
     a2a, admin, audit, auth, auth_cache, billing, breaker, catalogue, config, config_validate,
@@ -187,7 +189,8 @@ pub fn plugins_preflight(
         "plugins: enabled"
     );
     for s in registry.skipped() {
-        tracing::warn!(
+        diag_warn!(
+            PLUGIN_SKIPPED_TRUST_POLICY,
             plugin = %s.manifest.name,
             file = %s.file,
             reason = %s.reason,
@@ -208,7 +211,8 @@ pub fn plugins_preflight(
                 first_party,
                 "plugin validated"
             ),
-            busbar_plugin_sign::Verdict::Allowed { reason, .. } => tracing::warn!(
+            busbar_plugin_sign::Verdict::Allowed { reason, .. } => diag_warn!(
+                PLUGIN_LOADED_UNVERIFIED,
                 plugin = %p.manifest.name,
                 alias = %p.manifest.alias,
                 kind = %p.manifest.kind,

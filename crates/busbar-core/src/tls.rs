@@ -40,6 +40,8 @@
 use std::io;
 use std::net::SocketAddr;
 use std::sync::Arc;
+
+use crate::diagnostics::{diag_warn, TLS_ACCEPT_PERSISTENT_FAILURE};
 use std::time::{Duration, Instant};
 
 /// Hard wall-clock bound on the TLS handshake for a single accepted connection. A client that
@@ -303,7 +305,8 @@ impl AcceptBackoff {
         match self.next_delay(e) {
             None => tracing::debug!(error = %e, "{scheme}: accept error; continuing"),
             Some(d) => {
-                tracing::warn!(
+                diag_warn!(
+                    TLS_ACCEPT_PERSISTENT_FAILURE,
                     error = %e,
                     backoff_ms = d.as_millis() as u64,
                     "{scheme}: accept is failing persistently (fd exhaustion?); backing off",

@@ -12,6 +12,10 @@
 
 use std::sync::Arc;
 
+use crate::diagnostics::{
+    diag_error, diag_warn, AUDIT_CHAIN_VERIFY_FAILED, BOOT_AUDIT_RESTORE_READ_FAILED,
+};
+
 /// A store READ failure and a chain-VERIFICATION failure on audit restore are different events: the
 /// first is a hiccup, the second is tamper evidence. Reporting both as "chain verification" trains
 /// an operator to ignore the one that matters, so `hydrate_all`'s restore-error match keys on this
@@ -59,11 +63,13 @@ pub fn hydrate_all(app: &Arc<crate::state::App>) -> Result<(), String> {
             // A store READ failure and a chain-VERIFICATION failure are different events: the first
             // is a hiccup, the second is tamper evidence. Reporting both as "chain verification"
             // trains an operator to ignore the one that matters.
-            Err(e) if is_audit_restore_read_hiccup(&e) => tracing::warn!(
+            Err(e) if is_audit_restore_read_hiccup(&e) => diag_warn!(
+                BOOT_AUDIT_RESTORE_READ_FAILED,
                 error = %e,
                 "could not read the durable audit log; starting with an empty audit ring"
             ),
-            Err(e) => tracing::error!(
+            Err(e) => diag_error!(
+                AUDIT_CHAIN_VERIFY_FAILED,
                 error = %e,
                 "durable audit CHAIN VERIFICATION failed — the persisted log does not verify \
                  against its own hash chain; starting with an empty audit ring"

@@ -4,6 +4,10 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::config::RootCfg;
+use crate::diagnostics::{
+    diag_warn, CONFIG_AUTH_CHAIN_FULL_SCOPE, CONFIG_OPEN_ADMIN_MINT,
+    CONFIG_PASSTHROUGH_UNUSED_APIKEY, CONFIG_POOL_HETEROGENEOUS,
+};
 
 /// Maximum byte-length of an `affinity.header_name`. HTTP header field-names must be ASCII; an
 /// over-long name is rejected at boot so a bad value cannot silently disable affinity at header
@@ -331,7 +335,8 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
         if member_protocols.len() > 1 {
             let mut protocols: Vec<&str> = member_protocols.iter().copied().collect();
             protocols.sort();
-            tracing::warn!(
+            diag_warn!(
+                CONFIG_POOL_HETEROGENEOUS,
                 pool = %pool_name,
                 protocols = %protocols.join("+"),
                 "heterogeneous pool: cross-protocol failover translates via the IR and may not preserve all provider features"
@@ -870,7 +875,8 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
                     scope,
                 ) {
                     Err(e) => errors.push(e),
-                    Ok(crate::admin::v1::contract::Scope::Full) => tracing::warn!(
+                    Ok(crate::admin::v1::contract::Scope::Full) => diag_warn!(
+                        CONFIG_AUTH_CHAIN_FULL_SCOPE,
                         module = %entry.module,
                         "auth chain entry grants max_admin_scope: full - principals identified by \
                          this module can hold FULL admin authority (the default ceiling is \
@@ -1031,7 +1037,8 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
             );
         }
         if verifies_signed_keys && auth.admin_auth.is_empty() {
-            tracing::warn!(
+            diag_warn!(
+                CONFIG_OPEN_ADMIN_MINT,
                 "auth.chain names `keys` and auth.admin_auth is explicitly empty (open admin) — \
                  ANYONE can mint virtual keys through the admin API. Acceptable only for dev."
             );
@@ -1053,7 +1060,8 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
                     crate::config::secret::resolve_builtin_string(&provider_cfg.api_key)
                         .unwrap_or_default();
                 if !resolved_key.trim().is_empty() {
-                    tracing::warn!(
+                    diag_warn!(
+                        CONFIG_PASSTHROUGH_UNUSED_APIKEY,
                         provider = %provider_name,
                         api_key = %provider_cfg.api_key.describe(),
                         "upstream_credentials: passthrough with a NON-EMPTY configured api_key for \
