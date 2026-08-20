@@ -696,6 +696,24 @@ pub const SIGV4_HMAC_INIT_FAILED: Diagnostic = Diagnostic {
     retired: false,
 };
 
+/// oauth_as has no configured signing_key, so an EPHEMERAL ES256 key was generated at boot.
+/// Lives in `appbuild.rs`, but the subject is auth & identity (token signing), so it is a 4000 code.
+pub const OAUTH_AS_EPHEMERAL_SIGNING_KEY: Diagnostic = Diagnostic {
+    code: 4025,
+    class: Class::Auth,
+    slug: "oauth-as-ephemeral-signing-key",
+    title: "oauth_as generated an ephemeral ES256 signing key (tokens die on restart)",
+    severity: Severity::Actionable,
+    summary: "The oauth_as authorization server has no `signing_key` configured, so busbar generated \
+              an EPHEMERAL ES256 key at boot. Every token this deployment issues is signed with that \
+              in-memory key and stops verifying the moment the process restarts, because a new key is \
+              generated on the next boot. Acceptable only for a trial or local development.",
+    action: "Set `oauth_as.signing_key` to a durable key reference before relying on issued tokens \
+             across restarts. Until then, every restart invalidates all outstanding oauth_as tokens.",
+    since: "1.6.0",
+    retired: false,
+};
+
 // ── 5000 — Proxy & routing ──────────────────────────────────────────────────────────────────────
 
 /// Same-protocol non-stream billing copy hit the reassembly cap; the tail (with usage) is kept.
@@ -1311,6 +1329,341 @@ pub const METRICS_SCRAPE_GROUP_LEDGER_READ_FAILED: Diagnostic = Diagnostic {
     retired: false,
 };
 
+// ── 6000 — Plugins ────────────────────────────────────────────────────────────────────────────
+
+/// A plugin fetch missed on reload; busbar kept the current on-disk artifact. Boot/reload notice.
+/// Lives in `appbuild.rs`, but the subject is the plugin loader, so it is a 6000 code.
+pub const PLUGINS_FETCH_RELOAD_MISS: Diagnostic = Diagnostic {
+    code: 6001,
+    class: Class::Plugins,
+    slug: "plugins-fetch-reload-miss",
+    title: "plugins.fetch missed on reload (keeping the current artifact)",
+    severity: Severity::Actionable,
+    summary: "During a reload, fetching a pinned plugin artifact missed (the source did not return a \
+              usable download for the pinned spec), so busbar kept the artifact already on disk and \
+              continued the reload. The running plugin is unchanged; the intended refresh did not \
+              land.",
+    action: "Check the plugin source (registry/URL) and the pinned spec for the named artifact — a \
+             transient fetch miss self-heals on the next reload, a persistent one means the pin no \
+             longer resolves. busbar keeps serving the current artifact until a fetch succeeds.",
+    since: "1.6.0",
+    retired: false,
+};
+
+// ── 8000 — Governance & cost ────────────────────────────────────────────────────────────────────
+
+/// A revocation denylist re-sync is still outstanding from an earlier window; store hasn't answered.
+pub const REVOCATION_RESYNC_OUTSTANDING: Diagnostic = Diagnostic {
+    code: 8001,
+    class: Class::Governance,
+    slug: "revocation-resync-outstanding",
+    title: "Revocation denylist re-sync still outstanding from an earlier window",
+    severity: Severity::Actionable,
+    summary: "A revocation-denylist re-sync launched in an earlier window has not returned — the \
+              governance store has not answered for at least a full sync window — so busbar keeps \
+              serving the last-known revocations and does not start a second overlapping read. A \
+              peer's revoke may not be visible on this node until the store recovers. The CAS bound \
+              rate-limits this warning to once per window.",
+    action: "Investigate the governance store's health and latency. Revocations already known stay \
+             enforced (fail-closed); the risk is a NEW revoke made elsewhere not yet reaching this \
+             node. Re-sync resumes automatically once the store answers.",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// A revocation denylist re-sync store read returned an error; the prior set is kept (fail-closed).
+pub const REVOCATION_RESYNC_FAILED: Diagnostic = Diagnostic {
+    code: 8002,
+    class: Class::Governance,
+    slug: "revocation-resync-failed",
+    title: "Revocation denylist re-sync failed (keeping the previously-known revocations)",
+    severity: Severity::Actionable,
+    summary: "A revocation-denylist re-sync read from the governance store returned an error, so \
+              busbar keeps the previously-known revocations in place (fail-closed: a store blip never \
+              widens access) and leaves the set marked stale so the next window retries. A peer's \
+              revoke may not be visible on this node until a later sync succeeds.",
+    action: "Investigate the governance store — a transient error self-heals on the next window's \
+             retry; sustained failures mean the store is unreachable and cross-node revocations are \
+             not propagating.",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// A principal id collides with a reserved bucket namespace (group:/vk_); no synthetic key minted.
+pub const GOVERNANCE_KEY_RESERVED_NAMESPACE_COLLISION: Diagnostic = Diagnostic {
+    code: 8003,
+    class: Class::Governance,
+    slug: "governance-key-reserved-namespace-collision",
+    title: "Refused to synthesize a governance key (principal id collides with a reserved namespace)",
+    severity: Severity::BenignRecurring,
+    summary: "A principal id (attacker-influenceable at the IdP) starts with a reserved ledger-bucket \
+              prefix (`group:` or `vk_`), which would alias a group's or a real virtual key's ledger \
+              and rate bucket. busbar fails closed and synthesizes NO key for that principal rather \
+              than mint a colliding bucket. This is a per-request, caller-side signal, not an \
+              operator problem, so it is emitted at debug.",
+    action: "None — self-heals; the principal is correctly refused data-plane access. If a legitimate \
+             identity is being rejected, its IdP subject must be reshaped to avoid the reserved \
+             `group:` and `vk_` prefixes.",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// An unrecognized limit-window word (corrupt/foreign store row); enforced as all-time ('total').
+pub const LIMIT_WINDOW_UNRECOGNIZED: Diagnostic = Diagnostic {
+    code: 8004,
+    class: Class::Governance,
+    slug: "limit-window-unrecognized",
+    title: "Unrecognized limit window (enforcing as all-time 'total')",
+    severity: Severity::Actionable,
+    summary: "A limit's window word was not recognized — it can only arise from a corrupt or foreign \
+              store row, since config parse rejects unknown windows. busbar fails SAFE and enforces \
+              the limit as the all-time ('total') window, the tightest enforcement, never wider, and \
+              surfaces the value so the corruption is visible instead of silent.",
+    action: "Inspect the governance store row for the named window value — it was written by \
+             something other than a validated config load. Enforcement is safe (all-time) in the \
+             meantime; correct the row so the intended window applies.",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// refresh_self: tombstone of the prior binding failed AND the rollback failed — two live bindings.
+pub const REFRESH_SELF_INCONSISTENT_BINDING: Diagnostic = Diagnostic {
+    code: 8005,
+    class: Class::Governance,
+    slug: "refresh-self-inconsistent-binding",
+    title: "Self-serve refresh left an inconsistent binding (tombstone AND rollback both failed)",
+    severity: Severity::Actionable,
+    summary: "During a self-serve key refresh, tombstoning the prior binding failed and the \
+              compensating rollback of the newly-minted binding ALSO failed, so the subject may now \
+              have TWO live bindings in the store for one identity. busbar exhausted its best-effort \
+              recovery and surfaces the inconsistent state for inspection. Rare.",
+    action: "Inspect the governance store for the named subject — it may hold two live bindings \
+             (old_id and new_id). Tombstone whichever is not intended so the subject has exactly one \
+             valid credential.",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// refresh_self: cache reconcile failed after the store tombstone; prior binding evicted surgically.
+pub const REFRESH_SELF_CACHE_REFRESH_FAILED: Diagnostic = Diagnostic {
+    code: 8006,
+    class: Class::Governance,
+    slug: "refresh-self-cache-refresh-failed",
+    title: "Self-serve refresh: cache reconcile failed after tombstoning the prior binding",
+    severity: Severity::Actionable,
+    summary: "During a self-serve key refresh, the store tombstone of the prior binding committed but \
+              the follow-up cache reconcile (a store round-trip) failed. busbar evicted the prior \
+              binding directly from the cache so its old token stops verifying immediately; the store \
+              is consistent, but the rest of the cache may be stale until the next successful \
+              refresh.",
+    action: "Investigate the governance store's reachability — the durable state is correct and the \
+             old credential no longer verifies. The cache self-heals on the next successful reconcile; \
+             sustained failures mean the store is unhealthy.",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// A group was missing at accrual; tokens were ledgered to the key bucket only (self-degrading).
+pub const ACCRUAL_GROUP_MISSING: Diagnostic = Diagnostic {
+    code: 8007,
+    class: Class::Governance,
+    slug: "accrual-group-missing",
+    title: "Group missing at accrual (tokens ledgered to the key bucket only)",
+    severity: Severity::BenignRecurring,
+    summary: "A group referenced by a key was gone by the time usage was accrued (the group was \
+              deleted between admission and accrual), so busbar degrades to ledgering the tokens on \
+              the key's own bucket only rather than lose them. The request was already admitted and \
+              served; nothing is lost. This is a per-request, self-degrading path, so it is emitted \
+              at debug.",
+    action: "None — self-heals; tokens are preserved on the key bucket. Frequent occurrence for one \
+             key means a group is being deleted out from under active keys; reconcile the key's group \
+             assignment.",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// Metering flush had key(s) fail to persist this tick; already aggregated to one warn per tick.
+pub const METERING_FLUSH_PARTIAL_FAILURE: Diagnostic = Diagnostic {
+    code: 8008,
+    class: Class::Governance,
+    slug: "metering-flush-partial-failure",
+    title: "Metering flush: some keys failed to persist this tick (retained for retry)",
+    severity: Severity::Actionable,
+    summary: "A metering flush tick could not persist one or more keys' usage deltas to the store. \
+              busbar retains the failed deltas and retries them on the next tick, so no usage is \
+              lost. This is already collapsed to ONE aggregate warning per tick (per-key detail is at \
+              debug), so it fires at a human cadence, not per key.",
+    action: "Investigate the governance store if the failure count stays non-zero across ticks — a \
+             transient store hiccup self-heals on the next flush. Usage is retained and re-tried, so \
+             billing is not lost, only delayed.",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// delete_key: tombstone committed and key evicted, but the full cache reconcile failed.
+pub const DELETE_KEY_CACHE_RECONCILE_FAILED: Diagnostic = Diagnostic {
+    code: 8009,
+    class: Class::Governance,
+    slug: "delete-key-cache-reconcile-failed",
+    title: "delete_key: tombstone committed and key evicted, but cache reconcile failed",
+    severity: Severity::Actionable,
+    summary: "An admin key deletion committed the tombstone in the store and evicted the deleted key \
+              from the in-memory caches (it no longer authenticates), but the follow-up full cache \
+              reconcile failed. The deletion is durable and the key is dead; only OTHER cache entries \
+              may be stale until the next successful refresh. Rare admin path.",
+    action: "Investigate the governance store's reachability — the deletion itself is complete and \
+             safe. The cache self-heals on the next successful refresh; sustained failures indicate \
+             an unhealthy store.",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// rotate_key: new generation committed and key evicted, but cache reconcile failed; new secret lost.
+pub const ROTATE_KEY_CACHE_RECONCILE_FAILED: Diagnostic = Diagnostic {
+    code: 8010,
+    class: Class::Governance,
+    slug: "rotate-key-cache-reconcile-failed",
+    title: "rotate_key: new generation committed, but cache reconcile failed (new secret not returned)",
+    severity: Severity::Actionable,
+    summary: "An admin key rotation committed the new generation in the store — so the PREVIOUS \
+              credential is permanently dead — and evicted the key from the caches, but the follow-up \
+              cache reconcile failed, so the freshly-minted secret could not be returned to the \
+              admin. The rotation IS durable; the new secret is simply lost from this response. Rare \
+              admin path.",
+    action: "Re-rotate the key to obtain a fresh secret — the previous credential is already dead and \
+             will not come back. Investigate the governance store's reachability, which is why the \
+             reconcile failed.",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// Budget flush had bucket(s) fail to persist this tick; already aggregated to one warn per tick.
+pub const BUDGET_FLUSH_PARTIAL_FAILURE: Diagnostic = Diagnostic {
+    code: 8011,
+    class: Class::Governance,
+    slug: "budget-flush-partial-failure",
+    title: "Budget flush: some buckets failed to persist this tick (re-marked dirty for retry)",
+    severity: Severity::Actionable,
+    summary: "A budget flush tick could not persist one or more group-budget buckets to the store. \
+              busbar re-marks those buckets dirty and retries them on the next tick, so no spend is \
+              lost. This is already collapsed to ONE aggregate warning per tick (per-bucket detail is \
+              at debug), so it fires at a human cadence, not per bucket.",
+    action: "Investigate the governance store if the failure count stays non-zero across ticks — a \
+             transient store hiccup self-heals on the next flush. Spend is retained and re-tried, so \
+             budgets are not lost, only delayed.",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// --safe-mode boot: the config overlay was quarantined; running on base config.yaml alone.
+pub const SAFE_MODE_OVERLAY_QUARANTINED: Diagnostic = Diagnostic {
+    code: 8012,
+    class: Class::Governance,
+    slug: "safe-mode-overlay-quarantined",
+    title: "SAFE MODE: config overlay not merged (running on base config.yaml alone)",
+    severity: Severity::Actionable,
+    summary: "busbar was booted with `--safe-mode`, so the persisted config overlay (API-registered \
+              hooks) was NOT merged and busbar is running on the operator-owned base config.yaml \
+              alone. This is the intentional escape hatch for an applied hook that harms traffic and \
+              re-applies itself every boot. The overlay file is untouched, not deleted.",
+    action: "This is an operator-requested state. Repair or remove the offending overlay entry, then \
+             boot WITHOUT `--safe-mode` to re-apply the overlay. Until then, API-registered hooks are \
+             not in effect.",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// A provider api_key SecretRef did not resolve at boot; degraded to an empty key.
+pub const PROVIDER_API_KEY_UNRESOLVED: Diagnostic = Diagnostic {
+    code: 8013,
+    class: Class::Governance,
+    slug: "provider-api-key-unresolved",
+    title: "Provider api_key did not resolve (degraded to an empty key)",
+    severity: Severity::Actionable,
+    summary: "A provider's `api_key` secret reference did not resolve at boot, so busbar degraded that \
+              provider to an empty key. This is legitimate for keyless local upstreams (ollama/vLLM), \
+              but for a real provider it means egress will be unauthenticated and the upstream will \
+              reject with 401.",
+    action: "If the provider needs a key, fix its `api_key` secret reference (the secret is missing \
+             or the resolver could not read it) and restart. If the upstream is genuinely keyless, no \
+             action is needed.",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// auth.chain is empty (open relay) — emitted at error so RUST_LOG=error cannot mask it.
+pub const OPEN_RELAY_NO_AUTH: Diagnostic = Diagnostic {
+    code: 8014,
+    class: Class::Governance,
+    slug: "open-relay-no-auth",
+    title: "auth.chain is empty — OPEN RELAY (every request admitted unauthenticated)",
+    severity: Severity::Actionable,
+    summary: "The auth chain is empty (either explicitly, or because the `auth:` block is absent and \
+              serde-defaults to none), so every data-plane request is admitted unauthenticated — an \
+              OPEN RELAY forwarding anyone's traffic on your upstream credentials. Emitted at ERROR \
+              (not warn, which RUST_LOG=error would suppress) and unconditionally on stderr so the \
+              state cannot be masked by log configuration. Acceptable only for local development.",
+    action: "Configure `auth.chain` (a `keys` verifier and/or an auth plugin) before exposing busbar \
+             to any untrusted network. This is the same open-relay condition as BUSBAR-4004, surfaced \
+             at boot.",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// A store settings SecretRef does not resolve at boot; restart-to-apply, so it WILL fail next restart.
+pub const STORE_SECRET_REF_UNRESOLVED: Diagnostic = Diagnostic {
+    code: 8015,
+    class: Class::Governance,
+    slug: "store-secret-ref-unresolved",
+    title: "Store settings hold a secret reference that does not resolve here",
+    severity: Severity::Actionable,
+    summary: "A governance-store `settings` value holds a secret reference that does not resolve on \
+              this boot. busbar warns rather than fails, because the store is restart-to-apply and \
+              staging a ref whose secret the orchestrator mounts on the next deploy is a legitimate \
+              workflow. But if the secret is still absent at the next restart, THAT restart will fail \
+              in resolve_settings before serving.",
+    action: "Ensure the named store secret reference resolves before the next restart. If you are \
+             staging it for an upcoming deploy, no action now; otherwise fix the reference so the \
+             next restart does not die resolving it.",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// The in-memory (ephemeral) governance store was selected; keys/usage/ledgers reset on restart.
+pub const GOVERNANCE_STORE_EPHEMERAL: Diagnostic = Diagnostic {
+    code: 8016,
+    class: Class::Governance,
+    slug: "governance-store-ephemeral",
+    title: "Governance store is in-memory (ephemeral) — state resets on restart",
+    severity: Severity::Actionable,
+    summary: "busbar selected the in-memory (ephemeral) governance store, so virtual keys, groups' \
+              usage, and ledgers live only in RAM and are LOST on restart. This is the default when \
+              no durable store plugin is configured — fine for a trial or local development, but not \
+              for anything that must retain keys or spend across restarts.",
+    action: "Configure a durable governance store plugin for persistence if keys, usage, or budgets \
+             must survive a restart. No action is needed for ephemeral/dev use.",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// Durable store is configured with keys but keys-in-chain is off; durable keys are inert.
+pub const DURABLE_KEYS_INERT: Diagnostic = Diagnostic {
+    code: 8017,
+    class: Class::Governance,
+    slug: "durable-keys-inert",
+    title: "Durable keys are inert (keys exist but `keys` is not in the running auth chain)",
+    severity: Severity::Actionable,
+    summary: "A durable governance store holds virtual keys, but the running auth chain does not \
+              include the `keys` verifier, so those keys enforce nothing — every request bypasses \
+              key-based governance. Emitted at ERROR (not warn, which RUST_LOG=error would suppress) \
+              and unconditionally on stderr, the same pattern as the open-relay banner, so the inert \
+              state cannot be masked by log configuration.",
+    action: "Add `keys` to `auth.chain` so the durable keys actually gate traffic, or remove the keys \
+             if key-based governance is not intended. Until then, minted keys are dead weight.",
+    since: "1.6.0",
+    retired: false,
+};
+
 /// EVERY diagnostic, in ascending code order. The tests assert uniqueness and class alignment.
 pub static REGISTRY: &[&Diagnostic] = &[
     &DURABLE_WRITETHROUGH_BELOW_FLOOR,
@@ -1342,6 +1695,7 @@ pub static REGISTRY: &[&Diagnostic] = &[
     &TRUST_SWEEP_PANICKED,
     &OAUTH_AS_SWEEP_FAILED,
     &SIGV4_HMAC_INIT_FAILED,
+    &OAUTH_AS_EPHEMERAL_SIGNING_KEY,
     &USAGE_TAP_REASSEMBLY_CAP_EXCEEDED,
     &UPSTREAM_MIDSTREAM_TRANSPORT_ERROR,
     &UPSTREAM_PREFIRSTBYTE_TRANSPORT_ERROR,
@@ -1379,6 +1733,24 @@ pub static REGISTRY: &[&Diagnostic] = &[
     &METRICS_KEY_GAUGE_LIMIT_EXCEEDED,
     &METRICS_SCRAPE_KEY_USAGE_READ_FAILED,
     &METRICS_SCRAPE_GROUP_LEDGER_READ_FAILED,
+    &PLUGINS_FETCH_RELOAD_MISS,
+    &REVOCATION_RESYNC_OUTSTANDING,
+    &REVOCATION_RESYNC_FAILED,
+    &GOVERNANCE_KEY_RESERVED_NAMESPACE_COLLISION,
+    &LIMIT_WINDOW_UNRECOGNIZED,
+    &REFRESH_SELF_INCONSISTENT_BINDING,
+    &REFRESH_SELF_CACHE_REFRESH_FAILED,
+    &ACCRUAL_GROUP_MISSING,
+    &METERING_FLUSH_PARTIAL_FAILURE,
+    &DELETE_KEY_CACHE_RECONCILE_FAILED,
+    &ROTATE_KEY_CACHE_RECONCILE_FAILED,
+    &BUDGET_FLUSH_PARTIAL_FAILURE,
+    &SAFE_MODE_OVERLAY_QUARANTINED,
+    &PROVIDER_API_KEY_UNRESOLVED,
+    &OPEN_RELAY_NO_AUTH,
+    &STORE_SECRET_REF_UNRESOLVED,
+    &GOVERNANCE_STORE_EPHEMERAL,
+    &DURABLE_KEYS_INERT,
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────

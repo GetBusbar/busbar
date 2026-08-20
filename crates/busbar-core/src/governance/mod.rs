@@ -12,6 +12,10 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, RwLock};
 
+use crate::diagnostics::{
+    diag_debug, diag_warn, GOVERNANCE_KEY_RESERVED_NAMESPACE_COLLISION, LIMIT_WINDOW_UNRECOGNIZED,
+};
+
 /// Seconds in a UTC day, for `budget_window`'s day/month arithmetic. `pub(crate)` so cross-module
 /// TEST code can reference it as `crate::governance::SECS_PER_DAY`; production modules that need the
 /// same value independently (e.g. `sigv4.rs`) keep a private copy where layering prohibits importing
@@ -682,7 +686,8 @@ pub(crate) fn synthesize_principal_key(
     if principal.id.starts_with(crate::cost::GROUP_BUCKET_PREFIX)
         || principal.id.starts_with(VK_ID_PREFIX)
     {
-        tracing::warn!(
+        diag_debug!(
+            GOVERNANCE_KEY_RESERVED_NAMESPACE_COLLISION,
             principal = %principal.id,
             "refusing to synthesize a governance key: principal id collides with a reserved bucket \
              namespace (group: or vk_)"
@@ -852,7 +857,8 @@ pub(crate) fn budget_window(period: &str, now: u64) -> u64 {
         // parse rejects it). Fail SAFE to the all-time window (0), the tightest enforcement,
         // never wider, with a diagnostic so the corruption is visible instead of silent.
         other => {
-            tracing::warn!(
+            diag_warn!(
+                LIMIT_WINDOW_UNRECOGNIZED,
                 window = other,
                 "unrecognized limit window; enforcing as all-time ('total') window"
             );

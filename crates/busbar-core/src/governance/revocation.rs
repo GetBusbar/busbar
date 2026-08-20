@@ -49,6 +49,7 @@
 //! applied to the set synchronously by [`RevocationSync::insert`] (zero window), and the durable
 //! write still fails loud.
 
+use crate::diagnostics::{diag_warn, REVOCATION_RESYNC_FAILED, REVOCATION_RESYNC_OUTSTANDING};
 use busbar_api::Store;
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -145,7 +146,8 @@ impl RevocationSync {
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
             .is_err()
         {
-            tracing::warn!(
+            diag_warn!(
+                REVOCATION_RESYNC_OUTSTANDING,
                 synced_age_secs = now.saturating_sub(self.synced_at.load(Ordering::Relaxed)),
                 "revocation denylist re-sync is still outstanding from an earlier window; the \
                  store has not answered. Serving the last-known revocations - a peer's revoke may \
@@ -193,7 +195,8 @@ impl RevocationSync {
                 self.synced_at.fetch_max(now, Ordering::Relaxed);
             }
             Err(e) => {
-                tracing::warn!(
+                diag_warn!(
+                    REVOCATION_RESYNC_FAILED,
                     error = %e,
                     synced_age_secs = now.saturating_sub(self.synced_at.load(Ordering::Relaxed)),
                     "revocation denylist re-sync failed; keeping the previously-known revocations \
