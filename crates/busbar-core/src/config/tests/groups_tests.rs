@@ -97,6 +97,63 @@ fn limit_serialize_shape_matches_deserialize() {
     assert_eq!(budget, back);
 }
 
+/// D4: serialize↔deserialize SYMMETRY over EVERY `LimitMetric`. `as_str` (used by `Serialize`) and
+/// the deserializer's key match are hand-written in SEPARATE places, so a spelling drift between
+/// them would only surface at the next boot (fail-closed via the `unknown_field` catch-all, but a
+/// real gap). This pins them: for every variant, `as_str` yields a key the deserializer maps back
+/// into the SAME variant, and each metric survives a serialize→re-parse round-trip — including the
+/// four per-tier `tokens_*` metrics.
+#[test]
+fn every_limit_metric_serde_round_trips() {
+    // An EXHAUSTIVE match: adding a `LimitMetric` variant without extending this arm fails to
+    // compile, so the symmetry check can never silently miss a metric.
+    fn spelling(m: LimitMetric) -> &'static str {
+        match m {
+            LimitMetric::Requests => "requests",
+            LimitMetric::Tokens => "tokens",
+            LimitMetric::TokensInput => "tokens_input",
+            LimitMetric::TokensOutput => "tokens_output",
+            LimitMetric::TokensCacheRead => "tokens_cache_read",
+            LimitMetric::TokensCacheWrite => "tokens_cache_write",
+            LimitMetric::Budget => "budget",
+            LimitMetric::Concurrent => "concurrent",
+        }
+    }
+    let all = [
+        LimitMetric::Requests,
+        LimitMetric::Tokens,
+        LimitMetric::TokensInput,
+        LimitMetric::TokensOutput,
+        LimitMetric::TokensCacheRead,
+        LimitMetric::TokensCacheWrite,
+        LimitMetric::Budget,
+        LimitMetric::Concurrent,
+    ];
+    for m in all {
+        let key = spelling(m);
+        // `as_str` must equal the canonical spelling the deserializer keys on.
+        assert_eq!(m.as_str(), key, "as_str spelling for {m:?}");
+        // The minimal valid limit for this metric (`concurrent` takes no `per`; the others
+        // require one).
+        let src = if m == LimitMetric::Concurrent {
+            format!("{{ {key}: 7 }}")
+        } else {
+            format!("{{ {key}: 7, per: minute }}")
+        };
+        let parsed: LimitCfg =
+            serde_yaml::from_str(&src).unwrap_or_else(|e| panic!("parse `{src}`: {e}"));
+        assert_eq!(parsed.metric, m, "deserialize `{key}` -> variant");
+        // serialize -> re-parse must be identical (the overlay round-trip property).
+        let out = serde_yaml::to_string(&parsed).expect("serialize");
+        let back: LimitCfg = serde_yaml::from_str(&out).expect("re-parse");
+        assert_eq!(parsed, back, "round-trip for `{key}`");
+        assert!(
+            out.contains(key),
+            "serialized form keeps the metric key `{key}`: {out}"
+        );
+    }
+}
+
 /// THE `LimitCfg` wire-compat contract test: `pool: <name>` / `downgrade_to:
 /// <name>` in YAML — the entire existing config surface — decodes to `scope`/`downgrade_to:
 /// Some(ScopeRef { kind: "pool", value: <name> })` in memory, and serializes back out as the

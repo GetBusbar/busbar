@@ -139,6 +139,13 @@ pub(crate) struct GroupBucket {
     /// Total-token cap per window (`{ tokens: N, per: <window> }`), if any. Best-effort like the
     /// old TPM: tokens land post-response, so the cap blocks the NEXT request once crossed.
     pub(crate) tokens_cap: Option<u64>,
+    /// Per-tier token caps (`{ tokens_input: N, per: <window> }` etc.), each best-effort exactly
+    /// like `tokens_cap`. Mirror the cost tiers: `tokens_input` = uncached input, `tokens_output`
+    /// = output, `tokens_cache_read`, `tokens_cache_write` = cache creation.
+    pub(crate) tokens_input_cap: Option<u64>,
+    pub(crate) tokens_output_cap: Option<u64>,
+    pub(crate) tokens_cache_read_cap: Option<u64>,
+    pub(crate) tokens_cache_write_cap: Option<u64>,
     /// Spend cap per window (`{ budget: N, per: <window> }`) in abstract cents, if any. Derived at
     /// check time from the cell's token ledger x the current rate card (+ the flat per-request
     /// fee x requests).
@@ -183,6 +190,10 @@ pub(crate) struct ChainBucket<'a> {
     pub(crate) window: &'static str,
     pub(crate) requests_cap: Option<u64>,
     pub(crate) tokens_cap: Option<u64>,
+    pub(crate) tokens_input_cap: Option<u64>,
+    pub(crate) tokens_output_cap: Option<u64>,
+    pub(crate) tokens_cache_read_cap: Option<u64>,
+    pub(crate) tokens_cache_write_cap: Option<u64>,
     pub(crate) budget_cap: Option<i64>,
     /// `Some(scope)` = the bucket is scope-qualified: it checks/charges/accrues ONLY when the
     /// request was dispatched through that scope (today, always `kind: "pool"`). `None` = applies
@@ -300,7 +311,13 @@ impl CostModel {
             .iter()
             .flat_map(|g| g.buckets.iter())
             .filter(|b| {
-                b.requests_cap.is_some() || b.tokens_cap.is_some() || b.budget_cap.is_some()
+                b.requests_cap.is_some()
+                    || b.tokens_cap.is_some()
+                    || b.tokens_input_cap.is_some()
+                    || b.tokens_output_cap.is_some()
+                    || b.tokens_cache_read_cap.is_some()
+                    || b.tokens_cache_write_cap.is_some()
+                    || b.budget_cap.is_some()
             })
             .map(|b| b.bucket_id.clone())
             .collect()
@@ -366,6 +383,10 @@ impl CostModel {
                                         window: w,
                                         requests_cap: None,
                                         tokens_cap: None,
+                                        tokens_input_cap: None,
+                                        tokens_output_cap: None,
+                                        tokens_cache_read_cap: None,
+                                        tokens_cache_write_cap: None,
                                         budget_cap: None,
                                         scope: l.scope.clone(),
                                         downgrade_to: None,
@@ -381,6 +402,20 @@ impl CostModel {
                                     bucket.requests_cap = min_u(bucket.requests_cap)
                                 }
                                 LimitMetric::Tokens => bucket.tokens_cap = min_u(bucket.tokens_cap),
+                                LimitMetric::TokensInput => {
+                                    bucket.tokens_input_cap = min_u(bucket.tokens_input_cap)
+                                }
+                                LimitMetric::TokensOutput => {
+                                    bucket.tokens_output_cap = min_u(bucket.tokens_output_cap)
+                                }
+                                LimitMetric::TokensCacheRead => {
+                                    bucket.tokens_cache_read_cap =
+                                        min_u(bucket.tokens_cache_read_cap)
+                                }
+                                LimitMetric::TokensCacheWrite => {
+                                    bucket.tokens_cache_write_cap =
+                                        min_u(bucket.tokens_cache_write_cap)
+                                }
                                 LimitMetric::Budget => {
                                     let amount = i64::try_from(l.amount).unwrap_or(i64::MAX);
                                     // The MOST RESTRICTIVE budget's exhaustion behavior governs:
@@ -560,6 +595,10 @@ impl CostModel {
             window: crate::governance::WINDOW_TOTAL,
             requests_cap: None,
             tokens_cap: None,
+            tokens_input_cap: None,
+            tokens_output_cap: None,
+            tokens_cache_read_cap: None,
+            tokens_cache_write_cap: None,
             budget_cap: None,
             scope: None,
             downgrade_to: None,
@@ -587,6 +626,10 @@ impl CostModel {
                     window: b.window,
                     requests_cap: b.requests_cap,
                     tokens_cap: b.tokens_cap,
+                    tokens_input_cap: b.tokens_input_cap,
+                    tokens_output_cap: b.tokens_output_cap,
+                    tokens_cache_read_cap: b.tokens_cache_read_cap,
+                    tokens_cache_write_cap: b.tokens_cache_write_cap,
                     budget_cap: b.budget_cap,
                     scope: b.scope.as_ref(),
                     downgrade_to: b.downgrade_to.as_ref(),

@@ -237,6 +237,128 @@ fn tokens_cap_blocks_after_ledger_crosses() {
     g.try_admit(&cm, &k, "", now + 60).expect("fresh window");
 }
 
+/// A four-tier `TierTokens` builder for the per-tier cap tests.
+fn toks_tiers(input: u64, output: u64, cache_read: u64, cache_write: u64) -> TierTokens {
+    TierTokens {
+        input,
+        output,
+        cache_read,
+        cache_write,
+    }
+}
+
+/// `tokens_input` per window is best-effort post-paid on the UNCACHED-INPUT tier ONLY: admission
+/// passes until the ledgered INPUT crosses the cap, then the next request is rejected naming
+/// (group, tokens_input, window). Output tokens on the same cell do NOT trip it — the cost tiers
+/// are budgeted independently.
+#[test]
+fn tokens_input_cap_blocks_on_input_tier_only() {
+    let g = gov();
+    let cm = model(&[(
+        "g",
+        group_cfg(
+            None,
+            true,
+            vec![limit(
+                LimitMetric::TokensInput,
+                100,
+                Some(LimitWindow::Minute),
+            )],
+        ),
+    )]);
+    let k = key("vk_ti", Some("g"));
+    let now = 1_700_000_000;
+    g.try_admit(&cm, &k, "", now)
+        .expect("no tokens ledgered yet");
+    g.record_usage(&cm, &k, "", "m", &toks(99, 0), now); // input 99 < 100
+    g.try_admit(&cm, &k, "", now).expect("still under on input");
+    // A request that only produces OUTPUT tokens must NOT trip the input cap: 10_000 output
+    // tokens land, input stays 99.
+    g.record_usage(&cm, &k, "", "m", &toks(0, 10_000), now);
+    g.try_admit(&cm, &k, "", now)
+        .expect("output tokens do not count against tokens_input");
+    g.record_usage(&cm, &k, "", "m", &toks(1, 0), now); // input now exactly 100 = at the cap
+    assert_blocked(
+        g.try_admit(&cm, &k, "", now).unwrap_err(),
+        "g",
+        "tokens_input",
+        Some("minute"),
+        true,
+    );
+    // A fresh window forgets the input tokens.
+    g.try_admit(&cm, &k, "", now + 60).expect("fresh window");
+}
+
+/// CACHED-READ tokens live in the `cache_read` tier, NOT the input tier: they must never count
+/// against a `tokens_input` cap (matching the cost-tier semantics — a cached prompt read is billed
+/// as cache_read, not uncached input).
+#[test]
+fn cached_read_tokens_do_not_count_against_tokens_input() {
+    let g = gov();
+    let cm = model(&[(
+        "g",
+        group_cfg(
+            None,
+            true,
+            vec![limit(
+                LimitMetric::TokensInput,
+                100,
+                Some(LimitWindow::Minute),
+            )],
+        ),
+    )]);
+    let k = key("vk_tcr", Some("g"));
+    let now = 1_700_000_000;
+    g.try_admit(&cm, &k, "", now).expect("nothing ledgered");
+    // 10_000 cache-read tokens (well over the 100 input cap) but ZERO uncached input.
+    g.record_usage(&cm, &k, "", "m", &toks_tiers(0, 0, 10_000, 0), now);
+    g.try_admit(&cm, &k, "", now)
+        .expect("cache_read tokens do not fill the tokens_input bucket");
+    // And the input cap still bites once real input crosses it.
+    g.record_usage(&cm, &k, "", "m", &toks_tiers(100, 0, 0, 0), now);
+    assert_blocked(
+        g.try_admit(&cm, &k, "", now).unwrap_err(),
+        "g",
+        "tokens_input",
+        Some("minute"),
+        true,
+    );
+}
+
+/// Each per-tier cap enforces on its OWN tier: `tokens_cache_write` blocks after the cache-creation
+/// tier crosses, and the rejection names that exact tier.
+#[test]
+fn tokens_cache_write_cap_blocks_on_its_tier() {
+    let g = gov();
+    let cm = model(&[(
+        "g",
+        group_cfg(
+            None,
+            true,
+            vec![limit(
+                LimitMetric::TokensCacheWrite,
+                50,
+                Some(LimitWindow::Hour),
+            )],
+        ),
+    )]);
+    let k = key("vk_tcw", Some("g"));
+    let now = 1_700_000_000;
+    g.try_admit(&cm, &k, "", now).expect("nothing ledgered");
+    // Other tiers do not trip a cache_write cap.
+    g.record_usage(&cm, &k, "", "m", &toks_tiers(1_000, 1_000, 1_000, 0), now);
+    g.try_admit(&cm, &k, "", now)
+        .expect("input/output/cache_read do not count against tokens_cache_write");
+    g.record_usage(&cm, &k, "", "m", &toks_tiers(0, 0, 0, 50), now); // cache_write = 50 = at cap
+    assert_blocked(
+        g.try_admit(&cm, &k, "", now).unwrap_err(),
+        "g",
+        "tokens_cache_write",
+        Some("hour"),
+        true,
+    );
+}
+
 /// `budget` per window derives spend from the token ledger x the rate card PLUS the flat fee x
 /// requests, and blocks at/over the cap. Repricing applies on the next check (tokens are truth).
 #[test]

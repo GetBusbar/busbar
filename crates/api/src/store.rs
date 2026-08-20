@@ -540,6 +540,37 @@ impl UsageLedger {
             .fold(0u64, |acc, m| acc.saturating_add(m.tokens.total()))
     }
 
+    /// UNCACHED-INPUT tokens across every model (`TierTokens.input`) — the durable counterpart of
+    /// the `tokens_input` per-tier cap. Mirrors [`Self::total_tokens`].
+    pub fn total_input(&self) -> u64 {
+        self.models
+            .iter()
+            .fold(0u64, |acc, m| acc.saturating_add(m.tokens.input))
+    }
+
+    /// OUTPUT tokens across every model — the durable counterpart of the `tokens_output` cap.
+    pub fn total_output(&self) -> u64 {
+        self.models
+            .iter()
+            .fold(0u64, |acc, m| acc.saturating_add(m.tokens.output))
+    }
+
+    /// CACHE-READ tokens across every model — the durable counterpart of the `tokens_cache_read`
+    /// cap.
+    pub fn total_cache_read(&self) -> u64 {
+        self.models
+            .iter()
+            .fold(0u64, |acc, m| acc.saturating_add(m.tokens.cache_read))
+    }
+
+    /// CACHE-WRITE (cache_creation) tokens across every model — the durable counterpart of the
+    /// `tokens_cache_write` cap.
+    pub fn total_cache_write(&self) -> u64 {
+        self.models
+            .iter()
+            .fold(0u64, |acc, m| acc.saturating_add(m.tokens.cache_write))
+    }
+
     /// Apply one signed per-model tier delta, flooring every counter at 0 (a refund can never
     /// drive a durable counter negative). Allocates a model entry only on first sight.
     pub fn apply_model_delta(&mut self, delta: &ModelTokensDelta) {

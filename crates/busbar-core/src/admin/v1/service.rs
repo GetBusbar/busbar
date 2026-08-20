@@ -1201,6 +1201,10 @@ impl AdminService {
                 spend_cents: usage.spend_cents,
                 requests_cap: b.requests_cap,
                 tokens_cap: b.tokens_cap,
+                tokens_input_cap: b.tokens_input_cap,
+                tokens_output_cap: b.tokens_output_cap,
+                tokens_cache_read_cap: b.tokens_cache_read_cap,
+                tokens_cache_write_cap: b.tokens_cache_write_cap,
                 budget_cap: b.budget_cap,
                 budget_remaining_cents: b
                     .budget_cap

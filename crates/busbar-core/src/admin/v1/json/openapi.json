@@ -894,7 +894,40 @@
             "minimum": 0,
             "type": "integer"
           },
+          "tokens_cache_read_cap": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "tokens_cache_write_cap": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "tokens_cap": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "tokens_input_cap": {
+            "description": "Per-tier token caps mirroring the cost tiers, when configured (absent = uncapped on that\ntier): `tokens_input` = uncached input, `tokens_output` = output, `tokens_cache_read`,\n`tokens_cache_write` = cache creation.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "tokens_output_cap": {
             "format": "uint64",
             "minimum": 0,
             "type": [

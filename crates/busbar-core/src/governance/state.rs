@@ -939,6 +939,12 @@ impl GovState {
         let chain = cost.chain_for(key).ok()?;
         let mut headroom: Option<f64> = None;
         for bucket in chain.iter() {
+            // D5 (documented no-op): the per-tier token caps (`tokens_input`/…) are deliberately
+            // NOT reflected in routing headroom. Headroom is a routing-quality signal, not the
+            // enforcement gate — PASS-1 in `try_admit` is what actually blocks a filling per-tier
+            // bucket. A bucket carrying ONLY per-tier caps therefore reads as full headroom here
+            // (skipped), which never admits traffic that enforcement would refuse; it only means
+            // routing does not yet prefer away from a filling per-tier bucket.
             if bucket.requests_cap.is_none() && bucket.tokens_cap.is_none() {
                 continue;
             }
@@ -1802,6 +1808,10 @@ impl GovState {
         for (bi, bucket) in buckets.iter().enumerate() {
             if bucket.requests_cap.is_none()
                 && bucket.tokens_cap.is_none()
+                && bucket.tokens_input_cap.is_none()
+                && bucket.tokens_output_cap.is_none()
+                && bucket.tokens_cache_read_cap.is_none()
+                && bucket.tokens_cache_write_cap.is_none()
                 && bucket.budget_cap.is_none()
             {
                 continue; // uncapped bucket (e.g. the key's attribution bucket) never blocks
@@ -1814,22 +1824,52 @@ impl GovState {
             // after a concurrent admission already rolled the cell forward - its charge lands on
             // the live cell in PASS 2, so the check must read that same cell, never treat it as a
             // fresh window). Only a genuinely STALE (older-window) or absent cell reads as empty.
-            let (requests, tokens, derived) = match map.get(bucket.bucket_id) {
-                Some(cell) if cell.window_start >= window => (
-                    cell.requests,
-                    if bucket.tokens_cap.is_some() {
-                        cell.total_tokens()
-                    } else {
-                        0
-                    },
-                    if bucket.budget_cap.is_some() {
-                        cost.derive_spend_cents(cell.model_views(), cell.billable_requests, true)
-                    } else {
-                        0
-                    },
-                ),
-                _ => (0, 0, 0), // stale or absent cell = fresh window = nothing used
-            };
+            // Per-tier token counters (`tokens_input`/…): read the matching cell tier ONLY when its
+            // cap is set — same best-effort post-paid shape as `tokens_cap`, mirroring the cost
+            // tiers. `tokens_input` reads `total_input()` (uncached input; cache_read is a separate
+            // tier), so a cached prompt read never counts against the input cap.
+            let (requests, tokens, t_input, t_output, t_cache_read, t_cache_write, derived) =
+                match map.get(bucket.bucket_id) {
+                    Some(cell) if cell.window_start >= window => (
+                        cell.requests,
+                        if bucket.tokens_cap.is_some() {
+                            cell.total_tokens()
+                        } else {
+                            0
+                        },
+                        if bucket.tokens_input_cap.is_some() {
+                            cell.total_input()
+                        } else {
+                            0
+                        },
+                        if bucket.tokens_output_cap.is_some() {
+                            cell.total_output()
+                        } else {
+                            0
+                        },
+                        if bucket.tokens_cache_read_cap.is_some() {
+                            cell.total_cache_read()
+                        } else {
+                            0
+                        },
+                        if bucket.tokens_cache_write_cap.is_some() {
+                            cell.total_cache_write()
+                        } else {
+                            0
+                        },
+                        if bucket.budget_cap.is_some() {
+                            cost.derive_spend_cents(
+                                cell.model_views(),
+                                cell.billable_requests,
+                                true,
+                            )
+                        } else {
+                            0
+                        },
+                    ),
+                    // stale or absent cell = fresh window = nothing used
+                    _ => (0, 0, 0, 0, 0, 0, 0),
+                };
             let blocked_metric = if bucket
                 .requests_cap
                 .is_some_and(|cap| requests.saturating_add(1) > cap)
@@ -1837,6 +1877,20 @@ impl GovState {
                 Some("requests")
             } else if bucket.tokens_cap.is_some_and(|cap| tokens >= cap) {
                 Some("tokens")
+            } else if bucket.tokens_input_cap.is_some_and(|cap| t_input >= cap) {
+                Some("tokens_input")
+            } else if bucket.tokens_output_cap.is_some_and(|cap| t_output >= cap) {
+                Some("tokens_output")
+            } else if bucket
+                .tokens_cache_read_cap
+                .is_some_and(|cap| t_cache_read >= cap)
+            {
+                Some("tokens_cache_read")
+            } else if bucket
+                .tokens_cache_write_cap
+                .is_some_and(|cap| t_cache_write >= cap)
+            {
+                Some("tokens_cache_write")
             } else if bucket
                 .budget_cap
                 .is_some_and(|cap| derived >= cap || derived.saturating_add(fee) > cap)

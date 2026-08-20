@@ -237,7 +237,13 @@ fn admit_check(
         let (status, kind, message, retry_after) = match &blocked {
             LimitBlocked::Limit {
                 group,
-                metric: metric @ ("requests" | "tokens"),
+                // The per-tier token caps (`tokens_input`/…) surface as a rate limit exactly like
+                // the aggregate `tokens` metric — a 429 naming the tier — NOT as an over-quota
+                // block. Without this arm they would fall to the budget/quota arm below and return
+                // the vendor quota status (Bedrock 400), silently mislabelling the block.
+                metric:
+                    metric @ ("requests" | "tokens" | "tokens_input" | "tokens_output"
+                    | "tokens_cache_read" | "tokens_cache_write"),
                 window,
                 pool: limit_pool,
                 retry_after,
@@ -268,6 +274,7 @@ fn admit_check(
             ),
             LimitBlocked::Limit {
                 group,
+                metric: "budget",
                 window,
                 pool: limit_pool,
                 retry_after,
@@ -283,6 +290,29 @@ fn admit_check(
                 format!(
                     "You have exceeded your current quota (group '{group}' budget per {}{} \
                          exhausted). Please check your plan and billing details.",
+                    window.unwrap_or("total"),
+                    pool_scope_suffix(limit_pool),
+                ),
+                *retry_after,
+            ),
+            // FAIL-SAFE catch-all for any FUTURE metric not yet given an explicit arm above. It
+            // maps to a generic 429 rate limit — never the vendor quota status — so a new metric
+            // can never silently inherit `budget`'s Bedrock-400 semantics. Every metric that exists
+            // today (`requests`/`tokens`/the four `tokens_*` tiers/`concurrent`/`budget`) is matched
+            // explicitly above; this arm only exists to keep the string match exhaustive.
+            LimitBlocked::Limit {
+                group,
+                metric,
+                window,
+                pool: limit_pool,
+                retry_after,
+                ..
+            } => (
+                StatusCode::TOO_MANY_REQUESTS,
+                crate::proxy::KIND_RATE_LIMIT,
+                format!(
+                    "Rate limit exceeded (group '{group}': {metric} per {}{}). Please retry \
+                         after the indicated time.",
                     window.unwrap_or("total"),
                     pool_scope_suffix(limit_pool),
                 ),

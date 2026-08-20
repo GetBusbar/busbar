@@ -205,6 +205,37 @@ impl BudgetCell {
             .iter()
             .fold(0u64, |acc, m| acc.saturating_add(m.cur.total()))
     }
+
+    /// Current UNCACHED-INPUT tokens across models (`TierTokens.input`, which readers normalize to
+    /// exclude cache_read — cached prompt reads live in `cache_read`, not here). Mirrors
+    /// `total_tokens` for the `tokens_input` per-tier cap.
+    fn total_input(&self) -> u64 {
+        self.models
+            .iter()
+            .fold(0u64, |acc, m| acc.saturating_add(m.cur.input))
+    }
+
+    /// Current OUTPUT tokens across models — the `tokens_output` per-tier cap's counter.
+    fn total_output(&self) -> u64 {
+        self.models
+            .iter()
+            .fold(0u64, |acc, m| acc.saturating_add(m.cur.output))
+    }
+
+    /// Current CACHE-READ tokens across models — the `tokens_cache_read` per-tier cap's counter.
+    fn total_cache_read(&self) -> u64 {
+        self.models
+            .iter()
+            .fold(0u64, |acc, m| acc.saturating_add(m.cur.cache_read))
+    }
+
+    /// Current CACHE-WRITE (cache_creation) tokens across models — the `tokens_cache_write`
+    /// per-tier cap's counter.
+    fn total_cache_write(&self) -> u64 {
+        self.models
+            .iter()
+            .fold(0u64, |acc, m| acc.saturating_add(m.cur.cache_write))
+    }
 }
 
 /// Why an admission was refused by the group limit chain - carried to ingress so the rejection

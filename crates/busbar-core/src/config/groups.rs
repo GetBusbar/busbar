@@ -16,7 +16,10 @@
 //!   - { concurrent: 5 }              # instantaneous - no `per`
 //! ```
 //!
-//! metrics: `requests` | `tokens` | `budget` | `concurrent`. windows (nouns):
+//! metrics: `requests` | `tokens` | `tokens_input` | `tokens_output` | `tokens_cache_read` |
+//! `tokens_cache_write` | `budget` | `concurrent`. The four `tokens_*` metrics mirror the cost
+//! tiers (`tokens_input` = uncached input, `tokens_output` = output, `tokens_cache_read`,
+//! `tokens_cache_write` = cache creation) and are windowed exactly like `tokens`. windows (nouns):
 //! `minute` | `hour` | `day` | `month` | `total`. `concurrent` is an in-flight gauge and takes NO
 //! `per`; the three windowed metrics REQUIRE one (a windowless cap is ambiguous - fail loudly).
 //!
@@ -95,6 +98,15 @@ pub(crate) enum LimitMetric {
     Requests,
     /// Total tokens (all tiers) per window.
     Tokens,
+    /// UNCACHED-INPUT tokens per window (`TierTokens.input`; cached prompt reads are excluded and
+    /// counted under `tokens_cache_read` instead) — mirrors the cost `input` tier.
+    TokensInput,
+    /// OUTPUT tokens per window — mirrors the cost `output` tier.
+    TokensOutput,
+    /// CACHE-READ tokens per window — mirrors the cost `cache_read` tier.
+    TokensCacheRead,
+    /// CACHE-WRITE (cache creation) tokens per window — mirrors the cost `cache_write` tier.
+    TokensCacheWrite,
     /// Spend (cents, abstract minor units, derived from the ledger x rate_card) per window.
     Budget,
     /// In-flight request gauge - instantaneous, no window.
@@ -107,6 +119,10 @@ impl LimitMetric {
         match self {
             LimitMetric::Requests => "requests",
             LimitMetric::Tokens => "tokens",
+            LimitMetric::TokensInput => "tokens_input",
+            LimitMetric::TokensOutput => "tokens_output",
+            LimitMetric::TokensCacheRead => "tokens_cache_read",
+            LimitMetric::TokensCacheWrite => "tokens_cache_write",
             LimitMetric::Budget => "budget",
             LimitMetric::Concurrent => "concurrent",
         }
@@ -200,7 +216,8 @@ impl<'de> Deserialize<'de> for LimitCfg {
             fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 f.write_str(
                     "a limit map `{ <metric>: <amount>, per: <window>, pool: <name> }` where \
-                     <metric> is one of requests|tokens|budget|concurrent and <window> one of \
+                     <metric> is one of requests|tokens|tokens_input|tokens_output|\
+                     tokens_cache_read|tokens_cache_write|budget|concurrent and <window> one of \
                      minute|hour|day|month|total (omit `per` for concurrent; `pool` is optional \
                      and scopes the limit to one pool's traffic)",
                 )
@@ -220,6 +237,10 @@ impl<'de> Deserialize<'de> for LimitCfg {
                     let named = match key.as_str() {
                         "requests" => Some(LimitMetric::Requests),
                         "tokens" => Some(LimitMetric::Tokens),
+                        "tokens_input" => Some(LimitMetric::TokensInput),
+                        "tokens_output" => Some(LimitMetric::TokensOutput),
+                        "tokens_cache_read" => Some(LimitMetric::TokensCacheRead),
+                        "tokens_cache_write" => Some(LimitMetric::TokensCacheWrite),
                         "budget" => Some(LimitMetric::Budget),
                         "concurrent" => Some(LimitMetric::Concurrent),
                         "per" => {
@@ -256,6 +277,10 @@ impl<'de> Deserialize<'de> for LimitCfg {
                                 &[
                                     "requests",
                                     "tokens",
+                                    "tokens_input",
+                                    "tokens_output",
+                                    "tokens_cache_read",
+                                    "tokens_cache_write",
                                     "budget",
                                     "concurrent",
                                     "per",
@@ -281,7 +306,8 @@ impl<'de> Deserialize<'de> for LimitCfg {
                 let Some((metric, amount)) = metric else {
                     return Err(de::Error::custom(
                         "a limit needs exactly one metric key \
-                         (requests | tokens | budget | concurrent)",
+                         (requests | tokens | tokens_input | tokens_output | tokens_cache_read | \
+                         tokens_cache_write | budget | concurrent)",
                     ));
                 };
 
