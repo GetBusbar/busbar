@@ -457,18 +457,34 @@ impl CatalogueCache {
     /// every apply, including one that changes nothing — a no-op refresh costing a spurious
     /// dispatch retry is strictly better than a real revocation that forgot to bump.
     pub(crate) fn apply(&self, edit: impl FnOnce(&mut BTreeMap<String, ServerCatalogue>)) {
-        let current = self.load();
-        let mut servers = current.servers.clone();
+        // THE WRITE LOCK IS HELD ACROSS THE WHOLE READ-COPY-UPDATE, not just the final swap. Two
+        // applies targeting DIFFERENT server keys — a verify-on-call fetch settling one server while
+        // another settles a second — each clone the pre-edit map, edit their own key, and publish.
+        // If the clone-edit ran outside the lock (cloning from a cheap `load()` and only taking the
+        // lock to swap), both would clone the SAME pre-edit map and the later swap would drop the
+        // earlier server's edit: a just-detected drift or refresh silently lost. Holding the lock
+        // from clone through publish makes the sequence atomic, so concurrent applies serialise and
+        // every edit survives. Readers still pay only `load()`'s cheap read lock + `Arc` clone; the
+        // edit closures do only in-memory map mutation and never re-enter the cache, so the critical
+        // section is short and cannot deadlock.
+        let mut live = match self.live.write() {
+            Ok(g) => g,
+            // A poisoned lock means a prior writer panicked mid-swap. The published snapshot is
+            // immutable and whole, so it is still a coherent base to copy from; refusing it would
+            // take the MCP plane down for a panic that cannot have corrupted it.
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        let mut servers = live.servers.clone();
         edit(&mut servers);
+        // Bump BEFORE publishing the swap, still under the write lock. A dispatch that reads a
+        // generation newer than the snapshot it selected refuses and retries (spurious); the reverse
+        // order would let it pair a stale generation with a fresh snapshot and conclude nothing
+        // changed. The bump fires for every apply, no-op included.
         let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
-        let next = Arc::new(CatalogueSnapshot {
+        *live = Arc::new(CatalogueSnapshot {
             generation,
             servers,
         });
-        match self.live.write() {
-            Ok(mut g) => *g = next,
-            Err(poisoned) => *poisoned.into_inner() = next,
-        }
     }
 }
 

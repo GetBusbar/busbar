@@ -548,7 +548,13 @@ async fn a_tool_call_is_charged_metered_and_audited_on_the_ordinary_budget_plane
 
     let app = TestApp::new()
         .mcp(&mcp_cfg())
-        .mcp_server("fs", poisoned_server("fs", "read"))
+        // A UNIQUE server+tool for THIS test, so the `mcp_tool.call` row it audits carries a
+        // resource (`mcp_tool:meter_probe`) no sibling MCP test writes. Sharing the `fs`/`read`
+        // fixture meant a concurrent sibling's `mcp_tool.call` on `mcp_tool:fs_read` — same action,
+        // same `test-principal`, a newer seq — could be the row `.rev().find` returned, so this test
+        // passed on someone else's row or went flaky. The resource filter on the lookup below leans
+        // on this name being ours alone.
+        .mcp_server("meter", poisoned_server("meter", "probe"))
         .governance(gov_state.clone())
         .build();
     let gov = crate::governance::GovCtx {
@@ -572,7 +578,7 @@ async fn a_tool_call_is_charged_metered_and_audited_on_the_ordinary_budget_plane
         &app,
         &gov,
         "tools/call",
-        serde_json::json!({ "name": "fs_read", "arguments": {} }),
+        serde_json::json!({ "name": "meter_probe", "arguments": {} }),
     )
     .await;
     // The call is refused at the ROUND TRIP: `fs.internal` does not resolve, so the dispatch-time
@@ -608,7 +614,7 @@ async fn a_tool_call_is_charged_metered_and_audited_on_the_ordinary_budget_plane
     );
     let row = ours[0];
     assert_eq!(
-        row.model, "fs_read",
+        row.model, "meter_probe",
         "the metered series is attributed to the NAMESPACED tool, so an existing cost dashboard \
          groups MCP traffic without knowing what MCP is"
     );
@@ -621,13 +627,31 @@ async fn a_tool_call_is_charged_metered_and_audited_on_the_ordinary_budget_plane
 
     // THE AUDIT: the VALIDATED decision, attributed, recorded as a REJECTION because that is
     // what it was — never as a successful route.
+    //
+    // REGRESSION GUARD for the unfiltered lookup: stand in for the concurrent sibling the process-
+    // global ring exposes by appending a decoy `mcp_tool.call` row for the OLD shared fixture
+    // (`mcp_tool:fs_read`, same `test-principal`, action, and a NEWER seq than our own row). A
+    // lookup scoped only to `action`/`seq` would `.rev().find` this decoy first and assert on the
+    // wrong row; scoping the find to OUR resource+principal skips it. Without that scoping this test
+    // is red here.
+    crate::admin::audit::AUDIT.record_by(
+        "mcp_tool.call",
+        "mcp_tool:fs_read",
+        crate::admin::audit::OUTCOME_REJECTED,
+        "test-principal",
+    );
     let entries = crate::admin::audit::AUDIT.export();
     let row = entries
         .iter()
         .rev()
-        .find(|e| e.action == "mcp_tool.call" && e.seq > before)
+        .find(|e| {
+            e.action == "mcp_tool.call"
+                && e.seq > before
+                && e.resource == "mcp_tool:meter_probe"
+                && e.principal == "test-principal"
+        })
         .expect("the call must have audited an `mcp_tool.call` row of its own");
-    assert_eq!(row.resource, "mcp_tool:fs_read");
+    assert_eq!(row.resource, "mcp_tool:meter_probe");
     assert_eq!(row.outcome, crate::admin::audit::OUTCOME_REJECTED);
     assert_eq!(row.principal, "test-principal");
 }

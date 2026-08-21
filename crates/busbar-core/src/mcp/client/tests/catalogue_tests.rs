@@ -115,3 +115,50 @@ fn a_quiet_period_does_not_accrue_burst_credit() {
     // The very next trigger is still refused; the floor applies from the last ACCEPTED one.
     assert!(!gate.allow(1_000_000 + 3_600_001));
 }
+
+/// A1 REGRESSION: two or more `apply()` calls targeting DISTINCT server keys must each survive.
+///
+/// The lost-update bug cloned the pre-edit map from a lock-free `load()` and only took the write
+/// lock for the final swap, so concurrent applies copied the SAME base and the last swap dropped the
+/// others' edits — a just-detected drift or refresh silently lost. Each thread inserts one unique
+/// key, all released together on a barrier to hit the read-modify-write window, repeated so the
+/// buggy version drops keys reliably. The atomic apply keeps every key.
+#[test]
+fn concurrent_applies_to_distinct_keys_all_survive() {
+    use crate::mcp::client::support::simple_tool;
+    use std::sync::{Arc, Barrier};
+    const THREADS: usize = 8;
+    for _ in 0..100 {
+        let cache = Arc::new(CatalogueCache::new());
+        let barrier = Arc::new(Barrier::new(THREADS));
+        let handles: Vec<_> = (0..THREADS)
+            .map(|i| {
+                let cache = cache.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    let key = format!("srv{i}");
+                    // Line every thread up on the barrier so their read-copy-update windows overlap.
+                    barrier.wait();
+                    cache.apply(move |s| {
+                        s.insert(key.clone(), approved_server(&key, vec![simple_tool("t", "d")]));
+                    });
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join().unwrap();
+        }
+        let snap = cache.load();
+        assert_eq!(
+            snap.servers.len(),
+            THREADS,
+            "every concurrent apply on a distinct key must survive; a dropped key is the lost-update bug"
+        );
+        for i in 0..THREADS {
+            assert!(
+                snap.servers.contains_key(&format!("srv{i}")),
+                "srv{i} was dropped by a racing apply"
+            );
+        }
+    }
+}
