@@ -99,6 +99,13 @@ impl OperationHandler for BedrockImage {
     fn extract_error(&self, status: u16, body: &[u8]) -> busbar_core::breaker::RawUpstreamError {
         busbar_core::handlers::protocol_error("bedrock", status, body)
     }
+    // Buffer the same-protocol non-stream 2xx body so the default `extract_usage` runs the op's own
+    // reader and bills once. Titan/SDXL are per-image with no token usage object, so the tap bills 0
+    // tokens and the per-image cost basis on the cross-protocol seam carries the charge — mirrors the
+    // OpenAI/Gemini image cells (closes the same-protocol metering gap).
+    fn taps_usage(&self) -> bool {
+        true
+    }
     /// Titan image `InvokeModel` wire → IR (bedrock as INGRESS). Model rides the PATH, not the body —
     /// the route layer resolves it; the IR's `model` is filled by routing (`IrReq::set_model`).
     fn read_request(
@@ -350,7 +357,7 @@ pub(crate) fn read_image_request(
 pub(crate) fn read_image_response(wire: &[u8]) -> Result<crate::ir::image::ImageResp, CodecError> {
     let v: Value =
         serde_json::from_slice(wire).map_err(|e| CodecError::Malformed(e.to_string()))?;
-    let images = v
+    let images: Vec<busbar_core::media::ImageOutput> = v
         .get("images")
         .and_then(Value::as_array)
         .map(|arr| {
@@ -363,8 +370,18 @@ pub(crate) fn read_image_response(wire: &[u8]) -> Result<crate::ir::image::Image
                 .collect()
         })
         .unwrap_or_default();
+    // Titan/SDXL image models are PER-IMAGE (they return N base64 images in `images`, no token usage
+    // object). Without a cost basis `ImageResp::billing()` returns `None` when BOTH `usage` and
+    // `cost_basis` are unset — every Bedrock image response billed NOTHING. Record the per-image cost
+    // basis (count = one image per `images` entry) so `billing()` yields `Billing::Images`. Size /
+    // quality tiers live on the request params, which this response-only reader cannot see (`None`).
+    let cost_basis = Some(crate::ir::image::CostBasis {
+        count: u32::try_from(images.len()).unwrap_or(u32::MAX),
+        ..Default::default()
+    });
     Ok(crate::ir::image::ImageResp {
         images,
+        cost_basis,
         ..Default::default()
     })
 }

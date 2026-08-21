@@ -305,6 +305,14 @@ impl OperationHandler for GeminiImage {
     fn extract_error(&self, status: u16, body: &[u8]) -> busbar_core::breaker::RawUpstreamError {
         busbar_core::handlers::protocol_error("gemini", status, body)
     }
+    // Buffer the same-protocol non-stream 2xx body so the default `extract_usage` can read the
+    // response's usage and bill the virtual key's TPM/spend. Token-metered image models expose a
+    // `usageMetadata` object (billed as tokens); Imagen `:predict` per-image responses have none, so
+    // the tap bills 0 tokens and the request still meters once via the per-image cost basis on the
+    // cross-protocol seam — mirrors the OpenAI image cell.
+    fn taps_usage(&self) -> bool {
+        true
+    }
     /// Imagen `:predict` wire → IR (gemini as INGRESS): `instances[].prompt` + `parameters`.
     fn read_request(
         &self,
@@ -688,7 +696,7 @@ pub(crate) fn read_image_request(
 pub(crate) fn read_image_response(wire: &[u8]) -> Result<crate::ir::image::ImageResp, CodecError> {
     let v: Value =
         serde_json::from_slice(wire).map_err(|e| CodecError::Malformed(e.to_string()))?;
-    let images = v
+    let images: Vec<busbar_core::media::ImageOutput> = v
         .get("predictions")
         .and_then(Value::as_array)
         .map(|arr| {
@@ -707,8 +715,40 @@ pub(crate) fn read_image_response(wire: &[u8]) -> Result<crate::ir::image::Image
                 .collect()
         })
         .unwrap_or_default();
+    // Token-metered image models (gemini `generateContent`-shaped) carry a `usageMetadata` token
+    // object; Imagen `:predict` per-image responses carry none. Without this the response was billed
+    // NOTHING — `ImageResp::billing()` returns `None` when BOTH `usage` and `cost_basis` are unset.
+    // Parse the token object when present so `billing()` yields `Billing::Tokens` (same field mapping
+    // as the Gemini transcription/embeddings usage readers).
+    let usage = v
+        .get("usageMetadata")
+        .map(|u| busbar_core::billing::TokenUsage {
+            input: u
+                .get("promptTokenCount")
+                .and_then(Value::as_u64)
+                .unwrap_or(0),
+            output: u
+                .get("candidatesTokenCount")
+                .and_then(Value::as_u64)
+                .unwrap_or(0),
+            ..Default::default()
+        });
+    // Per-image (Imagen `:predict`) responses carry no `usageMetadata` — record the per-image cost
+    // basis so the op bills as `Billing::Images` rather than nothing. The billable COUNT is
+    // recoverable from the response itself (one image per `predictions` entry). Size/quality tiers
+    // live on the request params, which this response-only reader cannot see, so they stay `None`.
+    let cost_basis = if usage.is_none() {
+        Some(crate::ir::image::CostBasis {
+            count: u32::try_from(images.len()).unwrap_or(u32::MAX),
+            ..Default::default()
+        })
+    } else {
+        None
+    };
     Ok(crate::ir::image::ImageResp {
         images,
+        usage,
+        cost_basis,
         ..Default::default()
     })
 }

@@ -308,6 +308,44 @@ fn image_read_response_captures_base64_image_bytes() {
     assert_eq!(r.images[0].mime_type.as_deref(), Some("image/png"));
 }
 
+// FIND (money): a token-metered Gemini image response carries a `usageMetadata` token object; the
+// reader must surface it so `billing()` token-meters the request instead of billing nothing. Fails
+// pre-fix (usage left unset → `billing()` is None).
+#[test]
+fn image_response_with_usage_metadata_bills_tokens() {
+    let wire = serde_json::to_vec(&json!({
+        "predictions": [{ "bytesBase64Encoded": "AAAA", "mimeType": "image/png" }],
+        "usageMetadata": { "promptTokenCount": 20, "candidatesTokenCount": 10 },
+    }))
+    .unwrap();
+    let resp = super::read_image_response(&wire).unwrap();
+    match resp.billing() {
+        Some(busbar_core::billing::Billing::Tokens(t)) => {
+            assert_eq!(t.input, 20);
+            assert_eq!(t.output, 10);
+        }
+        other => panic!("token-metered Gemini image must token-bill, got {other:?}"),
+    }
+}
+
+// FIND (money): an Imagen `:predict` response has NO `usageMetadata`; the reader must record a cost
+// basis from the N returned images so `billing()` is `Images{count:N}`, not `None`. Fails pre-fix.
+#[test]
+fn image_response_without_usage_bills_per_image() {
+    let wire = serde_json::to_vec(&json!({
+        "predictions": [
+            { "bytesBase64Encoded": "AAAA", "mimeType": "image/png" },
+            { "bytesBase64Encoded": "BBBB", "mimeType": "image/png" },
+        ],
+    }))
+    .unwrap();
+    let resp = super::read_image_response(&wire).unwrap();
+    match resp.billing() {
+        Some(busbar_core::billing::Billing::Images { count, .. }) => assert_eq!(count, 2),
+        other => panic!("per-image Imagen response must bill Images, got {other:?}"),
+    }
+}
+
 #[test]
 fn image_write_read_roundtrip_preserves_prompt() {
     // write_request emits instances[].prompt + parameters.sampleCount; read_request recovers.
