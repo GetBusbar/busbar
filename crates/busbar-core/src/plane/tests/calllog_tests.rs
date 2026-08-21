@@ -1058,6 +1058,133 @@ fn the_process_global_call_log_is_the_seam_a_call_site_records_through() {
     );
 }
 
+// ── the per-principal chain map is BOUNDED, and eviction never forks a durable chain ───────────
+
+/// The chain-position map is a bounded LRU, not an unbounded ledger: after many DISTINCT principals
+/// it holds at most [`MAX_TRACKED_PRINCIPALS`], where before it grew one never-evicted entry per
+/// principal ever seen (an MCP tool call is request-rate, a principal is a caller identity, so a
+/// churn of short-lived principals leaked memory without bound). No sink here — the pure in-RAM
+/// posture — so this isolates the CAP from any durability behaviour.
+#[test]
+fn the_chain_position_map_stays_bounded_across_many_distinct_principals() {
+    use super::super::calllog::MAX_TRACKED_PRINCIPALS;
+    let log = PlaneCallLog::new();
+    let overflow_by = 1_000;
+    for i in 0..(MAX_TRACKED_PRINCIPALS + overflow_by) {
+        log.record(&format!("key_{i:07}"), dispatched(1000, "fs_read", "sha256:aaa", 7))
+            .expect("each distinct principal records with no sink attached");
+    }
+    assert_eq!(
+        log.len(),
+        MAX_TRACKED_PRINCIPALS,
+        "the map is capped at MAX_TRACKED_PRINCIPALS however many distinct principals arrive, \
+         rather than growing one entry per principal forever"
+    );
+}
+
+/// THE SEMANTIC eviction must preserve: a principal the LRU cap evicted is RESUMED from the store on
+/// its next call, so its chain continues from the persisted tail rather than reopening at seq 1 and
+/// FORKING the durable log (a different record on a `seq` the store already holds — the one thing the
+/// append contract refuses). This is the exactly-once-evidence guarantee that makes bounding the map
+/// safe: nothing is lost and nothing double-writes a sequence.
+#[test]
+fn an_evicted_principal_resumes_from_the_store_instead_of_forking_its_chain() {
+    use super::super::calllog::MAX_TRACKED_PRINCIPALS;
+    let backing = Arc::new(DurableCallStore::new());
+    let store: Arc<dyn Store> = backing.clone();
+    let log = PlaneCallLog::new();
+    log.set_sink(crate::plane::store::PlaneStoreView::narrow(store.clone()));
+
+    // P makes two calls, then goes cold. It sits at the FRONT of the LRU (recorded first, never
+    // re-touched), so it is the first to be evicted.
+    let first = log
+        .record(P, dispatched(1000, "fs_read", "sha256:aaa", 7))
+        .expect("P's first call records");
+    let second = log
+        .record(P, dispatched(1001, "fs_read", "sha256:aaa", 7))
+        .expect("P's second call records");
+    assert_eq!(second.seq, 2);
+
+    // Flood the cap with DISTINCT principals so P is evicted from the front. One eviction is enough,
+    // and MAX distinct fillers behind the single-entry P guarantees it.
+    for i in 0..MAX_TRACKED_PRINCIPALS {
+        log.record(&format!("filler_{i:07}"), dispatched(2000, "fs_read", "sha256:bbb", 1))
+            .expect("filler records");
+    }
+    assert!(
+        log.next_seq(P) == 1,
+        "P's in-RAM position is gone (a fresh lookup of an evicted principal reports seq 1)"
+    );
+    assert_eq!(log.len(), MAX_TRACKED_PRINCIPALS, "still capped after the flood");
+
+    // P calls again. This is the moment a naive eviction would fork: reopening at seq 1 collides with
+    // the store's seq-1 row. Instead the resume reads P's tail back and continues at seq 3.
+    let third = log
+        .record(P, dispatched(3000, "fs_read", "sha256:aaa", 7))
+        .expect("P's post-eviction call records WITHOUT a fork error from the store");
+    assert_eq!(
+        third.seq, 3,
+        "the evicted chain resumed from the persisted tail (seq 3), it did NOT reopen at seq 1"
+    );
+    assert_eq!(
+        third.prev_hash, second.hash,
+        "the post-eviction record links to the PERSISTED tail, not to a fresh chain"
+    );
+    assert_ne!(first.hash, "", "sanity: the first record really was chained");
+
+    // And the durable chain verifies end to end across the eviction — no fork, no gap.
+    assert_eq!(
+        log.verify_principal_chain(
+            crate::plane::store::PlaneStoreView::narrow(store.clone()).as_ref(),
+            P
+        )
+        .expect("verify reads")
+        .expect("the chain spanning the eviction verifies"),
+        3
+    );
+}
+
+/// A store that CANNOT answer the resume read must not be papered over with a seq-1 chain that might
+/// fork: after the cache has evicted, a miss whose store read-back fails is SURFACED as an error (the
+/// "evidence, not admission" posture the write path already takes), leaving the position absent so a
+/// later successful read still resumes correctly.
+#[test]
+fn an_evicted_principal_whose_readback_fails_is_surfaced_not_forked() {
+    use super::super::calllog::MAX_TRACKED_PRINCIPALS;
+    let backing = Arc::new(DurableCallStore::new());
+    let store: Arc<dyn Store> = backing.clone();
+    let log = PlaneCallLog::new();
+    log.set_sink(crate::plane::store::PlaneStoreView::narrow(store.clone()));
+
+    log.record(P, dispatched(1000, "fs_read", "sha256:aaa", 7))
+        .expect("P records");
+    for i in 0..MAX_TRACKED_PRINCIPALS {
+        log.record(&format!("filler_{i:07}"), dispatched(2000, "fs_read", "sha256:bbb", 1))
+            .expect("filler records");
+    }
+
+    // The store now refuses the resume read for the evicted P.
+    backing.set_failing(Some("the backing table is unavailable"));
+    let err = log
+        .record(P, dispatched(3000, "fs_read", "sha256:aaa", 7))
+        .expect_err("a resume read that fails is surfaced rather than reopening a forkable chain");
+    assert!(
+        err.to_string().contains("the backing table is unavailable"),
+        "the store's own reason reaches the caller: {err}"
+    );
+
+    // Recover the store: the retry resumes from the real tail and continues at seq 2, proving the
+    // failed attempt neither forked nor burned a sequence.
+    backing.set_failing(None);
+    let recovered = log
+        .record(P, dispatched(3001, "fs_read", "sha256:aaa", 7))
+        .expect("the retry resumes once the store answers");
+    assert_eq!(
+        recovered.seq, 2,
+        "the failed resume consumed no sequence — the chain continues at seq 2"
+    );
+}
+
 /// `CallChain::default()` MUST equal `CallChain::new()`. A derived `Default` gives `next_seq: 0`,
 /// and a chain that hands out `seq` 0 is invalid at its very first record — every verifier in this
 /// file reports it as a sequence break, and every restore then reports a healthy log as tampered.
