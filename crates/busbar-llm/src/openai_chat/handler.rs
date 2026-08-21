@@ -450,19 +450,7 @@ impl OperationHandler for OpenAiSpeech {
         let IrReq::Speech(r) = ir else {
             return Bytes::new();
         };
-        let mut body = json!({ "model": r.model, "input": r.input, "voice": r.voice });
-        if let Some(f) = &r.response_format {
-            body["response_format"] = json!(f);
-        }
-        // Carry the caller's style + playback controls (gpt-4o-mini-tts `instructions`, `speed`);
-        // dropping them made the synthesized audio ignore the request on a cross-protocol hop.
-        if let Some(instr) = &r.instructions {
-            body["instructions"] = json!(instr);
-        }
-        if let Some(speed) = r.speed {
-            body["speed"] = json!(speed);
-        }
-        Bytes::from(serde_json::to_vec(&body).unwrap_or_default())
+        super::super::leaf_codec::speech_write_request("openai", r)
     }
     fn read_response(&self, wire: &[u8]) -> Result<IrResp, CodecError> {
         // OpenAI speech is raw binary audio (mp3 by default) — wrap the bytes verbatim.
@@ -479,15 +467,40 @@ impl OperationHandler for OpenAiSpeech {
         let IrResp::Speech(r) = ir else {
             return WireBody::json(Bytes::new());
         };
-        let Some(blob) = &r.audio else {
-            return WireBody::json(Bytes::new());
-        };
-        let bytes = match &blob.payload {
-            MediaPayload::Bytes(b) => b.clone(),
-            MediaPayload::B64(s) => decode_ir_b64(s),
-        };
-        WireBody::typed(bytes, &blob.mime_type)
+        super::super::leaf_codec::speech_write_response("openai", r)
     }
+}
+
+/// IR → openai speech (TTS) request wire (the body of [`OpenAiSpeech::write_request`], moved behind
+/// the `(speech, openai)` key — G6 A4b option-a). Byte-identical to the pre-cutover inline write.
+pub(crate) fn write_speech_request(r: &SpeechReq) -> Bytes {
+    let mut body = json!({ "model": r.model, "input": r.input, "voice": r.voice });
+    if let Some(f) = &r.response_format {
+        body["response_format"] = json!(f);
+    }
+    // Carry the caller's style + playback controls (gpt-4o-mini-tts `instructions`, `speed`);
+    // dropping them made the synthesized audio ignore the request on a cross-protocol hop.
+    if let Some(instr) = &r.instructions {
+        body["instructions"] = json!(instr);
+    }
+    if let Some(speed) = r.speed {
+        body["speed"] = json!(speed);
+    }
+    Bytes::from(serde_json::to_vec(&body).unwrap_or_default())
+}
+
+/// IR → openai speech (TTS) response wire (the body of [`OpenAiSpeech::write_response`], moved behind
+/// the `(speech, openai)` key — G6 A4b option-a): raw audio bytes with the blob's own content-type.
+/// Byte-identical to the pre-cutover inline write.
+pub(crate) fn write_speech_response(r: &SpeechResp) -> WireBody {
+    let Some(blob) = &r.audio else {
+        return WireBody::json(Bytes::new());
+    };
+    let bytes = match &blob.payload {
+        MediaPayload::Bytes(b) => b.clone(),
+        MediaPayload::B64(s) => decode_ir_b64(s),
+    };
+    WireBody::typed(bytes, &blob.mime_type)
 }
 
 // -------------------------------------------------- embeddings OperationHandler (real codec, cross-protocol)

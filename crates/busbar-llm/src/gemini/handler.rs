@@ -342,22 +342,7 @@ impl OperationHandler for GeminiSpeech {
         let IrReq::Speech(r) = ir else {
             return Bytes::new();
         };
-        let speech_config = json!({
-            "voiceConfig": { "prebuiltVoiceConfig": { "voiceName": r.voice } }
-        });
-        // OpenAI's `instructions` is FREE-TEXT style guidance ("speak cheerfully"), not a locale.
-        // The old code put it into `speechConfig.languageCode` (a BCP-47 field), producing an
-        // invalid Gemini request. Gemini steers TTS style through the PROMPT itself, so prefix the
-        // text (its documented style-control mechanism) instead of corrupting languageCode.
-        let text = match &r.instructions {
-            Some(instr) if !instr.trim().is_empty() => format!("{}: {}", instr.trim(), r.input),
-            _ => r.input.clone(),
-        };
-        let body = json!({
-            "contents": [{ "role": "user", "parts": [{ "text": text }]}],
-            "generationConfig": { "responseModalities": ["AUDIO"], "speechConfig": speech_config },
-        });
-        Bytes::from(serde_json::to_vec(&body).unwrap_or_default())
+        super::super::leaf_codec::speech_write_request("gemini", r)
     }
     fn read_response(&self, wire: &[u8]) -> Result<IrResp, CodecError> {
         // Real Gemini → JSON with inline base64 audio; mock/raw → binary body. Try JSON, fall back.
@@ -412,24 +397,51 @@ impl OperationHandler for GeminiSpeech {
         let IrResp::Speech(r) = ir else {
             return WireBody::json(Bytes::new());
         };
-        let (data, mime) = match &r.audio {
-            Some(blob) => {
-                let d = match &blob.payload {
-                    MediaPayload::B64(s) => s.clone(),
-                    MediaPayload::Bytes(b) => base64_encode(b),
-                };
-                (d, blob.mime_type.clone())
-            }
-            None => (String::new(), "audio/mpeg".into()),
-        };
-        let body = json!({
-            "candidates": [{
-                "content": { "parts": [{ "inlineData": { "mimeType": mime, "data": data } }], "role": "model" },
-                "finishReason": "STOP",
-            }],
-        });
-        WireBody::json(Bytes::from(serde_json::to_vec(&body).unwrap_or_default()))
+        super::super::leaf_codec::speech_write_response("gemini", r)
     }
+}
+
+/// IR → gemini TTS request wire (the body of [`GeminiSpeech::write_request`], moved behind the
+/// `(speech, gemini)` key — G6 A4b option-a). Byte-identical to the pre-cutover inline write.
+pub(crate) fn write_speech_request(r: &busbar_core::ir::audio::SpeechReq) -> Bytes {
+    let speech_config = json!({
+        "voiceConfig": { "prebuiltVoiceConfig": { "voiceName": r.voice } }
+    });
+    // OpenAI's `instructions` is FREE-TEXT style guidance ("speak cheerfully"), not a locale.
+    // The old code put it into `speechConfig.languageCode` (a BCP-47 field), producing an
+    // invalid Gemini request. Gemini steers TTS style through the PROMPT itself, so prefix the
+    // text (its documented style-control mechanism) instead of corrupting languageCode.
+    let text = match &r.instructions {
+        Some(instr) if !instr.trim().is_empty() => format!("{}: {}", instr.trim(), r.input),
+        _ => r.input.clone(),
+    };
+    let body = json!({
+        "contents": [{ "role": "user", "parts": [{ "text": text }]}],
+        "generationConfig": { "responseModalities": ["AUDIO"], "speechConfig": speech_config },
+    });
+    Bytes::from(serde_json::to_vec(&body).unwrap_or_default())
+}
+
+/// IR → gemini TTS response wire (the body of [`GeminiSpeech::write_response`], moved behind the
+/// `(speech, gemini)` key — G6 A4b option-a). Byte-identical to the pre-cutover inline write.
+pub(crate) fn write_speech_response(r: &SpeechResp) -> WireBody {
+    let (data, mime) = match &r.audio {
+        Some(blob) => {
+            let d = match &blob.payload {
+                MediaPayload::B64(s) => s.clone(),
+                MediaPayload::Bytes(b) => base64_encode(b),
+            };
+            (d, blob.mime_type.clone())
+        }
+        None => (String::new(), "audio/mpeg".into()),
+    };
+    let body = json!({
+        "candidates": [{
+            "content": { "parts": [{ "inlineData": { "mimeType": mime, "data": data } }], "role": "model" },
+            "finishReason": "STOP",
+        }],
+    });
+    WireBody::json(Bytes::from(serde_json::to_vec(&body).unwrap_or_default()))
 }
 
 /// Gemini/Imagen image generation (`models/{id}:predict`). prompt in → `predictions[].bytesBase64Encoded` out.

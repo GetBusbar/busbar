@@ -19,7 +19,7 @@
 //! the write no longer needs the concrete enum. Prep only: names no `IrReq`/`IrResp`, moves no bytes.
 
 use busbar_core::handlers::WireBody;
-use busbar_core::ir::audio::{TranscriptionReq, TranscriptionResp};
+use busbar_core::ir::audio::{SpeechReq, SpeechResp, TranscriptionReq, TranscriptionResp};
 use busbar_core::ir::embeddings::{EmbeddingsReq, EmbeddingsResp};
 use busbar_core::ir::image::{ImageReq, ImageResp};
 use busbar_core::ir::rerank::{RerankReq, RerankResp};
@@ -101,6 +101,24 @@ pub(crate) fn transcription_write_response(proto: &str, r: &TranscriptionResp) -
     match proto {
         "gemini" => super::gemini::handler::write_transcription_response(r),
         "openai" => super::openai_chat::handler::write_transcription_response(r),
+        _ => WireBody::json(Bytes::new()),
+    }
+}
+
+/// Speech (TTS) egress request bytes for `proto`. Unknown protocol => empty (pre-cutover fallback).
+pub(crate) fn speech_write_request(proto: &str, r: &SpeechReq) -> Bytes {
+    match proto {
+        "gemini" => super::gemini::handler::write_speech_request(r),
+        "openai" => super::openai_chat::handler::write_speech_request(r),
+        _ => Bytes::new(),
+    }
+}
+
+/// Speech (TTS) ingress response wire for `proto`. Unknown protocol => empty JSON body.
+pub(crate) fn speech_write_response(proto: &str, r: &SpeechResp) -> WireBody {
+    match proto {
+        "gemini" => super::gemini::handler::write_speech_response(r),
+        "openai" => super::openai_chat::handler::write_speech_response(r),
         _ => WireBody::json(Bytes::new()),
     }
 }
