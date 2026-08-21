@@ -183,8 +183,14 @@ fn scope_kinds_survive_store_round_trip() {
     let mut k = sample_key();
     k.allowed_scopes = Some(vec![
         ScopeRef::pool("fast"),
-        ScopeRef::mcp_server("filesystem"),
-        ScopeRef::mcp_tool("filesystem_read_file"),
+        ScopeRef {
+            kind: "mcp_server".into(),
+            value: "filesystem".into(),
+        },
+        ScopeRef {
+            kind: "mcp_tool".into(),
+            value: "filesystem_read_file".into(),
+        },
     ]);
     let json = serde_json::to_string(&k).expect("serialize");
     let rt: VirtualKey = serde_json::from_str(&json).expect("deserialize");
@@ -236,8 +242,14 @@ fn mcp_scope_wire_fields_are_additive() {
     assert_eq!(
         k.allowed_scopes,
         Some(vec![
-            ScopeRef::mcp_server("filesystem"),
-            ScopeRef::mcp_tool("filesystem_read_file"),
+            ScopeRef {
+                kind: "mcp_server".into(),
+                value: "filesystem".into()
+            },
+            ScopeRef {
+                kind: "mcp_tool".into(),
+                value: "filesystem_read_file".into()
+            },
         ])
     );
     assert!(
