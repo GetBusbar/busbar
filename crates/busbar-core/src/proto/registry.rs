@@ -294,6 +294,16 @@ impl ProtocolDecl {
     pub(crate) fn uses_sigv4_ingress_auth(&self) -> bool {
         matches!(self.ingress_auth, IngressAuth::SigV4)
     }
+
+    /// This protocol's neutral computed-codec facade ([`super::DialectCodec`]) — the 4th seam the
+    /// operation-blind driver reads instead of `protocol_for(name).writer()/.reader()` (G6 A4b). `None`
+    /// for a protocol that declares no codec (MCP/A2A), exactly as `protocol_for` is. Keyed off the
+    /// existing [`Self::codec`] presence, so no new DECL field is required (the mcp/a2a decls are
+    /// untouched).
+    pub fn dialect(&self) -> Option<Box<dyn super::DialectCodec>> {
+        self.codec
+            .map(|_| Box::new(super::DialectRef(self.name)) as Box<dyn super::DialectCodec>)
+    }
 }
 
 /// THE BUILT-INS — one line per protocol, and every line is DATA.

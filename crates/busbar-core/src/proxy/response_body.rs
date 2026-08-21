@@ -581,8 +581,9 @@ where
                                 // the self-contained `usage` sub-object instead (see
                                 // `usage::recover_truncated_usage`'s doc comment for why this is safe and
                                 // why it duplicates rather than reuses each reader's field mapping).
-                                crate::proto::protocol_for(this.ingress_protocol)
-                                    .and_then(|p| p.reader().recover_truncated_usage(&buf))
+                                crate::proto::decl_for(this.ingress_protocol)
+                                    .and_then(|d| d.dialect())
+                                    .and_then(|di| di.recover_truncated_usage(&buf))
                             } else {
                                 this.op.extract_usage(this.ingress_protocol, &buf)
                             }

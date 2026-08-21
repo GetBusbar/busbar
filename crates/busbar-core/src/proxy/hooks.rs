@@ -60,12 +60,10 @@ pub(crate) fn apply_rewrite_to_body(
     let Some(obj) = v.as_object_mut() else {
         return false;
     };
-    let Some(protocol) = crate::proto::protocol_for(ingress_protocol) else {
+    let Some(dialect) = crate::proto::decl_for(ingress_protocol).and_then(|d| d.dialect()) else {
         return false;
     };
-    protocol
-        .writer()
-        .apply_rewrite_to_ingress_body(obj, &rewrite.messages, &rewrite.tools)
+    dialect.apply_rewrite_to_ingress_body(obj, &rewrite.messages, &rewrite.tools)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────

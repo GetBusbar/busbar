@@ -28,8 +28,9 @@ pub(crate) fn maybe_attach_response_request_id(
     ingress_protocol: &str,
     upstream_request_id: Option<&str>,
 ) -> axum::http::response::Builder {
-    match crate::proto::protocol_for(ingress_protocol)
-        .and_then(|p| p.writer().ingress_response_request_id(upstream_request_id))
+    match crate::proto::decl_for(ingress_protocol)
+        .and_then(|d| d.dialect())
+        .and_then(|di| di.ingress_response_request_id(upstream_request_id))
     {
         Some((name, id)) => rb.header(name, id),
         None => rb,
@@ -142,9 +143,9 @@ pub(crate) fn ingress_error(ingress: &str, status: StatusCode, kind: &str, msg: 
     // ([`agnostic_error_envelope`]) and attaches no protocol headers, because it has no protocol to
     // attach them for. Unreachable for the validated ingress protocols (config validation refuses an
     // unknown `protocol:` before a lane exists); what it must be is HONEST and always available.
-    let protocol = crate::proto::protocol_for(ingress);
-    let envelope = match &protocol {
-        Some(p) => p.writer().write_error(status.as_u16(), kind, msg),
+    let dialect = crate::proto::decl_for(ingress).and_then(|d| d.dialect());
+    let envelope = match &dialect {
+        Some(di) => di.write_error(status.as_u16(), kind, msg),
         None => agnostic_error_envelope(kind, msg),
     };
     let body = crate::json::to_string(&envelope).unwrap_or_else(|_| {
@@ -163,9 +164,8 @@ pub(crate) fn ingress_error(ingress: &str, status: StatusCode, kind: &str, msg: 
     // Anthropic `request-id` mirrored from the body) — dispatched via the writer vtable so the main,
     // degraded, auth, and route error paths cannot drift on header shape. An unresolved ingress has
     // no vtable and therefore no headers to attach.
-    if let Some(p) = &protocol {
-        p.writer()
-            .attach_error_response_headers(resp.headers_mut(), kind, &envelope);
+    if let Some(di) = &dialect {
+        di.attach_error_response_headers(resp.headers_mut(), kind, &envelope);
     }
     resp
 }
@@ -521,7 +521,9 @@ pub(crate) fn translate_request_cross_protocol(
         // is exactly `ingress_protocol != egress_name`.
         crate::telemetry::translation(ingress_protocol, egress_name);
         // Cross-protocol: translate the request body through the superset IR.
-        let Some(ingress_proto) = crate::proto::protocol_for(ingress_protocol) else {
+        let Some(ingress_dialect) =
+            crate::proto::decl_for(ingress_protocol).and_then(|d| d.dialect())
+        else {
             return Err(Box::new(ingress_error(
                 ingress_protocol,
                 StatusCode::BAD_REQUEST,
@@ -538,7 +540,7 @@ pub(crate) fn translate_request_cross_protocol(
         // 400 (fail-loud is a deliberate opt-in for a future plane, not a 1.6.0 default). The
         // `ProtocolWriter::requested_candidate_count` detection machinery is retained for that future
         // opt-in; only the outcome here reverts to the silent 1-of-N degrade.
-        let _ = ingress_proto.writer().requested_candidate_count(&body);
+        let _ = ingress_dialect.requested_candidate_count(&body);
         // OPERATION-BLIND translate: the INGRESS operation handler parses its dialect into the
         // neutral IR; the IR applies its own cross-protocol semantics (`prepare_for_egress` — chat's
         // max-tokens default, tool-id decode, and the extra-key leak guard live INSIDE the IR,
@@ -857,7 +859,7 @@ pub(crate) fn mid_stream_error_bytes(
         provider_signal: Some(message.to_string()),
         retry_after: None,
     };
-    let Some(proto) = crate::proto::protocol_for(ingress_protocol) else {
+    let Some(dialect) = crate::proto::decl_for(ingress_protocol).and_then(|d| d.dialect()) else {
         return agnostic_stream_error_frame(message);
     };
     if ingress_eventstream {
@@ -866,7 +868,7 @@ pub(crate) fn mid_stream_error_bytes(
         // (`write_response_exception`) — so proxy engine names no protocol's wire shape;
         // `encode_exception_frame` is the generic binary framer. A protocol that reports
         // `ingress_is_eventstream` but declines an exception mapping (a contradiction) falls through.
-        if let Some((exc_name, msg)) = proto.writer().write_response_exception(&err) {
+        if let Some((exc_name, msg)) = dialect.write_response_exception(&err) {
             return crate::eventstream::encode_exception_frame(&exc_name, &msg);
         }
     }
@@ -891,7 +893,7 @@ pub(crate) fn mid_stream_error_bytes(
     // Every SSE-framed writer (openai/anthropic/gemini/cohere/responses) returns `Some`; the `None`
     // fallback only guards a hypothetical future writer that declines to frame errors in-band, in
     // which case we still emit a decodable bare `data:` error.
-    match proto.writer().write_error_frame(&err) {
+    match dialect.write_error_frame(&err) {
         Some((event_type, data)) => {
             let data = crate::json::to_string(&data).unwrap_or_else(|_| {
                 serde_json::json!({ "error": { "message": message, "type": KIND_API_ERROR } })
