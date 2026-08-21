@@ -59,6 +59,9 @@ pub(super) fn export_def_view(name: &str, cfg: &crate::config::ExportDefCfg) -> 
 /// rewrite-through-busbar posture exists to keep on the server side. What IS projected is what an
 /// operator auditing trust needs and cannot get anywhere else: which root the entry is pinned to,
 /// whether a fingerprint has been approved yet, and how often it is re-checked.
+// Names `crate::a2a::config` types (`AgentDefCfg`, `DEFAULT_REVERIFY_TTL`) and is called only from
+// the gated `Agents` admin arms, so it is compiled out with the A2A plane (`plane-a2a` off).
+#[cfg(feature = "plane-a2a")]
 pub(super) fn agent_def_view(name: &str, cfg: &crate::a2a::config::AgentDefCfg) -> NamedDefView {
     NamedDefView {
         name: name.to_string(),
@@ -81,6 +84,38 @@ pub(super) fn agent_def_view(name: &str, cfg: &crate::a2a::config::AgentDefCfg) 
         ),
         unparseable: None,
     }
+}
+
+/// Every `agents:` DEFINITION projected onto the shared view, or an empty list when the A2A plane is
+/// compiled out (`plane-a2a` off). The cfg split lives HERE so the admin `list` arm names no
+/// `crate::a2a` type — the neutral analogue of how the MCP `tools:` list arm is gated in `service`.
+#[cfg(feature = "plane-a2a")]
+pub(super) fn agent_def_views(app: &crate::state::App) -> Vec<NamedDefView> {
+    app.agent_defs
+        .agents
+        .iter()
+        .map(|(name, cfg)| agent_def_view(name, cfg))
+        .collect()
+}
+#[cfg(not(feature = "plane-a2a"))]
+pub(super) fn agent_def_views(app: &crate::state::App) -> Vec<NamedDefView> {
+    let _ = app;
+    Vec::new()
+}
+
+/// The `agents:` DEFINITION for `name` projected onto the shared view, or `None` — always `None` when
+/// the A2A plane is compiled out. Companion to [`agent_def_views`], carrying the same cfg split.
+#[cfg(feature = "plane-a2a")]
+pub(super) fn agent_def_view_opt(app: &crate::state::App, name: &str) -> Option<NamedDefView> {
+    app.agent_defs
+        .agents
+        .get(name)
+        .map(|cfg| agent_def_view(name, cfg))
+}
+#[cfg(not(feature = "plane-a2a"))]
+pub(super) fn agent_def_view_opt(app: &crate::state::App, name: &str) -> Option<NamedDefView> {
+    let _ = (app, name);
+    None
 }
 
 /// Project one overlay definition this binary CANNOT parse onto the same named-map view, explicitly

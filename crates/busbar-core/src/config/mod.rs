@@ -496,6 +496,12 @@ pub struct RootCfg {
     /// `identity_providers` and `export_defs` are: the admin API serves DEFINITIONS, and the A2A
     /// control plane derives its runtime `AgentRegistration` from this plus what the store has
     /// accumulated. Nothing here is accumulation.
+    // Neutral capture when the A2A plane is compiled out: the resolved registry type does not exist
+    // then, and a non-empty `agents:` section is refused at `resolve` (the raw capture is carried
+    // through unchanged, as `RootCfg` for `mcp:`/`tools:` is when `plane-mcp` is off).
+    #[cfg(not(feature = "plane-a2a"))]
+    pub(crate) agent_defs: crate::plane::config::RawPlaneSection,
+    #[cfg(feature = "plane-a2a")]
     pub(crate) agent_defs: crate::a2a::config::AgentsCfg,
     /// The `tool_pools:` MCP failover pools, carried through `resolve` VERBATIM — operator intent,
     /// like `tool_defs` beside it, projected onto `state::App::tool_pools` at build. Empty ⇒ no
@@ -2966,6 +2972,13 @@ pub struct DeployCfg {
     /// [`crate::a2a::config::AgentDefCfg`]. THE A2A plane. Sibling in shape to `pools:` and
     /// `tools:`, carrying the same two reserved section words, and no entry on it may reference an
     /// entry on another plane. Absent ⇒ no agent is registered and nothing can be delegated to.
+    // Captured RAW when the A2A plane is compiled out (`plane-a2a` off); the typed field below is
+    // what `scripts/config-schema.py` fingerprints (it is declared LAST, and the extractor records
+    // the last same-named field), so this capture leaves the `agents:` schema unchanged.
+    #[cfg(not(feature = "plane-a2a"))]
+    #[serde(default)]
+    pub(crate) agents: crate::plane::config::RawPlaneSection,
+    #[cfg(feature = "plane-a2a")]
     #[serde(default)]
     pub(crate) agents: crate::a2a::config::AgentsCfg,
     // 1.6.0 UNIFIED POOLS: the separate `tool_pools:` and `agent_pools:` sections are GONE. There is
@@ -4554,6 +4567,9 @@ pub fn resolve(
             if deploy.tools.servers.contains_key(name) {
                 return Some(crate::plane::Plane::Mcp);
             }
+            // The A2A `agents:` noun exists only when the plane is compiled in; with `plane-a2a` off
+            // no name resolves to an agent (an `agents:` section is refused earlier).
+            #[cfg(feature = "plane-a2a")]
             if deploy.agents.agents.contains_key(name) {
                 return Some(crate::plane::Plane::A2a);
             }
@@ -4651,6 +4667,11 @@ pub fn resolve(
     // per-entry parse to hang off, so it is checked here, where every other cross-reference is.
     // `` `agents.hooks` `` is this plane's own WORDING for the site; the rule and the sentence are
     // `plane::config`'s, shared with the `tools:` plane below.
+    //
+    // The whole block reads the typed `agents:` registry; it exists only when the A2A plane is
+    // compiled in. With `plane-a2a` off there is no `agents:` content to validate (an `agents:`
+    // section is refused earlier as naming an absent plane), so it is compiled out entirely.
+    #[cfg(feature = "plane-a2a")]
     if let Err(e) = crate::plane::config::validate_section_hooks(
         "`agents.hooks`",
         &deploy.agents.all_agent_hooks,
@@ -4661,6 +4682,7 @@ pub fn resolve(
     // A hook an `agents:` entry names must EXIST in the one top-level `hooks:` map. A dangling
     // reference is an operator believing a control is attached that is not, so it is an error and
     // not a warning, exactly as it is for `auth.chain`.
+    #[cfg(feature = "plane-a2a")]
     for (agent, def) in &deploy.agents.agents {
         for hook in deploy.agents.all_agent_hooks.iter().chain(def.hooks.iter()) {
             if !deploy.hooks.contains_key(hook) {
@@ -4692,6 +4714,20 @@ pub fn resolve(
             false
         }
     };
+    // Whether `m` names an A2A `agents:` registration. Always false when the A2A plane is compiled
+    // out: there is no `agents:` registry then, and no pool is inferred onto the A2A plane, so
+    // `agent_pools_derived` is empty and the second loop below never iterates.
+    let is_agent_member = |m: &str| -> bool {
+        #[cfg(feature = "plane-a2a")]
+        {
+            deploy.agents.agents.contains_key(m)
+        }
+        #[cfg(not(feature = "plane-a2a"))]
+        {
+            let _ = m;
+            false
+        }
+    };
     for (pool, def) in &tool_pools_derived {
         check_failover_pool(
             &mut errors,
@@ -4699,7 +4735,7 @@ pub fn resolve(
             pool,
             def,
             is_tool_member,
-            |m| deploy.agents.agents.contains_key(m),
+            is_agent_member,
             "tools",
             "agents",
         );
@@ -4710,7 +4746,7 @@ pub fn resolve(
             "pools",
             pool,
             def,
-            |m| deploy.agents.agents.contains_key(m),
+            is_agent_member,
             is_tool_member,
             "agents",
             "tools",
@@ -4808,6 +4844,18 @@ pub fn resolve(
             "tools: is configured, but this build was compiled without the MCP plane (feature \
              `plane-mcp` is off), so busbar cannot reach any MCP server. Rebuild with the MCP plane \
              enabled, or remove the `tools:` block."
+                .to_string(),
+        );
+    }
+    // With the A2A plane compiled out, an `agents:` section names agents this build cannot register
+    // or delegate to: refuse it (the config deletion-gate leg), naming the compiled-out plane,
+    // exactly as `tools:`/`mcp:` are refused with the MCP plane off.
+    #[cfg(not(feature = "plane-a2a"))]
+    if deploy.agents.is_present() {
+        errors.push(
+            "agents: is configured, but this build was compiled without the A2A plane (feature \
+             `plane-a2a` is off), so busbar cannot register or delegate to any agent. Rebuild with \
+             the A2A plane enabled, or remove the `agents:` block."
                 .to_string(),
         );
     }

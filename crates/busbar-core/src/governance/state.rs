@@ -379,6 +379,10 @@ impl GovState {
     /// second place the signing key lives that a rotation has to remember to invalidate, and
     /// `set_signing_key` swapping the material underneath a stale card signer is exactly the
     /// mint-under-one-key-verify-under-another failure the material is held together to prevent.
+    // Returns a `crate::a2a::sign::CardSigner`, a type that only exists when the A2A plane is compiled
+    // in. Its sole caller outside `crate::a2a` is the A2A `start`-hook plumbing in `boot.rs`, gated
+    // the same way — so it is compiled out with the plane (`plane-a2a` off).
+    #[cfg(feature = "plane-a2a")]
     pub(crate) fn a2a_card_signer(&self) -> Option<crate::a2a::sign::CardSigner> {
         self.signing_material()
             .map(|m| crate::a2a::sign::CardSigner::derived_from(&m.signer))

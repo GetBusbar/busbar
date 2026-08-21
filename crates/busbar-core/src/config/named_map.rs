@@ -21,6 +21,7 @@
 //! own richer surface (health/schema/status probes, grant immutability, the configure-ack settings
 //! push), and `store:` is singular — there is no map to name into.
 
+#[cfg(feature = "plane-a2a")]
 use crate::a2a::config::AgentDefCfg;
 
 use super::{DeployCfg, ExportDefCfg, IdentityProviderCfg};
@@ -153,7 +154,19 @@ impl NamedMapSection {
                     false
                 }
             }
-            NamedMapSection::Agents => deploy.agents.agents.contains_key(name),
+            NamedMapSection::Agents => {
+                #[cfg(feature = "plane-a2a")]
+                {
+                    deploy.agents.agents.contains_key(name)
+                }
+                // With the A2A plane compiled out there is no `agents:` registry (an `agents:`
+                // section is refused at resolve), so no name is base-config-defined on it.
+                #[cfg(not(feature = "plane-a2a"))]
+                {
+                    let _ = (deploy, name);
+                    false
+                }
+            }
         }
     }
 
@@ -193,11 +206,21 @@ impl NamedMapSection {
                     None
                 }
             }
-            NamedMapSection::Agents => deploy
-                .agents
-                .agents
-                .get(name)
-                .and_then(|cfg| serde_json::to_value(cfg).ok()),
+            NamedMapSection::Agents => {
+                #[cfg(feature = "plane-a2a")]
+                {
+                    deploy
+                        .agents
+                        .agents
+                        .get(name)
+                        .and_then(|cfg| serde_json::to_value(cfg).ok())
+                }
+                #[cfg(not(feature = "plane-a2a"))]
+                {
+                    let _ = (deploy, name);
+                    None
+                }
+            }
         }
     }
 
@@ -276,6 +299,7 @@ impl NamedMapSection {
                      `plane-mcp` is off), so it cannot register an MCP server."
                 ))
             }
+            #[cfg(feature = "plane-a2a")]
             NamedMapSection::Agents => serde_json::from_value(def.clone())
                 .map_err(|e| format!("invalid `agents.{name}` definition: {e}"))
                 .and_then(|cfg: AgentDefCfg| {
@@ -287,6 +311,16 @@ impl NamedMapSection {
                     crate::a2a::config::validate_agent(name, &cfg)?;
                     Ok(NamedDef::Agent(cfg))
                 }),
+            // With the A2A plane compiled out, an `agents:` definition names a plane this build does
+            // not carry — refuse it, exactly as `resolve` refuses an `agents:` section.
+            #[cfg(not(feature = "plane-a2a"))]
+            NamedMapSection::Agents => {
+                let _ = def;
+                Err(format!(
+                    "`agents.{name}`: this build was compiled without the A2A plane (feature \
+                     `plane-a2a` is off), so it cannot register an agent."
+                ))
+            }
         }
     }
 
@@ -367,6 +401,8 @@ pub(crate) enum NamedDef {
     // a `tools:` definition then).
     #[cfg(feature = "plane-mcp")]
     Tool(Box<crate::mcp::config::McpServerDefCfg>),
+    // Absent when the A2A plane is compiled out (nothing parses an `agents:` definition then).
+    #[cfg(feature = "plane-a2a")]
     Agent(AgentDefCfg),
 }
 
@@ -385,6 +421,7 @@ impl NamedDef {
             NamedDef::Tool(cfg) => {
                 deploy.tools.servers.insert(name.to_string(), *cfg);
             }
+            #[cfg(feature = "plane-a2a")]
             NamedDef::Agent(cfg) => {
                 deploy.agents.agents.insert(name.to_string(), cfg);
             }

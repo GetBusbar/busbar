@@ -4670,19 +4670,23 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         "200",
         crate::mcp::admin_view::McpHealthView
     );
-    // A2A trust verbs.
+    // A2A trust verbs — present only when the A2A plane is compiled in (`plane-a2a`). With the plane
+    // off these paths are not served and carry no response/request schema.
+    #[cfg(feature = "plane-a2a")]
     typed!(
         "/agents/{name}/connect",
         "post",
         "200",
         crate::a2a::verbs::A2aTrustView
     );
+    #[cfg(feature = "plane-a2a")]
     typed!(
         "/agents/{name}/approve",
         "post",
         "200",
         crate::a2a::verbs::A2aTrustView
     );
+    #[cfg(feature = "plane-a2a")]
     body!(
         "/agents/{name}/approve",
         "post",

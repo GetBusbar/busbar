@@ -410,6 +410,12 @@ pub struct App {
     /// `GET /api/v1/admin/agents[/{name}]`. Operator INTENT only: everything that accumulates about
     /// a registered agent (observed cards, the drift queue, anomaly counters, task rows) is store
     /// state and is deliberately not reachable from a config snapshot.
+    // Neutral raw capture when the A2A plane is compiled out (`plane-a2a` off): the resolved registry
+    // type is `crate::a2a`'s and does not exist then. The admin CRUD serves an empty `agents:` view,
+    // and an `agents:` section was already refused at resolve — so nothing lowers into this.
+    #[cfg(not(feature = "plane-a2a"))]
+    pub(crate) agent_defs: crate::plane::config::RawPlaneSection,
+    #[cfg(feature = "plane-a2a")]
     pub(crate) agent_defs: crate::a2a::config::AgentsCfg,
     /// THE RUNNING A2A PLANE — the registry `agent_defs` lowers to, plus everything that has
     /// accumulated against it. `None` when no agent is configured, and that absence is the gate:
@@ -420,6 +426,10 @@ pub struct App {
     /// `agent_defs` is operator INTENT and is what the admin API serves; this is ACCUMULATION and is
     /// what the job mutates. Rebuilt on every apply, so a removed agent's observations are dropped
     /// with it rather than outliving the registration.
+    // Present only when the A2A plane is compiled in: the running plane and its accumulated state are
+    // `crate::a2a` types. With `plane-a2a` off there is no plane to run, no route mounted, and this
+    // field is absent (nothing outside `crate::a2a`/`appbuild` reads it).
+    #[cfg(feature = "plane-a2a")]
     pub(crate) a2a: Option<Arc<crate::a2a::plane::A2aPlane>>,
     /// THE A2A VERIFY-ON-CALL GATE — the per-agent single-flight coalescer that re-verifies a fronted
     /// agent's signed card on the DELEGATION path when its recorded observation is older than
@@ -438,6 +448,10 @@ pub struct App {
     /// persists: the client certificates are resolved from secrets at boot (a resolution failure is a
     /// boot refusal), and an agent added by a later apply is verified on the boot-time transport —
     /// which is the same reach the removed sweep had, since it too held its transports from boot.
+    // Present only when the A2A plane is compiled in: `LiveCardFetch` is a `crate::a2a` type, and only
+    // the A2A verify-on-call path (and the start hook that publishes it) reads it. Absent with
+    // `plane-a2a` off.
+    #[cfg(feature = "plane-a2a")]
     pub(crate) a2a_cards: Arc<std::sync::OnceLock<Arc<crate::a2a::transport::LiveCardFetch>>>,
     /// Per-principal ADMIN MUTATION rate limiter. Arc-shared across apply snapshots so the
     /// windows survive every swap.

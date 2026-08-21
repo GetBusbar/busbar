@@ -33,6 +33,7 @@ extern crate self as busbar_core;
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
+#[cfg(feature = "plane-a2a")]
 pub mod a2a;
 pub mod admin;
 /// THE APPEND-ONLY HASH CHAIN, in core. One append, one digest, one verifier, for every stream of

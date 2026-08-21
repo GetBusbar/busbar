@@ -9,6 +9,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+#[allow(unused_imports)]
+#[cfg(feature = "plane-a2a")]
+use crate::a2a;
 use crate::auth::AuthMiddleware;
 use crate::diagnostics::{
     diag_error, diag_warn, DURABLE_KEYS_INERT, GOVERNANCE_STORE_EPHEMERAL,
@@ -28,7 +31,7 @@ use crate::state::{App, Lane, WeightedLane};
 use crate::store::{HealthState, LaneData};
 #[allow(unused_imports)]
 use crate::{
-    a2a, admin, audit, auth, auth_cache, billing, breaker, catalogue, config, config_validate,
+    admin, audit, auth, auth_cache, billing, breaker, catalogue, config, config_validate,
     core_routes, cost, durable, egress_auth, endpoints, eventstream, export, failover, governance,
     handlers, health, hooks, ingress, ir, json, limits, lossless, media, metrics, net_guard,
     oauth_as, observability, operation, plane, plugin_routes, profile, proto, proxy, sigv4, state,
@@ -1226,6 +1229,10 @@ pub fn build_app_from_config(
         String,
         Vec<(u16, crate::hooks::ResolvedPolicy)>,
     > = std::collections::HashMap::new();
+    // The A2A per-agent gates read the typed `agents:` registry, which exists only when the plane is
+    // compiled in. With `plane-a2a` off there is no registry, so the map is empty (the neutral twin
+    // of `mcp_server_gates` above).
+    #[cfg(feature = "plane-a2a")]
     let a2a_agent_gates = hooks::resolve_container_gates(
         cfg.agent_defs
             .agents
@@ -1236,6 +1243,11 @@ pub fn build_app_from_config(
         &hook_env,
         app_config_version,
     );
+    #[cfg(not(feature = "plane-a2a"))]
+    let a2a_agent_gates: std::collections::HashMap<
+        String,
+        Vec<(u16, crate::hooks::ResolvedPolicy)>,
+    > = std::collections::HashMap::new();
 
     // EVERY fallible step of THIS build has now succeeded, so `rotate_gov_credentials` (if any) is
     // ready to run. It is NOT invoked here, though: `GovState` is a process-lifetime `Arc` shared
@@ -1478,17 +1490,22 @@ pub fn build_app_from_config(
         //
         // Downcast off the `plane_slots` map rather than a second `A2aPlane::from_config` call —
         // this and `App::plane_slots["a2a"]` are the SAME `Arc`, not two lowerings of one config.
+        // Both this typed handle and `a2a_cards` below name `crate::a2a` types that only exist when
+        // the plane is compiled in; with `plane-a2a` off the fields are absent (gated on `App`).
+        #[cfg(feature = "plane-a2a")]
         a2a: plane_slots
             .get(crate::a2a::PLANE_DECL.key)
             .and_then(|obj| obj.clone().downcast::<crate::a2a::plane::A2aPlane>().ok()),
         // CARRIED ACROSS THE APPLY, like the MCP verify gate: the A2A verify-on-call coalescing epochs
-        // are accumulated coordination, not intent.
+        // are accumulated coordination, not intent. (`VerifyGate` is a `trust` type, present in every
+        // build, so this field survives even with the A2A plane compiled out.)
         a2a_verify: prior.map_or_else(
             || Arc::new(crate::trust::verify::VerifyGate::new()),
             |p| p.a2a_verify.clone(),
         ),
         // CARRIED ACROSS THE APPLY by the SAME `Arc<OnceLock>`, so the boot-resolved per-agent card
         // transports (client identities) published by the A2A start hook survive every config apply.
+        #[cfg(feature = "plane-a2a")]
         a2a_cards: prior.map_or_else(
             || Arc::new(std::sync::OnceLock::new()),
             |p| p.a2a_cards.clone(),

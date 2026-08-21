@@ -73,7 +73,13 @@ pub(crate) struct BuildCtx<'a> {
     /// in the plane's `build` is what removes the one concrete-type name this struct used to carry
     /// into the eventual MCP extraction — the neutral analogue of how the LLM dialects left core.
     pub(crate) mcp_slot: Option<std::sync::Arc<dyn std::any::Any + Send + Sync>>,
+    // The A2A registry the A2A plane's `build` lowers. Its type is `crate::a2a`'s and does not exist
+    // when the plane is compiled out (`plane-a2a` off); in that build the field carries the neutral
+    // raw capture instead — no A2A plane reads it, and no `agents:` section survived resolve.
+    #[cfg(feature = "plane-a2a")]
     pub(crate) agent_defs: &'a crate::a2a::config::AgentsCfg,
+    #[cfg(not(feature = "plane-a2a"))]
+    pub(crate) agent_defs: &'a crate::plane::config::RawPlaneSection,
     pub(crate) public_url: Option<&'a str>,
 }
 
@@ -329,6 +335,7 @@ static BUILTIN_PLANE_DECLS: &[&PlaneDecl] = &[
     &crate::proto::PLANE_DECL,
     #[cfg(feature = "plane-mcp")]
     &crate::mcp::PLANE_DECL,
+    #[cfg(feature = "plane-a2a")]
     &crate::a2a::PLANE_DECL,
 ];
 
