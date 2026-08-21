@@ -5104,10 +5104,14 @@ fn test_file_data_reads_into_url_source_and_round_trips() {
     );
 }
 
-/// Regression guard: a fileData WITHOUT a mimeType (bare remote URI) still falls back to the
-/// image_url sentinel and re-emits as fileData{fileUri} (no spurious mimeType).
+/// Regression guard: a fileData WITHOUT a mimeType (bare remote URI) reads back as an image_url
+/// sentinel and re-emits as `fileData{fileUri, mimeType}`. Corrected to spec: the arm now
+/// SUPPLIES a `mimeType` — Gemini's `fileData` REQUIRES one to decode the referenced file (the
+/// writer's own invariant, and the Media-URL arm already supplied one), so a mimeless `fileData` is
+/// a part the backend rejects, not the faithful shape. The mime is derived from the URL extension
+/// (`.jpg` → `image/jpeg`); it is a WRITE-side default, not a claim about the referenced bytes.
 #[test]
-fn test_file_data_without_mime_type_uses_sentinel() {
+fn test_file_data_url_reemits_with_derived_mime_type() {
     let body = serde_json::json!({
         "contents": [{"role": "user", "parts": [{"fileData": {"fileUri": "https://x/i.jpg"}}]}]
     });
@@ -5129,10 +5133,10 @@ fn test_file_data_without_mime_type_uses_sentinel() {
         wire.pointer("/contents/0/parts/0/fileData/fileUri"),
         Some(&serde_json::json!("https://x/i.jpg"))
     );
-    assert!(
-        wire.pointer("/contents/0/parts/0/fileData/mimeType")
-            .is_none(),
-        "sentinel image must not gain a bogus mimeType: {wire}"
+    assert_eq!(
+        wire.pointer("/contents/0/parts/0/fileData/mimeType"),
+        Some(&serde_json::json!("image/jpeg")),
+        "fileData must carry a mimeType derived from the URL extension: {wire}"
     );
 }
 

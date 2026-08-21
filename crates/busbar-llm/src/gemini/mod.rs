@@ -1769,3 +1769,7 @@ mod tests;
 #[cfg(test)]
 #[path = "tests/logprobs_carry_tests.rs"]
 mod logprobs_carry_tests;
+
+#[cfg(test)]
+#[path = "tests/image_url_mime_regression_tests.rs"]
+mod image_url_mime_regression_tests;
