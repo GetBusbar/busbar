@@ -111,6 +111,36 @@ fn an_id_that_was_never_sent_is_null_rather_than_absent() {
 }
 
 #[test]
+fn unsupported_operation_and_version_not_supported_are_failed_precondition() {
+    // Regression: A2A section 5.4 (transcribed in the harness's `a2aht/spec.py::ERROR_MAP`) binds
+    // BOTH `-32004 UnsupportedOperationError` and `-32009 VersionNotSupportedError` to
+    // FAILED_PRECONDITION / HTTP 400 — the request is well formed and the served endpoint is what
+    // cannot satisfy it. They used to map to UNIMPLEMENTED / gRPC Unimplemented, which is the
+    // binding for an unknown METHOD, not a well-formed request the endpoint declines. The HTTP
+    // status was already 400, so the disagreement was between the canonical status and the wire.
+    for (code, err) in [
+        (-32004, A2aError::UnsupportedOperation),
+        (-32009, A2aError::VersionNotSupported),
+    ] {
+        assert_eq!(A2aError::from_code(code), Some(err), "from_code({code})");
+        assert_eq!(err.code(), code as i32, "{err:?} code round-trips");
+        assert_eq!(err.http_status(), 400, "{err:?} is HTTP 400");
+        assert_eq!(err.status(), "FAILED_PRECONDITION", "{err:?} status");
+        assert_eq!(
+            err.grpc_status(),
+            tonic::Code::FailedPrecondition,
+            "{err:?} gRPC status"
+        );
+    }
+    // MethodNotFound is the one that stays UNIMPLEMENTED — it is a genuinely unknown method.
+    assert_eq!(A2aError::MethodNotFound.status(), "UNIMPLEMENTED");
+    assert_eq!(
+        A2aError::MethodNotFound.grpc_status(),
+        tonic::Code::Unimplemented
+    );
+}
+
+#[test]
 fn push_notification_not_supported_and_extension_support_required_round_trip() {
     // Regression: A2A section 5.4 defines `-32003 PushNotificationNotSupportedError` and
     // `-32008 ExtensionSupportRequiredError`, both bound to FAILED_PRECONDITION / HTTP 400 (see the
