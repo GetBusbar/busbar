@@ -324,6 +324,58 @@ fn purge_plane_records_before_call_drops_all_older() {
     assert_eq!(remaining[0].ts, 200);
 }
 
+/// TWO HANDLES on one `durable_path` — the fleet this fixture exists to model — hammering the same
+/// table concurrently must not LOSE an update. Each thread appends a uniquely-keyed MCP call row
+/// through its handle; every row's `(principal, seq)` is distinct, so a correct store ends with ALL
+/// of them. Before the advisory `flock` around the read-modify-write, the two handles' RMW cycles
+/// interleaved (both `load()` the same state, both write, the second clobbering the first) and rows
+/// went missing — this asserts none do. Deterministically red without the lock under the contention
+/// below; green with it.
+#[test]
+fn two_handles_do_not_lose_updates_under_contention() {
+    use std::sync::Arc;
+
+    let mut path = std::env::temp_dir();
+    path.push(format!(
+        "busbar-store-example-plugin-flock-{}-{}.json",
+        std::process::id(),
+        std::sync::atomic::AtomicU64::new(0).fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    let _ = std::fs::remove_file(&path);
+
+    // TWO independent handles on the SAME file, each with its own per-handle gate — a fleet.
+    let h1 = Arc::new(FileStore::open(path.clone()).expect("open handle 1"));
+    let h2 = Arc::new(FileStore::open(path.clone()).expect("open handle 2"));
+
+    const PER_THREAD: u64 = 40;
+    let mut threads = Vec::new();
+    for (handle, base) in [(h1.clone(), 0u64), (h2.clone(), PER_THREAD)] {
+        threads.push(std::thread::spawn(move || {
+            for i in 0..PER_THREAD {
+                handle.append_mcp_call(&call("p1", base + i, 10)).unwrap();
+            }
+        }));
+    }
+    for t in threads {
+        t.join().unwrap();
+    }
+
+    // Every one of the 2*PER_THREAD distinct (principal, seq) rows survived — no lost update.
+    let rows = h1.list_mcp_calls("p1").unwrap();
+    assert_eq!(
+        rows.len() as u64,
+        2 * PER_THREAD,
+        "cross-handle RMW lost an update: expected {} rows, found {}",
+        2 * PER_THREAD,
+        rows.len()
+    );
+    let seqs: Vec<u64> = rows.iter().map(|r| r.seq).collect();
+    assert_eq!(seqs, (0..2 * PER_THREAD).collect::<Vec<_>>());
+
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(super::lock_path_for(&path));
+}
+
 #[test]
 fn unknown_kind_stays_inert() {
     let s = store();

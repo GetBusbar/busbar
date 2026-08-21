@@ -134,19 +134,27 @@ impl FileStore {
     /// persist is an ERROR the caller sees, never a silent `Ok(())`, which is the exact shape of the
     /// defect this fixture proves.
     ///
-    /// The persist is ATOMIC, through the one blessed publisher (`busbar_api::durable::write`:
-    /// sibling temp, fsync, rename, temp cleaned on every error path). A plain `fs::write`
-    /// truncates before it writes, so a reader on ANOTHER handle (the fleet case this fixture
-    /// exists to model — `self.gate` is per-handle, not per-file) can observe an empty or
-    /// half-written file: observed in practice as `list_mcp_calls` returning zero rows to a
-    /// freshly reopened handle while a still-live handle was mid-record on another thread. The
-    /// rename publish means a reader sees either the old complete state or the new complete
-    /// state, never a tear.
+    /// The RMW is serialised CROSS-HANDLE by an advisory whole-file lock ([`FileLock`], `flock`), not
+    /// just by the per-handle `self.gate` Mutex. `gate` alone orders one handle's own calls; two
+    /// handles on the same `durable_path` — the fleet this fixture exists to model — each hold their
+    /// OWN `gate`, so without the file lock they would both `load()` the same state, both apply their
+    /// mutation, and the second `write` would clobber the first: a classic lost update (a dropped MCP
+    /// call row, a double-redeemed approval nonce). `flock(LOCK_EX)` on a persistent sibling lock file
+    /// makes the load-apply-write one critical section across every handle and every process, so the
+    /// read-modify-write really is atomic the way a real backend's single transaction is.
+    ///
+    /// The persist itself is ATOMIC, through the one blessed publisher (`busbar_api::durable::write`:
+    /// sibling temp, fsync, rename, temp cleaned on every error path). The rename publish means even a
+    /// reader that does NOT hold the lock (`read` below) sees either the old complete state or the new
+    /// complete state, never a tear.
     fn mutate<T>(&self, f: impl FnOnce(&mut Durable) -> T) -> StoreResult<T> {
         let _guard = self
             .gate
             .lock()
             .map_err(|_| StoreError("poisoned".into()))?;
+        // Cross-handle / cross-process critical section: held across load → apply → publish, released
+        // on drop AFTER the durable write returns.
+        let _flock = FileLock::acquire(&self.path)?;
         let mut state = self.load()?;
         let out = f(&mut state);
         let bytes = serde_json::to_vec(&state).map_err(|e| StoreError(e.to_string()))?;
@@ -161,6 +169,87 @@ impl FileStore {
             .lock()
             .map_err(|_| StoreError("poisoned".into()))?;
         Ok(f(&self.load()?))
+    }
+}
+
+/// The sibling advisory-lock file for a `durable_path`. A DEDICATED file (`.<name>.lock`), never the
+/// data file: the data file is republished by an atomic rename on every write (`durable::write`), so
+/// its inode changes and a lock taken on it would not span the rename. The lock file is created once
+/// and never renamed or removed, so a lock on it is stable across the whole RMW. It shares the
+/// data file's holding directory but has a name that cannot collide with `durable::write`'s temps
+/// (`.<name>.<pid>-<seq>.tmp`).
+fn lock_path_for(path: &std::path::Path) -> PathBuf {
+    let name = path
+        .file_name()
+        .map(|n| n.to_owned())
+        .unwrap_or_else(|| std::ffi::OsString::from("store"));
+    let mut lock_name = std::ffi::OsString::from(".");
+    lock_name.push(name);
+    lock_name.push(".lock");
+    match path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        Some(dir) => dir.join(lock_name),
+        None => PathBuf::from(lock_name),
+    }
+}
+
+/// An RAII advisory whole-file lock over a `durable_path`, held for one read-modify-write and
+/// released on drop. This is what serialises the RMW ACROSS HANDLES and processes — see
+/// [`FileStore::mutate`]. On unix it is a real `flock(LOCK_EX)`; on non-unix it is a no-op holder
+/// (the fixture's fleet/durability tests run on unix CI, and this keeps the crate compiling
+/// everywhere — a non-unix build simply falls back to the pre-existing per-handle `gate` ordering).
+struct FileLock {
+    #[cfg(unix)]
+    _file: std::fs::File,
+}
+
+impl FileLock {
+    #[cfg(unix)]
+    fn acquire(path: &std::path::Path) -> StoreResult<Self> {
+        use std::os::unix::io::AsRawFd as _;
+        let lock_path = lock_path_for(path);
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&lock_path)
+            .map_err(|e| {
+                StoreError(format!(
+                    "lock file '{}' open: {e}",
+                    lock_path.display()
+                ))
+            })?;
+        // Blocking exclusive advisory lock. `flock` is associated with the open file DESCRIPTION, so
+        // two handles in one process (each with their own `open`) block each other just as two
+        // processes do — exactly the fleet contention this closes. EINTR is retried.
+        loop {
+            // SAFETY: `file` owns the fd for the duration of this call.
+            let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
+            if rc == 0 {
+                break;
+            }
+            let err = std::io::Error::last_os_error();
+            if err.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(StoreError(format!("flock LOCK_EX: {err}")));
+        }
+        Ok(Self { _file: file })
+    }
+
+    #[cfg(not(unix))]
+    fn acquire(_path: &std::path::Path) -> StoreResult<Self> {
+        Ok(Self {})
+    }
+}
+
+#[cfg(unix)]
+impl Drop for FileLock {
+    fn drop(&mut self) {
+        use std::os::unix::io::AsRawFd as _;
+        // Explicit unlock; closing the fd on drop would release it anyway, this just makes the
+        // release a named part of the critical-section boundary.
+        // SAFETY: `_file` still owns the fd here.
+        let _ = unsafe { libc::flock(self._file.as_raw_fd(), libc::LOCK_UN) };
     }
 }
 

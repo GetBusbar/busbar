@@ -23,3 +23,9 @@ busbar-plugin-sdk = { path = "../plugin-sdk" }
 busbar-store-memory = { path = "../store-memory" }
 serde = { workspace = true }
 serde_json = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+# Advisory whole-file lock (`flock`) around FileStore's read-modify-write, so two handles on one
+# durable_path — the fleet this fixture exists to model — serialise their RMW instead of racing and
+# losing an update. Unix-only; see FileLock in lib.rs.
+libc = { workspace = true }
