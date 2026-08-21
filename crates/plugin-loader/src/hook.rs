@@ -23,8 +23,8 @@
 
 use crate::{stage, wire_up_raw, RawPlugin};
 use busbar_api::{
-    Candidate, HookStatus, PolicyError, PolicyResult, RoutingContext, RoutingDecision,
-    RoutingPolicy, RoutingRequest, TransformOutcome,
+    Candidate, HookStatus, PolicyError, PolicyResult, RoutingContext, RoutingPolicy,
+    RoutingRequest, TransformOutcome,
 };
 use busbar_plugin_abi::{
     hook::{ConfigureBody, HookReply, HookRequest},
@@ -54,9 +54,17 @@ pub struct HookProjectors {
     #[allow(clippy::type_complexity)]
     pub transform: Box<dyn for<'a> Fn(&RoutingRequest<'a>) -> serde_json::Value + Send + Sync>,
     /// Parse a `decide` reply Value into a decision (the engine's fail-closed normalizer).
+    ///
+    /// Returns a [`PolicyResult`], not a bare `RoutingDecision`: a reply that PARSES but carries no
+    /// opinion is `Ok(RoutingDecision::Abstain)` (the request proceeds), whereas a reply that FAILS
+    /// to parse is `Err(..)` — the SAME shape a transport failure takes, so the caller coerces it to
+    /// the hook's `on_error` rather than silently abstaining. A malformed reply that fails closed to
+    /// Abstain would let a valid-but-unparseable `reject` (a good reject beside a wrong-typed sibling)
+    /// route the very request the gate tried to stop; routing it to `on_error` keeps a load-bearing
+    /// gate fail-CLOSED.
     #[allow(clippy::type_complexity)]
     pub normalize:
-        Box<dyn for<'a> Fn(serde_json::Value, &[Candidate<'a>]) -> RoutingDecision + Send + Sync>,
+        Box<dyn for<'a> Fn(serde_json::Value, &[Candidate<'a>]) -> PolicyResult + Send + Sync>,
     /// Parse a `transform` reply Value into an outcome (reject > rewrite > abstain).
     pub transform_outcome: Box<dyn Fn(serde_json::Value) -> TransformOutcome + Send + Sync>,
     /// Parse a `status` reply Value into the engine's `HookStatus` (metrics validated/bounded).
@@ -164,7 +172,11 @@ impl RoutingPolicy for DlopenPolicy {
             .call_bounded(HookRequest::Decide { payload }, budget)
             .await?;
         match reply {
-            HookReply::Reply(v) => Ok((self.projectors.normalize)(v, candidates)),
+            // A well-formed reply's normalized decision (incl. a genuine `Abstain`) passes through;
+            // an UNPARSEABLE reply is `Err(..)` from the normalizer and joins `HookReply::Failed`
+            // and a wrong reply variant below on the `on_error` path — a malformed reply can no
+            // longer masquerade as "no opinion" and slip a load-bearing gate open.
+            HookReply::Reply(v) => (self.projectors.normalize)(v, candidates),
             // The hook SAID it could not answer. Distinct from an abstain (`Reply({})`), and that
             // distinction is the whole point: an abstain lets the request proceed, this resolves
             // the operator's `on_error` chain, whose terminal can be `reject`. Before the ABI
