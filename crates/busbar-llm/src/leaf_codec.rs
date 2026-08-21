@@ -26,118 +26,119 @@ use crate::ir::rerank::{RerankReq, RerankResp};
 use busbar_core::handlers::WireBody;
 use bytes::Bytes;
 
-/// Embeddings egress request bytes for `proto`. Unknown protocol => empty (the pre-cutover
-/// wrong-variant fallback; never reached from a dialect handler, which passes its own protocol).
+/// Embeddings egress request bytes for `proto`. Unknown protocol => `unreachable!` — every caller
+/// (dialect handler today, leaf-op handle at A4b) passes a real egress protocol; a future protocol
+/// added without extending this match fails LOUDLY here rather than emitting a malformed empty body.
 pub(crate) fn embeddings_write_request(proto: &str, r: &EmbeddingsReq) -> Bytes {
     match proto {
         "cohere" => super::cohere::handler::write_embeddings_request(r),
         "bedrock" => super::bedrock::handler::write_embeddings_request(r),
         "gemini" => super::gemini::handler::write_embeddings_request(r),
         "openai" => super::openai_chat::handler::write_embeddings_request(r),
-        _ => Bytes::new(),
+        _ => unreachable!("leaf write: unknown egress protocol {proto}"),
     }
 }
 
-/// Embeddings ingress response wire for `proto`. Unknown protocol => empty JSON body (the pre-cutover
-/// wrong-variant fallback).
+/// Embeddings ingress response wire for `proto`. Unknown protocol => `unreachable!` (see the request
+/// dispatcher): a missing arm fails loudly, never a malformed empty body.
 pub(crate) fn embeddings_write_response(proto: &str, r: &EmbeddingsResp) -> WireBody {
     match proto {
         "cohere" => super::cohere::handler::write_embeddings_response(r),
         "bedrock" => super::bedrock::handler::write_embeddings_response(r),
         "gemini" => super::gemini::handler::write_embeddings_response(r),
         "openai" => super::openai_chat::handler::write_embeddings_response(r),
-        _ => WireBody::json(Bytes::new()),
+        _ => unreachable!("leaf write: unknown egress protocol {proto}"),
     }
 }
 
-/// Rerank egress request bytes for `proto`. Unknown protocol => empty (pre-cutover fallback).
+/// Rerank egress request bytes for `proto`. Unknown protocol => `unreachable!` (see embeddings dispatcher).
 pub(crate) fn rerank_write_request(proto: &str, r: &RerankReq) -> Bytes {
     match proto {
         "cohere" => super::cohere::handler::write_rerank_request(r),
         "bedrock" => super::bedrock::handler::write_rerank_request(r),
-        _ => Bytes::new(),
+        _ => unreachable!("leaf write: unknown egress protocol {proto}"),
     }
 }
 
-/// Rerank ingress response wire for `proto`. Unknown protocol => empty JSON body.
+/// Rerank ingress response wire for `proto`. Unknown protocol => `unreachable!` (see embeddings dispatcher).
 pub(crate) fn rerank_write_response(proto: &str, r: &RerankResp) -> WireBody {
     match proto {
         "cohere" => super::cohere::handler::write_rerank_response(r),
         "bedrock" => super::bedrock::handler::write_rerank_response(r),
-        _ => WireBody::json(Bytes::new()),
+        _ => unreachable!("leaf write: unknown egress protocol {proto}"),
     }
 }
 
-/// Image egress request bytes for `proto`. Unknown protocol => empty (pre-cutover fallback).
+/// Image egress request bytes for `proto`. Unknown protocol => `unreachable!` (see embeddings dispatcher).
 pub(crate) fn image_write_request(proto: &str, r: &ImageReq) -> Bytes {
     match proto {
         "bedrock" => super::bedrock::handler::write_image_request(r),
         "gemini" => super::gemini::handler::write_image_request(r),
         "openai" => super::openai_chat::handler::write_image_request(r),
-        _ => Bytes::new(),
+        _ => unreachable!("leaf write: unknown egress protocol {proto}"),
     }
 }
 
-/// Image ingress response wire for `proto`. Unknown protocol => empty JSON body.
+/// Image ingress response wire for `proto`. Unknown protocol => `unreachable!` (see embeddings dispatcher).
 pub(crate) fn image_write_response(proto: &str, r: &ImageResp) -> WireBody {
     match proto {
         "bedrock" => super::bedrock::handler::write_image_response(r),
         "gemini" => super::gemini::handler::write_image_response(r),
         "openai" => super::openai_chat::handler::write_image_response(r),
-        _ => WireBody::json(Bytes::new()),
+        _ => unreachable!("leaf write: unknown egress protocol {proto}"),
     }
 }
 
-/// Transcription egress request bytes for `proto`. Unknown protocol => empty (pre-cutover fallback).
+/// Transcription egress request bytes for `proto`. Unknown protocol => `unreachable!` (see embeddings dispatcher).
 pub(crate) fn transcription_write_request(proto: &str, r: &TranscriptionReq) -> Bytes {
     match proto {
         "gemini" => super::gemini::handler::write_transcription_request(r),
         "openai" => super::openai_chat::handler::write_transcription_request(r),
-        _ => Bytes::new(),
+        _ => unreachable!("leaf write: unknown egress protocol {proto}"),
     }
 }
 
-/// Transcription ingress response wire for `proto`. Unknown protocol => empty JSON body.
+/// Transcription ingress response wire for `proto`. Unknown protocol => `unreachable!` (see embeddings dispatcher).
 pub(crate) fn transcription_write_response(proto: &str, r: &TranscriptionResp) -> WireBody {
     match proto {
         "gemini" => super::gemini::handler::write_transcription_response(r),
         "openai" => super::openai_chat::handler::write_transcription_response(r),
-        _ => WireBody::json(Bytes::new()),
+        _ => unreachable!("leaf write: unknown egress protocol {proto}"),
     }
 }
 
-/// Speech (TTS) egress request bytes for `proto`. Unknown protocol => empty (pre-cutover fallback).
+/// Speech (TTS) egress request bytes for `proto`. Unknown protocol => `unreachable!` (see embeddings dispatcher).
 pub(crate) fn speech_write_request(proto: &str, r: &SpeechReq) -> Bytes {
     match proto {
         "gemini" => super::gemini::handler::write_speech_request(r),
         "openai" => super::openai_chat::handler::write_speech_request(r),
-        _ => Bytes::new(),
+        _ => unreachable!("leaf write: unknown egress protocol {proto}"),
     }
 }
 
-/// Speech (TTS) ingress response wire for `proto`. Unknown protocol => empty JSON body.
+/// Speech (TTS) ingress response wire for `proto`. Unknown protocol => `unreachable!` (see embeddings dispatcher).
 pub(crate) fn speech_write_response(proto: &str, r: &SpeechResp) -> WireBody {
     match proto {
         "gemini" => super::gemini::handler::write_speech_response(r),
         "openai" => super::openai_chat::handler::write_speech_response(r),
-        _ => WireBody::json(Bytes::new()),
+        _ => unreachable!("leaf write: unknown egress protocol {proto}"),
     }
 }
 
-/// Moderation egress request bytes for `proto`. Unknown protocol => empty (pre-cutover fallback).
+/// Moderation egress request bytes for `proto`. Unknown protocol => `unreachable!` (see embeddings dispatcher).
 /// Only openai serves moderation today; the key is uniform with the other ops for the A4b handle.
 pub(crate) fn moderation_write_request(proto: &str, r: &ModerationReq) -> Bytes {
     match proto {
         "openai" => super::openai_chat::handler::write_moderation_request(r),
-        _ => Bytes::new(),
+        _ => unreachable!("leaf write: unknown egress protocol {proto}"),
     }
 }
 
-/// Moderation ingress response wire for `proto`. Unknown protocol => empty JSON body.
+/// Moderation ingress response wire for `proto`. Unknown protocol => `unreachable!` (see embeddings dispatcher).
 pub(crate) fn moderation_write_response(proto: &str, r: &ModerationResp) -> WireBody {
     match proto {
         "openai" => super::openai_chat::handler::write_moderation_response(r),
-        _ => WireBody::json(Bytes::new()),
+        _ => unreachable!("leaf write: unknown egress protocol {proto}"),
     }
 }
 
@@ -322,5 +323,20 @@ pub(crate) fn moderation_read_response(
         other => Err(busbar_core::handlers::CodecError::Malformed(format!(
             "no moderation response reader for protocol `{other}`"
         ))),
+    }
+}
+
+#[cfg(test)]
+mod leaf_write_dispatch_tests {
+    use super::embeddings_write_request;
+    use crate::ir::embeddings::EmbeddingsReq;
+
+    // An unknown egress protocol must fail LOUDLY (not emit a malformed empty body): the guard for a
+    // future leaf-op protocol added without extending the write match. A known protocol ("openai") is
+    // exercised by the per-dialect handler tests, so this only pins the loud fallback.
+    #[test]
+    #[should_panic(expected = "leaf write: unknown egress protocol")]
+    fn unknown_egress_protocol_panics() {
+        let _ = embeddings_write_request("no-such-protocol", &EmbeddingsReq::default());
     }
 }
