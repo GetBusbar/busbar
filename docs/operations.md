@@ -499,7 +499,7 @@ Omit the block and you get the defaults. On the MCP and A2A planes the breaker r
 those defaults through the shared selection seam, and **that seam is wired into the
 tool-dispatch, the agent-submission and the agent-relay call sites**, so it fires on
 live calls: a tripped target fast-fails, and a target an operator put in a
-`tool_pools:`/`agent_pools:` set is rerouted to a verified twin before the first byte.
+`pools:` failover pool is rerouted to a verified twin before the first byte.
 Full detail, with worked YAML, is in
 [circuit-breaker.md](circuit-breaker.md#the-breaker-on-the-mcp-and-a2a-planes).
 
@@ -513,12 +513,13 @@ trip is a signal that names the server or the agent and the cause.
 **Failover on MCP and A2A is opt-in and operator-declared, and it is declared as a pool
 rather than a per-registration key.** A tool is namespaced to the server that exports it
 and an A2A task is addressed to a specific agent, so busbar will never guess at a
-substitute: you name the twins yourself, in a top-level `tool_pools:` or `agent_pools:`
-map, and busbar then verifies that claim against the fingerprints it already computed —
+substitute: you name the twins yourself, as a pool in the one neutral top-level `pools:`
+map (its kind inferred from its `tools:` or `agents:` members), and busbar then verifies
+that claim against the fingerprints it already computed —
 the approved tool schema digest on MCP, the approved canonical card fingerprint on A2A —
 before it moves anything. Members whose pins disagree are refused with both fingerprints
 named, not defaulted. `failover:` is still not accepted under `tools:` or `agents:`; the
-two pool sections are the whole vocabulary, and an absent section is exactly the old
+`pools:` map is the whole vocabulary, and declaring no such pool is exactly the old
 behaviour. Given a pool, a `tools/call` to a server whose primary is tripped, or that
 cannot be connected to at all, is rerouted to its verified twin **before the first
 byte**, and a fresh A2A submission to a pooled agent is walked the same way at

@@ -129,11 +129,11 @@ What enforces it instead is a runtime requirement stated in three places:
 
 The practical difference from MCP: a misconfiguration here surfaces as every request being refused at runtime rather than as a process that will not start. Configure `auth.chain` before you turn the plane on.
 
-### Failover pools: `agent_pools:`
+### Failover pools: `pools:`
 
-`agent_pools:` is the A2A twin of `tool_pools:`, sharing its type rather than copying its shape — one grammar, in core, over two registries, so an operator learns the concept once (`crates/busbar-core/src/failover/mod.rs:113-118`). It tells Busbar that two registrations are **the same agent registered twice**, and the walk runs at the admission of every fresh submission (`crates/busbar-core/src/a2a/route.rs:167`).
+A pool in the one neutral top-level `pools:` map whose members are `agents:` registrations is an A2A failover pool — the pool's kind is **inferred from its members**, so the same grammar in core serves every plane and an operator learns the concept once (`crates/busbar-core/src/failover/mod.rs:113-118`). It tells Busbar that two registrations are **the same agent registered twice**, and the walk runs at the admission of every fresh submission (`crates/busbar-core/src/a2a/route.rs:167`).
 
-It is **opt-in and the absent section is exactly today's behaviour**.
+It is **opt-in and declaring no A2A pool is exactly today's behaviour**.
 
 | Key | Type | Required | Default | Notes |
 |---|---|---|---|---|
@@ -141,12 +141,12 @@ It is **opt-in and the absent section is exactly today's behaviour**.
 | `repeatable` | list of operation names | no | `[]` | Operations safe to perform TWICE. |
 
 ```yaml
-agent_pools:
-  planner:
+pools:
+  planner:                        # kind = A2A, inferred from its `agents:` members
     members: [planner-eu, planner-us]
 ```
 
-Boot refusals are identical to `tool_pools:`, from the same function (`crates/busbar-core/src/config/mod.rs:1585-1639`): fewer than two members; a member named twice; **a member that is an entry in `tools:` rather than `agents:`** — no pool may straddle two planes, and the message names the section the entry really lives in; a member defined nowhere; an empty `repeatable:` entry.
+Boot refusals are identical to those for an MCP pool, from the same function (`crates/busbar-core/src/config/mod.rs:1585-1639`): fewer than two members; a member named twice; **a member that is an entry in `tools:` or `models:` rather than `agents:`** — no pool may straddle two planes (a pool's kind is inferred from its members, so they must all be the same kind), and the message names the section the entry really lives in; a member defined nowhere; an empty `repeatable:` entry.
 
 **Interchangeability is checked, not asserted.** On this plane the pin the walk compares is the **approved canonical card fingerprint** (`crates/busbar-core/src/failover/mod.rs:180-186`). A request moves between two candidates only when those fingerprints agree; a candidate with nothing approved yet can never match, not even another unapproved one — two unknowns are not one fact. You are asserting only *"these names are the same deployment"*.
 
@@ -470,7 +470,7 @@ The relay is this plane's Stage-1 normalizer; Stage 2 is the one core classifier
 
 **These cells refuse on a trip and nothing less**, exactly as the MCP cells do and for the same reason: `bench_below_trip_threshold: false` (`crates/busbar-core/src/store/planes.rs:81-99`). The predicate is **error rate ≥ 0.5 over at least 5 outcomes in a 30-second window**, cooldown 15 s escalating to 120 s (`crates/busbar-core/src/store/in_memory/mod.rs:563-574`, `:629-639`). There is no `breaker:` key under `agents:` and none on an agent pool; these planes run on the built-in defaults. An upstream's own `Retry-After` is honoured.
 
-**A tripped agent that is a member of an `agent_pools:` pool is not what produces the `rejected` task above.** For a FRESH submission the walk runs at admission, before any refusal is composed, and tries the next member whose approved card fingerprint matches the primary's (`crates/busbar-core/src/a2a/route.rs:82-219`); the caller gets that member's answer. Only an *exhausted* pool yields the `rejected` task, and then it names the **pool**, because the pool is the unit with nothing left (`crates/busbar-core/src/a2a/receive.rs:1497-1501`). A verb naming an **existing** task is unaffected either way: that task is pinned to the member that accepted it, so a tripped backend refuses the verb and the row keeps its last-known state.
+**A tripped agent that is a member of a `pools:` failover pool is not what produces the `rejected` task above.** For a FRESH submission the walk runs at admission, before any refusal is composed, and tries the next member whose approved card fingerprint matches the primary's (`crates/busbar-core/src/a2a/route.rs:82-219`); the caller gets that member's answer. Only an *exhausted* pool yields the `rejected` task, and then it names the **pool**, because the pool is the unit with nothing left (`crates/busbar-core/src/a2a/receive.rs:1497-1501`). A verb naming an **existing** task is unaffected either way: that task is pinned to the member that accepted it, so a tripped backend refuses the verb and the row keeps its last-known state.
 
 ### Anomaly-driven suspension
 

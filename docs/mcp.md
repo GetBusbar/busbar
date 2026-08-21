@@ -220,11 +220,11 @@ Two more refusals run over the **whole** effective registry (file base + admin o
 - **Published-name uniqueness.** Two tools that would both be published as one wire name refuse boot, naming both claimants. The check compares every published name against every other, *including* an override against another server's default — the collision a naive overrides-only check misses (`crates/busbar-core/src/mcp/config.rs:1486-1546`, called from `config/mod.rs:4498`). A collision is refused rather than resolved, because the published name is what an `mcp_tool:` grant names, so resolving it would silently move an authorization decision.
 - **Dangling hook references.** A hook a `tools:` entry names must exist in the one top-level `hooks:` map (`crates/busbar-core/src/config/mod.rs:4477-4486`). A dropped reference is an operator believing a control is attached that is not.
 
-### Failover pools: `tool_pools:`
+### Failover pools: `pools:`
 
-An MCP registration is one destination. `tool_pools:` is how you tell Busbar that two registrations are **the same server deployed twice** — one image in two regions, a hosted instance beside a self-hosted twin. That declaration is what the selection walk needs in order to send a request the breaker would otherwise refuse to the other member instead, and the walk runs on every `tools/call` (`crates/busbar-core/src/mcp/reroute.rs:259`).
+An MCP registration is one destination. A pool in the one neutral top-level `pools:` map — its kind **inferred from its members**, so a pool whose members are `tools:` registrations *is* an MCP failover pool — is how you tell Busbar that two registrations are **the same server deployed twice**: one image in two regions, a hosted instance beside a self-hosted twin. That declaration is what the selection walk needs in order to send a request the breaker would otherwise refuse to the other member instead, and the walk runs on every `tools/call` (`crates/busbar-core/src/mcp/reroute.rs:259`).
 
-It is **opt-in and the absent section is exactly today's behaviour**: one registration, one destination, nothing to reason about (`crates/busbar-core/src/failover/mod.rs:119-127`).
+It is **opt-in and declaring no MCP pool is exactly today's behaviour**: one registration, one destination, nothing to reason about (`crates/busbar-core/src/failover/mod.rs:119-127`).
 
 | Key | Type | Required | Default | Notes |
 |---|---|---|---|---|
@@ -238,8 +238,8 @@ tools:
   search-eu: { url: https://eu.search.example/mcp, pin: { mechanism: cert_spki, key: "sha256/…" } }
   search-us: { url: https://us.search.example/mcp, pin: { mechanism: cert_spki, key: "sha256/…" } }
 
-tool_pools:
-  search:
+pools:
+  search:                          # kind = MCP, inferred from its `tools:` members
     members: [search-eu, search-us]
     repeatable: [search_code]      # reads may be performed twice. Default: none.
 ```
@@ -250,7 +250,7 @@ Boot refusals, all in `crates/busbar-core/src/config/mod.rs:1585-1639`:
 |---|---|
 | a failover pool needs at least TWO members | `members.len() < 2` — a one-member pool has nowhere to fail over to |
 | `<member>` is named twice | a repeated member would be tried twice against the same upstream, which is a retry wearing a failover's clothes |
-| `<member>` is an entry in the top-level `agents:` section, not `tools:` | **no pool may straddle two planes.** The section a pool is written in *is* which plane it is on, and the message names the section the entry really lives in rather than sending you hunting for a typo you did not make |
+| `<member>` mixes an entry in the top-level `agents:` (or `models:`) section with `tools:` members | **no pool may straddle two planes.** A pool's kind is inferred from its members, so every member must be the same kind; the message names the section the entry really lives in rather than sending you hunting for a typo you did not make |
 | `<member>` is not defined in the top-level `tools:` map | |
 | `repeatable:` holds an empty entry | an empty entry names nothing |
 
@@ -465,7 +465,7 @@ A tripped server answers:
 
 **These cells refuse on a trip and nothing less.** The MCP cell is built with `bench_below_trip_threshold: false` — the one field it does not take from the LLM defaults (`crates/busbar-core/src/store/planes.rs:81-98`). On an LLM pool, a sub-threshold failure arms a short cooldown meaning "prefer a sibling for a while", and failover is what keeps the caller served while it lasts. On a single MCP registration with no pool there is no sibling, so the same cooldown would mean "refuse *every* caller of this server for the next 15–120 seconds" after one transient blip, on a cell whose own trip predicate had just declined to trip. So the predicate is the published one and nothing weaker: **error rate ≥ 0.5 over at least 5 outcomes in a 30-second window**, cooldown 15 s escalating to 120 s (`crates/busbar-core/src/store/in_memory/mod.rs:563-574`, `:629-639`). An upstream's own `Retry-After` is still honoured, for as long as the upstream asked for — that is the upstream's backpressure, not Busbar inventing an outage.
 
-**A tripped server that is a member of a `tool_pools:` pool is not what produces the `503` above.** The walk runs before any refusal is composed and tries the next member whose approved digest matches the primary's (`crates/busbar-core/src/mcp/reroute.rs:235-379`); the caller gets that member's answer. The `503` is what remains when the pool is *exhausted* — every interchangeable member tripped — and then it names the **pool**, not one server, with a `Retry-After` set from the soonest member cooldown to expire (`crates/busbar-core/src/mcp/method.rs:2142-2167`). An unpooled registration has no twin to select, so for it the `503` is the whole story.
+**A tripped server that is a member of a `pools:` failover pool is not what produces the `503` above.** The walk runs before any refusal is composed and tries the next member whose approved digest matches the primary's (`crates/busbar-core/src/mcp/reroute.rs:235-379`); the caller gets that member's answer. The `503` is what remains when the pool is *exhausted* — every interchangeable member tripped — and then it names the **pool**, not one server, with a `Retry-After` set from the soonest member cooldown to expire (`crates/busbar-core/src/mcp/method.rs:2142-2167`). An unpooled registration has no twin to select, so for it the `503` is the whole story.
 
 **Timeouts are a bound the upstream cannot lengthen by choosing to be slow.** `timeout:` is per server, default 30 s, and there is deliberately no spelling for "unlimited": a leg that cannot time out holds a concurrency slot for as long as the upstream chooses (`crates/busbar-core/src/mcp/config.rs:706-727`).
 
