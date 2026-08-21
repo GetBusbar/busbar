@@ -14,7 +14,7 @@ use std::collections::BTreeMap;
 /// `"openai"`), inner map = that protocol's unmodeled fields. An egress OperationHandler may CHOOSE to honor a
 /// foreign knob it recognizes; anything it does not consume is warn-and-dropped by the handler that
 /// declines it. Same-protocol round-trips re-emit the whole map verbatim.
-pub(crate) type SourceScopedExtra = BTreeMap<String, Map<String, Value>>;
+pub type SourceScopedExtra = BTreeMap<String, Map<String, Value>>;
 
 #[cfg(test)]
 #[path = "tests/lossless_tests.rs"]

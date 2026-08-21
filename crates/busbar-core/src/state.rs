@@ -4,7 +4,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-pub(crate) use crate::proto::Protocol;
 pub(crate) use crate::store::now;
 pub(crate) use crate::store::LaneRuntime;
 
@@ -26,7 +25,11 @@ pub(crate) struct Lane {
     /// held [`busbar_api::Redacted`] so it never leaks via `Debug`/logs and zeroizes on drop. Reach
     /// the plaintext only at the egress seam via `expose_secret()`.
     pub(crate) api_key: busbar_api::Redacted<String>,
-    pub(crate) protocol: Arc<Protocol>,
+    /// This lane's protocol, as the registry's interned `&'static str` NAME. Post-G6-A4b the concrete
+    /// `Protocol` (reader + writer) lives in the `busbar-llm` plugin and core names none of it; a lane
+    /// reaches its dialect's neutral computed-codec facade via `proto::decl_for(self.protocol).dialect()`
+    /// and its constant facts via `decl_for(self.protocol).<field>`. Copy-cheap, so `Lane: Clone` stays.
+    pub(crate) protocol: &'static str,
     /// Outbound credential — how this lane presents Busbar's identity to the upstream. Resolved once
     /// at boot from (protocol, auth). See `crate::egress_auth`; the request path calls `headers_for`.
     pub(crate) credential: Arc<dyn crate::egress_auth::CredentialProvider>,

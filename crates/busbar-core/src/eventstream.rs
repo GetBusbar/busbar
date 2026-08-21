@@ -55,7 +55,7 @@ use crate::diagnostics::{
 /// byte ALSO leaves an empty buffer, so length alone cannot tell a clean full-drain apart from an
 /// unrecoverable abort. Making the abort an explicit variant removes that ambiguity entirely.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum DrainStatus {
+pub enum DrainStatus {
     /// The decoder consumed every COMPLETE frame and stopped cleanly: either the buffer is now empty
     /// or it holds only a trailing PARTIAL frame awaiting more bytes. The buffer is intact and the
     /// stream is healthy — feed more bytes and call again.
@@ -85,7 +85,7 @@ pub(crate) enum DrainStatus {
 /// actually consumed — nothing on a chunk that completes no frame — and never the cleared
 /// malformed-prelude remainder (the malformed branch breaks before the push). Pass `None` on the
 /// cross-protocol path, which re-encodes and needs no verbatim copy.
-pub(crate) fn drain_frames_checked(
+pub fn drain_frames_checked(
     buf: &mut Vec<u8>,
     mut consumed_sink: Option<&mut Vec<u8>>,
 ) -> (Vec<(String, Vec<u8>)>, DrainStatus, usize) {
@@ -367,7 +367,7 @@ pub fn encode_frame(event_type: &str, payload: &[u8]) -> Vec<u8> {
 /// the JSON `{"message": ...}` body the SDK surfaces. This is what a Bedrock-ingress stream must emit
 /// on a mid-stream upstream failure instead of an SSE `event: error` text frame — writing SSE text
 /// into a binary eventstream body produces an undecodable prelude/CRC for the SDK's decoder.
-pub(crate) fn encode_exception_frame(exception_type: &str, message: &str) -> Vec<u8> {
+pub fn encode_exception_frame(exception_type: &str, message: &str) -> Vec<u8> {
     // Fallback only if serializing `{"message": <string>}` somehow fails (effectively unreachable
     // for a plain string). Use AWS's own generic phrasing rather than any busbar-internal routing
     // vocabulary like "upstream" — a native Bedrock exception frame would never carry that word, so

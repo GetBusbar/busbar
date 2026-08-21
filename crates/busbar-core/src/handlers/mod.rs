@@ -30,9 +30,11 @@
 // gemini, bedrock, cohere and openai-responses — each in its own dialect module's `handler.rs`.
 // They are reachable in the builds that compile the dialects back in as
 // `crate::proto::<dialect>::handler`, and in production only through the registry's
-// `ProtocolDecl::handler`, which is the point. `chat::ChatOperation` STAYS here: it is the shared
-// chat cell the LLM dialects parameterize by protocol name, not a dialect of its own.
-pub mod chat;
+// `ProtocolDecl::handler`, which is the point. `ChatOperation` RELOCATED to the plugin too at the
+// G6 A4b dissolve (`busbar-llm/src/chat_handle.rs`, netted as `crate::proto::chat_handle`): once
+// `IrReq`/`IrResp` dissolved onto `Box<dyn IrHandle>`, the chat codec names the concrete chat IR
+// that now lives in the plugin, so it cannot stay in core. Core names no chat codec in production;
+// chat resolves through the registry like every other operation (see `chat` below).
 /// THE EXTRACTED MCP DIALECT, compiled back in for TEST BUILDS ONLY. The sources live in
 /// `crates/busbar-mcp/src/codec` (the MCP plugin's codec half; the `busbar` binary registers its
 /// `PROTO_DECL` through `crate::proto::registry::install_protocols`), and core's PRODUCTION build
@@ -55,7 +57,7 @@ pub(crate) mod mcp;
 /// per-request volume. This records the fault (increments the counter) and returns `true` only the
 /// FIRST time a given `(protocol, reason)` is seen, so the caller warns once and logs `debug!`
 /// thereafter.
-pub(crate) fn usage_tap_decode_fail_should_warn(protocol: &str, reason: &'static str) -> bool {
+pub fn usage_tap_decode_fail_should_warn(protocol: &str, reason: &'static str) -> bool {
     metrics::counter!(
         crate::metrics::BILLING_TAP_DECODE_FAIL_TOTAL,
         "protocol" => protocol.to_string(),
@@ -85,9 +87,8 @@ pub fn request_handler(protocol: &str) -> Option<&'static dyn RequestHandler> {
 mod registry_tests;
 
 use crate::diagnostics::{diag_debug, diag_warn, USAGE_TAP_DECODE_FAILED};
-use crate::ir::variant::{IrReq, IrResp};
+use crate::ir::handle::IrHandle;
 use crate::operation::Operation;
-use crate::proto::ProtocolWriter;
 use bytes::Bytes;
 use serde_json::Value;
 
@@ -301,58 +302,34 @@ pub trait OperationHandler: Send + Sync {
         }
     }
 
-    /// Fail-closed guard for a cross-protocol request whose neutral IR cannot be written onto THIS
-    /// egress operation's wire without silently losing part of the caller's ask. Returns
-    /// `Err(reason)` to REJECT the request (4xx) up front rather than proceed to a `write_request`
-    /// that would drop data and return an HTTP 200. Default `Ok(())`; the Gemini embeddings handler
-    /// overrides it — Gemini `:embedContent` embeds a SINGLE input, so a multi-input embeddings
-    /// request routed to it can only embed the first, silently misaligning the caller's
-    /// `inputs[i] <-> embeddings[i]`. Consulted only at the cross-protocol request seam (a
-    /// same-protocol request never rebuilds its body from the IR, so it cannot hit this loss).
-    fn egress_representable(&self, _ir: &IrReq) -> Result<(), String> {
-        Ok(())
-    }
-
-    /// The caller controls this egress operation will DROP for `ir` on cross-protocol translation
-    /// because the target dialect has no native representation (audit-and-allow: the request still
-    /// forwards, but each drop is recorded as a first-class audit event by the cross-protocol seam —
-    /// unlike `egress_representable`, this never rejects). Default: none (non-chat operations).
-    fn egress_dropped_controls(&self, _ir: &IrReq) -> Vec<&'static str> {
-        Vec::new()
-    }
-
-    /// Value-level codec bridges — for engine seams that already hold a PARSED JSON body (the
-    /// streaming chat engine parses once for shim/intent reads). Defaults round-trip through the
-    /// byte codecs (correct for every JSON operation); chat overrides them to call its proto
-    /// reader/writer directly (no re-serialize on the hot path). Non-JSON operations never meet
-    /// these seams.
-    fn read_request_value(&self, v: &Value) -> Result<IrReq, IngressReject> {
+    /// Value-level codec bridge (request) — for engine seams that already hold a PARSED JSON body
+    /// (the streaming chat engine parses once for shim/intent reads). Default round-trips through the
+    /// byte reader; chat overrides to call its proto reader directly (no re-serialize on the hot
+    /// path). The WRITE half of the old bridge inverted onto the handle at the G6 A4b dissolve
+    /// (`IrHandle::write_egress_request`/`write_ingress_response`), so only the read side remains here.
+    fn read_request_value(&self, v: &Value) -> Result<Box<dyn IrHandle>, IngressReject> {
         let bytes = serde_json::to_vec(v).map_err(|e| IngressReject::BadRequest(e.to_string()))?;
         self.read_request(&bytes, crate::proxy::APPLICATION_JSON)
     }
-    fn write_request_value(&self, ir: &IrReq) -> Option<Value> {
-        serde_json::from_slice(&self.write_request(ir)).ok()
-    }
-    fn read_response_value(&self, v: &Value) -> Result<IrResp, CodecError> {
+    /// Value-level codec bridge (response).
+    fn read_response_value(&self, v: &Value) -> Result<Box<dyn IrHandle>, CodecError> {
         let bytes = serde_json::to_vec(v).map_err(|e| CodecError::Malformed(e.to_string()))?;
         self.read_response(&bytes)
     }
-    fn write_response_value(&self, ir: &IrResp) -> Option<Value> {
-        serde_json::from_slice(&self.write_response(ir).bytes).ok()
-    }
 
-    /// Wire → IR (request). The OperationHandler owns the ENTIRE wire format: it receives RAW bytes + the request
-    /// content-type and decides how to parse — JSON (`serde_json::from_slice`) for JSON ops, multipart
-    /// for transcription, etc. The engine never parses; "JSON vs opaque" is the OperationHandler's private business.
-    fn read_request(&self, body: &[u8], content_type: &str) -> Result<IrReq, IngressReject>;
-    /// IR → egress wire (request bytes sent upstream).
-    fn write_request(&self, ir: &IrReq) -> Bytes;
-    /// Egress wire → IR (response) — called only when `taps_usage()` or a cross-protocol translation
-    /// requires the neutral form. Raw bytes: binary responses (audio) were always fine here.
-    fn read_response(&self, wire: &[u8]) -> Result<IrResp, CodecError>;
-    /// IR → caller-dialect wire ([`WireBody`]: bytes + content-type returned to the client). The
-    /// content-type lets a binary op (speech → `audio/*`) declare its own; the engine relays it verbatim.
-    fn write_response(&self, ir: &IrResp) -> WireBody;
+    /// Wire → IR HANDLE (request). The OperationHandler owns the ENTIRE wire format: it receives RAW
+    /// bytes + the request content-type and decides how to parse — JSON for JSON ops, multipart for
+    /// transcription, etc. The engine never parses; "JSON vs opaque" is the codec's private business.
+    /// The handle it yields carries chat's/leaf's cross-protocol prep + self-write (the dissolved
+    /// `IrReq` arms); the WRITE seam (`write_request`) is gone — the handle writes itself by protocol.
+    fn read_request(
+        &self,
+        body: &[u8],
+        content_type: &str,
+    ) -> Result<Box<dyn IrHandle>, IngressReject>;
+    /// Egress wire → IR HANDLE (response) — for the usage tap or a cross-protocol translation. Raw
+    /// bytes: binary responses (audio) were always fine here.
+    fn read_response(&self, wire: &[u8]) -> Result<Box<dyn IrHandle>, CodecError>;
 }
 
 /// What a request-translation hop reads FROM — the two body shapes a hop can hold: a parsed JSON
@@ -465,8 +442,8 @@ pub trait TranslateCodec: OperationHandler {
     fn translate_request(
         &self,
         input: TranslateReqInput<'_>,
-        egress: Option<&dyn OperationHandler>,
-        prep: &crate::ir::variant::EgressPrep,
+        egress_proto: Option<&str>,
+        prep: &crate::ir::egress_prep::EgressPrep,
         model: &str,
     ) -> Result<TranslatedRequest, TranslateReqReject> {
         match input {
@@ -480,12 +457,11 @@ pub trait TranslateCodec: OperationHandler {
                 ir.prepare_for_egress(prep);
                 // The opaque caller resolves + 404-checks `egress` before calling, so it is always
                 // `Some`; the guard preserves total-safety without a panic on the request path.
-                let egress = egress.ok_or(TranslateReqReject::EgressUnsupported)?;
-                // A4b pre-step 1: the write inverts onto the handle (`ir`), which delegates to the
-                // egress codec's `write_request` after `set_model` — byte-identical to the inline
-                // `ir.set_model(model); egress.write_request(&ir)` this replaces.
+                let egress_proto = egress_proto.ok_or(TranslateReqReject::EgressUnsupported)?;
+                // A4b: the handle writes ITSELF onto the egress dialect (by protocol string) after
+                // `set_model` — byte-identical to the former `set_model(model); egress.write_request`.
                 Ok(TranslatedRequest {
-                    wire: EgressWire::Bytes(ir.write_egress_request_bytes(egress, model)),
+                    wire: EgressWire::Bytes(ir.write_egress_request_bytes(egress_proto, model)),
                     dropped_controls: Vec::new(),
                 })
             }
@@ -496,15 +472,13 @@ pub trait TranslateCodec: OperationHandler {
                 ir.prepare_for_egress(prep);
                 // Egress-absent surfaces only AFTER read+prepare, so a malformed body still rejects as
                 // a 400 (via `Ingress` above) rather than a 404, exactly as the pre-cutover branch did.
-                let egress = egress.ok_or(TranslateReqReject::EgressUnsupported)?;
-                if let Err(reason) = egress.egress_representable(&ir) {
+                let egress_proto = egress_proto.ok_or(TranslateReqReject::EgressUnsupported)?;
+                if let Err(reason) = ir.egress_representable(egress_proto) {
                     return Err(TranslateReqReject::Unrepresentable(reason));
                 }
-                let dropped_controls = egress.egress_dropped_controls(&ir);
-                // A4b pre-step 1: the write inverts onto the handle (`ir`), which owns the value-first
-                // /set-model+bytes choice by delegating to the egress codec — byte-identical to the
-                // inline `match egress.write_request_value(&ir) { … }` this replaces.
-                let wire = ir.write_egress_request(egress, model);
+                let dropped_controls = ir.egress_dropped_controls(egress_proto);
+                // A4b: the handle owns the value-first / set-model+bytes write onto the egress dialect.
+                let wire = ir.write_egress_request(egress_proto, model);
                 Ok(TranslatedRequest {
                     wire,
                     dropped_controls,
@@ -520,7 +494,7 @@ pub trait TranslateCodec: OperationHandler {
         &self,
         v: &Value,
     ) -> Result<Box<dyn crate::ir::facts::IrFacts + Send + Sync>, IngressReject> {
-        Ok(Box::new(self.read_request_value(v)?))
+        Ok(self.read_request_value(v)?.facts())
     }
 
     /// Byte-codec sibling of [`Self::read_facts_value`], for an opaque/multipart body whose caller
@@ -530,7 +504,7 @@ pub trait TranslateCodec: OperationHandler {
         wire: &[u8],
         content_type: &str,
     ) -> Result<Box<dyn crate::ir::facts::IrFacts + Send + Sync>, IngressReject> {
-        Ok(Box::new(self.read_request(wire, content_type)?))
+        Ok(self.read_request(wire, content_type)?.facts())
     }
 
     /// CROSS-PROTOCOL non-stream response translation: `self` is the EGRESS codec (it reads the
@@ -551,14 +525,12 @@ pub trait TranslateCodec: OperationHandler {
     /// exactly as the pre-cutover arm did. The caller keeps telemetry, the untranslatable-metadata warn,
     /// billing, budget accounting, native response-metrics injection, the gemini-array wrap, and all
     /// response building — none of which is the codec's business.
-    #[allow(clippy::too_many_arguments)]
     fn translate_response(
         &self,
         input: TranslateRespInput<'_>,
-        ingress_op: Option<&dyn OperationHandler>,
-        // `Some` on the JSON path (the engine resolved the ingress protocol for the wants-stream
-        // synthesis); `None` on the opaque path, which never synthesizes native stream frames.
-        ingress_writer: Option<&dyn ProtocolWriter>,
+        // Does the caller's INGRESS protocol serve this operation? (Resolved by the engine via
+        // `op_for`; replaces the former `ingress_op: Option<&dyn OperationHandler>`.)
+        ingress_serves_op: bool,
         ingress_protocol: &str,
         now: u64,
         wants_stream: bool,
@@ -567,31 +539,33 @@ pub trait TranslateCodec: OperationHandler {
         match input {
             TranslateRespInput::Opaque(bytes) => {
                 let mut ir = self.read_response(bytes)?;
-                let usage = ir.usage();
+                let usage = ir.billing();
                 ir.prepare_for_ingress(ingress_protocol, now);
-                // A4b pre-step 1: the write inverts onto the handle (`ir`), which owns the
-                // present=>Typed / absent=>Untranslatable choice — byte-identical to the inline
-                // `match ingress_op { … }` this replaces.
-                Ok((usage, ir.write_ingress_response_bytes(ingress_op)))
+                // A4b: the handle writes ITSELF onto the ingress dialect — present=>Typed /
+                // absent=>Untranslatable, keyed by `ingress_protocol` + `ingress_serves_op`.
+                Ok((
+                    usage,
+                    ir.write_ingress_response_bytes(ingress_protocol, ingress_serves_op),
+                ))
             }
             TranslateRespInput::Json(v) => {
                 let mut ir = self.read_response_value(v)?;
-                let usage = ir.usage();
+                let usage = ir.billing();
                 ir.prepare_for_ingress(ingress_protocol, now);
                 // Buffered-2xx-to-native-stream synthesis (a wants-stream ingress served a non-SSE
-                // upstream): try first; `None` falls through to the normal write. The JSON path always
-                // supplies the ingress writer, so this fork is reached exactly as before.
+                // upstream): try first; `None` falls through to the normal write. The handle resolves
+                // the ingress writer by `ingress_protocol` internally.
                 if wants_stream {
-                    if let Some(frames) =
-                        ingress_writer.and_then(|w| ir.wrap_buffered_as_stream(w, elapsed_ms))
-                    {
+                    if let Some(frames) = ir.wrap_buffered_as_stream(ingress_protocol, elapsed_ms) {
                         return Ok((usage, TranslatedResponse::StreamFrames(frames)));
                     }
                 }
-                // A4b pre-step 1: the write inverts onto the handle (`ir`), which owns the
-                // absent=>IngressUnsupported / value-first=>Json / else Typed(WireBody) choice —
-                // byte-identical to the inline `let Some(h) = ingress_op else { … }` this replaces.
-                Ok((usage, ir.write_ingress_response(ingress_op)))
+                // A4b: the handle owns the absent=>IngressUnsupported / value-first=>Json / else
+                // Typed(WireBody) write onto the ingress dialect.
+                Ok((
+                    usage,
+                    ir.write_ingress_response(ingress_protocol, ingress_serves_op),
+                ))
             }
         }
     }
@@ -685,12 +659,6 @@ impl OpDispatch {
     ) -> crate::breaker::RawUpstreamError {
         self.op_handler.extract_error(status, body)
     }
-    /// Forwarder for [`OperationHandler::egress_dropped_controls`] — the caller controls this egress
-    /// operation drops on cross-protocol translation, surfaced for the seam's audit event.
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn egress_dropped_controls(&self, ir: &IrReq) -> Vec<&'static str> {
-        self.op_handler.egress_dropped_controls(ir)
-    }
     /// Can this cell produce a client-facing incremental stream?
     ///
     /// THE SHAPE IS A FLOOR UNDER THE CELL'S ANSWER, and it is the one place the operation axis is
@@ -734,7 +702,7 @@ impl OpDispatch {
         if let Some(p) = &lane.path {
             return Some(p.clone());
         }
-        crate::handlers::request_handler(lane.protocol.name()).map(|rh| {
+        crate::handlers::request_handler(lane.protocol).map(|rh| {
             rh.upstream_path(&EgressCtx {
                 operation: self.operation,
                 model: lane.wire_model(),
@@ -745,23 +713,36 @@ impl OpDispatch {
     }
 }
 
-/// Chat — operation #1. A const handle to the shared chat OperationHandler, for tests and as the resolver's
-/// fallback. Prefer [`chat`] on the request path so the RequestHandler actually decides the OperationHandler.
+/// Chat — operation #1. A const handle to the shared chat OperationHandler, for tests and as the
+/// resolver's fallback. TEST-BUILD ONLY: `ChatOperation` relocated to the `busbar-llm` plugin at the
+/// G6 A4b dissolve (it names the concrete chat IR that moved there), so production core has no chat
+/// codec to name; the netted `crate::proto::chat_handle::ChatOperation` supplies it for the core test
+/// binary. Prefer [`chat`] on the request path so the RequestHandler actually decides the handler.
+#[cfg(any(test, feature = "test-support"))]
+#[allow(dead_code)] // exercised by the dialect test crates; unused in the netted-core target
 pub(crate) const CHAT: Op = crate::transport::Transport::Http.frame(
     Operation::CHAT,
-    &crate::handlers::chat::ChatOperation("openai"),
+    &crate::proto::chat_handle::ChatOperation("openai"),
 );
 
 /// Resolve the chat dispatch THROUGH the registry — the same path every other operation takes:
 /// `request_handler(protocol).operation_handler(Chat)`. This is how "the RequestHandler decides which
-/// OperationHandler handles the request" is honored for chat too, not just the JSON ops. Every protocol
-/// is registered and serves chat, so the fallback is unreachable (kept for total-safety, not behavior).
+/// OperationHandler handles the request" is honored for chat too, not just the JSON ops.
+///
+/// Post-G6-A4b the chat codec lives in the `busbar-llm` plugin, so this resolves it through the
+/// registry the composition root populated — there is no in-core const fallback to name anymore (that
+/// codec is gone from core's production build). The `expect` can only fire in a build that links no
+/// chat-serving protocol at all, which no shipped configuration is: the LLM plugin registers `openai`
+/// and its five siblings, and the sole production caller (`mcp::sampling`) asks for `openai`. The one
+/// caller that used the old const fallback purely for a chat cell's error vocabulary (`health.rs`)
+/// now calls the neutral `protocol_error` directly (byte-identical to `ChatOperation::extract_error`).
 ///
 /// The TRANSPORT is the caller's to state, not this resolver's: which channel an exchange arrived on
 /// is a fact about the arrival, and a protocol has no opinion about it (that is what A2A's three
 /// bindings of one agent mean). So it is a parameter, and every caller decides.
 pub(crate) fn chat(protocol: &str, transport: crate::transport::Transport) -> Op {
-    op_for(protocol, Operation::CHAT, transport).unwrap_or(CHAT)
+    op_for(protocol, Operation::CHAT, transport)
+        .expect("a chat-serving protocol is registered (the busbar-llm plugin registers openai)")
 }
 
 /// THE FRAMED CELL FOR ONE EXCHANGE — `(protocol, operation)` resolved through the registry and
@@ -809,14 +790,12 @@ pub fn protocol_error(
     status: u16,
     body: &[u8],
 ) -> crate::breaker::RawUpstreamError {
-    let Some(p) = crate::proto::protocol_for(protocol) else {
-        return crate::breaker::RawUpstreamError::from_status(status);
-    };
-    p.reader().extract_error(
-        axum::http::StatusCode::from_u16(status)
-            .unwrap_or(axum::http::StatusCode::INTERNAL_SERVER_ERROR),
-        body,
-    )
+    // Through the neutral dialect seam: the concrete reader (whose `extract_error` this delegates to)
+    // relocated to the busbar-llm plugin at A4b, so core names it by protocol only.
+    match crate::proto::decl_for(protocol).and_then(|d| d.dialect()) {
+        Some(dc) => dc.extract_error(status, body),
+        None => crate::breaker::RawUpstreamError::from_status(status),
+    }
 }
 
 #[cfg(test)]

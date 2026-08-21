@@ -47,7 +47,7 @@
 //! constructor. [`ProtocolDecl::verbs`] now carries the `Verb { op, name }` PAIR — see its field
 //! doc for what still anchors the seven LLM consts in `operation.rs`.
 
-use super::Protocol;
+use super::DialectCodec;
 use crate::handlers::RequestHandler;
 
 /// A protocol's declared egress credential-header builder: the resolved per-request credential
@@ -88,13 +88,14 @@ pub struct ProtocolDecl {
     /// and invalidates a config file. Replaces the `match name` arm.
     pub name: &'static str,
 
-    /// How to build this protocol's wire CODEC (reader + writer), or `None` for a protocol that
-    /// serves operations without a cross-dialect codec (MCP, whose IR is its own). A fresh instance
-    /// is REQUIRED per resolution — `GeminiWriter`, `CohereWriter` and `ResponsesWriter` carry
-    /// per-STREAM mutable state — which is why this is a constructor rather than a `&'static
-    /// Protocol`, and why the fact fields below exist: a caller that wants a constant must not have
-    /// to build a codec to read one.
-    pub codec: Option<fn() -> Protocol>,
+    /// How to build this protocol's NEUTRAL computed-codec facade ([`super::DialectCodec`]), or
+    /// `None` for a protocol that serves operations without a cross-dialect codec (MCP, whose IR is
+    /// its own). Post-G6-A4b the concrete `Protocol` (reader + writer) lives in the `busbar-llm`
+    /// plugin, so core no longer names it here — the dialect's DECL supplies a constructor for the
+    /// neutral `DialectCodec` seam (a fresh instance per resolution, since the underlying writers
+    /// carry per-STREAM mutable state). Presence alone is the "declares a codec" fact the fields below
+    /// let a caller read without building anything.
+    pub codec: Option<fn() -> Box<dyn DialectCodec>>,
 
     /// The cell that serves one exchange on this protocol. Replaces `handlers::request_handler`'s
     /// match. `None` would be a protocol that declares itself and serves nothing; every declaration
@@ -301,8 +302,10 @@ impl ProtocolDecl {
     /// existing [`Self::codec`] presence, so no new DECL field is required (the mcp/a2a decls are
     /// untouched).
     pub fn dialect(&self) -> Option<Box<dyn super::DialectCodec>> {
-        self.codec
-            .map(|_| Box::new(super::DialectRef(self.name)) as Box<dyn super::DialectCodec>)
+        // The DECL's `codec` constructor now BUILDS the neutral facade directly (its `DialectRef`
+        // implementor relocated to busbar-llm with the concrete `Protocol`), so core calls it without
+        // naming any concrete codec type.
+        self.codec.map(|make| make())
     }
 }
 
@@ -464,6 +467,7 @@ impl Registry {
     }
 
     /// Every declaration, in declaration order.
+    #[allow(dead_code)] // used by the netted dialect test crates; unused in the core target
     pub(crate) fn decls(&self) -> &[&'static ProtocolDecl] {
         &self.decls
     }
