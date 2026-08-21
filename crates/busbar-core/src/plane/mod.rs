@@ -136,7 +136,17 @@ pub(crate) enum Plane {
 impl Plane {
     /// Every plane, in layering order. Iterated by dispatch, the config validator and the candidate
     /// projection, so a plane absent from here is a plane that silently does not exist.
-    pub(crate) const ALL: &'static [Plane] = &[Plane::Llm, Plane::Mcp, Plane::A2a];
+    ///
+    /// `Plane::Mcp` is present only when the MCP plane is compiled in (`plane-mcp`): with it off the
+    /// plane has no built-in declaration, so it must not be iterated here — every `.decl()` on it
+    /// would fault. The `Plane::Mcp` enum variant still exists (a `Copy` key some match arms name),
+    /// but it is not a plane this build serves.
+    pub(crate) const ALL: &'static [Plane] = &[
+        Plane::Llm,
+        #[cfg(feature = "plane-mcp")]
+        Plane::Mcp,
+        Plane::A2a,
+    ];
 
     /// The plane's short stable name, for logs, metrics labels and audit resources.
     pub(crate) fn key(self) -> &'static str {

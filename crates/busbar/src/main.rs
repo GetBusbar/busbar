@@ -1003,6 +1003,10 @@ async fn run() {
     // supervisor never asked for) and speaks newline-delimited JSON-RPC on its own stdin/stdout.
     // EOF on stdin is the shutdown signal, and the tail below is the listener path's own shutdown
     // tail: the final budget/metering flush, then the tracer.
+    // The MCP stdio serve mode exists only when the MCP plane is compiled in (`plane-mcp`). With the
+    // plane off there is no MCP dispatch to serve on stdin/stdout, so the mode is not offered and a
+    // build without MCP falls through to its listener path.
+    #[cfg(feature = "plane-mcp")]
     if mcp_stdio_requested(std::env::args()) {
         let code = busbar_core::mcp::stdio_serve::serve_stdio(app_handle.clone()).await;
         if let Some(gov) = app_handle.load().governance.clone() {

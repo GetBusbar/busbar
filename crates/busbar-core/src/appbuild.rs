@@ -15,6 +15,9 @@ use crate::diagnostics::{
     OAUTH_AS_EPHEMERAL_SIGNING_KEY, OPEN_RELAY_NO_AUTH, PLUGINS_FETCH_RELOAD_MISS,
     PROVIDER_API_KEY_UNRESOLVED, SAFE_MODE_OVERLAY_QUARANTINED, STORE_SECRET_REF_UNRESOLVED,
 };
+#[allow(unused_imports)]
+#[cfg(feature = "plane-mcp")]
+use crate::mcp;
 use crate::preflight::{
     build_secret_resolver, plugin_fetch_downloader, plugins_preflight, resolve_admin_token,
     resolve_signing_key, validate_secret_refs,
@@ -27,7 +30,7 @@ use crate::store::{HealthState, LaneData};
 use crate::{
     a2a, admin, audit, auth, auth_cache, billing, breaker, catalogue, config, config_validate,
     core_routes, cost, durable, egress_auth, endpoints, eventstream, export, failover, governance,
-    handlers, health, hooks, ingress, ir, json, limits, lossless, mcp, media, metrics, net_guard,
+    handlers, health, hooks, ingress, ir, json, limits, lossless, media, metrics, net_guard,
     oauth_as, observability, operation, plane, plugin_routes, profile, proto, proxy, sigv4, state,
     store, telemetry, tls, transport, trust,
 };
@@ -1205,6 +1208,9 @@ pub fn build_app_from_config(
     //
     // Empty on every deployment that attaches nothing, which is every deployment that does not
     // spell the key — so the dispatch paths' lookups cost one hash probe against an empty map.
+    // The MCP `tools:` per-server gates read the typed `tools:` registry, which exists only when
+    // the plane is compiled in. With `plane-mcp` off there is no registry, so the map is empty.
+    #[cfg(feature = "plane-mcp")]
     let mcp_server_gates = hooks::resolve_container_gates(
         cfg.tool_defs
             .servers
@@ -1215,6 +1221,11 @@ pub fn build_app_from_config(
         &hook_env,
         app_config_version,
     );
+    #[cfg(not(feature = "plane-mcp"))]
+    let mcp_server_gates: std::collections::HashMap<
+        String,
+        Vec<(u16, crate::hooks::ResolvedPolicy)>,
+    > = std::collections::HashMap::new();
     let a2a_agent_gates = hooks::resolve_container_gates(
         cfg.agent_defs
             .agents
@@ -1308,11 +1319,16 @@ pub fn build_app_from_config(
             // `crate::mcp` type. It is the SAME `Arc` the plane clones into `plane_slots` and the
             // typed `App::mcp` field downcasts back out below, so the "one lowering, one Arc, two
             // readers" invariant is unchanged.
+            // The MCP resource type only exists when the plane is compiled in; with `plane-mcp` off
+            // there is no resource to erase into a slot, and the plane contributes none.
+            #[cfg(feature = "plane-mcp")]
             mcp_slot: cfg
                 .mcp
                 .as_ref()
                 .cloned()
                 .map(|r| Arc::new(r) as Arc<dyn std::any::Any + Send + Sync>),
+            #[cfg(not(feature = "plane-mcp"))]
+            mcp_slot: None,
             agent_defs: &cfg.agent_defs,
             public_url: cfg.public_url.as_deref(),
         };
@@ -1350,12 +1366,18 @@ pub fn build_app_from_config(
                         .map_err(|e| format!("oauth_as.signing_key: {e}"))?,
                 ),
             };
+            // busbar's OWN protected resource is its MCP endpoint's canonical URI — which exists only
+            // when the MCP plane is compiled in. With `plane-mcp` off there is no such resource, so
+            // the allowed-resources list is empty (the deployment protects no MCP audience).
+            #[cfg(feature = "plane-mcp")]
             let protected_resources: Vec<String> = cfg
                 .mcp
                 .as_ref()
                 .map(|r| r.canonical_uri().to_string())
                 .into_iter()
                 .collect();
+            #[cfg(not(feature = "plane-mcp"))]
+            let protected_resources: Vec<String> = Vec::new();
             let plane = crate::oauth_as::plane::AsPlane::build(
                 identity.clone(),
                 key_material.as_deref(),
@@ -1536,7 +1558,16 @@ pub fn build_app_from_config(
         // not intent — see `McpRuntime::build`). Building it beside the `App` keeps the swap atomic:
         // the whole `Arc<App>` is replaced under one lock, so the catalogue and the config that
         // produced it never disagree.
+        // Built through the plane's own type-erasing constructor when compiled in; with `plane-mcp`
+        // off the field carries a neutral empty placeholder (nothing downcasts it — no MCP accessor
+        // exists in that build).
+        #[cfg(feature = "plane-mcp")]
         mcp_runtime: crate::mcp::build_runtime(&cfg.tool_defs, prior),
+        #[cfg(not(feature = "plane-mcp"))]
+        mcp_runtime: {
+            let _ = prior;
+            Arc::new(()) as Arc<dyn std::any::Any + Send + Sync>
+        },
         // CARRIED ACROSS THE APPLY beside the sightings it freshens: the verify-on-call coalescing
         // epochs are accumulated coordination state, not intent, and rebuilding them on every apply
         // would let a burst of callers each fetch during the window an unrelated edit reset.

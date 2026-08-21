@@ -396,6 +396,11 @@ pub struct RootCfg {
     /// The VALIDATED MCP resource (`mcp:`), or `None` when this deployment is not an MCP server.
     /// Derived and refused at boot by [`crate::mcp::McpResource::from_cfg`], so nothing downstream
     /// re-parses the canonical URI or re-derives the mount path.
+    // Neutral capture when the MCP plane is compiled out: the resolved resource type does not exist
+    // then, and a non-empty `mcp:` section is refused at `resolve`.
+    #[cfg(not(feature = "plane-mcp"))]
+    pub(crate) mcp: Option<crate::plane::config::RawPlaneSection>,
+    #[cfg(feature = "plane-mcp")]
     pub(crate) mcp: Option<crate::mcp::McpResource>,
     /// The VALIDATED authorization server (`oauth_as:`), or `None` when this deployment is not one.
     /// Derived and refused at boot by `crate::oauth_as::config::AsIdentity::from_cfg`, so nothing
@@ -408,6 +413,9 @@ pub struct RootCfg {
     /// generation. Lowering it here would give the registry two representations that could disagree
     /// about what the operator approved — precisely the disagreement the trust lifecycle removes by
     /// DERIVING state from intent-versus-observation instead of storing it.
+    #[cfg(not(feature = "plane-mcp"))]
+    pub(crate) tool_defs: crate::plane::config::RawPlaneSection,
+    #[cfg(feature = "plane-mcp")]
     pub(crate) tool_defs: crate::mcp::config::ToolsCfg,
     /// Optional native inbound TLS. `None` ⇒ plain HTTP (today's path, byte-for-byte).
     pub tls: Option<TlsCfg>,
@@ -2851,6 +2859,13 @@ pub struct DeployCfg {
     /// server. Its PRESENCE is what mounts the MCP plane — absent, the deployment carries no MCP
     /// ingress and no `.well-known` document, and nothing joins the route table. See
     /// [`crate::mcp::McpCfg`].
+    // Captured RAW when the MCP plane is compiled out (`plane-mcp` off); the typed field below is
+    // what `scripts/config-schema.py` fingerprints (it is declared LAST, and the extractor records
+    // the last same-named field), so this capture leaves the `mcp:` schema unchanged.
+    #[cfg(not(feature = "plane-mcp"))]
+    #[serde(default)]
+    pub(crate) mcp: Option<crate::plane::config::RawPlaneSection>,
+    #[cfg(feature = "plane-mcp")]
     #[serde(default)]
     pub(crate) mcp: Option<crate::mcp::McpCfg>,
     /// `oauth_as:` — busbar AS an OAuth 2.1 authorization server, for the deployment that has no
@@ -2868,6 +2883,13 @@ pub struct DeployCfg {
     /// Distinct from `mcp:` above and the pair is not redundant: `mcp:` is busbar's OWN endpoint as
     /// a resource server (the door), `tools:` is the set of upstreams whose capabilities that door
     /// exposes (the rooms). A deployment may configure either without the other.
+    // Captured RAW when the MCP plane is compiled out (`plane-mcp` off); the typed field below is
+    // what `scripts/config-schema.py` fingerprints (declared LAST), so this leaves the `tools:`
+    // schema unchanged.
+    #[cfg(not(feature = "plane-mcp"))]
+    #[serde(default)]
+    pub(crate) tools: crate::plane::config::RawPlaneSection,
+    #[cfg(feature = "plane-mcp")]
     #[serde(default)]
     pub(crate) tools: crate::mcp::config::ToolsCfg,
     /// TLS/mTLS for the admin listener (only meaningful with `admin_listen`). Its own cert + optional
@@ -4524,14 +4546,18 @@ pub fn resolve(
             // Global-unique noun names make this a name-only lookup — the router never asks "which
             // kind of `x`?". A name defined in two nouns is a collision the validator rejects.
             if deploy.models.contains_key(name) {
-                Some(crate::plane::Plane::Llm)
-            } else if deploy.tools.servers.contains_key(name) {
-                Some(crate::plane::Plane::Mcp)
-            } else if deploy.agents.agents.contains_key(name) {
-                Some(crate::plane::Plane::A2a)
-            } else {
-                None
+                return Some(crate::plane::Plane::Llm);
             }
+            // The MCP `tools:` noun exists only when the plane is compiled in; with `plane-mcp` off
+            // no name resolves to an MCP server (a `tools:` section is refused earlier).
+            #[cfg(feature = "plane-mcp")]
+            if deploy.tools.servers.contains_key(name) {
+                return Some(crate::plane::Plane::Mcp);
+            }
+            if deploy.agents.agents.contains_key(name) {
+                return Some(crate::plane::Plane::A2a);
+            }
+            None
         };
         let mut non_llm: Vec<String> = Vec::new();
         for (pool_name, pool) in pools.iter() {
@@ -4652,13 +4678,27 @@ pub fn resolve(
     // agent named in a tool pool fails here rather than at dispatch — and the message says which
     // section the name actually lives in, because "not found" would send an operator looking for a
     // typo they did not make.
+    // Whether `m` names an MCP `tools:` server. Always false when the MCP plane is compiled out:
+    // there is no `tools:` registry then, and no pool is inferred onto the MCP plane, so
+    // `tool_pools_derived` is empty and the first loop below never iterates.
+    let is_tool_member = |m: &str| -> bool {
+        #[cfg(feature = "plane-mcp")]
+        {
+            deploy.tools.servers.contains_key(m)
+        }
+        #[cfg(not(feature = "plane-mcp"))]
+        {
+            let _ = m;
+            false
+        }
+    };
     for (pool, def) in &tool_pools_derived {
         check_failover_pool(
             &mut errors,
             "pools",
             pool,
             def,
-            |m| deploy.tools.servers.contains_key(m),
+            is_tool_member,
             |m| deploy.agents.agents.contains_key(m),
             "tools",
             "agents",
@@ -4671,7 +4711,7 @@ pub fn resolve(
             pool,
             def,
             |m| deploy.agents.agents.contains_key(m),
-            |m| deploy.tools.servers.contains_key(m),
+            is_tool_member,
             "agents",
             "tools",
         );
@@ -4725,6 +4765,11 @@ pub fn resolve(
     // only, into the ONE top-level `hooks:` map, and a dangling one is a boot error rather than a
     // silently dropped attachment. A dropped reference leaves an operator believing a control is
     // attached that is not, which is worse than the typo it came from.
+    //
+    // The whole block reads the typed `tools:` registry; it exists only when the MCP plane is
+    // compiled in. With `plane-mcp` off there is no `tools:` content to validate (a `tools:` section
+    // is refused earlier as naming an absent plane), so it is compiled out entirely.
+    #[cfg(feature = "plane-mcp")]
     if let Err(e) = crate::plane::config::validate_section_hooks(
         "`tools.hooks`",
         &deploy.tools.all_server_hooks,
@@ -4732,6 +4777,7 @@ pub fn resolve(
     ) {
         errors.push(e);
     }
+    #[cfg(feature = "plane-mcp")]
     for (server, def) in &deploy.tools.servers {
         for hook in deploy.tools.all_server_hooks.iter().chain(def.hooks.iter()) {
             if !deploy.hooks.contains_key(hook) {
@@ -4750,8 +4796,20 @@ pub fn resolve(
     // exists — file base plus whatever the admin API applied — and it is the single point boot,
     // `--validate`, the admin config-apply rebuild and the admin dry-run validate endpoint all pass
     // through, so a config that boots is exactly the config that validates.
+    #[cfg(feature = "plane-mcp")]
     if let Err(e) = crate::mcp::config::validate_published_names(&deploy.tools) {
         errors.push(e);
+    }
+    // With the MCP plane compiled out, a `tools:` section names MCP servers this build cannot reach:
+    // refuse it (the config deletion-gate leg) rather than silently ignore an operator's registry.
+    #[cfg(not(feature = "plane-mcp"))]
+    if deploy.tools.is_present() {
+        errors.push(
+            "tools: is configured, but this build was compiled without the MCP plane (feature \
+             `plane-mcp` is off), so busbar cannot reach any MCP server. Rebuild with the MCP plane \
+             enabled, or remove the `tools:` block."
+                .to_string(),
+        );
     }
 
     // ADMIN-PLANE BOOT-GUARD: a network-exposed admin listener MUST require client certificates
@@ -4799,6 +4857,7 @@ pub fn resolve(
     // expect another in its verifier, and every correctly-behaved client in the world would obtain a
     // token this server then refuses. A boot refusal names the field and what to type; a runtime one
     // is discovered by an agent that cannot connect and cannot say why.
+    #[cfg(feature = "plane-mcp")]
     let mcp = match deploy.mcp.as_ref().map(crate::mcp::McpResource::from_cfg) {
         None => None,
         Some(Ok(resource)) => Some(resource),
@@ -4806,6 +4865,21 @@ pub fn resolve(
             errors.push(e.to_string());
             None
         }
+    };
+    // With the MCP plane compiled out there is no resource to derive: an `mcp:` block names a plane
+    // this build does not carry, so it is refused (the config deletion-gate leg), and the raw
+    // capture is carried through unchanged for `RootCfg`.
+    #[cfg(not(feature = "plane-mcp"))]
+    let mcp = {
+        if deploy.mcp.as_ref().is_some_and(|s| s.is_present()) {
+            errors.push(
+                "mcp: is configured, but this build was compiled without the MCP plane (feature \
+                 `plane-mcp` is off), so busbar cannot serve an MCP endpoint. Rebuild with the MCP \
+                 plane enabled, or remove the `mcp:` block."
+                    .to_string(),
+            );
+        }
+        deploy.mcp.clone()
     };
 
     // The `oauth_as:` block, validated HERE for the same reason `mcp:` is: an authorization server

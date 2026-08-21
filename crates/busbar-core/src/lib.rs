@@ -71,6 +71,7 @@ pub mod json;
 pub mod limits;
 pub mod lineage;
 pub mod lossless;
+#[cfg(feature = "plane-mcp")]
 pub mod mcp;
 pub mod media;
 pub mod metrics;
