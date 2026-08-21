@@ -33,9 +33,11 @@ fn the_error_table_carries_the_specifications_grpc_column() {
         A2aError::TaskNotCancelable.grpc_status(),
         tonic::Code::FailedPrecondition
     );
+    // -32004/-32009 bind to FAILED_PRECONDITION (HTTP 400) per section 5.4's table — consistent
+    // with their http_status; a bare UNIMPLEMENTED would contradict the 400 they answer with.
     assert_eq!(
         A2aError::UnsupportedOperation.grpc_status(),
-        tonic::Code::Unimplemented
+        tonic::Code::FailedPrecondition
     );
     assert_eq!(
         A2aError::ContentTypeNotSupported.grpc_status(),
@@ -47,7 +49,7 @@ fn the_error_table_carries_the_specifications_grpc_column() {
     );
     assert_eq!(
         A2aError::VersionNotSupported.grpc_status(),
-        tonic::Code::Unimplemented
+        tonic::Code::FailedPrecondition
     );
 }
 
