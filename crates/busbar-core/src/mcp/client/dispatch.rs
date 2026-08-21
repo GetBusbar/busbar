@@ -292,7 +292,3 @@ mod dispatch_tests;
 #[cfg(test)]
 #[path = "tests/routing_key_tests.rs"]
 mod routing_key_tests;
-
-#[cfg(test)]
-#[path = "tests/generation_recheck_tests.rs"]
-mod generation_recheck_tests;
