@@ -46,15 +46,6 @@
 //! explicit operator act, precisely so that a poisoned capability list cannot be adopted by the same
 //! call that fetched it.
 
-// This plane-trust verb surface is mounted only for the MCP and A2A planes. With BOTH planes
-// compiled out nothing mounts it, so its items read dead — scoped to exactly that config so a real
-// single-plane build still lints it (the surface is plane-parameterised and used by whichever plane
-// remains).
-#![cfg_attr(
-    not(any(feature = "plane-mcp", feature = "plane-a2a")),
-    allow(dead_code)
-)]
-
 use std::future::Future;
 use std::sync::Arc;
 
