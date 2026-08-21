@@ -89,7 +89,7 @@ rustls-pki-types = { workspace = true }
 # `admin-tokens` match arm IN CORE — still a feature-gated arm inside the engine rather than a
 # dependency edge owned by the composition root. Moving that registration to the binary is the
 # protocol-extraction step's job; this split is what makes it possible. Do not "fix" it here.
-default = ["auth-admin-tokens", "hooks-ranking", "plane-mcp"]
+default = ["auth-admin-tokens", "hooks-ranking", "plane-mcp", "plane-a2a"]
 auth-admin-tokens = ["dep:busbar-auth-admin-tokens"]
 hooks-ranking = ["dep:busbar-hooks-ranking"]
 # THE MCP PLANE, in-core today (`src/mcp`), behind the SAME switch the binary already uses for MCP
@@ -99,6 +99,14 @@ hooks-ranking = ["dep:busbar-hooks-ranking"]
 # LLM and A2A planes with the MCP plane absent (the plane-split deletion test). The binary's
 # `plane-mcp` forwards to this via `busbar-core/plane-mcp`.
 plane-mcp = []
+# THE A2A PLANE, in-core today (`src/a2a`), behind the SAME switch the binary already uses for the
+# A2A crate (`busbar-a2a`): one plane-kind name for A2A-the-protocol and A2A-the-plane, never two.
+# Default-on — the shipped engine speaks A2A. With it OFF, `src/a2a` (and its plane-side helper
+# `plane::taskstore`) is compiled out and the `agents:` config section is captured raw and refused if
+# used, so core still routes the LLM and MCP planes with the A2A plane absent (the plane-split
+# deletion test). The binary's `plane-a2a` forwards to this via `busbar-core/plane-a2a`. The exact
+# analogue of `plane-mcp` above.
+plane-a2a = []
 openapi-schema = ["dep:schemars"]
 loom-model = ["dep:loom"]
 txn-fence-red = []

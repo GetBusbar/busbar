@@ -423,4 +423,72 @@ esac
 kill "$SRV_PID" 2>/dev/null; wait "$SRV_PID" 2>/dev/null; SRV_PID=""
 note "mcp-b boot: /healthz 200, /stats 200, POST /mcp $MCP_CODE (no plane handler) with plane-mcp off"
 
-echo "proto-deletion-gate: PASS (static 0; the LLM protocol deletes as one plugin and all six dialects it carries are refused, boot+serve, remaining dialects unaffected, control green; mcp independently droppable and still serving)"
+# ── a2a-b: THE A2A PLANE IS INDEPENDENTLY DROPPABLE, and the binary still SERVES LLM + MCP ────────
+# The exact analogue of the mcp-b/mcp-c legs (D4): `plane-a2a` off compiles `busbar-core/src/a2a`
+# (and its plane-side helper `plane::taskstore`) out, so core names no `crate::a2a` type. This is a
+# SEPARATE feature axis from `plane-mcp` — dropping it keeps MCP, proving the two planes are
+# independently droppable rather than droppable only as a set.
+A2A_TARGET="target/deletion-gate-a2a"
+A2A_KEEP="auth-admin-tokens,hooks-ranking,proto-llm,plane-mcp"
+note "a2a-b build: cargo build -p busbar --no-default-features --features $A2A_KEEP (plane-a2a OFF)"
+CARGO_TARGET_DIR="$A2A_TARGET" cargo build -q -p busbar \
+  --no-default-features --features "$A2A_KEEP" \
+  || die "the busbar binary must build with the A2A plane compiled out and LLM + MCP kept"
+A2A_DELETED_BIN="$A2A_TARGET/debug/busbar"
+[ -x "$A2A_DELETED_BIN" ] || die "a2a-deleted build binary not found at $A2A_DELETED_BIN"
+note "a2a-b build: ok ($A2A_DELETED_BIN)"
+
+# The kept LLM dialect still validates on this axis — so the leg measures the a2a edge specifically
+# and not a binary that lost everything.
+mk_providers "anthropic"; mk_config "127.0.0.1:0" "127.0.0.1:0"
+OUT=$(run_busbar "$A2A_DELETED_BIN" --validate 2>&1) \
+  || die "the a2a-deleted binary must still accept protocol: anthropic; got: $OUT"
+note "a2a-b kept dialect: anthropic config validates clean with plane-a2a off"
+
+# MCP still routes with the A2A plane gone: a `tools:` config validates clean (plane-mcp is kept in
+# this build), so this is not a binary that dropped every plane — only A2A left.
+printf 'listen: "127.0.0.1:0"\nadmin_listen: "127.0.0.1:0"\nproviders: {}\nmodels: {}\ntools:\n  s:\n    url: "https://example.com/mcp"\n    pin:\n      mechanism: unpinned\n' > "$FIX/config.yaml"
+mk_no_providers
+run_busbar "$A2A_DELETED_BIN" --validate >"$FIX/a2a-tools-validate.out" 2>&1 \
+  || { cat "$FIX/a2a-tools-validate.out"; die "the a2a-deleted binary must still ACCEPT a tools: config — MCP did not survive the A2A drop"; }
+note "a2a-b MCP-survives: a tools: config validates clean with plane-a2a off"
+
+# ── a2a-c: THE A2A PLANE'S CONFIG SURFACE LEFT WITH IT ───────────────────────────────────────────
+# `plane-a2a` off compiles `busbar-core/src/a2a` out (D4), so `agents:` names a plane this build
+# does not carry. `resolve` REFUSES such a config, naming the compiled-out plane — the config
+# analogue of the protocol registry refusing a deleted dialect, and the symmetric twin of mcp-c.
+printf 'listen: "127.0.0.1:0"\nadmin_listen: "127.0.0.1:0"\nproviders: {}\nmodels: {}\nagents:\n  a:\n    url: "https://example.com/a2a"\n' > "$FIX/config.yaml"
+mk_no_providers
+if run_busbar "$A2A_DELETED_BIN" --validate >"$FIX/agents-validate.out" 2>&1; then
+  cat "$FIX/agents-validate.out"; die "the a2a-deleted binary ACCEPTED an agents: config — the A2A plane's config surface did not leave with it"
+fi
+grep -qiE "without the A2A plane|plane-a2a" "$FIX/agents-validate.out" \
+  || { cat "$FIX/agents-validate.out"; die "the agents: refusal must NAME the compiled-out A2A plane"; }
+note "a2a-c config: an agents: section is REFUSED, naming the compiled-out A2A plane"
+
+# and it BOOTS and SERVES (R-D: fewer planes is a valid busbar).
+PORT=$(free_port) || die "could not find a free port pair for the a2a-deleted boot"
+ADMIN_PORT=$(( PORT + 1 ))
+mk_providers "anthropic"; mk_config "127.0.0.1:$PORT" "127.0.0.1:$ADMIN_PORT"
+run_busbar_bg "$A2A_DELETED_BIN" >"$FIX/boot-a2a.log" 2>&1 &
+SRV_PID=$!
+up=""
+for _ in $(seq 1 60); do
+  if curl -fsS "http://127.0.0.1:$PORT/healthz" >/dev/null 2>&1; then up=1; break; fi
+  kill -0 "$SRV_PID" 2>/dev/null || break
+  sleep 0.5
+done
+[ -n "$up" ] || { cat "$FIX/boot-a2a.log"; die "the a2a-deleted binary did not come up on /healthz"; }
+curl -fsS "http://127.0.0.1:$PORT/stats" >/dev/null || die "/stats must answer on the a2a-deleted binary"
+# THE /a2a HTTP LEG (D4): the A2A PLANE — its `POST /a2a/agents/{id}` receiving mount — is compiled
+# out with `plane-a2a`, so a POST under `/a2a` resolves to NO plane handler (non-2xx), while the
+# operator surface (/healthz, /stats) and the surviving LLM/MCP planes still serve.
+A2A_CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:$PORT/a2a/agents/probe" \
+  -H 'content-type: application/json' -d '{"jsonrpc":"2.0","method":"message/send","id":1}')
+case "$A2A_CODE" in
+  2*) die "POST /a2a answered $A2A_CODE with the A2A plane compiled out — the plane's data path did not leave core" ;;
+esac
+kill "$SRV_PID" 2>/dev/null; wait "$SRV_PID" 2>/dev/null; SRV_PID=""
+note "a2a-b boot: /healthz 200, /stats 200, POST /a2a $A2A_CODE (no plane handler) with plane-a2a off"
+
+echo "proto-deletion-gate: PASS (static 0; the LLM protocol deletes as one plugin and all six dialects it carries are refused, boot+serve, remaining dialects unaffected, control green; mcp and a2a each independently droppable and still serving)"

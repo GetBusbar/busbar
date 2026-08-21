@@ -91,7 +91,8 @@ pub(crate) fn redact_settings_bags(v: &mut serde_json::Value) {
 }
 
 use super::named_def_views::{
-    agent_def_view, export_def_view, identity_provider_view, unparseable_def_view,
+    agent_def_view_opt, agent_def_views, export_def_view, identity_provider_view,
+    unparseable_def_view,
 };
 
 /// Derive busbar's spend ESTIMATE (micro-units, abstract cost units) for one PER-MODEL metering
@@ -1076,13 +1077,9 @@ impl AdminService {
                     Vec::new() // no `tools:` registry when the MCP plane is compiled out
                 }
             }
-            NamedMapSection::Agents => self
-                .app
-                .agent_defs
-                .agents
-                .iter()
-                .map(|(name, cfg)| agent_def_view(name, cfg))
-                .collect(),
+            // Empty when the A2A plane is compiled out — the helper carries the cfg split so this
+            // arm names no `crate::a2a` type (see `named_def_views::agent_def_views`).
+            NamedMapSection::Agents => agent_def_views(&self.app),
         };
         // Plus every overlay entry this binary could not parse, explicitly FLAGGED. They are stored
         // but NOT live (dropped at each rebuild), and listing them here is what makes that
@@ -1128,12 +1125,8 @@ impl AdminService {
                     None
                 }
             }
-            NamedMapSection::Agents => self
-                .app
-                .agent_defs
-                .agents
-                .get(name)
-                .map(|cfg| agent_def_view(name, cfg)),
+            // `None` when the A2A plane is compiled out — the helper carries the cfg split.
+            NamedMapSection::Agents => agent_def_view_opt(&self.app, name),
         };
         view.or_else(|| {
             // A stored-but-unparseable overlay entry answers the FLAGGED view rather than a 404: a
@@ -2480,17 +2473,20 @@ fn reresolve_plane_gates(next: &mut crate::state::App) {
             next.config_version,
         );
     }
-    let agents = next.agent_defs.clone();
-    next.a2a_agent_gates = crate::hooks::resolve_container_gates(
-        agents
-            .agents
-            .iter()
-            .map(|(n, d)| (n.as_str(), d.hooks.as_slice())),
-        &agents.all_agent_hooks,
-        &next.hook_registry,
-        &next.hook_env,
-        next.config_version,
-    );
+    #[cfg(feature = "plane-a2a")] // no A2A registry to read when the plane is compiled out
+    {
+        let agents = next.agent_defs.clone();
+        next.a2a_agent_gates = crate::hooks::resolve_container_gates(
+            agents
+                .agents
+                .iter()
+                .map(|(n, d)| (n.as_str(), d.hooks.as_slice())),
+            &agents.all_agent_hooks,
+            &next.hook_registry,
+            &next.hook_env,
+            next.config_version,
+        );
+    }
 }
 
 #[cfg(test)]

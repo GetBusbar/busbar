@@ -100,6 +100,10 @@ pub(crate) mod provenance;
 pub(crate) mod quarantine;
 pub mod registry;
 pub(crate) mod store;
+// `plane::taskstore` stores A2A task rows and depends on `crate::a2a::task`/`crate::a2a::pushnotify`
+// types; every caller lives in `crate::a2a`. It is therefore an A2A-plane helper that happens to sit
+// under `plane/`, and it is compiled out with the plane (`plane-a2a` off) alongside `src/a2a`.
+#[cfg(feature = "plane-a2a")]
 pub(crate) mod taskstore;
 
 /// THE WIRE FORMAT both mounted planes speak: JSON-RPC 2.0. Named once, here, because it is read
@@ -141,10 +145,16 @@ impl Plane {
     /// plane has no built-in declaration, so it must not be iterated here — every `.decl()` on it
     /// would fault. The `Plane::Mcp` enum variant still exists (a `Copy` key some match arms name),
     /// but it is not a plane this build serves.
+    ///
+    /// `Plane::A2a` is present only when the A2A plane is compiled in (`plane-a2a`), for the same
+    /// reason `Plane::Mcp` is gated: with it off the plane has no built-in declaration, so it must
+    /// not be iterated here — every `.decl()` on it would fault. The `Plane::A2a` enum variant still
+    /// exists (a `Copy` key some match arms name), but it is not a plane this build serves.
     pub(crate) const ALL: &'static [Plane] = &[
         Plane::Llm,
         #[cfg(feature = "plane-mcp")]
         Plane::Mcp,
+        #[cfg(feature = "plane-a2a")]
         Plane::A2a,
     ];
 

@@ -1488,7 +1488,12 @@ fn validate_unified_pool_names(cfg: &RootCfg, errors: &mut Vec<String>) {
     let tools: BTreeSet<&str> = cfg.tool_defs.servers.keys().map(|s| s.as_str()).collect();
     #[cfg(not(feature = "plane-mcp"))]
     let tools: BTreeSet<&str> = BTreeSet::new();
+    // The A2A `agents:` noun exists only when the plane is compiled in; with `plane-a2a` off no name
+    // resolves to an agent (an `agents:` section is refused at resolve).
+    #[cfg(feature = "plane-a2a")]
     let agents: BTreeSet<&str> = cfg.agent_defs.agents.keys().map(|s| s.as_str()).collect();
+    #[cfg(not(feature = "plane-a2a"))]
+    let agents: BTreeSet<&str> = BTreeSet::new();
 
     // (1) No name may be defined in two nouns — the kind of a bare member must be decidable by name.
     for (a, b, name_a, name_b) in [

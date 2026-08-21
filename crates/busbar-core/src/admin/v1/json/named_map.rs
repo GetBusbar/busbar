@@ -674,7 +674,18 @@ fn section_contains(app: &App, section: NamedMapSection, name: &str) -> bool {
                 false
             }
         }
-        NamedMapSection::Agents => app.agent_defs.agents.contains_key(name),
+        NamedMapSection::Agents => {
+            #[cfg(feature = "plane-a2a")]
+            {
+                app.agent_defs.agents.contains_key(name)
+            }
+            // No A2A plane compiled in ⇒ no live `agents:` registry.
+            #[cfg(not(feature = "plane-a2a"))]
+            {
+                let _ = (app, name);
+                false
+            }
+        }
     }
 }
 
