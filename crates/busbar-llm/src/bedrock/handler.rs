@@ -3,13 +3,13 @@
 
 //! Bedrock `RequestHandler` + cells. Embeddings first (Titan, via InvokeModel).
 
+use crate::ir::embeddings::{
+    EmbInput, EmbeddingItem, EmbeddingsReq, EmbeddingsResp, EncFmt, VectorData,
+};
 use busbar_core::handlers::{
     CodecError, EgressCtx, IngressReject, OperationHandler, RequestHandler, WireBody,
 };
-use busbar_core::ir::embeddings::{
-    EmbInput, EmbeddingItem, EmbeddingsReq, EmbeddingsResp, EncFmt, VectorData,
-};
-use busbar_core::ir::variant::{IrReq, IrResp};
+use busbar_core::ir::handle::IrHandle;
 use busbar_core::operation::Operation;
 use bytes::Bytes;
 use serde_json::{json, Value};
@@ -17,8 +17,8 @@ use serde_json::{json, Value};
 pub struct BedrockRequestHandler;
 /// This protocol's OWN chat instance — delete this line (and the registry arm) and this
 /// protocol's chat 404s via the standard no-handler path; everything else keeps working.
-static CHAT: busbar_core::handlers::chat::ChatOperation =
-    busbar_core::handlers::chat::ChatOperation("bedrock");
+static CHAT: super::super::chat_handle::ChatOperation =
+    super::super::chat_handle::ChatOperation("bedrock");
 static EMB: BedrockEmbeddings = BedrockEmbeddings;
 static IMG: BedrockImage = BedrockImage;
 static RERANK: BedrockRerank = BedrockRerank;
@@ -101,74 +101,25 @@ impl OperationHandler for BedrockImage {
     }
     /// Titan image `InvokeModel` wire → IR (bedrock as INGRESS). Model rides the PATH, not the body —
     /// the route layer resolves it; the IR's `model` is filled by routing (`IrReq::set_model`).
-    fn read_request(&self, body: &[u8], _content_type: &str) -> Result<IrReq, IngressReject> {
-        let wire: Value =
-            serde_json::from_slice(body).map_err(|e| IngressReject::BadRequest(e.to_string()))?;
-        let params = wire.get("textToImageParams").cloned().unwrap_or_default();
-        let cfg = wire
-            .get("imageGenerationConfig")
-            .cloned()
-            .unwrap_or_default();
-        Ok(IrReq::Image(busbar_core::ir::image::ImageReq {
-            prompt: params
-                .get("text")
-                .and_then(Value::as_str)
-                .map(str::to_string),
-            negative_prompt: params
-                .get("negativeText")
-                .and_then(Value::as_str)
-                .map(str::to_string),
-            n: cfg
-                .get("numberOfImages")
-                .and_then(Value::as_u64)
-                .and_then(|n| u32::try_from(n).ok()),
-            seed: cfg.get("seed").and_then(Value::as_u64),
-            guidance_scale: cfg
-                .get("cfgScale")
-                .and_then(Value::as_f64)
-                .map(|f| f as f32),
-            ..Default::default()
-        }))
+    fn read_request(
+        &self,
+        body: &[u8],
+        _content_type: &str,
+    ) -> Result<Box<dyn IrHandle>, IngressReject> {
+        Ok(Box::new(super::super::leaf_handles::ImageReqHandle(
+            read_image_request(body, _content_type)?,
+        )) as Box<dyn IrHandle>)
     }
-    fn write_request(&self, ir: &IrReq) -> Bytes {
-        let IrReq::Image(r) = ir else {
-            return Bytes::new();
-        };
-        super::super::leaf_codec::image_write_request("bedrock", r)
-    }
-    fn read_response(&self, wire: &[u8]) -> Result<IrResp, CodecError> {
-        let v: Value =
-            serde_json::from_slice(wire).map_err(|e| CodecError::Malformed(e.to_string()))?;
-        let images = v
-            .get("images")
-            .and_then(Value::as_array)
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|b| b.as_str())
-                    .map(|b| busbar_core::media::ImageOutput {
-                        b64: Some(b.to_string()),
-                        ..Default::default()
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        Ok(IrResp::Image(busbar_core::ir::image::ImageResp {
-            images,
-            ..Default::default()
-        }))
-    }
-    /// IR → Titan image response (bedrock as INGRESS): `{"images": ["<b64>", …]}`.
-    fn write_response(&self, ir: &IrResp) -> WireBody {
-        let IrResp::Image(r) = ir else {
-            return WireBody::json(Bytes::new());
-        };
-        super::super::leaf_codec::image_write_response("bedrock", r)
+    fn read_response(&self, wire: &[u8]) -> Result<Box<dyn IrHandle>, CodecError> {
+        Ok(Box::new(super::super::leaf_handles::ImageRespHandle(
+            read_image_response(wire)?,
+        )) as Box<dyn IrHandle>)
     }
 }
 
 /// IR → Titan image request wire (the body of [`BedrockImage::write_request`], moved behind the
 /// `(image, bedrock)` key — G6 A4b option-a). Byte-identical to the pre-cutover inline write.
-pub(crate) fn write_image_request(r: &busbar_core::ir::image::ImageReq) -> Bytes {
+pub(crate) fn write_image_request(r: &crate::ir::image::ImageReq) -> Bytes {
     let body = json!({
         "taskType": "TEXT_IMAGE",
         "textToImageParams": { "text": r.prompt.clone().unwrap_or_default() },
@@ -179,7 +130,7 @@ pub(crate) fn write_image_request(r: &busbar_core::ir::image::ImageReq) -> Bytes
 
 /// IR → Titan image response wire (the body of [`BedrockImage::write_response`], moved behind the
 /// `(image, bedrock)` key — G6 A4b option-a). Byte-identical to the pre-cutover inline write.
-pub(crate) fn write_image_response(r: &busbar_core::ir::image::ImageResp) -> WireBody {
+pub(crate) fn write_image_response(r: &crate::ir::image::ImageResp) -> WireBody {
     let images: Vec<&str> = r.images.iter().filter_map(|i| i.b64.as_deref()).collect();
     WireBody::json(Bytes::from(
         serde_json::to_vec(&json!({ "images": images })).unwrap_or_default(),
@@ -203,66 +154,19 @@ impl OperationHandler for BedrockEmbeddings {
     }
     /// Titan `InvokeModel` wire → IR (bedrock as INGRESS): `inputText` (+ v2 dims/normalize). Model
     /// rides the PATH; routing fills it via `IrReq::set_model`.
-    fn read_request(&self, body: &[u8], _content_type: &str) -> Result<IrReq, IngressReject> {
-        let wire: Value =
-            serde_json::from_slice(body).map_err(|e| IngressReject::BadRequest(e.to_string()))?;
-        let Some(text) = wire.get("inputText").and_then(Value::as_str) else {
-            return Err(IngressReject::BadRequest(
-                "invoke embeddings requires `inputText`".into(),
-            ));
-        };
-        Ok(IrReq::Embeddings(
-            busbar_core::ir::embeddings::EmbeddingsReq {
-                input: EmbInput::Text(vec![text.to_string()]),
-                dimensions: wire
-                    .get("dimensions")
-                    .and_then(Value::as_u64)
-                    .and_then(|d| u32::try_from(d).ok()),
-                normalize: wire.get("normalize").and_then(Value::as_bool),
-                encoding_formats: vec![EncFmt::Float],
-                ..Default::default()
-            },
-        ))
+    fn read_request(
+        &self,
+        body: &[u8],
+        _content_type: &str,
+    ) -> Result<Box<dyn IrHandle>, IngressReject> {
+        Ok(Box::new(super::super::leaf_handles::EmbeddingsReqHandle(
+            read_embeddings_request(body, _content_type)?,
+        )) as Box<dyn IrHandle>)
     }
-    fn write_request(&self, ir: &IrReq) -> Bytes {
-        let IrReq::Embeddings(r) = ir else {
-            return Bytes::new();
-        };
-        super::super::leaf_codec::embeddings_write_request("bedrock", r)
-    }
-    fn read_response(&self, wire: &[u8]) -> Result<IrResp, CodecError> {
-        let v: Value =
-            serde_json::from_slice(wire).map_err(|e| CodecError::Malformed(e.to_string()))?;
-        let mut item = EmbeddingItem::default();
-        if let Some(f) = v.get("embedding").and_then(Value::as_array) {
-            item.vectors.insert(
-                EncFmt::Float,
-                VectorData::Float(
-                    f.iter()
-                        .filter_map(|x| x.as_f64().map(|n| n as f32))
-                        .collect(),
-                ),
-            );
-        }
-        let usage = v
-            .get("inputTextTokenCount")
-            .and_then(Value::as_u64)
-            .map(|n| busbar_core::billing::TokenUsage {
-                input: n,
-                ..Default::default()
-            });
-        Ok(IrResp::Embeddings(EmbeddingsResp {
-            embeddings: vec![item],
-            usage,
-            ..Default::default()
-        }))
-    }
-    /// IR → Titan embeddings response (bedrock as INGRESS): `embedding` + `inputTextTokenCount`.
-    fn write_response(&self, ir: &IrResp) -> WireBody {
-        let IrResp::Embeddings(r) = ir else {
-            return WireBody::json(Bytes::new());
-        };
-        super::super::leaf_codec::embeddings_write_response("bedrock", r)
+    fn read_response(&self, wire: &[u8]) -> Result<Box<dyn IrHandle>, CodecError> {
+        Ok(Box::new(super::super::leaf_handles::EmbeddingsRespHandle(
+            read_embeddings_response(wire)?,
+        )) as Box<dyn IrHandle>)
     }
 }
 
@@ -330,58 +234,25 @@ impl OperationHandler for BedrockRerank {
     fn extract_error(&self, status: u16, body: &[u8]) -> busbar_core::breaker::RawUpstreamError {
         busbar_core::handlers::protocol_error("bedrock", status, body)
     }
-    fn read_request(&self, body: &[u8], _content_type: &str) -> Result<IrReq, IngressReject> {
-        let wire: Value =
-            serde_json::from_slice(body).map_err(|e| IngressReject::BadRequest(e.to_string()))?;
-        let query = wire
-            .get("query")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string();
-        let documents = super::super::cohere::handler::rerank_documents_pub(wire.get("documents"));
-        if query.is_empty() || documents.is_empty() {
-            return Err(IngressReject::BadRequest(
-                "rerank request requires `query` and `documents`".into(),
-            ));
-        }
-        Ok(IrReq::Rerank(busbar_core::ir::rerank::RerankReq {
-            // Path-model protocol: the model arrives via the URL and routing calls `set_model`.
-            model: String::new(),
-            query,
-            documents,
-            top_n: wire
-                .get("top_n")
-                .and_then(Value::as_u64)
-                .and_then(|n| u32::try_from(n).ok()),
-            ..Default::default()
-        }))
+    fn read_request(
+        &self,
+        body: &[u8],
+        _content_type: &str,
+    ) -> Result<Box<dyn IrHandle>, IngressReject> {
+        Ok(Box::new(super::super::leaf_handles::RerankReqHandle(
+            read_rerank_request(body, _content_type)?,
+        )) as Box<dyn IrHandle>)
     }
-    fn write_request(&self, ir: &IrReq) -> Bytes {
-        let IrReq::Rerank(r) = ir else {
-            return Bytes::new();
-        };
-        super::super::leaf_codec::rerank_write_request("bedrock", r)
-    }
-    fn read_response(&self, wire: &[u8]) -> Result<IrResp, CodecError> {
-        let v: Value =
-            serde_json::from_slice(wire).map_err(|e| CodecError::Malformed(e.to_string()))?;
-        Ok(IrResp::Rerank(busbar_core::ir::rerank::RerankResp {
-            id: v.get("id").and_then(Value::as_str).map(str::to_string),
-            results: super::super::cohere::handler::read_rerank_results(v.get("results")),
-            ..Default::default()
-        }))
-    }
-    fn write_response(&self, ir: &IrResp) -> WireBody {
-        let IrResp::Rerank(r) = ir else {
-            return WireBody::json(Bytes::new());
-        };
-        super::super::leaf_codec::rerank_write_response("bedrock", r)
+    fn read_response(&self, wire: &[u8]) -> Result<Box<dyn IrHandle>, CodecError> {
+        Ok(Box::new(super::super::leaf_handles::RerankRespHandle(
+            read_rerank_response(wire)?,
+        )) as Box<dyn IrHandle>)
     }
 }
 
 /// IR → bedrock rerank request wire (the body of [`BedrockRerank::write_request`], moved behind the
 /// `(rerank, bedrock)` key — G6 A4b option-a). Byte-identical to the pre-cutover inline write.
-pub(crate) fn write_rerank_request(r: &busbar_core::ir::rerank::RerankReq) -> Bytes {
+pub(crate) fn write_rerank_request(r: &crate::ir::rerank::RerankReq) -> Bytes {
     let mut body = json!({
         "query": r.query,
         "documents": r.documents,
@@ -395,7 +266,7 @@ pub(crate) fn write_rerank_request(r: &busbar_core::ir::rerank::RerankReq) -> By
 
 /// IR → bedrock rerank response wire (the body of [`BedrockRerank::write_response`], moved behind the
 /// `(rerank, bedrock)` key — G6 A4b option-a). Byte-identical to the pre-cutover inline write.
-pub(crate) fn write_rerank_response(r: &busbar_core::ir::rerank::RerankResp) -> WireBody {
+pub(crate) fn write_rerank_response(r: &crate::ir::rerank::RerankResp) -> WireBody {
     let results: Vec<Value> = r
         .results
         .iter()
@@ -411,3 +282,171 @@ pub(crate) fn write_rerank_response(r: &busbar_core::ir::rerank::RerankResp) -> 
 #[cfg(test)]
 #[path = "tests/handler_tests.rs"]
 mod tests;
+
+/// Wire -> concrete `ImageReq` parse, extracted from the `OperationHandler::read_request`
+/// body so a dissolved leaf-op handle and the `(op,proto)` `leaf_codec` read dispatch (G6 A4b,
+/// owner ruling b) can recover the concrete IR without a downcast. Byte-identical parse.
+pub(crate) fn read_image_request(
+    body: &[u8],
+    _content_type: &str,
+) -> Result<crate::ir::image::ImageReq, IngressReject> {
+    let wire: Value =
+        serde_json::from_slice(body).map_err(|e| IngressReject::BadRequest(e.to_string()))?;
+    let params = wire.get("textToImageParams").cloned().unwrap_or_default();
+    let cfg = wire
+        .get("imageGenerationConfig")
+        .cloned()
+        .unwrap_or_default();
+    Ok(crate::ir::image::ImageReq {
+        prompt: params
+            .get("text")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        negative_prompt: params
+            .get("negativeText")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        n: cfg
+            .get("numberOfImages")
+            .and_then(Value::as_u64)
+            .and_then(|n| u32::try_from(n).ok()),
+        seed: cfg.get("seed").and_then(Value::as_u64),
+        guidance_scale: cfg
+            .get("cfgScale")
+            .and_then(Value::as_f64)
+            .map(|f| f as f32),
+        ..Default::default()
+    })
+}
+
+/// Wire -> concrete `ImageResp` parse, extracted from the `OperationHandler::read_response`
+/// body so a dissolved leaf-op handle and the `(op,proto)` `leaf_codec` read dispatch (G6 A4b,
+/// owner ruling b) can recover the concrete IR without a downcast. Byte-identical parse.
+pub(crate) fn read_image_response(wire: &[u8]) -> Result<crate::ir::image::ImageResp, CodecError> {
+    let v: Value =
+        serde_json::from_slice(wire).map_err(|e| CodecError::Malformed(e.to_string()))?;
+    let images = v
+        .get("images")
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|b| b.as_str())
+                .map(|b| busbar_core::media::ImageOutput {
+                    b64: Some(b.to_string()),
+                    ..Default::default()
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok(crate::ir::image::ImageResp {
+        images,
+        ..Default::default()
+    })
+}
+
+/// Wire -> concrete `EmbeddingsReq` parse, extracted from the `OperationHandler::read_request`
+/// body so a dissolved leaf-op handle and the `(op,proto)` `leaf_codec` read dispatch (G6 A4b,
+/// owner ruling b) can recover the concrete IR without a downcast. Byte-identical parse.
+pub(crate) fn read_embeddings_request(
+    body: &[u8],
+    _content_type: &str,
+) -> Result<crate::ir::embeddings::EmbeddingsReq, IngressReject> {
+    let wire: Value =
+        serde_json::from_slice(body).map_err(|e| IngressReject::BadRequest(e.to_string()))?;
+    let Some(text) = wire.get("inputText").and_then(Value::as_str) else {
+        return Err(IngressReject::BadRequest(
+            "invoke embeddings requires `inputText`".into(),
+        ));
+    };
+    Ok(crate::ir::embeddings::EmbeddingsReq {
+        input: EmbInput::Text(vec![text.to_string()]),
+        dimensions: wire
+            .get("dimensions")
+            .and_then(Value::as_u64)
+            .and_then(|d| u32::try_from(d).ok()),
+        normalize: wire.get("normalize").and_then(Value::as_bool),
+        encoding_formats: vec![EncFmt::Float],
+        ..Default::default()
+    })
+}
+
+/// Wire -> concrete `EmbeddingsResp` parse, extracted from the `OperationHandler::read_response`
+/// body so a dissolved leaf-op handle and the `(op,proto)` `leaf_codec` read dispatch (G6 A4b,
+/// owner ruling b) can recover the concrete IR without a downcast. Byte-identical parse.
+pub(crate) fn read_embeddings_response(
+    wire: &[u8],
+) -> Result<crate::ir::embeddings::EmbeddingsResp, CodecError> {
+    let v: Value =
+        serde_json::from_slice(wire).map_err(|e| CodecError::Malformed(e.to_string()))?;
+    let mut item = EmbeddingItem::default();
+    if let Some(f) = v.get("embedding").and_then(Value::as_array) {
+        item.vectors.insert(
+            EncFmt::Float,
+            VectorData::Float(
+                f.iter()
+                    .filter_map(|x| x.as_f64().map(|n| n as f32))
+                    .collect(),
+            ),
+        );
+    }
+    let usage = v
+        .get("inputTextTokenCount")
+        .and_then(Value::as_u64)
+        .map(|n| busbar_core::billing::TokenUsage {
+            input: n,
+            ..Default::default()
+        });
+    Ok(EmbeddingsResp {
+        embeddings: vec![item],
+        usage,
+        ..Default::default()
+    })
+}
+
+/// Wire -> concrete `RerankReq` parse, extracted from the `OperationHandler::read_request`
+/// body so a dissolved leaf-op handle and the `(op,proto)` `leaf_codec` read dispatch (G6 A4b,
+/// owner ruling b) can recover the concrete IR without a downcast. Byte-identical parse.
+pub(crate) fn read_rerank_request(
+    body: &[u8],
+    _content_type: &str,
+) -> Result<crate::ir::rerank::RerankReq, IngressReject> {
+    let wire: Value =
+        serde_json::from_slice(body).map_err(|e| IngressReject::BadRequest(e.to_string()))?;
+    let query = wire
+        .get("query")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let documents = super::super::cohere::handler::rerank_documents_pub(wire.get("documents"));
+    if query.is_empty() || documents.is_empty() {
+        return Err(IngressReject::BadRequest(
+            "rerank request requires `query` and `documents`".into(),
+        ));
+    }
+    Ok(crate::ir::rerank::RerankReq {
+        // Path-model protocol: the model arrives via the URL and routing calls `set_model`.
+        model: String::new(),
+        query,
+        documents,
+        top_n: wire
+            .get("top_n")
+            .and_then(Value::as_u64)
+            .and_then(|n| u32::try_from(n).ok()),
+        ..Default::default()
+    })
+}
+
+/// Wire -> concrete `RerankResp` parse, extracted from the `OperationHandler::read_response`
+/// body so a dissolved leaf-op handle and the `(op,proto)` `leaf_codec` read dispatch (G6 A4b,
+/// owner ruling b) can recover the concrete IR without a downcast. Byte-identical parse.
+pub(crate) fn read_rerank_response(
+    wire: &[u8],
+) -> Result<crate::ir::rerank::RerankResp, CodecError> {
+    let v: Value =
+        serde_json::from_slice(wire).map_err(|e| CodecError::Malformed(e.to_string()))?;
+    Ok(crate::ir::rerank::RerankResp {
+        id: v.get("id").and_then(Value::as_str).map(str::to_string),
+        results: super::super::cohere::handler::read_rerank_results(v.get("results")),
+        ..Default::default()
+    })
+}

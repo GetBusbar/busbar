@@ -3,9 +3,9 @@
 
 //! OpenAI protocol reader/writer implementation.
 
+use crate::ir::{IrStreamEvent, IrUsage};
 use axum::http::{header::HeaderValue, HeaderName, StatusCode};
 use busbar_core::breaker::StatusClass;
-use busbar_core::ir::{IrStreamEvent, IrUsage};
 use busbar_core::proto::openai_family::{
     bearer_error_code, openai_context_length_prose_scan, ERR_TYPE_AUTHENTICATION,
     ERR_TYPE_INSUFFICIENT_QUOTA, ERR_TYPE_INVALID_REQUEST, ERR_TYPE_NOT_FOUND, ERR_TYPE_OVERLOADED,
@@ -13,6 +13,12 @@ use busbar_core::proto::openai_family::{
     OPENAI_FAMILY_MAX_OPEN_TOOLS,
 };
 use busbar_core::proto::*;
+// G6 A4b: the wire-codec surface (ProtocolReader/Writer/Protocol/StreamFraming/ToolIdRemap/
+// protocol_for) relocated to this plugin's `proto_codec`; reach it RELATIVELY so it resolves both
+// standalone (crate::proto_codec) and netted into core (core::proto::proto_codec).
+#[allow(unused_imports)]
+// used standalone; redundant with busbar_core::proto::* when netted into core
+use super::proto_codec::*;
 
 pub mod handler;
 mod reader;
@@ -48,7 +54,7 @@ fn models_list_envelope(names: &[&str]) -> serde_json::Value {
 /// OPENAI'S DECLARATION. See `proto::registry` for what each field replaces.
 pub const DECL: ProtocolDecl = ProtocolDecl {
     name: PROTO_OPENAI,
-    codec: Some(protocol),
+    codec: Some(|| super::proto_codec::dialect_ref(PROTO_OPENAI)),
     handler: Some(&handler::OpenAiRequestHandler),
     verbs: &[
         busbar_core::operation::Operation::CHAT,
@@ -185,7 +191,7 @@ const PATH_UPSTREAM: &str = "/v1/chat/completions";
 /// that key on the message string still fire.
 const AUTH_FAILURE_MSG: &str = "Incorrect API key provided.";
 
-/// The `vendor` tag on an [`busbar_core::ir::IrImageSource::Vendor`] this protocol produces — an OpenAI
+/// The `vendor` tag on an [`crate::ir::IrImageSource::Vendor`] this protocol produces — an OpenAI
 /// `file.file_id`, an uploads-API handle with no neutral (base64/url) form. Only an OpenAI-family
 /// writer recognizes the tag and re-emits the reference; every other writer drops it with a warn
 /// rather than emitting a handle its own backend cannot resolve.
@@ -200,10 +206,10 @@ fn model_or_default(model: Option<&str>) -> &str {
     model.unwrap_or(DEFAULT_MODEL)
 }
 
-/// OpenAI native `finish_reason` token → canonical [`busbar_core::ir::IrStopReason`]. The ONLY place that
+/// OpenAI native `finish_reason` token → canonical [`crate::ir::IrStopReason`]. The ONLY place that
 /// knows OpenAI's finish vocabulary on the read side.
-fn read_openai_stop_reason(token: &str) -> busbar_core::ir::IrStopReason {
-    use busbar_core::ir::IrStopReason as S;
+fn read_openai_stop_reason(token: &str) -> crate::ir::IrStopReason {
+    use crate::ir::IrStopReason as S;
     match token {
         FINISH_STOP => S::EndTurn,
         FINISH_LENGTH => S::MaxTokens,
@@ -213,12 +219,12 @@ fn read_openai_stop_reason(token: &str) -> busbar_core::ir::IrStopReason {
     }
 }
 
-/// [`busbar_core::ir::IrStopReason`] → OpenAI native `finish_reason`. EXHAUSTIVE: OpenAI's enum is
+/// [`crate::ir::IrStopReason`] → OpenAI native `finish_reason`. EXHAUSTIVE: OpenAI's enum is
 /// {stop,length,tool_calls,content_filter}; any reason with no OpenAI analog (`refusal`, `error`,
 /// `pause_turn`, `other`) degrades to the SDK-safe `stop` rather than leak an off-enum value a strict
 /// SDK rejects.
-fn write_openai_stop_reason(reason: busbar_core::ir::IrStopReason) -> &'static str {
-    use busbar_core::ir::IrStopReason as S;
+fn write_openai_stop_reason(reason: crate::ir::IrStopReason) -> &'static str {
+    use crate::ir::IrStopReason as S;
     match reason {
         S::EndTurn | S::StopSequence => FINISH_STOP,
         S::MaxTokens => FINISH_LENGTH,
@@ -229,13 +235,13 @@ fn write_openai_stop_reason(reason: busbar_core::ir::IrStopReason) -> &'static s
 }
 
 /// Read an OpenAI Chat Completions `response_format` object into the protocol-agnostic
-/// [`busbar_core::ir::IrResponseFormat`]. This is the ONLY code that knows OpenAI's structured-output wire
+/// [`crate::ir::IrResponseFormat`]. This is the ONLY code that knows OpenAI's structured-output wire
 /// shape (`{type:"json_schema", json_schema:{name,schema,strict,description}}` / `{type:"json_object"}`
 /// / `{type:"text"}`). Returns `None` for a non-object or absent directive.
-fn read_openai_response_format(v: &serde_json::Value) -> Option<busbar_core::ir::IrResponseFormat> {
+fn read_openai_response_format(v: &serde_json::Value) -> Option<crate::ir::IrResponseFormat> {
     let o = v.as_object()?;
     match o.get("type").and_then(|t| t.as_str()) {
-        Some(RESP_FORMAT_TEXT) => Some(busbar_core::ir::IrResponseFormat {
+        Some(RESP_FORMAT_TEXT) => Some(crate::ir::IrResponseFormat {
             json: false,
             schema: None,
             name: None,
@@ -244,7 +250,7 @@ fn read_openai_response_format(v: &serde_json::Value) -> Option<busbar_core::ir:
         }),
         Some(RESP_FORMAT_JSON_SCHEMA) => {
             let js = o.get("json_schema");
-            Some(busbar_core::ir::IrResponseFormat {
+            Some(crate::ir::IrResponseFormat {
                 json: true,
                 schema: js.and_then(|j| j.get("schema")).cloned(),
                 name: js
@@ -260,7 +266,7 @@ fn read_openai_response_format(v: &serde_json::Value) -> Option<busbar_core::ir:
         }
         // `json_object` carries no schema; an unrecognized `type` is treated as free-form JSON (the
         // safe non-rejecting default) rather than dropped.
-        Some(_) => Some(busbar_core::ir::IrResponseFormat {
+        Some(_) => Some(crate::ir::IrResponseFormat {
             json: true,
             schema: None,
             name: None,
@@ -271,9 +277,9 @@ fn read_openai_response_format(v: &serde_json::Value) -> Option<busbar_core::ir:
     }
 }
 
-/// Project the agnostic [`busbar_core::ir::IrResponseFormat`] into OpenAI's native `response_format`. The
+/// Project the agnostic [`crate::ir::IrResponseFormat`] into OpenAI's native `response_format`. The
 /// ONLY code that builds OpenAI's structured-output wire shape.
-fn write_openai_response_format(rf: &busbar_core::ir::IrResponseFormat) -> serde_json::Value {
+fn write_openai_response_format(rf: &crate::ir::IrResponseFormat) -> serde_json::Value {
     if !rf.json {
         return serde_json::json!({"type": RESP_FORMAT_TEXT});
     }
@@ -313,7 +319,7 @@ const BASE62: &[u8; 62] = busbar_core::proto::BASE62_ALPHABET;
 /// OpenAI's `logprobs` object (`{content: [{token, logprob, bytes, top_logprobs[]}]}`) → the
 /// neutral IR entries. `bytes` is preserved verbatim when present (a token can be a partial UTF-8
 /// fragment, so the byte array is the only faithful carrier).
-pub fn read_openai_logprobs(v: Option<&serde_json::Value>) -> Vec<busbar_core::ir::IrTokenLogprob> {
+pub fn read_openai_logprobs(v: Option<&serde_json::Value>) -> Vec<crate::ir::IrTokenLogprob> {
     let entries = match v
         .and_then(|lp| lp.get("content"))
         .and_then(|c| c.as_array())
@@ -331,7 +337,7 @@ pub fn read_openai_logprobs(v: Option<&serde_json::Value>) -> Vec<busbar_core::i
     entries
         .iter()
         .filter_map(|e| {
-            Some(busbar_core::ir::IrTokenLogprob {
+            Some(crate::ir::IrTokenLogprob {
                 token: e.get("token")?.as_str()?.to_string(),
                 logprob: e.get("logprob")?.as_f64()?,
                 bytes: read_bytes(e),
@@ -341,7 +347,7 @@ pub fn read_openai_logprobs(v: Option<&serde_json::Value>) -> Vec<busbar_core::i
                     .map(|arr| {
                         arr.iter()
                             .filter_map(|t| {
-                                Some(busbar_core::ir::IrTopLogprob {
+                                Some(crate::ir::IrTopLogprob {
                                     token: t.get("token")?.as_str()?.to_string(),
                                     logprob: t.get("logprob")?.as_f64()?,
                                     bytes: read_bytes(t),
@@ -358,7 +364,7 @@ pub fn read_openai_logprobs(v: Option<&serde_json::Value>) -> Vec<busbar_core::i
 /// Neutral IR logprobs → OpenAI's `logprobs` object. `bytes` is synthesized from the token's UTF-8
 /// encoding when the source protocol (Gemini) carries none — the same value OpenAI itself returns
 /// for a whole-token UTF-8 string.
-pub fn write_openai_logprobs(lps: &[busbar_core::ir::IrTokenLogprob]) -> serde_json::Value {
+pub fn write_openai_logprobs(lps: &[crate::ir::IrTokenLogprob]) -> serde_json::Value {
     let content: Vec<serde_json::Value> = lps
         .iter()
         .map(|lp| {
@@ -500,7 +506,7 @@ fn modeled_request_keys() -> &'static std::collections::HashSet<&'static str> {
 #[derive(Clone)]
 pub struct OpenAiReader;
 
-/// Project an [`busbar_core::ir::IrBlock::Media`] into the OpenAI Chat Completions content part that can
+/// Project an [`crate::ir::IrBlock::Media`] into the OpenAI Chat Completions content part that can
 /// express it, or `None` when this dialect has no slot for it (the caller emits nothing).
 ///
 /// OpenAI Chat has exactly TWO attachment parts — `input_audio` (inline base64 + a bare format
@@ -515,11 +521,11 @@ pub struct OpenAiReader;
 ///   the silent one — indistinguishable, to the model and to the operator, from the caller having
 ///   attached nothing at all.
 fn media_part_from_ir(
-    kind: busbar_core::ir::IrMediaKind,
-    source: &busbar_core::ir::IrImageSource,
+    kind: crate::ir::IrMediaKind,
+    source: &crate::ir::IrImageSource,
     name: Option<&str>,
 ) -> Option<serde_json::Value> {
-    use busbar_core::ir::{IrImageSource as S, IrMediaKind as K};
+    use crate::ir::{IrImageSource as S, IrMediaKind as K};
     match (kind, source) {
         (K::Audio, S::Base64 { media_type, data }) => {
             // OpenAI wants the bare container token (`wav`, `mp3`), not the mime type.
@@ -564,7 +570,7 @@ fn media_part_from_ir(
 }
 
 /// Read an OpenAI-format block from JSON.
-fn read_openai_block(block_val: &serde_json::Value) -> Result<busbar_core::ir::IrBlock, IrError> {
+fn read_openai_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock, IrError> {
     let obj = block_val.as_object().ok_or(IrError {
         class: StatusClass::ClientError,
         provider_signal: Some(busbar_core::proto::SIGNAL_IR_PARSE.to_string()),
@@ -577,7 +583,7 @@ fn read_openai_block(block_val: &serde_json::Value) -> Result<busbar_core::ir::I
         "text" => {
             let text_val = obj.get("text");
             let text = text_val.and_then(|t| t.as_str()).unwrap_or("").to_string();
-            Ok(busbar_core::ir::IrBlock::Text {
+            Ok(crate::ir::IrBlock::Text {
                 text,
                 cache_control: None,
                 citations: Vec::new(),
@@ -612,7 +618,7 @@ fn read_openai_block(block_val: &serde_json::Value) -> Result<busbar_core::ir::I
                     );
                 }
             }
-            Ok(busbar_core::ir::IrBlock::Image {
+            Ok(crate::ir::IrBlock::Image {
                 source: super::ir_encode::parse_image_url(url),
                 cache_control: None,
             })
@@ -640,9 +646,9 @@ fn read_openai_block(block_val: &serde_json::Value) -> Result<busbar_core::ir::I
                 .get("format")
                 .and_then(|v| v.as_str())
                 .unwrap_or("wav");
-            Ok(busbar_core::ir::IrBlock::Media {
-                kind: busbar_core::ir::IrMediaKind::Audio,
-                source: busbar_core::ir::IrImageSource::Base64 {
+            Ok(crate::ir::IrBlock::Media {
+                kind: crate::ir::IrMediaKind::Audio,
+                source: crate::ir::IrImageSource::Base64 {
                     media_type: format!("audio/{format}"),
                     data,
                 },
@@ -680,7 +686,7 @@ fn read_openai_block(block_val: &serde_json::Value) -> Result<busbar_core::ir::I
                         .and_then(|v| v.as_str())
                         .unwrap_or("")
                         .to_string();
-                    busbar_core::ir::IrImageSource::Vendor {
+                    crate::ir::IrImageSource::Vendor {
                         vendor: VENDOR_NAME,
                         value: serde_json::json!({ "file_id": file_id }),
                     }
@@ -689,12 +695,12 @@ fn read_openai_block(block_val: &serde_json::Value) -> Result<busbar_core::ir::I
             // The mime type, when the data URI carried one, is the ONLY signal of what kind of
             // attachment this is — an OpenAI `file` part is used for PDFs today but the mime decides.
             let kind = match &source {
-                busbar_core::ir::IrImageSource::Base64 { media_type, .. } => {
-                    busbar_core::ir::IrMediaKind::from_media_type(media_type)
+                crate::ir::IrImageSource::Base64 { media_type, .. } => {
+                    crate::ir::IrMediaKind::from_media_type(media_type)
                 }
-                _ => busbar_core::ir::IrMediaKind::Document,
+                _ => crate::ir::IrMediaKind::Document,
             };
-            Ok(busbar_core::ir::IrBlock::Media {
+            Ok(crate::ir::IrBlock::Media {
                 kind,
                 source,
                 name,
@@ -711,7 +717,7 @@ fn read_openai_block(block_val: &serde_json::Value) -> Result<busbar_core::ir::I
                 .and_then(|t| t.as_str())
                 .unwrap_or("")
                 .to_string();
-            Ok(busbar_core::ir::IrBlock::Text {
+            Ok(crate::ir::IrBlock::Text {
                 text,
                 cache_control: None,
                 citations: Vec::new(),
@@ -724,7 +730,7 @@ fn read_openai_block(block_val: &serde_json::Value) -> Result<busbar_core::ir::I
         // a disposition/breaker match, so a named graceful-degradation arm is correct here.
         other => {
             let _ = other;
-            Ok(busbar_core::ir::IrBlock::Text {
+            Ok(crate::ir::IrBlock::Text {
                 text: String::new(),
                 cache_control: None,
                 citations: Vec::new(),
@@ -734,7 +740,7 @@ fn read_openai_block(block_val: &serde_json::Value) -> Result<busbar_core::ir::I
 }
 
 /// Read an OpenAI-format tool from JSON.
-fn read_openai_tool(tool_val: &serde_json::Value) -> Result<busbar_core::ir::IrTool, IrError> {
+fn read_openai_tool(tool_val: &serde_json::Value) -> Result<crate::ir::IrTool, IrError> {
     let obj = tool_val.as_object().ok_or(IrError {
         class: StatusClass::ClientError,
         provider_signal: Some(busbar_core::proto::SIGNAL_IR_PARSE.to_string()),
@@ -762,7 +768,7 @@ fn read_openai_tool(tool_val: &serde_json::Value) -> Result<busbar_core::ir::IrT
         .cloned()
         .unwrap_or(serde_json::Value::Null);
 
-    Ok(busbar_core::ir::IrTool {
+    Ok(crate::ir::IrTool {
         name,
         description,
         input_schema,
@@ -778,14 +784,12 @@ fn read_openai_tool(tool_val: &serde_json::Value) -> Result<busbar_core::ir::IrT
 /// Read an OpenAI-format `tool_choice` into the IR union. Shapes: the strings `"auto"` /
 /// `"none"` / `"required"`, or `{"type":"function","function":{"name":"X"}}` for a forced specific
 /// tool. Absent or any unrecognized shape yields `None` (the safe default — no directive emitted).
-fn read_openai_tool_choice(
-    val: Option<&serde_json::Value>,
-) -> Option<busbar_core::ir::IrToolChoice> {
+fn read_openai_tool_choice(val: Option<&serde_json::Value>) -> Option<crate::ir::IrToolChoice> {
     match val? {
         serde_json::Value::String(s) => match s.as_str() {
-            "auto" => Some(busbar_core::ir::IrToolChoice::Auto),
-            "none" => Some(busbar_core::ir::IrToolChoice::None),
-            "required" => Some(busbar_core::ir::IrToolChoice::Required),
+            "auto" => Some(crate::ir::IrToolChoice::Auto),
+            "none" => Some(crate::ir::IrToolChoice::None),
+            "required" => Some(crate::ir::IrToolChoice::Required),
             _ => None,
         },
         serde_json::Value::Object(o) => {
@@ -793,7 +797,7 @@ fn read_openai_tool_choice(
                 o.get("function")
                     .and_then(|f| f.get("name"))
                     .and_then(|n| n.as_str())
-                    .map(|name| busbar_core::ir::IrToolChoice::Tool {
+                    .map(|name| crate::ir::IrToolChoice::Tool {
                         name: name.to_string(),
                     })
             } else {

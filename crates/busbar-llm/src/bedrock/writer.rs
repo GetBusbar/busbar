@@ -157,7 +157,7 @@ impl ProtocolWriter for BedrockWriter {
         true
     }
 
-    fn dropped_egress_controls(&self, req: &busbar_core::ir::IrRequest) -> Vec<&'static str> {
+    fn dropped_egress_controls(&self, req: &crate::ir::IrRequest) -> Vec<&'static str> {
         // Mirrors the two `write_request` warns: Bedrock Converse has no native `response_format`
         // field, and no "do NOT call a tool" (`IrToolChoice::None`) directive — a cross-protocol
         // request carrying either has that control dropped on egress.
@@ -165,13 +165,13 @@ impl ProtocolWriter for BedrockWriter {
         if req.response_format.is_some() {
             dropped.push("response_format");
         }
-        if matches!(req.tool_choice, Some(busbar_core::ir::IrToolChoice::None)) {
+        if matches!(req.tool_choice, Some(crate::ir::IrToolChoice::None)) {
             dropped.push("tool_choice=none");
         }
         dropped
     }
 
-    fn write_request(&self, req: &busbar_core::ir::IrRequest) -> serde_json::Value {
+    fn write_request(&self, req: &crate::ir::IrRequest) -> serde_json::Value {
         // The reasoning carry has no Bedrock Converse shape in this pass; dropped observably (matching
         // the penalties/top_k convention) rather than silently.
         if req.reasoning.is_some() {
@@ -234,7 +234,7 @@ impl ProtocolWriter for BedrockWriter {
         {
             let mut text_arr: Vec<serde_json::Value> = Vec::new();
             for block in &req.system {
-                if let busbar_core::ir::IrBlock::Text {
+                if let crate::ir::IrBlock::Text {
                     text,
                     cache_control,
                     ..
@@ -273,18 +273,18 @@ impl ProtocolWriter for BedrockWriter {
         let mut msgs_arr: Vec<serde_json::Value> = Vec::new();
         for (msg_idx, msg) in req.messages.iter().enumerate() {
             let role_str = match msg.role {
-                busbar_core::ir::IrRole::User => "user",
-                busbar_core::ir::IrRole::Assistant => "assistant",
+                crate::ir::IrRole::User => "user",
+                crate::ir::IrRole::Assistant => "assistant",
                 // A Tool-role IR message carries `toolResult` blocks; Bedrock Converse has no
                 // freestanding "tool" role — a tool result is a `toolResult` content block inside a
                 // USER-turn message, so mapping Tool → "user" is the correct native wire shape.
-                busbar_core::ir::IrRole::Tool => "user",
+                crate::ir::IrRole::Tool => "user",
                 // System text is extracted by the caller into `req.system` (emitted as the top-level
                 // `system` array above), so a System-role MESSAGE should never reach the Bedrock
                 // wire. If one somehow escapes extraction, skip it rather than silently mislabeling
                 // it as a "user" turn (which would inject system instructions as a user message and
                 // corrupt the conversation). Each role is handled explicitly — no catch-all.
-                busbar_core::ir::IrRole::System => continue,
+                crate::ir::IrRole::System => continue,
             };
 
             let mut content_arr: Vec<serde_json::Value> = Vec::new();
@@ -305,26 +305,26 @@ impl ProtocolWriter for BedrockWriter {
                 // `cachePoint` block IMMEDIATELY AFTER the block below (the position Bedrock expects).
                 // Suppressed when the positional stash owns placement (same-protocol passthrough).
                 let block_cache_control = match block {
-                    busbar_core::ir::IrBlock::Text { cache_control, .. }
-                    | busbar_core::ir::IrBlock::ToolUse { cache_control, .. }
-                    | busbar_core::ir::IrBlock::ToolResult { cache_control, .. } => {
+                    crate::ir::IrBlock::Text { cache_control, .. }
+                    | crate::ir::IrBlock::ToolUse { cache_control, .. }
+                    | crate::ir::IrBlock::ToolResult { cache_control, .. } => {
                         cache_control.as_ref()
                     }
-                    busbar_core::ir::IrBlock::Thinking { .. }
-                    | busbar_core::ir::IrBlock::Image { .. }
-                    | busbar_core::ir::IrBlock::Media { .. }
-                    | busbar_core::ir::IrBlock::Json(_) => None,
+                    crate::ir::IrBlock::Thinking { .. }
+                    | crate::ir::IrBlock::Image { .. }
+                    | crate::ir::IrBlock::Media { .. }
+                    | crate::ir::IrBlock::Json(_) => None,
                 };
                 match block {
-                    busbar_core::ir::IrBlock::Text { text, .. } => {
+                    crate::ir::IrBlock::Text { text, .. } => {
                         content_arr.push(serde_json::json!({ "text": text }));
                     }
-                    busbar_core::ir::IrBlock::ToolUse {
+                    crate::ir::IrBlock::ToolUse {
                         id, name, input, ..
                     } => {
                         content_arr.push(serde_json::json!({"toolUse": {"toolUseId": id, "name": name, "input": input}}));
                     }
-                    busbar_core::ir::IrBlock::ToolResult {
+                    crate::ir::IrBlock::ToolResult {
                         tool_use_id,
                         content,
                         is_error,
@@ -333,7 +333,7 @@ impl ProtocolWriter for BedrockWriter {
                         let mut inner_content: Vec<serde_json::Value> = Vec::new();
                         for inner_block in content {
                             match inner_block {
-                                busbar_core::ir::IrBlock::Text { text, .. } => {
+                                crate::ir::IrBlock::Text { text, .. } => {
                                     inner_content.push(serde_json::json!({ "text": text }));
                                 }
                                 // Bedrock Converse natively supports structured tool-result content
@@ -341,18 +341,18 @@ impl ProtocolWriter for BedrockWriter {
                                 // decodes). Preserve the actual content instead of collapsing it to
                                 // the constant string `"{}"`: a JSON-string Text-equivalent or a
                                 // structured result that arrives via the IR is re-encoded faithfully.
-                                busbar_core::ir::IrBlock::Json(value) => {
+                                crate::ir::IrBlock::Json(value) => {
                                     // A structured-json tool-result block re-emits as a native
                                     // `{"json": <value>}` block, restoring same-protocol fidelity.
                                     inner_content.push(serde_json::json!({ "json": value }));
                                 }
-                                busbar_core::ir::IrBlock::Image { source, .. } => {
+                                crate::ir::IrBlock::Image { source, .. } => {
                                     if let Some(image_block) = bedrock_image_block(source) {
                                         inner_content
                                             .push(serde_json::json!({ "image": image_block }));
                                     }
                                 }
-                                busbar_core::ir::IrBlock::ToolUse {
+                                crate::ir::IrBlock::ToolUse {
                                     id, name, input, ..
                                 } => {
                                     // Nested ToolUse inside a tool result has no native Bedrock
@@ -362,7 +362,7 @@ impl ProtocolWriter for BedrockWriter {
                                         "json": { "toolUseId": id, "name": name, "input": input }
                                     }));
                                 }
-                                busbar_core::ir::IrBlock::ToolResult {
+                                crate::ir::IrBlock::ToolResult {
                                     tool_use_id,
                                     is_error,
                                     ..
@@ -377,7 +377,7 @@ impl ProtocolWriter for BedrockWriter {
                                 // Thinking blocks have no representable Bedrock tool-result shape and
                                 // carry no result data; omit them entirely (with a trace) rather than
                                 // emitting a misleading placeholder block.
-                                busbar_core::ir::IrBlock::Thinking { .. } => {
+                                crate::ir::IrBlock::Thinking { .. } => {
                                     tracing::warn!(
                                         "dropping non-representable Thinking block inside a Bedrock toolResult"
                                     );
@@ -386,7 +386,7 @@ impl ProtocolWriter for BedrockWriter {
                                 // {json, text, image, document, video} — the SAME document/video
                                 // members the top-level content block has, so an attachment returned
                                 // BY a tool projects natively here too.
-                                busbar_core::ir::IrBlock::Media {
+                                crate::ir::IrBlock::Media {
                                     kind, source, name, ..
                                 } => {
                                     if let Some(b) =
@@ -401,12 +401,12 @@ impl ProtocolWriter for BedrockWriter {
                         let status_str = if *is_error { "error" } else { "success" };
                         content_arr.push(serde_json::json!({"toolResult": {"toolUseId": tool_use_id, "content": inner_content, "status": status_str}}));
                     }
-                    busbar_core::ir::IrBlock::Image { source, .. } => {
+                    crate::ir::IrBlock::Image { source, .. } => {
                         if let Some(image_block) = bedrock_image_block(source) {
                             content_arr.push(serde_json::json!({ "image": image_block }));
                         }
                     }
-                    busbar_core::ir::IrBlock::Thinking {
+                    crate::ir::IrBlock::Thinking {
                         text,
                         signature,
                         redacted,
@@ -420,7 +420,7 @@ impl ProtocolWriter for BedrockWriter {
                         // `redactedContent`; any other Thinking re-emits `reasoningText`.
                         content_arr.push(bedrock_reasoning_block(text, signature, *redacted));
                     }
-                    busbar_core::ir::IrBlock::Media {
+                    crate::ir::IrBlock::Media {
                         kind, source, name, ..
                     } => {
                         if !raw_doc_video_stashed {
@@ -431,7 +431,7 @@ impl ProtocolWriter for BedrockWriter {
                             }
                         }
                     }
-                    busbar_core::ir::IrBlock::Json(_) => {
+                    crate::ir::IrBlock::Json(_) => {
                         // Structured-json content is only a tool-result content member; it has no
                         // top-level message-content shape, so omit it from a message turn.
                     }
@@ -778,14 +778,14 @@ impl ProtocolWriter for BedrockWriter {
                 // this event to initialize its per-block streaming decoder; omitting it for text
                 // blocks leaves the following `contentBlockDelta`s orphaned (no preceding start),
                 // which strict SDK parsers discard or reject — and is a detectable proxy tell.
-                busbar_core::ir::IrBlockMeta::Text => {
+                crate::ir::IrBlockMeta::Text => {
                     self.mark_block_open(*index);
                     Some((
                         ET_CONTENT_BLOCK_START.to_string(),
                         serde_json::json!({ "contentBlockIndex": index, "start": {} }),
                     ))
                 }
-                busbar_core::ir::IrBlockMeta::ToolUse { id, name } => {
+                crate::ir::IrBlockMeta::ToolUse { id, name } => {
                     self.mark_block_open(*index);
                     Some((
                         ET_CONTENT_BLOCK_START.to_string(),
@@ -801,7 +801,7 @@ impl ProtocolWriter for BedrockWriter {
                 // dropped on Bedrock egress; mirror the buffered `write_response` reasoningContent
                 // re-emit on the streaming path. (Image has no streaming-start projection on Bedrock
                 // — image blocks are not streamed as `contentBlock*` frames — so it stays None.)
-                busbar_core::ir::IrBlockMeta::Thinking => {
+                crate::ir::IrBlockMeta::Thinking => {
                     self.mark_block_open(*index);
                     Some((
                         ET_CONTENT_BLOCK_START.to_string(),
@@ -811,11 +811,11 @@ impl ProtocolWriter for BedrockWriter {
                         }),
                     ))
                 }
-                busbar_core::ir::IrBlockMeta::Image => None,
+                crate::ir::IrBlockMeta::Image => None,
             },
 
             IrStreamEvent::BlockDelta { index, delta } => match delta {
-                busbar_core::ir::IrDelta::TextDelta(text) => Some((
+                crate::ir::IrDelta::TextDelta(text) => Some((
                     ET_CONTENT_BLOCK_DELTA.to_string(),
                     serde_json::json!({
                         "contentBlockIndex": index,
@@ -823,7 +823,7 @@ impl ProtocolWriter for BedrockWriter {
                     }),
                 )),
 
-                busbar_core::ir::IrDelta::InputJsonDelta(json_str) => Some((
+                crate::ir::IrDelta::InputJsonDelta(json_str) => Some((
                     ET_CONTENT_BLOCK_DELTA.to_string(),
                     serde_json::json!({
                         "contentBlockIndex": index,
@@ -836,7 +836,7 @@ impl ProtocolWriter for BedrockWriter {
                 // OR a `redactedContent` (opaque encrypted bytes) per frame — each IR delta maps to
                 // exactly ONE ConverseStream frame, so the single-frame-per-event constraint holds.
                 // This is the streaming inverse of `bedrock_reasoning_block`'s buffered logic.
-                busbar_core::ir::IrDelta::ThinkingDelta(text) => Some((
+                crate::ir::IrDelta::ThinkingDelta(text) => Some((
                     ET_CONTENT_BLOCK_DELTA.to_string(),
                     serde_json::json!({
                         "contentBlockIndex": index,
@@ -845,7 +845,7 @@ impl ProtocolWriter for BedrockWriter {
                 )),
 
                 // A genuine reasoning signature token re-emits under `signature`.
-                busbar_core::ir::IrDelta::SignatureDelta(sig) => Some((
+                crate::ir::IrDelta::SignatureDelta(sig) => Some((
                     ET_CONTENT_BLOCK_DELTA.to_string(),
                     serde_json::json!({
                         "contentBlockIndex": index,
@@ -854,7 +854,7 @@ impl ProtocolWriter for BedrockWriter {
                 )),
                 // A streamed redacted-reasoning delta re-emits the opaque bytes under `redactedContent`
                 // (never as a plaintext `signature`) — the streaming inverse of `bedrock_reasoning_block`.
-                busbar_core::ir::IrDelta::RedactedReasoningDelta(redacted) => Some((
+                crate::ir::IrDelta::RedactedReasoningDelta(redacted) => Some((
                     ET_CONTENT_BLOCK_DELTA.to_string(),
                     serde_json::json!({
                         "contentBlockIndex": index,
@@ -873,7 +873,7 @@ impl ProtocolWriter for BedrockWriter {
                 // `StreamTranslate` has already fanned a multi-citation delta out to one citation per
                 // event by the time it reaches here; `first()` is therefore the whole delta, and the
                 // debug_assert pins the invariant rather than silently truncating if the seam changes.
-                busbar_core::ir::IrDelta::CitationsDelta(cits) => {
+                crate::ir::IrDelta::CitationsDelta(cits) => {
                     debug_assert!(
                         cits.len() <= 1,
                         "bedrock writer expects the citation fan-out to have split multi-citation \
@@ -901,7 +901,7 @@ impl ProtocolWriter for BedrockWriter {
                     }
                 }
                 // Bedrock Converse has no logprobs shape; dropped.
-                busbar_core::ir::IrDelta::LogprobsDelta(_) => None,
+                crate::ir::IrDelta::LogprobsDelta(_) => None,
             },
 
             // An untracked index is a block whose start had no Bedrock projection (Image); closing
@@ -1019,12 +1019,12 @@ impl ProtocolWriter for BedrockWriter {
         self.write_response_event(&IrStreamEvent::Error(err.clone()))
     }
 
-    fn write_response(&self, resp: &busbar_core::ir::IrResponse) -> serde_json::Value {
+    fn write_response(&self, resp: &crate::ir::IrResponse) -> serde_json::Value {
         let mut content_arr: Vec<serde_json::Value> = Vec::new();
 
         for block in &resp.content {
             match block {
-                busbar_core::ir::IrBlock::Text {
+                crate::ir::IrBlock::Text {
                     text, citations, ..
                 } => {
                     if text.is_empty() {
@@ -1065,9 +1065,9 @@ impl ProtocolWriter for BedrockWriter {
                 }
 
                 // A model does not emit an attachment back on the Converse response surface.
-                busbar_core::ir::IrBlock::Media { .. } => {}
+                crate::ir::IrBlock::Media { .. } => {}
 
-                busbar_core::ir::IrBlock::ToolUse {
+                crate::ir::IrBlock::ToolUse {
                     id, name, input, ..
                 } => {
                     content_arr.push(serde_json::json!({
@@ -1079,7 +1079,7 @@ impl ProtocolWriter for BedrockWriter {
                     }));
                 }
 
-                busbar_core::ir::IrBlock::Image { source, .. } => {
+                crate::ir::IrBlock::Image { source, .. } => {
                     // An assistant response CAN legitimately carry an Image block (e.g. a
                     // cross-protocol egress whose source emitted an image in the model turn).
                     // Bedrock Converse natively represents it as an `{"image": ...}` content block.
@@ -1089,12 +1089,12 @@ impl ProtocolWriter for BedrockWriter {
                         content_arr.push(serde_json::json!({ "image": image_block }));
                     }
                 }
-                busbar_core::ir::IrBlock::Json(_) => {
+                crate::ir::IrBlock::Json(_) => {
                     // Structured-json content has no top-level Bedrock response shape (it is only a
                     // tool-result content member); omit it from an assistant response turn.
                 }
 
-                busbar_core::ir::IrBlock::Thinking {
+                crate::ir::IrBlock::Thinking {
                     text,
                     signature,
                     redacted,
@@ -1112,7 +1112,7 @@ impl ProtocolWriter for BedrockWriter {
                 // A `toolResult` is a USER-turn content block in Bedrock Converse; it has no place
                 // in an ASSISTANT response message, so it is the only genuine no-op here. Handled
                 // explicitly — no catch-all.
-                busbar_core::ir::IrBlock::ToolResult { .. } => {}
+                crate::ir::IrBlock::ToolResult { .. } => {}
             }
         }
 
@@ -1125,10 +1125,8 @@ impl ProtocolWriter for BedrockWriter {
             content_arr.push(serde_json::json!({ "text": "" }));
         }
 
-        let reverse_reason = stop_reason_reverse(
-            resp.stop_reason
-                .unwrap_or(busbar_core::ir::IrStopReason::EndTurn),
-        );
+        let reverse_reason =
+            stop_reason_reverse(resp.stop_reason.unwrap_or(crate::ir::IrStopReason::EndTurn));
 
         // Identity emission. The native AWS Converse response body (the shape the official SDK
         // deserializes — `output` / `stopReason` / `usage` / optional `metrics`) carries NO id or
@@ -1204,7 +1202,7 @@ impl ProtocolWriter for BedrockWriter {
 
     fn wrap_buffered_as_stream(
         &self,
-        ir: &busbar_core::ir::IrResponse,
+        ir: &crate::ir::IrResponse,
         elapsed_ms: Option<u64>,
     ) -> Option<Vec<u8>> {
         // A Bedrock-ingress client that requested ConverseStream but received a buffered (non-SSE)

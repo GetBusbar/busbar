@@ -9,14 +9,14 @@ impl ProtocolReader for OpenAiReader {
             .and_then(|d| d.get("cached_tokens"))
             .and_then(|x| x.as_u64());
         Some(
-            busbar_core::ir::IrUsage {
+            crate::ir::IrUsage {
                 input_tokens: u64_field("prompt_tokens")
                     .unwrap_or(0)
                     .saturating_sub(cached.unwrap_or(0)),
                 output_tokens: u64_field("completion_tokens").unwrap_or(0),
                 cache_creation_input_tokens: None,
                 cache_read_input_tokens: cached,
-                detail: busbar_core::ir::IrUsageDetail::default(),
+                detail: crate::ir::IrUsageDetail::default(),
             }
             .to_token_usage(),
         )
@@ -95,10 +95,7 @@ impl ProtocolReader for OpenAiReader {
         super::openai_family::openai_classify(status, body)
     }
 
-    fn read_request(
-        &self,
-        body: &serde_json::Value,
-    ) -> Result<busbar_core::ir::IrRequest, IrError> {
+    fn read_request(&self, body: &serde_json::Value) -> Result<crate::ir::IrRequest, IrError> {
         let obj = body.as_object().ok_or(IrError {
             class: StatusClass::ClientError,
             provider_signal: Some(busbar_core::proto::SIGNAL_IR_PARSE.to_string()),
@@ -106,7 +103,7 @@ impl ProtocolReader for OpenAiReader {
         })?;
 
         let mut extra = serde_json::Map::new();
-        let mut system_blocks: Vec<busbar_core::ir::IrBlock> = Vec::new();
+        let mut system_blocks: Vec<crate::ir::IrBlock> = Vec::new();
 
         // Extract scalar fields and extra
         let _model = obj.get("model").and_then(|v| v.as_str()).map(String::from);
@@ -155,11 +152,11 @@ impl ProtocolReader for OpenAiReader {
             .and_then(read_openai_response_format);
         // OpenAI's `stop` is a string OR an array of strings; normalize to the IR's Vec<String>.
         // OpenAI has NO top_k knob, so `top_k` stays None (its writer omits it too).
-        let stop = busbar_core::ir::read_stop_sequences(obj.get("stop"));
+        let stop = crate::ir::read_stop_sequences(obj.get("stop"));
         let stream = obj.get("stream").and_then(|v| v.as_bool()).unwrap_or(false);
 
         // Handle messages array
-        let mut messages: Vec<busbar_core::ir::IrMessage> = Vec::new();
+        let mut messages: Vec<crate::ir::IrMessage> = Vec::new();
         // Per-message participant names, collected during the loop and parked in `extra` afterwards
         // (see `MESSAGE_NAMES_SENTINEL`).
         let mut message_names = serde_json::Map::new();
@@ -179,10 +176,10 @@ impl ProtocolReader for OpenAiReader {
                     // Responses API reader already treats them as equivalent). Map both to the IR
                     // System role so a developer-role turn flows through the existing
                     // System-promotion path below rather than being 400ed by the catch-all.
-                    "developer" | "system" => busbar_core::ir::IrRole::System,
-                    "user" => busbar_core::ir::IrRole::User,
-                    "assistant" => busbar_core::ir::IrRole::Assistant,
-                    "tool" => busbar_core::ir::IrRole::Tool,
+                    "developer" | "system" => crate::ir::IrRole::System,
+                    "user" => crate::ir::IrRole::User,
+                    "assistant" => crate::ir::IrRole::Assistant,
+                    "tool" => crate::ir::IrRole::Tool,
                     _ => {
                         return Err(IrError {
                             class: StatusClass::ClientError,
@@ -198,11 +195,11 @@ impl ProtocolReader for OpenAiReader {
                 // a System-role IrMessage placed inside the messages array would be rendered as
                 // `"role": "system"` by the Anthropic writer and rejected with a 400. We therefore
                 // never push a System IrMessage; we accumulate its content into system_blocks.
-                if role == busbar_core::ir::IrRole::System {
+                if role == crate::ir::IrRole::System {
                     let blocks_before = system_blocks.len();
                     if let Some(content) = content_val {
                         if let Some(text) = content.as_str() {
-                            system_blocks.push(busbar_core::ir::IrBlock::Text {
+                            system_blocks.push(crate::ir::IrBlock::Text {
                                 text: text.to_string(),
                                 cache_control: None,
                                 citations: Vec::new(),
@@ -218,7 +215,7 @@ impl ProtocolReader for OpenAiReader {
                     // turn is preserved rather than dropped. `content_val.is_none()` (key absent)
                     // also lands here, which matches treating an empty system turn as present.
                     if system_blocks.len() == blocks_before {
-                        system_blocks.push(busbar_core::ir::IrBlock::Text {
+                        system_blocks.push(crate::ir::IrBlock::Text {
                             text: String::new(),
                             cache_control: None,
                             citations: Vec::new(),
@@ -234,10 +231,10 @@ impl ProtocolReader for OpenAiReader {
                     // spurious extra `{"role":"tool"}` message carrying the same text. So skip the
                     // standalone-content projection for Tool-role messages; the ToolResult path owns
                     // the tool content. User/assistant/system content is projected as before.
-                    if role != busbar_core::ir::IrRole::Tool {
+                    if role != crate::ir::IrRole::Tool {
                         if let Some(cv) = content_val {
                             if let Some(text) = cv.as_str() {
-                                msg_content.push(busbar_core::ir::IrBlock::Text {
+                                msg_content.push(crate::ir::IrBlock::Text {
                                     text: text.to_string(),
                                     cache_control: None,
                                     citations: Vec::new(),
@@ -252,7 +249,7 @@ impl ProtocolReader for OpenAiReader {
                     }
 
                     // Handle tool_calls for assistant messages
-                    if role == busbar_core::ir::IrRole::Assistant {
+                    if role == crate::ir::IrRole::Assistant {
                         if let Some(tool_calls) = msg_val.get("tool_calls") {
                             if let Some(tc_arr) = tool_calls.as_array() {
                                 for tc_val in tc_arr {
@@ -281,7 +278,7 @@ impl ProtocolReader for OpenAiReader {
                                         serde_json::Value::String(arguments.to_string()),
                                     );
 
-                                    msg_content.push(busbar_core::ir::IrBlock::ToolUse {
+                                    msg_content.push(crate::ir::IrBlock::ToolUse {
                                         id,
                                         name,
                                         input,
@@ -294,7 +291,7 @@ impl ProtocolReader for OpenAiReader {
                     }
 
                     // Handle tool results
-                    if role == busbar_core::ir::IrRole::Tool {
+                    if role == crate::ir::IrRole::Tool {
                         let tool_call_id = msg_val
                             .get("tool_call_id")
                             .and_then(|v| v.as_str())
@@ -314,7 +311,7 @@ impl ProtocolReader for OpenAiReader {
                             Some(serde_json::Value::Array(parts)) => {
                                 let mut acc = String::new();
                                 for part in parts {
-                                    if let Ok(busbar_core::ir::IrBlock::Text { text, .. }) =
+                                    if let Ok(crate::ir::IrBlock::Text { text, .. }) =
                                         read_openai_block(part)
                                     {
                                         acc.push_str(&text);
@@ -325,9 +322,9 @@ impl ProtocolReader for OpenAiReader {
                             Some(_) | None => String::new(),
                         };
 
-                        msg_content.push(busbar_core::ir::IrBlock::ToolResult {
+                        msg_content.push(crate::ir::IrBlock::ToolResult {
                             tool_use_id: tool_call_id,
-                            content: vec![busbar_core::ir::IrBlock::Text {
+                            content: vec![crate::ir::IrBlock::Text {
                                 text: content_text,
                                 cache_control: None,
                                 citations: Vec::new(),
@@ -348,7 +345,7 @@ impl ProtocolReader for OpenAiReader {
                     {
                         message_names.insert(messages.len().to_string(), serde_json::json!(name));
                     }
-                    messages.push(busbar_core::ir::IrMessage {
+                    messages.push(crate::ir::IrMessage {
                         role,
                         content: msg_content,
                     });
@@ -357,7 +354,7 @@ impl ProtocolReader for OpenAiReader {
         }
 
         // Handle tools array
-        let mut tools: Vec<busbar_core::ir::IrTool> = Vec::new();
+        let mut tools: Vec<crate::ir::IrTool> = Vec::new();
         if let Some(tools_val) = obj.get("tools") {
             for tool_val in tools_val.as_array().unwrap_or(&Vec::new()) {
                 tools.push(read_openai_tool(tool_val)?);
@@ -422,8 +419,8 @@ impl ProtocolReader for OpenAiReader {
         // Promoted so it carries to Anthropic/Gemini thinking budgets via the effort table.
         let reasoning_effort_raw = obj.get("reasoning_effort").and_then(|v| v.as_str());
         let reasoning = reasoning_effort_raw
-            .and_then(busbar_core::ir::IrReasoningEffort::parse)
-            .map(busbar_core::ir::IrReasoningAsk::Effort);
+            .and_then(crate::ir::IrReasoningEffort::parse)
+            .map(crate::ir::IrReasoningAsk::Effort);
         // `reasoning_effort` is a MODELED key (in `modeled_request_keys()` below), so it is
         // excluded from the generic `extra` sweep — an unrecognised value (e.g. a `gpt-5`-family
         // spelling this build's `IrReasoningEffort::parse` doesn't know, like "none"/"xhigh")
@@ -453,7 +450,7 @@ impl ProtocolReader for OpenAiReader {
             .and_then(|v| v.as_u64())
             .and_then(|v| u32::try_from(v).ok());
 
-        Ok(busbar_core::ir::IrRequest {
+        Ok(crate::ir::IrRequest {
             reasoning,
             reasoning_budgets: None,
             logprobs,
@@ -486,7 +483,7 @@ impl ProtocolReader for OpenAiReader {
         &self,
         _event_type: &str,
         data: &serde_json::Value,
-        state: &mut busbar_core::ir::StreamDecodeState,
+        state: &mut crate::ir::StreamDecodeState,
     ) -> Vec<IrStreamEvent> {
         let mut out: Vec<IrStreamEvent> = Vec::new();
 
@@ -502,7 +499,7 @@ impl ProtocolReader for OpenAiReader {
         if !state.started {
             state.started = true;
             out.push(IrStreamEvent::MessageStart {
-                role: busbar_core::ir::IrRole::Assistant,
+                role: crate::ir::IrRole::Assistant,
                 usage: None,
                 id: data.get("id").and_then(|v| v.as_str()).map(String::from),
                 created: data.get("created").and_then(|v| v.as_u64()),
@@ -550,12 +547,12 @@ impl ProtocolReader for OpenAiReader {
                     state.thinking_block_open = true;
                     out.push(IrStreamEvent::BlockStart {
                         index: 0,
-                        block: busbar_core::ir::IrBlockMeta::Thinking,
+                        block: crate::ir::IrBlockMeta::Thinking,
                     });
                 }
                 out.push(IrStreamEvent::BlockDelta {
                     index: 0,
-                    delta: busbar_core::ir::IrDelta::ThinkingDelta(reasoning.to_string()),
+                    delta: crate::ir::IrDelta::ThinkingDelta(reasoning.to_string()),
                 });
             }
         }
@@ -601,12 +598,12 @@ impl ProtocolReader for OpenAiReader {
                 state.text_block_open = true;
                 out.push(IrStreamEvent::BlockStart {
                     index: ti,
-                    block: busbar_core::ir::IrBlockMeta::Text,
+                    block: crate::ir::IrBlockMeta::Text,
                 });
             }
             out.push(IrStreamEvent::BlockDelta {
                 index: ti,
-                delta: busbar_core::ir::IrDelta::TextDelta(content.to_string()),
+                delta: crate::ir::IrDelta::TextDelta(content.to_string()),
             });
         }
 
@@ -634,14 +631,14 @@ impl ProtocolReader for OpenAiReader {
                 });
                 out.push(IrStreamEvent::BlockStart {
                     index: ti,
-                    block: busbar_core::ir::IrBlockMeta::Text,
+                    block: crate::ir::IrBlockMeta::Text,
                 });
             }
             out.push(IrStreamEvent::BlockDelta {
                 index: state
                     .text_index
                     .expect("text_index set above when block opens"),
-                delta: busbar_core::ir::IrDelta::LogprobsDelta(lp_entries),
+                delta: crate::ir::IrDelta::LogprobsDelta(lp_entries),
             });
         }
 
@@ -698,7 +695,7 @@ impl ProtocolReader for OpenAiReader {
                         state.tool_ir_index.insert(oai_idx, ir_idx);
                         out.push(IrStreamEvent::BlockStart {
                             index: ir_idx,
-                            block: busbar_core::ir::IrBlockMeta::ToolUse {
+                            block: crate::ir::IrBlockMeta::ToolUse {
                                 id,
                                 name: name.to_string(),
                             },
@@ -719,7 +716,7 @@ impl ProtocolReader for OpenAiReader {
                     };
                     out.push(IrStreamEvent::BlockDelta {
                         index,
-                        delta: busbar_core::ir::IrDelta::InputJsonDelta(args.to_string()),
+                        delta: crate::ir::IrDelta::InputJsonDelta(args.to_string()),
                     });
                 }
             }
@@ -761,7 +758,7 @@ impl ProtocolReader for OpenAiReader {
                 // the buffered response does). Reading it only on the buffered path made the same
                 // request report reasoning tokens at `stream: false` and a hard `0` at
                 // `stream: true` — the streaming twin of the bug the field was added to fix.
-                detail: busbar_core::ir::IrUsageDetail {
+                detail: crate::ir::IrUsageDetail {
                     reasoning_tokens: u
                         .get("completion_tokens_details")
                         .and_then(|d| d.get("reasoning_tokens"))
@@ -805,8 +802,8 @@ impl ProtocolReader for OpenAiReader {
             let stop_reason = match read_openai_stop_reason(fr) {
                 // A refusal reports `finish_reason: "stop"`. Only EndTurn is overridden — a refusal
                 // that also hit the length cap keeps MaxTokens.
-                busbar_core::ir::IrStopReason::EndTurn if state.refusal_seen => {
-                    Some(busbar_core::ir::IrStopReason::Refusal)
+                crate::ir::IrStopReason::EndTurn if state.refusal_seen => {
+                    Some(crate::ir::IrStopReason::Refusal)
                 }
                 other => Some(other),
             };
@@ -815,7 +812,7 @@ impl ProtocolReader for OpenAiReader {
                 output_tokens: 0,
                 cache_creation_input_tokens: None,
                 cache_read_input_tokens: None,
-                detail: busbar_core::ir::IrUsageDetail::default(),
+                detail: crate::ir::IrUsageDetail::default(),
             });
             out.push(IrStreamEvent::MessageDelta {
                 stop_reason,
@@ -854,10 +851,7 @@ impl ProtocolReader for OpenAiReader {
         Box::new(self.clone())
     }
 
-    fn read_response(
-        &self,
-        body: &serde_json::Value,
-    ) -> Result<busbar_core::ir::IrResponse, IrError> {
+    fn read_response(&self, body: &serde_json::Value) -> Result<crate::ir::IrResponse, IrError> {
         let obj = body.as_object().ok_or(IrError {
             class: StatusClass::ClientError,
             provider_signal: Some(busbar_core::proto::SIGNAL_IR_PARSE.into()),
@@ -911,7 +905,7 @@ impl ProtocolReader for OpenAiReader {
             .unwrap_or("");
 
         // Parse content (may be null)
-        let mut content: Vec<busbar_core::ir::IrBlock> = Vec::new();
+        let mut content: Vec<crate::ir::IrBlock> = Vec::new();
 
         // Reasoning models on OpenAI-compatible providers (e.g. GLM, DeepSeek) emit the
         // chain-of-thought in a separate `reasoning_content` (or `reasoning`) field. Map it to a
@@ -920,7 +914,7 @@ impl ProtocolReader for OpenAiReader {
         for key in ["reasoning_content", "reasoning"] {
             if let Some(r) = message_val.get(key).and_then(|v| v.as_str()) {
                 if !r.is_empty() {
-                    content.push(busbar_core::ir::IrBlock::Thinking {
+                    content.push(crate::ir::IrBlock::Thinking {
                         text: r.to_string(),
                         signature: None,
                         redacted: false,
@@ -941,7 +935,7 @@ impl ProtocolReader for OpenAiReader {
                         .get("annotations")
                         .map(super::super::openai_annotations::read_url_annotations)
                         .unwrap_or_default();
-                    content.push(busbar_core::ir::IrBlock::Text {
+                    content.push(crate::ir::IrBlock::Text {
                         text: text.to_string(),
                         cache_control: None,
                         citations,
@@ -951,7 +945,7 @@ impl ProtocolReader for OpenAiReader {
                 for block_val in arr {
                     let block = read_openai_block(block_val)?;
                     // Only include text blocks from array content (OpenAI image_url not supported in response)
-                    if !matches!(block, busbar_core::ir::IrBlock::Image { .. }) {
+                    if !matches!(block, crate::ir::IrBlock::Image { .. }) {
                         content.push(block);
                     }
                 }
@@ -969,7 +963,7 @@ impl ProtocolReader for OpenAiReader {
         if let Some(text) = message_val.get("refusal").and_then(|v| v.as_str()) {
             if !text.is_empty() {
                 saw_refusal = true;
-                content.push(busbar_core::ir::IrBlock::Text {
+                content.push(crate::ir::IrBlock::Text {
                     text: text.to_string(),
                     cache_control: None,
                     citations: Vec::new(),
@@ -1003,7 +997,7 @@ impl ProtocolReader for OpenAiReader {
                     let input = busbar_core::json::parse_str(arguments)
                         .unwrap_or(serde_json::Value::String(arguments.to_string()));
 
-                    content.push(busbar_core::ir::IrBlock::ToolUse {
+                    content.push(crate::ir::IrBlock::ToolUse {
                         id,
                         name,
                         input,
@@ -1026,8 +1020,8 @@ impl ProtocolReader for OpenAiReader {
         };
         // A refusal reports `finish_reason: "stop"`, so the signal only survives if it is promoted
         // here. Only EndTurn is overridden — a refusal that also hit the length cap keeps MaxTokens.
-        if saw_refusal && stop_reason == Some(busbar_core::ir::IrStopReason::EndTurn) {
-            stop_reason = Some(busbar_core::ir::IrStopReason::Refusal);
+        if saw_refusal && stop_reason == Some(crate::ir::IrStopReason::EndTurn) {
+            stop_reason = Some(crate::ir::IrStopReason::Refusal);
         }
 
         // Parse usage. Treat an absent `usage` object leniently — fall back to zero counts rather
@@ -1043,7 +1037,7 @@ impl ProtocolReader for OpenAiReader {
             .and_then(|d| d.get("cached_tokens"))
             .and_then(|v| v.as_u64());
 
-        let usage = busbar_core::ir::IrUsage {
+        let usage = crate::ir::IrUsage {
             // NORMALIZE to the additive-cache convention: OpenAI's `prompt_tokens` is a TOTAL that
             // already INCLUDES the cached prefix, so subtract the cached tokens to leave only the
             // uncached input. `saturating_sub` guards an odd upstream where cached > prompt_tokens.
@@ -1063,7 +1057,7 @@ impl ProtocolReader for OpenAiReader {
             // for it — which reads as "this model did no thinking", not as "busbar did not carry the
             // number". Totals were always right; ATTRIBUTION is what a customer reconciles a bill
             // against.
-            detail: busbar_core::ir::IrUsageDetail {
+            detail: crate::ir::IrUsageDetail {
                 reasoning_tokens: usage_val
                     .and_then(|u| u.get("completion_tokens_details"))
                     .and_then(|d| d.get("reasoning_tokens"))
@@ -1089,9 +1083,9 @@ impl ProtocolReader for OpenAiReader {
         // (e.g. Gemini) receives them in its own shape.
         let logprobs = read_openai_logprobs(choices[0].get("logprobs"));
 
-        Ok(busbar_core::ir::IrResponse {
+        Ok(crate::ir::IrResponse {
             logprobs,
-            role: busbar_core::ir::IrRole::Assistant,
+            role: crate::ir::IrRole::Assistant,
             content,
             stop_reason,
             usage,

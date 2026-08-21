@@ -15,8 +15,8 @@ const PATH_MESSAGES: &str = "/v1/messages";
 pub(crate) struct AnthropicRequestHandler;
 /// This protocol's OWN chat instance — delete this line (and the registry arm) and this
 /// protocol's chat 404s via the standard no-handler path; everything else keeps working.
-static CHAT: busbar_core::handlers::chat::ChatOperation =
-    busbar_core::handlers::chat::ChatOperation("anthropic");
+static CHAT: super::super::chat_handle::ChatOperation =
+    super::super::chat_handle::ChatOperation("anthropic");
 
 /// ANTHROPIC'S ROW OF THE SUPPORT MATRIX — one verb. Every other verb is the standard no-handler
 /// 404, and it is the SAME answer for the LLM verbs Anthropic lacks and for the protocol-surface

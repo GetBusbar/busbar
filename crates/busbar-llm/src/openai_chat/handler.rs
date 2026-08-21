@@ -4,13 +4,11 @@
 //! OpenAI `RequestHandler` and its OperationHandlers. OperationHandlers are pure codecs — wire ↔ IR,
 //! both directions, nothing else: moderation, embeddings, images, audio, and chat each get one.
 
+use crate::ir::moderation::{ModerationInput, ModerationReq, ModerationResp, ModerationResult};
 use busbar_core::handlers::{
     CodecError, EgressCtx, IngressReject, OperationHandler, RequestHandler, WireBody,
 };
-use busbar_core::ir::moderation::{
-    ModerationInput, ModerationReq, ModerationResp, ModerationResult,
-};
-use busbar_core::ir::variant::{IrReq, IrResp};
+use busbar_core::ir::handle::IrHandle;
 use busbar_core::operation::Operation;
 use bytes::Bytes;
 use serde_json::{json, Value};
@@ -30,8 +28,8 @@ const PATH_RERANK: &str = "/v1/rerank";
 pub(crate) struct OpenAiRequestHandler;
 /// This protocol's OWN chat instance — delete this line (and the registry arm) and this
 /// protocol's chat 404s via the standard no-handler path; everything else keeps working.
-static CHAT: busbar_core::handlers::chat::ChatOperation =
-    busbar_core::handlers::chat::ChatOperation("openai");
+static CHAT: super::super::chat_handle::ChatOperation =
+    super::super::chat_handle::ChatOperation("openai");
 
 static MODERATION: OpenAiModeration = OpenAiModeration;
 static EMBEDDINGS: OpenAiEmbeddings = OpenAiEmbeddings;
@@ -101,8 +99,8 @@ impl RequestHandler for OpenAiRequestHandler {
 
 // -------------------------------------------------- audio cells (real codecs, cross-protocol)
 
+use crate::ir::audio::{SpeechReq, SpeechResp, TranscriptionReq, TranscriptionResp};
 use busbar_core::billing::Billing;
-use busbar_core::ir::audio::{SpeechReq, SpeechResp, TranscriptionReq, TranscriptionResp};
 use busbar_core::media::{base64_decode, MediaBlob, MediaPayload};
 
 /// One decoded part of a `multipart/form-data` body (its value borrowed from the request bytes).
@@ -256,72 +254,21 @@ impl OperationHandler for OpenAiTranscription {
         "multipart/form-data; boundary=----busbaraudioMIME"
     }
 
-    fn read_request(&self, body: &[u8], content_type: &str) -> Result<IrReq, IngressReject> {
-        let fields = parse_multipart(body, content_type);
-        let mut req = TranscriptionReq::default();
-        for f in &fields {
-            match f.name.as_str() {
-                "model" => req.model = String::from_utf8_lossy(f.value).trim().to_string(),
-                "language" => {
-                    req.source_language = Some(String::from_utf8_lossy(f.value).trim().to_string())
-                }
-                "prompt" => req.prompt = Some(String::from_utf8_lossy(f.value).into_owned()),
-                "response_format" => {
-                    req.response_format = Some(String::from_utf8_lossy(f.value).trim().to_string())
-                }
-                "file" => {
-                    req.audio = Some(MediaBlob {
-                        payload: MediaPayload::Bytes(Bytes::copy_from_slice(f.value)),
-                        mime_type: f
-                            .content_type
-                            .as_deref()
-                            .map(sanitize_mime_type)
-                            .unwrap_or_else(|| "application/octet-stream".into()),
-                        pcm: None,
-                    })
-                }
-                _ => {}
-            }
-        }
-        if req.audio.is_none() {
-            return Err(IngressReject::BadRequest(
-                "transcription requires a file part".into(),
-            ));
-        }
-        Ok(IrReq::Transcription(req))
+    fn read_request(
+        &self,
+        body: &[u8],
+        content_type: &str,
+    ) -> Result<Box<dyn IrHandle>, IngressReject> {
+        Ok(Box::new(super::super::leaf_handles::TranscriptionReqHandle(
+            read_transcription_request(body, content_type)?,
+        )) as Box<dyn IrHandle>)
     }
-    fn write_request(&self, ir: &IrReq) -> Bytes {
-        let IrReq::Transcription(r) = ir else {
-            return Bytes::new();
-        };
-        super::super::leaf_codec::transcription_write_request("openai", r)
-    }
-    fn read_response(&self, wire: &[u8]) -> Result<IrResp, CodecError> {
-        // OpenAI transcription is `{"text": "..."}` (json) or bare text (response_format=text). The
-        // real API also carries `usage` — whisper-1 DURATION (`{type:"duration",seconds}`), the
-        // gpt-4o-transcribe models TOKENS — captured from the live API (2026-07-10). Both → Billing.
-        let (text, usage) = match serde_json::from_slice::<Value>(wire) {
-            Ok(v) => {
-                let text = v
-                    .get("text")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_string();
-                (text, v.get("usage").and_then(parse_transcription_usage))
-            }
-            Err(_) => (String::from_utf8_lossy(wire).into_owned(), None),
-        };
-        Ok(IrResp::Transcription(TranscriptionResp {
-            text,
-            usage,
-            ..Default::default()
-        }))
-    }
-    fn write_response(&self, ir: &IrResp) -> WireBody {
-        let IrResp::Transcription(r) = ir else {
-            return WireBody::json(Bytes::new());
-        };
-        super::super::leaf_codec::transcription_write_response("openai", r)
+    fn read_response(&self, wire: &[u8]) -> Result<Box<dyn IrHandle>, CodecError> {
+        Ok(
+            Box::new(super::super::leaf_handles::TranscriptionRespHandle(
+                read_transcription_response(wire)?,
+            )) as Box<dyn IrHandle>,
+        )
     }
 }
 
@@ -421,53 +368,19 @@ impl OperationHandler for OpenAiSpeech {
     fn extract_error(&self, status: u16, body: &[u8]) -> busbar_core::breaker::RawUpstreamError {
         busbar_core::handlers::protocol_error("openai", status, body)
     }
-    fn read_request(&self, body: &[u8], _content_type: &str) -> Result<IrReq, IngressReject> {
-        let wire: Value =
-            serde_json::from_slice(body).map_err(|e| IngressReject::BadRequest(e.to_string()))?;
-        let get = |k: &str| {
-            wire.get(k)
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string()
-        };
-        Ok(IrReq::Speech(SpeechReq {
-            input: get("input"),
-            model: get("model"),
-            voice: get("voice"),
-            response_format: wire
-                .get("response_format")
-                .and_then(Value::as_str)
-                .map(str::to_string),
-            instructions: wire
-                .get("instructions")
-                .and_then(Value::as_str)
-                .map(str::to_string),
-            speed: wire.get("speed").and_then(Value::as_f64).map(|s| s as f32),
-            ..Default::default()
-        }))
+    fn read_request(
+        &self,
+        body: &[u8],
+        _content_type: &str,
+    ) -> Result<Box<dyn IrHandle>, IngressReject> {
+        Ok(Box::new(super::super::leaf_handles::SpeechReqHandle(
+            read_speech_request(body, _content_type)?,
+        )) as Box<dyn IrHandle>)
     }
-    fn write_request(&self, ir: &IrReq) -> Bytes {
-        let IrReq::Speech(r) = ir else {
-            return Bytes::new();
-        };
-        super::super::leaf_codec::speech_write_request("openai", r)
-    }
-    fn read_response(&self, wire: &[u8]) -> Result<IrResp, CodecError> {
-        // OpenAI speech is raw binary audio (mp3 by default) — wrap the bytes verbatim.
-        Ok(IrResp::Speech(SpeechResp {
-            audio: Some(MediaBlob {
-                payload: MediaPayload::Bytes(Bytes::copy_from_slice(wire)),
-                mime_type: "audio/mpeg".into(),
-                pcm: None,
-            }),
-            ..Default::default()
-        }))
-    }
-    fn write_response(&self, ir: &IrResp) -> WireBody {
-        let IrResp::Speech(r) = ir else {
-            return WireBody::json(Bytes::new());
-        };
-        super::super::leaf_codec::speech_write_response("openai", r)
+    fn read_response(&self, wire: &[u8]) -> Result<Box<dyn IrHandle>, CodecError> {
+        Ok(Box::new(super::super::leaf_handles::SpeechRespHandle(
+            read_speech_response(wire)?,
+        )) as Box<dyn IrHandle>)
     }
 }
 
@@ -505,7 +418,7 @@ pub(crate) fn write_speech_response(r: &SpeechResp) -> WireBody {
 
 // -------------------------------------------------- embeddings OperationHandler (real codec, cross-protocol)
 
-use busbar_core::ir::embeddings::{
+use crate::ir::embeddings::{
     EmbInput, EmbeddingItem, EmbeddingsReq, EmbeddingsResp, EncFmt, VectorData,
 };
 
@@ -524,120 +437,21 @@ impl OperationHandler for OpenAiEmbeddings {
         true
     }
     /// openai embeddings wire → IR (used when openai is the INGRESS of a cross-protocol call).
-    fn read_request(&self, body: &[u8], _content_type: &str) -> Result<IrReq, IngressReject> {
-        let wire: Value =
-            serde_json::from_slice(body).map_err(|e| IngressReject::BadRequest(e.to_string()))?;
-        let model = wire
-            .get("model")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string();
-        let input = match wire.get("input") {
-            Some(Value::String(s)) => EmbInput::Text(vec![s.clone()]),
-            Some(Value::Array(a)) => {
-                // An array of strings is the multi-text batch. An array of integers (or token-ID
-                // sub-arrays) is OpenAI's pre-tokenized input form, which does not translate across
-                // providers — reject it loudly rather than silently `filter_map` it to an empty batch
-                // that reaches the backend as a confusing 400.
-                if a.is_empty() || !a.iter().all(Value::is_string) {
-                    return Err(IngressReject::BadRequest(
-                        "embeddings `input` must be a string or a non-empty array of strings \
-                         (pre-tokenized integer input is not supported)"
-                            .into(),
-                    ));
-                }
-                EmbInput::Text(
-                    a.iter()
-                        .filter_map(|x| x.as_str().map(str::to_string))
-                        .collect(),
-                )
-            }
-            _ => {
-                return Err(IngressReject::BadRequest(
-                    "embeddings request missing `input`".into(),
-                ))
-            }
-        };
-        let dimensions = wire
-            .get("dimensions")
-            .and_then(Value::as_u64)
-            .and_then(|d| u32::try_from(d).ok());
-        let encoding_formats = match wire.get("encoding_format").and_then(Value::as_str) {
-            Some("base64") => vec![EncFmt::Base64],
-            _ => vec![EncFmt::Float],
-        };
-        Ok(IrReq::Embeddings(EmbeddingsReq {
-            model,
-            input,
-            dimensions,
-            encoding_formats,
-            user: wire.get("user").and_then(Value::as_str).map(str::to_string),
-            ..Default::default()
-        }))
-    }
-
-    /// IR → openai embeddings wire (used when openai is the EGRESS).
-    fn write_request(&self, ir: &IrReq) -> Bytes {
-        let IrReq::Embeddings(r) = ir else {
-            return Bytes::new();
-        };
-        super::super::leaf_codec::embeddings_write_request("openai", r)
+    fn read_request(
+        &self,
+        body: &[u8],
+        _content_type: &str,
+    ) -> Result<Box<dyn IrHandle>, IngressReject> {
+        Ok(Box::new(super::super::leaf_handles::EmbeddingsReqHandle(
+            read_embeddings_request(body, _content_type)?,
+        )) as Box<dyn IrHandle>)
     }
 
     /// openai embeddings response wire → IR (used when openai is the EGRESS).
-    fn read_response(&self, wire: &[u8]) -> Result<IrResp, CodecError> {
-        let v: Value =
-            serde_json::from_slice(wire).map_err(|e| CodecError::Malformed(e.to_string()))?;
-        let embeddings = v
-            .get("data")
-            .and_then(Value::as_array)
-            .map(|arr| {
-                arr.iter()
-                    .enumerate()
-                    .map(|(idx, d)| {
-                        let index =
-                            d.get("index").and_then(Value::as_u64).unwrap_or(idx as u64) as usize;
-                        let mut item = EmbeddingItem {
-                            index,
-                            ..Default::default()
-                        };
-                        if let Some(f) = d.get("embedding").and_then(Value::as_array) {
-                            item.vectors.insert(
-                                EncFmt::Float,
-                                VectorData::Float(
-                                    f.iter()
-                                        .filter_map(|x| x.as_f64().map(|n| n as f32))
-                                        .collect(),
-                                ),
-                            );
-                        } else if let Some(b) = d.get("embedding").and_then(Value::as_str) {
-                            item.vectors
-                                .insert(EncFmt::Base64, VectorData::Base64(b.to_string()));
-                        }
-                        item
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        let usage = v.get("usage").map(|u| busbar_core::billing::TokenUsage {
-            input: u.get("prompt_tokens").and_then(Value::as_u64).unwrap_or(0),
-            ..Default::default()
-        });
-        Ok(IrResp::Embeddings(EmbeddingsResp {
-            model: v.get("model").and_then(Value::as_str).map(str::to_string),
-            object_kind: Some("list".into()),
-            embeddings,
-            usage,
-            ..Default::default()
-        }))
-    }
-
-    /// IR → openai embeddings response wire (used when openai is the INGRESS — the caller's dialect).
-    fn write_response(&self, ir: &IrResp) -> WireBody {
-        let IrResp::Embeddings(r) = ir else {
-            return WireBody::json(Bytes::new());
-        };
-        super::super::leaf_codec::embeddings_write_response("openai", r)
+    fn read_response(&self, wire: &[u8]) -> Result<Box<dyn IrHandle>, CodecError> {
+        Ok(Box::new(super::super::leaf_handles::EmbeddingsRespHandle(
+            read_embeddings_response(wire)?,
+        )) as Box<dyn IrHandle>)
     }
 }
 
@@ -700,7 +514,7 @@ pub(crate) fn write_embeddings_response(r: &EmbeddingsResp) -> WireBody {
 
 // ---------------------------------------------------------------- image OperationHandler (real, cross-protocol)
 
-use busbar_core::ir::image::{ImageOp, ImageReq, ImageResp, ImageSize};
+use crate::ir::image::{ImageOp, ImageReq, ImageResp, ImageSize};
 use busbar_core::media::ImageOutput;
 
 struct OpenAiImage;
@@ -711,106 +525,19 @@ impl OperationHandler for OpenAiImage {
     fn extract_error(&self, status: u16, body: &[u8]) -> busbar_core::breaker::RawUpstreamError {
         busbar_core::handlers::protocol_error("openai", status, body)
     }
-    fn read_request(&self, body: &[u8], _content_type: &str) -> Result<IrReq, IngressReject> {
-        let wire: Value =
-            serde_json::from_slice(body).map_err(|e| IngressReject::BadRequest(e.to_string()))?;
-        let model = wire
-            .get("model")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string();
-        // `read_request` sees the body + content-type, never the PATH — so `/v1/images/edits` vs
-        // `/v1/images/generations` (both resolve to `Operation::IMAGE`, handlers/openai.rs:79) is
-        // distinguished by BODY SHAPE, not the route: an `image` reference names an edit
-        // (`mask` present) or variation sub-op. No 1.5.0 egress writer emits anything but
-        // `/v1/images/generations` (`upstream_path`, below), so every edit/variation request is
-        // unsupported today — the second 404 site, not a missing route.
-        if wire.get("image").is_some() {
-            return Err(IngressReject::UnsupportedSubOp {
-                op: Operation::IMAGE,
-                model,
-            });
-        }
-        let size = wire.get("size").and_then(Value::as_str).and_then(|s| {
-            if s == "auto" {
-                Some(ImageSize::Auto)
-            } else {
-                s.split_once('x').and_then(|(w, h)| {
-                    Some(ImageSize::Wh {
-                        width: w.parse().ok()?,
-                        height: h.parse().ok()?,
-                    })
-                })
-            }
-        });
-        Ok(IrReq::Image(ImageReq {
-            op: ImageOp::Generate,
-            model,
-            prompt: wire
-                .get("prompt")
-                .and_then(Value::as_str)
-                .map(str::to_string),
-            n: wire
-                .get("n")
-                .and_then(Value::as_u64)
-                .and_then(|n| u32::try_from(n).ok()),
-            size,
-            quality: wire
-                .get("quality")
-                .and_then(Value::as_str)
-                .map(str::to_string),
-            style: wire
-                .get("style")
-                .and_then(Value::as_str)
-                .map(str::to_string),
-            response_format: wire
-                .get("response_format")
-                .and_then(Value::as_str)
-                .map(str::to_string),
-            user: wire.get("user").and_then(Value::as_str).map(str::to_string),
-            ..Default::default()
-        }))
+    fn read_request(
+        &self,
+        body: &[u8],
+        _content_type: &str,
+    ) -> Result<Box<dyn IrHandle>, IngressReject> {
+        Ok(Box::new(super::super::leaf_handles::ImageReqHandle(
+            read_image_request(body, _content_type)?,
+        )) as Box<dyn IrHandle>)
     }
-    fn write_request(&self, ir: &IrReq) -> Bytes {
-        let IrReq::Image(r) = ir else {
-            return Bytes::new();
-        };
-        super::super::leaf_codec::image_write_request("openai", r)
-    }
-    fn read_response(&self, wire: &[u8]) -> Result<IrResp, CodecError> {
-        let v: Value =
-            serde_json::from_slice(wire).map_err(|e| CodecError::Malformed(e.to_string()))?;
-        let images = v
-            .get("data")
-            .and_then(Value::as_array)
-            .map(|arr| {
-                arr.iter()
-                    .map(|d| ImageOutput {
-                        b64: d
-                            .get("b64_json")
-                            .and_then(Value::as_str)
-                            .map(str::to_string),
-                        url: d.get("url").and_then(Value::as_str).map(str::to_string),
-                        revised_prompt: d
-                            .get("revised_prompt")
-                            .and_then(Value::as_str)
-                            .map(str::to_string),
-                        ..Default::default()
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        Ok(IrResp::Image(ImageResp {
-            created: v.get("created").and_then(Value::as_u64),
-            images,
-            ..Default::default()
-        }))
-    }
-    fn write_response(&self, ir: &IrResp) -> WireBody {
-        let IrResp::Image(r) = ir else {
-            return WireBody::json(Bytes::new());
-        };
-        super::super::leaf_codec::image_write_response("openai", r)
+    fn read_response(&self, wire: &[u8]) -> Result<Box<dyn IrHandle>, CodecError> {
+        Ok(Box::new(super::super::leaf_handles::ImageRespHandle(
+            read_image_response(wire)?,
+        )) as Box<dyn IrHandle>)
     }
 }
 
@@ -884,52 +611,20 @@ impl OperationHandler for OpenAiModeration {
     fn extract_error(&self, status: u16, body: &[u8]) -> busbar_core::breaker::RawUpstreamError {
         busbar_core::handlers::protocol_error("openai", status, body)
     }
-    fn read_request(&self, body: &[u8], _content_type: &str) -> Result<IrReq, IngressReject> {
-        let wire: Value =
-            serde_json::from_slice(body).map_err(|e| IngressReject::BadRequest(e.to_string()))?;
-        let model = wire
-            .get("model")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string();
-        let input = parse_input(wire.get("input"))?;
-        Ok(IrReq::Moderation(ModerationReq {
-            model,
-            input,
-            extra: BTreeMap::new(),
-        }))
+    fn read_request(
+        &self,
+        body: &[u8],
+        _content_type: &str,
+    ) -> Result<Box<dyn IrHandle>, IngressReject> {
+        Ok(Box::new(super::super::leaf_handles::ModerationReqHandle(
+            read_moderation_request(body, _content_type)?,
+        )) as Box<dyn IrHandle>)
     }
 
-    fn write_request(&self, ir: &IrReq) -> Bytes {
-        let IrReq::Moderation(r) = ir else {
-            // An OperationHandler only ever receives its own variant; anything else is a programming error, not a
-            // runtime path. Emit an empty body rather than panic.
-            return Bytes::new();
-        };
-        super::super::leaf_codec::moderation_write_request("openai", r)
-    }
-
-    fn read_response(&self, wire: &[u8]) -> Result<IrResp, CodecError> {
-        let v: Value =
-            serde_json::from_slice(wire).map_err(|e| CodecError::Malformed(e.to_string()))?;
-        let results = v
-            .get("results")
-            .and_then(Value::as_array)
-            .map(|arr| arr.iter().map(parse_result).collect())
-            .unwrap_or_default();
-        Ok(IrResp::Moderation(ModerationResp {
-            id: v.get("id").and_then(Value::as_str).map(str::to_string),
-            model: v.get("model").and_then(Value::as_str).map(str::to_string),
-            results,
-            extra: BTreeMap::new(),
-        }))
-    }
-
-    fn write_response(&self, ir: &IrResp) -> WireBody {
-        let IrResp::Moderation(r) = ir else {
-            return WireBody::json(Bytes::new());
-        };
-        super::super::leaf_codec::moderation_write_response("openai", r)
+    fn read_response(&self, wire: &[u8]) -> Result<Box<dyn IrHandle>, CodecError> {
+        Ok(Box::new(super::super::leaf_handles::ModerationRespHandle(
+            read_moderation_response(wire)?,
+        )) as Box<dyn IrHandle>)
     }
 }
 
@@ -1052,3 +747,373 @@ fn map_strs(m: &BTreeMap<String, Vec<String>>) -> Value {
 #[cfg(test)]
 #[path = "tests/handler_tests.rs"]
 mod tests;
+
+/// Wire -> concrete `TranscriptionReq` parse, extracted from the `OperationHandler::read_request`
+/// body so a dissolved leaf-op handle and the `(op,proto)` `leaf_codec` read dispatch (G6 A4b,
+/// owner ruling b) can recover the concrete IR without a downcast. Byte-identical parse.
+pub(crate) fn read_transcription_request(
+    body: &[u8],
+    content_type: &str,
+) -> Result<crate::ir::audio::TranscriptionReq, IngressReject> {
+    let fields = parse_multipart(body, content_type);
+    let mut req = TranscriptionReq::default();
+    for f in &fields {
+        match f.name.as_str() {
+            "model" => req.model = String::from_utf8_lossy(f.value).trim().to_string(),
+            "language" => {
+                req.source_language = Some(String::from_utf8_lossy(f.value).trim().to_string())
+            }
+            "prompt" => req.prompt = Some(String::from_utf8_lossy(f.value).into_owned()),
+            "response_format" => {
+                req.response_format = Some(String::from_utf8_lossy(f.value).trim().to_string())
+            }
+            "file" => {
+                req.audio = Some(MediaBlob {
+                    payload: MediaPayload::Bytes(Bytes::copy_from_slice(f.value)),
+                    mime_type: f
+                        .content_type
+                        .as_deref()
+                        .map(sanitize_mime_type)
+                        .unwrap_or_else(|| "application/octet-stream".into()),
+                    pcm: None,
+                })
+            }
+            _ => {}
+        }
+    }
+    if req.audio.is_none() {
+        return Err(IngressReject::BadRequest(
+            "transcription requires a file part".into(),
+        ));
+    }
+    Ok(req)
+}
+
+/// Wire -> concrete `TranscriptionResp` parse, extracted from the `OperationHandler::read_response`
+/// body so a dissolved leaf-op handle and the `(op,proto)` `leaf_codec` read dispatch (G6 A4b,
+/// owner ruling b) can recover the concrete IR without a downcast. Byte-identical parse.
+pub(crate) fn read_transcription_response(
+    wire: &[u8],
+) -> Result<crate::ir::audio::TranscriptionResp, CodecError> {
+    // OpenAI transcription is `{"text": "..."}` (json) or bare text (response_format=text). The
+    // real API also carries `usage` — whisper-1 DURATION (`{type:"duration",seconds}`), the
+    // gpt-4o-transcribe models TOKENS — captured from the live API (2026-07-10). Both → Billing.
+    let (text, usage) = match serde_json::from_slice::<Value>(wire) {
+        Ok(v) => {
+            let text = v
+                .get("text")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            (text, v.get("usage").and_then(parse_transcription_usage))
+        }
+        Err(_) => (String::from_utf8_lossy(wire).into_owned(), None),
+    };
+    Ok(TranscriptionResp {
+        text,
+        usage,
+        ..Default::default()
+    })
+}
+
+/// Wire -> concrete `SpeechReq` parse, extracted from the `OperationHandler::read_request`
+/// body so a dissolved leaf-op handle and the `(op,proto)` `leaf_codec` read dispatch (G6 A4b,
+/// owner ruling b) can recover the concrete IR without a downcast. Byte-identical parse.
+pub(crate) fn read_speech_request(
+    body: &[u8],
+    _content_type: &str,
+) -> Result<crate::ir::audio::SpeechReq, IngressReject> {
+    let wire: Value =
+        serde_json::from_slice(body).map_err(|e| IngressReject::BadRequest(e.to_string()))?;
+    let get = |k: &str| {
+        wire.get(k)
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string()
+    };
+    Ok(SpeechReq {
+        input: get("input"),
+        model: get("model"),
+        voice: get("voice"),
+        response_format: wire
+            .get("response_format")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        instructions: wire
+            .get("instructions")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        speed: wire.get("speed").and_then(Value::as_f64).map(|s| s as f32),
+        ..Default::default()
+    })
+}
+
+/// Wire -> concrete `SpeechResp` parse, extracted from the `OperationHandler::read_response`
+/// body so a dissolved leaf-op handle and the `(op,proto)` `leaf_codec` read dispatch (G6 A4b,
+/// owner ruling b) can recover the concrete IR without a downcast. Byte-identical parse.
+pub(crate) fn read_speech_response(
+    wire: &[u8],
+) -> Result<crate::ir::audio::SpeechResp, CodecError> {
+    // OpenAI speech is raw binary audio (mp3 by default) — wrap the bytes verbatim.
+    Ok(SpeechResp {
+        audio: Some(MediaBlob {
+            payload: MediaPayload::Bytes(Bytes::copy_from_slice(wire)),
+            mime_type: "audio/mpeg".into(),
+            pcm: None,
+        }),
+        ..Default::default()
+    })
+}
+
+/// Wire -> concrete `EmbeddingsReq` parse, extracted from the `OperationHandler::read_request`
+/// body so a dissolved leaf-op handle and the `(op,proto)` `leaf_codec` read dispatch (G6 A4b,
+/// owner ruling b) can recover the concrete IR without a downcast. Byte-identical parse.
+pub(crate) fn read_embeddings_request(
+    body: &[u8],
+    _content_type: &str,
+) -> Result<crate::ir::embeddings::EmbeddingsReq, IngressReject> {
+    let wire: Value =
+        serde_json::from_slice(body).map_err(|e| IngressReject::BadRequest(e.to_string()))?;
+    let model = wire
+        .get("model")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let input = match wire.get("input") {
+        Some(Value::String(s)) => EmbInput::Text(vec![s.clone()]),
+        Some(Value::Array(a)) => {
+            // An array of strings is the multi-text batch. An array of integers (or token-ID
+            // sub-arrays) is OpenAI's pre-tokenized input form, which does not translate across
+            // providers — reject it loudly rather than silently `filter_map` it to an empty batch
+            // that reaches the backend as a confusing 400.
+            if a.is_empty() || !a.iter().all(Value::is_string) {
+                return Err(IngressReject::BadRequest(
+                    "embeddings `input` must be a string or a non-empty array of strings \
+                         (pre-tokenized integer input is not supported)"
+                        .into(),
+                ));
+            }
+            EmbInput::Text(
+                a.iter()
+                    .filter_map(|x| x.as_str().map(str::to_string))
+                    .collect(),
+            )
+        }
+        _ => {
+            return Err(IngressReject::BadRequest(
+                "embeddings request missing `input`".into(),
+            ))
+        }
+    };
+    let dimensions = wire
+        .get("dimensions")
+        .and_then(Value::as_u64)
+        .and_then(|d| u32::try_from(d).ok());
+    let encoding_formats = match wire.get("encoding_format").and_then(Value::as_str) {
+        Some("base64") => vec![EncFmt::Base64],
+        _ => vec![EncFmt::Float],
+    };
+    Ok(EmbeddingsReq {
+        model,
+        input,
+        dimensions,
+        encoding_formats,
+        user: wire.get("user").and_then(Value::as_str).map(str::to_string),
+        ..Default::default()
+    })
+}
+
+/// Wire -> concrete `EmbeddingsResp` parse, extracted from the `OperationHandler::read_response`
+/// body so a dissolved leaf-op handle and the `(op,proto)` `leaf_codec` read dispatch (G6 A4b,
+/// owner ruling b) can recover the concrete IR without a downcast. Byte-identical parse.
+pub(crate) fn read_embeddings_response(
+    wire: &[u8],
+) -> Result<crate::ir::embeddings::EmbeddingsResp, CodecError> {
+    let v: Value =
+        serde_json::from_slice(wire).map_err(|e| CodecError::Malformed(e.to_string()))?;
+    let embeddings = v
+        .get("data")
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .enumerate()
+                .map(|(idx, d)| {
+                    let index =
+                        d.get("index").and_then(Value::as_u64).unwrap_or(idx as u64) as usize;
+                    let mut item = EmbeddingItem {
+                        index,
+                        ..Default::default()
+                    };
+                    if let Some(f) = d.get("embedding").and_then(Value::as_array) {
+                        item.vectors.insert(
+                            EncFmt::Float,
+                            VectorData::Float(
+                                f.iter()
+                                    .filter_map(|x| x.as_f64().map(|n| n as f32))
+                                    .collect(),
+                            ),
+                        );
+                    } else if let Some(b) = d.get("embedding").and_then(Value::as_str) {
+                        item.vectors
+                            .insert(EncFmt::Base64, VectorData::Base64(b.to_string()));
+                    }
+                    item
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let usage = v.get("usage").map(|u| busbar_core::billing::TokenUsage {
+        input: u.get("prompt_tokens").and_then(Value::as_u64).unwrap_or(0),
+        ..Default::default()
+    });
+    Ok(EmbeddingsResp {
+        model: v.get("model").and_then(Value::as_str).map(str::to_string),
+        object_kind: Some("list".into()),
+        embeddings,
+        usage,
+        ..Default::default()
+    })
+}
+
+/// Wire -> concrete `ImageReq` parse, extracted from the `OperationHandler::read_request`
+/// body so a dissolved leaf-op handle and the `(op,proto)` `leaf_codec` read dispatch (G6 A4b,
+/// owner ruling b) can recover the concrete IR without a downcast. Byte-identical parse.
+pub(crate) fn read_image_request(
+    body: &[u8],
+    _content_type: &str,
+) -> Result<crate::ir::image::ImageReq, IngressReject> {
+    let wire: Value =
+        serde_json::from_slice(body).map_err(|e| IngressReject::BadRequest(e.to_string()))?;
+    let model = wire
+        .get("model")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    // `read_request` sees the body + content-type, never the PATH — so `/v1/images/edits` vs
+    // `/v1/images/generations` (both resolve to `Operation::IMAGE`, handlers/openai.rs:79) is
+    // distinguished by BODY SHAPE, not the route: an `image` reference names an edit
+    // (`mask` present) or variation sub-op. No 1.5.0 egress writer emits anything but
+    // `/v1/images/generations` (`upstream_path`, below), so every edit/variation request is
+    // unsupported today — the second 404 site, not a missing route.
+    if wire.get("image").is_some() {
+        return Err(IngressReject::UnsupportedSubOp {
+            op: Operation::IMAGE,
+            model,
+        });
+    }
+    let size = wire.get("size").and_then(Value::as_str).and_then(|s| {
+        if s == "auto" {
+            Some(ImageSize::Auto)
+        } else {
+            s.split_once('x').and_then(|(w, h)| {
+                Some(ImageSize::Wh {
+                    width: w.parse().ok()?,
+                    height: h.parse().ok()?,
+                })
+            })
+        }
+    });
+    Ok(ImageReq {
+        op: ImageOp::Generate,
+        model,
+        prompt: wire
+            .get("prompt")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        n: wire
+            .get("n")
+            .and_then(Value::as_u64)
+            .and_then(|n| u32::try_from(n).ok()),
+        size,
+        quality: wire
+            .get("quality")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        style: wire
+            .get("style")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        response_format: wire
+            .get("response_format")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        user: wire.get("user").and_then(Value::as_str).map(str::to_string),
+        ..Default::default()
+    })
+}
+
+/// Wire -> concrete `ImageResp` parse, extracted from the `OperationHandler::read_response`
+/// body so a dissolved leaf-op handle and the `(op,proto)` `leaf_codec` read dispatch (G6 A4b,
+/// owner ruling b) can recover the concrete IR without a downcast. Byte-identical parse.
+pub(crate) fn read_image_response(wire: &[u8]) -> Result<crate::ir::image::ImageResp, CodecError> {
+    let v: Value =
+        serde_json::from_slice(wire).map_err(|e| CodecError::Malformed(e.to_string()))?;
+    let images = v
+        .get("data")
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .map(|d| ImageOutput {
+                    b64: d
+                        .get("b64_json")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                    url: d.get("url").and_then(Value::as_str).map(str::to_string),
+                    revised_prompt: d
+                        .get("revised_prompt")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                    ..Default::default()
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok(ImageResp {
+        created: v.get("created").and_then(Value::as_u64),
+        images,
+        ..Default::default()
+    })
+}
+
+/// Wire -> concrete `ModerationReq` parse, extracted from the `OperationHandler::read_request`
+/// body so a dissolved leaf-op handle and the `(op,proto)` `leaf_codec` read dispatch (G6 A4b,
+/// owner ruling b) can recover the concrete IR without a downcast. Byte-identical parse.
+pub(crate) fn read_moderation_request(
+    body: &[u8],
+    _content_type: &str,
+) -> Result<crate::ir::moderation::ModerationReq, IngressReject> {
+    let wire: Value =
+        serde_json::from_slice(body).map_err(|e| IngressReject::BadRequest(e.to_string()))?;
+    let model = wire
+        .get("model")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let input = parse_input(wire.get("input"))?;
+    Ok(ModerationReq {
+        model,
+        input,
+        extra: BTreeMap::new(),
+    })
+}
+
+/// Wire -> concrete `ModerationResp` parse, extracted from the `OperationHandler::read_response`
+/// body so a dissolved leaf-op handle and the `(op,proto)` `leaf_codec` read dispatch (G6 A4b,
+/// owner ruling b) can recover the concrete IR without a downcast. Byte-identical parse.
+pub(crate) fn read_moderation_response(
+    wire: &[u8],
+) -> Result<crate::ir::moderation::ModerationResp, CodecError> {
+    let v: Value =
+        serde_json::from_slice(wire).map_err(|e| CodecError::Malformed(e.to_string()))?;
+    let results = v
+        .get("results")
+        .and_then(Value::as_array)
+        .map(|arr| arr.iter().map(parse_result).collect())
+        .unwrap_or_default();
+    Ok(ModerationResp {
+        id: v.get("id").and_then(Value::as_str).map(str::to_string),
+        model: v.get("model").and_then(Value::as_str).map(str::to_string),
+        results,
+        extra: BTreeMap::new(),
+    })
+}
