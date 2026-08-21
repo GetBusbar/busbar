@@ -44,12 +44,10 @@ fn image_read_request_captures_prompt_and_count() {
     // n from imageGenerationConfig.numberOfImages.
     let body =
         br#"{"textToImageParams":{"text":"a cat"},"imageGenerationConfig":{"numberOfImages":2}}"#;
-    let ir = BedrockImage
-        .read_request(body, "application/json")
-        .expect("valid titan image body");
-    let IrReq::Image(r) = ir else {
-        panic!("expected IrReq::Image");
-    };
+    let ir =
+        super::super::super::leaf_codec::image_read_request("bedrock", body, "application/json")
+            .expect("valid titan image body");
+    let r = ir;
     assert_eq!(r.prompt.as_deref(), Some("a cat"));
     assert_eq!(r.n, Some(2));
 }
@@ -57,29 +55,31 @@ fn image_read_request_captures_prompt_and_count() {
 #[test]
 fn embeddings_read_request_captures_input_text() {
     // Titan embeddings InvokeModel body → IR Embeddings carrying the inputText string.
-    let ir = BedrockEmbeddings
-        .read_request(br#"{"inputText":"hello"}"#, "application/json")
-        .expect("valid titan embeddings body");
-    let IrReq::Embeddings(r) = ir else {
-        panic!("expected IrReq::Embeddings");
-    };
+    let ir = super::super::super::leaf_codec::embeddings_read_request(
+        "bedrock",
+        br#"{"inputText":"hello"}"#,
+        "application/json",
+    )
+    .expect("valid titan embeddings body");
+    let r = ir;
     assert_eq!(r.input, EmbInput::Text(vec!["hello".to_string()]));
 }
 
 #[test]
 fn embeddings_write_request_warns_on_dropped_non_text_input() {
-    use busbar_core::ir::embeddings::EmbeddingsReq;
+    use crate::ir::embeddings::EmbeddingsReq;
     use busbar_core::test_support::warn_capture::WarnCapture;
     use tracing_subscriber::layer::SubscriberExt as _;
 
-    let req = IrReq::Embeddings(EmbeddingsReq {
+    let req = EmbeddingsReq {
         input: EmbInput::Tokens(vec![vec![1, 2, 3]]),
         ..Default::default()
-    });
+    };
     let cap = WarnCapture::default();
     let subscriber = tracing_subscriber::registry().with(cap.clone());
-    let out =
-        tracing::subscriber::with_default(subscriber, || BedrockEmbeddings.write_request(&req));
+    let out = tracing::subscriber::with_default(subscriber, || {
+        super::super::super::leaf_codec::embeddings_write_request("bedrock", &req)
+    });
 
     // Behavior: a non-text input has no Titan analog, so `inputText` is empty (regression half).
     let body: Value = serde_json::from_slice(&out).unwrap();
@@ -96,26 +96,30 @@ fn embeddings_write_request_warns_on_dropped_non_text_input() {
 fn embeddings_read_request_without_input_text_is_bad_request() {
     // A Titan embeddings body missing the required inputText key must 400 at the trust
     // boundary, not resolve to an empty embed input.
-    let err = BedrockEmbeddings
-        .read_request(br#"{"dimensions":256}"#, "application/json")
-        .expect_err("missing inputText must reject");
+    let err = super::super::super::leaf_codec::embeddings_read_request(
+        "bedrock",
+        br#"{"dimensions":256}"#,
+        "application/json",
+    )
+    .expect_err("missing inputText must reject");
     assert!(matches!(err, IngressReject::BadRequest(_)));
 }
 
 #[test]
 fn embeddings_write_read_roundtrip_preserves_input_text() {
     // write_request emits `inputText`; read_request must recover the same input string.
-    let req = IrReq::Embeddings(busbar_core::ir::embeddings::EmbeddingsReq {
+    let req = crate::ir::embeddings::EmbeddingsReq {
         input: EmbInput::Text(vec!["roundtrip".to_string()]),
         encoding_formats: vec![EncFmt::Float],
         ..Default::default()
-    });
-    let wire = BedrockEmbeddings.write_request(&req);
-    let back = BedrockEmbeddings
-        .read_request(&wire, "application/json")
-        .expect("emitted body reparses");
-    let IrReq::Embeddings(r) = back else {
-        panic!("expected IrReq::Embeddings");
     };
+    let wire = super::super::super::leaf_codec::embeddings_write_request("bedrock", &req);
+    let back = super::super::super::leaf_codec::embeddings_read_request(
+        "bedrock",
+        &wire,
+        "application/json",
+    )
+    .expect("emitted body reparses");
+    let r = back;
     assert_eq!(r.input, EmbInput::Text(vec!["roundtrip".to_string()]));
 }

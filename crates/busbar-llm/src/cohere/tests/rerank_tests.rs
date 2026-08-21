@@ -7,6 +7,7 @@
 //! wires, and their result shapes are identical, so translation must be exact both ways.
 use super::super::bedrock::handler::BedrockRequestHandler;
 use super::*;
+use serde_json::Value;
 
 fn cohere_wire() -> Vec<u8> {
     serde_json::to_vec(&json!({
@@ -27,16 +28,13 @@ fn cohere_request_reaches_bedrock() {
         rh.resolve_operation("/v2/rerank", b"{}"),
         Some(Operation::RERANK)
     );
-    let ir = rh
-        .operation_handler(Operation::RERANK)
-        .unwrap()
-        .read_request(&cohere_wire(), "application/json")
-        .expect("parses");
-    let bh = BedrockRequestHandler;
-    let out = bh
-        .operation_handler(Operation::RERANK)
-        .unwrap()
-        .write_request(&ir);
+    let ir = super::super::super::leaf_codec::rerank_read_request(
+        "cohere",
+        &cohere_wire(),
+        "application/json",
+    )
+    .expect("parses");
+    let out = super::super::super::leaf_codec::rerank_write_request("bedrock", &ir);
     let v: Value = serde_json::from_slice(&out).unwrap();
     assert_eq!(v["query"], "what is a busbar");
     assert_eq!(v["documents"][1], "a fish");
@@ -56,16 +54,10 @@ fn bedrock_request_and_response_round_trip() {
         bh.resolve_operation("/model/cohere.rerank-v3-5:0/invoke", &body),
         Some(Operation::RERANK)
     );
-    let ir = bh
-        .operation_handler(Operation::RERANK)
-        .unwrap()
-        .read_request(&body, "application/json")
-        .expect("parses");
-    let ch = CohereRequestHandler;
-    let out = ch
-        .operation_handler(Operation::RERANK)
-        .unwrap()
-        .write_request(&ir);
+    let ir =
+        super::super::super::leaf_codec::rerank_read_request("bedrock", &body, "application/json")
+            .expect("parses");
+    let out = super::super::super::leaf_codec::rerank_write_request("cohere", &ir);
     let v: Value = serde_json::from_slice(&out).unwrap();
     assert_eq!(v["query"], "q");
     assert_eq!(v["documents"], json!(["a", "b"]));
@@ -80,15 +72,9 @@ fn bedrock_request_and_response_round_trip() {
         "meta": {"billed_units": {"search_units": 1}}
     }))
     .unwrap();
-    let ir_resp = ch
-        .operation_handler(Operation::RERANK)
-        .unwrap()
-        .read_response(&resp)
-        .expect("parses");
-    let wire = bh
-        .operation_handler(Operation::RERANK)
-        .unwrap()
-        .write_response(&ir_resp);
+    let ir_resp =
+        super::super::super::leaf_codec::rerank_read_response("cohere", &resp).expect("parses");
+    let wire = super::super::super::leaf_codec::rerank_write_response("bedrock", &ir_resp);
     let v: Value = serde_json::from_slice(&wire.bytes).unwrap();
     assert_eq!(v["results"][0]["index"], 2);
     assert_eq!(v["results"][0]["relevance_score"], 0.98);
@@ -97,59 +83,61 @@ fn bedrock_request_and_response_round_trip() {
 
 #[test]
 fn embeddings_write_request_emits_base64_encoding_type() {
-    use busbar_core::ir::embeddings::EmbeddingsReq;
-    let ir = IrReq::Embeddings(EmbeddingsReq {
+    use crate::ir::embeddings::EmbeddingsReq;
+    let ir = EmbeddingsReq {
         model: "embed-v4".into(),
         input: EmbInput::Text(vec!["a".into()]),
         encoding_formats: vec![EncFmt::Base64],
         ..Default::default()
-    });
-    let out = CohereEmbeddings.write_request(&ir);
+    };
+    let out = super::super::super::leaf_codec::embeddings_write_request("cohere", &ir);
     let v: Value = serde_json::from_slice(&out).unwrap();
     assert_eq!(v["embedding_types"], json!(["base64"]));
 }
 
 #[test]
 fn embeddings_write_request_defaults_to_float_when_empty() {
-    use busbar_core::ir::embeddings::EmbeddingsReq;
-    let ir = IrReq::Embeddings(EmbeddingsReq {
+    use crate::ir::embeddings::EmbeddingsReq;
+    let ir = EmbeddingsReq {
         model: "embed-v4".into(),
         input: EmbInput::Text(vec!["a".into()]),
         encoding_formats: vec![],
         ..Default::default()
-    });
-    let out = CohereEmbeddings.write_request(&ir);
+    };
+    let out = super::super::super::leaf_codec::embeddings_write_request("cohere", &ir);
     let v: Value = serde_json::from_slice(&out).unwrap();
     assert_eq!(v["embedding_types"], json!(["float"]));
 }
 
 #[test]
 fn embeddings_write_request_preserves_multiple_encoding_types_in_order() {
-    use busbar_core::ir::embeddings::EmbeddingsReq;
-    let ir = IrReq::Embeddings(EmbeddingsReq {
+    use crate::ir::embeddings::EmbeddingsReq;
+    let ir = EmbeddingsReq {
         model: "embed-v4".into(),
         input: EmbInput::Text(vec!["a".into()]),
         encoding_formats: vec![EncFmt::Float, EncFmt::Base64],
         ..Default::default()
-    });
-    let out = CohereEmbeddings.write_request(&ir);
+    };
+    let out = super::super::super::leaf_codec::embeddings_write_request("cohere", &ir);
     let v: Value = serde_json::from_slice(&out).unwrap();
     assert_eq!(v["embedding_types"], json!(["float", "base64"]));
 }
 
 #[test]
 fn embeddings_write_request_warns_on_dropped_non_text_input() {
-    use busbar_core::ir::embeddings::EmbeddingsReq;
+    use crate::ir::embeddings::EmbeddingsReq;
     use busbar_core::test_support::warn_capture::WarnCapture;
     use tracing_subscriber::layer::SubscriberExt as _;
 
-    let ir = IrReq::Embeddings(EmbeddingsReq {
+    let ir = EmbeddingsReq {
         input: EmbInput::Images(vec!["data:image/png;base64,AA==".into()]),
         ..Default::default()
-    });
+    };
     let cap = WarnCapture::default();
     let subscriber = tracing_subscriber::registry().with(cap.clone());
-    let out = tracing::subscriber::with_default(subscriber, || CohereEmbeddings.write_request(&ir));
+    let out = tracing::subscriber::with_default(subscriber, || {
+        super::super::super::leaf_codec::embeddings_write_request("cohere", &ir)
+    });
 
     let v: Value = serde_json::from_slice(&out).unwrap();
     assert_eq!(v["texts"], json!([]));
@@ -168,10 +156,9 @@ fn embeddings_read_response_reads_base64_vectors() {
         "embeddings": {"base64": ["AAAA", "BBBB"]}
     }))
     .unwrap();
-    let ir = CohereEmbeddings.read_response(&body).expect("parses");
-    let IrResp::Embeddings(r) = ir else {
-        panic!("expected embeddings")
-    };
+    let ir =
+        super::super::super::leaf_codec::embeddings_read_response("cohere", &body).expect("parses");
+    let r = ir;
     assert_eq!(r.embeddings.len(), 2);
     assert_eq!(
         r.embeddings[0].vectors[&EncFmt::Base64],
@@ -192,17 +179,16 @@ fn embeddings_response_roundtrips_int8_not_dropped() {
         "embeddings": {"int8": [[1, 2, 3], [4, 5, 6]]}
     }))
     .unwrap();
-    let ir = CohereEmbeddings.read_response(&body).expect("parses");
-    let IrResp::Embeddings(r) = &ir else {
-        panic!("expected embeddings")
-    };
+    let ir =
+        super::super::super::leaf_codec::embeddings_read_response("cohere", &body).expect("parses");
+    let r = &ir;
     assert_eq!(r.embeddings.len(), 2, "int8 response must not be empty");
     assert!(matches!(
         r.embeddings[0].vectors.get(&EncFmt::Int8),
         Some(VectorData::Int(_))
     ));
     // write_response re-emits the int8 key, not an empty float array.
-    let out = CohereEmbeddings.write_response(&ir);
+    let out = super::super::super::leaf_codec::embeddings_write_response("cohere", &ir);
     let v: Value = serde_json::from_slice(&out.bytes).unwrap();
     assert!(v["embeddings"]["int8"].is_array(), "int8 key emitted: {v}");
     assert!(
@@ -218,10 +204,9 @@ fn embeddings_read_response_reads_float_vectors() {
         "embeddings": {"float": [[0.1, 0.2]]}
     }))
     .unwrap();
-    let ir = CohereEmbeddings.read_response(&body).expect("parses");
-    let IrResp::Embeddings(r) = ir else {
-        panic!("expected embeddings")
-    };
+    let ir =
+        super::super::super::leaf_codec::embeddings_read_response("cohere", &body).expect("parses");
+    let r = ir;
     assert_eq!(r.embeddings.len(), 1);
     assert!(matches!(
         r.embeddings[0].vectors[&EncFmt::Float],
@@ -231,18 +216,18 @@ fn embeddings_read_response_reads_float_vectors() {
 
 #[test]
 fn embeddings_write_response_emits_base64_key_not_swallowed_by_empty_float() {
-    use busbar_core::ir::embeddings::EmbeddingsResp;
+    use crate::ir::embeddings::EmbeddingsResp;
     let mut item = EmbeddingItem {
         index: 0,
         ..Default::default()
     };
     item.vectors
         .insert(EncFmt::Base64, VectorData::Base64("AAAA".into()));
-    let ir = IrResp::Embeddings(EmbeddingsResp {
+    let ir = EmbeddingsResp {
         embeddings: vec![item],
         ..Default::default()
-    });
-    let out = CohereEmbeddings.write_response(&ir);
+    };
+    let out = super::super::super::leaf_codec::embeddings_write_response("cohere", &ir);
     let v: Value = serde_json::from_slice(&out.bytes).unwrap();
     assert_eq!(v["embeddings"]["base64"], json!(["AAAA"]));
     // A base64-only response must NOT emit an empty `float` array that swallows it.
@@ -251,18 +236,18 @@ fn embeddings_write_response_emits_base64_key_not_swallowed_by_empty_float() {
 
 #[test]
 fn embeddings_write_response_emits_float_key() {
-    use busbar_core::ir::embeddings::EmbeddingsResp;
+    use crate::ir::embeddings::EmbeddingsResp;
     let mut item = EmbeddingItem {
         index: 0,
         ..Default::default()
     };
     item.vectors
         .insert(EncFmt::Float, VectorData::Float(vec![0.1, 0.2]));
-    let ir = IrResp::Embeddings(EmbeddingsResp {
+    let ir = EmbeddingsResp {
         embeddings: vec![item],
         ..Default::default()
-    });
-    let out = CohereEmbeddings.write_response(&ir);
+    };
+    let out = super::super::super::leaf_codec::embeddings_write_response("cohere", &ir);
     let v: Value = serde_json::from_slice(&out.bytes).unwrap();
     assert!(v["embeddings"].get("float").is_some());
     let row = v["embeddings"]["float"][0].as_array().expect("float row");
@@ -280,21 +265,25 @@ fn embeddings_read_request_parses_texts() {
         "input_type": "search_query"
     }))
     .unwrap();
-    let ir = CohereEmbeddings
-        .read_request(&body, "application/json")
-        .expect("parses");
-    let IrReq::Embeddings(r) = ir else {
-        panic!("expected embeddings")
-    };
+    let ir = super::super::super::leaf_codec::embeddings_read_request(
+        "cohere",
+        &body,
+        "application/json",
+    )
+    .expect("parses");
+    let r = ir;
     assert_eq!(r.input, EmbInput::Text(vec!["a".into(), "b".into()]));
 }
 
 #[test]
 fn embeddings_read_request_rejects_missing_texts() {
     let body = serde_json::to_vec(&json!({"model": "m"})).unwrap();
-    let err = CohereEmbeddings
-        .read_request(&body, "application/json")
-        .expect_err("missing texts must reject");
+    let err = super::super::super::leaf_codec::embeddings_read_request(
+        "cohere",
+        &body,
+        "application/json",
+    )
+    .expect_err("missing texts must reject");
     assert!(matches!(err, IngressReject::BadRequest(_)));
 }
 
@@ -315,12 +304,12 @@ fn embeddings_read_request_maps_all_encoding_types_not_just_base64() {
             "embedding_types": [wire]
         }))
         .unwrap();
-        let IrReq::Embeddings(r) = CohereEmbeddings
-            .read_request(&body, "application/json")
-            .expect("parses")
-        else {
-            panic!("expected embeddings")
-        };
+        let r = super::super::super::leaf_codec::embeddings_read_request(
+            "cohere",
+            &body,
+            "application/json",
+        )
+        .expect("parses");
         assert_eq!(r.encoding_formats, vec![want], "encoding_type {wire}");
     }
 }
@@ -329,16 +318,16 @@ fn embeddings_read_request_maps_all_encoding_types_not_just_base64() {
 fn embeddings_write_request_carries_output_dimension_and_truncate() {
     // Cohere was the lone embeddings writer dropping these; they must reach the wire so a
     // Matryoshka (output_dimension) or explicit truncate request is honored.
-    use busbar_core::ir::embeddings::{EmbeddingsReq, EncFmt};
-    let ir = IrReq::Embeddings(EmbeddingsReq {
+    use crate::ir::embeddings::{EmbeddingsReq, EncFmt};
+    let ir = EmbeddingsReq {
         model: "embed-v4.0".into(),
         input: EmbInput::Text(vec!["x".into()]),
         dimensions: Some(256),
         truncate: Some("NONE".into()),
         encoding_formats: vec![EncFmt::Int8],
         ..Default::default()
-    });
-    let out = CohereEmbeddings.write_request(&ir);
+    };
+    let out = super::super::super::leaf_codec::embeddings_write_request("cohere", &ir);
     let v: Value = serde_json::from_slice(&out).unwrap();
     assert_eq!(v["output_dimension"], 256);
     assert_eq!(v["truncate"], "NONE");
@@ -354,14 +343,9 @@ fn oversized_top_n_drops_to_none_not_wrapped() {
         "top_n": u64::from(u32::MAX) + 1
     }))
     .unwrap();
-    let ir = CohereRequestHandler
-        .operation_handler(Operation::RERANK)
-        .unwrap()
-        .read_request(&body, "application/json")
-        .expect("parses");
-    let IrReq::Rerank(r) = ir else {
-        panic!("expected rerank")
-    };
+    let r =
+        super::super::super::leaf_codec::rerank_read_request("cohere", &body, "application/json")
+            .expect("parses");
     assert_eq!(
         r.top_n, None,
         "an out-of-range top_n must be omitted, not wrapped"

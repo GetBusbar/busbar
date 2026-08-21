@@ -1,10 +1,10 @@
 //! The gated cross-protocol reasoning/thinking carry. The GATE lives at
 //! `IrReq::prepare_for_egress` (per-lane `reasoning` flag); these tests cover the codec halves
 //! (read the ask, project it) plus the gate itself, the clamp, and the sampling-knob omission.
+use super::super::proto_codec::{Protocol, ProtocolReader, ProtocolWriter};
 use super::{AnthropicReader, AnthropicWriter};
-use busbar_core::ir::variant::{EgressPrep, IrReq};
-use busbar_core::ir::{IrReasoningAsk, IrReasoningEffort};
-use busbar_core::proto::{Protocol, ProtocolReader, ProtocolWriter};
+use crate::ir::{IrReasoningAsk, IrReasoningEffort};
+use busbar_core::ir::egress_prep::EgressPrep;
 
 fn openai_effort_body(effort: &str) -> serde_json::Value {
     serde_json::json!({
@@ -197,21 +197,17 @@ fn seam_gate_clears_or_stamps() {
         .read_request(&openai_effort_body("high"))
         .expect("parses");
 
-    let mut gated = IrReq::Chat(ir.clone());
-    gated.prepare_for_egress(&prep(false));
-    let IrReq::Chat(gated) = gated else {
-        unreachable!()
-    };
+    let mut gated = ir.clone();
+    super::super::chat_handle::chat_prepare_for_egress(&mut gated, &prep(false));
+    let gated = gated;
     assert_eq!(
         gated.reasoning, None,
         "unflagged lane must never see the ask"
     );
 
-    let mut allowed = IrReq::Chat(ir);
-    allowed.prepare_for_egress(&prep(true));
-    let IrReq::Chat(allowed) = allowed else {
-        unreachable!()
-    };
+    let mut allowed = ir;
+    super::super::chat_handle::chat_prepare_for_egress(&mut allowed, &prep(true));
+    let allowed = allowed;
     assert_eq!(
         allowed.reasoning,
         Some(IrReasoningAsk::Effort(IrReasoningEffort::High))

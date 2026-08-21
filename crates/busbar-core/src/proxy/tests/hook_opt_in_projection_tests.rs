@@ -763,7 +763,7 @@ fn every_known_protocol_has_a_declared_reasoning_wire_shape() {
         );
         assert_eq!(shape.text_chars, 0);
         assert!(
-            crate::ir::facts::project(&ir).is_empty(),
+            crate::ir::project(&ir).is_empty(),
             "'{proto}' projected content for an empty conversation"
         );
     }

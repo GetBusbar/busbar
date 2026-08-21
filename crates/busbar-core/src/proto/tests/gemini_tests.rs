@@ -725,7 +725,6 @@ fn test_bedrock_ingress_ir_usage_carries_real_tokens() {
 /// must NOT warn (regression proof: `extra` is never cleared on that path).
 #[test]
 fn gemini_cached_content_warns_naming_truncation_and_billing() {
-    use crate::ir::variant::{EgressPrep, IrReq};
     use crate::test_support::warn_capture::WarnCapture;
     use tracing_subscriber::layer::SubscriberExt as _;
 
@@ -740,7 +739,7 @@ fn gemini_cached_content_warns_naming_truncation_and_billing() {
         "cachedContent must ride extra (unmodeled key)"
     );
 
-    let prep = EgressPrep {
+    let prep = crate::ir::egress_prep::EgressPrep {
         thought_signature_fill: false,
         ingress_protocol: "gemini",
         egress_requires_max_tokens: false,
@@ -757,8 +756,10 @@ fn gemini_cached_content_warns_naming_truncation_and_billing() {
     // content coverage rather than assert on a level the diagnostic no longer uses.
     let cap = WarnCapture::capturing_debug();
     let subscriber = tracing_subscriber::registry().with(cap.clone());
-    let mut req = IrReq::Chat(ir);
-    tracing::subscriber::with_default(subscriber, || req.prepare_for_egress(&prep));
+    let mut req = ir;
+    tracing::subscriber::with_default(subscriber, || {
+        crate::proto::chat_handle::chat_prepare_for_egress(&mut req, &prep)
+    });
 
     assert!(
         cap.contains("VISIBLE history") && cap.contains("UNCACHED"),
@@ -773,8 +774,10 @@ fn gemini_cached_content_warns_naming_truncation_and_billing() {
     let ir2 = GeminiReader.read_request(&body2).expect("parses");
     let cap2 = WarnCapture::capturing_debug();
     let subscriber2 = tracing_subscriber::registry().with(cap2.clone());
-    let mut req2 = IrReq::Chat(ir2);
-    tracing::subscriber::with_default(subscriber2, || req2.prepare_for_egress(&prep));
+    let mut req2 = ir2;
+    tracing::subscriber::with_default(subscriber2, || {
+        crate::proto::chat_handle::chat_prepare_for_egress(&mut req2, &prep)
+    });
     assert!(
         !cap2.contains("cachedContent"),
         "a request without cachedContent must not warn about dropping it: {:?}",

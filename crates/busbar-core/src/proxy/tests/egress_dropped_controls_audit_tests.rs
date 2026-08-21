@@ -140,18 +140,18 @@ fn egress_dropped_controls_reports_the_right_controls_per_dialect() {
         .read_request_value(&body)
         .expect("openai body must parse to IR");
 
+    // The dropped-controls audit inverted onto the handle at the G6 A4b dissolve: `ir` is the chat
+    // `Box<dyn IrHandle>` and answers per egress protocol string.
     // Anthropic: only response_format has no native representation.
     assert_eq!(
-        crate::handlers::chat("anthropic", http()).egress_dropped_controls(&ir),
+        ir.egress_dropped_controls("anthropic"),
         vec!["response_format"],
     );
     // Bedrock: neither response_format nor tool_choice=none has a native representation.
     assert_eq!(
-        crate::handlers::chat("bedrock", http()).egress_dropped_controls(&ir),
+        ir.egress_dropped_controls("bedrock"),
         vec!["response_format", "tool_choice=none"],
     );
     // OpenAI egress (same-dialect writer) drops neither — the default empty vec.
-    assert!(crate::handlers::chat("openai", http())
-        .egress_dropped_controls(&ir)
-        .is_empty(),);
+    assert!(ir.egress_dropped_controls("openai").is_empty());
 }

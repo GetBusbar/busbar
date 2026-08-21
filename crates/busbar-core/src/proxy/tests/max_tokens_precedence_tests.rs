@@ -1,6 +1,4 @@
-use crate::ir::variant::{EgressPrep, IrReq};
 use crate::ir::IrRequest;
-use crate::proto::Protocol;
 use crate::state::Lane;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -17,7 +15,7 @@ fn anthropic_lane(default_max_tokens: Option<u32>) -> Lane {
         base_url: "https://api.anthropic.com".to_string(),
         api_key: busbar_api::Redacted::new("k".to_string()),
         credential: crate::egress_auth::resolve("anthropic", None),
-        protocol: Arc::new(Protocol::anthropic()),
+        protocol: "anthropic",
         max: 1,
         error_map: Arc::new(HashMap::new()),
         context_max: None,
@@ -38,10 +36,11 @@ fn per_model_then_global_then_4096() {
     let global = 8192; // a non-4096 global to prove it is consulted distinctly.
                        // The defaulting now lives on the IR (`IrReq::prepare_for_egress`) — the engine passes the
                        // lane's resolved primitives. Drive it exactly as the translate seam does.
-    let prep = |lane: &Lane, global: u32| EgressPrep {
+    let prep = |lane: &Lane, global: u32| crate::ir::egress_prep::EgressPrep {
         thought_signature_fill: false,
         ingress_protocol: "openai",
-        egress_requires_max_tokens: lane.protocol.decl().is_some_and(|d| d.requires_max_tokens),
+        egress_requires_max_tokens: crate::proto::decl_for(lane.protocol)
+            .is_some_and(|d| d.requires_max_tokens),
         lane_default_max_tokens: lane.default_max_tokens,
         global_default_max_tokens: global,
         reasoning_allowed: true,
@@ -50,12 +49,9 @@ fn per_model_then_global_then_4096() {
         cache_control_cap: None,
     };
     let apply = |ir: IrRequest, lane: &Lane, global: u32| -> Option<u32> {
-        let mut req = IrReq::Chat(ir);
-        req.prepare_for_egress(&prep(lane, global));
-        match req {
-            IrReq::Chat(c) => c.max_tokens,
-            _ => unreachable!(),
-        }
+        let mut req = ir;
+        crate::proto::chat_handle::chat_prepare_for_egress(&mut req, &prep(lane, global));
+        req.max_tokens
     };
 
     // 1. Per-model set → per-model wins over the global.
@@ -170,7 +166,7 @@ fn cache_control_breakpoints_clamped_to_four_on_anthropic_egress() {
     };
     assert_eq!(count_breakpoints(&ir), 6, "fixture carries 6 breakpoints");
 
-    let prep = EgressPrep {
+    let prep = crate::ir::egress_prep::EgressPrep {
         thought_signature_fill: false,
         ingress_protocol: "bedrock",
         egress_requires_max_tokens: true,
@@ -187,11 +183,11 @@ fn cache_control_breakpoints_clamped_to_four_on_anthropic_egress() {
     // cap/dropped-count content coverage rather than assert on a level the diagnostic no longer uses.
     let cap = WarnCapture::capturing_debug();
     let subscriber = tracing_subscriber::registry().with(cap.clone());
-    let mut req = IrReq::Chat(ir);
-    tracing::subscriber::with_default(subscriber, || req.prepare_for_egress(&prep));
-    let IrReq::Chat(clamped) = req else {
-        unreachable!()
-    };
+    let mut req = ir;
+    tracing::subscriber::with_default(subscriber, || {
+        crate::proto::chat_handle::chat_prepare_for_egress(&mut req, &prep)
+    });
+    let clamped = req;
 
     assert_eq!(
         count_breakpoints(&clamped),

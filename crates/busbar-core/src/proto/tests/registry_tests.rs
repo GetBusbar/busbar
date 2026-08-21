@@ -13,7 +13,6 @@ use crate::handlers::{
     CodecError, EgressCtx, IngressReject, OperationHandler, RequestHandler, WireBody,
 };
 use crate::ir::subscribe::{SubscribeIntent, SubscribeReq, SubscribeResp};
-use crate::ir::variant::{IrReq, IrResp};
 use crate::operation::Operation;
 use crate::proto::registry::{IngressAuth, ProtocolDecl, Registry};
 use bytes::Bytes;
@@ -289,7 +288,11 @@ impl RequestHandler for TelexHandler {
 }
 
 impl OperationHandler for TelexSubscribe {
-    fn read_request(&self, body: &[u8], _content_type: &str) -> Result<IrReq, IngressReject> {
+    fn read_request(
+        &self,
+        body: &[u8],
+        _content_type: &str,
+    ) -> Result<Box<dyn crate::ir::handle::IrHandle>, IngressReject> {
         // The telex wire is not JSON-object-shaped like the six: it is `TO <dest>` on one line.
         let dest = std::str::from_utf8(body)
             .ok()
@@ -297,41 +300,62 @@ impl OperationHandler for TelexSubscribe {
             .ok_or_else(|| {
                 IngressReject::BadRequest("not a telex directory request".to_string())
             })?;
-        Ok(IrReq::Subscribe(SubscribeReq {
+        Ok(Box::new(TelexReqHandle(SubscribeReq {
             intent: SubscribeIntent::Register,
             target: dest.trim().to_string(),
             extra: Default::default(),
-        }))
+        })))
     }
-    fn write_request(&self, ir: &IrReq) -> Bytes {
-        match ir {
-            IrReq::Subscribe(s) => Bytes::from(format!("TO {}", s.target)),
-            _ => Bytes::new(),
-        }
-    }
-    fn read_response(&self, wire: &[u8]) -> Result<IrResp, CodecError> {
+    fn read_response(
+        &self,
+        wire: &[u8],
+    ) -> Result<Box<dyn crate::ir::handle::IrHandle>, CodecError> {
         let text = std::str::from_utf8(wire)
             .map_err(|e| CodecError::Malformed(e.to_string()))?
             .to_string();
-        Ok(IrResp::Subscribe(SubscribeResp {
+        Ok(Box::new(TelexRespHandle(SubscribeResp {
             registration: Some(serde_json::Value::String(text)),
             extra: Default::default(),
-        }))
+        })))
     }
-    fn write_response(&self, ir: &IrResp) -> WireBody {
-        match ir {
-            IrResp::Subscribe(s) => WireBody::typed(
-                Bytes::from(
-                    s.registration
-                        .as_ref()
-                        .and_then(|v| v.as_str())
-                        .unwrap_or_default()
-                        .to_string(),
-                ),
-                "application/x-telex",
+}
+
+// G6 A4b: writes inverted off the trait onto the handle. This synthetic protocol's cell yields its
+// own handles that carry its telex wire — the same mechanism a real dialect uses (its handle writes
+// itself), demonstrated here for a protocol nobody in core wrote. `Sealed` is implementable because
+// this test lives inside busbar-core.
+struct TelexReqHandle(SubscribeReq);
+struct TelexRespHandle(SubscribeResp);
+impl crate::ir::handle::sealed::Sealed for TelexReqHandle {}
+impl crate::ir::handle::sealed::Sealed for TelexRespHandle {}
+impl crate::ir::handle::IrHandle for TelexReqHandle {
+    fn verb(&self) -> Operation {
+        Operation::SUBSCRIBE
+    }
+    fn write_egress_request_bytes(&mut self, _egress_proto: &str, _model: &str) -> Bytes {
+        Bytes::from(format!("TO {}", self.0.target))
+    }
+}
+impl crate::ir::handle::IrHandle for TelexRespHandle {
+    fn verb(&self) -> Operation {
+        Operation::SUBSCRIBE
+    }
+    fn write_ingress_response(
+        &self,
+        _ingress_protocol: &str,
+        _ingress_serves_op: bool,
+    ) -> crate::handlers::TranslatedResponse {
+        crate::handlers::TranslatedResponse::Typed(WireBody::typed(
+            Bytes::from(
+                self.0
+                    .registration
+                    .as_ref()
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
             ),
-            _ => WireBody::typed(Bytes::new(), "application/x-telex"),
-        }
+            "application/x-telex",
+        ))
     }
 }
 
@@ -373,14 +397,19 @@ fn a_protocol_nobody_wrote_costs_a_declaration_and_nothing_else() {
     let cell = handler
         .operation_handler(op)
         .expect("the declared verb has a cell");
-    let ir = cell
+    let mut ir = cell
         .read_request(b"TO paris", "application/x-telex")
         .expect("its cell reads its own wire");
-    assert_eq!(&cell.write_request(&ir)[..], b"TO paris");
+    // The write inverted onto the handle (G6 A4b): the cell's handle writes its own telex wire.
+    assert_eq!(&ir.write_egress_request_bytes("telex", "")[..], b"TO paris");
     let resp = cell
         .read_response(b"REGISTERED paris")
         .expect("its cell reads its own response");
-    let out = cell.write_response(&resp);
+    let crate::handlers::TranslatedResponse::Typed(out) =
+        resp.write_ingress_response("telex", true)
+    else {
+        panic!("telex response writes a typed body");
+    };
     assert_eq!(&out.bytes[..], b"REGISTERED paris");
 
     // 3. IT IS OBSERVABLE — its declaration lands in the aggregates core reads. `head_keys` is what

@@ -1,5 +1,5 @@
 use super::*;
-use busbar_core::ir::{IrBlock, IrBlockMeta, IrDelta, IrMessage, IrRole, IrStreamEvent, IrUsage};
+use crate::ir::{IrBlock, IrBlockMeta, IrDelta, IrMessage, IrRole, IrStreamEvent, IrUsage};
 
 /// The streaming `include_usage` trailer must be its OWN chunk, not folded onto the finish
 /// chunk. `split_openai_trailing_usage` lifts a folded `usage` off a finish chunk and re-homes it
@@ -289,7 +289,7 @@ fn read_request_ignores_nonpositive_max_completion_tokens() {
 /// content (base64 / split JSON) on the cross-protocol round-trip.
 #[test]
 fn write_request_tool_result_multi_text_concatenates_without_separator() {
-    let req = busbar_core::ir::IrRequest {
+    let req = crate::ir::IrRequest {
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -299,7 +299,7 @@ fn write_request_tool_result_multi_text_concatenates_without_separator() {
         system: Vec::new(),
         messages: vec![IrMessage {
             role: IrRole::Tool,
-            content: vec![busbar_core::ir::IrBlock::ToolResult {
+            content: vec![crate::ir::IrBlock::ToolResult {
                 tool_use_id: "call_1".to_string(),
                 content: vec![text_block("AAA"), text_block("BBB")],
                 is_error: false,
@@ -353,7 +353,7 @@ fn write_request_forces_logprobs_flag_when_only_top_logprobs_present() {
 
 #[test]
 fn write_request_emits_max_tokens_from_modeled_cap() {
-    let req = busbar_core::ir::IrRequest {
+    let req = crate::ir::IrRequest {
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -465,7 +465,7 @@ fn response_format_survives_same_protocol_roundtrip() {
     );
     assert_eq!(
         ir.response_format,
-        Some(busbar_core::ir::IrResponseFormat {
+        Some(crate::ir::IrResponseFormat {
             json: true,
             schema: Some(serde_json::json!({"type": "object"})),
             name: Some("out".to_string()),
@@ -486,7 +486,7 @@ fn response_format_survives_same_protocol_roundtrip() {
 
 #[test]
 fn write_request_omits_token_cap_when_absent() {
-    let req = busbar_core::ir::IrRequest {
+    let req = crate::ir::IrRequest {
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -523,7 +523,7 @@ fn write_request_omits_token_cap_when_absent() {
 
 #[test]
 fn write_request_keeps_tool_use_on_user_message() {
-    let req = busbar_core::ir::IrRequest {
+    let req = crate::ir::IrRequest {
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -576,7 +576,7 @@ fn write_request_keeps_tool_use_on_user_message() {
 /// `{"role":"tool","content":null}` entry).
 #[test]
 fn write_request_pure_tool_result_message_emits_only_flat_entries() {
-    let req = busbar_core::ir::IrRequest {
+    let req = crate::ir::IrRequest {
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -626,7 +626,7 @@ fn write_request_pure_tool_result_message_emits_only_flat_entries() {
 /// pushed on the Tool-role path, dropping it. The fix surfaces it as an additional message entry.
 #[test]
 fn write_request_tool_role_mixed_content_not_dropped() {
-    let req = busbar_core::ir::IrRequest {
+    let req = crate::ir::IrRequest {
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -709,7 +709,7 @@ fn write_request_tool_role_mixed_content_not_dropped() {
 /// after.
 #[test]
 fn write_request_tool_result_on_user_message_emits_tool_message() {
-    let req = busbar_core::ir::IrRequest {
+    let req = crate::ir::IrRequest {
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -763,7 +763,7 @@ fn write_request_tool_result_on_user_message_emits_tool_message() {
 
 #[test]
 fn write_response_joins_text_blocks_and_keeps_tool_calls() {
-    let resp = busbar_core::ir::IrResponse {
+    let resp = crate::ir::IrResponse {
         logprobs: Vec::new(),
         role: IrRole::Assistant,
         content: vec![
@@ -777,13 +777,13 @@ fn write_response_joins_text_blocks_and_keeps_tool_calls() {
                 cache_control: None,
             },
         ],
-        stop_reason: Some(busbar_core::ir::IrStopReason::ToolUse),
+        stop_reason: Some(crate::ir::IrStopReason::ToolUse),
         usage: IrUsage {
             input_tokens: 1,
             output_tokens: 2,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
-            detail: busbar_core::ir::IrUsageDetail::default(),
+            detail: crate::ir::IrUsageDetail::default(),
         },
         model: None,
         id: None,
@@ -803,7 +803,7 @@ fn write_response_joins_text_blocks_and_keeps_tool_calls() {
 
 #[test]
 fn write_response_content_null_when_no_text() {
-    let resp = busbar_core::ir::IrResponse {
+    let resp = crate::ir::IrResponse {
         logprobs: Vec::new(),
         role: IrRole::Assistant,
         content: vec![IrBlock::ToolUse {
@@ -813,13 +813,13 @@ fn write_response_content_null_when_no_text() {
             input: serde_json::json!({}),
             cache_control: None,
         }],
-        stop_reason: Some(busbar_core::ir::IrStopReason::ToolUse),
+        stop_reason: Some(crate::ir::IrStopReason::ToolUse),
         usage: IrUsage {
             input_tokens: 0,
             output_tokens: 0,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
-            detail: busbar_core::ir::IrUsageDetail::default(),
+            detail: crate::ir::IrUsageDetail::default(),
         },
         model: None,
         id: None,
@@ -938,17 +938,17 @@ fn same_protocol_roundtrip_preserves_identity() {
 fn cross_protocol_write_synthesizes_valid_id() {
     // IR with no identity (cross-protocol: backend supplied none) must still emit a
     // protocol-correct id ("chatcmpl-...") and a created timestamp, without panicking.
-    let resp = busbar_core::ir::IrResponse {
+    let resp = crate::ir::IrResponse {
         logprobs: Vec::new(),
         role: IrRole::Assistant,
         content: vec![text_block("hello")],
-        stop_reason: Some(busbar_core::ir::IrStopReason::EndTurn),
+        stop_reason: Some(crate::ir::IrStopReason::EndTurn),
         usage: IrUsage {
             input_tokens: 1,
             output_tokens: 1,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
-            detail: busbar_core::ir::IrUsageDetail::default(),
+            detail: crate::ir::IrUsageDetail::default(),
         },
         model: None,
         id: None,
@@ -982,17 +982,17 @@ fn cross_protocol_write_response_emits_fallback_model() {
     // A Bedrock-egress -> OpenAI-ingress buffered response carries `model: None`. The native
     // chat.completion schema requires a non-nullable `model` string, so the writer must emit a
     // present, non-null fallback (never omit the key).
-    let resp = busbar_core::ir::IrResponse {
+    let resp = crate::ir::IrResponse {
         logprobs: Vec::new(),
         role: IrRole::Assistant,
         content: vec![text_block("hi")],
-        stop_reason: Some(busbar_core::ir::IrStopReason::EndTurn),
+        stop_reason: Some(crate::ir::IrStopReason::EndTurn),
         usage: IrUsage {
             input_tokens: 1,
             output_tokens: 1,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
-            detail: busbar_core::ir::IrUsageDetail::default(),
+            detail: crate::ir::IrUsageDetail::default(),
         },
         model: None,
         id: None,
@@ -1014,17 +1014,17 @@ fn cross_protocol_write_response_emits_fallback_model() {
 #[test]
 fn write_response_preserves_upstream_model_over_fallback() {
     // A same-protocol passthrough must keep the upstream model verbatim, not the fallback.
-    let resp = busbar_core::ir::IrResponse {
+    let resp = crate::ir::IrResponse {
         logprobs: Vec::new(),
         role: IrRole::Assistant,
         content: vec![text_block("hi")],
-        stop_reason: Some(busbar_core::ir::IrStopReason::EndTurn),
+        stop_reason: Some(crate::ir::IrStopReason::EndTurn),
         usage: IrUsage {
             input_tokens: 1,
             output_tokens: 1,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
-            detail: busbar_core::ir::IrUsageDetail::default(),
+            detail: crate::ir::IrUsageDetail::default(),
         },
         model: Some("gpt-4o-mini".to_string()),
         id: None,
@@ -1124,7 +1124,7 @@ fn stream_message_start_emits_identity() {
 fn stream_read_captures_chunk_identity() {
     // The first streaming chunk's top-level id/created/model land in the MessageStart IR event.
     let reader = OpenAiReader;
-    let mut st = busbar_core::ir::StreamDecodeState::default();
+    let mut st = crate::ir::StreamDecodeState::default();
     let ev = reader.read_response_events(
         "",
         &serde_json::json!({
@@ -1156,17 +1156,17 @@ fn stream_read_captures_chunk_identity() {
 
 #[test]
 fn write_response_total_tokens_saturates_on_overflow() {
-    let resp = busbar_core::ir::IrResponse {
+    let resp = crate::ir::IrResponse {
         logprobs: Vec::new(),
         role: IrRole::Assistant,
         content: vec![text_block("x")],
-        stop_reason: Some(busbar_core::ir::IrStopReason::EndTurn),
+        stop_reason: Some(crate::ir::IrStopReason::EndTurn),
         usage: IrUsage {
             input_tokens: u64::MAX,
             output_tokens: 5,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
-            detail: busbar_core::ir::IrUsageDetail::default(),
+            detail: crate::ir::IrUsageDetail::default(),
         },
         model: None,
         id: None,
@@ -1269,7 +1269,7 @@ fn unknown_reasoning_effort_survives_in_extra() {
 
 #[test]
 fn write_request_tool_call_only_assistant_has_null_content() {
-    let req = busbar_core::ir::IrRequest {
+    let req = crate::ir::IrRequest {
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -1318,8 +1318,8 @@ fn read_block_data_uri_splits_media_type_and_payload() {
     });
     let ir = read_openai_block(&block).expect("parses");
     match ir {
-        busbar_core::ir::IrBlock::Image {
-            source: busbar_core::ir::IrImageSource::Base64 { media_type, data },
+        crate::ir::IrBlock::Image {
+            source: crate::ir::IrImageSource::Base64 { media_type, data },
             ..
         } => {
             assert_eq!(media_type, "image/png");
@@ -1337,8 +1337,8 @@ fn read_block_https_url_kept_verbatim_with_sentinel() {
     });
     let ir = read_openai_block(&block).expect("parses");
     match ir {
-        busbar_core::ir::IrBlock::Image {
-            source: busbar_core::ir::IrImageSource::Url(url),
+        crate::ir::IrBlock::Image {
+            source: crate::ir::IrImageSource::Url(url),
             ..
         } => {
             assert_eq!(url, "https://example.com/cat.png");
@@ -1533,7 +1533,7 @@ fn extract_error_context_length_scan_is_precise_no_false_positives() {
 
 #[test]
 fn write_request_non_text_system_block_does_not_vanish_silently() {
-    let req = busbar_core::ir::IrRequest {
+    let req = crate::ir::IrRequest {
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -1543,7 +1543,7 @@ fn write_request_non_text_system_block_does_not_vanish_silently() {
         system: vec![
             text_block("be terse"),
             IrBlock::Image {
-                source: busbar_core::ir::IrImageSource::Base64 {
+                source: crate::ir::IrImageSource::Base64 {
                     media_type: "image/png".to_string(),
                     data: "AAAB".to_string(),
                 },
@@ -1679,7 +1679,7 @@ fn stream_message_delta_none_stop_reason_serializes_null_not_empty_string() {
             output_tokens: 0,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
-            detail: busbar_core::ir::IrUsageDetail::default(),
+            detail: crate::ir::IrUsageDetail::default(),
         },
     };
     let (_, chunk) = OpenAiWriter
@@ -1693,7 +1693,7 @@ fn stream_message_delta_none_stop_reason_serializes_null_not_empty_string() {
 
 #[test]
 fn stream_message_delta_maps_stop_reasons_to_openai_enum() {
-    use busbar_core::ir::IrStopReason as S;
+    use crate::ir::IrStopReason as S;
     let cases = [
         (Some(S::EndTurn), serde_json::json!("stop")),
         (Some(S::StopSequence), serde_json::json!("stop")),
@@ -1710,7 +1710,7 @@ fn stream_message_delta_maps_stop_reasons_to_openai_enum() {
                 output_tokens: 0,
                 cache_creation_input_tokens: None,
                 cache_read_input_tokens: None,
-                detail: busbar_core::ir::IrUsageDetail::default(),
+                detail: crate::ir::IrUsageDetail::default(),
             },
         };
         let (_, chunk) = OpenAiWriter
@@ -1732,7 +1732,7 @@ fn write_request_assistant_tool_result_block_not_emitted_as_content() {
     // ToolResult ALSO surfaces as a flat `{"role":"tool",...}` entry regardless of role (a
     // Gemini/Anthropic tool result rides on a non-Tool message), so this asserts both: the content
     // array carries only the text block, and a separate tool message carries the result.
-    let req = busbar_core::ir::IrRequest {
+    let req = crate::ir::IrRequest {
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -1791,7 +1791,7 @@ fn write_request_assistant_tool_result_block_not_emitted_as_content() {
 
 #[test]
 fn write_request_thinking_block_dropped_from_message_content() {
-    let req = busbar_core::ir::IrRequest {
+    let req = crate::ir::IrRequest {
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -1884,7 +1884,7 @@ fn stream_trailing_usage_only_chunk_emits_message_delta_with_usage() {
     // finish_reason branch, so this chunk's usage was silently dropped. It must now surface as a
     // MessageDelta carrying the real token counts.
     let reader = OpenAiReader;
-    let mut st = busbar_core::ir::StreamDecodeState::default();
+    let mut st = crate::ir::StreamDecodeState::default();
     // Prime the stream with a normal first chunk so `started` is set (MessageStart already out).
     let _ = reader.read_response_events(
         "",
@@ -1942,7 +1942,7 @@ fn stream_usage_on_finish_chunk_still_captured() {
     // The combined case (usage present on the finish_reason chunk) must keep working: usage
     // flows into the terminal MessageDelta and a MessageStop closes the message.
     let reader = OpenAiReader;
-    let mut st = busbar_core::ir::StreamDecodeState::default();
+    let mut st = crate::ir::StreamDecodeState::default();
     let evs = reader.read_response_events(
         "",
         &serde_json::json!({
@@ -1963,7 +1963,7 @@ fn stream_usage_on_finish_chunk_still_captured() {
             _ => None,
         })
         .expect("finish chunk yields a MessageDelta");
-    assert_eq!(delta.0, Some(busbar_core::ir::IrStopReason::EndTurn));
+    assert_eq!(delta.0, Some(crate::ir::IrStopReason::EndTurn));
     assert_eq!(delta.1.input_tokens, 5);
     assert_eq!(delta.1.output_tokens, 2);
     assert!(evs.iter().any(|e| matches!(e, IrStreamEvent::MessageStop)));
@@ -2031,7 +2031,7 @@ fn stream_error_shape_matches_write_error_shape() {
 fn write_response_emits_null_finish_reason_when_stop_reason_none() {
     // A cross-protocol response whose upstream provided no stop reason (stop_reason: None) must
     // still carry a `finish_reason` KEY, serialized as JSON null — never omitted.
-    let resp = busbar_core::ir::IrResponse {
+    let resp = crate::ir::IrResponse {
         logprobs: Vec::new(),
         role: IrRole::Assistant,
         content: vec![text_block("partial")],
@@ -2041,7 +2041,7 @@ fn write_response_emits_null_finish_reason_when_stop_reason_none() {
             output_tokens: 1,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
-            detail: busbar_core::ir::IrUsageDetail::default(),
+            detail: crate::ir::IrUsageDetail::default(),
         },
         model: None,
         id: None,
@@ -2060,7 +2060,7 @@ fn write_response_emits_null_finish_reason_when_stop_reason_none() {
 
 #[test]
 fn write_response_maps_finish_reason_enum_values() {
-    use busbar_core::ir::IrStopReason as S;
+    use crate::ir::IrStopReason as S;
     let cases = [
         (Some(S::EndTurn), serde_json::json!("stop")),
         (Some(S::StopSequence), serde_json::json!("stop")),
@@ -2075,7 +2075,7 @@ fn write_response_maps_finish_reason_enum_values() {
         (None, serde_json::Value::Null),
     ];
     for (stop_reason, want) in cases {
-        let resp = busbar_core::ir::IrResponse {
+        let resp = crate::ir::IrResponse {
             logprobs: Vec::new(),
             role: IrRole::Assistant,
             content: vec![text_block("x")],
@@ -2085,7 +2085,7 @@ fn write_response_maps_finish_reason_enum_values() {
                 output_tokens: 0,
                 cache_creation_input_tokens: None,
                 cache_read_input_tokens: None,
-                detail: busbar_core::ir::IrUsageDetail::default(),
+                detail: crate::ir::IrUsageDetail::default(),
             },
             model: None,
             id: None,
@@ -2111,7 +2111,7 @@ fn stream_tool_call_index_u64_max_does_not_panic_or_wrap() {
     // regardless of how large the upstream `index` is; `MAX_TOOL_INDEX` still clamps `oai_idx`
     // itself (a map/set key), which is what this test guards against panicking/wrapping.
     let reader = OpenAiReader;
-    let mut st = busbar_core::ir::StreamDecodeState::default();
+    let mut st = crate::ir::StreamDecodeState::default();
     let evs = reader.read_response_events(
         "",
         &serde_json::json!({
@@ -2157,7 +2157,7 @@ fn stream_tool_call_index_close_does_not_overflow_on_finish() {
     // (the monotone counter's claimed slot), so a huge clamped `oai_idx` key must still close at
     // the SAME bounded IR index the BlockStart used, without panicking/wrapping.
     let reader = OpenAiReader;
-    let mut st = busbar_core::ir::StreamDecodeState::default();
+    let mut st = crate::ir::StreamDecodeState::default();
     let _ = reader.read_response_events(
         "",
         &serde_json::json!({
@@ -2203,7 +2203,7 @@ fn stream_tool_call_index_close_does_not_overflow_on_finish() {
 #[test]
 fn stream_tool_arg_delta_uses_recorded_block_start_index() {
     let reader = OpenAiReader;
-    let mut st = busbar_core::ir::StreamDecodeState::default();
+    let mut st = crate::ir::StreamDecodeState::default();
     // Chunk 1: tool opens first (claims its BlockStart IR index, recorded in tool_ir_index).
     let open_evs = reader.read_response_events(
         "",
@@ -2221,7 +2221,7 @@ fn stream_tool_arg_delta_uses_recorded_block_start_index() {
         .find_map(|e| match e {
             IrStreamEvent::BlockStart {
                 index,
-                block: busbar_core::ir::IrBlockMeta::ToolUse { .. },
+                block: crate::ir::IrBlockMeta::ToolUse { .. },
             } => Some(*index),
             _ => None,
         })
@@ -2252,7 +2252,7 @@ fn stream_tool_arg_delta_uses_recorded_block_start_index() {
         .find_map(|e| match e {
             IrStreamEvent::BlockDelta {
                 index,
-                delta: busbar_core::ir::IrDelta::InputJsonDelta(_),
+                delta: crate::ir::IrDelta::InputJsonDelta(_),
             } => Some(*index),
             _ => None,
         })
@@ -2274,7 +2274,7 @@ fn stream_tool_only_yields_zero_based_tool_indices() {
     // No text block ever opens, so the first tool call must claim IR index 0 (text_base = 0),
     // NOT index 1. Fails against the old `oai_idx + 1 + offset` arithmetic.
     let reader = OpenAiReader;
-    let mut st = busbar_core::ir::StreamDecodeState::default();
+    let mut st = crate::ir::StreamDecodeState::default();
     let start_evs = reader.read_response_events(
         "",
         &serde_json::json!({
@@ -2344,7 +2344,7 @@ fn stream_tool_only_yields_zero_based_tool_indices() {
 fn stream_text_then_tool_keeps_text_at_zero_tool_after() {
     // A text+tool stream keeps text at index 0 and places the tool at index 1 (text_base = 1).
     let reader = OpenAiReader;
-    let mut st = busbar_core::ir::StreamDecodeState::default();
+    let mut st = crate::ir::StreamDecodeState::default();
     // Text first → opens at index 0.
     let text_evs = reader.read_response_events(
         "",
@@ -2430,7 +2430,7 @@ fn stream_text_then_tool_keeps_text_at_zero_tool_after() {
 #[test]
 fn stream_tool_then_text_no_index_collision_and_stops_pair() {
     let reader = OpenAiReader;
-    let mut st = busbar_core::ir::StreamDecodeState::default();
+    let mut st = crate::ir::StreamDecodeState::default();
 
     // Tool call FIRST (oai index 0) → opens at IR index 0 (no text seen yet, so text_base = 0).
     let tool_evs = reader.read_response_events(
@@ -2565,7 +2565,7 @@ fn stream_open_tools_is_capped() {
     // (or the BlockStart count) without bound. After feeding more than MAX_OPEN_TOOLS distinct
     // indices, the tracked set is capped and no further BlockStart events are emitted.
     let reader = OpenAiReader;
-    let mut st = busbar_core::ir::StreamDecodeState::default();
+    let mut st = crate::ir::StreamDecodeState::default();
     let mut block_starts = 0usize;
     for i in 0..(MAX_OPEN_TOOLS as u64 + 50) {
         let evs = reader.read_response_events(
@@ -2791,14 +2791,14 @@ fn stream_error_billing_event_maps_to_insufficient_quota() {
 #[test]
 fn stream_message_delta_emits_usage_when_counts_nonzero() {
     let ev = IrStreamEvent::MessageDelta {
-        stop_reason: Some(busbar_core::ir::IrStopReason::EndTurn),
+        stop_reason: Some(crate::ir::IrStopReason::EndTurn),
         stop_sequence: None,
         usage: IrUsage {
             input_tokens: 12,
             output_tokens: 34,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
-            detail: busbar_core::ir::IrUsageDetail::default(),
+            detail: crate::ir::IrUsageDetail::default(),
         },
     };
     let (_, chunk) = OpenAiWriter
@@ -2820,14 +2820,14 @@ fn stream_message_delta_omits_usage_when_all_counts_zero() {
     // A same-protocol passthrough without include_usage carries zeroed usage in the IR; do not
     // stamp a usage object onto a stream that never asked for one.
     let ev = IrStreamEvent::MessageDelta {
-        stop_reason: Some(busbar_core::ir::IrStopReason::EndTurn),
+        stop_reason: Some(crate::ir::IrStopReason::EndTurn),
         stop_sequence: None,
         usage: IrUsage {
             input_tokens: 0,
             output_tokens: 0,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
-            detail: busbar_core::ir::IrUsageDetail::default(),
+            detail: crate::ir::IrUsageDetail::default(),
         },
     };
     let (_, chunk) = OpenAiWriter
@@ -2844,8 +2844,8 @@ fn stream_message_delta_omits_usage_when_all_counts_zero() {
 fn req_with_tool(
     input_schema: serde_json::Value,
     description: Option<&str>,
-) -> busbar_core::ir::IrRequest {
-    busbar_core::ir::IrRequest {
+) -> crate::ir::IrRequest {
+    crate::ir::IrRequest {
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -2854,7 +2854,7 @@ fn req_with_tool(
         parallel_tool_calls: None,
         system: Vec::new(),
         messages: Vec::new(),
-        tools: vec![busbar_core::ir::IrTool {
+        tools: vec![crate::ir::IrTool {
             name: "get_weather".to_string(),
             description: description.map(String::from),
             input_schema,
@@ -2986,7 +2986,7 @@ fn read_openai_block_refusal_maps_to_text() {
     let block = serde_json::json!({"type": "refusal", "refusal": "I cannot help with that."});
     let ir = read_openai_block(&block).expect("refusal must not error");
     match ir {
-        busbar_core::ir::IrBlock::Text { text, .. } => {
+        crate::ir::IrBlock::Text { text, .. } => {
             assert_eq!(text, "I cannot help with that.")
         }
         other => panic!("expected Text, got {other:?}"),
@@ -2999,7 +2999,7 @@ fn read_openai_block_unknown_type_degrades_to_empty_text() {
     let block = serde_json::json!({"type": "some_future_part", "foo": "bar"});
     let ir = read_openai_block(&block).expect("unknown type must degrade, not error");
     match ir {
-        busbar_core::ir::IrBlock::Text { text, .. } => assert_eq!(text, ""),
+        crate::ir::IrBlock::Text { text, .. } => assert_eq!(text, ""),
         other => panic!("expected empty Text, got {other:?}"),
     }
 }
@@ -3026,7 +3026,7 @@ fn read_response_normalizes_content_filter_to_safety() {
     let ir = OpenAiReader
         .read_response(&response_with_finish(FINISH_CONTENT_FILTER))
         .expect("parses");
-    assert_eq!(ir.stop_reason, Some(busbar_core::ir::IrStopReason::Safety));
+    assert_eq!(ir.stop_reason, Some(crate::ir::IrStopReason::Safety));
 }
 
 #[test]
@@ -3034,23 +3034,23 @@ fn read_response_normalizes_function_call_to_tool_use() {
     let ir = OpenAiReader
         .read_response(&response_with_finish(FINISH_FUNCTION_CALL))
         .expect("parses");
-    assert_eq!(ir.stop_reason, Some(busbar_core::ir::IrStopReason::ToolUse));
+    assert_eq!(ir.stop_reason, Some(crate::ir::IrStopReason::ToolUse));
 }
 
 #[test]
 fn write_response_safety_round_trips_to_content_filter() {
     // The canonical `safety` token must serialize back to OpenAI's native `content_filter`.
-    let resp = busbar_core::ir::IrResponse {
+    let resp = crate::ir::IrResponse {
         logprobs: Vec::new(),
         role: IrRole::Assistant,
         content: vec![text_block("hi")],
-        stop_reason: Some(busbar_core::ir::IrStopReason::Safety),
+        stop_reason: Some(crate::ir::IrStopReason::Safety),
         usage: IrUsage {
             input_tokens: 1,
             output_tokens: 1,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
-            detail: busbar_core::ir::IrUsageDetail::default(),
+            detail: crate::ir::IrUsageDetail::default(),
         },
         model: Some("gpt-4o".to_string()),
         id: Some("chatcmpl-x".to_string()),
@@ -3068,14 +3068,14 @@ fn write_response_safety_round_trips_to_content_filter() {
 #[test]
 fn stream_message_delta_safety_round_trips_to_content_filter() {
     let ev = IrStreamEvent::MessageDelta {
-        stop_reason: Some(busbar_core::ir::IrStopReason::Safety),
+        stop_reason: Some(crate::ir::IrStopReason::Safety),
         stop_sequence: None,
         usage: IrUsage {
             input_tokens: 1,
             output_tokens: 1,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
-            detail: busbar_core::ir::IrUsageDetail::default(),
+            detail: crate::ir::IrUsageDetail::default(),
         },
     };
     let (_, chunk) = OpenAiWriter
@@ -3096,13 +3096,13 @@ fn stream_read_normalizes_content_filter_to_safety() {
         "model": "gpt-4o",
         "choices": [{"index": 0, "delta": {}, "finish_reason": FINISH_CONTENT_FILTER}]
     });
-    let mut state = busbar_core::ir::StreamDecodeState::default();
+    let mut state = crate::ir::StreamDecodeState::default();
     let events = OpenAiReader.read_response_events("", &chunk, &mut state);
     let stop = events.iter().find_map(|e| match e {
         IrStreamEvent::MessageDelta { stop_reason, .. } => *stop_reason,
         _ => None,
     });
-    assert_eq!(stop, Some(busbar_core::ir::IrStopReason::Safety));
+    assert_eq!(stop, Some(crate::ir::IrStopReason::Safety));
 }
 
 // Regression: the singular `read_response_event` must not be a dead `None` stub that silently
@@ -3139,7 +3139,7 @@ fn singular_read_response_event_empty_chunk_yields_none() {
 // `usage: null` must yield only the text events — NO MessageDelta.
 #[test]
 fn null_usage_on_content_chunk_emits_no_message_delta() {
-    let mut state = busbar_core::ir::StreamDecodeState::default();
+    let mut state = crate::ir::StreamDecodeState::default();
     let chunk = serde_json::json!({
         "choices": [{"index": 0, "delta": {"content": "hello"}, "finish_reason": null}],
         "usage": null
@@ -3153,7 +3153,7 @@ fn null_usage_on_content_chunk_emits_no_message_delta() {
     assert!(
             evs.iter().any(|e| matches!(
                 e,
-                IrStreamEvent::BlockDelta { delta: busbar_core::ir::IrDelta::TextDelta(t), .. } if t == "hello"
+                IrStreamEvent::BlockDelta { delta: crate::ir::IrDelta::TextDelta(t), .. } if t == "hello"
             )),
             "text content must still decode, got {evs:?}"
         );
@@ -3167,7 +3167,7 @@ fn null_usage_on_content_chunk_emits_no_message_delta() {
 // non-eventstream ingress, not here.)
 #[test]
 fn trailing_usage_only_chunk_emits_message_delta_with_real_tokens() {
-    let mut state = busbar_core::ir::StreamDecodeState::default();
+    let mut state = crate::ir::StreamDecodeState::default();
     let mut all = Vec::new();
     // content chunk (usage:null), finish chunk (finish_reason, usage:null), trailing usage chunk.
     for chunk in [
@@ -3230,7 +3230,7 @@ fn read_response_tolerates_missing_usage() {
     assert_eq!(ir.usage.output_tokens, 0);
     assert_eq!(ir.usage.cache_read_input_tokens, None);
     // The rest of the response still parsed.
-    assert_eq!(ir.stop_reason, Some(busbar_core::ir::IrStopReason::EndTurn));
+    assert_eq!(ir.stop_reason, Some(crate::ir::IrStopReason::EndTurn));
     assert_eq!(ir.model.as_deref(), Some("gpt-4o"));
 }
 
@@ -3241,7 +3241,7 @@ fn read_response_tolerates_missing_usage() {
 #[test]
 fn write_request_string_tool_arguments_emitted_verbatim() {
     let raw = "not-json {oops".to_string();
-    let req = busbar_core::ir::IrRequest {
+    let req = crate::ir::IrRequest {
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -3251,7 +3251,7 @@ fn write_request_string_tool_arguments_emitted_verbatim() {
         system: Vec::new(),
         messages: vec![IrMessage {
             role: IrRole::Assistant,
-            content: vec![busbar_core::ir::IrBlock::ToolUse {
+            content: vec![crate::ir::IrBlock::ToolUse {
                 thought_signature: None,
                 id: "call_1".to_string(),
                 name: "do_it".to_string(),
@@ -3286,23 +3286,23 @@ fn write_request_string_tool_arguments_emitted_verbatim() {
 #[test]
 fn write_response_string_tool_arguments_emitted_verbatim() {
     let raw = "not-json {oops".to_string();
-    let resp = busbar_core::ir::IrResponse {
+    let resp = crate::ir::IrResponse {
         logprobs: Vec::new(),
         role: IrRole::Assistant,
-        content: vec![busbar_core::ir::IrBlock::ToolUse {
+        content: vec![crate::ir::IrBlock::ToolUse {
             thought_signature: None,
             id: "call_1".to_string(),
             name: "do_it".to_string(),
             input: serde_json::Value::String(raw.clone()),
             cache_control: None,
         }],
-        stop_reason: Some(busbar_core::ir::IrStopReason::ToolUse),
+        stop_reason: Some(crate::ir::IrStopReason::ToolUse),
         usage: IrUsage {
             input_tokens: 1,
             output_tokens: 1,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
-            detail: busbar_core::ir::IrUsageDetail::default(),
+            detail: crate::ir::IrUsageDetail::default(),
         },
         model: Some("gpt-4o".to_string()),
         id: Some("chatcmpl-x".to_string()),
@@ -3326,7 +3326,7 @@ fn write_response_string_tool_arguments_emitted_verbatim() {
 // no thinking BlockDelta, and `reasoning_seen`/`offset` must stay put.
 #[test]
 fn late_reasoning_delta_after_text_does_not_shift_indices() {
-    let mut state = busbar_core::ir::StreamDecodeState::default();
+    let mut state = crate::ir::StreamDecodeState::default();
     // First chunk opens the text block at index 0 (no reasoning seen yet).
     let c1 = serde_json::json!({
         "id": "chatcmpl-x", "object": OBJ_CHUNK, "created": 1u64, "model": "gpt-4o",
@@ -3338,7 +3338,7 @@ fn late_reasoning_delta_after_text_does_not_shift_indices() {
             e,
             IrStreamEvent::BlockStart {
                 index: 0,
-                block: busbar_core::ir::IrBlockMeta::Text
+                block: crate::ir::IrBlockMeta::Text
             }
         )),
         "text block must open at index 0, got {evs1:?}"
@@ -3355,7 +3355,7 @@ fn late_reasoning_delta_after_text_does_not_shift_indices() {
         !evs2.iter().any(|e| matches!(
             e,
             IrStreamEvent::BlockStart {
-                block: busbar_core::ir::IrBlockMeta::Thinking,
+                block: crate::ir::IrBlockMeta::Thinking,
                 ..
             }
         )),
@@ -3365,7 +3365,7 @@ fn late_reasoning_delta_after_text_does_not_shift_indices() {
         !evs2.iter().any(|e| matches!(
             e,
             IrStreamEvent::BlockDelta {
-                delta: busbar_core::ir::IrDelta::ThinkingDelta(_),
+                delta: crate::ir::IrDelta::ThinkingDelta(_),
                 ..
             }
         )),
@@ -3385,7 +3385,7 @@ fn late_reasoning_delta_after_text_does_not_shift_indices() {
     let text_idx = evs3.iter().find_map(|e| match e {
         IrStreamEvent::BlockDelta {
             index,
-            delta: busbar_core::ir::IrDelta::TextDelta(_),
+            delta: crate::ir::IrDelta::TextDelta(_),
         } => Some(*index),
         _ => None,
     });
@@ -3400,7 +3400,7 @@ fn late_reasoning_delta_after_text_does_not_shift_indices() {
 // Thinking block at index 0 (the gate must not break the normal reasoning-first path).
 #[test]
 fn early_reasoning_delta_still_opens_thinking_at_index_0() {
-    let mut state = busbar_core::ir::StreamDecodeState::default();
+    let mut state = crate::ir::StreamDecodeState::default();
     let c = serde_json::json!({
         "id": "chatcmpl-x", "object": OBJ_CHUNK, "created": 1u64, "model": "gpt-4o",
         "choices": [{"index": 0, "delta": {"reasoning_content": "thinking..."}, "finish_reason": null}]
@@ -3411,7 +3411,7 @@ fn early_reasoning_delta_still_opens_thinking_at_index_0() {
             e,
             IrStreamEvent::BlockStart {
                 index: 0,
-                block: busbar_core::ir::IrBlockMeta::Thinking
+                block: crate::ir::IrBlockMeta::Thinking
             }
         )),
         "early reasoning must open a thinking block at index 0, got {evs:?}"
@@ -3424,7 +3424,7 @@ fn logprobs_only_chunk_closes_thinking_before_opening_text() {
     // A reasoning backend can stream a logprobs-only chunk (no content delta) while a thinking
     // block is still open. The reader must close the thinking block (BlockStop{index:0}) BEFORE
     // opening the text block, so the two blocks are never open simultaneously.
-    let mut state = busbar_core::ir::StreamDecodeState::default();
+    let mut state = crate::ir::StreamDecodeState::default();
     // (a) open a thinking block.
     let c1 = serde_json::json!({
         "id": "chatcmpl-x", "object": OBJ_CHUNK, "created": 1u64, "model": "gpt-4o",
@@ -3454,7 +3454,7 @@ fn logprobs_only_chunk_closes_thinking_before_opening_text() {
         matches!(
             e,
             IrStreamEvent::BlockStart {
-                block: busbar_core::ir::IrBlockMeta::Text,
+                block: crate::ir::IrBlockMeta::Text,
                 ..
             }
         )
@@ -3559,10 +3559,7 @@ fn test_openai_tool_choice_required_roundtrips() {
         "tool_choice": "required",
     });
     let ir = OpenAiReader.read_request(&body).expect("parses");
-    assert_eq!(
-        ir.tool_choice,
-        Some(busbar_core::ir::IrToolChoice::Required)
-    );
+    assert_eq!(ir.tool_choice, Some(crate::ir::IrToolChoice::Required));
     // It must NOT linger in `extra` (that would double-emit and not survive the seam).
     assert!(!ir.extra.contains_key("tool_choice"));
     let out = OpenAiWriter.write_request(&ir);
@@ -3580,7 +3577,7 @@ fn test_openai_tool_choice_specific_function() {
     let ir = OpenAiReader.read_request(&body).expect("parses");
     assert_eq!(
         ir.tool_choice,
-        Some(busbar_core::ir::IrToolChoice::Tool {
+        Some(crate::ir::IrToolChoice::Tool {
             name: "get_weather".to_string()
         })
     );
@@ -3607,8 +3604,8 @@ fn test_openai_tool_choice_absent_is_none() {
 }
 
 /// Minimal valid `IrRequest` for writer-side tool_choice/temperature tests.
-fn test_ir_request() -> busbar_core::ir::IrRequest {
-    busbar_core::ir::IrRequest {
+fn test_ir_request() -> crate::ir::IrRequest {
+    crate::ir::IrRequest {
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -3642,7 +3639,7 @@ fn test_ir_request() -> busbar_core::ir::IrRequest {
 /// it un-folds into a native separate trailing usage-only chunk.
 #[test]
 fn test_framing_gates_usage_on_client_include_usage() {
-    use busbar_core::proto::StreamFraming;
+    use super::super::proto_codec::StreamFraming;
 
     fn folded_finish() -> serde_json::Value {
         serde_json::json!({
@@ -3740,7 +3737,7 @@ fn strip_same_proto_usage_fires_without_object_field() {
 
     // Guard: a client that legitimately opted in must NEVER have usage stripped.
     let mut opted_in = OpenAiStreamFraming::default();
-    use busbar_core::proto::StreamFraming;
+    use super::super::proto_codec::StreamFraming;
     opted_in.set_client_include_usage(true);
     assert!(
         !opted_in.strip_same_proto_usage(&no_object_content),
@@ -3754,7 +3751,7 @@ fn strip_same_proto_usage_fires_without_object_field() {
 /// call is index 0 even when the source opened it at a non-zero block index.
 #[test]
 fn test_remap_tool_call_index_is_0_based_per_call() {
-    use busbar_core::proto::StreamFraming;
+    use super::super::proto_codec::StreamFraming;
     let mut framing = OpenAiStreamFraming::default();
 
     // First tool call opens at RAW block index 1 (text was block 0) → must remap to 0.
@@ -3822,7 +3819,7 @@ fn test_remap_tool_call_index_is_0_based_per_call() {
 /// end-to-end there (the response is not funneled through the IR).
 #[test]
 fn test_n_gt_1_clamped_to_one_on_cross_protocol_egress() {
-    use busbar_core::ir::variant::{EgressPrep, IrReq};
+    use busbar_core::ir::egress_prep::EgressPrep;
 
     fn prep() -> EgressPrep<'static> {
         EgressPrep {
@@ -3832,7 +3829,7 @@ fn test_n_gt_1_clamped_to_one_on_cross_protocol_egress() {
             lane_default_max_tokens: None,
             global_default_max_tokens: 4096,
             reasoning_allowed: true,
-            reasoning_budgets: busbar_core::ir::REASONING_BUDGET_DEFAULTS,
+            reasoning_budgets: crate::ir::REASONING_BUDGET_DEFAULTS,
             prompt_caching_allowed: true,
             cache_control_cap: None,
         }
@@ -3841,9 +3838,9 @@ fn test_n_gt_1_clamped_to_one_on_cross_protocol_egress() {
     // n=3 must clamp to 1 on the cross-protocol seam, and the egress writer must emit `n: 1`.
     let mut ir = test_ir_request();
     ir.n = Some(3);
-    let mut req = IrReq::Chat(ir);
-    req.prepare_for_egress(&prep());
-    let IrReq::Chat(ir) = req else { unreachable!() };
+    let mut req = ir;
+    super::super::chat_handle::chat_prepare_for_egress(&mut req, &prep());
+    let ir = req;
     assert_eq!(
         ir.n,
         Some(1),
@@ -3859,21 +3856,17 @@ fn test_n_gt_1_clamped_to_one_on_cross_protocol_egress() {
     // n=1 is left intact (no spurious clamp/warn).
     let mut ir1 = test_ir_request();
     ir1.n = Some(1);
-    let mut req1 = IrReq::Chat(ir1);
-    req1.prepare_for_egress(&prep());
-    let IrReq::Chat(ir1) = req1 else {
-        unreachable!()
-    };
+    let mut req1 = ir1;
+    super::super::chat_handle::chat_prepare_for_egress(&mut req1, &prep());
+    let ir1 = req1;
     assert_eq!(ir1.n, Some(1), "n=1 is unchanged");
 
     // n absent stays absent (no `n` field materialized).
     let mut ir0 = test_ir_request();
     ir0.n = None;
-    let mut req0 = IrReq::Chat(ir0);
-    req0.prepare_for_egress(&prep());
-    let IrReq::Chat(ir0) = req0 else {
-        unreachable!()
-    };
+    let mut req0 = ir0;
+    super::super::chat_handle::chat_prepare_for_egress(&mut req0, &prep());
+    let ir0 = req0;
     assert_eq!(ir0.n, None, "absent n stays absent");
 }
 
@@ -3887,7 +3880,7 @@ fn test_openai_tool_choice_auto_roundtrips() {
         "tool_choice": "auto",
     });
     let ir = OpenAiReader.read_request(&body).expect("parses");
-    assert_eq!(ir.tool_choice, Some(busbar_core::ir::IrToolChoice::Auto));
+    assert_eq!(ir.tool_choice, Some(crate::ir::IrToolChoice::Auto));
     assert!(!ir.extra.contains_key("tool_choice"));
     let out = OpenAiWriter.write_request(&ir);
     assert_eq!(out["tool_choice"], serde_json::json!("auto"));
@@ -3902,7 +3895,7 @@ fn test_openai_tool_choice_none_roundtrips() {
         "tool_choice": "none",
     });
     let ir = OpenAiReader.read_request(&body).expect("parses");
-    assert_eq!(ir.tool_choice, Some(busbar_core::ir::IrToolChoice::None));
+    assert_eq!(ir.tool_choice, Some(crate::ir::IrToolChoice::None));
     assert!(!ir.extra.contains_key("tool_choice"));
     let out = OpenAiWriter.write_request(&ir);
     assert_eq!(out["tool_choice"], serde_json::json!("none"));
@@ -3913,7 +3906,7 @@ fn test_openai_tool_choice_none_roundtrips() {
 // live in anthropic.rs.
 #[test]
 fn test_anthropic_to_openai_tool_choice_directions() {
-    use busbar_core::ir::IrToolChoice;
+    use crate::ir::IrToolChoice;
     let cases = [
         (IrToolChoice::Auto, serde_json::json!("auto")),
         (IrToolChoice::None, serde_json::json!("none")),
@@ -3928,9 +3921,9 @@ fn test_anthropic_to_openai_tool_choice_directions() {
         ),
     ];
     for (tc, expected) in cases {
-        let ir = busbar_core::ir::IrRequest {
+        let ir = crate::ir::IrRequest {
             tool_choice: Some(tc.clone()),
-            tools: vec![busbar_core::ir::IrTool {
+            tools: vec![crate::ir::IrTool {
                 name: "get_weather".to_string(),
                 description: None,
                 input_schema: serde_json::json!({}),
@@ -3995,7 +3988,7 @@ fn phase0_sampling_fields_read_into_ir() {
     assert_eq!(ir.n, Some(3_u32));
     assert_eq!(
         ir.response_format,
-        Some(busbar_core::ir::IrResponseFormat {
+        Some(crate::ir::IrResponseFormat {
             json: true,
             schema: None,
             name: None,
@@ -4013,12 +4006,12 @@ fn phase0_sampling_fields_read_into_ir() {
 
 #[test]
 fn phase0_sampling_fields_written_from_ir() {
-    let ir = busbar_core::ir::IrRequest {
+    let ir = crate::ir::IrRequest {
         frequency_penalty: Some(1.5),
         presence_penalty: Some(-2.0),
         seed: Some(1234),
         n: Some(4),
-        response_format: Some(busbar_core::ir::IrResponseFormat {
+        response_format: Some(crate::ir::IrResponseFormat {
             json: true,
             schema: Some(serde_json::json!({"type": "object"})),
             name: Some("out".to_string()),
@@ -4089,7 +4082,7 @@ fn phase0_sampling_fields_roundtrip_same_protocol() {
 #[test]
 fn test_write_request_file_id_image_dropped_not_corrupted() {
     let writer = OpenAiWriter;
-    let req = busbar_core::ir::IrRequest {
+    let req = crate::ir::IrRequest {
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -4097,16 +4090,16 @@ fn test_write_request_file_id_image_dropped_not_corrupted() {
         user: None,
         parallel_tool_calls: None,
         system: vec![],
-        messages: vec![busbar_core::ir::IrMessage {
-            role: busbar_core::ir::IrRole::User,
+        messages: vec![crate::ir::IrMessage {
+            role: crate::ir::IrRole::User,
             content: vec![
-                busbar_core::ir::IrBlock::Text {
+                crate::ir::IrBlock::Text {
                     text: "describe this".to_string(),
                     cache_control: None,
                     citations: Vec::new(),
                 },
-                busbar_core::ir::IrBlock::Image {
-                    source: busbar_core::ir::IrImageSource::Vendor {
+                crate::ir::IrBlock::Image {
+                    source: crate::ir::IrImageSource::Vendor {
                         vendor: "responses",
                         value: serde_json::json!({ "file_id": "file-abc123" }),
                     },
@@ -4161,7 +4154,7 @@ fn test_write_request_file_id_image_dropped_not_corrupted() {
 #[test]
 fn test_write_request_image_s3_dropped_not_corrupted() {
     let writer = OpenAiWriter;
-    let req = busbar_core::ir::IrRequest {
+    let req = crate::ir::IrRequest {
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -4169,16 +4162,16 @@ fn test_write_request_image_s3_dropped_not_corrupted() {
         user: None,
         parallel_tool_calls: None,
         system: vec![],
-        messages: vec![busbar_core::ir::IrMessage {
-            role: busbar_core::ir::IrRole::User,
+        messages: vec![crate::ir::IrMessage {
+            role: crate::ir::IrRole::User,
             content: vec![
-                busbar_core::ir::IrBlock::Text {
+                crate::ir::IrBlock::Text {
                     text: "describe this".to_string(),
                     cache_control: None,
                     citations: Vec::new(),
                 },
-                busbar_core::ir::IrBlock::Image {
-                    source: busbar_core::ir::IrImageSource::Vendor {
+                crate::ir::IrBlock::Image {
+                    source: crate::ir::IrImageSource::Vendor {
                         vendor: "bedrock",
                         value: serde_json::json!({ "format": "png", "s3Location": { "uri": "s3://bucket/key.png" } }),
                     },
@@ -4303,17 +4296,17 @@ fn read_response_subtracts_cached_prefix_from_prompt_tokens() {
 /// read→write round-trip reproduces the original `prompt_tokens`.
 #[test]
 fn write_response_reconstructs_prompt_tokens_total_with_cached_details() {
-    let resp = busbar_core::ir::IrResponse {
+    let resp = crate::ir::IrResponse {
         logprobs: Vec::new(),
         role: IrRole::Assistant,
         content: vec![text_block("hi")],
-        stop_reason: Some(busbar_core::ir::IrStopReason::EndTurn),
+        stop_reason: Some(crate::ir::IrStopReason::EndTurn),
         usage: IrUsage {
             input_tokens: 20,
             output_tokens: 5,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: Some(80),
-            detail: busbar_core::ir::IrUsageDetail::default(),
+            detail: crate::ir::IrUsageDetail::default(),
         },
         model: Some("gpt-4o".to_string()),
         id: Some("chatcmpl-abc".to_string()),
@@ -4339,17 +4332,17 @@ fn write_response_reconstructs_prompt_tokens_total_with_cached_details() {
 /// native OpenAI shape (the details object appears only when a cache read occurred).
 #[test]
 fn write_response_omits_cached_details_when_no_cache_read() {
-    let mut resp = busbar_core::ir::IrResponse {
+    let mut resp = crate::ir::IrResponse {
         logprobs: Vec::new(),
         role: IrRole::Assistant,
         content: vec![text_block("hi")],
-        stop_reason: Some(busbar_core::ir::IrStopReason::EndTurn),
+        stop_reason: Some(crate::ir::IrStopReason::EndTurn),
         usage: IrUsage {
             input_tokens: 7,
             output_tokens: 3,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
-            detail: busbar_core::ir::IrUsageDetail::default(),
+            detail: crate::ir::IrUsageDetail::default(),
         },
         model: Some("gpt-4o".to_string()),
         id: Some("chatcmpl-x".to_string()),
@@ -4434,7 +4427,7 @@ fn response_format_json_schema_round_trips() {
 fn read_response_unknown_finish_reason_maps_to_other_and_degrades_to_stop() {
     assert_eq!(
         read_openai_stop_reason("some_future_reason"),
-        busbar_core::ir::IrStopReason::Other
+        crate::ir::IrStopReason::Other
     );
     let body = serde_json::json!({
         "id": "chatcmpl-abc",
@@ -4449,7 +4442,7 @@ fn read_response_unknown_finish_reason_maps_to_other_and_degrades_to_stop() {
         "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
     });
     let resp = OpenAiReader.read_response(&body).expect("read_response");
-    assert_eq!(resp.stop_reason, Some(busbar_core::ir::IrStopReason::Other));
+    assert_eq!(resp.stop_reason, Some(crate::ir::IrStopReason::Other));
     let out = OpenAiWriter.write_response(&resp);
     assert_eq!(
         out["choices"][0]["finish_reason"],
@@ -4512,7 +4505,7 @@ fn read_response_surfaces_a_refusal_as_text_and_promotes_the_stop_reason() {
     );
     assert_eq!(
         ir.stop_reason,
-        Some(busbar_core::ir::IrStopReason::Refusal),
+        Some(crate::ir::IrStopReason::Refusal),
         "finish_reason `stop` on a refusal must be promoted to Refusal"
     );
 }
@@ -4532,17 +4525,14 @@ fn read_response_refusal_does_not_override_a_length_stop() {
     });
 
     let ir = OpenAiReader.read_response(&body).expect("read_response");
-    assert_eq!(
-        ir.stop_reason,
-        Some(busbar_core::ir::IrStopReason::MaxTokens)
-    );
+    assert_eq!(ir.stop_reason, Some(crate::ir::IrStopReason::MaxTokens));
 }
 
 /// The streaming refusal is the same defect on the other path: `delta.refusal` carries the text in
 /// the same incremental shape as `delta.content`, and the terminal frame still says `stop`.
 #[test]
 fn stream_refusal_deltas_open_a_text_block_and_promote_the_stop_reason() {
-    let mut state = busbar_core::ir::StreamDecodeState::default();
+    let mut state = crate::ir::StreamDecodeState::default();
 
     let c1 = serde_json::json!({
         "choices": [{"index": 0, "delta": {"role": "assistant", "refusal": "I can't "}, "finish_reason": null}]
@@ -4593,7 +4583,7 @@ fn stream_refusal_deltas_open_a_text_block_and_promote_the_stop_reason() {
         evs3.iter().any(|e| matches!(
             e,
             IrStreamEvent::MessageDelta {
-                stop_reason: Some(busbar_core::ir::IrStopReason::Refusal),
+                stop_reason: Some(crate::ir::IrStopReason::Refusal),
                 ..
             }
         )),
@@ -4607,7 +4597,7 @@ fn stream_refusal_deltas_open_a_text_block_and_promote_the_stop_reason() {
 /// citation's offsets must be shifted by where its block starts in that join.
 #[test]
 fn write_response_carries_citations_with_join_relative_offsets() {
-    let cite = |quote: &str, title: &str, url: &str| busbar_core::ir::IrCitation {
+    let cite = |quote: &str, title: &str, url: &str| crate::ir::IrCitation {
         kind: Some("web_search_result_location".into()),
         cited_text: Some(quote.into()),
         title: Some(title.into()),
@@ -4618,13 +4608,13 @@ fn write_response_carries_citations_with_join_relative_offsets() {
         encrypted_index: None,
         raw: None,
     };
-    let text_block = |text: &str, citations: Vec<busbar_core::ir::IrCitation>| IrBlock::Text {
+    let text_block = |text: &str, citations: Vec<crate::ir::IrCitation>| IrBlock::Text {
         text: text.into(),
         cache_control: None,
         citations,
     };
 
-    let resp = busbar_core::ir::IrResponse {
+    let resp = crate::ir::IrResponse {
         logprobs: Vec::new(),
         role: IrRole::Assistant,
         id: Some("chatcmpl-c".into()),
@@ -4640,14 +4630,14 @@ fn write_response_carries_citations_with_join_relative_offsets() {
                 vec![cite("Second claim.", "B", "https://b.test")],
             ),
         ],
-        stop_reason: Some(busbar_core::ir::IrStopReason::EndTurn),
+        stop_reason: Some(crate::ir::IrStopReason::EndTurn),
         stop_sequence: None,
         usage: IrUsage {
             input_tokens: 1,
             output_tokens: 1,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
-            detail: busbar_core::ir::IrUsageDetail::default(),
+            detail: crate::ir::IrUsageDetail::default(),
         },
         system_fingerprint: None,
     };
@@ -4670,7 +4660,7 @@ fn write_response_carries_citations_with_join_relative_offsets() {
 /// the response path. `cargo test` builds debug, where the un-clamped `+` in the old code panics.
 #[test]
 fn url_annotation_offset_saturates_on_absurd_upstream_index() {
-    let citations = vec![busbar_core::ir::IrCitation {
+    let citations = vec![crate::ir::IrCitation {
         kind: Some("web_search_result_location".into()),
         cited_text: None,
         title: Some("T".into()),
@@ -4696,7 +4686,7 @@ fn url_annotation_offset_saturates_on_absurd_upstream_index() {
 /// by its byte-vs-char delta under the old `text.len()` accumulator.
 #[test]
 fn url_annotation_base_accumulates_in_characters() {
-    let cite = |quote: &str, url: &str| busbar_core::ir::IrCitation {
+    let cite = |quote: &str, url: &str| crate::ir::IrCitation {
         kind: Some("web_search_result_location".into()),
         cited_text: Some(quote.into()),
         title: None,
@@ -4712,7 +4702,7 @@ fn url_annotation_base_accumulates_in_characters() {
     assert_eq!(first_block.chars().count(), 12);
     assert_eq!(first_block.len(), 14);
 
-    let resp = busbar_core::ir::IrResponse {
+    let resp = crate::ir::IrResponse {
         logprobs: Vec::new(),
         role: IrRole::Assistant,
         id: Some("chatcmpl-c".into()),
@@ -4730,14 +4720,14 @@ fn url_annotation_base_accumulates_in_characters() {
                 citations: vec![cite("claim.", "https://b.test")],
             },
         ],
-        stop_reason: Some(busbar_core::ir::IrStopReason::EndTurn),
+        stop_reason: Some(crate::ir::IrStopReason::EndTurn),
         stop_sequence: None,
         usage: IrUsage {
             input_tokens: 1,
             output_tokens: 1,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
-            detail: busbar_core::ir::IrUsageDetail::default(),
+            detail: crate::ir::IrUsageDetail::default(),
         },
         system_fingerprint: None,
     };
@@ -4758,7 +4748,7 @@ fn url_annotation_base_accumulates_in_characters() {
 /// quoted text follows non-ASCII content in the same block.
 #[test]
 fn url_annotation_quote_recovery_reports_character_indices() {
-    let citations = vec![busbar_core::ir::IrCitation {
+    let citations = vec![crate::ir::IrCitation {
         kind: Some("web_search_result_location".into()),
         cited_text: Some("wörld".into()),
         title: None,
@@ -4787,7 +4777,7 @@ fn url_annotation_quote_recovery_reports_character_indices() {
 /// produced, so a hardcoded empty array would be a proxy tell in the other direction.
 #[test]
 fn write_response_omits_annotations_when_there_are_no_citations() {
-    let resp = busbar_core::ir::IrResponse {
+    let resp = crate::ir::IrResponse {
         logprobs: Vec::new(),
         role: IrRole::Assistant,
         id: Some("chatcmpl-n".into()),
@@ -4798,14 +4788,14 @@ fn write_response_omits_annotations_when_there_are_no_citations() {
             cache_control: None,
             citations: Vec::new(),
         }],
-        stop_reason: Some(busbar_core::ir::IrStopReason::EndTurn),
+        stop_reason: Some(crate::ir::IrStopReason::EndTurn),
         stop_sequence: None,
         usage: IrUsage {
             input_tokens: 1,
             output_tokens: 1,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
-            detail: busbar_core::ir::IrUsageDetail::default(),
+            detail: crate::ir::IrUsageDetail::default(),
         },
         system_fingerprint: None,
     };
@@ -4876,7 +4866,7 @@ fn anthropic_sourced_citation_indices_are_not_double_converted() {
     // Anthropic citations already carry CHARACTER offsets computed over non-ASCII text — e.g. a
     // quote starting at character 6 of "héllo wörld claim." (which is BYTE offset 7). Simulate
     // exactly what the Anthropic reader would populate: start_index/end_index already in chars.
-    let citations = vec![busbar_core::ir::IrCitation {
+    let citations = vec![crate::ir::IrCitation {
         kind: Some("web_search_result_location".into()),
         cited_text: None,
         title: Some("T".into()),
@@ -4935,7 +4925,7 @@ fn chat_response_annotations_read_into_ir_citations() {
         .content
         .iter()
         .find_map(|b| match b {
-            busbar_core::ir::IrBlock::Text { citations, .. } => Some(citations),
+            crate::ir::IrBlock::Text { citations, .. } => Some(citations),
             _ => None,
         })
         .expect("a Text block must be present");
@@ -4982,7 +4972,7 @@ fn openai_annotation_without_a_url_is_skipped() {
         .content
         .iter()
         .find_map(|b| match b {
-            busbar_core::ir::IrBlock::Text { citations, .. } => Some(citations),
+            crate::ir::IrBlock::Text { citations, .. } => Some(citations),
             _ => None,
         })
         .expect("a Text block must be present");

@@ -75,12 +75,13 @@ fn transcription_read_request_captures_inline_audio() {
         ]}],
     }))
     .unwrap();
-    let ir = TRANSCRIPTION
-        .read_request(&body, "application/json")
-        .expect("valid inline audio body");
-    let IrReq::Transcription(r) = ir else {
-        panic!("expected IrReq::Transcription");
-    };
+    let ir = super::super::super::leaf_codec::transcription_read_request(
+        "gemini",
+        &body,
+        "application/json",
+    )
+    .expect("valid inline audio body");
+    let r = ir;
     let blob = r.audio.expect("audio captured");
     assert_eq!(blob.mime_type, "audio/wav");
     assert_eq!(r.prompt.as_deref(), Some("please transcribe"));
@@ -100,9 +101,12 @@ fn transcription_read_request_invalid_base64_is_bad_request() {
         ]}],
     }))
     .unwrap();
-    let err = TRANSCRIPTION
-        .read_request(&body, "application/json")
-        .expect_err("invalid base64 must reject");
+    let err = super::super::super::leaf_codec::transcription_read_request(
+        "gemini",
+        &body,
+        "application/json",
+    )
+    .expect_err("invalid base64 must reject");
     assert!(matches!(err, IngressReject::BadRequest(_)));
 }
 
@@ -116,10 +120,9 @@ fn transcription_read_response_captures_input_and_output_token_counts() {
         "usageMetadata": { "promptTokenCount": 11, "candidatesTokenCount": 7 },
     }))
     .unwrap();
-    let ir = TRANSCRIPTION.read_response(&wire).expect("valid response");
-    let IrResp::Transcription(r) = ir else {
-        panic!("expected IrResp::Transcription");
-    };
+    let ir = super::super::super::leaf_codec::transcription_read_response("gemini", &wire)
+        .expect("valid response");
+    let r = ir;
     assert_eq!(r.text, "hello");
     let Some(busbar_core::billing::Billing::Tokens(usage)) = r.usage else {
         panic!("expected token usage");
@@ -135,9 +138,12 @@ fn transcription_read_request_without_inline_data_is_bad_request() {
         "contents": [{ "role": "user", "parts": [{ "text": "just text" }]}],
     }))
     .unwrap();
-    let err = TRANSCRIPTION
-        .read_request(&body, "application/json")
-        .expect_err("no audio part must reject");
+    let err = super::super::super::leaf_codec::transcription_read_request(
+        "gemini",
+        &body,
+        "application/json",
+    )
+    .expect_err("no audio part must reject");
     match err {
         IngressReject::BadRequest(m) => {
             assert!(m.contains("inline_data audio part"), "message was: {m}");
@@ -235,12 +241,13 @@ fn embeddings_read_request_captures_content_text() {
         "content": { "parts": [{ "text": "embed me" }] },
     }))
     .unwrap();
-    let ir = EMB
-        .read_request(&body, "application/json")
-        .expect("valid embedContent body");
-    let IrReq::Embeddings(r) = ir else {
-        panic!("expected IrReq::Embeddings");
-    };
+    let ir = super::super::super::leaf_codec::embeddings_read_request(
+        "gemini",
+        &body,
+        "application/json",
+    )
+    .expect("valid embedContent body");
+    let r = ir;
     assert_eq!(r.input, EmbInput::Text(vec!["embed me".to_string()]));
 }
 
@@ -248,9 +255,12 @@ fn embeddings_read_request_captures_content_text() {
 fn embeddings_read_request_without_text_is_bad_request() {
     // No content.parts text ⇒ 400.
     let body = serde_json::to_vec(&json!({ "content": { "parts": [] } })).unwrap();
-    let err = EMB
-        .read_request(&body, "application/json")
-        .expect_err("empty content must reject");
+    let err = super::super::super::leaf_codec::embeddings_read_request(
+        "gemini",
+        &body,
+        "application/json",
+    )
+    .expect_err("empty content must reject");
     assert!(matches!(err, IngressReject::BadRequest(_)));
 }
 
@@ -262,12 +272,10 @@ fn image_read_request_captures_prompt_and_count() {
         "parameters": { "sampleCount": 3 },
     }))
     .unwrap();
-    let ir = IMG
-        .read_request(&body, "application/json")
-        .expect("valid predict body");
-    let IrReq::Image(r) = ir else {
-        panic!("expected IrReq::Image");
-    };
+    let ir =
+        super::super::super::leaf_codec::image_read_request("gemini", &body, "application/json")
+            .expect("valid predict body");
+    let r = ir;
     assert_eq!(r.prompt.as_deref(), Some("a fox"));
     assert_eq!(r.n, Some(3));
 }
@@ -279,12 +287,10 @@ fn image_read_request_captures_aspect_ratio() {
         "parameters": { "aspectRatio": "16:9" },
     }))
     .unwrap();
-    let ir = IMG
-        .read_request(&body, "application/json")
-        .expect("valid predict body");
-    let IrReq::Image(r) = ir else {
-        panic!("expected IrReq::Image");
-    };
+    let ir =
+        super::super::super::leaf_codec::image_read_request("gemini", &body, "application/json")
+            .expect("valid predict body");
+    let r = ir;
     assert_eq!(r.aspect_ratio.as_deref(), Some("16:9"));
 }
 
@@ -294,10 +300,9 @@ fn image_read_response_captures_base64_image_bytes() {
         "predictions": [{ "bytesBase64Encoded": "cHJldGVuZC1pbWFnZQ==", "mimeType": "image/png" }],
     }))
     .unwrap();
-    let ir = IMG.read_response(&wire).expect("valid predictions body");
-    let IrResp::Image(r) = ir else {
-        panic!("expected IrResp::Image");
-    };
+    let ir = super::super::super::leaf_codec::image_read_response("gemini", &wire)
+        .expect("valid predictions body");
+    let r = ir;
     assert_eq!(r.images.len(), 1);
     assert_eq!(r.images[0].b64.as_deref(), Some("cHJldGVuZC1pbWFnZQ=="));
     assert_eq!(r.images[0].mime_type.as_deref(), Some("image/png"));
@@ -306,18 +311,16 @@ fn image_read_response_captures_base64_image_bytes() {
 #[test]
 fn image_write_read_roundtrip_preserves_prompt() {
     // write_request emits instances[].prompt + parameters.sampleCount; read_request recovers.
-    let req = IrReq::Image(busbar_core::ir::image::ImageReq {
+    let req = crate::ir::image::ImageReq {
         prompt: Some("roundtrip fox".to_string()),
         n: Some(2),
         ..Default::default()
-    });
-    let wire = IMG.write_request(&req);
-    let back = IMG
-        .read_request(&wire, "application/json")
-        .expect("emitted body reparses");
-    let IrReq::Image(r) = back else {
-        panic!("expected IrReq::Image");
     };
+    let wire = super::super::super::leaf_codec::image_write_request("gemini", &req);
+    let back =
+        super::super::super::leaf_codec::image_read_request("gemini", &wire, "application/json")
+            .expect("emitted body reparses");
+    let r = back;
     assert_eq!(r.prompt.as_deref(), Some("roundtrip fox"));
     assert_eq!(r.n, Some(2));
 }
@@ -326,14 +329,14 @@ fn image_write_read_roundtrip_preserves_prompt() {
 fn embeddings_write_request_carries_dimensions_task_type_and_title() {
     // Gemini `:embedContent` supports these natively; dropping `outputDimensionality` returned
     // full-width vectors, and taskType/title steer retrieval quality.
-    let ir = IrReq::Embeddings(busbar_core::ir::embeddings::EmbeddingsReq {
+    let ir = crate::ir::embeddings::EmbeddingsReq {
         input: EmbInput::Text(vec!["hi".into()]),
         dimensions: Some(256),
         task_type: Some("RETRIEVAL_DOCUMENT".into()),
         title: Some("doc".into()),
         ..Default::default()
-    });
-    let out = EMB.write_request(&ir);
+    };
+    let out = super::super::super::leaf_codec::embeddings_write_request("gemini", &ir);
     let v: Value = serde_json::from_slice(&out).unwrap();
     assert_eq!(v["outputDimensionality"], 256);
     assert_eq!(v["taskType"], "RETRIEVAL_DOCUMENT");
@@ -354,12 +357,13 @@ fn embeddings_read_request_captures_task_type() {
         "taskType": "RETRIEVAL_QUERY",
     }))
     .unwrap();
-    let ir = EMB
-        .read_request(&body, "application/json")
-        .expect("valid embedContent body");
-    let IrReq::Embeddings(r) = ir else {
-        panic!("expected IrReq::Embeddings");
-    };
+    let ir = super::super::super::leaf_codec::embeddings_read_request(
+        "gemini",
+        &body,
+        "application/json",
+    )
+    .expect("valid embedContent body");
+    let r = ir;
     assert_eq!(r.task_type.as_deref(), Some("RETRIEVAL_QUERY"));
 }
 
@@ -370,12 +374,9 @@ fn embeddings_read_response_captures_vector_and_usage() {
         "usageMetadata": { "promptTokenCount": 5 },
     }))
     .unwrap();
-    let ir = EMB
-        .read_response(&wire)
+    let ir = super::super::super::leaf_codec::embeddings_read_response("gemini", &wire)
         .expect("valid embedContent response");
-    let IrResp::Embeddings(r) = ir else {
-        panic!("expected IrResp::Embeddings");
-    };
+    let r = ir;
     assert_eq!(r.embeddings.len(), 1);
     match r.embeddings[0].vectors.get(&EncFmt::Float) {
         Some(VectorData::Float(v)) => assert_eq!(v, &[0.1_f32, 0.2, 0.3]),
@@ -389,11 +390,11 @@ fn embeddings_write_response_emits_the_float_vector() {
     let mut item = EmbeddingItem::default();
     item.vectors
         .insert(EncFmt::Float, VectorData::Float(vec![1.0, 2.0, 3.0]));
-    let ir = IrResp::Embeddings(EmbeddingsResp {
+    let ir = EmbeddingsResp {
         embeddings: vec![item],
         ..Default::default()
-    });
-    let out = EMB.write_response(&ir);
+    };
+    let out = super::super::super::leaf_codec::embeddings_write_response("gemini", &ir);
     let v: Value = serde_json::from_slice(&out.bytes).unwrap();
     assert_eq!(v["embedding"]["values"], json!([1.0, 2.0, 3.0]));
 }
@@ -403,13 +404,15 @@ fn embeddings_write_request_warns_on_dropped_non_text_input() {
     use busbar_core::test_support::warn_capture::WarnCapture;
     use tracing_subscriber::layer::SubscriberExt as _;
 
-    let ir = IrReq::Embeddings(busbar_core::ir::embeddings::EmbeddingsReq {
+    let ir = crate::ir::embeddings::EmbeddingsReq {
         input: EmbInput::Images(vec!["data:image/png;base64,AA==".into()]),
         ..Default::default()
-    });
+    };
     let cap = WarnCapture::default();
     let subscriber = tracing_subscriber::registry().with(cap.clone());
-    let out = tracing::subscriber::with_default(subscriber, || EMB.write_request(&ir));
+    let out = tracing::subscriber::with_default(subscriber, || {
+        super::super::super::leaf_codec::embeddings_write_request("gemini", &ir)
+    });
 
     let v: Value = serde_json::from_slice(&out).unwrap();
     assert_eq!(v["content"]["parts"][0]["text"], json!(""));
@@ -425,13 +428,13 @@ fn embeddings_write_request_warns_on_dropped_non_text_input() {
 fn image_write_request_carries_aspect_ratio_and_person_generation() {
     // Imagen generation controls must ride under `parameters`; dropping them fell back to
     // Imagen's defaults (1:1 aspect, default person-generation policy).
-    let ir = IrReq::Image(busbar_core::ir::image::ImageReq {
+    let ir = crate::ir::image::ImageReq {
         prompt: Some("a fox".into()),
         aspect_ratio: Some("16:9".into()),
         person_generation: Some("allow_adult".into()),
         ..Default::default()
-    });
-    let out = IMG.write_request(&ir);
+    };
+    let out = super::super::super::leaf_codec::image_write_request("gemini", &ir);
     let v: Value = serde_json::from_slice(&out).unwrap();
     assert_eq!(v["parameters"]["aspectRatio"], "16:9");
     assert_eq!(v["parameters"]["personGeneration"], "allow_adult");
@@ -443,7 +446,7 @@ fn speech_read_response_invalid_base64_is_malformed() {
     // rather than reach the egress writer, where a decode failure would silently become an
     // empty 200 audio body.
     let body = br#"{"candidates":[{"content":{"parts":[{"inlineData":{"data":"!!!not-base64!!!","mimeType":"audio/L16;codec=pcm;rate=24000"}}]}}]}"#;
-    let res = SPEECH.read_response(body);
+    let res = super::super::super::leaf_codec::speech_read_response("gemini", body);
     assert!(matches!(res, Err(CodecError::Malformed(_))));
 }
 
@@ -457,12 +460,9 @@ fn speech_read_response_valid_base64_returns_audio_blob() {
         } }] } }],
     }))
     .unwrap();
-    let ir = SPEECH
-        .read_response(&body)
+    let ir = super::super::super::leaf_codec::speech_read_response("gemini", &body)
         .expect("valid base64 must decode");
-    let IrResp::Speech(r) = ir else {
-        panic!("expected speech IR");
-    };
+    let r = ir;
     let blob = r.audio.expect("audio blob present");
     match blob.payload {
         MediaPayload::B64(s) => assert_eq!(s, base64_encode(b"pretend-pcm-audio")),
@@ -478,12 +478,10 @@ fn speech_read_request_captures_prompt_text() {
         "generationConfig": { "responseModalities": ["AUDIO"] },
     }))
     .unwrap();
-    let ir = SPEECH
-        .read_request(&body, "application/json")
-        .expect("valid speech body");
-    let IrReq::Speech(r) = ir else {
-        panic!("expected speech IR");
-    };
+    let ir =
+        super::super::super::leaf_codec::speech_read_request("gemini", &body, "application/json")
+            .expect("valid speech body");
+    let r = ir;
     assert_eq!(r.input, "hello");
 }
 
@@ -492,13 +490,13 @@ fn speech_write_request_prefixes_instructions_to_prompt_not_language_code() {
     // OpenAI-style free-text `instructions` steer Gemini TTS through the PROMPT, not the BCP-47
     // `speechConfig.languageCode` (the old, request-corrupting behavior). Assert the prefix lands
     // in parts[0].text as "<instr>: <input>" and no languageCode key is emitted.
-    let ir = IrReq::Speech(busbar_core::ir::audio::SpeechReq {
+    let ir = crate::ir::audio::SpeechReq {
         input: "hello".into(),
         voice: "Kore".into(),
         instructions: Some("speak cheerfully".into()),
         ..Default::default()
-    });
-    let out = SPEECH.write_request(&ir);
+    };
+    let out = super::super::super::leaf_codec::speech_write_request("gemini", &ir);
     let v: Value = serde_json::from_slice(&out).unwrap();
     let text = v
         .pointer("/contents/0/parts/0/text")

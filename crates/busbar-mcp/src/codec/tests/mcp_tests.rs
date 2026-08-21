@@ -8,12 +8,10 @@
 
 use super::handler::McpRequestHandler;
 use super::invoke::InvokeOperation;
-use super::subscribe::SubscribeOperation;
 use super::*;
 use busbar_core::handlers::{OperationHandler, RequestHandler};
 use busbar_core::ir::invoke::InvokeResp;
 use busbar_core::ir::subscribe::SubscribeIntent;
-use busbar_core::ir::variant::{IrReq, IrResp};
 use busbar_core::operation::Operation;
 
 fn call_wire(params: serde_json::Value) -> Vec<u8> {
@@ -28,12 +26,8 @@ fn a_tools_call_reads_into_the_invoke_ir() {
     let wire = call_wire(serde_json::json!({
         "name": "fs_read", "arguments": { "path": "/etc/hosts" }
     }));
-    let ir = InvokeOperation
-        .read_request(&wire, busbar_core::proxy::APPLICATION_JSON)
-        .expect("a well-formed tools/call reads");
-    let IrReq::Invoke(r) = ir else {
-        panic!("a tools/call is an Invoke")
-    };
+    let ir = super::invoke::read_invoke_request(&wire).expect("a well-formed tools/call reads");
+    let r = ir;
     assert_eq!(r.tool, "fs_read");
     assert_eq!(r.arguments["path"], "/etc/hosts");
 }
@@ -43,12 +37,9 @@ fn a_tools_call_reads_into_the_invoke_ir() {
 #[test]
 fn absent_arguments_are_an_empty_object_not_a_refusal() {
     let wire = call_wire(serde_json::json!({ "name": "ping" }));
-    let ir = InvokeOperation
-        .read_request(&wire, busbar_core::proxy::APPLICATION_JSON)
+    let ir = super::invoke::read_invoke_request(&wire)
         .expect("a tool with no arguments is a legal call");
-    let IrReq::Invoke(r) = ir else {
-        panic!("a tools/call is an Invoke")
-    };
+    let r = ir;
     assert_eq!(r.arguments, serde_json::json!({}));
 }
 
@@ -56,9 +47,7 @@ fn absent_arguments_are_an_empty_object_not_a_refusal() {
 fn a_call_that_names_no_tool_is_refused() {
     let wire = call_wire(serde_json::json!({ "arguments": {} }));
     assert!(
-        InvokeOperation
-            .read_request(&wire, busbar_core::proxy::APPLICATION_JSON)
-            .is_err(),
+        super::invoke::read_invoke_request(&wire).is_err(),
         "a tools/call with no `params.name` names no tool, so there is nothing to dispatch"
     );
 }
@@ -76,12 +65,9 @@ fn a_failed_tool_is_a_result_not_a_protocol_error() {
         "result": { "content": [{ "type": "text", "text": "no such file" }], "isError": true }
     }))
     .expect("fixture");
-    let ir = InvokeOperation
-        .read_response(&wire)
-        .expect("a tool error is a well-formed response");
-    let IrResp::Invoke(r) = ir else {
-        panic!("a tools/call answer is an Invoke")
-    };
+    let ir =
+        super::invoke::read_invoke_response(&wire).expect("a tool error is a well-formed response");
+    let r = ir;
     assert!(r.is_error, "the tool's own verdict survives");
     assert_eq!(r.content[0]["text"], "no such file");
 }
@@ -91,11 +77,9 @@ fn the_request_round_trips_through_the_codec() {
     let wire = call_wire(serde_json::json!({
         "name": "search", "arguments": { "q": "busbar" }
     }));
-    let ir = InvokeOperation
-        .read_request(&wire, busbar_core::proxy::APPLICATION_JSON)
-        .expect("reads");
+    let ir = super::invoke::read_invoke_request(&wire).expect("reads");
     let out: serde_json::Value =
-        serde_json::from_slice(&InvokeOperation.write_request(&ir)).expect("writes JSON");
+        serde_json::from_slice(&super::invoke::invoke_write_request(&ir)).expect("writes JSON");
     assert_eq!(out["jsonrpc"], "2.0");
     assert_eq!(out["method"], "tools/call");
     assert_eq!(out["params"]["name"], "search");
@@ -110,14 +94,15 @@ fn the_request_round_trips_through_the_codec() {
 
 #[test]
 fn the_response_round_trips_through_the_codec() {
-    let ir = IrResp::Invoke(InvokeResp {
+    let ir = InvokeResp {
         content: serde_json::json!([{ "type": "text", "text": "ok" }]),
         is_error: false,
         structured: Some(serde_json::json!({ "rows": 2 })),
         extra: Default::default(),
-    });
+    };
     let out: serde_json::Value =
-        serde_json::from_slice(&InvokeOperation.write_response(&ir).bytes).expect("writes JSON");
+        serde_json::from_slice(&super::invoke::invoke_write_response(&ir).bytes)
+            .expect("writes JSON");
     assert_eq!(out["result"]["content"][0]["text"], "ok");
     assert_eq!(out["result"]["isError"], false);
     assert_eq!(out["result"]["structuredContent"]["rows"], 2);
@@ -127,14 +112,15 @@ fn the_response_round_trips_through_the_codec() {
 /// returned none must not be given one.
 #[test]
 fn structured_content_is_omitted_when_the_tool_produced_none() {
-    let ir = IrResp::Invoke(InvokeResp {
+    let ir = InvokeResp {
         content: serde_json::json!([]),
         is_error: false,
         structured: None,
         extra: Default::default(),
-    });
+    };
     let out: serde_json::Value =
-        serde_json::from_slice(&InvokeOperation.write_response(&ir).bytes).expect("writes JSON");
+        serde_json::from_slice(&super::invoke::invoke_write_response(&ir).bytes)
+            .expect("writes JSON");
     assert!(out["result"].get("structuredContent").is_none());
 }
 
@@ -252,12 +238,9 @@ fn both_subscription_verbs_read_into_one_operation_with_their_intent_intact() {
         ("resources/unsubscribe", SubscribeIntent::Deregister),
     ] {
         let wire = subscription_wire(method, serde_json::json!({ "uri": "file:///log.txt" }));
-        let ir = SubscribeOperation
-            .read_request(&wire, busbar_core::proxy::APPLICATION_JSON)
+        let ir = super::subscribe::read_subscribe_request(&wire)
             .expect("a well-formed subscription request reads");
-        let IrReq::Subscribe(r) = ir else {
-            panic!("a subscription request is a Subscribe")
-        };
+        let r = ir;
         assert_eq!(r.intent, want);
         assert_eq!(r.target, "file:///log.txt");
     }
@@ -288,12 +271,11 @@ fn a_subscription_that_names_no_target_is_refused() {
         serde_json::json!({ "uri": 3 }),
     ] {
         assert!(
-            SubscribeOperation
-                .read_request(
-                    &subscription_wire("resources/subscribe", params.clone()),
-                    busbar_core::proxy::APPLICATION_JSON
-                )
-                .is_err(),
+            super::subscribe::read_subscribe_request(&subscription_wire(
+                "resources/subscribe",
+                params.clone()
+            ))
+            .is_err(),
             "a subscription request whose params are {params} names no target"
         );
     }
@@ -305,11 +287,10 @@ fn the_subscription_request_round_trips_through_the_codec() {
         "resources/unsubscribe",
         serde_json::json!({ "uri": "file:///a" }),
     );
-    let ir = SubscribeOperation
-        .read_request(&wire, busbar_core::proxy::APPLICATION_JSON)
-        .expect("reads");
+    let ir = super::subscribe::read_subscribe_request(&wire).expect("reads");
     let out: serde_json::Value =
-        serde_json::from_slice(&SubscribeOperation.write_request(&ir)).expect("writes JSON");
+        serde_json::from_slice(&super::subscribe::subscribe_write_request(&ir))
+            .expect("writes JSON");
     assert_eq!(out["jsonrpc"], "2.0");
     assert_eq!(
         out["method"], "resources/unsubscribe",
@@ -331,17 +312,12 @@ fn an_empty_result_is_an_acknowledgement_and_not_a_registration_record() {
         "jsonrpc": "2.0", "id": 7, "result": {}
     }))
     .expect("fixture");
-    let ir = SubscribeOperation.read_response(&wire).expect("reads");
-    let IrResp::Subscribe(r) = ir else {
-        panic!("a subscription answer is a Subscribe")
-    };
+    let ir = super::subscribe::read_subscribe_response(&wire).expect("reads");
+    let r = ir;
     assert_eq!(r.registration, None);
-    let out: serde_json::Value = serde_json::from_slice(
-        &SubscribeOperation
-            .write_response(&IrResp::Subscribe(r))
-            .bytes,
-    )
-    .expect("writes JSON");
+    let out: serde_json::Value =
+        serde_json::from_slice(&super::subscribe::subscribe_write_response(&r).bytes)
+            .expect("writes JSON");
     assert_eq!(
         out["result"],
         serde_json::json!({}),
@@ -357,17 +333,12 @@ fn a_registration_record_is_carried_through_untouched() {
         "jsonrpc": "2.0", "id": 7, "result": { "id": "sub-1", "uri": "file:///a" }
     }))
     .expect("fixture");
-    let ir = SubscribeOperation.read_response(&wire).expect("reads");
-    let IrResp::Subscribe(r) = ir else {
-        panic!("a subscription answer is a Subscribe")
-    };
+    let ir = super::subscribe::read_subscribe_response(&wire).expect("reads");
+    let r = ir;
     assert_eq!(r.registration.as_ref().expect("carried")["id"], "sub-1");
-    let out: serde_json::Value = serde_json::from_slice(
-        &SubscribeOperation
-            .write_response(&IrResp::Subscribe(r))
-            .bytes,
-    )
-    .expect("writes JSON");
+    let out: serde_json::Value =
+        serde_json::from_slice(&super::subscribe::subscribe_write_response(&r).bytes)
+            .expect("writes JSON");
     assert_eq!(out["result"]["uri"], "file:///a");
 }
 
@@ -376,12 +347,17 @@ fn a_registration_record_is_carried_through_untouched() {
 /// otherwise see it.
 #[test]
 fn a_subscription_is_flat_metered_rather_than_free() {
-    let ir = IrResp::Subscribe(busbar_core::ir::subscribe::SubscribeResp {
+    let ir = busbar_core::ir::subscribe::SubscribeResp {
         registration: None,
         extra: Default::default(),
-    });
+    };
     assert!(
-        matches!(ir.usage(), Some(busbar_core::billing::Billing::Flat)),
+        matches!(
+            busbar_core::ir::handle::IrHandle::billing(
+                &busbar_core::ir::neutral_handles::SubscribeRespHandle(ir)
+            ),
+            Some(busbar_core::billing::Billing::Flat)
+        ),
         "a registration bills one unit, so it lands on the same budget tree as every other call"
     );
 }

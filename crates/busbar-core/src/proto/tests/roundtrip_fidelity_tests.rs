@@ -176,7 +176,7 @@ fn roundtrip_anthropic_request() {
         anthropic_request(),
         &[
             // `model` is set by the ENGINE, not by the reader/writer pair: `proxy/wire.rs` calls
-            // `IrReq::set_model(lane.wire_model())` before the writer runs, because the caller's
+            // `lane.wire_model()` before the writer runs, because the caller's
             // model name is a ROUTING key that names a busbar lane, not necessarily a model the
             // backend knows. A harness that drives the reader/writer directly skips that step, so
             // the field is absent here and present on every real egress. Not a loss.
@@ -279,7 +279,7 @@ fn roundtrip_openai_request() {
         }),
         &[
             // `model` is set by the ENGINE, not by the reader/writer pair: `proxy/wire.rs` calls
-            // `IrReq::set_model(lane.wire_model())` before the writer runs, because the caller's
+            // `lane.wire_model()` before the writer runs, because the caller's
             // model name is a ROUTING key that names a busbar lane, not necessarily a model the
             // backend knows. A harness that drives the reader/writer directly skips that step, so
             // the field is absent here and present on every real egress. Not a loss.

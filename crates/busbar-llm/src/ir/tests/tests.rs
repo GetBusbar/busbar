@@ -1,4 +1,5 @@
 use super::*;
+use serde_json::Value;
 
 #[test]
 fn reasoning_effort_parse_round_trips_and_rejects_unknown() {
@@ -223,10 +224,10 @@ fn test_ir_tool_choice_variant_equality() {
 /// This is the U2 red. It fails on the Responses row today.
 #[test]
 fn all_three_opaque_reasoning_shapes_read_as_opaque_from_the_ir() {
-    let cases: [(&str, crate::proto::Protocol, Value); 3] = [
+    let cases: [(&str, crate::proto_codec::Protocol, Value); 3] = [
         (
             "anthropic redacted_thinking",
-            crate::proto::Protocol::anthropic(),
+            crate::proto_codec::Protocol::anthropic(),
             serde_json::json!({
                 "model": "claude", "max_tokens": 16,
                 "messages": [{"role": "assistant", "content": [
@@ -236,7 +237,7 @@ fn all_three_opaque_reasoning_shapes_read_as_opaque_from_the_ir() {
         ),
         (
             "bedrock redactedContent",
-            crate::proto::Protocol::bedrock(),
+            crate::proto_codec::Protocol::bedrock(),
             serde_json::json!({
                 "messages": [{"role": "assistant", "content": [
                     {"reasoningContent": {"redactedContent": "OPAQUE_BLOB"}}
@@ -245,7 +246,7 @@ fn all_three_opaque_reasoning_shapes_read_as_opaque_from_the_ir() {
         ),
         (
             "responses encrypted_content-only",
-            crate::proto::Protocol::responses(),
+            crate::proto_codec::Protocol::responses(),
             serde_json::json!({
                 "model": "gpt-5",
                 "input": [{

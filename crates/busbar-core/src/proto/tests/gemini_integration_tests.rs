@@ -22,8 +22,7 @@ fn test_gemini_upstream_path_for_embeds_model() {
 // gemini is now a registered, buildable protocol.
 #[test]
 fn test_gemini_registered_in_builtins() {
-    let reg = ProtocolRegistry::with_builtins();
-    let g = reg.get("gemini").expect("gemini should be registered");
+    let g = crate::proto::protocol_for("gemini").expect("gemini should be registered");
     assert_eq!(g.name(), "gemini");
     assert_eq!(
         g.writer().upstream_path_for("m"),

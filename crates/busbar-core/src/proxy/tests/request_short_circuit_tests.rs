@@ -118,7 +118,8 @@ fn upstream_model_override_rewrites_body_and_url_model() {
                 .upstream_model("upstream.real/model"),
         )
         .build();
-    let writer = app.lanes[0].protocol.writer();
+    let proto = crate::proto::protocol_for(app.lanes[0].protocol).expect("lane protocol resolves");
+    let writer = proto.writer();
     assert_eq!(
             writer.upstream_path_for_stream(app.lanes[0].wire_model(), false),
             "/model/upstream.real/model/converse",
