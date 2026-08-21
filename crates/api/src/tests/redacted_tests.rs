@@ -75,10 +75,7 @@ fn eq_is_constant_time_and_correct() {
         Redacted::new("sk-abc-123".to_string())
     );
     // Empty vs empty is equal.
-    assert_eq!(
-        Redacted::new(String::new()),
-        Redacted::new(String::new())
-    );
+    assert_eq!(Redacted::new(String::new()), Redacted::new(String::new()));
 }
 
 /// `Redacted` must NOT implement `serde::Serialize`, so a secret held in engine memory has no

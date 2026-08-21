@@ -325,18 +325,3 @@ pub(crate) fn moderation_read_response(
         ))),
     }
 }
-
-#[cfg(test)]
-mod leaf_write_dispatch_tests {
-    use super::embeddings_write_request;
-    use crate::ir::embeddings::EmbeddingsReq;
-
-    // An unknown egress protocol must fail LOUDLY (not emit a malformed empty body): the guard for a
-    // future leaf-op protocol added without extending the write match. A known protocol ("openai") is
-    // exercised by the per-dialect handler tests, so this only pins the loud fallback.
-    #[test]
-    #[should_panic(expected = "leaf write: unknown egress protocol")]
-    fn unknown_egress_protocol_panics() {
-        let _ = embeddings_write_request("no-such-protocol", &EmbeddingsReq::default());
-    }
-}

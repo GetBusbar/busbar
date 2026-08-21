@@ -105,3 +105,11 @@ pub static DECLS: &[&busbar_core::proto::ProtocolDecl] = &[
 #[cfg(test)]
 #[path = "tests/write_error_frame_tests.rs"]
 mod write_error_frame_tests;
+
+#[cfg(test)]
+#[path = "tests/decode_native_tool_id_tests.rs"]
+mod decode_native_tool_id_tests;
+
+#[cfg(test)]
+#[path = "tests/leaf_write_dispatch_tests.rs"]
+mod leaf_write_dispatch_tests;

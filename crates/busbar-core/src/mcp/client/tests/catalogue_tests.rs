@@ -140,7 +140,10 @@ fn concurrent_applies_to_distinct_keys_all_survive() {
                     // Line every thread up on the barrier so their read-copy-update windows overlap.
                     barrier.wait();
                     cache.apply(move |s| {
-                        s.insert(key.clone(), approved_server(&key, vec![simple_tool("t", "d")]));
+                        s.insert(
+                            key.clone(),
+                            approved_server(&key, vec![simple_tool("t", "d")]),
+                        );
                     });
                 })
             })

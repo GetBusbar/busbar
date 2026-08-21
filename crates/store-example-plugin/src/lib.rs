@@ -212,12 +212,7 @@ impl FileLock {
             .truncate(false)
             .write(true)
             .open(&lock_path)
-            .map_err(|e| {
-                StoreError(format!(
-                    "lock file '{}' open: {e}",
-                    lock_path.display()
-                ))
-            })?;
+            .map_err(|e| StoreError(format!("lock file '{}' open: {e}", lock_path.display())))?;
         // Blocking exclusive advisory lock. `flock` is associated with the open file DESCRIPTION, so
         // two handles in one process (each with their own `open`) block each other just as two
         // processes do — exactly the fleet contention this closes. EINTR is retried.
