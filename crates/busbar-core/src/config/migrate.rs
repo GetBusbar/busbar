@@ -799,16 +799,27 @@ fn window_noun(period: &str, ctx: &str, todos: &mut Vec<String>) -> (&'static st
         "total" | "lifetime" | "all_time" | "alltime" | "never" => ("total", 1),
         // APPROXIMATED / UNRECOGNIZED — LOUD, always.
         other => {
-            let shorter = matches!(other, "week" | "weekly" | "per_week");
-            let longer = matches!(
-                other,
-                "year" | "yearly" | "annual" | "annually" | "per_year"
-            );
-            // How many APPROX_WINDOWs the operator's period spans. Only a LONGER period rescales:
-            // a shorter one already errs tighter, and an unrecognized one has no known length, so
-            // neither is touched (and both keep their loud TODO).
-            let divisor: u64 = if longer { 12 } else { 1 };
-            let why = if shorter || longer {
+            // How many APPROX_WINDOWs (months) the operator's period spans, WHEN the migrator can
+            // determine it. A LONGER-than-month period MUST rescale by that factor or it loosens the
+            // cap (a `quarterly` amount spent every month is 3x); a SHORTER-or-equal period already
+            // errs tighter on {APPROX_WINDOW} and is carried unchanged (divisor 1); a period the
+            // migrator genuinely cannot classify (`None`) has NO known length, so it CANNOT be
+            // rescaled safely and is flagged UNVERIFIED rather than silently claimed tighter.
+            let months: Option<u64> = match other {
+                // SHORTER than a month — unchanged errs tighter (fail-closed).
+                "week" | "weekly" | "per_week" => Some(1),
+                // LONGER than a month — must divide by the number of months it spans.
+                "quarter" | "quarterly" | "per_quarter" => Some(3),
+                "biannual" | "biannually" | "semiannual" | "semiannually" | "semi_annual"
+                | "half_year" | "half_yearly" | "per_half_year" => Some(6),
+                "year" | "yearly" | "annual" | "annually" | "per_year" => Some(12),
+                // Genuinely unrecognized (a typo, a fork's period) — length unknown.
+                _ => None,
+            };
+            // Divisor: the month-span when known (floor 1 for shorter/equal), else 1 (carried
+            // unchanged). NEVER rounds a longer period's amount UP — that is the loosening direction.
+            let divisor: u64 = months.unwrap_or(1).max(1);
+            let why = if months.is_some() {
                 format!("1.5.3 has no `{other}` window")
             } else {
                 format!("`{other}` is not a period this migrator recognizes")
@@ -820,11 +831,22 @@ fn window_noun(period: &str, ctx: &str, todos: &mut Vec<String>) -> (&'static st
                      {APPROX_WINDOW} window would be {divisor}x the budget you wrote, in force from \
                      the first boot. Check the rescaled number"
             )
-            } else {
+            } else if months.is_some() {
+                // A KNOWN shorter-or-equal period: month is genuinely tighter, so unchanged is safe.
                 format!(
                     "The AMOUNT was carried over UNCHANGED, so the cap now spends over a \
                      {APPROX_WINDOW} instead of a `{other}` (tighter, never looser). Re-scale it \
                      by hand"
+                )
+            } else {
+                // UNVERIFIED: the migrator could not determine this period's length, so it did NOT
+                // rescale — and if `{other}` is LONGER than a {APPROX_WINDOW}, the migrated cap is
+                // LOOSER than what you wrote. This is the one path that cannot promise the invariant,
+                // so it says so instead of falsely claiming "tighter, never looser".
+                format!(
+                    "The AMOUNT was carried over UNCHANGED because this migrator could NOT determine \
+                     how long a `{other}` is; if it is LONGER than a {APPROX_WINDOW} the migrated cap \
+                     is now LOOSER than the one you wrote. RE-SCALE it by hand"
                 )
             };
             todos.push(format!(
