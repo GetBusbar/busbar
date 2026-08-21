@@ -550,3 +550,14 @@ fn image_response_without_usage_bills_per_image() {
         other => panic!("per-image response must bill Images, got {other:?}"),
     }
 }
+
+// FIND-2 (money): TTS returns a raw-audio body with no usage object; without a marker the synthesis
+// was billed nothing. The reader must set a `Flat` marker so `billing()` is `Some`. Fails pre-fix.
+#[test]
+fn speech_response_is_billed() {
+    let resp = super::read_speech_response(b"\x00\x01audio-bytes").unwrap();
+    assert!(
+        resp.billing().is_some(),
+        "TTS synthesis must be billed (non-None), got None"
+    );
+}

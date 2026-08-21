@@ -620,6 +620,8 @@ pub(crate) fn read_speech_response(
                     mime_type: mime,
                     pcm,
                 }),
+                // Mark the synthesis billable so `billing()` is not `None` (see the raw-body arm).
+                usage: Some(busbar_core::billing::Billing::Flat),
                 ..Default::default()
             });
         }
@@ -630,6 +632,10 @@ pub(crate) fn read_speech_response(
             mime_type: "audio/mpeg".into(),
             pcm: None,
         }),
+        // TTS carries no usage object in its audio body; without a marker `billing()` returned
+        // `None` and the request was billed nothing. Record a `Flat` marker so the request is at
+        // least counted (the per-character/token quantity would need the request `input`).
+        usage: Some(busbar_core::billing::Billing::Flat),
         ..Default::default()
     })
 }

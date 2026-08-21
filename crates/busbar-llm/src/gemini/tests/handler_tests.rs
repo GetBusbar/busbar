@@ -508,3 +508,13 @@ fn speech_write_request_prefixes_instructions_to_prompt_not_language_code() {
         "instructions must not corrupt speechConfig.languageCode: {v}"
     );
 }
+
+// FIND-2 (money): Gemini TTS response must be billed (non-None) so the synthesis is metered.
+#[test]
+fn gemini_speech_response_is_billed() {
+    let resp = super::read_speech_response(b"\x00\x01raw-audio").unwrap();
+    assert!(
+        resp.billing().is_some(),
+        "gemini TTS synthesis must be billed (non-None), got None"
+    );
+}
