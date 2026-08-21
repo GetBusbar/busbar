@@ -1304,6 +1304,20 @@ impl GovState {
             shard.retain(|id, _| !crate::cost::is_bucket_of_group(id, group));
             dropped += before - shard.len();
         }
+        // The per-group in-flight `concurrent` gauge is materialised on the first admission of a
+        // capped group and, unlike the budget cells above, was never swept on delete — a server
+        // that churns capped groups (SSO-template / operator-managed groups with a `concurrent_cap`,
+        // each admitting ≥1 request) grew this map without bound. It is keyed by the plain group
+        // name, so it is removed here rather than through `is_bucket_of_group`. Any request still
+        // in flight against the outgoing group holds its own `Arc` to the gauge inside its
+        // `AdmitGrant` and still decrements THAT on drop, so removing the shared registration entry
+        // cannot strand a hold; a re-created group re-materialises a fresh gauge at zero, exactly as
+        // the budget cells above are re-created. Deletion is durable and the new cost model no longer
+        // knows the group before this runs, so no new admission can re-insert it in the gap.
+        self.concurrent
+            .write()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(group);
         dropped
     }
 

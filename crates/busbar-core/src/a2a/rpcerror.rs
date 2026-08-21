@@ -158,10 +158,9 @@ impl A2aError {
             A2aError::TaskNotCancelable
             | A2aError::ExtendedAgentCardNotConfigured
             | A2aError::PushNotificationNotSupported
-            | A2aError::ExtensionSupportRequired => tonic::Code::FailedPrecondition,
-            A2aError::UnsupportedOperation | A2aError::VersionNotSupported => {
-                tonic::Code::Unimplemented
-            }
+            | A2aError::ExtensionSupportRequired
+            | A2aError::UnsupportedOperation
+            | A2aError::VersionNotSupported => tonic::Code::FailedPrecondition,
             A2aError::ContentTypeNotSupported => tonic::Code::InvalidArgument,
             A2aError::InvalidAgentResponse | A2aError::Internal => tonic::Code::Internal,
             A2aError::MethodNotFound => tonic::Code::Unimplemented,
@@ -214,10 +213,10 @@ impl A2aError {
             A2aError::TaskNotCancelable
             | A2aError::ExtendedAgentCardNotConfigured
             | A2aError::PushNotificationNotSupported
-            | A2aError::ExtensionSupportRequired => "FAILED_PRECONDITION",
-            A2aError::UnsupportedOperation
-            | A2aError::VersionNotSupported
-            | A2aError::MethodNotFound => "UNIMPLEMENTED",
+            | A2aError::ExtensionSupportRequired
+            | A2aError::UnsupportedOperation
+            | A2aError::VersionNotSupported => "FAILED_PRECONDITION",
+            A2aError::MethodNotFound => "UNIMPLEMENTED",
             A2aError::ContentTypeNotSupported
             | A2aError::Parse
             | A2aError::InvalidRequest
