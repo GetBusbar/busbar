@@ -590,3 +590,37 @@ async fn a_foreign_origin_cannot_drive_this_plane() {
     assert_ne!(resp.status().as_u16(), 403, "an agent sends no Origin");
     handle.abort();
 }
+
+/// FAIL-CLOSED on a panic in the blocking reverify. `verify_agent_on_call` folds the
+/// `spawn_blocking` join through `fold_reverify_join`: a `JoinError` (a PANIC in the card fetch) must
+/// RE-RAISE and latch the subject unreachable — never be swallowed to `None`.
+///
+/// RED, WATCHED: with the old `.await.ok().flatten()`, the join error was dropped — no panic, no
+/// report — so this test's `catch_unwind` would see `Ok(None)` and the latch would stay clear, the
+/// exact fail-open the next delegation rode through.
+#[tokio::test]
+async fn a_panicking_reverify_reraises_and_latches_unreachable_never_swallowed() {
+    // A REAL `JoinError`: exactly the value the fetch closure receives when the blocking card read
+    // panics.
+    let joined: Result<Option<crate::a2a::verify::Pass>, tokio::task::JoinError> =
+        tokio::task::spawn_blocking(|| -> Option<crate::a2a::verify::Pass> {
+            panic!("card fetch blew up")
+        })
+        .await;
+    assert!(joined.is_err(), "the fixture must actually be a panicked join");
+
+    let gate = crate::trust::verify::VerifyGate::new();
+    let subject = "planner";
+
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        super::fold_reverify_join(joined, &gate, subject)
+    }));
+    assert!(
+        outcome.is_err(),
+        "a panicking reverify must surface as a panic, never a swallowed `None`"
+    );
+    assert!(
+        gate.is_latched(subject),
+        "and the subject is reported unreachable, so the fail-closed outage diagnostic latches"
+    );
+}
