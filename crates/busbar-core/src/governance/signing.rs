@@ -178,6 +178,9 @@ impl TokenSigner {
     ///
     /// The secret NEVER leaves this method: callers get 32 derived bytes, not
     /// [`Self::secret_bytes`].
+    // A2A-only: the sole caller is the A2A agent-card signing path (`crate::a2a::sign`), so with
+    // `plane-a2a` off (and MCP on) it has no caller.
+    #[cfg_attr(not(feature = "plane-a2a"), allow(dead_code))]
     pub(crate) fn derived_subkey_seed(&self, domain: &str) -> [u8; 32] {
         subkey_seed(&self.key.to_bytes(), domain)
     }
@@ -330,6 +333,10 @@ impl TokenVerifier {
 /// plane, for a function whose body mentions none of them. The context string is versioned, so
 /// changing this derivation is a new key rather than a silently different one under the same name —
 /// which is also why the bytes it emits are pinned by known-answer vectors in the tests below.
+// Its one production caller today is [`SigningKey::derived_subkey_seed`], reached only from the A2A
+// card-signing path; so with `plane-a2a` off (and MCP on) it has no non-test caller. Kept generic
+// (not plane-gated) because it is key hygiene any future plane may derive through.
+#[cfg_attr(not(feature = "plane-a2a"), allow(dead_code))]
 fn subkey_seed(secret: &[u8; 32], domain: &str) -> [u8; 32] {
     let mut h = Sha256::new();
     h.update(b"busbar/subkey/v1");

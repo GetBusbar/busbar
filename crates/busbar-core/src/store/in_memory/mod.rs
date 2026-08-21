@@ -834,6 +834,12 @@ impl HealthState {
     // `store::planes::PlaneBreakers::record_signal` — the non-LLM planes' hard-down is PER CELL by
     // design (their degenerate cells share one lane index, so the all-cells primitive would trip
     // every other tool server and agent).
+    // With BOTH planes compiled out `PlaneBreakers` is vestigial, leaving only the test-only
+    // wrappers, so this reads dead in a non-test both-off build alone.
+    #[cfg_attr(
+        not(any(feature = "plane-mcp", feature = "plane-a2a")),
+        allow(dead_code)
+    )]
     pub(crate) fn record_hard_down_for(&self, pool: &str, lane: usize, reason: &str) {
         let ls = self.get_lane(lane);
         // Hard-down is RECOVERABLE — long sticky cooldown + Open, recovered via the half-open

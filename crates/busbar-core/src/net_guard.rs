@@ -393,6 +393,9 @@ pub(crate) enum GuardRefusal {
     /// A 3xx where the policy follows none.
     Redirect { status: u16, location: String },
     /// More redirects than the policy permits.
+    // A2A-only: only the A2A fetch path follows redirects and can overflow the hop limit; the MCP
+    // guard callers do not construct this, so with `plane-a2a` off (and MCP on) it is never built.
+    #[cfg_attr(not(feature = "plane-a2a"), allow(dead_code))]
     TooManyRedirects { limit: u8, at: String },
     /// The body exceeded [`GuardPolicy::max_body_bytes`].
     BodyTooLarge { url: String, bytes: usize },
@@ -478,6 +481,9 @@ impl PinnedTarget {
     /// presenting the original name is the whole trick: the certificate is still validated against
     /// the name the operator registered. Pinning the address without preserving the name would turn
     /// a validated TLS connection into an unvalidated one, which trades one hole for a bigger one.
+    // MCP-only: the MCP client reads the pinned host back to preserve SNI; the A2A fetch path does
+    // not, so with `plane-mcp` off (and A2A on) it has no caller.
+    #[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
     pub(crate) fn host(&self) -> &str {
         &self.host
     }
@@ -496,6 +502,9 @@ impl PinnedTarget {
     }
 
     /// THE ADDRESS TO CONNECT TO. Not re-resolved.
+    // A2A-only: the A2A fetch path connects by pinned address; the MCP client keys on
+    // `socket_addr()`, so with `plane-a2a` off (and MCP on) this has no caller.
+    #[cfg_attr(not(feature = "plane-a2a"), allow(dead_code))]
     pub(crate) fn addr(&self) -> IpAddr {
         self.addr
     }
@@ -515,6 +524,9 @@ impl PinnedTarget {
 /// defeat are all about WHAT THE RESOLVER SAYS AND WHEN: a mixed answer, an answer that changes
 /// between two lookups, a name that resolves to link-local. None of those is reproducible against
 /// the real resolver, so none of them would be tested.
+// A2A-only seam: the A2A fetch path resolves-and-pins through this trait; the MCP client's pin is
+// built elsewhere, so with `plane-a2a` off (and MCP on) the trait has no user.
+#[cfg_attr(not(feature = "plane-a2a"), allow(dead_code))]
 pub(crate) trait Resolver {
     /// Every address this name currently answers with. `Err` is a resolution FAILURE, not an empty
     /// answer: the two are different facts.
@@ -717,6 +729,9 @@ pub(crate) fn pin_answer(
 /// An IP LITERAL is its own answer: judged and pinned without asking a resolver about it. The
 /// resolver is not merely unnecessary there, it is wrong — a stub that echoes literals back is one
 /// more thing that could disagree with this check.
+// A2A-only: the resolve-then-pin entry point for the A2A fetch path; with `plane-a2a` off (and MCP
+// on) nothing calls it.
+#[cfg_attr(not(feature = "plane-a2a"), allow(dead_code))]
 pub(crate) fn resolve_and_pin(
     host: &str,
     port: u16,
@@ -782,6 +797,9 @@ pub(crate) fn refuse_redirect(status: u16, location: Option<&str>) -> Result<(),
 
 /// THE HOP BOUND. A guard applied correctly to an unbounded number of hops is a way to spend the
 /// process, so the chain is bounded as well as re-guarded.
+// A2A-only: only the A2A fetch path follows a redirect chain and bounds its hops; with `plane-a2a`
+// off (and MCP on) nothing calls it.
+#[cfg_attr(not(feature = "plane-a2a"), allow(dead_code))]
 pub(crate) fn refuse_hop_overflow(
     hops: u32,
     at: &str,

@@ -75,6 +75,16 @@
 //! enumerates, filters and renders it with no catalogue module, no walk, no filter and no error type
 //! written for it.
 
+// This module is shared plane infrastructure: every item below serves the MCP and/or A2A plane and
+// nothing else. With BOTH planes compiled out (`--no-default-features`) the whole catalogue is
+// vestigial, so its items read dead — scoped to exactly that config so `-D warnings` stays clean
+// there while a real single-plane build still lints every item its plane leaves unused (those carry
+// their own per-plane attrs below).
+#![cfg_attr(
+    not(any(feature = "plane-mcp", feature = "plane-a2a")),
+    allow(dead_code)
+)]
+
 use busbar_api::VirtualKey;
 
 use crate::trust::validate::{Generations, Grant};
@@ -94,6 +104,9 @@ pub(crate) struct Caller<'a> {
     /// Seconds, for the key-expiry comparison. The caller's clock, so a test can move it.
     pub(crate) now: u64,
     /// The registry generation this ask is being judged under.
+    // A2A-only field: the A2A catalogue walk consults it, the MCP one does not, so with `plane-a2a`
+    // off (and MCP on) it is read nowhere.
+    #[cfg_attr(not(feature = "plane-a2a"), allow(dead_code))]
     pub(crate) generation: Generations,
 }
 
@@ -231,6 +244,9 @@ pub(crate) fn entitled<'i, I: CatalogueItem + 'i>(
 }
 
 /// The entitled subset as ITEMS — the same walk, for a caller that has no use for the fitness value.
+// MCP-only helper: the MCP plane's catalogue calls this, the A2A plane renders differently, so with
+// `plane-mcp` off (and A2A on) it has no caller.
+#[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
 pub(crate) fn visible<'i, I: CatalogueItem + 'i>(
     items: impl IntoIterator<Item = &'i I>,
     caller: &Caller<'_>,

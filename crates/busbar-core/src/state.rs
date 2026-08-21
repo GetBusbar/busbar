@@ -271,13 +271,24 @@ pub struct App {
     /// (the default) ⇒ every gate screens the full projection every turn, byte-identical to 1.5.4; the
     /// firing sites pass `incremental: None`. Env-driven, not config, so activating it does not touch
     /// the frozen `config-schema.snapshot.json` / config-stability gate.
+    // Read only by the plane request gate's incremental-scan tenant; with BOTH planes compiled out
+    // nothing fires that gate, so the field goes unread in that config alone.
+    #[cfg_attr(
+        not(any(feature = "plane-mcp", feature = "plane-a2a")),
+        allow(dead_code)
+    )]
     pub(crate) incremental_scan: bool,
     /// The `tool_pools:` failover pools — operator-declared interchangeable MCP server sets,
     /// carried resolved-verbatim onto the snapshot so the dispatch path's route builder
     /// (`mcp::reroute`) reads the SAME generation the request was admitted on. Empty ⇒ every
     /// server keeps its degenerate single-member cell and no reroute exists to be had.
+    // MCP-only: read by the MCP dispatch route builder (`mcp::reroute`); with `plane-mcp` off (and
+    // A2A on) it is carried on the snapshot but never read.
+    #[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
     pub(crate) tool_pools: std::collections::BTreeMap<String, crate::failover::CandidatePoolCfg>,
     /// The `agent_pools:` twin for the A2A relay. Same carriage, same reasoning.
+    // A2A-only: the A2A relay's reroute twin; with `plane-a2a` off (and MCP on) it is never read.
+    #[cfg_attr(not(feature = "plane-a2a"), allow(dead_code))]
     pub(crate) agent_pools: std::collections::BTreeMap<String, crate::failover::CandidatePoolCfg>,
     /// The health-probe schedule, shared by every clone-derived snapshot of this lineage so a swap
     /// does not reset the probe phase. See [`crate::health::ProbeSchedule`].
@@ -331,11 +342,16 @@ pub struct App {
     ///
     /// Resolved here, at config apply, for the reason every other hook list is: resolution `dlopen`s
     /// the plugin, and doing that per request would put a library load on the dispatch path.
+    // MCP-only: consulted by the MCP submission gate firing site; with `plane-mcp` off (and A2A on)
+    // it is resolved onto the snapshot but never read.
+    #[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
     pub(crate) mcp_server_gates: HashMap<String, Vec<(u16, crate::hooks::ResolvedPolicy)>>,
     /// THE A2A SUBMISSION GATES, per registered agent: `agents.hooks:` ∪ `agents.<agent>.hooks:`.
     /// The exact twin of [`App::mcp_server_gates`], same combine rule, same keying, same zero-cost
     /// absence — because it is one operator concept spelled on two planes, and an operator who
     /// learned it on `tools:` must not have to learn it again here.
+    // A2A-only twin of `mcp_server_gates`; with `plane-a2a` off (and MCP on) it is never read.
+    #[cfg_attr(not(feature = "plane-a2a"), allow(dead_code))]
     pub(crate) a2a_agent_gates: HashMap<String, Vec<(u16, crate::hooks::ResolvedPolicy)>>,
     /// The raw `hooks:` registry (name → definition) as configured, for the Admin API v1 hooks READ
     /// surface (`GET /api/v1/admin/hooks`). This is the DEFINITION set, distinct
@@ -416,7 +432,12 @@ pub struct App {
     // Neutral raw capture when the A2A plane is compiled out (`plane-a2a` off): the resolved registry
     // type is `crate::a2a`'s and does not exist then. The admin CRUD serves an empty `agents:` view,
     // and an `agents:` section was already refused at resolve — so nothing lowers into this.
+    // This raw-capture variant exists ONLY in the `plane-a2a`-off build, where the A2A admin CRUD
+    // that would read it is itself compiled out — so it is carried (to keep the `agents:` refusal and
+    // empty-view behaviour) but never read. The allow is therefore scoped to exactly this config by
+    // the `cfg` above it.
     #[cfg(not(feature = "plane-a2a"))]
+    #[allow(dead_code)]
     pub(crate) agent_defs: crate::plane::config::RawPlaneSection,
     #[cfg(feature = "plane-a2a")]
     pub(crate) agent_defs: crate::a2a::config::AgentsCfg,
@@ -512,6 +533,9 @@ pub struct App {
     /// config-conditional, and the server-side dispatch object ([`crate::mcp::McpResource`]) lives
     /// there instead. Each bundled object's cross-apply lifecycle (fresh catalogue/servers/pool, but
     /// carried sightings/roots-epochs/sampling-spend) is unchanged — see `McpRuntime::build`.
+    // MCP-only: read only by the MCP plane through `crate::mcp::runtime`; with `plane-mcp` off (and
+    // A2A on) it is held type-erased but never downcast, so it reads dead there.
+    #[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
     pub(crate) mcp_runtime: Arc<dyn std::any::Any + Send + Sync>,
     /// THE MCP VERIFY-ON-CALL GATE — the per-server single-flight coalescer that re-verifies an
     /// upstream's advertised tool surface on the `tools/call` path when its recorded observation is
@@ -725,6 +749,9 @@ impl App {
     /// THE SEAM READERS HAVE STARTED MOVING HERE: the MCP plane reads its runtime object through this
     /// accessor (`crate::mcp::resource`), having deleted its typed `App::mcp` field. A2A still reads
     /// its typed field until the D4 step migrates it the same way.
+    // MCP-only today: the MCP plane reads its runtime slot through this accessor; with `plane-mcp`
+    // off (and A2A on) it has no caller (A2A still reads its typed field).
+    #[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
     pub(crate) fn plane_slot(&self, key: &str) -> Option<&Arc<dyn std::any::Any + Send + Sync>> {
         self.plane_slots.get(key)
     }

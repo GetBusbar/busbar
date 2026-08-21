@@ -190,6 +190,9 @@ pub(crate) struct CandidatePoolCfg {
 impl CandidatePoolCfg {
     /// MAY THIS OPERATION BE PERFORMED TWICE? The one reader of `repeatable:`, so the default can
     /// never be got wrong by a second caller spelling the lookup differently.
+    // MCP-only reader: the MCP dispatch path consults `repeatable:`; the A2A relay does not, so with
+    // `plane-mcp` off (and A2A on) this has no caller.
+    #[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
     pub(crate) fn repeatability(&self, operation: &str) -> Repeatable {
         if self.repeatable.iter().any(|o| o == operation) {
             Repeatable::Yes
@@ -281,6 +284,9 @@ pub(crate) enum Refusal {
 
 impl Refusal {
     /// The AUDIT WORD for this refusal, from [`crate::audit::vocab`]. Core decides; a plane renders.
+    // MCP-only reader: the MCP dispatch path audits a failover refusal by this word; the A2A relay
+    // renders its own, so with `plane-mcp` off (and A2A on) this has no caller.
+    #[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
     pub(crate) fn reason(&self) -> &'static str {
         match self {
             // An empty pool and an all-open pool are both "there is nowhere left to send this",
@@ -378,6 +384,9 @@ impl<'a, C: Candidate, T> Admitted<'a, C, T> {
         self.candidate
     }
     /// Its position in the pool. `0` is the primary; anything else means a reroute happened.
+    // MCP-only reader: the MCP dispatch path reads back the chosen position; the A2A relay does not,
+    // so with `plane-mcp` off (and A2A on) this has no caller.
+    #[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
     pub(crate) fn position(&self) -> usize {
         self.position
     }
@@ -391,6 +400,12 @@ impl<'a, C: Candidate, T> Admitted<'a, C, T> {
 impl<'a, C: Candidate> Admitted<'a, C, u64> {
     /// The single-flight probe owner token, for the owner-checked release after the outcome is
     /// recorded. The MCP/A2A spelling of [`Admitted::into_token`].
+    // Read only by the MCP and A2A dispatch paths; with BOTH planes compiled out neither `walk`
+    // consumer exists, so it reads dead in that config alone.
+    #[cfg_attr(
+        not(any(feature = "plane-mcp", feature = "plane-a2a")),
+        allow(dead_code)
+    )]
     pub(crate) fn probe_epoch(&self) -> u64 {
         self.token
     }
@@ -447,6 +462,12 @@ pub(crate) trait Order {
 /// the rest are its declared twins, so "first admissible in declaration order" is the whole policy —
 /// there is no weighting to apply because two deployments of ONE image are not a load-balancing
 /// decision, they are a same-or-nothing choice.
+// The declaration-order walk is driven only by the MCP and A2A dispatch paths; with BOTH planes
+// compiled out nothing constructs or drives it, so it reads dead in that config alone.
+#[cfg_attr(
+    not(any(feature = "plane-mcp", feature = "plane-a2a")),
+    allow(dead_code)
+)]
 pub(crate) struct InOrder<'a> {
     tried: &'a [usize],
     cursor: usize,
@@ -454,6 +475,10 @@ pub(crate) struct InOrder<'a> {
 }
 
 impl<'a> InOrder<'a> {
+    #[cfg_attr(
+        not(any(feature = "plane-mcp", feature = "plane-a2a")),
+        allow(dead_code)
+    )]
     pub(crate) fn new(tried: &'a [usize], len: usize) -> Self {
         Self {
             tried,
@@ -605,6 +630,12 @@ pub(crate) fn walk_with<'a, C: Candidate, T>(
 /// The MCP and A2A call sites' entry point. It adds NO selection logic — it names the two things
 /// those planes supply ([`InOrder`] and [`LaneRuntime::try_admit_breaker`]) and hands them to the one
 /// loop.
+// The MCP and A2A call sites are this seam's only entry point; with BOTH planes compiled out neither
+// exists, so it reads dead in that config alone.
+#[cfg_attr(
+    not(any(feature = "plane-mcp", feature = "plane-a2a")),
+    allow(dead_code)
+)]
 pub(crate) fn walk<'a, C: Candidate>(
     store: &dyn LaneRuntime,
     pool: &str,

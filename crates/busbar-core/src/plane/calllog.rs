@@ -122,6 +122,9 @@ use crate::audit::{verify_chain, ChainBreak, ChainLabels, ChainedRecord, Digest,
 /// the admin log has a single "refused") to the shared vocabulary rather than flattening to the
 /// weakest of the three. The re-export exists so the call sites keep one import path; the
 /// definitions, and the reasoning about each word, live in core.
+// MCP-only re-export: these tokens name the MCP call stream's outcomes; the A2A relay uses its own
+// subset, so with `plane-mcp` off (and A2A on) this path re-exports them with no local user.
+#[cfg_attr(not(feature = "plane-mcp"), allow(unused_imports))]
 pub(crate) use crate::audit::vocab::{
     OUTCOME_DISPATCHED, OUTCOME_REFUSED, REASON_CALLER_ASK_PENDING, REASON_MALFORMED,
     REASON_TASK_CREATED, REASON_UPSTREAM_FAILED,
