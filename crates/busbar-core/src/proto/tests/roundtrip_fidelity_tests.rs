@@ -808,10 +808,27 @@ fn streamed_citations_reach_openai_and_cohere_clients() {
         .write_response_event(&ev)
         .expect("Cohere v2 has a native `citation-start` frame");
     assert_eq!(frame["type"], "citation-start");
-    assert_eq!(frame["delta"]["message"]["citations"][0]["start"], 0);
+    // WIRE SHAPE (docs.cohere.com/v2/docs/streaming): `delta.message.citations` on a `citation-start`
+    // event is a SINGLE Citation OBJECT, NOT an array. The reference event is
+    // `CitationStartEventDeltaMessage(citations=Citation(...))`. A native Cohere v2 SDK deserializes
+    // this field into one `Citation`, so an array body would be a decode error (and a proxy tell).
+    let citations = &frame["delta"]["message"]["citations"];
+    assert!(
+        citations.is_object(),
+        "citation-start `delta.message.citations` must be a single Citation OBJECT, not an array; \
+         got {citations}"
+    );
+    assert!(
+        !citations.is_array(),
+        "citation-start `delta.message.citations` must NOT be a JSON array; got {citations}"
+    );
+    assert_eq!(citations["start"], 0);
+    assert_eq!(citations["end"], 6);
+    assert_eq!(citations["text"], "quoted");
     assert_eq!(
-        frame["delta"]["message"]["citations"][0]["sources"][0]["document"]["url"],
-        "https://x"
+        citations["sources"][0]["document"]["url"],
+        "https://x",
+        "the single Citation's source url must survive; got {citations}"
     );
 }
 

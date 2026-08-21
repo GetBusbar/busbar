@@ -1062,31 +1062,32 @@ fn test_write_response_event_usage_delta_is_metadata_frame() {
     );
 }
 
-/// A text BlockStart must emit a native `contentBlockStart` frame with an
-/// empty `start` struct (AWS emits one for every block, text included) so a native SDK can
-/// initialize its block decoder and the following deltas are not orphaned.
+/// A text BlockStart must emit NO frame. AWS Bedrock ConverseStream's
+/// `ContentBlockStart$start` union models ONLY `toolUse` (no text member — AWS Bedrock Runtime API
+/// reference, ContentBlockStart), so a real stream sends NO `contentBlockStart` for a text block;
+/// the block opens implicitly with its first `contentBlockDelta` carrying `text`. Emitting an empty
+/// `start: {}` frame was an off-spec proxy tell.
 #[test]
-fn test_write_response_event_text_block_start_emits_frame() {
+fn test_write_response_event_text_block_start_emits_no_frame() {
     let writer = BedrockWriter;
     let ev = IrStreamEvent::BlockStart {
         index: 0,
         block: crate::ir::IrBlockMeta::Text,
     };
-    let (et, payload) = writer
-        .write_response_event(&ev)
-        .expect("text BlockStart must emit a contentBlockStart frame");
-    assert_eq!(et, "contentBlockStart");
-    assert_eq!(
-        payload.get("contentBlockIndex").and_then(|i| i.as_u64()),
-        Some(0)
-    );
     assert!(
-        payload
-            .get("start")
-            .and_then(|s| s.as_object())
-            .map(|o| o.is_empty())
-            .unwrap_or(false),
-        "text block start must carry an empty `start` struct; got {payload}"
+        writer.write_response_event(&ev).is_none(),
+        "a text BlockStart must emit NO contentBlockStart frame; the block opens implicitly on \
+         its first contentBlockDelta"
+    );
+
+    // The block is still tracked as OPEN so its BlockStop emits the spec-required contentBlockStop.
+    let stop = writer
+        .write_response_event(&IrStreamEvent::BlockStop { index: 0 })
+        .expect("a text BlockStop must still emit a contentBlockStop");
+    assert_eq!(stop.0, "contentBlockStop");
+    assert_eq!(
+        stop.1.get("contentBlockIndex").and_then(|i| i.as_u64()),
+        Some(0)
     );
 }
 
@@ -2056,25 +2057,36 @@ fn eventstream_content_block_index_is_contiguous_when_a_block_is_skipped() {
     };
     let mut bytes = bedrock_response_to_eventstream(&resp, Some(5));
     let frames = busbar_core::eventstream::drain_frames(&mut bytes);
-    let text_start = frames
+    // A text block emits NO `contentBlockStart` (the ConverseStream union has no text member); it
+    // opens implicitly with its first `contentBlockDelta`. So the contiguity check keys off that
+    // delta: the Text block is the only one that emits frames, so its delta must land at index 0,
+    // not the enumerate()-derived index 1.
+    let text_delta = frames
         .iter()
-        .find(|(et, _)| et == "contentBlockStart")
+        .find(|(et, _)| et == "contentBlockDelta")
         .map(|(_, payload)| serde_json::from_slice::<serde_json::Value>(payload).unwrap())
-        .expect("Text block must synthesize a contentBlockStart frame");
+        .expect("Text block must synthesize a contentBlockDelta frame");
     assert_eq!(
-        text_start.get("contentBlockIndex").and_then(|i| i.as_u64()),
+        text_delta.get("contentBlockIndex").and_then(|i| i.as_u64()),
         Some(0),
         "the Text block is the only one that emits frames; it must land at index 0, \
-         not the enumerate()-derived index 1: {text_start:?}"
+         not the enumerate()-derived index 1: {text_delta:?}"
+    );
+    // And no contentBlockStart frame is emitted at all for this Image+Text response.
+    assert!(
+        !frames.iter().any(|(et, _)| et == "contentBlockStart"),
+        "neither an Image nor a Text block emits a contentBlockStart frame; got {:?}",
+        frames.iter().map(|(t, _)| t).collect::<Vec<_>>()
     );
 }
 
-/// REGRESSION PROOF (passes before AND after the `enumerate()` → emitted-count `index` fix): every
-/// emitting arm (Text, ToolUse, Thinking) pushes its own start, delta(s) and stop TOGETHER inside
-/// one match arm, so start/stop balance per index already held even when the index numbering was
-/// wrong. This does not prove contiguity (see
-/// `eventstream_content_block_index_is_contiguous_when_a_block_is_skipped` for that) — it only
-/// proves the fix does not introduce an orphaned start or stop.
+/// REGRESSION PROOF: no orphaned start or stop. Only `ToolUse` projects a `contentBlockStart`
+/// (the ConverseStream `ContentBlockStart$start` union models only `toolUse`); Text and Thinking
+/// open IMPLICITLY on their first delta and so emit a `contentBlockStop` WITHOUT a start. The
+/// invariant is therefore: every `contentBlockStart` has exactly one matching `contentBlockStop`
+/// (starts ⊆ stops, no orphan start), and every `contentBlockStop` closes a block that was actually
+/// opened (no orphan stop). This does not prove contiguity (see
+/// `eventstream_content_block_index_is_contiguous_when_a_block_is_skipped` for that).
 #[test]
 fn eventstream_every_content_block_start_has_exactly_one_stop() {
     let resp = crate::ir::IrResponse {
@@ -2152,10 +2164,29 @@ fn eventstream_every_content_block_start_has_exactly_one_stop() {
     }
     starts.sort_unstable();
     stops.sort_unstable();
-    assert!(!starts.is_empty(), "expected at least one emitted block");
-    assert_eq!(
-        starts, stops,
-        "every contentBlockStart index must have exactly one contentBlockStop: starts={starts:?} stops={stops:?}"
+    assert!(!stops.is_empty(), "expected at least one emitted block");
+    // No duplicate start or stop for any index.
+    {
+        let mut uniq_starts = starts.clone();
+        uniq_starts.dedup();
+        assert_eq!(uniq_starts, starts, "a contentBlockStart index was emitted twice: {starts:?}");
+        let mut uniq_stops = stops.clone();
+        uniq_stops.dedup();
+        assert_eq!(uniq_stops, stops, "a contentBlockStop index was emitted twice: {stops:?}");
+    }
+    // No orphan start: every contentBlockStart index has a matching contentBlockStop. (Only ToolUse
+    // emits a start; Text/Thinking open implicitly, so starts ⊆ stops, NOT starts == stops.)
+    for s in &starts {
+        assert!(
+            stops.contains(s),
+            "orphan contentBlockStart with no matching contentBlockStop: index {s}; starts={starts:?} stops={stops:?}"
+        );
+    }
+    // At least one ToolUse block was present, so at least one start was emitted (guards the
+    // subset check above from passing vacuously).
+    assert!(
+        !starts.is_empty(),
+        "the ToolUse block must emit exactly one contentBlockStart: starts={starts:?}"
     );
 }
 
@@ -4652,18 +4683,24 @@ fn test_stream_reasoning_content_round_trips() {
     );
 
     // Round-trip every reasoning IR event back through the writer and confirm the native frames.
-    let block_start = writer
-        .write_response_event(&IrStreamEvent::BlockStart {
-            index: 0,
-            block: IrBlockMeta::Thinking,
-        })
-        .expect("Thinking BlockStart must produce a frame");
-    assert_eq!(block_start.0, "contentBlockStart");
+    // A Thinking BlockStart emits NO frame: the ConverseStream `ContentBlockStart$start` union has
+    // no `reasoningContent` member (only `toolUse`), so reasoning opens implicitly on its first
+    // `contentBlockDelta.reasoningContent` and closes with `contentBlockStop`.
     assert!(
-        block_start.1.pointer("/start/reasoningContent").is_some(),
-        "a Thinking BlockStart must emit a reasoningContent start; got {}",
-        block_start.1
+        writer
+            .write_response_event(&IrStreamEvent::BlockStart {
+                index: 0,
+                block: IrBlockMeta::Thinking,
+            })
+            .is_none(),
+        "a Thinking BlockStart must emit NO contentBlockStart frame; reasoning is streamed via \
+         contentBlockDelta.reasoningContent"
     );
+    // The block is still tracked as OPEN so its BlockStop emits the spec-required contentBlockStop.
+    let think_stop = writer
+        .write_response_event(&IrStreamEvent::BlockStop { index: 0 })
+        .expect("a Thinking BlockStop must still emit a contentBlockStop");
+    assert_eq!(think_stop.0, "contentBlockStop");
 
     let text_delta = writer
         .write_response_event(&IrStreamEvent::BlockDelta {

@@ -1300,12 +1300,15 @@ impl super::proto_codec::StreamFraming for BedrockStreamFraming {
     }
 }
 
-/// Per-stream set of IR block indices for which this writer actually projected a
-/// `contentBlockStart` frame (Text / ToolUse / Thinking — NOT `Image`, which `writer.rs`'s
-/// `BlockStart` arm maps to `None`). The `BlockStop` arm carries only the integer index, no block
-/// kind, so without this it cannot tell an untracked index (whose start was suppressed) from a
-/// tracked one, and previously closed EVERY index unconditionally — emitting an orphan
-/// `contentBlockStop` for a block a real ConverseStream client never saw opened.
+/// Per-stream set of IR block indices this writer OPENED and therefore owes a closing
+/// `contentBlockStop` (Text / ToolUse / Thinking — NOT `Image`, whose `BlockStart` maps to `None`
+/// and which is never streamed as `contentBlock*` frames). NOTE: being tracked here does NOT mean a
+/// `contentBlockStart` was emitted — only `ToolUse` projects a start frame; Text and Thinking open
+/// IMPLICITLY on their first `contentBlockDelta` (per the ConverseStream wire, whose
+/// `ContentBlockStart$start` union models only `toolUse`). The `BlockStop` arm carries only the
+/// integer index, no block kind, so without this it cannot tell an untracked index (Image, whose
+/// start was suppressed) from a tracked one, and previously closed EVERY index unconditionally —
+/// emitting an orphan `contentBlockStop` for a block a real ConverseStream client never saw opened.
 /// `Mutex` keeps the writer `Sync` as `ProtocolWriter` requires; a stream is single-threaded at any
 /// instant, so lock contention never happens in practice. Lock poisoning degrades to a no-op /
 /// `false` rather than panicking on the request path — mirrors `CohereWriter`'s identical guard
@@ -1343,17 +1346,19 @@ impl Clone for BedrockWriter {
 }
 
 impl BedrockWriter {
-    /// Record that a `contentBlockStart` frame was projected at IR block `index`. Lock poisoning
-    /// degrades to a no-op rather than panicking on the request path.
+    /// Record that IR block `index` was OPENED and so owes a closing `contentBlockStop` (whether or
+    /// not a `contentBlockStart` was actually emitted — Text/Thinking open implicitly, ToolUse emits
+    /// a start). Lock poisoning degrades to a no-op rather than panicking on the request path.
     fn mark_block_open(&self, index: usize) {
         if let Ok(mut set) = self.open_block_indices.lock() {
             set.insert(index);
         }
     }
 
-    /// Return true and forget `index` if a `contentBlockStart` was projected for it; false if the
-    /// start was suppressed (e.g. an `Image` block), in which case the matching `BlockStop` must
-    /// also emit nothing. Lock poisoning degrades to `false` (suppress) rather than panicking on the
+    /// Return true and forget `index` if the block was opened (so its `BlockStop` must emit a
+    /// `contentBlockStop`); false if it was never opened (e.g. an `Image` block, whose `BlockStart`
+    /// mapped to `None` and was NOT marked open), in which case the matching `BlockStop` must also
+    /// emit nothing. Lock poisoning degrades to `false` (suppress) rather than panicking on the
     /// request path.
     fn take_block_open(&self, index: usize) -> bool {
         self.open_block_indices
@@ -1473,13 +1478,13 @@ pub(crate) fn bedrock_response_to_eventstream(
                 push(&IrStreamEvent::BlockStop { index }, &mut out);
                 index += 1;
             }
-            // A Thinking (reasoningContent) block DOES have native ConverseStream frames — the
-            // Bedrock writer emits `contentBlockStart{reasoningContent:{}}` for the
-            // `IrBlockMeta::Thinking` start and `contentBlockDelta{reasoningContent:{…}}` for the
-            // ThinkingDelta / SignatureDelta / RedactedReasoningDelta deltas. The old comment claimed
-            // the writer maps them to None and skipped the block, silently dropping upstream
-            // reasoning on a cross-protocol→Bedrock streaming client. Synthesize the same
-            // start/delta(s)/stop the live streaming path produces.
+            // A Thinking (reasoningContent) block streams natively as `contentBlockDelta`
+            // (`reasoningContent`) frames closed by a `contentBlockStop` — with NO `contentBlockStart`
+            // (`ContentBlockStart$start` models only `toolUse`; there is no `reasoningContent`
+            // member). The writer maps the `IrBlockMeta::Thinking` start to None (marking the block
+            // open so its stop still fires) and re-emits each ThinkingDelta / SignatureDelta /
+            // RedactedReasoningDelta as a `contentBlockDelta.reasoningContent` frame. Drive the same
+            // start/delta(s)/stop event sequence the live streaming path produces.
             IrBlock::Thinking {
                 text,
                 signature,

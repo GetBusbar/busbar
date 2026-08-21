@@ -63,7 +63,12 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     quota_exceeded_status: axum::http::StatusCode::TOO_MANY_REQUESTS,
     ingress_is_eventstream: false,
     emits_sse_done_terminator: false,
-    max_citations_per_delta: None,
+    // Cohere v2's `citation-start` event carries a SINGLE Citation at `delta.message.citations`
+    // (docs.cohere.com/v2/docs/streaming), so a multi-citation IR delta MUST be fanned out to one
+    // event per citation at the framing seam (`StreamTranslate`) before the writer serializes it —
+    // exactly like Anthropic/Bedrock. Without this a batched upstream delta would arrive as more
+    // than one citation for a single-object writer to drop.
+    max_citations_per_delta: Some(1),
     egress_user_agent: busbar_core::proxy::EGRESS_UA_COHERE,
     has_model_in_url: false,
     auth_failure_status_and_kind: (

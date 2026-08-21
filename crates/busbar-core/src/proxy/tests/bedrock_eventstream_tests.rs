@@ -36,7 +36,13 @@ fn buffered_response_wraps_into_converse_stream_frames() {
     let frames = crate::eventstream::drain_frames(&mut bytes);
     let names: Vec<&str> = frames.iter().map(|(t, _)| t.as_str()).collect();
     assert_eq!(names.first(), Some(&"messageStart"));
-    assert!(names.contains(&"contentBlockStart"));
+    // A TEXT block emits NO `contentBlockStart` (the ConverseStream `ContentBlockStart$start` union
+    // models only `toolUse`); it opens implicitly with its first `contentBlockDelta` and closes with
+    // `contentBlockStop`.
+    assert!(
+        !names.contains(&"contentBlockStart"),
+        "a text-only response must emit no contentBlockStart frame; got {names:?}"
+    );
     assert!(names.contains(&"contentBlockDelta"));
     assert!(names.contains(&"contentBlockStop"));
     assert!(names.contains(&"messageStop"));
@@ -176,8 +182,12 @@ fn buffered_multi_block_assigns_distinct_monotonic_content_block_indices() {
     let frames = crate::eventstream::drain_frames(&mut bytes);
     let names: Vec<&str> = frames.iter().map(|(t, _)| t.as_str()).collect();
 
-    // (a) Frame ordering: messageStart, then per-block start/delta/stop triples (one per block),
-    // then messageStop, then metadata — the native ConverseStream envelope.
+    // (a) Frame ordering: messageStart, then per-block frames, then messageStop, then metadata —
+    // the native ConverseStream envelope. The blocks are [Text, ToolUse, Text]: only the ToolUse
+    // block emits a `contentBlockStart` (the `ContentBlockStart$start` union models only `toolUse`);
+    // each Text block opens implicitly with its `contentBlockDelta` and closes with
+    // `contentBlockStop`. So the block-frame sequence is delta/stop, then start/delta/stop, then
+    // delta/stop.
     assert_eq!(names.first(), Some(&"messageStart"), "frames: {names:?}");
     let block_frames: Vec<&str> = names
         .iter()
@@ -187,17 +197,18 @@ fn buffered_multi_block_assigns_distinct_monotonic_content_block_indices() {
     assert_eq!(
         block_frames,
         vec![
+            // block 0: Text (no start)
+            "contentBlockDelta",
+            "contentBlockStop",
+            // block 1: ToolUse (start + delta + stop)
             "contentBlockStart",
             "contentBlockDelta",
             "contentBlockStop",
-            "contentBlockStart",
-            "contentBlockDelta",
-            "contentBlockStop",
-            "contentBlockStart",
+            // block 2: Text (no start)
             "contentBlockDelta",
             "contentBlockStop",
         ],
-        "three blocks must each emit a start/delta/stop triple in order: {names:?}"
+        "Text blocks emit delta/stop; the ToolUse block emits start/delta/stop, in order: {names:?}"
     );
     let stop_pos = names
         .iter()
@@ -221,8 +232,9 @@ fn buffered_multi_block_assigns_distinct_monotonic_content_block_indices() {
     );
 
     // (b) contentBlockIndex is distinct and monotonically increasing across blocks: every
-    // content* frame carries the index of its block — 0,0,0 then 1,1,1 then 2,2,2 in emission
-    // order. Collect the index off each content frame and assert the per-block grouping.
+    // content* frame carries the index of its block — 0,0 (Text) then 1,1,1 (ToolUse) then 2,2
+    // (Text) in emission order. Collect the index off each content frame and assert the per-block
+    // grouping.
     let block_indices: Vec<u64> = frames
         .iter()
         .filter(|(t, _)| t.starts_with("contentBlock"))
@@ -235,8 +247,8 @@ fn buffered_multi_block_assigns_distinct_monotonic_content_block_indices() {
         .collect();
     assert_eq!(
         block_indices,
-        vec![0, 0, 0, 1, 1, 1, 2, 2, 2],
-        "each block's three frames carry its own distinct, monotonic index; never colliding"
+        vec![0, 0, 1, 1, 1, 2, 2],
+        "each block's frames carry its own distinct, monotonic index; never colliding"
     );
 }
 
