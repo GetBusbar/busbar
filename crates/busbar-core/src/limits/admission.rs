@@ -19,6 +19,14 @@ use std::sync::Arc;
 
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
+/// The inbound-shed `Retry-After`, in WHOLE SECONDS, DERIVED from the store's advisory shed recovery
+/// floor [`crate::store::SHED_RETRY_FLOOR_MS`] rounded up — so the header a shed client backs off by
+/// can never drift from the floor the taxonomy advertises for the same condition
+/// ([`crate::store::Unavailable::Shedding`]). Today the floor is 1000ms, so this is `1` and the wire
+/// behaviour is unchanged; the point is that a future change to the floor moves both together instead
+/// of leaving this bare `"1"` silently stale.
+const SHED_RETRY_AFTER_SECS: u64 = crate::store::SHED_RETRY_FLOOR_MS.div_ceil(1000);
+
 /// A single non-blocking capacity gate: `permits` slots, handed out via [`try_enter`](Self::try_enter)
 /// and returned automatically when the returned permit is dropped. `name` identifies the gate on the
 /// shared `busbar_admission_denied_total{gate="..."}` counter — pick a short, stable, non-request-derived
@@ -83,7 +91,7 @@ fn inbound_overloaded_response() -> axum::response::Response {
         .into_response();
     resp.headers_mut().insert(
         axum::http::header::RETRY_AFTER,
-        axum::http::HeaderValue::from_static("1"),
+        axum::http::HeaderValue::from(SHED_RETRY_AFTER_SECS),
     );
     resp
 }

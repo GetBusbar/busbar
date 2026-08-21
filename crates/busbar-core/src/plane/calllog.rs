@@ -108,8 +108,10 @@
 // ERROR). There is no on-demand admin verb, so between two boots a tamper is undetected. That is a
 // REAL GAP, it is named here, and it must not be described as continuous verification anywhere.
 
-use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
+
+use indexmap::IndexMap;
 
 use crate::plane::store::{call_record, decode, PlaneStore, KIND_CALL};
 use busbar_api::{McpCallRecord, PlaneSelector, StoreResult};
@@ -268,13 +270,36 @@ impl std::fmt::Display for CallLogError {
     }
 }
 
+/// The upper bound on how many principals' chain POSITIONS this process caches in RAM at once.
+///
+/// The map is a CACHE of the store's per-principal tail, not the system of record — the durable
+/// store owns the records — so it can be bounded without losing anything: a principal evicted here is
+/// resumed from the store on its next call (see [`PlaneCallLog::resume_missing`]), so the chain stays
+/// contiguous with the persisted tail exactly as a boot rehydrate would make it. Without a bound the
+/// map grew one entry per DISTINCT principal ever seen and was never evicted — an MCP tool call is
+/// request-rate and a principal is a caller identity, so a deployment serving many short-lived
+/// principals leaked memory unboundedly. The eviction is least-recently-USED (a still-active
+/// principal is kept resident and never pays a readback), and the cap is generous enough that any
+/// realistic working set of concurrently-active callers fits without a single eviction.
+const MAX_TRACKED_PRINCIPALS: usize = 16_384;
+
 /// THE PER-CALL LOG. No `Debug`: `dyn Store` is not `Debug` (a backend must not be obliged to render
 /// itself, and one that did would be a place a credential could surface in a log).
 #[derive(Default)]
 pub(crate) struct PlaneCallLog {
     /// Chain POSITIONS only, keyed by principal — a tail hash and a next sequence, never the
-    /// records. The store owns the records.
-    chains: Mutex<HashMap<String, CallChain>>,
+    /// records. The store owns the records. An [`IndexMap`] rather than a plain map so it can serve
+    /// as a bounded LRU: insertion order is recency order (most-recently-used at the back), the
+    /// coldest is evicted from the front once [`MAX_TRACKED_PRINCIPALS`] is exceeded, and an evicted
+    /// principal is resumed from the store on its next call so no chain ever forks.
+    chains: Mutex<IndexMap<String, CallChain>>,
+    /// Latched true the first time an eviction actually happens. Before any eviction a cache MISS is
+    /// unambiguously a first-seen principal (open at seq 1, no store read — byte-identical to the
+    /// pre-cap behaviour); after an eviction a miss MIGHT be an evicted principal whose tail lives in
+    /// the store, so the resume path reads it back rather than risk reopening a chain the store still
+    /// holds records for (a fork). Relaxed: a rare, monotonic false→true transition whose only effect
+    /// is whether a miss consults the store, never a correctness ordering against other state.
+    overflowed: AtomicBool,
     sink: Mutex<Option<Arc<dyn PlaneStore>>>,
 }
 
@@ -295,8 +320,82 @@ impl PlaneCallLog {
     /// sections only mutate a map of chain positions), and cascading a poison would make every
     /// subsequent tool call panic too — a data plane that wedges permanently because one request
     /// panicked.
-    fn chains(&self) -> MutexGuard<'_, HashMap<String, CallChain>> {
+    fn chains(&self) -> MutexGuard<'_, IndexMap<String, CallChain>> {
         self.chains.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Commit `chain` as `principal`'s current position and record it as the MOST-recently-used,
+    /// evicting the coldest principal(s) from the front while the map exceeds
+    /// [`MAX_TRACKED_PRINCIPALS`]. Shared by the record hot path and the boot rehydrate so both keep
+    /// the same bound and the same recency discipline. An eviction latches `overflowed`, which is
+    /// what tells a later miss to consult the store instead of assuming the principal is new.
+    fn commit_position(
+        chains: &mut IndexMap<String, CallChain>,
+        overflowed: &AtomicBool,
+        principal: &str,
+        chain: CallChain,
+    ) {
+        match chains.get_index_of(principal) {
+            Some(idx) => {
+                if let Some((_, slot)) = chains.get_index_mut(idx) {
+                    *slot = chain;
+                }
+                // Move to the back: most-recently-used, so it is the last to be evicted.
+                chains.move_index(idx, chains.len() - 1);
+            }
+            None => {
+                // A new key appends at the back (most-recently-used) by IndexMap's contract.
+                chains.insert(principal.to_string(), chain);
+            }
+        }
+        while chains.len() > MAX_TRACKED_PRINCIPALS {
+            // Evict the front — the least-recently-used. Its records stay in the store; its position
+            // is rebuilt from there on the principal's next call.
+            chains.shift_remove_index(0);
+            overflowed.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// Resolve the chain position for a principal NOT currently cached.
+    ///
+    /// Before any eviction has ever occurred a miss is unambiguously a first-seen principal, so this
+    /// opens a fresh chain at seq 1 with NO store round-trip — byte-identical to the behaviour before
+    /// the cache was bounded, and the whole reason a small deployment (working set under the cap)
+    /// pays nothing for the bound.
+    ///
+    /// Once the cache HAS evicted, a miss might instead be a principal that was evicted while its
+    /// records still sit in the store. Reopening such a chain at seq 1 would FORK the durable log
+    /// (the next write collides with a sequence the store already holds — the one thing the append
+    /// contract refuses). So with a sink attached the resume READS THE TAIL BACK and continues from
+    /// it, exactly as a boot rehydrate does. A store that cannot answer is surfaced as an error
+    /// rather than papered over with a seq-1 chain that might fork — the same "evidence, not
+    /// admission" posture the write path takes. With no sink (the `store: memory` posture) there is
+    /// no durable log to fork, so a fresh chain is the honest answer.
+    fn resume_missing(&self, principal: &str) -> Result<CallChain, CallLogError> {
+        if !self.overflowed.load(Ordering::Relaxed) {
+            return Ok(CallChain::new());
+        }
+        let Some(store) = self.sink() else {
+            return Ok(CallChain::new());
+        };
+        let bodies = store
+            .list_plane_records(KIND_CALL, &PlaneSelector::Parent(principal.to_string()))
+            .map_err(CallLogError::Store)?;
+        if bodies.is_empty() {
+            // The store holds nothing for this principal: a genuinely first-seen caller (or one whose
+            // rows were lost), and seq 1 is the honest resumption.
+            return Ok(CallChain::new());
+        }
+        let records: Vec<McpCallRecord> = bodies
+            .iter()
+            .map(|body| decode(body))
+            .collect::<StoreResult<_>>()
+            .map_err(CallLogError::Store)?;
+        // A break here was already reported at boot (or would be by the verify verb); resume from the
+        // tail regardless, never re-based onto a fresh chain — the same judgement `restore_from_store`
+        // makes.
+        Ok(CallChain::from_persisted(&records)
+            .unwrap_or_else(|_brk| CallChain::from_persisted_unverified(&records)))
     }
 
     fn sink(&self) -> Option<Arc<dyn PlaneStore>> {
@@ -343,7 +442,7 @@ impl PlaneCallLog {
                      rather than skipped silently"
                 );
                 out.empty_chains += 1;
-                chains.insert(principal.clone(), CallChain::new());
+                Self::commit_position(&mut chains, &self.overflowed, principal, CallChain::new());
                 out.principals += 1;
                 continue;
             }
@@ -367,7 +466,7 @@ impl PlaneCallLog {
                 }
             };
             out.records += records.len();
-            chains.insert(principal.clone(), chain);
+            Self::commit_position(&mut chains, &self.overflowed, principal, chain);
             out.principals += 1;
         }
         Ok(out)
@@ -381,14 +480,23 @@ impl PlaneCallLog {
     /// chain — burns a sequence number that nothing occupies, so the next successful write lands on
     /// a `seq` the verifier will report as a gap forever. On a failed write the position is left
     /// exactly where it was, so the next call reuses the sequence and the chain stays contiguous.
+    ///
+    /// A cache MISS is resolved by [`resume_missing`](Self::resume_missing): a first-seen principal
+    /// opens at seq 1, but a principal EVICTED by the LRU bound (once the cache has ever overflowed)
+    /// is resumed from the store's persisted tail, so eviction never forks a durable chain. A
+    /// successful write then commits the advanced position as most-recently-used via
+    /// [`commit_position`](Self::commit_position), which also enforces the [`MAX_TRACKED_PRINCIPALS`]
+    /// bound.
     pub(crate) fn record(
         &self,
         principal: &str,
         input: CallInput,
     ) -> Result<McpCallRecord, CallLogError> {
         let mut chains = self.chains();
-        let chain = chains.entry(principal.to_string()).or_default();
-        let mut candidate = chain.clone();
+        let mut candidate = match chains.get(principal) {
+            Some(chain) => chain.clone(),
+            None => self.resume_missing(principal)?,
+        };
         let record = candidate.append(principal, input);
         if let Some(store) = self.sink() {
             let plane = call_record(&record).map_err(CallLogError::Store)?;
@@ -396,7 +504,7 @@ impl PlaneCallLog {
                 .append_plane_record(&plane)
                 .map_err(CallLogError::Store)?;
         }
-        *chain = candidate;
+        Self::commit_position(&mut chains, &self.overflowed, principal, candidate);
         Ok(record)
     }
 
