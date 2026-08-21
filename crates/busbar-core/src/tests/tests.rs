@@ -2370,6 +2370,57 @@ async fn plugin_fetch_downloader_rejects_an_oversized_body() {
     }
 }
 
+/// `plugins.fetch` must NOT follow HTTP redirects: the SSRF guard vets only the original URL, so a
+/// 3xx `Location` from the semi-trusted registry that points at an internal/metadata-looking target
+/// must be refused rather than fetched. Drives the REAL downloader against a loopback server whose
+/// first path answers `302 Location: /metadata` and whose redirect target serves a distinctive body;
+/// the download must return an Err and must NOT contain the redirect target's bytes.
+#[tokio::test]
+async fn plugin_fetch_downloader_refuses_to_follow_a_redirect() {
+    const CAP: usize = 4096;
+    // A body only reachable via the redirect. If the downloader followed the 302, it would return
+    // these bytes instead of an error.
+    const SECRET_BODY: &[u8] = b"internal-metadata-token-should-never-be-returned";
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let router = Router::new()
+        .route(
+            "/artifact",
+            axum::routing::get(|| async {
+                (
+                    axum::http::StatusCode::FOUND,
+                    [(axum::http::header::LOCATION, "/metadata")],
+                )
+            }),
+        )
+        .route(
+            "/metadata",
+            axum::routing::get(|| async { axum::body::Bytes::from_static(SECRET_BODY) }),
+        );
+    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+    let downloader = plugin_fetch_downloader_with_cap(&[], CAP);
+    let url = format!("http://{addr}/artifact");
+    let result = tokio::task::spawn_blocking(move || downloader(&url))
+        .await
+        .unwrap();
+    server.abort();
+
+    let err = result.expect_err("a plugins.fetch redirect must be refused, not followed");
+    assert!(
+        !err.as_bytes()
+            .windows(SECRET_BODY.len())
+            .any(|w| w == SECRET_BODY),
+        "the redirect target's body must never appear — the redirect was followed: {err}"
+    );
+    assert!(
+        err.contains("302") || err.to_lowercase().contains("redirect"),
+        "expected an error naming the refused redirect, got: {err}"
+    );
+}
+
 /// Boot RUNS `plugins.fetch` before preflight, and a PIN-CACHED entry skips the
 /// network (the URL is unreachable — if boot tried to fetch it, this would fail). Proves the fetch
 /// step is wired into `build_app_from_config`'s boot path and that cache-by-pin means no-network.
