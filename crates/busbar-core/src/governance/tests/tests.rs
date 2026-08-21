@@ -4233,6 +4233,82 @@ fn test_reclaim_group_cells_drops_every_window_and_scope_of_that_group() {
     );
 }
 
+/// Deleting a capped group also reclaims its per-group in-flight `concurrent` gauge, not only its
+/// budget cells. The gauge is materialised on the first admission of a `concurrent`-capped group and
+/// used to be swept by NOTHING — a server that churns capped groups (SSO-template / operator-managed
+/// groups, each admitting at least one request) grew that map by one entry per group forever. This
+/// admits through, and deletes, many distinct capped groups and asserts the gauge map ends bounded
+/// (every deleted group's entry gone), the group-shaped twin of the budget-cell reclamation above.
+#[test]
+fn test_reclaim_group_cells_drops_the_per_group_concurrent_gauge() {
+    use crate::config::groups::{LimitCfg, LimitMetric};
+    let store = Arc::new(MemoryStore::new());
+    let gov = GovState::new(store, None).unwrap();
+    let now = 1_700_000_040u64;
+
+    let concurrent_group = || crate::config::GroupCfg {
+        enabled: true,
+        limits: vec![LimitCfg {
+            metric: LimitMetric::Concurrent,
+            amount: 4,
+            per: None,
+            scope: None,
+            on_exhaust: None,
+            downgrade_to: None,
+        }],
+        ..Default::default()
+    };
+
+    const N: usize = 50;
+    let groups: std::collections::BTreeMap<String, crate::config::GroupCfg> = (0..N)
+        .map(|i| (format!("churny-{i}"), concurrent_group()))
+        .collect();
+    let cost = crate::cost::CostModel::resolve_parts(None, 0, &groups);
+
+    // Admit one request through each capped group — this is what materialises the gauge — then drop
+    // the grant so nothing is left in flight. The gauge ENTRY survives the drop (only the count
+    // returns to zero), which is exactly the residue that used to leak.
+    for i in 0..N {
+        let mut key = sample_key(&format!("k-{i}"), &format!("h-{i}"));
+        key.group = Some(format!("churny-{i}"));
+        let grant = gov
+            .try_admit(&cost, &key, "", now)
+            .expect("a capped group with an unused gauge admits");
+        assert_eq!(grant.held(), 1, "one concurrent hold was taken");
+        drop(grant);
+    }
+
+    assert_eq!(
+        gov.concurrent
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .len(),
+        N,
+        "every admitted capped group materialised exactly one gauge entry"
+    );
+
+    // Delete every group. Each reclamation must remove that group's gauge entry.
+    for i in 0..N {
+        gov.reclaim_group_cells(&format!("churny-{i}"));
+    }
+    assert!(
+        gov.concurrent
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .is_empty(),
+        "a deleted group's concurrent gauge must be reclaimed — the map is bounded, not monotonic"
+    );
+
+    // A re-created group re-materialises a fresh gauge at zero rather than resurrecting a stale count.
+    let mut revived = sample_key("k-revived", "h-revived");
+    revived.group = Some("churny-0".to_string());
+    let grant = gov
+        .try_admit(&cost, &revived, "", now)
+        .expect("a re-created capped group admits cleanly");
+    assert_eq!(gov.concurrent_in_flight("churny-0"), 1, "fresh gauge at one");
+    drop(grant);
+}
+
 /// The sweep's cap exemption must hold for a group whose NAME CONTAINS `@` — the
 /// ORDINARY SSO case, not a pathological one. `sanitize_self_sub` permits `@` explicitly, no
 /// charset check exists on a group name anywhere (`validate_groups` checks parent-existence /
