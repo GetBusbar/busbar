@@ -1097,8 +1097,8 @@ fn test_metering_accumulator_is_bounded_and_lossless_under_sustained_store_outag
     let (len_rec, sum_rec) = gov.pending_metering_totals();
     let n64 = n as u64;
     assert!(
-        len_rec <= MAX_PENDING_METERING + 8,
-        "the accrual path holds the map at the cap (+ a per-bucket sentinel), not one cell per key: {len_rec}"
+        len_rec <= MAX_PENDING_METERING + GOV_SHARDS,
+        "the accrual path holds the map at the cap (+ at most one per-bucket sentinel per shard), not one cell per key: {len_rec}"
     );
     assert_eq!(sum_rec.requests, n64, "every accrued request is still counted");
     assert_eq!(sum_rec.tokens_input, n64 * 3, "no input tokens lost to the cap");
@@ -1112,7 +1112,7 @@ fn test_metering_accumulator_is_bounded_and_lossless_under_sustained_store_outag
     assert_eq!(flushed, 0, "the store is down, so nothing persisted this tick");
     let (len_flush, sum_flush) = gov.pending_metering_totals();
     assert!(
-        len_flush <= MAX_PENDING_METERING + 8,
+        len_flush <= MAX_PENDING_METERING + GOV_SHARDS,
         "the failed-flush re-queue stays bounded rather than growing unbounded: {len_flush}"
     );
     assert_eq!(
@@ -1136,6 +1136,127 @@ fn test_metering_accumulator_is_bounded_and_lossless_under_sustained_store_outag
         coalesced > 0,
         "coalesced cells are exported on busbar_metering_pending_coalesced_total so the degradation \
          is observable; got:\n{rendered}"
+    );
+}
+
+/// The sharded metering accumulator counts EVERY concurrent accrual EXACTLY ONCE: N threads accrue
+/// in parallel (with keys that both spread across shards and collide on shared cells across threads),
+/// and the summed totals equal the arithmetic sum of all accruals — nothing lost to a race, nothing
+/// doubled. Then one flush DRAINS every shard to the store, and the store total equals the same sum.
+#[test]
+fn test_sharded_metering_accrual_is_exactly_once_under_concurrency() {
+    let store = Arc::new(MemoryStore::new());
+    let gov = Arc::new(GovState::new(store.clone(), None).unwrap());
+    // A CURRENT bucket: the memory store amortized-evicts buckets older than its retention window, and
+    // thousands of writes here would trip that sweep on a stale (2023) bucket.
+    let now = crate::store::now();
+    let threads = 16u64;
+    let per_thread = 5_000u64;
+    let key_space = 64u64; // spread across shards; cross-thread collisions on shared cells
+
+    let mut handles = Vec::new();
+    for t in 0..threads {
+        let gov = gov.clone();
+        handles.push(std::thread::spawn(move || {
+            let usage = crate::billing::TokenUsage {
+                input: 2,
+                output: 3,
+                ..Default::default()
+            };
+            for i in 0..per_thread {
+                let k = format!("k{}", (t * 7 + i) % key_space);
+                gov.record_metering(&k, "m", "p", Some(&usage), now);
+            }
+        }));
+    }
+    for h in handles {
+        h.join().unwrap();
+    }
+
+    let total = threads * per_thread;
+    let (_, sum) = gov.pending_metering_totals();
+    assert_eq!(
+        sum.requests, total,
+        "every one of the {total} concurrent accruals is counted exactly once"
+    );
+    assert_eq!(sum.tokens_input, total * 2, "input tokens summed exactly once");
+    assert_eq!(sum.tokens_output, total * 3, "output tokens summed exactly once");
+
+    // A single flush drains ALL shards; the store total equals the sum, and the accumulator empties.
+    let flushed = gov.flush_metering();
+    assert!(flushed > 0, "the flush wrote the drained cells");
+    let rows = gov.metering_for(metering_bucket(now)).unwrap();
+    let store_reqs: u64 = rows.iter().map(|r| r.requests).sum();
+    assert_eq!(
+        store_reqs, total,
+        "flush drained every shard exactly once — the store total equals the sum of accruals"
+    );
+    let (len_after, sum_after) = gov.pending_metering_totals();
+    assert_eq!(len_after, 0, "drain emptied every shard");
+    assert_eq!(sum_after.requests, 0);
+}
+
+/// Accrual RACING a concurrent flusher loses and doubles nothing: while N threads accrue, a separate
+/// thread drains-and-writes in a tight loop. Because a key never migrates shards and each shard is
+/// swapped atomically under its own lock, every accrual lands either in a drain (→ store) or in the
+/// residual pending set exactly once. At the end, store total + still-pending total == the sum.
+#[test]
+fn test_sharded_metering_no_loss_with_a_concurrent_flusher() {
+    let store = Arc::new(MemoryStore::new());
+    let gov = Arc::new(GovState::new(store.clone(), None).unwrap());
+    // A CURRENT bucket (see the sibling concurrency test): stale buckets get amortized-evicted by the
+    // memory store under the many writes a concurrent flusher makes.
+    let now = crate::store::now();
+    let threads = 8u64;
+    let per_thread = 10_000u64;
+
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let flusher = {
+        let gov = gov.clone();
+        let stop = stop.clone();
+        std::thread::spawn(move || {
+            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                gov.flush_metering();
+                std::thread::yield_now();
+            }
+        })
+    };
+
+    let mut handles = Vec::new();
+    for t in 0..threads {
+        let gov = gov.clone();
+        handles.push(std::thread::spawn(move || {
+            let usage = crate::billing::TokenUsage {
+                input: 1,
+                ..Default::default()
+            };
+            for i in 0..per_thread {
+                let k = format!("k{}", (t * 13 + i) % 200);
+                gov.record_metering(&k, "m", "p", Some(&usage), now);
+            }
+        }));
+    }
+    for h in handles {
+        h.join().unwrap();
+    }
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    flusher.join().unwrap();
+    gov.flush_metering(); // final drain of whatever the accruals left behind
+
+    let total = threads * per_thread;
+    let rows = gov.metering_for(metering_bucket(now)).unwrap();
+    let store_reqs: u64 = rows.iter().map(|r| r.requests).sum();
+    let (_, pending) = gov.pending_metering_totals();
+    assert_eq!(
+        store_reqs + pending.requests,
+        total,
+        "no accrual was lost or double-counted across a flush running concurrently with accrual \
+         (store {store_reqs} + pending {} == {total})",
+        pending.requests
+    );
+    assert_eq!(
+        store_reqs, total,
+        "the final drain flushed everything, so the store alone holds the full sum"
     );
 }
 
@@ -3374,10 +3495,10 @@ mod metering_fanout {
     /// `record_metering` (it always increments `requests` by at least 1 before an entry can land
     /// in `pending_metering`) — so this isn't exercised by any public-API test above. It is real,
     /// intended defensive behavior, not dead code to delete: reach into the private
-    /// `pending_metering` map directly (same crate, `governance::tests` is a descendant module of
-    /// `governance`, so this is a normal same-module-tree access, not a visibility hack) to prove
-    /// a genuinely all-zero entry is skipped — never flushed, never a store row — rather than
-    /// silently trusting the branch would work if it were ever reached.
+    /// `pending_metering` accumulator directly (same crate, `governance::tests` is a descendant
+    /// module of `governance`, so this is a normal same-module-tree access, not a visibility hack) to
+    /// insert a genuinely all-zero cell and prove it is skipped — never flushed, never a store row —
+    /// rather than silently trusting the branch would work if it were ever reached.
     #[test]
     fn flush_metering_skips_a_genuinely_all_zero_entry() {
         let store = Arc::new(MemoryStore::new());
@@ -3389,10 +3510,8 @@ mod metering_fanout {
             "m".to_string(),
             "p".to_string(),
         );
-        gov.pending_metering
-            .lock()
-            .unwrap()
-            .insert(key, MeterCounts::default());
+        // `accrue` with an all-zero delta inserts a genuinely all-zero cell (key absent, under cap).
+        gov.pending_metering.accrue(key, MeterCounts::default());
 
         let flushed = gov.flush_metering();
         assert_eq!(flushed, 0, "an all-zero entry must not count as flushed");

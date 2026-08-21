@@ -62,7 +62,7 @@ impl GovState {
                     .map(|t| crate::sigv4::sha256_hex(t.as_bytes())),
             ),
             budget: Sharded::new(),
-            pending_metering: std::sync::Mutex::new(HashMap::new()),
+            pending_metering: PendingMetering::new(),
             signing: RwLock::new(signer.map(|s| Arc::new(SigningMaterial::new(s)))),
             denylist,
             refresh_lock: std::sync::Mutex::new(()),
@@ -844,15 +844,10 @@ impl GovState {
             tokens_cache_read: usage.and_then(|u| u.cache_read).unwrap_or(0),
             tokens_cache_write: usage.and_then(|u| u.cache_creation).unwrap_or(0),
         };
-        let mut pending = self
-            .pending_metering
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        // Accrue through the ONE bounded primitive so a sustained store outage cannot grow this map
-        // without bound (see `accrue_pending`): an existing cell accumulates, a new cell is added
-        // while under the cap, and past the cap a new cell is coalesced into a per-bucket overflow
-        // sentinel — totals preserved, never silently dropped.
-        accrue_pending(&mut pending, key, add);
+        // Accrue through the sharded accumulator: this locks ONLY the shard owning `key_id`, so
+        // concurrent completions for different keys no longer serialize on one process-wide mutex.
+        // The bound (and the coalesce-never-drop behaviour) is enforced per shard inside `accrue`.
+        self.pending_metering.accrue(key, add);
     }
 
     /// TEST-ONLY: how many distinct cells sit unflushed, and their SUMMED counts. The sum is the
@@ -861,15 +856,7 @@ impl GovState {
     /// everything accrued (coalescing moves counts, it never loses them).
     #[cfg(test)]
     pub(crate) fn pending_metering_totals(&self) -> (usize, MeterCounts) {
-        let pending = self
-            .pending_metering
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let mut sum = MeterCounts::default();
-        for counts in pending.values() {
-            sum.merge(*counts);
-        }
-        (pending.len(), sum)
+        self.pending_metering.totals()
     }
 
     /// Drain `pending_metering` and write each entry to the store as one `MeteringDelta`. A DRAIN,
@@ -883,16 +870,11 @@ impl GovState {
     /// counts are merged BACK into whatever
     /// accumulated meanwhile (saturating add, not overwrite) so the next tick retries the full
     /// amount exactly once — this is what makes two concurrently-running flushes safe without a
-    /// gate: `std::mem::take` is an atomic full-map swap, so any two calls partition the arrivals
+    /// gate: [`PendingMetering::drain`] `mem::take`s each shard under its own lock (an atomic
+    /// per-shard swap) and a key never migrates shards, so any two calls partition the arrivals
     /// between them by construction and cannot double-send. Returns the number of deltas written.
     pub fn flush_metering(&self) -> usize {
-        let taken: HashMap<(String, u64, String, String), MeterCounts> = {
-            let mut pending = self
-                .pending_metering
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            std::mem::take(&mut *pending)
-        };
+        let taken = self.pending_metering.drain();
         let mut flushed = 0usize;
         // Aggregate failures: during a store outage EVERY pending key fails on the same tick, so a
         // per-key `warn!` spams. Emit exactly ONE throttled warn per tick carrying the failed count;
@@ -928,16 +910,14 @@ impl GovState {
                     failed += 1;
                     tracing::debug!(key = %key_id, error = %e, "metering flush failed for key; will retry next tick");
                     last_error = Some(e.to_string());
-                    let mut pending = self
-                        .pending_metering
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner());
-                    // Re-queue the failed delta through the SAME bounded primitive as accrual. Under a
-                    // sustained outage with diverse keys this is exactly where the map used to grow
-                    // without bound; `accrue_pending` now caps it (coalescing past the cap into the
-                    // per-bucket overflow sentinel), so no billable usage is dropped and retry is
-                    // preserved — a re-queued cell that still exists next tick simply accumulates.
-                    accrue_pending(&mut pending, (key_id, bucket, model, provider), counts);
+                    // Re-queue the failed delta through the SAME sharded, bounded accrual as the hot
+                    // path (it lands back in the key's own shard). Under a sustained outage with
+                    // diverse keys this is exactly where the map used to grow without bound; `accrue`
+                    // now caps each shard (coalescing past the cap into the per-bucket overflow
+                    // sentinel), so no billable usage is dropped and retry is preserved — a re-queued
+                    // cell that still exists next tick simply accumulates.
+                    self.pending_metering
+                        .accrue((key_id, bucket, model, provider), counts);
                 }
             }
         }
