@@ -421,6 +421,24 @@ pub struct App {
     /// what the job mutates. Rebuilt on every apply, so a removed agent's observations are dropped
     /// with it rather than outliving the registration.
     pub(crate) a2a: Option<Arc<crate::a2a::plane::A2aPlane>>,
+    /// THE A2A VERIFY-ON-CALL GATE — the per-agent single-flight coalescer that re-verifies a fronted
+    /// agent's signed card on the DELEGATION path when its recorded observation is older than
+    /// `verify_ttl` (see [`crate::trust::verify`]). It replaces the background re-verification sweep:
+    /// no timer, and an agent nobody delegates to is never re-fetched.
+    ///
+    /// Arc-shared ACROSS config applies, like its MCP sibling and for the same reason: the coalescing
+    /// epochs are accumulated coordination state, not intent.
+    pub(crate) a2a_verify: Arc<crate::trust::verify::VerifyGate>,
+    /// THE A2A CARD-FETCH TRANSPORTS, resolved ONCE at boot (per-agent client identities, the same
+    /// object the delegation hop relays through). Verify-on-call reads it on the request path to
+    /// re-fetch and re-verify a stale card. `None` until the A2A start hook publishes it — and a
+    /// delegation-only-or-absent deployment leaves it `None`.
+    ///
+    /// A boot-resolved `OnceLock`, carried across applies by the SAME `Arc` so the value set at boot
+    /// persists: the client certificates are resolved from secrets at boot (a resolution failure is a
+    /// boot refusal), and an agent added by a later apply is verified on the boot-time transport —
+    /// which is the same reach the removed sweep had, since it too held its transports from boot.
+    pub(crate) a2a_cards: Arc<std::sync::OnceLock<Arc<crate::a2a::transport::LiveCardFetch>>>,
     /// Per-principal ADMIN MUTATION rate limiter. Arc-shared across apply snapshots so the
     /// windows survive every swap.
     pub(crate) mutation_limiter: Arc<crate::admin::rate::MutationLimiter>,

@@ -24,6 +24,8 @@ fn minimal_app() -> Arc<App> {
         mcp_catalogue: Arc::new(crate::mcp::catalogue::Catalogue::default()),
         mcp_sightings: Default::default(),
         mcp_verify: Default::default(),
+        a2a_verify: Default::default(),
+        a2a_cards: Default::default(),
         plane_approvals: Default::default(),
         mcp_roots_epochs: Default::default(),
         mcp_sampling_spend: Default::default(),

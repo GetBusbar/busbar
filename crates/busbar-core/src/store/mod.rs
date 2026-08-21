@@ -90,7 +90,7 @@ pub fn now() -> u64 {
 /// The same wall clock in MILLISECONDS.
 ///
 /// Beside [`now`] rather than in either plane, because two planes needed it and each had grown its
-/// own: `trust::sweep` for the re-verification cadence on every plane, `mcp::tasks` for task
+/// own: `trust::verify` for verify-on-call's freshness clock on every plane, `mcp::tasks` for task
 /// timestamps and TTL.
 /// They agreed on the clock and disagreed on the SIGNEDNESS — one `u64`, one `i64` — which is the
 /// shape of defect that reads correctly in review and produces a wrong comparison or a silent wrap

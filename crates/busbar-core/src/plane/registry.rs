@@ -74,29 +74,6 @@ pub(crate) struct BuildCtx<'a> {
 /// phase; an `Err` REFUSES BOOT (the fold propagates it with `?`).
 pub(crate) type BootHook = fn(&BootCtx) -> Result<(), String>;
 
-/// THE CORE REVERIFY-SWEEP SPAWNER, handed to a plane's [`PlaneDecl::start`] hook as a fn-pointer so
-/// the one background sweep loop can be started WITHOUT `crate::trust::sweep::spawn` (the cadence +
-/// shutdown-select machinery) going public — invariant (a)'s doctrine on the trust internals, in the
-/// same spirit as the plane store narrowing: the seam hands a capability, not a handle to the engine.
-///
-/// It is typed on the A2A sweeper because `crate::trust::sweep::Sweeper` returns `impl Future` and so
-/// is NOT object-safe — it cannot be erased behind `dyn`, and a fn-pointer cannot be generic. That
-/// concrete type is the ONE residual coupling this seam carries into the eventual A2A extraction, and
-/// is flagged as such: when A2A becomes a crate this alias moves with `ReverifySweeper`, or the sweep
-/// job grows a `spawn_blocking`-free object-safe form the seam can erase. It is unrelated to the
-/// invariant-(a) surface rule, which is about `Store`/`audit::Chain`/`GovCtx`, none of which this
-/// names.
-pub(crate) type ReverifySpawn = fn(
-    crate::a2a::verify::ReverifySweeper,
-    tokio::sync::broadcast::Receiver<()>,
-) -> tokio::task::JoinHandle<()>;
-
-/// The one instance of [`ReverifySpawn`] — `crate::trust::sweep::spawn` monomorphised on the A2A
-/// sweeper. Named HERE, in the registry (which already names every built-in plane's `PLANE_DECL`),
-/// rather than in `boot.rs`, so `boot.rs`'s `start_planes` loop names NO plane type at all.
-const REVERIFY_SPAWN: ReverifySpawn =
-    crate::trust::sweep::spawn::<crate::a2a::verify::ReverifySweeper>;
-
 /// BUSBAR'S PUBLISHED CARD-ISSUER KEY, computed core-side and handed to the A2A [`PlaneDecl::start`]
 /// hook as PUBLIC values ONLY — the `kid` and the base64 Ed25519 SPKI an operator hands a counterparty
 /// out of band to pin busbar by. Deliberately NOT the signer and NOT its seed: a boot hook publishes
@@ -130,15 +107,11 @@ pub struct BootCtx<'a> {
     /// phase, where the app has been moved into the router builder and only the handle remains.
     pub(crate) app: Option<&'a std::sync::Arc<crate::state::App>>,
 
-    /// START phase — the live app handle a start hook reads THIS config generation off (a config
-    /// apply is then picked up on the next tick rather than sweeping a replaced generation), and the
-    /// shutdown broadcast its spawned loop exits on. `None` in the hydrate phase (no listener yet).
+    /// START phase — the live app handle a start hook reads THIS config generation off. `None` in the
+    /// hydrate phase (no listener yet). There is no `shutdown` broadcast on this seam any more: the
+    /// built-in start hooks spawn no background loop now that verify-on-call replaced the sweep, so a
+    /// hook has nothing to exit on a shutdown of.
     pub(crate) handle: Option<&'a std::sync::Arc<crate::state::AppHandle>>,
-    pub(crate) shutdown: Option<&'a tokio::sync::broadcast::Sender<()>>,
-
-    /// The core reverify-sweep spawner (see [`ReverifySpawn`]). Always present; a hook that starts no
-    /// sweep simply never calls it.
-    pub(crate) spawn_reverify: ReverifySpawn,
 
     /// The deployment's PUBLIC card-issuer key (see [`CardIssuer`]). `Some` in the start phase when
     /// this deployment mints one; `None` in the hydrate phase and when no card is signed.
@@ -156,40 +129,32 @@ impl<'a> BootCtx<'a> {
             store,
             app: Some(app),
             handle: None,
-            shutdown: None,
-            spawn_reverify: REVERIFY_SPAWN,
             card_issuer: None,
         }
     }
 
-    /// THE START-PHASE CONTEXT: the live handle, the shutdown broadcast, and the PUBLIC card-issuer
-    /// key (computed core-side; the seed never crosses). A start hook restores nothing, so no store.
+    /// THE START-PHASE CONTEXT: the live handle and the PUBLIC card-issuer key (computed core-side;
+    /// the seed never crosses). A start hook restores nothing, so no store.
     pub(crate) fn for_start(
         handle: &'a std::sync::Arc<crate::state::AppHandle>,
-        shutdown: &'a tokio::sync::broadcast::Sender<()>,
         card_issuer: Option<CardIssuer>,
     ) -> Self {
         BootCtx {
             store: None,
             app: None,
             handle: Some(handle),
-            shutdown: Some(shutdown),
-            spawn_reverify: REVERIFY_SPAWN,
             card_issuer,
         }
     }
 
     /// A ctx carrying no phase context, for the boot-hook FOLD tests (R2-boot): a hook that only
-    /// returns `Err` — or a `None`-hook plane — reads nothing off it. Defined here because the
-    /// `spawn_reverify` fn-pointer is module-private.
+    /// returns `Err` — or a `None`-hook plane — reads nothing off it.
     #[cfg(test)]
     pub(crate) fn stub() -> BootCtx<'static> {
         BootCtx {
             store: None,
             app: None,
             handle: None,
-            shutdown: None,
-            spawn_reverify: REVERIFY_SPAWN,
             card_issuer: None,
         }
     }
@@ -321,13 +286,14 @@ pub struct PlaneDecl {
     /// [`crate::boot::hydrate_all`] propagates it with `?`, so a plane cannot half-restore and serve.
     pub(crate) hydrate: Option<BootHook>,
 
-    /// START THIS PLANE'S BACKGROUND WORK, AFTER the listeners are built — the plane half of
-    /// [`crate::boot::start_planes`]. Handed the same [`BootCtx`], now carrying the live app handle
-    /// and the shutdown broadcast a spawned loop exits on, plus the core reverify-sweep spawner as a
-    /// fn-pointer (so `crate::trust::sweep::spawn` need not go public) and the deployment's PUBLIC
-    /// card-issuer key (never its seed). `None` for a plane that starts nothing. A hook returning
-    /// `Err` REFUSES BOOT — an outbound identity that does not resolve is a startup failure, never a
-    /// warning — so [`crate::boot::start_planes`] propagates it with `?`.
+    /// START THIS PLANE'S BOOT-TIME WORK, AFTER the listeners are built — the plane half of
+    /// [`crate::boot::start_planes`]. Handed the same [`BootCtx`], now carrying the live app handle,
+    /// the shutdown broadcast a spawned loop exits on and the deployment's PUBLIC card-issuer key
+    /// (never its seed). Since verify-on-call replaced the background sweep, the built-in start hooks
+    /// no longer spawn a reverify loop — the MCP plane has no start hook at all, and the A2A one only
+    /// resolves and publishes its per-agent card transports. `None` for a plane that starts nothing. A
+    /// hook returning `Err` REFUSES BOOT — an outbound identity that does not resolve is a startup
+    /// failure, never a warning — so [`crate::boot::start_planes`] propagates it with `?`.
     pub(crate) start: Option<BootHook>,
 
     /// CARRY THIS PLANE'S ENGINE-OWNED STATE ACROSS A CONFIG SWAP — the plane half of

@@ -994,7 +994,7 @@ async fn run() {
     // is: a second job against the same registry would double every fetch and race every ledger stamp.
     // Fatal if an A2A outbound client identity does not resolve, exactly as before — the refusal text
     // is the plane hook's, propagated through `start_planes`.
-    busbar_core::boot::start_planes(&app_handle, &shutdown_tx).unwrap_or_else(|e| die(e));
+    busbar_core::boot::start_planes(&app_handle).unwrap_or_else(|e| die(e));
 
     // THE STDIO SERVE MODE (`--mcp-stdio`). The SAME boot ran above — config load, plugin
     // preflight, governance, the flusher and the refresh jobs — and the SAME dispatch will serve

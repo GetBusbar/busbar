@@ -1436,6 +1436,8 @@ impl TestApp {
             mcp_pool: std::sync::Arc::new(crate::mcp::client::pool::McpConnectionPool::new()),
             mcp_sightings: self.mcp_sightings.clone().unwrap_or_default(),
             mcp_verify: Default::default(),
+            a2a_verify: Default::default(),
+            a2a_cards: Default::default(),
             plane_approvals: Default::default(),
             mcp_roots_epochs: Default::default(),
             mcp_sampling_spend: Default::default(),

@@ -59,7 +59,7 @@
 //   * [`observe`], the plane ingress boundary — asks `PlaneDispatch::mounted_plane_of` which plane
 //     a request arrived on and labels that request's metrics with `Plane::key`. Before it, MCP and
 //     A2A traffic appeared in no Prometheus series at all.
-//   * the trust sweep job (`crate::trust::sweep`), which carries `Plane` as its log label.
+//   * verify-on-call (`crate::trust::verify`), which carries `Plane` as its diagnostic label.
 //   * the admin trust verb surface (`crate::admin::planeverbs`), which reads `Plane::subject_noun`
 //     for its one `404` and `Plane::audit_kind` for its audit action and resource.
 //

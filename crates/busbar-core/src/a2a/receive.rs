@@ -1283,6 +1283,17 @@ async fn admitted(
     // Held across the hop below; the recorded outcome consumes it and the drop is then a no-op.
     let route_admission = selected_member.admission;
 
+    // ── VERIFY-ON-CALL. Re-verify the agent this hop will actually delegate to, within `verify_ttl`,
+    //    single-flight, fail-closed — BEFORE the relay preamble's live `still_delegable` gate compares
+    //    it. A moved fingerprint or an unreachable card demotes the registration here, and the gate
+    //    then refuses; there is no background sweep. See `verify_agent_on_call`.
+    verify_agent_on_call(&app, &plane, &target_agent).await;
+    // The re-verification mutates the registry and so bumps its generation; the hop's admitted
+    // generation is re-read AFTER it so the pre-socket gate does not refuse the call for busbar's OWN
+    // re-verification — while still catching a config apply that lands between here and the socket, and
+    // while `still_delegable` re-validates the live (re-verified) registration's trust state regardless.
+    let hop_generation = plane.generation();
+
     // WHO IS BILLED, recorded as this plane's own statement rather than inferred later. Receiving
     // covers the downstream L2 spend this call causes and never the callee's internal spend — a
     // distinction `Attribution` makes unconstructible rather than documented.
@@ -1521,7 +1532,7 @@ async fn admitted(
         task_id: task_id.clone(),
         context_id: context_id.clone(),
         matched_skill: admitted.matched_skill.clone(),
-        admitted_generation: admitted.generation,
+        admitted_generation: hop_generation,
         request_id,
         a2a_version,
         breaker: hop_breaker,
@@ -1624,6 +1635,60 @@ struct HopContext {
 /// The plane, if this deployment has one.
 pub(super) fn plane_of(app: &App) -> Option<Arc<super::plane::A2aPlane>> {
     app.a2a.as_ref().map(Arc::clone)
+}
+
+/// VERIFY-ON-CALL for one A2A delegation: re-verify `agent_id`'s card within `verify_ttl`,
+/// single-flight, fail-closed, BEFORE the relay's live trust gate compares it.
+///
+/// The single-flight, the freshness bound and the fail-closed ordering are [`crate::trust::verify`]'s,
+/// once, for every plane; this plane's FETCH is [`super::plane::A2aPlane::reverify_agent`] — the
+/// signed-card read and verification against the operator's out-of-band root, on a blocking thread. A
+/// failed re-verification records `Error`, which the relay preamble's `still_delegable` gate then
+/// refuses. Skipped only when the boot transports are absent (a test app, or a deployment that fronts
+/// nothing to delegate with), in which case the recorded sighting governs exactly as it did before
+/// verify-on-call — production always publishes the transports at boot.
+async fn verify_agent_on_call(app: &Arc<App>, plane: &Arc<super::plane::A2aPlane>, agent_id: &str) {
+    let Some(cards) = app.a2a_cards.get().cloned() else {
+        return;
+    };
+    let Some((_, policy)) = plane.verify_state_of(agent_id) else {
+        return;
+    };
+    let now_ms = crate::store::now_ms();
+    let ledger_plane = Arc::clone(plane);
+    let ledger_id = agent_id.to_string();
+    let fetch_plane = Arc::clone(plane);
+    let fetch_id = agent_id.to_string();
+    let report_id = agent_id.to_string();
+    let gate = Arc::clone(&app.a2a_verify);
+    app.a2a_verify
+        .ensure_fresh(
+            agent_id,
+            &policy,
+            now_ms,
+            || {
+                ledger_plane
+                    .verify_state_of(&ledger_id)
+                    .map(|(l, _)| l)
+                    .unwrap_or_default()
+            },
+            || async move {
+                // OFF THE REACTOR: a card fetch is a blocking socket read behind the SSRF guard, held
+                // under the registry write lock. A panic in it re-raises so the join surfaces it.
+                let pass = tokio::task::spawn_blocking(move || {
+                    fetch_plane.reverify_agent(&fetch_id, cards.resolver(), &*cards, now_ms)
+                })
+                .await
+                .ok()
+                .flatten();
+                if let Some(pass) = pass {
+                    let unreachable = pass.refusal.is_some();
+                    let drifted = pass.settled.as_ref().is_some_and(|s| s.drift_observed);
+                    gate.report(crate::plane::Plane::A2a, &report_id, drifted, unreachable);
+                }
+            },
+        )
+        .await;
 }
 
 /// THE UNARY HOP: one submission, one answer.

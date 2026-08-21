@@ -119,15 +119,12 @@ pub(crate) fn run_hydrate_hooks(
 /// were configured is exactly what booting past it would produce.
 ///
 /// This function names no plane. Each plane's job MOVED into its own `start` hook beside the code it
-/// starts; the sweeper types, the live-fetch transport and the identity resolver all stay
-/// `pub(crate)` in their planes. Two capabilities the A2A hook needs without reaching into the engine
-/// are handed on the [`BootCtx`]: the core reverify-sweep spawner (a fn-pointer, so
-/// `crate::trust::sweep::spawn` need not go public) and busbar's PUBLIC card-issuer key (its `kid` and
-/// SPKI, computed core-side HERE — the signing seed never crosses the seam, invariant (a)).
-pub fn start_planes(
-    app_handle: &Arc<crate::state::AppHandle>,
-    shutdown: &tokio::sync::broadcast::Sender<()>,
-) -> Result<(), String> {
+/// starts; the live-fetch transport and the identity resolver all stay `pub(crate)` in their planes.
+/// The one capability the A2A hook needs without reaching into the engine is handed on the
+/// [`BootCtx`]: busbar's PUBLIC card-issuer key (its `kid` and SPKI, computed core-side HERE — the
+/// signing seed never crosses the seam, invariant (a)). Verify-on-call replaced the background sweep,
+/// so no reverify-loop spawner crosses this seam any more.
+pub fn start_planes(app_handle: &Arc<crate::state::AppHandle>) -> Result<(), String> {
     // BUSBAR'S PUBLISHED CARD-ISSUER KEY, computed core-side from the card signer and reduced to its
     // PUBLIC halves before it crosses the seam. The signer (and the seed it derives from) never
     // leaves core; a start hook receives only the `kid` and the base64 SPKI it publishes for callers
@@ -141,7 +138,7 @@ pub fn start_planes(
             kid: s.kid().to_string(),
             issuer_spki_base64: s.issuer_spki_base64(),
         });
-    let ctx = crate::plane::registry::BootCtx::for_start(app_handle, shutdown, card_issuer);
+    let ctx = crate::plane::registry::BootCtx::for_start(app_handle, card_issuer);
     run_start_hooks(crate::plane::registry::plane_decls(), &ctx)
 }
 
