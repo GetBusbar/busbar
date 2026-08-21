@@ -4,6 +4,17 @@ impl ProtocolReader for GeminiReader {
     fn recover_truncated_usage(&self, tail: &[u8]) -> Option<busbar_core::billing::TokenUsage> {
         let v = super::super::usage_tail::isolate_tail_usage_object(tail, b"\"usageMetadata\"")?;
         let cached = v.get("cachedContentTokenCount").and_then(|x| x.as_u64());
+        // THINKING TOKENS ARE OUTPUT TOKENS — mirror `gemini_usage` exactly. `candidatesTokenCount`
+        // counts only the visible answer; the 2.5-series reasoning tokens arrive in the separate,
+        // ADDITIVE `thoughtsTokenCount` (Google's `totalTokenCount = prompt + candidates + thoughts`).
+        // A truncated response is recovered here rather than through `gemini_usage`, and reading only
+        // `candidatesTokenCount` ledgered every thinking token as ZERO — under-billing and
+        // under-capping by the (often dominant) thinking count on exactly the responses whose large
+        // thinking overflowed the reassembly cap and marked them truncated. Sum the two into
+        // `output_tokens` so a truncated response bills the same as a complete one, and record the
+        // thinking count as the reasoning sub-bucket (pure attribution; it is already folded into
+        // `output_tokens`).
+        let thoughts = v.get(FIELD_THOUGHTS_TOKEN_COUNT).and_then(|x| x.as_u64());
         Some(
             crate::ir::IrUsage {
                 input_tokens: v
@@ -14,10 +25,14 @@ impl ProtocolReader for GeminiReader {
                 output_tokens: v
                     .get("candidatesTokenCount")
                     .and_then(|x| x.as_u64())
-                    .unwrap_or(0),
+                    .unwrap_or(0)
+                    .saturating_add(thoughts.unwrap_or(0)),
                 cache_creation_input_tokens: None,
                 cache_read_input_tokens: cached,
-                detail: crate::ir::IrUsageDetail::default(),
+                detail: crate::ir::IrUsageDetail {
+                    reasoning_tokens: thoughts,
+                    ..Default::default()
+                },
             }
             .to_token_usage(),
         )
