@@ -2041,6 +2041,56 @@ fn test_stream_unknown_event_is_noop() {
     assert!(evs.is_empty(), "unknown event types produce no IR events");
 }
 
+/// CF6 (wire-conformance): a streamed citation egressing into the Cohere v2 dialect must serialize
+/// as a `citation-start` event whose `delta.message.citations` is a SINGLE Citation OBJECT — NOT an
+/// array. Per docs.cohere.com/v2/docs/streaming the reference event is
+/// `CitationStartEventDeltaMessage(citations=Citation(...))`, one Citation per event; a native
+/// Cohere v2 SDK deserializes the field into one `Citation`, so an array body is a decode error and
+/// a proxy tell. Before the fix the writer emitted a JSON array here.
+#[test]
+fn test_write_response_event_citation_start_is_single_object() {
+    let writer = CohereWriter;
+    let ev = IrStreamEvent::BlockDelta {
+        index: 0,
+        delta: crate::ir::IrDelta::CitationsDelta(vec![crate::ir::IrCitation {
+            kind: Some("web_search_result_location".to_string()),
+            cited_text: Some("quoted".to_string()),
+            title: Some("T".to_string()),
+            url: Some("https://x".to_string()),
+            document_index: None,
+            start_index: Some(0),
+            end_index: Some(6),
+            encrypted_index: None,
+            raw: None,
+        }]),
+    };
+    let (_, frame) = writer
+        .write_response_event(&ev)
+        .expect("a citation delta emits a citation-start frame");
+    assert_eq!(frame.get("type").and_then(|t| t.as_str()), Some("citation-start"));
+    let citations = frame
+        .pointer("/delta/message/citations")
+        .expect("citation-start carries delta.message.citations");
+    assert!(
+        citations.is_object(),
+        "delta.message.citations must be a single Citation OBJECT; got {citations}"
+    );
+    assert!(
+        !citations.is_array(),
+        "delta.message.citations must NOT be a JSON array; got {citations}"
+    );
+    assert_eq!(citations.pointer("/start").and_then(|v| v.as_u64()), Some(0));
+    assert_eq!(citations.pointer("/end").and_then(|v| v.as_u64()), Some(6));
+    assert_eq!(citations.pointer("/text").and_then(|v| v.as_str()), Some("quoted"));
+    assert_eq!(
+        citations
+            .pointer("/sources/0/document/url")
+            .and_then(|v| v.as_str()),
+        Some("https://x"),
+        "the single Citation's source url must survive; got {citations}"
+    );
+}
+
 /// `extract_error` derives both fields from a SINGLE parse.
 /// Behavioral check that both fields are still populated from one body.
 #[test]

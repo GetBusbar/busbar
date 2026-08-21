@@ -773,17 +773,19 @@ impl ProtocolWriter for BedrockWriter {
             )),
 
             IrStreamEvent::BlockStart { index, block } => match block {
-                // AWS ConverseStream emits a `contentBlockStart` frame at the start of EVERY content
-                // block, including text blocks, with an empty `start` struct. A native AWS SDK uses
-                // this event to initialize its per-block streaming decoder; omitting it for text
-                // blocks leaves the following `contentBlockDelta`s orphaned (no preceding start),
-                // which strict SDK parsers discard or reject — and is a detectable proxy tell.
+                // A TEXT block has NO `contentBlockStart` on the AWS Bedrock ConverseStream wire.
+                // `ContentBlockStart$start` is a UNION whose members are `toolUse` (plus
+                // `image`/`toolResult` in newer API revisions) — there is NO text member (AWS
+                // Bedrock Runtime API reference, ContentBlockStart). A real ConverseStream therefore
+                // opens a text block IMPLICITLY with its first `contentBlockDelta` carrying `text` and
+                // closes it with `contentBlockStop`; the reader mirrors this (it lazily opens a Text
+                // block on the first text delta). Emitting an empty `start: {}` frame here was an
+                // off-spec frame no native endpoint sends — a detectable proxy tell. Still
+                // `mark_block_open` so the matching `BlockStop` emits the (spec-required)
+                // `contentBlockStop`, but emit NO start frame.
                 crate::ir::IrBlockMeta::Text => {
                     self.mark_block_open(*index);
-                    Some((
-                        ET_CONTENT_BLOCK_START.to_string(),
-                        serde_json::json!({ "contentBlockIndex": index, "start": {} }),
-                    ))
+                    None
                 }
                 crate::ir::IrBlockMeta::ToolUse { id, name } => {
                     self.mark_block_open(*index);
@@ -795,21 +797,20 @@ impl ProtocolWriter for BedrockWriter {
                         }),
                     ))
                 }
-                // A reasoning (extended-thinking) block opens with a `contentBlockStart` whose
-                // `start` carries an (empty) `reasoningContent` object — the inverse of the reader's
-                // lazy-open. Without this the streamed reasoning deltas were orphaned and the block
-                // dropped on Bedrock egress; mirror the buffered `write_response` reasoningContent
-                // re-emit on the streaming path. (Image has no streaming-start projection on Bedrock
-                // — image blocks are not streamed as `contentBlock*` frames — so it stays None.)
+                // A reasoning (extended-thinking) block has NO `contentBlockStart` either.
+                // `ContentBlockStart$start` models ONLY `toolUse` (no `reasoningContent` member —
+                // AWS Bedrock Runtime API reference, ContentBlockStart). Reasoning is streamed
+                // ENTIRELY through `contentBlockDelta.delta.reasoningContent` — the
+                // `ReasoningContentBlockDelta` union (`text` / `signature` / `redactedContent`) — and
+                // closed with `contentBlockStop`; the reader mirrors this (it lazily opens a Thinking
+                // block on the first `reasoningContent` delta). Emitting a
+                // `start.reasoningContent` frame was off-spec — a detectable proxy tell. Still
+                // `mark_block_open` so the matching `BlockStop` emits `contentBlockStop`, but emit NO
+                // start frame. (Image likewise has no streaming-start projection on Bedrock, so it
+                // stays None — but is NOT marked open, so it emits no orphan stop either.)
                 crate::ir::IrBlockMeta::Thinking => {
                     self.mark_block_open(*index);
-                    Some((
-                        ET_CONTENT_BLOCK_START.to_string(),
-                        serde_json::json!({
-                            "contentBlockIndex": index,
-                            "start": { "reasoningContent": {} }
-                        }),
-                    ))
+                    None
                 }
                 crate::ir::IrBlockMeta::Image => None,
             },

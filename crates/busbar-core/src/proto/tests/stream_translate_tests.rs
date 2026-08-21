@@ -1252,6 +1252,77 @@ fn stream_gemini_multi_citation_yields_separate_single_object_anthropic_events()
     );
 }
 
+/// CF6 (wire-conformance): the same Gemini multi-citation fan-out, but egressing into the COHERE v2
+/// dialect. Per docs.cohere.com/v2/docs/streaming a `citation-start` event carries a SINGLE Citation
+/// OBJECT at `delta.message.citations` (reference: `CitationStartEventDeltaMessage(citations=
+/// Citation(...))`) — NOT an array. So a 3-source Gemini chunk must fan out (cohere's
+/// `max_citations_per_delta == Some(1)`) into THREE separate `citation-start` events, each with a
+/// single Citation object. Before the fix the writer emitted a JSON ARRAY at that path, which a
+/// native Cohere v2 SDK (deserializing the field into one `Citation`) rejects.
+#[test]
+fn stream_gemini_multi_citation_yields_separate_single_object_cohere_events() {
+    // ingress = cohere (the client), egress = gemini (the backend): `feed` consumes Gemini SSE and
+    // emits Cohere v2 SSE.
+    let mut st = StreamTranslate::new("cohere", "gemini").expect("translator");
+    let chunk = br#"data: {"candidates":[{"index":0,"content":{"role":"model","parts":[{"text":"answer text"}]},"citationMetadata":{"citationSources":[{"startIndex":0,"endIndex":3,"uri":"https://example.com/a","title":"A"},{"startIndex":3,"endIndex":6,"uri":"https://example.com/b","title":"B"},{"startIndex":6,"endIndex":9,"uri":"https://example.com/c","title":"C"}]}}]}
+
+"#;
+    let mut out = st.feed(chunk);
+    out.extend_from_slice(&st.finish());
+    let text = String::from_utf8(out).expect("cohere SSE is utf-8");
+
+    let mut citation_bodies: Vec<serde_json::Value> = Vec::new();
+    for line in text.lines() {
+        let Some(json) = line.strip_prefix("data:") else {
+            continue;
+        };
+        let Ok(body) = serde_json::from_str::<serde_json::Value>(json.trim()) else {
+            continue;
+        };
+        // INVARIANT: no SSE event body is ever a JSON array.
+        assert!(
+            !body.is_array(),
+            "no SSE event body may be a JSON array: {body}"
+        );
+        if body.get("type").and_then(|t| t.as_str()) == Some("citation-start") {
+            let citations = body
+                .pointer("/delta/message/citations")
+                .expect("a citation-start carries delta.message.citations");
+            // The v2 wire shape: a SINGLE Citation OBJECT, never an array.
+            assert!(
+                citations.is_object() && !citations.is_array(),
+                "citation-start `delta.message.citations` must be a single Citation object, not an \
+                 array: {citations}"
+            );
+            citation_bodies.push(body);
+        }
+    }
+
+    assert_eq!(
+        citation_bodies.len(),
+        3,
+        "3 Gemini citationSources → 3 separate single-object Cohere citation-start events; got {text}"
+    );
+    // The three carry the three distinct sources, in order.
+    let urls: Vec<String> = citation_bodies
+        .iter()
+        .filter_map(|b| {
+            b.pointer("/delta/message/citations/sources/0/document/url")
+                .and_then(|u| u.as_str())
+                .map(|s| s.to_string())
+        })
+        .collect();
+    assert_eq!(
+        urls,
+        vec![
+            "https://example.com/a".to_string(),
+            "https://example.com/b".to_string(),
+            "https://example.com/c".to_string()
+        ],
+        "each fanned-out citation-start carries its own source url; got {text}"
+    );
+}
+
 /// HIGH-1 reverse direction: 3 Anthropic single-citation `citations_delta` events (as a native
 /// Anthropic stream emits — one citation per delta) → Gemini EGRESS-shaped `citationMetadata`
 /// chunks that are VALID Gemini (candidate-level `citationSources`), never an array-bodied frame.
@@ -1945,6 +2016,121 @@ fn test_translate_anthropic_egress_to_bedrock_ingress_binary_frames() {
     );
 }
 
+/// CF7 (wire-conformance): a cross-protocol TEXT stream egressing into Bedrock ConverseStream must
+/// emit NO `contentBlockStart` frame — the `ContentBlockStart$start` union models only `toolUse`
+/// (AWS Bedrock Runtime API reference), so a real ConverseStream opens a text block IMPLICITLY with
+/// its first `contentBlockDelta` carrying `text`. Before the fix the writer emitted a spurious
+/// `contentBlockStart{start:{}}` for text — an off-spec frame no native endpoint sends. Drive an
+/// Anthropic text stream into a Bedrock ingress and assert the first block frame is a
+/// `contentBlockDelta`, with no preceding `contentBlockStart`.
+#[test]
+fn test_translate_anthropic_text_to_bedrock_ingress_has_no_content_block_start() {
+    let mut t = StreamTranslate::new("bedrock", "anthropic").expect("bedrock ingress translator");
+    let mut raw: Vec<u8> = Vec::new();
+    for frame in [
+            "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_t\",\"role\":\"assistant\"}}\n\n",
+            "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\"}}\n\n",
+            "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hello\"}}\n\n",
+            "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+            "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"input_tokens\":3,\"output_tokens\":1}}\n\n",
+            "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+        ] {
+            raw.extend(t.feed(frame.as_bytes()));
+        }
+    let mut buf = raw.clone();
+    let frames = crate::eventstream::drain_frames(&mut buf);
+    assert!(buf.is_empty(), "all frames decode cleanly; {} bytes left", buf.len());
+    let block_frames: Vec<&str> = frames
+        .iter()
+        .map(|(et, _)| et.as_str())
+        .filter(|et| et.starts_with("contentBlock"))
+        .collect();
+    assert!(
+        !block_frames.contains(&"contentBlockStart"),
+        "a cross-protocol text egress into Bedrock must emit NO contentBlockStart; got {block_frames:?}"
+    );
+    // The block opens implicitly on the first contentBlockDelta and closes with contentBlockStop.
+    assert_eq!(
+        block_frames,
+        vec!["contentBlockDelta", "contentBlockStop"],
+        "text block frames must be exactly delta then stop; got {block_frames:?}"
+    );
+    // And the delta carries the translated text at delta.text.
+    let delta = frames
+        .iter()
+        .find(|(et, _)| et == "contentBlockDelta")
+        .expect("a contentBlockDelta frame");
+    let v: serde_json::Value = serde_json::from_slice(&delta.1).expect("valid JSON payload");
+    assert_eq!(v.pointer("/delta/text").and_then(|x| x.as_str()), Some("Hello"));
+}
+
+/// CF8 (wire-conformance): a cross-protocol REASONING stream egressing into Bedrock ConverseStream
+/// must stream reasoning ENTIRELY through `contentBlockDelta.delta.reasoningContent`
+/// (text/signature) with NO `contentBlockStart` — `ContentBlockStart$start` has no
+/// `reasoningContent` member (only `toolUse`). Before the fix the writer emitted a
+/// `contentBlockStart{start:{reasoningContent:{}}}` frame that is not on the AWS wire. Drive an
+/// Anthropic extended-thinking stream into a Bedrock ingress and assert: no contentBlockStart, and
+/// the reasoning text + signature arrive on `contentBlockDelta.reasoningContent`.
+#[test]
+fn test_translate_anthropic_reasoning_to_bedrock_ingress_uses_delta_not_start() {
+    let mut t = StreamTranslate::new("bedrock", "anthropic").expect("bedrock ingress translator");
+    let mut raw: Vec<u8> = Vec::new();
+    for frame in [
+            "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_r\",\"role\":\"assistant\"}}\n\n",
+            "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\"}}\n\n",
+            "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"let me think\"}}\n\n",
+            "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"signature_delta\",\"signature\":\"sig-xyz\"}}\n\n",
+            "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+            "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"input_tokens\":3,\"output_tokens\":4}}\n\n",
+            "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+        ] {
+            raw.extend(t.feed(frame.as_bytes()));
+        }
+    let mut buf = raw.clone();
+    let frames = crate::eventstream::drain_frames(&mut buf);
+    assert!(buf.is_empty(), "all frames decode cleanly; {} bytes left", buf.len());
+    let block_frames: Vec<&str> = frames
+        .iter()
+        .map(|(et, _)| et.as_str())
+        .filter(|et| et.starts_with("contentBlock"))
+        .collect();
+    assert!(
+        !block_frames.contains(&"contentBlockStart"),
+        "a cross-protocol reasoning egress into Bedrock must emit NO contentBlockStart; got {block_frames:?}"
+    );
+    // Reasoning is streamed purely on contentBlockDelta.reasoningContent, closed by a stop.
+    let reasoning_text: String = frames
+        .iter()
+        .filter(|(et, _)| et == "contentBlockDelta")
+        .filter_map(|(_, body)| serde_json::from_slice::<serde_json::Value>(body).ok())
+        .filter_map(|v| {
+            v.pointer("/delta/reasoningContent/text")
+                .and_then(|x| x.as_str())
+                .map(|s| s.to_string())
+        })
+        .collect();
+    assert_eq!(
+        reasoning_text, "let me think",
+        "the reasoning text must ride contentBlockDelta.reasoningContent.text; got {block_frames:?}"
+    );
+    let has_signature = frames
+        .iter()
+        .filter(|(et, _)| et == "contentBlockDelta")
+        .filter_map(|(_, body)| serde_json::from_slice::<serde_json::Value>(body).ok())
+        .any(|v| {
+            v.pointer("/delta/reasoningContent/signature").and_then(|x| x.as_str()) == Some("sig-xyz")
+        });
+    assert!(
+        has_signature,
+        "the reasoning signature must ride contentBlockDelta.reasoningContent.signature"
+    );
+    // The reasoning block still closes with a contentBlockStop.
+    assert!(
+        block_frames.contains(&"contentBlockStop"),
+        "the reasoning block must close with a contentBlockStop; got {block_frames:?}"
+    );
+}
+
 /// Bedrock *ingress* streaming, TOOL-CALL path: an Anthropic SSE `content_block_start` with a
 /// `tool_use` block + `input_json_delta` + `content_block_stop` must translate through the binary
 /// Bedrock encoder into a `contentBlockStart` frame carrying a `toolUse` start, a
@@ -2246,10 +2432,17 @@ fn all_block_metas() -> Vec<IrBlockMeta> {
 /// INV-B, exhaustively: for every registered protocol's writer and every `IrBlockMeta` variant, a
 /// suppressed `BlockStart` (writer returns `None`) must be followed by a suppressed `BlockStop`
 /// (also `None`) — otherwise a client receives a close for a block it never saw opened (7.2's
-/// class). The gemini ToolUse row is the ONE declared exception: `gemini/writer.rs`'s `BlockStart`
-/// arm returns `None` for ToolUse DELIBERATELY (it buffers `(name, args)` and flushes the whole
-/// native `functionCall` part on `BlockStop`), so `Some` on the stop there is correct — suppressing
-/// it would silently delete the tool call.
+/// class) — UNLESS the block opens IMPLICITLY on the wire, in which case the start frame is
+/// legitimately absent but the close is still mandatory. There are three declared exceptions where
+/// a suppressed start pairs with a REQUIRED stop:
+///   1. gemini ToolUse: `gemini/writer.rs`'s `BlockStart` returns `None` for ToolUse DELIBERATELY
+///      (it buffers `(name, args)` and flushes the whole native `functionCall` part on `BlockStop`),
+///      so `Some` on the stop is correct — suppressing it would silently delete the tool call.
+///   2. bedrock Text and 3. bedrock Thinking: the AWS ConverseStream `ContentBlockStart$start`
+///      union models only `toolUse`, so a text/reasoning block has NO `contentBlockStart` — it opens
+///      IMPLICITLY on its first `contentBlockDelta` — but MUST still close with `contentBlockStop`
+///      (a real ConverseStream sends the stop for every block). Suppressing the stop would drop the
+///      block terminator a native AWS SDK keys its per-block reassembly off.
 ///
 /// A FRESH writer is constructed for EVERY (name, meta) row via `protocol_for(name)` INSIDE the
 /// loop body, not hoisted: cohere/responses/gemini writers carry per-stream `Mutex` state, so
@@ -2290,18 +2483,22 @@ fn every_writer_that_suppresses_a_block_start_suppresses_its_stop() {
                 .write_response_event(&IrStreamEvent::BlockStop { index: start_index })
                 .is_some();
 
-            // The declared exception: gemini's ToolUse BlockStart returns None on purpose
-            // (`gemini/writer.rs`'s buffered-flush-on-stop idiom), so its BlockStop legitimately
-            // returns Some. Every other (writer, meta) pair must agree: suppressed start implies
-            // suppressed stop.
-            let is_declared_exception =
-                name == PROTO_GEMINI && matches!(meta, IrBlockMeta::ToolUse { .. });
+            // The declared exceptions (suppressed start, REQUIRED stop): gemini's ToolUse
+            // (buffered-flush-on-stop idiom), and bedrock's Text / Thinking (open IMPLICITLY on the
+            // first delta — the ConverseStream `ContentBlockStart$start` union has no text/reasoning
+            // member — but MUST still emit `contentBlockStop`). Every other (writer, meta) pair must
+            // agree: suppressed start implies suppressed stop.
+            let is_declared_exception = (name == PROTO_GEMINI
+                && matches!(meta, IrBlockMeta::ToolUse { .. }))
+                || (name == PROTO_BEDROCK
+                    && matches!(meta, IrBlockMeta::Text | IrBlockMeta::Thinking));
 
             if is_declared_exception {
                 assert!(
                     !start_emitted && stop_emitted,
-                    "gemini ToolUse is the declared exception: BlockStart must stay None (buffered) \
-                     and BlockStop must stay Some (the flush point); got start={start_emitted} stop={stop_emitted}"
+                    "{name:?}/{meta:?} is a declared exception: BlockStart must stay None (implicit \
+                     open / buffered) and BlockStop must stay Some (the mandatory close / flush \
+                     point); got start={start_emitted} stop={stop_emitted}"
                 );
             } else if !start_emitted {
                 assert!(

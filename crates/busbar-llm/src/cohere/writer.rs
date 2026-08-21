@@ -616,20 +616,38 @@ impl ProtocolWriter for CohereWriter {
                 // `citation-end`), so a streamed citation re-emits natively instead of being
                 // suppressed. Suppressing it made the SAME request against the SAME backend return
                 // sources at `stream:false` and no sources at `stream:true` — the worst shape of a
-                // loss, because nothing about the request explains the difference. One frame per
-                // event carrying the whole batch; an empty batch emits nothing.
-                crate::ir::IrDelta::CitationsDelta(cits) if !cits.is_empty() => Some((
-                    "".to_string(),
-                    serde_json::json!({
-                        "type": ET_CITATION_START,
-                        "index": index,
-                        "delta": {
-                            "message": {
-                                "citations": cits.iter().map(write_cohere_citation).collect::<Vec<_>>()
+                // loss, because nothing about the request explains the difference.
+                //
+                // WIRE SHAPE (docs.cohere.com/v2/docs/streaming): a `citation-start` event carries a
+                // SINGLE Citation object at `delta.message.citations` — NOT an array. The reference
+                // event is `CitationStartEventDeltaMessage(citations=Citation(...))`, one Citation per
+                // event. Emitting a JSON array here was off-spec: a native Cohere v2 SDK deserializes
+                // `delta.message.citations` into ONE `Citation`, so an array body is a decode error
+                // (and a proxy tell). `max_citations_per_delta == Some(1)` makes `StreamTranslate` fan
+                // a multi-citation delta out to one `citation-start` event per citation BEFORE it
+                // reaches here, so `first()` is the whole (already-split) delta; the debug_assert pins
+                // that invariant rather than silently truncating if the seam changes. An empty batch
+                // emits nothing.
+                crate::ir::IrDelta::CitationsDelta(cits) if !cits.is_empty() => {
+                    debug_assert!(
+                        cits.len() <= 1,
+                        "cohere writer expects the citation fan-out to have split multi-citation \
+                         deltas (max_citations_per_delta == Some(1))"
+                    );
+                    let c = cits.first()?;
+                    Some((
+                        "".to_string(),
+                        serde_json::json!({
+                            "type": ET_CITATION_START,
+                            "index": index,
+                            "delta": {
+                                "message": {
+                                    "citations": write_cohere_citation(c)
+                                }
                             }
-                        }
-                    }),
-                )),
+                        }),
+                    ))
+                }
                 crate::ir::IrDelta::CitationsDelta(_) => None,
                 // Cohere v2 has no cross-protocol logprobs shape (token IDs only); dropped.
                 crate::ir::IrDelta::LogprobsDelta(_) => None,
