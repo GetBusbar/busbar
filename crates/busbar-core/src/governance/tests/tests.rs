@@ -4305,7 +4305,11 @@ fn test_reclaim_group_cells_drops_the_per_group_concurrent_gauge() {
     let grant = gov
         .try_admit(&cost, &revived, "", now)
         .expect("a re-created capped group admits cleanly");
-    assert_eq!(gov.concurrent_in_flight("churny-0"), 1, "fresh gauge at one");
+    assert_eq!(
+        gov.concurrent_in_flight("churny-0"),
+        1,
+        "fresh gauge at one"
+    );
     drop(grant);
 }
 
