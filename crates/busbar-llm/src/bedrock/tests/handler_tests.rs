@@ -52,6 +52,19 @@ fn image_read_request_captures_prompt_and_count() {
     assert_eq!(r.n, Some(2));
 }
 
+// FIND (money): Titan/SDXL image responses are per-image (N base64 images, no usage object); the
+// reader must record a cost basis from the N returned images so `billing()` is `Images{count:N}`,
+// not `None`. Fails pre-fix (both usage and cost_basis left unset → `billing()` is None → unmetered).
+#[test]
+fn image_response_bills_per_image() {
+    let wire = br#"{"images":["AAAA","BBBB","CCCC"]}"#;
+    let resp = super::read_image_response(wire).unwrap();
+    match resp.billing() {
+        Some(busbar_core::billing::Billing::Images { count, .. }) => assert_eq!(count, 3),
+        other => panic!("Titan per-image response must bill Images, got {other:?}"),
+    }
+}
+
 #[test]
 fn embeddings_read_request_captures_input_text() {
     // Titan embeddings InvokeModel body → IR Embeddings carrying the inputText string.
