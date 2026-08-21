@@ -689,3 +689,7 @@ mod catalogue_tests;
 #[cfg(test)]
 #[path = "tests/rugpull_tests.rs"]
 mod rugpull_tests;
+
+#[cfg(test)]
+#[path = "tests/catalogue_concurrency_tests.rs"]
+mod catalogue_concurrency_tests;

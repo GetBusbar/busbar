@@ -229,3 +229,7 @@ impl VerifyGate {
 #[cfg(test)]
 #[path = "tests/verify_tests.rs"]
 mod verify_tests;
+
+#[cfg(test)]
+#[path = "tests/verify_edge_tests.rs"]
+mod verify_edge_tests;
