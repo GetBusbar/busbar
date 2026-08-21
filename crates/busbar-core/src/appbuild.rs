@@ -1450,6 +1450,18 @@ pub fn build_app_from_config(
         a2a: plane_slots
             .get(crate::a2a::PLANE_DECL.key)
             .and_then(|obj| obj.clone().downcast::<crate::a2a::plane::A2aPlane>().ok()),
+        // CARRIED ACROSS THE APPLY, like the MCP verify gate: the A2A verify-on-call coalescing epochs
+        // are accumulated coordination, not intent.
+        a2a_verify: prior.map_or_else(
+            || Arc::new(crate::trust::verify::VerifyGate::new()),
+            |p| p.a2a_verify.clone(),
+        ),
+        // CARRIED ACROSS THE APPLY by the SAME `Arc<OnceLock>`, so the boot-resolved per-agent card
+        // transports (client identities) published by the A2A start hook survive every config apply.
+        a2a_cards: prior.map_or_else(
+            || Arc::new(std::sync::OnceLock::new()),
+            |p| p.a2a_cards.clone(),
+        ),
         // History + rate windows are Arc-shared across applies (process-lifetime state).
         versions: prior.map_or_else(
             || Arc::new(admin::versions::VersionLog::new()),
@@ -1528,6 +1540,13 @@ pub fn build_app_from_config(
         mcp_sightings: prior.map_or_else(
             || Arc::new(crate::mcp::client::catalogue::CatalogueCache::new()),
             |p| p.mcp_sightings.clone(),
+        ),
+        // CARRIED ACROSS THE APPLY beside the sightings it freshens: the verify-on-call coalescing
+        // epochs are accumulated coordination state, not intent, and rebuilding them on every apply
+        // would let a burst of callers each fetch during the window an unrelated edit reset.
+        mcp_verify: prior.map_or_else(
+            || Arc::new(crate::trust::verify::VerifyGate::new()),
+            |p| p.mcp_verify.clone(),
         ),
         // CARRIED ACROSS THE APPLY for the same reason, and it is the same class of mistake: an
         // approval already spent is evidence, not intent, and a config apply that forgot it would

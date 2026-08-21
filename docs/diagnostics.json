@@ -2196,6 +2196,30 @@
     "retired": false
   },
   {
+    "code": "BUSBAR-7097",
+    "number": 7097,
+    "class": "plane",
+    "slug": "trust-verify-refused-on-drift",
+    "title": "Verify-on-call refused a call because the upstream's advertised surface drifted",
+    "severity": "benign_recurring",
+    "summary": "On the request path, verify-on-call re-fetched the upstream's advertised surface (an MCP tool's name+args+description, or an A2A agent card) within `verify_ttl` and found it DRIFTED from the fingerprint the operator approved, so the call was refused BEFORE dispatch. The refusal itself is the signal; this is a warn-once-per-subject note so persistent drift does not spam.",
+    "action": "Review the change on the trust surface and re-approve the new fingerprint if it is legitimate, or investigate the upstream if it is not.",
+    "since": "1.6.0",
+    "retired": false
+  },
+  {
+    "code": "BUSBAR-7098",
+    "number": 7098,
+    "class": "plane",
+    "slug": "trust-verify-unreachable",
+    "title": "Verify-on-call could not reach an upstream to re-verify, and refused fail-closed",
+    "severity": "actionable",
+    "summary": "On the request path, verify-on-call needed to re-verify an upstream whose recorded observation was older than `verify_ttl`, and the re-fetch FAILED (unreachable or unverifiable). The call was REFUSED fail-closed rather than served against a snapshot older than the operator's bound. Latched per subject.",
+    "action": "Restore reachability to the named upstream. Calls to it are refused until a re-fetch succeeds within `verify_ttl`; a larger `verify_ttl` widens the drift-serving window and is an explicit, documented security downgrade.",
+    "since": "1.6.0",
+    "retired": false
+  },
+  {
     "code": "BUSBAR-8001",
     "number": 8001,
     "class": "governance",

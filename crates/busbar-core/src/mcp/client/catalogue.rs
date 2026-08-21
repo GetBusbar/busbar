@@ -263,7 +263,8 @@ pub(crate) struct ServerCatalogue {
     /// (`main.rs` carries `mcp_sightings` across), so a reload cannot reset a server's freshness
     /// clock and buy an upstream a fresh window.
     ///
-    /// Read by [`crate::mcp::connect::refresh_sweep`] and by nothing on the request path.
+    /// Read by verify-on-call ([`crate::mcp::connect::ledger_of`]) as this plane's `fetched_at`
+    /// source, and stamped by [`crate::mcp::connect::stamp`] when it looks.
     pub(crate) ledger: crate::trust::reverify::Ledger,
 }
 
@@ -620,10 +621,10 @@ impl<'a> LiveSightings<'a> {
 /// return the same list. A hard floor between accepted triggers is the honest shape.
 // WIRED. `super::peer` classifies a peer's `…/list_changed` and `super::pool::RefreshTriggers`
 // holds one of these per server; an accepted trigger puts the server's NAME — and nothing from the
-// notification's body — into the set `crate::mcp::connect::refresh_sweep` drains on its next tick.
-// The gate was written and kept unwired precisely so that the increment which added the handler
-// could not add it with no rate limit at all, which is what would have happened had it been deleted
-// as dead code.
+// notification's body — into a pending set that verify-on-call consumes on the NEXT `tools/call`
+// (`super::pool::RefreshTriggers::take_if_pending`), marking that server's snapshot stale so the call
+// re-verifies. It moves TIMING, never content: what follows is the authoritative `tools/list`,
+// re-hashed. The gate rate-limits so an upstream cannot turn one edit into a fetch storm.
 #[derive(Debug)]
 pub(crate) struct RefreshGate {
     min_interval_ms: u64,

@@ -115,3 +115,52 @@ The lane status object served by `/stats` no longer carries `limit`, the shorter
 ```json
 { "model": "...", "max_concurrent": 20, "inflight": 3, ... }
 ```
+
+---
+
+## 6. MCP tool trust: `refresh_ttl:` → `verify_ttl:` (and verify-on-call)
+
+1.6.0 replaces the background tool-list refresh sweep with **verify-on-call**: an MCP tool server is
+re-verified on the `tools/call` path, before the call is dispatched, if its last observation is older
+than a per-server staleness bound. The A2A plane's card re-verification moved the same way, on the
+delegation path. There is no background job on either plane any more. See
+[Tool and agent trust](/docs/tool-and-agent-trust/) for the full model.
+
+The per-server MCP key is renamed and its **meaning changed**:
+
+- `tools.<server>.refresh_ttl:` → `tools.<server>.verify_ttl:`
+- It was a background sweep cadence (default `6h`); it is now the longest an observation may be
+  **reused on the request path** before a `tools/call` re-verifies (default `5s`). `0` is strict-live.
+
+`busbar --migrate-config` performs the rename and carries your value over **unchanged**, then emits a
+loud per-server `WARNING` — because a value that was a sensible sweep cadence is a drift-serving
+**window** as a `verify_ttl`. A `refresh_ttl: 6h` becomes a `verify_ttl: 6h`, i.e. a tool whose
+fingerprint moved could be dispatched for up to six hours before the next call re-verifies it. Review
+every migrated value: a few seconds is the new default, `0` is strict-live, and a large value is an
+explicit security downgrade.
+
+The A2A key keeps its name — `agents.<agent>.reverify_ttl:` — and only its default changed from `6h`
+to `5s`; nothing in an A2A config file needs editing.
+
+**Before:**
+
+<!-- config-check: historical -->
+```yaml
+tools:
+  servers:
+    acme:
+      url: https://tools.acme.example/mcp
+      pin: { mechanism: cert_spki, key: "sha256/…" }
+      refresh_ttl: 6h
+```
+
+**After:**
+
+```yaml
+tools:
+  servers:
+    acme:
+      url: https://tools.acme.example/mcp
+      pin: { mechanism: cert_spki, key: "sha256/…" }
+      verify_ttl: 5s   # migrate-config carries 6h over unchanged; reconsider it — see the WARNING
+```

@@ -192,27 +192,25 @@ pub(crate) fn a2a_hydrate(ctx: &crate::plane::registry::BootCtx) -> Result<(), S
     Ok(())
 }
 
-/// THE A2A RE-VERIFICATION JOB, started after the listeners are built. An approval is a statement
-/// about a document at a moment and nothing keeps it true; the pin catches a change only when somebody
-/// looks, and this is what makes somebody look. Spawned only when `agents:` defines a plane and ONCE
-/// at boot (a second job against the same registry would double every fetch and race every ledger
-/// stamp). It resolves the outbound client identities ONCE — an identity that does not resolve is a
-/// boot REFUSAL (the returned `Err`), never a warning — publishes busbar's PUBLIC card-issuer key
-/// beside the plane start, builds the per-agent transports once, and starts the one sweep loop through
-/// the core spawner handed on [`crate::plane::registry::BootCtx`] (so `crate::trust::sweep::spawn`
-/// need not go public).
+/// ARM A2A VERIFY-ON-CALL, after the listeners are built. An approval is a statement about a document
+/// at a moment and nothing keeps it true; the pin catches a change only when somebody looks, and under
+/// verify-on-call the somebody is the DELEGATION itself, not a background job. This hook runs ONCE at
+/// boot, only when `agents:` defines a plane: it resolves the outbound client identities ONCE — an
+/// identity that does not resolve is a boot REFUSAL (the returned `Err`), never a warning — publishes
+/// busbar's PUBLIC card-issuer key, builds the per-agent card transports once, and hands that one
+/// transport to BOTH the delegation hop (the plane's relay seam) and verify-on-call (the app's
+/// `a2a_cards`). There is no sweep loop to spawn: a fronted agent nobody delegates to is never
+/// re-fetched, and one that is delegated to is re-verified on the call path within its `verify_ttl`.
 pub(crate) fn a2a_start(ctx: &crate::plane::registry::BootCtx) -> Result<(), String> {
     let handle = ctx
         .handle
         .expect("a2a start runs in the START phase, which supplies the live app handle");
-    let shutdown = ctx
-        .shutdown
-        .expect("a2a start runs in the START phase, which supplies the shutdown broadcast");
-    if let Some(plane) = handle.load().a2a.clone() {
+    let app = handle.load();
+    if let Some(plane) = app.a2a.clone() {
         tracing::info!(
             agents = plane.len(),
-            tick_secs = crate::trust::sweep::SWEEP_TICK.as_secs(),
-            "a2a: re-verification job started"
+            "a2a: verify-on-call is armed — fronted agents are re-verified on the delegation path \
+             within their `verify_ttl`, single-flight and fail-closed, with no background sweep"
         );
         // PUBLISH BUSBAR'S AGENT-CARD ISSUER KEY, once, at the one moment an operator is watching.
         // busbar signs the cards it serves so external callers have something to pin it BY, and a pin
@@ -240,21 +238,22 @@ pub(crate) fn a2a_start(ctx: &crate::plane::registry::BootCtx) -> Result<(), Str
             &handle.load().secret_resolver,
         )
         .map_err(|e| format!("a2a: outbound client identity: {e}"))?;
-        // THE PER-AGENT TRANSPORTS, BUILT ONCE for the job's lifetime rather than per tick. The
-        // identities were resolved at boot and the plane the job holds is this generation's, so
-        // rebuilding the bundle every thirty seconds would re-derive a constant — and, now that a
-        // transport can carry a private key, would do so with key material in hand on every tick.
+        // THE PER-AGENT TRANSPORTS, BUILT ONCE at boot. The identities were resolved just above (a
+        // failure is a boot refusal), and a transport now carries a private key, so building the
+        // bundle once and holding it is what keeps that key material out of a per-request rebuild.
         let live = std::sync::Arc::new(crate::a2a::transport::LiveCardFetch::presenting(
             plane.fetch_policy().clone(),
             &a2a_identities,
         ));
-        // Handle intentionally dropped, exactly as the flusher's is: the job runs for the process
-        // lifetime and exits its own loop on the shutdown broadcast. Started through the core spawner
-        // handed on the ctx rather than `crate::trust::sweep::spawn` directly.
-        std::mem::drop((ctx.spawn_reverify)(
-            crate::a2a::verify::ReverifySweeper { plane, live },
-            shutdown.subscribe(),
-        ));
+        // PUBLISHED FOR VERIFY-ON-CALL to re-fetch a stale card with. It carries the per-agent CLIENT
+        // IDENTITIES the card verification (`pin.mechanism: mtls`) needs, which the plane's own relay
+        // seam — built at `from_config` before secrets resolve — deliberately does not: the delegation
+        // HOP authenticates with a leased bearer and needs no client certificate, so the two transports
+        // are separate exactly as they were when the sweep held its own. Set into the app's
+        // boot-resolved `OnceLock` (carried across every config apply), so the request path always has
+        // a transport to re-verify with. There is no sweep to spawn: verify-on-call is lazy and runs on
+        // the delegation path, so a fronted agent nobody delegates to is never re-fetched.
+        let _ = app.a2a_cards.set(live);
     }
     Ok(())
 }

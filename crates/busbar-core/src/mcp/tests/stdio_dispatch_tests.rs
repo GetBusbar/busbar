@@ -61,7 +61,7 @@ fn stdio_server(script: &str) -> McpServerDefCfg {
         args: vec!["-c".to_string(), script.to_string()],
         env: Default::default(),
         cwd: None,
-        refresh_ttl: None,
+        verify_ttl: None,
         timeout: Some("5s".to_string()),
         pin: ServerPinCfg {
             mechanism: McpPinMechanism::CertSpki,

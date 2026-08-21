@@ -179,7 +179,7 @@ const MIGRATED_FILES: &[&str] = &[
     "src/auth/self_keys.rs",
     "src/egress_auth/mod.rs",
     "src/egress_auth/bearer_token.rs",
-    "src/trust/sweep.rs",
+    "src/trust/verify.rs",
     "src/oauth_as/plane.rs",
     "src/sigv4.rs",
     "src/governance/mod.rs",

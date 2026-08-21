@@ -18,8 +18,9 @@
 //! [`super::registry::AgentRegistration`] is that intent PLUS everything that has since been
 //! observed: the last sighting, the cached card, the re-verification ledger, the breaker's window.
 //! The split is the same one `AgentDefCfg`'s own doc draws, and this type is where the second half
-//! actually lives — behind one `RwLock`, because a re-verification sweep mutates every registration
-//! it looks at and a reader that saw half a sweep would be reading a registry that never existed.
+//! actually lives — behind one `RwLock`, because verify-on-call mutates the registration it
+//! re-verifies and a config apply rebuilds the whole registry, and a reader that saw a half-applied
+//! mutation would be reading a registry that never existed.
 //!
 //! ## Nothing here comes into existence trusted
 //!
@@ -48,24 +49,25 @@ pub(crate) struct A2aPlane {
     /// failure: an operator may configure `agents:` for the DELEGATING direction alone, and
     /// refusing to boot would make the receiving side's requirement the whole plane's.
     public_url: Option<String>,
-    /// The card-fetch policy every pass on this plane uses. One reading, so the sweep and an
+    /// The card-fetch policy every pass on this plane uses. One reading, so verify-on-call and an
     /// operator-driven `connect` cannot guard differently.
     fetch_policy: FetchPolicy,
     /// The operator's trust roots, by agent id. Held apart from the registrations because a pin is
     /// INTENT: it is re-read from config on every apply, and a registration's accumulated half is
     /// not.
     pins: BTreeMap<String, AgentPinCfg>,
-    /// THE REGISTRY. One lock over the whole vector rather than one per entry: a sweep walks all of
-    /// them, and a reader that saw a half-applied sweep would be reading a registry state that
-    /// never existed at any instant.
+    /// THE REGISTRY. One lock over the whole vector rather than one per entry: verify-on-call takes
+    /// the WRITE lock to re-verify one agent and a config apply rebuilds the whole vector, and a
+    /// reader that saw a half-applied mutation would be reading a registry state that never existed at
+    /// any instant.
     registrations: RwLock<Vec<AgentRegistration>>,
     /// THE GENERATION THIS REGISTRY IS AT, taken from the process-wide monotonic source in
     /// [`crate::trust::validate`] and re-taken on every mutation.
     ///
     /// It is what makes an in-flight request unable to outlive the approval it was admitted under.
     /// Admission records this value; the gate immediately before the socket re-reads it; a move is a
-    /// refusal. Without it a re-verification sweep, a breaker trip or an operator's `suspend` that
-    /// lands between admission and the socket takes effect on the NEXT request rather than on the
+    /// refusal. Without it a verify-on-call re-verification, a breaker trip or an operator's `suspend`
+    /// that lands between admission and the socket takes effect on the NEXT request rather than on the
     /// one in flight — the exact window the sibling plane closed and this one had left open.
     ///
     /// Bumped for ANY mutation rather than only for trust-relevant ones. Deciding whether a
@@ -222,7 +224,7 @@ impl A2aPlane {
     /// THE PLANE'S POLICY, NARROWED TO ONE REGISTRATION by that registration's `allow_private:`.
     ///
     /// Derived rather than stored, on every ask, so there is exactly one reading of the operator's
-    /// line: the sweep, an operator-driven `connect` and an `approve` all obtain the policy here and
+    /// line: verify-on-call, an operator-driven `connect` and an `approve` all obtain the policy here and
     /// therefore cannot guard differently — which is the property `fetch_policy` was added to hold
     /// for the plane-wide half and which a per-agent knob would have broken if each caller assembled
     /// its own.
@@ -257,7 +259,7 @@ impl A2aPlane {
 
     /// MUTATE the registry. Same closure discipline as the read side, for the same reason.
     ///
-    /// Poisoning is recovered from rather than propagated: a panic in one sweep must not turn the
+    /// Poisoning is recovered from rather than propagated: a panic in one re-verification must not turn the
     /// registry into a permanently unreadable object, because a registry nobody can read is a plane
     /// that has silently stopped re-verifying anything.
     pub(crate) fn with_registrations_mut<R>(
@@ -280,6 +282,62 @@ impl A2aPlane {
     /// THE GENERATION THIS REGISTRY IS AT RIGHT NOW. Recorded at admission, re-read at the gate.
     pub(crate) fn generation(&self) -> u64 {
         self.generation.load(Ordering::Relaxed)
+    }
+
+    /// RE-VERIFY ONE FRONTED AGENT'S CARD ON THE DELEGATION PATH — this plane's FETCH for verify-on-call.
+    ///
+    /// The single-flight, the freshness bound and the fail-closed ordering are
+    /// [`crate::trust::verify`]'s, once, for every plane; what is here is this plane's fetch: the same
+    /// signed-card read, verification against the operator's out-of-band root, and settle that
+    /// [`super::verify::reverify_once`] performs — over the per-agent transport that carries THIS
+    /// registration's client certificate (`cards`), under the registry write lock. Blocking (a card
+    /// fetch is a blocking socket read behind the SSRF guard), so the caller runs it on a blocking
+    /// thread. `None` when the agent has no live registration or pin — a removed agent is not
+    /// re-verified against a root nobody currently declares.
+    ///
+    /// It updates the registration's sighting and stamps its ledger, so the freshness clock records
+    /// when verify-on-call looked and a failed contact derives `Error` (which the delegation gate then
+    /// refuses fail-closed). Because [`Self::with_registrations_mut`] bumps the generation, the caller
+    /// re-reads [`Self::generation`] AFTER this for the hop's admitted generation.
+    pub(crate) fn reverify_agent(
+        &self,
+        agent_id: &str,
+        resolver: &dyn super::fetch::Resolver,
+        transports: &dyn super::verify::CardTransports,
+        now_ms: u64,
+    ) -> Option<super::verify::Pass> {
+        let pin_cfg = self.pin_for(agent_id)?.clone();
+        let fetch_policy = self.fetch_policy_for(agent_id);
+        self.with_registrations_mut(|regs| {
+            let reg = regs.iter_mut().find(|r| r.agent_id == agent_id)?;
+            let transport = transports.for_agent(agent_id);
+            Some(super::verify::reverify_once(
+                reg,
+                &pin_cfg,
+                resolver,
+                transport,
+                &fetch_policy,
+                now_ms,
+                false,
+            ))
+        })
+    }
+
+    /// THIS AGENT'S VERIFICATION LEDGER and its re-verification policy — the two the verify-on-call
+    /// gate reads to decide staleness (`fetched_at` and `verify_ttl`). `None` for an agent with no live
+    /// registration. Read WITHOUT mutating, so a freshness check never bumps the generation.
+    pub(crate) fn verify_state_of(
+        &self,
+        agent_id: &str,
+    ) -> Option<(
+        crate::trust::reverify::Ledger,
+        crate::trust::reverify::Policy,
+    )> {
+        self.with_registrations(|regs| {
+            regs.iter()
+                .find(|r| r.agent_id == agent_id)
+                .map(|r| (r.ledger.clone(), r.reverify.clone()))
+        })
     }
 
     /// How many agents this deployment fronts.

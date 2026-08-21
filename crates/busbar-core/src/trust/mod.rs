@@ -460,13 +460,13 @@ impl<A: PinnedArtifact> Approval<A> {
 /// second plane wants it". The MCP refresh timer is that second plane.
 pub(crate) mod reverify;
 
-/// THE SWEEP JOB that drives [`reverify::due`] on a timer, written once for every plane. `reverify`
-/// decides WHEN to look; this is what makes somebody look with no operator present, which is the
-/// difference between a control that exists and a control that runs.
-///
-/// It lives beside the cadence rather than on either plane because both planes need exactly it. The
-/// plane supplies one method — the fetch — and nothing above that method knows which plane it is on.
-pub(crate) mod sweep;
+/// VERIFY-ON-CALL: the lazy, single-flight freshness gate that drives [`reverify::due`] on the
+/// REQUEST path, written once for every plane. `reverify` decides WHEN an observation is stale; this
+/// makes somebody look — the CALL itself, with no background timer — coalesces concurrent stale-hits
+/// into one fetch, and fails closed when the upstream cannot be reached. It lives beside the cadence
+/// for the reason [`reverify`] does: the plane supplies only its fetch, and nothing above it is
+/// per-plane. It REPLACED the background sweep job both planes used to run.
+pub(crate) mod verify;
 
 /// THE DECLARED PIN, READ ONCE — *"what authenticity root did the operator write down?"*, asked in
 /// one order for every plane.

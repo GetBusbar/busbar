@@ -156,7 +156,11 @@ pub(crate) const PLANE_DECL: crate::plane::registry::PlaneDecl =
         admin_routes: Some(mcp_admin_routes),
         openapi: Some(mcp_openapi_fragment),
         hydrate: Some(mcp_hydrate),
-        start: Some(mcp_start),
+        // NO START HOOK. Verify-on-call is LAZY — it re-verifies on the `tools/call` path against a
+        // ≤`verify_ttl` single-flight snapshot (see `crate::trust::verify`), so there is no background
+        // sweep to spawn at boot. A server nobody calls is never fetched. The daemon this replaced is
+        // gone; its removal is the whole of this plane's boot change.
+        start: None,
         on_swap: Some(mcp_on_swap),
     };
 
@@ -269,27 +273,6 @@ pub(crate) fn mcp_hydrate(ctx: &crate::plane::registry::BootCtx) -> Result<(), S
              the change or a sweep observes them serving what was approved"
         ),
     }
-    Ok(())
-}
-
-/// START THE MCP UNATTENDED DRIFT SWEEP after the listeners are built — the tool-list refresh job
-/// that re-hashes each registered server on its own `refresh_ttl:` and quarantines on drift with no
-/// operator present. Started only when there is a registration to sweep and ONCE at boot (a second
-/// job against the same registry would double every fetch and race every ledger stamp); it holds the
-/// HANDLE, so a config apply is picked up on the next tick rather than sweeping a replaced generation.
-/// The handle intentionally dropped: the job runs for the process lifetime and exits its own loop on
-/// the shutdown broadcast. This plane never refuses boot, so it always returns `Ok`.
-pub(crate) fn mcp_start(ctx: &crate::plane::registry::BootCtx) -> Result<(), String> {
-    let handle = ctx
-        .handle
-        .expect("mcp start runs in the START phase, which supplies the live app handle");
-    let shutdown = ctx
-        .shutdown
-        .expect("mcp start runs in the START phase, which supplies the shutdown broadcast");
-    std::mem::drop(crate::mcp::connect::spawn_refresh_job(
-        handle,
-        shutdown.subscribe(),
-    ));
     Ok(())
 }
 
@@ -458,12 +441,9 @@ tokio::task_local! {
 }
 pub(crate) mod config;
 /// THE CONNECT / REFRESH PATH: fetch an upstream's LIVE tool list, re-hash it, and feed the
-/// trust lifecycle — the missing right-hand side of the rug-pull comparison.
+/// trust lifecycle — the missing right-hand side of the rug-pull comparison. On-demand now, driven by
+/// verify-on-call ([`crate::trust::verify`]) rather than a boot-time sweep.
 pub(crate) mod connect;
-/// The one thing the boot path needs from this plane's drift defence: START IT. Re-exported here so
-/// `main.rs` names a plane rather than a plane's internals, and so the call site a test ratchets on
-/// is one stable string.
-pub use connect::spawn_refresh_job;
 
 /// THIS REVISION'S ENVELOPE RULES. Not `ingress` any more, and the rename is the statement: the
 /// ingress SEQUENCE is `crate::ingress::protocol`, once, for every JSON-RPC plane. Every rule left

@@ -3252,6 +3252,40 @@ pub const PLANE_DEMOTIONS_UNREAD: Diagnostic = Diagnostic {
     retired: false,
 };
 
+pub const TRUST_VERIFY_REFUSED_ON_DRIFT: Diagnostic = Diagnostic {
+    code: 7097,
+    class: Class::Plane,
+    slug: "trust-verify-refused-on-drift",
+    title: "Verify-on-call refused a call because the upstream's advertised surface drifted",
+    severity: Severity::BenignRecurring,
+    summary: "On the request path, verify-on-call re-fetched the upstream's advertised surface (an \
+              MCP tool's name+args+description, or an A2A agent card) within `verify_ttl` and found \
+              it DRIFTED from the fingerprint the operator approved, so the call was refused BEFORE \
+              dispatch. The refusal itself is the signal; this is a warn-once-per-subject note so \
+              persistent drift does not spam.",
+    action: "Review the change on the trust surface and re-approve the new fingerprint if it is \
+             legitimate, or investigate the upstream if it is not.",
+    since: "1.6.0",
+    retired: false,
+};
+
+pub const TRUST_VERIFY_UNREACHABLE: Diagnostic = Diagnostic {
+    code: 7098,
+    class: Class::Plane,
+    slug: "trust-verify-unreachable",
+    title: "Verify-on-call could not reach an upstream to re-verify, and refused fail-closed",
+    severity: Severity::Actionable,
+    summary: "On the request path, verify-on-call needed to re-verify an upstream whose recorded \
+              observation was older than `verify_ttl`, and the re-fetch FAILED (unreachable or \
+              unverifiable). The call was REFUSED fail-closed rather than served against a snapshot \
+              older than the operator's bound. Latched per subject.",
+    action: "Restore reachability to the named upstream. Calls to it are refused until a re-fetch \
+             succeeds within `verify_ttl`; a larger `verify_ttl` widens the drift-serving window \
+             and is an explicit, documented security downgrade.",
+    since: "1.6.0",
+    retired: false,
+};
+
 pub const ADMIN_STORE_OPERATION_FAILED: Diagnostic = Diagnostic {
     code: 1006,
     class: Class::Durability,
@@ -4044,6 +4078,8 @@ pub static REGISTRY: &[&Diagnostic] = &[
     &PLANE_DEMOTION_WRITE_FAILED,
     &PLANE_DEMOTION_CLEAR_FAILED,
     &PLANE_DEMOTIONS_UNREAD,
+    &TRUST_VERIFY_REFUSED_ON_DRIFT,
+    &TRUST_VERIFY_UNREACHABLE,
     &ADMIN_STORE_OPERATION_FAILED,
     &ADMIN_STORE_TASK_JOIN_FAILED,
     &GROUP_DELETE_KEY_READ_FAILED,

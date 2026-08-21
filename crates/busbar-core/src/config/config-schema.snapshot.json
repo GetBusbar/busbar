@@ -946,10 +946,6 @@
           "optional": true,
           "type": "indexmap::IndexMap<String, PromptAllowCfg>"
         },
-        "refresh_ttl": {
-          "optional": true,
-          "type": "String"
-        },
         "resource_templates_allow": {
           "optional": true,
           "type": "indexmap::IndexMap<String, ResourceTemplateAllowCfg>"
@@ -987,6 +983,10 @@
           "type": "crate::auth::UpstreamCreds"
         },
         "url": {
+          "optional": true,
+          "type": "String"
+        },
+        "verify_ttl": {
           "optional": true,
           "type": "String"
         }

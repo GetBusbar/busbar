@@ -18,13 +18,13 @@ The `agents:` section registers external A2A agents. Registering one turns on **
 
 ### A deployment with no `agents:` block gains nothing
 
-`A2aPlane::from_config` returns `None` when no agent is configured, and that is the whole gate: no registry, no re-verification job, no route (`crates/busbar-core/src/a2a/plane.rs:7-13`). "Is the A2A plane running here?" is answered by the mounted surface rather than by a boolean an operator has to trust.
+`A2aPlane::from_config` returns `None` when no agent is configured, and that is the whole gate: no registry, no re-verification, no route (`crates/busbar-core/src/a2a/plane.rs`). "Is the A2A plane running here?" is answered by the mounted surface rather than by a boolean an operator has to trust.
 
 ### And a delegating-only deployment mounts no route either
 
 The receiving side additionally needs a top-level **`public_url:`**. `A2aPlane::admission()` answers `None` without one (`crates/busbar-core/src/a2a/plane.rs:301-307`), `receive::mount` then returns the router untouched (`crates/busbar-core/src/a2a/receive.rs:2393-2396`), and `appbuild` claims no path and binds no audience (`crates/busbar-core/src/appbuild.rs:1469-1487`). That is deliberate rather than an oversight: an operator may configure `agents:` for the delegating direction alone, and a deployment that only delegates fronts nothing — it has no resource for a token to be bound to and no metadata document to point a refused caller at. Refusing to boot would make the receiving side's requirement the whole plane's.
 
-Concretely, with `agents:` but no `public_url:` you get none of `/a2a`, `/a2a/`, `/a2a/agents/{id}`, the REST routes, `/a2a/push`, `/lf.a2a.v1.A2AService/*`, `/.well-known/agent-card.json` or `/.well-known/oauth-protected-resource/a2a`. The relay, the credential leases, the registry and the re-verification sweep all still exist.
+Concretely, with `agents:` but no `public_url:` you get none of `/a2a`, `/a2a/`, `/a2a/agents/{id}`, the REST routes, `/a2a/push`, `/lf.a2a.v1.A2AService/*`, `/.well-known/agent-card.json` or `/.well-known/oauth-protected-resource/a2a`. The relay, the credential leases, the registry and verify-on-call all still exist.
 
 There is a second consequence worth knowing: the `a2a_inbound` credential kind is conferred **only** when the plane is audience-bound (`crates/busbar-core/src/a2a/receive.rs:53-62`), and `inbound::authorize` refuses the empty kind. So even if a route existed, nothing could be admitted through it.
 
@@ -57,7 +57,7 @@ Naming an agent `hooks` or `upstream_credentials` is refused at parse (`crates/b
 | `client_identity` | object | **required** when `pin.mechanism: mtls`; optional otherwise; **refused** on an `http://` URL | absent | The certificate Busbar PRESENTS to this endpoint. |
 | `client_identity.cert` | `SecretRef` | yes (within the block) | — | PEM chain, leaf first. |
 | `client_identity.key` | `SecretRef` | yes (within the block) | — | PEM private key (PKCS#8, PKCS#1 or SEC1). **There is deliberately no way to write PEM bytes here** — an inlined private key is a private key in every config dump, every `--validate` output, every admin GET and every version-history row. |
-| `reverify_ttl` | `<n><s\|m\|h\|d>` | no | `6h` (`a2a/config.rs:67`) | How long a verification stays fresh before the card is re-fetched and re-verified. |
+| `reverify_ttl` | `<n><s\|m\|h\|d>` | no | `5s` (`a2a/config.rs`) | The longest a verification may be reused on the delegation path before the card is re-fetched and re-verified. `0` = strict-live; a larger value is an explicit security downgrade. See [Tool and agent trust](/docs/tool-and-agent-trust/). |
 | `recovery_backoff` | `<n><s\|m\|h\|d>` | no | `15m` (`a2a/config.rs:80`) | How long after a DRIFT a clean answer is disbelieved. The only half of the cadence that is ever held. |
 | `protocol_version` | string | no | the release default | Pinned per registration because the well-known card path moved between versions, and a registration that follows whatever the upstream now claims has no pin at all. |
 | `allow_private` | bool | no | `false` | Permits a plaintext `http://` endpoint and a loopback / link-local / RFC1918 / CGNAT address for this one agent. **Never** permits a cloud-metadata address, whatever it says. |
@@ -85,7 +85,7 @@ agents:
   planner:
     url: https://planner.vendor.example/a2a
     pin: { mechanism: jws_issuer_key, key: "MCowBQYDK2Vw…" }
-    reverify_ttl: 6h
+    reverify_ttl: 5s
     recovery_backoff: 15m
     upstream_credential:
       secret: { env: PLANNER_API_KEY }
@@ -245,7 +245,7 @@ The order is verify-then-fingerprint, always. A failed verification is recorded 
 
 **`unpinned` is registrable and never approvable** — there is no fingerprint to approve (`crates/busbar-core/src/a2a/pin.rs:90`, `:217`).
 
-**There is no knob that slows detection or delays a demotion.** Only recovery is held (`recovery_backoff:`), and a test enumerates the knobs and fails if one grows a direction (`verify.rs:25-31`). The `reverify_ttl:` you set is how long a verification stays fresh; the sweep that notices a TTL elapsed ticks every 30 seconds and is not configurable (`crates/busbar-core/src/trust/sweep.rs:49-56`).
+**There is no knob that slows detection or delays a demotion.** Only recovery is held (`recovery_backoff:`), and a test enumerates the knobs and fails if one grows a direction (`verify.rs`). The `reverify_ttl:` you set is the longest a verification may be reused on the delegation path; a stale card is re-verified **on the call**, single-flight and fail-closed, with no background job — see [Tool and agent trust](/docs/tool-and-agent-trust/).
 
 ---
 

@@ -632,18 +632,25 @@ pub(crate) const DEFAULT_MAX_INPUT_REQUIRED_ROUNDS: u32 = 3;
 /// whatever this says.
 pub(crate) const DEFAULT_MAX_CALLER_ASK_ROUNDS: u32 = 3;
 
-/// THE DEPLOYMENT-WIDE REFRESH CADENCE a registration gets when it spells no `refresh_ttl:`.
+/// THE DEPLOYMENT-WIDE MAX VERIFICATION STALENESS a registration gets when it spells no `verify_ttl:`.
 ///
-/// Deliberately the same `6h` as the sibling plane's [`crate::a2a::config::DEFAULT_REVERIFY_TTL`],
+/// Deliberately the same `5s` as the sibling plane's [`crate::a2a::config::DEFAULT_VERIFY_TTL`],
 /// because the two are the same decision about the same risk — how long a hash-pinned upstream may
-/// have drifted before anybody looks — and an operator who learns the number on one plane should not
-/// find a different one on the other. If a reason ever emerges for them to differ, it goes in
-/// writing next to whichever one moves.
+/// have drifted before the CALL that dispatches to it re-verifies — and an operator who learns the
+/// number on one plane should not find a different one on the other. If a reason ever emerges for
+/// them to differ, it goes in writing next to whichever one moves.
 ///
-/// A DEFAULT and not an opt-in: the whole point of A2.1 is that the rug-pull defence runs without an
-/// operator present, and a cadence that has to be switched on per server is a defence that is off on
-/// every registration whose author did not know to switch it on.
-pub(crate) const DEFAULT_MCP_REFRESH_TTL: &str = "6h";
+/// `5s` and not the old daemon's `6h`, because the meaning changed. This is no longer a background
+/// cadence: it is the LONGEST an observation may be reused on the request path before verify-on-call
+/// re-fetches. The intrinsic verify→dispatch race is already ms–s, so sub-second precision buys
+/// nothing, and `5s` bounds worst-case drift-serving to seconds while single-flight holds upstream
+/// load to at most one fetch per `verify_ttl` per server. `verify_ttl: 0` is strict-live (a fetch per
+/// call); a LARGER value is an explicit, docs-flagged security downgrade.
+///
+/// A DEFAULT and not an opt-in: the whole point is that the rug-pull defence runs BEFORE the call
+/// without an operator present, and a bound that has to be switched on per server is a defence that
+/// is off on every registration whose author did not know to switch it on.
+pub(crate) const DEFAULT_MCP_VERIFY_TTL: &str = "5s";
 
 /// One entry in the top-level `tools:` NAMED-DEFINITION map — one registered external MCP server.
 ///
@@ -693,16 +700,19 @@ pub(crate) struct McpServerDefCfg {
     pub(crate) cwd: Option<String>,
     /// The out-of-band trust root. REQUIRED, and required to be spelled even when it is `unpinned`.
     pub(crate) pin: ServerPinCfg,
-    /// `<n><s|m|h|d>` — how long an observation stays fresh before the upstream's tool list is
-    /// re-fetched and re-hashed by the refresh timer. Absent ⇒ [`DEFAULT_MCP_REFRESH_TTL`].
+    /// `<n><s|m|h|d>` — the LONGEST an observation may be reused on the request path before
+    /// verify-on-call re-fetches and re-hashes the upstream's tool list. Absent ⇒
+    /// [`DEFAULT_MCP_VERIFY_TTL`] (`5s`); `0` is strict-live (re-verify every call).
     ///
-    /// This is the ONE cadence knob on this plane, and it is deliberately the only one. There is no
-    /// key that slows DETECTION, none that delays a QUARANTINE, and no per-server "skip if it failed
-    /// last time" — every one of those would be a window an upstream could open for itself by
-    /// misbehaving, and choosing when to misbehave is entirely within its gift. See
-    /// [`crate::trust::sweep`], the one job both planes run, which has no knob at all.
+    /// This is the ONE verification knob on this plane, and it is deliberately the only one. There is
+    /// no key that slows DETECTION below what this bounds, none that delays a QUARANTINE, and no
+    /// per-server "skip if it failed last time" — every one of those would be a window an upstream
+    /// could open for itself by misbehaving, and choosing when to misbehave is entirely within its
+    /// gift. A LARGER value is an explicit security downgrade (a wider drift-serving window), which is
+    /// why the default is seconds rather than the old daemon's hours. See [`crate::trust::verify`],
+    /// the one gate both planes run on the call path.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) refresh_ttl: Option<String>,
+    pub(crate) verify_ttl: Option<String>,
     /// `<n><s|m|h|d>` — the wall-clock budget for ONE outbound leg to THIS server: the tool call,
     /// and separately the RFC 8693 token exchange. Absent ⇒
     /// [`super::upstream::DEFAULT_UPSTREAM_TIMEOUT`],
@@ -720,7 +730,7 @@ pub(crate) struct McpServerDefCfg {
     /// ## And why it is a DEADLINE and not a retry or a circuit breaker
     ///
     /// This plane deliberately has no per-server "skip if it failed last time" and no key that
-    /// slows detection (see `refresh_ttl`), because every one of those is a window an upstream can
+    /// slows detection (see `verify_ttl`), because every one of those is a window an upstream can
     /// open for itself by misbehaving. A deadline is the opposite: it is a bound the upstream
     /// cannot lengthen by choosing to be slow.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1035,8 +1045,9 @@ impl crate::plane::config::PlaneCfg for ToolsCfg {
                 args: _,
                 cwd: _,
                 pin: _,
-                // A duration string driving the refresh timer's cadence. Not a credential.
-                refresh_ttl: _,
+                // A duration string bounding max verification staleness on the call path. Not a
+                // credential.
+                verify_ttl: _,
                 // A duration string bounding one outbound leg to this server. Not a credential.
                 timeout: _,
                 transport: _,
@@ -1098,10 +1109,10 @@ impl crate::plane::config::PlaneCfg for ToolsCfg {
 /// admin write path calls it from
 /// [`crate::config::named_map::NamedMapSection::parse_def`], so the two paths cannot drift into
 /// different grammars — the ONE GRAMMAR, TWO PATHS rule.
-/// THE OPERATOR'S REFRESH CADENCE for one registration, lifted into the plane-neutral
-/// [`crate::trust::reverify::Policy`] the timer consumes.
+/// THE OPERATOR'S MAX VERIFICATION STALENESS for one registration, lifted into the plane-neutral
+/// [`crate::trust::reverify::Policy`] the verify-on-call gate consumes.
 ///
-/// Config in, policy out, no clock and no I/O — so the cadence an operator wrote and the cadence the
+/// Config in, policy out, no clock and no I/O — so the bound an operator wrote and the bound the
 /// decision uses are provably the same value rather than two parallel readings of it. Deliberately
 /// the same shape as [`crate::a2a::config::policy_for`], because it feeds the same `due`.
 ///
@@ -1111,15 +1122,12 @@ impl crate::plane::config::PlaneCfg for ToolsCfg {
 /// [`crate::mcp::client::catalogue::ServerCatalogue::observe`] has no such arm — it adopts what it
 /// saw — so a non-zero value here would be a number that is read and then ignored, which is worse
 /// than no number at all. `due` does not consult it. Giving MCP the recovery hold is real work on
-/// `observe`, and it is not what A2.1 is: A2.1 is that the DEMOTION happens with nobody watching,
-/// and demotion is the half that is never held on either plane.
-pub(crate) fn refresh_policy_for(
+/// `observe`, and it is not what verify-on-call is: verify-on-call is that the DEMOTION happens
+/// BEFORE the call, and demotion is the half that is never held on either plane.
+pub(crate) fn verify_policy_for(
     def: &McpServerDefCfg,
 ) -> Result<crate::trust::reverify::Policy, String> {
-    let ttl = def
-        .refresh_ttl
-        .as_deref()
-        .unwrap_or(DEFAULT_MCP_REFRESH_TTL);
+    let ttl = def.verify_ttl.as_deref().unwrap_or(DEFAULT_MCP_VERIFY_TTL);
     let ttl_ms = crate::admin::parse_duration_secs(ttl)?.saturating_mul(1_000);
     Ok(crate::trust::reverify::Policy {
         ttl_ms,
@@ -1315,11 +1323,11 @@ pub(crate) fn validate_server(name: &str, def: &McpServerDefCfg) -> Result<(), S
         ));
     }
 
-    // The cadence is parsed at BOOT, so a malformed `refresh_ttl:` lands on the operator who wrote
-    // it rather than silently falling back to a default six hours later — a defence that quietly
-    // uses a cadence the operator did not write is a defence whose behaviour nobody can predict.
-    if let Some(ttl) = def.refresh_ttl.as_deref() {
-        crate::admin::parse_duration_secs(ttl).map_err(|e| format!("{at}: `refresh_ttl:` {e}"))?;
+    // The bound is parsed at BOOT, so a malformed `verify_ttl:` lands on the operator who wrote it
+    // rather than silently falling back to a default later — a defence that quietly uses a bound the
+    // operator did not write is a defence whose behaviour nobody can predict.
+    if let Some(ttl) = def.verify_ttl.as_deref() {
+        crate::admin::parse_duration_secs(ttl).map_err(|e| format!("{at}: `verify_ttl:` {e}"))?;
     }
 
     // The DEADLINE is parsed at boot for the same reason, and `0` is refused rather than accepted

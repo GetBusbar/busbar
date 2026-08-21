@@ -59,12 +59,17 @@
 
 use serde::{Deserialize, Serialize};
 
-/// The default re-verification cadence for a registration that names none: six hours.
+/// The default MAX VERIFICATION STALENESS for a registration that names none: five seconds.
 ///
-/// Chosen as the longest window an operator would accept for "a vendor rotated a key and we have
-/// not looked", not as a performance figure — the fetch is one HTTP request per registered agent
-/// per period and is nowhere near any budget. An operator who wants tighter says so per agent.
-pub(crate) const DEFAULT_REVERIFY_TTL: &str = "6h";
+/// The same `5s` as the sibling plane's [`crate::mcp::config::DEFAULT_MCP_VERIFY_TTL`], because the
+/// two are one decision about one risk — how long a signed card may have drifted before the DELEGATION
+/// that submits to it re-verifies. Under verify-on-call this is a bound on reuse on the request path,
+/// not a background cadence: the intrinsic verify→submit race is already ms–s, so sub-second precision
+/// buys nothing, and single-flight holds the card fetch to at most one per `reverify_ttl` per agent.
+/// `reverify_ttl: 0` is strict-live; a larger value is an explicit, docs-flagged security downgrade.
+/// (The A2A key keeps its name `reverify_ttl`; the MCP sibling's is `verify_ttl` — the admin API
+/// projects both under one `reverify_ttl` view field, so the concept is one across the two planes.)
+pub(crate) const DEFAULT_REVERIFY_TTL: &str = "5s";
 
 /// THE DEPLOYMENT-WIDE RECOVERY BACKOFF a registration gets when it spells no `recovery_backoff:`.
 ///
@@ -207,8 +212,8 @@ pub(crate) struct AgentDefCfg {
     /// does about signing its card.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) client_identity: Option<ClientIdentityCfg>,
-    /// `<n><s|m|h|d>` — how long a verification stays fresh before the card is re-fetched and
-    /// re-verified. Absent ⇒ [`DEFAULT_REVERIFY_TTL`].
+    /// `<n><s|m|h|d>` — the LONGEST a verification may be reused on the delegation path before the
+    /// card is re-fetched and re-verified. Absent ⇒ [`DEFAULT_REVERIFY_TTL`] (`5s`); `0` is strict-live.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) reverify_ttl: Option<String>,
     /// How long after a DRIFT a clean answer is disbelieved. Absent ⇒ the deployment default.
