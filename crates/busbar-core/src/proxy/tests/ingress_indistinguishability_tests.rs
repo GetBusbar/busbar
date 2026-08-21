@@ -2687,10 +2687,21 @@ async fn test_gemini_json_array_buffered_via_forward_once_matches_primary() {
 #[tokio::test]
 async fn test_cross_protocol_nonstream_over_cap_body_returns_500_uncharged() {
     crate::metrics::init();
+    // Serialize against sibling tests that mutate the process-global `limits::INSTALLED`, and pin a
+    // small KNOWN cap under an RAII guard so the body below is deterministically over-cap regardless
+    // of a concurrent install (restored on drop). Without the lock this test READS the cap to size
+    // `huge`, and a sibling install could move it mid-run.
+    let _lock = crate::limits::LIMITS_TEST_LOCK.lock().await;
+    const CAP: usize = 4096;
+    let _limits_guard = crate::limits::InstallGuard::install(&crate::config::LimitsResolved {
+        request_body_max_bytes: CAP,
+        ..crate::config::LimitsResolved::default()
+    });
+    assert_eq!(super::max_translated_body_bytes(), CAP);
     let state = Arc::new(MockServerState::new());
-    // An OpenAI chat.completion whose `content` alone is > 32 MiB, so the whole body overruns
-    // MAX_TRANSLATED_BODY_BYTES and `read_capped` reports ReadEnd::Truncated.
-    let huge = "x".repeat(super::max_translated_body_bytes() + 1024);
+    // An OpenAI chat.completion whose `content` alone is > CAP, so the whole body overruns the
+    // installed translate cap and `read_capped` reports ReadEnd::Truncated.
+    let huge = "x".repeat(CAP + 1024);
     state.push(MockResponse::Ok {
             status: StatusCode::OK,
             body: json!({
@@ -2756,8 +2767,20 @@ async fn test_cross_protocol_nonstream_over_cap_body_returns_500_uncharged() {
 #[tokio::test]
 async fn test_truncated_body_does_not_refund_budget() {
     crate::metrics::init();
+    // Serialize against the sibling tests that mutate the process-global `limits::INSTALLED`
+    // (`InstallGuard::install` / `install`) — this test READS the translate-body cap to build an
+    // over-cap body, and a sibling's install landing mid-run would move the cap out from under it.
+    // Install a small KNOWN cap under an RAII guard so the body is deterministically over-cap
+    // (restored on drop). See the correctly-locked sibling `..._over_cap_body_still_bills_tail_usage`.
+    let _lock = crate::limits::LIMITS_TEST_LOCK.lock().await;
+    const CAP: usize = 4096;
+    let _limits_guard = crate::limits::InstallGuard::install(&crate::config::LimitsResolved {
+        request_body_max_bytes: CAP,
+        ..crate::config::LimitsResolved::default()
+    });
+    assert_eq!(super::max_translated_body_bytes(), CAP);
     let state = Arc::new(MockServerState::new());
-    let huge = "x".repeat(super::max_translated_body_bytes() + 1024);
+    let huge = "x".repeat(CAP + 1024);
     state.push(MockResponse::Ok {
         status: StatusCode::OK,
         body: json!({
