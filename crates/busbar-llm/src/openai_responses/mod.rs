@@ -134,9 +134,24 @@ const RESPONSE_ID_TOKEN_LEN: usize = 48;
 const EVT_RESPONSE_CREATED: &str = "response.created";
 const EVT_OUTPUT_ITEM_ADDED: &str = "response.output_item.added";
 const EVT_OUTPUT_ITEM_DONE: &str = "response.output_item.done";
+// The intermediate content-part lifecycle a native /v1/responses text stream emits BETWEEN
+// `output_item.added(message)` and the first `output_text.delta`: `content_part.added` establishes
+// the active content part, and `content_part.done` closes it (with the assembled part) just before
+// `output_item.done`. A strict Responses SDK (Codex CLI) that consumes a delta with no active
+// content part logs "OutputTextDelta without active item" and DROPS the output, so these brackets
+// are load-bearing on a cross-protocol egress re-framed into the Responses dialect.
+const EVT_CONTENT_PART_ADDED: &str = "response.content_part.added";
+const EVT_CONTENT_PART_DONE: &str = "response.content_part.done";
 const EVT_OUTPUT_TEXT_DELTA: &str = "response.output_text.delta";
+// The closing bracket of the `output_text.delta` run: a native stream emits `output_text.done`
+// (carrying the COMPLETE assembled text) after the last delta and before `content_part.done`.
+const EVT_OUTPUT_TEXT_DONE: &str = "response.output_text.done";
 const EVT_FUNCTION_CALL_ARGS_DELTA: &str = "response.function_call_arguments.delta";
 const EVT_REASONING_TEXT_DELTA: &str = "response.reasoning_text.delta";
+// The closing bracket of the `reasoning_text.delta` run (mirrors `output_text.done` for a text
+// part): carries the COMPLETE assembled reasoning text and precedes the reasoning item's
+// `output_item.done`.
+const EVT_REASONING_TEXT_DONE: &str = "response.reasoning_text.done";
 const EVT_RESPONSE_COMPLETED: &str = "response.completed";
 const EVT_RESPONSE_FAILED: &str = "response.failed";
 const EVT_RESPONSE_INCOMPLETE: &str = "response.incomplete";

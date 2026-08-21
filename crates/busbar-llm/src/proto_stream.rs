@@ -602,36 +602,41 @@ impl StreamTranslate {
             }
             _ => {}
         }
-        let Some((out_et, mut out_data)) = self.ingress.writer().write_response_event(ev) else {
-            return;
-        };
-        if self.ingress_eventstream {
-            // ingress is a native AWS SDK Bedrock client: pack the logical event into a binary
-            // `application/vnd.amazon.eventstream` frame with valid CRC32. Per-frame protocol metrics
-            // (a native usage frame's real latency) are injected through the framing vtable, so this
-            // agnostic emitter names no wire event-type of its own.
-            self.framing
-                .inject_streaming_metrics(&out_et, &mut out_data, self.started_at);
-            let payload = busbar_core::json::to_vec(&out_data).unwrap_or_default();
-            // Bedrock-INGRESS usage (Change A): the usage carried by this frame was already accumulated
-            // into `last_usage` by `translate_event`/`extract_usage_only` from the structured IR event,
-            // BEFORE this writer ran — so billing reads `usage()` and no longer needs the pre-encode
-            // JSON side-channel the deleted byte-scanner consumed. Just encode the binary frame.
-            out.extend_from_slice(&busbar_core::eventstream::encode_frame(&out_et, &payload));
-        } else {
-            // EGRESS-CHUNK framing seam: the OpenAI per-chunk identity replay AND the
-            // include_usage trailing-usage un-fold now live behind the framing vtable. The framing
-            // mutates the chunk in place (latch/replay id/created/model) and, when it is a usage-bearing
-            // finish chunk, returns a separate trailing usage-only chunk to frame after it — preserving
-            // the exact two-frame order. PassthroughFraming is inert (no mutation, returns `None`), so
-            // every non-OpenAI ingress is untouched. The `[DONE]` terminator stays a separate `finish()`
-            // literal — only the chunk-identity + trailing-usage logic moved here.
-            if let Some(trailing) = self.framing.on_egress_chunk(&mut out_data) {
+        // One IR event may frame as MORE than one wire event: the OpenAI Responses writer expands a
+        // single text `BlockStart`/`BlockStop` into the `output_item.added → content_part.added` and
+        // `output_text.done → content_part.done → output_item.done` brackets a strict Responses SDK
+        // requires (see `ProtocolWriter::write_response_events`). Every other writer yields 0 or 1
+        // frame (the default wraps `write_response_event`), so this loop is a no-op change for them.
+        // Each frame is framed INDEPENDENTLY through the same transport/vtable split below.
+        for (out_et, mut out_data) in self.ingress.writer().write_response_events(ev) {
+            if self.ingress_eventstream {
+                // ingress is a native AWS SDK Bedrock client: pack the logical event into a binary
+                // `application/vnd.amazon.eventstream` frame with valid CRC32. Per-frame protocol metrics
+                // (a native usage frame's real latency) are injected through the framing vtable, so this
+                // agnostic emitter names no wire event-type of its own.
+                self.framing
+                    .inject_streaming_metrics(&out_et, &mut out_data, self.started_at);
+                let payload = busbar_core::json::to_vec(&out_data).unwrap_or_default();
+                // Bedrock-INGRESS usage (Change A): the usage carried by this frame was already accumulated
+                // into `last_usage` by `translate_event`/`extract_usage_only` from the structured IR event,
+                // BEFORE this writer ran — so billing reads `usage()` and no longer needs the pre-encode
+                // JSON side-channel the deleted byte-scanner consumed. Just encode the binary frame.
+                out.extend_from_slice(&busbar_core::eventstream::encode_frame(&out_et, &payload));
+            } else {
+                // EGRESS-CHUNK framing seam: the OpenAI per-chunk identity replay AND the
+                // include_usage trailing-usage un-fold now live behind the framing vtable. The framing
+                // mutates the chunk in place (latch/replay id/created/model) and, when it is a usage-bearing
+                // finish chunk, returns a separate trailing usage-only chunk to frame after it — preserving
+                // the exact two-frame order. PassthroughFraming is inert (no mutation, returns `None`), so
+                // every non-OpenAI ingress is untouched. The `[DONE]` terminator stays a separate `finish()`
+                // literal — only the chunk-identity + trailing-usage logic moved here.
+                if let Some(trailing) = self.framing.on_egress_chunk(&mut out_data) {
+                    write_sse_frame(out, &out_et, &out_data);
+                    write_sse_frame(out, &out_et, &trailing);
+                    continue;
+                }
                 write_sse_frame(out, &out_et, &out_data);
-                write_sse_frame(out, &out_et, &trailing);
-                return;
             }
-            write_sse_frame(out, &out_et, &out_data);
         }
     }
 

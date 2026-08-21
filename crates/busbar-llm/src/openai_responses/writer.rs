@@ -569,15 +569,28 @@ impl ProtocolWriter for ResponsesWriter {
     }
 
     fn write_response_event(&self, ev: &IrStreamEvent) -> Option<(String, serde_json::Value)> {
+        // SINGULAR contract (one wire frame). The streaming seam drives emission through
+        // `write_response_events` (which can carry the multi-frame content-part bracket), so this
+        // method is now reached only for events that frame to a SINGLE wire event — notably
+        // `write_error_frame`, which passes an `Error` (always one frame) — and by tests that assert
+        // the single-frame arms directly. A multi-frame event yields only its FIRST frame here.
+        self.write_response_events(ev).into_iter().next()
+    }
+
+    fn write_response_events(&self, ev: &IrStreamEvent) -> Vec<(String, serde_json::Value)> {
         // The stream's opening event resets the per-stream `sequence_number` counter so each stream's
-        // sequence starts at 0. Every event this writer emits then carries a top-level
-        // `sequence_number` injected just before return (see the closing `map` below). The reader
-        // gates `MessageStart` on `state.started`, so exactly one reset happens per stream.
+        // sequence starts at 0. The reader gates `MessageStart` on `state.started`, so exactly one
+        // reset happens per stream.
         if matches!(ev, IrStreamEvent::MessageStart { .. }) {
             self.reset_sequence_number();
         }
 
-        let emitted: Option<(String, serde_json::Value)> = match ev {
+        // Build the ORDERED wire frames for this IR event. Most events yield 0 or 1 frame; a text
+        // `BlockStart`/`BlockStop` yields the multi-frame content-part bracket a strict Responses SDK
+        // requires (`output_item.added → content_part.added`, and
+        // `output_text.done → content_part.done → output_item.done`), which a single
+        // `(event_type, data)` cannot carry. Each frame is then numbered below.
+        let frames: Vec<(String, serde_json::Value)> = match ev {
             IrStreamEvent::MessageStart {
                 id, created, model, ..
             } => {
@@ -619,47 +632,72 @@ impl ProtocolWriter for ResponsesWriter {
                 resp_obj.insert("output".to_string(), serde_json::json!([]));
                 resp_obj.insert("error".to_string(), serde_json::Value::Null);
                 resp_obj.insert("usage".to_string(), serde_json::Value::Null);
-                Some((
+                vec![(
                     EVT_RESPONSE_CREATED.to_string(),
                     serde_json::json!({ "type": EVT_RESPONSE_CREATED, "response": resp_obj }),
-                ))
+                )]
             }
 
             IrStreamEvent::BlockStart { index, block } => match block {
                 crate::ir::IrBlockMeta::Text => {
                     // A native /v1/responses stream brackets a text part inside a `message` output
-                    // item: `output_item.added(message)` opens it, the `output_text.delta`s carry
-                    // the body, and `output_item.done(message)` closes it. The official SDK builds
-                    // `response.output[]` from the added/done pair, so without an enclosing item the
-                    // assembled Response has an empty output array even though deltas streamed.
-                    // Previously the Text BlockStart returned None, leaving the deltas orphaned.
+                    // item: `output_item.added(message)` opens the item, `content_part.added`
+                    // establishes the active `output_text` content part, the `output_text.delta`s
+                    // carry the body, then `output_text.done` → `content_part.done` →
+                    // `output_item.done` close it. The official SDK builds `response.output[]` from
+                    // the item lifecycle, and a STRICT client (Codex CLI) DROPS every delta that
+                    // arrives with no active content part ("OutputTextDelta without active item"),
+                    // so the `content_part.added` frame here is load-bearing on a cross-protocol
+                    // egress re-framed into the Responses dialect.
                     //
-                    // The `ProtocolWriter` trait emits at most ONE wire frame per IR event, so the
-                    // intermediate `content_part.added` sub-frame (which would need a second frame
-                    // for this single BlockStart) cannot be produced here; the message item's
-                    // `output_item.added`/`.done` pair is the load-bearing lifecycle the SDK reads
-                    // to materialize the assistant message, and the deltas already carry
-                    // `content_index: 0`. Track the open text index (capped) so the matching
-                    // BlockStop emits `output_item.done` for THIS index only.
+                    // `write_response_events` allows more than one wire frame per IR event, so this
+                    // single BlockStart emits BOTH the `output_item.added` that opens the message
+                    // item AND the `content_part.added` that opens its (empty) `output_text` part.
+                    // The matching BlockStop closes the part (`output_text.done`/`content_part.done`)
+                    // and then the item (`output_item.done`). Track the open text index (capped) so
+                    // BlockStop closes THIS index only.
                     if !self.open_text_item(*index) {
-                        return None;
+                        return Vec::new();
                     }
                     let item_id = self.item_id_for(ITEM_ID_PREFIX_MSG, *index);
-                    Some((
-                        EVT_OUTPUT_ITEM_ADDED.to_string(),
-                        serde_json::json!({
-                            "type": EVT_OUTPUT_ITEM_ADDED,
-                            "output_index": index,
-                            "item_id": item_id,
-                            "item": {
-                                "type": ITEM_TYPE_MESSAGE,
-                                "id": item_id,
-                                "role": "assistant",
-                                "status": STATUS_IN_PROGRESS,
-                                "content": []
-                            }
-                        }),
-                    ))
+                    vec![
+                        (
+                            EVT_OUTPUT_ITEM_ADDED.to_string(),
+                            serde_json::json!({
+                                "type": EVT_OUTPUT_ITEM_ADDED,
+                                "output_index": index,
+                                "item_id": item_id,
+                                "item": {
+                                    "type": ITEM_TYPE_MESSAGE,
+                                    "id": item_id,
+                                    "role": "assistant",
+                                    "status": STATUS_IN_PROGRESS,
+                                    "content": []
+                                }
+                            }),
+                        ),
+                        (
+                            EVT_CONTENT_PART_ADDED.to_string(),
+                            serde_json::json!({
+                                "type": EVT_CONTENT_PART_ADDED,
+                                "output_index": index,
+                                "item_id": item_id,
+                                // The single text content part of the message item; the deltas and
+                                // the closing `output_text.done`/`content_part.done` all carry the
+                                // SAME `content_index: 0`.
+                                "content_index": 0,
+                                // A native `content_part.added` opens an EMPTY `output_text` part —
+                                // the text arrives via the deltas and is assembled onto the part at
+                                // `content_part.done`. Shape matches the closing part exactly
+                                // (`type`/`text`/`annotations`).
+                                "part": {
+                                    "type": CONTENT_TYPE_OUTPUT_TEXT,
+                                    "text": "",
+                                    "annotations": []
+                                }
+                            }),
+                        ),
+                    ]
                 }
                 crate::ir::IrBlockMeta::ToolUse { id, name } => {
                     // `item_id` (a stable per-output-item id, `fc_…` for a function-call item) is
@@ -675,7 +713,7 @@ impl ProtocolWriter for ResponsesWriter {
                     // fully finalized item (native `done` carries call_id/name/arguments; the IR
                     // BlockStop carries only the index).
                     self.record_tool_meta(*index, id, name);
-                    Some((
+                    vec![(
                         EVT_OUTPUT_ITEM_ADDED.to_string(),
                         serde_json::json!({
                             "type": EVT_OUTPUT_ITEM_ADDED,
@@ -688,7 +726,7 @@ impl ProtocolWriter for ResponsesWriter {
                                 "name": name
                             }
                         }),
-                    ))
+                    )]
                 }
                 crate::ir::IrBlockMeta::Thinking => {
                     // REASONING (stream): open a native Responses `reasoning` output item. The IR
@@ -697,10 +735,10 @@ impl ProtocolWriter for ResponsesWriter {
                     // it), tracking the open index so BlockStop closes it as a reasoning item. The
                     // prior `None` DROPPED the reasoning lifecycle entirely.
                     if !self.open_reasoning_item(*index) {
-                        return None;
+                        return Vec::new();
                     }
                     let item_id = self.item_id_for(ITEM_ID_PREFIX_RS, *index);
-                    Some((
+                    vec![(
                         EVT_OUTPUT_ITEM_ADDED.to_string(),
                         serde_json::json!({
                             "type": EVT_OUTPUT_ITEM_ADDED,
@@ -713,9 +751,9 @@ impl ProtocolWriter for ResponsesWriter {
                                 "content": []
                             }
                         }),
-                    ))
+                    )]
                 }
-                crate::ir::IrBlockMeta::Image => None,
+                crate::ir::IrBlockMeta::Image => Vec::new(),
             },
 
             IrStreamEvent::BlockDelta { index, delta } => match delta {
@@ -729,7 +767,7 @@ impl ProtocolWriter for ResponsesWriter {
                     // Accumulate the fragment so the matching `BlockStop` can assemble the message
                     // item with its COMPLETE `output_text` for the terminal `response.output` array.
                     self.append_text(*index, text);
-                    Some((
+                    vec![(
                         EVT_OUTPUT_TEXT_DELTA.to_string(),
                         serde_json::json!({
                             "type": EVT_OUTPUT_TEXT_DELTA,
@@ -738,14 +776,14 @@ impl ProtocolWriter for ResponsesWriter {
                             "content_index": 0,
                             "delta": text
                         }),
-                    ))
+                    )]
                 }
                 crate::ir::IrDelta::InputJsonDelta(json_str) => {
                     // Accumulate the arguments fragment so the matching `output_item.done` emits the
                     // COMPLETE arguments string the native event (and the SDK's `event.item.arguments`)
                     // carries.
                     self.append_tool_arguments(*index, json_str);
-                    Some((
+                    vec![(
                         EVT_FUNCTION_CALL_ARGS_DELTA.to_string(),
                         serde_json::json!({
                             "type": EVT_FUNCTION_CALL_ARGS_DELTA,
@@ -753,9 +791,9 @@ impl ProtocolWriter for ResponsesWriter {
                             "item_id": self.item_id_for(ITEM_ID_PREFIX_FC, *index),
                             "delta": json_str
                         }),
-                    ))
+                    )]
                 }
-                &crate::ir::IrDelta::TextDelta(_) => None,
+                &crate::ir::IrDelta::TextDelta(_) => Vec::new(),
                 crate::ir::IrDelta::ThinkingDelta(text) if !text.is_empty() => {
                     // REASONING (stream): emit the native `response.reasoning_text.delta` for the
                     // reasoning item at this index, accumulating the fragment so the matching
@@ -763,7 +801,7 @@ impl ProtocolWriter for ResponsesWriter {
                     // streamed chain-of-thought. `content_index: 0` — the single reasoning content
                     // part of the item.
                     self.append_reasoning(*index, text);
-                    Some((
+                    vec![(
                         EVT_REASONING_TEXT_DELTA.to_string(),
                         serde_json::json!({
                             "type": EVT_REASONING_TEXT_DELTA,
@@ -772,25 +810,25 @@ impl ProtocolWriter for ResponsesWriter {
                             "content_index": 0,
                             "delta": text
                         }),
-                    ))
+                    )]
                 }
                 // An empty ThinkingDelta carries no content (drop it), and Responses has no streaming
                 // analog for a thinking `SignatureDelta` (the signature rides on the item's
                 // `encrypted_content`, not a stream delta) — so both emit no frame.
                 &crate::ir::IrDelta::ThinkingDelta(_)
                 | crate::ir::IrDelta::SignatureDelta(_)
-                | crate::ir::IrDelta::RedactedReasoningDelta(_) => None,
+                | crate::ir::IrDelta::RedactedReasoningDelta(_) => Vec::new(),
                 // Responses carries citations as `annotations` on the assembled `output_text`
                 // part, not as a standalone delta frame — so there is nothing to emit HERE, but the
                 // citations must survive until `BlockStop` builds that part. Buffer them; dropping
                 // them lost every grounding source on a cross-protocol stream into Responses.
                 crate::ir::IrDelta::CitationsDelta(cits) => {
                     self.append_citations(*index, cits);
-                    None
+                    Vec::new()
                 }
                 // Responses streaming logprobs (inside `output_text` events) are out of the 1.2
                 // OpenAI<->Gemini scope; dropped rather than emitted in a non-native shape.
-                crate::ir::IrDelta::LogprobsDelta(_) => None,
+                crate::ir::IrDelta::LogprobsDelta(_) => Vec::new(),
             },
 
             IrStreamEvent::BlockStop { index } => {
@@ -810,16 +848,21 @@ impl ProtocolWriter for ResponsesWriter {
                 // BlockStart with `output_item.added` typed "message") closes with an
                 // `output_item.done` typed "message"; any other (never-opened) index emits NOTHING.
                 //
-                // NOTE: this arm must YIELD its `Option` as the match value (never `return` it), so
-                // the closing `emitted.map(...)` tail injects the top-level `sequence_number` every
-                // native Responses event carries — an early `return Some(..)` would skip it.
+                // NOTE: each branch YIELDS its `Vec` as the match value (never `return`s it), so the
+                // caller numbers each frame with the top-level `sequence_number` every native
+                // Responses event carries — an early `return` would skip that numbering. A text /
+                // reasoning close yields MULTIPLE ordered frames (the part's `.done` bracket THEN the
+                // item's `output_item.done`); a tool close and a never-opened index yield 0/1.
                 if self.take_reasoning_open(*index) {
                     // REASONING (stream): close the reasoning item opened by the Thinking
-                    // BlockStart. Emit `output_item.done` typed "reasoning" with the SAME `rs_…`
-                    // item_id and the assembled reasoning text under a `content[]` `reasoning_text`
-                    // part. Record the finalized item so the terminal `response.completed` emits it in
-                    // `output[]`. The prior writer dropped reasoning entirely, so a reasoning stream
-                    // reassembled to an OpenAI/Anthropic client lost the chain-of-thought.
+                    // BlockStart. First `reasoning_text.done` closes the streamed `reasoning_text`
+                    // content part (the bracket the `reasoning_text.delta` run was missing — a native
+                    // stream always closes the part before the item), THEN `output_item.done` typed
+                    // "reasoning" with the SAME `rs_…` item_id and the assembled reasoning text under a
+                    // `content[]` `reasoning_text` part. Record the finalized item so the terminal
+                    // `response.completed` emits it in `output[]`. The prior writer dropped reasoning
+                    // entirely, so a reasoning stream reassembled to an OpenAI/Anthropic client lost
+                    // the chain-of-thought.
                     let item_id = self.item_id_for(ITEM_ID_PREFIX_RS, *index);
                     let text = self.take_reasoning_accum(*index);
                     let item = serde_json::json!({
@@ -831,15 +874,27 @@ impl ProtocolWriter for ResponsesWriter {
                         ]
                     });
                     self.record_output_item(*index, item.clone());
-                    Some((
-                        EVT_OUTPUT_ITEM_DONE.to_string(),
-                        serde_json::json!({
-                            "type": EVT_OUTPUT_ITEM_DONE,
-                            "output_index": index,
-                            "item_id": item_id,
-                            "item": item,
-                        }),
-                    ))
+                    vec![
+                        (
+                            EVT_REASONING_TEXT_DONE.to_string(),
+                            serde_json::json!({
+                                "type": EVT_REASONING_TEXT_DONE,
+                                "output_index": index,
+                                "item_id": item_id,
+                                "content_index": 0,
+                                "text": text,
+                            }),
+                        ),
+                        (
+                            EVT_OUTPUT_ITEM_DONE.to_string(),
+                            serde_json::json!({
+                                "type": EVT_OUTPUT_ITEM_DONE,
+                                "output_index": index,
+                                "item_id": item_id,
+                                "item": item,
+                            }),
+                        ),
+                    ]
                 } else if self.take_tool_open(*index) {
                     // Native `response.output_item.done` carries the SAME stable `item_id` as the
                     // matching `output_item.added` (so a client correlates the `added → done`
@@ -863,7 +918,7 @@ impl ProtocolWriter for ResponsesWriter {
                     // `response.incomplete` event emits the fully assembled `output[]` array (the
                     // SDK reads `event.response.output` to materialize `Response.output`).
                     self.record_output_item(*index, item.clone());
-                    Some((
+                    vec![(
                         EVT_OUTPUT_ITEM_DONE.to_string(),
                         serde_json::json!({
                             "type": EVT_OUTPUT_ITEM_DONE,
@@ -871,15 +926,18 @@ impl ProtocolWriter for ResponsesWriter {
                             "item_id": item_id,
                             "item": item,
                         }),
-                    ))
+                    )]
                 } else if self.take_text_open(*index) {
-                    // Close the message item opened by the Text BlockStart. The same cached `msg_…`
-                    // id (also carried on every `output_text.delta`) reconstructs the matching
-                    // `added → done` pair the SDK uses to finalize `response.output[]`. The native
-                    // `output_item.done` for a message item carries the assembled `output_text`
-                    // content part with the COMPLETE text the deltas delivered (the SDK accumulates
-                    // `Response.output_text` from it), so emit the accumulated text rather than an
-                    // empty content array.
+                    // Close the message item opened by the Text BlockStart. A native stream closes a
+                    // text part in THREE ordered frames before the item's `output_item.done`:
+                    // `output_text.done` (the assembled text of the part) → `content_part.done` (the
+                    // finalized `output_text` part) → `output_item.done` (the message item). The same
+                    // cached `msg_…` id (also carried on every `output_text.delta` and the opening
+                    // `content_part.added`) reconstructs the matching lifecycle the SDK uses to
+                    // finalize `response.output[]`, with the COMPLETE text the deltas delivered rather
+                    // than an empty content array. The `output_text.done`/`content_part.done` brackets
+                    // are what a strict Responses client (Codex CLI) needs to accept the streamed text
+                    // — without them it saw deltas against a part that was never opened/closed.
                     let item_id = self.item_id_for(ITEM_ID_PREFIX_MSG, *index);
                     let text = self.take_text_accum(*index);
                     let annotations = super::super::openai_annotations::url_annotations(
@@ -903,19 +961,47 @@ impl ProtocolWriter for ResponsesWriter {
                     // Record the finalized message item so the terminal event emits the fully
                     // assembled `output[]` array.
                     self.record_output_item(*index, item.clone());
-                    Some((
-                        EVT_OUTPUT_ITEM_DONE.to_string(),
-                        serde_json::json!({
-                            "type": EVT_OUTPUT_ITEM_DONE,
-                            "output_index": index,
-                            "item_id": item_id,
-                            "item": item,
-                        }),
-                    ))
+                    vec![
+                        (
+                            EVT_OUTPUT_TEXT_DONE.to_string(),
+                            serde_json::json!({
+                                "type": EVT_OUTPUT_TEXT_DONE,
+                                "output_index": index,
+                                "item_id": item_id,
+                                "content_index": 0,
+                                "text": text,
+                            }),
+                        ),
+                        (
+                            EVT_CONTENT_PART_DONE.to_string(),
+                            serde_json::json!({
+                                "type": EVT_CONTENT_PART_DONE,
+                                "output_index": index,
+                                "item_id": item_id,
+                                "content_index": 0,
+                                // The finalized `output_text` part: SAME shape as the message item's
+                                // single content part (assembled text + annotations).
+                                "part": {
+                                    "type": CONTENT_TYPE_OUTPUT_TEXT,
+                                    "text": text,
+                                    "annotations": annotations,
+                                }
+                            }),
+                        ),
+                        (
+                            EVT_OUTPUT_ITEM_DONE.to_string(),
+                            serde_json::json!({
+                                "type": EVT_OUTPUT_ITEM_DONE,
+                                "output_index": index,
+                                "item_id": item_id,
+                                "item": item,
+                            }),
+                        ),
+                    ]
                 } else {
                     // Nothing open at this index (e.g. a repeated BlockStop, or an index whose
                     // BlockStart was suppressed by the cardinality cap): emit no frame.
-                    None
+                    Vec::new()
                 }
             }
 
@@ -1022,13 +1108,13 @@ impl ProtocolWriter for ResponsesWriter {
                     STATUS_COMPLETED => (EVT_RESPONSE_COMPLETED, EVT_RESPONSE_COMPLETED),
                     _ => (EVT_RESPONSE_COMPLETED, EVT_RESPONSE_COMPLETED),
                 };
-                Some((
+                vec![(
                     event_name.to_string(),
                     serde_json::json!({ "type": event_type, "response": resp_obj }),
-                ))
+                )]
             }
 
-            IrStreamEvent::MessageStop => None,
+            IrStreamEvent::MessageStop => Vec::new(),
 
             IrStreamEvent::Error(err) => {
                 // The native OpenAI Responses `response.failed` event wraps the error inside a
@@ -1063,7 +1149,7 @@ impl ProtocolWriter for ResponsesWriter {
                 let response_id = self
                     .carried_response_id()
                     .unwrap_or_else(synthesize_response_id);
-                Some((
+                vec![(
                     EVT_RESPONSE_FAILED.to_string(),
                     serde_json::json!({
                         "type": EVT_RESPONSE_FAILED,
@@ -1091,25 +1177,29 @@ impl ProtocolWriter for ResponsesWriter {
                             }
                         }
                     }),
-                ))
+                )]
             }
         };
 
         // EVERY native `/v1/responses` SSE event carries a top-level `sequence_number` (monotonic
-        // from 0 per stream). Inject it uniformly here so no writer arm can forget it and so the
-        // counter advances exactly once per emitted event. Events that produce no body
-        // (`MessageStop`, empty text deltas, Image `BlockStart`) do NOT consume a
-        // sequence number — only events that actually go on the wire are numbered, matching the
+        // from 0 per stream). Inject it uniformly here so no builder arm can forget it and so the
+        // counter advances exactly once per emitted frame. Events that produce no frame
+        // (`MessageStop`, empty text deltas, Image `BlockStart`) do NOT consume a sequence number,
+        // and a MULTI-frame event (text `BlockStart`/`BlockStop`) numbers each of its frames in
+        // emission order — only frames that actually go on the wire are numbered, matching the
         // native stream where the integer counts emitted events.
-        emitted.map(|(event_name, mut data)| {
-            if let Some(obj) = data.as_object_mut() {
-                obj.insert(
-                    "sequence_number".to_string(),
-                    serde_json::json!(self.next_sequence_number()),
-                );
-            }
-            (event_name, data)
-        })
+        frames
+            .into_iter()
+            .map(|(event_name, mut data)| {
+                if let Some(obj) = data.as_object_mut() {
+                    obj.insert(
+                        "sequence_number".to_string(),
+                        serde_json::json!(self.next_sequence_number()),
+                    );
+                }
+                (event_name, data)
+            })
+            .collect()
     }
 
     fn write_error_frame(&self, err: &IrError) -> Option<(String, serde_json::Value)> {

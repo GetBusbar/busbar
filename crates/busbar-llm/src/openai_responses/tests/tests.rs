@@ -3005,8 +3005,8 @@ fn test_sequence_number_monotonic_from_zero() {
         }
     }
 
-    // A TEXT block's `BlockStop` emits no body (a text part has no `output_item.added`/`.done`
-    // pair — its content-part lifecycle is closed upstream), so it consumes no sequence number.
+    // This stream has NO Text `BlockStart`, so no message item was opened at index 0; the
+    // `BlockStop` therefore finds nothing open and emits no frame (consuming no sequence number).
     // The numbered events are therefore: created, two text deltas, completed = four events.
     assert_eq!(
         seqs,
@@ -3381,35 +3381,37 @@ fn test_response_failed_code_is_enum_even_for_human_provider_signal() {
     );
 }
 
-/// A TEXT block's `BlockStop` must emit NOTHING from
-/// the Responses writer. The Text `BlockStart` arm emits no `output_item.added`, so emitting an
-/// `output_item.done` (with `type:"function_call"`, as a prior revision did) would be an
-/// unmatched lifecycle event AND mis-type a text response as a function call — both break a
-/// typed Responses SDK and are distinguishability tells.
-/// A TEXT part must be bracketed inside a `message`
-/// output item. The Text BlockStart emits `response.output_item.added` (type "message") and the
-/// Text BlockStop emits the matching `response.output_item.done` (type "message") carrying the
-/// SAME `msg_…` `item_id`. Previously the text BlockStart returned None and the BlockStop
-/// returned None, leaving the `output_text.delta`s orphaned with no parent item — so a typed SDK
-/// never materialized the assistant message in `response.output[]`.
+/// A TEXT part must be bracketed inside a `message` output item AND its `output_text` content part.
+/// The Text BlockStart emits `response.output_item.added` (type "message") THEN
+/// `response.content_part.added` (the empty `output_text` part) — the content part a STRICT Responses
+/// client (Codex CLI) requires before the first `output_text.delta`, without which it logs
+/// "OutputTextDelta without active item" and DROPS the output. The Text BlockStop closes the part and
+/// the item in order: `response.output_text.done` → `response.content_part.done` →
+/// `response.output_item.done` (type "message"), all carrying the SAME `msg_…` `item_id` and
+/// `content_index: 0`. Previously the BlockStart/BlockStop emitted only the `output_item` add/done
+/// pair, so the content-part bracket was missing and a strict SDK dropped every delta.
 #[test]
 fn test_text_block_emits_message_item_lifecycle() {
     let writer = ResponsesWriter;
-    let _ = writer.write_response_event(&IrStreamEvent::MessageStart {
+    let _ = writer.write_response_events(&IrStreamEvent::MessageStart {
         role: crate::ir::IrRole::Assistant,
         usage: None,
         id: None,
         created: None,
         model: None,
     });
-    // Text BlockStart now opens a message item.
-    let (added_et, added) = writer
-        .write_response_event(&IrStreamEvent::BlockStart {
-            index: 0,
-            block: crate::ir::IrBlockMeta::Text,
-        })
-        .expect("text BlockStart opens a message item");
-    assert_eq!(added_et, "response.output_item.added"); // golden wire-contract literal (kept bare on purpose)
+    // Text BlockStart opens the message item AND its output_text content part (two ordered frames).
+    let added_frames = writer.write_response_events(&IrStreamEvent::BlockStart {
+        index: 0,
+        block: crate::ir::IrBlockMeta::Text,
+    });
+    let added_types: Vec<&str> = added_frames.iter().map(|(et, _)| et.as_str()).collect();
+    assert_eq!(
+        added_types,
+        vec!["response.output_item.added", "response.content_part.added"], // golden wire-contract literals (kept bare on purpose)
+        "text BlockStart must open the message item THEN its output_text content part"
+    );
+    let added = &added_frames[0].1;
     assert_eq!(added["item"]["type"], "message"); // golden wire-contract literal (kept bare on purpose)
     assert_eq!(added["item"]["role"], "assistant");
     let added_item_id = added["item_id"]
@@ -3418,16 +3420,43 @@ fn test_text_block_emits_message_item_lifecycle() {
         .to_string();
     assert!(added_item_id.starts_with("msg_"), "text item id is msg_…"); // golden wire-contract literal (kept bare on purpose)
 
-    let _ = writer.write_response_event(&IrStreamEvent::BlockDelta {
+    // The content_part.added establishes the active part: same item_id, content_index 0, empty
+    // output_text part.
+    let part_added = &added_frames[1].1;
+    assert_eq!(part_added["item_id"].as_str(), Some(added_item_id.as_str()));
+    assert_eq!(part_added["content_index"], 0);
+    assert_eq!(part_added["part"]["type"], "output_text"); // golden wire-contract literal (kept bare on purpose)
+    assert_eq!(part_added["part"]["text"], "");
+
+    let _ = writer.write_response_events(&IrStreamEvent::BlockDelta {
         index: 0,
         delta: crate::ir::IrDelta::TextDelta("hi".to_string()),
     });
 
-    // Text BlockStop now closes the message item with a matching done.
-    let (done_et, done) = writer
-        .write_response_event(&IrStreamEvent::BlockStop { index: 0 })
-        .expect("text BlockStop closes the message item");
-    assert_eq!(done_et, "response.output_item.done"); // golden wire-contract literal (kept bare on purpose)
+    // Text BlockStop closes the content part then the item, in the native order.
+    let done_frames = writer.write_response_events(&IrStreamEvent::BlockStop { index: 0 });
+    let done_types: Vec<&str> = done_frames.iter().map(|(et, _)| et.as_str()).collect();
+    assert_eq!(
+        done_types,
+        vec![
+            "response.output_text.done",
+            "response.content_part.done",
+            "response.output_item.done"
+        ], // golden wire-contract literals (kept bare on purpose)
+        "text BlockStop must close output_text → content_part → output_item in order"
+    );
+    // output_text.done carries the COMPLETE assembled text under content_index 0.
+    let text_done = &done_frames[0].1;
+    assert_eq!(text_done["text"], "hi");
+    assert_eq!(text_done["content_index"], 0);
+    assert_eq!(text_done["item_id"].as_str(), Some(added_item_id.as_str()));
+    // content_part.done carries the finalized output_text part with the same text.
+    let part_done = &done_frames[1].1;
+    assert_eq!(part_done["part"]["type"], "output_text"); // golden wire-contract literal (kept bare on purpose)
+    assert_eq!(part_done["part"]["text"], "hi");
+    assert_eq!(part_done["item_id"].as_str(), Some(added_item_id.as_str()));
+    // output_item.done closes the message item with the matching id.
+    let done = &done_frames[2].1;
     assert_eq!(done["item"]["type"], "message"); // golden wire-contract literal (kept bare on purpose)
     assert_eq!(
         done["item_id"].as_str(),
@@ -3435,12 +3464,12 @@ fn test_text_block_emits_message_item_lifecycle() {
         "done item_id matches the added item_id (added→done correlation)"
     );
 
-    // A SECOND BlockStop at the (already-closed) text index must NOT re-emit a done.
+    // A SECOND BlockStop at the (already-closed) text index must NOT re-emit any frame.
     assert!(
         writer
-            .write_response_event(&IrStreamEvent::BlockStop { index: 0 })
-            .is_none(),
-        "a repeated BlockStop for a closed text index must not re-emit output_item.done"
+            .write_response_events(&IrStreamEvent::BlockStop { index: 0 })
+            .is_empty(),
+        "a repeated BlockStop for a closed text index must not re-emit any lifecycle frame"
     );
 }
 
@@ -3478,23 +3507,34 @@ fn test_tool_and_text_block_stop_emit_correctly_typed_done() {
         index: 1,
         delta: crate::ir::IrDelta::TextDelta("hi".to_string()),
     });
-    // Tool index closes with a function_call done.
-    let (etype, tool_done) = writer
-        .write_response_event(&IrStreamEvent::BlockStop { index: 0 })
-        .expect("tool BlockStop emits output_item.done");
-    assert_eq!(etype, "response.output_item.done"); // golden wire-contract literal (kept bare on purpose)
-    assert_eq!(tool_done["item"]["type"], "function_call"); // golden wire-contract literal (kept bare on purpose)
-                                                            // Text index closes with a message done.
-    let (text_et, text_done) = writer
-        .write_response_event(&IrStreamEvent::BlockStop { index: 1 })
-        .expect("text BlockStop emits output_item.done (message)");
-    assert_eq!(text_et, "response.output_item.done"); // golden wire-contract literal (kept bare on purpose)
-    assert_eq!(text_done["item"]["type"], "message"); // golden wire-contract literal (kept bare on purpose)
-                                                      // A SECOND BlockStop at the (already-closed) tool index 0 must not emit a duplicate done.
+    // Tool index closes with a SINGLE function_call done (a tool has no content-part bracket).
+    let tool_frames = writer.write_response_events(&IrStreamEvent::BlockStop { index: 0 });
+    let tool_types: Vec<&str> = tool_frames.iter().map(|(et, _)| et.as_str()).collect();
+    assert_eq!(
+        tool_types,
+        vec!["response.output_item.done"], // golden wire-contract literal (kept bare on purpose)
+        "tool BlockStop emits only output_item.done"
+    );
+    assert_eq!(tool_frames[0].1["item"]["type"], "function_call"); // golden wire-contract literal (kept bare on purpose)
+                                                                   // Text index closes with the content-part bracket THEN a message done.
+    let text_frames = writer.write_response_events(&IrStreamEvent::BlockStop { index: 1 });
+    let text_types: Vec<&str> = text_frames.iter().map(|(et, _)| et.as_str()).collect();
+    assert_eq!(
+        text_types,
+        vec![
+            "response.output_text.done",
+            "response.content_part.done",
+            "response.output_item.done"
+        ], // golden wire-contract literals (kept bare on purpose)
+        "text BlockStop closes output_text → content_part → output_item"
+    );
+    // The item-close frame (last) is the message done.
+    assert_eq!(text_frames[2].1["item"]["type"], "message"); // golden wire-contract literal (kept bare on purpose)
+                                                             // A SECOND BlockStop at the (already-closed) tool index 0 must not emit a duplicate done.
     assert!(
         writer
-            .write_response_event(&IrStreamEvent::BlockStop { index: 0 })
-            .is_none(),
+            .write_response_events(&IrStreamEvent::BlockStop { index: 0 })
+            .is_empty(),
         "a repeated BlockStop for a closed tool index must not re-emit output_item.done"
     );
 }
@@ -4238,26 +4278,31 @@ fn test_item_id_for_is_stream_stable_and_opaque() {
     );
 }
 
-/// Full streamed text item: the `output_item.added`, every `output_text.delta`, and the closing
-/// `output_item.done` must all carry the SAME `item_id` so a typed SDK correlates the lifecycle.
+/// Full streamed text item: the `output_item.added`, the `content_part.added`, every
+/// `output_text.delta`, and the closing `output_text.done` / `content_part.done` /
+/// `output_item.done` must ALL carry the SAME `item_id` so a typed SDK correlates the lifecycle.
 #[test]
 fn test_streamed_text_item_shares_one_item_id() {
     let writer = ResponsesWriter;
-    let _ = writer.write_response_event(&IrStreamEvent::MessageStart {
+    let _ = writer.write_response_events(&IrStreamEvent::MessageStart {
         role: crate::ir::IrRole::Assistant,
         usage: None,
         id: None,
         created: None,
         model: None,
     });
-    let (_, added) = writer
-        .write_response_event(&IrStreamEvent::BlockStart {
-            index: 0,
-            block: crate::ir::IrBlockMeta::Text,
-        })
-        .expect("output_item.added");
-    let added_id = added["item_id"].as_str().unwrap().to_string();
+    let added_frames = writer.write_response_events(&IrStreamEvent::BlockStart {
+        index: 0,
+        block: crate::ir::IrBlockMeta::Text,
+    });
+    // output_item.added THEN content_part.added, both carrying the msg_… id.
+    let added_id = added_frames[0].1["item_id"].as_str().unwrap().to_string();
     assert!(added_id.starts_with("msg_")); // golden wire-contract literal (kept bare on purpose)
+    assert_eq!(added_frames[1].0, "response.content_part.added"); // golden wire-contract literal (kept bare on purpose)
+    assert_eq!(
+        added_frames[1].1["item_id"].as_str(),
+        Some(added_id.as_str())
+    );
 
     let (_, delta) = writer
         .write_response_event(&IrStreamEvent::BlockDelta {
@@ -4267,14 +4312,17 @@ fn test_streamed_text_item_shares_one_item_id() {
         .expect("output_text.delta");
     assert_eq!(delta["item_id"].as_str(), Some(added_id.as_str()));
 
-    let (_, done) = writer
-        .write_response_event(&IrStreamEvent::BlockStop { index: 0 })
-        .expect("output_item.done");
-    assert_eq!(
-        done["item_id"].as_str(),
-        Some(added_id.as_str()),
-        "added/delta/done must share one item_id"
-    );
+    let done_frames = writer.write_response_events(&IrStreamEvent::BlockStop { index: 0 });
+    // output_text.done → content_part.done → output_item.done, ALL sharing the item id.
+    assert_eq!(done_frames.len(), 3, "text close is a three-frame bracket");
+    for (et, frame) in &done_frames {
+        assert_eq!(
+            frame["item_id"].as_str(),
+            Some(added_id.as_str()),
+            "every close frame ({et}) must share the added item_id"
+        );
+    }
+    let done = &done_frames[2].1;
     assert_eq!(done["item"]["id"].as_str(), Some(added_id.as_str()));
 }
 
@@ -5964,11 +6012,20 @@ fn test_streaming_reasoning_round_trip() {
     assert_eq!(etype2, "response.reasoning_text.delta"); // golden wire-contract literal (kept bare on purpose)
     assert_eq!(payload2["delta"], "pondering");
 
-    // BlockStop closes it as a reasoning output_item.done carrying the assembled text.
-    let (etype3, payload3) = writer
-        .write_response_event(&crate::ir::IrStreamEvent::BlockStop { index: 0 })
-        .expect("Thinking BlockStop emits a frame");
-    assert_eq!(etype3, "response.output_item.done"); // golden wire-contract literal (kept bare on purpose)
+    // BlockStop closes it: `reasoning_text.done` (the bracket the reasoning_text.delta run needs)
+    // THEN a reasoning `output_item.done` carrying the assembled text.
+    let close_frames =
+        writer.write_response_events(&crate::ir::IrStreamEvent::BlockStop { index: 0 });
+    let close_types: Vec<&str> = close_frames.iter().map(|(et, _)| et.as_str()).collect();
+    assert_eq!(
+        close_types,
+        vec!["response.reasoning_text.done", "response.output_item.done"], // golden wire-contract literals (kept bare on purpose)
+        "reasoning BlockStop closes reasoning_text then output_item"
+    );
+    // reasoning_text.done carries the COMPLETE assembled reasoning text under content_index 0.
+    assert_eq!(close_frames[0].1["text"], "pondering");
+    assert_eq!(close_frames[0].1["content_index"], 0);
+    let payload3 = &close_frames[1].1;
     assert_eq!(payload3["item"]["type"], "reasoning"); // golden wire-contract literal (kept bare on purpose)
     assert_eq!(payload3["item"]["content"][0]["text"], "pondering");
 }
@@ -6641,11 +6698,31 @@ fn streamed_citations_reach_the_assembled_output_item() {
             raw: None,
         }]),
     });
-    let (name, frame) =
-        ev(crate::ir::IrStreamEvent::BlockStop { index: 0 }).expect("BlockStop finalizes the item");
-    assert_eq!(name, "response.output_item.done");
+    let close_frames = w.write_response_events(&crate::ir::IrStreamEvent::BlockStop { index: 0 });
+    let close_types: Vec<&str> = close_frames.iter().map(|(et, _)| et.as_str()).collect();
+    assert_eq!(
+        close_types,
+        vec![
+            "response.output_text.done",
+            "response.content_part.done",
+            "response.output_item.done"
+        ],
+        "text close is the three-frame bracket"
+    );
 
-    let anns = frame["item"]["content"][0]["annotations"]
+    // The citation must survive onto BOTH the finalized content part (content_part.done) and the
+    // assembled message item (output_item.done).
+    let part_anns = close_frames[1].1["part"]["annotations"]
+        .as_array()
+        .expect("content_part.done annotations array");
+    assert_eq!(
+        part_anns.len(),
+        1,
+        "citation survives onto the content part"
+    );
+    assert_eq!(part_anns[0]["url"], "https://example.com/s");
+
+    let anns = close_frames[2].1["item"]["content"][0]["annotations"]
         .as_array()
         .expect("annotations array");
     assert_eq!(
@@ -6655,6 +6732,142 @@ fn streamed_citations_reach_the_assembled_output_item() {
     );
     assert_eq!(anns[0]["url"], "https://example.com/s");
     assert_eq!(anns[0]["end_index"], 14);
+}
+
+/// STRICT-CLIENT CONTRACT (CF2): the Responses egress writer, driven with the IR event stream a
+/// CROSS-protocol egress produces (an Anthropic/Gemini backend re-framed to `/v1/responses` — the
+/// shape a Codex CLI client consumes), must emit the intermediate `response.content_part.added`
+/// between `output_item.added` and the first `output_text.delta`, and must close the text part with
+/// `output_text.done` → `content_part.done` before `output_item.done`. Without the
+/// `content_part.added` a strict Responses client sees a delta with no active content part
+/// ("OutputTextDelta without active item") and DROPS all output.
+///
+/// This exercises `write_response_events` — the multi-frame emission path the `StreamTranslate` seam
+/// drives per IR event — and asserts the FULL ordered wire event sequence plus a gap-free
+/// per-stream `sequence_number` run.
+#[test]
+fn cross_protocol_egress_into_responses_emits_content_part_bracket() {
+    let writer = ResponsesWriter;
+    // The IR event stream a cross-protocol text egress yields (identity stripped to None on the
+    // cross-protocol seam, so the writer synthesizes native `resp_`/`msg_` ids): a message start,
+    // one text block (added → two deltas → stop), then the terminal delta.
+    let ir_stream = vec![
+        IrStreamEvent::MessageStart {
+            role: crate::ir::IrRole::Assistant,
+            usage: None,
+            id: None,
+            created: None,
+            model: None,
+        },
+        IrStreamEvent::BlockStart {
+            index: 0,
+            block: crate::ir::IrBlockMeta::Text,
+        },
+        IrStreamEvent::BlockDelta {
+            index: 0,
+            delta: crate::ir::IrDelta::TextDelta("Hel".to_string()),
+        },
+        IrStreamEvent::BlockDelta {
+            index: 0,
+            delta: crate::ir::IrDelta::TextDelta("lo".to_string()),
+        },
+        IrStreamEvent::BlockStop { index: 0 },
+        IrStreamEvent::MessageDelta {
+            stop_reason: Some(crate::ir::IrStopReason::EndTurn),
+            stop_sequence: None,
+            usage: usage_fixture(),
+        },
+    ];
+
+    // Collect EVERY emitted wire frame in order, exactly as the seam's per-event loop would frame it.
+    let frames: Vec<serde_json::Value> = ir_stream
+        .iter()
+        .flat_map(|ev| writer.write_response_events(ev))
+        .map(|(_et, data)| data)
+        .collect();
+    let types: Vec<String> = frames
+        .iter()
+        .map(|f| {
+            f["type"]
+                .as_str()
+                .expect("every frame carries a type")
+                .to_string()
+        })
+        .collect();
+
+    // The exact corrected sequence a native /v1/responses text stream emits.
+    assert_eq!(
+        types,
+        vec![
+            "response.created",
+            "response.output_item.added",
+            "response.content_part.added",
+            "response.output_text.delta",
+            "response.output_text.delta",
+            "response.output_text.done",
+            "response.content_part.done",
+            "response.output_item.done",
+            "response.completed",
+        ],
+        "cross-protocol egress into Responses must carry the full content-part bracket, got {types:?}"
+    );
+
+    // Strict-client invariants, stated independently of the exact list above.
+    let pos = |name: &str| types.iter().position(|t| t == name).unwrap();
+    assert!(
+        pos("response.content_part.added") > pos("response.output_item.added"),
+        "content_part.added must follow output_item.added"
+    );
+    assert!(
+        pos("response.content_part.added") < pos("response.output_text.delta"),
+        "content_part.added must PRECEDE the first output_text.delta (else a strict client drops it)"
+    );
+    // The closing brackets, in order, all before the item close.
+    assert!(pos("response.output_text.done") < pos("response.content_part.done"));
+    assert!(pos("response.content_part.done") < pos("response.output_item.done"));
+
+    // item_id / content_index thread consistently across the whole text part.
+    let msg_id = frames[1]["item_id"]
+        .as_str()
+        .expect("output_item.added item_id");
+    for name in [
+        "response.content_part.added",
+        "response.output_text.delta",
+        "response.output_text.done",
+        "response.content_part.done",
+        "response.output_item.done",
+    ] {
+        let f = &frames[pos(name)];
+        assert_eq!(
+            f["item_id"].as_str(),
+            Some(msg_id),
+            "{name} must carry the same msg_ item_id as output_item.added"
+        );
+    }
+    for name in [
+        "response.content_part.added",
+        "response.output_text.delta",
+        "response.output_text.done",
+        "response.content_part.done",
+    ] {
+        assert_eq!(
+            frames[pos(name)]["content_index"],
+            0,
+            "{name} content_index"
+        );
+    }
+
+    // Every emitted frame (INCLUDING the bracket sub-frames) is numbered 0..N monotonically —
+    // exactly as a native stream counts emitted events.
+    let seqs: Vec<u64> = frames
+        .iter()
+        .map(|f| f["sequence_number"].as_u64().expect("sequence_number"))
+        .collect();
+    let expected_seqs: Vec<u64> = (0..frames.len() as u64).collect();
+    assert_eq!(
+        seqs, expected_seqs,
+        "sequence_number must be a gap-free 0..N run across all frames, got {seqs:?}"
+    );
 }
 
 /// A `developer`/`system` item AFTER an earlier conversational turn is still hoisted
