@@ -422,8 +422,9 @@ LLM-shaped. *Member selection* needs one thing more: members that can substitute
 another. An earlier version of this section said MCP and A2A have none, and stated it as
 a property of the protocols. It is not one. The case operators actually run is the same
 server image deployed twice, or one agent registered twice, and busbar's inability to be
-told about it was a missing config vocabulary rather than a law. `tool_pools:` and
-`agent_pools:` (1.6.0) are that vocabulary, over one selection loop in `crate::failover`;
+told about it was a missing config vocabulary rather than a law. The one neutral top-level
+`pools:` map (1.6.0) is that vocabulary — an MCP or A2A failover pool is just a `pools:`
+entry whose kind is inferred from its `tools:`/`agents:` members — over one selection loop in `crate::failover`;
 a candidate set of one remains exactly the degenerate case §4 already describes. Two
 rules keep it safe and both are core's, not a plane's: two candidates are interchangeable
 only when the pins busbar already computed AGREE, and a call that has already gone out is

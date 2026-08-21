@@ -84,7 +84,9 @@ Want a different order than weighted? Name a **selection strategy** (`cheapest`,
 
 The field-by-field reference, every pool and member field with its type, default, and validation rule, lives in one place: **[Configuration → `pools`](/docs/configuration/#pools)**. This guide stays conceptual so the two never drift.
 
-In short: a pool takes a list of `members` (each a `model` lane with an optional `weight`, `context_max`, `tier`, and `tags`), an optional `hooks` list (one ordering strategy, `weighted`/`cheapest`/`fastest`/`least_busy`/`usage`, plus any gates as inline `kind: hook` plugin refs), and optional `affinity`, `breaker`, `failover`, and `on_exhausted` blocks.
+In short: a pool takes a list of `members`, an optional `hooks` list (one ordering strategy, `weighted`/`cheapest`/`fastest`/`least_busy`/`usage`, plus any gates as inline `kind: hook` plugin refs), and optional `affinity`, `breaker`, `failover`, and `on_exhausted` blocks.
+
+Members are written in the 1.6.0 **uniform grammar**: a member is a bare name referencing an entry in a plane's noun map (`models:` here on the LLM plane, `tools:`/`agents:` on the MCP/A2A planes), and the pool carries the plane-neutral routing knobs — `weights: { <member>: <n> }` (present ⇒ weighted distribute, absent ⇒ ordered failover with the first member as primary), plus optional `tier:`, `attempt_timeout_ms:`, and `repeatable:`. On the LLM plane the older **rich member object** (`{ model, weight, context_max, tier, tags }`) remains a valid superset and is still the way to attach per-member fields with no pool-level knob, such as `context_max` or `tags`; a per-member `weight:` written inline wins over the pool-level `weights:` map.
 
 Each block with its own guide: [Hooks](/docs/hooks/) for the selection strategies, the ordering-hook contract, and [what a gate receives](hooks.md#what-a-gate-receives); [Circuit breaker](/docs/circuit-breaker/#circuit-breaker-configuration) for the per-pool `breaker` block; and [In-flight failover](/docs/failover/) for `failover` and `on_exhausted`.
 
@@ -99,10 +101,11 @@ Each block with its own guide: [Hooks](/docs/hooks/) for the selection strategie
 ```yaml
 pools:
   chat:
-    members:
-      - { model: gpt-4o,        weight: 8 }   # ~80% of traffic
-      - { model: claude-sonnet, weight: 2 }   # ~20%
-      - { model: gemini-pro,    weight: 1 }   # picks up load when the others trip
+    members: [gpt-4o, claude-sonnet, gemini-pro]   # uniform bare-name members
+    weights:                                       # present ⇒ weighted distribute
+      gpt-4o:        8   # ~80% of traffic
+      claude-sonnet: 2   # ~20%
+      gemini-pro:    1   # picks up load when the others trip
 ```
 
 ### Same model, two providers (cross-provider failover)
