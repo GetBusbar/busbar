@@ -516,3 +516,48 @@ fn multipart_single_char_boundary_parses_correctly() {
     assert_eq!(r.model, "whisper-1");
     assert!(r.audio.is_some());
 }
+
+// FIND-1 (money): a gpt-image-1 response carries a token `usage` object; the reader must surface it
+// so `billing()` token-meters the request instead of billing nothing. Fails pre-fix (usage unset).
+#[test]
+fn image_response_with_usage_object_bills_tokens() {
+    let wire = json!({
+        "created": 1,
+        "data": [{ "b64_json": "AAAA" }],
+        "usage": { "total_tokens": 30, "input_tokens": 20, "output_tokens": 10 },
+    });
+    let resp = super::read_image_response(&serde_json::to_vec(&wire).unwrap()).unwrap();
+    match resp.billing() {
+        Some(busbar_core::billing::Billing::Tokens(t)) => {
+            assert_eq!(t.input, 20);
+            assert_eq!(t.output, 10);
+        }
+        other => panic!("gpt-image-1 usage must token-bill, got {other:?}"),
+    }
+}
+
+// FIND-1 (money): a per-image (dall-e-style) response has NO usage object; the reader must record a
+// cost basis from the N returned images so `billing()` is `Images{..}`, not `None`. Fails pre-fix.
+#[test]
+fn image_response_without_usage_bills_per_image() {
+    let wire = json!({
+        "created": 1,
+        "data": [{ "url": "https://x/1.png" }, { "url": "https://x/2.png" }],
+    });
+    let resp = super::read_image_response(&serde_json::to_vec(&wire).unwrap()).unwrap();
+    match resp.billing() {
+        Some(busbar_core::billing::Billing::Images { count, .. }) => assert_eq!(count, 2),
+        other => panic!("per-image response must bill Images, got {other:?}"),
+    }
+}
+
+// FIND-2 (money): TTS returns a raw-audio body with no usage object; without a marker the synthesis
+// was billed nothing. The reader must set a `Flat` marker so `billing()` is `Some`. Fails pre-fix.
+#[test]
+fn speech_response_is_billed() {
+    let resp = super::read_speech_response(b"\x00\x01audio-bytes").unwrap();
+    assert!(
+        resp.billing().is_some(),
+        "TTS synthesis must be billed (non-None), got None"
+    );
+}

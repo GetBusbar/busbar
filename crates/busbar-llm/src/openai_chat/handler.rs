@@ -525,6 +525,14 @@ impl OperationHandler for OpenAiImage {
     fn extract_error(&self, status: u16, body: &[u8]) -> busbar_core::breaker::RawUpstreamError {
         busbar_core::handlers::protocol_error("openai", status, body)
     }
+    // Token-metered for gpt-image-1: buffer the same-protocol non-stream 2xx body so the default
+    // `extract_usage` can read the `usage` object and bill the virtual key's TPM/spend. The
+    // cross-protocol path already bills via `translate_response`; this closes the same-protocol gap
+    // (mirrors the embeddings cell). Per-image models return no `usage`, so the tap bills 0 tokens
+    // and the request still meters once — unchanged for them.
+    fn taps_usage(&self) -> bool {
+        true
+    }
     fn read_request(
         &self,
         body: &[u8],
@@ -861,6 +869,12 @@ pub(crate) fn read_speech_response(
             mime_type: "audio/mpeg".into(),
             pcm: None,
         }),
+        // TTS carries no usage object in its binary body, so without a marker `billing()` returned
+        // `None` and the synthesis was billed nothing. The true unit is per-input-character (tts-1)
+        // or tokens (gpt-4o-mini-tts), both counted from the REQUEST `input`, which this
+        // response-only reader cannot see — so record a `Flat` marker (as rerank does) to at least
+        // count the request. The exact character/token quantity needs the request seam.
+        usage: Some(Billing::Flat),
         ..Default::default()
     })
 }
@@ -1048,7 +1062,7 @@ pub(crate) fn read_image_request(
 pub(crate) fn read_image_response(wire: &[u8]) -> Result<crate::ir::image::ImageResp, CodecError> {
     let v: Value =
         serde_json::from_slice(wire).map_err(|e| CodecError::Malformed(e.to_string()))?;
-    let images = v
+    let images: Vec<ImageOutput> = v
         .get("data")
         .and_then(Value::as_array)
         .map(|arr| {
@@ -1068,9 +1082,32 @@ pub(crate) fn read_image_response(wire: &[u8]) -> Result<crate::ir::image::Image
                 .collect()
         })
         .unwrap_or_default();
+    // gpt-image-1 returns a token `usage` object (`{total_tokens,input_tokens,output_tokens}`);
+    // per-image models (dall-e, etc.) return no usage body at all. Without this the response was
+    // billed nothing — `ImageResp::billing()` returns `None` when BOTH `usage` and `cost_basis`
+    // are unset. Parse the token object when present so `billing()` yields `Billing::Tokens`.
+    let usage = v.get("usage").map(|u| busbar_core::billing::TokenUsage {
+        input: u.get("input_tokens").and_then(Value::as_u64).unwrap_or(0),
+        output: u.get("output_tokens").and_then(Value::as_u64).unwrap_or(0),
+        ..Default::default()
+    });
+    // Per-image (dall-e-style) providers carry no `usage` — record the per-image cost basis so the
+    // op is billed as `Billing::Images` rather than nothing. The billable COUNT is recoverable from
+    // the response itself (one image per `data` entry). The size/quality TIERS live on the request
+    // params, which this response-only reader cannot see, so they stay `None` (count is the unit).
+    let cost_basis = if usage.is_none() {
+        Some(crate::ir::image::CostBasis {
+            count: u32::try_from(images.len()).unwrap_or(u32::MAX),
+            ..Default::default()
+        })
+    } else {
+        None
+    };
     Ok(ImageResp {
         created: v.get("created").and_then(Value::as_u64),
         images,
+        usage,
+        cost_basis,
         ..Default::default()
     })
 }
