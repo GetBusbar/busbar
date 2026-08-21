@@ -308,18 +308,44 @@ impl A2aPlane {
     ) -> Option<super::verify::Pass> {
         let pin_cfg = self.pin_for(agent_id)?.clone();
         let fetch_policy = self.fetch_policy_for(agent_id);
+        // SNAPSHOT under a SHORT read lock, then RELEASE it before the blocking fetch. The card read is
+        // a blocking socket round-trip behind the SSRF guard; holding the registry WRITE lock across it
+        // — as this once did — serialized every other agent's admission and verify against one agent's
+        // full network round-trip, so a slow or hostile card host stalled the whole plane. Availability
+        // is a named asset: the fetch below runs with NO registry lock held. `None` here keeps the
+        // "no live registration" contract — a removed agent is not re-verified.
+        let original = self.with_registrations(|regs| {
+            regs.iter().find(|r| r.agent_id == agent_id).cloned()
+        })?;
+        let transport = transports.for_agent(agent_id);
+        // FETCH + VERIFY + SETTLE on a CLONE, entirely UNLOCKED. While this blocks, no reader is blocked
+        // on us. Single-flight (`crate::trust::verify`) already guarantees at most one of these per agent
+        // at a time, so nothing else is mutating this registration's accumulation concurrently.
+        let mut working = original.clone();
+        let pass = super::verify::reverify_once(
+            &mut working,
+            &pin_cfg,
+            resolver,
+            transport,
+            &fetch_policy,
+            now_ms,
+            false,
+        );
+        // APPLY under a BRIEF write lock. TOCTOU: if the registration VANISHED, or its record CHANGED
+        // (a config reapply replaces the whole registry with fresh records and bumps the generation
+        // itself) during the unlocked fetch, DROP the sighting we just derived rather than write an
+        // observation computed against a pin/approval that is no longer the operator's intent. Dropping
+        // is fail-closed: the reapplied registration starts un-approved and its own generation bump
+        // refuses the in-flight hop; the next call re-verifies. Writing `working` back through
+        // `with_registrations_mut` bumps the generation exactly as before, so the caller's post-fetch
+        // `generation()` read still names the hop's admitted generation.
         self.with_registrations_mut(|regs| {
             let reg = regs.iter_mut().find(|r| r.agent_id == agent_id)?;
-            let transport = transports.for_agent(agent_id);
-            Some(super::verify::reverify_once(
-                reg,
-                &pin_cfg,
-                resolver,
-                transport,
-                &fetch_policy,
-                now_ms,
-                false,
-            ))
+            if *reg != original {
+                return None;
+            }
+            *reg = working;
+            Some(pass)
         })
     }
 
