@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/busbar/src/hooks/wire.rs`.
+//! Tests for `crates/busbar-core/src/hooks/wire.rs`.
 
 /// A hook-supplied multi-byte help/label/unit must cap at a CHAR
 /// boundary, never panic (String::truncate takes bytes — 100 × '€' panicked the admin handler).

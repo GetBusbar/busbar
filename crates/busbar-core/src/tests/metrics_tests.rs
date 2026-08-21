@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/busbar/src/metrics.rs`.
+//! Tests for `crates/busbar-core/src/metrics.rs`.
 
 use super::*;
 use crate::governance::{GovState, MemoryStore, Store, VirtualKey};

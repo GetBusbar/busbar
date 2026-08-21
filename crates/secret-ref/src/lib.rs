@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! `SecretRef` — the SECRET REFERENCE type, extracted out of `busbar`'s crate-private
-//! `crates/busbar/src/config/secret.rs` into its own tiny crate.
+//! `crates/busbar-core/src/config/secret.rs` into its own tiny crate.
 //!
 //! Every secret/external value in busbar config is `{ module: <secret-module>, settings: {…} }` — a
 //! reference to a SECRET MODULE (`kind: secret` plugin), never the secret itself. The built-in

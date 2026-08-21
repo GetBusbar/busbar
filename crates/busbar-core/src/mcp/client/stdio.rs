@@ -7,7 +7,7 @@
 //!
 //! ## Why this is net-new engine surface and not "a seventh entry in an existing pattern"
 //!
-//! `crates/busbar/src/proto/` is six STATELESS HTTP families over one shared `reqwest` pool. There
+//! `crates/busbar-core/src/proto/` is six STATELESS HTTP families over one shared `reqwest` pool. There
 //! is no process in any of them, nothing to crash, nothing to restart, and nothing to reap. A stdio
 //! MCP server is a CHILD OF THIS PROCESS with a pipe on each side of it, and every one of those
 //! properties is new.

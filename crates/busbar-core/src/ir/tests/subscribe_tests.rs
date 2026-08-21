@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/busbar/src/ir/subscribe.rs`.
+//! Tests for `crates/busbar-core/src/ir/subscribe.rs`.
 
 use super::*;
 use crate::ir::facts::{ContentItem, IrFacts};

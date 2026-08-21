@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/busbar/src/transport.rs` — the third axis.
+//! Tests for `crates/busbar-core/src/transport.rs` — the third axis.
 //!
 //! These are axis tests, not cell tests: what is being asserted is that the axis is a bounded label
 //! and that framing a codec is genuinely inert, because the whole claim of this step is that the

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/busbar/src/proxy/reqlog.rs` — the model plane's RECORD.
+//! Tests for `crates/busbar-core/src/proxy/reqlog.rs` — the model plane's RECORD.
 //!
 //! ## What is deliberately NOT here
 //!

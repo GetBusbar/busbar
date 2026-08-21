@@ -208,7 +208,7 @@ fn validate_fails_when_store_plugin_referenced_but_plugins_disabled() {
 /// pass. Before the fix, `config_validate::validate` hard-rejected every non-`keys` chain module
 /// unconditionally, which (as an unwanted side effect neither layer's own tests caught, since each
 /// tested its own layer in isolation) meant a genuinely INSTALLED `kind: auth` plugin could never
-/// pass either -- see `crates/busbar/src/config_validate/tests/tests.rs`'s
+/// pass either -- see `crates/busbar-core/src/config_validate/tests/tests.rs`'s
 /// `test_validate_chain_unknown_module_rejected_keys_accepted` for that half of the regression
 /// proof. This test proves the other half: with plugins enabled but nothing actually installed
 /// under that name, `--validate` must STILL refuse, and the error must come from the registry-aware

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/busbar/src/egress_auth/gate.rs` — THE ONE EGRESS GATE.
+//! Tests for `crates/busbar-core/src/egress_auth/gate.rs` — THE ONE EGRESS GATE.
 //!
 //! Two jobs, and the second is the one that makes the unification worth doing:
 //!

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/busbar/src/egress_auth/oauth_client_credentials.rs`.
+//! Tests for `crates/busbar-core/src/egress_auth/oauth_client_credentials.rs`.
 
 use super::*;
 

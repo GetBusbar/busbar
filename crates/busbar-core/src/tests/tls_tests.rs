@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/busbar/src/tls.rs`.
+//! Tests for `crates/busbar-core/src/tls.rs`.
 
 //! End-to-end TLS / mTLS transport tests. Each spins a real busbar TLS listener on an ephemeral
 //! port with rcgen-generated certs and drives it with a real reqwest https client over the wire —

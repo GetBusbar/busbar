@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/busbar/src/proto/detect.rs`.
+//! Tests for `crates/busbar-core/src/proto/detect.rs`.
 
 use super::*;
 use axum::http::{HeaderMap, HeaderValue};

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/busbar/src/a2a/local.rs` — the verbs busbar answers itself.
+//! Tests for `crates/busbar-core/src/a2a/local.rs` — the verbs busbar answers itself.
 //!
 //! ## Why every test names its own principal
 //!

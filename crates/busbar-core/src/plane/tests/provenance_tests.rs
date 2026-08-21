@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/busbar/src/a2a/provenance.rs`.
+//! Tests for `crates/busbar-core/src/plane/provenance.rs`.
 //!
 //! The MECHANISM is `crate::audit`'s and is tested there, including against a throwaway fourth
 //! record type. What is tested HERE is this plane's RECORD: that `TaskEventRow` is wired into the

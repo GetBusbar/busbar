@@ -428,7 +428,7 @@ fn projection_keys_are_instance_level_not_settings() {
 // ── THE BOOT/`--validate` PATH, end to end ──────────────────────────────────────────────────────
 
 /// The rules above are proven against `resolve_export`. This one proves they are actually REACHED by
-/// the boot / `--validate` pipeline: `config::resolve` (crates/busbar/src/config/mod.rs:4044) returns
+/// the boot / `--validate` pipeline: `config::resolve` (crates/busbar-core/src/config/mod.rs:4044) returns
 /// `Result<RootCfg, Vec<String>>` and lowers the `export:` block through the same `resolve_export`
 /// (mod.rs:4052) — and BOTH boot entry points treat that `Err` as fatal (main.rs:293, main.rs:853).
 /// Without this test the whole grammar could be validated in a function nothing fatal ever calls.

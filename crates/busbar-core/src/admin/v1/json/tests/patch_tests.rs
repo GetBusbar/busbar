@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/busbar/src/admin/v1/json/handlers.rs`.
+//! Tests for `crates/busbar-core/src/admin/v1/json/handlers.rs`.
 
 use super::merge_group_patch;
 use crate::config::groups::{ChildDefault, LimitMetric, LimitWindow};
