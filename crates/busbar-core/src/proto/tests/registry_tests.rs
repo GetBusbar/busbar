@@ -146,6 +146,41 @@ fn the_declared_verbs_are_the_verbs_the_handler_serves() {
     }
 }
 
+/// **A4b scaffolding (G6 step A4a.4): the registry-driven EXHAUSTIVENESS contract.** It replaces the
+/// compile-time "an 8th operation is an error" gate the `IrReq`/`IrResp` enum `match` gives today
+/// (`ir::variant`), which A4b removes when the hub dissolves onto `Box<dyn ir::handle::IrHandle>`.
+///
+/// The rustc gate said: every operation variant must be handled, or the code does not compile. Its
+/// runtime replacement, landed BEFORE the dissolve so the safety net exists first: every verb a
+/// declaration claims MUST resolve to a serving cell on that declaration's handler — so a verb added
+/// without a handler to serve it (the runtime analog of a non-exhaustive match) fails HERE, loudly,
+/// instead of silently 404ing a live route. When the per-operation `IrHandle` impls land at A4b this
+/// is where "…and each served verb yields an `IrHandle`" is additionally asserted, completing the
+/// rustc gate's replacement.
+#[test]
+fn every_declared_verb_has_a_serving_handler() {
+    // The whole declared vocabulary — the registry's own answer to "which operations exist", folded
+    // from the declarations at boot. Non-empty or the registry has forgotten the LLM/plane verbs.
+    assert!(
+        !crate::proto::registry::declared_verbs().is_empty(),
+        "the registry must declare at least the LLM/plane verbs"
+    );
+    for decl in builtins().decls() {
+        let Some(handler) = decl.handler else {
+            continue;
+        };
+        for verb in decl.verbs {
+            assert!(
+                handler.operation_handler(*verb).is_some(),
+                "{} declares verb '{}' but its handler serves no cell for it — the registry-level \
+                 exhaustiveness the dissolved enum match enforced at compile time",
+                decl.name,
+                verb.name(),
+            );
+        }
+    }
+}
+
 /// A protocol that declares no codec (MCP) still resolves, still dispatches, and MUST NOT be offered
 /// to a provider lane — `protocol_for` answers `None` for it, which is what keeps a `protocol: mcp`
 /// provider out of the config-validated set without anything comparing the name "mcp".
@@ -234,6 +269,7 @@ const TELEX_DECL: ProtocolDecl = ProtocolDecl {
     auth_failure_message: "authentication failed",
     uses_array_stream_shim: false,
     has_native_path_not_found: false,
+    egress_stream_accept: crate::proxy::TEXT_EVENT_STREAM,
     models_list_envelope: None,
 };
 
@@ -411,6 +447,7 @@ const fn named_decl(name: &'static str) -> ProtocolDecl {
         auth_failure_message: "authentication failed",
         uses_array_stream_shim: false,
         has_native_path_not_found: false,
+        egress_stream_accept: crate::proxy::TEXT_EVENT_STREAM,
         models_list_envelope: None,
     }
 }

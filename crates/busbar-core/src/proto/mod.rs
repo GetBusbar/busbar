@@ -577,23 +577,6 @@ pub trait ProtocolWriter: Send + Sync {
     ) {
     }
 
-    /// Native-SDK `Accept` header for THIS EGRESS protocol, given the caller's stream intent.
-    /// A native SDK always sends one; omitting it is a backend-side proxy fingerprint, especially on
-    /// the Bedrock egress where botocore sends `application/vnd.amazon.eventstream` on a
-    /// ConverseStream call. The agnostic forward path calls this through the writer vtable instead of
-    /// the name-match in `egress_accept`, so the core never branches on `"bedrock"`.
-    ///
-    /// Default: `text/event-stream` when streaming, `application/json` otherwise (the shape shared
-    /// by anthropic/openai/responses/gemini/cohere). `BedrockWriter` overrides: eventstream when
-    /// streaming, `application/json` otherwise.
-    fn egress_accept(&self, wants_stream: bool) -> &'static str {
-        if wants_stream {
-            crate::proxy::TEXT_EVENT_STREAM
-        } else {
-            crate::proxy::APPLICATION_JSON
-        }
-    }
-
     /// When a Bedrock-ingress client requested a STREAMING response (`wants_stream`) but the upstream
     /// answered with a BUFFERED (non-SSE) 2xx body, the single translated `IrResponse` must be
     /// re-emitted as native binary eventstream frames rather than `application/json` — a Bedrock SDK's

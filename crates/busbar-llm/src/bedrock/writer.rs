@@ -1202,16 +1202,6 @@ impl ProtocolWriter for BedrockWriter {
         Box::<BedrockStreamFraming>::default()
     }
 
-    fn egress_accept(&self, wants_stream: bool) -> &'static str {
-        // botocore/boto3 sends `application/vnd.amazon.eventstream` on a ConverseStream call and
-        // `application/json` on a non-stream Converse call — the headline Bedrock egress surface.
-        if wants_stream {
-            APPLICATION_VND_AMAZON_EVENTSTREAM
-        } else {
-            busbar_core::proxy::APPLICATION_JSON
-        }
-    }
-
     fn wrap_buffered_as_stream(
         &self,
         ir: &busbar_core::ir::IrResponse,

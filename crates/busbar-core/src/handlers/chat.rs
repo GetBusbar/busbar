@@ -21,7 +21,6 @@ use crate::diagnostics::{
 };
 use crate::handlers::{CodecError, IngressReject, OperationHandler, WireBody};
 use crate::ir::variant::{IrReq, IrResp};
-use crate::proto::ProtocolWriter;
 use bytes::Bytes;
 use serde_json::Value;
 
@@ -156,10 +155,6 @@ impl OperationHandler for ChatOperation {
             }
         }
     }
-    fn egress_accept(&self, writer: &dyn ProtocolWriter, wants_stream: bool) -> &'static str {
-        writer.egress_accept(wants_stream)
-    }
-
     /// Cross-protocol chat representability check. v1.5.4-restored: a stop-sequence list that
     /// exceeds the egress dialect's published cap (`stop_sequence_cap`, e.g. Cohere's 5) is NOT
     /// rejected here. Instead the egress writer CLAMPS the list to the cap, emits a `warn!` naming

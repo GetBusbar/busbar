@@ -125,6 +125,7 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     auth_failure_message: "invalid x-api-key",
     uses_array_stream_shim: false,
     has_native_path_not_found: false,
+    egress_stream_accept: busbar_core::proxy::TEXT_EVENT_STREAM,
     models_list_envelope: Some(models_list_envelope),
 };
 

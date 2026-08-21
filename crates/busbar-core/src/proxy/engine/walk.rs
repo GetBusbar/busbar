@@ -552,7 +552,6 @@ pub(crate) async fn forward_once(
     };
 
     // per-request auth (SigV4 for Bedrock; static otherwise).
-    let writer = app.lanes[i].protocol.writer();
     let url_path = match op.upstream_path(&app.lanes[i], wants_stream) {
         Some(p) => p,
         None => {
@@ -603,9 +602,9 @@ pub(crate) async fn forward_once(
         // Native-SDK User-Agent for the egress protocol (mirrors the main forward path). Dispatched
         // through the writer vtable (`ProtocolWriter::egress_user_agent`) — writer resolved above.
         .header(USER_AGENT, crate::proxy::egress_user_agent(egress_name))
-        // Native-SDK Accept for the egress protocol (mirrors the main forward path). Dispatched
-        // through the writer vtable (`ProtocolWriter::egress_accept`) — no `"bedrock"` branch here.
-        .header(ACCEPT, op.egress_accept(writer, wants_stream))
+        // Native-SDK Accept for the egress protocol (mirrors the main forward path). Read from the
+        // egress declaration (`ProtocolDecl::egress_stream_accept`) — no `"bedrock"` branch here.
+        .header(ACCEPT, op.egress_accept(egress_name, wants_stream))
         .body(payload);
     // See the main forward path: reqwest's `.timeout()` bounds the whole body read, so applying the
     // failover deadline to a STREAMING request truncates a healthy long generation at that wall-clock

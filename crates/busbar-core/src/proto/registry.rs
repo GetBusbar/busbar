@@ -264,6 +264,15 @@ pub struct ProtocolDecl {
     /// path-not-found envelope with a protocol-specific message format (Gemini).
     pub has_native_path_not_found: bool,
 
+    /// Replaces `ProtocolWriter::egress_accept()` (the STREAMING half of it). The native-SDK `Accept`
+    /// header value THIS egress protocol sends on a STREAMING request — `text/event-stream` for every
+    /// SSE-framed dialect, `application/vnd.amazon.eventstream` for Bedrock (botocore sends the binary
+    /// eventstream Accept on a `ConverseStream` call). The NON-streaming value is universally
+    /// `application/json` across every dialect, so it is not a field: the caller reads
+    /// `if wants_stream { decl.egress_stream_accept } else { APPLICATION_JSON }`. A pure per-protocol
+    /// constant relocated off the writer vtable — same value, no allocated codec to read it.
+    pub egress_stream_accept: &'static str,
+
     /// This protocol's `GET /v1(beta)/models` (list-models) response ENVELOPE builder, or `None`
     /// for a protocol that serves no model-discovery surface. Given the visible model/pool names
     /// (already governance-filtered and ordered by core), it returns the dialect-shaped JSON body —

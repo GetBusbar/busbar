@@ -69,6 +69,7 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     auth_failure_message: "invalid api token",
     uses_array_stream_shim: false,
     has_native_path_not_found: false,
+    egress_stream_accept: busbar_core::proxy::TEXT_EVENT_STREAM,
     // No model-discovery surface: Cohere's `/v1/models` fingerprint resolves to the OpenAI envelope
     // (documented), so this dialect declares none of its own.
     models_list_envelope: None,

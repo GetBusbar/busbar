@@ -92,6 +92,7 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     auth_failure_message: GEMINI_BAD_KEY_MESSAGE,
     uses_array_stream_shim: true,
     has_native_path_not_found: true,
+    egress_stream_accept: busbar_core::proxy::TEXT_EVENT_STREAM,
     models_list_envelope: Some(models_list_envelope),
 };
 
