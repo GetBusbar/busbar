@@ -26,7 +26,7 @@
 //! chat (in `busbar-llm`) overrides `prepare_for_egress`/`prepare_for_ingress`/`billing`.
 
 #[allow(dead_code)] // A4b scaffolding: unreferenced until the enum dissolves onto it.
-pub(crate) mod handle_impl {
+pub mod handle_impl {
     use super::sealed;
     use crate::billing::Billing;
     use crate::ir::facts::IrFacts;
@@ -34,8 +34,13 @@ pub(crate) mod handle_impl {
 
     /// The type-erased request/response an `OperationHandler` yields, once the `IrReq`/`IrResp` hub
     /// enums dissolve (A4b). Every method names a neutral, core-retained type; the concrete chat IR
-    /// lives behind the implementor in `busbar-llm`. Sealed via [`sealed::Sealed`] (owner ruling).
-    pub(crate) trait IrHandle: sealed::Sealed + Send {
+    /// lives behind the implementor in `busbar-llm`. Soft-sealed via the `#[doc(hidden)]`
+    /// [`sealed::Sealed`] supertrait (owner ruling 2026-08-20 — pre-step 2): `pub` so the busbar-llm
+    /// dialect handlers can implement it, but an implementor must also name `Sealed`, which is hidden
+    /// from the docs and only referenced by the first-party dialect crates, so the implementor set
+    /// stays closed by convention (in-workspace this is equivalent to the hard seal — nothing outside
+    /// the workspace names `Sealed`). No `Box<dyn Any>` downcast anywhere.
+    pub trait IrHandle: sealed::Sealed + Send {
         /// The semantic operation this handle carries — the same closed vocabulary the registry
         /// declares and the metric labels use. Replaces the enum discriminant `match` that answered
         /// the operation today.
@@ -97,14 +102,17 @@ pub(crate) mod handle_impl {
     }
 }
 
-/// The seal: `IrHandle` can only be implemented by a type that also implements this `pub(crate)`
-/// trait, so the implementor set is closed to the crates core links (owner ruling — no `Box<dyn Any>`
-/// downcast). A dialect crate implements BOTH; an unrelated crate cannot name `Sealed` and so cannot
-/// add an implementor.
-pub(crate) mod sealed {
+/// The soft-seal: `IrHandle` can only be implemented by a type that also implements this trait.
+/// `pub` (so the first-party busbar-llm / busbar-mcp / busbar-a2a dialect crates can name it and
+/// implement `IrHandle`) but `#[doc(hidden)]` — it is not part of the documented surface, so the
+/// implementor set stays closed by convention to the crates that deliberately reach for it. In-tree
+/// this is equivalent to the `pub(crate)` hard seal the owner ruled on (2026-08-20): nothing outside
+/// the workspace names `Sealed`, and there is no `Box<dyn Any>` downcast anywhere.
+#[doc(hidden)]
+pub mod sealed {
     #[allow(dead_code)] // A4b scaffolding: the seal has no implementors until the dissolve.
-    pub(crate) trait Sealed {}
+    pub trait Sealed {}
 }
 
 #[allow(unused_imports)] // re-export path the A4b engine will hold `IrHandle` through.
-pub(crate) use handle_impl::IrHandle;
+pub use handle_impl::IrHandle;

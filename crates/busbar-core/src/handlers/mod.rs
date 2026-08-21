@@ -481,9 +481,11 @@ pub trait TranslateCodec: OperationHandler {
                 // The opaque caller resolves + 404-checks `egress` before calling, so it is always
                 // `Some`; the guard preserves total-safety without a panic on the request path.
                 let egress = egress.ok_or(TranslateReqReject::EgressUnsupported)?;
-                ir.set_model(model);
+                // A4b pre-step 1: the write inverts onto the handle (`ir`), which delegates to the
+                // egress codec's `write_request` after `set_model` — byte-identical to the inline
+                // `ir.set_model(model); egress.write_request(&ir)` this replaces.
                 Ok(TranslatedRequest {
-                    wire: EgressWire::Bytes(egress.write_request(&ir)),
+                    wire: EgressWire::Bytes(ir.write_egress_request_bytes(egress, model)),
                     dropped_controls: Vec::new(),
                 })
             }
@@ -499,13 +501,10 @@ pub trait TranslateCodec: OperationHandler {
                     return Err(TranslateReqReject::Unrepresentable(reason));
                 }
                 let dropped_controls = egress.egress_dropped_controls(&ir);
-                let wire = match egress.write_request_value(&ir) {
-                    Some(written) => EgressWire::Json(written),
-                    None => {
-                        ir.set_model(model);
-                        EgressWire::Bytes(egress.write_request(&ir))
-                    }
-                };
+                // A4b pre-step 1: the write inverts onto the handle (`ir`), which owns the value-first
+                // /set-model+bytes choice by delegating to the egress codec — byte-identical to the
+                // inline `match egress.write_request_value(&ir) { … }` this replaces.
+                let wire = ir.write_egress_request(egress, model);
                 Ok(TranslatedRequest {
                     wire,
                     dropped_controls,
@@ -570,11 +569,10 @@ pub trait TranslateCodec: OperationHandler {
                 let mut ir = self.read_response(bytes)?;
                 let usage = ir.usage();
                 ir.prepare_for_ingress(ingress_protocol, now);
-                let delivery = match ingress_op {
-                    Some(h) => TranslatedResponse::Typed(h.write_response(&ir)),
-                    None => TranslatedResponse::Untranslatable,
-                };
-                Ok((usage, delivery))
+                // A4b pre-step 1: the write inverts onto the handle (`ir`), which owns the
+                // present=>Typed / absent=>Untranslatable choice — byte-identical to the inline
+                // `match ingress_op { … }` this replaces.
+                Ok((usage, ir.write_ingress_response_bytes(ingress_op)))
             }
             TranslateRespInput::Json(v) => {
                 let mut ir = self.read_response_value(v)?;
@@ -590,15 +588,10 @@ pub trait TranslateCodec: OperationHandler {
                         return Ok((usage, TranslatedResponse::StreamFrames(frames)));
                     }
                 }
-                let Some(h) = ingress_op else {
-                    return Ok((usage, TranslatedResponse::IngressUnsupported));
-                };
-                let delivery = match h.write_response_value(&ir) {
-                    Some(written) => TranslatedResponse::Json(written),
-                    // The ingress dialect's response is NOT JSON (binary speech): relay the WireBody.
-                    None => TranslatedResponse::Typed(h.write_response(&ir)),
-                };
-                Ok((usage, delivery))
+                // A4b pre-step 1: the write inverts onto the handle (`ir`), which owns the
+                // absent=>IngressUnsupported / value-first=>Json / else Typed(WireBody) choice —
+                // byte-identical to the inline `let Some(h) = ingress_op else { … }` this replaces.
+                Ok((usage, ir.write_ingress_response(ingress_op)))
             }
         }
     }

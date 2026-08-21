@@ -52,6 +52,11 @@ pub(crate) mod openai_annotations;
 /// dialect writers.
 pub(crate) mod ir_encode;
 
+/// **G6 A4b option-a prep.** The per-`(operation, egress-protocol)` leaf-op writer dispatch — the
+/// non-chat twin of chat's `protocol_for(proto).writer()`, so a dissolved leaf-op handle can write
+/// itself by egress-protocol string without a downcast.
+pub(crate) mod leaf_codec;
+
 /// EVERY DIALECT THIS PLUGIN DECLARES, in the order an operator sees.
 ///
 /// THE ORDER IS LOAD-BEARING AND IT IS NOT ALPHABETICAL. The composition root hands this slice to

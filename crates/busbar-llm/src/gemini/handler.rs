@@ -7,7 +7,9 @@ use busbar_core::handlers::{
     CodecError, EgressCtx, IngressReject, OperationHandler, RequestHandler, WireBody,
 };
 use busbar_core::ir::audio::{SpeechResp, TranscriptionResp};
-use busbar_core::ir::embeddings::{EmbInput, EmbeddingItem, EmbeddingsResp, EncFmt, VectorData};
+use busbar_core::ir::embeddings::{
+    EmbInput, EmbeddingItem, EmbeddingsReq, EmbeddingsResp, EncFmt, VectorData,
+};
 use busbar_core::ir::variant::{IrReq, IrResp};
 use busbar_core::media::{base64_encode, MediaBlob, MediaPayload};
 use busbar_core::operation::Operation;
@@ -201,29 +203,7 @@ impl OperationHandler for GeminiTranscription {
         let IrReq::Transcription(r) = ir else {
             return Bytes::new();
         };
-        let (mime, data) = match &r.audio {
-            Some(blob) => {
-                let d = match &blob.payload {
-                    MediaPayload::B64(s) => s.clone(),
-                    MediaPayload::Bytes(b) => base64_encode(b),
-                };
-                (blob.mime_type.clone(), d)
-            }
-            None => (String::new(), String::new()),
-        };
-        // `target_language` set ⇒ translate (folds /audio/translations); else transcribe.
-        let instruction = if r.target_language.is_some() {
-            "Translate the following audio to text."
-        } else {
-            "Transcribe the following audio verbatim."
-        };
-        let body = json!({
-            "contents": [{ "role": "user", "parts": [
-                { "text": instruction },
-                { "inline_data": { "mime_type": mime, "data": data } },
-            ]}],
-        });
-        Bytes::from(serde_json::to_vec(&body).unwrap_or_default())
+        super::super::leaf_codec::transcription_write_request("gemini", r)
     }
     fn read_response(&self, wire: &[u8]) -> Result<IrResp, CodecError> {
         let v: Value =
@@ -263,21 +243,58 @@ impl OperationHandler for GeminiTranscription {
         let IrResp::Transcription(r) = ir else {
             return WireBody::json(Bytes::new());
         };
-        let mut body = json!({
-            "candidates": [{
-                "content": { "parts": [{ "text": r.text }], "role": "model" },
-                "finishReason": "STOP",
-            }],
-        });
-        if let Some(busbar_core::billing::Billing::Tokens(t)) = &r.usage {
-            body["usageMetadata"] = json!({
-                "promptTokenCount": t.input,
-                "candidatesTokenCount": t.output,
-                "totalTokenCount": t.input.saturating_add(t.output),
-            });
-        }
-        WireBody::json(Bytes::from(serde_json::to_vec(&body).unwrap_or_default()))
+        super::super::leaf_codec::transcription_write_response("gemini", r)
     }
+}
+
+/// IR → gemini candidates transcription request wire (the body of [`GeminiTranscription::write_request`],
+/// moved behind the `(transcription, gemini)` key — G6 A4b option-a). Byte-identical to the inline write.
+pub(crate) fn write_transcription_request(r: &busbar_core::ir::audio::TranscriptionReq) -> Bytes {
+    let (mime, data) = match &r.audio {
+        Some(blob) => {
+            let d = match &blob.payload {
+                MediaPayload::B64(s) => s.clone(),
+                MediaPayload::Bytes(b) => base64_encode(b),
+            };
+            (blob.mime_type.clone(), d)
+        }
+        None => (String::new(), String::new()),
+    };
+    // `target_language` set ⇒ translate (folds /audio/translations); else transcribe.
+    let instruction = if r.target_language.is_some() {
+        "Translate the following audio to text."
+    } else {
+        "Transcribe the following audio verbatim."
+    };
+    let body = json!({
+        "contents": [{ "role": "user", "parts": [
+            { "text": instruction },
+            { "inline_data": { "mime_type": mime, "data": data } },
+        ]}],
+    });
+    Bytes::from(serde_json::to_vec(&body).unwrap_or_default())
+}
+
+/// IR → gemini candidates transcription response wire (the body of
+/// [`GeminiTranscription::write_response`], moved behind the `(transcription, gemini)` key — G6 A4b
+/// option-a). Byte-identical to the pre-cutover inline write.
+pub(crate) fn write_transcription_response(
+    r: &busbar_core::ir::audio::TranscriptionResp,
+) -> WireBody {
+    let mut body = json!({
+        "candidates": [{
+            "content": { "parts": [{ "text": r.text }], "role": "model" },
+            "finishReason": "STOP",
+        }],
+    });
+    if let Some(busbar_core::billing::Billing::Tokens(t)) = &r.usage {
+        body["usageMetadata"] = json!({
+            "promptTokenCount": t.input,
+            "candidatesTokenCount": t.output,
+            "totalTokenCount": t.input.saturating_add(t.output),
+        });
+    }
+    WireBody::json(Bytes::from(serde_json::to_vec(&body).unwrap_or_default()))
 }
 
 /// Gemini speech (TTS) — `models/{id}:generateContent` with `responseModalities: [AUDIO]`.
@@ -325,22 +342,7 @@ impl OperationHandler for GeminiSpeech {
         let IrReq::Speech(r) = ir else {
             return Bytes::new();
         };
-        let speech_config = json!({
-            "voiceConfig": { "prebuiltVoiceConfig": { "voiceName": r.voice } }
-        });
-        // OpenAI's `instructions` is FREE-TEXT style guidance ("speak cheerfully"), not a locale.
-        // The old code put it into `speechConfig.languageCode` (a BCP-47 field), producing an
-        // invalid Gemini request. Gemini steers TTS style through the PROMPT itself, so prefix the
-        // text (its documented style-control mechanism) instead of corrupting languageCode.
-        let text = match &r.instructions {
-            Some(instr) if !instr.trim().is_empty() => format!("{}: {}", instr.trim(), r.input),
-            _ => r.input.clone(),
-        };
-        let body = json!({
-            "contents": [{ "role": "user", "parts": [{ "text": text }]}],
-            "generationConfig": { "responseModalities": ["AUDIO"], "speechConfig": speech_config },
-        });
-        Bytes::from(serde_json::to_vec(&body).unwrap_or_default())
+        super::super::leaf_codec::speech_write_request("gemini", r)
     }
     fn read_response(&self, wire: &[u8]) -> Result<IrResp, CodecError> {
         // Real Gemini → JSON with inline base64 audio; mock/raw → binary body. Try JSON, fall back.
@@ -395,24 +397,51 @@ impl OperationHandler for GeminiSpeech {
         let IrResp::Speech(r) = ir else {
             return WireBody::json(Bytes::new());
         };
-        let (data, mime) = match &r.audio {
-            Some(blob) => {
-                let d = match &blob.payload {
-                    MediaPayload::B64(s) => s.clone(),
-                    MediaPayload::Bytes(b) => base64_encode(b),
-                };
-                (d, blob.mime_type.clone())
-            }
-            None => (String::new(), "audio/mpeg".into()),
-        };
-        let body = json!({
-            "candidates": [{
-                "content": { "parts": [{ "inlineData": { "mimeType": mime, "data": data } }], "role": "model" },
-                "finishReason": "STOP",
-            }],
-        });
-        WireBody::json(Bytes::from(serde_json::to_vec(&body).unwrap_or_default()))
+        super::super::leaf_codec::speech_write_response("gemini", r)
     }
+}
+
+/// IR → gemini TTS request wire (the body of [`GeminiSpeech::write_request`], moved behind the
+/// `(speech, gemini)` key — G6 A4b option-a). Byte-identical to the pre-cutover inline write.
+pub(crate) fn write_speech_request(r: &busbar_core::ir::audio::SpeechReq) -> Bytes {
+    let speech_config = json!({
+        "voiceConfig": { "prebuiltVoiceConfig": { "voiceName": r.voice } }
+    });
+    // OpenAI's `instructions` is FREE-TEXT style guidance ("speak cheerfully"), not a locale.
+    // The old code put it into `speechConfig.languageCode` (a BCP-47 field), producing an
+    // invalid Gemini request. Gemini steers TTS style through the PROMPT itself, so prefix the
+    // text (its documented style-control mechanism) instead of corrupting languageCode.
+    let text = match &r.instructions {
+        Some(instr) if !instr.trim().is_empty() => format!("{}: {}", instr.trim(), r.input),
+        _ => r.input.clone(),
+    };
+    let body = json!({
+        "contents": [{ "role": "user", "parts": [{ "text": text }]}],
+        "generationConfig": { "responseModalities": ["AUDIO"], "speechConfig": speech_config },
+    });
+    Bytes::from(serde_json::to_vec(&body).unwrap_or_default())
+}
+
+/// IR → gemini TTS response wire (the body of [`GeminiSpeech::write_response`], moved behind the
+/// `(speech, gemini)` key — G6 A4b option-a). Byte-identical to the pre-cutover inline write.
+pub(crate) fn write_speech_response(r: &SpeechResp) -> WireBody {
+    let (data, mime) = match &r.audio {
+        Some(blob) => {
+            let d = match &blob.payload {
+                MediaPayload::B64(s) => s.clone(),
+                MediaPayload::Bytes(b) => base64_encode(b),
+            };
+            (d, blob.mime_type.clone())
+        }
+        None => (String::new(), "audio/mpeg".into()),
+    };
+    let body = json!({
+        "candidates": [{
+            "content": { "parts": [{ "inlineData": { "mimeType": mime, "data": data } }], "role": "model" },
+            "finishReason": "STOP",
+        }],
+    });
+    WireBody::json(Bytes::from(serde_json::to_vec(&body).unwrap_or_default()))
 }
 
 /// Gemini/Imagen image generation (`models/{id}:predict`). prompt in → `predictions[].bytesBase64Encoded` out.
@@ -453,20 +482,7 @@ impl OperationHandler for GeminiImage {
         let IrReq::Image(r) = ir else {
             return Bytes::new();
         };
-        let mut params = json!({ "sampleCount": r.n.unwrap_or(1) });
-        // Carry the Imagen generation controls the reader captures; dropping them fell back to
-        // Imagen's defaults (1:1 aspect, default person-generation policy) instead of the request.
-        if let Some(a) = &r.aspect_ratio {
-            params["aspectRatio"] = json!(a);
-        }
-        if let Some(p) = &r.person_generation {
-            params["personGeneration"] = json!(p);
-        }
-        let body = json!({
-            "instances": [{ "prompt": r.prompt.clone().unwrap_or_default() }],
-            "parameters": params,
-        });
-        Bytes::from(serde_json::to_vec(&body).unwrap_or_default())
+        super::super::leaf_codec::image_write_request("gemini", r)
     }
     fn read_response(&self, wire: &[u8]) -> Result<IrResp, CodecError> {
         let v: Value =
@@ -500,22 +516,47 @@ impl OperationHandler for GeminiImage {
         let IrResp::Image(r) = ir else {
             return WireBody::json(Bytes::new());
         };
-        let predictions: Vec<Value> = r
-            .images
-            .iter()
-            .map(|img| {
-                let mut p = json!({});
-                if let Some(b64) = &img.b64 {
-                    p["bytesBase64Encoded"] = json!(b64);
-                }
-                p["mimeType"] = json!(img.mime_type.clone().unwrap_or_else(|| "image/png".into()));
-                p
-            })
-            .collect();
-        WireBody::json(Bytes::from(
-            serde_json::to_vec(&json!({ "predictions": predictions })).unwrap_or_default(),
-        ))
+        super::super::leaf_codec::image_write_response("gemini", r)
     }
+}
+
+/// IR → Imagen `:predict` request wire (the body of [`GeminiImage::write_request`], moved behind the
+/// `(image, gemini)` key — G6 A4b option-a). Byte-identical to the pre-cutover inline write.
+pub(crate) fn write_image_request(r: &busbar_core::ir::image::ImageReq) -> Bytes {
+    let mut params = json!({ "sampleCount": r.n.unwrap_or(1) });
+    // Carry the Imagen generation controls the reader captures; dropping them fell back to
+    // Imagen's defaults (1:1 aspect, default person-generation policy) instead of the request.
+    if let Some(a) = &r.aspect_ratio {
+        params["aspectRatio"] = json!(a);
+    }
+    if let Some(p) = &r.person_generation {
+        params["personGeneration"] = json!(p);
+    }
+    let body = json!({
+        "instances": [{ "prompt": r.prompt.clone().unwrap_or_default() }],
+        "parameters": params,
+    });
+    Bytes::from(serde_json::to_vec(&body).unwrap_or_default())
+}
+
+/// IR → Imagen `:predict` response wire (the body of [`GeminiImage::write_response`], moved behind
+/// the `(image, gemini)` key — G6 A4b option-a). Byte-identical to the pre-cutover inline write.
+pub(crate) fn write_image_response(r: &busbar_core::ir::image::ImageResp) -> WireBody {
+    let predictions: Vec<Value> = r
+        .images
+        .iter()
+        .map(|img| {
+            let mut p = json!({});
+            if let Some(b64) = &img.b64 {
+                p["bytesBase64Encoded"] = json!(b64);
+            }
+            p["mimeType"] = json!(img.mime_type.clone().unwrap_or_else(|| "image/png".into()));
+            p
+        })
+        .collect();
+    WireBody::json(Bytes::from(
+        serde_json::to_vec(&json!({ "predictions": predictions })).unwrap_or_default(),
+    ))
 }
 
 /// Gemini embeddings (`models/{id}:embedContent`). Single content in, `embedding.values` out.
@@ -587,43 +628,7 @@ impl OperationHandler for GeminiEmbeddings {
         let IrReq::Embeddings(r) = ir else {
             return Bytes::new();
         };
-        let text = match &r.input {
-            EmbInput::Text(v) => {
-                // Gemini `:embedContent` embeds a SINGLE content; a multi-input request can only
-                // embed the first here (batch would need `:batchEmbedContents`, a 1.3 item). Warn
-                // rather than silently drop the rest.
-                if v.len() > 1 {
-                    tracing::warn!(
-                        dropped = v.len() - 1,
-                        "Gemini :embedContent takes one input; embedding only the first of a \
-                         multi-input request (the rest are not sent)"
-                    );
-                }
-                v.first().cloned().unwrap_or_default()
-            }
-            other => {
-                tracing::warn!(
-                    dropped = 1,
-                    "Gemini :embedContent takes text input only; dropping a non-text embeddings \
-                     input ({other:?} kind) with no analog"
-                );
-                String::new()
-            }
-        };
-        // Carry the retrieval/shape controls the reader captures — Gemini `:embedContent` supports
-        // them natively. Dropping `outputDimensionality` returned full-width vectors instead of the
-        // requested size (a wrong-length response); `taskType`/`title` steer retrieval quality.
-        let mut body = json!({ "content": { "parts": [{ "text": text }] } });
-        if let Some(d) = r.dimensions {
-            body["outputDimensionality"] = json!(d);
-        }
-        if let Some(t) = &r.task_type {
-            body["taskType"] = json!(t);
-        }
-        if let Some(t) = &r.title {
-            body["title"] = json!(t);
-        }
-        Bytes::from(serde_json::to_vec(&body).unwrap_or_default())
+        super::super::leaf_codec::embeddings_write_request("gemini", r)
     }
     fn read_response(&self, wire: &[u8]) -> Result<IrResp, CodecError> {
         let v: Value =
@@ -662,18 +667,68 @@ impl OperationHandler for GeminiEmbeddings {
         let IrResp::Embeddings(r) = ir else {
             return WireBody::json(Bytes::new());
         };
-        let values: Vec<f32> = r
-            .embeddings
-            .first()
-            .and_then(|item| match item.vectors.get(&EncFmt::Float) {
-                Some(VectorData::Float(v)) => Some(v.clone()),
-                _ => None,
-            })
-            .unwrap_or_default();
-        WireBody::json(Bytes::from(
-            serde_json::to_vec(&json!({ "embedding": { "values": values } })).unwrap_or_default(),
-        ))
+        super::super::leaf_codec::embeddings_write_response("gemini", r)
     }
+}
+
+/// IR → gemini `:embedContent` request wire (the body of the gemini embeddings
+/// `OperationHandler::write_request`, moved behind the `(embeddings, gemini)` key — G6 A4b option-a).
+/// Byte-identical to the pre-cutover inline write.
+pub(crate) fn write_embeddings_request(r: &EmbeddingsReq) -> Bytes {
+    let text = match &r.input {
+        EmbInput::Text(v) => {
+            // Gemini `:embedContent` embeds a SINGLE content; a multi-input request can only
+            // embed the first here (batch would need `:batchEmbedContents`, a 1.3 item). Warn
+            // rather than silently drop the rest.
+            if v.len() > 1 {
+                tracing::warn!(
+                    dropped = v.len() - 1,
+                    "Gemini :embedContent takes one input; embedding only the first of a \
+                     multi-input request (the rest are not sent)"
+                );
+            }
+            v.first().cloned().unwrap_or_default()
+        }
+        other => {
+            tracing::warn!(
+                dropped = 1,
+                "Gemini :embedContent takes text input only; dropping a non-text embeddings \
+                 input ({other:?} kind) with no analog"
+            );
+            String::new()
+        }
+    };
+    // Carry the retrieval/shape controls the reader captures — Gemini `:embedContent` supports
+    // them natively. Dropping `outputDimensionality` returned full-width vectors instead of the
+    // requested size (a wrong-length response); `taskType`/`title` steer retrieval quality.
+    let mut body = json!({ "content": { "parts": [{ "text": text }] } });
+    if let Some(d) = r.dimensions {
+        body["outputDimensionality"] = json!(d);
+    }
+    if let Some(t) = &r.task_type {
+        body["taskType"] = json!(t);
+    }
+    if let Some(t) = &r.title {
+        body["title"] = json!(t);
+    }
+    Bytes::from(serde_json::to_vec(&body).unwrap_or_default())
+}
+
+/// IR → gemini `:embedContent` response wire (the body of the gemini embeddings
+/// `OperationHandler::write_response`, moved behind the `(embeddings, gemini)` key — G6 A4b
+/// option-a). Byte-identical to the pre-cutover inline write.
+pub(crate) fn write_embeddings_response(r: &EmbeddingsResp) -> WireBody {
+    let values: Vec<f32> = r
+        .embeddings
+        .first()
+        .and_then(|item| match item.vectors.get(&EncFmt::Float) {
+            Some(VectorData::Float(v)) => Some(v.clone()),
+            _ => None,
+        })
+        .unwrap_or_default();
+    WireBody::json(Bytes::from(
+        serde_json::to_vec(&json!({ "embedding": { "values": values } })).unwrap_or_default(),
+    ))
 }
 
 #[cfg(test)]

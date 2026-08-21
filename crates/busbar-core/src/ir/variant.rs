@@ -16,7 +16,9 @@ use super::image::{ImageReq, ImageResp};
 use super::moderation::{ModerationReq, ModerationResp};
 use super::{IrRequest, IrResponse};
 use crate::billing::{Billing, TokenUsage};
+use crate::handlers::{EgressWire, OperationHandler, TranslatedResponse};
 use crate::operation::Operation;
+use bytes::Bytes;
 
 /// Google's documented dummy `thoughtSignature` value that "skips validation" for a function-call
 /// part — the officially sanctioned escape hatch for migrating conversation history from another
@@ -435,6 +437,43 @@ impl IrReq {
     }
 }
 
+/// A4b PRE-STEP 1 — the handle-owned EGRESS-REQUEST write entrypoints (the write-inversion SHAPE).
+/// The `IrReq` (the handle-to-be) OWNS the write, delegating to the egress codec's existing
+/// `write_request_value`/`write_request` so the pipeline stays byte-identical. At A4b the
+/// `egress: &dyn OperationHandler` param becomes an `egress_protocol: &str` and each body selects the
+/// writer internally (no downcast — owner ruling 2026-08-20); these methods then move onto
+/// `IrHandle` in busbar-llm. Named here so `TranslateCodec` routes writes through the handle before
+/// the irreversible dissolve.
+impl IrReq {
+    /// JSON egress path: value-first (a JSON body the router still post-shapes) else `set_model` +
+    /// final bytes. Byte-identical to the pre-cutover inline write in `TranslateCodec::translate_request`.
+    pub fn write_egress_request(
+        &mut self,
+        egress: &dyn OperationHandler,
+        model: &str,
+    ) -> EgressWire {
+        match egress.write_request_value(self) {
+            Some(written) => EgressWire::Json(written),
+            None => {
+                self.set_model(model);
+                EgressWire::Bytes(egress.write_request(self))
+            }
+        }
+    }
+
+    /// OPAQUE egress path (multipart transcription / audio speech): `set_model` then the egress
+    /// codec's final bytes, no JSON post-shape. Byte-identical to the pre-cutover inline opaque write;
+    /// folds into the same `IrHandle` entrypoint at A4b.
+    pub fn write_egress_request_bytes(
+        &mut self,
+        egress: &dyn OperationHandler,
+        model: &str,
+    ) -> Bytes {
+        self.set_model(model);
+        egress.write_request(self)
+    }
+}
+
 /// THE OPERATION-BLIND PROJECTION DISPATCH — the hook/gate/tap seam reads a request through
 /// [`crate::ir::facts::IrFacts`], and this is the one place the parent enum forwards to the inner
 /// family's walk. Every arm is enumerated with NO catch-all, deliberately: a `_ =>` would silently
@@ -685,6 +724,40 @@ impl IrResp {
         match self.usage() {
             Some(Billing::Tokens(t)) => Some(t),
             _ => None,
+        }
+    }
+
+    /// A4b PRE-STEP 1 — the handle-owned INGRESS-RESPONSE write entrypoint for the JSON path (the
+    /// write-inversion SHAPE). The `IrResp` OWNS the delivery choice — ingress-absent =>
+    /// `IngressUnsupported`, else value-first (`write_response_value` `Some` => `Json`) else the
+    /// ingress codec's `write_response` (`Typed`) — delegating to the ingress codec's existing
+    /// methods, so it is byte-identical to the pre-cutover inline write in
+    /// `TranslateCodec::translate_response`. At A4b `ingress: &dyn OperationHandler` becomes an
+    /// `ingress_protocol: &str` and this moves onto `IrHandle` in busbar-llm.
+    pub fn write_ingress_response(
+        &self,
+        ingress: Option<&dyn OperationHandler>,
+    ) -> TranslatedResponse {
+        let Some(h) = ingress else {
+            return TranslatedResponse::IngressUnsupported;
+        };
+        match h.write_response_value(self) {
+            Some(written) => TranslatedResponse::Json(written),
+            None => TranslatedResponse::Typed(h.write_response(self)),
+        }
+    }
+
+    /// A4b PRE-STEP 1 — the handle-owned INGRESS-RESPONSE write entrypoint for the OPAQUE path (audio
+    /// / the opaque egress->ingress bridge): ingress-present => `Typed(write_response)`, absent =>
+    /// `Untranslatable`. Byte-identical to the pre-cutover inline opaque write; folds into the same
+    /// `IrHandle` entrypoint at A4b.
+    pub fn write_ingress_response_bytes(
+        &self,
+        ingress: Option<&dyn OperationHandler>,
+    ) -> TranslatedResponse {
+        match ingress {
+            Some(h) => TranslatedResponse::Typed(h.write_response(self)),
+            None => TranslatedResponse::Untranslatable,
         }
     }
 }

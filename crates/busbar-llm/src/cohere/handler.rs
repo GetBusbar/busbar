@@ -6,7 +6,9 @@
 use busbar_core::handlers::{
     CodecError, EgressCtx, IngressReject, OperationHandler, RequestHandler, WireBody,
 };
-use busbar_core::ir::embeddings::{EmbInput, EmbeddingItem, EmbeddingsResp, EncFmt, VectorData};
+use busbar_core::ir::embeddings::{
+    EmbInput, EmbeddingItem, EmbeddingsReq, EmbeddingsResp, EncFmt, VectorData,
+};
 use busbar_core::ir::variant::{IrReq, IrResp};
 use busbar_core::operation::Operation;
 use bytes::Bytes;
@@ -178,47 +180,7 @@ impl OperationHandler for CohereEmbeddings {
         let IrReq::Embeddings(r) = ir else {
             return Bytes::new();
         };
-        let texts = match &r.input {
-            EmbInput::Text(v) => v.clone(),
-            other => {
-                tracing::warn!(
-                    dropped = 1,
-                    "Cohere embeddings input is text-only here; dropping a non-text embeddings \
-                     input ({other:?} kind) with no analog"
-                );
-                Vec::new()
-            }
-        };
-        let input_type = r
-            .input_type
-            .clone()
-            .unwrap_or_else(|| "search_document".to_string());
-        // Honor the caller's requested encoding(s): Cohere's `embedding_types` map 1:1 to the IR
-        // `EncFmt` variants, so a base64 ask is served natively rather than silently downgraded to
-        // float (the same drop that was fixed for the OpenAI egress writer). Default to float.
-        let embedding_types: Vec<&str> = if r.encoding_formats.is_empty() {
-            vec!["float"]
-        } else {
-            r.encoding_formats
-                .iter()
-                .map(cohere_embedding_type)
-                .collect()
-        };
-        let mut body = json!({
-            "model": r.model,
-            "texts": texts,
-            "input_type": input_type,
-            "embedding_types": embedding_types,
-        });
-        // Carry the shape/truncation controls the reader captures (Cohere is the lone embeddings
-        // writer that was dropping these): `output_dimension` (Matryoshka on embed-v4) and `truncate`.
-        if let Some(d) = r.dimensions {
-            body["output_dimension"] = json!(d);
-        }
-        if let Some(t) = &r.truncate {
-            body["truncate"] = json!(t);
-        }
-        Bytes::from(serde_json::to_vec(&body).unwrap_or_default())
+        super::super::leaf_codec::embeddings_write_request("cohere", r)
     }
     fn read_response(&self, wire: &[u8]) -> Result<IrResp, CodecError> {
         let v: Value =
@@ -292,45 +254,98 @@ impl OperationHandler for CohereEmbeddings {
         let IrResp::Embeddings(r) = ir else {
             return WireBody::json(Bytes::new());
         };
-        // Emit every encoding the IR carries under its own Cohere key (`float`, `base64`, `int8`,
-        // ...), so an int8/base64/etc. response (e.g. from a cross-protocol backend) is not silently
-        // dropped — the write twin of the six-encoding read. Cohere's `embeddings_by_type` shape
-        // holds multiple keys, each a per-item array in candidate order.
-        let mut by_enc: std::collections::BTreeMap<EncFmt, Vec<Value>> =
-            std::collections::BTreeMap::new();
-        for item in &r.embeddings {
-            for (enc, vd) in &item.vectors {
-                let cell = match vd {
-                    VectorData::Float(v) => json!(v),
-                    VectorData::Base64(s) => json!(s),
-                    VectorData::Int(v) => json!(v),
-                };
-                by_enc.entry(*enc).or_default().push(cell);
-            }
-        }
-        let mut emb = serde_json::Map::new();
-        for (enc, vals) in &by_enc {
-            emb.insert(cohere_embedding_type(enc).to_string(), json!(vals));
-        }
-        // Emit an empty `float` key when the IR carried no vectors, for response-shape stability.
-        if emb.is_empty() {
-            emb.insert("float".to_string(), json!(Vec::<Vec<f32>>::new()));
-        }
-        let mut body = json!({
-            "response_type": "embeddings_by_type",
-            "embeddings": emb,
-        });
-        if let Some(id) = &r.id {
-            body["id"] = json!(id);
-        }
-        if let Some(texts) = &r.input_echo {
-            body["texts"] = json!(texts);
-        }
-        if let Some(u) = &r.usage {
-            body["meta"] = json!({ "billed_units": { "input_tokens": u.input } });
-        }
-        WireBody::json(Bytes::from(serde_json::to_vec(&body).unwrap_or_default()))
+        super::super::leaf_codec::embeddings_write_response("cohere", r)
     }
+}
+
+/// IR → cohere v2 embed request wire (the body of [`CohereEmbeddings::write_request`], moved behind
+/// the `(embeddings, cohere)` key so a dissolved leaf-op handle can reach it — G6 A4b option-a).
+/// Byte-identical to the pre-cutover inline write.
+pub(crate) fn write_embeddings_request(r: &EmbeddingsReq) -> Bytes {
+    let texts = match &r.input {
+        EmbInput::Text(v) => v.clone(),
+        other => {
+            tracing::warn!(
+                dropped = 1,
+                "Cohere embeddings input is text-only here; dropping a non-text embeddings \
+                 input ({other:?} kind) with no analog"
+            );
+            Vec::new()
+        }
+    };
+    let input_type = r
+        .input_type
+        .clone()
+        .unwrap_or_else(|| "search_document".to_string());
+    // Honor the caller's requested encoding(s): Cohere's `embedding_types` map 1:1 to the IR
+    // `EncFmt` variants, so a base64 ask is served natively rather than silently downgraded to
+    // float (the same drop that was fixed for the OpenAI egress writer). Default to float.
+    let embedding_types: Vec<&str> = if r.encoding_formats.is_empty() {
+        vec!["float"]
+    } else {
+        r.encoding_formats
+            .iter()
+            .map(cohere_embedding_type)
+            .collect()
+    };
+    let mut body = json!({
+        "model": r.model,
+        "texts": texts,
+        "input_type": input_type,
+        "embedding_types": embedding_types,
+    });
+    // Carry the shape/truncation controls the reader captures (Cohere is the lone embeddings
+    // writer that was dropping these): `output_dimension` (Matryoshka on embed-v4) and `truncate`.
+    if let Some(d) = r.dimensions {
+        body["output_dimension"] = json!(d);
+    }
+    if let Some(t) = &r.truncate {
+        body["truncate"] = json!(t);
+    }
+    Bytes::from(serde_json::to_vec(&body).unwrap_or_default())
+}
+
+/// IR → cohere v2 embed response wire (the body of [`CohereEmbeddings::write_response`], moved behind
+/// the `(embeddings, cohere)` key — G6 A4b option-a). Byte-identical to the pre-cutover inline write.
+pub(crate) fn write_embeddings_response(r: &EmbeddingsResp) -> WireBody {
+    // Emit every encoding the IR carries under its own Cohere key (`float`, `base64`, `int8`,
+    // ...), so an int8/base64/etc. response (e.g. from a cross-protocol backend) is not silently
+    // dropped — the write twin of the six-encoding read. Cohere's `embeddings_by_type` shape
+    // holds multiple keys, each a per-item array in candidate order.
+    let mut by_enc: std::collections::BTreeMap<EncFmt, Vec<Value>> =
+        std::collections::BTreeMap::new();
+    for item in &r.embeddings {
+        for (enc, vd) in &item.vectors {
+            let cell = match vd {
+                VectorData::Float(v) => json!(v),
+                VectorData::Base64(s) => json!(s),
+                VectorData::Int(v) => json!(v),
+            };
+            by_enc.entry(*enc).or_default().push(cell);
+        }
+    }
+    let mut emb = serde_json::Map::new();
+    for (enc, vals) in &by_enc {
+        emb.insert(cohere_embedding_type(enc).to_string(), json!(vals));
+    }
+    // Emit an empty `float` key when the IR carried no vectors, for response-shape stability.
+    if emb.is_empty() {
+        emb.insert("float".to_string(), json!(Vec::<Vec<f32>>::new()));
+    }
+    let mut body = json!({
+        "response_type": "embeddings_by_type",
+        "embeddings": emb,
+    });
+    if let Some(id) = &r.id {
+        body["id"] = json!(id);
+    }
+    if let Some(texts) = &r.input_echo {
+        body["texts"] = json!(texts);
+    }
+    if let Some(u) = &r.usage {
+        body["meta"] = json!({ "billed_units": { "input_tokens": u.input } });
+    }
+    WireBody::json(Bytes::from(serde_json::to_vec(&body).unwrap_or_default()))
 }
 
 /// Cohere v2 rerank (`/v2/rerank`): `{model, query, documents[], top_n?}` →
@@ -399,18 +414,7 @@ impl OperationHandler for CohereRerank {
         let IrReq::Rerank(r) = ir else {
             return Bytes::new();
         };
-        let mut body = json!({
-            "model": r.model,
-            "query": r.query,
-            "documents": r.documents,
-        });
-        if let Some(n) = r.top_n {
-            body["top_n"] = json!(n);
-        }
-        if let Some(m) = r.max_tokens_per_doc {
-            body["max_tokens_per_doc"] = json!(m);
-        }
-        Bytes::from(serde_json::to_vec(&body).unwrap_or_default())
+        super::super::leaf_codec::rerank_write_request("cohere", r)
     }
     fn read_response(&self, wire: &[u8]) -> Result<IrResp, CodecError> {
         let v: Value =
@@ -430,20 +434,43 @@ impl OperationHandler for CohereRerank {
         let IrResp::Rerank(r) = ir else {
             return WireBody::json(Bytes::new());
         };
-        let results: Vec<Value> = r
-            .results
-            .iter()
-            .map(|x| json!({"index": x.index, "relevance_score": x.relevance_score}))
-            .collect();
-        let mut body = json!({ "results": results });
-        if let Some(id) = &r.id {
-            body["id"] = json!(id);
-        }
-        if let Some(su) = r.search_units {
-            body["meta"] = json!({ "billed_units": { "search_units": su } });
-        }
-        WireBody::json(Bytes::from(serde_json::to_vec(&body).unwrap_or_default()))
+        super::super::leaf_codec::rerank_write_response("cohere", r)
     }
+}
+
+/// IR → cohere v2 rerank request wire (the body of [`CohereRerank::write_request`], moved behind the
+/// `(rerank, cohere)` key — G6 A4b option-a). Byte-identical to the pre-cutover inline write.
+pub(crate) fn write_rerank_request(r: &busbar_core::ir::rerank::RerankReq) -> Bytes {
+    let mut body = json!({
+        "model": r.model,
+        "query": r.query,
+        "documents": r.documents,
+    });
+    if let Some(n) = r.top_n {
+        body["top_n"] = json!(n);
+    }
+    if let Some(m) = r.max_tokens_per_doc {
+        body["max_tokens_per_doc"] = json!(m);
+    }
+    Bytes::from(serde_json::to_vec(&body).unwrap_or_default())
+}
+
+/// IR → cohere v2 rerank response wire (the body of [`CohereRerank::write_response`], moved behind the
+/// `(rerank, cohere)` key — G6 A4b option-a). Byte-identical to the pre-cutover inline write.
+pub(crate) fn write_rerank_response(r: &busbar_core::ir::rerank::RerankResp) -> WireBody {
+    let results: Vec<Value> = r
+        .results
+        .iter()
+        .map(|x| json!({"index": x.index, "relevance_score": x.relevance_score}))
+        .collect();
+    let mut body = json!({ "results": results });
+    if let Some(id) = &r.id {
+        body["id"] = json!(id);
+    }
+    if let Some(su) = r.search_units {
+        body["meta"] = json!({ "billed_units": { "search_units": su } });
+    }
+    WireBody::json(Bytes::from(serde_json::to_vec(&body).unwrap_or_default()))
 }
 
 /// `results[] -> [{index, relevance_score}]` — shared by the Cohere and Bedrock rerank readers

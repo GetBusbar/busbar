@@ -489,10 +489,11 @@ pub(crate) async fn forward_once(
     // smuggle the shim key to force JSON-array reframing of its SSE stream.
     let gemini_json_array = crate::proto::decl_for(ingress_protocol)
         .is_some_and(|d| d.uses_array_stream_shim)
-        && crate::proto::protocol_for(ingress_protocol)
-            .map(|p| {
+        && crate::proto::decl_for(ingress_protocol)
+            .and_then(|d| d.dialect())
+            .map(|di| {
                 v.as_ref()
-                    .map(|v| p.writer().wants_array_stream(v))
+                    .map(|v| di.wants_array_stream(v))
                     .unwrap_or(false)
             })
             .unwrap_or(false);

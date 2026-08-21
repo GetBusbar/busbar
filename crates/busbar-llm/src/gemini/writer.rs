@@ -1347,7 +1347,7 @@ impl ProtocolWriter for GeminiWriter {
         out
     }
 
-    fn make_array_stream_framer(&self) -> Option<Box<dyn busbar_core::proto::JsonArrayFramer>> {
+    fn make_array_stream_framer(&self) -> Option<Box<dyn busbar_core::proto::ArrayStreamFramer>> {
         // Gemini `:streamGenerateContent` WITHOUT `?alt=sse` expects a JSON-array streamed body; this
         // builds the framer that reframes the (gemini-shape) SSE bytes into that array. The forward
         // path engages it only when `uses_array_stream_shim()` AND `wants_array_stream(body)` hold.

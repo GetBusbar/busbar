@@ -667,10 +667,10 @@ pub trait ProtocolWriter: Send + Sync {
 
     /// Build this protocol's array-stream framer (the JSON-array reframer engaged for a streaming
     /// response that must be delivered as a `[{...},{...}]` document instead of SSE), as a
-    /// `Box<dyn JsonArrayFramer>`, or `None` when this protocol has no such framing. The agnostic
+    /// `Box<dyn ArrayStreamFramer>`, or `None` when this protocol has no such framing. The agnostic
     /// forward path constructs the framer through this vtable method — gated by `uses_array_stream_shim()`
     /// — so it never names the gemini framer type. Default `None`; `GeminiWriter` overrides → `Some`.
-    fn make_array_stream_framer(&self) -> Option<Box<dyn JsonArrayFramer>> {
+    fn make_array_stream_framer(&self) -> Option<Box<dyn ArrayStreamFramer>> {
         None
     }
 
@@ -705,13 +705,13 @@ pub trait ProtocolWriter: Send + Sync {
 
 /// A streaming JSON-array reframer: consumes a protocol's SSE response bytes and re-emits them as one
 /// streaming JSON array (`[{...},{...}]`), the body shape a non-SSE streaming request expects. The
-/// agnostic forward path holds one `Box<dyn JsonArrayFramer>` (built via
+/// agnostic forward path holds one `Box<dyn ArrayStreamFramer>` (built via
 /// [`ProtocolWriter::make_array_stream_framer`]) and drives it, so it names no protocol's framer type.
 /// The sole implementor is `gemini::GeminiJsonArrayFramer` (Gemini `:streamGenerateContent` without
 /// `?alt=sse`). The trait exposes only the SUBSET of that type's API the agnostic core needs (`feed`,
 /// `finish_for_translate`, `finish_with_server_error`); the type's raw `finish` and its low-level
 /// `finish_with_error(code, status, …)` are absent, since the core never passes a wire status code.
-pub trait JsonArrayFramer: Send {
+pub trait ArrayStreamFramer: Send {
     /// Feed a chunk of SSE bytes; return JSON-array bytes for whatever complete frames are now
     /// available (empty if only a partial frame is buffered).
     fn feed(&mut self, chunk: &[u8]) -> Vec<u8>;
@@ -1056,6 +1056,119 @@ pub(crate) fn protocol_for(name: &str) -> Option<Protocol> {
     registry::decl_for(name)
         .and_then(|d| d.codec)
         .map(|new| new())
+}
+
+/// **THE 4TH NEUTRAL SEAM (G6 A4b, owner-ruled 2026-08-20).** The per-PROTOCOL computed-codec facade
+/// the operation-blind driver reads, so core names ZERO concrete LLM IR and zero `ProtocolReader`/
+/// `ProtocolWriter` at its call sites. Every method here has a NEUTRAL signature (bytes / `Value` /
+/// `bool` / `TokenUsage` / neutral tuples — `IrError` is `breaker::CanonicalSignal`); the concrete
+/// codec lives behind the implementor.
+///
+/// This is the sibling of the per-CELL `TranslateCodec` — these are the ~10 computed methods the
+/// engine/wire/health/hooks/response_body driver called through the `Protocol` bundle
+/// (`protocol_for(name).writer()/.reader().X()`) that are protocol-level, not operation-level, and so
+/// have no home on `TranslateCodec`. Reached via `decl_for(name).dialect()`. Today its sole
+/// implementor ([`DialectRef`]) forwards to the in-core writer/reader; at the A4b relocation the
+/// implementor moves to busbar-llm with those codecs and this call surface does not change.
+pub trait DialectCodec: Send + Sync {
+    fn probe_body(&self, model: &str) -> Vec<u8>;
+    fn apply_rewrite_to_ingress_body(
+        &self,
+        obj: &mut serde_json::Map<String, serde_json::Value>,
+        messages: &[serde_json::Value],
+        tools: &[serde_json::Value],
+    ) -> bool;
+    fn recover_truncated_usage(&self, tail: &[u8]) -> Option<crate::billing::TokenUsage>;
+    fn ingress_response_request_id(
+        &self,
+        upstream_request_id: Option<&str>,
+    ) -> Option<(&'static str, String)>;
+    fn write_error(&self, status: u16, kind: &str, message: &str) -> serde_json::Value;
+    fn requested_candidate_count(&self, body: &serde_json::Value) -> Option<u64>;
+    fn write_response_exception(&self, err: &IrError) -> Option<(String, String)>;
+    fn write_error_frame(&self, err: &IrError) -> Option<(String, serde_json::Value)>;
+    fn wants_array_stream(&self, body: &serde_json::Value) -> bool;
+    fn inject_response_metrics(&self, value: &mut serde_json::Value, elapsed_ms: Option<u64>);
+    fn attach_error_response_headers(
+        &self,
+        headers: &mut axum::http::HeaderMap,
+        kind: &str,
+        envelope: &serde_json::Value,
+    );
+}
+
+/// The sole [`DialectCodec`] implementor today: a name-keyed forwarder to this protocol's in-core
+/// `Protocol` writer/reader (a fresh instance per call, exactly as every driver call site did before
+/// — these neutral methods carry no per-stream state). At A4b it relocates to busbar-llm alongside
+/// `ProtocolReader`/`ProtocolWriter`, so the driver's `decl_for(name).dialect().X()` calls are stable
+/// across the move. Constructed only via [`ProtocolDecl::dialect`], so `protocol_for(self.0)` is
+/// always `Some`.
+struct DialectRef(&'static str);
+
+impl DialectCodec for DialectRef {
+    fn probe_body(&self, model: &str) -> Vec<u8> {
+        protocol_for(self.0)
+            .map(|p| p.writer().probe_body(model))
+            .unwrap_or_default()
+    }
+    fn apply_rewrite_to_ingress_body(
+        &self,
+        obj: &mut serde_json::Map<String, serde_json::Value>,
+        messages: &[serde_json::Value],
+        tools: &[serde_json::Value],
+    ) -> bool {
+        protocol_for(self.0)
+            .map(|p| {
+                p.writer()
+                    .apply_rewrite_to_ingress_body(obj, messages, tools)
+            })
+            .unwrap_or(false)
+    }
+    fn recover_truncated_usage(&self, tail: &[u8]) -> Option<crate::billing::TokenUsage> {
+        protocol_for(self.0).and_then(|p| p.reader().recover_truncated_usage(tail))
+    }
+    fn ingress_response_request_id(
+        &self,
+        upstream_request_id: Option<&str>,
+    ) -> Option<(&'static str, String)> {
+        protocol_for(self.0)
+            .and_then(|p| p.writer().ingress_response_request_id(upstream_request_id))
+    }
+    fn write_error(&self, status: u16, kind: &str, message: &str) -> serde_json::Value {
+        protocol_for(self.0)
+            .map(|p| p.writer().write_error(status, kind, message))
+            .unwrap_or_default()
+    }
+    fn requested_candidate_count(&self, body: &serde_json::Value) -> Option<u64> {
+        protocol_for(self.0).and_then(|p| p.writer().requested_candidate_count(body))
+    }
+    fn write_response_exception(&self, err: &IrError) -> Option<(String, String)> {
+        protocol_for(self.0).and_then(|p| p.writer().write_response_exception(err))
+    }
+    fn write_error_frame(&self, err: &IrError) -> Option<(String, serde_json::Value)> {
+        protocol_for(self.0).and_then(|p| p.writer().write_error_frame(err))
+    }
+    fn wants_array_stream(&self, body: &serde_json::Value) -> bool {
+        protocol_for(self.0)
+            .map(|p| p.writer().wants_array_stream(body))
+            .unwrap_or(false)
+    }
+    fn inject_response_metrics(&self, value: &mut serde_json::Value, elapsed_ms: Option<u64>) {
+        if let Some(p) = protocol_for(self.0) {
+            p.writer().inject_response_metrics(value, elapsed_ms);
+        }
+    }
+    fn attach_error_response_headers(
+        &self,
+        headers: &mut axum::http::HeaderMap,
+        kind: &str,
+        envelope: &serde_json::Value,
+    ) {
+        if let Some(p) = protocol_for(self.0) {
+            p.writer()
+                .attach_error_response_headers(headers, kind, envelope);
+        }
+    }
 }
 
 /// The set of streaming `Content-Type` values across every declared protocol. A registry aggregate,
@@ -1625,6 +1738,16 @@ pub mod openai_annotations;
 #[cfg(any(test, feature = "test-support"))]
 #[path = "../../../busbar-llm/src/ir_encode.rs"]
 pub mod ir_encode;
+
+/// THE EXTRACTED LEAF-OP WRITER DISPATCH, compiled back in for TEST BUILDS ONLY (G6 A4b option-a).
+/// Sources live in `crates/busbar-llm/src/leaf_codec.rs` — the per-`(operation, egress-protocol)`
+/// writer dispatcher the dialect leaf-op handlers route their writes through (they call it via
+/// `super::super::leaf_codec`, and it reaches each dialect's write body via `super::<dialect>::…`);
+/// same `#[path]` dual-compile mechanism as `ir_encode`/`usage_tail`. Production core drives the
+/// codecs through the vtable and never names this module directly.
+#[cfg(any(test, feature = "test-support"))]
+#[path = "../../../busbar-llm/src/leaf_codec.rs"]
+pub mod leaf_codec;
 
 // Private imports (NOT re-exports) for the symbols mod.rs references by bare name: the registry
 // constructs each Reader/Writer below, and a test synthesizes an Anthropic request id. Every other

@@ -992,12 +992,12 @@ fn test_gemini_json_array_framer_empty_and_done() {
 }
 
 /// The agnostic `finish_with_server_error` seam (proxy engine:`poll_next`) reaches the framer through
-/// a `Box<dyn JsonArrayFramer>` — exercise THAT dispatch path: the trait method must produce the
+/// a `Box<dyn ArrayStreamFramer>` — exercise THAT dispatch path: the trait method must produce the
 /// native Gemini server-error element (HTTP 500 / gRPC `INTERNAL`) carrying the supplied message,
 /// closed into a valid JSON array. The core passes only the message; the impl owns 500/`INTERNAL`.
 #[test]
 fn test_finish_with_server_error_through_trait_object_is_gemini_500_internal() {
-    let mut framer: Box<dyn JsonArrayFramer> = Box::new(gemini::GeminiJsonArrayFramer::new());
+    let mut framer: Box<dyn ArrayStreamFramer> = Box::new(gemini::GeminiJsonArrayFramer::new());
     let out = framer.finish_with_server_error("boom");
     let parsed: serde_json::Value =
         serde_json::from_slice(&out).expect("server-error body must parse as a JSON array");

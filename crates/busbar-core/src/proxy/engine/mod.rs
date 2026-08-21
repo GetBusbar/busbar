@@ -936,11 +936,12 @@ pub(crate) async fn forward_with_pool_parsed_inner(
     // stream (chat streams, so this is a no-op for chat — `true && x == x`).
     let gemini_json_array = op.streaming()
         && crate::proto::decl_for(ingress_protocol).is_some_and(|d| d.uses_array_stream_shim)
-        && crate::proto::protocol_for(ingress_protocol)
-            .map(|p| {
+        && crate::proto::decl_for(ingress_protocol)
+            .and_then(|d| d.dialect())
+            .map(|di| {
                 v.as_ref()
                     // The shim key is a captured head key — `probe()` answers without a DOM.
-                    .map(|l| p.writer().wants_array_stream(l.probe()))
+                    .map(|l| di.wants_array_stream(l.probe()))
                     .unwrap_or(false)
             })
             .unwrap_or(false);

@@ -291,50 +291,10 @@ impl OperationHandler for OpenAiTranscription {
         Ok(IrReq::Transcription(req))
     }
     fn write_request(&self, ir: &IrReq) -> Bytes {
-        // OpenAI-as-egress rebuilds the multipart form (fixed boundary — no randomness needed). Not on
-        // the harness path (openai is always ingress there); kept for cross-protocol symmetry.
         let IrReq::Transcription(r) = ir else {
             return Bytes::new();
         };
-        let boundary = "----busbaraudioMIME";
-        let mut out: Vec<u8> = Vec::new();
-        let mut push_field = |name: &str, val: &str| {
-            // Strip CR/LF from the value: any field (model, language, prompt, response_format) can
-            // carry attacker- or misconfig-supplied text, and an embedded `\r\n--boundary` would
-            // terminate this part and inject arbitrary new MIME parts. This is the one place these
-            // fields are serialized, so sanitizing here covers every text field uniformly.
-            let safe: String = val.chars().filter(|&c| c != '\r' && c != '\n').collect();
-            out.extend_from_slice(format!("--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{safe}\r\n").as_bytes());
-        };
-        push_field("model", &r.model);
-        // Carry the caller's transcription hints on cross-protocol egress (e.g. Gemini ingress ->
-        // OpenAI Whisper): dropping these silently changed behavior (no language hint / prompt /
-        // format). Emit each only when present, matching the OpenAI multipart form field names.
-        if let Some(lang) = &r.source_language {
-            push_field("language", lang);
-        }
-        if let Some(prompt) = &r.prompt {
-            push_field("prompt", prompt);
-        }
-        if let Some(fmt) = &r.response_format {
-            push_field("response_format", fmt);
-        }
-        if let Some(blob) = &r.audio {
-            let bytes = match &blob.payload {
-                MediaPayload::Bytes(b) => b.clone(),
-                MediaPayload::B64(s) => decode_ir_b64(s),
-            };
-            // Sanitize at the EGRESS boundary too: mime_type can enter the IR from ANY ingress
-            // reader (e.g. Gemini inline_data), not just the OpenAI multipart parser, so sanitizing
-            // only at ingress left the gemini->openai transcription path exposed to CR/LF header
-            // injection. This is the one place the outgoing header is built, so it covers all paths.
-            let safe_mime = sanitize_mime_type(&blob.mime_type);
-            out.extend_from_slice(format!("--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"audio\"\r\nContent-Type: {safe_mime}\r\n\r\n").as_bytes());
-            out.extend_from_slice(&bytes);
-            out.extend_from_slice(b"\r\n");
-        }
-        out.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
-        Bytes::from(out)
+        super::super::leaf_codec::transcription_write_request("openai", r)
     }
     fn read_response(&self, wire: &[u8]) -> Result<IrResp, CodecError> {
         // OpenAI transcription is `{"text": "..."}` (json) or bare text (response_format=text). The
@@ -361,20 +321,78 @@ impl OperationHandler for OpenAiTranscription {
         let IrResp::Transcription(r) = ir else {
             return WireBody::json(Bytes::new());
         };
-        let mut body = json!({ "text": r.text });
-        // Surface the billable usage in OpenAI's own transcription shape — duration or tokens.
-        match &r.usage {
-            Some(Billing::Duration { seconds }) => {
-                body["usage"] = json!({ "type": "duration", "seconds": seconds });
-            }
-            Some(Billing::Tokens(t)) => {
-                body["usage"] = json!({ "type": "tokens", "input_tokens": t.input,
-                    "output_tokens": t.output, "total_tokens": t.input.saturating_add(t.output) });
-            }
-            _ => {}
-        }
-        WireBody::json(Bytes::from(serde_json::to_vec(&body).unwrap_or_default()))
+        super::super::leaf_codec::transcription_write_response("openai", r)
     }
+}
+
+/// IR → openai multipart transcription request wire (the body of
+/// [`OpenAiTranscription::write_request`], moved behind the `(transcription, openai)` key — G6 A4b
+/// option-a). OpenAI-as-egress rebuilds the multipart form (fixed boundary — no randomness needed);
+/// not on the harness path (openai is always ingress there), kept for cross-protocol symmetry.
+/// Byte-identical to the pre-cutover inline write.
+pub(crate) fn write_transcription_request(r: &TranscriptionReq) -> Bytes {
+    let boundary = "----busbaraudioMIME";
+    let mut out: Vec<u8> = Vec::new();
+    let mut push_field = |name: &str, val: &str| {
+        // Strip CR/LF from the value: any field (model, language, prompt, response_format) can
+        // carry attacker- or misconfig-supplied text, and an embedded `\r\n--boundary` would
+        // terminate this part and inject arbitrary new MIME parts. This is the one place these
+        // fields are serialized, so sanitizing here covers every text field uniformly.
+        let safe: String = val.chars().filter(|&c| c != '\r' && c != '\n').collect();
+        out.extend_from_slice(
+            format!(
+                "--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{safe}\r\n"
+            )
+            .as_bytes(),
+        );
+    };
+    push_field("model", &r.model);
+    // Carry the caller's transcription hints on cross-protocol egress (e.g. Gemini ingress ->
+    // OpenAI Whisper): dropping these silently changed behavior (no language hint / prompt /
+    // format). Emit each only when present, matching the OpenAI multipart form field names.
+    if let Some(lang) = &r.source_language {
+        push_field("language", lang);
+    }
+    if let Some(prompt) = &r.prompt {
+        push_field("prompt", prompt);
+    }
+    if let Some(fmt) = &r.response_format {
+        push_field("response_format", fmt);
+    }
+    if let Some(blob) = &r.audio {
+        let bytes = match &blob.payload {
+            MediaPayload::Bytes(b) => b.clone(),
+            MediaPayload::B64(s) => decode_ir_b64(s),
+        };
+        // Sanitize at the EGRESS boundary too: mime_type can enter the IR from ANY ingress
+        // reader (e.g. Gemini inline_data), not just the OpenAI multipart parser, so sanitizing
+        // only at ingress left the gemini->openai transcription path exposed to CR/LF header
+        // injection. This is the one place the outgoing header is built, so it covers all paths.
+        let safe_mime = sanitize_mime_type(&blob.mime_type);
+        out.extend_from_slice(format!("--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"audio\"\r\nContent-Type: {safe_mime}\r\n\r\n").as_bytes());
+        out.extend_from_slice(&bytes);
+        out.extend_from_slice(b"\r\n");
+    }
+    out.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+    Bytes::from(out)
+}
+
+/// IR → openai transcription response wire (the body of [`OpenAiTranscription::write_response`], moved
+/// behind the `(transcription, openai)` key — G6 A4b option-a). Byte-identical to the inline write.
+pub(crate) fn write_transcription_response(r: &TranscriptionResp) -> WireBody {
+    let mut body = json!({ "text": r.text });
+    // Surface the billable usage in OpenAI's own transcription shape — duration or tokens.
+    match &r.usage {
+        Some(Billing::Duration { seconds }) => {
+            body["usage"] = json!({ "type": "duration", "seconds": seconds });
+        }
+        Some(Billing::Tokens(t)) => {
+            body["usage"] = json!({ "type": "tokens", "input_tokens": t.input,
+                "output_tokens": t.output, "total_tokens": t.input.saturating_add(t.output) });
+        }
+        _ => {}
+    }
+    WireBody::json(Bytes::from(serde_json::to_vec(&body).unwrap_or_default()))
 }
 
 /// OpenAI transcription `usage` → `Billing`: `{type:"duration",seconds}` (whisper) or a token shape.
@@ -432,19 +450,7 @@ impl OperationHandler for OpenAiSpeech {
         let IrReq::Speech(r) = ir else {
             return Bytes::new();
         };
-        let mut body = json!({ "model": r.model, "input": r.input, "voice": r.voice });
-        if let Some(f) = &r.response_format {
-            body["response_format"] = json!(f);
-        }
-        // Carry the caller's style + playback controls (gpt-4o-mini-tts `instructions`, `speed`);
-        // dropping them made the synthesized audio ignore the request on a cross-protocol hop.
-        if let Some(instr) = &r.instructions {
-            body["instructions"] = json!(instr);
-        }
-        if let Some(speed) = r.speed {
-            body["speed"] = json!(speed);
-        }
-        Bytes::from(serde_json::to_vec(&body).unwrap_or_default())
+        super::super::leaf_codec::speech_write_request("openai", r)
     }
     fn read_response(&self, wire: &[u8]) -> Result<IrResp, CodecError> {
         // OpenAI speech is raw binary audio (mp3 by default) — wrap the bytes verbatim.
@@ -461,15 +467,40 @@ impl OperationHandler for OpenAiSpeech {
         let IrResp::Speech(r) = ir else {
             return WireBody::json(Bytes::new());
         };
-        let Some(blob) = &r.audio else {
-            return WireBody::json(Bytes::new());
-        };
-        let bytes = match &blob.payload {
-            MediaPayload::Bytes(b) => b.clone(),
-            MediaPayload::B64(s) => decode_ir_b64(s),
-        };
-        WireBody::typed(bytes, &blob.mime_type)
+        super::super::leaf_codec::speech_write_response("openai", r)
     }
+}
+
+/// IR → openai speech (TTS) request wire (the body of [`OpenAiSpeech::write_request`], moved behind
+/// the `(speech, openai)` key — G6 A4b option-a). Byte-identical to the pre-cutover inline write.
+pub(crate) fn write_speech_request(r: &SpeechReq) -> Bytes {
+    let mut body = json!({ "model": r.model, "input": r.input, "voice": r.voice });
+    if let Some(f) = &r.response_format {
+        body["response_format"] = json!(f);
+    }
+    // Carry the caller's style + playback controls (gpt-4o-mini-tts `instructions`, `speed`);
+    // dropping them made the synthesized audio ignore the request on a cross-protocol hop.
+    if let Some(instr) = &r.instructions {
+        body["instructions"] = json!(instr);
+    }
+    if let Some(speed) = r.speed {
+        body["speed"] = json!(speed);
+    }
+    Bytes::from(serde_json::to_vec(&body).unwrap_or_default())
+}
+
+/// IR → openai speech (TTS) response wire (the body of [`OpenAiSpeech::write_response`], moved behind
+/// the `(speech, openai)` key — G6 A4b option-a): raw audio bytes with the blob's own content-type.
+/// Byte-identical to the pre-cutover inline write.
+pub(crate) fn write_speech_response(r: &SpeechResp) -> WireBody {
+    let Some(blob) = &r.audio else {
+        return WireBody::json(Bytes::new());
+    };
+    let bytes = match &blob.payload {
+        MediaPayload::Bytes(b) => b.clone(),
+        MediaPayload::B64(s) => decode_ir_b64(s),
+    };
+    WireBody::typed(bytes, &blob.mime_type)
 }
 
 // -------------------------------------------------- embeddings OperationHandler (real codec, cross-protocol)
@@ -550,29 +581,7 @@ impl OperationHandler for OpenAiEmbeddings {
         let IrReq::Embeddings(r) = ir else {
             return Bytes::new();
         };
-        let input = match &r.input {
-            EmbInput::Text(v) if v.len() == 1 => json!(v[0]),
-            EmbInput::Text(v) => json!(v),
-            other => {
-                tracing::warn!(
-                    dropped = 1,
-                    "openai embeddings input is text-only here; dropping a non-text embeddings \
-                     input ({other:?} kind) with no analog"
-                );
-                json!([])
-            }
-        };
-        let mut body = json!({ "model": r.model, "input": input });
-        if let Some(d) = r.dimensions {
-            body["dimensions"] = json!(d);
-        }
-        // Honor a base64 encoding request (OpenAI supports float (default) and base64). Dropping
-        // it made a cross-protocol base64 embeddings request silently come back as float; the
-        // response reader decodes both, so emitting the field completes the round trip.
-        if r.encoding_formats.contains(&EncFmt::Base64) {
-            body["encoding_format"] = json!("base64");
-        }
-        Bytes::from(serde_json::to_vec(&body).unwrap_or_default())
+        super::super::leaf_codec::embeddings_write_request("openai", r)
     }
 
     /// openai embeddings response wire → IR (used when openai is the EGRESS).
@@ -628,30 +637,65 @@ impl OperationHandler for OpenAiEmbeddings {
         let IrResp::Embeddings(r) = ir else {
             return WireBody::json(Bytes::new());
         };
-        let data: Vec<Value> = r
-            .embeddings
-            .iter()
-            .map(|item| {
-                let emb = match item.vectors.get(&EncFmt::Float) {
-                    Some(VectorData::Float(f)) => json!(f),
-                    _ => match item.vectors.values().next() {
-                        Some(VectorData::Base64(b)) => json!(b),
-                        Some(VectorData::Int(v)) => json!(v),
-                        _ => json!([]),
-                    },
-                };
-                json!({ "object": "embedding", "index": item.index, "embedding": emb })
-            })
-            .collect();
-        let mut body = json!({ "object": "list", "data": data });
-        if let Some(m) = &r.model {
-            body["model"] = json!(m);
-        }
-        if let Some(u) = &r.usage {
-            body["usage"] = json!({ "prompt_tokens": u.input, "total_tokens": u.input.saturating_add(u.output) });
-        }
-        WireBody::json(Bytes::from(serde_json::to_vec(&body).unwrap_or_default()))
+        super::super::leaf_codec::embeddings_write_response("openai", r)
     }
+}
+
+/// IR → openai embeddings request wire (the body of [`OpenAiEmbeddings::write_request`], moved behind
+/// the `(embeddings, openai)` key — G6 A4b option-a). Byte-identical to the pre-cutover inline write.
+pub(crate) fn write_embeddings_request(r: &EmbeddingsReq) -> Bytes {
+    let input = match &r.input {
+        EmbInput::Text(v) if v.len() == 1 => json!(v[0]),
+        EmbInput::Text(v) => json!(v),
+        other => {
+            tracing::warn!(
+                dropped = 1,
+                "openai embeddings input is text-only here; dropping a non-text embeddings \
+                 input ({other:?} kind) with no analog"
+            );
+            json!([])
+        }
+    };
+    let mut body = json!({ "model": r.model, "input": input });
+    if let Some(d) = r.dimensions {
+        body["dimensions"] = json!(d);
+    }
+    // Honor a base64 encoding request (OpenAI supports float (default) and base64). Dropping
+    // it made a cross-protocol base64 embeddings request silently come back as float; the
+    // response reader decodes both, so emitting the field completes the round trip.
+    if r.encoding_formats.contains(&EncFmt::Base64) {
+        body["encoding_format"] = json!("base64");
+    }
+    Bytes::from(serde_json::to_vec(&body).unwrap_or_default())
+}
+
+/// IR → openai embeddings response wire (the body of [`OpenAiEmbeddings::write_response`], moved
+/// behind the `(embeddings, openai)` key — G6 A4b option-a). Byte-identical to the inline write.
+pub(crate) fn write_embeddings_response(r: &EmbeddingsResp) -> WireBody {
+    let data: Vec<Value> = r
+        .embeddings
+        .iter()
+        .map(|item| {
+            let emb = match item.vectors.get(&EncFmt::Float) {
+                Some(VectorData::Float(f)) => json!(f),
+                _ => match item.vectors.values().next() {
+                    Some(VectorData::Base64(b)) => json!(b),
+                    Some(VectorData::Int(v)) => json!(v),
+                    _ => json!([]),
+                },
+            };
+            json!({ "object": "embedding", "index": item.index, "embedding": emb })
+        })
+        .collect();
+    let mut body = json!({ "object": "list", "data": data });
+    if let Some(m) = &r.model {
+        body["model"] = json!(m);
+    }
+    if let Some(u) = &r.usage {
+        body["usage"] =
+            json!({ "prompt_tokens": u.input, "total_tokens": u.input.saturating_add(u.output) });
+    }
+    WireBody::json(Bytes::from(serde_json::to_vec(&body).unwrap_or_default()))
 }
 
 // ---------------------------------------------------------------- image OperationHandler (real, cross-protocol)
@@ -731,35 +775,7 @@ impl OperationHandler for OpenAiImage {
         let IrReq::Image(r) = ir else {
             return Bytes::new();
         };
-        let mut body = json!({ "model": r.model });
-        if let Some(p) = &r.prompt {
-            body["prompt"] = json!(p);
-        }
-        if let Some(n) = r.n {
-            body["n"] = json!(n);
-        }
-        match r.size {
-            Some(ImageSize::Wh { width, height }) => {
-                body["size"] = json!(format!("{width}x{height}"));
-            }
-            Some(ImageSize::Auto) => body["size"] = json!("auto"),
-            None => {}
-        }
-        // Carry the generation controls the reader captures; dropping them silently downgraded the
-        // request (e.g. a `b64_json` ask fell back to the default URL response, `hd` to standard).
-        if let Some(q) = &r.quality {
-            body["quality"] = json!(q);
-        }
-        if let Some(s) = &r.style {
-            body["style"] = json!(s);
-        }
-        if let Some(f) = &r.response_format {
-            body["response_format"] = json!(f);
-        }
-        if let Some(u) = &r.user {
-            body["user"] = json!(u);
-        }
-        Bytes::from(serde_json::to_vec(&body).unwrap_or_default())
+        super::super::leaf_codec::image_write_request("openai", r)
     }
     fn read_response(&self, wire: &[u8]) -> Result<IrResp, CodecError> {
         let v: Value =
@@ -794,28 +810,68 @@ impl OperationHandler for OpenAiImage {
         let IrResp::Image(r) = ir else {
             return WireBody::json(Bytes::new());
         };
-        let data: Vec<Value> = r
-            .images
-            .iter()
-            .map(|img| {
-                let mut o = serde_json::Map::new();
-                if let Some(b) = &img.b64 {
-                    o.insert("b64_json".into(), json!(b));
-                }
-                if let Some(u) = &img.url {
-                    o.insert("url".into(), json!(u));
-                }
-                if let Some(rp) = &img.revised_prompt {
-                    o.insert("revised_prompt".into(), json!(rp));
-                }
-                Value::Object(o)
-            })
-            .collect();
-        WireBody::json(Bytes::from(
-            serde_json::to_vec(&json!({ "created": r.created.unwrap_or(0), "data": data }))
-                .unwrap_or_default(),
-        ))
+        super::super::leaf_codec::image_write_response("openai", r)
     }
+}
+
+/// IR → openai image request wire (the body of [`OpenAiImage::write_request`], moved behind the
+/// `(image, openai)` key — G6 A4b option-a). Byte-identical to the pre-cutover inline write.
+pub(crate) fn write_image_request(r: &ImageReq) -> Bytes {
+    let mut body = json!({ "model": r.model });
+    if let Some(p) = &r.prompt {
+        body["prompt"] = json!(p);
+    }
+    if let Some(n) = r.n {
+        body["n"] = json!(n);
+    }
+    match r.size {
+        Some(ImageSize::Wh { width, height }) => {
+            body["size"] = json!(format!("{width}x{height}"));
+        }
+        Some(ImageSize::Auto) => body["size"] = json!("auto"),
+        None => {}
+    }
+    // Carry the generation controls the reader captures; dropping them silently downgraded the
+    // request (e.g. a `b64_json` ask fell back to the default URL response, `hd` to standard).
+    if let Some(q) = &r.quality {
+        body["quality"] = json!(q);
+    }
+    if let Some(s) = &r.style {
+        body["style"] = json!(s);
+    }
+    if let Some(f) = &r.response_format {
+        body["response_format"] = json!(f);
+    }
+    if let Some(u) = &r.user {
+        body["user"] = json!(u);
+    }
+    Bytes::from(serde_json::to_vec(&body).unwrap_or_default())
+}
+
+/// IR → openai image response wire (the body of [`OpenAiImage::write_response`], moved behind the
+/// `(image, openai)` key — G6 A4b option-a). Byte-identical to the pre-cutover inline write.
+pub(crate) fn write_image_response(r: &ImageResp) -> WireBody {
+    let data: Vec<Value> = r
+        .images
+        .iter()
+        .map(|img| {
+            let mut o = serde_json::Map::new();
+            if let Some(b) = &img.b64 {
+                o.insert("b64_json".into(), json!(b));
+            }
+            if let Some(u) = &img.url {
+                o.insert("url".into(), json!(u));
+            }
+            if let Some(rp) = &img.revised_prompt {
+                o.insert("revised_prompt".into(), json!(rp));
+            }
+            Value::Object(o)
+        })
+        .collect();
+    WireBody::json(Bytes::from(
+        serde_json::to_vec(&json!({ "created": r.created.unwrap_or(0), "data": data }))
+            .unwrap_or_default(),
+    ))
 }
 
 // ---------------------------------------------------------------- moderation cell
@@ -850,8 +906,7 @@ impl OperationHandler for OpenAiModeration {
             // runtime path. Emit an empty body rather than panic.
             return Bytes::new();
         };
-        let body = json!({ "model": r.model, "input": input_to_value(&r.input) });
-        Bytes::from(serde_json::to_vec(&body).unwrap_or_default())
+        super::super::leaf_codec::moderation_write_request("openai", r)
     }
 
     fn read_response(&self, wire: &[u8]) -> Result<IrResp, CodecError> {
@@ -874,27 +929,40 @@ impl OperationHandler for OpenAiModeration {
         let IrResp::Moderation(r) = ir else {
             return WireBody::json(Bytes::new());
         };
-        let results: Vec<Value> = r
-            .results
-            .iter()
-            .map(|res| {
-                json!({
-                    "flagged": res.flagged,
-                    "categories": map_bool(&res.categories),
-                    "category_scores": map_f64(&res.category_scores),
-                    "category_applied_input_types": map_strs(&res.applied_input_types),
-                })
-            })
-            .collect();
-        let mut body = json!({ "results": results });
-        if let Some(id) = &r.id {
-            body["id"] = json!(id);
-        }
-        if let Some(m) = &r.model {
-            body["model"] = json!(m);
-        }
-        WireBody::json(Bytes::from(serde_json::to_vec(&body).unwrap_or_default()))
+        super::super::leaf_codec::moderation_write_response("openai", r)
     }
+}
+
+/// IR → openai moderation request wire (the body of [`OpenAiModeration::write_request`], moved behind
+/// the `(moderation, openai)` key — G6 A4b option-a). Byte-identical to the pre-cutover inline write.
+pub(crate) fn write_moderation_request(r: &ModerationReq) -> Bytes {
+    let body = json!({ "model": r.model, "input": input_to_value(&r.input) });
+    Bytes::from(serde_json::to_vec(&body).unwrap_or_default())
+}
+
+/// IR → openai moderation response wire (the body of [`OpenAiModeration::write_response`], moved
+/// behind the `(moderation, openai)` key — G6 A4b option-a). Byte-identical to the inline write.
+pub(crate) fn write_moderation_response(r: &ModerationResp) -> WireBody {
+    let results: Vec<Value> = r
+        .results
+        .iter()
+        .map(|res| {
+            json!({
+                "flagged": res.flagged,
+                "categories": map_bool(&res.categories),
+                "category_scores": map_f64(&res.category_scores),
+                "category_applied_input_types": map_strs(&res.applied_input_types),
+            })
+        })
+        .collect();
+    let mut body = json!({ "results": results });
+    if let Some(id) = &r.id {
+        body["id"] = json!(id);
+    }
+    if let Some(m) = &r.model {
+        body["model"] = json!(m);
+    }
+    WireBody::json(Bytes::from(serde_json::to_vec(&body).unwrap_or_default()))
 }
 
 // ---- helpers ----
