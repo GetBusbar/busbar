@@ -335,7 +335,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.98.0
         with:
           components: rustfmt, clippy
 
@@ -429,7 +429,7 @@ jobs:
     if: github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.98.0
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
@@ -481,7 +481,7 @@ jobs:
         with:
           fetch-depth: 0
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.98.0
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
       - name: Corpus is present and covers the tags
@@ -518,6 +518,38 @@ jobs:
         env:
           CONFIG_SCHEMA_BASELINE_REF: ${{ github.base_ref && format('origin/{0}', github.base_ref) || 'HEAD' }}
         run: scripts/config-stability-gate.sh --check
+
+  # GENERATED-ARTIFACT DRIFT gate. Sibling to the openapi (`openapi-schema`) and config-schema
+  # (`config-stability`) drift guards, closing the third and fourth committed-but-generated files
+  # that had NO CI guard at all: `qa/field-inventory.json` and `qa/method-inventory.json`.
+  #
+  # THE HOLE THIS CLOSES. Both files are GENERATED — field-inventory from the vendored dialect
+  # schemas in `qa/field-schemas/`, method-inventory from rmcp's `model.rs` + a2a's vendored
+  # `a2a.proto`. The Rust coverage tests (`field_coverage.rs`, `method_coverage.rs`) READ the
+  # committed JSON and assert properties OF it — so a STALE inventory (a schema/method moved and
+  # nobody re-ran `--write`) is read as gospel and the tests still pass. The generators ship a
+  # `--check` mode written expressly "fail if the committed file is stale (CI)", but until now
+  # nothing in CI ran it. That is exactly the class the 1.4.1 openapi and the config-stability
+  # snapshot guards exist for: a hand-edit (a version bump, a schema tweak) that skips the regen
+  # chore lands a stale generated artifact and main goes red later, or worse, silently ships it.
+  #
+  # Regen-is-clean, enforced: `--check` re-derives from source in memory and fails RED naming the
+  # `--write` command if the committed file differs. Self-test FIRST (the sibling convention) so a
+  # generator that has quietly stopped deriving anything cannot pass vacuously. Pure stdlib python
+  # over tracked files — no toolchain, no build — so it is FAST TIER and runs on every push.
+  generated-artifact-drift:
+    name: generated-artifact drift (field · method inventories regen-clean)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: field-inventory self-test (derivation cannot be lied to)
+        run: python3 scripts/field-inventory.py --selftest
+      - name: field-inventory drift (committed == fresh derivation)
+        run: python3 scripts/field-inventory.py --check
+      - name: method-inventory self-test (derivation cannot be lied to)
+        run: python3 scripts/method-inventory.py --selftest
+      - name: method-inventory drift (committed == fresh derivation)
+        run: python3 scripts/method-inventory.py --check
 
   # PUBLIC-HYGIENE gate. busbar is sold to enterprises, and this repo, the docs site and the
   # generated openapi.json are all public. A customer who finds an internal tracking id, a developer's
@@ -573,7 +605,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.98.0
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
       - name: Build busbar (the validator this gate judges with)
@@ -606,7 +638,7 @@ jobs:
     if: github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.98.0
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
@@ -675,7 +707,7 @@ jobs:
     if: github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.98.0
       - uses: Swatinem/rust-cache@v2
       - name: No-plugins gate SELF-TEST (prove RED/GREEN before trusting the verdict)
         run: scripts/no-plugins-gate.sh --selftest
@@ -695,7 +727,7 @@ jobs:
     if: github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.98.0
       - uses: Swatinem/rust-cache@v2
       - name: Transaction compile fence (must fail to compile)
         run: scripts/txn-fence.sh
@@ -714,7 +746,7 @@ jobs:
     if: github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.98.0
       - uses: Swatinem/rust-cache@v2
       - name: Hot-path timing gate
         run: |
@@ -772,7 +804,7 @@ jobs:
       WINDOWS_EXPECTED_TESTS: "4755"
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.98.0
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
@@ -891,6 +923,7 @@ jobs:
       - openapi-schema
       - migration-corpus
       - config-stability
+      - generated-artifact-drift
       - public-hygiene
       - executable-config-lint
       - no-default-features
@@ -911,6 +944,7 @@ jobs:
         structure-lint|fast|${{ needs.structure-lint.result }}
         check|fast|${{ needs.check.result }}
         config-stability|fast|${{ needs.config-stability.result }}
+        generated-artifact-drift|fast|${{ needs.generated-artifact-drift.result }}
         public-hygiene|fast|${{ needs.public-hygiene.result }}
         openapi-schema|full|${{ needs.openapi-schema.result }}
         migration-corpus|full|${{ needs.migration-corpus.result }}

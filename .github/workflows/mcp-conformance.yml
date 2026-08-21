@@ -142,7 +142,7 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: '22'
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.98.0
       - uses: Swatinem/rust-cache@v2
 
       # THE SUBJECT IS BUILT FROM THIS COMMIT, and that is the change that makes this leg mean
@@ -312,7 +312,7 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.98.0
       - uses: Swatinem/rust-cache@v2
 
       # THE SUBJECT IS BUILT FROM THIS COMMIT, the same change that made the official subject leg
@@ -397,7 +397,7 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.98.0
       - uses: Swatinem/rust-cache@v2
       # Two axes, because a fixture can survive into a shipped build two independent ways and
       # neither axis sees the other's. See the script's header.
