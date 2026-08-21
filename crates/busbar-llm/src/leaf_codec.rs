@@ -20,6 +20,7 @@
 
 use busbar_core::handlers::WireBody;
 use busbar_core::ir::embeddings::{EmbeddingsReq, EmbeddingsResp};
+use busbar_core::ir::rerank::{RerankReq, RerankResp};
 use bytes::Bytes;
 
 /// Embeddings egress request bytes for `proto`. Unknown protocol => empty (the pre-cutover
@@ -42,6 +43,24 @@ pub(crate) fn embeddings_write_response(proto: &str, r: &EmbeddingsResp) -> Wire
         "bedrock" => super::bedrock::handler::write_embeddings_response(r),
         "gemini" => super::gemini::handler::write_embeddings_response(r),
         "openai" => super::openai_chat::handler::write_embeddings_response(r),
+        _ => WireBody::json(Bytes::new()),
+    }
+}
+
+/// Rerank egress request bytes for `proto`. Unknown protocol => empty (pre-cutover fallback).
+pub(crate) fn rerank_write_request(proto: &str, r: &RerankReq) -> Bytes {
+    match proto {
+        "cohere" => super::cohere::handler::write_rerank_request(r),
+        "bedrock" => super::bedrock::handler::write_rerank_request(r),
+        _ => Bytes::new(),
+    }
+}
+
+/// Rerank ingress response wire for `proto`. Unknown protocol => empty JSON body.
+pub(crate) fn rerank_write_response(proto: &str, r: &RerankResp) -> WireBody {
+    match proto {
+        "cohere" => super::cohere::handler::write_rerank_response(r),
+        "bedrock" => super::bedrock::handler::write_rerank_response(r),
         _ => WireBody::json(Bytes::new()),
     }
 }

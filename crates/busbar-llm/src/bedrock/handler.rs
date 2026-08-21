@@ -348,15 +348,7 @@ impl OperationHandler for BedrockRerank {
         let IrReq::Rerank(r) = ir else {
             return Bytes::new();
         };
-        let mut body = json!({
-            "query": r.query,
-            "documents": r.documents,
-            "api_version": 2,
-        });
-        if let Some(n) = r.top_n {
-            body["top_n"] = json!(n);
-        }
-        Bytes::from(serde_json::to_vec(&body).unwrap_or_default())
+        super::super::leaf_codec::rerank_write_request("bedrock", r)
     }
     fn read_response(&self, wire: &[u8]) -> Result<IrResp, CodecError> {
         let v: Value =
@@ -371,17 +363,37 @@ impl OperationHandler for BedrockRerank {
         let IrResp::Rerank(r) = ir else {
             return WireBody::json(Bytes::new());
         };
-        let results: Vec<Value> = r
-            .results
-            .iter()
-            .map(|x| json!({"index": x.index, "relevance_score": x.relevance_score}))
-            .collect();
-        let mut body = json!({ "results": results });
-        if let Some(id) = &r.id {
-            body["id"] = json!(id);
-        }
-        WireBody::json(Bytes::from(serde_json::to_vec(&body).unwrap_or_default()))
+        super::super::leaf_codec::rerank_write_response("bedrock", r)
     }
+}
+
+/// IR → bedrock rerank request wire (the body of [`BedrockRerank::write_request`], moved behind the
+/// `(rerank, bedrock)` key — G6 A4b option-a). Byte-identical to the pre-cutover inline write.
+pub(crate) fn write_rerank_request(r: &busbar_core::ir::rerank::RerankReq) -> Bytes {
+    let mut body = json!({
+        "query": r.query,
+        "documents": r.documents,
+        "api_version": 2,
+    });
+    if let Some(n) = r.top_n {
+        body["top_n"] = json!(n);
+    }
+    Bytes::from(serde_json::to_vec(&body).unwrap_or_default())
+}
+
+/// IR → bedrock rerank response wire (the body of [`BedrockRerank::write_response`], moved behind the
+/// `(rerank, bedrock)` key — G6 A4b option-a). Byte-identical to the pre-cutover inline write.
+pub(crate) fn write_rerank_response(r: &busbar_core::ir::rerank::RerankResp) -> WireBody {
+    let results: Vec<Value> = r
+        .results
+        .iter()
+        .map(|x| json!({"index": x.index, "relevance_score": x.relevance_score}))
+        .collect();
+    let mut body = json!({ "results": results });
+    if let Some(id) = &r.id {
+        body["id"] = json!(id);
+    }
+    WireBody::json(Bytes::from(serde_json::to_vec(&body).unwrap_or_default()))
 }
 
 #[cfg(test)]

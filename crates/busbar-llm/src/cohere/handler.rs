@@ -414,18 +414,7 @@ impl OperationHandler for CohereRerank {
         let IrReq::Rerank(r) = ir else {
             return Bytes::new();
         };
-        let mut body = json!({
-            "model": r.model,
-            "query": r.query,
-            "documents": r.documents,
-        });
-        if let Some(n) = r.top_n {
-            body["top_n"] = json!(n);
-        }
-        if let Some(m) = r.max_tokens_per_doc {
-            body["max_tokens_per_doc"] = json!(m);
-        }
-        Bytes::from(serde_json::to_vec(&body).unwrap_or_default())
+        super::super::leaf_codec::rerank_write_request("cohere", r)
     }
     fn read_response(&self, wire: &[u8]) -> Result<IrResp, CodecError> {
         let v: Value =
@@ -445,20 +434,43 @@ impl OperationHandler for CohereRerank {
         let IrResp::Rerank(r) = ir else {
             return WireBody::json(Bytes::new());
         };
-        let results: Vec<Value> = r
-            .results
-            .iter()
-            .map(|x| json!({"index": x.index, "relevance_score": x.relevance_score}))
-            .collect();
-        let mut body = json!({ "results": results });
-        if let Some(id) = &r.id {
-            body["id"] = json!(id);
-        }
-        if let Some(su) = r.search_units {
-            body["meta"] = json!({ "billed_units": { "search_units": su } });
-        }
-        WireBody::json(Bytes::from(serde_json::to_vec(&body).unwrap_or_default()))
+        super::super::leaf_codec::rerank_write_response("cohere", r)
     }
+}
+
+/// IR → cohere v2 rerank request wire (the body of [`CohereRerank::write_request`], moved behind the
+/// `(rerank, cohere)` key — G6 A4b option-a). Byte-identical to the pre-cutover inline write.
+pub(crate) fn write_rerank_request(r: &busbar_core::ir::rerank::RerankReq) -> Bytes {
+    let mut body = json!({
+        "model": r.model,
+        "query": r.query,
+        "documents": r.documents,
+    });
+    if let Some(n) = r.top_n {
+        body["top_n"] = json!(n);
+    }
+    if let Some(m) = r.max_tokens_per_doc {
+        body["max_tokens_per_doc"] = json!(m);
+    }
+    Bytes::from(serde_json::to_vec(&body).unwrap_or_default())
+}
+
+/// IR → cohere v2 rerank response wire (the body of [`CohereRerank::write_response`], moved behind the
+/// `(rerank, cohere)` key — G6 A4b option-a). Byte-identical to the pre-cutover inline write.
+pub(crate) fn write_rerank_response(r: &busbar_core::ir::rerank::RerankResp) -> WireBody {
+    let results: Vec<Value> = r
+        .results
+        .iter()
+        .map(|x| json!({"index": x.index, "relevance_score": x.relevance_score}))
+        .collect();
+    let mut body = json!({ "results": results });
+    if let Some(id) = &r.id {
+        body["id"] = json!(id);
+    }
+    if let Some(su) = r.search_units {
+        body["meta"] = json!({ "billed_units": { "search_units": su } });
+    }
+    WireBody::json(Bytes::from(serde_json::to_vec(&body).unwrap_or_default()))
 }
 
 /// `results[] -> [{index, relevance_score}]` — shared by the Cohere and Bedrock rerank readers
