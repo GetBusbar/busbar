@@ -1521,11 +1521,6 @@ pub fn build_app_from_config(
                 &ref_slots,
             )?
         }),
-        // Downcast off the SAME `Arc` `plane_slots["mcp"]` holds — see the field's doc for why this
-        // and the type-erased map must never be two constructions of one config generation.
-        mcp: plane_slots
-            .get(crate::mcp::PLANE_DECL.key)
-            .and_then(|obj| obj.clone().downcast::<crate::mcp::McpResource>().ok()),
         // THE TYPE-ERASED SLOT MAP ITSELF (Step 2.3). Moved in last: every typed field above that
         // reads a plane's object does so by cloning out of this map first, so `plane_slots` and
         // (e.g.) `mcp`/`a2a` are guaranteed to agree — there is no second `build` call anywhere that

@@ -477,11 +477,6 @@ pub struct App {
     /// `base_url` (verbatim, no `/v1`). `None` ⇒ no hosted login (config_validate requires it when
     /// any `browser_login` method is configured). Rebuilt on every apply/reload.
     pub(crate) public_url: Option<String>,
-    /// The validated MCP resource (`mcp:`, 1.6.0), or `None` when this deployment is not an MCP
-    /// server. Read by the MCP ingress and the RFC 9728 metadata handler; both take the audience and
-    /// the mount path from this ONE object, so the value advertised to clients and the value the
-    /// verifier compares against cannot be two different strings.
-    pub(crate) mcp: Option<Arc<crate::mcp::McpResource>>,
     /// THE AUTHORIZATION SERVER (`oauth_as:`), or `None` when this deployment is not one.
     ///
     /// `None` is the whole zero-cost-when-off property: nothing is constructed, nothing is
@@ -590,19 +585,17 @@ pub struct App {
     pub(crate) planes: Arc<crate::plane::PlaneDispatch>,
     /// THE TYPE-ERASED PLANE SLOT MAP, keyed by plane key (`"mcp"`, `"a2a"`, …) — the app-state seam
     /// an extracted plane crate contributes its runtime object through, without core naming that
-    /// object's type. Each present entry is the SAME `Arc` the plane's own typed field below holds
-    /// (`App::mcp`, `App::a2a`): one construction, two readers, so a caller reading either sees the
-    /// same object under the same config generation.
+    /// object's type. `PlaneDecl::claims`/`admission` already read a plane's object through exactly
+    /// this kind of erasure (`&dyn Any`), and this map generalises it to an owned, `App`-carried slot.
     ///
-    /// ADDITIVE, for now: every reader that already knows a plane's concrete type keeps reading its
-    /// typed field directly (`app.mcp`, `app.a2a`) — nothing here replaces that yet. This map exists
-    /// so a plane whose type core cannot name (because it now lives in a crate that depends on
-    /// `busbar-core`) has somewhere to put its object anyway; `PlaneDecl::claims`/`admission` already
-    /// read a plane's object through exactly this kind of erasure (`&dyn Any`), which is what this
-    /// map generalises to an owned, `App`-carried slot.
+    /// The MCP plane already reads its runtime object ONLY through this map: `App::mcp` was deleted
+    /// and `crate::mcp::resource(app)` downcasts this slot inside the plane, so nothing OUTSIDE the
+    /// mcp module names `McpResource`. The A2A plane still holds a parallel typed field (`App::a2a`)
+    /// carrying the SAME `Arc` this map holds under `"a2a"` (one construction, two readers); its
+    /// migration to slot-only access is the D4 step that mirrors this one.
     ///
-    /// Absent from this map is the same fact as `None` in the typed field: a plane the operator did
-    /// not configure contributes no slot (see [`crate::plane::registry::PlaneDecl::build`]).
+    /// Absent from this map is the same fact as an unconfigured plane: a plane the operator did not
+    /// configure contributes no slot (see [`crate::plane::registry::PlaneDecl::build`]).
     pub(crate) plane_slots:
         std::collections::BTreeMap<&'static str, Arc<dyn std::any::Any + Send + Sync>>,
     /// The credential cache — Arc-shared ACROSS config swaps (like the
@@ -765,10 +758,10 @@ impl App {
     /// registered for this key, OR the plane is registered but this config generation did not
     /// configure it (see `App::plane_slots`) — the same absence a typed field's `None`/no-entry
     /// already means, reached through the key instead of the field name.
-    // The lib has no reader through the slot yet — core still reads the typed fields. The readers
-    // move to this accessor in a later seam step (when a plane's type leaves core and can no longer
-    // be named); until then it is exercised only by tests. Allow, don't delete: this IS the seam.
-    #[allow(dead_code)]
+    ///
+    /// THE SEAM READERS HAVE STARTED MOVING HERE: the MCP plane reads its runtime object through this
+    /// accessor (`crate::mcp::resource`), having deleted its typed `App::mcp` field. A2A still reads
+    /// its typed field until the D4 step migrates it the same way.
     pub(crate) fn plane_slot(&self, key: &str) -> Option<&Arc<dyn std::any::Any + Send + Sync>> {
         self.plane_slots.get(key)
     }

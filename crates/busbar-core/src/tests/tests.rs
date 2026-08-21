@@ -2603,14 +2603,18 @@ fn plane_slot_mirrors_the_typed_mcp_and_a2a_fields_when_configured() {
     let mcp_via_slot = mcp_slot
         .downcast::<crate::mcp::McpResource>()
         .expect("the mcp plane's slot is an McpResource");
+    // `App::mcp` was dissolved: the MCP plane now reads its runtime object ONLY through the
+    // type-erased slot, via the neutral accessor `crate::mcp::resource`. The invariant this used to
+    // state as "typed field and slot are the same Arc" is now "the neutral accessor reads the SAME
+    // object the slot holds, not a second construction".
     assert!(
-        std::sync::Arc::ptr_eq(
-            &mcp_via_slot,
-            app.mcp
-                .as_ref()
-                .expect("App::mcp is Some when mcp: is configured")
+        std::ptr::eq(
+            std::sync::Arc::as_ptr(&mcp_via_slot),
+            crate::mcp::resource(&app).expect("mcp: configured => resource(app) is Some")
+                as *const crate::mcp::McpResource
         ),
-        "plane_slot(\"mcp\") and App::mcp must be the SAME Arc, not two constructions"
+        "crate::mcp::resource must read the SAME object plane_slot(\"mcp\") holds, not a second \
+         construction"
     );
 
     let a2a_slot = app
@@ -2632,10 +2636,10 @@ fn plane_slot_mirrors_the_typed_mcp_and_a2a_fields_when_configured() {
 }
 
 /// THE NEGATIVE CASE (the RED-first gate): a deployment with NO `tools:`/`agents:` gets no slot
-/// for either plane — exactly the absence `App::mcp: None` / `App::a2a: None` already encode.
+/// for either plane — exactly the absence the neutral mcp accessor / `App::a2a: None` already encode.
 /// Watched RED before `PlaneDecl::build` guarded absence (an unconditional `build` that always
-/// constructs an object regardless of `ctx.mcp`/`ctx.agent_defs` makes this fail: `plane_slot`
-/// answers `Some` on a deployment that configured no plane, disagreeing with the typed field's
+/// constructs an object regardless of `ctx.mcp_slot`/`ctx.agent_defs` makes this fail: `plane_slot`
+/// answers `Some` on a deployment that configured no plane, disagreeing with the neutral accessor's
 /// `None` right beside it).
 #[test]
 fn plane_slot_is_none_when_the_plane_is_not_configured() {
@@ -2651,11 +2655,14 @@ fn plane_slot_is_none_when_the_plane_is_not_configured() {
 
     let app = build_once(cfg, None).expect("app builds with neither plane configured");
 
-    assert!(app.mcp.is_none(), "control: App::mcp is None");
+    assert!(
+        crate::mcp::resource(&app).is_none(),
+        "control: the neutral mcp accessor is None"
+    );
     assert!(app.a2a.is_none(), "control: App::a2a is None");
     assert!(
         app.plane_slot("mcp").is_none(),
-        "no tools: => no mcp slot, matching App::mcp's own None"
+        "no tools: => no mcp slot, matching the neutral accessor's own None"
     );
     assert!(
         app.plane_slot("a2a").is_none(),

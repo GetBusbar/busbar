@@ -135,7 +135,7 @@ pub(crate) async fn session_identity(
     credential: Option<&str>,
 ) -> Result<SessionIdentity, String> {
     let app = handle.load();
-    let Some(resource) = app.mcp.clone() else {
+    let Some(resource) = super::resource(&app) else {
         return Err(
             "this deployment carries no `mcp:` block, so there is no MCP plane to serve. \
              Presence of the block is what makes busbar an MCP server, on every transport."
@@ -514,7 +514,7 @@ impl<W: AsyncWrite + Unpin + Send + 'static> Session<W> {
         crate::ingress::protocol::serve(
             &McpWords,
             crate::ingress::protocol::Request {
-                present: app.mcp.is_some(),
+                present: super::resource(&app).is_some(),
                 // A pipe has no Origin: there is no browser and no rebinding surface. `None` takes
                 // the same arm an agent's headerless HTTP request takes.
                 origin: None,

@@ -161,6 +161,32 @@ pub(crate) const PLANE_DECL: crate::plane::registry::PlaneDecl =
         on_swap: Some(mcp_on_swap),
     };
 
+/// THE MCP RUNTIME OBJECT for this config generation, read through the TYPE-ERASED `plane_slots`
+/// seam ([`crate::state::App::plane_slot`]) and downcast back to [`McpResource`] HERE, inside the
+/// plane — so core OUTSIDE this module reaches the resource only as an opaque `Arc<dyn Any>` slot and
+/// names no `crate::mcp` type. `None` exactly when `mcp:` is not configured this generation (the
+/// plane contributed no slot — the same absence the deleted `App::mcp: None` used to encode). The
+/// downcast never fails: the mcp slot is always an `McpResource` (`PLANE_DECL::build`).
+pub(crate) fn resource(app: &crate::state::App) -> Option<&McpResource> {
+    app.plane_slot(PLANE_DECL.key).map(|slot| {
+        slot.downcast_ref::<McpResource>()
+            .expect("the mcp plane's dispatch slot is an McpResource")
+    })
+}
+
+/// The OWNED-`Arc` twin of [`resource`], for the one caller that needs the resource to OUTLIVE the
+/// `App` snapshot borrow it was read from — the HTTP envelope, where the snapshot guard is moved into
+/// the dispatch closure while the resource is still read for the request-line facts. Clones the SAME
+/// `Arc` `plane_slots` holds (a refcount bump, not a second construction). `None` and the never-fail
+/// downcast have the same meaning as [`resource`].
+pub(crate) fn resource_arc(app: &crate::state::App) -> Option<std::sync::Arc<McpResource>> {
+    app.plane_slot(PLANE_DECL.key).map(|slot| {
+        slot.clone()
+            .downcast::<McpResource>()
+            .expect("the mcp plane's dispatch slot is an McpResource")
+    })
+}
+
 /// CARRY THE MCP CONNECTION POOL ACROSS A CONFIG SWAP — retire every stdio child whose registration
 /// is gone from the NEXT generation. The pool deliberately outlives an apply (a socket negotiated
 /// nothing this revision, so reusing it across a config edit is safe and desirable), and the

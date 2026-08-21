@@ -1428,7 +1428,6 @@ impl TestApp {
                 }
                 m
             },
-            mcp: mcp_arc.clone(),
             mcp_catalogue: std::sync::Arc::new(crate::mcp::catalogue::Catalogue::build(
                 &self.tool_defs,
             )),
