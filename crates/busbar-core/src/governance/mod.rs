@@ -528,8 +528,12 @@ pub struct GovState {
     /// `flush_metering`, which runs inside `spawn_blocking` and also never awaits. `flush_metering`
     /// DRAINS this map (not a baseline like `budget`): metering cells are authoritative for
     /// nothing — nothing enforces against them, the store is the only consumer — so there is no
-    /// running total to protect and a drained-empty entry needs no reaper or growth cap.
-    pending_metering: std::sync::Mutex<HashMap<(String, u64, String, String), MeterCounts>>,
+    /// running total to protect and a drained-empty entry needs no reaper. It IS growth-capped,
+    /// though: a sustained store-write outage keeps `flush_metering` re-queuing failed cells while new
+    /// ones arrive, so all accrual routes through `accrue_pending`, which bounds the map at
+    /// [`MAX_PENDING_METERING`] and coalesces the overflow into a per-bucket sentinel rather than
+    /// growing without bound or dropping billable usage.
+    pending_metering: std::sync::Mutex<HashMap<MeterKey, MeterCounts>>,
     /// The busbar SIGNING material (1.5.0) — the mint-side signer paired with the
     /// verify-side public keyset, held together so they can never drift. `Some` once a signing key
     /// is resolved/generated at boot; `None` in the (test) path that constructs GovState without
@@ -937,6 +941,86 @@ pub(crate) struct MeterCounts {
     pub(crate) tokens_output: u64,
     pub(crate) tokens_cache_read: u64,
     pub(crate) tokens_cache_write: u64,
+}
+
+impl MeterCounts {
+    /// Accumulate `other` into `self`, saturating each counter — the one place metering cells are
+    /// merged, so accrual and flush-retry both add usage the same way and neither can wrap.
+    pub(crate) fn merge(&mut self, other: MeterCounts) {
+        self.requests = self.requests.saturating_add(other.requests);
+        self.tokens_input = self.tokens_input.saturating_add(other.tokens_input);
+        self.tokens_output = self.tokens_output.saturating_add(other.tokens_output);
+        self.tokens_cache_read = self.tokens_cache_read.saturating_add(other.tokens_cache_read);
+        self.tokens_cache_write = self
+            .tokens_cache_write
+            .saturating_add(other.tokens_cache_write);
+    }
+}
+
+/// The upsert key every metering cell is aggregated under: `(key_id, bucket, model, provider)`, the
+/// store's own metering key. Named so the accumulator and its flush read as one type, not a raw tuple
+/// repeated at every call site.
+pub(crate) type MeterKey = (String, u64, String, String);
+
+/// The cap on how many distinct [`MeterKey`] cells may sit unflushed in `pending_metering` at once.
+///
+/// Normal operation drains every ~100ms flush tick, so live cardinality is arrival-rate x the flush
+/// interval — nowhere near this. The cap only bites under a SUSTAINED governance-store WRITE OUTAGE
+/// with diverse keys/models, where `flush_metering` re-queues every failed cell each tick while
+/// `record_metering` keeps adding new ones: without a cap that grows without bound. The bound is
+/// generous so a real key population never hits it; overflow past it is a degraded-mode signal, not a
+/// steady state.
+pub(crate) const MAX_PENDING_METERING: usize = 262_144;
+
+/// The `key_id` an OVERFLOW cell is coalesced under when the accumulator is at [`MAX_PENDING_METERING`].
+/// A sentinel, not a real key: its purpose is to preserve the day's billable TOTALS when per-key
+/// attribution can no longer be held in memory, never to masquerade as a customer key. `pub(crate)`
+/// so the flush and the tests can name it.
+pub(crate) const METERING_OVERFLOW_KEY_ID: &str = "__busbar_pending_overflow__";
+
+/// The model/provider label an overflow cell carries — deliberately not a real model or provider, so
+/// the sentinel row is unmistakable in a usage read.
+pub(crate) const METERING_OVERFLOW_LABEL: &str = "__aggregated__";
+
+/// Accrue `add` into the metering cell for `key`, holding the accumulator BOUNDED at
+/// [`MAX_PENDING_METERING`] distinct cells.
+///
+/// The exactly-once contract: an EXISTING cell (including the overflow sentinel) always accumulates,
+/// so retries and re-arriving keys never grow the map; a NEW cell is inserted only while there is
+/// room. When the map is full a new cell's counts are COALESCED into a per-bucket overflow sentinel —
+/// billable token/request totals are preserved (nothing is dropped), only per-key/model/provider
+/// attribution collapses — and every coalesce is COUNTED (metric + throttled diagnostic) so the
+/// degradation is never silent. This is the single accrual primitive both `record_metering` (the hot
+/// path) and `flush_metering`'s failure re-queue call, so both bound the map identically.
+pub(crate) fn accrue_pending(pending: &mut HashMap<MeterKey, MeterCounts>, key: MeterKey, add: MeterCounts) {
+    if let Some(cell) = pending.get_mut(&key) {
+        cell.merge(add);
+        return;
+    }
+    if pending.len() < MAX_PENDING_METERING {
+        pending.insert(key, add);
+        return;
+    }
+    // FULL, and this is a new cell. Coalesce into the per-bucket overflow sentinel rather than drop
+    // billable usage or grow without bound. The sentinel itself, once present, is an existing cell and
+    // takes the early-return above, so the map is bounded at MAX_PENDING_METERING + (distinct buckets).
+    let sentinel: MeterKey = (
+        METERING_OVERFLOW_KEY_ID.to_string(),
+        key.1,
+        METERING_OVERFLOW_LABEL.to_string(),
+        METERING_OVERFLOW_LABEL.to_string(),
+    );
+    pending.entry(sentinel).or_default().merge(add);
+    metrics::counter!(crate::metrics::METERING_PENDING_COALESCED_TOTAL).increment(1);
+    // Per-event detail at debug; the metric above is the aggregate, human-cadence signal an operator
+    // alerts on. Kept off `warn!` so a sustained outage does not spam one line per coalesced cell.
+    crate::diagnostics::diag_debug!(
+        crate::diagnostics::METERING_PENDING_OVERFLOW_COALESCED,
+        overflow_bucket = key.1,
+        "metering accumulator at cap ({MAX_PENDING_METERING}); coalesced a new cell into the \
+         per-bucket overflow sentinel — totals preserved, per-key attribution collapsed until the \
+         store recovers"
+    );
 }
 
 /// Floor an epoch to its UTC-day metering bucket start.

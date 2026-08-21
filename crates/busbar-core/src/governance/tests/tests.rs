@@ -1028,6 +1028,117 @@ fn test_additive_flush_carries_refund_deltas() {
     );
 }
 
+/// Under a SUSTAINED metering-store outage with diverse keys, `pending_metering` stays BOUNDED and
+/// loses NO billable usage. Before the cap, `flush_metering` re-queued every failed cell each tick
+/// while `record_metering` kept adding new ones, so the map grew without bound. Now both routes go
+/// through `accrue_pending`, which caps the map and COALESCES the overflow into a per-bucket sentinel
+/// (totals preserved, per-key attribution collapsed) and counts it on a metric — so the map is
+/// bounded, the loss of attribution is visible, and not one token or request is dropped.
+#[test]
+fn test_metering_accumulator_is_bounded_and_lossless_under_sustained_store_outage() {
+    crate::metrics::init();
+
+    /// A store whose `add_metering` ALWAYS fails — a metering-write outage that never recovers.
+    struct MeteringDownStore {
+        inner: MemoryStore,
+    }
+    impl busbar_api::Store for MeteringDownStore {
+        fn put_key(&self, k: &busbar_api::VirtualKey) -> busbar_api::StoreResult<()> {
+            self.inner.put_key(k)
+        }
+        fn get_key(&self, id: &str) -> busbar_api::StoreResult<Option<busbar_api::VirtualKey>> {
+            self.inner.get_key(id)
+        }
+        fn list_keys(&self) -> busbar_api::StoreResult<Vec<busbar_api::VirtualKey>> {
+            self.inner.list_keys()
+        }
+        fn delete_key(&self, id: &str) -> busbar_api::StoreResult<()> {
+            self.inner.delete_key(id)
+        }
+        fn get_usage(&self, id: &str, w: u64) -> busbar_api::StoreResult<busbar_api::UsageLedger> {
+            self.inner.get_usage(id, w)
+        }
+        fn put_usage(
+            &self,
+            id: &str,
+            w: u64,
+            l: &busbar_api::UsageLedger,
+        ) -> busbar_api::StoreResult<()> {
+            self.inner.put_usage(id, w, l)
+        }
+        fn add_metering(&self, _d: &busbar_api::MeteringDelta) -> busbar_api::StoreResult<()> {
+            Err(busbar_api::StoreError("metering store down".into()))
+        }
+        fn list_metering(&self, b: u64) -> busbar_api::StoreResult<Vec<busbar_api::MeteringRow>> {
+            self.inner.list_metering(b)
+        }
+    }
+
+    let store = Arc::new(MeteringDownStore {
+        inner: MemoryStore::new(),
+    });
+    let gov = GovState::new(store, None).unwrap();
+    let now = 1_700_000_000;
+    let per = crate::billing::TokenUsage {
+        input: 3,
+        output: 5,
+        cache_read: Some(1),
+        cache_creation: Some(2),
+        ..Default::default()
+    };
+    // Drive well past the cap with DISTINCT keys — the "diverse keys/models" outage shape.
+    let n = MAX_PENDING_METERING + 5_000;
+    for i in 0..n {
+        gov.record_metering(&format!("k{i}"), "m", "p", Some(&per), now);
+    }
+
+    // The RECORD path alone already bounds the map (record_metering coalesces past the cap), and the
+    // summed totals still equal everything accrued — coalescing MOVES counts, it never drops them.
+    let (len_rec, sum_rec) = gov.pending_metering_totals();
+    let n64 = n as u64;
+    assert!(
+        len_rec <= MAX_PENDING_METERING + 8,
+        "the accrual path holds the map at the cap (+ a per-bucket sentinel), not one cell per key: {len_rec}"
+    );
+    assert_eq!(sum_rec.requests, n64, "every accrued request is still counted");
+    assert_eq!(sum_rec.tokens_input, n64 * 3, "no input tokens lost to the cap");
+    assert_eq!(sum_rec.tokens_output, n64 * 5, "no output tokens lost to the cap");
+    assert_eq!(sum_rec.tokens_cache_read, n64, "no cache-read tokens lost to the cap");
+    assert_eq!(sum_rec.tokens_cache_write, n64 * 2, "no cache-write tokens lost to the cap");
+
+    // The FLUSH re-queue path: every write fails, every drained cell is re-queued through the same
+    // bound. This is precisely where the map used to grow without bound.
+    let flushed = gov.flush_metering();
+    assert_eq!(flushed, 0, "the store is down, so nothing persisted this tick");
+    let (len_flush, sum_flush) = gov.pending_metering_totals();
+    assert!(
+        len_flush <= MAX_PENDING_METERING + 8,
+        "the failed-flush re-queue stays bounded rather than growing unbounded: {len_flush}"
+    );
+    assert_eq!(
+        sum_flush.requests, n64,
+        "retry preserves every request across the failed flush (nothing dropped, nothing doubled)"
+    );
+    assert_eq!(
+        sum_flush.tokens_input, n64 * 3,
+        "no billable input tokens lost across the failed flush"
+    );
+
+    // The loss of ATTRIBUTION is COUNTED, not silent: the coalesce metric is exported and non-zero.
+    let rendered = crate::metrics::render();
+    let coalesced = rendered
+        .lines()
+        .find(|l| l.starts_with("busbar_metering_pending_coalesced_total "))
+        .and_then(|l| l.rsplit(' ').next())
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(0);
+    assert!(
+        coalesced > 0,
+        "coalesced cells are exported on busbar_metering_pending_coalesced_total so the degradation \
+         is observable; got:\n{rendered}"
+    );
+}
+
 /// A FAILED flush re-marks the cell dirty WITHOUT advancing the acked baseline, so the unacked
 /// delta is retried (not lost) on the next tick once the store recovers.
 #[test]

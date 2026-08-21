@@ -831,37 +831,56 @@ impl GovState {
         usage: Option<&crate::billing::TokenUsage>,
         now: u64,
     ) {
-        let key = (
+        let key: MeterKey = (
             key_id.to_string(),
             metering_bucket(now),
             model.to_string(),
             provider.to_string(),
         );
+        let add = MeterCounts {
+            requests: 1,
+            tokens_input: usage.map(|u| u.input).unwrap_or(0),
+            tokens_output: usage.map(|u| u.output).unwrap_or(0),
+            tokens_cache_read: usage.and_then(|u| u.cache_read).unwrap_or(0),
+            tokens_cache_write: usage.and_then(|u| u.cache_creation).unwrap_or(0),
+        };
         let mut pending = self
             .pending_metering
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        let entry = pending.entry(key).or_default();
-        entry.requests = entry.requests.saturating_add(1);
-        entry.tokens_input = entry
-            .tokens_input
-            .saturating_add(usage.map(|u| u.input).unwrap_or(0));
-        entry.tokens_output = entry
-            .tokens_output
-            .saturating_add(usage.map(|u| u.output).unwrap_or(0));
-        entry.tokens_cache_read = entry
-            .tokens_cache_read
-            .saturating_add(usage.and_then(|u| u.cache_read).unwrap_or(0));
-        entry.tokens_cache_write = entry
-            .tokens_cache_write
-            .saturating_add(usage.and_then(|u| u.cache_creation).unwrap_or(0));
+        // Accrue through the ONE bounded primitive so a sustained store outage cannot grow this map
+        // without bound (see `accrue_pending`): an existing cell accumulates, a new cell is added
+        // while under the cap, and past the cap a new cell is coalesced into a per-bucket overflow
+        // sentinel — totals preserved, never silently dropped.
+        accrue_pending(&mut pending, key, add);
+    }
+
+    /// TEST-ONLY: how many distinct cells sit unflushed, and their SUMMED counts. The sum is the
+    /// bounding invariant's other half — a cap that silently dropped usage could also look "bounded",
+    /// so a test asserts BOTH that the cell count stays capped AND that the summed totals still equal
+    /// everything accrued (coalescing moves counts, it never loses them).
+    #[cfg(test)]
+    pub(crate) fn pending_metering_totals(&self) -> (usize, MeterCounts) {
+        let pending = self
+            .pending_metering
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let mut sum = MeterCounts::default();
+        for counts in pending.values() {
+            sum.merge(*counts);
+        }
+        (pending.len(), sum)
     }
 
     /// Drain `pending_metering` and write each entry to the store as one `MeteringDelta`. A DRAIN,
     /// not a baseline (contrast `flush_budgets`): nothing in the tree enforces against a metering
     /// cell, so there is no authoritative running total to protect, and a successfully-flushed
-    /// entry is simply gone — no reaper, no growth cap, cardinality bounded by arrival rate x the
-    /// flush interval. On a store error the entry's counts are merged BACK into whatever
+    /// entry is simply gone. In steady state cardinality is bounded by arrival rate x the flush
+    /// interval; under a SUSTAINED store outage the re-queue below plus fresh arrivals would grow it
+    /// without bound, so the re-queue goes through `accrue_pending`, which caps the map at
+    /// [`MAX_PENDING_METERING`] and coalesces the overflow into a per-bucket sentinel (totals kept,
+    /// attribution collapsed) rather than dropping billable usage. On a store error the entry's
+    /// counts are merged BACK into whatever
     /// accumulated meanwhile (saturating add, not overwrite) so the next tick retries the full
     /// amount exactly once — this is what makes two concurrently-running flushes safe without a
     /// gate: `std::mem::take` is an atomic full-map swap, so any two calls partition the arrivals
@@ -913,18 +932,12 @@ impl GovState {
                         .pending_metering
                         .lock()
                         .unwrap_or_else(|e| e.into_inner());
-                    let entry = pending
-                        .entry((key_id, bucket, model, provider))
-                        .or_default();
-                    entry.requests = entry.requests.saturating_add(counts.requests);
-                    entry.tokens_input = entry.tokens_input.saturating_add(counts.tokens_input);
-                    entry.tokens_output = entry.tokens_output.saturating_add(counts.tokens_output);
-                    entry.tokens_cache_read = entry
-                        .tokens_cache_read
-                        .saturating_add(counts.tokens_cache_read);
-                    entry.tokens_cache_write = entry
-                        .tokens_cache_write
-                        .saturating_add(counts.tokens_cache_write);
+                    // Re-queue the failed delta through the SAME bounded primitive as accrual. Under a
+                    // sustained outage with diverse keys this is exactly where the map used to grow
+                    // without bound; `accrue_pending` now caps it (coalescing past the cap into the
+                    // per-bucket overflow sentinel), so no billable usage is dropped and retry is
+                    // preserved — a re-queued cell that still exists next tick simply accumulates.
+                    accrue_pending(&mut pending, (key_id, bucket, model, provider), counts);
                 }
             }
         }

@@ -247,6 +247,16 @@ pub(crate) const ADMISSION_DENIED_TOTAL: &str = "busbar_admission_denied_total";
 // it streams verbatim; only the billing side-channel is capped.)
 pub(crate) const BILLING_TRUNCATED_TOTAL: &str = "busbar_billing_truncated_total"; // no labels
 
+// The write-behind metering accumulator (`pending_metering`) was at its cap when a NEW
+// `(key_id, bucket, model, provider)` cell arrived — a sustained governance-store outage with diverse
+// keys/models. The arriving cell's counts are COALESCED into a per-bucket overflow sentinel rather
+// than dropped, so billable token/request totals are preserved for the day and only per-key/model
+// ATTRIBUTION is collapsed. Incremented once per coalesced cell. Unlabeled. A non-zero rate means the
+// store has been unreachable long enough to overflow the cap; usage is not lost but its attribution is
+// degrading, so alert and restore the store. (Contrast BILLING_TRUNCATED_TOTAL, which is a genuine
+// per-response gap.)
+pub(crate) const METERING_PENDING_COALESCED_TOTAL: &str = "busbar_metering_pending_coalesced_total"; // no labels
+
 // A plugin HTTP-endpoint route's INBOUND request header count exceeded
 // `plugin_routes::MAX_PLUGIN_HEADERS` before the projection was forwarded to the plugin's
 // `handle_http`. The projection is still sent (truncated, never silently — see
@@ -394,6 +404,7 @@ pub(crate) fn init_with(buffer: Duration) {
             // inventing label values, which the cardinality contract above forbids. The
             // labeled gauges appear on the first scrape via `refresh_scrape_gauges`.
             metrics::counter!(BILLING_TRUNCATED_TOTAL).absolute(0);
+            metrics::counter!(METERING_PENDING_COALESCED_TOTAL).absolute(0);
             spawn_maintenance(bucket);
             Some(handle)
         }
@@ -567,6 +578,10 @@ fn describe() {
     describe_counter!(
         BILLING_TAP_DECODE_FAIL_TOTAL,
         "Same-protocol 2xx bodies the usage tap could not decode (billed 0 tokens), by protocol and reason"
+    );
+    describe_counter!(
+        METERING_PENDING_COALESCED_TOTAL,
+        "Metering cells coalesced into a per-bucket overflow sentinel because the write-behind accumulator was at its cap (sustained store outage); totals preserved, per-key attribution collapsed"
     );
     describe_histogram!(
         REQUEST_DURATION_SECONDS,
