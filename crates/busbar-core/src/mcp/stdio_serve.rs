@@ -503,7 +503,7 @@ impl<W: AsyncWrite + Unpin + Send + 'static> Session<W> {
     async fn dispatch_frame(self: &Arc<Self>, body: &[u8]) -> Response {
         let app = self.handle.load();
         let session = self.clone();
-        let epochs = app.mcp_roots_epochs.clone();
+        let epochs = super::runtime(&app).roots_epochs.clone();
         // The SAME principal name the HTTP observer binds roots epochs under — the authenticated
         // key id, or the one honest constant on an ungoverned deployment.
         let notify_principal = session
@@ -987,11 +987,13 @@ impl<W: AsyncWrite + Unpin + Send + 'static> Session<W> {
     fn spawn_resource_watch(self: &Arc<Self>) {
         let session = self.clone();
         let handle = tokio::spawn(async move {
-            let mut generation = session.handle.load().mcp_catalogue.generation();
+            let mut generation = super::runtime(&session.handle.load())
+                .catalogue
+                .generation();
             loop {
                 tokio::time::sleep(WATCH_INTERVAL).await;
                 let app = session.handle.load();
-                let live = app.mcp_catalogue.generation();
+                let live = super::runtime(&app).catalogue.generation();
                 // The generation compare is the cheap gate on the WALK, exactly as it is for
                 // `subscriptions/listen`; the baselines were written at subscribe time, so an
                 // unmoved generation has nothing to compare against.
@@ -1043,10 +1045,11 @@ impl<W: AsyncWrite + Unpin + Send + 'static> Session<W> {
             key: self.gov.key.as_deref(),
             now: crate::store::now(),
             generation: crate::trust::validate::Generations::at_admission(
-                app.mcp_catalogue.generation(),
+                super::runtime(app).catalogue.generation(),
             ),
         };
-        app.mcp_catalogue
+        super::runtime(app)
+            .catalogue
             .resources_for(&caller)
             .iter()
             .find(|r| r.namespaced == uri || r.uri == uri)

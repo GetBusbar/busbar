@@ -155,7 +155,8 @@ pub(crate) async fn satisfy_upstream_ask(
         // THE PER-UPSTREAM BUDGET, spent per completion and BEFORE the model leg. One map entry is
         // one completion, so a map with many entries spends many units — an upstream cannot buy
         // more model calls by packing one round.
-        app.mcp_sampling_spend
+        super::runtime(app)
+            .sampling_spend
             .try_spend(server, cfg.max_requests_per_minute, now)?;
         let body = chat_body(request.get("params"), cfg)?;
         let result = complete(app, gov, cfg, body).await?;

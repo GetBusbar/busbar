@@ -145,55 +145,57 @@ impl PoolRoute {
             };
         };
 
-        let sightings = app.mcp_sightings.load();
+        let sightings = super::runtime(app).sightings.load();
         let live = super::client::catalogue::LiveSightings::of(&sightings);
-        let generation =
-            crate::trust::validate::Generations::at_admission(app.mcp_catalogue.generation());
+        let generation = crate::trust::validate::Generations::at_admission(
+            super::runtime(app).catalogue.generation(),
+        );
         let now = crate::store::now();
         let mut selected_auth = Some(selected_auth);
         let mut tried = Vec::new();
-        let members: Vec<RouteMember> = cfg
-            .members
-            .iter()
-            .enumerate()
-            .map(|(lane, member)| {
-                if member == &selected.server {
-                    return RouteMember {
+        let members: Vec<RouteMember> =
+            cfg.members
+                .iter()
+                .enumerate()
+                .map(|(lane, member)| {
+                    if member == &selected.server {
+                        return RouteMember {
+                            name: member.clone(),
+                            lane,
+                            pin: selected.schema_hash.clone(),
+                            auth: selected_auth.take(),
+                        };
+                    }
+                    // THE TWIN'S OWN ADMISSION, in full: the caller's grant on the twin's published
+                    // name, the twin's live trust state, the twin's credential plan and the argument
+                    // guard against the twin's approved schema. A twin this caller may not reach is
+                    // skipped — busbar never widens a grant because an operator declared a pool.
+                    let entry = super::runtime(app)
+                        .catalogue
+                        .tool_on(member, &selected.tool)
+                        .and_then(|e| {
+                            super::runtime(app)
+                                .catalogue
+                                .resolve(principal, live, &e.namespaced, generation, now)
+                                .ok()
+                        });
+                    let pin = entry.and_then(|e| e.schema_hash.clone());
+                    let auth = entry.and_then(|e| {
+                        super::runtime(app).catalogue.server(member).and_then(|s| {
+                            super::upstream::authorise(s, e, arguments, principal).ok()
+                        })
+                    });
+                    if auth.is_none() {
+                        tried.push(lane);
+                    }
+                    RouteMember {
                         name: member.clone(),
                         lane,
-                        pin: selected.schema_hash.clone(),
-                        auth: selected_auth.take(),
-                    };
-                }
-                // THE TWIN'S OWN ADMISSION, in full: the caller's grant on the twin's published
-                // name, the twin's live trust state, the twin's credential plan and the argument
-                // guard against the twin's approved schema. A twin this caller may not reach is
-                // skipped — busbar never widens a grant because an operator declared a pool.
-                let entry = app
-                    .mcp_catalogue
-                    .tool_on(member, &selected.tool)
-                    .and_then(|e| {
-                        app.mcp_catalogue
-                            .resolve(principal, live, &e.namespaced, generation, now)
-                            .ok()
-                    });
-                let pin = entry.and_then(|e| e.schema_hash.clone());
-                let auth = entry.and_then(|e| {
-                    app.mcp_catalogue
-                        .server(member)
-                        .and_then(|s| super::upstream::authorise(s, e, arguments, principal).ok())
-                });
-                if auth.is_none() {
-                    tried.push(lane);
-                }
-                RouteMember {
-                    name: member.clone(),
-                    lane,
-                    pin,
-                    auth,
-                }
-            })
-            .collect();
+                        pin,
+                        auth,
+                    }
+                })
+                .collect();
 
         PoolRoute {
             pool_key: PlaneBreakers::tool_key(pool_name),

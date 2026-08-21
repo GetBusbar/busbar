@@ -21,22 +21,24 @@ fn test_query_has_alt_sse() {
 /// Minimal governance-off App for exercising `finish` in isolation.
 fn minimal_app() -> Arc<App> {
     Arc::new(App {
-        mcp_catalogue: Arc::new(crate::mcp::catalogue::Catalogue::default()),
-        mcp_sightings: Default::default(),
+        mcp_runtime: Arc::new(crate::mcp::McpRuntime {
+            catalogue: Arc::new(crate::mcp::catalogue::Catalogue::default()),
+            servers: Default::default(),
+            pool: Default::default(),
+            sightings: Default::default(),
+            roots_epochs: Default::default(),
+            sampling_spend: Default::default(),
+        }),
         mcp_verify: Default::default(),
         a2a_verify: Default::default(),
         a2a_cards: Default::default(),
         plane_approvals: Default::default(),
-        mcp_roots_epochs: Default::default(),
-        mcp_sampling_spend: Default::default(),
         mcp_demotions: Default::default(),
-        mcp_pool: Default::default(),
         plane_breakers: Arc::new(crate::store::PlaneBreakers::new()),
         session_store: Arc::new(crate::session::SessionStore::new(1024, None)),
         incremental_scan: false,
         tool_pools: Default::default(),
         agent_pools: Default::default(),
-        mcp_servers: Arc::new(Default::default()),
         // Not an MCP server: the plane is absent (no `"mcp"` slot in `plane_slots` below) and the
         // dispatch table empty, which is what every path in this fixture is asserted against.
         oauth_as: None,

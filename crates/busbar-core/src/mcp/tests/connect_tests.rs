@@ -70,9 +70,15 @@ async fn a_refresh_records_the_observation_it_re_hashed() {
         )
         .with_mcp_sightings(cache.clone())
         .build();
-    let entry = app.mcp_catalogue.server("fs").unwrap().clone();
+    let entry = crate::mcp::runtime(&app)
+        .catalogue
+        .server("fs")
+        .unwrap()
+        .clone();
 
-    let report = refresh(&app.mcp_pool, &cache, &entry).await.unwrap();
+    let report = refresh(&crate::mcp::runtime(&app).pool, &cache, &entry)
+        .await
+        .unwrap();
 
     assert_eq!(report.observed, 1);
     assert_eq!(report.failure, None);
@@ -108,12 +114,20 @@ async fn a_failed_refresh_is_recorded_and_demotes_the_server() {
         )
         .with_mcp_sightings(cache.clone())
         .build();
-    let entry = app.mcp_catalogue.server("fs").unwrap().clone();
-    refresh(&app.mcp_pool, &cache, &entry).await.unwrap();
+    let entry = crate::mcp::runtime(&app)
+        .catalogue
+        .server("fs")
+        .unwrap()
+        .clone();
+    refresh(&crate::mcp::runtime(&app).pool, &cache, &entry)
+        .await
+        .unwrap();
     assert_eq!(changes(&cache, &entry).state_word(), "approved");
 
     peer.fail_list(-32001);
-    let report = refresh(&app.mcp_pool, &cache, &entry).await.unwrap();
+    let report = refresh(&crate::mcp::runtime(&app).pool, &cache, &entry)
+        .await
+        .unwrap();
 
     assert_eq!(report.state_word(), "error");
     assert!(
@@ -149,9 +163,13 @@ async fn a_passthrough_server_refuses_an_operator_driven_refresh() {
         .mcp_server("fs", cfg)
         .with_mcp_sightings(cache.clone())
         .build();
-    let entry = app.mcp_catalogue.server("fs").unwrap().clone();
+    let entry = crate::mcp::runtime(&app)
+        .catalogue
+        .server("fs")
+        .unwrap()
+        .clone();
 
-    let refusal = refresh(&app.mcp_pool, &cache, &entry)
+    let refusal = refresh(&crate::mcp::runtime(&app).pool, &cache, &entry)
         .await
         .expect_err("a passthrough refresh has no caller credential to send");
 

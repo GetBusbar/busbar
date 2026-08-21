@@ -612,9 +612,8 @@ async fn run(task: Arc<McpTask>, runner: Runner) {
             let handle = Arc::clone(&handle);
             let server_id = server_id.clone();
             move || {
-                handle
-                    .load()
-                    .mcp_catalogue
+                super::runtime(&handle.load())
+                    .catalogue
                     .server(&server_id)
                     .map(|s| s.grants)
                     .unwrap_or_default()
@@ -629,7 +628,7 @@ async fn run(task: Arc<McpTask>, runner: Runner) {
         // carries). See `super::roots::satisfy_upstream_ask` / `super::sampling`.
         |ask| {
             let live = handle.load();
-            let entry = live.mcp_catalogue.server(&server_id);
+            let entry = super::runtime(&live).catalogue.server(&server_id);
             let roots = entry.map(|s| s.roots.clone()).unwrap_or_default();
             let sampling = entry.and_then(|s| s.sampling.clone());
             let gov = crate::governance::GovCtx {

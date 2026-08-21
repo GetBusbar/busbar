@@ -227,9 +227,13 @@ done"#,
         )
         .with_mcp_sightings(cache.clone())
         .build();
-    let entry = app.mcp_catalogue.server("fs").unwrap().clone();
+    let entry = crate::mcp::runtime(&app)
+        .catalogue
+        .server("fs")
+        .unwrap()
+        .clone();
 
-    let report = crate::mcp::connect::refresh(&app.mcp_pool, &cache, &entry)
+    let report = crate::mcp::connect::refresh(&crate::mcp::runtime(&app).pool, &cache, &entry)
         .await
         .expect("a stdio registration is refreshable, not a refusal");
 

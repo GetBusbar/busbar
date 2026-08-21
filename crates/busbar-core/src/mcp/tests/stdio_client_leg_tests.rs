@@ -220,13 +220,13 @@ fn authorised(
         .key
         .clone()
         .expect("the fixture governance carries a key");
-    let server = app
-        .mcp_catalogue
+    let server = crate::mcp::runtime(app)
+        .catalogue
         .server("fs")
         .expect("the fixture registration is in the catalogue")
         .clone();
-    let selected = app
-        .mcp_catalogue
+    let selected = crate::mcp::runtime(app)
+        .catalogue
         .resolve_now(
             Some(&key),
             crate::mcp::client::catalogue::LiveSightings::unsighted(),
@@ -277,7 +277,7 @@ async fn every_issued_verb_reaches_a_real_child_and_is_correlated() {
         // A DISTINCT id per verb, so a stale answer from the previous exchange cannot be adopted as
         // this one's — which is the property `parse_response`'s correlation exists for.
         let id = 1_000 + n as u64;
-        let outcome = issue(&app.mcp_pool, &auth, verb, id)
+        let outcome = issue(&crate::mcp::runtime(&app).pool, &auth, verb, id)
             .await
             .unwrap_or_else(|e| panic!("issuing `{}` to a live child failed: {e}", verb.method()));
         if verb.is_notification() {
@@ -354,9 +354,14 @@ async fn the_handshake_is_sent_once_per_child_and_not_per_call() {
     let auth = authorised(&app, &[("mcp_server", "fs"), ("mcp_tool", "fs_read")]);
 
     for id in [1u64, 2, 3] {
-        issue(&app.mcp_pool, &auth, &UpstreamVerb::Ping, id)
-            .await
-            .expect("a ping to a live child");
+        issue(
+            &crate::mcp::runtime(&app).pool,
+            &auth,
+            &UpstreamVerb::Ping,
+            id,
+        )
+        .await
+        .expect("a ping to a live child");
     }
     let seen = await_log(&log, "\"method\":\"ping\"", "the pings").await;
     assert_eq!(
@@ -405,7 +410,7 @@ async fn an_ungranted_caller_is_refused_before_the_child_is_reached() {
         UpstreamVerb::Ping,
         UpstreamVerb::NotificationsRootsListChanged,
     ] {
-        let err = issue(&app.mcp_pool, &auth, &verb, 1)
+        let err = issue(&crate::mcp::runtime(&app).pool, &auth, &verb, 1)
             .await
             .expect_err("a caller with no grant must be refused");
         assert!(
@@ -443,10 +448,14 @@ async fn a_chatty_child_is_handled_and_the_answer_is_still_the_right_one() {
         .build();
     let auth = authorised(&app, &[("mcp_server", "fs"), ("mcp_tool", "fs_read")]);
 
-    let Issued::Result(value) = issue(&app.mcp_pool, &auth, &UpstreamVerb::ToolsList, 77)
-        .await
-        .expect("a chatty child still answers")
-    else {
+    let Issued::Result(value) = issue(
+        &crate::mcp::runtime(&app).pool,
+        &auth,
+        &UpstreamVerb::ToolsList,
+        77,
+    )
+    .await
+    .expect("a chatty child still answers") else {
         panic!("`tools/list` is a request and must return a result");
     };
     assert_eq!(
@@ -523,9 +532,14 @@ async fn a_granted_ask_is_refused_differently_than_an_ungranted_one() {
         .build();
     let auth = authorised(&app, &[("mcp_server", "fs"), ("mcp_tool", "fs_read")]);
 
-    issue(&app.mcp_pool, &auth, &UpstreamVerb::ToolsList, 78)
-        .await
-        .expect("a chatty child still answers");
+    issue(
+        &crate::mcp::runtime(&app).pool,
+        &auth,
+        &UpstreamVerb::ToolsList,
+        78,
+    )
+    .await
+    .expect("a chatty child still answers");
     let seen = await_log(&log, "\"id\":904", "busbar's reply to the elicitation ask").await;
 
     for (id, kind) in [(902, "roots"), (903, "sampling"), (904, "elicitation")] {
@@ -567,16 +581,25 @@ async fn a_peer_signal_brings_one_refresh_forward_and_is_then_rate_limited() {
     let auth = authorised(&app, &[("mcp_server", "fs"), ("mcp_tool", "fs_read")]);
 
     assert!(
-        app.mcp_pool.triggers.take_pending().is_empty(),
+        crate::mcp::runtime(&app)
+            .pool
+            .triggers
+            .take_pending()
+            .is_empty(),
         "nothing is pending before a peer has said anything"
     );
 
     // ONE exchange, during which the child emits FOUR change notifications.
-    issue(&app.mcp_pool, &auth, &UpstreamVerb::ToolsList, 79)
-        .await
-        .expect("the child answers");
+    issue(
+        &crate::mcp::runtime(&app).pool,
+        &auth,
+        &UpstreamVerb::ToolsList,
+        79,
+    )
+    .await
+    .expect("the child answers");
 
-    let pending = app.mcp_pool.triggers.take_pending();
+    let pending = crate::mcp::runtime(&app).pool.triggers.take_pending();
     assert_eq!(
         pending.iter().map(String::as_str).collect::<Vec<_>>(),
         vec!["fs"],
@@ -589,7 +612,7 @@ async fn a_peer_signal_brings_one_refresh_forward_and_is_then_rate_limited() {
     // announced uri), which is what `subscriptions/listen`'s `resourceSubscriptions` category
     // delivers from. See `mcp::client::pool::ResourceUpdates` for why this is the one payload
     // field an untrusted peer's message gets to carry.
-    let (announced, _) = app.mcp_pool.updates.since(0);
+    let (announced, _) = crate::mcp::runtime(&app).pool.updates.since(0);
     assert_eq!(
         announced,
         vec![("fs".to_string(), "file:///a".to_string())],
@@ -599,15 +622,28 @@ async fn a_peer_signal_brings_one_refresh_forward_and_is_then_rate_limited() {
     // FOUR notifications, ONE accepted trigger: the other three were inside the floor interval. A
     // peer that emits one notification per tool per change cannot turn one edit into a fetch storm.
     assert!(
-        app.mcp_pool.triggers.take_pending().is_empty(),
+        crate::mcp::runtime(&app)
+            .pool
+            .triggers
+            .take_pending()
+            .is_empty(),
         "draining is what makes one signal cause one refresh; a set the sweep only read would \
          refetch on every later tick"
     );
-    issue(&app.mcp_pool, &auth, &UpstreamVerb::ToolsList, 80)
-        .await
-        .expect("the child answers again");
+    issue(
+        &crate::mcp::runtime(&app).pool,
+        &auth,
+        &UpstreamVerb::ToolsList,
+        80,
+    )
+    .await
+    .expect("the child answers again");
     assert!(
-        app.mcp_pool.triggers.take_pending().is_empty(),
+        crate::mcp::runtime(&app)
+            .pool
+            .triggers
+            .take_pending()
+            .is_empty(),
         "a second burst inside the floor interval must be swallowed by the rate limiter: an \
          upstream may bring a re-pull forward and may not have one on demand"
     );

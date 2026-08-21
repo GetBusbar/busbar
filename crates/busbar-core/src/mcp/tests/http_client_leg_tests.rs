@@ -158,18 +158,18 @@ fn authorise(
     app: &std::sync::Arc<crate::state::App>,
     caller: Option<&VirtualKey>,
 ) -> Result<Authorised, SetupRefusal> {
-    let entry = app
-        .mcp_catalogue
+    let entry = crate::mcp::runtime(app)
+        .catalogue
         .server(SERVER)
         .expect("the registration under test is in the built snapshot")
         .clone();
-    let sightings = app.mcp_sightings.load();
+    let sightings = crate::mcp::runtime(app).sightings.load();
     let sighting = LiveSightings::of(&sightings).sighting_for(SERVER);
     authorise_verb(
         &entry,
         &sighting,
         caller,
-        Generations::at_admission(app.mcp_catalogue.generation()),
+        Generations::at_admission(crate::mcp::runtime(app).catalogue.generation()),
         crate::store::now(),
     )
 }
@@ -220,7 +220,7 @@ async fn every_owed_method_reaches_the_upstream_with_the_mirrored_headers_this_r
     let verbs = verbs_here();
     for (n, verb) in verbs.iter().enumerate() {
         let request_id = 1_000 + n as u64;
-        let outcome = issue(&app.mcp_pool, &auth, verb, request_id)
+        let outcome = issue(&crate::mcp::runtime(&app).pool, &auth, verb, request_id)
             .await
             .unwrap_or_else(|e| panic!("`{}` must reach the upstream: {e}", verb.method()));
 
@@ -413,7 +413,7 @@ async fn a_link_local_uri_in_a_verbs_params_is_refused_before_the_exchange() {
     let auth = authorise(&app, Some(&caller)).expect("the gate admits a granted caller");
 
     let err = issue(
-        &app.mcp_pool,
+        &crate::mcp::runtime(&app).pool,
         &auth,
         &UpstreamVerb::ResourcesRead {
             uri: "http://169.254.169.254/latest/meta-data/iam/security-credentials/".to_string(),
@@ -448,7 +448,7 @@ async fn an_upstreams_ask_terminates_at_a_verb_and_is_never_proxied() {
     let auth = authorise(&app, Some(&caller)).expect("the gate admits a granted caller");
 
     let err = issue(
-        &app.mcp_pool,
+        &crate::mcp::runtime(&app).pool,
         &auth,
         &UpstreamVerb::PromptsGet {
             name: "greet".to_string(),
@@ -483,9 +483,14 @@ async fn a_verbs_exchange_asks_for_no_tool_scope_and_binds_to_this_upstream() {
     let caller = wildcard_key("k-wildcard");
     let auth = authorise(&app, Some(&caller)).expect("a wildcard key reaches every registration");
 
-    issue(&app.mcp_pool, &auth, &UpstreamVerb::ResourcesList, 12)
-        .await
-        .expect("the call goes out");
+    issue(
+        &crate::mcp::runtime(&app).pool,
+        &auth,
+        &UpstreamVerb::ResourcesList,
+        12,
+    )
+    .await
+    .expect("the call goes out");
 
     assert_eq!(peer.token_hits(), 1, "one exchange for the one call");
     let form = peer.last_token().form();
@@ -517,9 +522,14 @@ async fn an_upstream_error_is_recorded_as_dispatched_with_the_upstream_failed_re
     // a chain position must not read the one a sibling left behind.
     let principal = "http-verb-outcome-principal";
 
-    let err = issue(&app.mcp_pool, &auth, &UpstreamVerb::PromptsList, 3)
-        .await
-        .expect_err("a JSON-RPC error from the upstream is a failed verb");
+    let err = issue(
+        &crate::mcp::runtime(&app).pool,
+        &auth,
+        &UpstreamVerb::PromptsList,
+        3,
+    )
+    .await
+    .expect_err("a JSON-RPC error from the upstream is a failed verb");
     assert!(
         err.contains("-32003"),
         "the upstream's code is reported: {err}"

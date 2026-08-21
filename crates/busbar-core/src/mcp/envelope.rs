@@ -303,7 +303,7 @@ pub(crate) async fn rpc(
         // honest constant on an ungoverned deployment — because an epoch compared under a different
         // name than it was sealed under is an epoch that never matches or always does.
         {
-            let epochs = app.mcp_roots_epochs.clone();
+            let epochs = super::runtime(&app).roots_epochs.clone();
             let notify_principal = gov
                 .key
                 .as_ref()

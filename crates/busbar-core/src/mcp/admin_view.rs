@@ -85,7 +85,8 @@ pub(crate) fn mcp_server_view(
 /// Every registered MCP server, as the shared named-definition view. The read half of
 /// `GET /api/v1/admin/tools`.
 pub(crate) fn list(app: &crate::state::App) -> Vec<NamedDefView> {
-    app.mcp_servers
+    super::runtime(app)
+        .servers
         .servers
         .iter()
         .map(|(name, cfg)| mcp_server_view(name, cfg))
@@ -94,7 +95,8 @@ pub(crate) fn list(app: &crate::state::App) -> Vec<NamedDefView> {
 
 /// One registered MCP server, or `None`. The read half of `GET /api/v1/admin/tools/{name}`.
 pub(crate) fn get(app: &crate::state::App, name: &str) -> Option<NamedDefView> {
-    app.mcp_servers
+    super::runtime(app)
+        .servers
         .servers
         .get(name)
         .map(|cfg| mcp_server_view(name, cfg))
@@ -277,14 +279,14 @@ impl PlaneTrust for McpServers {
     fn resolve(app: &Arc<crate::state::App>, name: &str) -> Result<McpSubject, AdminError> {
         planeverbs::registered(Plane::Mcp, name, || {
             match (
-                app.mcp_catalogue.server(name),
-                app.mcp_servers.servers.get(name),
+                super::runtime(app).catalogue.server(name),
+                super::runtime(app).servers.servers.get(name),
             ) {
                 (Some(entry), Some(cfg)) => Some(McpSubject {
                     entry: entry.clone(),
                     cfg: cfg.clone(),
-                    pool: app.mcp_pool.clone(),
-                    sightings: app.mcp_sightings.clone(),
+                    pool: super::runtime(app).pool.clone(),
+                    sightings: super::runtime(app).sightings.clone(),
                     demotions: app.mcp_demotions.clone(),
                 }),
                 _ => None,
