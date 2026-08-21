@@ -347,6 +347,238 @@ fn chain_with_missing_group_fails_closed_naming_it() {
     }
 }
 
+/// A rate card with ALL FOUR tiers priced distinctly, and four distinct tier-token counts, must
+/// price each tier against ITS OWN rate — cache-read tokens at the cache-read rate, cache-write
+/// (creation) tokens at the cache-write rate, never swapped. An invoice where cache-read and
+/// cache-write were transposed would over- or under-bill every cached request (cache-write is
+/// typically 8x cache-read), so this pins the tier→rate mapping with counts chosen so any swap of
+/// two tiers changes the total.
+#[test]
+fn four_tier_card_prices_each_tier_against_its_own_rate() {
+    let c = BTreeMap::from([(
+        "quad".to_string(),
+        RateEntryCfg {
+            input_utok: 1.0,       // 1000 nano/token
+            output_utok: 2.0,      // 2000
+            cache_read_utok: 0.5,  // 500
+            cache_write_utok: 4.0, // 4000
+        },
+    )]);
+    let cm = resolve_card_fee(Some(&c), 0);
+    let t = TierTokens {
+        input: 10_000_000,     // 10_000_000_000 nanos
+        output: 1_000_000,     //  2_000_000_000
+        cache_read: 2_000_000, //  1_000_000_000
+        cache_write: 500_000,  //  2_000_000_000
+    };
+    // sum 15_000_000_000 nanos / 10_000_000 = 1500 cents exactly.
+    assert_eq!(
+        cm.derive_spend_cents([("quad", &t)].into_iter(), 0, false),
+        1500,
+        "each tier must bill against its own rate; a swapped cache_read/cache_write mapping changes this"
+    );
+    let r = cm.rate_for("quad").unwrap();
+    assert_eq!(
+        (r.input, r.output, r.cache_read, r.cache_write),
+        (1_000, 2_000, 500, 4_000),
+        "nano rates carry all four tiers straight from the card"
+    );
+}
+
+/// The cent derivation is an INTEGER DIVISION (`nanos / NANOS_PER_CENT`) — it TRUNCATES toward zero,
+/// it does not round to nearest. A sub-cent remainder is dropped, never rounded UP. This is the
+/// invoice property: the ledger floors fractional spend deterministically (never bills a cent the
+/// tokens did not reach). 19_999 input tokens at 1 utok = 19_999_000 nanos = 1.9999 cents and must
+/// derive to 1, not 2; the exact boundary 20_000 tokens = 2 cents. A round-to-nearest bug would make
+/// the first case 2.
+#[test]
+fn cent_derivation_truncates_toward_zero_never_rounds_up() {
+    let cm = resolve_card_fee(Some(&card(&[("m", 1.0, 0.0)])), 0);
+    let just_under = cm.derive_spend_cents([("m", &toks(19_999, 0))].into_iter(), 0, false);
+    assert_eq!(
+        just_under, 1,
+        "1.9999 cents must floor to 1, not round up to 2"
+    );
+    let on_boundary = cm.derive_spend_cents([("m", &toks(20_000, 0))].into_iter(), 0, false);
+    assert_eq!(on_boundary, 2, "exactly 2.0 cents is 2");
+    let just_over = cm.derive_spend_cents([("m", &toks(20_001, 0))].into_iter(), 0, false);
+    assert_eq!(just_over, 2, "2.0001 cents still floors to 2");
+}
+
+/// Two models billed into ONE bucket accumulate NANOS first and divide to cents ONCE, not per model.
+/// This matters below the cent: two models each contributing 0.5 cent (5_000_000 nanos) sum to a
+/// whole 1 cent — a per-model floor would drop each to 0 and bill 0, silently under-charging every
+/// multi-model bucket. Pins the "sum-then-divide" order the ledger depends on.
+#[test]
+fn sub_cent_contributions_across_models_sum_before_flooring() {
+    // 5 utok/token = 5000 nano/token; 1000 tokens = 5_000_000 nanos = 0.5 cent each.
+    let cm = resolve_card_fee(Some(&card(&[("a", 5.0, 0.0), ("b", 5.0, 0.0)])), 0);
+    let ta = toks(1_000, 0);
+    let tb = toks(1_000, 0);
+    assert_eq!(
+        cm.derive_spend_cents([("a", &ta)].into_iter(), 0, false),
+        0,
+        "one 0.5-cent model alone floors to 0"
+    );
+    assert_eq!(
+        cm.derive_spend_cents([("a", &ta), ("b", &tb)].into_iter(), 0, false),
+        1,
+        "two 0.5-cent models sum to a whole cent — nanos accumulate before the single divide"
+    );
+}
+
+/// A model priced EXPLICITLY at zero (all four tiers 0.0 in a present card) is a KNOWN model that
+/// derives 0 for any token volume — distinct from an UNKNOWN model (missing entry). Pricing is
+/// enabled, the model is NOT unpriced, and even u64::MAX tokens derive exactly 0.
+#[test]
+fn explicit_zero_rate_model_is_known_and_derives_zero() {
+    let c = BTreeMap::from([(
+        "freebie".to_string(),
+        RateEntryCfg {
+            input_utok: 0.0,
+            output_utok: 0.0,
+            cache_read_utok: 0.0,
+            cache_write_utok: 0.0,
+        },
+    )]);
+    let cm = resolve_card_fee(Some(&c), 0);
+    assert!(cm.pricing_enabled());
+    assert!(
+        !cm.model_unpriced("freebie"),
+        "an all-zero entry is present, not missing"
+    );
+    let t = TierTokens {
+        input: u64::MAX,
+        output: u64::MAX,
+        cache_read: u64::MAX,
+        cache_write: u64::MAX,
+    };
+    assert_eq!(
+        cm.derive_spend_cents([("freebie", &t)].into_iter(), 0, false),
+        0,
+        "a zero-rated model bills nothing regardless of volume"
+    );
+}
+
+/// A PARTIAL card (some models priced, one absent): `model_unpriced` is true ONLY for the missing
+/// model, and a mixed derivation prices the KNOWN model and contributes 0 for the missing one
+/// (`rate_for` = None is skipped by the saturating add), so the total is exactly the known model's
+/// spend — never a panic, never the missing model priced by a sibling's rate.
+#[test]
+fn partial_card_prices_known_models_and_zeroes_the_missing_one() {
+    let c = card(&[("priced", 2.0, 0.0)]);
+    let cm = resolve_card_fee(Some(&c), 0);
+    assert!(!cm.model_unpriced("priced"));
+    assert!(cm.model_unpriced("absent"));
+    let known = toks(1_000_000, 0); // 2 utok * 1M = 200 cents
+    let absent = toks(9_999_999, 0);
+    assert_eq!(
+        cm.derive_spend_cents(
+            [("priced", &known), ("absent", &absent)].into_iter(),
+            0,
+            false
+        ),
+        200,
+        "only the priced model contributes; the missing one derives 0"
+    );
+}
+
+/// The flat per-request fee is `price_per_request_cents * fee_requests`, added ONLY when
+/// `include_request_fee`. Both the multiply and the add SATURATE at i64::MAX — an astronomically
+/// large billable-request count can never wrap the fee negative (which `.max(0)` would then floor to
+/// 0, billing an over-cap bucket as FREE). With the flag off, the fee contributes nothing.
+#[test]
+fn flat_fee_saturates_and_is_gated_by_the_flag() {
+    let cm = resolve_card_fee(None, i64::MAX);
+    let z = toks(0, 0);
+    assert_eq!(
+        cm.derive_spend_cents([("m", &z)].into_iter(), u64::MAX, true),
+        i64::MAX,
+        "i64::MAX fee * u64::MAX requests must pin at i64::MAX, never wrap toward 0"
+    );
+    assert_eq!(
+        cm.derive_spend_cents([("m", &z)].into_iter(), u64::MAX, false),
+        0,
+        "with include_request_fee=false the flat fee contributes nothing"
+    );
+}
+
+/// A NEGATIVE configured per-request fee is clamped to 0 at resolve (`per_request_fee.max(0)`), so
+/// no request can ever be billed a negative amount that would CREDIT a budget bucket back toward
+/// headroom. Both the accessor and a fee-inclusive derivation see 0.
+#[test]
+fn negative_per_request_fee_clamps_to_zero() {
+    let cm = resolve_card_fee(None, -5);
+    assert_eq!(cm.price_per_request_cents(), 0);
+    assert_eq!(
+        cm.derive_spend_cents([("m", &toks(0, 0))].into_iter(), 100, true),
+        0,
+        "a negative fee must never credit a bucket: 100 requests at a clamped-0 fee is 0"
+    );
+}
+
+/// The MICRO projection's flat-fee component is `cents * 10_000 * requests` (1 cent = 10_000
+/// micro-units), added only when `include_request_fee`. Pins the micro-scale fee against the
+/// cent-scale one so the hook-seam projection can never drift from the ledger's cents.
+#[test]
+fn micro_projection_fee_is_cents_times_ten_thousand() {
+    let cm = resolve_card_fee(None, 3);
+    let z = toks(0, 0);
+    // 3 cents/request * 5 requests = 15 cents = 150_000 micro-units.
+    assert_eq!(
+        cm.derive_spend_micros([("m", &z)].into_iter(), 5, true),
+        150_000
+    );
+    assert_eq!(
+        cm.derive_spend_cents([("m", &z)].into_iter(), 5, true),
+        15,
+        "the same fee in cents is 15 — the micro projection is exactly 10_000x"
+    );
+    assert_eq!(
+        cm.derive_spend_micros([("m", &z)].into_iter(), 5, false),
+        0,
+        "flag off: no fee in the micro projection either"
+    );
+}
+
+/// BUDGET-CAP BOUNDARY, in the exact cents the admission decision compares (`derived >= cap`): a
+/// token count chosen to land the derived spend EXACTLY on an integer cap value derives to precisely
+/// that integer (so a request that has reached the cap is recognized as at-cap), and a larger count
+/// derives strictly above it. This pins the arithmetic the governance budget check keys off; the
+/// comparison itself lives in the metering path (not exercised here).
+#[test]
+fn derived_spend_lands_exactly_on_an_integer_budget_cap() {
+    // 1 utok = 1000 nano/token; 1_000_000 tokens = 1_000_000_000 nanos = 100 cents exactly.
+    let cm = resolve_card_fee(Some(&card(&[("m", 1.0, 0.0)])), 0);
+    assert_eq!(
+        cm.derive_spend_cents([("m", &toks(1_000_000, 0))].into_iter(), 0, false),
+        100,
+        "spend lands exactly on the integer cap value the budget check compares against"
+    );
+    assert_eq!(
+        cm.derive_spend_cents([("m", &toks(1_010_000, 0))].into_iter(), 0, false),
+        101,
+        "one full cent more of tokens derives strictly above the cap"
+    );
+}
+
+/// `RateNanos::from_cfg` converts config micro-units to nano-units by `(_utok * 1000).round()` —
+/// ROUND TO NEAREST (half away from zero), not truncation. 0.0015 utok = 1.5 nano must round to 2;
+/// 0.0014 utok = 1.4 nano must floor to 1. A truncating conversion would make the first case 1,
+/// silently under-pricing the finest-grained rates an operator can configure.
+#[test]
+fn rate_nanos_from_cfg_rounds_to_nearest_at_the_nano_boundary() {
+    let half_up = RateEntryCfg {
+        input_utok: 0.0015,
+        output_utok: 0.0014,
+        cache_read_utok: 0.0,
+        cache_write_utok: 0.0,
+    };
+    let rn = crate::cost::RateNanos::from_cfg(&half_up);
+    assert_eq!(rn.input, 2, "1.5 nano rounds to 2 (half away from zero)");
+    assert_eq!(rn.output, 1, "1.4 nano floors to 1");
+}
+
 /// `RateNanos::from_cfg`'s inner `nanos()` clamp is `is_finite() && v > 0.0`, not `||`: a
 /// mutated `||` would let a non-finite-but-positive value (e.g. `+inf`, reachable from a huge
 /// `_utok` config value * 1000.0) through to `as u64`, which SATURATES to `u64::MAX` on a
