@@ -455,20 +455,7 @@ impl OperationHandler for GeminiImage {
         let IrReq::Image(r) = ir else {
             return Bytes::new();
         };
-        let mut params = json!({ "sampleCount": r.n.unwrap_or(1) });
-        // Carry the Imagen generation controls the reader captures; dropping them fell back to
-        // Imagen's defaults (1:1 aspect, default person-generation policy) instead of the request.
-        if let Some(a) = &r.aspect_ratio {
-            params["aspectRatio"] = json!(a);
-        }
-        if let Some(p) = &r.person_generation {
-            params["personGeneration"] = json!(p);
-        }
-        let body = json!({
-            "instances": [{ "prompt": r.prompt.clone().unwrap_or_default() }],
-            "parameters": params,
-        });
-        Bytes::from(serde_json::to_vec(&body).unwrap_or_default())
+        super::super::leaf_codec::image_write_request("gemini", r)
     }
     fn read_response(&self, wire: &[u8]) -> Result<IrResp, CodecError> {
         let v: Value =
@@ -502,22 +489,47 @@ impl OperationHandler for GeminiImage {
         let IrResp::Image(r) = ir else {
             return WireBody::json(Bytes::new());
         };
-        let predictions: Vec<Value> = r
-            .images
-            .iter()
-            .map(|img| {
-                let mut p = json!({});
-                if let Some(b64) = &img.b64 {
-                    p["bytesBase64Encoded"] = json!(b64);
-                }
-                p["mimeType"] = json!(img.mime_type.clone().unwrap_or_else(|| "image/png".into()));
-                p
-            })
-            .collect();
-        WireBody::json(Bytes::from(
-            serde_json::to_vec(&json!({ "predictions": predictions })).unwrap_or_default(),
-        ))
+        super::super::leaf_codec::image_write_response("gemini", r)
     }
+}
+
+/// IR → Imagen `:predict` request wire (the body of [`GeminiImage::write_request`], moved behind the
+/// `(image, gemini)` key — G6 A4b option-a). Byte-identical to the pre-cutover inline write.
+pub(crate) fn write_image_request(r: &busbar_core::ir::image::ImageReq) -> Bytes {
+    let mut params = json!({ "sampleCount": r.n.unwrap_or(1) });
+    // Carry the Imagen generation controls the reader captures; dropping them fell back to
+    // Imagen's defaults (1:1 aspect, default person-generation policy) instead of the request.
+    if let Some(a) = &r.aspect_ratio {
+        params["aspectRatio"] = json!(a);
+    }
+    if let Some(p) = &r.person_generation {
+        params["personGeneration"] = json!(p);
+    }
+    let body = json!({
+        "instances": [{ "prompt": r.prompt.clone().unwrap_or_default() }],
+        "parameters": params,
+    });
+    Bytes::from(serde_json::to_vec(&body).unwrap_or_default())
+}
+
+/// IR → Imagen `:predict` response wire (the body of [`GeminiImage::write_response`], moved behind
+/// the `(image, gemini)` key — G6 A4b option-a). Byte-identical to the pre-cutover inline write.
+pub(crate) fn write_image_response(r: &busbar_core::ir::image::ImageResp) -> WireBody {
+    let predictions: Vec<Value> = r
+        .images
+        .iter()
+        .map(|img| {
+            let mut p = json!({});
+            if let Some(b64) = &img.b64 {
+                p["bytesBase64Encoded"] = json!(b64);
+            }
+            p["mimeType"] = json!(img.mime_type.clone().unwrap_or_else(|| "image/png".into()));
+            p
+        })
+        .collect();
+    WireBody::json(Bytes::from(
+        serde_json::to_vec(&json!({ "predictions": predictions })).unwrap_or_default(),
+    ))
 }
 
 /// Gemini embeddings (`models/{id}:embedContent`). Single content in, `embedding.values` out.

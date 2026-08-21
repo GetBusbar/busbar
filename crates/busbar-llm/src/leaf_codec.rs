@@ -20,6 +20,7 @@
 
 use busbar_core::handlers::WireBody;
 use busbar_core::ir::embeddings::{EmbeddingsReq, EmbeddingsResp};
+use busbar_core::ir::image::{ImageReq, ImageResp};
 use busbar_core::ir::rerank::{RerankReq, RerankResp};
 use bytes::Bytes;
 
@@ -61,6 +62,26 @@ pub(crate) fn rerank_write_response(proto: &str, r: &RerankResp) -> WireBody {
     match proto {
         "cohere" => super::cohere::handler::write_rerank_response(r),
         "bedrock" => super::bedrock::handler::write_rerank_response(r),
+        _ => WireBody::json(Bytes::new()),
+    }
+}
+
+/// Image egress request bytes for `proto`. Unknown protocol => empty (pre-cutover fallback).
+pub(crate) fn image_write_request(proto: &str, r: &ImageReq) -> Bytes {
+    match proto {
+        "bedrock" => super::bedrock::handler::write_image_request(r),
+        "gemini" => super::gemini::handler::write_image_request(r),
+        "openai" => super::openai_chat::handler::write_image_request(r),
+        _ => Bytes::new(),
+    }
+}
+
+/// Image ingress response wire for `proto`. Unknown protocol => empty JSON body.
+pub(crate) fn image_write_response(proto: &str, r: &ImageResp) -> WireBody {
+    match proto {
+        "bedrock" => super::bedrock::handler::write_image_response(r),
+        "gemini" => super::gemini::handler::write_image_response(r),
+        "openai" => super::openai_chat::handler::write_image_response(r),
         _ => WireBody::json(Bytes::new()),
     }
 }

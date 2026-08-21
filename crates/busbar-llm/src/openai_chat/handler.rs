@@ -744,35 +744,7 @@ impl OperationHandler for OpenAiImage {
         let IrReq::Image(r) = ir else {
             return Bytes::new();
         };
-        let mut body = json!({ "model": r.model });
-        if let Some(p) = &r.prompt {
-            body["prompt"] = json!(p);
-        }
-        if let Some(n) = r.n {
-            body["n"] = json!(n);
-        }
-        match r.size {
-            Some(ImageSize::Wh { width, height }) => {
-                body["size"] = json!(format!("{width}x{height}"));
-            }
-            Some(ImageSize::Auto) => body["size"] = json!("auto"),
-            None => {}
-        }
-        // Carry the generation controls the reader captures; dropping them silently downgraded the
-        // request (e.g. a `b64_json` ask fell back to the default URL response, `hd` to standard).
-        if let Some(q) = &r.quality {
-            body["quality"] = json!(q);
-        }
-        if let Some(s) = &r.style {
-            body["style"] = json!(s);
-        }
-        if let Some(f) = &r.response_format {
-            body["response_format"] = json!(f);
-        }
-        if let Some(u) = &r.user {
-            body["user"] = json!(u);
-        }
-        Bytes::from(serde_json::to_vec(&body).unwrap_or_default())
+        super::super::leaf_codec::image_write_request("openai", r)
     }
     fn read_response(&self, wire: &[u8]) -> Result<IrResp, CodecError> {
         let v: Value =
@@ -807,28 +779,68 @@ impl OperationHandler for OpenAiImage {
         let IrResp::Image(r) = ir else {
             return WireBody::json(Bytes::new());
         };
-        let data: Vec<Value> = r
-            .images
-            .iter()
-            .map(|img| {
-                let mut o = serde_json::Map::new();
-                if let Some(b) = &img.b64 {
-                    o.insert("b64_json".into(), json!(b));
-                }
-                if let Some(u) = &img.url {
-                    o.insert("url".into(), json!(u));
-                }
-                if let Some(rp) = &img.revised_prompt {
-                    o.insert("revised_prompt".into(), json!(rp));
-                }
-                Value::Object(o)
-            })
-            .collect();
-        WireBody::json(Bytes::from(
-            serde_json::to_vec(&json!({ "created": r.created.unwrap_or(0), "data": data }))
-                .unwrap_or_default(),
-        ))
+        super::super::leaf_codec::image_write_response("openai", r)
     }
+}
+
+/// IR → openai image request wire (the body of [`OpenAiImage::write_request`], moved behind the
+/// `(image, openai)` key — G6 A4b option-a). Byte-identical to the pre-cutover inline write.
+pub(crate) fn write_image_request(r: &ImageReq) -> Bytes {
+    let mut body = json!({ "model": r.model });
+    if let Some(p) = &r.prompt {
+        body["prompt"] = json!(p);
+    }
+    if let Some(n) = r.n {
+        body["n"] = json!(n);
+    }
+    match r.size {
+        Some(ImageSize::Wh { width, height }) => {
+            body["size"] = json!(format!("{width}x{height}"));
+        }
+        Some(ImageSize::Auto) => body["size"] = json!("auto"),
+        None => {}
+    }
+    // Carry the generation controls the reader captures; dropping them silently downgraded the
+    // request (e.g. a `b64_json` ask fell back to the default URL response, `hd` to standard).
+    if let Some(q) = &r.quality {
+        body["quality"] = json!(q);
+    }
+    if let Some(s) = &r.style {
+        body["style"] = json!(s);
+    }
+    if let Some(f) = &r.response_format {
+        body["response_format"] = json!(f);
+    }
+    if let Some(u) = &r.user {
+        body["user"] = json!(u);
+    }
+    Bytes::from(serde_json::to_vec(&body).unwrap_or_default())
+}
+
+/// IR → openai image response wire (the body of [`OpenAiImage::write_response`], moved behind the
+/// `(image, openai)` key — G6 A4b option-a). Byte-identical to the pre-cutover inline write.
+pub(crate) fn write_image_response(r: &ImageResp) -> WireBody {
+    let data: Vec<Value> = r
+        .images
+        .iter()
+        .map(|img| {
+            let mut o = serde_json::Map::new();
+            if let Some(b) = &img.b64 {
+                o.insert("b64_json".into(), json!(b));
+            }
+            if let Some(u) = &img.url {
+                o.insert("url".into(), json!(u));
+            }
+            if let Some(rp) = &img.revised_prompt {
+                o.insert("revised_prompt".into(), json!(rp));
+            }
+            Value::Object(o)
+        })
+        .collect();
+    WireBody::json(Bytes::from(
+        serde_json::to_vec(&json!({ "created": r.created.unwrap_or(0), "data": data }))
+            .unwrap_or_default(),
+    ))
 }
 
 // ---------------------------------------------------------------- moderation cell
