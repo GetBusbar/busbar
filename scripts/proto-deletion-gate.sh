@@ -33,7 +33,7 @@
 #                 and it is what proves the protocol crates are independently droppable rather than
 #                 droppable only as a set.
 #
-# WHAT THE MCP LEG NOW CLAIMS (D3): dropping `plane-mcp` compiles out BOTH halves of MCP — the
+# WHAT THE MCP LEG NOW CLAIMS: dropping `plane-mcp` compiles out BOTH halves of MCP — the
 #   protocol codec crate (busbar-mcp) AND the MCP PLANE in `busbar-core/src/mcp` (gated by the
 #   `busbar-core/plane-mcp` feature the binary's `plane-mcp` forwards). Core names no `crate::mcp`
 #   type in that build, so:
@@ -382,7 +382,7 @@ OUT=$(run_busbar "$MCP_DELETED_BIN" --validate 2>&1) \
 note "mcp-b kept dialect: anthropic config validates clean with plane-mcp off"
 
 # ── mcp-c: THE MCP PLANE'S CONFIG SURFACE LEFT WITH IT ──────────────────────────────────────────
-# `plane-mcp` off compiles `busbar-core/src/mcp` out (D3), so `tools:`/`mcp:` name a plane this
+# `plane-mcp` off compiles `busbar-core/src/mcp` out, so `tools:`/`mcp:` name a plane this
 # build does not carry. `resolve` REFUSES such a config, naming the compiled-out plane — the config
 # analogue of the protocol registry refusing a deleted dialect. This is the leg that went RED before
 # D3: the plane was an unconditional core built-in, so a `tools:` config validated clean with
@@ -410,7 +410,7 @@ for _ in $(seq 1 60); do
 done
 [ -n "$up" ] || { cat "$FIX/boot-mcp.log"; die "the mcp-deleted binary did not come up on /healthz"; }
 curl -fsS "http://127.0.0.1:$PORT/stats" >/dev/null || die "/stats must answer on the mcp-deleted binary"
-# THE /mcp HTTP LEG (D3): the MCP PLANE — its `/mcp` data-plane mount — is compiled out with
+# THE /mcp HTTP LEG: the MCP PLANE — its `/mcp` data-plane mount — is compiled out with
 # `plane-mcp`, so `POST /mcp` resolves to NO plane handler (non-2xx), while the operator surface
 # (/healthz, /stats) and the surviving LLM/A2A planes still serve. Before D3 this could not be
 # probed: the plane was an unconditional core built-in and `/mcp` answered regardless of the
@@ -424,7 +424,7 @@ kill "$SRV_PID" 2>/dev/null; wait "$SRV_PID" 2>/dev/null; SRV_PID=""
 note "mcp-b boot: /healthz 200, /stats 200, POST /mcp $MCP_CODE (no plane handler) with plane-mcp off"
 
 # ── a2a-b: THE A2A PLANE IS INDEPENDENTLY DROPPABLE, and the binary still SERVES LLM + MCP ────────
-# The exact analogue of the mcp-b/mcp-c legs (D4): `plane-a2a` off compiles `busbar-core/src/a2a`
+# The exact analogue of the mcp-b/mcp-c legs: `plane-a2a` off compiles `busbar-core/src/a2a`
 # (and its plane-side helper `plane::taskstore`) out, so core names no `crate::a2a` type. This is a
 # SEPARATE feature axis from `plane-mcp` — dropping it keeps MCP, proving the two planes are
 # independently droppable rather than droppable only as a set.
@@ -454,7 +454,7 @@ run_busbar "$A2A_DELETED_BIN" --validate >"$FIX/a2a-tools-validate.out" 2>&1 \
 note "a2a-b MCP-survives: a tools: config validates clean with plane-a2a off"
 
 # ── a2a-c: THE A2A PLANE'S CONFIG SURFACE LEFT WITH IT ───────────────────────────────────────────
-# `plane-a2a` off compiles `busbar-core/src/a2a` out (D4), so `agents:` names a plane this build
+# `plane-a2a` off compiles `busbar-core/src/a2a` out, so `agents:` names a plane this build
 # does not carry. `resolve` REFUSES such a config, naming the compiled-out plane — the config
 # analogue of the protocol registry refusing a deleted dialect, and the symmetric twin of mcp-c.
 printf 'listen: "127.0.0.1:0"\nadmin_listen: "127.0.0.1:0"\nproviders: {}\nmodels: {}\nagents:\n  a:\n    url: "https://example.com/a2a"\n' > "$FIX/config.yaml"
@@ -480,7 +480,7 @@ for _ in $(seq 1 60); do
 done
 [ -n "$up" ] || { cat "$FIX/boot-a2a.log"; die "the a2a-deleted binary did not come up on /healthz"; }
 curl -fsS "http://127.0.0.1:$PORT/stats" >/dev/null || die "/stats must answer on the a2a-deleted binary"
-# THE /a2a HTTP LEG (D4): the A2A PLANE — its `POST /a2a/agents/{id}` receiving mount — is compiled
+# THE /a2a HTTP LEG: the A2A PLANE — its `POST /a2a/agents/{id}` receiving mount — is compiled
 # out with `plane-a2a`, so a POST under `/a2a` resolves to NO plane handler (non-2xx), while the
 # operator surface (/healthz, /stats) and the surviving LLM/MCP planes still serve.
 A2A_CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:$PORT/a2a/agents/probe" \
