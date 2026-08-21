@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/busbar/src/proto/openai_family.rs`.
+//! Tests for `crates/busbar-core/src/proto/openai_family.rs`.
 
 use crate::breaker::StatusClass;
 use axum::http::StatusCode;

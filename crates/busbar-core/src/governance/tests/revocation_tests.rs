@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/busbar/src/governance/revocation.rs`.
+//! Tests for `crates/busbar-core/src/governance/revocation.rs`.
 
 use super::*;
 use busbar_api::{

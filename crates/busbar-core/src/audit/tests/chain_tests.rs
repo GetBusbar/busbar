@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/busbar/src/audit/mod.rs` — THE ONE HASH CHAIN.
+//! Tests for `crates/busbar-core/src/audit/mod.rs` — THE ONE HASH CHAIN.
 //!
 //! Two jobs, and the second is the one that makes the unification worth doing:
 //!

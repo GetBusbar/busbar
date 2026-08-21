@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/busbar/src/sigv4.rs`.
+//! Tests for `crates/busbar-core/src/sigv4.rs`.
 
 use super::*;
 

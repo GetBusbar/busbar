@@ -607,6 +607,7 @@ dependencies = [
  "busbar-api",
  "busbar-plugin-sdk",
  "busbar-store-memory",
+ "libc",
  "serde",
  "serde_json",
 ]

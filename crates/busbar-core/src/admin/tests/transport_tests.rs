@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/busbar/src/admin/transport.rs`.
+//! Tests for `crates/busbar-core/src/admin/transport.rs`.
 
 use super::*;
 

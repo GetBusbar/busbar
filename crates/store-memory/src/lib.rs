@@ -17,13 +17,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Retention ceiling for `usage`/`metering` rows, keyed by their epoch-second period-start field
 /// (`window_start` / `bucket`). Mirrors `busbar::governance`'s own 31-day `max_window` sweep of its
-/// in-memory rate-map cells (`crates/busbar/src/governance/mod.rs`): this store's ledgers are a
+/// in-memory rate-map cells (`crates/busbar-core/src/governance/mod.rs`): this store's ledgers are a
 /// durability shadow of that engine state, so retaining them exactly as long as the engine keeps
 /// its own cells is the right correspondence, not an arbitrary shorter/longer number.
 const MAX_RETENTION_SECS: u64 = 31 * 86_400;
 
 /// Amortized sweep cadence: one `retain()` pass per this many writes. Mirrors
-/// `DEFAULT_RATE_SWEEP_INTERVAL` (`crates/busbar/src/config/mod.rs`).
+/// `DEFAULT_RATE_SWEEP_INTERVAL` (`crates/busbar-core/src/config/mod.rs`).
 const SWEEP_INTERVAL: u64 = 256;
 
 fn now() -> u64 {

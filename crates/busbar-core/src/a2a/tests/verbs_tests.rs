@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/busbar/src/a2a/verbs.rs`.
+//! Tests for `crates/busbar-core/src/a2a/verbs.rs`.
 //!
 //! The three verbs the generic five-verb CRUD chassis models none of. Every test drives the REAL
 //! `crate::trust` machine through the real verb; the only doubles are the two seams the delegating

@@ -52,6 +52,35 @@ fn clone_and_eq_operate_on_the_secret() {
     assert_ne!(a, Redacted::new("w".to_string()));
 }
 
+/// Equality is CONSTANT-TIME: it routes through the crate's `constant_time_eq` over the secret
+/// bytes rather than a plain `==`. This asserts the correctness contract that primitive must uphold
+/// for every case — equal, equal-length-but-differing, and different-length secrets — so the
+/// comparison stays a genuine equality even after being made timing-safe.
+#[test]
+fn eq_is_constant_time_and_correct() {
+    // Equal secrets compare equal.
+    assert_eq!(
+        Redacted::new("sk-abc-123".to_string()),
+        Redacted::new("sk-abc-123".to_string())
+    );
+    // Equal length, differing bytes (the case a data-dependent `memcmp` would short-circuit) — the
+    // constant-time compare still returns not-equal.
+    assert_ne!(
+        Redacted::new("sk-abc-123".to_string()),
+        Redacted::new("sk-abc-124".to_string())
+    );
+    // Differing lengths compare not-equal.
+    assert_ne!(
+        Redacted::new("sk-abc".to_string()),
+        Redacted::new("sk-abc-123".to_string())
+    );
+    // Empty vs empty is equal.
+    assert_eq!(
+        Redacted::new(String::new()),
+        Redacted::new(String::new())
+    );
+}
+
 /// `Redacted` must NOT implement `serde::Serialize`, so a secret held in engine memory has no
 /// implicit path into JSON (the credential-transport boundary uses a plain wire `String`, on
 /// purpose). This uses AUTOREF SPECIALIZATION to actually detect the impl at test time: the

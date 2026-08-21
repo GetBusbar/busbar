@@ -67,7 +67,7 @@ pub fn plugins_preflight(
     // pre-flight the store ref gets, so `--validate` catches a missing/wrong-kind/untrusted auth
     // plugin BEFORE boot. `keys` is engine-handled (never a plugin); `test-groups-module` is the
     // compiled-in test stand-in — ONLY actually registered under `#[cfg(test)]`
-    // (`AuthMiddleware::new`, `crates/busbar/src/auth/mod.rs`), so filtering it out
+    // (`AuthMiddleware::new`, `crates/busbar-core/src/auth/mod.rs`), so filtering it out
     // unconditionally here made `--validate`/`config_validate::validate` silently agree a RELEASE
     // config naming it is fine, while real boot still hard-failed (the invariant `--validate`
     // clean => the plugin half of boot succeeds too, documented a few lines below, broke). Gate
@@ -578,7 +578,7 @@ pub(crate) fn validate_secret_module(
 /// Whether `m` names a REAL `auth.chain` plugin ref that must resolve against the plugin registry
 /// (`true`) vs a builtin/test stand-in that's exempt (`false`). `keys` is engine-handled, never a
 /// plugin. `test-groups-module` is ONLY actually registered as a chain module under
-/// `#[cfg(test)]` (`AuthMiddleware::new`, `crates/busbar/src/auth/mod.rs`) — `is_test_build` MUST
+/// `#[cfg(test)]` (`AuthMiddleware::new`, `crates/busbar-core/src/auth/mod.rs`) — `is_test_build` MUST
 /// be `cfg!(test)` at the real call site, so this exemption only fires in a test binary. Module-
 /// level (not inlined into the `.filter(...)` closure) so the exact predicate that determines
 /// `--validate`/`config_validate::validate`'s pass/fail is unit-testable independent of which
@@ -600,7 +600,7 @@ pub(crate) fn is_real_auth_plugin_ref(m: &str, is_test_build: bool) -> bool {
 /// so the chain predicate exempts only `keys`, while EVERY built-in is legal as a definition's
 /// module. Same `is_test_build` discipline for the same reason: `test-scope-module` /
 /// `test-groups-module` are only ever registered under `#[cfg(test)]` (`AuthPlugins::build`,
-/// `crates/busbar/src/auth/mod.rs`), so exempting them unconditionally would make `--validate`
+/// `crates/busbar-core/src/auth/mod.rs`), so exempting them unconditionally would make `--validate`
 /// silently bless a RELEASE config that real boot still hard-fails.
 pub(crate) fn is_real_identity_provider_plugin_ref(m: &str, is_test_build: bool) -> bool {
     !config::BUILTIN_IDENTITY_PROVIDERS.contains(&m)

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/busbar/src/a2a/taskstore.rs`.
+//! Tests for `crates/busbar-core/src/plane/taskstore.rs`.
 //!
 //! ## What "durable" is allowed to mean in a test
 //!

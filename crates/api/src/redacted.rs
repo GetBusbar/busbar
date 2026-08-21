@@ -81,13 +81,21 @@ impl<T: Zeroize + Clone> Clone for Redacted<T> {
     }
 }
 
-impl<T: Zeroize + PartialEq> PartialEq for Redacted<T> {
+/// Equality on two secrets is CONSTANT-TIME. This type exists to make secret handling safe, and an
+/// ordinary `==` on the plaintext (or a derived `PartialEq` on a struct that embeds a `Redacted`
+/// field — e.g. `ExchangeRequest`, `CompleteLogin`) would compare byte-by-byte with a data-dependent
+/// early exit, leaking through timing how long a common prefix two secrets share. Routing through the
+/// crate's [`constant_time_eq`](crate::constant_time_eq) — the same primitive the auth path uses to
+/// compare credentials — closes that channel for every secret comparison, structurally. The bound is
+/// `AsRef<str>` (satisfied by `String`, the only `T` any secret is wrapped in) so the comparison can
+/// go through that str-based primitive.
+impl<T: Zeroize + AsRef<str>> PartialEq for Redacted<T> {
     fn eq(&self, other: &Self) -> bool {
-        self.0 == other.0
+        crate::auth::constant_time_eq(self.0.as_ref(), other.0.as_ref())
     }
 }
 
-impl<T: Zeroize + Eq> Eq for Redacted<T> {}
+impl<T: Zeroize + AsRef<str>> Eq for Redacted<T> {}
 
 #[cfg(test)]
 #[path = "tests/redacted_tests.rs"]

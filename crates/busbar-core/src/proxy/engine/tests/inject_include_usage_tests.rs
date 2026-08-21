@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/busbar/src/proxy/engine/mod.rs`.
+//! Tests for `crates/busbar-core/src/proxy/engine/mod.rs`.
 
 use super::{inject_openai_stream_include_usage, inject_openai_stream_include_usage_pristine};
 use bytes::Bytes;
