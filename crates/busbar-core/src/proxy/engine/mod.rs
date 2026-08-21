@@ -438,11 +438,12 @@ async fn translate_response_cross_protocol(
                     );
                 }
                 Ok((usage, delivery)) => {
-                    record_resp_usage(usage, &usage_sink, app.lanes.get(i));
-                    // Tokens are now committed to this key; keep the lane unit too rather than refund
-                    // it out from under an already-billed request.
-                    budget_guard.disarm();
                     if let crate::handlers::TranslatedResponse::Typed(wire) = delivery {
+                        // Delivered: bill + disarm the spend guard here (tokens are now committed to
+                        // this key; keep the lane unit too rather than refund it out from under an
+                        // already-billed request).
+                        record_resp_usage(usage, &usage_sink, app.lanes.get(i));
+                        budget_guard.disarm();
                         let rb = Response::builder()
                             .status(status)
                             .header(CONTENT_TYPE, wire.content_type);
@@ -453,8 +454,11 @@ async fn translate_response_cross_protocol(
                             .body(Body::from(wire.bytes))
                             .unwrap_or_else(|_| status.into_response());
                     }
-                    // `Untranslatable` (ingress handler absent): fall through to the 500, exactly as
-                    // the pre-cutover arm did after billing.
+                    // `Untranslatable` (ingress handler absent): NO client body could be written, so
+                    // this falls through to the ingress-native 500 delivering no completion. Do NOT
+                    // bill, and leave the guard ARMED so its `Drop` refunds the headers-time budget
+                    // unit — a completion the client never receives is not charged, mirroring the
+                    // streaming `FirstByteBody` refund-on-non-delivery.
                 }
             }
         }
@@ -506,13 +510,25 @@ async fn translate_response_cross_protocol(
                                 upstream_body,
                             );
                         }
-                        // Token accounting: we are now committed to translating and delivering this
-                        // body. No FirstByteBody on this buffered path, so bill here — straight from
-                        // the IR usage the egress reader decoded (captured before `prepare_for_ingress`).
-                        record_resp_usage(usage, &usage_sink, app.lanes.get(i));
-                        // Tokens are now committed to this key; keep the lane unit too rather than
-                        // refund it out from under an already-billed request.
-                        budget_guard.disarm();
+                        // Token accounting: bill + disarm the spend guard ONLY when the resolved
+                        // delivery variant actually hands bytes to the client. `IngressUnsupported`
+                        // (renders a 404) and `Untranslatable` (falls through to the ingress-native
+                        // 500) deliver NO completion — for those, leave the guard ARMED so its `Drop`
+                        // refunds the headers-time budget unit, mirroring the streaming `FirstByteBody`
+                        // refund-on-non-delivery. Billing a completion the client never receives is
+                        // exactly the TPM/spend inconsistency the Truncated/TransportError branches
+                        // above already avoid. No FirstByteBody on this buffered path, so a delivered
+                        // response bills here — straight from the IR usage the egress reader decoded
+                        // (captured before `prepare_for_ingress`).
+                        if matches!(
+                            delivery,
+                            crate::handlers::TranslatedResponse::StreamFrames(_)
+                                | crate::handlers::TranslatedResponse::Typed(_)
+                                | crate::handlers::TranslatedResponse::Json(_)
+                        ) {
+                            record_resp_usage(usage, &usage_sink, app.lanes.get(i));
+                            budget_guard.disarm();
+                        }
                         match delivery {
                             // Bedrock ingress that requested ConverseStream but got a BUFFERED 2xx: a
                             // native AWS SDK decoder expects binary `eventstream` frames, delivered
@@ -2735,3 +2751,7 @@ pub(crate) use walk::*;
 #[cfg(test)]
 #[path = "tests/inject_include_usage_tests.rs"]
 mod inject_include_usage_tests;
+
+#[cfg(test)]
+#[path = "tests/crossproto_delivery_billing_tests.rs"]
+mod crossproto_delivery_billing_tests;

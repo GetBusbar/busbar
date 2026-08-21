@@ -402,11 +402,14 @@ pub enum TranslatedResponse {
     /// stream content-type.
     StreamFrames(Vec<u8>),
     /// JSON path only: the ingress protocol does not serve this operation → the caller renders the 404
-    /// (`DETAIL_ENDPOINT_UNSUPPORTED_OPERATION`). The egress read still succeeded, so its usage bills.
+    /// (`DETAIL_ENDPOINT_UNSUPPORTED_OPERATION`). The egress read succeeded, but NO completion reaches
+    /// the client, so the caller does NOT bill this and leaves its spend guard armed to refund — a
+    /// response the client never receives is not charged (mirrors the streaming refund-on-non-delivery).
     IngressUnsupported,
     /// Opaque path only: the egress read succeeded but the ingress handler is absent, so no client body
-    /// could be written → the caller falls through to its ingress-native untranslatable 500. The usage
-    /// still bills (the pre-cutover arm records it before this fall-through).
+    /// could be written → the caller falls through to its ingress-native untranslatable 500. NO
+    /// completion reaches the client, so the caller does NOT bill this and leaves its spend guard armed
+    /// to refund — same non-delivery posture as `IngressUnsupported`.
     Untranslatable,
 }
 
