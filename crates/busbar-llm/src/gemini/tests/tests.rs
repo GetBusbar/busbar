@@ -6516,3 +6516,30 @@ fn test_empty_string_thought_signature_normalizes_to_none() {
         other => panic!("expected ToolUse, got {other:?}"),
     }
 }
+
+/// Regression (CF3): the truncated-usage recovery path must count Gemini thinking tokens as
+/// OUTPUT, exactly as the main `gemini_usage` path does. `candidatesTokenCount` counts only the
+/// visible answer; the 2.5-series reasoning tokens arrive in the separate, ADDITIVE
+/// `thoughtsTokenCount`. On a HEAD-truncated response (large thinking overflows the reassembly cap),
+/// billing runs through `recover_truncated_usage`; reading only `candidatesTokenCount` there
+/// ledgered every thinking token as ZERO — under-billing and under-capping. Output must be the SUM
+/// (candidates + thoughts), and input must have the cached tokens subtracted.
+#[test]
+fn recover_truncated_usage_counts_thinking_as_output() {
+    let reader = GeminiReader;
+    // A HEAD-truncated tail: the opening document structure is gone, but the trailing
+    // `usageMetadata` object is intact and self-contained.
+    let tail = br#"... mangled head cut through here"},"finishReason":"MAX_TOKENS"}],"usageMetadata":{"promptTokenCount":1000,"candidatesTokenCount":50,"thoughtsTokenCount":4000,"cachedContentTokenCount":200,"totalTokenCount":5050}}"#;
+    let usage = reader
+        .recover_truncated_usage(tail)
+        .expect("usageMetadata tail must be recoverable");
+    assert_eq!(
+        usage.output, 4050,
+        "thinking tokens must be summed into output (candidates 50 + thoughts 4000)"
+    );
+    assert_eq!(
+        usage.input, 800,
+        "input must be promptTokenCount(1000) minus cachedContentTokenCount(200)"
+    );
+    assert_eq!(usage.cache_read, Some(200));
+}
