@@ -345,6 +345,14 @@ pub(crate) mod audit;
 /// THE PLANE TRUST VERB SURFACE, written once and parameterised by plane. Every plane that fronts a
 /// registered upstream resolves it, looks at it and audits what it found in the same order; that
 /// order lives here, and the plane supplies only the look.
+// The surface is mounted only for the MCP and A2A planes; with BOTH compiled out nothing mounts it,
+// so its items read dead in that config alone. Scoped here, at the module declaration, rather than
+// inside `planeverbs.rs` — that file's ratchet test forbids any plane vocabulary (`mcp`/`a2a`/…) in
+// its own source, and a feature-named attribute would trip it.
+#[cfg_attr(
+    not(any(feature = "plane-mcp", feature = "plane-a2a")),
+    allow(dead_code)
+)]
 pub(crate) mod planeverbs;
 pub(crate) mod rate;
 pub mod restart;

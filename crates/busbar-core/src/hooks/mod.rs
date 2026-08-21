@@ -1531,6 +1531,12 @@ pub(crate) fn resolve_gate_hooks(
 /// Written here rather than once per plane because it is a rule of the CONFIG GRAMMAR, not of any
 /// plane — and because two copies of it is exactly how the section list and an entry list come to
 /// dedupe differently on one plane and not the other.
+// Called only from the MCP/A2A container-gate resolution; with BOTH planes compiled out
+// [`resolve_container_gates`] has no caller and neither does this, so it reads dead in that config.
+#[cfg_attr(
+    not(any(feature = "plane-mcp", feature = "plane-a2a")),
+    allow(dead_code)
+)]
 pub(crate) fn attach_list(section: &[String], own: &[String]) -> Vec<String> {
     let mut out: Vec<String> = Vec::with_capacity(section.len() + own.len());
     for h in section.iter().chain(own) {
@@ -1552,6 +1558,13 @@ pub(crate) fn attach_list(section: &[String], own: &[String]) -> Vec<String> {
 ///
 /// Called ONCE per config generation, from the App build. Resolution `dlopen`s the plugin; doing it
 /// per request would put a library load on a dispatch path.
+// Resolves the per-container gate chains for the MCP (`tools.hooks:`) and A2A (`agents.hooks:`)
+// registries; with BOTH planes compiled out neither registry is built, so it reads dead in that
+// config alone.
+#[cfg_attr(
+    not(any(feature = "plane-mcp", feature = "plane-a2a")),
+    allow(dead_code)
+)]
 pub(crate) fn resolve_container_gates<'a>(
     containers: impl Iterator<Item = (&'a str, &'a [String])>,
     section: &[String],

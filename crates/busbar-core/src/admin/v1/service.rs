@@ -2458,6 +2458,12 @@ fn rebuild_hook_derived(next: &mut crate::state::App) {
     reresolve_plane_gates(next);
 }
 
+// `next` is consulted only inside the two plane-gated blocks below; with BOTH planes compiled out
+// there is no registry to re-resolve, so the parameter goes unread in that config alone.
+#[cfg_attr(
+    not(any(feature = "plane-mcp", feature = "plane-a2a")),
+    allow(unused_variables)
+)]
 fn reresolve_plane_gates(next: &mut crate::state::App) {
     #[cfg(feature = "plane-mcp")] // no MCP runtime to read when the plane is compiled out
     {

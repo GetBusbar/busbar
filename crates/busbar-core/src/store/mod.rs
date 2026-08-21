@@ -103,6 +103,12 @@ pub fn now() -> u64 {
 /// SECONDS remains the ledger's unit and is unchanged. Milliseconds exist for the two places that
 /// genuinely need sub-second arithmetic — a TTL an operator writes as `30s`, and a task poll
 /// interval — where a second-granularity clock would answer "some time in that second".
+// The two sub-second callers (an operator TTL and the A2A task poll) both live behind the planes;
+// with BOTH compiled out neither is present, so this clock reads dead in that config alone.
+#[cfg_attr(
+    not(any(feature = "plane-mcp", feature = "plane-a2a")),
+    allow(dead_code)
+)]
 pub(crate) fn now_ms() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()
@@ -718,7 +724,14 @@ mod in_memory;
 pub(crate) use in_memory::*;
 
 mod planes;
-pub(crate) use planes::{Admission as PlaneAdmission, PlaneBreakers, MAX_POOL_MEMBERS};
+pub(crate) use planes::{PlaneBreakers, MAX_POOL_MEMBERS};
+// `PlaneAdmission` is the RAII admission token the plane dispatch paths hand around; with BOTH
+// planes compiled out nothing names it, so this re-export is unused in that config alone.
+#[cfg_attr(
+    not(any(feature = "plane-mcp", feature = "plane-a2a")),
+    allow(unused_imports)
+)]
+pub(crate) use planes::Admission as PlaneAdmission;
 
 #[cfg(test)]
 #[path = "tests/tests.rs"]

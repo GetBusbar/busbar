@@ -49,6 +49,15 @@
 //! for a plane busbar does not have and shows it is gated, refused and audited with NO gate, NO
 //! refusal enum and NO error type written for it.
 
+// Shared plane infrastructure: this gate serves the MCP and A2A egress paths and nothing else. With
+// BOTH planes compiled out the whole gate is vestigial, so its items read dead — scoped to exactly
+// that config so a real single-plane build still lints every item its plane leaves unused (those
+// carry their own per-plane attrs below).
+#![cfg_attr(
+    not(any(feature = "plane-mcp", feature = "plane-a2a")),
+    allow(dead_code)
+)]
+
 use busbar_api::VirtualKey;
 
 /// ONE GRANT THAT MUST PASS: which check this is, the scope KIND it is asked under, and the VALUE
@@ -181,6 +190,9 @@ pub(crate) struct EgressGrant<S> {
 
 impl<S> EgressGrant<S> {
     /// The subject this grant was taken against.
+    // A2A-only accessor: the A2A mint reads the subject back off the witness, the MCP path does not,
+    // so with `plane-a2a` off (and MCP on) it has no caller.
+    #[cfg_attr(not(feature = "plane-a2a"), allow(dead_code))]
     pub(crate) fn subject(&self) -> &S {
         &self.subject
     }

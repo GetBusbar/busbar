@@ -107,6 +107,15 @@
 //! the top of this file is a record of. One envelope, one file; the module's own name (`jsonrpc`)
 //! is what is true about it.
 
+// Shared plane infrastructure: this JSON-RPC envelope reader serves the MCP (server) and A2A
+// (receiving) planes and nothing else. With BOTH planes compiled out the reader has no caller, so
+// its items read dead — scoped to exactly that config so a real single-plane build still lints every
+// item its plane leaves unused (those carry their own per-plane attrs below).
+#![cfg_attr(
+    not(any(feature = "plane-mcp", feature = "plane-a2a")),
+    allow(dead_code)
+)]
+
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde_json::Value;
@@ -116,6 +125,9 @@ use serde_json::Value;
 /// Defined HERE and re-exported by the planes rather than re-declared, so `-32600` cannot come to
 /// mean two things in one binary. The plane-specific extension codes (`-32020`, `-32021`, `-32022`)
 /// stay with the plane that defines them: they are not JSON-RPC's.
+// MCP-only: only the MCP server role emits a parse-error envelope; the A2A receiving role does not
+// reach for this code, so with `plane-mcp` off (and A2A on) it is unused.
+#[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
 pub(crate) const PARSE_ERROR: i64 = -32700;
 pub(crate) const INVALID_REQUEST: i64 = -32600;
 
@@ -141,6 +153,10 @@ pub(crate) enum Envelope {
 /// could not. Deciding that once, next to the code that established it, is the point.
 #[derive(Debug, Clone)]
 pub(crate) struct Invalid {
+    // MCP-only field: the MCP plane reads the numeric code back off an `Invalid`; the A2A plane
+    // renders its refusal from the message alone, so with `plane-mcp` off (and A2A on) `code` is
+    // written but never read.
+    #[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
     pub(crate) code: i64,
     pub(crate) message: &'static str,
     /// section 5: *"If there was an error in detecting the id in the Request object … it MUST be Null."*
@@ -432,6 +448,9 @@ pub(crate) fn error_body(id: Value, code: i64, message: &str, data: Option<Value
 /// `400` rather than `200`-with-an-error-object: the request was malformed at the transport's own
 /// level, and a `200` there tells every proxy, cache and dashboard between the peers that the call
 /// succeeded.
+// MCP-only: the MCP server answers a malformed envelope with this `400`; the A2A receiving role
+// takes a different refusal path, so with `plane-mcp` off (and A2A on) it has no caller.
+#[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
 pub(crate) fn refused(invalid: &Invalid) -> Response {
     (
         StatusCode::BAD_REQUEST,
@@ -478,6 +497,9 @@ pub(crate) fn transport_refusal(status: StatusCode, message: &str) -> Response {
 }
 
 /// A body that is not JSON at all: `-32700`, `id` Null, per section 5's *"e.g. Parse error"*.
+// MCP-only: emitted only by the MCP server role (it reaches `PARSE_ERROR` above), so with
+// `plane-mcp` off (and A2A on) it has no caller.
+#[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
 pub(crate) fn parse_error() -> Response {
     refused(&Invalid {
         code: PARSE_ERROR,

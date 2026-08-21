@@ -401,6 +401,9 @@ impl GovState {
     /// The FLEET-SHARED property is the reason this is usable for a state seal at all. One logical
     /// caller-facing exchange spans several independent requests, which different nodes may serve;
     /// a per-process key would make the second request fail on whichever node did not mint the first.
+    // MCP-only: its consumer is the MCP ask-state sealer (`crate::plane::approvals::Sealer`), so with
+    // `plane-mcp` off (and A2A on) it has no caller.
+    #[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
     pub(crate) fn signing_secret(&self) -> Option<[u8; 32]> {
         self.signing_material().map(|m| m.signer.secret_bytes())
     }
