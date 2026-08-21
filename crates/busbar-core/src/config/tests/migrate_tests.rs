@@ -2543,3 +2543,57 @@ agent_pools:
         "the LLM pool resolves onto the model plane"
     );
 }
+
+/// 1.6.0 verify-on-call: the per-MCP-server `refresh_ttl:` is renamed to `verify_ttl:`, the value is
+/// carried over, and a loud WARNING names the server and the semantics change (a former sweep cadence
+/// is now a drift-serving window on the call path).
+#[test]
+fn migrate_renames_mcp_refresh_ttl_to_verify_ttl_with_a_warning() {
+    let raw = r#"
+tools:
+  servers:
+    fs:
+      url: "https://fs.example.com/mcp"
+      pin: { mechanism: cert_spki, key: "sha256:abc" }
+      refresh_ttl: "6h"
+    docs:
+      url: "https://docs.example.com/mcp"
+      pin: { mechanism: unpinned }
+"#;
+    let out = migrate_config(raw).expect("migrates");
+    let root: serde_yaml::Value = serde_yaml::from_str(&out.yaml).expect("valid yaml");
+    let get = |keys: &[&str]| -> serde_yaml::Value {
+        let mut v = root.clone();
+        for k in keys {
+            v = v
+                .get(serde_yaml::Value::from(*k))
+                .cloned()
+                .unwrap_or(serde_yaml::Value::Null);
+        }
+        v
+    };
+
+    // The old key is GONE and the new one carries the value verbatim.
+    assert!(
+        get(&["tools", "servers", "fs", "refresh_ttl"]).is_null(),
+        "the old `refresh_ttl` key must be removed: {}",
+        out.yaml
+    );
+    assert_eq!(
+        get(&["tools", "servers", "fs", "verify_ttl"]).as_str(),
+        Some("6h"),
+        "the value is carried over onto `verify_ttl`: {}",
+        out.yaml
+    );
+    // A server that never set it is untouched.
+    assert!(get(&["tools", "servers", "docs", "verify_ttl"]).is_null());
+
+    // The semantics change is surfaced LOUDLY, naming the server.
+    assert!(
+        out.warnings.iter().any(|w| {
+            w.contains("tools.servers.fs.refresh_ttl -> verify_ttl") && w.contains("MAX staleness")
+        }),
+        "the rename must warn about the changed meaning: {:?}",
+        out.warnings
+    );
+}

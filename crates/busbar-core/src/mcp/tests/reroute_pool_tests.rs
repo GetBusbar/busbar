@@ -56,7 +56,7 @@ fn plain_server(url: &str) -> crate::mcp::config::McpServerDefCfg {
         args: Vec::new(),
         env: Default::default(),
         cwd: None,
-        refresh_ttl: None,
+        verify_ttl: None,
         timeout: None,
         url: url.to_string(),
         pin: ServerPinCfg {

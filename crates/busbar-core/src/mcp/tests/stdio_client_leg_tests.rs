@@ -84,7 +84,7 @@ fn stdio_server(
         args: vec!["-c".to_string(), script.to_string()],
         env,
         cwd: None,
-        refresh_ttl: None,
+        verify_ttl: None,
         timeout: Some(format!("{}s", LEG_TIMEOUT.as_secs())),
         pin: ServerPinCfg {
             mechanism: McpPinMechanism::CertSpki,

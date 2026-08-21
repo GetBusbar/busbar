@@ -2683,7 +2683,7 @@ fn swap_test_http_server(url: &str) -> crate::mcp::config::McpServerDefCfg {
         args: Vec::new(),
         env: Default::default(),
         cwd: None,
-        refresh_ttl: None,
+        verify_ttl: None,
         timeout: None,
         tools_allow: Default::default(),
         prompts_allow: Default::default(),

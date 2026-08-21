@@ -100,7 +100,7 @@ pub(crate) struct RefreshTriggers {
 ///
 /// Sixty seconds: long enough that a peer emitting a notification per tool per change cannot turn
 /// one edit into a fetch storm, short enough that an operator who edits a child's tool set sees the
-/// change land within a minute rather than at the next `refresh_ttl:`.
+/// change land within a minute rather than only at the next call's `verify_ttl:` window.
 const PEER_TRIGGER_FLOOR_MS: u64 = 60_000;
 
 impl RefreshTriggers {
@@ -127,9 +127,23 @@ impl RefreshTriggers {
         allowed
     }
 
-    /// DRAIN the pending set. Draining rather than reading, so one signal causes exactly one
-    /// brought-forward refresh: a set the sweep only read would make every subsequent tick refetch
-    /// on the strength of a notification that was already acted on.
+    /// CONSUME one server's pending signal, if any — returns whether `server` had been signalled. Used
+    /// by verify-on-call to mark that server's snapshot STALE so the NEXT `tools/call` re-verifies
+    /// even inside its `verify_ttl`. Consuming rather than reading, so one accepted signal brings
+    /// forward exactly one re-verification: a flag the call path only read would re-fetch on every
+    /// call until the ttl lapsed, on the strength of a notification already acted on. The
+    /// notification's CONTENTS are never read — this moves TIMING only, and what follows is the
+    /// authoritative `tools/list`, re-hashed.
+    pub(crate) fn take_if_pending(&self, server: &str) -> bool {
+        match self.pending.lock() {
+            Ok(mut p) => p.remove(server),
+            Err(p) => p.into_inner().remove(server),
+        }
+    }
+
+    /// DRAIN the whole pending set — the test-only reader that asserts [`Self::signal`] populated it.
+    /// Production consumes per server through [`Self::take_if_pending`] on the call path.
+    #[cfg(test)]
     pub(crate) fn take_pending(&self) -> std::collections::BTreeSet<String> {
         match self.pending.lock() {
             Ok(mut p) => std::mem::take(&mut *p),
@@ -159,8 +173,9 @@ impl RefreshTriggers {
 ///
 /// ## Why a bounded ring with per-reader CURSORS, not a drained set
 ///
-/// `take_pending` drains because ONE sweep acts on a trigger exactly once. An update has MANY
-/// readers — every open listen stream holds its own position — so draining would deliver each
+/// `take_if_pending` consumes because ONE call acts on a `list_changed` trigger exactly once. An
+/// update has MANY readers — every open listen stream holds its own position — so consuming would
+/// deliver each
 /// event to whichever stream polled first and silence to the rest. Readers keep a sequence cursor
 /// and ask for what they have not seen; the ring keeps [`MAX_RESOURCE_UPDATES`] events and evicts
 /// the oldest, so a slow stream misses old events rather than growing memory — a missed

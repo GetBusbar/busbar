@@ -94,7 +94,7 @@ fn poisoned_server(id: &str, tool: &str) -> McpServerDefCfg {
         args: Vec::new(),
         env: Default::default(),
         cwd: None,
-        refresh_ttl: None,
+        verify_ttl: None,
         timeout: None,
         url: format!("https://{id}.internal/mcp"),
         pin: ServerPinCfg {
@@ -164,6 +164,8 @@ async fn call(
     method: &str,
     params: serde_json::Value,
 ) -> (u16, serde_json::Value) {
+    // Assert the method surface, not verify-on-call: reuse the snapshot for reachable servers.
+    crate::test_support::prefresh_mcp_sightings(app);
     let handle = Arc::new(AppHandle::new(app.clone()));
     let ctx = crate::mcp::method::Ctx {
         app,
@@ -681,6 +683,9 @@ async fn a_minted_ask_the_caller_cannot_answer_is_32021_and_400() {
             asking_tool("fs", "needs_sampling", "sampling/createMessage"),
         )
         .build();
+    // This case is about the CAPABILITY gate, not verify-on-call: reuse the snapshot so the
+    // capability refusal is what the caller meets, not a fail-closed verify refusal.
+    crate::test_support::prefresh_mcp_sightings(&app);
     let g = gov_with_scopes(&[("mcp_server", "fs"), ("mcp_tool", "fs_needs_sampling")]);
 
     // The caller declares NOTHING, which is exactly what the scenario does.

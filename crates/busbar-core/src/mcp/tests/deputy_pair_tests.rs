@@ -295,6 +295,10 @@ async fn the_callers_busbar_key_appears_nowhere_on_the_upstream_wire() {
         .mcp(&mcp_cfg(CANONICAL))
         .mcp_server("fs", exchanging_server(&peer, SUBJECT))
         .build();
+    // This end-to-end case asserts the CREDENTIAL LEG over the real wire, not verify-on-call: mark
+    // the server just-verified so the gate reuses the snapshot (the mock upstream answers `tools/call`
+    // but not a verifiable `tools/list`). See `crate::test_support::prefresh_mcp_sightings`.
+    crate::test_support::prefresh_mcp_sightings(&app);
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();

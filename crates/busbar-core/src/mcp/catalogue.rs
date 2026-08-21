@@ -291,13 +291,13 @@ pub(crate) struct ServerEntry {
     /// The hard cap on rounds busbar may ask ITS OWN CALLER for. `0` disables every `ask_caller` on
     /// this server at once.
     pub(crate) max_caller_ask_rounds: u32,
-    /// THE REFRESH CADENCE the operator wrote for this registration, lifted at build time.
+    /// THE MAX VERIFICATION STALENESS the operator wrote for this registration, lifted at build time.
     ///
-    /// It rides on the entry rather than being re-read from `ToolsCfg` by the timer, for the same
-    /// reason every other field here does: the snapshot is what the engine holds, and a sweep that
-    /// reached back into the config document to find out how often to look would be a second reader
-    /// of the operator's intent that could disagree with the first.
-    pub(crate) refresh_policy: crate::trust::reverify::Policy,
+    /// It rides on the entry rather than being re-read from `ToolsCfg` by the verify gate, for the
+    /// same reason every other field here does: the snapshot is what the engine holds, and a re-read
+    /// that reached back into the config document to find the bound would be a second reader of the
+    /// operator's intent that could disagree with the first.
+    pub(crate) verify_policy: crate::trust::reverify::Policy,
     /// THE OUTBOUND CREDENTIAL POSTURE, carried as the operator wrote it rather than as a resolved
     /// secret.
     ///
@@ -325,7 +325,7 @@ pub(crate) struct UpstreamPosture {
     /// before `tools.<server>.timeout:` existed.
     ///
     /// It rides on the snapshot rather than being re-read from `ToolsCfg` at dispatch, for the same
-    /// reason `refresh_policy` does: the request was ADMITTED against one snapshot, and a second
+    /// reason `verify_policy` does: the request was ADMITTED against one snapshot, and a second
     /// reader of the operator's intent could hand it a deadline from a different generation.
     pub(crate) timeout: Option<std::time::Duration>,
 }
@@ -587,13 +587,23 @@ impl Catalogue {
         self.servers.get(id)
     }
 
-    /// EVERY registration, in deterministic id order.
+    /// THE SERVER A NAMESPACED TOOL NAME BELONGS TO, and the bound the verify-on-call gate re-verifies
+    /// it under. `None` for a name no registration exposes — the same not-found `resolve` would give.
     ///
-    /// The refresh timer's reach, and the reason it is a plain iterator over the whole map with no
-    /// filter argument: a sweep that could be handed a subset is a sweep that can be handed an empty
-    /// one, and "which servers get watched" is not a decision this plane wants spread across call
-    /// sites. [`crate::mcp::connect::refresh_sweep`] asks
-    /// [`crate::trust::reverify::due`] about every entry this yields and lets IT answer.
+    /// Read on the `tools/call` path BEFORE admission so the server's advertised surface is freshened
+    /// (within `verify_ttl`, single-flight) before the digest compare in [`Self::resolve`]. It does
+    /// NOT read the caller's grant: freshening a snapshot reveals nothing to the caller and triggers
+    /// at most one coalesced upstream fetch per `verify_ttl` per server — the same fetch any caller
+    /// would trigger — while the grant refusal still lands, unchanged, inside `resolve`.
+    pub(crate) fn verify_target(&self, namespaced_name: &str) -> Option<(&str, &ServerEntry)> {
+        let tool = self.tools.get(namespaced_name)?;
+        let server = self.servers.get(&tool.server)?;
+        Some((server.id.as_str(), server))
+    }
+
+    /// EVERY registration, in deterministic id order. Read by `mcp_on_swap` to retire the stdio
+    /// children of registrations a config apply removed — a plain iterator over the whole map because
+    /// "which registrations exist" is not a decision this plane wants spread across call sites.
     pub(crate) fn servers(&self) -> impl Iterator<Item = &ServerEntry> {
         self.servers.values()
     }
@@ -1104,12 +1114,12 @@ fn server_entry(id: &str, def: &McpServerDefCfg) -> ServerEntry {
             .unwrap_or(super::config::DEFAULT_MAX_CALLER_ASK_ROUNDS),
         // `validate_server` already parsed this and refused a malformed one at boot, so the only way
         // to reach the fallback is a code path that skipped validation. Falling back to the default
-        // cadence is the fail-CLOSED answer: a server that ends up unswept is a server whose drift
-        // nobody would ever see.
-        refresh_policy: super::config::refresh_policy_for(def).unwrap_or(
+        // bound is the fail-CLOSED answer: a server that ends up with a huge staleness bound is a
+        // server whose drift a call would not re-verify.
+        verify_policy: super::config::verify_policy_for(def).unwrap_or(
             crate::trust::reverify::Policy {
-                ttl_ms: crate::admin::parse_duration_secs(super::config::DEFAULT_MCP_REFRESH_TTL)
-                    .unwrap_or(6 * 60 * 60)
+                ttl_ms: crate::admin::parse_duration_secs(super::config::DEFAULT_MCP_VERIFY_TTL)
+                    .unwrap_or(5)
                     .saturating_mul(1_000),
                 recovery_backoff_ms: 0,
             },

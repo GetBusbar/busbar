@@ -520,6 +520,16 @@ pub struct App {
     /// runs a refresh has always done; with one, it compares against what the upstream is actually
     /// serving, and a schema that moved refuses the call.
     pub(crate) mcp_sightings: Arc<crate::mcp::client::catalogue::CatalogueCache>,
+    /// THE MCP VERIFY-ON-CALL GATE — the per-server single-flight coalescer that re-verifies an
+    /// upstream's advertised tool surface on the `tools/call` path when its recorded observation is
+    /// older than `verify_ttl` (see [`crate::trust::verify`]).
+    ///
+    /// Arc-shared ACROSS config applies, like the sightings cache it freshens, and for the same
+    /// reason: the coalescing epochs are ACCUMULATED coordination state, not intent, and rebuilding
+    /// them on every apply would let a burst of callers each fetch during the window an unrelated
+    /// config edit reset. It replaces the background sweep daemon: there is no timer, and a server
+    /// nobody calls is never fetched.
+    pub(crate) mcp_verify: Arc<crate::trust::verify::VerifyGate>,
     /// APPROVALS ALREADY SPENT — the record that makes an operator-configured confirmation
     /// single-use.
     ///

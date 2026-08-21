@@ -311,7 +311,7 @@ pub(crate) async fn drive_mcp_verb_errors() {
 }
 
 /// AN OPERATOR'S CONNECT RESETS THE UNATTENDED CLOCK. The sweep re-checks a registration when its
-/// ledger says `NeverChecked` or the `refresh_ttl:` lapsed, and `connect` takes EXACTLY the
+/// ledger says `NeverChecked` or the `verify_ttl:` lapsed, and `connect` takes EXACTLY the
 /// observation the sweep takes — same fetch, same re-hash, same `demotion::settle`. It used to
 /// take everything about that observation EXCEPT the ledger stamp, so a registration an operator
 /// had just looked at was still `NeverChecked` to the timer and was re-fetched on the sweep's very

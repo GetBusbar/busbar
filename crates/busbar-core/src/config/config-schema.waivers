@@ -22,3 +22,4 @@
 # line here, the change needs a human decision, not a config edit.
 #
 # EMPTY BY DEFAULT. It should stay that way.
+McpServerDefCfg.refresh_ttl = 1.6.0 verify-on-call: the background `refresh_ttl` daemon cadence is renamed to `verify_ttl` (max verification staleness on the call path, default 5s). `busbar --migrate-config` maps the old key; see crates/busbar-core/src/config/migrate.rs.

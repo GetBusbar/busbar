@@ -516,7 +516,7 @@ pub(super) fn exchanging_server(
         args: Vec::new(),
         env: Default::default(),
         cwd: None,
-        refresh_ttl: None,
+        verify_ttl: None,
         timeout: None,
         url: peer.mcp_url(),
         pin: ServerPinCfg {
@@ -642,6 +642,10 @@ pub(super) async fn call_response_caps(
     params: serde_json::Value,
     capabilities: &serde_json::Value,
 ) -> (u16, axum::http::HeaderMap, serde_json::Value) {
+    // These batteries assert the dispatch LEG, not verify-on-call: mark each server just-verified so
+    // the gate reuses the snapshot and the declarative configured-hash comparison runs, exactly as it
+    // did before verify-on-call. See `crate::test_support::prefresh_mcp_sightings`.
+    crate::test_support::prefresh_mcp_sightings(app);
     let handle = std::sync::Arc::new(crate::state::AppHandle::new(app.clone()));
     let ctx = crate::mcp::method::Ctx {
         app,

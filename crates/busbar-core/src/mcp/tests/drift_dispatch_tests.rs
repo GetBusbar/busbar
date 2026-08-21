@@ -312,11 +312,18 @@ async fn a_failed_refresh_refuses_the_dispatch() {
     );
 }
 
-/// A DEPLOYMENT THAT NEVER CONNECTS is unaffected. This is the compatibility control: the gate falls
-/// back to the operator's configured hash when there is no sighting, so a declarative deployment
-/// serves exactly as it did before the live cache existed.
+/// THE REUSE PATH PRESERVES THE DECLARATIVE GATE. This is the compatibility control: when
+/// verify-on-call REUSES a fresh, still-`Unsighted` snapshot (within `verify_ttl`, nothing observed),
+/// the gate falls back to the operator's configured hash exactly as it did before the live cache
+/// existed — so a declarative deployment serves on the reuse path unchanged.
+///
+/// `prefresh_mcp_sightings` stamps the server just-verified with no observation, which is precisely
+/// the state the gate's `Unsighted` branch is for. Without it, verify-on-call would re-fetch this
+/// reachable upstream, observe its real schema, and refuse the deliberately-bogus configured hash as
+/// drift — which is the correct verify-on-call behaviour and is proven by the drift cases above; this
+/// case isolates the OTHER branch, the one a reused or not-yet-observed snapshot takes.
 #[tokio::test]
-async fn a_deployment_that_never_connected_dispatches_on_the_configured_hash() {
+async fn a_reused_unsighted_snapshot_dispatches_on_the_configured_hash() {
     crate::metrics::init();
     let peer = Peer::start(vec![wire_tool("read", DESCRIPTION, honest_schema())]).await;
     let app = TestApp::new()
@@ -332,6 +339,7 @@ async fn a_deployment_that_never_connected_dispatches_on_the_configured_hash() {
             ),
         )
         .build();
+    crate::test_support::prefresh_mcp_sightings(&app);
     let g = gov_with_scopes(&[("mcp_server", "fs"), ("mcp_tool", "fs_read")]);
 
     let (status, body) = call(
@@ -343,7 +351,7 @@ async fn a_deployment_that_never_connected_dispatches_on_the_configured_hash() {
     .await;
     assert_eq!(
         status, 200,
-        "with no sighting the configured hash is the only truth there is, and it must still \
-         serve: {body}"
+        "on the reuse path a still-unsighted snapshot compares the configured hash against itself, \
+         and it must still serve: {body}"
     );
 }

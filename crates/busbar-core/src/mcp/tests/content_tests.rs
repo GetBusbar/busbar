@@ -47,6 +47,9 @@ async fn serve(server_id: &str, yaml: &str) -> (String, tokio::task::JoinHandle<
         })
         .mcp_server(server_id, def)
         .build();
+    // These batteries assert content/envelope handling once a tool is servable, not verify-on-call:
+    // mark the server just-verified so the gate reuses the snapshot over the real wire.
+    crate::test_support::prefresh_mcp_sightings(&app);
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();

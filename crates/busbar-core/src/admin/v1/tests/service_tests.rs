@@ -113,7 +113,7 @@ fn build_with_hook_makes_an_mcp_attach_live() {
             mechanism: crate::mcp::config::McpPinMechanism::CertSpki,
             key: Some("sha256/PIN==".to_string()),
         },
-        refresh_ttl: None,
+        verify_ttl: None,
         timeout: None,
         // The stdio child-process grammar, absent: this fixture is an HTTP-transport server
         // (`url:` above, `transport: None`), and these four are `transport: stdio` only.

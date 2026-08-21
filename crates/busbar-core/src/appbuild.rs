@@ -1529,6 +1529,13 @@ pub fn build_app_from_config(
             || Arc::new(crate::mcp::client::catalogue::CatalogueCache::new()),
             |p| p.mcp_sightings.clone(),
         ),
+        // CARRIED ACROSS THE APPLY beside the sightings it freshens: the verify-on-call coalescing
+        // epochs are accumulated coordination state, not intent, and rebuilding them on every apply
+        // would let a burst of callers each fetch during the window an unrelated edit reset.
+        mcp_verify: prior.map_or_else(
+            || Arc::new(crate::trust::verify::VerifyGate::new()),
+            |p| p.mcp_verify.clone(),
+        ),
         // CARRIED ACROSS THE APPLY for the same reason, and it is the same class of mistake: an
         // approval already spent is evidence, not intent, and a config apply that forgot it would
         // hand every outstanding confirmation back to whoever still holds it.

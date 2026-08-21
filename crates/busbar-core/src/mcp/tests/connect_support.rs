@@ -125,7 +125,7 @@ impl Peer {
 
     /// How many `tools/list` requests reached the wire — i.e. how many times this peer was actually
     /// REFRESHED. The load-bearing number for "the refresh timer honours the operator's cadence":
-    /// a sweep that ignored `refresh_ttl:` would contact every registered upstream on every tick,
+    /// a sweep that ignored `verify_ttl:` would contact every registered upstream on every tick,
     /// and no assertion about busbar's own return value could tell you that it had.
     pub(crate) fn list_calls(&self) -> usize {
         self.methods().iter().filter(|m| *m == "tools/list").count()
@@ -231,7 +231,7 @@ pub(crate) fn server_cfg(
         args: Vec::new(),
         env: Default::default(),
         cwd: None,
-        refresh_ttl: None,
+        verify_ttl: None,
         timeout: None,
         url: peer.mcp_url(),
         pin: ServerPinCfg {

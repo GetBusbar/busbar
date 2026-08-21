@@ -223,7 +223,7 @@ async fn a_dead_stdio_child_trips_the_same_core_cell_and_the_second_call_fast_fa
         args: vec!["-c".to_string(), "exit 1".to_string()],
         env: Default::default(),
         cwd: None,
-        refresh_ttl: None,
+        verify_ttl: None,
         timeout: Some("5s".to_string()),
         pin: ServerPinCfg {
             mechanism: McpPinMechanism::CertSpki,

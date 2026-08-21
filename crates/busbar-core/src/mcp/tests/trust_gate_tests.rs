@@ -88,7 +88,7 @@ fn cfg_with(
             args: Vec::new(),
             env: Default::default(),
             cwd: None,
-            refresh_ttl: None,
+            verify_ttl: None,
             timeout: None,
             url: "https://fs.internal/mcp".to_string(),
             pin: ServerPinCfg { mechanism, key },

@@ -2031,6 +2031,28 @@ The durable MCP demotion records could NOT be read at boot, so any upstream this
 
 **What to do:** Restore the durable governance store's read path and restart so persisted demotions are re-applied before a listener binds.
 
+<a id="trust-verify-refused-on-drift"></a>
+### BUSBAR-7097 — Verify-on-call refused a call because the upstream's advertised surface drifted
+
+- **Severity:** benign_recurring
+- **Since:** 1.6.0
+- **Slug:** `trust-verify-refused-on-drift`
+
+On the request path, verify-on-call re-fetched the upstream's advertised surface (an MCP tool's name+args+description, or an A2A agent card) within `verify_ttl` and found it DRIFTED from the fingerprint the operator approved, so the call was refused BEFORE dispatch. The refusal itself is the signal; this is a warn-once-per-subject note so persistent drift does not spam.
+
+**What to do:** Review the change on the trust surface and re-approve the new fingerprint if it is legitimate, or investigate the upstream if it is not.
+
+<a id="trust-verify-unreachable"></a>
+### BUSBAR-7098 — Verify-on-call could not reach an upstream to re-verify, and refused fail-closed
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `trust-verify-unreachable`
+
+On the request path, verify-on-call needed to re-verify an upstream whose recorded observation was older than `verify_ttl`, and the re-fetch FAILED (unreachable or unverifiable). The call was REFUSED fail-closed rather than served against a snapshot older than the operator's bound. Latched per subject.
+
+**What to do:** Restore reachability to the named upstream. Calls to it are refused until a re-fetch succeeds within `verify_ttl`; a larger `verify_ttl` widens the drift-serving window and is an explicit, documented security downgrade.
+
 ## 8xxx — Governance & cost
 
 <a id="revocation-resync-outstanding"></a>

@@ -13,11 +13,8 @@ cd "$(dirname "$0")/.."
 # binary). Every row below names the root it governs THROUGH these two variables, so the file move
 # is a one-variable flip of CORE rather than 46 silently stale paths — and each row's choice of
 # $CORE vs $BIN is a signed decision about which side of the seam that invariant watches. The
-# grandfathered `main.rs` is what stays on $BIN: its whole job is to watch the binary. The
-# `boot-starts-the-quarantine-sweep` census row FOLLOWED its subject onto $CORE when plane step 3.0b
-# inverted the boot hooks — the sweep is now started by the MCP plane's `start` decl hook
-# (`mcp::mcp_start`), the boot loop's business, not a hardcoded line in `main`. Census and axis rows
-# whose subject is "the tree" scope over BOTH roots as a comma-separated list.
+# grandfathered `main.rs` is what stays on $BIN: its whole job is to watch the binary. Census and axis
+# rows whose subject is "the tree" scope over BOTH roots as a comma-separated list.
 CORE=crates/busbar-core/src
 BIN=crates/busbar/src
 # The extracted protocol crates (step 4 of 1.6.0; anthropic was the first, mcp the second, and six
@@ -1894,13 +1891,6 @@ DECLARATION_CENSUS=(
   #    else, which is what the deleted test's `assert_eq!(serves_calls, 1)` was watching for.
   'trust-serve-decision|TRUST-DECISION-RESPELT|fn[[:space:]]+serves[[:space:]]*\(|1|'"$TREE"'|there is exactly ONE may-this-serve comparison in busbar; a second is two answers to one question and they diverge the first time either is fixed, and zero means the dispatch gate was routed somewhere this row cannot see'
 
-  # ── THE BOOT PATH STARTS THE QUARANTINE SWEEP. Scoped to `main.rs` on purpose: the question is not
-  #    "does this function exist" (a census over the whole tree would answer yes to a function
-  #    nothing calls) but "does BOOT call it". `run()` binds real listeners and joins them, so no
-  #    test can reach this call site; reading it is the only way to pin it, and this row is that
-  #    read moved out of a test whose file is being deleted. Zero is the whole point: a sweep
-  #    nothing spawns is a defence that does not run, which is exactly the state `mcp::connect::
-  #    refresh` was in when its only caller was a human pressing an admin button.
   # ── THE ONE ORDERED REQUEST VALIDATOR. `identity -> grant -> artifact -> generation` is asked of
   #    every request on every plane, and before `trust::validate` it was asked in several places with
   #    several coverages: one plane wrote the sequence down once and stamped a generation onto its
@@ -1973,7 +1963,6 @@ DECLARATION_CENSUS=(
   #    debt today.
   'the-third-catalogue-walk|THIRD-CATALOGUE-WALK|fn[[:space:]]+visible_catalogue[^a-zA-Z0-9_]|1|'"$TREE"'|the outbound client leg still walks its own catalogue instead of crate::catalogue, filtering through the egress gate rather than the ordered validator; this row is that debt, and the count is 1 until somebody routes it through the one walk and deletes the row'
 
-  'boot-starts-the-quarantine-sweep|SWEEP-NOT-SPAWNED|spawn_refresh_job\(|1|'"$CORE"'/mcp/mod.rs|the sweep is the only thing that quarantines a drifted upstream with no operator present; boot starts it through the MCP plane`s start decl hook (mcp_start), and if that hook stops calling it the defence is still fully implemented, fully tested, and never runs'
 
   # ── THE ONE PARSE-TIME PLANE-BOUNDARY RULE. `refuse_cross_plane_reference` decides whether a hook
   #    reference reaches onto another config section, and `validate_section_hooks` applies it to a

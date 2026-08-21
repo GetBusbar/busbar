@@ -1435,6 +1435,7 @@ impl TestApp {
             mcp_servers: std::sync::Arc::new(self.tool_defs.clone()),
             mcp_pool: std::sync::Arc::new(crate::mcp::client::pool::McpConnectionPool::new()),
             mcp_sightings: self.mcp_sightings.clone().unwrap_or_default(),
+            mcp_verify: Default::default(),
             plane_approvals: Default::default(),
             mcp_roots_epochs: Default::default(),
             mcp_sampling_spend: Default::default(),
@@ -1509,6 +1510,41 @@ impl TestApp {
         }
         (app, store)
     }
+}
+
+/// SEED every registered MCP server's verification clock as JUST CHECKED, WITHOUT a sighting, so
+/// verify-on-call reuses the snapshot rather than re-fetching on the next `tools/call`.
+///
+/// The dispatch-LEG batteries (credentials, metering, breaker, reroute, roots, sampling, the wire
+/// itself) assert what leaves busbar once a tool is servable; they use synthetic approved hashes and
+/// mock upstreams that answer `tools/call` but not a verifiable `tools/list`. Verify-on-call would
+/// otherwise re-fetch and fail-close them for a reason those batteries are not about. Stamping a
+/// still-`Unsighted` ledger entry as fresh makes `crate::trust::reverify::due` answer "fresh", so the
+/// gate reuses the snapshot and the declarative `Unsighted` → configured-hash comparison runs exactly
+/// as it did before verify-on-call — which is the precondition these batteries were always written
+/// against. The drift/quarantine batteries drive their OWN `call` helper and deliberately do NOT call
+/// this, so they still fetch and detect drift.
+pub(crate) fn prefresh_mcp_sightings(app: &crate::state::App) {
+    use crate::mcp::client::catalogue::ServerCatalogue;
+    use crate::mcp::client::identity::ServerId;
+    let now = crate::store::now_ms();
+    let servers: Vec<_> = app
+        .mcp_catalogue
+        .servers()
+        .filter_map(|e| {
+            ServerId::new(&e.id)
+                .ok()
+                .map(|sid| (sid, e.approval.clone()))
+        })
+        .collect();
+    app.mcp_sightings.apply(|map| {
+        for (sid, approval) in servers {
+            let entry = map
+                .entry(sid.as_str().to_string())
+                .or_insert_with(|| ServerCatalogue::seeded(sid.clone(), approval));
+            entry.ledger.last_checked_ms = Some(now);
+        }
+    });
 }
 
 /// Build a [`crate::hooks::HookEnv`] whose registry loads the hermetic `busbar-hook-test-plugin`

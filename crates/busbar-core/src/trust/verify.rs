@@ -50,15 +50,15 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use super::reverify::{self, Ledger, Policy};
+use crate::diagnostics::{
+    diag_debug, diag_warn, TRUST_VERIFY_REFUSED_ON_DRIFT, TRUST_VERIFY_UNREACHABLE,
+};
+use crate::plane::Plane;
 
 /// One subject's coalescing state: an async lock the single fetcher holds, and the epoch every waiter
 /// reads to learn whether a sibling already fetched. Kept behind an `Arc` so a waiter can drop the map
 /// lock the instant it has its subject's flight, rather than holding the whole registry's coordination
 /// across a network fetch.
-// The whole of this module is exercised by its own async batteries and, from step 2 on, by the MCP
-// and A2A request paths. Until the first plane wires a call site it has only test callers, so the
-// non-test build would report it dead; the attribute is removed the moment `tools/call` calls it.
-#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Debug)]
 struct Flight {
     lock: tokio::sync::Mutex<()>,
@@ -67,13 +67,15 @@ struct Flight {
 
 /// THE VERIFY-ON-CALL GATE, one per plane, riding the `App`. It owns no cadence and no timer: it holds
 /// only the per-subject coalescing state, created on first sight of a subject and reused thereafter.
-#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Debug, Default)]
 pub(crate) struct VerifyGate {
     flights: Mutex<HashMap<String, Arc<Flight>>>,
+    /// Per-subject latch for the fail-closed diagnostics, so a persistently unreachable or drifted
+    /// upstream logs ONCE rather than on every call. `true` once latched; reset on a clean, serving
+    /// outcome so the NEXT drift is announced again.
+    drift_latch: Mutex<HashMap<String, bool>>,
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 impl VerifyGate {
     pub(crate) fn new() -> Self {
         Self::default()
@@ -133,6 +135,50 @@ impl VerifyGate {
         fetch().await;
         flight.epoch.fetch_add(1, Ordering::Release);
         true
+    }
+
+    /// EMIT the verify-on-call outcome once the caller's gate has decided. `drifted` is the compare
+    /// refusing on a moved fingerprint; `unreachable` is the fetch having failed to reach the upstream
+    /// (fail-closed refusal). Latched per subject so persistent drift or a persistent outage logs
+    /// once, not per call; a clean, serving outcome resets the latch so the NEXT drift is announced
+    /// again. `plane` is a LABEL, never a branch — the same code runs for MCP and A2A.
+    pub(crate) fn report(&self, plane: Plane, subject: &str, drifted: bool, unreachable: bool) {
+        if !drifted && !unreachable {
+            self.reset_latch(subject);
+            return;
+        }
+        {
+            let mut latch = self.drift_latch.lock().unwrap_or_else(|p| p.into_inner());
+            if latch.get(subject).copied().unwrap_or(false) {
+                return;
+            }
+            latch.insert(subject.to_string(), true);
+        }
+        if unreachable {
+            diag_warn!(
+                TRUST_VERIFY_UNREACHABLE,
+                plane = plane.key(),
+                subject = %subject,
+                "verify-on-call could not reach this upstream to re-verify its advertised surface \
+                 within `verify_ttl`; the call is REFUSED fail-closed rather than served against a \
+                 snapshot older than the operator's bound"
+            );
+        } else {
+            diag_debug!(
+                TRUST_VERIFY_REFUSED_ON_DRIFT,
+                plane = plane.key(),
+                subject = %subject,
+                "verify-on-call found the upstream's advertised surface DRIFTED from the approved \
+                 fingerprint; the call is refused before dispatch until an operator re-approves"
+            );
+        }
+    }
+
+    fn reset_latch(&self, subject: &str) {
+        let mut latch = self.drift_latch.lock().unwrap_or_else(|p| p.into_inner());
+        if latch.get(subject).copied().unwrap_or(false) {
+            latch.insert(subject.to_string(), false);
+        }
     }
 }
 

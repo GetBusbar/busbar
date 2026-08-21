@@ -1065,6 +1065,82 @@ impl<'a> CallLog<'a> {
     }
 }
 
+/// VERIFY-ON-CALL for one `tools/call`: freshen the named tool's server within `verify_ttl`,
+/// single-flight, fail-closed. See the call site in [`tools_call`] for the ordering rationale.
+///
+/// The single-flight, the freshness bound and the fail-closed ordering are [`crate::trust::verify`]'s,
+/// once, for every plane; what is here is this plane's FETCH — an async `tools/list` re-hash through
+/// [`crate::mcp::connect::refresh`], stamped so the freshness clock records when it looked — and this
+/// plane's ledger reader. A tool name no registration exposes is a no-op, and so is a fresh snapshot:
+/// nothing is fetched between calls, and a server nobody calls is never fetched.
+async fn verify_on_call(ctx: &Ctx<'_>, name: &str) {
+    let Some((server_id, server)) = ctx.app.mcp_catalogue.verify_target(name) else {
+        return;
+    };
+    let now_ms = crate::store::now_ms();
+    let policy = server.verify_policy.clone();
+    let server = server.clone();
+    let subject = server_id.to_string();
+    // Two handles to the one shared cache: the ledger reader BORROWS it (an `Fn`, called on each
+    // freshness check), the fetch MOVES its own (an `async move`), so the two closures do not contend
+    // over one binding.
+    let cache = ctx.app.mcp_sightings.clone();
+    let cache_fetch = cache.clone();
+    let pool = ctx.app.mcp_pool.clone();
+    let gate = ctx.app.mcp_verify.clone();
+    let demotions = ctx.app.mcp_demotions.clone();
+    // A peer's `list_changed` may only mark the snapshot STALE (never read its body): if this server
+    // was signalled, clear its freshness clock so this call re-verifies even inside `verify_ttl`.
+    if ctx.app.mcp_pool.triggers.take_if_pending(&subject) {
+        crate::mcp::connect::invalidate(&cache, &subject);
+    }
+    ctx.app
+        .mcp_verify
+        .ensure_fresh(
+            &subject,
+            &policy,
+            now_ms,
+            || crate::mcp::connect::ledger_of(&cache, &subject),
+            || async move {
+                match crate::mcp::connect::refresh(&pool, &cache_fetch, &server).await {
+                    Ok(report) => {
+                        // Record that verify-on-call LOOKED, whatever it saw, so reuse is bounded to
+                        // `verify_ttl` and a failed contact is not re-fetched on every call within it.
+                        crate::mcp::connect::stamp(
+                            &cache_fetch,
+                            &server.id,
+                            now_ms,
+                            !report.drift.is_empty(),
+                        );
+                        // WRITE THE DURABLE DEMOTION (or clear it when serving again), exactly as the
+                        // sweep did: the request path is now what compares a live observation to the
+                        // approval, so it is what must persist the result. The RULE lives in
+                        // `quarantine::settle`, shared with the admin `connect` verb, so one call site
+                        // cannot record a demotion the other never clears. It keeps a demoted tool
+                        // UN-ADVERTISED across a restart (`tools/list` does not itself re-verify).
+                        crate::plane::quarantine::settle(&demotions, &server.id, report.state);
+                        if report.failure.is_some() {
+                            // UNREACHABLE at verify → the gate below refuses fail-closed; latch the
+                            // diagnostic so a persistent outage logs once.
+                            gate.report(crate::plane::Plane::Mcp, &server.id, false, true);
+                        } else if report.drift.is_empty() {
+                            // A clean re-verification re-arms the latch so the NEXT drift is announced.
+                            gate.report(crate::plane::Plane::Mcp, &server.id, false, false);
+                        } else {
+                            gate.report(crate::plane::Plane::Mcp, &server.id, true, false);
+                        }
+                    }
+                    // NEVER ATTEMPTED (an unroutable id, or a `passthrough` credential the verify path
+                    // has no caller for). Not stamped and not a fail-closed refusal on its own — the
+                    // same case the daemon logged as `NotAttempted`; the configured-hash compare then
+                    // applies exactly as before.
+                    Err(_refusal) => {}
+                }
+            },
+        )
+        .await;
+}
+
 /// `tools/call` — DISPATCH. See the module header for the ordering and why it is that ordering.
 async fn tools_call(
     ctx: &Ctx<'_>,
@@ -1087,6 +1163,17 @@ async fn tools_call(
         .and_then(|p| p.get("arguments"))
         .cloned()
         .unwrap_or_else(|| serde_json::json!({}));
+
+    // (0) VERIFY-ON-CALL. BEFORE the rug-pull digest compare below, ensure this tool's server has been
+    // re-verified within `verify_ttl`: if the recorded observation is stale, single-flight a re-fetch
+    // of the upstream's advertised tool list (concurrent stale-hits coalesce into one), fail-closed. A
+    // fetch that fails records `Failed`, which the gate below refuses rather than serving past the
+    // bound — verified BEFORE the call, not on some later tick. Keyed on the server the tool names,
+    // ahead of the grant check because freshening a snapshot reveals nothing to the caller; the grant
+    // refusal still lands, unchanged, in `resolve`. A `passthrough`-credential server cannot be
+    // verified by this operator-style refresh (its credential is the caller's), so — exactly as the
+    // old daemon did — that refusal leaves the snapshot as-is and the configured-hash compare applies.
+    verify_on_call(ctx, name).await;
 
     // THE LIVE TOOL-LIST SIGHTINGS as of admission. This is the right-hand side of the rug-pull
     // comparison: with one, the gate below compares the operator's approved digest against what the

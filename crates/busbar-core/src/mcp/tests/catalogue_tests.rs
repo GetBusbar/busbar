@@ -39,7 +39,7 @@ fn server(id: &str, tools: &[&str], pending: &[&str]) -> (String, McpServerDefCf
             args: Vec::new(),
             env: Default::default(),
             cwd: None,
-            refresh_ttl: None,
+            verify_ttl: None,
             timeout: None,
             url: format!("https://{id}.internal/mcp"),
             pin: ServerPinCfg {

@@ -393,6 +393,10 @@ pub fn migrate_config(raw: &str) -> Result<MigrateOutput, String> {
     // last so `migrate_governance`'s `governance.store:` -> `store:` lift has already produced the
     // 1.5.x `store:` block a 1.4.x config's Valkey backend would land in.
     migrate_store_module(&mut root, &mut changes, &mut todos);
+    // 1.6.0 verify-on-call: the per-MCP-server `refresh_ttl:` (a background sweep cadence, default 6h)
+    // becomes `verify_ttl:` (max verification staleness on the `tools/call` path, default 5s). A pure
+    // key rename, but the SEMANTICS changed, so it carries a loud warning per occurrence.
+    migrate_mcp_verify_ttl(&mut root, &mut changes, &mut warnings);
 
     let body = serde_yaml::to_string(&Value::Mapping(root))
         .map_err(|e| format!("could not serialize the migrated config: {e}"))?;
@@ -434,6 +438,56 @@ pub fn migrate_config(raw: &str) -> Result<MigrateOutput, String> {
 
 pub(super) fn take(m: &mut Mapping, k: &str) -> Option<Value> {
     m.remove(Value::from(k))
+}
+
+/// 1.6.0 verify-on-call: rename each `tools.servers.<id>.refresh_ttl:` to `verify_ttl:`.
+///
+/// The KEY is renamed and the VALUE is carried over unchanged, because a rescale would guess at what
+/// the operator meant. But the meaning is not the same: `refresh_ttl` was a BACKGROUND SWEEP CADENCE
+/// (how often a daemon re-hashed the upstream with nobody watching, default `6h`); `verify_ttl` is the
+/// MAX VERIFICATION STALENESS ON THE CALL PATH (the longest an observation may be reused before a
+/// `tools/call` re-verifies, default `5s`). A value that was a sensible sweep cadence — `6h`, say — is
+/// a large, explicit security downgrade as a staleness bound: it lets a rug-pulled tool be dispatched
+/// for up to that long before the call re-verifies. So every rename carries a loud warning naming the
+/// server and the value, telling the operator to reconsider it (a few seconds is the new default;
+/// `0` is strict-live).
+fn migrate_mcp_verify_ttl(
+    root: &mut Mapping,
+    changes: &mut Vec<String>,
+    warnings: &mut Vec<String>,
+) {
+    let Some(Value::Mapping(tools)) = root.get_mut(Value::from("tools")) else {
+        return;
+    };
+    let Some(Value::Mapping(servers)) = tools.get_mut(Value::from("servers")) else {
+        return;
+    };
+    let mut renamed = false;
+    for (id, def) in servers.iter_mut() {
+        let Value::Mapping(def) = def else { continue };
+        let Some(value) = def.remove(Value::from("refresh_ttl")) else {
+            continue;
+        };
+        let shown = value.as_str().unwrap_or("<non-string>").to_string();
+        def.insert("verify_ttl".into(), value);
+        renamed = true;
+        warnings.push(format!(
+            "tools.servers.{}.refresh_ttl -> verify_ttl (value `{shown}` carried over). The meaning \
+             CHANGED: `refresh_ttl` was a background sweep cadence (default 6h); `verify_ttl` is the \
+             MAX staleness before a `tools/call` re-verifies the upstream live (default 5s). Your \
+             value is now a drift-serving window on the request path — reconsider it: a few seconds \
+             is the new default, `0` is strict-live, and a large value is an explicit security \
+             downgrade.",
+            id.as_str().unwrap_or("?")
+        ));
+    }
+    if renamed {
+        changes.push(
+            "tools.servers.<id>.refresh_ttl -> verify_ttl (verify-on-call replaces the background \
+             refresh daemon; see the per-server WARNING for the semantics change)"
+                .into(),
+        );
+    }
 }
 
 fn as_map(v: Value) -> Mapping {
