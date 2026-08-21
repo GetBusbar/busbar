@@ -8,8 +8,8 @@
 //! no-handler rule. Search-unit metered → `Billing::Flat` (Cohere bills per search unit, carried
 //! for the response echo; the pricing engine lands in 1.3).
 
-use crate::billing::Billing;
-use crate::lossless::SourceScopedExtra;
+use busbar_core::billing::Billing;
+use busbar_core::lossless::SourceScopedExtra;
 
 /// Rerank request IR — the superset over both providers.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -22,13 +22,13 @@ pub struct RerankReq {
     pub extra: SourceScopedExtra,
 }
 
-/// THE RERANK FAMILY'S WALK — this IR's answer to [`crate::ir::facts::IrFacts`]. Both the `query`
+/// THE RERANK FAMILY'S WALK — this IR's answer to [`busbar_core::ir::facts::IrFacts`]. Both the `query`
 /// and every `document` are caller free-text sent upstream verbatim, so both project to
-/// [`crate::ir::facts::ContentItem::Text`] for a screening gate. `top_n`/`max_tokens_per_doc` are
+/// [`busbar_core::ir::facts::ContentItem::Text`] for a screening gate. `top_n`/`max_tokens_per_doc` are
 /// numeric knobs, not content.
-impl crate::ir::facts::IrFacts for RerankReq {
-    fn verb(&self) -> crate::operation::Operation {
-        crate::operation::Operation::RERANK
+impl busbar_core::ir::facts::IrFacts for RerankReq {
+    fn verb(&self) -> busbar_core::operation::Operation {
+        busbar_core::operation::Operation::RERANK
     }
 
     fn wants_stream(&self) -> bool {
@@ -39,10 +39,10 @@ impl crate::ir::facts::IrFacts for RerankReq {
         None
     }
 
-    fn shape(&self) -> crate::ir::facts::Shape {
-        let items = crate::ir::facts::IrFacts::content(self);
-        let (text_chars, system_chars) = crate::ir::facts::Shape::counts_over(&items);
-        crate::ir::facts::Shape {
+    fn shape(&self) -> busbar_core::ir::facts::Shape {
+        let items = busbar_core::ir::facts::IrFacts::content(self);
+        let (text_chars, system_chars) = busbar_core::ir::facts::Shape::counts_over(&items);
+        busbar_core::ir::facts::Shape {
             turn_count: 1,
             has_tools: false,
             tool_count: 0,
@@ -52,8 +52,8 @@ impl crate::ir::facts::IrFacts for RerankReq {
         }
     }
 
-    fn content(&self) -> Vec<crate::ir::facts::ContentItem<'_>> {
-        use crate::ir::facts::{ContentItem, Slot};
+    fn content(&self) -> Vec<busbar_core::ir::facts::ContentItem<'_>> {
+        use busbar_core::ir::facts::{ContentItem, Slot};
         use std::borrow::Cow;
         let mut out = Vec::with_capacity(1 + self.documents.len());
         out.push(ContentItem::Text {

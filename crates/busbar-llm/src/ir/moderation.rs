@@ -6,7 +6,7 @@
 //! OpenAI's shape exactly. Split request/response per. Flat-fee: no `Billing` on the response
 //! (`IrResp::usage()` returns `Billing::Flat` for moderation).
 
-use crate::lossless::SourceScopedExtra;
+use busbar_core::lossless::SourceScopedExtra;
 use std::collections::BTreeMap;
 
 /// A moderation input item — text or an image reference (omni-moderation accepts both).
@@ -26,14 +26,14 @@ pub struct ModerationReq {
     pub extra: SourceScopedExtra,
 }
 
-/// THE MODERATION FAMILY'S WALK — this IR's answer to [`crate::ir::facts::IrFacts`]. Moderation
+/// THE MODERATION FAMILY'S WALK — this IR's answer to [`busbar_core::ir::facts::IrFacts`]. Moderation
 /// input is EXACTLY the content to classify, so it is exactly what a screening gate must see: a
-/// `ModerationInput::Text` is caller free-text → [`crate::ir::facts::ContentItem::Text`]; a
+/// `ModerationInput::Text` is caller free-text → [`busbar_core::ir::facts::ContentItem::Text`]; a
 /// `ModerationInput::ImageUrl` is an image reference busbar does not fetch or render →
-/// [`crate::ir::facts::ContentItem::Opaque`] (MAJOR-5; chat-parity, present-but-unscreenable).
-impl crate::ir::facts::IrFacts for ModerationReq {
-    fn verb(&self) -> crate::operation::Operation {
-        crate::operation::Operation::MODERATION
+/// [`busbar_core::ir::facts::ContentItem::Opaque`] (MAJOR-5; chat-parity, present-but-unscreenable).
+impl busbar_core::ir::facts::IrFacts for ModerationReq {
+    fn verb(&self) -> busbar_core::operation::Operation {
+        busbar_core::operation::Operation::MODERATION
     }
 
     fn wants_stream(&self) -> bool {
@@ -44,10 +44,10 @@ impl crate::ir::facts::IrFacts for ModerationReq {
         None
     }
 
-    fn shape(&self) -> crate::ir::facts::Shape {
-        let items = crate::ir::facts::IrFacts::content(self);
-        let (text_chars, system_chars) = crate::ir::facts::Shape::counts_over(&items);
-        crate::ir::facts::Shape {
+    fn shape(&self) -> busbar_core::ir::facts::Shape {
+        let items = busbar_core::ir::facts::IrFacts::content(self);
+        let (text_chars, system_chars) = busbar_core::ir::facts::Shape::counts_over(&items);
+        busbar_core::ir::facts::Shape {
             turn_count: 1,
             has_tools: false,
             tool_count: 0,
@@ -57,8 +57,8 @@ impl crate::ir::facts::IrFacts for ModerationReq {
         }
     }
 
-    fn content(&self) -> Vec<crate::ir::facts::ContentItem<'_>> {
-        use crate::ir::facts::{ContentItem, Slot, OPAQUE_CONTENT_MARKER};
+    fn content(&self) -> Vec<busbar_core::ir::facts::ContentItem<'_>> {
+        use busbar_core::ir::facts::{ContentItem, Slot, OPAQUE_CONTENT_MARKER};
         use std::borrow::Cow;
         self.input
             .iter()

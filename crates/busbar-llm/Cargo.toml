@@ -30,6 +30,12 @@ license = "Apache-2.0"
 name = "busbar_llm"
 path = "src/lib.rs"
 
+[features]
+# Pass-through so a dependent (and this crate's own gated round-trip codec helpers) can ask for the
+# test fixtures without naming busbar-core directly — the same shape `busbar-core`/`busbar-mcp` expose.
+# The G6 A4b leaf-op read/write free fns are `#[cfg(any(test, feature = "test-support"))]`.
+test-support = ["busbar-core/test-support"]
+
 [dependencies]
 # The engine's public surface — the ONLY busbar crate this plugin may name. `default-features =
 # false` for the same reason the binary does it: the feature decisions are the composition root's.

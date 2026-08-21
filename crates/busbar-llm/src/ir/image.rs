@@ -11,9 +11,9 @@
 //! `controlMode`, SDXL `sampler`/`clip_guidance_preset`, per-prompt weights…) ride source-scoped
 //! `extra`. Billing: `Tokens` for gpt-image-1/Gemini, else `Billing::Images` (per-image, no usage body).
 
-use crate::billing::{Billing, TokenUsage};
-use crate::lossless::SourceScopedExtra;
-use crate::media::ImageOutput;
+use busbar_core::billing::{Billing, TokenUsage};
+use busbar_core::lossless::SourceScopedExtra;
+use busbar_core::media::ImageOutput;
 
 /// Which image operation. Support is non-uniform per model → unsupported `(op, model)` = 404.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -76,18 +76,18 @@ pub struct ImageReq {
     pub extra: SourceScopedExtra,
 }
 
-/// THE IMAGE FAMILY'S WALK — this IR's answer to [`crate::ir::facts::IrFacts`]. Unlike an enum, a
+/// THE IMAGE FAMILY'S WALK — this IR's answer to [`busbar_core::ir::facts::IrFacts`]. Unlike an enum, a
 /// struct has no exhaustiveness check on its fields, so EVERY caller-text field is enumerated here by
 /// hand (MAJOR-6) and the `image_projection_covers_every_text_field` forcing-function test fails
 /// loudly if a new `String` field is added without a projection decision. Screenable text →
-/// [`crate::ir::facts::ContentItem::Text`]: `prompt`, `negative_prompt`, `mask_prompt`, and each
+/// [`busbar_core::ir::facts::ContentItem::Text`]: `prompt`, `negative_prompt`, `mask_prompt`, and each
 /// `weighted_prompts` string (SDXL, which override `prompt`). Binary edit inputs →
-/// [`crate::ir::facts::ContentItem::Opaque`] (present-but-unscreenable, mirroring chat's image
+/// [`busbar_core::ir::facts::ContentItem::Opaque`] (present-but-unscreenable, mirroring chat's image
 /// opacity): each `input_images` entry and the `mask`. The geometry / quality / sampling / provenance
 /// knobs are enum/numeric roles, not caller free-text, and stay out.
-impl crate::ir::facts::IrFacts for ImageReq {
-    fn verb(&self) -> crate::operation::Operation {
-        crate::operation::Operation::IMAGE
+impl busbar_core::ir::facts::IrFacts for ImageReq {
+    fn verb(&self) -> busbar_core::operation::Operation {
+        busbar_core::operation::Operation::IMAGE
     }
 
     fn wants_stream(&self) -> bool {
@@ -98,10 +98,10 @@ impl crate::ir::facts::IrFacts for ImageReq {
         self.user.as_deref()
     }
 
-    fn shape(&self) -> crate::ir::facts::Shape {
-        let items = crate::ir::facts::IrFacts::content(self);
-        let (text_chars, system_chars) = crate::ir::facts::Shape::counts_over(&items);
-        crate::ir::facts::Shape {
+    fn shape(&self) -> busbar_core::ir::facts::Shape {
+        let items = busbar_core::ir::facts::IrFacts::content(self);
+        let (text_chars, system_chars) = busbar_core::ir::facts::Shape::counts_over(&items);
+        busbar_core::ir::facts::Shape {
             turn_count: 1,
             has_tools: false,
             tool_count: 0,
@@ -111,8 +111,8 @@ impl crate::ir::facts::IrFacts for ImageReq {
         }
     }
 
-    fn content(&self) -> Vec<crate::ir::facts::ContentItem<'_>> {
-        use crate::ir::facts::{ContentItem, Slot, OPAQUE_CONTENT_MARKER};
+    fn content(&self) -> Vec<busbar_core::ir::facts::ContentItem<'_>> {
+        use busbar_core::ir::facts::{ContentItem, Slot, OPAQUE_CONTENT_MARKER};
         use std::borrow::Cow;
         let mut out = Vec::new();
         if let Some(p) = &self.prompt {

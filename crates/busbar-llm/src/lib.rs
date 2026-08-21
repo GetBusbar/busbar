@@ -34,6 +34,21 @@
 //! from one file deeper — because the parent module is this crate's root in one shape and
 //! `crate::proto` in the other, and only a relative path is correct in both.
 
+/// **G6 A4b relocation.** The concrete chat IR + leaf-op IR, moved here from busbar-core. Core keeps
+/// the neutral `ir::facts` trait / `ir::handle` / `ir::invoke` / `ir::subscribe` and re-includes this
+/// module via `#[path]` for its test build so `crate::ir::IrRequest` still resolves there.
+pub mod ir;
+
+/// **G6 A4b dissolve.** The chat `IrHandle` (`ChatReqHandle`/`ChatRespHandle`) + its
+/// `prepare_for_egress`/`_ingress`/`usage` bodies, lifted from the dissolved `IrReq::Chat`/`IrResp::Chat`
+/// arms; the handle writes itself onto the egress dialect by protocol string.
+pub mod chat_handle;
+
+/// **G6 A4b dissolve.** The six leaf-op `IrHandle`s (embeddings/image/rerank/moderation/
+/// transcription/speech), writing themselves onto the peer dialect via the `leaf_codec` `(op,proto)`
+/// dispatchers.
+pub mod leaf_handles;
+
 pub mod anthropic;
 pub mod bedrock;
 pub mod cohere;
@@ -56,6 +71,17 @@ pub(crate) mod ir_encode;
 /// non-chat twin of chat's `protocol_for(proto).writer()`, so a dissolved leaf-op handle can write
 /// itself by egress-protocol string without a downcast.
 pub(crate) mod leaf_codec;
+
+/// **G6 A4b relocation.** The concrete wire-codec surface (`ProtocolReader`/`ProtocolWriter`/
+/// `StreamFraming`/`Protocol`/`protocol_for`/`DialectRef`/`ToolIdRemap`), moved out of busbar-core so
+/// core names zero concrete LLM IR; core re-includes it under `crate::proto::proto_codec` for its test
+/// build.
+pub mod proto_codec;
+
+/// **G6 A4b relocation.** The concrete streaming byte-translator (`StreamTranslate`) behind the neutral
+/// `busbar_core::proto::StreamTranslator`; core re-includes it under `crate::proto::stream` for tests
+/// and reaches it in production via the installed factory.
+pub mod proto_stream;
 
 /// EVERY DIALECT THIS PLUGIN DECLARES, in the order an operator sees.
 ///
