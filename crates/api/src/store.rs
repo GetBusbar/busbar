@@ -32,26 +32,6 @@ impl ScopeRef {
             value: value.into(),
         }
     }
-
-    /// Build a `kind: "mcp_server"` scope (1.6.0) - grants a caller access to a registered MCP
-    /// server as a whole. Carried on the wire by its OWN named field (`allowed_mcp_servers`),
-    /// never mixed into `allowed_pools`.
-    pub fn mcp_server(value: impl Into<String>) -> Self {
-        ScopeRef {
-            kind: "mcp_server".to_string(),
-            value: value.into(),
-        }
-    }
-
-    /// Build a `kind: "mcp_tool"` scope (1.6.0) - grants a caller access to one namespaced
-    /// `{server}_{tool}` bound identity. Carried on the wire by its OWN named field
-    /// (`allowed_mcp_tools`), never mixed into `allowed_pools`.
-    pub fn mcp_tool(value: impl Into<String>) -> Self {
-        ScopeRef {
-            kind: "mcp_tool".to_string(),
-            value: value.into(),
-        }
-    }
 }
 
 /// The KIND-PARTITIONED wire shape for [`VirtualKey::allowed_scopes`] (1.6.0): each registered
@@ -159,8 +139,14 @@ mod virtual_key_wire {
         }
         let mut list = Vec::new();
         list.extend(pools.into_iter().flatten().map(ScopeRef::pool));
-        list.extend(servers.into_iter().flatten().map(ScopeRef::mcp_server));
-        list.extend(tools.into_iter().flatten().map(ScopeRef::mcp_tool));
+        list.extend(servers.into_iter().flatten().map(|value| ScopeRef {
+            kind: "mcp_server".to_string(),
+            value,
+        }));
+        list.extend(tools.into_iter().flatten().map(|value| ScopeRef {
+            kind: "mcp_tool".to_string(),
+            value,
+        }));
         Some(list)
     }
 

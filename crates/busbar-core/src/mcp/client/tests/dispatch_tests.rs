@@ -107,13 +107,28 @@ fn a_narrowed_grant_is_caught_at_revalidation_even_though_the_catalogue_did_not_
     let cache = seeded();
     let wide = key_with_scopes(
         "k",
-        vec![ScopeRef::mcp_server("fs"), ScopeRef::mcp_tool("fs_read")],
+        vec![
+            ScopeRef {
+                kind: "mcp_server".into(),
+                value: "fs".into(),
+            },
+            ScopeRef {
+                kind: "mcp_tool".into(),
+                value: "fs_read".into(),
+            },
+        ],
     );
     let snapshot = cache.load();
     let resolved = resolve(&snapshot, "fs_read", &wide).expect("resolves under the wide grant");
 
     // The operator narrows the key. The catalogue is untouched, so the generation is unchanged.
-    let narrowed = key_with_scopes("k", vec![ScopeRef::mcp_server("fs")]);
+    let narrowed = key_with_scopes(
+        "k",
+        vec![ScopeRef {
+            kind: "mcp_server".into(),
+            value: "fs".into(),
+        }],
+    );
     assert_eq!(cache.generation(), resolved.generation);
 
     let err = revalidate(&cache, &resolved, &narrowed)
@@ -241,11 +256,29 @@ fn two_grants_see_two_lists_and_a_third_sees_none() {
 
     let reader = key_with_scopes(
         "reader",
-        vec![ScopeRef::mcp_server("fs"), ScopeRef::mcp_tool("fs_read")],
+        vec![
+            ScopeRef {
+                kind: "mcp_server".into(),
+                value: "fs".into(),
+            },
+            ScopeRef {
+                kind: "mcp_tool".into(),
+                value: "fs_read".into(),
+            },
+        ],
     );
     let dba = key_with_scopes(
         "dba",
-        vec![ScopeRef::mcp_server("db"), ScopeRef::mcp_tool("db_query")],
+        vec![
+            ScopeRef {
+                kind: "mcp_server".into(),
+                value: "db".into(),
+            },
+            ScopeRef {
+                kind: "mcp_tool".into(),
+                value: "db_query".into(),
+            },
+        ],
     );
     let nobody = key_with_scopes("nobody", vec![]);
 

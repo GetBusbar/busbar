@@ -78,7 +78,13 @@ fn busbars_own_credential_is_not_spent_for_a_caller_without_the_server_grant() {
 /// get wrong — the caller may reach `payments` and is still not authorised for `refund`.
 #[test]
 fn a_server_grant_alone_does_not_authorise_a_tool() {
-    let caller = key_with_scopes("agent-1", vec![ScopeRef::mcp_server("payments")]);
+    let caller = key_with_scopes(
+        "agent-1",
+        vec![ScopeRef {
+            kind: "mcp_server".into(),
+            value: "payments".into(),
+        }],
+    );
     let err = plan_credential(
         &sid("payments"),
         &ambient_exchange(),
@@ -100,7 +106,13 @@ fn a_server_grant_alone_does_not_authorise_a_tool() {
 /// directions, which is what stops one of them being decorative.
 #[test]
 fn a_tool_grant_alone_does_not_authorise_the_server() {
-    let caller = key_with_scopes("agent-1", vec![ScopeRef::mcp_tool("payments_refund")]);
+    let caller = key_with_scopes(
+        "agent-1",
+        vec![ScopeRef {
+            kind: "mcp_tool".into(),
+            value: "payments_refund".into(),
+        }],
+    );
     assert_eq!(
         authorise_tool_egress(&caller, &tkey("payments", "refund")),
         Err(EgressDenied::NoServerGrant {
@@ -117,8 +129,14 @@ fn both_grants_produce_an_audience_bound_exchange() {
     let caller = key_with_scopes(
         "agent-1",
         vec![
-            ScopeRef::mcp_server("payments"),
-            ScopeRef::mcp_tool("payments_refund"),
+            ScopeRef {
+                kind: "mcp_server".into(),
+                value: "payments".into(),
+            },
+            ScopeRef {
+                kind: "mcp_tool".into(),
+                value: "payments_refund".into(),
+            },
         ],
     );
     let plan = plan_credential(
@@ -160,18 +178,36 @@ fn the_requested_scope_is_the_callers_grant_and_nothing_wider() {
     let narrow = key_with_scopes(
         "narrow",
         vec![
-            ScopeRef::mcp_server("payments"),
-            ScopeRef::mcp_tool("payments_refund"),
+            ScopeRef {
+                kind: "mcp_server".into(),
+                value: "payments".into(),
+            },
+            ScopeRef {
+                kind: "mcp_tool".into(),
+                value: "payments_refund".into(),
+            },
         ],
     );
     let wide = key_with_scopes(
         "wide",
         vec![
-            ScopeRef::mcp_server("payments"),
-            ScopeRef::mcp_tool("payments_refund"),
-            ScopeRef::mcp_tool("payments_charge"),
+            ScopeRef {
+                kind: "mcp_server".into(),
+                value: "payments".into(),
+            },
+            ScopeRef {
+                kind: "mcp_tool".into(),
+                value: "payments_refund".into(),
+            },
+            ScopeRef {
+                kind: "mcp_tool".into(),
+                value: "payments_charge".into(),
+            },
             // A grant on a DIFFERENT server must not widen this server's token.
-            ScopeRef::mcp_tool("ledger_write"),
+            ScopeRef {
+                kind: "mcp_tool".into(),
+                value: "ledger_write".into(),
+            },
         ],
     );
     let called = tkey("payments", "refund");
@@ -218,8 +254,14 @@ fn passthrough_without_a_caller_credential_never_falls_back_to_busbars_own() {
     let caller = key_with_scopes(
         "agent-1",
         vec![
-            ScopeRef::mcp_server("payments"),
-            ScopeRef::mcp_tool("payments_refund"),
+            ScopeRef {
+                kind: "mcp_server".into(),
+                value: "payments".into(),
+            },
+            ScopeRef {
+                kind: "mcp_tool".into(),
+                value: "payments_refund".into(),
+            },
         ],
     );
     let err = plan_credential(
