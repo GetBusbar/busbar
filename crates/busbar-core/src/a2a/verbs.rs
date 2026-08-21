@@ -155,11 +155,23 @@ impl CardProbe<'_> {
     /// consequence: neither may ever read as "unchanged". Collapsing them here, once, is what stops
     /// a future call site from handling one and forgetting the other.
     fn look(&self, agent_id: &str) -> Sighting<CardPin> {
+        self.look_documented(agent_id).0
+    }
+
+    /// As [`Self::look`], but also returns the card document AS RECEIVED on a verified sighting.
+    ///
+    /// The document is the exact bytes an operator is being asked to approve, and `approve` caches
+    /// them so the agent it just adopted is immediately servable rather than waiting for a
+    /// delegation to warm the catalogue: under verify-on-call there is no background sweep to fetch
+    /// the first card, so an approved-but-never-delegated agent would otherwise stay excluded from
+    /// every caller's catalogue (`Excluded::NoCachedCard`) and answer `503` on `/a2a/agents/{id}`.
+    /// `None` on any failure arm, exactly as the sighting is `Failed` there.
+    fn look_documented(&self, agent_id: &str) -> (Sighting<CardPin>, Option<serde_json::Value>) {
         match self.source.fetch_card(agent_id) {
-            Err(e) => Sighting::Failed(e),
+            Err(e) => (Sighting::Failed(e), None),
             Ok(card) => match self.observer.observe(&card) {
-                Err(e) => Sighting::Failed(e),
-                Ok(observation) => Sighting::Seen(observation),
+                Err(e) => (Sighting::Failed(e), None),
+                Ok(observation) => (Sighting::Seen(observation), Some(card.document)),
             },
         }
     }
@@ -183,6 +195,12 @@ pub(crate) struct ConnectPreview {
     /// is the string that goes in front of the human, so it is surfaced explicitly rather than left
     /// for a caller to dig out of the sighting.
     pub(crate) fingerprint: Option<String>,
+    /// The card document AS RECEIVED on a verified sighting — the exact bytes behind `fingerprint`.
+    /// `None` on a failed sighting. Carried so `approve` can cache the document it just verified
+    /// (`AgentRegistration::cached_card`), which is what makes an approved agent servable at all
+    /// under verify-on-call: there is no sweep to fetch the first card, so without this the
+    /// catalogue would exclude the agent for `NoCachedCard` no matter how the trust axis reads.
+    pub(crate) observed_document: Option<serde_json::Value>,
 }
 
 impl ConnectPreview {
@@ -208,7 +226,7 @@ pub(crate) fn connect(
     // serves; treating it as "nothing observed" would leave a previously-trusted registration
     // looking fine because the check could not be performed, which is the cheapest possible way for
     // an upstream to avoid being checked.
-    let sighting = probe.look(agent_id);
+    let (sighting, observed_document) = probe.look_documented(agent_id);
     let state = approval.state(&sighting);
     let drift = approval.drift(&sighting);
     let fingerprint = match &sighting {
@@ -235,6 +253,7 @@ pub(crate) fn connect(
         },
         drift,
         fingerprint,
+        observed_document,
     }
 }
 
@@ -560,6 +579,18 @@ pub(crate) async fn approve(
         // drift and the state is `Approved` either way — but leaving `Never` behind would report a
         // registration that has demonstrably been contacted as one that never has.
         reg.sighting = preview.sighting.clone();
+        // WARM THE SERVED CARD from the exact document this approval just verified. Under
+        // verify-on-call there is no background sweep, so the first card has to be cached by the
+        // operator act that adopted it — otherwise the registration is `Approved` (delegable on the
+        // trust axis) yet absent from every caller's catalogue for `NoCachedCard`, `/a2a/agents/{id}`
+        // answers `503`, and every delegation is refused before it can warm anything. These are the
+        // bytes behind the fingerprint the operator echoed (`agrees` above), so caching them cannot
+        // adopt a card the human did not see; verify-on-call re-checks them on the delegation path
+        // within `verify_ttl` thereafter. Present on every `Seen` sighting, which an agreeing
+        // fingerprint is.
+        if let Some(document) = preview.observed_document.clone() {
+            reg.cached_card = Some(document);
+        }
         Ok(reg.clone())
     });
     let reg = match applied {

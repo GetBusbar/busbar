@@ -236,6 +236,20 @@ async fn an_operator_can_take_a_registration_out_of_pending() {
          `relay::LiveGate` ask on every request, and the one that was answering \
          `503 … is not serving (Pending)` for every fronted agent in every deployment."
     );
+    // AND THE SERVED CARD IS WARM. `delegable` is the TRUST axis; the CATALOGUE axis is a second
+    // gate that excludes an agent with no cached card (`Excluded::NoCachedCard`), so an approved
+    // registration whose card was never cached is still absent from every caller's catalogue,
+    // answers `503` on `/a2a/agents/{id}`, and refuses every delegation. The deleted re-verification
+    // sweep used to cache that first card on its first tick; verify-on-call has no tick, so `approve`
+    // caches the exact document it just verified. Without that, this is the state the A2A conformance
+    // battery failed on — approved, delegable, and serving nothing.
+    assert!(
+        plane.with_registrations(|regs| regs
+            .iter()
+            .any(|r| r.agent_id == "echo" && r.cached_card.is_some())),
+        "approve must cache the document it verified, or the agent is delegable on the trust axis \
+         yet excluded from every catalogue for want of a card"
+    );
 
     server.abort();
     agent_task.abort();
