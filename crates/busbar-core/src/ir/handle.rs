@@ -10,9 +10,11 @@
 //!
 //! **SEALED (owner ruling 2026-08-20): a neutral TRAIT, never `Box<dyn Any>` + downcast.** Core
 //! defines the trait; the dialect crates implement it; no core code ever downcasts to a concrete IR.
-//! The private [`sealed::Sealed`] supertrait makes "who may implement `IrHandle`" a decision core
-//! keeps: an external crate cannot add an implementor without also naming `sealed::Sealed`, which is
-//! `pub(crate)`, so the implementor set is closed to the crates core links.
+//! The `#[doc(hidden)]` [`sealed::Sealed`] supertrait makes "who may implement `IrHandle`" a decision
+//! core keeps: an external crate cannot add an implementor without also naming `sealed::Sealed`, which
+//! is `pub` but `#[doc(hidden)]` — a SOFT seal closed by convention to the first-party dialect crates
+//! that deliberately reach for it, NOT the compiler-enforced `pub(crate)` hard seal (see the note on
+//! `mod sealed` below). In-tree the two are equivalent: nothing outside the workspace names `Sealed`.
 //!
 //! **NAMES ONLY NEUTRAL TYPES.** Every method here is spelled in the surface that STAYS in core —
 //! `Operation`, `IrFacts`, `Billing`, and (threaded at A4b) the resolved-primitives `EgressPrep` —
