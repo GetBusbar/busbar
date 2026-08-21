@@ -483,56 +483,19 @@ pub struct App {
     /// allocated, no signing key exists, no sweeper runs and no route is mounted. See
     /// `crate::oauth_as`.
     pub(crate) oauth_as: Option<Arc<crate::oauth_as::plane::AsPlane>>,
-    /// THE MCP CATALOGUE SNAPSHOT for this config generation: every
-    /// registered server, its approved tools/prompts/resources, and the monotonic PIN GENERATION the
-    /// snapshot was built under.
+    /// THE MCP PLANE'S PER-GENERATION CLIENT-DIRECTION RUNTIME — the catalogue snapshot, the `tools:`
+    /// registry, the upstream connection pool, the live tool-list sightings, the per-principal roots
+    /// epochs and the per-upstream sampling spend, bundled into ONE mcp-owned object
+    /// ([`crate::mcp::McpRuntime`]) and held here TYPE-ERASED so this `App` names no `crate::mcp` type
+    /// for any of them. The mcp plane reads it through [`crate::mcp::runtime`], which downcasts inside
+    /// the plane; nothing outside the mcp module reaches these objects.
     ///
-    /// It rides the `App` because that is where the atomic swap already is — a config apply replaces
-    /// the whole `Arc<App>` under one lock, so the catalogue is replaced atomically without a second
-    /// hot-swap mechanism to keep correct. The generation is what makes the swap DETECTABLE from
-    /// inside a request: dispatch re-reads the live snapshot and refuses a call whose identity was
-    /// resolved under a generation the operator has since replaced. On a stateful protocol this
-    /// defence was spelled as tombstoning the sessions pinned to a de-approved server; with no
-    /// handshake and no sessions there is nothing to tombstone, and the per-request generation
-    /// re-read is the whole of it — the bound is one REQUEST, not one session lifetime.
-    ///
-    /// Present even on a deployment with no `tools:` block, as an EMPTY catalogue. `Option` would
-    /// have made "MCP is not configured" and "MCP is configured with nothing registered" the same
-    /// value, and they answer differently: the first has no endpoint, the second answers every
-    /// catalogue with an empty list.
-    pub(crate) mcp_catalogue: Arc<crate::mcp::catalogue::Catalogue>,
-    /// The `tools:` REGISTRY as the operator wrote it — operator INTENT (owner ruling 3), carried
-    /// beside the catalogue that is derived from it.
-    ///
-    /// Both, and not one: the catalogue is the answer-shaped projection the data plane reads, and
-    /// this is the definition-shaped document the ADMIN plane reads and writes. Deriving the admin
-    /// read back out of the catalogue would mean reconstructing what the operator typed from what
-    /// busbar computed, and a round trip that loses a field loses it silently.
-    pub(crate) mcp_servers: Arc<crate::mcp::config::ToolsCfg>,
-    /// THE UPSTREAM CONNECTION POOL for the MCP client direction, keyed by `(host, PINNED
-    /// SocketAddr)`.
-    ///
-    /// Engine-owned and shared across config applies, which is deliberate and is why it is not
-    /// rebuilt beside `mcp_catalogue`: a pool rebuilt on every apply is a pool that never reuses a
-    /// connection on a deployment whose config is written through the admin API. It carries no
-    /// authority to leak across an apply either — a pooled socket negotiated nothing under this
-    /// revision, so there is no session on it a revocation would have to invalidate. What must be
-    /// re-checked is the catalogue GENERATION, and that is checked per request.
-    pub(crate) mcp_pool: Arc<crate::mcp::client::pool::McpConnectionPool>,
-    /// THE LIVE TOOL-LIST SIGHTINGS — what each registered upstream was last observed to OFFER,
-    /// hashed per tool.
-    ///
-    /// Arc-shared ACROSS config applies, like the pool and the credential cache, and for a reason
-    /// that is a correctness rule rather than an efficiency one: an observation is ACCUMULATED
-    /// state, not intent, and rebuilding it on every apply would discard the evidence of a drift the
-    /// instant an operator touched an unrelated section — which is the moment a rug-pull would like
-    /// it discarded.
-    ///
-    /// This is the right-hand side of the dispatch gate's comparison. With no sighting the gate
-    /// compares against the hash the operator wrote in config, which is what a deployment that never
-    /// runs a refresh has always done; with one, it compares against what the upstream is actually
-    /// serving, and a schema that moved refuses the call.
-    pub(crate) mcp_sightings: Arc<crate::mcp::client::catalogue::CatalogueCache>,
+    /// Always present (an empty catalogue and a live pool exist even with no `tools:`/`mcp:` block),
+    /// which is why it is a plain field and not a `plane_slots` entry — a `plane_slots` slot is
+    /// config-conditional, and the server-side dispatch object ([`crate::mcp::McpResource`]) lives
+    /// there instead. Each bundled object's cross-apply lifecycle (fresh catalogue/servers/pool, but
+    /// carried sightings/roots-epochs/sampling-spend) is unchanged — see `McpRuntime::build`.
+    pub(crate) mcp_runtime: Arc<dyn std::any::Any + Send + Sync>,
     /// THE MCP VERIFY-ON-CALL GATE — the per-server single-flight coalescer that re-verifies an
     /// upstream's advertised tool surface on the `tools/call` path when its recorded observation is
     /// older than `verify_ttl` (see [`crate::trust::verify`]).
@@ -553,23 +516,6 @@ pub struct App {
     /// like it rebuilt. See [`crate::plane::approvals::PlaneApprovals`] for what a RESTART does to it
     /// and why that trade was taken.
     pub(crate) plane_approvals: Arc<crate::plane::approvals::PlaneApprovals>,
-    /// EACH PRINCIPAL'S ROOTS EPOCH — what a received `notifications/roots/list_changed` moves, and
-    /// what a roots-bearing `requestState` is sealed against.
-    ///
-    /// Arc-shared across config applies for the same reason as the two fields beside it: a bump is
-    /// what a CALLER announced, not what the operator configured, and an apply that rebuilt this
-    /// would silently re-validate every roots answer a caller had just disavowed. See
-    /// [`crate::mcp::roots`].
-    pub(crate) mcp_roots_epochs: Arc<crate::mcp::roots::RootsEpochs>,
-    /// PER-UPSTREAM SAMPLING SPEND — what each registered upstream has already induced busbar to
-    /// complete in the current budget window, the counter `tools.<server>.sampling.
-    /// max_requests_per_minute` is enforced against.
-    ///
-    /// Arc-shared across config applies for the same reason its three neighbours are: spend that
-    /// happened is ACCUMULATED evidence, not intent, and an apply that rebuilt it would refill
-    /// every upstream's budget the moment an operator touched an unrelated section — which is the
-    /// moment an upstream mid-runaway would like it refilled. See [`crate::mcp::sampling`].
-    pub(crate) mcp_sampling_spend: Arc<crate::mcp::sampling::SamplingSpend>,
     /// DEMOTIONS THAT OUTLIVE THE PROCESS THAT TOOK THEM — the write side of the durable quarantine
     /// record, and the reason a restart no longer hands a demoted upstream its approval back.
     ///

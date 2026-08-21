@@ -2448,7 +2448,7 @@ fn rebuild_hook_derived(next: &mut crate::state::App) {
 }
 
 fn reresolve_plane_gates(next: &mut crate::state::App) {
-    let servers = std::sync::Arc::clone(&next.mcp_servers);
+    let servers = std::sync::Arc::clone(&crate::mcp::runtime(next).servers);
     next.mcp_server_gates = crate::hooks::resolve_container_gates(
         servers
             .servers

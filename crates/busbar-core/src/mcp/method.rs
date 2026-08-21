@@ -207,7 +207,7 @@ impl Ctx<'_> {
             key: self.gov.key.as_deref(),
             now: crate::store::now(),
             generation: crate::trust::validate::Generations::at_admission(
-                self.app.mcp_catalogue.generation(),
+                super::runtime(self.app).catalogue.generation(),
             ),
         }
     }
@@ -458,7 +458,7 @@ fn cache_hints(value: serde_json::Value) -> serde_json::Value {
 /// The counts are of what THIS caller can reach, and the `servers` list names only servers this
 /// caller holds at least one capability on.
 fn discover(ctx: &Ctx<'_>, id: Option<serde_json::Value>) -> Response {
-    let cat = &ctx.app.mcp_catalogue;
+    let cat = &super::runtime(ctx.app).catalogue;
     let caller = ctx.caller();
     let tools = cat.tools_for(&caller);
     let prompts = cat.prompts_for(&caller);
@@ -569,18 +569,17 @@ fn discover(ctx: &Ctx<'_>, id: Option<serde_json::Value>) -> Response {
 /// would empty the catalogue of all of them. Both halves are pinned by test beside each other.
 fn tools_list(ctx: &Ctx<'_>, id: Option<serde_json::Value>) -> Response {
     let caller = ctx.caller();
-    let sightings = ctx.app.mcp_sightings.load();
+    let sightings = super::runtime(ctx.app).sightings.load();
     let live = LiveSightings::of(&sightings);
     // ENTITLEMENT FIRST (core's walk, through the ordered gate), then trust, then render. The
     // quarantine filter sits between the two because it is not an entitlement question — see
     // `Catalogue::is_quarantined`, which takes no caller — so it cannot be folded into
     // `required_grants` without making trust a second place a grant is interpreted.
-    let tools: Vec<serde_json::Value> = ctx
-        .app
-        .mcp_catalogue
+    let tools: Vec<serde_json::Value> = super::runtime(ctx.app)
+        .catalogue
         .tools_for(&caller)
         .into_iter()
-        .filter(|t| !ctx.app.mcp_catalogue.is_quarantined(live, t))
+        .filter(|t| !super::runtime(ctx.app).catalogue.is_quarantined(live, t))
         .map(CatalogueItem::render)
         .collect();
     result(id, cache_hints(serde_json::json!({ "tools": tools })))
@@ -589,7 +588,8 @@ fn tools_list(ctx: &Ctx<'_>, id: Option<serde_json::Value>) -> Response {
 /// `prompts/list`, with every description markup-normalised on the way out.
 fn prompts_list(ctx: &Ctx<'_>, id: Option<serde_json::Value>) -> Response {
     let caller = ctx.caller();
-    let prompts: Vec<serde_json::Value> = ctx.app.mcp_catalogue.prompts_rendered(&caller);
+    let prompts: Vec<serde_json::Value> =
+        super::runtime(ctx.app).catalogue.prompts_rendered(&caller);
     result(id, cache_hints(serde_json::json!({ "prompts": prompts })))
 }
 
@@ -643,7 +643,7 @@ fn prompts_get(
         return invalid_params(id, "`params.name` is required and must be a string.");
     };
     let caller = ctx.caller();
-    let Some(prompt) = ctx.app.mcp_catalogue.prompt_for(&caller, name) else {
+    let Some(prompt) = super::runtime(ctx.app).catalogue.prompt_for(&caller, name) else {
         // Not-found and not-granted answer the same, deliberately: a catalogue that distinguishes
         // them tells an unauthorised caller what exists behind the grant it does not hold.
         return not_found(
@@ -665,9 +665,8 @@ fn prompts_get(
         .and_then(|p| p.get("arguments"))
         .cloned()
         .unwrap_or_else(|| serde_json::json!({}));
-    let cap = ctx
-        .app
-        .mcp_catalogue
+    let cap = super::runtime(ctx.app)
+        .catalogue
         .server(&prompt.server)
         .map_or(0, |s| s.max_caller_ask_rounds);
     match caller_ask_decision(
@@ -677,7 +676,7 @@ fn prompts_get(
             capability: &prompt.namespaced,
             rounds: &prompt.ask_caller,
             cap,
-            generation: ctx.app.mcp_catalogue.generation(),
+            generation: super::runtime(ctx.app).catalogue.generation(),
             arguments: &prompt_args,
         },
         params,
@@ -809,7 +808,9 @@ fn render_prompt_messages(
 /// `resources/list`, with every free-text field markup-normalised on the way out.
 fn resources_list(ctx: &Ctx<'_>, id: Option<serde_json::Value>) -> Response {
     let caller = ctx.caller();
-    let resources: Vec<serde_json::Value> = ctx.app.mcp_catalogue.resources_rendered(&caller);
+    let resources: Vec<serde_json::Value> = super::runtime(ctx.app)
+        .catalogue
+        .resources_rendered(&caller);
     result(
         id,
         cache_hints(serde_json::json!({ "resources": resources })),
@@ -831,8 +832,9 @@ fn resources_list(ctx: &Ctx<'_>, id: Option<serde_json::Value>) -> Response {
 /// is where the old answer was right all along.
 fn resources_templates_list(ctx: &Ctx<'_>, id: Option<serde_json::Value>) -> Response {
     let caller = ctx.caller();
-    let templates: Vec<serde_json::Value> =
-        ctx.app.mcp_catalogue.resource_templates_rendered(&caller);
+    let templates: Vec<serde_json::Value> = super::runtime(ctx.app)
+        .catalogue
+        .resource_templates_rendered(&caller);
     result(
         id,
         cache_hints(serde_json::json!({ "resourceTemplates": templates })),
@@ -854,7 +856,10 @@ fn resources_read(
     // NAME must not be answered by a template that happens to match it: the two are different
     // approvals, and letting the broader one win would let adding a template silently change what an
     // already-approved URI returns.
-    let content = match ctx.app.mcp_catalogue.resource_by_uri(&caller, uri) {
+    let content = match super::runtime(ctx.app)
+        .catalogue
+        .resource_by_uri(&caller, uri)
+    {
         super::catalogue::ResourceLookup::One(res) => concrete_resource_content(res),
         // NEVER A GUESS. Two servers this caller can reach both expose this URI, so which one was
         // meant is a question only the caller can answer. The whole reason the catalogue was
@@ -864,7 +869,10 @@ fn resources_read(
             return ambiguous_resource(id, uri, &candidates)
         }
         super::catalogue::ResourceLookup::NotFound => {
-            match ctx.app.mcp_catalogue.resource_template_for(&caller, uri) {
+            match super::runtime(ctx.app)
+                .catalogue
+                .resource_template_for(&caller, uri)
+            {
                 super::catalogue::ResourceLookup::One((template, bindings)) => {
                     templated_resource_content(uri, template, &bindings)
                 }
@@ -1074,7 +1082,7 @@ impl<'a> CallLog<'a> {
 /// plane's ledger reader. A tool name no registration exposes is a no-op, and so is a fresh snapshot:
 /// nothing is fetched between calls, and a server nobody calls is never fetched.
 async fn verify_on_call(ctx: &Ctx<'_>, name: &str) {
-    let Some((server_id, server)) = ctx.app.mcp_catalogue.verify_target(name) else {
+    let Some((server_id, server)) = super::runtime(ctx.app).catalogue.verify_target(name) else {
         return;
     };
     let now_ms = crate::store::now_ms();
@@ -1084,14 +1092,18 @@ async fn verify_on_call(ctx: &Ctx<'_>, name: &str) {
     // Two handles to the one shared cache: the ledger reader BORROWS it (an `Fn`, called on each
     // freshness check), the fetch MOVES its own (an `async move`), so the two closures do not contend
     // over one binding.
-    let cache = ctx.app.mcp_sightings.clone();
+    let cache = super::runtime(ctx.app).sightings.clone();
     let cache_fetch = cache.clone();
-    let pool = ctx.app.mcp_pool.clone();
+    let pool = super::runtime(ctx.app).pool.clone();
     let gate = ctx.app.mcp_verify.clone();
     let demotions = ctx.app.mcp_demotions.clone();
     // A peer's `list_changed` may only mark the snapshot STALE (never read its body): if this server
     // was signalled, clear its freshness clock so this call re-verifies even inside `verify_ttl`.
-    if ctx.app.mcp_pool.triggers.take_if_pending(&subject) {
+    if super::runtime(ctx.app)
+        .pool
+        .triggers
+        .take_if_pending(&subject)
+    {
         crate::mcp::connect::invalidate(&cache, &subject);
     }
     ctx.app
@@ -1147,7 +1159,7 @@ async fn tools_call(
     params: Option<&serde_json::Value>,
     id: Option<serde_json::Value>,
 ) -> Response {
-    let selected_gen = ctx.app.mcp_catalogue.generation();
+    let selected_gen = super::runtime(ctx.app).catalogue.generation();
     let Some(name) = string_param(params, "name") else {
         // THE CALLER IS ALREADY AUTHENTICATED HERE, so a malformed request is still one this
         // principal made and still belongs in their chain. `tool` and `server` stay empty, which is
@@ -1180,9 +1192,9 @@ async fn tools_call(
     // upstream is CURRENTLY serving, so a schema changed under a live cache refuses the call.
     // Without one — no refresh has ever run — it compares against the configured hash, exactly as
     // before.
-    let admitted_sightings = ctx.app.mcp_sightings.load();
+    let admitted_sightings = super::runtime(ctx.app).sightings.load();
     // (1) ADMISSION on the snapshot this request arrived on.
-    let selected = match ctx.app.mcp_catalogue.resolve(
+    let selected = match super::runtime(ctx.app).catalogue.resolve(
         ctx.gov.key.as_deref(),
         LiveSightings::of(&admitted_sightings),
         name,
@@ -1206,8 +1218,8 @@ async fn tools_call(
     // RE-READ the sightings too, not just the catalogue: a refresh that landed a drifted tool list
     // between admission and dispatch has to bite on THIS request. Re-reading only one of the two
     // would leave a window exactly as wide as the check it replaced.
-    let live_sightings = live.mcp_sightings.load();
-    if let Err(refusal) = live.mcp_catalogue.revalidate(
+    let live_sightings = super::runtime(&live).sightings.load();
+    if let Err(refusal) = super::runtime(&live).catalogue.revalidate(
         ctx.gov.key.as_deref(),
         LiveSightings::of(&live_sightings),
         &selected,
@@ -1219,7 +1231,11 @@ async fn tools_call(
             refuse_catalogue(ctx, name, &refusal, id),
         );
     }
-    let Some(server) = live.mcp_catalogue.server(&selected.server).cloned() else {
+    let Some(server) = super::runtime(&live)
+        .catalogue
+        .server(&selected.server)
+        .cloned()
+    else {
         let refusal = DispatchRefusal::UnknownTool(name.to_string());
         return log.refused(
             refusal.audit_reason(),
@@ -1271,7 +1287,7 @@ async fn tools_call(
             capability: &selected.namespaced,
             rounds: &selected.ask_caller,
             cap: server.max_caller_ask_rounds,
-            generation: live.mcp_catalogue.generation(),
+            generation: super::runtime(&live).catalogue.generation(),
             arguments: &arguments,
         },
         params,
@@ -1546,7 +1562,7 @@ async fn tools_call(
     // would return the slot while the round it guards is still running.
     let mut holds: Vec<crate::governance::AdmitGrant> = Vec::new();
     let server_id = selected.server.clone();
-    let pool = ctx.app.mcp_pool.as_ref();
+    let pool = super::runtime(ctx.app).pool.as_ref();
     let route_ref = &route;
     let outcome = inputreq::drive(
         &server_id,
@@ -1563,9 +1579,8 @@ async fn tools_call(
         // Read for the member the route ACTUALLY dispatched to: a reroute moved the conversation
         // to the twin, and the twin's asks are judged against the twin's own operator grants.
         || {
-            ctx.handle
-                .load()
-                .mcp_catalogue
+            super::runtime(&ctx.handle.load())
+                .catalogue
                 .server(&route_ref.active_member())
                 .map(|s| s.grants)
                 .unwrap_or_default()
@@ -1586,7 +1601,7 @@ async fn tools_call(
             // `roots`/`sampling` declarations are the ones its asks must be answered from.
             let member = route_ref.active_member();
             let live = ctx.handle.load();
-            let entry = live.mcp_catalogue.server(&member);
+            let entry = super::runtime(&live).catalogue.server(&member);
             let roots = entry.map(|s| s.roots.clone()).unwrap_or_default();
             let sampling = entry.and_then(|s| s.sampling.clone());
             let gov = ctx.gov.clone();
@@ -1905,7 +1920,7 @@ async fn create_task(
     super::tasks::spawn(
         std::sync::Arc::clone(&task),
         super::tasks::Runner {
-            pool: std::sync::Arc::clone(&ctx.app.mcp_pool),
+            pool: std::sync::Arc::clone(&super::runtime(ctx.app).pool),
             handle: std::sync::Arc::clone(ctx.handle),
             breakers,
             admission,
@@ -2554,7 +2569,7 @@ fn caller_ask_decision(
                 // The live roots epoch for THIS principal — the value a received
                 // `notifications/roots/list_changed` moves, read under the same name the seal
                 // binds. See `crate::mcp::roots`.
-                roots_epoch: ctx.app.mcp_roots_epochs.current(principal),
+                roots_epoch: super::runtime(ctx.app).roots_epochs.current(principal),
             }
         },
         &crate::plane::approvals::digest_arguments(arguments),

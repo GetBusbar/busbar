@@ -29,7 +29,7 @@ pub(crate) fn hydrate(app: &crate::state::App) -> usize {
     }
     let mut replayed = 0usize;
     for row in rows {
-        let Some(entry) = app.mcp_catalogue.server(&row.server) else {
+        let Some(entry) = super::runtime(app).catalogue.server(&row.server) else {
             tracing::info!(
                 server = %row.server,
                 "a durable MCP demotion record names a server this deployment no longer registers; \
@@ -42,7 +42,7 @@ pub(crate) fn hydrate(app: &crate::state::App) -> usize {
         };
         let approval = entry.approval.clone();
         let reason = row.reason.clone();
-        app.mcp_sightings.apply(|servers| {
+        super::runtime(app).sightings.apply(|servers| {
             let sc = servers.entry(id.as_str().to_string()).or_insert_with(|| {
                 crate::mcp::client::catalogue::ServerCatalogue::seeded(id.clone(), approval)
             });

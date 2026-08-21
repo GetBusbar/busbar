@@ -417,9 +417,8 @@ async fn an_upstream_resource_update_is_relayed_to_a_subscribed_stream() {
         let handle = handle.clone();
         async move {
             tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-            handle
-                .load()
-                .mcp_pool
+            crate::mcp::runtime(&handle.load())
+                .pool
                 .updates
                 .record("tools", "docs://guide");
         }
@@ -480,7 +479,8 @@ async fn the_relay_filters_unasked_uris_and_refuses_another_servers_announcement
         let handle = handle.clone();
         async move {
             tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-            let updates = &handle.load().mcp_pool.updates;
+            let app = handle.load();
+            let updates = &crate::mcp::runtime(&app).pool.updates;
             // An uri the stream did not subscribe to…
             updates.record("tools", "docs://other");
             // …and the subscribed uri announced by a server that does not own it.
@@ -572,9 +572,8 @@ fn a_recorded_update_is_not_delivered_to_a_caller_whose_grant_does_not_reach_it(
         assert!(ack.contains("acknowledged"), "{ack}");
     }
 
-    handle
-        .load()
-        .mcp_pool
+    crate::mcp::runtime(&handle.load())
+        .pool
         .updates
         .record("tools", "docs://guide");
 

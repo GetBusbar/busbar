@@ -1527,24 +1527,16 @@ pub fn build_app_from_config(
         // could disagree with what is stored here.
         plane_slots,
         oauth_as: oauth_as_plane.clone(),
-        // THE CATALOGUE SNAPSHOT, built here and only here. It takes the next PIN GENERATION on
-        // construction, so every config apply — including one that changes nothing about `tools:` —
-        // moves the generation and a call admitted under the previous one is refused at dispatch —
-        // an in-flight call cannot outlive the approval it was admitted under, which is the whole
-        // point of taking the generation here rather than reading config at dispatch time.
-        // Building it beside the `App` is what makes the swap atomic: the
-        // whole `Arc<App>` is replaced under one lock, so there is no window in which the catalogue
-        // and the config that produced it disagree.
-        mcp_catalogue: Arc::new(crate::mcp::catalogue::Catalogue::build(&cfg.tool_defs)),
-        mcp_servers: Arc::new(cfg.tool_defs.clone()),
-        mcp_pool: Arc::new(crate::mcp::client::pool::McpConnectionPool::new()),
-        // CARRIED ACROSS THE APPLY. A sighting is what accumulated, not what the operator intended,
-        // so a config apply must not erase it: dropping the observations here would clear a
-        // quarantine as a side effect of an unrelated edit.
-        mcp_sightings: prior.map_or_else(
-            || Arc::new(crate::mcp::client::catalogue::CatalogueCache::new()),
-            |p| p.mcp_sightings.clone(),
-        ),
+        // THE MCP PLANE'S PER-GENERATION RUNTIME, built ONCE through the plane's own type-erasing
+        // constructor so this composition names no `crate::mcp` runtime type. It bundles the catalogue
+        // snapshot (which takes the next PIN GENERATION on construction, so every config apply — even
+        // one that changes nothing about `tools:` — moves the generation and a call admitted under the
+        // previous one is refused at dispatch), the `tools:` registry, the fresh connection pool, and
+        // the CARRIED-ACROSS-APPLY sightings / roots-epochs / sampling-spend (accumulated evidence,
+        // not intent — see `McpRuntime::build`). Building it beside the `App` keeps the swap atomic:
+        // the whole `Arc<App>` is replaced under one lock, so the catalogue and the config that
+        // produced it never disagree.
+        mcp_runtime: crate::mcp::build_runtime(&cfg.tool_defs, prior),
         // CARRIED ACROSS THE APPLY beside the sightings it freshens: the verify-on-call coalescing
         // epochs are accumulated coordination state, not intent, and rebuilding them on every apply
         // would let a burst of callers each fetch during the window an unrelated edit reset.
@@ -1558,20 +1550,6 @@ pub fn build_app_from_config(
         plane_approvals: prior.map_or_else(
             || Arc::new(crate::plane::approvals::PlaneApprovals::new()),
             |p| p.plane_approvals.clone(),
-        ),
-        // CARRIED ACROSS THE APPLY, same class again: an epoch bump is a caller's own announcement
-        // that its roots changed, and an apply that reset it would re-validate roots answers the
-        // caller disavowed — inside the very TTL window the seal exists to police.
-        mcp_roots_epochs: prior.map_or_else(
-            || Arc::new(crate::mcp::roots::RootsEpochs::new()),
-            |p| p.mcp_roots_epochs.clone(),
-        ),
-        // CARRIED ACROSS THE APPLY, same class: spend that already happened is evidence, not
-        // intent, and an apply that rebuilt this would hand every registered upstream a fresh
-        // sampling budget the moment an operator touched an unrelated section of config.
-        mcp_sampling_spend: prior.map_or_else(
-            || Arc::new(crate::mcp::sampling::SamplingSpend::new()),
-            |p| p.mcp_sampling_spend.clone(),
         ),
         // CARRIED ACROSS THE APPLY, and here the reason is sharper than for the two above: the
         // durable sink is attached to this instance once at boot, so rebuilding it on an apply would

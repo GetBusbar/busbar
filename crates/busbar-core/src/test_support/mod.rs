@@ -1428,18 +1428,23 @@ impl TestApp {
                 }
                 m
             },
-            mcp_catalogue: std::sync::Arc::new(crate::mcp::catalogue::Catalogue::build(
-                &self.tool_defs,
-            )),
-            mcp_servers: std::sync::Arc::new(self.tool_defs.clone()),
-            mcp_pool: std::sync::Arc::new(crate::mcp::client::pool::McpConnectionPool::new()),
-            mcp_sightings: self.mcp_sightings.clone().unwrap_or_default(),
+            // The MCP plane runtime bundle, constructed directly (rather than via
+            // `crate::mcp::build_runtime`) so a fixture can still inject its own `mcp_sightings`; the
+            // other five objects match the flat-field construction this replaced.
+            mcp_runtime: std::sync::Arc::new(crate::mcp::McpRuntime {
+                catalogue: std::sync::Arc::new(crate::mcp::catalogue::Catalogue::build(
+                    &self.tool_defs,
+                )),
+                servers: std::sync::Arc::new(self.tool_defs.clone()),
+                pool: std::sync::Arc::new(crate::mcp::client::pool::McpConnectionPool::new()),
+                sightings: self.mcp_sightings.clone().unwrap_or_default(),
+                roots_epochs: Default::default(),
+                sampling_spend: Default::default(),
+            }),
             mcp_verify: Default::default(),
             a2a_verify: Default::default(),
             a2a_cards: Default::default(),
             plane_approvals: Default::default(),
-            mcp_roots_epochs: Default::default(),
-            mcp_sampling_spend: Default::default(),
             mcp_demotions: Default::default(),
             credential_cache: std::sync::Arc::new(crate::auth_cache::CredentialCache::new()),
             auth_scope_caps: std::collections::HashMap::new(),
@@ -1529,8 +1534,8 @@ pub(crate) fn prefresh_mcp_sightings(app: &crate::state::App) {
     use crate::mcp::client::catalogue::ServerCatalogue;
     use crate::mcp::client::identity::ServerId;
     let now = crate::store::now_ms();
-    let servers: Vec<_> = app
-        .mcp_catalogue
+    let servers: Vec<_> = crate::mcp::runtime(app)
+        .catalogue
         .servers()
         .filter_map(|e| {
             ServerId::new(&e.id)
@@ -1538,7 +1543,7 @@ pub(crate) fn prefresh_mcp_sightings(app: &crate::state::App) {
                 .map(|sid| (sid, e.approval.clone()))
         })
         .collect();
-    app.mcp_sightings.apply(|map| {
+    crate::mcp::runtime(app).sightings.apply(|map| {
         for (sid, approval) in servers {
             let entry = map
                 .entry(sid.as_str().to_string())

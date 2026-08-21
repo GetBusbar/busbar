@@ -187,6 +187,77 @@ pub(crate) fn resource_arc(app: &crate::state::App) -> Option<std::sync::Arc<Mcp
     })
 }
 
+/// THE MCP PLANE'S PER-GENERATION CLIENT-DIRECTION RUNTIME — the six objects the plane carries on the
+/// `App` snapshot for one config generation, bundled into ONE mcp-owned struct so core's `App` names
+/// no `crate::mcp` type for any of them. `App::mcp_runtime` holds this behind `Arc<dyn Any>` and
+/// [`runtime`] downcasts it back HERE, inside the plane.
+///
+/// It is held in a plain `App` field rather than the `plane_slots` map (where the server-side
+/// dispatch object, [`McpResource`], lives) because these objects are ALWAYS present — even a
+/// deployment with no `tools:`/`mcp:` block carries an empty catalogue and a live pool — whereas a
+/// `plane_slots` entry is config-conditional (`None` when the plane is not configured). Folding an
+/// always-present bundle into the config-conditional slot would change `plane_slot("mcp")`'s presence
+/// semantics; keeping them separate preserves byte-identical behaviour.
+///
+/// Each field's cross-apply lifecycle is UNCHANGED from when these were six flat `App` fields — the
+/// carry-over rules (fresh `catalogue`/`servers`/`pool` per apply, carried `sightings`/`roots_epochs`/
+/// `sampling_spend`) live in [`McpRuntime::build`].
+pub(crate) struct McpRuntime {
+    pub(crate) catalogue: std::sync::Arc<catalogue::Catalogue>,
+    pub(crate) servers: std::sync::Arc<config::ToolsCfg>,
+    pub(crate) pool: std::sync::Arc<client::pool::McpConnectionPool>,
+    pub(crate) sightings: std::sync::Arc<client::catalogue::CatalogueCache>,
+    pub(crate) roots_epochs: std::sync::Arc<roots::RootsEpochs>,
+    pub(crate) sampling_spend: std::sync::Arc<sampling::SamplingSpend>,
+}
+
+impl McpRuntime {
+    /// Build the generation's runtime from the resolved `tools:` registry, carrying the accumulated
+    /// state forward from the prior generation exactly as the flat-field construction did:
+    /// `catalogue`/`servers`/`pool` are fresh (a new pin generation, a fresh pool), while
+    /// `sightings`/`roots_epochs`/`sampling_spend` are ACCUMULATED evidence and are carried from
+    /// `prior` when there is one.
+    pub(crate) fn build(tool_defs: &config::ToolsCfg, prior: Option<&McpRuntime>) -> McpRuntime {
+        McpRuntime {
+            catalogue: std::sync::Arc::new(catalogue::Catalogue::build(tool_defs)),
+            servers: std::sync::Arc::new(tool_defs.clone()),
+            pool: std::sync::Arc::new(client::pool::McpConnectionPool::new()),
+            sightings: prior.map_or_else(
+                || std::sync::Arc::new(client::catalogue::CatalogueCache::new()),
+                |p| p.sightings.clone(),
+            ),
+            roots_epochs: prior.map_or_else(
+                || std::sync::Arc::new(roots::RootsEpochs::new()),
+                |p| p.roots_epochs.clone(),
+            ),
+            sampling_spend: prior.map_or_else(
+                || std::sync::Arc::new(sampling::SamplingSpend::new()),
+                |p| p.sampling_spend.clone(),
+            ),
+        }
+    }
+}
+
+/// THE MCP PLANE'S RUNTIME for this generation, read through the neutral `App::mcp_runtime` slot and
+/// downcast back to [`McpRuntime`] HERE — so core outside this module names no `crate::mcp` runtime
+/// type. The downcast never fails: `App::mcp_runtime` is always an `McpRuntime` (`appbuild`).
+pub(crate) fn runtime(app: &crate::state::App) -> &McpRuntime {
+    app.mcp_runtime
+        .downcast_ref::<McpRuntime>()
+        .expect("App::mcp_runtime is an McpRuntime")
+}
+
+/// BUILD THE GENERATION'S MCP RUNTIME, TYPE-ERASED for the neutral `App::mcp_runtime` slot — the one
+/// entry point `appbuild` calls so the composition of the `App` names no `crate::mcp` runtime type.
+/// `prior` is the prior generation's `App` (for the carry-over rules in [`McpRuntime::build`]); it is
+/// read through [`runtime`] so this function, not `appbuild`, owns the downcast.
+pub(crate) fn build_runtime(
+    tool_defs: &config::ToolsCfg,
+    prior: Option<&crate::state::App>,
+) -> std::sync::Arc<dyn std::any::Any + Send + Sync> {
+    std::sync::Arc::new(McpRuntime::build(tool_defs, prior.map(runtime)))
+}
+
 /// CARRY THE MCP CONNECTION POOL ACROSS A CONFIG SWAP — retire every stdio child whose registration
 /// is gone from the NEXT generation. The pool deliberately outlives an apply (a socket negotiated
 /// nothing this revision, so reusing it across a config edit is safe and desirable), and the
@@ -207,9 +278,9 @@ pub(crate) fn mcp_on_swap(_prior: &dyn std::any::Any, next: &dyn std::any::Any) 
     let next = next
         .downcast_ref::<crate::state::App>()
         .expect("the mcp on_swap hook is handed the next App snapshot");
-    next.mcp_pool.children.retain(
-        &next
-            .mcp_catalogue
+    runtime(next).pool.children.retain(
+        &runtime(next)
+            .catalogue
             .servers()
             .map(|s| s.id.clone())
             .collect::<std::collections::BTreeSet<_>>(),

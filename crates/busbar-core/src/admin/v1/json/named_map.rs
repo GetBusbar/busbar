@@ -662,7 +662,7 @@ fn section_contains(app: &App, section: NamedMapSection, name: &str) -> bool {
     match section {
         NamedMapSection::IdentityProviders => app.identity_providers.contains_key(name),
         NamedMapSection::Export => app.export_defs.contains_key(name),
-        NamedMapSection::Tools => app.mcp_servers.servers.contains_key(name),
+        NamedMapSection::Tools => crate::mcp::runtime(app).servers.servers.contains_key(name),
         NamedMapSection::Agents => app.agent_defs.agents.contains_key(name),
     }
 }

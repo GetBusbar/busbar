@@ -406,7 +406,7 @@ impl Listen {
             return None;
         }
         let app = self.handle.load();
-        let catalogue = &app.mcp_catalogue;
+        let catalogue = &super::runtime(&app).catalogue;
         // THE STANDING PERMISSION, RE-ASKED. A principal that has stopped resolving live ends the
         // stream on THIS frame rather than at the bound, which is the whole of the fix.
         let key = match self.standing.still_permitted(
@@ -470,7 +470,7 @@ impl Listen {
                 // not anything matched: an event judged and refused is an event handled, not one
                 // to re-judge for ever.
                 if let Some(uris) = &self.accepted.resource_subscriptions {
-                    let (events, latest) = app.mcp_pool.updates.since(self.cursor);
+                    let (events, latest) = super::runtime(&app).pool.updates.since(self.cursor);
                     self.cursor = latest;
                     for (server, uri) in events {
                         if !uris.iter().any(|u| u == &uri) {
@@ -542,7 +542,7 @@ pub(crate) fn listen(
     // `resources/read` asks, under this caller's grant against the live snapshot. Re-asked per
     // poll at delivery — this read only decides what the acknowledgement may NAME.
     let accepted = {
-        let catalogue = &ctx.app.mcp_catalogue;
+        let catalogue = &super::runtime(ctx.app).catalogue;
         let caller = caller_of(ctx.gov.key.as_ref(), catalogue.generation());
         accept(&requested, |uri| {
             matches!(
@@ -593,7 +593,7 @@ pub(crate) fn listen(
         phase: Phase::Acknowledge,
         last_write: now,
         // From NOW: announcements recorded before this subscription existed are not replayed.
-        cursor: ctx.app.mcp_pool.updates.latest(),
+        cursor: super::runtime(ctx.app).pool.updates.latest(),
     };
     // THE FIRST CHUNK IS PRODUCED BEFORE THE RESPONSE IS BUILT, so the acknowledgement is on the
     // wire the instant the headers are. A stream whose first frame is computed lazily is a stream

@@ -2732,10 +2732,10 @@ fn a_config_swap_retires_the_orphaned_stdio_child_through_on_swap() {
     // The pool outlives an apply, so by swap time it holds a slot for the surviving registration AND
     // one for a registration the operator removed. Seed both (a `slot` call creates the slot without
     // spawning a process, which is all the retire path reads).
-    let _ = next.mcp_pool.children.slot("keep");
-    let _ = next.mcp_pool.children.slot("orphan");
+    let _ = crate::mcp::runtime(&next).pool.children.slot("keep");
+    let _ = crate::mcp::runtime(&next).pool.children.slot("orphan");
     assert_eq!(
-        next.mcp_pool.children.len(),
+        crate::mcp::runtime(&next).pool.children.len(),
         2,
         "fixture control: the pool carries both the survivor and the orphan into the swap"
     );
@@ -2747,7 +2747,7 @@ fn a_config_swap_retires_the_orphaned_stdio_child_through_on_swap() {
     handle.swap(next.clone());
 
     assert_eq!(
-        next.mcp_pool.children.len(),
+        crate::mcp::runtime(&next).pool.children.len(),
         1,
         "the swap retires the orphan (its registration is gone from next's catalogue) and keeps the \
          survivor — the byte-identical behaviour App::swap gave inline, now via PlaneDecl::on_swap"
