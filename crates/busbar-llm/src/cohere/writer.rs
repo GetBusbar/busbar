@@ -104,6 +104,26 @@ impl ProtocolWriter for CohereWriter {
                 })
                 .collect();
 
+            // A top-level `Media` (document/audio/video) attachment has NO Cohere v2 `/chat`
+            // message-content slot: v2 message content carries text and `image_url` parts only
+            // (native `documents` RAG grounding is a SEPARATE top-level field, not an IR-modeled
+            // per-message part, and tool-result documents are handled on the ToolResult path
+            // below). Such a block is therefore unrepresentable here — drop it WITH the standard
+            // drop-with-warn `warn!` (mirroring the Image/ToolResult arms and the OpenAI/Gemini
+            // egress) so the loss is operator-visible, rather than letting it vanish silently and
+            // violate the IR Media contract. Media carried INSIDE a ToolResult is not a direct
+            // `msg.content` block, so it is not caught (or double-warned) here.
+            for block in &msg.content {
+                if let crate::ir::IrBlock::Media { kind, .. } = block {
+                    tracing::warn!(
+                        media_kind = kind.as_str(),
+                        "dropping attachment on Cohere egress: Cohere v2 /chat message content \
+                         carries text and image parts only — a document/audio/video block has no \
+                         message-content slot and is NOT emitted"
+                    );
+                }
+            }
+
             let content_val: Option<serde_json::Value> = if image_parts.is_empty() {
                 match text_blocks.as_slice() {
                     [] => None,
