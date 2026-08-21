@@ -518,3 +518,25 @@ fn gemini_speech_response_is_billed() {
         "gemini TTS synthesis must be billed (non-None), got None"
     );
 }
+
+// FIND-3 (money): whisper-1 transcription bills audio DURATION. On an openai->gemini transcription
+// hop the gemini response writer previously surfaced only `Billing::Tokens` and DROPPED a
+// `Billing::Duration`. Assert the seconds survive the hop. Fails pre-fix (usageMetadata absent).
+#[test]
+fn openai_whisper_duration_carries_through_gemini_transcription_write() {
+    // A `Billing::Duration` is exactly what the OpenAI whisper-1 transcription reader produces from
+    // `usage.type == "duration"`; feed it to the gemini response writer and assert it is not dropped.
+    let ir = TranscriptionResp {
+        text: "hi".into(),
+        usage: Some(busbar_core::billing::Billing::Duration { seconds: 12.5 }),
+        ..Default::default()
+    };
+    let out = super::write_transcription_response(&ir).bytes;
+    let v: Value = serde_json::from_slice(&out).unwrap();
+    assert_eq!(
+        v.pointer("/usageMetadata/audioDurationSeconds")
+            .and_then(Value::as_f64),
+        Some(12.5),
+        "gemini transcription writer must carry the whisper duration through: {v}"
+    );
+}

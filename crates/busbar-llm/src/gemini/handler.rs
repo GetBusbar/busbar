@@ -205,12 +205,23 @@ pub(crate) fn write_transcription_response(r: &crate::ir::audio::TranscriptionRe
             "finishReason": "STOP",
         }],
     });
-    if let Some(busbar_core::billing::Billing::Tokens(t)) = &r.usage {
-        body["usageMetadata"] = json!({
-            "promptTokenCount": t.input,
-            "candidatesTokenCount": t.output,
-            "totalTokenCount": t.input.saturating_add(t.output),
-        });
+    match &r.usage {
+        Some(busbar_core::billing::Billing::Tokens(t)) => {
+            body["usageMetadata"] = json!({
+                "promptTokenCount": t.input,
+                "candidatesTokenCount": t.output,
+                "totalTokenCount": t.input.saturating_add(t.output),
+            });
+        }
+        // whisper-1 bills audio DURATION (produced by the OpenAI transcription reader). Gemini's
+        // usageMetadata is token-shaped and has no seconds field, so surfacing this as a token count
+        // would fabricate tokens and corrupt downstream token pricing. Instead carry the exact
+        // seconds through under an explicit duration field so the billable quantity is not dropped
+        // on an openai->gemini transcription hop (the closest faithful representation).
+        Some(busbar_core::billing::Billing::Duration { seconds }) => {
+            body["usageMetadata"] = json!({ "audioDurationSeconds": seconds });
+        }
+        _ => {}
     }
     WireBody::json(Bytes::from(serde_json::to_vec(&body).unwrap_or_default()))
 }
