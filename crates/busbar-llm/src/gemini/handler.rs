@@ -203,29 +203,7 @@ impl OperationHandler for GeminiTranscription {
         let IrReq::Transcription(r) = ir else {
             return Bytes::new();
         };
-        let (mime, data) = match &r.audio {
-            Some(blob) => {
-                let d = match &blob.payload {
-                    MediaPayload::B64(s) => s.clone(),
-                    MediaPayload::Bytes(b) => base64_encode(b),
-                };
-                (blob.mime_type.clone(), d)
-            }
-            None => (String::new(), String::new()),
-        };
-        // `target_language` set ⇒ translate (folds /audio/translations); else transcribe.
-        let instruction = if r.target_language.is_some() {
-            "Translate the following audio to text."
-        } else {
-            "Transcribe the following audio verbatim."
-        };
-        let body = json!({
-            "contents": [{ "role": "user", "parts": [
-                { "text": instruction },
-                { "inline_data": { "mime_type": mime, "data": data } },
-            ]}],
-        });
-        Bytes::from(serde_json::to_vec(&body).unwrap_or_default())
+        super::super::leaf_codec::transcription_write_request("gemini", r)
     }
     fn read_response(&self, wire: &[u8]) -> Result<IrResp, CodecError> {
         let v: Value =
@@ -265,21 +243,58 @@ impl OperationHandler for GeminiTranscription {
         let IrResp::Transcription(r) = ir else {
             return WireBody::json(Bytes::new());
         };
-        let mut body = json!({
-            "candidates": [{
-                "content": { "parts": [{ "text": r.text }], "role": "model" },
-                "finishReason": "STOP",
-            }],
-        });
-        if let Some(busbar_core::billing::Billing::Tokens(t)) = &r.usage {
-            body["usageMetadata"] = json!({
-                "promptTokenCount": t.input,
-                "candidatesTokenCount": t.output,
-                "totalTokenCount": t.input.saturating_add(t.output),
-            });
-        }
-        WireBody::json(Bytes::from(serde_json::to_vec(&body).unwrap_or_default()))
+        super::super::leaf_codec::transcription_write_response("gemini", r)
     }
+}
+
+/// IR → gemini candidates transcription request wire (the body of [`GeminiTranscription::write_request`],
+/// moved behind the `(transcription, gemini)` key — G6 A4b option-a). Byte-identical to the inline write.
+pub(crate) fn write_transcription_request(r: &busbar_core::ir::audio::TranscriptionReq) -> Bytes {
+    let (mime, data) = match &r.audio {
+        Some(blob) => {
+            let d = match &blob.payload {
+                MediaPayload::B64(s) => s.clone(),
+                MediaPayload::Bytes(b) => base64_encode(b),
+            };
+            (blob.mime_type.clone(), d)
+        }
+        None => (String::new(), String::new()),
+    };
+    // `target_language` set ⇒ translate (folds /audio/translations); else transcribe.
+    let instruction = if r.target_language.is_some() {
+        "Translate the following audio to text."
+    } else {
+        "Transcribe the following audio verbatim."
+    };
+    let body = json!({
+        "contents": [{ "role": "user", "parts": [
+            { "text": instruction },
+            { "inline_data": { "mime_type": mime, "data": data } },
+        ]}],
+    });
+    Bytes::from(serde_json::to_vec(&body).unwrap_or_default())
+}
+
+/// IR → gemini candidates transcription response wire (the body of
+/// [`GeminiTranscription::write_response`], moved behind the `(transcription, gemini)` key — G6 A4b
+/// option-a). Byte-identical to the pre-cutover inline write.
+pub(crate) fn write_transcription_response(
+    r: &busbar_core::ir::audio::TranscriptionResp,
+) -> WireBody {
+    let mut body = json!({
+        "candidates": [{
+            "content": { "parts": [{ "text": r.text }], "role": "model" },
+            "finishReason": "STOP",
+        }],
+    });
+    if let Some(busbar_core::billing::Billing::Tokens(t)) = &r.usage {
+        body["usageMetadata"] = json!({
+            "promptTokenCount": t.input,
+            "candidatesTokenCount": t.output,
+            "totalTokenCount": t.input.saturating_add(t.output),
+        });
+    }
+    WireBody::json(Bytes::from(serde_json::to_vec(&body).unwrap_or_default()))
 }
 
 /// Gemini speech (TTS) — `models/{id}:generateContent` with `responseModalities: [AUDIO]`.

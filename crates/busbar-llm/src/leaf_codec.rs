@@ -19,6 +19,7 @@
 //! the write no longer needs the concrete enum. Prep only: names no `IrReq`/`IrResp`, moves no bytes.
 
 use busbar_core::handlers::WireBody;
+use busbar_core::ir::audio::{TranscriptionReq, TranscriptionResp};
 use busbar_core::ir::embeddings::{EmbeddingsReq, EmbeddingsResp};
 use busbar_core::ir::image::{ImageReq, ImageResp};
 use busbar_core::ir::rerank::{RerankReq, RerankResp};
@@ -82,6 +83,24 @@ pub(crate) fn image_write_response(proto: &str, r: &ImageResp) -> WireBody {
         "bedrock" => super::bedrock::handler::write_image_response(r),
         "gemini" => super::gemini::handler::write_image_response(r),
         "openai" => super::openai_chat::handler::write_image_response(r),
+        _ => WireBody::json(Bytes::new()),
+    }
+}
+
+/// Transcription egress request bytes for `proto`. Unknown protocol => empty (pre-cutover fallback).
+pub(crate) fn transcription_write_request(proto: &str, r: &TranscriptionReq) -> Bytes {
+    match proto {
+        "gemini" => super::gemini::handler::write_transcription_request(r),
+        "openai" => super::openai_chat::handler::write_transcription_request(r),
+        _ => Bytes::new(),
+    }
+}
+
+/// Transcription ingress response wire for `proto`. Unknown protocol => empty JSON body.
+pub(crate) fn transcription_write_response(proto: &str, r: &TranscriptionResp) -> WireBody {
+    match proto {
+        "gemini" => super::gemini::handler::write_transcription_response(r),
+        "openai" => super::openai_chat::handler::write_transcription_response(r),
         _ => WireBody::json(Bytes::new()),
     }
 }

@@ -291,50 +291,10 @@ impl OperationHandler for OpenAiTranscription {
         Ok(IrReq::Transcription(req))
     }
     fn write_request(&self, ir: &IrReq) -> Bytes {
-        // OpenAI-as-egress rebuilds the multipart form (fixed boundary — no randomness needed). Not on
-        // the harness path (openai is always ingress there); kept for cross-protocol symmetry.
         let IrReq::Transcription(r) = ir else {
             return Bytes::new();
         };
-        let boundary = "----busbaraudioMIME";
-        let mut out: Vec<u8> = Vec::new();
-        let mut push_field = |name: &str, val: &str| {
-            // Strip CR/LF from the value: any field (model, language, prompt, response_format) can
-            // carry attacker- or misconfig-supplied text, and an embedded `\r\n--boundary` would
-            // terminate this part and inject arbitrary new MIME parts. This is the one place these
-            // fields are serialized, so sanitizing here covers every text field uniformly.
-            let safe: String = val.chars().filter(|&c| c != '\r' && c != '\n').collect();
-            out.extend_from_slice(format!("--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{safe}\r\n").as_bytes());
-        };
-        push_field("model", &r.model);
-        // Carry the caller's transcription hints on cross-protocol egress (e.g. Gemini ingress ->
-        // OpenAI Whisper): dropping these silently changed behavior (no language hint / prompt /
-        // format). Emit each only when present, matching the OpenAI multipart form field names.
-        if let Some(lang) = &r.source_language {
-            push_field("language", lang);
-        }
-        if let Some(prompt) = &r.prompt {
-            push_field("prompt", prompt);
-        }
-        if let Some(fmt) = &r.response_format {
-            push_field("response_format", fmt);
-        }
-        if let Some(blob) = &r.audio {
-            let bytes = match &blob.payload {
-                MediaPayload::Bytes(b) => b.clone(),
-                MediaPayload::B64(s) => decode_ir_b64(s),
-            };
-            // Sanitize at the EGRESS boundary too: mime_type can enter the IR from ANY ingress
-            // reader (e.g. Gemini inline_data), not just the OpenAI multipart parser, so sanitizing
-            // only at ingress left the gemini->openai transcription path exposed to CR/LF header
-            // injection. This is the one place the outgoing header is built, so it covers all paths.
-            let safe_mime = sanitize_mime_type(&blob.mime_type);
-            out.extend_from_slice(format!("--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"audio\"\r\nContent-Type: {safe_mime}\r\n\r\n").as_bytes());
-            out.extend_from_slice(&bytes);
-            out.extend_from_slice(b"\r\n");
-        }
-        out.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
-        Bytes::from(out)
+        super::super::leaf_codec::transcription_write_request("openai", r)
     }
     fn read_response(&self, wire: &[u8]) -> Result<IrResp, CodecError> {
         // OpenAI transcription is `{"text": "..."}` (json) or bare text (response_format=text). The
@@ -361,20 +321,78 @@ impl OperationHandler for OpenAiTranscription {
         let IrResp::Transcription(r) = ir else {
             return WireBody::json(Bytes::new());
         };
-        let mut body = json!({ "text": r.text });
-        // Surface the billable usage in OpenAI's own transcription shape — duration or tokens.
-        match &r.usage {
-            Some(Billing::Duration { seconds }) => {
-                body["usage"] = json!({ "type": "duration", "seconds": seconds });
-            }
-            Some(Billing::Tokens(t)) => {
-                body["usage"] = json!({ "type": "tokens", "input_tokens": t.input,
-                    "output_tokens": t.output, "total_tokens": t.input.saturating_add(t.output) });
-            }
-            _ => {}
-        }
-        WireBody::json(Bytes::from(serde_json::to_vec(&body).unwrap_or_default()))
+        super::super::leaf_codec::transcription_write_response("openai", r)
     }
+}
+
+/// IR → openai multipart transcription request wire (the body of
+/// [`OpenAiTranscription::write_request`], moved behind the `(transcription, openai)` key — G6 A4b
+/// option-a). OpenAI-as-egress rebuilds the multipart form (fixed boundary — no randomness needed);
+/// not on the harness path (openai is always ingress there), kept for cross-protocol symmetry.
+/// Byte-identical to the pre-cutover inline write.
+pub(crate) fn write_transcription_request(r: &TranscriptionReq) -> Bytes {
+    let boundary = "----busbaraudioMIME";
+    let mut out: Vec<u8> = Vec::new();
+    let mut push_field = |name: &str, val: &str| {
+        // Strip CR/LF from the value: any field (model, language, prompt, response_format) can
+        // carry attacker- or misconfig-supplied text, and an embedded `\r\n--boundary` would
+        // terminate this part and inject arbitrary new MIME parts. This is the one place these
+        // fields are serialized, so sanitizing here covers every text field uniformly.
+        let safe: String = val.chars().filter(|&c| c != '\r' && c != '\n').collect();
+        out.extend_from_slice(
+            format!(
+                "--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{safe}\r\n"
+            )
+            .as_bytes(),
+        );
+    };
+    push_field("model", &r.model);
+    // Carry the caller's transcription hints on cross-protocol egress (e.g. Gemini ingress ->
+    // OpenAI Whisper): dropping these silently changed behavior (no language hint / prompt /
+    // format). Emit each only when present, matching the OpenAI multipart form field names.
+    if let Some(lang) = &r.source_language {
+        push_field("language", lang);
+    }
+    if let Some(prompt) = &r.prompt {
+        push_field("prompt", prompt);
+    }
+    if let Some(fmt) = &r.response_format {
+        push_field("response_format", fmt);
+    }
+    if let Some(blob) = &r.audio {
+        let bytes = match &blob.payload {
+            MediaPayload::Bytes(b) => b.clone(),
+            MediaPayload::B64(s) => decode_ir_b64(s),
+        };
+        // Sanitize at the EGRESS boundary too: mime_type can enter the IR from ANY ingress
+        // reader (e.g. Gemini inline_data), not just the OpenAI multipart parser, so sanitizing
+        // only at ingress left the gemini->openai transcription path exposed to CR/LF header
+        // injection. This is the one place the outgoing header is built, so it covers all paths.
+        let safe_mime = sanitize_mime_type(&blob.mime_type);
+        out.extend_from_slice(format!("--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"audio\"\r\nContent-Type: {safe_mime}\r\n\r\n").as_bytes());
+        out.extend_from_slice(&bytes);
+        out.extend_from_slice(b"\r\n");
+    }
+    out.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+    Bytes::from(out)
+}
+
+/// IR → openai transcription response wire (the body of [`OpenAiTranscription::write_response`], moved
+/// behind the `(transcription, openai)` key — G6 A4b option-a). Byte-identical to the inline write.
+pub(crate) fn write_transcription_response(r: &TranscriptionResp) -> WireBody {
+    let mut body = json!({ "text": r.text });
+    // Surface the billable usage in OpenAI's own transcription shape — duration or tokens.
+    match &r.usage {
+        Some(Billing::Duration { seconds }) => {
+            body["usage"] = json!({ "type": "duration", "seconds": seconds });
+        }
+        Some(Billing::Tokens(t)) => {
+            body["usage"] = json!({ "type": "tokens", "input_tokens": t.input,
+                "output_tokens": t.output, "total_tokens": t.input.saturating_add(t.output) });
+        }
+        _ => {}
+    }
+    WireBody::json(Bytes::from(serde_json::to_vec(&body).unwrap_or_default()))
 }
 
 /// OpenAI transcription `usage` → `Billing`: `{type:"duration",seconds}` (whisper) or a token shape.
