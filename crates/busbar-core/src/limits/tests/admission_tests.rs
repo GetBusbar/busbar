@@ -66,6 +66,44 @@ fn inbound_shed_retry_after_is_derived_from_the_shed_floor() {
     );
 }
 
+/// CONCURRENT-CAP BOUNDARY at N > 1: a gate of N permits admits EXACTLY N in-flight holders and
+/// denies the (N+1)th — the instantaneous cap is N, not N-1 (off-by-one over-throttle) nor N+1
+/// (over-admit past the cap). Freeing exactly one held permit re-opens exactly one slot: the next
+/// `try_enter` admits, and the one after that is denied again. This is the shape of the group
+/// `{ concurrent: N }` gauge — an operator's in-flight cap must admit the full N they configured.
+#[test]
+fn concurrent_cap_admits_exactly_n_and_frees_one_at_a_time() {
+    let gate = AdmissionGate::new(3, "test-concurrent-boundary");
+    assert_eq!(gate.available_permits(), 3);
+    let a = gate.try_enter().expect("1st of 3 admits");
+    let b = gate.try_enter().expect("2nd of 3 admits");
+    let c = gate.try_enter().expect("3rd of 3 admits");
+    assert_eq!(gate.available_permits(), 0, "all 3 slots held");
+    assert!(
+        gate.try_enter().is_none(),
+        "the 4th must be denied — the cap is exactly 3, never 4"
+    );
+    drop(b);
+    assert_eq!(
+        gate.available_permits(),
+        1,
+        "freeing one reopens exactly one slot"
+    );
+    let d = gate
+        .try_enter()
+        .expect("one freed slot admits exactly one more");
+    assert!(
+        gate.try_enter().is_none(),
+        "and only one — the cap re-saturates at 3"
+    );
+    drop((a, c, d));
+    assert_eq!(
+        gate.available_permits(),
+        3,
+        "all holders gone, cap fully restored"
+    );
+}
+
 #[test]
 fn unbounded_sentinel_never_denies() {
     let gate = AdmissionGate::new(Semaphore::MAX_PERMITS, "test-unbounded");
