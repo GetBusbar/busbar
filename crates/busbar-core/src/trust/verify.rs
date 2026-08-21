@@ -180,6 +180,50 @@ impl VerifyGate {
             latch.insert(subject.to_string(), false);
         }
     }
+
+    /// PRUNE the per-subject coordination to the subjects the deployment still fronts. Called from the
+    /// config-apply/carry path with the CURRENT registration set: without it, `flights` and
+    /// `drift_latch` gain one entry per subject ever seen and never lose one, so an operator rotating
+    /// or retiring servers/agents leaks an entry per retired subject across every apply. Dropping a
+    /// removed subject's flight and latch is safe — a subject no longer in the registration set is
+    /// never fetched, so its coalescing state cannot race an in-flight verify — and it is fail-closed:
+    /// a surviving subject keeps its latch, and a later re-add simply gets a fresh flight on next sight.
+    pub(crate) fn retain(&self, live_subjects: &std::collections::HashSet<String>) {
+        self.flights
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .retain(|subject, _| live_subjects.contains(subject));
+        self.drift_latch
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .retain(|subject, _| live_subjects.contains(subject));
+    }
+
+    /// TEST-ONLY observation of the per-subject state, so a battery can assert a prune dropped exactly
+    /// the retired subjects and a panic latched the outage, without reaching into the private maps.
+    #[cfg(test)]
+    pub(crate) fn tracks_subject(&self, subject: &str) -> bool {
+        self.flights
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .contains_key(subject)
+            || self
+                .drift_latch
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .contains_key(subject)
+    }
+
+    /// TEST-ONLY: whether `subject`'s outage/drift diagnostic is currently latched.
+    #[cfg(test)]
+    pub(crate) fn is_latched(&self, subject: &str) -> bool {
+        self.drift_latch
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(subject)
+            .copied()
+            .unwrap_or(false)
+    }
 }
 
 #[cfg(test)]

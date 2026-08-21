@@ -1660,6 +1660,26 @@ pub fn build_app_from_config(
         plugin_routes,
         boot_route_paths,
     };
+    // PRUNE the verify-on-call gates to the subjects THIS generation still fronts. `flights` and
+    // `drift_latch` are per-subject coordination CARRIED across every apply (above); without a prune
+    // they leak one dead entry per server/agent an operator ever removed. Done here, on the same
+    // carry path, with the live registration set of each plane: a pruned subject is one no delegation
+    // can name, so dropping its coalescing state and latch cannot race a verify (fail-closed intact).
+    #[cfg(feature = "plane-a2a")]
+    if let Some(plane) = app.a2a.as_ref() {
+        let live: std::collections::HashSet<String> =
+            plane.with_registrations(|regs| regs.iter().map(|r| r.agent_id.clone()).collect());
+        app.a2a_verify.retain(&live);
+    }
+    #[cfg(feature = "plane-mcp")]
+    {
+        let live: std::collections::HashSet<String> = crate::mcp::runtime(&app)
+            .catalogue
+            .servers()
+            .map(|s| s.id.clone())
+            .collect();
+        app.mcp_verify.retain(&live);
+    }
     // The build reached its end without a single fallible step refusing: KEEP the limits installed
     // at the top. Every earlier `return Err` / `?` drops the guard instead and rolls them back.
     limits_guard.commit();

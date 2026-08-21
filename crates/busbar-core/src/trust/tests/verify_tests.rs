@@ -263,3 +263,43 @@ async fn distinct_subjects_each_fetch() {
     );
     assert_eq!(fetches.load(SeqCst), 2);
 }
+
+/// RESOURCE: the per-subject coordination is pruned to the live registration set on the carry path,
+/// so an operator retiring a server/agent does not leak its `flights`/`drift_latch` entry forever.
+///
+/// RED, WATCHED: without `VerifyGate::retain`, both assertions on the retired subject below fail — its
+/// flight and its latch remain tracked across the (simulated) apply.
+#[tokio::test]
+async fn retain_drops_retired_subjects_and_keeps_the_live_ones() {
+    use std::collections::HashSet;
+
+    let gate = VerifyGate::new();
+    let policy = Policy {
+        ttl_ms: 0,
+        recovery_backoff_ms: 0,
+    };
+    // Give BOTH subjects a flight (a completed verify) and a latch (a reported drift), the two maps
+    // that would otherwise accumulate one dead entry per subject ever seen.
+    for subject in ["retired", "surviving"] {
+        let last = Arc::new(AtomicU64::new(0));
+        gate.ensure_fresh(subject, &policy, 1, ledger_of(&last), || async {})
+            .await;
+        gate.report(crate::plane::Plane::A2a, subject, true, false);
+    }
+    assert!(gate.tracks_subject("retired") && gate.is_latched("retired"));
+    assert!(gate.tracks_subject("surviving") && gate.is_latched("surviving"));
+
+    // The operator removed `retired`; the new registration set fronts only `surviving`.
+    let live: HashSet<String> = HashSet::from(["surviving".to_string()]);
+    gate.retain(&live);
+
+    assert!(
+        !gate.tracks_subject("retired"),
+        "the retired subject's flight and latch are pruned — no leak per retired server/agent"
+    );
+    assert!(
+        gate.tracks_subject("surviving") && gate.is_latched("surviving"),
+        "a surviving subject keeps its coalescing state AND its latch, so a persistent outage still \
+         logs once rather than re-announcing on every call"
+    );
+}

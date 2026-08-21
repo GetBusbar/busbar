@@ -935,3 +935,95 @@ fn an_unreachable_card_at_verify_fails_closed_on_the_call_path() {
         "a card busbar could not re-verify derives Error, which never serves — fail-closed"
     );
 }
+
+/// A card transport whose `get` BLOCKS until the test releases it. Self-contained and `Sync` (no
+/// `RefCell`), so it can be shared with the reverifying thread — the fixture for proving the blocking
+/// card fetch is NOT held under the registry lock.
+struct BlockingCard {
+    body: Vec<u8>,
+    entered: std::sync::mpsc::SyncSender<()>,
+    release: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+}
+
+impl Transport for BlockingCard {
+    fn get(&self, url: &reqwest::Url, _addr: IpAddr) -> Result<HttpResponse, String> {
+        // Announce that the fetch is in progress, then BLOCK until the test lets it proceed.
+        let _ = self.entered.try_send(());
+        {
+            let rx = self.release.lock().expect("release lock");
+            let _ = rx.recv();
+        }
+        if url.as_str().ends_with("agent-card.json") {
+            Ok(HttpResponse {
+                status: 200,
+                location: None,
+                body: self.body.clone(),
+                peer_spki: None,
+                client_identity_offered: false,
+            })
+        } else {
+            Err(format!("no card at `{url}`"))
+        }
+    }
+}
+
+/// AVAILABILITY: one agent's slow (or hostile) card host must not stall the whole plane. The blocking
+/// card fetch runs OUTSIDE the registry write lock, so a concurrent read of ANOTHER agent's
+/// verify-state proceeds while the fetch is still in flight.
+///
+/// RED, WATCHED: with `reverify_agent` performing the fetch INSIDE `with_registrations_mut` (the write
+/// lock held across the blocking `get`), the read below cannot acquire the read lock until the host
+/// answers, so `recv_timeout` returns `Err` and the `expect` fails.
+#[test]
+fn a_blocking_card_host_does_not_hold_the_registry_lock_against_another_agents_read() {
+    use std::time::Duration;
+
+    let k = key(9);
+    let spki = spki_base64(&k);
+    // Two fronted agents: `planner` (whose card fetch will block) and `other` (whose verify-state a
+    // concurrent caller reads).
+    let cfg: crate::a2a::config::AgentsCfg = serde_yaml::from_str(&format!(
+        "planner:\n  url: \"https://a2a.vendor/planner\"\n  pin:\n    mechanism: jws_issuer_key\n    key: \"{spki}\"\nother:\n  url: \"https://a2a.vendor/other\"\n  pin:\n    mechanism: jws_issuer_key\n    key: \"{spki}\"\n"
+    ))
+    .expect("a two-agent config");
+    let plane = crate::a2a::plane::A2aPlane::from_config(&cfg, None).expect("a plane");
+
+    let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel::<()>(1);
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    let transport = BlockingCard {
+        body: serde_json::to_vec(&signed_by(&k, a_card("plan a trip"))).expect("serialize"),
+        entered: entered_tx,
+        release: std::sync::Mutex::new(release_rx),
+    };
+
+    std::thread::scope(|scope| {
+        // The reverifying thread enters the blocking fetch and stays there until released.
+        scope.spawn(|| {
+            plane.reverify_agent("planner", &FixedResolver, &OneForAll(&transport), 1_000_000);
+        });
+        entered_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the blocking card fetch started");
+
+        // WHILE the fetch blocks, read ANOTHER agent's verify-state on a helper thread, so a regression
+        // (the read blocked behind the held write lock) surfaces as a timeout, not a permanent hang.
+        let (done_tx, done_rx) = std::sync::mpsc::channel::<bool>();
+        std::thread::scope(|inner| {
+            inner.spawn(|| {
+                let present = plane.verify_state_of("other").is_some();
+                let _ = done_tx.send(present);
+            });
+            let read = done_rx.recv_timeout(Duration::from_secs(2));
+            // Release the fetch regardless, so the reverifying thread finishes and both scopes join.
+            let _ = release_tx.send(());
+            let present = read.expect(
+                "a read of another agent's verify-state was blocked for the whole card fetch — the \
+                 registry write lock is being held across the blocking network round-trip",
+            );
+            assert!(
+                present,
+                "`other` has a live registration, so its verify-state is present"
+            );
+        });
+    });
+}

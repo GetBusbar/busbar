@@ -1647,6 +1647,30 @@ pub(super) fn plane_of(app: &App) -> Option<Arc<super::plane::A2aPlane>> {
 /// refuses. Skipped only when the boot transports are absent (a test app, or a deployment that fronts
 /// nothing to delegate with), in which case the recorded sighting governs exactly as it did before
 /// verify-on-call — production always publishes the transports at boot.
+/// FOLD the blocking reverify's join result into the pass to act on, FAIL-CLOSED on a panic.
+///
+/// `Ok` returns the pass for the caller to report on. `Err` is a `JoinError` — a PANIC in the blocking
+/// reverify, which is a FAILED contact, never a silent pass. Dropping it (the old `.ok().flatten()`)
+/// left `pass = None`, no diagnostic, and the single-flight epoch STILL advancing: the subject looked
+/// "checked" and the next delegation proceeded against unchanged trust state — a fail-OPEN. So this
+/// reports the subject UNREACHABLE (latching the outage diagnostic), then RE-RAISES, matching the
+/// fetch closure's own contract that a panic "surfaces": the fetch does not complete, the epoch does
+/// not advance, and the in-flight hop refuses rather than dispatching against a snapshot no
+/// re-verification ever confirmed.
+fn fold_reverify_join(
+    joined: Result<Option<super::verify::Pass>, tokio::task::JoinError>,
+    gate: &crate::trust::verify::VerifyGate,
+    subject: &str,
+) -> Option<super::verify::Pass> {
+    match joined {
+        Ok(pass) => pass,
+        Err(join_err) => {
+            gate.report(crate::plane::Plane::A2a, subject, false, true);
+            std::panic::resume_unwind(join_err.into_panic());
+        }
+    }
+}
+
 async fn verify_agent_on_call(app: &Arc<App>, plane: &Arc<super::plane::A2aPlane>, agent_id: &str) {
     let Some(cards) = app.a2a_cards.get().cloned() else {
         return;
@@ -1673,14 +1697,12 @@ async fn verify_agent_on_call(app: &Arc<App>, plane: &Arc<super::plane::A2aPlane
                     .unwrap_or_default()
             },
             || async move {
-                // OFF THE REACTOR: a card fetch is a blocking socket read behind the SSRF guard, held
-                // under the registry write lock. A panic in it re-raises so the join surfaces it.
-                let pass = tokio::task::spawn_blocking(move || {
+                // OFF THE REACTOR: a card fetch is a blocking socket read behind the SSRF guard.
+                let joined = tokio::task::spawn_blocking(move || {
                     fetch_plane.reverify_agent(&fetch_id, cards.resolver(), &*cards, now_ms)
                 })
-                .await
-                .ok()
-                .flatten();
+                .await;
+                let pass = fold_reverify_join(joined, &gate, &report_id);
                 if let Some(pass) = pass {
                     let unreachable = pass.refusal.is_some();
                     let drifted = pass.settled.as_ref().is_some_and(|s| s.drift_observed);
