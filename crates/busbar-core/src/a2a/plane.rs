@@ -314,9 +314,8 @@ impl A2aPlane {
         // full network round-trip, so a slow or hostile card host stalled the whole plane. Availability
         // is a named asset: the fetch below runs with NO registry lock held. `None` here keeps the
         // "no live registration" contract — a removed agent is not re-verified.
-        let original = self.with_registrations(|regs| {
-            regs.iter().find(|r| r.agent_id == agent_id).cloned()
-        })?;
+        let original =
+            self.with_registrations(|regs| regs.iter().find(|r| r.agent_id == agent_id).cloned())?;
         let transport = transports.for_agent(agent_id);
         // FETCH + VERIFY + SETTLE on a CLONE, entirely UNLOCKED. While this blocks, no reader is blocked
         // on us. Single-flight (`crate::trust::verify`) already guarantees at most one of these per agent

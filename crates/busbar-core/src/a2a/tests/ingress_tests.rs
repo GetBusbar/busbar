@@ -607,7 +607,10 @@ async fn a_panicking_reverify_reraises_and_latches_unreachable_never_swallowed()
             panic!("card fetch blew up")
         })
         .await;
-    assert!(joined.is_err(), "the fixture must actually be a panicked join");
+    assert!(
+        joined.is_err(),
+        "the fixture must actually be a panicked join"
+    );
 
     let gate = crate::trust::verify::VerifyGate::new();
     let subject = "planner";
