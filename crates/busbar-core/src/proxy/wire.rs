@@ -604,8 +604,13 @@ pub(crate) fn translate_request_cross_protocol(
                                                                  // the backend REQUIRES this `model` body field, so `model` is stripped ONLY on the same-protocol
                                                                  // passthrough (below), where the model rides the URL and a body `model` is an indistinguishability
                                                                  // leak. Reports a change only when the written model differs from the body's existing one (#3).
-    pristine &= !crate::proto::decl_for(app.lanes[i].protocol)
-        .and_then(|d| d.dialect())
+    // Resolve the lane's DialectCodec ONCE and reuse it for BOTH the model rewrite (#3) and the
+    // path-base reshape below. `decl_for(..).dialect()` allocates a fresh `Box<dyn DialectCodec>` per
+    // call, so resolving it twice on the request hot path was a redundant allocation. Behavior/output
+    // are identical: same dialect, same two mutations, same order.
+    let lane_dialect = crate::proto::decl_for(app.lanes[i].protocol).and_then(|d| d.dialect());
+    pristine &= !lane_dialect
+        .as_ref()
         .map(|dc| dc.rewrite_model_if_needed(&mut body, app.lanes[i].wire_model()))
         .unwrap_or(false); // invalidator #3
                            // PATH-BASE BODY RESHAPE. A lane with a `path_base` carries the model in the URL, and some
@@ -614,8 +619,8 @@ pub(crate) fn translate_request_cross_protocol(
                            // this path only knows the lane's URL shape. A reshape necessarily mutates the body, so such
                            // a same-protocol passthrough is (correctly) no longer pristine.
     if app.lanes[i].path_base.is_some()
-        && crate::proto::decl_for(app.lanes[i].protocol)
-            .and_then(|d| d.dialect())
+        && lane_dialect
+            .as_ref()
             .map(|dc| dc.reshape_for_path_base(&mut body))
             .unwrap_or(false)
     {
