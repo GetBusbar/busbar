@@ -16,6 +16,27 @@ fn gemini_mime_for_kind(kind: crate::ir::IrMediaKind) -> &'static str {
     }
 }
 
+/// A representative `image/*` `mimeType` for an image whose source is a bare URL (an OpenAI
+/// `image_url`, an Anthropic `image.source.url`) and therefore carries no mime of its own. Gemini's
+/// `fileData` REQUIRES a `mimeType` to decode the referenced file (this file's invariant, above), so
+/// omitting it is worse than a well-formed guess. Derived from the URL's file extension, defaulting
+/// to `image/jpeg` (the most common web image type) when the extension is absent or unrecognized.
+/// This is a WRITE-side default, never a claim about the referenced bytes — a `Base64` image always
+/// knows its real mime and never routes through here.
+fn gemini_image_mime_for_url(uri: &str) -> &'static str {
+    // Compare only the path's extension, lowercased, ignoring any `?query`/`#fragment` suffix.
+    let path = uri.split(['?', '#']).next().unwrap_or(uri);
+    let ext = path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+    match ext.as_str() {
+        "png" => "image/png",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "heic" => "image/heic",
+        "heif" => "image/heif",
+        _ => "image/jpeg",
+    }
+}
+
 impl ProtocolWriter for GeminiWriter {
     fn probe_request(&self) -> serde_json::Value {
         // The ping IR is built by the plugin (ir_encode::ping_request); this dialect serializes it
@@ -266,9 +287,15 @@ impl ProtocolWriter for GeminiWriter {
                         }))
                     }
                     crate::ir::IrBlock::Image { source, .. } => match source {
-                        // A remote URL → Gemini's native `fileData{fileUri}` (URL reference, not base64).
+                        // A remote URL → Gemini's native `fileData{fileUri, mimeType}` (URL
+                        // reference, not base64). `mimeType` is REQUIRED for Gemini to decode the
+                        // referenced file (this file's own invariant, lines 6-10) — the Media-URL
+                        // arm below already supplies one, and omitting it on the image arm produced
+                        // a `fileData` Gemini rejects. The source URL carries no mime of its own
+                        // (an OpenAI/Anthropic image URL), so derive a representative `image/*` from
+                        // the URL extension, defaulting to `image/jpeg`.
                         crate::ir::IrImageSource::Url(uri) => parts_arr.push(serde_json::json!({
-                            "fileData": { "fileUri": uri }
+                            "fileData": { "fileUri": uri, "mimeType": gemini_image_mime_for_url(uri) }
                         })),
                         // Inline base64 → `inlineData{mimeType, data}`.
                         crate::ir::IrImageSource::Base64 { media_type, data } => {

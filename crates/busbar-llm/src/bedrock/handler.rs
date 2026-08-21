@@ -120,11 +120,25 @@ impl OperationHandler for BedrockImage {
 /// IR → Titan image request wire (the body of [`BedrockImage::write_request`], moved behind the
 /// `(image, bedrock)` key — G6 A4b option-a). Byte-identical to the pre-cutover inline write.
 pub(crate) fn write_image_request(r: &crate::ir::image::ImageReq) -> Bytes {
-    let body = json!({
+    let mut body = json!({
         "taskType": "TEXT_IMAGE",
         "textToImageParams": { "text": r.prompt.clone().unwrap_or_default() },
         "imageGenerationConfig": { "numberOfImages": r.n.unwrap_or(1) },
     });
+    // Re-emit the generation controls `read_image_request` captures, in Titan's native shape, so
+    // they survive egress instead of being dropped (round-trip loss). `negativeText` rides
+    // `textToImageParams`; `seed` and `cfgScale` ride `imageGenerationConfig` (Titan's own
+    // TextToImageParams / ImageGenerationConfig layout). Emitted only when present so a request
+    // that never carried them gains no fabricated field.
+    if let Some(neg) = &r.negative_prompt {
+        body["textToImageParams"]["negativeText"] = json!(neg);
+    }
+    if let Some(seed) = r.seed {
+        body["imageGenerationConfig"]["seed"] = json!(seed);
+    }
+    if let Some(cfg) = r.guidance_scale {
+        body["imageGenerationConfig"]["cfgScale"] = json!(cfg);
+    }
     Bytes::from(serde_json::to_vec(&body).unwrap_or_default())
 }
 
@@ -199,6 +213,13 @@ pub(crate) fn write_embeddings_request(r: &EmbeddingsReq) -> Bytes {
     let mut body = json!({ "inputText": text });
     if let Some(d) = r.dimensions {
         body["dimensions"] = json!(d);
+    }
+    // Titan v2 embeddings takes a top-level `normalize` boolean, which `read_embeddings_request`
+    // captures — emit it when present so it survives egress instead of being dropped (round-trip
+    // loss). Titan's own default is `true`, so omit the key when the request never set it rather
+    // than fabricate a value.
+    if let Some(n) = r.normalize {
+        body["normalize"] = json!(n);
     }
     Bytes::from(serde_json::to_vec(&body).unwrap_or_default())
 }
@@ -282,6 +303,10 @@ pub(crate) fn write_rerank_response(r: &crate::ir::rerank::RerankResp) -> WireBo
 #[cfg(test)]
 #[path = "tests/handler_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/titan_roundtrip_regression_tests.rs"]
+mod titan_roundtrip_regression_tests;
 
 /// Wire -> concrete `ImageReq` parse, extracted from the `OperationHandler::read_request`
 /// body so a dissolved leaf-op handle and the `(op,proto)` `leaf_codec` read dispatch (G6 A4b,

@@ -756,6 +756,10 @@ fn map_strs(m: &BTreeMap<String, Vec<String>>) -> Value {
 #[path = "tests/handler_tests.rs"]
 mod tests;
 
+#[cfg(test)]
+#[path = "tests/speech_mime_regression_tests.rs"]
+mod speech_mime_regression_tests;
+
 /// Wire -> concrete `TranscriptionReq` parse, extracted from the `OperationHandler::read_request`
 /// body so a dissolved leaf-op handle and the `(op,proto)` `leaf_codec` read dispatch (G6 A4b,
 /// owner ruling b) can recover the concrete IR without a downcast. Byte-identical parse.
@@ -862,11 +866,20 @@ pub(crate) fn read_speech_request(
 pub(crate) fn read_speech_response(
     wire: &[u8],
 ) -> Result<crate::ir::audio::SpeechResp, CodecError> {
-    // OpenAI speech is raw binary audio (mp3 by default) — wrap the bytes verbatim.
+    // OpenAI speech is raw binary audio whose container is whatever the request's `response_format`
+    // asked for (`mp3`|`opus`|`aac`|`flac`|`wav`|`pcm`, default `mp3` — openai-openapi
+    // `CreateSpeechRequest.response_format`). This reader is the EGRESS codec reading the upstream
+    // 2xx body; the cross-protocol response pipeline (`translate_response`) hands it ONLY the body
+    // bytes — not the originating request nor the upstream `Content-Type` header — so the requested
+    // `response_format` is not reachable here. Hardcoding `audio/mpeg` therefore mislabeled every
+    // non-mp3 format the caller asked for (a wav/opus/flac blob surfaced to the client as
+    // `Content-Type: audio/mpeg`). Recover the true container from the audio's own magic bytes
+    // instead — the one in-band source of truth — which yields exactly the mime the requested
+    // `response_format` implies for every format that carries a container signature.
     Ok(SpeechResp {
         audio: Some(MediaBlob {
             payload: MediaPayload::Bytes(Bytes::copy_from_slice(wire)),
-            mime_type: "audio/mpeg".into(),
+            mime_type: sniff_speech_audio_mime(wire).into(),
             pcm: None,
         }),
         // TTS carries no usage object in its binary body, so without a marker `billing()` returned
@@ -877,6 +890,40 @@ pub(crate) fn read_speech_response(
         usage: Some(Billing::Flat),
         ..Default::default()
     })
+}
+
+/// Recover the audio Content-Type of an OpenAI speech (TTS) response body from its container magic
+/// bytes, mapping onto the mime for each `response_format` the endpoint can emit.
+///
+/// The reader has neither the originating request's `response_format` nor the upstream
+/// `Content-Type` header (see [`read_speech_response`]), so the container signature is the only
+/// in-band discriminant:
+/// * `ID3` tag or raw MPEG frame-sync → mp3 → `audio/mpeg`
+/// * `OggS` (Ogg-encapsulated Opus) → opus → `audio/opus`
+/// * `fLaC` → flac → `audio/flac`
+/// * `RIFF`…`WAVE` → wav → `audio/wav`
+/// * ADTS syncword (`0xFF 0xF1`/`0xF9`) → aac → `audio/aac`
+///
+/// A headerless raw-PCM body carries no signature and falls to the `audio/mpeg` default alongside
+/// bare frame-sync mp3 — the endpoint's own default `response_format` — the one residual ambiguity,
+/// since PCM is byte-indistinguishable from an unlucky mp3 frame prefix.
+fn sniff_speech_audio_mime(wire: &[u8]) -> &'static str {
+    if wire.starts_with(b"ID3") {
+        "audio/mpeg"
+    } else if wire.starts_with(b"OggS") {
+        "audio/opus"
+    } else if wire.starts_with(b"fLaC") {
+        "audio/flac"
+    } else if wire.len() >= 12 && wire[0..4] == *b"RIFF" && wire[8..12] == *b"WAVE" {
+        "audio/wav"
+    } else if wire.len() >= 2 && wire[0] == 0xFF && (wire[1] == 0xF1 || wire[1] == 0xF9) {
+        // ADTS AAC syncword (12-bit 0xFFF + layer/protection bits): 0xFFF1 (MPEG-4) / 0xFFF9
+        // (MPEG-2). Distinct from the mp3 frame-sync second bytes (0xFB/0xFA/0xF3/0xF2/…).
+        "audio/aac"
+    } else {
+        // Raw MPEG frame-sync mp3 (no ID3 tag) or headerless PCM → the endpoint's default format.
+        "audio/mpeg"
+    }
 }
 
 /// Wire -> concrete `EmbeddingsReq` parse, extracted from the `OperationHandler::read_request`

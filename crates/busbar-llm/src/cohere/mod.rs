@@ -741,3 +741,7 @@ impl CohereWriter {
 #[cfg(test)]
 #[path = "tests/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/egress_media_regression_tests.rs"]
+mod egress_media_regression_tests;

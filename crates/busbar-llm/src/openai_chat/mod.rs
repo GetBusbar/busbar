@@ -528,12 +528,30 @@ fn media_part_from_ir(
     use crate::ir::{IrImageSource as S, IrMediaKind as K};
     match (kind, source) {
         (K::Audio, S::Base64 { media_type, data }) => {
-            // OpenAI wants the bare container token (`wav`, `mp3`), not the mime type.
-            let format = media_type.rsplit('/').next().unwrap_or("wav");
-            Some(serde_json::json!({
-                "type": "input_audio",
-                "input_audio": { "data": data, "format": format }
-            }))
+            // OpenAI's `input_audio.format` is a CLOSED enum — `{wav, mp3}` (openai-openapi
+            // `ChatCompletionRequestMessageContentPartAudio.input_audio.format`). The old
+            // `media_type.rsplit('/')` emitted the raw mime SUBTYPE, so `audio/mpeg` produced
+            // `format:"mpeg"` (and `audio/x-wav` → `"x-wav"`), both of which the API 400-rejects as
+            // not-in-enum. Map the mime to a valid enum token instead; an audio mime with NO
+            // `{wav, mp3}` representation (e.g. `audio/ogg`, `audio/flac`) has no slot on this
+            // dialect at all, so it falls through to the drop-with-warn arm below rather than
+            // emitting an invalid `format`.
+            match openai_audio_input_format(media_type) {
+                Some(format) => Some(serde_json::json!({
+                    "type": "input_audio",
+                    "input_audio": { "data": data, "format": format }
+                })),
+                None => {
+                    tracing::warn!(
+                        media_kind = "audio",
+                        mime = media_type.as_str(),
+                        "dropping audio attachment on OpenAI Chat egress: input_audio.format is a \
+                         closed {{wav, mp3}} enum and this mime maps to neither; the block is NOT \
+                         emitted (deliberately absent, not an invalid format the API would 400 on)"
+                    );
+                    None
+                }
+            }
         }
         (K::Document, S::Base64 { media_type, data }) => {
             let mut file = serde_json::Map::new();
@@ -566,6 +584,26 @@ fn media_part_from_ir(
             );
             None
         }
+    }
+}
+
+/// Map an audio mime type onto OpenAI Chat's `input_audio.format` enum token, or `None` when the
+/// mime has no representation in the closed `{wav, mp3}` enum.
+///
+/// The enum is `{wav, mp3}` per openai-openapi
+/// (`ChatCompletionRequestMessageContentPartAudio.input_audio.format`). Every other dialect speaks
+/// real mime types in the neutral IR, so this is the inverse of the reader's `audio/{format}`
+/// normalization: `audio/mpeg` (the canonical mp3 mime) and the `audio/mp3` alias → `mp3`;
+/// `audio/wav` and its `x-wav`/`wave`/`vnd.wave` aliases → `wav`. Anything else (`audio/ogg`,
+/// `audio/flac`, …) returns `None` — the caller drops it with a warn rather than emit an off-enum
+/// token the API rejects.
+fn openai_audio_input_format(media_type: &str) -> Option<&'static str> {
+    match media_type.to_ascii_lowercase().as_str() {
+        "audio/mpeg" | "audio/mp3" | "audio/mpeg3" | "audio/x-mpeg-3" => Some("mp3"),
+        "audio/wav" | "audio/x-wav" | "audio/wave" | "audio/vnd.wave" | "audio/x-pn-wav" => {
+            Some("wav")
+        }
+        _ => None,
     }
 }
 
@@ -1126,3 +1164,7 @@ pub struct OpenAiWriter;
 #[cfg(test)]
 #[path = "tests/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/audio_format_regression_tests.rs"]
+mod audio_format_regression_tests;
