@@ -7,7 +7,9 @@ use busbar_core::handlers::{
     CodecError, EgressCtx, IngressReject, OperationHandler, RequestHandler, WireBody,
 };
 use busbar_core::ir::audio::{SpeechResp, TranscriptionResp};
-use busbar_core::ir::embeddings::{EmbInput, EmbeddingItem, EmbeddingsResp, EncFmt, VectorData};
+use busbar_core::ir::embeddings::{
+    EmbInput, EmbeddingItem, EmbeddingsReq, EmbeddingsResp, EncFmt, VectorData,
+};
 use busbar_core::ir::variant::{IrReq, IrResp};
 use busbar_core::media::{base64_encode, MediaBlob, MediaPayload};
 use busbar_core::operation::Operation;
@@ -587,43 +589,7 @@ impl OperationHandler for GeminiEmbeddings {
         let IrReq::Embeddings(r) = ir else {
             return Bytes::new();
         };
-        let text = match &r.input {
-            EmbInput::Text(v) => {
-                // Gemini `:embedContent` embeds a SINGLE content; a multi-input request can only
-                // embed the first here (batch would need `:batchEmbedContents`, a 1.3 item). Warn
-                // rather than silently drop the rest.
-                if v.len() > 1 {
-                    tracing::warn!(
-                        dropped = v.len() - 1,
-                        "Gemini :embedContent takes one input; embedding only the first of a \
-                         multi-input request (the rest are not sent)"
-                    );
-                }
-                v.first().cloned().unwrap_or_default()
-            }
-            other => {
-                tracing::warn!(
-                    dropped = 1,
-                    "Gemini :embedContent takes text input only; dropping a non-text embeddings \
-                     input ({other:?} kind) with no analog"
-                );
-                String::new()
-            }
-        };
-        // Carry the retrieval/shape controls the reader captures — Gemini `:embedContent` supports
-        // them natively. Dropping `outputDimensionality` returned full-width vectors instead of the
-        // requested size (a wrong-length response); `taskType`/`title` steer retrieval quality.
-        let mut body = json!({ "content": { "parts": [{ "text": text }] } });
-        if let Some(d) = r.dimensions {
-            body["outputDimensionality"] = json!(d);
-        }
-        if let Some(t) = &r.task_type {
-            body["taskType"] = json!(t);
-        }
-        if let Some(t) = &r.title {
-            body["title"] = json!(t);
-        }
-        Bytes::from(serde_json::to_vec(&body).unwrap_or_default())
+        super::super::leaf_codec::embeddings_write_request("gemini", r)
     }
     fn read_response(&self, wire: &[u8]) -> Result<IrResp, CodecError> {
         let v: Value =
@@ -662,18 +628,68 @@ impl OperationHandler for GeminiEmbeddings {
         let IrResp::Embeddings(r) = ir else {
             return WireBody::json(Bytes::new());
         };
-        let values: Vec<f32> = r
-            .embeddings
-            .first()
-            .and_then(|item| match item.vectors.get(&EncFmt::Float) {
-                Some(VectorData::Float(v)) => Some(v.clone()),
-                _ => None,
-            })
-            .unwrap_or_default();
-        WireBody::json(Bytes::from(
-            serde_json::to_vec(&json!({ "embedding": { "values": values } })).unwrap_or_default(),
-        ))
+        super::super::leaf_codec::embeddings_write_response("gemini", r)
     }
+}
+
+/// IR → gemini `:embedContent` request wire (the body of the gemini embeddings
+/// `OperationHandler::write_request`, moved behind the `(embeddings, gemini)` key — G6 A4b option-a).
+/// Byte-identical to the pre-cutover inline write.
+pub(crate) fn write_embeddings_request(r: &EmbeddingsReq) -> Bytes {
+    let text = match &r.input {
+        EmbInput::Text(v) => {
+            // Gemini `:embedContent` embeds a SINGLE content; a multi-input request can only
+            // embed the first here (batch would need `:batchEmbedContents`, a 1.3 item). Warn
+            // rather than silently drop the rest.
+            if v.len() > 1 {
+                tracing::warn!(
+                    dropped = v.len() - 1,
+                    "Gemini :embedContent takes one input; embedding only the first of a \
+                     multi-input request (the rest are not sent)"
+                );
+            }
+            v.first().cloned().unwrap_or_default()
+        }
+        other => {
+            tracing::warn!(
+                dropped = 1,
+                "Gemini :embedContent takes text input only; dropping a non-text embeddings \
+                 input ({other:?} kind) with no analog"
+            );
+            String::new()
+        }
+    };
+    // Carry the retrieval/shape controls the reader captures — Gemini `:embedContent` supports
+    // them natively. Dropping `outputDimensionality` returned full-width vectors instead of the
+    // requested size (a wrong-length response); `taskType`/`title` steer retrieval quality.
+    let mut body = json!({ "content": { "parts": [{ "text": text }] } });
+    if let Some(d) = r.dimensions {
+        body["outputDimensionality"] = json!(d);
+    }
+    if let Some(t) = &r.task_type {
+        body["taskType"] = json!(t);
+    }
+    if let Some(t) = &r.title {
+        body["title"] = json!(t);
+    }
+    Bytes::from(serde_json::to_vec(&body).unwrap_or_default())
+}
+
+/// IR → gemini `:embedContent` response wire (the body of the gemini embeddings
+/// `OperationHandler::write_response`, moved behind the `(embeddings, gemini)` key — G6 A4b
+/// option-a). Byte-identical to the pre-cutover inline write.
+pub(crate) fn write_embeddings_response(r: &EmbeddingsResp) -> WireBody {
+    let values: Vec<f32> = r
+        .embeddings
+        .first()
+        .and_then(|item| match item.vectors.get(&EncFmt::Float) {
+            Some(VectorData::Float(v)) => Some(v.clone()),
+            _ => None,
+        })
+        .unwrap_or_default();
+    WireBody::json(Bytes::from(
+        serde_json::to_vec(&json!({ "embedding": { "values": values } })).unwrap_or_default(),
+    ))
 }
 
 #[cfg(test)]

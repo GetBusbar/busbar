@@ -1626,6 +1626,16 @@ pub mod openai_annotations;
 #[path = "../../../busbar-llm/src/ir_encode.rs"]
 pub mod ir_encode;
 
+/// THE EXTRACTED LEAF-OP WRITER DISPATCH, compiled back in for TEST BUILDS ONLY (G6 A4b option-a).
+/// Sources live in `crates/busbar-llm/src/leaf_codec.rs` — the per-`(operation, egress-protocol)`
+/// writer dispatcher the dialect leaf-op handlers route their writes through (they call it via
+/// `super::super::leaf_codec`, and it reaches each dialect's write body via `super::<dialect>::…`);
+/// same `#[path]` dual-compile mechanism as `ir_encode`/`usage_tail`. Production core drives the
+/// codecs through the vtable and never names this module directly.
+#[cfg(any(test, feature = "test-support"))]
+#[path = "../../../busbar-llm/src/leaf_codec.rs"]
+pub mod leaf_codec;
+
 // Private imports (NOT re-exports) for the symbols mod.rs references by bare name: the registry
 // constructs each Reader/Writer below, and a test synthesizes an Anthropic request id. Every other
 // caller references these at their owning module path (e.g. `crate::proto::bedrock::...`).

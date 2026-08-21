@@ -6,7 +6,9 @@
 use busbar_core::handlers::{
     CodecError, EgressCtx, IngressReject, OperationHandler, RequestHandler, WireBody,
 };
-use busbar_core::ir::embeddings::{EmbInput, EmbeddingItem, EmbeddingsResp, EncFmt, VectorData};
+use busbar_core::ir::embeddings::{
+    EmbInput, EmbeddingItem, EmbeddingsReq, EmbeddingsResp, EncFmt, VectorData,
+};
 use busbar_core::ir::variant::{IrReq, IrResp};
 use busbar_core::operation::Operation;
 use bytes::Bytes;
@@ -214,34 +216,7 @@ impl OperationHandler for BedrockEmbeddings {
         let IrReq::Embeddings(r) = ir else {
             return Bytes::new();
         };
-        let text = match &r.input {
-            EmbInput::Text(v) => {
-                // Titan's InvokeModel embeddings takes a SINGLE `inputText`; a multi-input request
-                // (OpenAI allows an array) can only embed the first here. Warn rather than silently
-                // drop the rest — true multi-input fan-out to single-input backends is a 1.3 item.
-                if v.len() > 1 {
-                    tracing::warn!(
-                        dropped = v.len() - 1,
-                        "Titan embeddings takes one input; embedding only the first of a \
-                         multi-input request (the rest are not sent)"
-                    );
-                }
-                v.first().cloned().unwrap_or_default()
-            }
-            other => {
-                tracing::warn!(
-                    dropped = 1,
-                    "Titan embeddings takes text input only; dropping a non-text embeddings \
-                     input ({other:?} kind) with no analog"
-                );
-                String::new()
-            }
-        };
-        let mut body = json!({ "inputText": text });
-        if let Some(d) = r.dimensions {
-            body["dimensions"] = json!(d);
-        }
-        Bytes::from(serde_json::to_vec(&body).unwrap_or_default())
+        super::super::leaf_codec::embeddings_write_request("bedrock", r)
     }
     fn read_response(&self, wire: &[u8]) -> Result<IrResp, CodecError> {
         let v: Value =
@@ -275,20 +250,59 @@ impl OperationHandler for BedrockEmbeddings {
         let IrResp::Embeddings(r) = ir else {
             return WireBody::json(Bytes::new());
         };
-        let floats: Vec<f32> = r
-            .embeddings
-            .first()
-            .and_then(|item| match item.vectors.get(&EncFmt::Float) {
-                Some(VectorData::Float(v)) => Some(v.clone()),
-                _ => None,
-            })
-            .unwrap_or_default();
-        let mut body = json!({ "embedding": floats });
-        if let Some(u) = &r.usage {
-            body["inputTextTokenCount"] = json!(u.input);
-        }
-        WireBody::json(Bytes::from(serde_json::to_vec(&body).unwrap_or_default()))
+        super::super::leaf_codec::embeddings_write_response("bedrock", r)
     }
+}
+
+/// IR → Titan embeddings request wire (the body of [`BedrockEmbeddings::write_request`], moved behind
+/// the `(embeddings, bedrock)` key — G6 A4b option-a). Byte-identical to the pre-cutover inline write.
+pub(crate) fn write_embeddings_request(r: &EmbeddingsReq) -> Bytes {
+    let text = match &r.input {
+        EmbInput::Text(v) => {
+            // Titan's InvokeModel embeddings takes a SINGLE `inputText`; a multi-input request
+            // (OpenAI allows an array) can only embed the first here. Warn rather than silently
+            // drop the rest — true multi-input fan-out to single-input backends is a 1.3 item.
+            if v.len() > 1 {
+                tracing::warn!(
+                    dropped = v.len() - 1,
+                    "Titan embeddings takes one input; embedding only the first of a \
+                     multi-input request (the rest are not sent)"
+                );
+            }
+            v.first().cloned().unwrap_or_default()
+        }
+        other => {
+            tracing::warn!(
+                dropped = 1,
+                "Titan embeddings takes text input only; dropping a non-text embeddings \
+                 input ({other:?} kind) with no analog"
+            );
+            String::new()
+        }
+    };
+    let mut body = json!({ "inputText": text });
+    if let Some(d) = r.dimensions {
+        body["dimensions"] = json!(d);
+    }
+    Bytes::from(serde_json::to_vec(&body).unwrap_or_default())
+}
+
+/// IR → Titan embeddings response wire (the body of [`BedrockEmbeddings::write_response`], moved
+/// behind the `(embeddings, bedrock)` key — G6 A4b option-a). Byte-identical to the inline write.
+pub(crate) fn write_embeddings_response(r: &EmbeddingsResp) -> WireBody {
+    let floats: Vec<f32> = r
+        .embeddings
+        .first()
+        .and_then(|item| match item.vectors.get(&EncFmt::Float) {
+            Some(VectorData::Float(v)) => Some(v.clone()),
+            _ => None,
+        })
+        .unwrap_or_default();
+    let mut body = json!({ "embedding": floats });
+    if let Some(u) = &r.usage {
+        body["inputTextTokenCount"] = json!(u.input);
+    }
+    WireBody::json(Bytes::from(serde_json::to_vec(&body).unwrap_or_default()))
 }
 
 /// Bedrock rerank models (`cohere.rerank-*`, `amazon.rerank-*`) via `/model/{id}/invoke`:

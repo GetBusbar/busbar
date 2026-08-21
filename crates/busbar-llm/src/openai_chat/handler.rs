@@ -550,29 +550,7 @@ impl OperationHandler for OpenAiEmbeddings {
         let IrReq::Embeddings(r) = ir else {
             return Bytes::new();
         };
-        let input = match &r.input {
-            EmbInput::Text(v) if v.len() == 1 => json!(v[0]),
-            EmbInput::Text(v) => json!(v),
-            other => {
-                tracing::warn!(
-                    dropped = 1,
-                    "openai embeddings input is text-only here; dropping a non-text embeddings \
-                     input ({other:?} kind) with no analog"
-                );
-                json!([])
-            }
-        };
-        let mut body = json!({ "model": r.model, "input": input });
-        if let Some(d) = r.dimensions {
-            body["dimensions"] = json!(d);
-        }
-        // Honor a base64 encoding request (OpenAI supports float (default) and base64). Dropping
-        // it made a cross-protocol base64 embeddings request silently come back as float; the
-        // response reader decodes both, so emitting the field completes the round trip.
-        if r.encoding_formats.contains(&EncFmt::Base64) {
-            body["encoding_format"] = json!("base64");
-        }
-        Bytes::from(serde_json::to_vec(&body).unwrap_or_default())
+        super::super::leaf_codec::embeddings_write_request("openai", r)
     }
 
     /// openai embeddings response wire → IR (used when openai is the EGRESS).
@@ -628,30 +606,65 @@ impl OperationHandler for OpenAiEmbeddings {
         let IrResp::Embeddings(r) = ir else {
             return WireBody::json(Bytes::new());
         };
-        let data: Vec<Value> = r
-            .embeddings
-            .iter()
-            .map(|item| {
-                let emb = match item.vectors.get(&EncFmt::Float) {
-                    Some(VectorData::Float(f)) => json!(f),
-                    _ => match item.vectors.values().next() {
-                        Some(VectorData::Base64(b)) => json!(b),
-                        Some(VectorData::Int(v)) => json!(v),
-                        _ => json!([]),
-                    },
-                };
-                json!({ "object": "embedding", "index": item.index, "embedding": emb })
-            })
-            .collect();
-        let mut body = json!({ "object": "list", "data": data });
-        if let Some(m) = &r.model {
-            body["model"] = json!(m);
-        }
-        if let Some(u) = &r.usage {
-            body["usage"] = json!({ "prompt_tokens": u.input, "total_tokens": u.input.saturating_add(u.output) });
-        }
-        WireBody::json(Bytes::from(serde_json::to_vec(&body).unwrap_or_default()))
+        super::super::leaf_codec::embeddings_write_response("openai", r)
     }
+}
+
+/// IR → openai embeddings request wire (the body of [`OpenAiEmbeddings::write_request`], moved behind
+/// the `(embeddings, openai)` key — G6 A4b option-a). Byte-identical to the pre-cutover inline write.
+pub(crate) fn write_embeddings_request(r: &EmbeddingsReq) -> Bytes {
+    let input = match &r.input {
+        EmbInput::Text(v) if v.len() == 1 => json!(v[0]),
+        EmbInput::Text(v) => json!(v),
+        other => {
+            tracing::warn!(
+                dropped = 1,
+                "openai embeddings input is text-only here; dropping a non-text embeddings \
+                 input ({other:?} kind) with no analog"
+            );
+            json!([])
+        }
+    };
+    let mut body = json!({ "model": r.model, "input": input });
+    if let Some(d) = r.dimensions {
+        body["dimensions"] = json!(d);
+    }
+    // Honor a base64 encoding request (OpenAI supports float (default) and base64). Dropping
+    // it made a cross-protocol base64 embeddings request silently come back as float; the
+    // response reader decodes both, so emitting the field completes the round trip.
+    if r.encoding_formats.contains(&EncFmt::Base64) {
+        body["encoding_format"] = json!("base64");
+    }
+    Bytes::from(serde_json::to_vec(&body).unwrap_or_default())
+}
+
+/// IR → openai embeddings response wire (the body of [`OpenAiEmbeddings::write_response`], moved
+/// behind the `(embeddings, openai)` key — G6 A4b option-a). Byte-identical to the inline write.
+pub(crate) fn write_embeddings_response(r: &EmbeddingsResp) -> WireBody {
+    let data: Vec<Value> = r
+        .embeddings
+        .iter()
+        .map(|item| {
+            let emb = match item.vectors.get(&EncFmt::Float) {
+                Some(VectorData::Float(f)) => json!(f),
+                _ => match item.vectors.values().next() {
+                    Some(VectorData::Base64(b)) => json!(b),
+                    Some(VectorData::Int(v)) => json!(v),
+                    _ => json!([]),
+                },
+            };
+            json!({ "object": "embedding", "index": item.index, "embedding": emb })
+        })
+        .collect();
+    let mut body = json!({ "object": "list", "data": data });
+    if let Some(m) = &r.model {
+        body["model"] = json!(m);
+    }
+    if let Some(u) = &r.usage {
+        body["usage"] =
+            json!({ "prompt_tokens": u.input, "total_tokens": u.input.saturating_add(u.output) });
+    }
+    WireBody::json(Bytes::from(serde_json::to_vec(&body).unwrap_or_default()))
 }
 
 // ---------------------------------------------------------------- image OperationHandler (real, cross-protocol)
