@@ -45,13 +45,24 @@ pub(crate) fn projectors() -> Arc<HookProjectors> {
                 .unwrap_or_else(|_| serde_json::json!({}))
         }),
         // normalize: parse the reply Value into the shared fail-closed `HookResponse` and run the
-        // engine's `wire::normalize` (reject > restrict > abstain > order; unknown idxs dropped). A
-        // malformed reply is FAIL-CLOSED to Abstain (never a silent route) — the loader coerces the
-        // decide-path `Err` to on_error, and an un-parseable OK reply is treated as "no opinion".
+        // engine's `wire::normalize` (reject > restrict > abstain > order; unknown idxs dropped).
+        //
+        // FAIL-CLOSED on a PARSE ERROR: a reply that does not deserialize into `HookResponse` is an
+        // `Err`, NOT `Abstain`. The loader routes that `Err` through the hook's `on_error` — the SAME
+        // path a transport failure and a `HookReply::Failed` take — so a garbage reply and a
+        // could-not-answer converge on the operator's chosen disposition (`reject` refuses the
+        // request). This closes the fail-OPEN hole where a reply carrying a VALID `reject` alongside a
+        // wrong-typed sibling field (`order`/`abstain` are strictly typed) aborted the whole parse and
+        // was silently downgraded to `Abstain` → proceed, bypassing BOTH the hook's own `reject` and
+        // the operator's `on_error: reject`.
+        //
+        // A reply that PARSES but carries no opinion (an empty `{}`, an explicit `abstain`, an absent
+        // `order`) is a genuine "no opinion" and stays `Ok(Abstain)` — a hook that legitimately has
+        // nothing to say is not turned into a hard failure.
         normalize: Box::new(
             |v, cands| match serde_json::from_value::<wire::HookResponse>(v) {
-                Ok(parsed) => wire::normalize(parsed, cands),
-                Err(_) => super::RoutingDecision::Abstain,
+                Ok(parsed) => Ok(wire::normalize(parsed, cands)),
+                Err(e) => Err(format!("hook decide reply failed to parse: {e}").into()),
             },
         ),
         // transform_outcome: parse the reply and run the shared reject > rewrite > abstain

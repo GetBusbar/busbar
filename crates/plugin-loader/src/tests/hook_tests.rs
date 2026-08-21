@@ -4,7 +4,7 @@
 //! Tests for `crates/plugin-loader/src/hook.rs`.
 
 use super::*;
-use busbar_api::TransformOutcome;
+use busbar_api::{RoutingDecision, TransformOutcome};
 
 /// Locate the test hook plugin cdylib in the build's target dir (mirrors the sqlite loader test).
 /// Under CI (`cargo test --workspace` always builds it) a missing cdylib is a HARD failure, never
@@ -88,16 +88,16 @@ fn test_projectors() -> Arc<HookProjectors> {
                     .and_then(|m| m.as_str())
                     .unwrap_or("")
                     .to_string();
-                return RoutingDecision::Reject { status, message };
+                return Ok(RoutingDecision::Reject { status, message });
             }
             let Some(order) = v.get("order").and_then(|o| o.as_array()) else {
-                return RoutingDecision::Abstain;
+                return Ok(RoutingDecision::Abstain);
             };
             let valid: std::collections::HashSet<usize> = cands.iter().map(|c| c.idx).collect();
-            RoutingDecision::from_ranked(
+            Ok(RoutingDecision::from_ranked(
                 order.iter().filter_map(|x| x.as_u64().map(|x| x as usize)),
                 &valid,
-            )
+            ))
         }),
         transform_outcome: Box::new(|v| {
             if let Some(reject) = v.get("reject") {
