@@ -771,7 +771,20 @@ pub fn build_app_from_config(
     // lock. Constructed before the pool-runtime loop so the webhook routing transport can reuse
     // it (a shard clone shares that shard's connection pool + the `redirect:none` SSRF posture);
     // the sharded set is then moved into `App` below.
-    let upstream_client = if let Some(p) = prior {
+    // The client-affecting subset of the resolved limits (timeout, pool sizing, protocol posture).
+    // Carried onto `App` so the NEXT apply can compare; the `redirect: none` SSRF posture and every
+    // other builder input below are compile-time constants, so this snapshot is exhaustive over what
+    // the build reads from config.
+    let new_client_settings = crate::state::UpstreamClientSettings::from_limits(&cfg.limits);
+    // REUSE the prior sharded client (for its warm connection pool + kept-alive upstream sockets)
+    // ONLY when NONE of the client-affecting settings changed. If any changed — a looser/tighter
+    // request timeout, resized idle pool, flipped http1-only/h2c posture — REBUILD so the new
+    // setting actually takes effect this apply instead of silently lingering on the old client until
+    // a full process restart. An unrelated apply (settings identical) still reuses, so the pool is
+    // not churned needlessly. The rebuilt client keeps the same `redirect: none` posture and
+    // per-thread shard structure.
+    let reuse_prior_client = prior.is_some_and(|p| p.client_settings == new_client_settings);
+    let upstream_client = if let (true, Some(p)) = (reuse_prior_client, prior) {
         // REUSED across applies: the pooled connections + their kept-alive upstream sockets.
         p.client.clone()
     } else {
@@ -1457,6 +1470,7 @@ pub fn build_app_from_config(
         by_model,
         pools,
         client: upstream_client.clone(),
+        client_settings: new_client_settings,
         auth: auth_mw.clone(),
         rewrite_hooks,
         tap_hooks,
@@ -1666,9 +1680,21 @@ pub fn build_app_from_config(
     // carry path, with the live registration set of each plane: a pruned subject is one no delegation
     // can name, so dropping its coalescing state and latch cannot race a verify (fail-closed intact).
     #[cfg(feature = "plane-a2a")]
-    if let Some(plane) = app.a2a.as_ref() {
+    {
+        // UNCONDITIONAL, like the MCP arm below: when the operator REMOVES the `agents:` block
+        // (`app.a2a` is None) the live subject set is EMPTY, so retain drops every carried a2a
+        // VerifyGate flight/drift-latch instead of leaking one per removed agent forever. Gating this
+        // on `app.a2a.is_some()` (as it once was) skipped the prune exactly when it was needed most —
+        // the whole plane going away. Fail-closed intact: a pruned subject is one no delegation can
+        // name, so dropping its coalescing state cannot race a verify.
         let live: std::collections::HashSet<String> =
-            plane.with_registrations(|regs| regs.iter().map(|r| r.agent_id.clone()).collect());
+            app.a2a
+                .as_ref()
+                .map_or_else(std::collections::HashSet::new, |plane| {
+                    plane.with_registrations(|regs| {
+                        regs.iter().map(|r| r.agent_id.clone()).collect()
+                    })
+                });
         app.a2a_verify.retain(&live);
     }
     #[cfg(feature = "plane-mcp")]

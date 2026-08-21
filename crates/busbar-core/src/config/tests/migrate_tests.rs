@@ -2008,6 +2008,89 @@ pools: {}
     );
 }
 
+/// The rescale-never-loosen invariant must hold for EVERY longer-than-month period the migrator can
+/// name, not just `yearly`.
+///
+/// `quarterly` and `biannually` fell through the old year-only classifier onto the `divisor == 1`
+/// branch, which carried the amount UNCHANGED onto the `month` window — a `quarterly` cap then spent
+/// its whole allowance EVERY MONTH (3x the operator's cap), a `biannually` cap 6x, while the emitted
+/// TODO wrongly claimed "(tighter, never looser)". Both must now RESCALE (quarter -> /3, biannual
+/// -> /6, rounded DOWN, floor 1) so the migrated cap can never spend MORE per unit time than the
+/// original, and the TODO must name the divisor it applied.
+#[test]
+fn quarterly_and_biannual_budget_periods_are_rescaled_never_loosened_onto_the_month_window() {
+    let raw = "\
+governance:
+  enabled: true
+  budget_groups:
+    quarter-team: { max_budget_cents: 900000, budget_period: quarterly }
+    biannual-team: { max_budget_cents: 600000, budget_period: biannually }
+    semiannual-team: { max_budget_cents: 600000, budget_period: semiannual }
+providers: {}
+models: {}
+pools: {}
+";
+    let (out, doc) = migrate_to_value(raw);
+    let field = |group: &str, key: &str| -> serde_yaml::Value {
+        dig(&doc, &["groups", group, "limits"])
+            .and_then(|v| v.as_sequence())
+            .and_then(|s| s.first())
+            .and_then(|l| l.as_mapping())
+            .and_then(|m| m.get(serde_yaml::Value::from(key)))
+            .cloned()
+            .unwrap_or(serde_yaml::Value::Null)
+    };
+
+    // quarterly: lands on the month window with the amount DIVIDED BY 3 (900_000/quarter is
+    // 300_000/month, NOT 900_000/month — carrying it unchanged is a 3x cap the operator never wrote).
+    assert_eq!(
+        field("quarter-team", "per"),
+        serde_yaml::Value::from("month")
+    );
+    assert_eq!(
+        field("quarter-team", "budget"),
+        serde_yaml::Value::from(300000u64),
+        "900_000/quarter must become 300_000/month; carrying it unchanged loosens the cap 3x"
+    );
+
+    // biannually / semiannual (twice-a-year = a 6-month period): DIVIDED BY 6.
+    for group in ["biannual-team", "semiannual-team"] {
+        assert_eq!(field(group, "per"), serde_yaml::Value::from("month"));
+        assert_eq!(
+            field(group, "budget"),
+            serde_yaml::Value::from(100000u64),
+            "{group}: 600_000/half-year must become 100_000/month; unchanged loosens the cap 6x"
+        );
+    }
+
+    // The invariant, stated as arithmetic: the migrated PER-MONTH cap must be <= the original cap's
+    // spend per month (original amount / months in the period), for each group.
+    let per_month = |group: &str| field(group, "budget").as_u64().unwrap();
+    assert!(per_month("quarter-team") <= 900000 / 3);
+    assert!(per_month("biannual-team") <= 600000 / 6);
+
+    // LOUD: each todo names the period, the month window, and the divisor it applied.
+    let todo_for = |needle: &str| {
+        out.todos
+            .iter()
+            .find(|t| t.contains(needle))
+            .unwrap_or_else(|| panic!("no todo for {needle}: {:?}", out.todos))
+            .clone()
+    };
+    assert!(
+        todo_for("quarter-team").contains("quarterly")
+            && todo_for("quarter-team").contains("month")
+            && todo_for("quarter-team").contains("DIVIDED BY 3"),
+        "quarterly todo must name the period, window and /3 rescale; got {:?}",
+        todo_for("quarter-team")
+    );
+    assert!(
+        todo_for("biannual-team").contains("DIVIDED BY 6"),
+        "biannual todo must name the /6 rescale; got {:?}",
+        todo_for("biannual-team")
+    );
+}
+
 /// The migrator NEVER takes a key off the document and then discards the value because it was
 /// not the shape the migration expected.
 ///

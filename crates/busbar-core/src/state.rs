@@ -189,6 +189,50 @@ impl UpstreamClients {
         // Mask, not modulo: the count is a power of two by construction (and >= 1).
         &self.shards[idx & (self.shards.len() - 1)]
     }
+
+    /// Do two `UpstreamClients` share the SAME underlying shard set (`Arc::ptr_eq`)? True exactly
+    /// when one was cloned from the other (a config apply that REUSED the prior client for pool
+    /// warmth); false when the shards were freshly built. Lets the apply path — and its tests —
+    /// distinguish "carried the warm pool forward" from "rebuilt with new client settings".
+    pub(crate) fn shares_pool_with(&self, other: &UpstreamClients) -> bool {
+        Arc::ptr_eq(&self.shards, &other.shards)
+    }
+}
+
+/// The subset of resolved limits that FEEDS the upstream reqwest client build — every setting
+/// whose change must produce a different client. On a config apply the prior client is reused (for
+/// its warm connection pool) ONLY when this snapshot is UNCHANGED; if any field here changed, the
+/// client is REBUILT so the new setting actually takes effect (a reused client would silently pin
+/// the old timeout / pool sizing / protocol posture until a full process restart). Every OTHER
+/// input to the builder (`connect_timeout`, `tcp_keepalive`, `tcp_nodelay`, the h2 keep-alive
+/// timers, and the `redirect: none` SSRF posture) is a compile-time constant, so this snapshot is
+/// exhaustive over the client-affecting configuration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct UpstreamClientSettings {
+    /// Overall streaming request timeout (`limits.upstream_request_timeout_secs`). Security-relevant:
+    /// a looser timeout is a resource-exhaustion surface, so a change here MUST rebuild.
+    pub(crate) upstream_request_timeout_secs: u64,
+    /// Per-host idle keep-alive socket budget (`limits.pool_max_idle_per_host`).
+    pub(crate) pool_max_idle_per_host: usize,
+    /// Idle keep-alive lifetime (`limits.pool_idle_timeout_secs`).
+    pub(crate) pool_idle_timeout_secs: u64,
+    /// Pin to HTTP/1.1 (`advanced.upstream_http1_only`).
+    pub(crate) upstream_http1_only: bool,
+    /// Force cleartext h2 prior-knowledge (`advanced.upstream_h2_prior_knowledge`).
+    pub(crate) upstream_h2_prior_knowledge: bool,
+}
+
+impl UpstreamClientSettings {
+    /// Project the client-affecting subset out of the fully-resolved limits.
+    pub(crate) fn from_limits(limits: &crate::config::LimitsResolved) -> Self {
+        Self {
+            upstream_request_timeout_secs: limits.upstream_request_timeout_secs,
+            pool_max_idle_per_host: limits.pool_max_idle_per_host,
+            pool_idle_timeout_secs: limits.pool_idle_timeout_secs,
+            upstream_http1_only: limits.upstream_http1_only,
+            upstream_h2_prior_knowledge: limits.upstream_h2_prior_knowledge,
+        }
+    }
 }
 
 /// Live per-pool depth of requests currently PARKED in an `on_exhausted: queue` wait — the real
@@ -299,6 +343,10 @@ pub struct App {
     /// The ALL-POOLS `upstream_credentials:` default — see [`App::upstream_creds`].
     pub(crate) upstream_credentials: crate::auth::UpstreamCreds,
     pub client: UpstreamClients,
+    /// The client-affecting resolved-limits snapshot THIS `client` was built from. Carried so the
+    /// next config apply can tell whether reusing `client` (warm pool) is safe: reuse only when this
+    /// is unchanged, else rebuild so a changed timeout / pool sizing / protocol posture takes effect.
+    pub(crate) client_settings: UpstreamClientSettings,
     pub(crate) auth: Arc<crate::auth::AuthMiddleware>,
     /// GLOBAL rewrite hooks — the `prompt: rw` gates named in `global_hooks`, resolved to their
     /// transports and sorted by ascending `priority` (the transform-chain order). Fired before

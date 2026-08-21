@@ -1456,6 +1456,84 @@ fn a_rebuild_carries_the_session_store_and_defaults_scan_off() {
     );
 }
 
+/// A hot config apply that CHANGES a client-affecting limit (here the upstream request timeout) must
+/// REBUILD the sharded upstream client so the new setting takes effect — not silently reuse the
+/// prior client and pin the old timeout until a full process restart. An apply that changes nothing
+/// client-relevant must REUSE the prior client (keeping its warm connection pool). Observed by shard
+/// -set pointer identity: reuse clones the same `Arc<[Client]>`, a rebuild allocates a fresh one.
+#[test]
+fn a_changed_upstream_timeout_rebuilds_the_client_an_unrelated_apply_reuses_it() {
+    crate::metrics::init();
+    let cfg = || {
+        cfg_with_provider_api_key(crate::config::SecretRef::env(
+            "BUSBAR_TEST_NO_SUCH_KEY_CLIENT_REBUILD",
+        ))
+    };
+
+    // Reuse half: an apply with an identical client-affecting settings snapshot carries the warm
+    // pool forward (same shard-set Arc).
+    let prior = build_once(cfg(), None).expect("boot");
+    let unchanged =
+        build_once(cfg(), Some(&prior)).expect("apply, nothing client-relevant changed");
+    assert!(
+        unchanged.client.shares_pool_with(&prior.client),
+        "an apply that changes no client-affecting setting must REUSE the prior client's warm pool"
+    );
+
+    // Rebuild half: bump the upstream request timeout and re-apply — the client MUST be rebuilt, or
+    // the new timeout never takes effect until restart.
+    let prior2 = build_once(cfg(), None).expect("boot");
+    let mut changed_cfg = cfg();
+    changed_cfg.limits.upstream_request_timeout_secs =
+        prior2.client_settings.upstream_request_timeout_secs + 7;
+    let rebuilt = build_once(changed_cfg, Some(&prior2)).expect("apply with a changed timeout");
+    assert!(
+        !rebuilt.client.shares_pool_with(&prior2.client),
+        "an apply that changes upstream_request_timeout_secs must REBUILD the client so the new \
+         timeout takes effect"
+    );
+    assert_eq!(
+        rebuilt.client_settings.upstream_request_timeout_secs,
+        prior2.client_settings.upstream_request_timeout_secs + 7,
+        "the rebuilt client's carried settings snapshot must reflect the new timeout"
+    );
+}
+
+/// Removing the `agents:` block (so `app.a2a` becomes None) must STILL prune the carried A2A
+/// VerifyGate — matching the self-cleaning MCP arm, which always retains against its live server set.
+/// The old code gated the a2a prune on `app.a2a.is_some()`, so tearing the whole plane down skipped
+/// the prune entirely and every removed agent's carried flight/drift-latch leaked forever. Here the
+/// carried gate holds a subject from an agent the deployment once fronted; an apply with no agents
+/// must drop it (retain against an EMPTY live set).
+#[cfg(feature = "plane-a2a")]
+#[test]
+fn removing_the_agents_block_still_prunes_carried_a2a_verify_entries() {
+    crate::metrics::init();
+    let cfg = || {
+        cfg_with_provider_api_key(crate::config::SecretRef::env(
+            "BUSBAR_TEST_NO_SUCH_KEY_A2A_PRUNE",
+        ))
+    };
+    let prior = build_once(cfg(), None).expect("boot");
+    // The carried gate accumulated per-subject coordination for an agent this deployment fronted
+    // (a latched drift diagnostic tracks the subject just as an in-flight verify would).
+    prior
+        .a2a_verify
+        .report(crate::plane::Plane::A2a, "retired-agent", true, false);
+    assert!(
+        prior.a2a_verify.tracks_subject("retired-agent"),
+        "seed: the carried a2a VerifyGate must track the subject before the apply"
+    );
+
+    // Apply with NO `agents:` block (`app.a2a` is None). The prune must STILL run against an empty
+    // live set and drop the carried subject.
+    let next = build_once(cfg(), Some(&prior)).expect("apply with agents removed");
+    assert!(
+        !next.a2a_verify.tracks_subject("retired-agent"),
+        "removing the agents: block must still prune the carried a2a VerifyGate entry, not leak it"
+    );
+}
+
 /// Rotating the admin-token secret on disk and RE-APPLYING changes the credential the process
 /// accepts. RED without the re-resolution: the digest stays on `tok-v1` forever.
 #[cfg(feature = "auth-admin-tokens")]
