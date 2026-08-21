@@ -177,7 +177,13 @@ const PROBE_RETRY_FLOOR_MS: u64 = 250;
 
 /// Advisory recovery floor for an inbound-shed request (`limits.max_inbound_concurrent`). Advisory
 /// only until the observability phase renders it.
-const SHED_RETRY_FLOOR_MS: u64 = 1000;
+///
+/// `pub(crate)` so the inbound-admission `Retry-After` DERIVES its whole-second value from this one
+/// source rather than hardcoding a bare `"1"` beside it — the same coupling
+/// [`AT_CAPACITY_RECOVERY_FLOOR_MS`] gives the proxy's at-capacity `Retry-After`. The store must not
+/// depend on `limits`, so the derivation lives at the consumer (`limits::admission`), reading this
+/// const, never the reverse.
+pub(crate) const SHED_RETRY_FLOOR_MS: u64 = 1000;
 
 /// At-capacity recovery FLOOR in milliseconds. A busy concurrency slot has no scheduled recovery
 /// the way a breaker `until` does, so absent a per-lane drain estimate this floor is the honest "back
