@@ -144,14 +144,11 @@ pub(crate) const PLANE_DECL: crate::plane::registry::PlaneDecl =
             Some(r.admission())
         },
         // THE MCP SLOT: the validated resource is already built by config resolution
-        // (`McpResource::from_cfg`, run once at `RootCfg` construction), so `build` here is the
-        // erasure of that ONE object into `Arc<dyn Any + Send + Sync>` — not a second construction.
-        // `None` exactly when `cfg.mcp` is `None`, matching `App::mcp`'s own absence.
-        build: |ctx| {
-            ctx.mcp
-                .cloned()
-                .map(|r| std::sync::Arc::new(r) as std::sync::Arc<dyn std::any::Any + Send + Sync>)
-        },
+        // (`McpResource::from_cfg`, run once at `RootCfg` construction) AND already type-erased at the
+        // composition root into the neutral `BuildCtx::mcp_slot`, so `build` here is a CLONE of that
+        // ONE opaque `Arc` — not a second construction and not a re-erasure. `None` exactly when
+        // `cfg.mcp` is `None`, matching `App::mcp`'s own absence.
+        build: |ctx| ctx.mcp_slot.clone(),
         mount: Some(mcp_mount),
         admin_routes: Some(mcp_admin_routes),
         openapi: Some(mcp_openapi_fragment),
