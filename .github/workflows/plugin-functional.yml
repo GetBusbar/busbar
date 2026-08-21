@@ -153,7 +153,7 @@ jobs:
 
       - name: Install Rust (only when something is built from source)
         if: ${{ inputs.busbar_version == 'this-tree' || inputs.plugin_ref == 'this-tree' }}
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.98.0
 
       # ── Resolve the busbar binary. A failure here does NOT try to be clever: the probe step below
       # ── guards on the binary's presence and records `did not run`, which verdict.sh reports as RED.

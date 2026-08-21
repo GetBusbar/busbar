@@ -516,7 +516,7 @@ jobs:
       # Node is the credential shim and the token minter, both shared with the MCP subject leg.
       - uses: actions/setup-node@v4
         with: { node-version: '22' }
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.98.0
       - uses: Swatinem/rust-cache@v2
 
       # THE SUBJECT IS BUILT FROM THIS COMMIT, and that is the change that makes this leg mean

@@ -450,7 +450,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.98.0
         with:
           components: rustfmt, clippy
       - name: Cache cargo
@@ -593,7 +593,7 @@ jobs:
       TAG: ${{ needs.plan.outputs.tag }}
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.98.0
       - uses: Swatinem/rust-cache@v2
       - name: Install cargo-cyclonedx
         run: cargo install cargo-cyclonedx --locked
@@ -622,7 +622,7 @@ jobs:
       TAG: ${{ needs.plan.outputs.tag }}
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.98.0
       - uses: Swatinem/rust-cache@v2
       - name: Emit the OpenAPI document from the release code
         # `openapi_doc()` (and the `emit_openapi_artifact` test) live behind the CI-ONLY
