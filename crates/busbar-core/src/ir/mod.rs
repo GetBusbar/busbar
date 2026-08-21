@@ -22,10 +22,11 @@ pub mod embeddings;
 /// a request, read from the IR and from nothing else. Beside the IR rather than beside the hooks so
 /// that "a hook sees the IR" is a compile-time fact; see the module header.
 pub mod facts;
-/// **A4b scaffolding (G6 step A4a.4).** The sealed, neutral `IrHandle` trait the operation-blind
-/// engine will hold once `IrReq`/`IrResp` dissolve. Unreferenced ⇒ byte-identical; see the module
-/// header for why it lands before the irreversible A4b relocation.
-pub(crate) mod handle;
+/// **A4b scaffolding (G6 steps A4a.4 / A4b pre-step 2).** The soft-sealed, neutral `IrHandle` trait
+/// the operation-blind engine will hold once `IrReq`/`IrResp` dissolve. `pub` (+ a `#[doc(hidden)]`
+/// `Sealed` supertrait) so the busbar-llm dialect handlers can implement it at A4b; still unreferenced
+/// ⇒ byte-identical. See the module header for why it lands before the irreversible A4b relocation.
+pub mod handle;
 pub mod image;
 pub mod invoke;
 pub mod moderation;
