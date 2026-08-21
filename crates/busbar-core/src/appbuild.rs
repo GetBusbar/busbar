@@ -1303,7 +1303,16 @@ pub fn build_app_from_config(
         Arc<dyn std::any::Any + Send + Sync>,
     > = {
         let ctx = crate::plane::registry::BuildCtx {
-            mcp: cfg.mcp.as_ref(),
+            // The MCP resource is TYPE-ERASED here, at the composition root, rather than inside the
+            // plane's `build` fn — so the `BuildCtx` seam carries an opaque slot and names no
+            // `crate::mcp` type. It is the SAME `Arc` the plane clones into `plane_slots` and the
+            // typed `App::mcp` field downcasts back out below, so the "one lowering, one Arc, two
+            // readers" invariant is unchanged.
+            mcp_slot: cfg
+                .mcp
+                .as_ref()
+                .cloned()
+                .map(|r| Arc::new(r) as Arc<dyn std::any::Any + Send + Sync>),
             agent_defs: &cfg.agent_defs,
             public_url: cfg.public_url.as_deref(),
         };
@@ -1512,11 +1521,6 @@ pub fn build_app_from_config(
                 &ref_slots,
             )?
         }),
-        // Downcast off the SAME `Arc` `plane_slots["mcp"]` holds — see the field's doc for why this
-        // and the type-erased map must never be two constructions of one config generation.
-        mcp: plane_slots
-            .get(crate::mcp::PLANE_DECL.key)
-            .and_then(|obj| obj.clone().downcast::<crate::mcp::McpResource>().ok()),
         // THE TYPE-ERASED SLOT MAP ITSELF (Step 2.3). Moved in last: every typed field above that
         // reads a plane's object does so by cloning out of this map first, so `plane_slots` and
         // (e.g.) `mcp`/`a2a` are guaranteed to agree — there is no second `build` call anywhere that

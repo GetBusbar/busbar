@@ -65,7 +65,14 @@ use super::Plane;
 /// A2A) actually read; a future plane needing another section adds a field here rather than gaining
 /// its own parameter list, so `build`'s signature never has to change per plane.
 pub(crate) struct BuildCtx<'a> {
-    pub(crate) mcp: Option<&'a crate::mcp::McpResource>,
+    /// The MCP plane's runtime object for THIS generation, ALREADY built and TYPE-ERASED at config
+    /// resolution (`McpResource::from_cfg` ran at `RootCfg` construction) and handed across this seam
+    /// as an OPAQUE slot — so the seam names no `crate::mcp` type. The MCP plane's `build` clones this
+    /// `Arc` into `plane_slots` unchanged rather than constructing a second one; `None` exactly when
+    /// `mcp:` is absent, matching `App::mcp`'s own absence. Erasing at the composition root instead of
+    /// in the plane's `build` is what removes the one concrete-type name this struct used to carry
+    /// into the eventual MCP extraction — the neutral analogue of how the LLM dialects left core.
+    pub(crate) mcp_slot: Option<std::sync::Arc<dyn std::any::Any + Send + Sync>>,
     pub(crate) agent_defs: &'a crate::a2a::config::AgentsCfg,
     pub(crate) public_url: Option<&'a str>,
 }

@@ -221,7 +221,7 @@ impl crate::ingress::protocol::Words for McpWords {
 /// the same validated config object, so there is no second spelling of it anywhere.
 impl crate::ingress::protocol::ResourceMetadata for McpWords {
     fn document(app: &crate::state::App) -> Option<crate::ingress::protocol::Metadata<'_>> {
-        let resource = app.mcp.as_ref()?;
+        let resource = super::resource(app)?;
         Some(crate::ingress::protocol::Metadata {
             resource: std::borrow::Cow::Borrowed(resource.canonical_uri()),
             authorization_servers: resource.authorization_servers(),
@@ -275,7 +275,7 @@ pub(crate) async fn rpc(
     // The resource is present whenever this route is mounted — the mount is what creates it. The
     // `Option` survives only so a future refactor that mounts the route without the config produces
     // a clean refusal instead of a panic on a request path; `serve` answers it as `PlaneAbsent`.
-    let resource = app.mcp.clone();
+    let resource = super::resource_arc(&app);
     // Borrowed rather than moved into the closure so the `Origin` read below and the mirrored
     // header reads inside it are two immutable borrows of one map rather than a clone of it.
     let headers = &headers;

@@ -37,13 +37,12 @@ fn minimal_app() -> Arc<App> {
         tool_pools: Default::default(),
         agent_pools: Default::default(),
         mcp_servers: Arc::new(Default::default()),
-        // Not an MCP server: the plane is absent and the dispatch table empty, which is what every
-        // path in this fixture is asserted against.
-        mcp: None,
+        // Not an MCP server: the plane is absent (no `"mcp"` slot in `plane_slots` below) and the
+        // dispatch table empty, which is what every path in this fixture is asserted against.
         oauth_as: None,
         planes: Arc::new(crate::plane::PlaneDispatch::default()),
-        // No `mcp:`/`agents:` configured — no slot for either, the same absence `mcp`/`a2a` below
-        // encode in their own typed fields.
+        // No `mcp:`/`agents:` configured — no slot for either (an empty map); the MCP plane reads its
+        // absence straight off this map now, and `a2a` still mirrors it in its typed field below.
         plane_slots: Default::default(),
         agent_defs: Default::default(),
         // No `agents:`, therefore no plane: the same `None` a deployment that fronts no agents gets.
