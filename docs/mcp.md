@@ -26,7 +26,7 @@ This is a property of the boot path rather than a claim about defaults. `App::pl
 - `PlaneDispatch` claims no path for MCP, so `admission_for` answers `None` and the RFC 8707 audience check costs one `Option` test;
 - nothing inbound can reach a `tools:` registration, because nothing inbound is mounted.
 
-**One thing an absent `mcp:` block does NOT switch off: the outbound sweep.** The tool-list refresh job is keyed on the *registry*, not on the plane. `spawn_refresh_job` returns `None` only when the catalogue is empty (`crates/busbar-core/src/mcp/connect.rs:708-710`), the catalogue is built unconditionally from `tools:` (`crates/busbar-core/src/appbuild.rs:1500`), and the spawn is unconditional (`crates/busbar/src/main.rs:922`). So a deployment that writes `tools:` and no `mcp:` block still reaches those upstreams on their `refresh_ttl:` — outbound, and on the sweep's own clock. If you want no traffic to a registration at all, remove the registration; an absent `mcp:` block only closes the door in one direction.
+There is **no background job to switch off**: an upstream is re-verified lazily, on the `tools/call` path (verify-on-call — see [Tool and agent trust](/docs/tool-and-agent-trust/)), so a registration nothing calls is never reached. An absent `mcp:` block closes the inbound door, and with no inbound call there is nothing to trigger an outbound fetch. If you want no traffic to a registration at all, remove the registration.
 
 A plane exists because it is configured, not because its name appears in a path (`crates/busbar-core/src/plane/mod.rs:505-509`).
 
@@ -110,7 +110,7 @@ Naming a server `hooks` or `upstream_credentials` is refused at parse with a mes
 | `args` | list of strings | no; **refused** on non-stdio | `[]` | The child's argv, verbatim. Never split on spaces. |
 | `env` | map of name → string \| secret ref | no; **refused** on non-stdio | `{}` | The child's WHOLE environment. |
 | `cwd` | string | no; **refused** on non-stdio | Busbar's own | Absolute. |
-| `refresh_ttl` | `<n><s\|m\|h\|d>` | no | `6h` (`mcp/config.rs:646`) | How long an observation of this upstream's tool list stays fresh. |
+| `verify_ttl` | `<n><s\|m\|h\|d>` | no | `5s` (`mcp/config.rs`) | The longest an observation of this upstream's tool list may be reused on the `tools/call` path before it is re-fetched and re-verified. `0` = strict-live (re-verify every call); a larger value is an explicit security downgrade. Renamed from `refresh_ttl` in 1.6.0 — see [Tool and agent trust](/docs/tool-and-agent-trust/). |
 | `timeout` | `<n><s\|m\|h\|d>` | no | `30s` (`mcp/upstream.rs:72`) | Wall-clock budget for one outbound leg (the tool call; separately, the RFC 8693 exchange). `0` is refused. |
 | `tools_allow` | map of tool name → object | no | `{}` | The approved tools. A map, not a list, because every tool needs a slot for its approved schema hash. |
 | `prompts_allow` | map of prompt name → object | no | `{}` | |
@@ -159,7 +159,7 @@ tools:
   acme:
     url: https://tools.acme.example/mcp
     pin: { mechanism: cert_spki, key: "sha256/…" }
-    refresh_ttl: 6h
+    verify_ttl: 5s
     timeout: 30s
     aud: https://tools.acme.example/mcp
     token_exchange:
@@ -193,7 +193,7 @@ All of these are checked by `validate_server` / `validate_endpoint`, which is ca
 | `allow_private:` on `stdio` | there is no address for it to widen | `1175-1180` |
 | rooted `pin.mechanism` with no `pin.key` | a pin with nothing to verify with is not a pin | `1218-1225` |
 | `pin.mechanism: unpinned` carrying `pin.key` | key material never verified against reads as protection that does not exist | `1226-1232` |
-| `refresh_ttl:` unparseable | parsed at boot so it lands on the operator, not on a silent fallback six hours later | `1237-1239` |
+| `verify_ttl:` unparseable | parsed at boot so it lands on the operator, not on a silent fallback later | `mcp/config.rs` |
 | `timeout:` unparseable, or `0` | zero would refuse every call before it was sent. There is deliberately no spelling for "unlimited" | `1246-1256` |
 | `roots[n].uri` not a non-empty `file://` URI | MCP roots are filesystem roots | `1263-1272` |
 | `roots:` declared with `grants.roots: false` | the gate runs before the satisfier, so the list would never be disclosed | `1273-1279` |
@@ -361,7 +361,7 @@ The revision Busbar implements is `2026-07-28`, and it is the only one (`crates/
 
 For an MCP host that runs Busbar as a child process (Claude Desktop-class), `busbar --mcp-stdio` serves the MCP plane on Busbar's own stdin and stdout, newline-delimited JSON-RPC, and **binds no listener at all** — a child that opened ports would be a network server its supervisor never asked for (`crates/busbar/src/main.rs:934-951`).
 
-The **same boot** runs: config load, plugin preflight, governance, the flusher and the refresh jobs. Every line read from stdin is fed to the same serve sequence the HTTP endpoint runs, with the same envelope rules and the same dispatch, so a request the HTTP plane would refuse is refused here with the same code and the same sentence (`crates/busbar-core/src/mcp/stdio_serve.rs:7-15`). The mirrored routing headers are synthesised from the body — a pipe has no header block and no intermediary — so a body defect stays a body defect rather than being converted into a header defect.
+The **same boot** runs: config load, plugin preflight, governance and the flusher. Every line read from stdin is fed to the same serve sequence the HTTP endpoint runs, with the same envelope rules and the same dispatch, so a request the HTTP plane would refuse is refused here with the same code and the same sentence (`crates/busbar-core/src/mcp/stdio_serve.rs:7-15`). The mirrored routing headers are synthesised from the body — a pipe has no header block and no intermediary — so a body defect stays a body defect rather than being converted into a header defect.
 
 **Governance is bound once, at boot, for the whole session.** A stdio caller presents no per-request bearer, so `BUSBAR_MCP_STDIO_CREDENTIAL` carries the same credential the HTTP plane accepts, judged by the same sequence: the RFC 8707 audience pre-filter against `mcp.canonical_uri`, then the configured auth chain, then the one identity resolution the HTTP middleware itself calls (`crates/busbar-core/src/mcp/stdio_serve.rs:29-47`, `:108-111`). A credential the HTTP door would refuse is refused here; one it would admit binds the session to the same principal, the same budgets, the same audit attribution and the same hooks. **A configured chain with no credential, or a refused one, is a refusal to serve** — nonzero exit, a sentence on stderr — exactly as the HTTP door answers `401`.
 
@@ -411,15 +411,15 @@ Tool identity on this plane is `(server, tool, schema-hash)`. Two things have to
 
 A registration with no authenticity root (`pin.mechanism: unpinned`) is registrable and **never approvable** — it is enforced by what is constructible rather than by a check a later edit could relax (`crates/busbar-core/src/mcp/catalogue.rs:70-74`). A tool with an empty `tools_allow` value object is `pending` and does not dispatch.
 
-**The rug-pull defence needs a live observation, and that is what the refresh job supplies.** Comparing an approved digest against the digest the operator wrote in config is comparing intent with itself and is structurally incapable of noticing an upstream changing its schema underneath (`crates/busbar-core/src/mcp/connect.rs:7-14`). So Busbar fetches each registered server's live tool list on its own `refresh_ttl:` and re-hashes it **from the bytes the upstream sent** — never adopting a digest the upstream supplied, which would be the rug-pull with an extra step. A refresh that fails is recorded as a failure, not dropped: a server Busbar could not reach must never present as trusted.
+**The rug-pull defence needs a live observation, and verify-on-call supplies it on the call path.** Comparing an approved digest against the digest the operator wrote in config is comparing intent with itself and is structurally incapable of noticing an upstream changing its schema underneath (`crates/busbar-core/src/mcp/connect.rs`). So on each `tools/call`, before the digest comparison, Busbar re-fetches the server's live tool list if its last observation is older than `verify_ttl` and re-hashes it **from the bytes the upstream sent** — never adopting a digest the upstream supplied, which would be the rug-pull with an extra step. A fetch that fails is recorded as a failure, not dropped, and the call is refused **fail-closed**: a server Busbar could not re-verify must never present as trusted. The full model — the fingerprint, the `verify_ttl` bound, single-flight coalescing, fail-closed — is in [Tool and agent trust](/docs/tool-and-agent-trust/).
 
-The sweep job ticks every 30 seconds and is not configurable (`crates/busbar-core/src/trust/sweep.rs:49-56`). That constant only decides how finely the job notices that a per-registration TTL elapsed; the cadence you control is `refresh_ttl:`. There is deliberately no key that slows detection, none that delays a quarantine, and no per-server "skip if it failed last time" — every one of those would be a window an upstream could open for itself by misbehaving.
+There is **no background sweep and no timer**. Re-verification is lazy and single-flight: within `verify_ttl` the snapshot is reused (0 fetches); past it, N concurrent callers coalesce into exactly one fetch. `verify_ttl` (default `5s`) is the only knob — there is deliberately no key that slows detection below it, none that delays a quarantine, and no per-server "skip if it failed last time", every one of which would be a window an upstream could open for itself by misbehaving.
 
-An upstream's own `notifications/tools/list_changed` can only ever bring a refresh **forward**, and its contents are never read: an attacker-controlled trigger may not choose the moment freely and may not choose the content at all (`crates/busbar-core/src/mcp/connect.rs:26-30`).
+An upstream's own `notifications/tools/list_changed` can only ever mark the snapshot **stale** so the next call re-verifies, and its contents are never read: an attacker-controlled trigger may not choose the moment freely and may not choose the content at all (`crates/busbar-core/src/mcp/connect.rs`).
 
-**A quarantine survives a restart.** What is written to the store is not "this server is quarantined" but "a live observation of this server disagreed with the approval, at this time" — an observation replayed at boot, with the derivation running unchanged on top of it (`crates/busbar-core/src/mcp/demotion.rs:22-35`). A server with no record replays as nothing at all and falls back to the declarative approval, exactly as before: the absence of a row is not a demotion. The record is cleared by the first observation that agrees with the approval again — fix the upstream, the sweep looks, the row goes. A restart does not clear it, which is the whole point.
+**A quarantine survives a restart.** What is written to the store is not "this server is quarantined" but "a live observation of this server disagreed with the approval, at this time" — an observation replayed at boot, with the derivation running unchanged on top of it (`crates/busbar-core/src/mcp/demotion.rs`). A server with no record replays as nothing at all and falls back to the declarative approval, exactly as before: the absence of a row is not a demotion. The record is cleared by the first observation that agrees with the approval again — the record is written on the call path, so the first call after a fix clears it. A restart does not silently re-open it: `tools/list` does not itself re-verify, so the persisted demotion keeps a drifted tool un-advertised until an operator works it.
 
-> **Stated gap.** Drift has two axes and the refresh path observes one of them. The **capability** axis (digests over name, description and input schema) is fully observed. The **identity** axis is not: the shared HTTP client does not surface the peer's certificate SPKI to that layer, so a certificate rotation is invisible to the refresh path. It is invisible; it is not silently reported as verified (`crates/busbar-core/src/mcp/connect.rs:32-41`).
+> **Stated gap.** Drift has two axes and the fetch path observes one of them. The **capability** axis (digests over name, description and input schema) is fully observed. The **identity** axis is not: the shared HTTP client does not surface the peer's certificate SPKI to that layer, so a certificate rotation is invisible to it. It is invisible; it is not silently reported as verified (`crates/busbar-core/src/mcp/connect.rs`).
 
 ### Operator surfaces
 
