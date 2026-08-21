@@ -71,6 +71,16 @@ pub(crate) enum A2aError {
     TaskNotFound,
     /// The task exists and is in a state from which cancellation is not defined.
     TaskNotCancelable,
+    /// A2A section 5.4 `PushNotificationNotSupportedError`: the caller asked to configure push
+    /// notifications for a task on a backend that does not offer them. Client-actionable
+    /// (`FAILED_PRECONDITION` / HTTP 400) — the request is well formed and the served
+    /// configuration is what cannot satisfy it. A variant so a relayed backend `-32003` carries
+    /// through with its own semantics rather than collapsing to a gateway fault.
+    PushNotificationNotSupported,
+    /// A2A section 5.4 `ExtensionSupportRequiredError`: the request needs a protocol extension the
+    /// served endpoint does not support. Same client-actionable binding as the row above
+    /// (`FAILED_PRECONDITION` / HTTP 400 per the harness's `a2aht/spec.py::ERROR_MAP`).
+    ExtensionSupportRequired,
     /// The caller asked for something this deployment does not do, or may not do for them. The
     /// nearest binding for busbar's own admission refusals; the message names the real reason.
     UnsupportedOperation,
@@ -108,10 +118,12 @@ impl A2aError {
         match self {
             A2aError::TaskNotFound => -32001,
             A2aError::TaskNotCancelable => -32002,
+            A2aError::PushNotificationNotSupported => -32003,
             A2aError::UnsupportedOperation => -32004,
             A2aError::ContentTypeNotSupported => -32005,
             A2aError::InvalidAgentResponse => -32006,
             A2aError::ExtendedAgentCardNotConfigured => -32007,
+            A2aError::ExtensionSupportRequired => -32008,
             A2aError::VersionNotSupported => -32009,
             A2aError::InvalidRequest => -32600,
             A2aError::MethodNotFound => -32601,
@@ -143,9 +155,10 @@ impl A2aError {
             // so no single branch's compiler ever asked the question. It is the same row
             // [`Self::status`] answers `FAILED_PRECONDITION` and `http_status` answers 400 with:
             // the request is well formed and the deployment's configuration cannot satisfy it.
-            A2aError::TaskNotCancelable | A2aError::ExtendedAgentCardNotConfigured => {
-                tonic::Code::FailedPrecondition
-            }
+            A2aError::TaskNotCancelable
+            | A2aError::ExtendedAgentCardNotConfigured
+            | A2aError::PushNotificationNotSupported
+            | A2aError::ExtensionSupportRequired => tonic::Code::FailedPrecondition,
             A2aError::UnsupportedOperation | A2aError::VersionNotSupported => {
                 tonic::Code::Unimplemented
             }
@@ -165,6 +178,8 @@ impl A2aError {
         match self {
             A2aError::TaskNotFound => Some("TASK_NOT_FOUND"),
             A2aError::TaskNotCancelable => Some("TASK_NOT_CANCELABLE"),
+            A2aError::PushNotificationNotSupported => Some("PUSH_NOTIFICATION_NOT_SUPPORTED"),
+            A2aError::ExtensionSupportRequired => Some("EXTENSION_SUPPORT_REQUIRED"),
             A2aError::UnsupportedOperation => Some("UNSUPPORTED_OPERATION"),
             A2aError::ContentTypeNotSupported => Some("CONTENT_TYPE_NOT_SUPPORTED"),
             A2aError::InvalidAgentResponse => Some("INVALID_AGENT_RESPONSE"),
@@ -196,9 +211,10 @@ impl A2aError {
             // `a2aht/spec.py::ERROR_MAP` transcribes: the request is well formed and the
             // deployment's configuration is what cannot satisfy it, which is a precondition and not
             // an argument.
-            A2aError::TaskNotCancelable | A2aError::ExtendedAgentCardNotConfigured => {
-                "FAILED_PRECONDITION"
-            }
+            A2aError::TaskNotCancelable
+            | A2aError::ExtendedAgentCardNotConfigured
+            | A2aError::PushNotificationNotSupported
+            | A2aError::ExtensionSupportRequired => "FAILED_PRECONDITION",
             A2aError::UnsupportedOperation
             | A2aError::VersionNotSupported
             | A2aError::MethodNotFound => "UNIMPLEMENTED",
@@ -223,10 +239,12 @@ impl A2aError {
         Some(match code {
             -32001 => A2aError::TaskNotFound,
             -32002 => A2aError::TaskNotCancelable,
+            -32003 => A2aError::PushNotificationNotSupported,
             -32004 => A2aError::UnsupportedOperation,
             -32005 => A2aError::ContentTypeNotSupported,
             -32006 => A2aError::InvalidAgentResponse,
             -32007 => A2aError::ExtendedAgentCardNotConfigured,
+            -32008 => A2aError::ExtensionSupportRequired,
             -32009 => A2aError::VersionNotSupported,
             -32600 => A2aError::InvalidRequest,
             -32601 => A2aError::MethodNotFound,
@@ -250,6 +268,11 @@ impl A2aError {
             // section 5.4's own row for this one is also 400: the request is well formed and the
             // agent's configuration is what cannot satisfy it.
             | A2aError::ExtendedAgentCardNotConfigured
+            // section 5.4 (and the harness's `a2aht/spec.py::ERROR_MAP`) bind both of these to
+            // FAILED_PRECONDITION / 400: the request is well formed and the served endpoint's
+            // capabilities are what cannot satisfy it.
+            | A2aError::PushNotificationNotSupported
+            | A2aError::ExtensionSupportRequired
             // A2A section 5.4's own row: a version this server does not speak is a CLIENT fault and
             // answers 400, not 505 — the HTTP version and the A2A version are different facts.
             | A2aError::VersionNotSupported => 400,

@@ -109,3 +109,40 @@ fn an_id_that_was_never_sent_is_null_rather_than_absent() {
     // plane, and what this asserts, is that the null renders onto the wire at all.
     assert_eq!(body(&Value::Null, A2aError::Parse, "x")["id"], Value::Null);
 }
+
+#[test]
+fn push_notification_not_supported_and_extension_support_required_round_trip() {
+    // Regression (CF1): A2A section 5.4 defines `-32003 PushNotificationNotSupportedError` and
+    // `-32008 ExtensionSupportRequiredError`, both bound to FAILED_PRECONDITION / HTTP 400 (see the
+    // harness's `a2aht/spec.py::ERROR_MAP`). The code table used to jump -32002 -> -32004, so a
+    // relayed backend answering -32003/-32008 got `from_code == None` and was collapsed to a generic
+    // gateway fault (-32006 InvalidAgentResponse, 500) on the relay path — the caller could no longer
+    // tell a client-actionable refusal from an outage.
+    for (code, err, reason) in [
+        (
+            -32003,
+            A2aError::PushNotificationNotSupported,
+            "PUSH_NOTIFICATION_NOT_SUPPORTED",
+        ),
+        (
+            -32008,
+            A2aError::ExtensionSupportRequired,
+            "EXTENSION_SUPPORT_REQUIRED",
+        ),
+    ] {
+        assert_eq!(A2aError::from_code(code), Some(err), "from_code({code})");
+        assert_eq!(err.code(), code as i32, "{err:?} code round-trips");
+        assert_eq!(err.http_status(), 400, "{err:?} is HTTP 400");
+        assert_eq!(err.status(), "FAILED_PRECONDITION", "{err:?} status");
+        assert_eq!(err.reason(), Some(reason), "{err:?} reason");
+        // The relay path (receive.rs) looks the backend code up here and re-emits err.code(), so a
+        // backend -32003 now reaches the caller as -32003 rather than -32006.
+        let relayed = A2aError::from_code(code).expect("defined code");
+        assert_eq!(relayed.code(), code as i32, "relayed code carried through");
+        assert_ne!(
+            relayed.code(),
+            A2aError::InvalidAgentResponse.code(),
+            "{err:?} must not collapse to the gateway-fault code"
+        );
+    }
+}
