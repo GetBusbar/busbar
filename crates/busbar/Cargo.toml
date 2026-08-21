@@ -66,7 +66,7 @@ proto-llm = ["dep:busbar-llm"]
 # registration line in main.rs. ONE switch for MCP the protocol codec today and MCP the plane once
 # it folds in — never two — so it keeps the plane-kind name `plane-mcp` rather than a `proto-mcp`
 # that would imply the plane rode a different knob. Default-on: the shipped binary speaks MCP.
-plane-mcp = ["dep:busbar-mcp"]
+plane-mcp = ["dep:busbar-mcp", "busbar-core/plane-mcp"]
 # NOT in `default` and NOT yet referenced from main.rs — the A2A crate is still an empty shell (see
 # the dependency comment above). This exists so the later plane/codec-move step has a feature to
 # flip; flipping it today would add a dependency edge to an empty crate and nothing else.

@@ -1066,7 +1066,16 @@ impl AdminService {
                 .iter()
                 .map(|(name, cfg)| export_def_view(name, cfg))
                 .collect(),
-            NamedMapSection::Tools => crate::mcp::admin_view::list(&self.app),
+            NamedMapSection::Tools => {
+                #[cfg(feature = "plane-mcp")]
+                {
+                    crate::mcp::admin_view::list(&self.app)
+                }
+                #[cfg(not(feature = "plane-mcp"))]
+                {
+                    Vec::new() // no `tools:` registry when the MCP plane is compiled out
+                }
+            }
             NamedMapSection::Agents => self
                 .app
                 .agent_defs
@@ -1109,7 +1118,16 @@ impl AdminService {
                 .export_defs
                 .get(name)
                 .map(|cfg| export_def_view(name, cfg)),
-            NamedMapSection::Tools => crate::mcp::admin_view::get(&self.app, name),
+            NamedMapSection::Tools => {
+                #[cfg(feature = "plane-mcp")]
+                {
+                    crate::mcp::admin_view::get(&self.app, name)
+                }
+                #[cfg(not(feature = "plane-mcp"))]
+                {
+                    None
+                }
+            }
             NamedMapSection::Agents => self
                 .app
                 .agent_defs
@@ -2448,17 +2466,20 @@ fn rebuild_hook_derived(next: &mut crate::state::App) {
 }
 
 fn reresolve_plane_gates(next: &mut crate::state::App) {
-    let servers = std::sync::Arc::clone(&crate::mcp::runtime(next).servers);
-    next.mcp_server_gates = crate::hooks::resolve_container_gates(
-        servers
-            .servers
-            .iter()
-            .map(|(n, d)| (n.as_str(), d.hooks.as_slice())),
-        &servers.all_server_hooks,
-        &next.hook_registry,
-        &next.hook_env,
-        next.config_version,
-    );
+    #[cfg(feature = "plane-mcp")] // no MCP runtime to read when the plane is compiled out
+    {
+        let servers = std::sync::Arc::clone(&crate::mcp::runtime(next).servers);
+        next.mcp_server_gates = crate::hooks::resolve_container_gates(
+            servers
+                .servers
+                .iter()
+                .map(|(n, d)| (n.as_str(), d.hooks.as_slice())),
+            &servers.all_server_hooks,
+            &next.hook_registry,
+            &next.hook_env,
+            next.config_version,
+        );
+    }
     let agents = next.agent_defs.clone();
     next.a2a_agent_gates = crate::hooks::resolve_container_gates(
         agents

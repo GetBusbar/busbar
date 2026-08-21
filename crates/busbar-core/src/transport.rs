@@ -194,6 +194,11 @@ impl Transport {
     ///
     /// The returned wire is ZERO-SIZED and `'static`: everything per-upstream (sockets, children,
     /// deadlines) rides on `WireLeg`, so this is a table lookup and not a construction.
+    // The one match on the transport axis, and it hands back an MCP client wire — a type that only
+    // exists when the MCP plane is compiled in. It is called ONLY from `crate::mcp` (the client
+    // legs), so with `plane-mcp` off it is dead; gating it here removes the last non-mcp source that
+    // would name an `mcp` type, without relocating the match off the transport axis.
+    #[cfg(feature = "plane-mcp")]
     pub(crate) fn mcp_wire(self) -> &'static dyn crate::mcp::client::wire::McpWire {
         match self {
             Transport::Http => &crate::mcp::client::transport::HttpTransport,

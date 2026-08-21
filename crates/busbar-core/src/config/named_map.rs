@@ -140,7 +140,19 @@ impl NamedMapSection {
         match self {
             NamedMapSection::IdentityProviders => deploy.identity_providers.contains_key(name),
             NamedMapSection::Export => deploy.export.contains_key(name),
-            NamedMapSection::Tools => deploy.tools.servers.contains_key(name),
+            NamedMapSection::Tools => {
+                #[cfg(feature = "plane-mcp")]
+                {
+                    deploy.tools.servers.contains_key(name)
+                }
+                // With the MCP plane compiled out there is no `tools:` registry (a `tools:` section
+                // is refused at resolve), so no name is base-config-defined on it.
+                #[cfg(not(feature = "plane-mcp"))]
+                {
+                    let _ = (deploy, name);
+                    false
+                }
+            }
             NamedMapSection::Agents => deploy.agents.agents.contains_key(name),
         }
     }
@@ -166,11 +178,21 @@ impl NamedMapSection {
                 .export
                 .get(name)
                 .and_then(|cfg| serde_json::to_value(cfg).ok()),
-            NamedMapSection::Tools => deploy
-                .tools
-                .servers
-                .get(name)
-                .and_then(|cfg| serde_json::to_value(cfg).ok()),
+            NamedMapSection::Tools => {
+                #[cfg(feature = "plane-mcp")]
+                {
+                    deploy
+                        .tools
+                        .servers
+                        .get(name)
+                        .and_then(|cfg| serde_json::to_value(cfg).ok())
+                }
+                #[cfg(not(feature = "plane-mcp"))]
+                {
+                    let _ = (deploy, name);
+                    None
+                }
+            }
             NamedMapSection::Agents => deploy
                 .agents
                 .agents
@@ -231,6 +253,7 @@ impl NamedMapSection {
             NamedMapSection::Export => serde_json::from_value(def.clone())
                 .map(NamedDef::Export)
                 .map_err(|e| format!("invalid `export.{name}` definition: {e}")),
+            #[cfg(feature = "plane-mcp")]
             NamedMapSection::Tools => serde_json::from_value(def.clone())
                 .map_err(|e| format!("invalid `tools.{name}` definition: {e}"))
                 .and_then(|cfg: crate::mcp::config::McpServerDefCfg| {
@@ -243,6 +266,16 @@ impl NamedMapSection {
                     crate::mcp::config::validate_server(name, &cfg)?;
                     Ok(NamedDef::Tool(Box::new(cfg)))
                 }),
+            // With the MCP plane compiled out, a `tools:` definition names a plane this build does
+            // not carry — refuse it, exactly as `resolve` refuses a `tools:` section.
+            #[cfg(not(feature = "plane-mcp"))]
+            NamedMapSection::Tools => {
+                let _ = def;
+                Err(format!(
+                    "`tools.{name}`: this build was compiled without the MCP plane (feature \
+                     `plane-mcp` is off), so it cannot register an MCP server."
+                ))
+            }
             NamedMapSection::Agents => serde_json::from_value(def.clone())
                 .map_err(|e| format!("invalid `agents.{name}` definition: {e}"))
                 .and_then(|cfg: AgentDefCfg| {
@@ -330,7 +363,9 @@ pub(crate) enum NamedDef {
     Export(ExportDefCfg),
     // BOXED because `McpServerDefCfg` carries three `IndexMap`s and is by far the largest variant;
     // an unboxed one would make every `NamedDef` — including the two small ones on the hot admin
-    // write path — as wide as the widest.
+    // write path — as wide as the widest. Absent when the MCP plane is compiled out (nothing parses
+    // a `tools:` definition then).
+    #[cfg(feature = "plane-mcp")]
     Tool(Box<crate::mcp::config::McpServerDefCfg>),
     Agent(AgentDefCfg),
 }
@@ -346,6 +381,7 @@ impl NamedDef {
             NamedDef::Export(cfg) => {
                 deploy.export.insert(name.to_string(), cfg);
             }
+            #[cfg(feature = "plane-mcp")]
             NamedDef::Tool(cfg) => {
                 deploy.tools.servers.insert(name.to_string(), *cfg);
             }

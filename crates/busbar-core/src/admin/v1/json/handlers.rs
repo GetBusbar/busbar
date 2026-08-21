@@ -4647,19 +4647,23 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
     typed!("/hooks/{name}", "put", "200", HookView);
     typed!("/hooks/{name}/settings", "patch", "200", HookView);
     typed!("/hooks/{name}/health", "get", "200", HookHealthView);
-    // MCP trust verbs.
+    // MCP trust verbs — present only when the MCP plane is compiled in (`plane-mcp`). With the plane
+    // off these paths are not served and carry no response schema.
+    #[cfg(feature = "plane-mcp")]
     typed!(
         "/tools/{name}/connect",
         "post",
         "200",
         crate::mcp::admin_view::McpTrustView
     );
+    #[cfg(feature = "plane-mcp")]
     typed!(
         "/tools/{name}/changes",
         "get",
         "200",
         crate::mcp::admin_view::McpTrustView
     );
+    #[cfg(feature = "plane-mcp")]
     typed!(
         "/tools/{name}/health",
         "get",

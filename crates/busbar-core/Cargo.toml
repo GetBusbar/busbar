@@ -89,9 +89,16 @@ rustls-pki-types = { workspace = true }
 # `admin-tokens` match arm IN CORE — still a feature-gated arm inside the engine rather than a
 # dependency edge owned by the composition root. Moving that registration to the binary is the
 # protocol-extraction step's job; this split is what makes it possible. Do not "fix" it here.
-default = ["auth-admin-tokens", "hooks-ranking"]
+default = ["auth-admin-tokens", "hooks-ranking", "plane-mcp"]
 auth-admin-tokens = ["dep:busbar-auth-admin-tokens"]
 hooks-ranking = ["dep:busbar-hooks-ranking"]
+# THE MCP PLANE, in-core today (`src/mcp`), behind the SAME switch the binary already uses for MCP
+# the protocol codec (`busbar-mcp`): one plane-kind name for MCP-the-protocol and MCP-the-plane,
+# never two. Default-on — the shipped engine speaks MCP. With it OFF, `src/mcp` is compiled out and
+# the `tools:`/`mcp:` config sections are captured raw and refused if used, so core still routes the
+# LLM and A2A planes with the MCP plane absent (the plane-split deletion test). The binary's
+# `plane-mcp` forwards to this via `busbar-core/plane-mcp`.
+plane-mcp = []
 openapi-schema = ["dep:schemars"]
 loom-model = ["dep:loom"]
 txn-fence-red = []

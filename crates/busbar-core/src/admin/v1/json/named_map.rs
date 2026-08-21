@@ -662,7 +662,18 @@ fn section_contains(app: &App, section: NamedMapSection, name: &str) -> bool {
     match section {
         NamedMapSection::IdentityProviders => app.identity_providers.contains_key(name),
         NamedMapSection::Export => app.export_defs.contains_key(name),
-        NamedMapSection::Tools => crate::mcp::runtime(app).servers.servers.contains_key(name),
+        NamedMapSection::Tools => {
+            #[cfg(feature = "plane-mcp")]
+            {
+                crate::mcp::runtime(app).servers.servers.contains_key(name)
+            }
+            // No MCP plane compiled in ⇒ no live `tools:` registry.
+            #[cfg(not(feature = "plane-mcp"))]
+            {
+                let _ = (app, name);
+                false
+            }
+        }
         NamedMapSection::Agents => app.agent_defs.agents.contains_key(name),
     }
 }

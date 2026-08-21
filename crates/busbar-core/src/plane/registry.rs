@@ -327,6 +327,7 @@ pub struct PlaneDecl {
 /// Order is the operator-visible LAYERING order, unchanged from `Plane::ALL`.
 static BUILTIN_PLANE_DECLS: &[&PlaneDecl] = &[
     &crate::proto::PLANE_DECL,
+    #[cfg(feature = "plane-mcp")]
     &crate::mcp::PLANE_DECL,
     &crate::a2a::PLANE_DECL,
 ];

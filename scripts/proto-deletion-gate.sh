@@ -33,18 +33,20 @@
 #                 and it is what proves the protocol crates are independently droppable rather than
 #                 droppable only as a set.
 #
-# WHAT THE MCP LEG DELIBERATELY DOES NOT CLAIM, so nobody later reads it as proving more:
-#   MCP's HTTP surface (`POST /mcp`) is served by the mcp/ PLANE in busbar-core — its own router
-#   mount, gated by the `tools:` config section — and NOT by this protocol crate's cells. The crate
-#   carries MCP the PROTOCOL (its ProtocolDecl and the tools/call + subscribe codecs); the plane did
-#   not travel with it, because a `&'static ProtocolDecl` carries no AppState/config/boot handle and
-#   there is no plane-kind seam in core yet. So dropping `plane-mcp` removes MCP from the protocol
-#   registry, and it does NOT change what `/mcp` answers. There is therefore no honest HTTP probe
-#   for this leg, and one is not invented here: the registry-level property is pinned by a unit test
-#   instead (proto/tests/registry_tests.rs::a_codec_less_declaration_does_not_move_the_operator_
-#   visible_list_when_it_is_folded_ahead, plus the crate's own suite, which runs in BOTH the crate
-#   build and core's dual-compiled build). When the plane-kind seam lands and the plane leaves core,
-#   THIS is the leg that grows the `/mcp` probe.
+# WHAT THE MCP LEG NOW CLAIMS (D3): dropping `plane-mcp` compiles out BOTH halves of MCP — the
+#   protocol codec crate (busbar-mcp) AND the MCP PLANE in `busbar-core/src/mcp` (gated by the
+#   `busbar-core/plane-mcp` feature the binary's `plane-mcp` forwards). Core names no `crate::mcp`
+#   type in that build, so:
+#     * mcp-b: the binary BUILDS, BOOTS and SERVES its operator surface (/healthz, /stats), and
+#       `POST /mcp` resolves to NO plane handler (non-2xx) — the plane's data path left with it.
+#     * mcp-c: a `tools:`/`mcp:` config names the compiled-out plane, so `--validate` REFUSES it,
+#       naming the plane (the config analogue of a deleted-dialect refusal).
+#   Historic note (pre-D3): the plane was an unconditional core built-in that did not travel with the
+#   codec crate, so `/mcp` answered regardless of `plane-mcp` and this leg was static-only — the
+#   registry-level property pinned by a unit test instead
+#   (proto/tests/registry_tests.rs::a_codec_less_declaration_does_not_move_the_operator_visible_list_
+#   when_it_is_folded_ahead). D3 gave the plane its own compile-out switch, and this is the leg that
+#   grew the `/mcp` and config probes it promised.
 #
 # WATCHED RED, each dialect's first landing: run against the pre-extraction tree (the dialect still
 # a core built-in), level 3a fails — the featureless build still accepts the deleted dialect's
@@ -376,6 +378,21 @@ OUT=$(run_busbar "$MCP_DELETED_BIN" --validate 2>&1) \
   || die "the mcp-deleted binary must still accept protocol: anthropic; got: $OUT"
 note "mcp-b kept dialect: anthropic config validates clean with plane-mcp off"
 
+# ── mcp-c: THE MCP PLANE'S CONFIG SURFACE LEFT WITH IT ──────────────────────────────────────────
+# `plane-mcp` off compiles `busbar-core/src/mcp` out (D3), so `tools:`/`mcp:` name a plane this
+# build does not carry. `resolve` REFUSES such a config, naming the compiled-out plane — the config
+# analogue of the protocol registry refusing a deleted dialect. This is the leg that went RED before
+# D3: the plane was an unconditional core built-in, so a `tools:` config validated clean with
+# `plane-mcp` off.
+printf 'listen: "127.0.0.1:0"\nadmin_listen: "127.0.0.1:0"\nproviders: {}\nmodels: {}\ntools:\n  s:\n    url: "https://example.com/mcp"\n' > "$FIX/config.yaml"
+mk_no_providers
+if run_busbar "$MCP_DELETED_BIN" --validate >"$FIX/tools-validate.out" 2>&1; then
+  cat "$FIX/tools-validate.out"; die "the mcp-deleted binary ACCEPTED a tools: config — the MCP plane's config surface did not leave with it"
+fi
+grep -qiE "without the MCP plane|plane-mcp" "$FIX/tools-validate.out" \
+  || { cat "$FIX/tools-validate.out"; die "the tools: refusal must NAME the compiled-out MCP plane"; }
+note "mcp-c config: a tools: section is REFUSED, naming the compiled-out MCP plane"
+
 # and it BOOTS and SERVES (R-D: fewer protocols is a valid busbar).
 PORT=$(free_port) || die "could not find a free port pair for the mcp-deleted boot"
 ADMIN_PORT=$(( PORT + 1 ))
@@ -390,7 +407,17 @@ for _ in $(seq 1 60); do
 done
 [ -n "$up" ] || { cat "$FIX/boot-mcp.log"; die "the mcp-deleted binary did not come up on /healthz"; }
 curl -fsS "http://127.0.0.1:$PORT/stats" >/dev/null || die "/stats must answer on the mcp-deleted binary"
+# THE /mcp HTTP LEG (D3): the MCP PLANE — its `/mcp` data-plane mount — is compiled out with
+# `plane-mcp`, so `POST /mcp` resolves to NO plane handler (non-2xx), while the operator surface
+# (/healthz, /stats) and the surviving LLM/A2A planes still serve. Before D3 this could not be
+# probed: the plane was an unconditional core built-in and `/mcp` answered regardless of the
+# feature, which is why this leg was static-only until the plane learned to leave.
+MCP_CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:$PORT/mcp" \
+  -H 'content-type: application/json' -d '{"jsonrpc":"2.0","method":"initialize","id":1}')
+case "$MCP_CODE" in
+  2*) die "POST /mcp answered $MCP_CODE with the MCP plane compiled out — the plane's data path did not leave core" ;;
+esac
 kill "$SRV_PID" 2>/dev/null; wait "$SRV_PID" 2>/dev/null; SRV_PID=""
-note "mcp-b boot: /healthz 200, /stats 200 with the mcp protocol crate deleted"
+note "mcp-b boot: /healthz 200, /stats 200, POST /mcp $MCP_CODE (no plane handler) with plane-mcp off"
 
 echo "proto-deletion-gate: PASS (static 0; the LLM protocol deletes as one plugin and all six dialects it carries are refused, boot+serve, remaining dialects unaffected, control green; mcp independently droppable and still serving)"

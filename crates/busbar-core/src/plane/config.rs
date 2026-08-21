@@ -102,6 +102,65 @@ pub(crate) trait PlaneCfg: std::any::Any + Send + Sync {
     fn secret_refs(&self) -> Vec<(String, &crate::config::SecretRef)>;
 }
 
+/// A PLANE'S TOP-LEVEL CONFIG SECTION, CAPTURED RAW — the neutral carrier `DeployCfg`/`RootCfg` use
+/// for a plane's section in a build where the plane that would LOWER it is compiled out.
+///
+/// The MCP plane's `tools:` and `mcp:` sections deserialize into `crate::mcp::config::ToolsCfg` /
+/// `crate::mcp::McpCfg` — types that do not exist when `plane-mcp` is off. So in that build the two
+/// fields are typed `RawPlaneSection` instead (behind `#[cfg(not(feature = "plane-mcp"))]`), which
+/// captures whatever the operator wrote without naming a plane type. A section that carries CONTENT
+/// in such a build names a plane that is not present; `resolve` REFUSES it (see the config
+/// deletion-gate leg), exactly as the protocol registry refuses a config naming a deleted dialect.
+///
+/// This type lives OUTSIDE `config/` on purpose: `scripts/config-schema.py` fingerprints the
+/// `config/` directory, and the `#[cfg(feature = "plane-mcp")]` twin field (declared LAST) is what
+/// that fingerprint records — so the `tools:`/`mcp:` schema is unchanged by this capture. A
+/// `RawPlaneSection` type declared under `config/` would add a new fingerprinted type and drift the
+/// committed snapshot; declared here it never enters the config surface.
+#[cfg(not(feature = "plane-mcp"))]
+#[derive(Debug, Clone, Default)]
+pub(crate) struct RawPlaneSection {
+    /// The captured value, or `None` when the section was absent or explicitly null.
+    raw: Option<serde_yaml::Value>,
+}
+
+#[cfg(not(feature = "plane-mcp"))]
+impl<'de> serde::Deserialize<'de> for RawPlaneSection {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = serde_yaml::Value::deserialize(deserializer)?;
+        let raw = if value.is_null() { None } else { Some(value) };
+        Ok(RawPlaneSection { raw })
+    }
+}
+
+// A raw-captured section carries no ENUMERABLE secrets: it is unparsed, and a non-empty one is
+// refused at resolve, so it never reaches a running deployment. Implementing the seam with an empty
+// answer lets `config_validate::secret_refs` loop the trait over the section bindings uniformly, the
+// same way it does for the typed plane configs, without naming the compiled-out plane's types.
+#[cfg(not(feature = "plane-mcp"))]
+impl PlaneCfg for RawPlaneSection {
+    fn secret_refs(&self) -> Vec<(String, &crate::config::SecretRef)> {
+        Vec::new()
+    }
+}
+
+#[cfg(not(feature = "plane-mcp"))]
+impl RawPlaneSection {
+    /// True when the operator actually wrote CONTENT for this section (a non-empty mapping or any
+    /// non-null scalar/sequence). An absent, null, or empty-mapping section is not "present": it
+    /// names no plane and is not refused.
+    pub(crate) fn is_present(&self) -> bool {
+        match &self.raw {
+            None | Some(serde_yaml::Value::Null) => false,
+            Some(serde_yaml::Value::Mapping(m)) => !m.is_empty(),
+            Some(_) => true,
+        }
+    }
+}
+
 /// THE TWO WORDS RESERVED AT EVERY PLANE SECTION'S TOP LEVEL, under the name the shared reader uses.
 ///
 /// One declaration, re-exported rather than restated: the whole point of the rule is that the

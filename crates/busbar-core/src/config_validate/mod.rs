@@ -1482,7 +1482,12 @@ fn reserved_admin_name(name: &str) -> bool {
 fn validate_unified_pool_names(cfg: &RootCfg, errors: &mut Vec<String>) {
     use std::collections::BTreeSet;
     let models: BTreeSet<&str> = cfg.models.keys().map(|s| s.as_str()).collect();
+    // The MCP `tools:` noun exists only when the plane is compiled in; with `plane-mcp` off no name
+    // resolves to a `tools:` server (a `tools:` section is refused at resolve).
+    #[cfg(feature = "plane-mcp")]
     let tools: BTreeSet<&str> = cfg.tool_defs.servers.keys().map(|s| s.as_str()).collect();
+    #[cfg(not(feature = "plane-mcp"))]
+    let tools: BTreeSet<&str> = BTreeSet::new();
     let agents: BTreeSet<&str> = cfg.agent_defs.agents.keys().map(|s| s.as_str()).collect();
 
     // (1) No name may be defined in two nouns — the kind of a bare member must be decidable by name.
