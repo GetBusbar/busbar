@@ -246,6 +246,23 @@ pub trait ProtocolWriter: Send + Sync {
     /// Write a response/stream event to wire (event_type, data).
     fn write_response_event(&self, ev: &IrStreamEvent) -> Option<(String, serde_json::Value)>;
 
+    /// Write ONE IR stream event to wire as an ORDERED sequence of frames, allowing a dialect to
+    /// emit MORE than one wire frame per IR event.
+    ///
+    /// The default preserves the historical one-frame-per-event behavior every writer had before this
+    /// method existed: it wraps [`Self::write_response_event`] into a 0-or-1-element `Vec`. Only a
+    /// dialect whose native wire brackets a single IR event with intermediate sub-frames overrides it.
+    ///
+    /// `ResponsesWriter` is the sole override: a native `/v1/responses` text stream frames one IR
+    /// `BlockStart`/`BlockStop` as several ordered events — `output_item.added` is followed by
+    /// `content_part.added` (which a strict Responses SDK REQUIRES to establish the active content
+    /// part before the first `output_text.delta`), and the closing `output_text.done` /
+    /// `content_part.done` precede `output_item.done`. A single `(event_type, data)` cannot carry
+    /// that bracket, so the seam drives streaming through this method.
+    fn write_response_events(&self, ev: &IrStreamEvent) -> Vec<(String, serde_json::Value)> {
+        self.write_response_event(ev).into_iter().collect()
+    }
+
     /// Map a mid-stream `IrError` to a MODELED-EXCEPTION pair `(exception_name, message)` for
     /// protocols whose native stream signals errors with an out-of-band exception frame rather than a
     /// normal event. Only the AWS Bedrock event-stream wire distinguishes this: a native AWS SDK
