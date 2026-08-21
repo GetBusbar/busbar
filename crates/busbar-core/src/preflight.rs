@@ -864,13 +864,29 @@ pub(crate) fn plugin_fetch_downloader_with_cap(
                     .build()
                     .map_err(|e| format!("fetch runtime: {e}"))?;
                 rt.block_on(async {
-                    let resp = reqwest::Client::new()
+                    // Do NOT follow redirects: the SSRF guard above only vets the ORIGINAL url, so a
+                    // 3xx `Location` from the semi-trusted plugin registry could otherwise bounce the
+                    // fetch to an internal/cloud-metadata target with no re-check — the same
+                    // redirect-SSRF vector the OTLP exporter and provider clients already close. With
+                    // `Policy::none()` a redirect arrives as a 3xx status and falls into the
+                    // non-success arm below.
+                    let client = reqwest::Client::builder()
+                        .redirect(reqwest::redirect::Policy::none())
+                        .build()
+                        .map_err(|e| format!("fetch client: {e}"))?;
+                    let resp = client
                         .get(&url)
                         .send()
                         .await
                         .map_err(|e| format!("GET {url}: {e}"))?;
                     let status = resp.status();
                     if !status.is_success() {
+                        if status.is_redirection() {
+                            return Err(format!(
+                                "GET {url}: HTTP {status} — refusing to follow a plugins.fetch \
+                                 redirect (redirect-SSRF guard)"
+                            ));
+                        }
                         return Err(format!("GET {url}: HTTP {status}"));
                     }
                     // A declared Content-Length over the cap is rejected BEFORE reading a single body
