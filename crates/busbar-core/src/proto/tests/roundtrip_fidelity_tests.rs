@@ -826,8 +826,7 @@ fn streamed_citations_reach_openai_and_cohere_clients() {
     assert_eq!(citations["end"], 6);
     assert_eq!(citations["text"], "quoted");
     assert_eq!(
-        citations["sources"][0]["document"]["url"],
-        "https://x",
+        citations["sources"][0]["document"]["url"], "https://x",
         "the single Citation's source url must survive; got {citations}"
     );
 }

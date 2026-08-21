@@ -2169,10 +2169,16 @@ fn eventstream_every_content_block_start_has_exactly_one_stop() {
     {
         let mut uniq_starts = starts.clone();
         uniq_starts.dedup();
-        assert_eq!(uniq_starts, starts, "a contentBlockStart index was emitted twice: {starts:?}");
+        assert_eq!(
+            uniq_starts, starts,
+            "a contentBlockStart index was emitted twice: {starts:?}"
+        );
         let mut uniq_stops = stops.clone();
         uniq_stops.dedup();
-        assert_eq!(uniq_stops, stops, "a contentBlockStop index was emitted twice: {stops:?}");
+        assert_eq!(
+            uniq_stops, stops,
+            "a contentBlockStop index was emitted twice: {stops:?}"
+        );
     }
     // No orphan start: every contentBlockStart index has a matching contentBlockStop. (Only ToolUse
     // emits a start; Text/Thinking open implicitly, so starts ⊆ stops, NOT starts == stops.)

@@ -2067,7 +2067,10 @@ fn test_write_response_event_citation_start_is_single_object() {
     let (_, frame) = writer
         .write_response_event(&ev)
         .expect("a citation delta emits a citation-start frame");
-    assert_eq!(frame.get("type").and_then(|t| t.as_str()), Some("citation-start"));
+    assert_eq!(
+        frame.get("type").and_then(|t| t.as_str()),
+        Some("citation-start")
+    );
     let citations = frame
         .pointer("/delta/message/citations")
         .expect("citation-start carries delta.message.citations");
@@ -2079,9 +2082,15 @@ fn test_write_response_event_citation_start_is_single_object() {
         !citations.is_array(),
         "delta.message.citations must NOT be a JSON array; got {citations}"
     );
-    assert_eq!(citations.pointer("/start").and_then(|v| v.as_u64()), Some(0));
+    assert_eq!(
+        citations.pointer("/start").and_then(|v| v.as_u64()),
+        Some(0)
+    );
     assert_eq!(citations.pointer("/end").and_then(|v| v.as_u64()), Some(6));
-    assert_eq!(citations.pointer("/text").and_then(|v| v.as_str()), Some("quoted"));
+    assert_eq!(
+        citations.pointer("/text").and_then(|v| v.as_str()),
+        Some("quoted")
+    );
     assert_eq!(
         citations
             .pointer("/sources/0/document/url")

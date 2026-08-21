@@ -2039,7 +2039,11 @@ fn test_translate_anthropic_text_to_bedrock_ingress_has_no_content_block_start()
         }
     let mut buf = raw.clone();
     let frames = crate::eventstream::drain_frames(&mut buf);
-    assert!(buf.is_empty(), "all frames decode cleanly; {} bytes left", buf.len());
+    assert!(
+        buf.is_empty(),
+        "all frames decode cleanly; {} bytes left",
+        buf.len()
+    );
     let block_frames: Vec<&str> = frames
         .iter()
         .map(|(et, _)| et.as_str())
@@ -2061,7 +2065,10 @@ fn test_translate_anthropic_text_to_bedrock_ingress_has_no_content_block_start()
         .find(|(et, _)| et == "contentBlockDelta")
         .expect("a contentBlockDelta frame");
     let v: serde_json::Value = serde_json::from_slice(&delta.1).expect("valid JSON payload");
-    assert_eq!(v.pointer("/delta/text").and_then(|x| x.as_str()), Some("Hello"));
+    assert_eq!(
+        v.pointer("/delta/text").and_then(|x| x.as_str()),
+        Some("Hello")
+    );
 }
 
 /// CF8 (wire-conformance): a cross-protocol REASONING stream egressing into Bedrock ConverseStream
@@ -2088,7 +2095,11 @@ fn test_translate_anthropic_reasoning_to_bedrock_ingress_uses_delta_not_start() 
         }
     let mut buf = raw.clone();
     let frames = crate::eventstream::drain_frames(&mut buf);
-    assert!(buf.is_empty(), "all frames decode cleanly; {} bytes left", buf.len());
+    assert!(
+        buf.is_empty(),
+        "all frames decode cleanly; {} bytes left",
+        buf.len()
+    );
     let block_frames: Vec<&str> = frames
         .iter()
         .map(|(et, _)| et.as_str())
@@ -2118,7 +2129,9 @@ fn test_translate_anthropic_reasoning_to_bedrock_ingress_uses_delta_not_start() 
         .filter(|(et, _)| et == "contentBlockDelta")
         .filter_map(|(_, body)| serde_json::from_slice::<serde_json::Value>(body).ok())
         .any(|v| {
-            v.pointer("/delta/reasoningContent/signature").and_then(|x| x.as_str()) == Some("sig-xyz")
+            v.pointer("/delta/reasoningContent/signature")
+                .and_then(|x| x.as_str())
+                == Some("sig-xyz")
         });
     assert!(
         has_signature,
