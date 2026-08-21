@@ -906,8 +906,7 @@ impl OperationHandler for OpenAiModeration {
             // runtime path. Emit an empty body rather than panic.
             return Bytes::new();
         };
-        let body = json!({ "model": r.model, "input": input_to_value(&r.input) });
-        Bytes::from(serde_json::to_vec(&body).unwrap_or_default())
+        super::super::leaf_codec::moderation_write_request("openai", r)
     }
 
     fn read_response(&self, wire: &[u8]) -> Result<IrResp, CodecError> {
@@ -930,27 +929,40 @@ impl OperationHandler for OpenAiModeration {
         let IrResp::Moderation(r) = ir else {
             return WireBody::json(Bytes::new());
         };
-        let results: Vec<Value> = r
-            .results
-            .iter()
-            .map(|res| {
-                json!({
-                    "flagged": res.flagged,
-                    "categories": map_bool(&res.categories),
-                    "category_scores": map_f64(&res.category_scores),
-                    "category_applied_input_types": map_strs(&res.applied_input_types),
-                })
-            })
-            .collect();
-        let mut body = json!({ "results": results });
-        if let Some(id) = &r.id {
-            body["id"] = json!(id);
-        }
-        if let Some(m) = &r.model {
-            body["model"] = json!(m);
-        }
-        WireBody::json(Bytes::from(serde_json::to_vec(&body).unwrap_or_default()))
+        super::super::leaf_codec::moderation_write_response("openai", r)
     }
+}
+
+/// IR → openai moderation request wire (the body of [`OpenAiModeration::write_request`], moved behind
+/// the `(moderation, openai)` key — G6 A4b option-a). Byte-identical to the pre-cutover inline write.
+pub(crate) fn write_moderation_request(r: &ModerationReq) -> Bytes {
+    let body = json!({ "model": r.model, "input": input_to_value(&r.input) });
+    Bytes::from(serde_json::to_vec(&body).unwrap_or_default())
+}
+
+/// IR → openai moderation response wire (the body of [`OpenAiModeration::write_response`], moved
+/// behind the `(moderation, openai)` key — G6 A4b option-a). Byte-identical to the inline write.
+pub(crate) fn write_moderation_response(r: &ModerationResp) -> WireBody {
+    let results: Vec<Value> = r
+        .results
+        .iter()
+        .map(|res| {
+            json!({
+                "flagged": res.flagged,
+                "categories": map_bool(&res.categories),
+                "category_scores": map_f64(&res.category_scores),
+                "category_applied_input_types": map_strs(&res.applied_input_types),
+            })
+        })
+        .collect();
+    let mut body = json!({ "results": results });
+    if let Some(id) = &r.id {
+        body["id"] = json!(id);
+    }
+    if let Some(m) = &r.model {
+        body["model"] = json!(m);
+    }
+    WireBody::json(Bytes::from(serde_json::to_vec(&body).unwrap_or_default()))
 }
 
 // ---- helpers ----

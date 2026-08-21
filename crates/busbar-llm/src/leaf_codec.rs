@@ -22,6 +22,7 @@ use busbar_core::handlers::WireBody;
 use busbar_core::ir::audio::{SpeechReq, SpeechResp, TranscriptionReq, TranscriptionResp};
 use busbar_core::ir::embeddings::{EmbeddingsReq, EmbeddingsResp};
 use busbar_core::ir::image::{ImageReq, ImageResp};
+use busbar_core::ir::moderation::{ModerationReq, ModerationResp};
 use busbar_core::ir::rerank::{RerankReq, RerankResp};
 use bytes::Bytes;
 
@@ -119,6 +120,23 @@ pub(crate) fn speech_write_response(proto: &str, r: &SpeechResp) -> WireBody {
     match proto {
         "gemini" => super::gemini::handler::write_speech_response(r),
         "openai" => super::openai_chat::handler::write_speech_response(r),
+        _ => WireBody::json(Bytes::new()),
+    }
+}
+
+/// Moderation egress request bytes for `proto`. Unknown protocol => empty (pre-cutover fallback).
+/// Only openai serves moderation today; the key is uniform with the other ops for the A4b handle.
+pub(crate) fn moderation_write_request(proto: &str, r: &ModerationReq) -> Bytes {
+    match proto {
+        "openai" => super::openai_chat::handler::write_moderation_request(r),
+        _ => Bytes::new(),
+    }
+}
+
+/// Moderation ingress response wire for `proto`. Unknown protocol => empty JSON body.
+pub(crate) fn moderation_write_response(proto: &str, r: &ModerationResp) -> WireBody {
+    match proto {
+        "openai" => super::openai_chat::handler::write_moderation_response(r),
         _ => WireBody::json(Bytes::new()),
     }
 }
