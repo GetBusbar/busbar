@@ -1071,8 +1071,11 @@ fn the_chain_position_map_stays_bounded_across_many_distinct_principals() {
     let log = PlaneCallLog::new();
     let overflow_by = 1_000;
     for i in 0..(MAX_TRACKED_PRINCIPALS + overflow_by) {
-        log.record(&format!("key_{i:07}"), dispatched(1000, "fs_read", "sha256:aaa", 7))
-            .expect("each distinct principal records with no sink attached");
+        log.record(
+            &format!("key_{i:07}"),
+            dispatched(1000, "fs_read", "sha256:aaa", 7),
+        )
+        .expect("each distinct principal records with no sink attached");
     }
     assert_eq!(
         log.len(),
@@ -1108,14 +1111,21 @@ fn an_evicted_principal_resumes_from_the_store_instead_of_forking_its_chain() {
     // Flood the cap with DISTINCT principals so P is evicted from the front. One eviction is enough,
     // and MAX distinct fillers behind the single-entry P guarantees it.
     for i in 0..MAX_TRACKED_PRINCIPALS {
-        log.record(&format!("filler_{i:07}"), dispatched(2000, "fs_read", "sha256:bbb", 1))
-            .expect("filler records");
+        log.record(
+            &format!("filler_{i:07}"),
+            dispatched(2000, "fs_read", "sha256:bbb", 1),
+        )
+        .expect("filler records");
     }
     assert!(
         log.next_seq(P) == 1,
         "P's in-RAM position is gone (a fresh lookup of an evicted principal reports seq 1)"
     );
-    assert_eq!(log.len(), MAX_TRACKED_PRINCIPALS, "still capped after the flood");
+    assert_eq!(
+        log.len(),
+        MAX_TRACKED_PRINCIPALS,
+        "still capped after the flood"
+    );
 
     // P calls again. This is the moment a naive eviction would fork: reopening at seq 1 collides with
     // the store's seq-1 row. Instead the resume reads P's tail back and continues at seq 3.
@@ -1130,7 +1140,10 @@ fn an_evicted_principal_resumes_from_the_store_instead_of_forking_its_chain() {
         third.prev_hash, second.hash,
         "the post-eviction record links to the PERSISTED tail, not to a fresh chain"
     );
-    assert_ne!(first.hash, "", "sanity: the first record really was chained");
+    assert_ne!(
+        first.hash, "",
+        "sanity: the first record really was chained"
+    );
 
     // And the durable chain verifies end to end across the eviction — no fork, no gap.
     assert_eq!(
@@ -1159,8 +1172,11 @@ fn an_evicted_principal_whose_readback_fails_is_surfaced_not_forked() {
     log.record(P, dispatched(1000, "fs_read", "sha256:aaa", 7))
         .expect("P records");
     for i in 0..MAX_TRACKED_PRINCIPALS {
-        log.record(&format!("filler_{i:07}"), dispatched(2000, "fs_read", "sha256:bbb", 1))
-            .expect("filler records");
+        log.record(
+            &format!("filler_{i:07}"),
+            dispatched(2000, "fs_read", "sha256:bbb", 1),
+        )
+        .expect("filler records");
     }
 
     // The store now refuses the resume read for the evicted P.

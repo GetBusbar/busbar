@@ -1100,16 +1100,37 @@ fn test_metering_accumulator_is_bounded_and_lossless_under_sustained_store_outag
         len_rec <= MAX_PENDING_METERING + GOV_SHARDS,
         "the accrual path holds the map at the cap (+ at most one per-bucket sentinel per shard), not one cell per key: {len_rec}"
     );
-    assert_eq!(sum_rec.requests, n64, "every accrued request is still counted");
-    assert_eq!(sum_rec.tokens_input, n64 * 3, "no input tokens lost to the cap");
-    assert_eq!(sum_rec.tokens_output, n64 * 5, "no output tokens lost to the cap");
-    assert_eq!(sum_rec.tokens_cache_read, n64, "no cache-read tokens lost to the cap");
-    assert_eq!(sum_rec.tokens_cache_write, n64 * 2, "no cache-write tokens lost to the cap");
+    assert_eq!(
+        sum_rec.requests, n64,
+        "every accrued request is still counted"
+    );
+    assert_eq!(
+        sum_rec.tokens_input,
+        n64 * 3,
+        "no input tokens lost to the cap"
+    );
+    assert_eq!(
+        sum_rec.tokens_output,
+        n64 * 5,
+        "no output tokens lost to the cap"
+    );
+    assert_eq!(
+        sum_rec.tokens_cache_read, n64,
+        "no cache-read tokens lost to the cap"
+    );
+    assert_eq!(
+        sum_rec.tokens_cache_write,
+        n64 * 2,
+        "no cache-write tokens lost to the cap"
+    );
 
     // The FLUSH re-queue path: every write fails, every drained cell is re-queued through the same
     // bound. This is precisely where the map used to grow without bound.
     let flushed = gov.flush_metering();
-    assert_eq!(flushed, 0, "the store is down, so nothing persisted this tick");
+    assert_eq!(
+        flushed, 0,
+        "the store is down, so nothing persisted this tick"
+    );
     let (len_flush, sum_flush) = gov.pending_metering_totals();
     assert!(
         len_flush <= MAX_PENDING_METERING + GOV_SHARDS,
@@ -1120,7 +1141,8 @@ fn test_metering_accumulator_is_bounded_and_lossless_under_sustained_store_outag
         "retry preserves every request across the failed flush (nothing dropped, nothing doubled)"
     );
     assert_eq!(
-        sum_flush.tokens_input, n64 * 3,
+        sum_flush.tokens_input,
+        n64 * 3,
         "no billable input tokens lost across the failed flush"
     );
 
@@ -1179,8 +1201,16 @@ fn test_sharded_metering_accrual_is_exactly_once_under_concurrency() {
         sum.requests, total,
         "every one of the {total} concurrent accruals is counted exactly once"
     );
-    assert_eq!(sum.tokens_input, total * 2, "input tokens summed exactly once");
-    assert_eq!(sum.tokens_output, total * 3, "output tokens summed exactly once");
+    assert_eq!(
+        sum.tokens_input,
+        total * 2,
+        "input tokens summed exactly once"
+    );
+    assert_eq!(
+        sum.tokens_output,
+        total * 3,
+        "output tokens summed exactly once"
+    );
 
     // A single flush drains ALL shards; the store total equals the sum, and the accumulator empties.
     let flushed = gov.flush_metering();

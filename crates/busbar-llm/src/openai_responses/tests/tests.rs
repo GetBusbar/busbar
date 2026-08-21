@@ -6734,7 +6734,7 @@ fn streamed_citations_reach_the_assembled_output_item() {
     assert_eq!(anns[0]["end_index"], 14);
 }
 
-/// STRICT-CLIENT CONTRACT (CF2): the Responses egress writer, driven with the IR event stream a
+/// STRICT-CLIENT CONTRACT: the Responses egress writer, driven with the IR event stream a
 /// CROSS-protocol egress produces (an Anthropic/Gemini backend re-framed to `/v1/responses` — the
 /// shape a Codex CLI client consumes), must emit the intermediate `response.content_part.added`
 /// between `output_item.added` and the first `output_text.delta`, and must close the text part with
@@ -6751,7 +6751,7 @@ fn cross_protocol_egress_into_responses_emits_content_part_bracket() {
     // The IR event stream a cross-protocol text egress yields (identity stripped to None on the
     // cross-protocol seam, so the writer synthesizes native `resp_`/`msg_` ids): a message start,
     // one text block (added → two deltas → stop), then the terminal delta.
-    let ir_stream = vec![
+    let ir_stream = [
         IrStreamEvent::MessageStart {
             role: crate::ir::IrRole::Assistant,
             usage: None,

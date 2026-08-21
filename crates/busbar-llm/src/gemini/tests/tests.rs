@@ -6517,7 +6517,7 @@ fn test_empty_string_thought_signature_normalizes_to_none() {
     }
 }
 
-/// Regression (CF3): the truncated-usage recovery path must count Gemini thinking tokens as
+/// Regression: the truncated-usage recovery path must count Gemini thinking tokens as
 /// OUTPUT, exactly as the main `gemini_usage` path does. `candidatesTokenCount` counts only the
 /// visible answer; the 2.5-series reasoning tokens arrive in the separate, ADDITIVE
 /// `thoughtsTokenCount`. On a HEAD-truncated response (large thinking overflows the reassembly cap),

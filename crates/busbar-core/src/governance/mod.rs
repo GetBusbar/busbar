@@ -953,7 +953,9 @@ impl MeterCounts {
         self.requests = self.requests.saturating_add(other.requests);
         self.tokens_input = self.tokens_input.saturating_add(other.tokens_input);
         self.tokens_output = self.tokens_output.saturating_add(other.tokens_output);
-        self.tokens_cache_read = self.tokens_cache_read.saturating_add(other.tokens_cache_read);
+        self.tokens_cache_read = self
+            .tokens_cache_read
+            .saturating_add(other.tokens_cache_read);
         self.tokens_cache_write = self
             .tokens_cache_write
             .saturating_add(other.tokens_cache_write);

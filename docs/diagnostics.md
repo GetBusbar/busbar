@@ -2253,6 +2253,17 @@ An admin group `/usage` read could not derive a bucket's usage from the governan
 
 **What to do:** Investigate the governance store's health for the logged group and bucket (reachability, the underlying store error). The condition is a read-path fault; usage reads recover once the store answers.
 
+<a id="metering-pending-overflow-coalesced"></a>
+### BUSBAR-8019 — Metering accumulator at cap: a cell was coalesced into an overflow sentinel
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `metering-pending-overflow-coalesced`
+
+The write-behind metering accumulator (pending_metering) reached its cap while a NEW (key_id, bucket, model, provider) cell arrived — a sustained governance-store outage with diverse keys/models, where every flush re-queues the failed cells while new ones keep arriving. Rather than grow without bound OR silently drop billable usage, busbar COALESCES the arriving cell's counts into a per-bucket overflow sentinel: the day's token and request TOTALS are preserved, only their per-key/model/provider ATTRIBUTION is collapsed. Each coalesce also increments busbar_metering_pending_coalesced_total. Per-event detail is at debug; this is the human-cadence signal.
+
+**What to do:** Restore the governance store — the accumulator overflows only under a sustained write outage. Usage is not lost (totals are retained under the overflow sentinel key), but once the store recovers the retained deltas flush and normal per-key attribution resumes. A steadily climbing coalesced counter means the outage has outlasted the cap.
+
 ## 9xxx — Boot & lifecycle
 
 <a id="boot-audit-restore-read-failed"></a>

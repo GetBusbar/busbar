@@ -112,7 +112,7 @@ fn an_id_that_was_never_sent_is_null_rather_than_absent() {
 
 #[test]
 fn push_notification_not_supported_and_extension_support_required_round_trip() {
-    // Regression (CF1): A2A section 5.4 defines `-32003 PushNotificationNotSupportedError` and
+    // Regression: A2A section 5.4 defines `-32003 PushNotificationNotSupportedError` and
     // `-32008 ExtensionSupportRequiredError`, both bound to FAILED_PRECONDITION / HTTP 400 (see the
     // harness's `a2aht/spec.py::ERROR_MAP`). The code table used to jump -32002 -> -32004, so a
     // relayed backend answering -32003/-32008 got `from_code == None` and was collapsed to a generic
