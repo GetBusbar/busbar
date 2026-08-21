@@ -1456,6 +1456,49 @@ fn a_rebuild_carries_the_session_store_and_defaults_scan_off() {
     );
 }
 
+/// A hot config apply that CHANGES a client-affecting limit (here the upstream request timeout) must
+/// REBUILD the sharded upstream client so the new setting takes effect — not silently reuse the
+/// prior client and pin the old timeout until a full process restart. An apply that changes nothing
+/// client-relevant must REUSE the prior client (keeping its warm connection pool). Observed by shard
+/// -set pointer identity: reuse clones the same `Arc<[Client]>`, a rebuild allocates a fresh one.
+#[test]
+fn a_changed_upstream_timeout_rebuilds_the_client_an_unrelated_apply_reuses_it() {
+    crate::metrics::init();
+    let cfg = || {
+        cfg_with_provider_api_key(crate::config::SecretRef::env(
+            "BUSBAR_TEST_NO_SUCH_KEY_CLIENT_REBUILD",
+        ))
+    };
+
+    // Reuse half: an apply with an identical client-affecting settings snapshot carries the warm
+    // pool forward (same shard-set Arc).
+    let prior = build_once(cfg(), None).expect("boot");
+    let unchanged =
+        build_once(cfg(), Some(&prior)).expect("apply, nothing client-relevant changed");
+    assert!(
+        unchanged.client.shares_pool_with(&prior.client),
+        "an apply that changes no client-affecting setting must REUSE the prior client's warm pool"
+    );
+
+    // Rebuild half: bump the upstream request timeout and re-apply — the client MUST be rebuilt, or
+    // the new timeout never takes effect until restart.
+    let prior2 = build_once(cfg(), None).expect("boot");
+    let mut changed_cfg = cfg();
+    changed_cfg.limits.upstream_request_timeout_secs =
+        prior2.client_settings.upstream_request_timeout_secs + 7;
+    let rebuilt = build_once(changed_cfg, Some(&prior2)).expect("apply with a changed timeout");
+    assert!(
+        !rebuilt.client.shares_pool_with(&prior2.client),
+        "an apply that changes upstream_request_timeout_secs must REBUILD the client so the new \
+         timeout takes effect"
+    );
+    assert_eq!(
+        rebuilt.client_settings.upstream_request_timeout_secs,
+        prior2.client_settings.upstream_request_timeout_secs + 7,
+        "the rebuilt client's carried settings snapshot must reflect the new timeout"
+    );
+}
+
 /// Rotating the admin-token secret on disk and RE-APPLYING changes the credential the process
 /// accepts. RED without the re-resolution: the digest stays on `tok-v1` forever.
 #[cfg(feature = "auth-admin-tokens")]

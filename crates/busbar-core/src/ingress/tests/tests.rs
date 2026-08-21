@@ -62,6 +62,9 @@ fn minimal_app() -> Arc<App> {
         by_model: std::collections::HashMap::new(),
         pools: std::collections::HashMap::new(),
         client: crate::state::UpstreamClients::build(1, reqwest::Client::new),
+        client_settings: crate::state::UpstreamClientSettings::from_limits(
+            &crate::config::LimitsResolved::default(),
+        ),
         auth: Arc::new(crate::auth::AuthMiddleware::new_builtin(
             &crate::config::AuthCfg::default_none(),
         )),
