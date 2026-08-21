@@ -1499,6 +1499,41 @@ fn a_changed_upstream_timeout_rebuilds_the_client_an_unrelated_apply_reuses_it()
     );
 }
 
+/// Removing the `agents:` block (so `app.a2a` becomes None) must STILL prune the carried A2A
+/// VerifyGate — matching the self-cleaning MCP arm, which always retains against its live server set.
+/// The old code gated the a2a prune on `app.a2a.is_some()`, so tearing the whole plane down skipped
+/// the prune entirely and every removed agent's carried flight/drift-latch leaked forever. Here the
+/// carried gate holds a subject from an agent the deployment once fronted; an apply with no agents
+/// must drop it (retain against an EMPTY live set).
+#[cfg(feature = "plane-a2a")]
+#[test]
+fn removing_the_agents_block_still_prunes_carried_a2a_verify_entries() {
+    crate::metrics::init();
+    let cfg = || {
+        cfg_with_provider_api_key(crate::config::SecretRef::env(
+            "BUSBAR_TEST_NO_SUCH_KEY_A2A_PRUNE",
+        ))
+    };
+    let prior = build_once(cfg(), None).expect("boot");
+    // The carried gate accumulated per-subject coordination for an agent this deployment fronted
+    // (a latched drift diagnostic tracks the subject just as an in-flight verify would).
+    prior
+        .a2a_verify
+        .report(crate::plane::Plane::A2a, "retired-agent", true, false);
+    assert!(
+        prior.a2a_verify.tracks_subject("retired-agent"),
+        "seed: the carried a2a VerifyGate must track the subject before the apply"
+    );
+
+    // Apply with NO `agents:` block (`app.a2a` is None). The prune must STILL run against an empty
+    // live set and drop the carried subject.
+    let next = build_once(cfg(), Some(&prior)).expect("apply with agents removed");
+    assert!(
+        !next.a2a_verify.tracks_subject("retired-agent"),
+        "removing the agents: block must still prune the carried a2a VerifyGate entry, not leak it"
+    );
+}
+
 /// Rotating the admin-token secret on disk and RE-APPLYING changes the credential the process
 /// accepts. RED without the re-resolution: the digest stays on `tok-v1` forever.
 #[cfg(feature = "auth-admin-tokens")]
