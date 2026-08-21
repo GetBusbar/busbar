@@ -3,13 +3,13 @@
 
 //! Cohere `RequestHandler` + cells. Embeddings via `/v2/embed`.
 
+use crate::ir::embeddings::{
+    EmbInput, EmbeddingItem, EmbeddingsReq, EmbeddingsResp, EncFmt, VectorData,
+};
 use busbar_core::handlers::{
     CodecError, EgressCtx, IngressReject, OperationHandler, RequestHandler, WireBody,
 };
-use busbar_core::ir::embeddings::{
-    EmbInput, EmbeddingItem, EmbeddingsReq, EmbeddingsResp, EncFmt, VectorData,
-};
-use busbar_core::ir::variant::{IrReq, IrResp};
+use busbar_core::ir::handle::IrHandle;
 use busbar_core::operation::Operation;
 use bytes::Bytes;
 use serde_json::{json, Value};
@@ -23,8 +23,8 @@ const PATH_RERANK: &str = "/v2/rerank";
 pub struct CohereRequestHandler;
 /// This protocol's OWN chat instance — delete this line (and the registry arm) and this
 /// protocol's chat 404s via the standard no-handler path; everything else keeps working.
-static CHAT: busbar_core::handlers::chat::ChatOperation =
-    busbar_core::handlers::chat::ChatOperation("cohere");
+static CHAT: super::super::chat_handle::ChatOperation =
+    super::super::chat_handle::ChatOperation("cohere");
 static EMB: CohereEmbeddings = CohereEmbeddings;
 static RERANK: CohereRerank = CohereRerank;
 
@@ -124,137 +124,19 @@ impl OperationHandler for CohereEmbeddings {
         true
     }
     /// cohere `/v2/embed` wire → IR (cohere as INGRESS): `texts[]` + required `input_type`.
-    fn read_request(&self, body: &[u8], _content_type: &str) -> Result<IrReq, IngressReject> {
-        let wire: Value =
-            serde_json::from_slice(body).map_err(|e| IngressReject::BadRequest(e.to_string()))?;
-        let texts = wire
-            .get("texts")
-            .and_then(Value::as_array)
-            .map(|a| {
-                a.iter()
-                    .filter_map(|x| x.as_str().map(str::to_string))
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        if texts.is_empty() {
-            return Err(IngressReject::BadRequest(
-                "embed request requires `texts`".into(),
-            ));
-        }
-        let encoding_formats = wire
-            .get("embedding_types")
-            .and_then(Value::as_array)
-            .map(|a| {
-                a.iter()
-                    .filter_map(|x| x.as_str())
-                    .map(cohere_encoding_format)
-                    .collect()
-            })
-            .unwrap_or_else(|| vec![EncFmt::Float]);
-        Ok(IrReq::Embeddings(
-            busbar_core::ir::embeddings::EmbeddingsReq {
-                model: wire
-                    .get("model")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_string(),
-                input: EmbInput::Text(texts),
-                input_type: wire
-                    .get("input_type")
-                    .and_then(Value::as_str)
-                    .map(str::to_string),
-                dimensions: wire
-                    .get("output_dimension")
-                    .and_then(Value::as_u64)
-                    .and_then(|d| u32::try_from(d).ok()),
-                truncate: wire
-                    .get("truncate")
-                    .and_then(Value::as_str)
-                    .map(str::to_string),
-                encoding_formats,
-                ..Default::default()
-            },
-        ))
+    fn read_request(
+        &self,
+        body: &[u8],
+        _content_type: &str,
+    ) -> Result<Box<dyn IrHandle>, IngressReject> {
+        Ok(Box::new(super::super::leaf_handles::EmbeddingsReqHandle(
+            read_embeddings_request(body, _content_type)?,
+        )) as Box<dyn IrHandle>)
     }
-    fn write_request(&self, ir: &IrReq) -> Bytes {
-        let IrReq::Embeddings(r) = ir else {
-            return Bytes::new();
-        };
-        super::super::leaf_codec::embeddings_write_request("cohere", r)
-    }
-    fn read_response(&self, wire: &[u8]) -> Result<IrResp, CodecError> {
-        let v: Value =
-            serde_json::from_slice(wire).map_err(|e| CodecError::Malformed(e.to_string()))?;
-        // Cohere returns each requested encoding under its own key (`embeddings.float`,
-        // `embeddings.base64`, `embeddings.int8`, ...), positionally aligned. Read EVERY encoding the
-        // request leg can ask for — float, base64, and the four integer forms — so an int8/uint8/
-        // binary/ubinary response is not silently dropped (its `float` key is absent when only that
-        // encoding was requested). Float -> Float, base64 -> Base64, the int forms -> Int.
-        let emb = v.get("embeddings");
-        let arrays: Vec<(EncFmt, &Vec<Value>)> = ALL_ENCODINGS
-            .iter()
-            .filter_map(|&e| {
-                emb.and_then(|o| o.get(cohere_embedding_type(&e)))
-                    .and_then(Value::as_array)
-                    .map(|a| (e, a))
-            })
-            .collect();
-        let count = arrays.iter().map(|(_, a)| a.len()).max().unwrap_or(0);
-        let embeddings: Vec<EmbeddingItem> = (0..count)
-            .map(|idx| {
-                let mut item = EmbeddingItem {
-                    index: idx,
-                    ..Default::default()
-                };
-                for (enc, arr) in &arrays {
-                    let Some(cell) = arr.get(idx) else { continue };
-                    let vd = match enc {
-                        EncFmt::Float => cell.as_array().map(|f| {
-                            VectorData::Float(
-                                f.iter()
-                                    .filter_map(|x| x.as_f64().map(|n| n as f32))
-                                    .collect(),
-                            )
-                        }),
-                        EncFmt::Base64 => cell.as_str().map(|s| VectorData::Base64(s.to_string())),
-                        // int8/uint8/binary/ubinary all arrive as JSON integer arrays.
-                        _ => cell.as_array().map(|f| {
-                            VectorData::Int(
-                                f.iter()
-                                    .filter_map(|x| x.as_i64().map(|n| n as i32))
-                                    .collect(),
-                            )
-                        }),
-                    };
-                    if let Some(vd) = vd {
-                        item.vectors.insert(*enc, vd);
-                    }
-                }
-                item
-            })
-            .collect();
-        let usage = v
-            .get("meta")
-            .and_then(|m| m.get("billed_units"))
-            .and_then(|b| b.get("input_tokens"))
-            .and_then(Value::as_u64)
-            .map(|n| busbar_core::billing::TokenUsage {
-                input: n,
-                ..Default::default()
-            });
-        Ok(IrResp::Embeddings(EmbeddingsResp {
-            id: v.get("id").and_then(Value::as_str).map(str::to_string),
-            embeddings,
-            usage,
-            ..Default::default()
-        }))
-    }
-    /// IR → cohere v2 embed response (cohere as INGRESS): `embeddings.float[[..]]` + billed_units.
-    fn write_response(&self, ir: &IrResp) -> WireBody {
-        let IrResp::Embeddings(r) = ir else {
-            return WireBody::json(Bytes::new());
-        };
-        super::super::leaf_codec::embeddings_write_response("cohere", r)
+    fn read_response(&self, wire: &[u8]) -> Result<Box<dyn IrHandle>, CodecError> {
+        Ok(Box::new(super::super::leaf_handles::EmbeddingsRespHandle(
+            read_embeddings_response(wire)?,
+        )) as Box<dyn IrHandle>)
     }
 }
 
@@ -377,70 +259,25 @@ impl OperationHandler for CohereRerank {
     fn extract_error(&self, status: u16, body: &[u8]) -> busbar_core::breaker::RawUpstreamError {
         busbar_core::handlers::protocol_error("cohere", status, body)
     }
-    fn read_request(&self, body: &[u8], _content_type: &str) -> Result<IrReq, IngressReject> {
-        let wire: Value =
-            serde_json::from_slice(body).map_err(|e| IngressReject::BadRequest(e.to_string()))?;
-        let query = wire
-            .get("query")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string();
-        let documents = rerank_documents(wire.get("documents"));
-        if query.is_empty() || documents.is_empty() {
-            return Err(IngressReject::BadRequest(
-                "rerank request requires `query` and `documents`".into(),
-            ));
-        }
-        Ok(IrReq::Rerank(busbar_core::ir::rerank::RerankReq {
-            model: wire
-                .get("model")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
-            query,
-            documents,
-            top_n: wire
-                .get("top_n")
-                .and_then(Value::as_u64)
-                .and_then(|n| u32::try_from(n).ok()),
-            max_tokens_per_doc: wire
-                .get("max_tokens_per_doc")
-                .and_then(Value::as_u64)
-                .and_then(|n| u32::try_from(n).ok()),
-            ..Default::default()
-        }))
+    fn read_request(
+        &self,
+        body: &[u8],
+        _content_type: &str,
+    ) -> Result<Box<dyn IrHandle>, IngressReject> {
+        Ok(Box::new(super::super::leaf_handles::RerankReqHandle(
+            read_rerank_request(body, _content_type)?,
+        )) as Box<dyn IrHandle>)
     }
-    fn write_request(&self, ir: &IrReq) -> Bytes {
-        let IrReq::Rerank(r) = ir else {
-            return Bytes::new();
-        };
-        super::super::leaf_codec::rerank_write_request("cohere", r)
-    }
-    fn read_response(&self, wire: &[u8]) -> Result<IrResp, CodecError> {
-        let v: Value =
-            serde_json::from_slice(wire).map_err(|e| CodecError::Malformed(e.to_string()))?;
-        Ok(IrResp::Rerank(busbar_core::ir::rerank::RerankResp {
-            id: v.get("id").and_then(Value::as_str).map(str::to_string),
-            results: read_rerank_results(v.get("results")),
-            search_units: v
-                .get("meta")
-                .and_then(|m| m.get("billed_units"))
-                .and_then(|b| b.get("search_units"))
-                .and_then(Value::as_u64),
-            ..Default::default()
-        }))
-    }
-    fn write_response(&self, ir: &IrResp) -> WireBody {
-        let IrResp::Rerank(r) = ir else {
-            return WireBody::json(Bytes::new());
-        };
-        super::super::leaf_codec::rerank_write_response("cohere", r)
+    fn read_response(&self, wire: &[u8]) -> Result<Box<dyn IrHandle>, CodecError> {
+        Ok(Box::new(super::super::leaf_handles::RerankRespHandle(
+            read_rerank_response(wire)?,
+        )) as Box<dyn IrHandle>)
     }
 }
 
 /// IR → cohere v2 rerank request wire (the body of [`CohereRerank::write_request`], moved behind the
 /// `(rerank, cohere)` key — G6 A4b option-a). Byte-identical to the pre-cutover inline write.
-pub(crate) fn write_rerank_request(r: &busbar_core::ir::rerank::RerankReq) -> Bytes {
+pub(crate) fn write_rerank_request(r: &crate::ir::rerank::RerankReq) -> Bytes {
     let mut body = json!({
         "model": r.model,
         "query": r.query,
@@ -457,7 +294,7 @@ pub(crate) fn write_rerank_request(r: &busbar_core::ir::rerank::RerankReq) -> By
 
 /// IR → cohere v2 rerank response wire (the body of [`CohereRerank::write_response`], moved behind the
 /// `(rerank, cohere)` key — G6 A4b option-a). Byte-identical to the pre-cutover inline write.
-pub(crate) fn write_rerank_response(r: &busbar_core::ir::rerank::RerankResp) -> WireBody {
+pub(crate) fn write_rerank_response(r: &crate::ir::rerank::RerankResp) -> WireBody {
     let results: Vec<Value> = r
         .results
         .iter()
@@ -475,12 +312,12 @@ pub(crate) fn write_rerank_response(r: &busbar_core::ir::rerank::RerankResp) -> 
 
 /// `results[] -> [{index, relevance_score}]` — shared by the Cohere and Bedrock rerank readers
 /// (the two wires use the same result shape).
-pub(crate) fn read_rerank_results(v: Option<&Value>) -> Vec<busbar_core::ir::rerank::RerankResult> {
+pub(crate) fn read_rerank_results(v: Option<&Value>) -> Vec<crate::ir::rerank::RerankResult> {
     v.and_then(Value::as_array)
         .map(|a| {
             a.iter()
                 .filter_map(|x| {
-                    Some(busbar_core::ir::rerank::RerankResult {
+                    Some(crate::ir::rerank::RerankResult {
                         index: x.get("index").and_then(Value::as_u64)? as usize,
                         relevance_score: x.get("relevance_score").and_then(Value::as_f64)?,
                     })
@@ -493,3 +330,193 @@ pub(crate) fn read_rerank_results(v: Option<&Value>) -> Vec<busbar_core::ir::rer
 #[cfg(test)]
 #[path = "tests/rerank_tests.rs"]
 mod rerank_tests;
+
+/// Wire -> concrete `EmbeddingsReq` parse, extracted from the `OperationHandler::read_request`
+/// body so a dissolved leaf-op handle and the `(op,proto)` `leaf_codec` read dispatch (G6 A4b,
+/// owner ruling b) can recover the concrete IR without a downcast. Byte-identical parse.
+pub(crate) fn read_embeddings_request(
+    body: &[u8],
+    _content_type: &str,
+) -> Result<crate::ir::embeddings::EmbeddingsReq, IngressReject> {
+    let wire: Value =
+        serde_json::from_slice(body).map_err(|e| IngressReject::BadRequest(e.to_string()))?;
+    let texts = wire
+        .get("texts")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str().map(str::to_string))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if texts.is_empty() {
+        return Err(IngressReject::BadRequest(
+            "embed request requires `texts`".into(),
+        ));
+    }
+    let encoding_formats = wire
+        .get("embedding_types")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str())
+                .map(cohere_encoding_format)
+                .collect()
+        })
+        .unwrap_or_else(|| vec![EncFmt::Float]);
+    Ok(crate::ir::embeddings::EmbeddingsReq {
+        model: wire
+            .get("model")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        input: EmbInput::Text(texts),
+        input_type: wire
+            .get("input_type")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        dimensions: wire
+            .get("output_dimension")
+            .and_then(Value::as_u64)
+            .and_then(|d| u32::try_from(d).ok()),
+        truncate: wire
+            .get("truncate")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        encoding_formats,
+        ..Default::default()
+    })
+}
+
+/// Wire -> concrete `EmbeddingsResp` parse, extracted from the `OperationHandler::read_response`
+/// body so a dissolved leaf-op handle and the `(op,proto)` `leaf_codec` read dispatch (G6 A4b,
+/// owner ruling b) can recover the concrete IR without a downcast. Byte-identical parse.
+pub(crate) fn read_embeddings_response(
+    wire: &[u8],
+) -> Result<crate::ir::embeddings::EmbeddingsResp, CodecError> {
+    let v: Value =
+        serde_json::from_slice(wire).map_err(|e| CodecError::Malformed(e.to_string()))?;
+    // Cohere returns each requested encoding under its own key (`embeddings.float`,
+    // `embeddings.base64`, `embeddings.int8`, ...), positionally aligned. Read EVERY encoding the
+    // request leg can ask for — float, base64, and the four integer forms — so an int8/uint8/
+    // binary/ubinary response is not silently dropped (its `float` key is absent when only that
+    // encoding was requested). Float -> Float, base64 -> Base64, the int forms -> Int.
+    let emb = v.get("embeddings");
+    let arrays: Vec<(EncFmt, &Vec<Value>)> = ALL_ENCODINGS
+        .iter()
+        .filter_map(|&e| {
+            emb.and_then(|o| o.get(cohere_embedding_type(&e)))
+                .and_then(Value::as_array)
+                .map(|a| (e, a))
+        })
+        .collect();
+    let count = arrays.iter().map(|(_, a)| a.len()).max().unwrap_or(0);
+    let embeddings: Vec<EmbeddingItem> = (0..count)
+        .map(|idx| {
+            let mut item = EmbeddingItem {
+                index: idx,
+                ..Default::default()
+            };
+            for (enc, arr) in &arrays {
+                let Some(cell) = arr.get(idx) else { continue };
+                let vd = match enc {
+                    EncFmt::Float => cell.as_array().map(|f| {
+                        VectorData::Float(
+                            f.iter()
+                                .filter_map(|x| x.as_f64().map(|n| n as f32))
+                                .collect(),
+                        )
+                    }),
+                    EncFmt::Base64 => cell.as_str().map(|s| VectorData::Base64(s.to_string())),
+                    // int8/uint8/binary/ubinary all arrive as JSON integer arrays.
+                    _ => cell.as_array().map(|f| {
+                        VectorData::Int(
+                            f.iter()
+                                .filter_map(|x| x.as_i64().map(|n| n as i32))
+                                .collect(),
+                        )
+                    }),
+                };
+                if let Some(vd) = vd {
+                    item.vectors.insert(*enc, vd);
+                }
+            }
+            item
+        })
+        .collect();
+    let usage = v
+        .get("meta")
+        .and_then(|m| m.get("billed_units"))
+        .and_then(|b| b.get("input_tokens"))
+        .and_then(Value::as_u64)
+        .map(|n| busbar_core::billing::TokenUsage {
+            input: n,
+            ..Default::default()
+        });
+    Ok(EmbeddingsResp {
+        id: v.get("id").and_then(Value::as_str).map(str::to_string),
+        embeddings,
+        usage,
+        ..Default::default()
+    })
+}
+
+/// Wire -> concrete `RerankReq` parse, extracted from the `OperationHandler::read_request`
+/// body so a dissolved leaf-op handle and the `(op,proto)` `leaf_codec` read dispatch (G6 A4b,
+/// owner ruling b) can recover the concrete IR without a downcast. Byte-identical parse.
+pub(crate) fn read_rerank_request(
+    body: &[u8],
+    _content_type: &str,
+) -> Result<crate::ir::rerank::RerankReq, IngressReject> {
+    let wire: Value =
+        serde_json::from_slice(body).map_err(|e| IngressReject::BadRequest(e.to_string()))?;
+    let query = wire
+        .get("query")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let documents = rerank_documents(wire.get("documents"));
+    if query.is_empty() || documents.is_empty() {
+        return Err(IngressReject::BadRequest(
+            "rerank request requires `query` and `documents`".into(),
+        ));
+    }
+    Ok(crate::ir::rerank::RerankReq {
+        model: wire
+            .get("model")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        query,
+        documents,
+        top_n: wire
+            .get("top_n")
+            .and_then(Value::as_u64)
+            .and_then(|n| u32::try_from(n).ok()),
+        max_tokens_per_doc: wire
+            .get("max_tokens_per_doc")
+            .and_then(Value::as_u64)
+            .and_then(|n| u32::try_from(n).ok()),
+        ..Default::default()
+    })
+}
+
+/// Wire -> concrete `RerankResp` parse, extracted from the `OperationHandler::read_response`
+/// body so a dissolved leaf-op handle and the `(op,proto)` `leaf_codec` read dispatch (G6 A4b,
+/// owner ruling b) can recover the concrete IR without a downcast. Byte-identical parse.
+pub(crate) fn read_rerank_response(
+    wire: &[u8],
+) -> Result<crate::ir::rerank::RerankResp, CodecError> {
+    let v: Value =
+        serde_json::from_slice(wire).map_err(|e| CodecError::Malformed(e.to_string()))?;
+    Ok(crate::ir::rerank::RerankResp {
+        id: v.get("id").and_then(Value::as_str).map(str::to_string),
+        results: read_rerank_results(v.get("results")),
+        search_units: v
+            .get("meta")
+            .and_then(|m| m.get("billed_units"))
+            .and_then(|b| b.get("search_units"))
+            .and_then(Value::as_u64),
+        ..Default::default()
+    })
+}

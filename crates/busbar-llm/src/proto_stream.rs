@@ -1,5 +1,20 @@
-// Cross-protocol response-stream translation, split out of proto/mod.rs.
-use super::*;
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+//! Cross-protocol response-stream translation — the concrete `StreamTranslate` + its factory,
+//! RELOCATED from busbar-core (G6 A4b). It names the concrete stream IR (`IrStreamEvent`/`IrUsage`/
+//! `StreamDecodeState`/…), so it lives in the plugin; busbar-core keeps only the neutral
+//! `StreamTranslator` byte-in/byte-out seam (`proto::stream_translator`) and reaches this factory
+//! through an installed fn-ptr in production, or directly via the `#[path]` net in its test build.
+//! Addresses core as `busbar_core::`; the concrete IR is `crate::ir::*` (this crate's own).
+
+use busbar_core::proto::{
+    find_frame_terminator, parse_sse_frame, write_sse_frame, IrError, StreamTranslator,
+    SSE_DONE_FRAME, SSE_DONE_SENTINEL, STREAM_ABORT_DETAIL,
+};
+// G6 A4b: the wire-codec surface relocated to this plugin's `proto_codec`; reach it RELATIVELY so it
+// resolves both standalone (crate::proto_codec) and netted into core (core::proto::proto_codec).
+use super::proto_codec::{protocol_for, Protocol, StreamFraming, ToolIdRemap};
 
 /// pure cross-protocol response-stream translator. Feed EGRESS-protocol SSE bytes,
 /// get the equivalent INGRESS-protocol SSE bytes — composing `egress.reader().read_response_events`
@@ -111,7 +126,7 @@ pub(crate) struct StreamTranslate {
     /// text). Synthesized closes are routed back through `emit_ir_event`, so each ingress writer applies
     /// its OWN projection and no wire shape is named here.
     open_blocks: std::collections::BTreeSet<usize>,
-    /// Test-only instrumentation: counts frames that reached the `crate::json::parse_str` DOM parse
+    /// Test-only instrumentation: counts frames that reached the `busbar_core::json::parse_str` DOM parse
     /// in the SSE loop. Proves the same-proto Anthropic event-type gate actually elides the parse
     /// for non-usage-bearing frames, rather than asserting a tautology about the diff. Compiled out
     /// entirely in non-test builds — zero production cost.
@@ -312,7 +327,7 @@ impl StreamTranslate {
                     if let Some((exc_name, message)) =
                         self.ingress.writer().write_response_exception(err)
                     {
-                        out.extend_from_slice(&crate::eventstream::encode_exception_frame(
+                        out.extend_from_slice(&busbar_core::eventstream::encode_exception_frame(
                             &exc_name, &message,
                         ));
                         continue;
@@ -597,12 +612,12 @@ impl StreamTranslate {
             // agnostic emitter names no wire event-type of its own.
             self.framing
                 .inject_streaming_metrics(&out_et, &mut out_data, self.started_at);
-            let payload = crate::json::to_vec(&out_data).unwrap_or_default();
+            let payload = busbar_core::json::to_vec(&out_data).unwrap_or_default();
             // Bedrock-INGRESS usage (Change A): the usage carried by this frame was already accumulated
             // into `last_usage` by `translate_event`/`extract_usage_only` from the structured IR event,
             // BEFORE this writer ran — so billing reads `usage()` and no longer needs the pre-encode
             // JSON side-channel the deleted byte-scanner consumed. Just encode the binary frame.
-            out.extend_from_slice(&crate::eventstream::encode_frame(&out_et, &payload));
+            out.extend_from_slice(&busbar_core::eventstream::encode_frame(&out_et, &payload));
         } else {
             // EGRESS-CHUNK framing seam: the OpenAI per-chunk identity replay AND the
             // include_usage trailing-usage un-fold now live behind the framing vtable. The framing
@@ -637,7 +652,7 @@ impl StreamTranslate {
     /// divergence between the two literals (the previous hand-copied `16 * 1024 * 1024`) would
     /// reintroduce that bug with no compile-time signal. Far larger than any legitimate single SSE /
     /// event-stream frame from a chat completion.
-    pub(super) const MAX_BUF: usize = crate::eventstream::MAX_FRAME_BYTES;
+    pub(super) const MAX_BUF: usize = busbar_core::eventstream::MAX_FRAME_BYTES;
 
     /// Feed a chunk of EGRESS SSE bytes; return translated INGRESS SSE bytes for whatever
     /// COMPLETE frames are now available (empty if only a partial frame is buffered). Once the
@@ -679,7 +694,7 @@ impl StreamTranslate {
             // malformed branch breaks before the push), so the client never gets undecodable garbage
             // ahead of the synthesized exception frame. On the cross-proto path the sink is `None`
             // (the bytes are re-encoded by `translate_event`).
-            let (frames, status, _valid_consumed) = crate::eventstream::drain_frames_checked(
+            let (frames, status, _valid_consumed) = busbar_core::eventstream::drain_frames_checked(
                 &mut self.buf,
                 if self.same_proto {
                     Some(&mut out)
@@ -709,7 +724,7 @@ impl StreamTranslate {
             // A malformed prelude is unrecoverable: abandon the stream exactly like the MAX_BUF
             // overflow path so the terminal exception frame is emitted by `finish()` (the `aborted`
             // flag drives that branch). Without this the stream would silently truncate.
-            if status == crate::eventstream::DrainStatus::MalformedPrelude
+            if status == busbar_core::eventstream::DrainStatus::MalformedPrelude
                 || self.buf.len() > Self::MAX_BUF
             {
                 self.abort();
@@ -769,7 +784,7 @@ impl StreamTranslate {
                         continue;
                     }
                     if self.same_proto
-                        && self.egress.name_static() == crate::proto::PROTO_ANTHROPIC
+                        && self.egress.name_static() == busbar_core::proto::PROTO_ANTHROPIC
                         && !matches!(
                             event_type.as_str(),
                             "message_start" | "message_delta" | "error"
@@ -788,7 +803,8 @@ impl StreamTranslate {
                     }
                     #[cfg(test)]
                     self.decode_calls.set(self.decode_calls.get() + 1);
-                    let Ok(data) = crate::json::parse_str::<serde_json::Value>(&data_str) else {
+                    let Ok(data) = busbar_core::json::parse_str::<serde_json::Value>(&data_str)
+                    else {
                         continue; // malformed data JSON — skip the frame rather than abort
                     };
                     if self.same_proto {
@@ -909,7 +925,7 @@ impl StreamTranslate {
     /// subsequent `feed()` is a no-op, and let `finish()` emit the ingress-native terminal error
     /// frame. The two abandonment triggers are a reassembly buffer that grew past [`Self::MAX_BUF`]
     /// without a frame terminator, and a malformed egress event-stream prelude
-    /// ([`crate::eventstream::DrainStatus::MalformedPrelude`]); both must surface an error, never a
+    /// ([`busbar_core::eventstream::DrainStatus::MalformedPrelude`]); both must surface an error, never a
     /// silent truncation.
     fn abort(&mut self) {
         self.aborted = true;
@@ -941,7 +957,7 @@ impl StreamTranslate {
                 // `InternalServerException`); this agnostic translator names none. `Some` here is the
                 // eventstream-ingress abort signal (equivalent to the prior `ingress_eventstream` gate,
                 // which only Bedrock sets).
-                out.extend_from_slice(&crate::eventstream::encode_exception_frame(
+                out.extend_from_slice(&busbar_core::eventstream::encode_exception_frame(
                     exc_type,
                     ABORT_DETAIL,
                 ));
@@ -958,7 +974,7 @@ impl StreamTranslate {
             // `emit_ir_event` exactly as every other event on this stream). `emit_ir_event` takes the
             // non-eventstream branch here (`ingress_eventstream` is false), so this stays SSE text.
             let err = IrError {
-                class: crate::breaker::StatusClass::ServerError,
+                class: busbar_core::breaker::StatusClass::ServerError,
                 provider_signal: Some(ABORT_DETAIL.to_string()),
                 retry_after: None,
             };
@@ -1025,31 +1041,6 @@ impl StreamTranslate {
     }
 }
 
-/// Neutral streaming byte-in/byte-out translator seam. The WHOLE [`StreamTranslate`] sits
-/// behind this trait so emission ORDER is preserved verbatim — the streaming forward path
-/// (`FirstByteBody`) holds an `Option<Box<dyn StreamTranslator>>` and never names the concrete
-/// translator. `usage()` returns an OWNED [`crate::billing::TokenUsage`] (the billing consumers read
-/// the four token totals, not the concrete `&IrUsage` borrow), so the seam names zero concrete IR;
-/// the projection is billing-lossless. The other methods forward 1:1 to `StreamTranslate`'s inherent
-/// methods, so behavior is byte-identical to the pre-trait direct calls.
-pub(crate) trait StreamTranslator: Send {
-    /// Feed a chunk of EGRESS bytes; return the translated INGRESS bytes for whatever COMPLETE frames
-    /// are now available (empty if only a partial frame is buffered).
-    fn feed(&mut self, chunk: &[u8]) -> Vec<u8>;
-    /// Call once at end-of-stream; returns the INGRESS terminator plus any deferred terminal frames.
-    fn finish(&mut self) -> Vec<u8>;
-    /// The terminal token usage accumulated for this stream, projected to the neutral billing total,
-    /// or `None` if no usage-bearing terminal event was seen. The streaming billing arm reads this
-    /// for the per-request token fee.
-    fn usage(&self) -> Option<crate::billing::TokenUsage>;
-    /// The terminal stream ERROR message, or `None` for a clean stream — the breaker/billing gate.
-    fn terminal_error(&self) -> Option<&str>;
-    /// True once this translator abandoned its stream (reassembly overflow / malformed prelude).
-    fn aborted(&self) -> bool;
-    /// Record whether the ORIGINAL client request opted into streaming usage.
-    fn set_client_include_usage(&mut self, include: bool);
-}
-
 impl StreamTranslator for StreamTranslate {
     // Each method forwards to the same-named INHERENT method — Rust's method resolution prefers an
     // inherent method over a trait method, so `self.feed(..)` here calls the concrete `StreamTranslate`
@@ -1061,7 +1052,7 @@ impl StreamTranslator for StreamTranslate {
     fn finish(&mut self) -> Vec<u8> {
         self.finish()
     }
-    fn usage(&self) -> Option<crate::billing::TokenUsage> {
+    fn usage(&self) -> Option<busbar_core::billing::TokenUsage> {
         self.usage().map(|u| u.to_token_usage())
     }
     fn terminal_error(&self) -> Option<&str> {
@@ -1082,7 +1073,7 @@ impl StreamTranslator for StreamTranslate {
 /// cross-protocol builds the reframing translator. Returns `None` (legacy raw passthrough) when the
 /// response is not an incremental stream (`!is_sse`), or for an unknown protocol with no reader to
 /// drive the IR. Byte-identical to the two inlined `StreamTranslate::new*` sites it replaces.
-pub(crate) fn new_stream_translator(
+pub fn new_stream_translator(
     ingress: &str,
     egress: &str,
     is_sse: bool,
@@ -1120,7 +1111,7 @@ pub(crate) fn new_stream_translator(
 /// best-effort but the stream is never damaged.
 fn rewrite_frame_strip_usage(frame: &[u8], data_str: &str) -> Vec<u8> {
     // Fast path: byte-level strip spliced back into the frame in place of the JSON substring.
-    if let Some(stripped) = crate::proto::strip_top_level_usage_member(data_str) {
+    if let Some(stripped) = busbar_core::proto::strip_top_level_usage_member(data_str) {
         // Locate the exact JSON substring within the frame. For an OpenAI bare `data: {json}\n\n`
         // frame the JSON is present verbatim and unique, so a single-substring find is exact.
         if let Ok(frame_str) = std::str::from_utf8(frame) {
@@ -1158,7 +1149,7 @@ fn rewrite_frame_strip_usage(frame: &[u8], data_str: &str) -> Vec<u8> {
     // only removes the `usage` member. This handles the "JSON not a clean single substring of the
     // frame" case (multi-`data:`-line frames) without reordering keys, reframed with the original
     // terminator so no wire-shape tell is introduced.
-    if let Some(stripped) = crate::proto::strip_top_level_usage_member(data_str) {
+    if let Some(stripped) = busbar_core::proto::strip_top_level_usage_member(data_str) {
         return format!("data: {stripped}{terminator}").into_bytes();
     }
 

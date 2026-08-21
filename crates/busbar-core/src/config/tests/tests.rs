@@ -854,10 +854,9 @@ fn test_shipped_providers_catalog_valid() {
     let defs: HashMap<String, ProviderDef> =
         serde_yaml::from_str(&raw).expect("parse providers.yaml");
     assert!(defs.len() >= 10, "catalog should be non-trivial");
-    let registry = crate::proto::ProtocolRegistry::with_builtins();
     for (name, def) in &defs {
         assert!(
-            registry.get(&def.protocol).is_some(),
+            crate::proto::protocol_for(&def.protocol).is_some(),
             "provider '{name}' names unknown protocol '{}'",
             def.protocol
         );

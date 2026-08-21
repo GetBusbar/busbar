@@ -153,7 +153,7 @@ fn first_call_provisions_second_call_reuses_one_row() {
 /// MissingGroup. Idempotent: a second exchange reuses the one leaf and the one key row.
 ///
 /// Before the fix: the mint seam bound the key to `user:<sub>` but never created that group, so
-/// `reg.get("user:sam")` is absent (panic) and a cost model built from the registry can't resolve the
+/// `crate::proto::protocol_for("user:sam")` is absent (panic) and a cost model built from the registry can't resolve the
 /// key's chain — exactly the live `429 group 'user:<sub>' is not configured` the demo hit.
 #[tokio::test]
 async fn exchange_provisions_user_leaf_from_child_default_and_key_is_usable() {

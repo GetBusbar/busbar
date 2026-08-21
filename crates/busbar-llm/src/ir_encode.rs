@@ -9,18 +9,18 @@
 //! them rather than in the neutral router; every caller is a `busbar-llm` reader/writer reached
 //! through the vtable, so core never names them.
 
-/// Reconstruct an OpenAI/Responses `image_url` string from an [`busbar_core::ir::IrImageSource`] —
+/// Reconstruct an OpenAI/Responses `image_url` string from an [`crate::ir::IrImageSource`] —
 /// the inverse of core's `parse_image_url`. A `Url` is emitted verbatim; a `Base64` is re-wrapped
 /// into a `data:<mime>;base64,<payload>` URI. A `Vendor` reference has no `image_url` projection, so
 /// returns `None` and the caller drops the block with a warn. Shared by the Chat and Responses writers.
-pub fn image_url_from_ir(source: &busbar_core::ir::IrImageSource) -> Option<String> {
+pub fn image_url_from_ir(source: &crate::ir::IrImageSource) -> Option<String> {
     match source {
-        busbar_core::ir::IrImageSource::Url(url) => Some(url.clone()),
-        busbar_core::ir::IrImageSource::Base64 { media_type, data } => {
+        crate::ir::IrImageSource::Url(url) => Some(url.clone()),
+        crate::ir::IrImageSource::Base64 { media_type, data } => {
             Some(format!("data:{media_type};base64,{data}"))
         }
         // An opaque vendor reference has no neutral `image_url` projection.
-        busbar_core::ir::IrImageSource::Vendor { .. } => None,
+        crate::ir::IrImageSource::Vendor { .. } => None,
     }
 }
 
@@ -33,13 +33,13 @@ pub fn image_url_from_ir(source: &busbar_core::ir::IrImageSource) -> Option<Stri
 /// other URL (an https reference, or a data URI we cannot confidently split) is preserved verbatim in
 /// `data` with an "image_url" media_type sentinel so the writer can reconstruct the exact original
 /// `image_url` on a same-protocol round-trip rather than mangling it.
-pub fn parse_image_url(url: &str) -> busbar_core::ir::IrImageSource {
+pub fn parse_image_url(url: &str) -> crate::ir::IrImageSource {
     if let Some(rest) = url.strip_prefix("data:") {
         if let Some((meta, payload)) = rest.split_once(',') {
             // meta is e.g. "image/png;base64" or "image/png" — keep only the MIME type.
             let media_type = meta.split(';').next().unwrap_or("").to_string();
             if meta.contains("base64") && !media_type.is_empty() {
-                return busbar_core::ir::IrImageSource::Base64 {
+                return crate::ir::IrImageSource::Base64 {
                     media_type,
                     data: payload.to_string(),
                 };
@@ -48,26 +48,26 @@ pub fn parse_image_url(url: &str) -> busbar_core::ir::IrImageSource {
     }
     // Non-data URL (https://...) or an unrecognized data URI: keep it verbatim as a URL reference so
     // the writer round-trips it as-is rather than mangling it.
-    busbar_core::ir::IrImageSource::Url(url.to_string())
+    crate::ir::IrImageSource::Url(url.to_string())
 }
 
 /// True when an image source is a vendor-scoped reference with no neutral form — a foreign writer
 /// that sees one must skip the image with a `tracing::warn!` instead of emitting a corrupt block. The
 /// PRODUCING protocol re-emits its own `Vendor` reference same-protocol and does NOT route through
 /// here (it matches its own `vendor` tag first).
-pub fn is_unresolvable_image_ref(source: &busbar_core::ir::IrImageSource) -> bool {
-    matches!(source, busbar_core::ir::IrImageSource::Vendor { .. })
+pub fn is_unresolvable_image_ref(source: &crate::ir::IrImageSource) -> bool {
+    matches!(source, crate::ir::IrImageSource::Vendor { .. })
 }
 
 /// True when an IR block is a structured-json tool-result content block
-/// ([`busbar_core::ir::IrBlock::Json`]) rather than text/image — used by NON-Bedrock ToolResult
+/// ([`crate::ir::IrBlock::Json`]) rather than text/image — used by NON-Bedrock ToolResult
 /// writers to drop-with-warn it (there is no lossless cross-protocol projection of a Bedrock
 /// `{"json":…}` tool-result).
-pub fn is_json_tool_result_block(block: &busbar_core::ir::IrBlock) -> bool {
-    matches!(block, busbar_core::ir::IrBlock::Json(_))
+pub fn is_json_tool_result_block(block: &crate::ir::IrBlock) -> bool {
+    matches!(block, crate::ir::IrBlock::Json(_))
 }
 
-/// Signal that this egress dialect cannot express [`busbar_core::ir::IrTool::strict`], naming the
+/// Signal that this egress dialect cannot express [`crate::ir::IrTool::strict`], naming the
 /// tools whose strict-schema guarantee is being dropped.
 ///
 /// `strict: true` is a BEHAVIOURAL contract — OpenAI guarantees the model's tool arguments conform
@@ -79,7 +79,7 @@ pub fn is_json_tool_result_block(block: &busbar_core::ir::IrBlock) -> bool {
 ///
 /// Called by each writer that cannot express the flag; the writers that CAN (OpenAI Chat, Responses)
 /// emit it instead and never call this.
-pub fn warn_dropped_tool_strict(tools: &[busbar_core::ir::IrTool], egress: &'static str) {
+pub fn warn_dropped_tool_strict(tools: &[crate::ir::IrTool], egress: &'static str) {
     let named: Vec<&str> = tools
         .iter()
         .filter(|t| t.strict.is_some())
@@ -101,8 +101,8 @@ pub fn warn_dropped_tool_strict(tools: &[busbar_core::ir::IrTool], egress: &'sta
 /// `write_request` — so every protocol gets a valid probe body for free, no per-protocol probe code.
 /// Shared by every writer's `probe_request` seam; the model is stamped afterward by the caller's
 /// `rewrite_model_if_needed`, so this carries none.
-pub fn ping_request() -> busbar_core::ir::IrRequest {
-    use busbar_core::ir::{IrBlock, IrMessage, IrRequest, IrRole};
+pub fn ping_request() -> crate::ir::IrRequest {
+    use crate::ir::{IrBlock, IrMessage, IrRequest, IrRole};
     IrRequest {
         reasoning: None,
         reasoning_budgets: None,

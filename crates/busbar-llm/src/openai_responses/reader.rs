@@ -9,14 +9,14 @@ impl ProtocolReader for ResponsesReader {
             .and_then(|d| d.get("cached_tokens"))
             .and_then(|x| x.as_u64());
         Some(
-            busbar_core::ir::IrUsage {
+            crate::ir::IrUsage {
                 input_tokens: u64_field("input_tokens")
                     .unwrap_or(0)
                     .saturating_sub(cached.unwrap_or(0)),
                 output_tokens: u64_field("output_tokens").unwrap_or(0),
                 cache_creation_input_tokens: None,
                 cache_read_input_tokens: cached,
-                detail: busbar_core::ir::IrUsageDetail::default(),
+                detail: crate::ir::IrUsageDetail::default(),
             }
             .to_token_usage(),
         )
@@ -91,10 +91,7 @@ impl ProtocolReader for ResponsesReader {
         super::openai_family::openai_classify(status, body)
     }
 
-    fn read_request(
-        &self,
-        body: &serde_json::Value,
-    ) -> Result<busbar_core::ir::IrRequest, IrError> {
+    fn read_request(&self, body: &serde_json::Value) -> Result<crate::ir::IrRequest, IrError> {
         let obj = body.as_object().ok_or(IrError {
             class: StatusClass::ClientError,
             provider_signal: Some(busbar_core::proto::SIGNAL_IR_PARSE.to_string()),
@@ -110,11 +107,11 @@ impl ProtocolReader for ResponsesReader {
         }
 
         let mut extra = serde_json::Map::new();
-        let mut system_blocks: Vec<busbar_core::ir::IrBlock> = Vec::new();
+        let mut system_blocks: Vec<crate::ir::IrBlock> = Vec::new();
 
         if let Some(instructions) = obj.get("instructions").and_then(|v| v.as_str()) {
             if !instructions.is_empty() {
-                system_blocks.push(busbar_core::ir::IrBlock::Text {
+                system_blocks.push(crate::ir::IrBlock::Text {
                     text: instructions.to_string(),
                     cache_control: None,
                     citations: Vec::new(),
@@ -122,14 +119,14 @@ impl ProtocolReader for ResponsesReader {
             }
         }
 
-        let mut messages: Vec<busbar_core::ir::IrMessage> = Vec::new();
+        let mut messages: Vec<crate::ir::IrMessage> = Vec::new();
 
         if let Some(input_val) = obj.get("input") {
             if input_val.is_string() {
                 let text = input_val.as_str().unwrap_or("").to_string();
-                messages.push(busbar_core::ir::IrMessage {
-                    role: busbar_core::ir::IrRole::User,
-                    content: vec![busbar_core::ir::IrBlock::Text {
+                messages.push(crate::ir::IrMessage {
+                    role: crate::ir::IrRole::User,
+                    content: vec![crate::ir::IrBlock::Text {
                         text,
                         cache_control: None,
                         citations: Vec::new(),
@@ -144,9 +141,9 @@ impl ProtocolReader for ResponsesReader {
                                 .and_then(|t| t.as_str())
                                 .unwrap_or("")
                                 .to_string();
-                            messages.push(busbar_core::ir::IrMessage {
-                                role: busbar_core::ir::IrRole::User,
-                                content: vec![busbar_core::ir::IrBlock::Text {
+                            messages.push(crate::ir::IrMessage {
+                                role: crate::ir::IrRole::User,
+                                content: vec![crate::ir::IrBlock::Text {
                                     text,
                                     cache_control: None,
                                     citations: Vec::new(),
@@ -162,8 +159,8 @@ impl ProtocolReader for ResponsesReader {
                             // sentinel) so the writer reconstructs `{type:input_image,file_id}` and the
                             // round-trip is lossless. Prefer `image_url` when present (the inline form).
                             if let Some(block) = responses_input_image_block(item) {
-                                messages.push(busbar_core::ir::IrMessage {
-                                    role: busbar_core::ir::IrRole::User,
+                                messages.push(crate::ir::IrMessage {
+                                    role: crate::ir::IrRole::User,
                                     content: vec![block],
                                 });
                             }
@@ -174,9 +171,9 @@ impl ProtocolReader for ResponsesReader {
                                 .and_then(|t| t.as_str())
                                 .unwrap_or("")
                                 .to_string();
-                            messages.push(busbar_core::ir::IrMessage {
-                                role: busbar_core::ir::IrRole::Assistant,
-                                content: vec![busbar_core::ir::IrBlock::Text {
+                            messages.push(crate::ir::IrMessage {
+                                role: crate::ir::IrRole::Assistant,
+                                content: vec![crate::ir::IrBlock::Text {
                                     text,
                                     cache_control: None,
                                     citations: Vec::new(),
@@ -206,9 +203,9 @@ impl ProtocolReader for ResponsesReader {
                                     serde_json::Value::String(arguments.to_string())
                                 });
 
-                            messages.push(busbar_core::ir::IrMessage {
-                                role: busbar_core::ir::IrRole::Assistant,
-                                content: vec![busbar_core::ir::IrBlock::ToolUse {
+                            messages.push(crate::ir::IrMessage {
+                                role: crate::ir::IrRole::Assistant,
+                                content: vec![crate::ir::IrBlock::ToolUse {
                                     id: call_id,
                                     name,
                                     input,
@@ -224,9 +221,9 @@ impl ProtocolReader for ResponsesReader {
                                 .unwrap_or("")
                                 .to_string();
                             let output_val = item.get("output");
-                            let content_blocks: Vec<busbar_core::ir::IrBlock> = match output_val {
+                            let content_blocks: Vec<crate::ir::IrBlock> = match output_val {
                                 Some(serde_json::Value::String(out_str)) => {
-                                    vec![busbar_core::ir::IrBlock::Text {
+                                    vec![crate::ir::IrBlock::Text {
                                         text: out_str.clone(),
                                         cache_control: None,
                                         citations: Vec::new(),
@@ -240,9 +237,9 @@ impl ProtocolReader for ResponsesReader {
                                     .unwrap_or_default(),
                             };
 
-                            messages.push(busbar_core::ir::IrMessage {
-                                role: busbar_core::ir::IrRole::Tool,
-                                content: vec![busbar_core::ir::IrBlock::ToolResult {
+                            messages.push(crate::ir::IrMessage {
+                                role: crate::ir::IrRole::Tool,
+                                content: vec![crate::ir::IrBlock::ToolResult {
                                     tool_use_id: call_id,
                                     content: content_blocks,
                                     is_error: false,
@@ -288,8 +285,8 @@ impl ProtocolReader for ResponsesReader {
                                 continue;
                             }
                             let role = match role_str {
-                                "user" => Some(busbar_core::ir::IrRole::User),
-                                "assistant" => Some(busbar_core::ir::IrRole::Assistant),
+                                "user" => Some(crate::ir::IrRole::User),
+                                "assistant" => Some(crate::ir::IrRole::Assistant),
                                 _ => None,
                             };
                             if let Some(role) = role {
@@ -299,7 +296,7 @@ impl ProtocolReader for ResponsesReader {
                                 if let Some(msg_content) =
                                     message_content_blocks(item.get("content"))
                                 {
-                                    messages.push(busbar_core::ir::IrMessage {
+                                    messages.push(crate::ir::IrMessage {
                                         role,
                                         content: msg_content,
                                     });
@@ -320,9 +317,9 @@ impl ProtocolReader for ResponsesReader {
                             let signature =
                                 read_reasoning_encrypted_content(item).map(String::from);
                             if !text.is_empty() || signature.is_some() {
-                                messages.push(busbar_core::ir::IrMessage {
-                                    role: busbar_core::ir::IrRole::Assistant,
-                                    content: vec![busbar_core::ir::IrBlock::Thinking {
+                                messages.push(crate::ir::IrMessage {
+                                    role: crate::ir::IrRole::Assistant,
+                                    content: vec![crate::ir::IrBlock::Thinking {
                                         text: text.into_owned(),
                                         signature,
                                         redacted: false,
@@ -362,8 +359,8 @@ impl ProtocolReader for ResponsesReader {
                         }
 
                         let role = match role_str {
-                            "user" => busbar_core::ir::IrRole::User,
-                            "assistant" => busbar_core::ir::IrRole::Assistant,
+                            "user" => crate::ir::IrRole::User,
+                            "assistant" => crate::ir::IrRole::Assistant,
                             _ => continue,
                         };
 
@@ -371,7 +368,7 @@ impl ProtocolReader for ResponsesReader {
                         // blocks OR a bare string shorthand; handle both via
                         // `message_content_blocks` so a string-content untyped turn survives.
                         if let Some(msg_content) = message_content_blocks(content_val) {
-                            messages.push(busbar_core::ir::IrMessage {
+                            messages.push(crate::ir::IrMessage {
                                 role,
                                 content: msg_content,
                             });
@@ -387,7 +384,7 @@ impl ProtocolReader for ResponsesReader {
             });
         }
 
-        let mut tools: Vec<busbar_core::ir::IrTool> = Vec::new();
+        let mut tools: Vec<crate::ir::IrTool> = Vec::new();
         if let Some(tools_val) = obj.get("tools") {
             for tool_val in tools_val.as_array().unwrap_or(&Vec::new()) {
                 // HOSTED-TOOL PASSTHROUGH. The Responses `tools` array mixes CUSTOM
@@ -406,7 +403,7 @@ impl ProtocolReader for ResponsesReader {
                     None => tool_val.get("name").is_some(),
                 };
                 if !is_function {
-                    tools.push(busbar_core::ir::IrTool {
+                    tools.push(crate::ir::IrTool {
                         name: String::new(),
                         description: None,
                         input_schema: serde_json::Value::Null,
@@ -431,7 +428,7 @@ impl ProtocolReader for ResponsesReader {
                     .cloned()
                     .unwrap_or(serde_json::Value::Null);
 
-                tools.push(busbar_core::ir::IrTool {
+                tools.push(crate::ir::IrTool {
                     name,
                     description,
                     input_schema,
@@ -525,8 +522,8 @@ impl ProtocolReader for ResponsesReader {
             .get("reasoning")
             .and_then(|r| r.get("effort"))
             .and_then(|v| v.as_str())
-            .and_then(busbar_core::ir::IrReasoningEffort::parse)
-            .map(busbar_core::ir::IrReasoningAsk::Effort);
+            .and_then(crate::ir::IrReasoningEffort::parse)
+            .map(crate::ir::IrReasoningAsk::Effort);
 
         // `/v1/responses` models a top-level `parallel_tool_calls` boolean, identically to Chat
         // Completions. Previously hardcoded `None`, which — unlike
@@ -535,7 +532,7 @@ impl ProtocolReader for ResponsesReader {
         // who explicitly set it.
         let parallel_tool_calls = obj.get("parallel_tool_calls").and_then(|v| v.as_bool());
 
-        Ok(busbar_core::ir::IrRequest {
+        Ok(crate::ir::IrRequest {
             reasoning,
             reasoning_budgets: None,
             logprobs: None,
@@ -565,7 +562,7 @@ impl ProtocolReader for ResponsesReader {
         &self,
         event_type: &str,
         data: &serde_json::Value,
-        state: &mut busbar_core::ir::StreamDecodeState,
+        state: &mut crate::ir::StreamDecodeState,
     ) -> Vec<IrStreamEvent> {
         let mut out: Vec<IrStreamEvent> = Vec::new();
 
@@ -593,7 +590,7 @@ impl ProtocolReader for ResponsesReader {
                         .and_then(|m| m.as_str())
                         .map(String::from);
                     out.push(IrStreamEvent::MessageStart {
-                        role: busbar_core::ir::IrRole::Assistant,
+                        role: crate::ir::IrRole::Assistant,
                         usage: None,
                         id,
                         created,
@@ -656,10 +653,7 @@ impl ProtocolReader for ResponsesReader {
                                 state.open_tools.insert(idx);
                                 out.push(IrStreamEvent::BlockStart {
                                     index: idx,
-                                    block: busbar_core::ir::IrBlockMeta::ToolUse {
-                                        id: call_id,
-                                        name,
-                                    },
+                                    block: crate::ir::IrBlockMeta::ToolUse { id: call_id, name },
                                 });
                             }
                         }
@@ -684,7 +678,7 @@ impl ProtocolReader for ResponsesReader {
                                 state.open_tools.insert(idx);
                                 out.push(IrStreamEvent::BlockStart {
                                     index: idx,
-                                    block: busbar_core::ir::IrBlockMeta::Thinking,
+                                    block: crate::ir::IrBlockMeta::Thinking,
                                 });
                             }
                         }
@@ -727,12 +721,12 @@ impl ProtocolReader for ResponsesReader {
                         state.open_tools.insert(idx);
                         out.push(IrStreamEvent::BlockStart {
                             index: idx,
-                            block: busbar_core::ir::IrBlockMeta::Thinking,
+                            block: crate::ir::IrBlockMeta::Thinking,
                         });
                     }
                     out.push(IrStreamEvent::BlockDelta {
                         index: idx,
-                        delta: busbar_core::ir::IrDelta::ThinkingDelta(delta),
+                        delta: crate::ir::IrDelta::ThinkingDelta(delta),
                     });
                 }
             }
@@ -788,12 +782,12 @@ impl ProtocolReader for ResponsesReader {
                         state.open_tools.insert(text_key);
                         out.push(IrStreamEvent::BlockStart {
                             index: idx,
-                            block: busbar_core::ir::IrBlockMeta::Text,
+                            block: crate::ir::IrBlockMeta::Text,
                         });
                     }
                     out.push(IrStreamEvent::BlockDelta {
                         index: idx,
-                        delta: busbar_core::ir::IrDelta::TextDelta(delta),
+                        delta: crate::ir::IrDelta::TextDelta(delta),
                     });
                 }
             }
@@ -818,7 +812,7 @@ impl ProtocolReader for ResponsesReader {
                         if state.open_tools.contains(&idx) {
                             out.push(IrStreamEvent::BlockDelta {
                                 index: idx,
-                                delta: busbar_core::ir::IrDelta::InputJsonDelta(delta),
+                                delta: crate::ir::IrDelta::InputJsonDelta(delta),
                             });
                         }
                     }
@@ -869,8 +863,7 @@ impl ProtocolReader for ResponsesReader {
                 // index. This closure is invoked in EVERY terminal sub-path (incl. the failed
                 // early-return) right before the MessageStop is pushed.
                 let close_open_blocks =
-                    |out: &mut Vec<IrStreamEvent>,
-                     state: &mut busbar_core::ir::StreamDecodeState| {
+                    |out: &mut Vec<IrStreamEvent>, state: &mut crate::ir::StreamDecodeState| {
                         // Drain into a sorted Vec first: closing in ascending IR-index order keeps
                         // the emitted BlockStop sequence deterministic regardless of insertion order
                         // (text and tool keys interleave under the offset scheme).
@@ -948,7 +941,7 @@ impl ProtocolReader for ResponsesReader {
                     // successful end_turn. An unrecognized status is treated as a terminal stop
                     // with no specific reason (None) rather than silently claiming success.
                     let stop_reason = match status {
-                        STATUS_COMPLETED | "" => Some(busbar_core::ir::IrStopReason::EndTurn),
+                        STATUS_COMPLETED | "" => Some(crate::ir::IrStopReason::EndTurn),
                         // An `incomplete` is NOT a successful end_turn; map its machine-readable
                         // reason, or surface None (don't mask the truncation) when there is none.
                         STATUS_INCOMPLETE => response_obj
@@ -966,7 +959,7 @@ impl ProtocolReader for ResponsesReader {
                     // Anthropic ingress) never saw the tool-call finish signal on the streaming path.
                     // The `response.completed` event carries the fully-assembled `output`, so detect a
                     // function_call item there and override only the successful end_turn cases.
-                    let stop_reason = if stop_reason == Some(busbar_core::ir::IrStopReason::EndTurn)
+                    let stop_reason = if stop_reason == Some(crate::ir::IrStopReason::EndTurn)
                         && response_obj
                             .get("output")
                             .and_then(|o| o.as_array())
@@ -976,7 +969,7 @@ impl ProtocolReader for ResponsesReader {
                                         == Some(ITEM_TYPE_FUNCTION_CALL)
                                 })
                             }) {
-                        Some(busbar_core::ir::IrStopReason::ToolUse)
+                        Some(crate::ir::IrStopReason::ToolUse)
                     } else {
                         stop_reason
                     };
@@ -1022,31 +1015,28 @@ impl ProtocolReader for ResponsesReader {
                                     state.open_tools.insert(text_key);
                                     out.push(IrStreamEvent::BlockStart {
                                         index: idx,
-                                        block: busbar_core::ir::IrBlockMeta::Text,
+                                        block: crate::ir::IrBlockMeta::Text,
                                     });
                                     out.push(IrStreamEvent::BlockDelta {
                                         index: idx,
-                                        delta: busbar_core::ir::IrDelta::TextDelta(
-                                            text.to_string(),
-                                        ),
+                                        delta: crate::ir::IrDelta::TextDelta(text.to_string()),
                                     });
                                 }
                             }
                         }
                     }
-                    let stop_reason = if saw_refusal
-                        && stop_reason == Some(busbar_core::ir::IrStopReason::EndTurn)
-                    {
-                        Some(busbar_core::ir::IrStopReason::Refusal)
-                    } else {
-                        stop_reason
-                    };
+                    let stop_reason =
+                        if saw_refusal && stop_reason == Some(crate::ir::IrStopReason::EndTurn) {
+                            Some(crate::ir::IrStopReason::Refusal)
+                        } else {
+                            stop_reason
+                        };
 
                     let usage = response_obj
                         .get("usage")
                         .map(|u| {
                             let cached = read_cached_tokens(u);
-                            busbar_core::ir::IrUsage {
+                            crate::ir::IrUsage {
                                 // NORMALIZE to the additive-cache convention: the Responses API's
                                 // `input_tokens` is a TOTAL that already INCLUDES the cached prefix,
                                 // so subtract the cached tokens to leave only the uncached input.
@@ -1071,7 +1061,7 @@ impl ProtocolReader for ResponsesReader {
                                 // buffered response. Reading it only on the buffered path made the
                                 // same request report reasoning tokens at `stream: false` and a hard
                                 // `0` at `stream: true`.
-                                detail: busbar_core::ir::IrUsageDetail {
+                                detail: crate::ir::IrUsageDetail {
                                     reasoning_tokens: u
                                         .get("output_tokens_details")
                                         .and_then(|d| d.get("reasoning_tokens"))
@@ -1080,12 +1070,12 @@ impl ProtocolReader for ResponsesReader {
                                 },
                             }
                         })
-                        .unwrap_or(busbar_core::ir::IrUsage {
+                        .unwrap_or(crate::ir::IrUsage {
                             input_tokens: 0,
                             output_tokens: 0,
                             cache_creation_input_tokens: None,
                             cache_read_input_tokens: None,
-                            detail: busbar_core::ir::IrUsageDetail::default(),
+                            detail: crate::ir::IrUsageDetail::default(),
                         });
 
                     // Close any still-open content blocks BEFORE the MessageDelta so the emitted
@@ -1131,19 +1121,19 @@ impl ProtocolReader for ResponsesReader {
                     // `read_response`). Only a `completed` event maps to end_turn. (`failed` is
                     // handled by the branch above; this else covers `completed`/`incomplete`.)
                     let stop_reason = match event_type {
-                        EVT_RESPONSE_COMPLETED => Some(busbar_core::ir::IrStopReason::EndTurn),
+                        EVT_RESPONSE_COMPLETED => Some(crate::ir::IrStopReason::EndTurn),
                         EVT_RESPONSE_INCOMPLETE => None,
                         // No other event_type reaches this arm (the outer match guards the set and
                         // `response.failed` is handled above), so anything else is an unrecognized
                         // terminal with no specific reason.
                         _ => None,
                     };
-                    let usage = busbar_core::ir::IrUsage {
+                    let usage = crate::ir::IrUsage {
                         input_tokens: 0,
                         output_tokens: 0,
                         cache_creation_input_tokens: None,
                         cache_read_input_tokens: None,
-                        detail: busbar_core::ir::IrUsageDetail::default(),
+                        detail: crate::ir::IrUsageDetail::default(),
                     };
                     close_open_blocks(&mut out, state);
                     out.push(IrStreamEvent::MessageDelta {
@@ -1161,10 +1151,7 @@ impl ProtocolReader for ResponsesReader {
         out
     }
 
-    fn read_response(
-        &self,
-        body: &serde_json::Value,
-    ) -> Result<busbar_core::ir::IrResponse, IrError> {
+    fn read_response(&self, body: &serde_json::Value) -> Result<crate::ir::IrResponse, IrError> {
         let obj = body.as_object().ok_or(IrError {
             class: StatusClass::ClientError,
             provider_signal: Some(busbar_core::proto::SIGNAL_IR_PARSE.to_string()),
@@ -1208,8 +1195,8 @@ impl ProtocolReader for ResponsesReader {
             });
         }
 
-        let mut stop_reason: Option<busbar_core::ir::IrStopReason> = match status {
-            STATUS_COMPLETED => Some(busbar_core::ir::IrStopReason::EndTurn),
+        let mut stop_reason: Option<crate::ir::IrStopReason> = match status {
+            STATUS_COMPLETED => Some(crate::ir::IrStopReason::EndTurn),
             STATUS_INCOMPLETE => obj
                 .get("incomplete_details")
                 .and_then(|d| d.get("reason"))
@@ -1218,7 +1205,7 @@ impl ProtocolReader for ResponsesReader {
             _ => None,
         };
 
-        let mut content: Vec<busbar_core::ir::IrBlock> = Vec::new();
+        let mut content: Vec<crate::ir::IrBlock> = Vec::new();
         // A refusal rides on a `refusal` content part with `status:"completed"`, so the refusal
         // SIGNAL is not in `status`. Track it here to promote `stop_reason` to `Refusal` below.
         let mut saw_refusal = false;
@@ -1246,7 +1233,7 @@ impl ProtocolReader for ResponsesReader {
                                             .get("annotations")
                                             .map(super::super::openai_annotations::read_url_annotations)
                                             .unwrap_or_default();
-                                        content.push(busbar_core::ir::IrBlock::Text {
+                                        content.push(crate::ir::IrBlock::Text {
                                             text: text.to_string(),
                                             cache_control: None,
                                             citations,
@@ -1264,7 +1251,7 @@ impl ProtocolReader for ResponsesReader {
                                         block_item.get("refusal").and_then(|t| t.as_str())
                                     {
                                         saw_refusal = true;
-                                        content.push(busbar_core::ir::IrBlock::Text {
+                                        content.push(crate::ir::IrBlock::Text {
                                             text: text.to_string(),
                                             cache_control: None,
                                             citations: Vec::new(),
@@ -1295,7 +1282,7 @@ impl ProtocolReader for ResponsesReader {
                         let input = busbar_core::json::parse_str(arguments)
                             .unwrap_or_else(|_| serde_json::Value::String(arguments.to_string()));
 
-                        content.push(busbar_core::ir::IrBlock::ToolUse {
+                        content.push(crate::ir::IrBlock::ToolUse {
                             id: call_id,
                             name,
                             input,
@@ -1331,7 +1318,7 @@ impl ProtocolReader for ResponsesReader {
                         // Skip a wholly-empty reasoning item (no text and no encrypted_content)
                         // rather than emitting a blank Thinking block.
                         if !text.is_empty() || signature.is_some() {
-                            content.push(busbar_core::ir::IrBlock::Thinking {
+                            content.push(crate::ir::IrBlock::Thinking {
                                 text: text.into_owned(),
                                 signature,
                                 redacted: false,
@@ -1360,19 +1347,19 @@ impl ProtocolReader for ResponsesReader {
         // tool call, and clobbering `max_tokens`/`safety` with `tool_use` would tell the client the
         // call is complete and deny the truncation signal to the breaker. Only the clean-finish case
         // (`end_turn`) is promoted; any other reason is left untouched.
-        if stop_reason == Some(busbar_core::ir::IrStopReason::EndTurn)
+        if stop_reason == Some(crate::ir::IrStopReason::EndTurn)
             && content
                 .iter()
-                .any(|b| matches!(b, busbar_core::ir::IrBlock::ToolUse { .. }))
+                .any(|b| matches!(b, crate::ir::IrBlock::ToolUse { .. }))
         {
-            stop_reason = Some(busbar_core::ir::IrStopReason::ToolUse);
+            stop_reason = Some(crate::ir::IrStopReason::ToolUse);
         }
 
         // A `completed` response that carried a `refusal` part is a refusal, not a clean end_turn.
         // Promote the typed `Refusal` stop_reason (which the Anthropic/OpenAI writers translate) so
         // the refusal signal survives even though the Responses `status` was `completed`.
-        if saw_refusal && stop_reason == Some(busbar_core::ir::IrStopReason::EndTurn) {
-            stop_reason = Some(busbar_core::ir::IrStopReason::Refusal);
+        if saw_refusal && stop_reason == Some(crate::ir::IrStopReason::EndTurn) {
+            stop_reason = Some(crate::ir::IrStopReason::Refusal);
         }
 
         // Tolerate an absent `usage` object leniently — zero-default rather than hard-erroring,
@@ -1383,7 +1370,7 @@ impl ProtocolReader for ResponsesReader {
         let usage_val = obj.get("usage");
 
         let cached = usage_val.and_then(read_cached_tokens);
-        let usage = busbar_core::ir::IrUsage {
+        let usage = crate::ir::IrUsage {
             // NORMALIZE to the additive-cache convention: the Responses API's `input_tokens` is a
             // TOTAL that already INCLUDES the cached prefix, so subtract the cached tokens to leave
             // only the uncached input. `saturating_sub` guards an odd upstream where cached > input.
@@ -1406,7 +1393,7 @@ impl ProtocolReader for ResponsesReader {
             // previously unread, and the writer hardcoded `0` — so every cross-protocol reasoning
             // call CLAIMED the model did no thinking rather than admitting the number was not
             // carried.
-            detail: busbar_core::ir::IrUsageDetail {
+            detail: crate::ir::IrUsageDetail {
                 reasoning_tokens: usage_val
                     .and_then(|u| u.get("output_tokens_details"))
                     .and_then(|d| d.get("reasoning_tokens"))
@@ -1425,9 +1412,9 @@ impl ProtocolReader for ResponsesReader {
         let id = obj.get("id").and_then(|i| i.as_str()).map(String::from);
         let created = obj.get("created_at").and_then(|c| c.as_u64());
 
-        Ok(busbar_core::ir::IrResponse {
+        Ok(crate::ir::IrResponse {
             logprobs: Vec::new(),
-            role: busbar_core::ir::IrRole::Assistant,
+            role: crate::ir::IrRole::Assistant,
             content,
             stop_reason,
             usage,

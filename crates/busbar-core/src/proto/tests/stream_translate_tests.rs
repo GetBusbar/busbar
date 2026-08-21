@@ -1,4 +1,6 @@
 use super::*;
+use crate::ir::{IrBlockMeta, IrStreamEvent};
+use axum::http::StatusCode;
 
 /// STRUCTURAL ROUND-TRIP MATRIX (the test class that would have caught the cohere object-shape
 /// and openai usage bugs): for EVERY protocol, writing a canonical IR stream through that
@@ -4060,9 +4062,14 @@ fn test_gemini_protocol_resolves() {
 #[test]
 fn test_bedrock_and_responses_register() {
     // Both 0.10 protocols resolve via the registry and the ingress resolver.
-    let registry = ProtocolRegistry::with_builtins();
-    assert!(registry.get("bedrock").is_some(), "bedrock in registry");
-    assert!(registry.get("responses").is_some(), "responses in registry");
+    assert!(
+        crate::proto::protocol_for("bedrock").is_some(),
+        "bedrock in registry"
+    );
+    assert!(
+        crate::proto::protocol_for("responses").is_some(),
+        "responses in registry"
+    );
     assert!(
         protocol_for("bedrock").is_some(),
         "bedrock resolves for ingress"

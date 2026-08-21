@@ -3,14 +3,20 @@
 
 //! Bedrock Converse protocol reader/writer implementation.
 
+use crate::ir::IrStreamEvent;
 use axum::http::{HeaderName, HeaderValue, StatusCode};
 use busbar_core::breaker::StatusClass;
-use busbar_core::ir::IrStreamEvent;
 use busbar_core::proto::openai_family::{
     ERR_TYPE_AUTHENTICATION, ERR_TYPE_INSUFFICIENT_QUOTA, ERR_TYPE_INVALID_REQUEST,
     ERR_TYPE_NOT_FOUND, ERR_TYPE_PERMISSION, ERR_TYPE_RATE_LIMIT,
 };
 use busbar_core::proto::*;
+// G6 A4b: the wire-codec surface (ProtocolReader/Writer/Protocol/StreamFraming/ToolIdRemap/
+// protocol_for) relocated to this plugin's `proto_codec`; reach it RELATIVELY so it resolves both
+// standalone (crate::proto_codec) and netted into core (core::proto::proto_codec).
+#[allow(unused_imports)]
+// used standalone; redundant with busbar_core::proto::* when netted into core
+use super::proto_codec::*;
 
 pub mod handler;
 mod reader;
@@ -26,7 +32,7 @@ pub fn protocol() -> Protocol {
 /// content type — the two facts core used to learn by allocating a reader and a writer to ask.
 pub const DECL: ProtocolDecl = ProtocolDecl {
     name: PROTO_BEDROCK,
-    codec: Some(protocol),
+    codec: Some(|| super::proto_codec::dialect_ref(PROTO_BEDROCK)),
     handler: Some(&handler::BedrockRequestHandler),
     verbs: &[
         busbar_core::operation::Operation::CHAT,
@@ -373,7 +379,7 @@ fn clamp_temperature_for_bedrock(temperature: f64) -> (f64, bool) {
 ///     `reasoningText`; non-Bedrock writers (no native analog) DROP the typed redacted block.
 ///
 /// Mirrors anthropic.rs `read_block`'s `"thinking"` arm (text + optional signature → `Thinking`).
-fn read_bedrock_reasoning_block(reasoning: &serde_json::Value) -> Option<busbar_core::ir::IrBlock> {
+fn read_bedrock_reasoning_block(reasoning: &serde_json::Value) -> Option<crate::ir::IrBlock> {
     if let Some(reasoning_text) = reasoning.get("reasoningText") {
         let text = reasoning_text
             .get("text")
@@ -383,7 +389,7 @@ fn read_bedrock_reasoning_block(reasoning: &serde_json::Value) -> Option<busbar_
         let signature = reasoning_text
             .get("signature")
             .and_then(|s| s.as_str().map(String::from));
-        return Some(busbar_core::ir::IrBlock::Thinking {
+        return Some(crate::ir::IrBlock::Thinking {
             text,
             signature,
             redacted: false,
@@ -391,7 +397,7 @@ fn read_bedrock_reasoning_block(reasoning: &serde_json::Value) -> Option<busbar_
         });
     }
     if let Some(redacted) = reasoning.get("redactedContent").and_then(|r| r.as_str()) {
-        return Some(busbar_core::ir::IrBlock::Thinking {
+        return Some(crate::ir::IrBlock::Thinking {
             text: redacted.to_string(),
             signature: None,
             redacted: true,
@@ -438,11 +444,11 @@ fn bedrock_reasoning_block(
 ///     same-protocol round-trip).
 ///   - `Url(_)` (no Converse arbitrary-URL source) and a FOREIGN `Vendor` (e.g. a Responses `file_id`)
 ///     have no native projection — DROP with a warn rather than emit a corrupt `bytes` block.
-fn bedrock_image_block(source: &busbar_core::ir::IrImageSource) -> Option<serde_json::Value> {
+fn bedrock_image_block(source: &crate::ir::IrImageSource) -> Option<serde_json::Value> {
     match source {
         // A Bedrock-produced vendor reference is an `s3Location` (stored as `{format, s3Location}`);
         // re-emit it faithfully. A vendor reference from ANOTHER protocol has no Bedrock projection.
-        busbar_core::ir::IrImageSource::Vendor { vendor, value } if *vendor == "bedrock" => {
+        crate::ir::IrImageSource::Vendor { vendor, value } if *vendor == "bedrock" => {
             let format_str = value
                 .get("format")
                 .and_then(|f| f.as_str())
@@ -460,13 +466,13 @@ fn bedrock_image_block(source: &busbar_core::ir::IrImageSource) -> Option<serde_
         // Bedrock Converse has no arbitrary-URL image source, and a foreign vendor reference (a
         // Responses file_id) has no Converse projection — emitting either as base64 `bytes` would
         // corrupt the block. Drop with a warn.
-        busbar_core::ir::IrImageSource::Url(_) | busbar_core::ir::IrImageSource::Vendor { .. } => {
+        crate::ir::IrImageSource::Url(_) | crate::ir::IrImageSource::Vendor { .. } => {
             tracing::warn!(
                 "dropping image with no Bedrock Converse projection (URL or foreign vendor ref)"
             );
             None
         }
-        busbar_core::ir::IrImageSource::Base64 { media_type, data } => {
+        crate::ir::IrImageSource::Base64 { media_type, data } => {
             // Map the MIME subtype onto a member of Bedrock Converse's `ImageFormat` union
             // {png, jpeg, gif, webp}. `image/jpg` (and casing variants) is NOT a member — Bedrock
             // spells it `jpeg` — so emitting it verbatim 400s a valid client image. Normalize
@@ -504,21 +510,21 @@ fn bedrock_image_block(source: &busbar_core::ir::IrImageSource) -> Option<serde_
     }
 }
 
-/// The `vendor` tag on an [`busbar_core::ir::IrImageSource::Vendor`] this protocol produces — a Bedrock
+/// The `vendor` tag on an [`crate::ir::IrImageSource::Vendor`] this protocol produces — a Bedrock
 /// `s3Location` document/video/image source, which names an S3 object in the CALLER's AWS account
 /// and is meaningless to any other backend.
 const VENDOR_NAME: &str = busbar_core::proto::PROTO_BEDROCK;
 
-/// Read a native Converse `document` / `video` block body into an [`busbar_core::ir::IrBlock::Media`].
+/// Read a native Converse `document` / `video` block body into an [`crate::ir::IrBlock::Media`].
 ///
 /// Converse spells both the same way — `{"format": "pdf", "name": "…", "source": {…}}` — with a
 /// `source` union of inline `bytes` or an `s3Location`. `format` is a bare container token, so it is
 /// normalized to a real mime type here (the neutral IR speaks mime; every other dialect does too)
 /// and the writer reverses it exactly.
 fn bedrock_media_block(
-    kind: busbar_core::ir::IrMediaKind,
+    kind: crate::ir::IrMediaKind,
     value: &serde_json::Value,
-) -> busbar_core::ir::IrBlock {
+) -> crate::ir::IrBlock {
     let format = value.get("format").and_then(|v| v.as_str()).unwrap_or("");
     let name = value
         .get("name")
@@ -527,18 +533,18 @@ fn bedrock_media_block(
         .map(String::from);
     let source = value.get("source");
     let ir_source = match source.and_then(|s| s.get("bytes")).and_then(|b| b.as_str()) {
-        Some(bytes) => busbar_core::ir::IrImageSource::Base64 {
+        Some(bytes) => crate::ir::IrImageSource::Base64 {
             media_type: bedrock_media_type_for_format(kind, format),
             data: bytes.to_string(),
         },
         // An `s3Location` names an object in the caller's own AWS account: no other backend can
         // fetch it, so it rides the opaque `Vendor` escape and only this writer re-emits it.
-        None => busbar_core::ir::IrImageSource::Vendor {
+        None => crate::ir::IrImageSource::Vendor {
             vendor: VENDOR_NAME,
             value: source.cloned().unwrap_or_else(|| serde_json::json!({})),
         },
     };
-    busbar_core::ir::IrBlock::Media {
+    crate::ir::IrBlock::Media {
         kind,
         source: ir_source,
         name,
@@ -549,7 +555,7 @@ fn bedrock_media_block(
 /// Converse's bare container token (`pdf`, `csv`, `mp4`) → a real mime type for the neutral IR.
 /// Unknown tokens fall back to the kind's generic type rather than fabricating `application/<token>`,
 /// which would be a mime type that does not exist.
-fn bedrock_media_type_for_format(kind: busbar_core::ir::IrMediaKind, format: &str) -> String {
+fn bedrock_media_type_for_format(kind: crate::ir::IrMediaKind, format: &str) -> String {
     match format.to_ascii_lowercase().as_str() {
         "pdf" => "application/pdf".to_string(),
         "csv" => "text/csv".to_string(),
@@ -567,28 +573,28 @@ fn bedrock_media_type_for_format(kind: busbar_core::ir::IrMediaKind, format: &st
         }
         "three_gp" => "video/3gpp".to_string(),
         _ => match kind {
-            busbar_core::ir::IrMediaKind::Document => "application/octet-stream".to_string(),
-            busbar_core::ir::IrMediaKind::Audio => "audio/mpeg".to_string(),
-            busbar_core::ir::IrMediaKind::Video => "video/mp4".to_string(),
+            crate::ir::IrMediaKind::Document => "application/octet-stream".to_string(),
+            crate::ir::IrMediaKind::Audio => "audio/mpeg".to_string(),
+            crate::ir::IrMediaKind::Video => "video/mp4".to_string(),
         },
     }
 }
 
-/// Project an [`busbar_core::ir::IrBlock::Media`] into the native Converse content block that carries it,
+/// Project an [`crate::ir::IrBlock::Media`] into the native Converse content block that carries it,
 /// or `None` when Converse has no slot (the caller emits nothing, having warned).
 ///
 /// Converse has a `document` block and a `video` block and NO audio block, and each has a CLOSED
 /// format union AWS validates — so an unmappable format is coerced/dropped here rather than sent
 /// upstream to be rejected, which is the pattern this writer already applied to images.
 fn bedrock_media_content_block(
-    kind: busbar_core::ir::IrMediaKind,
-    source: &busbar_core::ir::IrImageSource,
+    kind: crate::ir::IrMediaKind,
+    source: &crate::ir::IrImageSource,
     name: Option<&str>,
 ) -> Option<serde_json::Value> {
     let (wire_key, format) = match kind {
-        busbar_core::ir::IrMediaKind::Document => ("document", bedrock_document_format(source)?),
-        busbar_core::ir::IrMediaKind::Video => ("video", bedrock_video_format(source)?),
-        busbar_core::ir::IrMediaKind::Audio => {
+        crate::ir::IrMediaKind::Document => ("document", bedrock_document_format(source)?),
+        crate::ir::IrMediaKind::Video => ("video", bedrock_video_format(source)?),
+        crate::ir::IrMediaKind::Audio => {
             tracing::warn!(
                 "dropping audio attachment on Bedrock egress: Converse has `document` and `video` \
                  content blocks and NO audio block, so there is no native slot; the block is NOT \
@@ -598,11 +604,11 @@ fn bedrock_media_content_block(
         }
     };
     let wire_source = match source {
-        busbar_core::ir::IrImageSource::Base64 { data, .. } => serde_json::json!({ "bytes": data }),
-        busbar_core::ir::IrImageSource::Vendor { vendor, value } if *vendor == VENDOR_NAME => {
+        crate::ir::IrImageSource::Base64 { data, .. } => serde_json::json!({ "bytes": data }),
+        crate::ir::IrImageSource::Vendor { vendor, value } if *vendor == VENDOR_NAME => {
             value.clone()
         }
-        busbar_core::ir::IrImageSource::Url(_) | busbar_core::ir::IrImageSource::Vendor { .. } => {
+        crate::ir::IrImageSource::Url(_) | crate::ir::IrImageSource::Vendor { .. } => {
             tracing::warn!(
                 media_kind = kind.as_str(),
                 "dropping attachment on Bedrock egress: Converse has no arbitrary-URL source and \
@@ -616,7 +622,7 @@ fn bedrock_media_content_block(
     // Converse REQUIRES `name` on a document block. A cross-protocol attachment often has none
     // (Gemini `inlineData` carries no filename), so synthesize one rather than emit a block AWS
     // rejects for a missing required field.
-    if kind == busbar_core::ir::IrMediaKind::Document {
+    if kind == crate::ir::IrMediaKind::Document {
         block.insert(
             "name".to_string(),
             serde_json::json!(name.unwrap_or("attachment")),
@@ -630,10 +636,10 @@ fn bedrock_media_content_block(
 
 /// Mime type → a member of Converse's closed `DocumentFormat` union, or `None` (drop with a warn)
 /// when the attachment is not something Converse will accept as a document.
-fn bedrock_document_format(source: &busbar_core::ir::IrImageSource) -> Option<&'static str> {
+fn bedrock_document_format(source: &crate::ir::IrImageSource) -> Option<&'static str> {
     // A vendor (s3Location) source carries no mime; Converse still requires a format, and `pdf` is
     // the overwhelmingly common document a caller puts in S3 for a model to read.
-    let busbar_core::ir::IrImageSource::Base64 { media_type, .. } = source else {
+    let crate::ir::IrImageSource::Base64 { media_type, .. } = source else {
         return Some("pdf");
     };
     let f = match media_type.to_ascii_lowercase().as_str() {
@@ -660,8 +666,8 @@ fn bedrock_document_format(source: &busbar_core::ir::IrImageSource) -> Option<&'
 }
 
 /// Mime type → a member of Converse's closed `VideoFormat` union, or `None` (drop with a warn).
-fn bedrock_video_format(source: &busbar_core::ir::IrImageSource) -> Option<&'static str> {
-    let busbar_core::ir::IrImageSource::Base64 { media_type, .. } = source else {
+fn bedrock_video_format(source: &crate::ir::IrImageSource) -> Option<&'static str> {
+    let crate::ir::IrImageSource::Base64 { media_type, .. } = source else {
         return Some("mp4");
     };
     let subtype = media_type
@@ -702,7 +708,7 @@ fn bedrock_cache_point() -> serde_json::Value {
     serde_json::json!({ "cachePoint": { "type": "default" } })
 }
 
-/// Project an [`busbar_core::ir::IrCitation`] into the Bedrock Converse `Citation` object — the SAME field
+/// Project an [`crate::ir::IrCitation`] into the Bedrock Converse `Citation` object — the SAME field
 /// set the streaming `ContentBlockDelta`'s `citation` member (`CitationsDelta`) carries, which is why
 /// one helper serves both paths.
 ///
@@ -717,7 +723,7 @@ fn bedrock_cache_point() -> serde_json::Value {
 /// Returns `None` when the citation projects to nothing at all (no title, no url, no quoted text, no
 /// resolvable location) — emitting `{}` would put a member-less union on the wire that a Bedrock SDK
 /// rejects, which is the one thing translation must never do. The caller warns on `None`.
-fn write_bedrock_citation(c: &busbar_core::ir::IrCitation) -> Option<serde_json::Value> {
+fn write_bedrock_citation(c: &crate::ir::IrCitation) -> Option<serde_json::Value> {
     let mut obj = serde_json::Map::new();
 
     let title = c.title.as_deref().filter(|s| !s.is_empty());
@@ -790,22 +796,22 @@ fn write_bedrock_citation(c: &busbar_core::ir::IrCitation) -> Option<serde_json:
 /// idempotent and additive: it does NOT disable the same-protocol stash, so byte-identical
 /// same-protocol round-trips are unaffected (the writer suppresses the inline emission whenever the
 /// stash is present — see `write_request`).
-fn set_preceding_block_cache_control(blocks: &mut [busbar_core::ir::IrBlock]) {
+fn set_preceding_block_cache_control(blocks: &mut [crate::ir::IrBlock]) {
     if let Some(last) = blocks.last_mut() {
-        let cc = Some(busbar_core::ir::CacheControl {
-            kind: busbar_core::ir::CacheKind::Ephemeral,
+        let cc = Some(crate::ir::CacheControl {
+            kind: crate::ir::CacheKind::Ephemeral,
         });
         match last {
-            busbar_core::ir::IrBlock::Text { cache_control, .. }
-            | busbar_core::ir::IrBlock::ToolUse { cache_control, .. }
-            | busbar_core::ir::IrBlock::ToolResult { cache_control, .. } => {
+            crate::ir::IrBlock::Text { cache_control, .. }
+            | crate::ir::IrBlock::ToolUse { cache_control, .. }
+            | crate::ir::IrBlock::ToolResult { cache_control, .. } => {
                 *cache_control = cc;
             }
             // Thinking / Image have no `cache_control` field; the positional stash carries the marker.
-            busbar_core::ir::IrBlock::Thinking { .. }
-            | busbar_core::ir::IrBlock::Image { .. }
-            | busbar_core::ir::IrBlock::Media { .. }
-            | busbar_core::ir::IrBlock::Json(_) => {}
+            crate::ir::IrBlock::Thinking { .. }
+            | crate::ir::IrBlock::Image { .. }
+            | crate::ir::IrBlock::Media { .. }
+            | crate::ir::IrBlock::Json(_) => {}
         }
     }
 }
@@ -940,7 +946,7 @@ fn derive_sigv4_region(host: &str) -> Option<&str> {
 /// `source.s3Location` on same-protocol egress (a foreign writer drops the vendor ref). A base64
 /// image reads as `IrImageSource::Base64`. A block with neither source yields `None` so a
 /// content-less image is not injected as an empty-bytes block.
-fn read_bedrock_image_block(image: &serde_json::Value) -> Option<busbar_core::ir::IrBlock> {
+fn read_bedrock_image_block(image: &serde_json::Value) -> Option<crate::ir::IrBlock> {
     let format_str = image
         .get("format")
         .and_then(|f| f.as_str())
@@ -950,8 +956,8 @@ fn read_bedrock_image_block(image: &serde_json::Value) -> Option<busbar_core::ir
 
     // Prefer inline base64 `bytes`.
     if let Some(bytes) = source.and_then(|s| s.get("bytes")).and_then(|b| b.as_str()) {
-        return Some(busbar_core::ir::IrBlock::Image {
-            source: busbar_core::ir::IrImageSource::Base64 {
+        return Some(crate::ir::IrBlock::Image {
+            source: crate::ir::IrImageSource::Base64 {
                 media_type: format!("image/{}", format_str),
                 data: bytes.to_string(),
             },
@@ -964,8 +970,8 @@ fn read_bedrock_image_block(image: &serde_json::Value) -> Option<busbar_core::ir
     // same-protocol egress instead of dropping the image.
     if let Some(s3_location) = source.and_then(|s| s.get("s3Location")) {
         if s3_location.is_object() {
-            return Some(busbar_core::ir::IrBlock::Image {
-                source: busbar_core::ir::IrImageSource::Vendor {
+            return Some(crate::ir::IrBlock::Image {
+                source: crate::ir::IrImageSource::Vendor {
                     vendor: "bedrock",
                     value: serde_json::json!({
                         "format": format_str,
@@ -989,16 +995,16 @@ fn read_bedrock_image_block(image: &serde_json::Value) -> Option<busbar_core::ir
 /// `obj.get("toolConfig")` directly.
 fn read_bedrock_tool_choice(
     tool_config: Option<&serde_json::Value>,
-) -> Option<busbar_core::ir::IrToolChoice> {
+) -> Option<crate::ir::IrToolChoice> {
     let tc = tool_config?.get("toolChoice")?.as_object()?;
     if tc.contains_key("auto") {
-        Some(busbar_core::ir::IrToolChoice::Auto)
+        Some(crate::ir::IrToolChoice::Auto)
     } else if tc.contains_key("any") {
-        Some(busbar_core::ir::IrToolChoice::Required)
+        Some(crate::ir::IrToolChoice::Required)
     } else if let Some(tool) = tc.get("tool") {
         tool.get("name")
             .and_then(|n| n.as_str())
-            .map(|name| busbar_core::ir::IrToolChoice::Tool {
+            .map(|name| crate::ir::IrToolChoice::Tool {
                 name: name.to_string(),
             })
     } else {
@@ -1011,11 +1017,11 @@ fn read_bedrock_tool_choice(
 /// Returns `None` for `IrToolChoice::None`: Bedrock Converse has no native "don't call a tool"
 /// directive, so the closest faithful behavior is to omit `toolChoice` entirely (the backend then
 /// applies its own default) rather than emit an invalid shape.
-fn write_bedrock_tool_choice(tc: &busbar_core::ir::IrToolChoice) -> Option<serde_json::Value> {
+fn write_bedrock_tool_choice(tc: &crate::ir::IrToolChoice) -> Option<serde_json::Value> {
     match tc {
-        busbar_core::ir::IrToolChoice::Auto => Some(serde_json::json!({"auto": {}})),
-        busbar_core::ir::IrToolChoice::Required => Some(serde_json::json!({"any": {}})),
-        busbar_core::ir::IrToolChoice::Tool { name } => {
+        crate::ir::IrToolChoice::Auto => Some(serde_json::json!({"auto": {}})),
+        crate::ir::IrToolChoice::Required => Some(serde_json::json!({"any": {}})),
+        crate::ir::IrToolChoice::Tool { name } => {
             // AWS documents `toolChoice.tool` (force this SPECIFIC tool) as Anthropic-Claude-only
             // on Converse — Titan/Llama/other model families reject it. The writer cannot gate on
             // the model: `write_request(&self, req: &IrRequest)` receives only the IR, which has no
@@ -1031,13 +1037,13 @@ fn write_bedrock_tool_choice(tc: &busbar_core::ir::IrToolChoice) -> Option<serde
             );
             Some(serde_json::json!({"tool": {"name": name}}))
         }
-        busbar_core::ir::IrToolChoice::None => None,
+        crate::ir::IrToolChoice::None => None,
     }
 }
 
 /// Bedrock stopReason → canonical IR stop_reason.
-fn stop_reason_map(ward: &str) -> busbar_core::ir::IrStopReason {
-    use busbar_core::ir::IrStopReason as S;
+fn stop_reason_map(ward: &str) -> crate::ir::IrStopReason {
+    use crate::ir::IrStopReason as S;
     match ward {
         "end_turn" => S::EndTurn,
         "tool_use" => S::ToolUse,
@@ -1050,8 +1056,8 @@ fn stop_reason_map(ward: &str) -> busbar_core::ir::IrStopReason {
 }
 
 /// Canonical IR stop_reason → Bedrock stopReason (inverse of `stop_reason_map`).
-fn stop_reason_reverse(canonical: busbar_core::ir::IrStopReason) -> &'static str {
-    use busbar_core::ir::IrStopReason as S;
+fn stop_reason_reverse(canonical: crate::ir::IrStopReason) -> &'static str {
+    use crate::ir::IrStopReason as S;
     match canonical {
         S::EndTurn => "end_turn",
         S::ToolUse => "tool_use",
@@ -1095,7 +1101,7 @@ fn read_cache_usage(
 /// these fields entirely.
 fn write_cache_usage(
     usage_obj: &mut serde_json::Map<String, serde_json::Value>,
-    usage: &busbar_core::ir::IrUsage,
+    usage: &crate::ir::IrUsage,
 ) {
     if let Some(ccit) = usage.cache_creation_input_tokens {
         usage_obj.insert("cacheWriteInputTokens".to_string(), ccit.into());
@@ -1152,7 +1158,7 @@ struct BedrockStreamFraming {
     pending: bool,
 }
 
-impl busbar_core::proto::StreamFraming for BedrockStreamFraming {
+impl super::proto_codec::StreamFraming for BedrockStreamFraming {
     // Bedrock ingress carries usage in a SEPARATE `metadata` frame (handled by on_combined_stop_delta
     // / on_usage_only_delta / on_finish), not folded into a terminal message_delta, so it must NOT use
     // the generic terminal-usage deferral.
@@ -1200,20 +1206,20 @@ impl busbar_core::proto::StreamFraming for BedrockStreamFraming {
 
     fn on_combined_stop_delta(
         &mut self,
-        stop_reason: busbar_core::ir::IrStopReason,
+        stop_reason: crate::ir::IrStopReason,
         stop_sequence: Option<String>,
-        usage: &busbar_core::ir::IrUsage,
-    ) -> Option<Vec<busbar_core::ir::IrStreamEvent>> {
+        usage: &crate::ir::IrUsage,
+    ) -> Option<Vec<crate::ir::IrStreamEvent>> {
         // Frame 1: stop-only delta → `messageStop` (usage, if any, rides frame 2).
-        let mut events = vec![busbar_core::ir::IrStreamEvent::MessageDelta {
+        let mut events = vec![crate::ir::IrStreamEvent::MessageDelta {
             stop_reason: Some(stop_reason),
             stop_sequence: stop_sequence.clone(),
-            usage: busbar_core::ir::IrUsage {
+            usage: crate::ir::IrUsage {
                 input_tokens: 0,
                 output_tokens: 0,
                 cache_creation_input_tokens: None,
                 cache_read_input_tokens: None,
-                detail: busbar_core::ir::IrUsageDetail::default(),
+                detail: crate::ir::IrUsageDetail::default(),
             },
         }];
         // Frame 2: `metadata` carrying the token usage — but a native ConverseStream emits EXACTLY ONE
@@ -1238,7 +1244,7 @@ impl busbar_core::proto::StreamFraming for BedrockStreamFraming {
             || usage.cache_creation_input_tokens.unwrap_or(0) != 0;
         if !self.emitted {
             if has_usage {
-                events.push(busbar_core::ir::IrStreamEvent::MessageDelta {
+                events.push(crate::ir::IrStreamEvent::MessageDelta {
                     stop_reason: None,
                     stop_sequence,
                     usage: usage.clone(),
@@ -1271,7 +1277,7 @@ impl busbar_core::proto::StreamFraming for BedrockStreamFraming {
         Some(true)
     }
 
-    fn on_finish(&mut self) -> Option<busbar_core::ir::IrStreamEvent> {
+    fn on_finish(&mut self) -> Option<crate::ir::IrStreamEvent> {
         // If a combined stop-delta deferred the `metadata` frame (zero usage, expecting a trailing
         // usage-only delta) and that delta never arrived — the DEFAULT OpenAI streaming case — flush a
         // single best-effort zero-usage `metadata` frame now.
@@ -1280,15 +1286,15 @@ impl busbar_core::proto::StreamFraming for BedrockStreamFraming {
         }
         self.emitted = true;
         self.pending = false;
-        Some(busbar_core::ir::IrStreamEvent::MessageDelta {
+        Some(crate::ir::IrStreamEvent::MessageDelta {
             stop_reason: None,
             stop_sequence: None,
-            usage: busbar_core::ir::IrUsage {
+            usage: crate::ir::IrUsage {
                 input_tokens: 0,
                 output_tokens: 0,
                 cache_creation_input_tokens: None,
                 cache_read_input_tokens: None,
-                detail: busbar_core::ir::IrUsageDetail::default(),
+                detail: crate::ir::IrUsageDetail::default(),
             },
         })
     }
@@ -1372,10 +1378,10 @@ impl BedrockWriter {
 /// encoded via `eventstream::encode_frame`, so the bytes are byte-for-byte what a native stream sends.
 /// Never panics on the request path: a frame whose payload fails to serialize is skipped.
 pub(crate) fn bedrock_response_to_eventstream(
-    ir: &busbar_core::ir::IrResponse,
+    ir: &crate::ir::IrResponse,
     elapsed_ms: Option<u64>,
 ) -> Vec<u8> {
-    use busbar_core::ir::{IrBlock, IrBlockMeta, IrDelta, IrStreamEvent, IrUsage};
+    use crate::ir::{IrBlock, IrBlockMeta, IrDelta, IrStreamEvent, IrUsage};
     let writer = protocol();
     let writer = writer.writer();
     let mut out: Vec<u8> = Vec::new();
@@ -1542,9 +1548,9 @@ pub(crate) fn bedrock_response_to_eventstream(
         .iter()
         .any(|b| matches!(b, IrBlock::ToolUse { .. }))
     {
-        busbar_core::ir::IrStopReason::ToolUse
+        crate::ir::IrStopReason::ToolUse
     } else {
-        busbar_core::ir::IrStopReason::EndTurn
+        crate::ir::IrStopReason::EndTurn
     };
     push(
         &IrStreamEvent::MessageDelta {
@@ -1554,7 +1560,7 @@ pub(crate) fn bedrock_response_to_eventstream(
                 output_tokens: 0,
                 cache_creation_input_tokens: None,
                 cache_read_input_tokens: None,
-                detail: busbar_core::ir::IrUsageDetail::default(),
+                detail: crate::ir::IrUsageDetail::default(),
             },
             stop_sequence: None,
         },

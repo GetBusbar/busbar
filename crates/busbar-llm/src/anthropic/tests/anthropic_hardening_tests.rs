@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn stop_reason_egress_never_leaks_foreign_tokens() {
-    use busbar_core::ir::IrStopReason as S;
+    use crate::ir::IrStopReason as S;
     // Anthropic-native reasons map to their wire token; `refusal`/`pause_turn` are real Anthropic
     // StopReason members and survive.
     assert_eq!(write_anthropic_stop_reason(S::EndTurn), "end_turn"); // golden wire-contract literal (kept bare on purpose)
@@ -588,10 +588,7 @@ fn read_then_write_response_preserves_identity() {
     let ir = AnthropicReader.read_response(&body).expect("read_response");
     assert_eq!(ir.id.as_deref(), Some("msg_01XYZabc123"));
     assert_eq!(ir.model.as_deref(), Some("claude-opus-4-8"));
-    assert_eq!(
-        ir.stop_reason,
-        Some(busbar_core::ir::IrStopReason::StopSequence)
-    );
+    assert_eq!(ir.stop_reason, Some(crate::ir::IrStopReason::StopSequence));
     assert_eq!(ir.stop_sequence.as_deref(), Some("\n\nHuman:"));
 
     let out = AnthropicWriter.write_response(&ir);
@@ -666,21 +663,21 @@ fn message_start_roundtrip_preserves_id_and_model() {
 /// and the synthesized id must be unique across calls (timestamp + atomic counter).
 #[test]
 fn cross_protocol_write_synthesizes_valid_unique_id() {
-    let make = || busbar_core::ir::IrResponse {
+    let make = || crate::ir::IrResponse {
         logprobs: Vec::new(),
-        role: busbar_core::ir::IrRole::Assistant,
-        content: vec![busbar_core::ir::IrBlock::Text {
+        role: crate::ir::IrRole::Assistant,
+        content: vec![crate::ir::IrBlock::Text {
             text: "x".to_string(),
             cache_control: None,
             citations: Vec::new(),
         }],
-        stop_reason: Some(busbar_core::ir::IrStopReason::EndTurn),
-        usage: busbar_core::ir::IrUsage {
+        stop_reason: Some(crate::ir::IrStopReason::EndTurn),
+        usage: crate::ir::IrUsage {
             input_tokens: 1,
             output_tokens: 1,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
-            detail: busbar_core::ir::IrUsageDetail::default(),
+            detail: crate::ir::IrUsageDetail::default(),
         },
         model: Some("gpt-4o".to_string()),
         id: None,
@@ -715,17 +712,17 @@ fn cross_protocol_write_synthesizes_valid_unique_id() {
 /// keep id-less; the id must never be absent.
 #[test]
 fn write_response_synthesizes_id_when_neither_id_nor_created() {
-    let resp = busbar_core::ir::IrResponse {
+    let resp = crate::ir::IrResponse {
         logprobs: Vec::new(),
-        role: busbar_core::ir::IrRole::Assistant,
+        role: crate::ir::IrRole::Assistant,
         content: vec![],
         stop_reason: None,
-        usage: busbar_core::ir::IrUsage {
+        usage: crate::ir::IrUsage {
             input_tokens: 0,
             output_tokens: 0,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
-            detail: busbar_core::ir::IrUsageDetail::default(),
+            detail: crate::ir::IrUsageDetail::default(),
         },
         model: None,
         // The Bedrock egress → Anthropic ingress non-stream path: both None.
@@ -1093,7 +1090,7 @@ fn read_request_array_system_parses_blocks() {
         .expect("array system must parse without panic");
     assert_eq!(ir.system.len(), 2, "both system text blocks must be read");
     match &ir.system[0] {
-        busbar_core::ir::IrBlock::Text { text, .. } => assert_eq!(text, "you are helpful"),
+        crate::ir::IrBlock::Text { text, .. } => assert_eq!(text, "you are helpful"),
         other => panic!("expected text block, got {other:?}"),
     }
 }
@@ -1133,7 +1130,7 @@ fn read_block_tool_result_array_content_parses() {
     });
     let ir = read_block(&block).expect("tool_result array content must parse without panic");
     match ir {
-        busbar_core::ir::IrBlock::ToolResult {
+        crate::ir::IrBlock::ToolResult {
             tool_use_id,
             content,
             ..
@@ -1218,8 +1215,8 @@ fn synth_request_id_no_collision_under_rapid_minting() {
 /// (which Anthropic 400s).
 #[test]
 fn write_block_image_url_sentinel_emits_native_url_source() {
-    let block = busbar_core::ir::IrBlock::Image {
-        source: busbar_core::ir::IrImageSource::Url("https://example.com/cat.png".to_string()),
+    let block = crate::ir::IrBlock::Image {
+        source: crate::ir::IrImageSource::Url("https://example.com/cat.png".to_string()),
         cache_control: None,
     };
     let out = write_block(&block);
@@ -1249,8 +1246,8 @@ fn write_block_image_url_sentinel_emits_native_url_source() {
 /// unchanged — the sentinel handling must not regress the common case.
 #[test]
 fn write_block_real_base64_image_unchanged() {
-    let block = busbar_core::ir::IrBlock::Image {
-        source: busbar_core::ir::IrImageSource::Base64 {
+    let block = crate::ir::IrBlock::Image {
+        source: crate::ir::IrImageSource::Base64 {
             media_type: "image/png".to_string(),
             data: "iVBORw0KGgo=".to_string(),
         },
@@ -1283,7 +1280,7 @@ fn cache_control_on_image_and_thinking_blocks_round_trips() {
     });
     let ir_img = read_block(&img_in).expect("read image block");
     match &ir_img {
-        busbar_core::ir::IrBlock::Image { cache_control, .. } => assert!(
+        crate::ir::IrBlock::Image { cache_control, .. } => assert!(
             cache_control.is_some(),
             "image cache_control must be carried into the IR"
         ),
@@ -1305,7 +1302,7 @@ fn cache_control_on_image_and_thinking_blocks_round_trips() {
     });
     let ir_think = read_block(&think_in).expect("read thinking block");
     match &ir_think {
-        busbar_core::ir::IrBlock::Thinking { cache_control, .. } => assert!(
+        crate::ir::IrBlock::Thinking { cache_control, .. } => assert!(
             cache_control.is_some(),
             "thinking cache_control must be carried into the IR"
         ),
@@ -1332,8 +1329,8 @@ fn read_block_url_image_source_round_trips_via_sentinel() {
     });
     let ir = read_block(&block_json).expect("url image source parses");
     match &ir {
-        busbar_core::ir::IrBlock::Image {
-            source: busbar_core::ir::IrImageSource::Url(url),
+        crate::ir::IrBlock::Image {
+            source: crate::ir::IrImageSource::Url(url),
             ..
         } => {
             assert_eq!(
@@ -1367,8 +1364,8 @@ fn read_block_base64_image_source_unchanged() {
     });
     let ir = read_block(&block_json).expect("base64 image source parses");
     match ir {
-        busbar_core::ir::IrBlock::Image {
-            source: busbar_core::ir::IrImageSource::Base64 { media_type, data },
+        crate::ir::IrBlock::Image {
+            source: crate::ir::IrImageSource::Base64 { media_type, data },
             ..
         } => {
             assert_eq!(media_type, "image/png");
@@ -1381,7 +1378,7 @@ fn read_block_base64_image_source_unchanged() {
 /// A valid native Anthropic content-block type the IR does not model must NOT hard-error the whole
 /// request with a ClientError 400 — it degrades to an empty Text block, preserving the turn's shape.
 ///
-/// `document` is NO LONGER such a block: it is modelled as [`busbar_core::ir::IrBlock::Media`], because
+/// `document` is NO LONGER such a block: it is modelled as [`crate::ir::IrBlock::Media`], because
 /// degrading a PDF to an empty text block destroyed the caller's attachment on every cross-protocol
 /// hop with no warn. What still degrades is a document with NO `source` (nothing to carry) and any
 /// genuinely unmodeled type — asserted here so the graceful-degradation arm keeps its coverage.
@@ -1392,12 +1389,12 @@ fn read_block_unmodeled_document_type_degrades_not_400() {
         "source": { "type": "base64", "media_type": "application/pdf", "data": "JVBERi0=" }
     });
     match read_block(&with_source).expect("a document block must not 400") {
-        busbar_core::ir::IrBlock::Media {
+        crate::ir::IrBlock::Media {
             kind,
-            source: busbar_core::ir::IrImageSource::Base64 { media_type, data },
+            source: crate::ir::IrImageSource::Base64 { media_type, data },
             ..
         } => {
-            assert_eq!(kind, busbar_core::ir::IrMediaKind::Document);
+            assert_eq!(kind, crate::ir::IrMediaKind::Document);
             assert_eq!(media_type, "application/pdf");
             assert_eq!(
                 data, "JVBERi0=",
@@ -1414,7 +1411,7 @@ fn read_block_unmodeled_document_type_degrades_not_400() {
         serde_json::json!({"type": "some_future_block", "whatever": 1}),
     ] {
         match read_block(&degenerate).expect("an unmodeled block must degrade, not 400") {
-            busbar_core::ir::IrBlock::Text {
+            crate::ir::IrBlock::Text {
                 text,
                 cache_control,
                 citations,
@@ -1433,7 +1430,7 @@ fn read_block_unmodeled_document_type_degrades_not_400() {
     // `data` bytes in `text`. It must still not 400.
     let redacted = serde_json::json!({ "type": BLOCK_TYPE_REDACTED_THINKING, "data": "abc123" });
     match read_block(&redacted).expect("redacted_thinking must not 400") {
-        busbar_core::ir::IrBlock::Thinking {
+        crate::ir::IrBlock::Thinking {
             text,
             redacted,
             signature,
@@ -1481,8 +1478,8 @@ fn anthropic_unmodeled_document_survives_same_protocol_round_trip() {
     assert!(
         matches!(
             &ir.messages[0].content[1],
-            busbar_core::ir::IrBlock::Media {
-                kind: busbar_core::ir::IrMediaKind::Document,
+            crate::ir::IrBlock::Media {
+                kind: crate::ir::IrMediaKind::Document,
                 ..
             }
         ),
@@ -1522,7 +1519,7 @@ fn anthropic_unmodeled_document_survives_same_protocol_round_trip() {
 #[test]
 fn streaming_redacted_thinking_is_not_dropped() {
     let reader = AnthropicReader;
-    let mut state = busbar_core::ir::StreamDecodeState::default();
+    let mut state = crate::ir::StreamDecodeState::default();
     let start = serde_json::json!({
         "type": EVT_CONTENT_BLOCK_START,
         "index": 0,
@@ -1584,7 +1581,7 @@ fn redacted_thinking_response_round_trips_as_native_block() {
         .expect("response with redacted_thinking parses");
     // Carrier shape preserved in the IR.
     match &ir.content[0] {
-        busbar_core::ir::IrBlock::Thinking { text, redacted, .. } => {
+        crate::ir::IrBlock::Thinking { text, redacted, .. } => {
             assert_eq!(text, "OPAQUEBYTES");
             assert!(*redacted, "redacted_thinking sets the typed redacted flag");
         }
@@ -1706,22 +1703,22 @@ fn read_request_oversized_max_tokens_and_top_k_drop_to_none() {
 /// signed thinking block and surrounding text survive.
 #[test]
 fn write_message_drops_unsigned_thinking_block() {
-    let msg = busbar_core::ir::IrMessage {
-        role: busbar_core::ir::IrRole::Assistant,
+    let msg = crate::ir::IrMessage {
+        role: crate::ir::IrRole::Assistant,
         content: vec![
-            busbar_core::ir::IrBlock::Thinking {
+            crate::ir::IrBlock::Thinking {
                 text: "unsigned reasoning".to_string(),
                 signature: None,
                 redacted: false,
                 cache_control: None,
             },
-            busbar_core::ir::IrBlock::Thinking {
+            crate::ir::IrBlock::Thinking {
                 text: "signed reasoning".to_string(),
                 signature: Some("sig-abc".to_string()),
                 redacted: false,
                 cache_control: None,
             },
-            busbar_core::ir::IrBlock::Text {
+            crate::ir::IrBlock::Text {
                 text: "the answer".to_string(),
                 cache_control: None,
                 citations: Vec::new(),
@@ -1764,16 +1761,16 @@ fn write_message_drops_unsigned_thinking_block() {
 /// old code emitted the bare empty string; this guards the regression.
 #[test]
 fn write_message_emits_empty_array_when_all_blocks_dropped() {
-    let msg = busbar_core::ir::IrMessage {
-        role: busbar_core::ir::IrRole::Assistant,
+    let msg = crate::ir::IrMessage {
+        role: crate::ir::IrRole::Assistant,
         content: vec![
-            busbar_core::ir::IrBlock::Thinking {
+            crate::ir::IrBlock::Thinking {
                 text: "unsigned reasoning A".to_string(),
                 signature: None,
                 redacted: false,
                 cache_control: None,
             },
-            busbar_core::ir::IrBlock::Thinking {
+            crate::ir::IrBlock::Thinking {
                 text: "unsigned reasoning B".to_string(),
                 signature: None,
                 redacted: false,
@@ -1801,9 +1798,9 @@ fn write_message_emits_empty_array_when_all_blocks_dropped() {
 /// after collapsing the old `if blocks.is_empty()` split.
 #[test]
 fn write_message_emits_array_for_surviving_block() {
-    let msg = busbar_core::ir::IrMessage {
-        role: busbar_core::ir::IrRole::Assistant,
-        content: vec![busbar_core::ir::IrBlock::Text {
+    let msg = crate::ir::IrMessage {
+        role: crate::ir::IrRole::Assistant,
+        content: vec![crate::ir::IrBlock::Text {
             text: "kept".to_string(),
             cache_control: None,
             citations: Vec::new(),
@@ -1823,22 +1820,22 @@ fn write_message_emits_array_for_surviving_block() {
 /// block (response reasoning has no signature requirement).
 #[test]
 fn write_response_keeps_unsigned_thinking_block() {
-    let resp = busbar_core::ir::IrResponse {
+    let resp = crate::ir::IrResponse {
         logprobs: Vec::new(),
-        role: busbar_core::ir::IrRole::Assistant,
-        content: vec![busbar_core::ir::IrBlock::Thinking {
+        role: crate::ir::IrRole::Assistant,
+        content: vec![crate::ir::IrBlock::Thinking {
             text: "visible reasoning".to_string(),
             signature: None,
             redacted: false,
             cache_control: None,
         }],
         stop_reason: None,
-        usage: busbar_core::ir::IrUsage {
+        usage: crate::ir::IrUsage {
             input_tokens: 1,
             output_tokens: 1,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
-            detail: busbar_core::ir::IrUsageDetail::default(),
+            detail: crate::ir::IrUsageDetail::default(),
         },
         model: Some("claude-3-5-sonnet".to_string()),
         id: Some("msg_123".to_string()),
@@ -1866,7 +1863,7 @@ fn write_response_keeps_unsigned_thinking_block() {
 #[test]
 fn message_start_emits_zero_usage_when_none() {
     let ev = IrStreamEvent::MessageStart {
-        role: busbar_core::ir::IrRole::Assistant,
+        role: crate::ir::IrRole::Assistant,
         usage: None,
         id: None,
         created: Some(1_700_000_000),
@@ -1897,13 +1894,13 @@ fn message_start_emits_zero_usage_when_none() {
 #[test]
 fn message_start_emits_present_usage_with_cache_fields() {
     let ev = IrStreamEvent::MessageStart {
-        role: busbar_core::ir::IrRole::Assistant,
+        role: crate::ir::IrRole::Assistant,
         usage: Some(IrUsage {
             input_tokens: 42,
             output_tokens: 0,
             cache_creation_input_tokens: Some(5),
             cache_read_input_tokens: Some(7),
-            detail: busbar_core::ir::IrUsageDetail::default(),
+            detail: crate::ir::IrUsageDetail::default(),
         }),
         id: Some("msg_x".to_string()),
         created: None,
@@ -1951,7 +1948,7 @@ fn read_message_delta_without_usage_preserves_terminal_event() {
         } => {
             assert_eq!(
                 stop_reason,
-                Some(busbar_core::ir::IrStopReason::EndTurn),
+                Some(crate::ir::IrStopReason::EndTurn),
                 "terminal stop_reason must survive a missing usage"
             );
             assert_eq!(stop_sequence, None);
@@ -1997,17 +1994,17 @@ fn read_message_delta_with_usage_flows_through() {
 /// the key must still be present (empty-string fallback), not dropped.
 #[test]
 fn write_response_emits_model_even_when_none() {
-    let resp = busbar_core::ir::IrResponse {
+    let resp = crate::ir::IrResponse {
         logprobs: Vec::new(),
-        role: busbar_core::ir::IrRole::Assistant,
+        role: crate::ir::IrRole::Assistant,
         content: vec![],
         stop_reason: None,
-        usage: busbar_core::ir::IrUsage {
+        usage: crate::ir::IrUsage {
             input_tokens: 0,
             output_tokens: 0,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
-            detail: busbar_core::ir::IrUsageDetail::default(),
+            detail: crate::ir::IrUsageDetail::default(),
         },
         model: None,
         id: Some("msg_x".to_string()),
@@ -2026,17 +2023,17 @@ fn write_response_emits_model_even_when_none() {
 /// A present model round-trips verbatim.
 #[test]
 fn write_response_preserves_present_model() {
-    let resp = busbar_core::ir::IrResponse {
+    let resp = crate::ir::IrResponse {
         logprobs: Vec::new(),
-        role: busbar_core::ir::IrRole::Assistant,
+        role: crate::ir::IrRole::Assistant,
         content: vec![],
         stop_reason: None,
-        usage: busbar_core::ir::IrUsage {
+        usage: crate::ir::IrUsage {
             input_tokens: 0,
             output_tokens: 0,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
-            detail: busbar_core::ir::IrUsageDetail::default(),
+            detail: crate::ir::IrUsageDetail::default(),
         },
         model: Some("claude-opus-4-8".to_string()),
         id: Some("msg_x".to_string()),
@@ -2058,7 +2055,7 @@ fn write_response_preserves_present_model() {
 #[test]
 fn message_start_emits_model_even_when_none() {
     let ev = IrStreamEvent::MessageStart {
-        role: busbar_core::ir::IrRole::Assistant,
+        role: crate::ir::IrRole::Assistant,
         usage: None,
         id: None,
         created: None,
@@ -2085,7 +2082,7 @@ fn message_start_emits_model_even_when_none() {
 fn every_write_response_event_carries_matching_top_level_type() {
     let events = vec![
         IrStreamEvent::MessageStart {
-            role: busbar_core::ir::IrRole::Assistant,
+            role: crate::ir::IrRole::Assistant,
             usage: None,
             id: None,
             created: None,
@@ -2101,14 +2098,14 @@ fn every_write_response_event_carries_matching_top_level_type() {
         },
         IrStreamEvent::BlockStop { index: 0 },
         IrStreamEvent::MessageDelta {
-            stop_reason: Some(busbar_core::ir::IrStopReason::EndTurn),
+            stop_reason: Some(crate::ir::IrStopReason::EndTurn),
             stop_sequence: None,
             usage: IrUsage {
                 input_tokens: 1,
                 output_tokens: 1,
                 cache_creation_input_tokens: None,
                 cache_read_input_tokens: None,
-                detail: busbar_core::ir::IrUsageDetail::default(),
+                detail: crate::ir::IrUsageDetail::default(),
             },
         },
         IrStreamEvent::MessageStop,
@@ -2138,21 +2135,21 @@ fn every_write_response_event_carries_matching_top_level_type() {
 /// preserved: re-reading a `null` stop_sequence yields `None` again.
 #[test]
 fn write_response_emits_null_stop_sequence_when_absent() {
-    let resp = busbar_core::ir::IrResponse {
+    let resp = crate::ir::IrResponse {
         logprobs: Vec::new(),
-        role: busbar_core::ir::IrRole::Assistant,
-        content: vec![busbar_core::ir::IrBlock::Text {
+        role: crate::ir::IrRole::Assistant,
+        content: vec![crate::ir::IrBlock::Text {
             text: "hi".to_string(),
             cache_control: None,
             citations: Vec::new(),
         }],
-        stop_reason: Some(busbar_core::ir::IrStopReason::EndTurn),
-        usage: busbar_core::ir::IrUsage {
+        stop_reason: Some(crate::ir::IrStopReason::EndTurn),
+        usage: crate::ir::IrUsage {
             input_tokens: 1,
             output_tokens: 1,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
-            detail: busbar_core::ir::IrUsageDetail::default(),
+            detail: crate::ir::IrUsageDetail::default(),
         },
         model: Some("claude-opus-4-8".to_string()),
         id: Some("msg_01abc".to_string()),
@@ -2177,17 +2174,17 @@ fn write_response_emits_null_stop_sequence_when_absent() {
 /// string verbatim.
 #[test]
 fn write_response_emits_matched_stop_sequence_string() {
-    let resp = busbar_core::ir::IrResponse {
+    let resp = crate::ir::IrResponse {
         logprobs: Vec::new(),
-        role: busbar_core::ir::IrRole::Assistant,
+        role: crate::ir::IrRole::Assistant,
         content: vec![],
-        stop_reason: Some(busbar_core::ir::IrStopReason::StopSequence),
-        usage: busbar_core::ir::IrUsage {
+        stop_reason: Some(crate::ir::IrStopReason::StopSequence),
+        usage: crate::ir::IrUsage {
             input_tokens: 1,
             output_tokens: 1,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
-            detail: busbar_core::ir::IrUsageDetail::default(),
+            detail: crate::ir::IrUsageDetail::default(),
         },
         model: None,
         id: Some("msg_01abc".to_string()),
@@ -2431,7 +2428,7 @@ fn read_response_without_usage_zero_defaults_no_error() {
     assert_eq!(ir.usage.cache_creation_input_tokens, None);
     assert_eq!(ir.usage.cache_read_input_tokens, None);
     match &ir.content[0] {
-        busbar_core::ir::IrBlock::Text { text, .. } => assert_eq!(text, "hi"),
+        crate::ir::IrBlock::Text { text, .. } => assert_eq!(text, "hi"),
         other => panic!("expected text block, got {other:?}"),
     }
 }
@@ -2457,7 +2454,7 @@ fn read_request_promotes_system_role_message_into_system_blocks() {
     assert!(
         ir.messages
             .iter()
-            .all(|m| m.role != busbar_core::ir::IrRole::System),
+            .all(|m| m.role != crate::ir::IrRole::System),
         "no IrRole::System message may remain in req.messages after read_request"
     );
     assert_eq!(
@@ -2465,14 +2462,14 @@ fn read_request_promotes_system_role_message_into_system_blocks() {
         1,
         "only the user message survives in messages"
     );
-    assert_eq!(ir.messages[0].role, busbar_core::ir::IrRole::User);
+    assert_eq!(ir.messages[0].role, crate::ir::IrRole::User);
     assert_eq!(
         ir.system.len(),
         1,
         "system content promoted into req.system"
     );
     match &ir.system[0] {
-        busbar_core::ir::IrBlock::Text { text, .. } => assert_eq!(text, "you are terse"),
+        crate::ir::IrBlock::Text { text, .. } => assert_eq!(text, "you are terse"),
         other => panic!("expected promoted system text block, got {other:?}"),
     }
 }
@@ -2484,7 +2481,7 @@ fn read_request_promotes_system_role_message_into_system_blocks() {
 /// mirroring the gemini/bedrock writers. Fails against old code (which emitted `role:"system"`).
 #[test]
 fn write_request_never_emits_system_role_message() {
-    let req = busbar_core::ir::IrRequest {
+    let req = crate::ir::IrRequest {
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -2493,17 +2490,17 @@ fn write_request_never_emits_system_role_message() {
         parallel_tool_calls: None,
         system: Vec::new(),
         messages: vec![
-            busbar_core::ir::IrMessage {
-                role: busbar_core::ir::IrRole::System,
-                content: vec![busbar_core::ir::IrBlock::Text {
+            crate::ir::IrMessage {
+                role: crate::ir::IrRole::System,
+                content: vec![crate::ir::IrBlock::Text {
                     text: "be terse".to_string(),
                     cache_control: None,
                     citations: Vec::new(),
                 }],
             },
-            busbar_core::ir::IrMessage {
-                role: busbar_core::ir::IrRole::User,
-                content: vec![busbar_core::ir::IrBlock::Text {
+            crate::ir::IrMessage {
+                role: crate::ir::IrRole::User,
+                content: vec![crate::ir::IrBlock::Text {
                     text: "hi".to_string(),
                     cache_control: None,
                     citations: Vec::new(),
@@ -2559,9 +2556,9 @@ fn write_request_never_emits_system_role_message() {
 /// a future caller bypasses `write_request`, the writer can never produce the rejected role.
 #[test]
 fn write_message_system_role_does_not_emit_system() {
-    let msg = busbar_core::ir::IrMessage {
-        role: busbar_core::ir::IrRole::System,
-        content: vec![busbar_core::ir::IrBlock::Text {
+    let msg = crate::ir::IrMessage {
+        role: crate::ir::IrRole::System,
+        content: vec![crate::ir::IrBlock::Text {
             text: "x".to_string(),
             cache_control: None,
             citations: Vec::new(),
@@ -2577,7 +2574,7 @@ fn write_message_system_role_does_not_emit_system() {
 
 // ---- tool_choice round-trips (Anthropic native shape) ----
 
-fn read_anthropic_request(body: serde_json::Value) -> busbar_core::ir::IrRequest {
+fn read_anthropic_request(body: serde_json::Value) -> crate::ir::IrRequest {
     AnthropicReader.read_request(&body).expect("read_request")
 }
 
@@ -2589,10 +2586,7 @@ fn tool_choice_any_required_roundtrips() {
         "tools": [{"name": "get_weather", "input_schema": {"type": "object"}}],
         "tool_choice": {"type": "any"}
     }));
-    assert_eq!(
-        ir.tool_choice,
-        Some(busbar_core::ir::IrToolChoice::Required)
-    );
+    assert_eq!(ir.tool_choice, Some(crate::ir::IrToolChoice::Required));
     let out = AnthropicWriter.write_request(&ir);
     assert_eq!(out["tool_choice"], serde_json::json!({"type": "any"}));
 }
@@ -2606,7 +2600,7 @@ fn tool_choice_specific_tool_roundtrips() {
     }));
     assert_eq!(
         ir.tool_choice,
-        Some(busbar_core::ir::IrToolChoice::Tool {
+        Some(crate::ir::IrToolChoice::Tool {
             name: "get_weather".to_string()
         })
     );
@@ -2620,8 +2614,8 @@ fn tool_choice_specific_tool_roundtrips() {
 #[test]
 fn tool_choice_auto_and_none_roundtrip() {
     for (native_type, variant) in [
-        ("auto", busbar_core::ir::IrToolChoice::Auto),
-        ("none", busbar_core::ir::IrToolChoice::None),
+        ("auto", crate::ir::IrToolChoice::Auto),
+        ("none", crate::ir::IrToolChoice::None),
     ] {
         let ir = read_anthropic_request(serde_json::json!({
             "model": "c", "max_tokens": 16, "messages": [],
@@ -2662,7 +2656,7 @@ fn tool_choice_openai_specific_to_anthropic_targeted() {
         .expect("openai read");
     assert_eq!(
         ir.tool_choice,
-        Some(busbar_core::ir::IrToolChoice::Tool {
+        Some(crate::ir::IrToolChoice::Tool {
             name: "get_weather".to_string()
         })
     );
@@ -2715,14 +2709,14 @@ fn tool_use_and_result_cache_control_roundtrips() {
     }));
     // ToolUse cache_control promoted...
     match &ir.messages[0].content[0] {
-        busbar_core::ir::IrBlock::ToolUse { cache_control, .. } => {
+        crate::ir::IrBlock::ToolUse { cache_control, .. } => {
             assert!(cache_control.is_some(), "tool_use cache_control lost")
         }
         other => panic!("expected ToolUse, got {other:?}"),
     }
     // ...and ToolResult cache_control promoted.
     match &ir.messages[1].content[0] {
-        busbar_core::ir::IrBlock::ToolResult { cache_control, .. } => {
+        crate::ir::IrBlock::ToolResult { cache_control, .. } => {
             assert!(cache_control.is_some(), "tool_result cache_control lost")
         }
         other => panic!("expected ToolResult, got {other:?}"),
@@ -2826,7 +2820,7 @@ fn test_anthropic_reader_max_tokens_zero_yields_none() {
 // `required` -> `{"type":"any"}` mapping is the load-bearing case.
 #[test]
 fn test_openai_to_anthropic_tool_choice_directions() {
-    use busbar_core::ir::IrToolChoice;
+    use crate::ir::IrToolChoice;
     let cases = [
         (IrToolChoice::Auto, serde_json::json!({"type": "auto"})),
         (IrToolChoice::None, serde_json::json!({"type": "none"})),
@@ -2873,17 +2867,17 @@ fn test_anthropic_tool_choice_tool_without_name_is_none() {
 // ---- IR `safety` stop_reason is not a native Anthropic stop_reason -> map to end_turn ----
 #[test]
 fn test_anthropic_safety_stop_reason_maps_to_end_turn() {
-    let resp = busbar_core::ir::IrResponse {
+    let resp = crate::ir::IrResponse {
         logprobs: Vec::new(),
-        role: busbar_core::ir::IrRole::Assistant,
+        role: crate::ir::IrRole::Assistant,
         content: vec![],
-        stop_reason: Some(busbar_core::ir::IrStopReason::Safety),
-        usage: busbar_core::ir::IrUsage {
+        stop_reason: Some(crate::ir::IrStopReason::Safety),
+        usage: crate::ir::IrUsage {
             input_tokens: 1,
             output_tokens: 1,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
-            detail: busbar_core::ir::IrUsageDetail::default(),
+            detail: crate::ir::IrUsageDetail::default(),
         },
         model: Some("claude-x".to_string()),
         id: Some("msg_01abc".to_string()),
@@ -2898,8 +2892,8 @@ fn test_anthropic_safety_stop_reason_maps_to_end_turn() {
         "IR `safety` must collapse to the native `end_turn` on Anthropic egress; got {out}"
     );
     // A native reason still passes through verbatim.
-    let resp2 = busbar_core::ir::IrResponse {
-        stop_reason: Some(busbar_core::ir::IrStopReason::MaxTokens),
+    let resp2 = crate::ir::IrResponse {
+        stop_reason: Some(crate::ir::IrStopReason::MaxTokens),
         ..resp
     };
     let out2 = AnthropicWriter.write_response(&resp2);
@@ -2913,14 +2907,14 @@ fn test_anthropic_safety_stop_reason_maps_to_end_turn() {
 #[test]
 fn test_anthropic_streaming_safety_stop_reason_maps_to_end_turn() {
     let ev = IrStreamEvent::MessageDelta {
-        stop_reason: Some(busbar_core::ir::IrStopReason::Safety),
+        stop_reason: Some(crate::ir::IrStopReason::Safety),
         stop_sequence: None,
-        usage: busbar_core::ir::IrUsage {
+        usage: crate::ir::IrUsage {
             input_tokens: 1,
             output_tokens: 1,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
-            detail: busbar_core::ir::IrUsageDetail::default(),
+            detail: crate::ir::IrUsageDetail::default(),
         },
     };
     let (event, data) = AnthropicWriter
@@ -2936,14 +2930,14 @@ fn test_anthropic_streaming_safety_stop_reason_maps_to_end_turn() {
 
     // A native reason still passes through verbatim on the streaming path.
     let ev2 = IrStreamEvent::MessageDelta {
-        stop_reason: Some(busbar_core::ir::IrStopReason::MaxTokens),
+        stop_reason: Some(crate::ir::IrStopReason::MaxTokens),
         stop_sequence: None,
-        usage: busbar_core::ir::IrUsage {
+        usage: crate::ir::IrUsage {
             input_tokens: 1,
             output_tokens: 1,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
-            detail: busbar_core::ir::IrUsageDetail::default(),
+            detail: crate::ir::IrUsageDetail::default(),
         },
     };
     let (_event2, data2) = AnthropicWriter
@@ -2967,10 +2961,10 @@ use busbar_core::test_support::warn_capture::WarnCapture;
 /// unknown key would 400 the upstream). Pins that nothing silently mis-maps them onto the wire.
 #[test]
 fn write_request_omits_unsupported_sampling_params() {
-    let req = busbar_core::ir::IrRequest {
-        messages: vec![busbar_core::ir::IrMessage {
-            role: busbar_core::ir::IrRole::User,
-            content: vec![busbar_core::ir::IrBlock::Text {
+    let req = crate::ir::IrRequest {
+        messages: vec![crate::ir::IrMessage {
+            role: crate::ir::IrRole::User,
+            content: vec![crate::ir::IrBlock::Text {
                 text: "hi".to_string(),
                 cache_control: None,
                 citations: Vec::new(),
@@ -3002,19 +2996,19 @@ fn write_request_omits_unsupported_sampling_params() {
 /// PRESERVE it verbatim when thinking is NOT emitted.
 #[test]
 fn write_request_downgrades_forced_tool_choice_to_auto_when_thinking_emitted() {
-    let mk = |reasoning: Option<busbar_core::ir::IrReasoningAsk>,
-              tc: busbar_core::ir::IrToolChoice|
-     -> busbar_core::ir::IrRequest {
-        busbar_core::ir::IrRequest {
-            messages: vec![busbar_core::ir::IrMessage {
-                role: busbar_core::ir::IrRole::User,
-                content: vec![busbar_core::ir::IrBlock::Text {
+    let mk = |reasoning: Option<crate::ir::IrReasoningAsk>,
+              tc: crate::ir::IrToolChoice|
+     -> crate::ir::IrRequest {
+        crate::ir::IrRequest {
+            messages: vec![crate::ir::IrMessage {
+                role: crate::ir::IrRole::User,
+                content: vec![crate::ir::IrBlock::Text {
                     text: "hi".to_string(),
                     cache_control: None,
                     citations: Vec::new(),
                 }],
             }],
-            tools: vec![busbar_core::ir::IrTool {
+            tools: vec![crate::ir::IrTool {
                 name: "get_weather".to_string(),
                 description: Some("look up weather".to_string()),
                 input_schema: serde_json::json!({"type": "object"}),
@@ -3036,10 +3030,10 @@ fn write_request_downgrades_forced_tool_choice_to_auto_when_thinking_emitted() {
     // WITH a thinking ask: the forced `any` (IrToolChoice::Required) downgrades to `auto`, and
     // `thinking` is present on the egress.
     let req = mk(
-        Some(busbar_core::ir::IrReasoningAsk::Effort(
-            busbar_core::ir::IrReasoningEffort::Low,
+        Some(crate::ir::IrReasoningAsk::Effort(
+            crate::ir::IrReasoningEffort::Low,
         )),
-        busbar_core::ir::IrToolChoice::Required,
+        crate::ir::IrToolChoice::Required,
     );
     let out = AnthropicWriter.write_request(&req);
     assert!(
@@ -3054,10 +3048,10 @@ fn write_request_downgrades_forced_tool_choice_to_auto_when_thinking_emitted() {
 
     // A TARGETED `tool` choice likewise downgrades, dropping the now-invalid `name`.
     let req_tool = mk(
-        Some(busbar_core::ir::IrReasoningAsk::Effort(
-            busbar_core::ir::IrReasoningEffort::Low,
+        Some(crate::ir::IrReasoningAsk::Effort(
+            crate::ir::IrReasoningEffort::Low,
         )),
-        busbar_core::ir::IrToolChoice::Tool {
+        crate::ir::IrToolChoice::Tool {
             name: "get_weather".to_string(),
         },
     );
@@ -3075,7 +3069,7 @@ fn write_request_downgrades_forced_tool_choice_to_auto_when_thinking_emitted() {
     );
 
     // WITHOUT a thinking ask: the forced `any` is preserved verbatim (no spurious downgrade).
-    let req_no_think = mk(None, busbar_core::ir::IrToolChoice::Required);
+    let req_no_think = mk(None, crate::ir::IrToolChoice::Required);
     let out_no_think = AnthropicWriter.write_request(&req_no_think);
     assert!(
         out_no_think.get("thinking").is_none(),
@@ -3099,17 +3093,17 @@ fn write_request_downgrades_forced_tool_choice_to_auto_when_thinking_emitted() {
 fn write_request_warns_and_drops_response_format_on_cross_protocol_egress() {
     use tracing_subscriber::layer::SubscriberExt as _;
 
-    let req = busbar_core::ir::IrRequest {
-        messages: vec![busbar_core::ir::IrMessage {
-            role: busbar_core::ir::IrRole::User,
-            content: vec![busbar_core::ir::IrBlock::Text {
+    let req = crate::ir::IrRequest {
+        messages: vec![crate::ir::IrMessage {
+            role: crate::ir::IrRole::User,
+            content: vec![crate::ir::IrBlock::Text {
                 text: "extract".to_string(),
                 cache_control: None,
                 citations: Vec::new(),
             }],
         }],
         max_tokens: Some(16),
-        response_format: Some(busbar_core::ir::IrResponseFormat {
+        response_format: Some(crate::ir::IrResponseFormat {
             json: true,
             schema: Some(serde_json::json!({"type": "object"})),
             name: Some("out".to_string()),
@@ -3142,18 +3136,18 @@ fn write_request_warns_and_drops_response_format_on_cross_protocol_egress() {
 fn write_request_warns_and_drops_json_tool_result_block() {
     use tracing_subscriber::layer::SubscriberExt as _;
 
-    let req = busbar_core::ir::IrRequest {
-        messages: vec![busbar_core::ir::IrMessage {
-            role: busbar_core::ir::IrRole::User,
-            content: vec![busbar_core::ir::IrBlock::ToolResult {
+    let req = crate::ir::IrRequest {
+        messages: vec![crate::ir::IrMessage {
+            role: crate::ir::IrRole::User,
+            content: vec![crate::ir::IrBlock::ToolResult {
                 tool_use_id: "call-1".to_string(),
                 content: vec![
-                    busbar_core::ir::IrBlock::Text {
+                    crate::ir::IrBlock::Text {
                         text: "ok".to_string(),
                         cache_control: None,
                         citations: Vec::new(),
                     },
-                    busbar_core::ir::IrBlock::Json(serde_json::json!({ "answer": 42 })),
+                    crate::ir::IrBlock::Json(serde_json::json!({ "answer": 42 })),
                 ],
                 is_error: false,
                 cache_control: None,
@@ -3185,10 +3179,10 @@ fn write_request_warns_and_drops_json_tool_result_block() {
 fn write_request_no_response_format_warning_when_absent() {
     use tracing_subscriber::layer::SubscriberExt as _;
 
-    let req = busbar_core::ir::IrRequest {
-        messages: vec![busbar_core::ir::IrMessage {
-            role: busbar_core::ir::IrRole::User,
-            content: vec![busbar_core::ir::IrBlock::Text {
+    let req = crate::ir::IrRequest {
+        messages: vec![crate::ir::IrMessage {
+            role: crate::ir::IrRole::User,
+            content: vec![crate::ir::IrBlock::Text {
                 text: "hi".to_string(),
                 cache_control: None,
                 citations: Vec::new(),
@@ -3226,7 +3220,7 @@ fn thinking_block_roundtrips_with_signature() {
     // Read → IR.
     let block = read_block(&native).expect("thinking block reads");
     match &block {
-        busbar_core::ir::IrBlock::Thinking {
+        crate::ir::IrBlock::Thinking {
             text, signature, ..
         } => {
             assert_eq!(text, "let me reason about this");
@@ -3262,29 +3256,29 @@ fn thinking_block_roundtrips_with_signature() {
 /// client). Guards that native reasoning is not lost on the response writer.
 #[test]
 fn thinking_block_with_signature_survives_response_egress() {
-    let resp = busbar_core::ir::IrResponse {
+    let resp = crate::ir::IrResponse {
         logprobs: Vec::new(),
-        role: busbar_core::ir::IrRole::Assistant,
+        role: crate::ir::IrRole::Assistant,
         content: vec![
-            busbar_core::ir::IrBlock::Thinking {
+            crate::ir::IrBlock::Thinking {
                 text: "step-by-step".to_string(),
                 signature: Some("sig-abc".to_string()),
                 redacted: false,
                 cache_control: None,
             },
-            busbar_core::ir::IrBlock::Text {
+            crate::ir::IrBlock::Text {
                 text: "answer".to_string(),
                 cache_control: None,
                 citations: Vec::new(),
             },
         ],
-        stop_reason: Some(busbar_core::ir::IrStopReason::EndTurn),
-        usage: busbar_core::ir::IrUsage {
+        stop_reason: Some(crate::ir::IrStopReason::EndTurn),
+        usage: crate::ir::IrUsage {
             input_tokens: 1,
             output_tokens: 1,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
-            detail: busbar_core::ir::IrUsageDetail::default(),
+            detail: crate::ir::IrUsageDetail::default(),
         },
         model: Some("claude-opus-4-8".to_string()),
         id: Some("msg_01abc".to_string()),
@@ -3319,7 +3313,7 @@ fn thinking_block_with_signature_survives_response_egress() {
 #[test]
 fn test_write_request_file_id_image_dropped_not_corrupted() {
     let writer = AnthropicWriter;
-    let req = busbar_core::ir::IrRequest {
+    let req = crate::ir::IrRequest {
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -3327,16 +3321,16 @@ fn test_write_request_file_id_image_dropped_not_corrupted() {
         user: None,
         parallel_tool_calls: None,
         system: vec![],
-        messages: vec![busbar_core::ir::IrMessage {
-            role: busbar_core::ir::IrRole::User,
+        messages: vec![crate::ir::IrMessage {
+            role: crate::ir::IrRole::User,
             content: vec![
-                busbar_core::ir::IrBlock::Text {
+                crate::ir::IrBlock::Text {
                     text: "describe this".to_string(),
                     cache_control: None,
                     citations: Vec::new(),
                 },
-                busbar_core::ir::IrBlock::Image {
-                    source: busbar_core::ir::IrImageSource::Vendor {
+                crate::ir::IrBlock::Image {
+                    source: crate::ir::IrImageSource::Vendor {
                         vendor: "responses",
                         value: serde_json::json!({ "file_id": "file-abc123" }),
                     },
@@ -3391,7 +3385,7 @@ fn test_write_request_file_id_image_dropped_not_corrupted() {
 #[test]
 fn test_write_request_image_s3_dropped_not_corrupted() {
     let writer = AnthropicWriter;
-    let req = busbar_core::ir::IrRequest {
+    let req = crate::ir::IrRequest {
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -3399,16 +3393,16 @@ fn test_write_request_image_s3_dropped_not_corrupted() {
         user: None,
         parallel_tool_calls: None,
         system: vec![],
-        messages: vec![busbar_core::ir::IrMessage {
-            role: busbar_core::ir::IrRole::User,
+        messages: vec![crate::ir::IrMessage {
+            role: crate::ir::IrRole::User,
             content: vec![
-                busbar_core::ir::IrBlock::Text {
+                crate::ir::IrBlock::Text {
                     text: "describe this".to_string(),
                     cache_control: None,
                     citations: Vec::new(),
                 },
-                busbar_core::ir::IrBlock::Image {
-                    source: busbar_core::ir::IrImageSource::Vendor {
+                crate::ir::IrBlock::Image {
+                    source: crate::ir::IrImageSource::Vendor {
                         vendor: "bedrock",
                         value: serde_json::json!({ "format": "png", "s3Location": { "uri": "s3://bucket/key.png" } }),
                     },
@@ -3479,7 +3473,7 @@ fn test_client_thinking_block_cannot_forge_redacted() {
     });
     let ir = reader.read_request(&body).expect("request must parse");
     match &ir.messages[0].content[0] {
-        busbar_core::ir::IrBlock::Thinking { redacted, .. } => assert!(
+        crate::ir::IrBlock::Thinking { redacted, .. } => assert!(
             !redacted,
             "a client `thinking` block must NEVER read as redacted — the forge vector is closed"
         ),
@@ -3533,7 +3527,7 @@ fn anthropic_citations_roundtrip_byte_exact_all_variants() {
     let ir = read_block(&block).expect("text block with citations must parse");
     // Neutral fields are populated (cross-protocol projection works) ...
     let citations = match &ir {
-        busbar_core::ir::IrBlock::Text { citations, .. } => citations,
+        crate::ir::IrBlock::Text { citations, .. } => citations,
         other => panic!("expected Text, got {other:?}"),
     };
     assert_eq!(citations.len(), 4);
@@ -3563,10 +3557,10 @@ fn anthropic_citations_roundtrip_byte_exact_all_variants() {
 /// web_search_result_location synthesis path (url/title/cited_text) a Gemini grounding source maps to.
 #[test]
 fn anthropic_writes_web_search_citation_from_neutral_fields() {
-    let block = busbar_core::ir::IrBlock::Text {
+    let block = crate::ir::IrBlock::Text {
         text: "answer".to_string(),
         cache_control: None,
-        citations: vec![busbar_core::ir::IrCitation {
+        citations: vec![crate::ir::IrCitation {
             kind: Some("web_search_result_location".to_string()),
             cited_text: None,
             title: Some("Source Title".to_string()),
@@ -3599,7 +3593,7 @@ fn anthropic_writes_web_search_citation_from_neutral_fields() {
 /// An empty-citations Text block is unaffected — no `citations` key is emitted.
 #[test]
 fn anthropic_empty_citations_text_block_unaffected() {
-    let block = busbar_core::ir::IrBlock::Text {
+    let block = crate::ir::IrBlock::Text {
         text: "plain".to_string(),
         cache_control: None,
         citations: Vec::new(),
@@ -3691,7 +3685,7 @@ fn cache_control_on_tool_use_block_round_trips() {
     });
     let ir = read_block(&block).expect("tool_use block with cache_control parses");
     match &ir {
-        busbar_core::ir::IrBlock::ToolUse {
+        crate::ir::IrBlock::ToolUse {
             id,
             name,
             input,
@@ -3732,7 +3726,7 @@ fn cache_control_on_tool_result_block_round_trips() {
     });
     let ir = read_block(&block).expect("tool_result block with cache_control parses");
     match &ir {
-        busbar_core::ir::IrBlock::ToolResult {
+        crate::ir::IrBlock::ToolResult {
             tool_use_id,
             cache_control,
             is_error,
@@ -3800,7 +3794,7 @@ fn read_write_response_unknown_stop_reason_degrades_to_end_turn() {
     let ir = AnthropicReader.read_response(&body).expect("read_response");
     assert_eq!(
         ir.stop_reason,
-        Some(busbar_core::ir::IrStopReason::Other),
+        Some(crate::ir::IrStopReason::Other),
         "an unmodeled native stop_reason must map to Other (never carried verbatim)"
     );
     let out = AnthropicWriter.write_response(&ir);
@@ -3873,16 +3867,16 @@ fn read_response_cache_usage_is_additive_not_subtracted() {
 /// content.len() == 1); passes after.
 #[test]
 fn write_message_keeps_redacted_thinking_block() {
-    let msg = busbar_core::ir::IrMessage {
-        role: busbar_core::ir::IrRole::Assistant,
+    let msg = crate::ir::IrMessage {
+        role: crate::ir::IrRole::Assistant,
         content: vec![
-            busbar_core::ir::IrBlock::Thinking {
+            crate::ir::IrBlock::Thinking {
                 text: "ENCRYPTED_OPAQUE_BYTES".to_string(),
                 signature: None,
                 redacted: true,
                 cache_control: None,
             },
-            busbar_core::ir::IrBlock::Text {
+            crate::ir::IrBlock::Text {
                 text: "the answer".to_string(),
                 cache_control: None,
                 citations: Vec::new(),
@@ -3934,9 +3928,9 @@ fn write_message_keeps_redacted_thinking_block() {
 fn content_block_start_carries_seed_fields() {
     // Text block start → `text: ""`.
     let (_et, out) = AnthropicWriter
-        .write_response_event(&busbar_core::ir::IrStreamEvent::BlockStart {
+        .write_response_event(&crate::ir::IrStreamEvent::BlockStart {
             index: 0,
-            block: busbar_core::ir::IrBlockMeta::Text,
+            block: crate::ir::IrBlockMeta::Text,
         })
         .expect("text block_start writes");
     assert_eq!(
@@ -3951,9 +3945,9 @@ fn content_block_start_carries_seed_fields() {
 
     // Tool-use block start → `input: {}` (plus id/name).
     let (_et, out) = AnthropicWriter
-        .write_response_event(&busbar_core::ir::IrStreamEvent::BlockStart {
+        .write_response_event(&crate::ir::IrStreamEvent::BlockStart {
             index: 1,
-            block: busbar_core::ir::IrBlockMeta::ToolUse {
+            block: crate::ir::IrBlockMeta::ToolUse {
                 id: "toolu_01".to_string(),
                 name: "get_weather".to_string(),
             },
@@ -3981,9 +3975,9 @@ fn content_block_start_carries_seed_fields() {
 
     // Thinking block start → `thinking: ""`.
     let (_et, out) = AnthropicWriter
-        .write_response_event(&busbar_core::ir::IrStreamEvent::BlockStart {
+        .write_response_event(&crate::ir::IrStreamEvent::BlockStart {
             index: 2,
-            block: busbar_core::ir::IrBlockMeta::Thinking,
+            block: crate::ir::IrBlockMeta::Thinking,
         })
         .expect("thinking block_start writes");
     assert_eq!(

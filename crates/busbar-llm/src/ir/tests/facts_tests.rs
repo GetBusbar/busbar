@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Unit coverage for [`crate::ir::facts`] — the properties the projection owes, asserted against IR
+//! Unit coverage for [`busbar_core::ir::facts`] — the properties the projection owes, asserted against IR
 //! values built by hand so that a failure here names the projection and never a reader.
 //!
 //! The CROSS-implementation coverage (this projection versus the raw-body one it replaces, over a

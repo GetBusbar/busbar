@@ -74,16 +74,19 @@ note "level 1 static: core names no protocol crate (grep count 0)"
 # core-owned invoke/subscribe leaves — counting them would conflate "dissolved" with "named" and
 # inflate the number ~160x, masking per-leaf progress. So their removal needs its OWN structural gate.
 #
-# A4a only ENCAPSULATES the concrete IR codec surface; it does NOT dissolve the hub enums. This gate
-# is therefore wired to expect them PRESENT now, which:
-#   * proves the assertion is live (a premature dissolve trips it — the red that makes it evidence), and
-#   * is FLIPPED to "must be ABSENT" in the A4b commit, at which point it becomes the structural proof
-#     that the enum is gone (the freeze witness → 0 pins the relocation; this pins the dissolve).
-grep -q "enum IrReq" crates/busbar-core/src/ir/variant.rs \
-  || die "enum IrReq not found in core — A4b must FLIP this gate to expect-absent, never silently pass"
-grep -q "enum IrResp" crates/busbar-core/src/ir/variant.rs \
-  || die "enum IrResp not found in core — A4b must FLIP this gate to expect-absent, never silently pass"
-note "level 1b structural: IrReq/IrResp hub enums PRESENT (A4a; this condition FLIPS to expect-absent at A4b)"
+# A4a only ENCAPSULATED the concrete IR codec surface; A4b DISSOLVES the hub enums. This gate is now
+# FLIPPED (as promised at A4a) to "must be ABSENT": `crates/busbar-core/src/ir/variant.rs` — the file
+# that DEFINED `enum IrReq`/`enum IrResp` and their operation-blind surface — is deleted at A4b, the
+# surface having inverted onto `ir::handle::IrHandle` (the neutral `Box<dyn IrHandle>` the engine
+# drives) plus the core-owned invoke/subscribe leaf handles. This is the structural proof the enum is
+# gone; the freeze witness → 0 pins the concrete-family relocation, this pins the dissolve.
+if [ -e crates/busbar-core/src/ir/variant.rs ]; then
+  die "ir/variant.rs still exists — A4b dissolves IrReq/IrResp onto Box<dyn IrHandle> and DELETES this file"
+fi
+if grep -rREq "\benum IrReq\b|\benum IrResp\b" crates/busbar-core/src; then
+  die "enum IrReq/IrResp still defined in core — the A4b dissolve must remove them entirely"
+fi
+note "level 1b structural: IrReq/IrResp hub enums ABSENT (A4b dissolve complete — variant.rs deleted)"
 
 # ── fixtures ─────────────────────────────────────────────────────────────────────────────────────
 FIX=$(mktemp -d "${TMPDIR:-/tmp}/proto-deletion-gate.XXXXXX")

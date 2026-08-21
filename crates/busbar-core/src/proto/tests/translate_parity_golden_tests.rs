@@ -26,8 +26,6 @@
 //! Regenerating goldens (ONLY for an intentional wire-shape change):
 //!   `BUSBAR_BLESS_GOLDEN=1 cargo test -p busbar translate_parity_golden` then commit the diff.
 
-use crate::ir::variant::{EgressPrep, IrReq, IrResp};
-
 /// The lane wire model stamped on the egress request (mirrors `rewrite_model_if_needed`).
 const LANE_MODEL: &str = "gpt-4o-mini";
 /// Fixed epoch for `prepare_for_ingress` so the synthesized `created` boundary signal (unused by
@@ -69,19 +67,22 @@ fn translate_request_a2o(body: &str) -> Vec<u8> {
     let openai = crate::proto::protocol_for("openai").expect("openai protocol");
     let v: serde_json::Value = crate::json::parse(body.as_bytes()).expect("valid corpus JSON");
     let ir = anthropic.reader().read_request(&v).expect("reads");
-    let mut req = IrReq::Chat(ir);
-    req.prepare_for_egress(&EgressPrep {
-        thought_signature_fill: false,
-        ingress_protocol: "anthropic",
-        egress_requires_max_tokens: openai.decl().is_some_and(|d| d.requires_max_tokens),
-        lane_default_max_tokens: None,
-        global_default_max_tokens: 4096,
-        reasoning_allowed: true,
-        reasoning_budgets: crate::ir::REASONING_BUDGET_DEFAULTS,
-        prompt_caching_allowed: true,
-        cache_control_cap: None,
-    });
-    let IrReq::Chat(ir) = req else { unreachable!() };
+    let mut req = ir;
+    crate::proto::chat_handle::chat_prepare_for_egress(
+        &mut req,
+        &crate::ir::egress_prep::EgressPrep {
+            thought_signature_fill: false,
+            ingress_protocol: "anthropic",
+            egress_requires_max_tokens: openai.decl().is_some_and(|d| d.requires_max_tokens),
+            lane_default_max_tokens: None,
+            global_default_max_tokens: 4096,
+            reasoning_allowed: true,
+            reasoning_budgets: crate::ir::REASONING_BUDGET_DEFAULTS,
+            prompt_caching_allowed: true,
+            cache_control_cap: None,
+        },
+    );
+    let ir = req;
     let mut out = openai.writer().write_request(&ir);
     crate::proxy::strip_router_shim_keys(&mut out, "openai");
     openai
@@ -97,11 +98,9 @@ fn translate_response_o2a(body: &str) -> Vec<u8> {
     let openai = crate::proto::protocol_for("openai").expect("openai protocol");
     let v: serde_json::Value = crate::json::parse(body.as_bytes()).expect("valid corpus JSON");
     let ir = openai.reader().read_response(&v).expect("reads");
-    let mut resp = IrResp::Chat(ir);
-    resp.prepare_for_ingress("anthropic", FIXED_NOW);
-    let IrResp::Chat(ir) = resp else {
-        unreachable!()
-    };
+    let mut resp = ir;
+    crate::proto::chat_handle::chat_prepare_for_ingress(&mut resp, "anthropic", FIXED_NOW);
+    let ir = resp;
     let mut out = anthropic.writer().write_response(&ir);
     anthropic
         .writer()

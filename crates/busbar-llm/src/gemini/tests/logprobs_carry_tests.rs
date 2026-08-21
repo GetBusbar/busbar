@@ -1,6 +1,6 @@
 //! Cross-protocol logprobs (OpenAI<->Gemini): the ask (request) and the data (response,
 //! buffered AND streaming) must cross the seam in both directions via the neutral IR.
-use busbar_core::proto::{Protocol, ProtocolReader};
+use super::super::proto_codec::{Protocol, ProtocolReader};
 
 fn gemini_body_with_logprobs() -> serde_json::Value {
     serde_json::json!({
@@ -51,7 +51,7 @@ fn openai_logprobs_codec_round_trips_bytes_and_top() {
     assert_eq!(back["content"][0]["top_logprobs"][1]["token"], "Yo");
 
     // bytes synthesized from UTF-8 when the source (e.g. Gemini) carried none.
-    let no_bytes = vec![busbar_core::ir::IrTokenLogprob {
+    let no_bytes = vec![crate::ir::IrTokenLogprob {
         token: "Hi".into(),
         logprob: -0.1,
         bytes: None,
@@ -86,17 +86,14 @@ fn gemini_logprobs_reach_openai_caller() {
 fn tts_instructions_prefix_the_prompt_not_language_code() {
     // OpenAI TTS `instructions` (free-text style) must steer via the prompt, not corrupt
     // Gemini's speechConfig.languageCode (a BCP-47 field).
-    let ir = busbar_core::ir::variant::IrReq::Speech(busbar_core::ir::audio::SpeechReq {
+    let ir = crate::ir::audio::SpeechReq {
         model: "gemini-2.5-flash-preview-tts".into(),
         input: "hello there".into(),
         voice: "Kore".into(),
         instructions: Some("speak cheerfully".into()),
         ..Default::default()
-    });
-    let out = busbar_core::handlers::request_handler("gemini")
-        .and_then(|rh| rh.operation_handler(busbar_core::operation::Operation::SPEECH))
-        .unwrap()
-        .write_request(&ir);
+    };
+    let out = super::super::leaf_codec::speech_write_request("gemini", &ir);
     let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
     assert_eq!(
         v["contents"][0]["parts"][0]["text"],
@@ -218,7 +215,7 @@ fn gemini_stream_logprobs_reach_openai_caller() {
             }
         }]
     });
-    let mut state = busbar_core::ir::StreamDecodeState::default();
+    let mut state = crate::ir::StreamDecodeState::default();
     let events = Protocol::gemini()
         .reader()
         .read_response_events("", &chunk, &mut state);
@@ -227,8 +224,8 @@ fn gemini_stream_logprobs_reach_openai_caller() {
         .find(|e| {
             matches!(
                 e,
-                busbar_core::ir::IrStreamEvent::BlockDelta {
-                    delta: busbar_core::ir::IrDelta::LogprobsDelta(_),
+                crate::ir::IrStreamEvent::BlockDelta {
+                    delta: crate::ir::IrDelta::LogprobsDelta(_),
                     ..
                 }
             )
@@ -257,11 +254,11 @@ fn stream_thinking_plus_logprobs_do_not_collide_on_index_zero() {
             }
         }]
     });
-    let mut state = busbar_core::ir::StreamDecodeState::default();
+    let mut state = crate::ir::StreamDecodeState::default();
     let events = Protocol::gemini()
         .reader()
         .read_response_events("", &chunk, &mut state);
-    use busbar_core::ir::{IrBlockMeta, IrDelta, IrStreamEvent};
+    use crate::ir::{IrBlockMeta, IrDelta, IrStreamEvent};
     // Thinking block opened at 0.
     assert!(events.iter().any(|e| matches!(
         e,
@@ -305,7 +302,7 @@ fn openai_stream_logprobs_reach_gemini_caller() {
             "finish_reason": null
         }]
     });
-    let mut state = busbar_core::ir::StreamDecodeState::default();
+    let mut state = crate::ir::StreamDecodeState::default();
     let events = Protocol::openai()
         .reader()
         .read_response_events("", &chunk, &mut state);
@@ -314,8 +311,8 @@ fn openai_stream_logprobs_reach_gemini_caller() {
         .find(|e| {
             matches!(
                 e,
-                busbar_core::ir::IrStreamEvent::BlockDelta {
-                    delta: busbar_core::ir::IrDelta::LogprobsDelta(_),
+                crate::ir::IrStreamEvent::BlockDelta {
+                    delta: crate::ir::IrDelta::LogprobsDelta(_),
                     ..
                 }
             )

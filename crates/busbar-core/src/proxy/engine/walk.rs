@@ -497,7 +497,7 @@ pub(crate) async fn forward_once(
                     .unwrap_or(false)
             })
             .unwrap_or(false);
-    let egress_name = app.lanes[i].protocol.name();
+    let egress_name = app.lanes[i].protocol;
 
     // Breaker config for THIS degraded attempt's routing pool cell — resolved the same way the main
     // forward path resolves `breaker_cfg` (per-pool settings, ADR-0002 default fallback). All breaker
@@ -867,8 +867,9 @@ pub(crate) async fn forward_once(
                 crate::proto::new_stream_translator(ingress_protocol, egress_name, is_sse);
             let json_array = (gemini_json_array && is_sse)
                 .then(|| {
-                    crate::proto::protocol_for(ingress_protocol)
-                        .and_then(|p| p.writer().make_array_stream_framer())
+                    crate::proto::decl_for(ingress_protocol)
+                        .and_then(|d| d.dialect())
+                        .and_then(|dc| dc.make_array_stream_framer())
                 })
                 .flatten();
             // Handing the budget-refund decision to `FirstByteBody` (via `budget_spent` below) —

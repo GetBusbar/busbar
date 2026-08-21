@@ -34,7 +34,7 @@
 pub fn url_annotations(
     text: &str,
     base: usize,
-    citations: &[busbar_core::ir::IrCitation],
+    citations: &[crate::ir::IrCitation],
 ) -> Vec<serde_json::Value> {
     let mut out = Vec::new();
     for c in citations {
@@ -95,7 +95,7 @@ pub fn url_annotations(
 /// established (one upstream response with a multi-byte character ahead of the cited span settles
 /// it), the url and title — which need no unit — are preserved and the span is left `None`, which
 /// every writer already treats as optional.
-pub fn read_url_annotations(annotations: &serde_json::Value) -> Vec<busbar_core::ir::IrCitation> {
+pub fn read_url_annotations(annotations: &serde_json::Value) -> Vec<crate::ir::IrCitation> {
     let mut out = Vec::new();
     let Some(arr) = annotations.as_array() else {
         return out;
@@ -122,7 +122,7 @@ pub fn read_url_annotations(annotations: &serde_json::Value) -> Vec<busbar_core:
             .and_then(|t| t.as_str())
             .filter(|t| !t.is_empty())
             .map(String::from);
-        out.push(busbar_core::ir::IrCitation {
+        out.push(crate::ir::IrCitation {
             kind: Some("web_search_result_location".to_string()),
             cited_text: None,
             title,

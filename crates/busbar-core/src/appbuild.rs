@@ -22,7 +22,6 @@ use crate::preflight::{
     build_secret_resolver, plugin_fetch_downloader, plugins_preflight, resolve_admin_token,
     resolve_signing_key, validate_secret_refs,
 };
-use crate::proto::ProtocolRegistry;
 use crate::router::project_auth_scope_caps;
 use crate::state::{App, Lane, WeightedLane};
 use crate::store::{HealthState, LaneData};
@@ -546,8 +545,6 @@ pub fn build_app_from_config(
         );
     }
 
-    let registry = ProtocolRegistry::with_builtins();
-
     // Build a map from model name to context_max. A model is one lane shared across every pool that
     // names it, so its context_max must be single-valued. Previously the last pool to iterate (in
     // nondeterministic HashMap order) silently won, so a model carrying `context_max: Some(128000)`
@@ -562,7 +559,7 @@ pub fn build_app_from_config(
         // Reuse the provider handle resolved (and validated via `die`) in the lanes_data loop above,
         // captured in lockstep into `lane_provider_cfgs`. No redundant re-lookup / `expect` here.
         let provider_cfg = lane_provider_cfgs[idx];
-        let Some(protocol) = registry.get(&provider_cfg.protocol) else {
+        let Some(protocol) = crate::proto::lane_protocol_name(&provider_cfg.protocol) else {
             return Err(format!(
                 "provider '{}' uses unknown protocol '{}' (supported: anthropic, openai, gemini, bedrock, responses, cohere)",
                 ld.provider, provider_cfg.protocol

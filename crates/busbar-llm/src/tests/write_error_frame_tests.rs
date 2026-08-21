@@ -18,6 +18,7 @@
 //! (`stream_translate_tests`, the mid-stream-error/`response.failed` tests) exercise that live path.
 
 use super::*;
+use crate::proto_codec::protocol_for;
 use busbar_core::breaker::{CanonicalSignal, StatusClass};
 
 fn a_mid_stream_error() -> CanonicalSignal {
@@ -35,10 +36,12 @@ fn every_declared_writer_frames_a_stream_error_in_band() {
     let err = a_mid_stream_error();
     for decl in DECLS {
         // A protocol without a cross-dialect codec (none today; MCP would be one) has no writer.
-        let Some(codec) = decl.codec else { continue };
-
+        if decl.codec.is_none() {
+            continue;
+        }
+        let proto = protocol_for(decl.name).expect("a codec protocol resolves its writer");
         assert!(
-            codec().writer().write_error_frame(&err).is_some(),
+            proto.writer().write_error_frame(&err).is_some(),
             "{}: write_error_frame returned None — a mid-stream error would fall back to core's \
              dialect-free frame instead of this protocol's native stream-error shape",
             decl.name

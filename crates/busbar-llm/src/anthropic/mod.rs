@@ -27,12 +27,18 @@ pub mod handler;
 mod reader;
 mod writer;
 
+use crate::ir::{IrBlockMeta, IrDelta, IrStreamEvent, IrUsage};
 use axum::http::{header::HeaderValue, HeaderName, StatusCode};
 #[cfg(test)]
 use busbar_core::breaker::CanonicalSignal;
 use busbar_core::breaker::StatusClass;
-use busbar_core::ir::{IrBlockMeta, IrDelta, IrStreamEvent, IrUsage};
 use busbar_core::proto::*;
+// G6 A4b: the wire-codec surface (ProtocolReader/Writer/Protocol/StreamFraming/ToolIdRemap/
+// protocol_for) relocated to this plugin's `proto_codec`; reach it RELATIVELY so it resolves both
+// standalone (crate::proto_codec) and netted into core (core::proto::proto_codec).
+#[allow(unused_imports)]
+// used standalone; redundant with busbar_core::proto::* when netted into core
+use super::proto_codec::*;
 
 /// Build this dialect's wire codec — the [`ProtocolDecl::codec`] constructor. A fresh instance per
 /// resolution, exactly as the registry's field doc requires.
@@ -85,7 +91,7 @@ fn models_list_envelope(names: &[&str]) -> serde_json::Value {
 /// built-in row, so the fixture registry the tests see matches the registry a shipped binary has.
 pub const DECL: ProtocolDecl = ProtocolDecl {
     name: PROTO_ANTHROPIC,
-    codec: Some(protocol),
+    codec: Some(|| super::proto_codec::dialect_ref(PROTO_ANTHROPIC)),
     handler: Some(&handler::AnthropicRequestHandler),
     verbs: &[busbar_core::operation::Operation::CHAT],
     head_keys: LLM_HEAD_KEYS,
@@ -210,7 +216,7 @@ fn is_modeled_anthropic_block_type(t: &str) -> bool {
     )
 }
 
-/// The `vendor` tag on an [`busbar_core::ir::IrImageSource::Vendor`] this protocol produces — an Anthropic
+/// The `vendor` tag on an [`crate::ir::IrImageSource::Vendor`] this protocol produces — an Anthropic
 /// Files-API `{"type":"file","file_id":…}` document source, or a `{"type":"content"}` document whose
 /// body is a block array. Neither has a neutral (base64/url) form, so only this protocol's writer
 /// re-emits it; any other writer drops it with a warn.
@@ -221,7 +227,7 @@ const BLOCK_TYPE_DOCUMENT: &str = "document";
 
 /// Native Anthropic `search_result` content block type — a retrieved RAG passage (source, title and
 /// a text `content[]`) the caller supplies for the model to answer from and cite. Read into a
-/// `Text` block carrying an [`busbar_core::ir::IrCitation`]; see the arm in [`read_block`] for why it is
+/// `Text` block carrying an [`crate::ir::IrCitation`]; see the arm in [`read_block`] for why it is
 /// deliberately NOT in [`is_modeled_anthropic_block_type`].
 const BLOCK_TYPE_SEARCH_RESULT: &str = "search_result";
 
@@ -493,7 +499,7 @@ fn stream_error_class(error_type: Option<&str>) -> StatusClass {
 }
 
 /// Read Anthropic's 5m/1h cache-creation TIER SPLIT off a wire `usage` object into the neutral
-/// [`busbar_core::ir::IrUsageDetail`].
+/// [`crate::ir::IrUsageDetail`].
 ///
 /// The two tiers are SLICES of `cache_creation_input_tokens`, never additions to it, but they are
 /// PRICED DIFFERENTLY — collapsing them into the one total leaves a bill that reconciles in aggregate
@@ -501,8 +507,8 @@ fn stream_error_class(error_type: Option<&str>) -> StatusClass {
 /// (`message_start` and `message_delta`) read the identical object instead of defaulting the split
 /// away: the same request must not report the tier split at `stream: false` and lose it at
 /// `stream: true`.
-fn read_cache_tier_detail(usage_val: Option<&serde_json::Value>) -> busbar_core::ir::IrUsageDetail {
-    busbar_core::ir::IrUsageDetail {
+fn read_cache_tier_detail(usage_val: Option<&serde_json::Value>) -> crate::ir::IrUsageDetail {
+    crate::ir::IrUsageDetail {
         cache_creation_5m_input_tokens: usage_val
             .and_then(|u| u.get("cache_creation"))
             .and_then(|c| c.get("ephemeral_5m_input_tokens"))
@@ -525,7 +531,7 @@ fn read_cache_tier_detail(usage_val: Option<&serde_json::Value>) -> busbar_core:
 /// aggregate and cannot be reconciled per line.
 fn write_cache_creation_tiers(
     usage_map: &mut serde_json::Map<String, serde_json::Value>,
-    detail: &busbar_core::ir::IrUsageDetail,
+    detail: &crate::ir::IrUsageDetail,
 ) {
     let mut tiers = serde_json::Map::new();
     if let Some(t5) = detail.cache_creation_5m_input_tokens {
@@ -549,7 +555,7 @@ fn write_cache_creation_tiers(
 }
 
 // Helper functions for IR mapping (used by read_request/write_request)
-fn read_block(block_val: &serde_json::Value) -> Result<busbar_core::ir::IrBlock, IrError> {
+fn read_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock, IrError> {
     let obj = block_val.as_object().ok_or(IrError {
         class: StatusClass::ClientError,
         provider_signal: Some(busbar_core::proto::SIGNAL_IR_PARSE.to_string()),
@@ -572,7 +578,7 @@ fn read_block(block_val: &serde_json::Value) -> Result<busbar_core::ir::IrBlock,
                 .and_then(|v| v.as_array())
                 .map(|arr| arr.iter().map(read_citation).collect())
                 .unwrap_or_default();
-            Ok(busbar_core::ir::IrBlock::Text {
+            Ok(crate::ir::IrBlock::Text {
                 text,
                 cache_control,
                 citations,
@@ -588,7 +594,7 @@ fn read_block(block_val: &serde_json::Value) -> Result<busbar_core::ir::IrBlock,
                 .get("signature")
                 .and_then(|v| v.as_str().map(String::from));
             let cache_control = read_cache_control(obj.get("cache_control"))?;
-            Ok(busbar_core::ir::IrBlock::Thinking {
+            Ok(crate::ir::IrBlock::Thinking {
                 text,
                 signature,
                 redacted: false,
@@ -608,7 +614,7 @@ fn read_block(block_val: &serde_json::Value) -> Result<busbar_core::ir::IrBlock,
                 .to_string();
             let input = obj.get("input").cloned().unwrap_or(serde_json::Value::Null);
             let cache_control = read_cache_control(obj.get("cache_control"))?;
-            Ok(busbar_core::ir::IrBlock::ToolUse {
+            Ok(crate::ir::IrBlock::ToolUse {
                 id,
                 name,
                 input,
@@ -627,7 +633,7 @@ fn read_block(block_val: &serde_json::Value) -> Result<busbar_core::ir::IrBlock,
             let content = if let Some(arr) = content_val.as_array() {
                 arr.iter().map(read_block).collect::<Result<_, _>>()?
             } else {
-                vec![busbar_core::ir::IrBlock::Text {
+                vec![crate::ir::IrBlock::Text {
                     text: content_val.as_str().unwrap_or("").to_string(),
                     cache_control: None,
                     citations: Vec::new(),
@@ -638,7 +644,7 @@ fn read_block(block_val: &serde_json::Value) -> Result<busbar_core::ir::IrBlock,
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
             let cache_control = read_cache_control(obj.get("cache_control"))?;
-            Ok(busbar_core::ir::IrBlock::ToolResult {
+            Ok(crate::ir::IrBlock::ToolResult {
                 tool_use_id,
                 content,
                 is_error,
@@ -669,8 +675,8 @@ fn read_block(block_val: &serde_json::Value) -> Result<busbar_core::ir::IrBlock,
                         .and_then(|v| v.as_str())
                         .unwrap_or("")
                         .to_string();
-                    return Ok(busbar_core::ir::IrBlock::Image {
-                        source: busbar_core::ir::IrImageSource::Url(url),
+                    return Ok(crate::ir::IrBlock::Image {
+                        source: crate::ir::IrImageSource::Url(url),
                         cache_control,
                     });
                 }
@@ -684,8 +690,8 @@ fn read_block(block_val: &serde_json::Value) -> Result<busbar_core::ir::IrBlock,
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
-                Ok(busbar_core::ir::IrBlock::Image {
-                    source: busbar_core::ir::IrImageSource::Base64 { media_type, data },
+                Ok(crate::ir::IrBlock::Image {
+                    source: crate::ir::IrImageSource::Base64 { media_type, data },
                     cache_control,
                 })
             } else {
@@ -720,7 +726,7 @@ fn read_block(block_val: &serde_json::Value) -> Result<busbar_core::ir::IrBlock,
                     "degrading anthropic `document` block with no `source` to an empty text \
                      placeholder: the block carries no payload to translate"
                 );
-                return Ok(busbar_core::ir::IrBlock::Text {
+                return Ok(crate::ir::IrBlock::Text {
                     text: String::new(),
                     cache_control: None,
                     citations: Vec::new(),
@@ -734,7 +740,7 @@ fn read_block(block_val: &serde_json::Value) -> Result<busbar_core::ir::IrBlock,
                 .map(String::from);
             let src_type = source.get("type").and_then(|v| v.as_str()).unwrap_or("");
             let ir_source = match src_type {
-                "url" => busbar_core::ir::IrImageSource::Url(
+                "url" => crate::ir::IrImageSource::Url(
                     source
                         .get("url")
                         .and_then(|v| v.as_str())
@@ -743,7 +749,7 @@ fn read_block(block_val: &serde_json::Value) -> Result<busbar_core::ir::IrBlock,
                 ),
                 // Both `base64` and `text` carry inline bytes plus a real mime type
                 // (`application/pdf`, `text/plain`) — the same neutral shape.
-                "base64" | "text" => busbar_core::ir::IrImageSource::Base64 {
+                "base64" | "text" => crate::ir::IrImageSource::Base64 {
                     media_type: source
                         .get("media_type")
                         .and_then(|v| v.as_str())
@@ -755,15 +761,15 @@ fn read_block(block_val: &serde_json::Value) -> Result<busbar_core::ir::IrBlock,
                         .unwrap_or("")
                         .to_string(),
                 },
-                _ => busbar_core::ir::IrImageSource::Vendor {
+                _ => crate::ir::IrImageSource::Vendor {
                     vendor: VENDOR_NAME,
                     value: source.clone(),
                 },
             };
-            Ok(busbar_core::ir::IrBlock::Media {
+            Ok(crate::ir::IrBlock::Media {
                 // A `document` is a document whatever its mime says — Anthropic has no audio/video
                 // content block, so there is no other kind this can be.
-                kind: busbar_core::ir::IrMediaKind::Document,
+                kind: crate::ir::IrMediaKind::Document,
                 source: ir_source,
                 name,
                 cache_control,
@@ -829,7 +835,7 @@ fn read_block(block_val: &serde_json::Value) -> Result<busbar_core::ir::IrBlock,
             let citations = if source.is_empty() && title.is_empty() {
                 Vec::new()
             } else {
-                vec![busbar_core::ir::IrCitation {
+                vec![crate::ir::IrCitation {
                     kind: Some("search_result_location".to_string()),
                     cited_text: None,
                     title: (!title.is_empty()).then(|| title.to_string()),
@@ -846,7 +852,7 @@ fn read_block(block_val: &serde_json::Value) -> Result<busbar_core::ir::IrBlock,
                 }]
             };
             let cache_control = read_cache_control(obj.get("cache_control"))?;
-            Ok(busbar_core::ir::IrBlock::Text {
+            Ok(crate::ir::IrBlock::Text {
                 text,
                 cache_control,
                 citations,
@@ -868,7 +874,7 @@ fn read_block(block_val: &serde_json::Value) -> Result<busbar_core::ir::IrBlock,
                 .unwrap_or("")
                 .to_string();
             let cache_control = read_cache_control(block_val.get("cache_control"))?;
-            Ok(busbar_core::ir::IrBlock::Thinking {
+            Ok(crate::ir::IrBlock::Thinking {
                 text: data,
                 signature: None,
                 redacted: true,
@@ -890,7 +896,7 @@ fn read_block(block_val: &serde_json::Value) -> Result<busbar_core::ir::IrBlock,
                 "skipping unmodeled anthropic content-block type during ir parse; degrading to an \
                  empty text block rather than 400ing a legitimate request"
             );
-            Ok(busbar_core::ir::IrBlock::Text {
+            Ok(crate::ir::IrBlock::Text {
                 text: String::new(),
                 cache_control: None,
                 citations: Vec::new(),
@@ -899,7 +905,7 @@ fn read_block(block_val: &serde_json::Value) -> Result<busbar_core::ir::IrBlock,
     }
 }
 
-fn read_message(msg_val: &serde_json::Value) -> Result<busbar_core::ir::IrMessage, IrError> {
+fn read_message(msg_val: &serde_json::Value) -> Result<crate::ir::IrMessage, IrError> {
     let obj = msg_val.as_object().ok_or(IrError {
         class: StatusClass::ClientError,
         provider_signal: Some(busbar_core::proto::SIGNAL_IR_PARSE.to_string()),
@@ -908,9 +914,9 @@ fn read_message(msg_val: &serde_json::Value) -> Result<busbar_core::ir::IrMessag
 
     let role_str = obj.get("role").and_then(|v| v.as_str()).unwrap_or("");
     let role = match role_str {
-        "user" => busbar_core::ir::IrRole::User,
-        "assistant" => busbar_core::ir::IrRole::Assistant,
-        "system" => busbar_core::ir::IrRole::System,
+        "user" => crate::ir::IrRole::User,
+        "assistant" => crate::ir::IrRole::Assistant,
+        "system" => crate::ir::IrRole::System,
         _ => {
             return Err(IrError {
                 class: StatusClass::ClientError,
@@ -924,17 +930,17 @@ fn read_message(msg_val: &serde_json::Value) -> Result<busbar_core::ir::IrMessag
     let content = if let Some(arr) = content_val.as_array() {
         arr.iter().map(read_block).collect::<Result<_, _>>()?
     } else {
-        vec![busbar_core::ir::IrBlock::Text {
+        vec![crate::ir::IrBlock::Text {
             text: content_val.as_str().unwrap_or("").to_string(),
             cache_control: None,
             citations: Vec::new(),
         }]
     };
 
-    Ok(busbar_core::ir::IrMessage { role, content })
+    Ok(crate::ir::IrMessage { role, content })
 }
 
-fn read_tool(tool_val: &serde_json::Value) -> Result<busbar_core::ir::IrTool, IrError> {
+fn read_tool(tool_val: &serde_json::Value) -> Result<crate::ir::IrTool, IrError> {
     let obj = tool_val.as_object().ok_or(IrError {
         class: StatusClass::ClientError,
         provider_signal: Some(busbar_core::proto::SIGNAL_IR_PARSE.to_string()),
@@ -955,7 +961,7 @@ fn read_tool(tool_val: &serde_json::Value) -> Result<busbar_core::ir::IrTool, Ir
         .unwrap_or(serde_json::Value::Null);
     let cache_control = read_cache_control(obj.get("cache_control"))?;
 
-    Ok(busbar_core::ir::IrTool {
+    Ok(crate::ir::IrTool {
         name,
         description,
         input_schema,
@@ -974,14 +980,14 @@ fn read_tool(tool_val: &serde_json::Value) -> Result<busbar_core::ir::IrTool, Ir
 /// unrecognized `type` is a client error (matching the strictness the text-block parser already had).
 fn read_cache_control(
     val: Option<&serde_json::Value>,
-) -> Result<Option<busbar_core::ir::CacheControl>, IrError> {
+) -> Result<Option<crate::ir::CacheControl>, IrError> {
     let Some(cc_val) = val else { return Ok(None) };
     let Some(cc_obj) = cc_val.as_object() else {
         return Ok(None);
     };
     match cc_obj.get("type").and_then(|t| t.as_str()) {
-        Some(CACHE_KIND_EPHEMERAL) => Ok(Some(busbar_core::ir::CacheControl {
-            kind: busbar_core::ir::CacheKind::Ephemeral,
+        Some(CACHE_KIND_EPHEMERAL) => Ok(Some(crate::ir::CacheControl {
+            kind: crate::ir::CacheKind::Ephemeral,
         })),
         None => Ok(None),
         Some(_) => Err(IrError {
@@ -993,9 +999,9 @@ fn read_cache_control(
 }
 
 /// Serialize the IR's `CacheControl` back to Anthropic's native `{"type":"ephemeral"}` object.
-fn write_cache_control(cc: &busbar_core::ir::CacheControl) -> serde_json::Value {
+fn write_cache_control(cc: &crate::ir::CacheControl) -> serde_json::Value {
     match cc.kind {
-        busbar_core::ir::CacheKind::Ephemeral => serde_json::json!({"type": CACHE_KIND_EPHEMERAL}),
+        crate::ir::CacheKind::Ephemeral => serde_json::json!({"type": CACHE_KIND_EPHEMERAL}),
     }
 }
 
@@ -1006,39 +1012,39 @@ fn write_cache_control(cc: &busbar_core::ir::CacheControl) -> serde_json::Value 
 /// absent field or an unrecognized/`tool`-without-`name` shape maps to `None` (omitted) so a request
 /// that never carried a directive does not gain a spurious one — except `tool` with a name, which is
 /// the load-bearing targeted case this fix exists to preserve.
-fn read_anthropic_tool_choice(
-    val: Option<&serde_json::Value>,
-) -> Option<busbar_core::ir::IrToolChoice> {
+fn read_anthropic_tool_choice(val: Option<&serde_json::Value>) -> Option<crate::ir::IrToolChoice> {
     let obj = val?.as_object()?;
     match obj.get("type").and_then(|t| t.as_str())? {
-        "auto" => Some(busbar_core::ir::IrToolChoice::Auto),
-        "none" => Some(busbar_core::ir::IrToolChoice::None),
-        "any" => Some(busbar_core::ir::IrToolChoice::Required),
-        "tool" => obj.get("name").and_then(|n| n.as_str()).map(|name| {
-            busbar_core::ir::IrToolChoice::Tool {
-                name: name.to_string(),
-            }
-        }),
+        "auto" => Some(crate::ir::IrToolChoice::Auto),
+        "none" => Some(crate::ir::IrToolChoice::None),
+        "any" => Some(crate::ir::IrToolChoice::Required),
+        "tool" => {
+            obj.get("name")
+                .and_then(|n| n.as_str())
+                .map(|name| crate::ir::IrToolChoice::Tool {
+                    name: name.to_string(),
+                })
+        }
         _ => None,
     }
 }
 
 /// Emit the IR tool-choice union in Anthropic's native `tool_choice` object shape.
-fn write_anthropic_tool_choice(tc: &busbar_core::ir::IrToolChoice) -> serde_json::Value {
+fn write_anthropic_tool_choice(tc: &crate::ir::IrToolChoice) -> serde_json::Value {
     match tc {
-        busbar_core::ir::IrToolChoice::Auto => serde_json::json!({"type": "auto"}),
-        busbar_core::ir::IrToolChoice::None => serde_json::json!({"type": "none"}),
-        busbar_core::ir::IrToolChoice::Required => serde_json::json!({"type": "any"}),
-        busbar_core::ir::IrToolChoice::Tool { name } => {
+        crate::ir::IrToolChoice::Auto => serde_json::json!({"type": "auto"}),
+        crate::ir::IrToolChoice::None => serde_json::json!({"type": "none"}),
+        crate::ir::IrToolChoice::Required => serde_json::json!({"type": "any"}),
+        crate::ir::IrToolChoice::Tool { name } => {
             serde_json::json!({"type": "tool", "name": name})
         }
     }
 }
 
-/// Anthropic native `stop_reason` token → canonical [`busbar_core::ir::IrStopReason`]. The ONLY place that
+/// Anthropic native `stop_reason` token → canonical [`crate::ir::IrStopReason`]. The ONLY place that
 /// knows Anthropic's finish vocabulary on the read side; an unmodeled token maps to `Other`.
-fn read_anthropic_stop_reason(token: &str) -> busbar_core::ir::IrStopReason {
-    use busbar_core::ir::IrStopReason as S;
+fn read_anthropic_stop_reason(token: &str) -> crate::ir::IrStopReason {
+    use crate::ir::IrStopReason as S;
     match token {
         STOP_END_TURN => S::EndTurn,
         STOP_MAX_TOKENS => S::MaxTokens,
@@ -1050,13 +1056,13 @@ fn read_anthropic_stop_reason(token: &str) -> busbar_core::ir::IrStopReason {
     }
 }
 
-/// [`busbar_core::ir::IrStopReason`] → Anthropic native `stop_reason`. EXHAUSTIVE: Anthropic's enum is
+/// [`crate::ir::IrStopReason`] → Anthropic native `stop_reason`. EXHAUSTIVE: Anthropic's enum is
 /// `end_turn | max_tokens | stop_sequence | tool_use | pause_turn | refusal` — there is NO `safety`
 /// member, so `safety` (and `error`/`other`, which Anthropic also can't name) degrades to `end_turn`
 /// (the turn ended, just not by the model's choice) rather than leak an off-spec value a strict
 /// Anthropic SDK rejects.
-fn write_anthropic_stop_reason(reason: busbar_core::ir::IrStopReason) -> &'static str {
-    use busbar_core::ir::IrStopReason as S;
+fn write_anthropic_stop_reason(reason: crate::ir::IrStopReason) -> &'static str {
+    use crate::ir::IrStopReason as S;
     match reason {
         S::EndTurn => STOP_END_TURN,
         S::MaxTokens => STOP_MAX_TOKENS,
@@ -1068,13 +1074,13 @@ fn write_anthropic_stop_reason(reason: busbar_core::ir::IrStopReason) -> &'stati
     }
 }
 
-/// Map one RAW Anthropic citation object → neutral [`busbar_core::ir::IrCitation`]. Fills the neutral
+/// Map one RAW Anthropic citation object → neutral [`crate::ir::IrCitation`]. Fills the neutral
 /// fields it recognizes AND stashes the source object verbatim in `raw`, so the Anthropic writer can
 /// re-emit it byte-exact (the no-regression guarantee) while a cross-protocol writer still has the
 /// neutral coordinates. The Anthropic citation `type` union uses differently-named start/end fields
 /// per variant (char/page/block index, or web-search `encrypted_index`); we read each into the shared
 /// neutral `start_index`/`end_index`/`encrypted_index` slots, keyed off the `type` tag.
-fn read_citation(val: &serde_json::Value) -> busbar_core::ir::IrCitation {
+fn read_citation(val: &serde_json::Value) -> crate::ir::IrCitation {
     let kind = val.get("type").and_then(|v| v.as_str()).map(str::to_string);
     let cited_text = val
         .get("cited_text")
@@ -1103,7 +1109,7 @@ fn read_citation(val: &serde_json::Value) -> busbar_core::ir::IrCitation {
         .get("encrypted_index")
         .and_then(|v| v.as_str())
         .map(str::to_string);
-    busbar_core::ir::IrCitation {
+    crate::ir::IrCitation {
         kind,
         cited_text,
         title,
@@ -1133,14 +1139,14 @@ fn is_anthropic_citation_shape(raw: &serde_json::Value) -> bool {
     )
 }
 
-/// Map a neutral [`busbar_core::ir::IrCitation`] → an Anthropic citation object.
+/// Map a neutral [`crate::ir::IrCitation`] → an Anthropic citation object.
 ///
 /// NO-REGRESSION GUARANTEE: when `raw` is present (an Anthropic-sourced citation, OR any source that
 /// preserved its original object), it is emitted VERBATIM — so Anthropic→IR→Anthropic is byte-exact
 /// regardless of how the neutral fields map. Only when `raw` is absent (a citation synthesized from
 /// neutral fields on a cross-protocol hop, e.g. Gemini→Anthropic) do we BUILD an Anthropic object
 /// from the neutral fields, keyed off `kind` to choose the variant + its field names.
-fn write_citation(c: &busbar_core::ir::IrCitation) -> serde_json::Value {
+fn write_citation(c: &crate::ir::IrCitation) -> serde_json::Value {
     // Re-emit `raw` VERBATIM only when it is an ANTHROPIC citation object (same-protocol path) — keyed
     // off an Anthropic `type` tag. A `raw` from a FOREIGN protocol (e.g. a Gemini `citationSources[]`
     // entry on a Gemini→Anthropic hop, which has `uri`/`startIndex` and no Anthropic `type`) must NOT
@@ -1215,9 +1221,9 @@ fn write_citation(c: &busbar_core::ir::IrCitation) -> serde_json::Value {
     serde_json::Value::Object(obj)
 }
 
-fn write_block(block: &busbar_core::ir::IrBlock) -> serde_json::Value {
+fn write_block(block: &crate::ir::IrBlock) -> serde_json::Value {
     match block {
-        busbar_core::ir::IrBlock::Text {
+        crate::ir::IrBlock::Text {
             text,
             cache_control,
             citations,
@@ -1227,7 +1233,7 @@ fn write_block(block: &busbar_core::ir::IrBlock) -> serde_json::Value {
             obj.insert("text".to_string(), serde_json::json!(text));
             if let Some(cc) = cache_control {
                 let cc_val = match cc.kind {
-                    busbar_core::ir::CacheKind::Ephemeral => {
+                    crate::ir::CacheKind::Ephemeral => {
                         serde_json::json!({"type": CACHE_KIND_EPHEMERAL})
                     }
                 };
@@ -1242,7 +1248,7 @@ fn write_block(block: &busbar_core::ir::IrBlock) -> serde_json::Value {
         // A REDACTED reasoning block (opaque encrypted bytes in `text`) re-emits as Anthropic's native
         // `redacted_thinking` block so an Anthropic→Anthropic round-trip preserves the native shape and
         // the bytes are NOT leaked as visible `thinking` text.
-        busbar_core::ir::IrBlock::Thinking {
+        crate::ir::IrBlock::Thinking {
             text,
             redacted: true,
             cache_control,
@@ -1259,7 +1265,7 @@ fn write_block(block: &busbar_core::ir::IrBlock) -> serde_json::Value {
             }
             serde_json::Value::Object(obj)
         }
-        busbar_core::ir::IrBlock::Thinking {
+        crate::ir::IrBlock::Thinking {
             text,
             signature,
             redacted: false,
@@ -1276,7 +1282,7 @@ fn write_block(block: &busbar_core::ir::IrBlock) -> serde_json::Value {
             }
             serde_json::Value::Object(obj)
         }
-        busbar_core::ir::IrBlock::ToolUse {
+        crate::ir::IrBlock::ToolUse {
             id,
             name,
             input,
@@ -1296,7 +1302,7 @@ fn write_block(block: &busbar_core::ir::IrBlock) -> serde_json::Value {
             }
             serde_json::Value::Object(obj)
         }
-        busbar_core::ir::IrBlock::ToolResult {
+        crate::ir::IrBlock::ToolResult {
             tool_use_id,
             content,
             is_error,
@@ -1340,7 +1346,7 @@ fn write_block(block: &busbar_core::ir::IrBlock) -> serde_json::Value {
             }
             serde_json::Value::Object(obj)
         }
-        busbar_core::ir::IrBlock::Image {
+        crate::ir::IrBlock::Image {
             source,
             cache_control,
         } => {
@@ -1349,10 +1355,10 @@ fn write_block(block: &busbar_core::ir::IrBlock) -> serde_json::Value {
             // (see the unresolvable-image drop in write_message); the arm here is a defensive empty
             // placeholder for the unreachable case.
             let mut img = match source {
-                busbar_core::ir::IrImageSource::Url(url) => {
+                crate::ir::IrImageSource::Url(url) => {
                     serde_json::json!({ "type": "image", "source": { "type": "url", "url": url } })
                 }
-                busbar_core::ir::IrImageSource::Base64 { media_type, data } => {
+                crate::ir::IrImageSource::Base64 { media_type, data } => {
                     // VALIDATE the media type before putting it on the wire. Anthropic accepts only
                     // `image/{jpeg,png,gif,webp}` and 400s anything else — and a non-image mime CAN
                     // reach here: the Gemini reader used to map EVERY `inlineData` (including
@@ -1364,7 +1370,7 @@ fn write_block(block: &busbar_core::ir::IrBlock) -> serde_json::Value {
                     // union; this is that same pattern, not a new one. Emit the empty placeholder
                     // (unreachable in practice — `write_message` filters first) rather than a block
                     // Anthropic rejects.
-                    match busbar_core::ir::image_subtype_if_supported(media_type) {
+                    match crate::ir::image_subtype_if_supported(media_type) {
                         Some(subtype) => serde_json::json!({
                             "type": "image",
                             "source": { "type": "base64", "media_type": format!("image/{subtype}"), "data": data }
@@ -1380,7 +1386,7 @@ fn write_block(block: &busbar_core::ir::IrBlock) -> serde_json::Value {
                         }
                     }
                 }
-                busbar_core::ir::IrImageSource::Vendor { .. } => {
+                crate::ir::IrImageSource::Vendor { .. } => {
                     serde_json::json!({ "type": "text", "text": "" })
                 }
             };
@@ -1391,7 +1397,7 @@ fn write_block(block: &busbar_core::ir::IrBlock) -> serde_json::Value {
             }
             img
         }
-        busbar_core::ir::IrBlock::Media {
+        crate::ir::IrBlock::Media {
             kind,
             source,
             name,
@@ -1403,7 +1409,7 @@ fn write_block(block: &busbar_core::ir::IrBlock) -> serde_json::Value {
             // DELIBERATELY with a warn naming the construct. `write_message` filters those before
             // they get here so nothing is emitted for them; the placeholder below is defensive for a
             // direct `write_block` call.
-            if *kind != busbar_core::ir::IrMediaKind::Document {
+            if *kind != crate::ir::IrMediaKind::Document {
                 tracing::warn!(
                     media_kind = kind.as_str(),
                     "dropping attachment on Anthropic egress: the Messages API has a `document` \
@@ -1413,10 +1419,10 @@ fn write_block(block: &busbar_core::ir::IrBlock) -> serde_json::Value {
                 return serde_json::json!({ "type": "text", "text": "" });
             }
             let src = match source {
-                busbar_core::ir::IrImageSource::Url(url) => {
+                crate::ir::IrImageSource::Url(url) => {
                     serde_json::json!({ "type": "url", "url": url })
                 }
-                busbar_core::ir::IrImageSource::Base64 { media_type, data } => {
+                crate::ir::IrImageSource::Base64 { media_type, data } => {
                     // Anthropic splits inline document bytes across two source types by mime:
                     // `text/plain` is the `text` source (raw, not base64), everything else is the
                     // `base64` source. Reading the mime here keeps the reader's round-trip exact.
@@ -1429,7 +1435,7 @@ fn write_block(block: &busbar_core::ir::IrBlock) -> serde_json::Value {
                 }
                 // This protocol's OWN opaque source (a Files-API `file_id` or a `content` document):
                 // re-emit verbatim. A FOREIGN vendor reference is filtered in `write_message`.
-                busbar_core::ir::IrImageSource::Vendor { value, .. } => value.clone(),
+                crate::ir::IrImageSource::Vendor { value, .. } => value.clone(),
             };
             let mut doc = serde_json::json!({ "type": BLOCK_TYPE_DOCUMENT, "source": src });
             if let Some(obj) = doc.as_object_mut() {
@@ -1442,7 +1448,7 @@ fn write_block(block: &busbar_core::ir::IrBlock) -> serde_json::Value {
             }
             doc
         }
-        busbar_core::ir::IrBlock::Json(_) => {
+        crate::ir::IrBlock::Json(_) => {
             // A structured-json tool-result block has no top-level Anthropic content shape; it is
             // dropped before reaching write_block (see the json-tool-result filter in the ToolResult
             // arm). Defensive empty placeholder for the unreachable case.
@@ -1452,22 +1458,22 @@ fn write_block(block: &busbar_core::ir::IrBlock) -> serde_json::Value {
 }
 
 fn write_message(
-    msg: &busbar_core::ir::IrMessage,
+    msg: &crate::ir::IrMessage,
     m: usize,
     unmodeled_sentinel: &[serde_json::Value],
 ) -> serde_json::Value {
     let role_str = match msg.role {
-        busbar_core::ir::IrRole::User => "user",
-        busbar_core::ir::IrRole::Assistant => "assistant",
+        crate::ir::IrRole::User => "user",
+        crate::ir::IrRole::Assistant => "assistant",
         // Anthropic's Messages API has NO `system` role inside `messages` — system content lives in
         // the top-level `system` field. `write_request` folds every `IrRole::System` message into
         // that top-level array and FILTERS it out of the per-message loop, so this arm is unreachable
         // on the request path. Map it to `"user"` defensively (NOT the invalid `"system"`) so that
         // even a direct `write_message` call can never emit a `role:"system"` Anthropic rejects.
-        busbar_core::ir::IrRole::System => "user",
+        crate::ir::IrRole::System => "user",
         // Anthropic has no "tool" message role — tool results are carried as `user` messages whose
         // content holds `tool_result` block(s). (Reachable when translating an OpenAI `tool` message.)
-        busbar_core::ir::IrRole::Tool => "user",
+        crate::ir::IrRole::Tool => "user",
     };
     // REQUEST-side filter (write_message feeds write_request only; write_response/_event call
     // write_block directly, so response reasoning still surfaces). Anthropic's Messages API rejects
@@ -1494,7 +1500,7 @@ fn write_message(
         .iter()
         .enumerate()
         .filter_map(|(i, block)| {
-            if let busbar_core::ir::IrBlock::Thinking {
+            if let crate::ir::IrBlock::Thinking {
                 signature: None,
                 redacted: false,
                 ..
@@ -1503,7 +1509,7 @@ fn write_message(
                 dropped_unsigned_thinking += 1;
                 return None;
             }
-            if let busbar_core::ir::IrBlock::Image { source, .. } = block {
+            if let crate::ir::IrBlock::Image { source, .. } = block {
                 // A Responses `file_id` / Bedrock `s3Location` image is an unresolvable cross-vendor
                 // reference with no Anthropic projection. SKIP it rather than emit a corrupt block.
                 if super::ir_encode::is_unresolvable_image_ref(source) {
@@ -1513,8 +1519,8 @@ fn write_message(
                 // A base64 image whose media_type is not one Anthropic accepts (the `audio/mp3`
                 // arriving from a Gemini `inlineData`) would 400 the backend. Drop it here — the
                 // write_block arm warns and emits a placeholder only for a direct call.
-                if let busbar_core::ir::IrImageSource::Base64 { media_type, .. } = source {
-                    if busbar_core::ir::image_subtype_if_supported(media_type).is_none() {
+                if let crate::ir::IrImageSource::Base64 { media_type, .. } = source {
+                    if crate::ir::image_subtype_if_supported(media_type).is_none() {
                         tracing::warn!(
                             media_type = %media_type,
                             "dropping image block from anthropic request egress: media_type is not \
@@ -1524,10 +1530,10 @@ fn write_message(
                     }
                 }
             }
-            if let busbar_core::ir::IrBlock::Media { kind, source, .. } = block {
+            if let crate::ir::IrBlock::Media { kind, source, .. } = block {
                 // Anthropic models documents only, and cannot resolve a FOREIGN vendor handle (an
                 // OpenAI `file_id`, a Bedrock `s3Location`). Both are deliberate, warned drops.
-                if *kind != busbar_core::ir::IrMediaKind::Document {
+                if *kind != crate::ir::IrMediaKind::Document {
                     tracing::warn!(
                         media_kind = kind.as_str(),
                         "dropping attachment from anthropic request egress: the Messages API has no \
@@ -1535,7 +1541,7 @@ fn write_message(
                     );
                     return None;
                 }
-                if let busbar_core::ir::IrImageSource::Vendor { vendor, .. } = source {
+                if let crate::ir::IrImageSource::Vendor { vendor, .. } = source {
                     if *vendor != VENDOR_NAME {
                         tracing::warn!(
                             vendor = %vendor,
@@ -1580,7 +1586,7 @@ fn write_message(
     serde_json::json!({ "role": role_str, "content": content_val })
 }
 
-fn write_tool(tool: &busbar_core::ir::IrTool) -> serde_json::Value {
+fn write_tool(tool: &crate::ir::IrTool) -> serde_json::Value {
     let mut obj = serde_json::Map::new();
     obj.insert("name".to_string(), serde_json::json!(tool.name));
     if let Some(desc) = &tool.description {

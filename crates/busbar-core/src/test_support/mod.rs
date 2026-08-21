@@ -663,7 +663,9 @@ impl LaneSpec {
             signing_host: crate::proxy::host_from_base(&self.base_url),
             base_url: self.base_url.clone(),
             api_key: busbar_api::Redacted::new(self.api_key.clone()),
-            protocol: self.protocol.clone(),
+            // G6 A4b Lane inversion: `Lane.protocol` is the interned protocol NAME now, not an
+            // `Arc<Protocol>`. The builder still holds the fixture `Protocol` for `.name()`/credential.
+            protocol: self.protocol.name_static(),
             max: self.max,
             error_map: std::sync::Arc::new(self.error_map.clone()),
             context_max: self.context_max,

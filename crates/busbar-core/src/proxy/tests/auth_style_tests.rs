@@ -1,5 +1,5 @@
 use super::lane_auth_headers;
-use crate::proto::{Protocol, SigningContext};
+use crate::proto::SigningContext;
 use crate::state::Lane;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -20,7 +20,7 @@ fn lane_with_auth(auth: Option<&str>) -> Lane {
         signing_host: "res.openai.azure.com".to_string(),
         base_url: "https://res.openai.azure.com".to_string(),
         api_key: busbar_api::Redacted::new("SECRETKEY".to_string()),
-        protocol: Arc::new(Protocol::openai()),
+        protocol: "openai",
         max: 1,
         error_map: Arc::new(HashMap::new()),
         context_max: None,

@@ -3,15 +3,21 @@
 
 //! OpenAI Responses API protocol reader/writer implementation.
 
+use crate::ir::IrStreamEvent;
 use axum::http::StatusCode;
 use busbar_core::breaker::StatusClass;
-use busbar_core::ir::IrStreamEvent;
 use busbar_core::proto::openai_family::{
     bearer_error_code, CODE_INVALID_API_KEY, ERR_TYPE_AUTHENTICATION, ERR_TYPE_INSUFFICIENT_QUOTA,
     ERR_TYPE_INVALID_REQUEST, ERR_TYPE_NOT_FOUND, ERR_TYPE_OVERLOADED, ERR_TYPE_PERMISSION,
     ERR_TYPE_RATE_LIMIT, ERR_TYPE_SERVER_ERROR,
 };
 use busbar_core::proto::*;
+// G6 A4b: the wire-codec surface (ProtocolReader/Writer/Protocol/StreamFraming/ToolIdRemap/
+// protocol_for) relocated to this plugin's `proto_codec`; reach it RELATIVELY so it resolves both
+// standalone (crate::proto_codec) and netted into core (core::proto::proto_codec).
+#[allow(unused_imports)]
+// used standalone; redundant with busbar_core::proto::* when netted into core
+use super::proto_codec::*;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub mod handler;
@@ -29,7 +35,7 @@ pub fn protocol() -> Protocol {
 /// second surface) and declares its own name, because a metric label is a protocol's own.
 pub const DECL: ProtocolDecl = ProtocolDecl {
     name: PROTO_RESPONSES,
-    codec: Some(protocol),
+    codec: Some(|| super::proto_codec::dialect_ref(PROTO_RESPONSES)),
     handler: Some(&handler::ResponsesRequestHandler),
     verbs: &[busbar_core::operation::Operation::CHAT],
     head_keys: LLM_HEAD_KEYS,
@@ -275,7 +281,7 @@ fn now_unix_secs() -> u64 {
         .unwrap_or(0)
 }
 
-/// Build the Responses API `usage` object from the neutral [`busbar_core::ir::IrUsage`] with ALL fields the
+/// Build the Responses API `usage` object from the neutral [`crate::ir::IrUsage`] with ALL fields the
 /// official SDKs require. `openai-python`'s `ResponseUsage` and `openai-node`'s
 /// `ResponseUsage` type `total_tokens`, `input_tokens_details` (with `cached_tokens`), and
 /// `output_tokens_details` (with `reasoning_tokens`) as REQUIRED, non-nullable fields - a strict
@@ -295,11 +301,11 @@ fn now_unix_secs() -> u64 {
 /// The IR stores UNCACHED input, but the Responses `input_tokens` is a TOTAL that includes the cached
 /// prefix, so `cache_read` (+ `cache_creation`) are added back. `cached_tokens` mirrors the cache-read
 /// count (`0` when absent - not omitted, matching the required-field contract). `reasoning_tokens`
-/// is the carried sub-bucket ([`busbar_core::ir::IrUsageDetail::reasoning_tokens`]), falling back to `0`
+/// is the carried sub-bucket ([`crate::ir::IrUsageDetail::reasoning_tokens`]), falling back to `0`
 /// ONLY when the source reported none - the SDK models the field as required and non-nullable, so it
 /// must be present; what changed is that a reasoning backend's real count now reaches it instead of
 /// every response asserting `0`. `total_tokens` = `input_total` + `output_tokens`.
-fn build_responses_usage(usage: &busbar_core::ir::IrUsage) -> serde_json::Value {
+fn build_responses_usage(usage: &crate::ir::IrUsage) -> serde_json::Value {
     let cache_read = usage.cache_read_input_tokens.unwrap_or(0);
     let cache_write = usage.cache_creation_input_tokens.unwrap_or(0);
     let input_total = usage
@@ -345,12 +351,12 @@ fn synthesize_response_id() -> String {
 /// of `{"type":"input_text","text":...}` blocks (or `output_text`); both are handled. Empty text
 /// is skipped to avoid emitting blank system blocks.
 fn push_system_content(
-    system_blocks: &mut Vec<busbar_core::ir::IrBlock>,
+    system_blocks: &mut Vec<crate::ir::IrBlock>,
     content: Option<&serde_json::Value>,
 ) {
     let mut push_text = |text: &str| {
         if !text.is_empty() {
-            system_blocks.push(busbar_core::ir::IrBlock::Text {
+            system_blocks.push(crate::ir::IrBlock::Text {
                 text: text.to_string(),
                 cache_control: None,
                 citations: Vec::new(),
@@ -378,11 +384,9 @@ fn push_system_content(
 /// user/assistant turn on a cross-protocol hop. This helper handles both shapes so neither arm
 /// loses a turn. A bare string becomes a single `Text` block (empty string -> empty content, but
 /// the message is still emitted so the turn survives).
-fn message_content_blocks(
-    content: Option<&serde_json::Value>,
-) -> Option<Vec<busbar_core::ir::IrBlock>> {
+fn message_content_blocks(content: Option<&serde_json::Value>) -> Option<Vec<crate::ir::IrBlock>> {
     match content {
-        Some(serde_json::Value::String(s)) => Some(vec![busbar_core::ir::IrBlock::Text {
+        Some(serde_json::Value::String(s)) => Some(vec![crate::ir::IrBlock::Text {
             text: s.clone(),
             cache_control: None,
             citations: Vec::new(),
@@ -402,14 +406,12 @@ fn message_content_blocks(
 /// fallback) so a forced/targeted tool survives the cross-protocol seam instead of degrading to
 /// `auto`. Absent / unrecognized → `None` (omitted), so a request that never carried a directive does
 /// not gain a spurious one.
-fn read_responses_tool_choice(
-    val: Option<&serde_json::Value>,
-) -> Option<busbar_core::ir::IrToolChoice> {
+fn read_responses_tool_choice(val: Option<&serde_json::Value>) -> Option<crate::ir::IrToolChoice> {
     match val? {
         serde_json::Value::String(s) => match s.as_str() {
-            "auto" => Some(busbar_core::ir::IrToolChoice::Auto),
-            "none" => Some(busbar_core::ir::IrToolChoice::None),
-            "required" => Some(busbar_core::ir::IrToolChoice::Required),
+            "auto" => Some(crate::ir::IrToolChoice::Auto),
+            "none" => Some(crate::ir::IrToolChoice::None),
+            "required" => Some(crate::ir::IrToolChoice::Required),
             _ => None,
         },
         serde_json::Value::Object(o) => {
@@ -421,7 +423,7 @@ fn read_responses_tool_choice(
                             .and_then(|f| f.get("name"))
                             .and_then(|n| n.as_str())
                     })
-                    .map(|name| busbar_core::ir::IrToolChoice::Tool {
+                    .map(|name| crate::ir::IrToolChoice::Tool {
                         name: name.to_string(),
                     })
             } else {
@@ -434,12 +436,12 @@ fn read_responses_tool_choice(
 
 /// Emit the IR tool-choice union in the Responses API's native shape — string forms for
 /// auto/none/required, the FLAT `{"type":"function","name":...}` object for a targeted tool.
-fn write_responses_tool_choice(tc: &busbar_core::ir::IrToolChoice) -> serde_json::Value {
+fn write_responses_tool_choice(tc: &crate::ir::IrToolChoice) -> serde_json::Value {
     match tc {
-        busbar_core::ir::IrToolChoice::Auto => serde_json::json!("auto"),
-        busbar_core::ir::IrToolChoice::None => serde_json::json!("none"),
-        busbar_core::ir::IrToolChoice::Required => serde_json::json!("required"),
-        busbar_core::ir::IrToolChoice::Tool { name } => {
+        crate::ir::IrToolChoice::Auto => serde_json::json!("auto"),
+        crate::ir::IrToolChoice::None => serde_json::json!("none"),
+        crate::ir::IrToolChoice::Required => serde_json::json!("required"),
+        crate::ir::IrToolChoice::Tool { name } => {
             serde_json::json!({"type": "function", "name": name})
         }
     }
@@ -551,7 +553,7 @@ fn responses_modeled_keys() -> &'static std::collections::HashSet<&'static str> 
 #[derive(Clone)]
 pub struct ResponsesReader;
 
-fn responses_block(block_val: &serde_json::Value) -> Result<busbar_core::ir::IrBlock, IrError> {
+fn responses_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock, IrError> {
     let obj = block_val.as_object().ok_or(IrError {
         class: StatusClass::ClientError,
         provider_signal: Some(busbar_core::proto::SIGNAL_IR_PARSE.to_string()),
@@ -564,7 +566,7 @@ fn responses_block(block_val: &serde_json::Value) -> Result<busbar_core::ir::IrB
         CONTENT_TYPE_INPUT_TEXT | CONTENT_TYPE_OUTPUT_TEXT => {
             let text_val = obj.get("text");
             let text = text_val.and_then(|t| t.as_str()).unwrap_or("").to_string();
-            Ok(busbar_core::ir::IrBlock::Text {
+            Ok(crate::ir::IrBlock::Text {
                 text,
                 cache_control: None,
                 citations: Vec::new(),
@@ -601,10 +603,10 @@ fn responses_block(block_val: &serde_json::Value) -> Result<busbar_core::ir::IrB
                 .and_then(|v| v.as_str())
                 .filter(|s| !s.is_empty())
             {
-                busbar_core::ir::IrImageSource::Url(url.to_string())
+                crate::ir::IrImageSource::Url(url.to_string())
             } else {
                 // An OpenAI-hosted uploads handle: no neutral form, so the opaque `Vendor` escape.
-                busbar_core::ir::IrImageSource::Vendor {
+                crate::ir::IrImageSource::Vendor {
                     vendor: VENDOR_NAME,
                     value: serde_json::json!({
                         "file_id": obj.get("file_id").and_then(|v| v.as_str()).unwrap_or("")
@@ -612,12 +614,12 @@ fn responses_block(block_val: &serde_json::Value) -> Result<busbar_core::ir::IrB
                 }
             };
             let kind = match &source {
-                busbar_core::ir::IrImageSource::Base64 { media_type, .. } => {
-                    busbar_core::ir::IrMediaKind::from_media_type(media_type)
+                crate::ir::IrImageSource::Base64 { media_type, .. } => {
+                    crate::ir::IrMediaKind::from_media_type(media_type)
                 }
-                _ => busbar_core::ir::IrMediaKind::Document,
+                _ => crate::ir::IrMediaKind::Document,
             };
-            Ok(busbar_core::ir::IrBlock::Media {
+            Ok(crate::ir::IrBlock::Media {
                 kind,
                 source,
                 name,
@@ -638,7 +640,7 @@ fn responses_block(block_val: &serde_json::Value) -> Result<busbar_core::ir::IrB
                 "skipping unmodeled Responses content-block type during ir parse; degrading to an \
                  empty text block rather than silently dropping it"
             );
-            Ok(busbar_core::ir::IrBlock::Text {
+            Ok(crate::ir::IrBlock::Text {
                 text: String::new(),
                 cache_control: None,
                 citations: Vec::new(),
@@ -651,10 +653,10 @@ fn responses_block(block_val: &serde_json::Value) -> Result<busbar_core::ir::IrB
 /// `image_url` (parsed via the shared `parse_image_url` into a `Base64`/`Url` source). Otherwise, an
 /// uploaded-file reference becomes the typed `FileId` source so the writer reconstructs the native
 /// `file_id` form losslessly. Returns `None` when the block carries NEITHER (a degenerate reference).
-fn responses_input_image_block(item: &serde_json::Value) -> Option<busbar_core::ir::IrBlock> {
+fn responses_input_image_block(item: &serde_json::Value) -> Option<crate::ir::IrBlock> {
     let image_url = item.get("image_url").and_then(|u| u.as_str());
     if let Some(url) = image_url.filter(|u| !u.is_empty()) {
-        return Some(busbar_core::ir::IrBlock::Image {
+        return Some(crate::ir::IrBlock::Image {
             source: super::ir_encode::parse_image_url(url),
             cache_control: None,
         });
@@ -664,8 +666,8 @@ fn responses_input_image_block(item: &serde_json::Value) -> Option<busbar_core::
         .and_then(|f| f.as_str())
         .filter(|f| !f.is_empty())
     {
-        return Some(busbar_core::ir::IrBlock::Image {
-            source: busbar_core::ir::IrImageSource::Vendor {
+        return Some(crate::ir::IrBlock::Image {
+            source: crate::ir::IrImageSource::Vendor {
                 vendor: VENDOR_NAME,
                 value: serde_json::json!({ "file_id": file_id }),
             },
@@ -753,10 +755,10 @@ pub(crate) fn read_reasoning_encrypted_content(item: &serde_json::Value) -> Opti
         .filter(|s| !s.is_empty())
 }
 
-/// Responses `incomplete_details.reason` → canonical [`busbar_core::ir::IrStopReason`]. The ONLY place that
+/// Responses `incomplete_details.reason` → canonical [`crate::ir::IrStopReason`]. The ONLY place that
 /// knows the Responses truncation-reason vocabulary; an unmodeled reason maps to `Other`.
-fn read_responses_incomplete_reason(reason: &str) -> busbar_core::ir::IrStopReason {
-    use busbar_core::ir::IrStopReason as S;
+fn read_responses_incomplete_reason(reason: &str) -> crate::ir::IrStopReason {
+    use crate::ir::IrStopReason as S;
     match reason {
         INCOMPLETE_REASON_MAX_OUTPUT => S::MaxTokens,
         INCOMPLETE_REASON_CONTENT_FILTER => S::Safety,
@@ -765,21 +767,21 @@ fn read_responses_incomplete_reason(reason: &str) -> busbar_core::ir::IrStopReas
     }
 }
 
-/// [`busbar_core::ir::IrStopReason`] → Responses terminal `status`. Only a truncation (`max_tokens`) or a
+/// [`crate::ir::IrStopReason`] → Responses terminal `status`. Only a truncation (`max_tokens`) or a
 /// content-filter (`safety`) renders the turn `incomplete`; everything else (incl. tool_use, refusal)
 /// is `completed` (a refusal/tool-call is surfaced via output items, not the status).
-fn write_responses_status(reason: busbar_core::ir::IrStopReason) -> &'static str {
-    use busbar_core::ir::IrStopReason as S;
+fn write_responses_status(reason: crate::ir::IrStopReason) -> &'static str {
+    use crate::ir::IrStopReason as S;
     match reason {
         S::MaxTokens | S::Safety => STATUS_INCOMPLETE,
         _ => STATUS_COMPLETED,
     }
 }
 
-/// [`busbar_core::ir::IrStopReason`] → Responses `incomplete_details.reason` (only consulted when the status
+/// [`crate::ir::IrStopReason`] → Responses `incomplete_details.reason` (only consulted when the status
 /// is `incomplete`, i.e. for `MaxTokens`/`Safety`; any other reason defaults to `other`).
-fn write_responses_incomplete_reason(reason: busbar_core::ir::IrStopReason) -> &'static str {
-    use busbar_core::ir::IrStopReason as S;
+fn write_responses_incomplete_reason(reason: crate::ir::IrStopReason) -> &'static str {
+    use crate::ir::IrStopReason as S;
     match reason {
         S::MaxTokens => INCOMPLETE_REASON_MAX_OUTPUT,
         S::Safety => INCOMPLETE_REASON_CONTENT_FILTER,
@@ -797,13 +799,11 @@ fn write_responses_incomplete_reason(reason: busbar_core::ir::IrStopReason) -> &
 /// no extra fields and pass through as `{"type":...}`. Returns `None` when `text.format` is absent so
 /// the IR field stays unset (no spurious response_format on a request that carried none). An
 /// unrecognized `type` is passed through verbatim rather than dropped.
-fn read_text_format(
-    text_val: Option<&serde_json::Value>,
-) -> Option<busbar_core::ir::IrResponseFormat> {
+fn read_text_format(text_val: Option<&serde_json::Value>) -> Option<crate::ir::IrResponseFormat> {
     let format = text_val.and_then(|t| t.get("format"))?;
     let o = format.as_object()?;
     match o.get("type").and_then(|t| t.as_str()) {
-        Some("text") => Some(busbar_core::ir::IrResponseFormat {
+        Some("text") => Some(crate::ir::IrResponseFormat {
             json: false,
             schema: None,
             name: None,
@@ -812,7 +812,7 @@ fn read_text_format(
         }),
         // The Responses `text.format` json_schema form is FLAT — name/schema/strict/description sit
         // beside `type` (not nested under `json_schema` as in OpenAI).
-        Some("json_schema") => Some(busbar_core::ir::IrResponseFormat {
+        Some("json_schema") => Some(crate::ir::IrResponseFormat {
             json: true,
             schema: o.get("schema").cloned(),
             name: o.get("name").and_then(|n| n.as_str()).map(String::from),
@@ -823,7 +823,7 @@ fn read_text_format(
                 .map(String::from),
         }),
         // `json_object` / any unknown type → free-form JSON (safe default).
-        Some(_) => Some(busbar_core::ir::IrResponseFormat {
+        Some(_) => Some(crate::ir::IrResponseFormat {
             json: true,
             schema: None,
             name: None,
@@ -834,11 +834,11 @@ fn read_text_format(
     }
 }
 
-/// Project the agnostic [`busbar_core::ir::IrResponseFormat`] into a Responses `text.format` object (inverse
+/// Project the agnostic [`crate::ir::IrResponseFormat`] into a Responses `text.format` object (inverse
 /// of [`read_text_format`]). The ONLY code that builds the Responses structured-output wire shape: the
 /// json_schema form is FLAT — `name`/`schema`/`strict`/`description` sit beside `type`. Returns the
 /// `format` value to place under `text.format`; the caller wraps it in `{"text":{"format":...}}`.
-fn write_text_format(rf: &busbar_core::ir::IrResponseFormat) -> serde_json::Value {
+fn write_text_format(rf: &crate::ir::IrResponseFormat) -> serde_json::Value {
     if !rf.json {
         return serde_json::json!({"type": "text"});
     }
@@ -994,8 +994,7 @@ pub struct ResponsesWriter {
     /// standalone delta frame, so a streamed `CitationsDelta` has nowhere to go at arrival time and
     /// is accumulated here until `BlockStop` builds that part. Dropping it, as the writer used to,
     /// lost every grounding source on any cross-protocol stream into Responses.
-    citation_accum:
-        std::sync::Mutex<std::collections::BTreeMap<usize, Vec<busbar_core::ir::IrCitation>>>,
+    citation_accum: std::sync::Mutex<std::collections::BTreeMap<usize, Vec<crate::ir::IrCitation>>>,
     /// Per-stream buffer of FINALIZED `output[]` items, keyed by `output_index` so the terminal
     /// event emits them in stable index order. A native /v1/responses `response.completed`/
     /// `response.incomplete` event's inner `response.output` is the fully assembled array (each
@@ -1356,7 +1355,7 @@ impl ResponsesWriter {
 
     /// Buffer streamed citations for the message item at `index` until `BlockStop` assembles the
     /// `output_text` part they annotate. Lock poisoning degrades to a no-op.
-    fn append_citations(&self, index: usize, cits: &[busbar_core::ir::IrCitation]) {
+    fn append_citations(&self, index: usize, cits: &[crate::ir::IrCitation]) {
         if cits.is_empty() {
             return;
         }
@@ -1366,7 +1365,7 @@ impl ResponsesWriter {
     }
 
     /// Remove and return the accumulated citations for the message item at `index`.
-    fn take_citation_accum(&self, index: usize) -> Vec<busbar_core::ir::IrCitation> {
+    fn take_citation_accum(&self, index: usize) -> Vec<crate::ir::IrCitation> {
         self.citation_accum
             .lock()
             .ok()

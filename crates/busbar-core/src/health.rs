@@ -273,11 +273,16 @@ pub(crate) async fn probe_lane(app: &Arc<App>, i: usize, timeout: Duration) {
         return;
     }
 
-    let body = lane.protocol.writer().probe_body(lane.wire_model());
+    // Probe body via the neutral dialect seam (the concrete writer relocated to the plugin at A4b).
+    let body = crate::proto::decl_for(lane.protocol)
+        .and_then(|d| d.dialect())
+        .map(|dc| dc.probe_body(lane.wire_model()))
+        .unwrap_or_default();
     let url_path = lane.path.clone().unwrap_or_else(|| {
-        lane.protocol
-            .writer()
-            .upstream_path_for_stream(lane.wire_model(), false)
+        crate::proto::decl_for(lane.protocol)
+            .and_then(|d| d.dialect())
+            .map(|dc| dc.upstream_path_for_stream(lane.wire_model(), false))
+            .unwrap_or_default()
     });
 
     // SigV4 signs over the URI-encoded canonical path, so the probe MUST send the wire request over
@@ -306,7 +311,7 @@ pub(crate) async fn probe_lane(app: &Arc<App>, i: usize, timeout: Duration) {
     // absence is a proxy tell), and a missing Accept differs from what a native SDK sends. The probe
     // is non-streaming, so `wants_stream = false`. Without these, a backend could fingerprint and
     // special-case busbar's health probes — defeating the indistinguishability guarantee.
-    let egress_name = lane.protocol.name();
+    let egress_name = lane.protocol;
     let res = app
         .client
         .get()
@@ -357,9 +362,14 @@ pub(crate) async fn probe_lane(app: &Arc<App>, i: usize, timeout: Duration) {
             let status = r.status();
             let retry_after_secs = crate::breaker::parse_retry_after(r.headers());
             let body = read_capped_error_body(r).await;
+            // Stage 1a asks the CELL that spoke to this upstream. For chat over HTTP that cell's
+            // `extract_error` is uniformly `protocol_error(protocol, …)` (its error vocabulary is the
+            // PROTOCOL's, shared by every operation it serves), so calling `protocol_error` directly
+            // is byte-identical to `chat(protocol).extract_error(…)` — and does not require a concrete
+            // chat codec, which core no longer carries in production (G6 A4b: `ChatOperation` and the
+            // chat IR relocated to the `busbar-llm` plugin).
             let mut raw: RawUpstreamError =
-                crate::handlers::chat(lane.protocol.name(), crate::transport::Transport::Http)
-                    .extract_error(status.as_u16(), &body);
+                crate::handlers::protocol_error(lane.protocol, status.as_u16(), &body);
             raw.retry_after_secs = retry_after_secs;
             (
                 classify(&normalize_raw_error(&raw, &lane.error_map)),

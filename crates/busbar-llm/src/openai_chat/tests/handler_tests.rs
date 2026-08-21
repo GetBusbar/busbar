@@ -16,24 +16,31 @@ fn no_cell_lookup() {
 
 #[test]
 fn moderation_request_round_trips_openai_shape() {
-    let cell = OpenAiModeration;
     let wire = json!({ "model": "omni-moderation-latest", "input": "hello" });
-    let ir = cell
-        .read_request(&serde_json::to_vec(&wire).unwrap(), "application/json")
-        .unwrap();
-    let back: Value = serde_json::from_slice(&cell.write_request(&ir)).unwrap();
+    let ir = super::super::super::leaf_codec::moderation_read_request(
+        "openai",
+        &serde_json::to_vec(&wire).unwrap(),
+        "application/json",
+    )
+    .unwrap();
+    let back: Value = serde_json::from_slice(
+        &super::super::super::leaf_codec::moderation_write_request("openai", &ir),
+    )
+    .unwrap();
     assert_eq!(back["model"], "omni-moderation-latest");
     assert_eq!(back["input"], "hello"); // single text → bare string, round-tripped
 }
 
 #[test]
 fn moderation_response_round_trips() {
-    let cell = OpenAiModeration;
     let wire = br#"{"id":"modr-1","model":"m","results":[{"flagged":true,
             "categories":{"violence":true},"category_scores":{"violence":0.9},
             "category_applied_input_types":{"violence":["text"]}}]}"#;
-    let ir = cell.read_response(wire).unwrap();
-    let back: Value = serde_json::from_slice(&cell.write_response(&ir).bytes).unwrap();
+    let ir = super::super::super::leaf_codec::moderation_read_response("openai", wire).unwrap();
+    let back: Value = serde_json::from_slice(
+        &super::super::super::leaf_codec::moderation_write_response("openai", &ir).bytes,
+    )
+    .unwrap();
     assert_eq!(back["results"][0]["flagged"], true);
     assert_eq!(back["results"][0]["categories"]["violence"], true);
     assert_eq!(back["results"][0]["category_scores"]["violence"], 0.9);
@@ -45,14 +52,14 @@ fn moderation_response_round_trips() {
 /// The OperationHandler must parse both from the wire and re-emit them in OpenAI's own transcription shape.
 #[test]
 fn transcription_usage_duration_round_trips() {
-    let cell = OpenAiTranscription;
     let wire = br#"{"text":"Hello there?","usage":{"type":"duration","seconds":1}}"#;
-    let ir = cell.read_response(wire).unwrap();
-    let IrResp::Transcription(ref r) = ir else {
-        panic!("expected transcription IR")
-    };
+    let ir = super::super::super::leaf_codec::transcription_read_response("openai", wire).unwrap();
+    let r = &ir;
     assert!(matches!(r.usage, Some(Billing::Duration { seconds }) if (seconds - 1.0).abs() < 1e-9));
-    let back: Value = serde_json::from_slice(&cell.write_response(&ir).bytes).unwrap();
+    let back: Value = serde_json::from_slice(
+        &super::super::super::leaf_codec::transcription_write_response("openai", &ir).bytes,
+    )
+    .unwrap();
     assert_eq!(back["text"], "Hello there?");
     assert_eq!(back["usage"]["type"], "duration");
     assert_eq!(back["usage"]["seconds"], 1.0);
@@ -61,8 +68,7 @@ fn transcription_usage_duration_round_trips() {
 #[test]
 fn transcription_usage_tokens_round_trips() {
     // A cross-protocol transcript whose usage arrived as tokens (e.g. Gemini) → OpenAI token shape.
-    let cell = OpenAiTranscription;
-    let ir = IrResp::Transcription(busbar_core::ir::audio::TranscriptionResp {
+    let ir = crate::ir::audio::TranscriptionResp {
         text: "hi".into(),
         usage: Some(Billing::Tokens(busbar_core::billing::TokenUsage {
             input: 11,
@@ -70,8 +76,11 @@ fn transcription_usage_tokens_round_trips() {
             ..Default::default()
         })),
         ..Default::default()
-    });
-    let back: Value = serde_json::from_slice(&cell.write_response(&ir).bytes).unwrap();
+    };
+    let back: Value = serde_json::from_slice(
+        &super::super::super::leaf_codec::transcription_write_response("openai", &ir).bytes,
+    )
+    .unwrap();
     assert_eq!(back["usage"]["type"], "tokens");
     assert_eq!(back["usage"]["input_tokens"], 11);
     assert_eq!(back["usage"]["output_tokens"], 3);
@@ -82,25 +91,23 @@ fn transcription_usage_tokens_round_trips() {
 fn embeddings_base64_encoding_format_survives_to_openai_egress() {
     // A base64 embeddings request must emit `encoding_format: "base64"` on OpenAI egress, or
     // the backend defaults to float and the caller silently gets the wrong encoding.
-    let ir =
-        busbar_core::ir::variant::IrReq::Embeddings(busbar_core::ir::embeddings::EmbeddingsReq {
-            model: "text-embedding-3-small".into(),
-            input: busbar_core::ir::embeddings::EmbInput::Text(vec!["hi".into()]),
-            encoding_formats: vec![busbar_core::ir::embeddings::EncFmt::Base64],
-            ..Default::default()
-        });
-    let out = OpenAiEmbeddings.write_request(&ir);
+    let ir = crate::ir::embeddings::EmbeddingsReq {
+        model: "text-embedding-3-small".into(),
+        input: crate::ir::embeddings::EmbInput::Text(vec!["hi".into()]),
+        encoding_formats: vec![crate::ir::embeddings::EncFmt::Base64],
+        ..Default::default()
+    };
+    let out = super::super::super::leaf_codec::embeddings_write_request("openai", &ir);
     let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
     assert_eq!(v["encoding_format"], "base64");
     // A plain (float) request must NOT gain a spurious encoding_format key.
-    let ir2 =
-        busbar_core::ir::variant::IrReq::Embeddings(busbar_core::ir::embeddings::EmbeddingsReq {
-            model: "m".into(),
-            input: busbar_core::ir::embeddings::EmbInput::Text(vec!["hi".into()]),
-            encoding_formats: vec![busbar_core::ir::embeddings::EncFmt::Float],
-            ..Default::default()
-        });
-    let out2 = OpenAiEmbeddings.write_request(&ir2);
+    let ir2 = crate::ir::embeddings::EmbeddingsReq {
+        model: "m".into(),
+        input: crate::ir::embeddings::EmbInput::Text(vec!["hi".into()]),
+        encoding_formats: vec![crate::ir::embeddings::EncFmt::Float],
+        ..Default::default()
+    };
+    let out2 = super::super::super::leaf_codec::embeddings_write_request("openai", &ir2);
     let v2: serde_json::Value = serde_json::from_slice(&out2).unwrap();
     assert!(v2.get("encoding_format").is_none());
 }
@@ -110,14 +117,15 @@ fn embeddings_write_request_warns_on_dropped_non_text_input() {
     use busbar_core::test_support::warn_capture::WarnCapture;
     use tracing_subscriber::layer::SubscriberExt as _;
 
-    let ir =
-        busbar_core::ir::variant::IrReq::Embeddings(busbar_core::ir::embeddings::EmbeddingsReq {
-            input: busbar_core::ir::embeddings::EmbInput::Tokens(vec![vec![1, 2, 3]]),
-            ..Default::default()
-        });
+    let ir = crate::ir::embeddings::EmbeddingsReq {
+        input: crate::ir::embeddings::EmbInput::Tokens(vec![vec![1, 2, 3]]),
+        ..Default::default()
+    };
     let cap = WarnCapture::default();
     let subscriber = tracing_subscriber::registry().with(cap.clone());
-    let out = tracing::subscriber::with_default(subscriber, || OpenAiEmbeddings.write_request(&ir));
+    let out = tracing::subscriber::with_default(subscriber, || {
+        super::super::super::leaf_codec::embeddings_write_request("openai", &ir)
+    });
 
     let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
     assert_eq!(v["input"], serde_json::json!([]));
@@ -135,17 +143,16 @@ fn egress_multipart_sanitizes_mime_from_any_ingress() {
     // parser) must not inject headers into the egress multipart. Build the transcription IR
     // directly with a CR/LF mime (as a gemini inline_data reader could) and assert the egress
     // bytes carry no injected header.
-    let ir =
-        busbar_core::ir::variant::IrReq::Transcription(busbar_core::ir::audio::TranscriptionReq {
-            model: "whisper-1".into(),
-            audio: Some(busbar_core::media::MediaBlob {
-                payload: busbar_core::media::MediaPayload::Bytes(bytes::Bytes::from_static(b"x")),
-                mime_type: "audio/mp3\r\nX-Injected: evil".into(),
-                pcm: None,
-            }),
-            ..Default::default()
-        });
-    let out = OpenAiTranscription.write_request(&ir);
+    let ir = crate::ir::audio::TranscriptionReq {
+        model: "whisper-1".into(),
+        audio: Some(busbar_core::media::MediaBlob {
+            payload: busbar_core::media::MediaPayload::Bytes(bytes::Bytes::from_static(b"x")),
+            mime_type: "audio/mp3\r\nX-Injected: evil".into(),
+            pcm: None,
+        }),
+        ..Default::default()
+    };
+    let out = super::super::super::leaf_codec::transcription_write_request("openai", &ir);
     let text = String::from_utf8_lossy(&out);
     assert!(
         !text.contains("X-Injected"),
@@ -188,14 +195,12 @@ fn total_tokens_saturate_on_upstream_overflow() {
         ..Default::default()
     };
     // openai transcription write path
-    let ir = busbar_core::ir::variant::IrResp::Transcription(
-        busbar_core::ir::audio::TranscriptionResp {
-            text: "x".into(),
-            usage: Some(Billing::Tokens(huge.clone())),
-            ..Default::default()
-        },
-    );
-    let out = OpenAiTranscription.write_response(&ir);
+    let ir = crate::ir::audio::TranscriptionResp {
+        text: "x".into(),
+        usage: Some(Billing::Tokens(huge.clone())),
+        ..Default::default()
+    };
+    let out = super::super::super::leaf_codec::transcription_write_response("openai", &ir);
     let v: serde_json::Value = serde_json::from_slice(&out.bytes).unwrap();
     assert_eq!(v["usage"]["total_tokens"], u64::MAX); // saturated, not panicked/wrapped
 }
@@ -217,12 +222,13 @@ fn multipart_boundary_ignores_trailing_content_type_params() {
     // parser must key on `abc`, not `abc; charset=utf-8` (which matches no real delimiter and
     // used to drop every part, 400-ing a well-formed request).
     let body = multipart_body("abc");
-    let ir = OpenAiTranscription
-        .read_request(&body, "multipart/form-data; boundary=abc; charset=utf-8")
-        .expect("well-formed body must parse despite trailing CT params");
-    let IrReq::Transcription(r) = ir else {
-        panic!("expected transcription IR")
-    };
+    let ir = super::super::super::leaf_codec::transcription_read_request(
+        "openai",
+        &body,
+        "multipart/form-data; boundary=abc; charset=utf-8",
+    )
+    .expect("well-formed body must parse despite trailing CT params");
+    let r = ir;
     assert_eq!(r.model, "whisper-1");
     assert!(r.audio.is_some());
 }
@@ -232,9 +238,12 @@ fn multipart_empty_boundary_is_rejected_not_amplified() {
     // An empty boundary yields delim `--`, whose 2-byte scan could push ~body/2 offsets into a
     // Vec (heap amplification). It must short-circuit to a clean BadRequest, never scan.
     let body = vec![b'-'; 4096];
-    let err = OpenAiTranscription
-        .read_request(&body, "multipart/form-data; boundary=")
-        .unwrap_err();
+    let err = super::super::super::leaf_codec::transcription_read_request(
+        "openai",
+        &body,
+        "multipart/form-data; boundary=",
+    )
+    .unwrap_err();
     assert!(matches!(err, IngressReject::BadRequest(_)));
 }
 
@@ -242,7 +251,7 @@ fn multipart_empty_boundary_is_rejected_not_amplified() {
 fn transcription_egress_carries_language_prompt_and_format() {
     // A cross-protocol transcription (e.g. Gemini ingress -> OpenAI egress) must not silently
     // drop the caller's language hint, prompt, or response_format on the multipart body.
-    let ir = IrReq::Transcription(busbar_core::ir::audio::TranscriptionReq {
+    let ir = crate::ir::audio::TranscriptionReq {
         model: "whisper-1".into(),
         source_language: Some("fr".into()),
         prompt: Some("Glossary: API, SDK".into()),
@@ -253,8 +262,8 @@ fn transcription_egress_carries_language_prompt_and_format() {
             pcm: None,
         }),
         ..Default::default()
-    });
-    let out = OpenAiTranscription.write_request(&ir);
+    };
+    let out = super::super::super::leaf_codec::transcription_write_request("openai", &ir);
     let text = String::from_utf8_lossy(&out);
     assert!(
         text.contains("name=\"language\"\r\n\r\nfr\r\n"),
@@ -274,7 +283,7 @@ fn transcription_egress_carries_language_prompt_and_format() {
 fn transcription_egress_field_strips_crlf_injection() {
     // A CR/LF in any text field (here the operator-supplied model) must not terminate the part
     // and inject new MIME parts into the egress request.
-    let ir = IrReq::Transcription(busbar_core::ir::audio::TranscriptionReq {
+    let ir = crate::ir::audio::TranscriptionReq {
         model: "whisper-1\r\nContent-Disposition: form-data; name=\"evil\"\r\n\r\npwn".into(),
         audio: Some(MediaBlob {
             payload: MediaPayload::Bytes(Bytes::from_static(b"x")),
@@ -282,8 +291,8 @@ fn transcription_egress_field_strips_crlf_injection() {
             pcm: None,
         }),
         ..Default::default()
-    });
-    let out = OpenAiTranscription.write_request(&ir);
+    };
+    let out = super::super::super::leaf_codec::transcription_write_request("openai", &ir);
     let text = String::from_utf8_lossy(&out);
     // The CR/LF is stripped, so the injection text collapses INLINE into the model value line
     // and can no longer start a MIME header line — the danger is a `\r\n`-prefixed injected part,
@@ -313,36 +322,42 @@ fn embeddings_taps_usage_and_extract_usage_reads_prompt_tokens() {
 fn embeddings_integer_input_is_rejected_not_silently_emptied() {
     // Pre-tokenized integer input does not translate cross-protocol; it must 400 loudly rather
     // than filter_map to an empty batch that confuses the backend.
-    let err = OpenAiEmbeddings
-        .read_request(
-            br#"{"model":"text-embedding-3-small","input":[1,2,3]}"#,
-            "application/json",
-        )
-        .unwrap_err();
+    let err = super::super::super::leaf_codec::embeddings_read_request(
+        "openai",
+        br#"{"model":"text-embedding-3-small","input":[1,2,3]}"#,
+        "application/json",
+    )
+    .unwrap_err();
     assert!(matches!(err, IngressReject::BadRequest(_)));
     // An empty array is likewise rejected.
-    assert!(OpenAiEmbeddings
-        .read_request(br#"{"model":"m","input":[]}"#, "application/json")
-        .is_err());
+    assert!(super::super::super::leaf_codec::embeddings_read_request(
+        "openai",
+        br#"{"model":"m","input":[]}"#,
+        "application/json"
+    )
+    .is_err());
     // A normal string-array batch still parses.
-    assert!(OpenAiEmbeddings
-        .read_request(br#"{"model":"m","input":["a","b"]}"#, "application/json")
-        .is_ok());
+    assert!(super::super::super::leaf_codec::embeddings_read_request(
+        "openai",
+        br#"{"model":"m","input":["a","b"]}"#,
+        "application/json"
+    )
+    .is_ok());
 }
 
 #[test]
 fn speech_write_request_carries_instructions_and_speed() {
     // gpt-4o-mini-tts style `instructions` and playback `speed` must survive to OpenAI egress;
     // dropping them made the synthesized audio ignore the request on a cross-protocol hop.
-    let ir = IrReq::Speech(busbar_core::ir::audio::SpeechReq {
+    let ir = crate::ir::audio::SpeechReq {
         input: "hello world".into(),
         model: "gpt-4o-mini-tts".into(),
         voice: "alloy".into(),
         instructions: Some("speak cheerfully".into()),
         speed: Some(1.25),
         ..Default::default()
-    });
-    let out = OpenAiSpeech.write_request(&ir);
+    };
+    let out = super::super::super::leaf_codec::speech_write_request("openai", &ir);
     let v: Value = serde_json::from_slice(&out).unwrap();
     assert_eq!(v["instructions"], "speak cheerfully");
     assert_eq!(v["speed"], 1.25);
@@ -352,14 +367,12 @@ fn speech_write_request_carries_instructions_and_speed() {
 fn speech_read_write_roundtrip_preserves_speed() {
     // A wire body carrying `speed` must read into the IR and re-emit on egress (not be dropped).
     let body = br#"{"model":"tts-1","input":"hi","voice":"alloy","speed":0.75}"#;
-    let ir = OpenAiSpeech
-        .read_request(body, "application/json")
-        .expect("valid speech body");
-    let IrReq::Speech(ref r) = ir else {
-        panic!("expected speech IR");
-    };
+    let ir =
+        super::super::super::leaf_codec::speech_read_request("openai", body, "application/json")
+            .expect("valid speech body");
+    let r = &ir;
     assert_eq!(r.speed, Some(0.75));
-    let out = OpenAiSpeech.write_request(&ir);
+    let out = super::super::super::leaf_codec::speech_write_request("openai", &ir);
     let v: Value = serde_json::from_slice(&out).unwrap();
     assert_eq!(v["speed"], 0.75);
 }
@@ -368,7 +381,7 @@ fn speech_read_write_roundtrip_preserves_speed() {
 fn image_write_request_carries_quality_style_response_format_user_and_auto_size() {
     // The generation controls the reader captures must survive to egress; dropping them silently
     // downgraded the request (e.g. a `b64_json` ask fell back to URL, `hd` to standard).
-    let ir = IrReq::Image(busbar_core::ir::image::ImageReq {
+    let ir = crate::ir::image::ImageReq {
         op: ImageOp::Generate,
         model: "gpt-image-1".into(),
         prompt: Some("a fox".into()),
@@ -378,8 +391,8 @@ fn image_write_request_carries_quality_style_response_format_user_and_auto_size(
         size: Some(ImageSize::Auto),
         user: Some("user-42".into()),
         ..Default::default()
-    });
-    let out = OpenAiImage.write_request(&ir);
+    };
+    let out = super::super::super::leaf_codec::image_write_request("openai", &ir);
     let v: Value = serde_json::from_slice(&out).unwrap();
     assert_eq!(v["quality"], "hd");
     assert_eq!(v["style"], "vivid");
@@ -394,15 +407,15 @@ fn speech_write_response_decodes_b64_payload_to_raw_bytes() {
     // (routed through decode_ir_b64), not emitted as the base64 string.
     let raw = b"\xff\xfb\x90\x00some-audio";
     let b64 = busbar_core::media::base64_encode(raw);
-    let ir = IrResp::Speech(busbar_core::ir::audio::SpeechResp {
+    let ir = crate::ir::audio::SpeechResp {
         audio: Some(MediaBlob {
             payload: MediaPayload::B64(b64),
             mime_type: "audio/mpeg".into(),
             pcm: None,
         }),
         ..Default::default()
-    });
-    let out = OpenAiSpeech.write_response(&ir);
+    };
+    let out = super::super::super::leaf_codec::speech_write_response("openai", &ir);
     assert_eq!(out.bytes.as_ref(), raw);
 }
 
@@ -430,12 +443,10 @@ fn parse_multipart_caps_at_64_parts() {
 #[test]
 fn image_read_request_parses_size_quality_and_response_format() {
     let body = br#"{"model":"dall-e-3","prompt":"a cat","size":"1024x1024","quality":"hd","response_format":"b64_json"}"#;
-    let ir = OpenAiImage
-        .read_request(body, "application/json")
-        .expect("valid image body");
-    let IrReq::Image(r) = ir else {
-        panic!("expected image IR")
-    };
+    let ir =
+        super::super::super::leaf_codec::image_read_request("openai", body, "application/json")
+            .expect("valid image body");
+    let r = ir;
     assert_eq!(
         r.size,
         Some(ImageSize::Wh {
@@ -451,12 +462,10 @@ fn image_read_request_parses_size_quality_and_response_format() {
 #[test]
 fn image_read_request_parses_auto_size() {
     let body = br#"{"model":"gpt-image-1","prompt":"a cat","size":"auto"}"#;
-    let ir = OpenAiImage
-        .read_request(body, "application/json")
-        .expect("valid image body");
-    let IrReq::Image(r) = ir else {
-        panic!("expected image IR")
-    };
+    let ir =
+        super::super::super::leaf_codec::image_read_request("openai", body, "application/json")
+            .expect("valid image body");
+    let r = ir;
     assert_eq!(r.size, Some(ImageSize::Auto));
 }
 
@@ -468,9 +477,9 @@ fn openai_images_edit_request_is_rejected_as_unsupported_sub_op() {
     // egress writer emits anything but generations, so this must be the second 404, not a
     // silent fall-through to Generate.
     let body = br#"{"model":"dall-e-2","image":"data:image/png;base64,AA==","mask":"data:image/png;base64,BB==","prompt":"add a hat"}"#;
-    let err = OpenAiImage
-        .read_request(body, "multipart/form-data")
-        .expect_err("an edit body must be rejected, not silently treated as a generation");
+    let err =
+        super::super::super::leaf_codec::image_read_request("openai", body, "multipart/form-data")
+            .expect_err("an edit body must be rejected, not silently treated as a generation");
     assert_eq!(
         err,
         IngressReject::UnsupportedSubOp {
@@ -483,12 +492,9 @@ fn openai_images_edit_request_is_rejected_as_unsupported_sub_op() {
 #[test]
 fn image_read_response_reads_b64_and_revised_prompt() {
     let body = br#"{"data":[{"b64_json":"AAA","revised_prompt":"a big cat"}]}"#;
-    let ir = OpenAiImage
-        .read_response(body)
+    let ir = super::super::super::leaf_codec::image_read_response("openai", body)
         .expect("valid image response");
-    let IrResp::Image(r) = ir else {
-        panic!("expected image IR")
-    };
+    let r = ir;
     assert_eq!(r.images.len(), 1);
     assert_eq!(r.images[0].b64.as_deref(), Some("AAA"));
     assert_eq!(r.images[0].revised_prompt.as_deref(), Some("a big cat"));
@@ -500,12 +506,13 @@ fn multipart_single_char_boundary_parses_correctly() {
     // (`boundary=a`): both the `model` and `file` parts must be extracted, proving the rewrite
     // didn't break short boundaries (the case that previously drove the heap-amplification Vec).
     let body = multipart_body("a");
-    let ir = OpenAiTranscription
-        .read_request(&body, "multipart/form-data; boundary=a")
-        .expect("well-formed body with 1-char boundary must parse");
-    let IrReq::Transcription(r) = ir else {
-        panic!("expected transcription IR")
-    };
+    let ir = super::super::super::leaf_codec::transcription_read_request(
+        "openai",
+        &body,
+        "multipart/form-data; boundary=a",
+    )
+    .expect("well-formed body with 1-char boundary must parse");
+    let r = ir;
     assert_eq!(r.model, "whisper-1");
     assert!(r.audio.is_some());
 }

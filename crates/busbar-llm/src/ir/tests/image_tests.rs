@@ -62,8 +62,8 @@ fn variation_op_needs_no_prompt() {
 
 // ── IrFacts projection + the new-String-field forcing function (MAJOR-6) ─────────────────────────
 
-use crate::ir::facts::{ContentItem, IrFacts, OPAQUE_CONTENT_MARKER};
-use crate::operation::Operation;
+use busbar_core::ir::facts::{ContentItem, IrFacts, OPAQUE_CONTENT_MARKER};
+use busbar_core::operation::Operation;
 
 fn screened(items: &[ContentItem<'_>]) -> Vec<String> {
     items

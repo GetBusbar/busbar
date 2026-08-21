@@ -42,8 +42,8 @@ fn request_holds_mixed_text_and_image_inputs() {
 
 // ── IrFacts projection (close-non-chat-gate-blindness) ───────────────────────────────────────────
 
-use crate::ir::facts::{ContentItem, IrFacts, OPAQUE_CONTENT_MARKER};
-use crate::operation::Operation;
+use busbar_core::ir::facts::{ContentItem, IrFacts, OPAQUE_CONTENT_MARKER};
+use busbar_core::operation::Operation;
 
 #[test]
 fn moderation_projects_text_and_marks_image_url_opaque() {

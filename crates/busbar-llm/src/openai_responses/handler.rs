@@ -14,8 +14,8 @@ const PATH_RESPONSES: &str = "/v1/responses";
 pub struct ResponsesRequestHandler;
 /// This protocol's OWN chat instance — delete this line (and the registry arm) and this
 /// protocol's chat 404s via the standard no-handler path; everything else keeps working.
-static CHAT: busbar_core::handlers::chat::ChatOperation =
-    busbar_core::handlers::chat::ChatOperation("responses");
+static CHAT: super::super::chat_handle::ChatOperation =
+    super::super::chat_handle::ChatOperation("responses");
 
 /// THE RESPONSES API'S ROW OF THE SUPPORT MATRIX — one verb; every other verb is the standard
 /// no-handler 404.

@@ -36,7 +36,7 @@
 //!     CHANGELOG entries that shipped, checked rather than claimed. A row that did NOT change is a
 //!     cutover that did not do what it said.
 //!
-//! The corpus is protocol-blind — `registry.get(f.proto)`, no protocol name anywhere in the walk —
+//! The corpus is protocol-blind — `crate::proto::protocol_for(f.proto)`, no protocol name anywhere in the walk —
 //! so a seventh protocol joins by appearing in `KNOWN_PROTOCOLS` and getting fixtures. If it ever
 //! needs an arm here, the standard is not held.
 //!
@@ -47,7 +47,7 @@
 use super::*;
 use crate::ir::facts::IrFacts;
 use crate::ir::IrRequest;
-use crate::proto::{known_protocols, ProtocolRegistry};
+use crate::proto::known_protocols;
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 // THE NORMALIZED VIEW — the canonical form both implementations reduce to.
@@ -80,9 +80,7 @@ struct Fixture {
 /// projection screened happily, and turning that asymmetry into a 400 is one of the shipped
 /// behaviour changes rather than an accident of this test.
 fn ir_view(f: &Fixture) -> Result<View, String> {
-    let registry = ProtocolRegistry::with_builtins();
-    let proto = registry
-        .get(f.proto)
+    let proto = crate::proto::protocol_for(f.proto)
         .unwrap_or_else(|| panic!("no protocol registered for '{}'", f.proto));
     let ir = proto
         .reader()
@@ -105,7 +103,7 @@ fn ir_view(f: &Fixture) -> Result<View, String> {
 fn project_ir(ir: &IrRequest) -> View {
     let mut system_pieces: Vec<String> = Vec::new();
     let mut turns: Vec<(String, Vec<String>)> = Vec::new();
-    for item in crate::ir::facts::project(ir) {
+    for item in crate::ir::project(ir) {
         let piece = item.screenable_text().into_owned();
         match item.slot().turn_index() {
             None => system_pieces.push(piece),
@@ -632,7 +630,7 @@ fn every_opaque_shape_projects_the_marker_and_never_the_bytes() {
 /// `proto/`, its handler and its codec, the standard is not held"*. This file is one of the places
 /// that would break first, so it asserts the weaker half it CAN assert today: every registered
 /// protocol has fixtures in the corpus, and the walk needs no per-protocol code — it contains no
-/// protocol name at all, only `registry.get(f.proto)`.
+/// protocol name at all, only `crate::proto::protocol_for(f.proto)`.
 ///
 /// A seventh protocol therefore joins by appearing in `KNOWN_PROTOCOLS` and getting fixtures. If it
 /// ever needs an arm in the walk, the standard is not held and this test's neighbours are the place

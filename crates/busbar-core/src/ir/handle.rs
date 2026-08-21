@@ -25,79 +25,122 @@
 //! `ir::invoke`/`ir::subscribe` handle will implement this trait through the defaults alone, and only
 //! chat (in `busbar-llm`) overrides `prepare_for_egress`/`prepare_for_ingress`/`billing`.
 
-#[allow(dead_code)] // A4b scaffolding: unreferenced until the enum dissolves onto it.
 pub mod handle_impl {
     use super::sealed;
-    use crate::billing::Billing;
+    use crate::billing::{Billing, TokenUsage};
+    use crate::handlers::{EgressWire, TranslatedResponse};
+    use crate::ir::egress_prep::EgressPrep;
     use crate::ir::facts::IrFacts;
     use crate::operation::Operation;
+    use bytes::Bytes;
 
-    /// The type-erased request/response an `OperationHandler` yields, once the `IrReq`/`IrResp` hub
-    /// enums dissolve (A4b). Every method names a neutral, core-retained type; the concrete chat IR
-    /// lives behind the implementor in `busbar-llm`. Soft-sealed via the `#[doc(hidden)]`
-    /// [`sealed::Sealed`] supertrait (owner ruling 2026-08-20 — pre-step 2): `pub` so the busbar-llm
-    /// dialect handlers can implement it, but an implementor must also name `Sealed`, which is hidden
-    /// from the docs and only referenced by the first-party dialect crates, so the implementor set
-    /// stays closed by convention (in-workspace this is equivalent to the hard seal — nothing outside
-    /// the workspace names `Sealed`). No `Box<dyn Any>` downcast anywhere.
+    /// The type-erased request/response an `OperationHandler` yields, now that the `IrReq`/`IrResp`
+    /// hub enums have dissolved (G6 A4b). Every method names a neutral, core-retained type; the
+    /// concrete chat IR lives behind the implementor in `busbar-llm` (chat + the six leaf ops) or in
+    /// core (`ir::invoke`/`ir::subscribe`, via defaults). Soft-sealed via the `#[doc(hidden)]`
+    /// [`sealed::Sealed`] supertrait — no `Box<dyn Any>` downcast anywhere.
+    ///
+    /// A handle instance is EITHER a request or a response; the request-side methods
+    /// (`facts`/`prepare_for_egress`/`write_egress_request`/…) and the response-side methods
+    /// (`billing`/`prepare_for_ingress`/`write_ingress_response`/…) both live on the one trait per the
+    /// owner ruling, each side defaulting the other. The cross-protocol WRITE is keyed by the peer
+    /// PROTOCOL STRING (not the peer `OperationHandler`): the handle writes ITSELF onto the target
+    /// dialect (chat via `proto::protocol_for(proto).writer()`, leaf ops via `leaf_codec`), so no
+    /// downcast is needed.
     pub trait IrHandle: sealed::Sealed + Send {
-        /// The semantic operation this handle carries — the same closed vocabulary the registry
-        /// declares and the metric labels use. Replaces the enum discriminant `match` that answered
-        /// the operation today.
+        /// The semantic operation this handle carries — the closed registry vocabulary / metric label.
         fn verb(&self) -> Operation;
 
-        /// Did the caller ask to stream?
-        fn wants_stream(&self) -> bool;
+        /// Did the caller ask to stream? (request-side; response handles keep the `false` default.)
+        fn wants_stream(&self) -> bool {
+            false
+        }
 
-        /// The neutral projection the shared pipeline (hooks, governance, taps) is allowed to read —
-        /// the ONLY window onto the request's content, never the concrete IR.
-        fn facts(&self) -> Box<dyn IrFacts>;
+        /// The neutral projection the shared pipeline (hooks/governance/taps) reads (request-side).
+        /// Response handles never have this called; the default is an empty projection over `verb()`.
+        fn facts(&self) -> Box<dyn IrFacts + Send + Sync> {
+            Box::new(crate::ir::facts::NeutralFacts(self.verb()))
+        }
 
-        /// The billable item this handle produces, or `None` when billing is deferred to a later
-        /// seam. Default `None`; chat/embeddings/… override. The neutral `Invoke`/`Subscribe` arms
-        /// are `Some(Billing::Flat)` in their own impls.
+        // ─────────────────────────── request-side (cross-protocol egress) ───────────────────────────
+
+        /// CROSS-PROTOCOL egress preparation — reshape this request for the target dialect. Default
+        /// no-op (the `Invoke`/`Subscribe`/leaf arms carry nothing to reshape); chat overrides.
+        fn prepare_for_egress(&mut self, _prep: &EgressPrep) {}
+
+        /// Stamp the resolved wire model onto this request. Default no-op (URL-model ops carry none).
+        fn set_model(&mut self, _model: &str) {}
+
+        /// Fail-closed guard: `Err(reason)` rejects a request the `egress_proto` dialect cannot
+        /// represent without silent loss (4xx). Default `Ok(())`.
+        fn egress_representable(&self, _egress_proto: &str) -> Result<(), String> {
+            Ok(())
+        }
+
+        /// The caller controls the `egress_proto` dialect will DROP for this request (audit-and-allow).
+        fn egress_dropped_controls(&self, _egress_proto: &str) -> Vec<&'static str> {
+            Vec::new()
+        }
+
+        /// JSON egress path: value-first (a JSON body the router post-shapes) else `set_model` + final
+        /// bytes, written onto the `egress_proto` dialect. Default: empty bytes (non-request handles).
+        fn write_egress_request(&mut self, _egress_proto: &str, _model: &str) -> EgressWire {
+            EgressWire::Bytes(Bytes::new())
+        }
+
+        /// OPAQUE egress path (multipart/audio): `set_model` + the `egress_proto` dialect's final bytes.
+        fn write_egress_request_bytes(&mut self, _egress_proto: &str, _model: &str) -> Bytes {
+            Bytes::new()
+        }
+
+        // ─────────────────────────── response-side ───────────────────────────
+
+        /// The billable item this response produces. Default `None`; chat/leaf override; the neutral
+        /// `Invoke`/`Subscribe` arms are `Some(Billing::Flat)`.
         fn billing(&self) -> Option<Billing> {
             None
         }
 
-        /// CROSS-PROTOCOL egress preparation — reshape this handle's request for the target dialect.
-        /// DEFAULT no-op: reproduces the `Invoke`/`Subscribe` arms, which carry nothing to reshape;
-        /// chat overrides in `busbar-llm`.
-        ///
-        /// The resolved-primitives param bag (`ir::variant::EgressPrep` today) is threaded in as the
-        /// argument at **A4b**, when the dissolve wires this method into the driver — deliberately NOT
-        /// named here in A4a, because `EgressPrep` is a `g6-freeze-witness` TYPES entry and naming it
-        /// from this unreferenced skeleton would bump the freeze count above its A4a baseline (which
-        /// must not move). The skeleton names only neutral types the witness does NOT count.
-        fn prepare_for_egress(&mut self) {}
+        /// The token usage if this response is token-metered (the `Billing::Tokens` unwrap). Default
+        /// `None`.
+        fn token_usage(&self) -> Option<TokenUsage> {
+            match self.billing() {
+                Some(Billing::Tokens(t)) => Some(t),
+                _ => None,
+            }
+        }
 
-        /// CROSS-PROTOCOL ingress preparation — reshape this handle's response for delivery in the
-        /// caller's dialect. DEFAULT no-op (the neutral arms carry no cross-protocol identity to
-        /// reshape); chat overrides.
+        /// CROSS-PROTOCOL ingress preparation — reshape this response for delivery in the caller's
+        /// `ingress_protocol`. Default no-op; chat overrides.
         fn prepare_for_ingress(&mut self, _ingress_protocol: &str, _now_epoch: u64) {}
 
-        /// Re-emit a buffered response as this dialect's native STREAM bytes when the client asked to
-        /// stream but the upstream answered buffered (the Bedrock ConverseStream case). `None` when a
-        /// plain buffered body is correct (every SSE-framed dialect). Default `None`.
-        fn wrap_buffered_as_stream(&self, _elapsed_ms: Option<u64>) -> Option<Vec<u8>> {
+        /// Re-emit a buffered response as the `ingress_protocol` dialect's native STREAM bytes (the
+        /// Bedrock ConverseStream case). `None` when a plain buffered body is correct. Default `None`.
+        fn wrap_buffered_as_stream(
+            &self,
+            _ingress_protocol: &str,
+            _elapsed_ms: Option<u64>,
+        ) -> Option<Vec<u8>> {
             None
         }
 
-        /// Stamp the resolved wire model onto this handle's request. Default no-op (an operation whose
-        /// wire carries the model in the URL, not the body, has nothing to stamp).
-        fn set_model(&mut self, _model: &str) {}
-
-        /// Fail-closed guard for a cross-protocol request whose neutral content cannot be written onto
-        /// the egress dialect without silent data loss — `Err(reason)` rejects up front (4xx). Default
-        /// `Ok(())`.
-        fn egress_representable(&self) -> Result<(), String> {
-            Ok(())
+        /// JSON ingress path: write this response onto the `ingress_protocol` dialect
+        /// (`ingress_serves_op` = does that protocol serve this op). Default `Untranslatable`.
+        fn write_ingress_response(
+            &self,
+            _ingress_protocol: &str,
+            _ingress_serves_op: bool,
+        ) -> TranslatedResponse {
+            TranslatedResponse::Untranslatable
         }
 
-        /// The caller controls this handle will DROP on cross-protocol egress because the target
-        /// dialect has no native representation (audit-and-allow). Default: none.
-        fn egress_dropped_controls(&self) -> Vec<&'static str> {
-            Vec::new()
+        /// OPAQUE ingress path (audio / the opaque bridge). Default `Untranslatable`.
+        fn write_ingress_response_bytes(
+            &self,
+            _ingress_protocol: &str,
+            _ingress_serves_op: bool,
+        ) -> TranslatedResponse {
+            TranslatedResponse::Untranslatable
         }
     }
 }

@@ -1,5 +1,5 @@
 use super::*;
-use busbar_core::ir::{IrBlockMeta, IrDelta, IrStreamEvent, StreamDecodeState};
+use crate::ir::{IrBlockMeta, IrDelta, IrStreamEvent, StreamDecodeState};
 
 fn collect_stream(chunks: &[serde_json::Value]) -> Vec<IrStreamEvent> {
     let reader = GeminiReader;
@@ -584,7 +584,7 @@ fn test_writer_text_blockstart_is_none() {
 #[test]
 fn test_write_request_image_s3_dropped_not_corrupted() {
     let writer = GeminiWriter;
-    let req = busbar_core::ir::IrRequest {
+    let req = crate::ir::IrRequest {
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -592,16 +592,16 @@ fn test_write_request_image_s3_dropped_not_corrupted() {
         user: None,
         parallel_tool_calls: None,
         system: vec![],
-        messages: vec![busbar_core::ir::IrMessage {
-            role: busbar_core::ir::IrRole::User,
+        messages: vec![crate::ir::IrMessage {
+            role: crate::ir::IrRole::User,
             content: vec![
-                busbar_core::ir::IrBlock::Text {
+                crate::ir::IrBlock::Text {
                     text: "describe this".to_string(),
                     cache_control: None,
                     citations: Vec::new(),
                 },
-                busbar_core::ir::IrBlock::Image {
-                    source: busbar_core::ir::IrImageSource::Vendor {
+                crate::ir::IrBlock::Image {
+                    source: crate::ir::IrImageSource::Vendor {
                         vendor: "bedrock",
                         value: serde_json::json!({ "format": "png", "s3Location": { "uri": "s3://bucket/key.png" } }),
                     },
@@ -1387,24 +1387,24 @@ fn test_response_identity_roundtrip_preserves_id_and_model() {
 /// native `OTHER` member, on both the whole-body and streamed paths.
 #[test]
 fn foreign_stop_reason_maps_to_other_not_verbatim() {
-    use busbar_core::ir::IrStopReason as S;
+    use crate::ir::IrStopReason as S;
     let writer = GeminiWriter;
     for foreign in [S::Refusal, S::Error, S::Other] {
-        let ir = busbar_core::ir::IrResponse {
+        let ir = crate::ir::IrResponse {
             logprobs: Vec::new(),
-            role: busbar_core::ir::IrRole::Assistant,
-            content: vec![busbar_core::ir::IrBlock::Text {
+            role: crate::ir::IrRole::Assistant,
+            content: vec![crate::ir::IrBlock::Text {
                 text: "x".to_string(),
                 cache_control: None,
                 citations: Vec::new(),
             }],
             stop_reason: Some(foreign),
-            usage: busbar_core::ir::IrUsage {
+            usage: crate::ir::IrUsage {
                 input_tokens: 1,
                 output_tokens: 1,
                 cache_creation_input_tokens: None,
                 cache_read_input_tokens: None,
-                detail: busbar_core::ir::IrUsageDetail::default(),
+                detail: crate::ir::IrUsageDetail::default(),
             },
             model: None,
             id: None,
@@ -1421,12 +1421,12 @@ fn foreign_stop_reason_maps_to_other_not_verbatim() {
         let ev = IrStreamEvent::MessageDelta {
             stop_reason: Some(foreign),
             stop_sequence: None,
-            usage: busbar_core::ir::IrUsage {
+            usage: crate::ir::IrUsage {
                 input_tokens: 1,
                 output_tokens: 1,
                 cache_creation_input_tokens: None,
                 cache_read_input_tokens: None,
-                detail: busbar_core::ir::IrUsageDetail::default(),
+                detail: crate::ir::IrUsageDetail::default(),
             },
         };
         let (_, frame) = writer
@@ -1447,21 +1447,21 @@ fn foreign_stop_reason_maps_to_other_not_verbatim() {
 #[test]
 fn test_response_identity_cross_protocol_emits_foreign_id() {
     let writer = GeminiWriter;
-    let ir = busbar_core::ir::IrResponse {
+    let ir = crate::ir::IrResponse {
         logprobs: Vec::new(),
-        role: busbar_core::ir::IrRole::Assistant,
-        content: vec![busbar_core::ir::IrBlock::Text {
+        role: crate::ir::IrRole::Assistant,
+        content: vec![crate::ir::IrBlock::Text {
             text: "hello".to_string(),
             cache_control: None,
             citations: Vec::new(),
         }],
-        stop_reason: Some(busbar_core::ir::IrStopReason::EndTurn),
-        usage: busbar_core::ir::IrUsage {
+        stop_reason: Some(crate::ir::IrStopReason::EndTurn),
+        usage: crate::ir::IrUsage {
             input_tokens: 1,
             output_tokens: 1,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
-            detail: busbar_core::ir::IrUsageDetail::default(),
+            detail: crate::ir::IrUsageDetail::default(),
         },
         model: None,
         id: Some("chatcmpl-abc123".to_string()),
@@ -1484,21 +1484,21 @@ fn test_response_identity_cross_protocol_emits_foreign_id() {
 #[test]
 fn test_response_identity_none_id_is_omitted_not_fabricated() {
     let writer = GeminiWriter;
-    let ir = busbar_core::ir::IrResponse {
+    let ir = crate::ir::IrResponse {
         logprobs: Vec::new(),
-        role: busbar_core::ir::IrRole::Assistant,
-        content: vec![busbar_core::ir::IrBlock::Text {
+        role: crate::ir::IrRole::Assistant,
+        content: vec![crate::ir::IrBlock::Text {
             text: "hi".to_string(),
             cache_control: None,
             citations: Vec::new(),
         }],
-        stop_reason: Some(busbar_core::ir::IrStopReason::EndTurn),
-        usage: busbar_core::ir::IrUsage {
+        stop_reason: Some(crate::ir::IrStopReason::EndTurn),
+        usage: crate::ir::IrUsage {
             input_tokens: 1,
             output_tokens: 1,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
-            detail: busbar_core::ir::IrUsageDetail::default(),
+            detail: crate::ir::IrUsageDetail::default(),
         },
         model: None,
         id: None,
@@ -1538,7 +1538,7 @@ fn test_stream_message_start_captures_and_emits_identity() {
     let writer = GeminiWriter;
     let frame = writer
         .write_response_event(&IrStreamEvent::MessageStart {
-            role: busbar_core::ir::IrRole::Assistant,
+            role: crate::ir::IrRole::Assistant,
             usage: None,
             id: start.0.clone(),
             created: None,
@@ -1565,7 +1565,7 @@ fn test_stream_message_start_no_identity_synthesizes_response_id() {
     let writer = GeminiWriter;
     let frame = writer
         .write_response_event(&IrStreamEvent::MessageStart {
-            role: busbar_core::ir::IrRole::Assistant,
+            role: crate::ir::IrRole::Assistant,
             usage: None,
             id: None,
             created: None,
@@ -1589,7 +1589,7 @@ fn test_stream_message_start_no_identity_synthesizes_response_id() {
 #[test]
 fn test_write_request_omits_stream_field() {
     let writer = GeminiWriter;
-    let req = busbar_core::ir::IrRequest {
+    let req = crate::ir::IrRequest {
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -1597,9 +1597,9 @@ fn test_write_request_omits_stream_field() {
         user: None,
         parallel_tool_calls: None,
         system: Vec::new(),
-        messages: vec![busbar_core::ir::IrMessage {
-            role: busbar_core::ir::IrRole::User,
-            content: vec![busbar_core::ir::IrBlock::Text {
+        messages: vec![crate::ir::IrMessage {
+            role: crate::ir::IrRole::User,
+            content: vec![crate::ir::IrBlock::Text {
                 text: "hi".to_string(),
                 cache_control: None,
                 citations: Vec::new(),
@@ -1712,7 +1712,7 @@ fn test_extract_error_expired_api_key_prose_is_auth() {
 #[test]
 fn test_write_request_thinking_only_turn_survives_with_placeholder() {
     let writer = GeminiWriter;
-    let req = busbar_core::ir::IrRequest {
+    let req = crate::ir::IrRequest {
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -1721,26 +1721,26 @@ fn test_write_request_thinking_only_turn_survives_with_placeholder() {
         parallel_tool_calls: None,
         system: Vec::new(),
         messages: vec![
-            busbar_core::ir::IrMessage {
-                role: busbar_core::ir::IrRole::User,
-                content: vec![busbar_core::ir::IrBlock::Text {
+            crate::ir::IrMessage {
+                role: crate::ir::IrRole::User,
+                content: vec![crate::ir::IrBlock::Text {
                     text: "first".to_string(),
                     cache_control: None,
                     citations: Vec::new(),
                 }],
             },
-            busbar_core::ir::IrMessage {
-                role: busbar_core::ir::IrRole::Assistant,
-                content: vec![busbar_core::ir::IrBlock::Thinking {
+            crate::ir::IrMessage {
+                role: crate::ir::IrRole::Assistant,
+                content: vec![crate::ir::IrBlock::Thinking {
                     text: "internal reasoning".to_string(),
                     signature: None,
                     redacted: false,
                     cache_control: None,
                 }],
             },
-            busbar_core::ir::IrMessage {
-                role: busbar_core::ir::IrRole::User,
-                content: vec![busbar_core::ir::IrBlock::Text {
+            crate::ir::IrMessage {
+                role: crate::ir::IrRole::User,
+                content: vec![crate::ir::IrBlock::Text {
                     text: "second".to_string(),
                     cache_control: None,
                     citations: Vec::new(),
@@ -1808,7 +1808,7 @@ fn test_write_request_thinking_only_turn_survives_with_placeholder() {
 #[test]
 fn test_write_request_null_tool_result_coerced_to_struct() {
     let writer = GeminiWriter;
-    let req = busbar_core::ir::IrRequest {
+    let req = crate::ir::IrRequest {
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -1816,12 +1816,12 @@ fn test_write_request_null_tool_result_coerced_to_struct() {
         user: None,
         parallel_tool_calls: None,
         system: Vec::new(),
-        messages: vec![busbar_core::ir::IrMessage {
-            role: busbar_core::ir::IrRole::Tool,
-            content: vec![busbar_core::ir::IrBlock::ToolResult {
+        messages: vec![crate::ir::IrMessage {
+            role: crate::ir::IrRole::Tool,
+            content: vec![crate::ir::IrBlock::ToolResult {
                 tool_use_id: "get_weather".to_string(),
                 // A literal "null" payload — valid JSON that parses to Value::Null.
-                content: vec![busbar_core::ir::IrBlock::Text {
+                content: vec![crate::ir::IrBlock::Text {
                     text: "null".to_string(),
                     cache_control: None,
                     citations: Vec::new(),
@@ -1871,7 +1871,7 @@ fn test_write_request_null_tool_result_coerced_to_struct() {
 #[test]
 fn test_write_request_scalar_tool_result_coerced_to_struct() {
     let writer = GeminiWriter;
-    let req = busbar_core::ir::IrRequest {
+    let req = crate::ir::IrRequest {
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -1879,11 +1879,11 @@ fn test_write_request_scalar_tool_result_coerced_to_struct() {
         user: None,
         parallel_tool_calls: None,
         system: Vec::new(),
-        messages: vec![busbar_core::ir::IrMessage {
-            role: busbar_core::ir::IrRole::Tool,
-            content: vec![busbar_core::ir::IrBlock::ToolResult {
+        messages: vec![crate::ir::IrMessage {
+            role: crate::ir::IrRole::Tool,
+            content: vec![crate::ir::IrBlock::ToolResult {
                 tool_use_id: "compute".to_string(),
-                content: vec![busbar_core::ir::IrBlock::Text {
+                content: vec![crate::ir::IrBlock::Text {
                     text: "42".to_string(),
                     cache_control: None,
                     citations: Vec::new(),
@@ -1946,7 +1946,7 @@ fn test_read_request_absent_role_defaults_to_user() {
     assert_eq!(ir.messages.len(), 1, "one message expected: {ir:?}");
     assert_eq!(
         ir.messages[0].role,
-        busbar_core::ir::IrRole::User,
+        crate::ir::IrRole::User,
         "an absent role must default to user: {ir:?}"
     );
 }
@@ -1964,7 +1964,7 @@ fn test_read_request_empty_role_defaults_to_user() {
         .expect("an empty role must be accepted as a user turn, not rejected");
     assert_eq!(
         ir.messages[0].role,
-        busbar_core::ir::IrRole::User,
+        crate::ir::IrRole::User,
         "an empty role must default to user: {ir:?}"
     );
 }
@@ -2007,7 +2007,7 @@ fn test_read_request_model_preserved_in_extra_once() {
 #[test]
 fn test_write_request_tool_result_plaintext_wrapped_not_dropped() {
     let writer = GeminiWriter;
-    let req = busbar_core::ir::IrRequest {
+    let req = crate::ir::IrRequest {
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -2015,17 +2015,17 @@ fn test_write_request_tool_result_plaintext_wrapped_not_dropped() {
         user: None,
         parallel_tool_calls: None,
         system: Vec::new(),
-        messages: vec![busbar_core::ir::IrMessage {
-            role: busbar_core::ir::IrRole::User,
-            content: vec![busbar_core::ir::IrBlock::ToolResult {
+        messages: vec![crate::ir::IrMessage {
+            role: crate::ir::IrRole::User,
+            content: vec![crate::ir::IrBlock::ToolResult {
                 tool_use_id: "get_weather".to_string(),
                 content: vec![
-                    busbar_core::ir::IrBlock::Text {
+                    crate::ir::IrBlock::Text {
                         text: "sunny".to_string(),
                         cache_control: None,
                         citations: Vec::new(),
                     },
-                    busbar_core::ir::IrBlock::Text {
+                    crate::ir::IrBlock::Text {
                         text: "and warm".to_string(),
                         cache_control: None,
                         citations: Vec::new(),
@@ -2070,7 +2070,7 @@ fn test_write_request_tool_result_plaintext_wrapped_not_dropped() {
 #[test]
 fn test_write_request_tool_result_json_passthrough() {
     let writer = GeminiWriter;
-    let req = busbar_core::ir::IrRequest {
+    let req = crate::ir::IrRequest {
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -2078,11 +2078,11 @@ fn test_write_request_tool_result_json_passthrough() {
         user: None,
         parallel_tool_calls: None,
         system: Vec::new(),
-        messages: vec![busbar_core::ir::IrMessage {
-            role: busbar_core::ir::IrRole::User,
-            content: vec![busbar_core::ir::IrBlock::ToolResult {
+        messages: vec![crate::ir::IrMessage {
+            role: crate::ir::IrRole::User,
+            content: vec![crate::ir::IrBlock::ToolResult {
                 tool_use_id: "f".to_string(),
-                content: vec![busbar_core::ir::IrBlock::Text {
+                content: vec![crate::ir::IrBlock::Text {
                     text: "{\"temp\":21}".to_string(),
                     cache_control: None,
                     citations: Vec::new(),
@@ -2119,21 +2119,21 @@ fn test_write_request_tool_result_json_passthrough() {
 #[test]
 fn test_response_identity_cross_protocol_synthesizes_id_when_created_set() {
     let writer = GeminiWriter;
-    let ir = busbar_core::ir::IrResponse {
+    let ir = crate::ir::IrResponse {
         logprobs: Vec::new(),
-        role: busbar_core::ir::IrRole::Assistant,
-        content: vec![busbar_core::ir::IrBlock::Text {
+        role: crate::ir::IrRole::Assistant,
+        content: vec![crate::ir::IrBlock::Text {
             text: "hi".to_string(),
             cache_control: None,
             citations: Vec::new(),
         }],
-        stop_reason: Some(busbar_core::ir::IrStopReason::EndTurn),
-        usage: busbar_core::ir::IrUsage {
+        stop_reason: Some(crate::ir::IrStopReason::EndTurn),
+        usage: crate::ir::IrUsage {
             input_tokens: 1,
             output_tokens: 1,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
-            detail: busbar_core::ir::IrUsageDetail::default(),
+            detail: crate::ir::IrUsageDetail::default(),
         },
         model: None,
         id: None,
@@ -2215,7 +2215,7 @@ fn test_stream_message_start_model_only_emits_model_version() {
     let writer = GeminiWriter;
     let frame = writer
         .write_response_event(&IrStreamEvent::MessageStart {
-            role: busbar_core::ir::IrRole::Assistant,
+            role: crate::ir::IrRole::Assistant,
             usage: None,
             id: None,
             created: None,
@@ -2255,7 +2255,7 @@ fn test_read_request_functioncall_gets_nonempty_id() {
     });
     let ir = reader.read_request(&body).expect("read_request");
     let id = ir.messages[0].content.iter().find_map(|b| match b {
-        busbar_core::ir::IrBlock::ToolUse { id, .. } => Some(id.clone()),
+        crate::ir::IrBlock::ToolUse { id, .. } => Some(id.clone()),
         _ => None,
     });
     let id = id.expect("ToolUse block must be present");
@@ -2282,7 +2282,7 @@ fn test_read_request_same_name_tool_calls_get_distinct_ids() {
         .content
         .iter()
         .filter_map(|b| match b {
-            busbar_core::ir::IrBlock::ToolUse { id, .. } => Some(id.clone()),
+            crate::ir::IrBlock::ToolUse { id, .. } => Some(id.clone()),
             _ => None,
         })
         .collect();
@@ -2310,7 +2310,7 @@ fn test_read_request_tool_call_id_is_deterministic() {
             .content
             .iter()
             .find_map(|b| match b {
-                busbar_core::ir::IrBlock::ToolUse { id, .. } => Some(id.clone()),
+                crate::ir::IrBlock::ToolUse { id, .. } => Some(id.clone()),
                 _ => None,
             })
             .unwrap()
@@ -2332,7 +2332,7 @@ fn test_read_request_functionresponse_tool_use_id_is_name() {
     });
     let ir = reader.read_request(&body).expect("read_request");
     let tid = ir.messages[0].content.iter().find_map(|b| match b {
-        busbar_core::ir::IrBlock::ToolResult { tool_use_id, .. } => Some(tool_use_id.clone()),
+        crate::ir::IrBlock::ToolResult { tool_use_id, .. } => Some(tool_use_id.clone()),
         _ => None,
     });
     assert_eq!(
@@ -2358,7 +2358,7 @@ fn test_read_response_functioncall_gets_nonempty_id() {
     });
     let ir = reader.read_response(&body).expect("read_response");
     let id = ir.content.iter().find_map(|b| match b {
-        busbar_core::ir::IrBlock::ToolUse { id, .. } => Some(id.clone()),
+        crate::ir::IrBlock::ToolUse { id, .. } => Some(id.clone()),
         _ => None,
     });
     assert!(
@@ -2422,7 +2422,7 @@ fn test_stream_prompt_block_emits_terminal_sequence() {
     });
     assert_eq!(
         stop_reason,
-        Some(busbar_core::ir::IrStopReason::Safety),
+        Some(crate::ir::IrStopReason::Safety),
         "prompt-block must surface a `safety` stop_reason: {events:?}"
     );
     assert!(
@@ -2452,7 +2452,7 @@ fn test_stream_prompt_block_recitation_maps_to_safety() {
     });
     assert_eq!(
         stop_reason,
-        Some(busbar_core::ir::IrStopReason::Safety),
+        Some(crate::ir::IrStopReason::Safety),
         "a prompt-level RECITATION block must map to Safety, not Other: {events:?}"
     );
 }
@@ -2517,7 +2517,7 @@ fn test_stream_mid_stream_prompt_block_closes_open_text_block() {
     );
     assert_eq!(
         stop_reason,
-        Some(busbar_core::ir::IrStopReason::Safety),
+        Some(crate::ir::IrStopReason::Safety),
         "the terminal MessageDelta must carry a `safety` stop_reason: {second:?}"
     );
     assert!(
@@ -2550,7 +2550,7 @@ fn test_read_response_prompt_block_is_safety_stop_not_error() {
     );
     assert_eq!(
         ir.stop_reason,
-        Some(busbar_core::ir::IrStopReason::Safety),
+        Some(crate::ir::IrStopReason::Safety),
         "a blocked prompt must surface a `safety` stop_reason"
     );
     assert_eq!(ir.usage.input_tokens, 9, "usage must still be surfaced");
@@ -2606,7 +2606,7 @@ fn test_read_response_zero_arg_function_call_input_is_empty_object_not_null() {
     });
     let ir = reader.read_response(&body).expect("read_response");
     let input = ir.content.iter().find_map(|b| match b {
-        busbar_core::ir::IrBlock::ToolUse { input, .. } => Some(input.clone()),
+        crate::ir::IrBlock::ToolUse { input, .. } => Some(input.clone()),
         _ => None,
     });
     assert_eq!(
@@ -2833,7 +2833,7 @@ fn test_generation_config_typed_fields_override_raw_extra() {
         "generationConfig".to_string(),
         serde_json::json!({"maxOutputTokens": 100, "responseMimeType": "text/plain"}),
     );
-    let ir = busbar_core::ir::IrRequest {
+    let ir = crate::ir::IrRequest {
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -2841,9 +2841,9 @@ fn test_generation_config_typed_fields_override_raw_extra() {
         user: None,
         parallel_tool_calls: None,
         system: Vec::new(),
-        messages: vec![busbar_core::ir::IrMessage {
-            role: busbar_core::ir::IrRole::User,
-            content: vec![busbar_core::ir::IrBlock::Text {
+        messages: vec![crate::ir::IrMessage {
+            role: crate::ir::IrRole::User,
+            content: vec![crate::ir::IrBlock::Text {
                 text: "hi".to_string(),
                 cache_control: None,
                 citations: Vec::new(),
@@ -2889,14 +2889,14 @@ fn test_generation_config_typed_fields_override_raw_extra() {
 fn test_stream_message_delta_includes_total_token_count() {
     let writer = GeminiWriter;
     let ev = IrStreamEvent::MessageDelta {
-        stop_reason: Some(busbar_core::ir::IrStopReason::EndTurn),
+        stop_reason: Some(crate::ir::IrStopReason::EndTurn),
         stop_sequence: None,
-        usage: busbar_core::ir::IrUsage {
+        usage: crate::ir::IrUsage {
             input_tokens: 7,
             output_tokens: 5,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
-            detail: busbar_core::ir::IrUsageDetail::default(),
+            detail: crate::ir::IrUsageDetail::default(),
         },
     };
     let (_, frame) = writer
@@ -2923,14 +2923,14 @@ fn test_stream_message_delta_includes_total_token_count() {
 fn test_stream_message_delta_total_token_count_saturates() {
     let writer = GeminiWriter;
     let ev = IrStreamEvent::MessageDelta {
-        stop_reason: Some(busbar_core::ir::IrStopReason::EndTurn),
+        stop_reason: Some(crate::ir::IrStopReason::EndTurn),
         stop_sequence: None,
-        usage: busbar_core::ir::IrUsage {
+        usage: crate::ir::IrUsage {
             input_tokens: u64::MAX,
             output_tokens: 1,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
-            detail: busbar_core::ir::IrUsageDetail::default(),
+            detail: crate::ir::IrUsageDetail::default(),
         },
     };
     let (_, frame) = writer
@@ -2952,21 +2952,21 @@ fn test_stream_message_delta_total_token_count_saturates() {
 #[test]
 fn test_write_response_includes_total_token_count_cross_protocol() {
     let writer = GeminiWriter;
-    let ir = busbar_core::ir::IrResponse {
+    let ir = crate::ir::IrResponse {
         logprobs: Vec::new(),
-        role: busbar_core::ir::IrRole::Assistant,
-        content: vec![busbar_core::ir::IrBlock::Text {
+        role: crate::ir::IrRole::Assistant,
+        content: vec![crate::ir::IrBlock::Text {
             text: "hi".to_string(),
             cache_control: None,
             citations: Vec::new(),
         }],
-        stop_reason: Some(busbar_core::ir::IrStopReason::EndTurn),
-        usage: busbar_core::ir::IrUsage {
+        stop_reason: Some(crate::ir::IrStopReason::EndTurn),
+        usage: crate::ir::IrUsage {
             input_tokens: 5,
             output_tokens: 3,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
-            detail: busbar_core::ir::IrUsageDetail::default(),
+            detail: crate::ir::IrUsageDetail::default(),
         },
         model: None,
         id: None,
@@ -2998,21 +2998,21 @@ fn test_write_response_includes_total_token_count_cross_protocol() {
 #[test]
 fn test_write_response_omits_total_token_count_same_protocol() {
     let writer = GeminiWriter;
-    let ir = busbar_core::ir::IrResponse {
+    let ir = crate::ir::IrResponse {
         logprobs: Vec::new(),
-        role: busbar_core::ir::IrRole::Assistant,
-        content: vec![busbar_core::ir::IrBlock::Text {
+        role: crate::ir::IrRole::Assistant,
+        content: vec![crate::ir::IrBlock::Text {
             text: "hi".to_string(),
             cache_control: None,
             citations: Vec::new(),
         }],
-        stop_reason: Some(busbar_core::ir::IrStopReason::EndTurn),
-        usage: busbar_core::ir::IrUsage {
+        stop_reason: Some(crate::ir::IrStopReason::EndTurn),
+        usage: crate::ir::IrUsage {
             input_tokens: 5,
             output_tokens: 3,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
-            detail: busbar_core::ir::IrUsageDetail::default(),
+            detail: crate::ir::IrUsageDetail::default(),
         },
         model: None,
         id: None,
@@ -3031,17 +3031,17 @@ fn test_write_response_omits_total_token_count_same_protocol() {
 #[test]
 fn test_write_response_total_token_count_saturates() {
     let writer = GeminiWriter;
-    let ir = busbar_core::ir::IrResponse {
+    let ir = crate::ir::IrResponse {
         logprobs: Vec::new(),
-        role: busbar_core::ir::IrRole::Assistant,
+        role: crate::ir::IrRole::Assistant,
         content: Vec::new(),
-        stop_reason: Some(busbar_core::ir::IrStopReason::EndTurn),
-        usage: busbar_core::ir::IrUsage {
+        stop_reason: Some(crate::ir::IrStopReason::EndTurn),
+        usage: crate::ir::IrUsage {
             input_tokens: u64::MAX,
             output_tokens: 1,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
-            detail: busbar_core::ir::IrUsageDetail::default(),
+            detail: crate::ir::IrUsageDetail::default(),
         },
         model: None,
         id: None,
@@ -3069,21 +3069,21 @@ fn test_write_response_total_token_count_saturates() {
 #[test]
 fn test_write_response_includes_total_token_count_when_only_model_present() {
     let writer = GeminiWriter;
-    let ir = busbar_core::ir::IrResponse {
+    let ir = crate::ir::IrResponse {
         logprobs: Vec::new(),
-        role: busbar_core::ir::IrRole::Assistant,
-        content: vec![busbar_core::ir::IrBlock::Text {
+        role: crate::ir::IrRole::Assistant,
+        content: vec![crate::ir::IrBlock::Text {
             text: "hi".to_string(),
             cache_control: None,
             citations: Vec::new(),
         }],
-        stop_reason: Some(busbar_core::ir::IrStopReason::EndTurn),
-        usage: busbar_core::ir::IrUsage {
+        stop_reason: Some(crate::ir::IrStopReason::EndTurn),
+        usage: crate::ir::IrUsage {
             input_tokens: 11,
             output_tokens: 4,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
-            detail: busbar_core::ir::IrUsageDetail::default(),
+            detail: crate::ir::IrUsageDetail::default(),
         },
         // Anthropic/Cohere cross-protocol shape: model survives, created/id are None.
         model: Some("claude-opus-4-8".to_string()),
@@ -3113,17 +3113,17 @@ fn test_write_response_includes_total_token_count_when_only_model_present() {
 #[test]
 fn test_write_response_model_only_total_token_count_saturates() {
     let writer = GeminiWriter;
-    let ir = busbar_core::ir::IrResponse {
+    let ir = crate::ir::IrResponse {
         logprobs: Vec::new(),
-        role: busbar_core::ir::IrRole::Assistant,
+        role: crate::ir::IrRole::Assistant,
         content: Vec::new(),
-        stop_reason: Some(busbar_core::ir::IrStopReason::EndTurn),
-        usage: busbar_core::ir::IrUsage {
+        stop_reason: Some(crate::ir::IrStopReason::EndTurn),
+        usage: crate::ir::IrUsage {
             input_tokens: u64::MAX,
             output_tokens: 7,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
-            detail: busbar_core::ir::IrUsageDetail::default(),
+            detail: crate::ir::IrUsageDetail::default(),
         },
         model: Some("command-r".to_string()),
         id: None,
@@ -3208,23 +3208,23 @@ fn test_read_request_unmodeled_key_still_flows_to_extra_after_hoist() {
 #[test]
 fn test_write_response_tool_use_maps_to_stop() {
     let writer = GeminiWriter;
-    let ir = busbar_core::ir::IrResponse {
+    let ir = crate::ir::IrResponse {
         logprobs: Vec::new(),
-        role: busbar_core::ir::IrRole::Assistant,
-        content: vec![busbar_core::ir::IrBlock::ToolUse {
+        role: crate::ir::IrRole::Assistant,
+        content: vec![crate::ir::IrBlock::ToolUse {
             thought_signature: None,
             id: "call_1".to_string(),
             name: "get_weather".to_string(),
             input: serde_json::json!({"city": "SF"}),
             cache_control: None,
         }],
-        stop_reason: Some(busbar_core::ir::IrStopReason::ToolUse),
-        usage: busbar_core::ir::IrUsage {
+        stop_reason: Some(crate::ir::IrStopReason::ToolUse),
+        usage: crate::ir::IrUsage {
             input_tokens: 1,
             output_tokens: 1,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
-            detail: busbar_core::ir::IrUsageDetail::default(),
+            detail: crate::ir::IrUsageDetail::default(),
         },
         model: None,
         id: None,
@@ -3247,14 +3247,14 @@ fn test_write_response_tool_use_maps_to_stop() {
 fn test_stream_message_delta_tool_use_maps_to_stop() {
     let writer = GeminiWriter;
     let ev = IrStreamEvent::MessageDelta {
-        stop_reason: Some(busbar_core::ir::IrStopReason::ToolUse),
+        stop_reason: Some(crate::ir::IrStopReason::ToolUse),
         stop_sequence: None,
-        usage: busbar_core::ir::IrUsage {
+        usage: crate::ir::IrUsage {
             input_tokens: 1,
             output_tokens: 1,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
-            detail: busbar_core::ir::IrUsageDetail::default(),
+            detail: crate::ir::IrUsageDetail::default(),
         },
     };
     let (_, frame) = writer
@@ -3278,7 +3278,7 @@ fn test_stream_message_delta_tool_use_maps_to_stop() {
 #[test]
 fn test_write_request_image_url_sentinel_emits_file_data() {
     let writer = GeminiWriter;
-    let req = busbar_core::ir::IrRequest {
+    let req = crate::ir::IrRequest {
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -3286,12 +3286,10 @@ fn test_write_request_image_url_sentinel_emits_file_data() {
         user: None,
         parallel_tool_calls: None,
         system: Vec::new(),
-        messages: vec![busbar_core::ir::IrMessage {
-            role: busbar_core::ir::IrRole::User,
-            content: vec![busbar_core::ir::IrBlock::Image {
-                source: busbar_core::ir::IrImageSource::Url(
-                    "https://example.com/cat.png".to_string(),
-                ),
+        messages: vec![crate::ir::IrMessage {
+            role: crate::ir::IrRole::User,
+            content: vec![crate::ir::IrBlock::Image {
+                source: crate::ir::IrImageSource::Url("https://example.com/cat.png".to_string()),
                 cache_control: None,
             }],
         }],
@@ -3328,7 +3326,7 @@ fn test_write_request_image_url_sentinel_emits_file_data() {
 #[test]
 fn test_write_request_base64_image_still_inline_data() {
     let writer = GeminiWriter;
-    let req = busbar_core::ir::IrRequest {
+    let req = crate::ir::IrRequest {
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -3336,10 +3334,10 @@ fn test_write_request_base64_image_still_inline_data() {
         user: None,
         parallel_tool_calls: None,
         system: Vec::new(),
-        messages: vec![busbar_core::ir::IrMessage {
-            role: busbar_core::ir::IrRole::User,
-            content: vec![busbar_core::ir::IrBlock::Image {
-                source: busbar_core::ir::IrImageSource::Base64 {
+        messages: vec![crate::ir::IrMessage {
+            role: crate::ir::IrRole::User,
+            content: vec![crate::ir::IrBlock::Image {
+                source: crate::ir::IrImageSource::Base64 {
                     media_type: "image/png".to_string(),
                     data: "aGVsbG8=".to_string(),
                 },
@@ -3389,8 +3387,8 @@ fn test_file_data_image_round_trips_via_url() {
     });
     let ir = reader.read_request(&body).expect("read_request");
     let url = ir.messages[0].content.iter().find_map(|b| match b {
-        busbar_core::ir::IrBlock::Image {
-            source: busbar_core::ir::IrImageSource::Url(url),
+        crate::ir::IrBlock::Image {
+            source: crate::ir::IrImageSource::Url(url),
             ..
         } => Some(url.clone()),
         _ => None,
@@ -3704,7 +3702,7 @@ fn test_auth_headers_control_byte_key_omits_header() {
 #[test]
 fn test_tool_role_maps_to_user_for_function_response() {
     let writer = GeminiWriter;
-    let req = busbar_core::ir::IrRequest {
+    let req = crate::ir::IrRequest {
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -3712,11 +3710,11 @@ fn test_tool_role_maps_to_user_for_function_response() {
         user: None,
         parallel_tool_calls: None,
         system: Vec::new(),
-        messages: vec![busbar_core::ir::IrMessage {
-            role: busbar_core::ir::IrRole::Tool,
-            content: vec![busbar_core::ir::IrBlock::ToolResult {
+        messages: vec![crate::ir::IrMessage {
+            role: crate::ir::IrRole::Tool,
+            content: vec![crate::ir::IrBlock::ToolResult {
                 tool_use_id: "get_weather".to_string(),
-                content: vec![busbar_core::ir::IrBlock::Text {
+                content: vec![crate::ir::IrBlock::Text {
                     text: "{\"temp\":21}".to_string(),
                     cache_control: None,
                     citations: Vec::new(),
@@ -3767,7 +3765,7 @@ fn test_tool_role_maps_to_user_for_function_response() {
 #[test]
 fn test_assistant_tool_use_stays_model_role() {
     let writer = GeminiWriter;
-    let req = busbar_core::ir::IrRequest {
+    let req = crate::ir::IrRequest {
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -3775,9 +3773,9 @@ fn test_assistant_tool_use_stays_model_role() {
         user: None,
         parallel_tool_calls: None,
         system: Vec::new(),
-        messages: vec![busbar_core::ir::IrMessage {
-            role: busbar_core::ir::IrRole::Assistant,
-            content: vec![busbar_core::ir::IrBlock::ToolUse {
+        messages: vec![crate::ir::IrMessage {
+            role: crate::ir::IrRole::Assistant,
+            content: vec![crate::ir::IrBlock::ToolUse {
                 thought_signature: None,
                 id: "call_1".to_string(),
                 name: "get_weather".to_string(),
@@ -3987,7 +3985,7 @@ fn test_write_error_generic_invalid_argument_has_no_details() {
 fn test_write_request_cross_protocol_function_response_name_matches_call() {
     let writer = GeminiWriter;
     let synthetic_id = "call_00000000deadbeef".to_string();
-    let req = busbar_core::ir::IrRequest {
+    let req = crate::ir::IrRequest {
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -3997,9 +3995,9 @@ fn test_write_request_cross_protocol_function_response_name_matches_call() {
         system: Vec::new(),
         messages: vec![
             // Assistant turn: the tool CALL carries a synthetic id, real name `get_weather`.
-            busbar_core::ir::IrMessage {
-                role: busbar_core::ir::IrRole::Assistant,
-                content: vec![busbar_core::ir::IrBlock::ToolUse {
+            crate::ir::IrMessage {
+                role: crate::ir::IrRole::Assistant,
+                content: vec![crate::ir::IrBlock::ToolUse {
                     thought_signature: None,
                     id: synthetic_id.clone(),
                     name: "get_weather".to_string(),
@@ -4009,11 +4007,11 @@ fn test_write_request_cross_protocol_function_response_name_matches_call() {
             },
             // Tool turn: the RESULT references the call by the SAME synthetic id (cross-protocol
             // seam keeps the id, not the name).
-            busbar_core::ir::IrMessage {
-                role: busbar_core::ir::IrRole::Tool,
-                content: vec![busbar_core::ir::IrBlock::ToolResult {
+            crate::ir::IrMessage {
+                role: crate::ir::IrRole::Tool,
+                content: vec![crate::ir::IrBlock::ToolResult {
                     tool_use_id: synthetic_id.clone(),
-                    content: vec![busbar_core::ir::IrBlock::Text {
+                    content: vec![crate::ir::IrBlock::Text {
                         text: "{\"temp\":21}".to_string(),
                         cache_control: None,
                         citations: Vec::new(),
@@ -4070,7 +4068,7 @@ fn test_write_request_cross_protocol_function_response_name_matches_call() {
 #[test]
 fn test_write_request_same_protocol_function_response_name_falls_back_to_id() {
     let writer = GeminiWriter;
-    let req = busbar_core::ir::IrRequest {
+    let req = crate::ir::IrRequest {
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -4078,11 +4076,11 @@ fn test_write_request_same_protocol_function_response_name_falls_back_to_id() {
         user: None,
         parallel_tool_calls: None,
         system: Vec::new(),
-        messages: vec![busbar_core::ir::IrMessage {
-            role: busbar_core::ir::IrRole::Tool,
-            content: vec![busbar_core::ir::IrBlock::ToolResult {
+        messages: vec![crate::ir::IrMessage {
+            role: crate::ir::IrRole::Tool,
+            content: vec![crate::ir::IrBlock::ToolResult {
                 tool_use_id: "get_weather".to_string(),
-                content: vec![busbar_core::ir::IrBlock::Text {
+                content: vec![crate::ir::IrBlock::Text {
                     text: "{\"temp\":21}".to_string(),
                     cache_control: None,
                     citations: Vec::new(),
@@ -4133,7 +4131,7 @@ fn test_stream_empty_candidates_array_prompt_block_terminates() {
     });
     assert_eq!(
         stop_reason,
-        Some(busbar_core::ir::IrStopReason::Safety),
+        Some(crate::ir::IrStopReason::Safety),
         "an empty candidates[] + blockReason stream must surface a `safety` stop: {events:?}"
     );
     assert!(
@@ -4164,7 +4162,7 @@ fn test_read_response_empty_candidates_array_prompt_block_is_safety_stop() {
     );
     assert_eq!(
         ir.stop_reason,
-        Some(busbar_core::ir::IrStopReason::Safety),
+        Some(crate::ir::IrStopReason::Safety),
         "an empty candidates[] + blockReason body must surface a `safety` stop_reason"
     );
 }
@@ -4205,13 +4203,13 @@ fn test_read_response_stop_with_function_call_is_tool_use() {
     assert!(
         ir.content
             .iter()
-            .any(|b| matches!(b, busbar_core::ir::IrBlock::ToolUse { .. })),
+            .any(|b| matches!(b, crate::ir::IrBlock::ToolUse { .. })),
         "the response must carry a ToolUse block: {:?}",
         ir.content
     );
     assert_eq!(
         ir.stop_reason,
-        Some(busbar_core::ir::IrStopReason::ToolUse),
+        Some(crate::ir::IrStopReason::ToolUse),
         "STOP + functionCall must read back as `tool_use`, not `end_turn`"
     );
 }
@@ -4230,7 +4228,7 @@ fn test_read_response_plain_stop_stays_end_turn() {
     let ir = reader.read_response(&body).expect("plain STOP must decode");
     assert_eq!(
         ir.stop_reason,
-        Some(busbar_core::ir::IrStopReason::EndTurn),
+        Some(crate::ir::IrStopReason::EndTurn),
         "a plain STOP with no tool block must stay `end_turn`"
     );
 }
@@ -4256,7 +4254,7 @@ fn test_stream_stop_with_function_call_terminal_is_tool_use() {
     });
     assert_eq!(
         stop.flatten(),
-        Some(busbar_core::ir::IrStopReason::ToolUse),
+        Some(crate::ir::IrStopReason::ToolUse),
         "streamed STOP + functionCall must terminate with `tool_use`: {events:?}"
     );
 }
@@ -4277,7 +4275,7 @@ fn test_stream_plain_stop_terminal_stays_end_turn() {
     });
     assert_eq!(
         stop.flatten(),
-        Some(busbar_core::ir::IrStopReason::EndTurn),
+        Some(crate::ir::IrStopReason::EndTurn),
         "a plain STOP stream must terminate with `end_turn`: {events:?}"
     );
 }
@@ -4288,7 +4286,7 @@ fn test_stream_plain_stop_terminal_stays_end_turn() {
 /// fix the array is wrapped under `{"args": <value>}`. Asserts BOTH writers (request + response).
 #[test]
 fn test_tool_use_array_input_coerced_to_object_args() {
-    let block = busbar_core::ir::IrBlock::ToolUse {
+    let block = crate::ir::IrBlock::ToolUse {
         thought_signature: None,
         id: "call_1".to_string(),
         name: "do_thing".to_string(),
@@ -4298,7 +4296,7 @@ fn test_tool_use_array_input_coerced_to_object_args() {
 
     // write_request path
     let writer = GeminiWriter;
-    let req = busbar_core::ir::IrRequest {
+    let req = crate::ir::IrRequest {
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -4306,8 +4304,8 @@ fn test_tool_use_array_input_coerced_to_object_args() {
         user: None,
         parallel_tool_calls: None,
         system: Vec::new(),
-        messages: vec![busbar_core::ir::IrMessage {
-            role: busbar_core::ir::IrRole::Assistant,
+        messages: vec![crate::ir::IrMessage {
+            role: crate::ir::IrRole::Assistant,
             content: vec![block.clone()],
         }],
         tools: Vec::new(),
@@ -4340,17 +4338,17 @@ fn test_tool_use_array_input_coerced_to_object_args() {
     );
 
     // write_response path
-    let resp = busbar_core::ir::IrResponse {
+    let resp = crate::ir::IrResponse {
         logprobs: Vec::new(),
-        role: busbar_core::ir::IrRole::Assistant,
+        role: crate::ir::IrRole::Assistant,
         content: vec![block],
-        stop_reason: Some(busbar_core::ir::IrStopReason::ToolUse),
-        usage: busbar_core::ir::IrUsage {
+        stop_reason: Some(crate::ir::IrStopReason::ToolUse),
+        usage: crate::ir::IrUsage {
             input_tokens: 0,
             output_tokens: 0,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
-            detail: busbar_core::ir::IrUsageDetail::default(),
+            detail: crate::ir::IrUsageDetail::default(),
         },
         model: None,
         id: None,
@@ -4378,23 +4376,23 @@ fn test_tool_use_array_input_coerced_to_object_args() {
 #[test]
 fn test_tool_use_object_input_passes_through_unchanged() {
     let writer = GeminiWriter;
-    let resp = busbar_core::ir::IrResponse {
+    let resp = crate::ir::IrResponse {
         logprobs: Vec::new(),
-        role: busbar_core::ir::IrRole::Assistant,
-        content: vec![busbar_core::ir::IrBlock::ToolUse {
+        role: crate::ir::IrRole::Assistant,
+        content: vec![crate::ir::IrBlock::ToolUse {
             thought_signature: None,
             id: "call_1".to_string(),
             name: "do_thing".to_string(),
             input: serde_json::json!({"city": "SF", "unit": "C"}),
             cache_control: None,
         }],
-        stop_reason: Some(busbar_core::ir::IrStopReason::ToolUse),
-        usage: busbar_core::ir::IrUsage {
+        stop_reason: Some(crate::ir::IrStopReason::ToolUse),
+        usage: crate::ir::IrUsage {
             input_tokens: 0,
             output_tokens: 0,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
-            detail: busbar_core::ir::IrUsageDetail::default(),
+            detail: crate::ir::IrUsageDetail::default(),
         },
         model: None,
         id: None,
@@ -4415,7 +4413,7 @@ fn test_tool_use_object_input_passes_through_unchanged() {
 
 // ---- Gemini tool_choice (functionCallingConfig) round-trips ----
 
-fn gemini_read(body: serde_json::Value) -> busbar_core::ir::IrRequest {
+fn gemini_read(body: serde_json::Value) -> crate::ir::IrRequest {
     GeminiReader
         .read_request(&body)
         .expect("gemini read_request")
@@ -4427,10 +4425,7 @@ fn tool_choice_any_required_roundtrips() {
         "contents": [],
         "toolConfig": {"functionCallingConfig": {"mode": "ANY"}}
     }));
-    assert_eq!(
-        ir.tool_choice,
-        Some(busbar_core::ir::IrToolChoice::Required)
-    );
+    assert_eq!(ir.tool_choice, Some(crate::ir::IrToolChoice::Required));
     let writer = GeminiWriter;
     let out = writer.write_request(&ir);
     assert_eq!(
@@ -4448,7 +4443,7 @@ fn tool_choice_specific_tool_roundtrips() {
     }));
     assert_eq!(
         ir.tool_choice,
-        Some(busbar_core::ir::IrToolChoice::Tool {
+        Some(crate::ir::IrToolChoice::Tool {
             name: "get_weather".to_string()
         })
     );
@@ -4473,7 +4468,7 @@ fn tool_choice_multi_name_allowlist_relaxes_to_required() {
     }));
     assert_eq!(
         ir.tool_choice,
-        Some(busbar_core::ir::IrToolChoice::Required),
+        Some(crate::ir::IrToolChoice::Required),
         "a multi-name allow-list must relax to Required, not Tool{{name: first}}"
     );
 
@@ -4485,7 +4480,7 @@ fn tool_choice_multi_name_allowlist_relaxes_to_required() {
     }));
     assert_eq!(
         ir_one.tool_choice,
-        Some(busbar_core::ir::IrToolChoice::Tool {
+        Some(crate::ir::IrToolChoice::Tool {
             name: "get_weather".to_string()
         })
     );
@@ -4494,8 +4489,8 @@ fn tool_choice_multi_name_allowlist_relaxes_to_required() {
 #[test]
 fn tool_choice_none_and_auto_roundtrip() {
     for (mode, variant) in [
-        ("AUTO", busbar_core::ir::IrToolChoice::Auto),
-        ("NONE", busbar_core::ir::IrToolChoice::None),
+        ("AUTO", crate::ir::IrToolChoice::Auto),
+        ("NONE", crate::ir::IrToolChoice::None),
     ] {
         let ir = gemini_read(serde_json::json!({
             "contents": [],
@@ -4553,7 +4548,7 @@ fn tool_choice_no_duplicate_function_calling_config() {
 #[test]
 fn tool_choice_overlay_survives_stale_raw_toolconfig_in_extra() {
     let mut req = base_ir_request();
-    req.tools.push(busbar_core::ir::IrTool {
+    req.tools.push(crate::ir::IrTool {
         name: "get_weather".to_string(),
         description: None,
         input_schema: serde_json::json!({"type": "object", "properties": {}}),
@@ -4562,7 +4557,7 @@ fn tool_choice_overlay_survives_stale_raw_toolconfig_in_extra() {
         strict: None,
     });
     // Typed field says: force this ONE specific tool.
-    req.tool_choice = Some(busbar_core::ir::IrToolChoice::Tool {
+    req.tool_choice = Some(crate::ir::IrToolChoice::Tool {
         name: "get_weather".to_string(),
     });
     // `extra` carries a STALE raw toolConfig disagreeing with the typed field (as it would after a
@@ -4631,7 +4626,7 @@ fn response_tool_call_ids_do_not_collide_across_conversation_turns() {
         .content
         .iter()
         .find_map(|b| match b {
-            busbar_core::ir::IrBlock::ToolUse { id, .. } => Some(id.clone()),
+            crate::ir::IrBlock::ToolUse { id, .. } => Some(id.clone()),
             _ => None,
         })
         .expect("turn1 tool_use id");
@@ -4641,7 +4636,7 @@ fn response_tool_call_ids_do_not_collide_across_conversation_turns() {
         .content
         .iter()
         .find_map(|b| match b {
-            busbar_core::ir::IrBlock::ToolUse { id, .. } => Some(id.clone()),
+            crate::ir::IrBlock::ToolUse { id, .. } => Some(id.clone()),
             _ => None,
         })
         .expect("turn2 tool_use id");
@@ -4657,7 +4652,7 @@ fn response_tool_call_ids_do_not_collide_across_conversation_turns() {
 
 #[test]
 fn finish_reason_maps_gemini_only_reasons_to_canonical() {
-    use busbar_core::ir::IrStopReason as S;
+    use crate::ir::IrStopReason as S;
     // The Gemini-only reasons map to canonical IR stop reasons (NOT a verbatim lowercase token).
     assert_eq!(
         map_gemini_finish_reason(GEMINI_FINISH_RECITATION),
@@ -4695,10 +4690,7 @@ fn finish_reason_recitation_in_response_is_safety() {
         "usageMetadata": {"promptTokenCount": 1, "candidatesTokenCount": 1}
     });
     let resp = GeminiReader.read_response(&body).expect("read_response");
-    assert_eq!(
-        resp.stop_reason,
-        Some(busbar_core::ir::IrStopReason::Safety)
-    );
+    assert_eq!(resp.stop_reason, Some(crate::ir::IrStopReason::Safety));
 }
 
 /// End-to-end through read_response: a MALFORMED_FUNCTION_CALL finishReason surfaces as the
@@ -4715,7 +4707,7 @@ fn finish_reason_malformed_function_call_in_response_is_error() {
         "usageMetadata": {"promptTokenCount": 1, "candidatesTokenCount": 1}
     });
     let resp = GeminiReader.read_response(&body).expect("read_response");
-    assert_eq!(resp.stop_reason, Some(busbar_core::ir::IrStopReason::Error));
+    assert_eq!(resp.stop_reason, Some(crate::ir::IrStopReason::Error));
 }
 
 /// The STREAMING reader (read_response_events) routes finishReason through the SAME
@@ -4737,7 +4729,7 @@ fn finish_reason_malformed_function_call_stream_is_error() {
     });
     assert_eq!(
         stop,
-        Some(Some(busbar_core::ir::IrStopReason::Error)),
+        Some(Some(crate::ir::IrStopReason::Error)),
         "streamed MALFORMED_FUNCTION_CALL must terminate stop_reason=Error; got {events:?}"
     );
 }
@@ -4781,8 +4773,8 @@ fn context_length_override_only_fires_on_400_or_413() {
 
 /// Minimal IR request with a single user "hi" turn and all controls defaulted. Tests mutate the
 /// field(s) under test so the assertion targets exactly one gap.
-fn base_ir_request() -> busbar_core::ir::IrRequest {
-    busbar_core::ir::IrRequest {
+fn base_ir_request() -> crate::ir::IrRequest {
+    crate::ir::IrRequest {
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -4790,9 +4782,9 @@ fn base_ir_request() -> busbar_core::ir::IrRequest {
         user: None,
         parallel_tool_calls: None,
         system: Vec::new(),
-        messages: vec![busbar_core::ir::IrMessage {
-            role: busbar_core::ir::IrRole::User,
-            content: vec![busbar_core::ir::IrBlock::Text {
+        messages: vec![crate::ir::IrMessage {
+            role: crate::ir::IrRole::User,
+            content: vec![crate::ir::IrBlock::Text {
                 text: "hi".to_string(),
                 cache_control: None,
                 citations: Vec::new(),
@@ -4934,7 +4926,7 @@ fn test_response_format_round_trips_native_gemini() {
 #[test]
 fn test_response_format_maps_to_gemini_and_sanitizes_schema() {
     let mut req = base_ir_request();
-    req.response_format = Some(busbar_core::ir::IrResponseFormat {
+    req.response_format = Some(crate::ir::IrResponseFormat {
         json: true,
         schema: Some(serde_json::json!({
             "type": "object",
@@ -4984,7 +4976,7 @@ fn test_thought_part_round_trips_through_ir_thinking() {
     let resp = GeminiReader.read_response(&body).expect("read_response");
     // First block is Thinking with text + signature; second is plain Text.
     match &resp.content[0] {
-        busbar_core::ir::IrBlock::Thinking {
+        crate::ir::IrBlock::Thinking {
             text, signature, ..
         } => {
             assert_eq!(text, "let me reason");
@@ -4994,7 +4986,7 @@ fn test_thought_part_round_trips_through_ir_thinking() {
     }
     assert!(matches!(
         &resp.content[1],
-        busbar_core::ir::IrBlock::Text { text, .. } if text == "the answer"
+        crate::ir::IrBlock::Text { text, .. } if text == "the answer"
     ));
 
     let wire = {
@@ -5018,9 +5010,9 @@ fn test_thought_part_round_trips_through_ir_thinking() {
 #[test]
 fn test_thinking_block_round_trips_in_write_request() {
     let mut req = base_ir_request();
-    req.messages.push(busbar_core::ir::IrMessage {
-        role: busbar_core::ir::IrRole::Assistant,
-        content: vec![busbar_core::ir::IrBlock::Thinking {
+    req.messages.push(crate::ir::IrMessage {
+        role: crate::ir::IrRole::Assistant,
+        content: vec![crate::ir::IrBlock::Thinking {
             text: "thinking...".to_string(),
             signature: Some("sig-1".to_string()),
             redacted: false,
@@ -5095,8 +5087,8 @@ fn test_file_data_reads_into_url_source_and_round_trips() {
     });
     let ir = GeminiReader.read_request(&body).expect("read_request");
     match &ir.messages[0].content[0] {
-        busbar_core::ir::IrBlock::Image {
-            source: busbar_core::ir::IrImageSource::Url(url),
+        crate::ir::IrBlock::Image {
+            source: crate::ir::IrImageSource::Url(url),
             ..
         } => assert_eq!(url, "gs://bucket/img.png"),
         other => panic!("expected Image(Url), got {other:?}"),
@@ -5121,8 +5113,8 @@ fn test_file_data_without_mime_type_uses_sentinel() {
     });
     let ir = GeminiReader.read_request(&body).expect("read_request");
     match &ir.messages[0].content[0] {
-        busbar_core::ir::IrBlock::Image {
-            source: busbar_core::ir::IrImageSource::Url(url),
+        crate::ir::IrBlock::Image {
+            source: crate::ir::IrImageSource::Url(url),
             ..
         } => {
             assert_eq!(url, "https://x/i.jpg");
@@ -5152,7 +5144,7 @@ fn test_file_data_without_mime_type_uses_sentinel() {
 #[test]
 fn test_write_request_strips_rejected_schema_keywords() {
     let mut req = base_ir_request();
-    req.tools.push(busbar_core::ir::IrTool {
+    req.tools.push(crate::ir::IrTool {
         name: "get_weather".to_string(),
         description: Some("w".to_string()),
         input_schema: serde_json::json!({
@@ -5534,9 +5526,7 @@ fn gemini_citation_metadata_reads_and_projects_to_anthropic() {
         .content
         .iter()
         .find_map(|b| match b {
-            busbar_core::ir::IrBlock::Text { citations, .. } if !citations.is_empty() => {
-                Some(citations)
-            }
+            crate::ir::IrBlock::Text { citations, .. } if !citations.is_empty() => Some(citations),
             _ => None,
         })
         .expect("citations must be attached to the Text block");
@@ -5654,11 +5644,11 @@ fn gemini_citation_offsets_correct_across_multiple_text_parts() {
     });
     let ir = reader.read_response(&body).expect("read_response");
 
-    let text_blocks: Vec<(&str, &Vec<busbar_core::ir::IrCitation>)> = ir
+    let text_blocks: Vec<(&str, &Vec<crate::ir::IrCitation>)> = ir
         .content
         .iter()
         .filter_map(|b| match b {
-            busbar_core::ir::IrBlock::Text {
+            crate::ir::IrBlock::Text {
                 text, citations, ..
             } => Some((text.as_str(), citations)),
             _ => None,
@@ -5736,7 +5726,7 @@ fn stream_gemini_citation_metadata_projects_to_anthropic_citations_delta() {
         .find_map(|e| match e {
             IrStreamEvent::BlockDelta {
                 index,
-                delta: busbar_core::ir::IrDelta::CitationsDelta(cs),
+                delta: crate::ir::IrDelta::CitationsDelta(cs),
             } if !cs.is_empty() => Some((*index, cs.clone())),
             _ => None,
         })
@@ -5771,7 +5761,7 @@ fn stream_gemini_citation_metadata_projects_to_anthropic_citations_delta() {
         .iter()
         .find_map(|e| match e {
             IrStreamEvent::BlockDelta {
-                delta: busbar_core::ir::IrDelta::CitationsDelta(_),
+                delta: crate::ir::IrDelta::CitationsDelta(_),
                 ..
             } => aw.write_response_event(e),
             _ => None,
@@ -5812,7 +5802,7 @@ fn stream_anthropic_citation_projects_to_gemini_citation_metadata() {
     // produce this; here we model the Anthropic→Gemini direction). The Gemini writer must NOT
     // emit the Anthropic `raw` verbatim — it has no Gemini uri/index keys — and must synthesize
     // a Gemini source from the neutral fields instead.
-    let cit = busbar_core::ir::IrCitation {
+    let cit = crate::ir::IrCitation {
         kind: Some("web_search_result_location".to_string()),
         cited_text: None,
         title: Some("Doc Title".to_string()),
@@ -5830,7 +5820,7 @@ fn stream_anthropic_citation_projects_to_gemini_citation_metadata() {
     };
     let ev = IrStreamEvent::BlockDelta {
         index: 0,
-        delta: busbar_core::ir::IrDelta::CitationsDelta(vec![cit]),
+        delta: crate::ir::IrDelta::CitationsDelta(vec![cit]),
     };
     let (_, body) = writer
         .write_response_event(&ev)
@@ -5868,7 +5858,7 @@ fn stream_gemini_no_citations_unaffected() {
         !events.iter().any(|e| matches!(
             e,
             IrStreamEvent::BlockDelta {
-                delta: busbar_core::ir::IrDelta::CitationsDelta(_),
+                delta: crate::ir::IrDelta::CitationsDelta(_),
                 ..
             }
         )),
@@ -5893,11 +5883,11 @@ fn stream_gemini_no_citations_unaffected() {
 #[test]
 fn tool_choice_variants_round_trip_via_function_calling_config() {
     let cases = [
-        (busbar_core::ir::IrToolChoice::Auto, "AUTO", None),
-        (busbar_core::ir::IrToolChoice::None, "NONE", None),
-        (busbar_core::ir::IrToolChoice::Required, "ANY", None),
+        (crate::ir::IrToolChoice::Auto, "AUTO", None),
+        (crate::ir::IrToolChoice::None, "NONE", None),
+        (crate::ir::IrToolChoice::Required, "ANY", None),
         (
-            busbar_core::ir::IrToolChoice::Tool {
+            crate::ir::IrToolChoice::Tool {
                 name: "get_weather".to_string(),
             },
             "ANY",
@@ -5944,7 +5934,7 @@ fn tool_choice_multi_allowed_names_relaxes_to_required() {
     });
     assert_eq!(
         read_gemini_tool_choice(Some(&tool_config)),
-        Some(busbar_core::ir::IrToolChoice::Required),
+        Some(crate::ir::IrToolChoice::Required),
         "a 2-name allow-list has no IR analog; must degrade to Required, not Tool{{first}}"
     );
 }
@@ -5956,17 +5946,17 @@ fn tool_choice_multi_allowed_names_relaxes_to_required() {
 fn unknown_finish_reason_maps_to_other_and_writes_native_other() {
     assert_eq!(
         map_gemini_finish_reason("SOME_FUTURE_REASON"),
-        busbar_core::ir::IrStopReason::Other
+        crate::ir::IrStopReason::Other
     );
     // Egress: Other -> the valid native OTHER member.
     assert_eq!(
-        write_gemini_stop_reason(busbar_core::ir::IrStopReason::Other),
+        write_gemini_stop_reason(crate::ir::IrStopReason::Other),
         GEMINI_FINISH_OTHER
     );
     // MALFORMED_FUNCTION_CALL is a modeled abnormal stop -> Error (not Other).
     assert_eq!(
         map_gemini_finish_reason(GEMINI_FINISH_MALFORMED_FUNCTION_CALL),
-        busbar_core::ir::IrStopReason::Error
+        crate::ir::IrStopReason::Error
     );
 }
 
@@ -5976,21 +5966,21 @@ fn unknown_finish_reason_maps_to_other_and_writes_native_other() {
 /// re-emit `cachedContentTokenCount`. Pins the inverse of the read normalization (ir.rs:457).
 #[test]
 fn write_response_reconstructs_prompt_token_count_with_cached() {
-    let resp = busbar_core::ir::IrResponse {
+    let resp = crate::ir::IrResponse {
         logprobs: Vec::new(),
-        role: busbar_core::ir::IrRole::Assistant,
-        content: vec![busbar_core::ir::IrBlock::Text {
+        role: crate::ir::IrRole::Assistant,
+        content: vec![crate::ir::IrBlock::Text {
             text: "hi".to_string(),
             cache_control: None,
             citations: Vec::new(),
         }],
-        stop_reason: Some(busbar_core::ir::IrStopReason::EndTurn),
-        usage: busbar_core::ir::IrUsage {
+        stop_reason: Some(crate::ir::IrStopReason::EndTurn),
+        usage: crate::ir::IrUsage {
             input_tokens: 20,
             output_tokens: 5,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: Some(80),
-            detail: busbar_core::ir::IrUsageDetail::default(),
+            detail: crate::ir::IrUsageDetail::default(),
         },
         model: Some("gemini-2.0-flash".to_string()),
         id: None,
@@ -6039,7 +6029,7 @@ fn system_instruction_round_trips_through_ir_system() {
         "systemInstruction must feed IrRequest.system"
     );
     match &ir.system[0] {
-        busbar_core::ir::IrBlock::Text { text, .. } => assert_eq!(text, "You are terse."),
+        crate::ir::IrBlock::Text { text, .. } => assert_eq!(text, "You are terse."),
         other => panic!("expected a Text system block, got {other:?}"),
     }
     // WRITE re-emits the native systemInstruction.parts[] container.
@@ -6084,7 +6074,7 @@ fn test_read_response_captures_function_call_thought_signature() {
     let ir = reader.read_response(&body).expect("read_response");
     assert_eq!(ir.content.len(), 1, "expected one ToolUse block: {ir:?}");
     match &ir.content[0] {
-        busbar_core::ir::IrBlock::ToolUse {
+        crate::ir::IrBlock::ToolUse {
             thought_signature, ..
         } => assert_eq!(
             thought_signature.as_deref(),
@@ -6113,7 +6103,7 @@ fn test_read_request_captures_function_call_thought_signature_from_history() {
     let ir = reader.read_request(&body).expect("read_request");
     assert_eq!(ir.messages.len(), 1, "expected one message: {ir:?}");
     match &ir.messages[0].content[0] {
-        busbar_core::ir::IrBlock::ToolUse {
+        crate::ir::IrBlock::ToolUse {
             thought_signature, ..
         } => assert_eq!(
             thought_signature.as_deref(),
@@ -6134,7 +6124,7 @@ fn test_read_request_captures_function_call_thought_signature_from_history() {
 /// non-base64, non-wrapped JSON string.
 #[test]
 fn test_outage_cross_protocol_tool_use_gets_sentinel_thought_signature() {
-    let mut ir_req = busbar_core::ir::variant::IrReq::Chat(busbar_core::ir::IrRequest {
+    let mut ir_req = crate::ir::IrRequest {
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -6142,9 +6132,9 @@ fn test_outage_cross_protocol_tool_use_gets_sentinel_thought_signature() {
         user: None,
         parallel_tool_calls: None,
         system: Vec::new(),
-        messages: vec![busbar_core::ir::IrMessage {
-            role: busbar_core::ir::IrRole::Assistant,
-            content: vec![busbar_core::ir::IrBlock::ToolUse {
+        messages: vec![crate::ir::IrMessage {
+            role: crate::ir::IrRole::Assistant,
+            content: vec![crate::ir::IrBlock::ToolUse {
                 id: "call_1".to_string(),
                 name: "get_weather".to_string(),
                 input: serde_json::json!({"city": "SF"}),
@@ -6168,21 +6158,22 @@ fn test_outage_cross_protocol_tool_use_gets_sentinel_thought_signature() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
-    });
-    ir_req.prepare_for_egress(&busbar_core::ir::variant::EgressPrep {
-        thought_signature_fill: true,
-        ingress_protocol: "openai",
-        egress_requires_max_tokens: false,
-        lane_default_max_tokens: None,
-        global_default_max_tokens: 4096,
-        reasoning_allowed: false,
-        reasoning_budgets: [1024, 4096, 8192, 16384],
-        prompt_caching_allowed: true,
-        cache_control_cap: None,
-    });
-    let busbar_core::ir::variant::IrReq::Chat(ir) = &ir_req else {
-        panic!("expected Chat variant");
     };
+    super::super::chat_handle::chat_prepare_for_egress(
+        &mut ir_req,
+        &busbar_core::ir::egress_prep::EgressPrep {
+            thought_signature_fill: true,
+            ingress_protocol: "openai",
+            egress_requires_max_tokens: false,
+            lane_default_max_tokens: None,
+            global_default_max_tokens: 4096,
+            reasoning_allowed: false,
+            reasoning_budgets: [1024, 4096, 8192, 16384],
+            prompt_caching_allowed: true,
+            cache_control_cap: None,
+        },
+    );
+    let ir = &ir_req;
     let writer = GeminiWriter;
     let wire = writer.write_request(ir);
     assert_eq!(
@@ -6210,7 +6201,7 @@ fn test_outage_cross_protocol_tool_use_gets_sentinel_thought_signature() {
 /// step — the real value always wins over the sentinel.
 #[test]
 fn test_prepare_for_egress_does_not_overwrite_real_thought_signature() {
-    let mut ir_req = busbar_core::ir::variant::IrReq::Chat(busbar_core::ir::IrRequest {
+    let mut ir_req = crate::ir::IrRequest {
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -6218,9 +6209,9 @@ fn test_prepare_for_egress_does_not_overwrite_real_thought_signature() {
         user: None,
         parallel_tool_calls: None,
         system: Vec::new(),
-        messages: vec![busbar_core::ir::IrMessage {
-            role: busbar_core::ir::IrRole::Assistant,
-            content: vec![busbar_core::ir::IrBlock::ToolUse {
+        messages: vec![crate::ir::IrMessage {
+            role: crate::ir::IrRole::Assistant,
+            content: vec![crate::ir::IrBlock::ToolUse {
                 id: "call_1".to_string(),
                 name: "get_weather".to_string(),
                 input: serde_json::json!({"city": "SF"}),
@@ -6242,23 +6233,24 @@ fn test_prepare_for_egress_does_not_overwrite_real_thought_signature() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
-    });
-    ir_req.prepare_for_egress(&busbar_core::ir::variant::EgressPrep {
-        thought_signature_fill: true,
-        ingress_protocol: "gemini",
-        egress_requires_max_tokens: false,
-        lane_default_max_tokens: None,
-        global_default_max_tokens: 4096,
-        reasoning_allowed: false,
-        reasoning_budgets: [1024, 4096, 8192, 16384],
-        prompt_caching_allowed: true,
-        cache_control_cap: None,
-    });
-    let busbar_core::ir::variant::IrReq::Chat(ir) = &ir_req else {
-        panic!("expected Chat variant");
     };
+    super::super::chat_handle::chat_prepare_for_egress(
+        &mut ir_req,
+        &busbar_core::ir::egress_prep::EgressPrep {
+            thought_signature_fill: true,
+            ingress_protocol: "gemini",
+            egress_requires_max_tokens: false,
+            lane_default_max_tokens: None,
+            global_default_max_tokens: 4096,
+            reasoning_allowed: false,
+            reasoning_budgets: [1024, 4096, 8192, 16384],
+            prompt_caching_allowed: true,
+            cache_control_cap: None,
+        },
+    );
+    let ir = &ir_req;
     match &ir.messages[0].content[0] {
-        busbar_core::ir::IrBlock::ToolUse {
+        crate::ir::IrBlock::ToolUse {
             thought_signature, ..
         } => assert_eq!(
             thought_signature.as_deref(),
@@ -6275,7 +6267,7 @@ fn test_prepare_for_egress_does_not_overwrite_real_thought_signature() {
 /// empty string.
 #[test]
 fn test_vertex_lane_gets_no_sentinel_thought_signature() {
-    let mut ir_req = busbar_core::ir::variant::IrReq::Chat(busbar_core::ir::IrRequest {
+    let mut ir_req = crate::ir::IrRequest {
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -6283,9 +6275,9 @@ fn test_vertex_lane_gets_no_sentinel_thought_signature() {
         user: None,
         parallel_tool_calls: None,
         system: Vec::new(),
-        messages: vec![busbar_core::ir::IrMessage {
-            role: busbar_core::ir::IrRole::Assistant,
-            content: vec![busbar_core::ir::IrBlock::ToolUse {
+        messages: vec![crate::ir::IrMessage {
+            role: crate::ir::IrRole::Assistant,
+            content: vec![crate::ir::IrBlock::ToolUse {
                 id: "call_1".to_string(),
                 name: "get_weather".to_string(),
                 input: serde_json::json!({"city": "SF"}),
@@ -6307,21 +6299,22 @@ fn test_vertex_lane_gets_no_sentinel_thought_signature() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
-    });
-    ir_req.prepare_for_egress(&busbar_core::ir::variant::EgressPrep {
-        thought_signature_fill: false,
-        ingress_protocol: "openai",
-        egress_requires_max_tokens: false,
-        lane_default_max_tokens: None,
-        global_default_max_tokens: 4096,
-        reasoning_allowed: false,
-        reasoning_budgets: [1024, 4096, 8192, 16384],
-        prompt_caching_allowed: true,
-        cache_control_cap: None,
-    });
-    let busbar_core::ir::variant::IrReq::Chat(ir) = &ir_req else {
-        panic!("expected Chat variant");
     };
+    super::super::chat_handle::chat_prepare_for_egress(
+        &mut ir_req,
+        &busbar_core::ir::egress_prep::EgressPrep {
+            thought_signature_fill: false,
+            ingress_protocol: "openai",
+            egress_requires_max_tokens: false,
+            lane_default_max_tokens: None,
+            global_default_max_tokens: 4096,
+            reasoning_allowed: false,
+            reasoning_budgets: [1024, 4096, 8192, 16384],
+            prompt_caching_allowed: true,
+            cache_control_cap: None,
+        },
+    );
+    let ir = &ir_req;
     let writer = GeminiWriter;
     let wire = writer.write_request(ir);
     assert!(
@@ -6338,7 +6331,7 @@ fn test_vertex_lane_gets_no_sentinel_thought_signature() {
 /// get the sentinel (both end up `Some`, with different values).
 #[test]
 fn test_prepare_for_egress_fills_only_missing_signatures_in_parallel_calls() {
-    let mut ir_req = busbar_core::ir::variant::IrReq::Chat(busbar_core::ir::IrRequest {
+    let mut ir_req = crate::ir::IrRequest {
         reasoning: None,
         reasoning_budgets: None,
         logprobs: None,
@@ -6346,17 +6339,17 @@ fn test_prepare_for_egress_fills_only_missing_signatures_in_parallel_calls() {
         user: None,
         parallel_tool_calls: None,
         system: Vec::new(),
-        messages: vec![busbar_core::ir::IrMessage {
-            role: busbar_core::ir::IrRole::Assistant,
+        messages: vec![crate::ir::IrMessage {
+            role: crate::ir::IrRole::Assistant,
             content: vec![
-                busbar_core::ir::IrBlock::ToolUse {
+                crate::ir::IrBlock::ToolUse {
                     id: "call_1".to_string(),
                     name: "get_weather".to_string(),
                     input: serde_json::json!({"city": "SF"}),
                     cache_control: None,
                     thought_signature: Some("only-the-first-is-signed".to_string()),
                 },
-                busbar_core::ir::IrBlock::ToolUse {
+                crate::ir::IrBlock::ToolUse {
                     id: "call_2".to_string(),
                     name: "get_time".to_string(),
                     input: serde_json::json!({"city": "SF"}),
@@ -6379,26 +6372,27 @@ fn test_prepare_for_egress_fills_only_missing_signatures_in_parallel_calls() {
         n: None,
         response_format: None,
         extra: serde_json::Map::new(),
-    });
-    ir_req.prepare_for_egress(&busbar_core::ir::variant::EgressPrep {
-        thought_signature_fill: true,
-        ingress_protocol: "gemini",
-        egress_requires_max_tokens: false,
-        lane_default_max_tokens: None,
-        global_default_max_tokens: 4096,
-        reasoning_allowed: false,
-        reasoning_budgets: [1024, 4096, 8192, 16384],
-        prompt_caching_allowed: true,
-        cache_control_cap: None,
-    });
-    let busbar_core::ir::variant::IrReq::Chat(ir) = &ir_req else {
-        panic!("expected Chat variant");
     };
+    super::super::chat_handle::chat_prepare_for_egress(
+        &mut ir_req,
+        &busbar_core::ir::egress_prep::EgressPrep {
+            thought_signature_fill: true,
+            ingress_protocol: "gemini",
+            egress_requires_max_tokens: false,
+            lane_default_max_tokens: None,
+            global_default_max_tokens: 4096,
+            reasoning_allowed: false,
+            reasoning_budgets: [1024, 4096, 8192, 16384],
+            prompt_caching_allowed: true,
+            cache_control_cap: None,
+        },
+    );
+    let ir = &ir_req;
     let sigs: Vec<Option<&str>> = ir.messages[0]
         .content
         .iter()
         .map(|b| match b {
-            busbar_core::ir::IrBlock::ToolUse {
+            crate::ir::IrBlock::ToolUse {
                 thought_signature, ..
             } => thought_signature.as_deref(),
             _ => panic!("expected ToolUse"),
@@ -6423,23 +6417,23 @@ fn test_prepare_for_egress_fills_only_missing_signatures_in_parallel_calls() {
 #[test]
 fn test_write_response_emits_real_signature_never_sentinel() {
     let writer = GeminiWriter;
-    let with_sig = busbar_core::ir::IrResponse {
+    let with_sig = crate::ir::IrResponse {
         logprobs: Vec::new(),
-        role: busbar_core::ir::IrRole::Assistant,
-        content: vec![busbar_core::ir::IrBlock::ToolUse {
+        role: crate::ir::IrRole::Assistant,
+        content: vec![crate::ir::IrBlock::ToolUse {
             id: "call_1".to_string(),
             name: "get_weather".to_string(),
             input: serde_json::json!({"city": "SF"}),
             cache_control: None,
             thought_signature: Some("real-response-sig".to_string()),
         }],
-        stop_reason: Some(busbar_core::ir::IrStopReason::ToolUse),
-        usage: busbar_core::ir::IrUsage {
+        stop_reason: Some(crate::ir::IrStopReason::ToolUse),
+        usage: crate::ir::IrUsage {
             input_tokens: 1,
             output_tokens: 1,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
-            detail: busbar_core::ir::IrUsageDetail::default(),
+            detail: crate::ir::IrUsageDetail::default(),
         },
         model: None,
         id: None,
@@ -6455,8 +6449,8 @@ fn test_write_response_emits_real_signature_never_sentinel() {
         "a real captured signature must be re-emitted verbatim: {wire}"
     );
 
-    let without_sig = busbar_core::ir::IrResponse {
-        content: vec![busbar_core::ir::IrBlock::ToolUse {
+    let without_sig = crate::ir::IrResponse {
+        content: vec![crate::ir::IrBlock::ToolUse {
             id: "call_1".to_string(),
             name: "get_weather".to_string(),
             input: serde_json::json!({"city": "SF"}),
@@ -6491,7 +6485,7 @@ fn test_empty_string_thought_signature_normalizes_to_none() {
     });
     let ir = reader.read_request(&req_body).expect("read_request");
     match &ir.messages[0].content[0] {
-        busbar_core::ir::IrBlock::ToolUse {
+        crate::ir::IrBlock::ToolUse {
             thought_signature, ..
         } => assert_eq!(
             *thought_signature, None,
@@ -6513,7 +6507,7 @@ fn test_empty_string_thought_signature_normalizes_to_none() {
     });
     let resp_ir = reader.read_response(&resp_body).expect("read_response");
     match &resp_ir.content[0] {
-        busbar_core::ir::IrBlock::ToolUse {
+        crate::ir::IrBlock::ToolUse {
             thought_signature, ..
         } => assert_eq!(
             *thought_signature, None,

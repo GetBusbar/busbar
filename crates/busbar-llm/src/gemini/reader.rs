@@ -5,7 +5,7 @@ impl ProtocolReader for GeminiReader {
         let v = super::super::usage_tail::isolate_tail_usage_object(tail, b"\"usageMetadata\"")?;
         let cached = v.get("cachedContentTokenCount").and_then(|x| x.as_u64());
         Some(
-            busbar_core::ir::IrUsage {
+            crate::ir::IrUsage {
                 input_tokens: v
                     .get("promptTokenCount")
                     .and_then(|x| x.as_u64())
@@ -17,7 +17,7 @@ impl ProtocolReader for GeminiReader {
                     .unwrap_or(0),
                 cache_creation_input_tokens: None,
                 cache_read_input_tokens: cached,
-                detail: busbar_core::ir::IrUsageDetail::default(),
+                detail: crate::ir::IrUsageDetail::default(),
             }
             .to_token_usage(),
         )
@@ -234,10 +234,7 @@ impl ProtocolReader for GeminiReader {
         }
     }
 
-    fn read_request(
-        &self,
-        body: &serde_json::Value,
-    ) -> Result<busbar_core::ir::IrRequest, IrError> {
+    fn read_request(&self, body: &serde_json::Value) -> Result<crate::ir::IrRequest, IrError> {
         let obj = body.as_object().ok_or(IrError {
             class: StatusClass::ClientError,
             provider_signal: Some(busbar_core::proto::SIGNAL_IR_PARSE.to_string()),
@@ -245,7 +242,7 @@ impl ProtocolReader for GeminiReader {
         })?;
 
         let mut extra = serde_json::Map::new();
-        let mut system_blocks: Vec<busbar_core::ir::IrBlock> = Vec::new();
+        let mut system_blocks: Vec<crate::ir::IrBlock> = Vec::new();
 
         // Per-request tool-call index. Gemini `functionCall` parts carry no id, so we synthesize a
         // deterministic, non-empty one (see `synth_tool_call_id`). The index makes each synthesized
@@ -258,7 +255,7 @@ impl ProtocolReader for GeminiReader {
             if let Some(parts_arr) = sys_instr.get("parts").and_then(|p| p.as_array()) {
                 for part in parts_arr {
                     if let Some(text_val) = part.get("text").and_then(|t| t.as_str()) {
-                        system_blocks.push(busbar_core::ir::IrBlock::Text {
+                        system_blocks.push(crate::ir::IrBlock::Text {
                             text: text_val.to_string(),
                             cache_control: None,
                             citations: Vec::new(),
@@ -269,7 +266,7 @@ impl ProtocolReader for GeminiReader {
         }
 
         // Handle contents array (messages)
-        let mut messages: Vec<busbar_core::ir::IrMessage> = Vec::new();
+        let mut messages: Vec<crate::ir::IrMessage> = Vec::new();
         if let Some(contents_arr) = obj.get("contents").and_then(|c| c.as_array()) {
             for content_val in contents_arr {
                 let role_str = content_val
@@ -280,8 +277,8 @@ impl ProtocolReader for GeminiReader {
                     // Gemini's Content.role is optional; an absent/empty role is an
                     // implicit user turn per the GenerateContentRequest schema and the
                     // official SDK. Match the streaming reader's leniency.
-                    "user" | "" => busbar_core::ir::IrRole::User,
-                    "model" => busbar_core::ir::IrRole::Assistant,
+                    "user" | "" => crate::ir::IrRole::User,
+                    "model" => crate::ir::IrRole::Assistant,
                     _ => {
                         return Err(IrError {
                             class: StatusClass::ClientError,
@@ -319,7 +316,7 @@ impl ProtocolReader for GeminiReader {
                                 // redacted reasoning block via this path regardless of the signature
                                 // it sends (redacted-ness is a typed flag, not a signature string).
                                 .map(String::from);
-                            msg_content.push(busbar_core::ir::IrBlock::Thinking {
+                            msg_content.push(crate::ir::IrBlock::Thinking {
                                 text,
                                 signature,
                                 redacted: false,
@@ -328,7 +325,7 @@ impl ProtocolReader for GeminiReader {
                         }
                         // Text part
                         else if let Some(text_val) = part.get("text").and_then(|t| t.as_str()) {
-                            msg_content.push(busbar_core::ir::IrBlock::Text {
+                            msg_content.push(crate::ir::IrBlock::Text {
                                 text: text_val.to_string(),
                                 cache_control: None,
                                 citations: Vec::new(),
@@ -365,7 +362,7 @@ impl ProtocolReader for GeminiReader {
                                 .and_then(|s| s.as_str())
                                 .filter(|s| !s.is_empty())
                                 .map(String::from);
-                            msg_content.push(busbar_core::ir::IrBlock::ToolUse {
+                            msg_content.push(crate::ir::IrBlock::ToolUse {
                                 id,
                                 name,
                                 input: args,
@@ -405,9 +402,9 @@ impl ProtocolReader for GeminiReader {
                                      duplicate tool_use_id; cross-protocol correlation is ambiguous"
                                 );
                             }
-                            msg_content.push(busbar_core::ir::IrBlock::ToolResult {
+                            msg_content.push(crate::ir::IrBlock::ToolResult {
                                 tool_use_id: name,
-                                content: vec![busbar_core::ir::IrBlock::Text {
+                                content: vec![crate::ir::IrBlock::Text {
                                     text: response_text,
                                     cache_control: None,
                                     citations: Vec::new(),
@@ -438,17 +435,17 @@ impl ProtocolReader for GeminiReader {
                             // `Image`, everything else to the typed `Media` block whose writers know
                             // which target has a native slot for it.
                             let block = if mime_type.to_ascii_lowercase().starts_with("image/") {
-                                busbar_core::ir::IrBlock::Image {
-                                    source: busbar_core::ir::IrImageSource::Base64 {
+                                crate::ir::IrBlock::Image {
+                                    source: crate::ir::IrImageSource::Base64 {
                                         media_type: mime_type,
                                         data,
                                     },
                                     cache_control: None,
                                 }
                             } else {
-                                busbar_core::ir::IrBlock::Media {
-                                    kind: busbar_core::ir::IrMediaKind::from_media_type(&mime_type),
-                                    source: busbar_core::ir::IrImageSource::Base64 {
+                                crate::ir::IrBlock::Media {
+                                    kind: crate::ir::IrMediaKind::from_media_type(&mime_type),
+                                    source: crate::ir::IrImageSource::Base64 {
                                         media_type: mime_type,
                                         data,
                                     },
@@ -481,14 +478,14 @@ impl ProtocolReader for GeminiReader {
                             let block = if mime.is_empty()
                                 || mime.to_ascii_lowercase().starts_with("image/")
                             {
-                                busbar_core::ir::IrBlock::Image {
-                                    source: busbar_core::ir::IrImageSource::Url(uri),
+                                crate::ir::IrBlock::Image {
+                                    source: crate::ir::IrImageSource::Url(uri),
                                     cache_control: None,
                                 }
                             } else {
-                                busbar_core::ir::IrBlock::Media {
-                                    kind: busbar_core::ir::IrMediaKind::from_media_type(mime),
-                                    source: busbar_core::ir::IrImageSource::Url(uri),
+                                crate::ir::IrBlock::Media {
+                                    kind: crate::ir::IrMediaKind::from_media_type(mime),
+                                    source: crate::ir::IrImageSource::Url(uri),
                                     name: None,
                                     cache_control: None,
                                 }
@@ -498,7 +495,7 @@ impl ProtocolReader for GeminiReader {
                     }
                 }
 
-                messages.push(busbar_core::ir::IrMessage {
+                messages.push(crate::ir::IrMessage {
                     role,
                     content: msg_content,
                 });
@@ -506,7 +503,7 @@ impl ProtocolReader for GeminiReader {
         }
 
         // Handle tools array (functionDeclarations)
-        let mut tools: Vec<busbar_core::ir::IrTool> = Vec::new();
+        let mut tools: Vec<crate::ir::IrTool> = Vec::new();
         if let Some(tools_arr) = obj.get("tools").and_then(|t| t.as_array()) {
             for tool_val in tools_arr {
                 // Gemini has functionDeclarations inside tools
@@ -528,7 +525,7 @@ impl ProtocolReader for GeminiReader {
                             .cloned()
                             .unwrap_or(serde_json::Value::Null);
 
-                        tools.push(busbar_core::ir::IrTool {
+                        tools.push(crate::ir::IrTool {
                             name,
                             description,
                             input_schema: parameters,
@@ -567,7 +564,7 @@ impl ProtocolReader for GeminiReader {
             .and_then(|gc| gc.get("topK"))
             .and_then(|v| v.as_u64())
             .and_then(|v| u32::try_from(v).ok());
-        let stop = busbar_core::ir::read_stop_sequences(
+        let stop = crate::ir::read_stop_sequences(
             obj.get("generationConfig")
                 .and_then(|gc| gc.get("stopSequences")),
         );
@@ -627,10 +624,8 @@ impl ProtocolReader for GeminiReader {
             .and_then(|tc| tc.get("thinkingBudget"))
             .and_then(|v| v.as_i64())
             .and_then(|n| match n {
-                -1 => Some(busbar_core::ir::IrReasoningAsk::Dynamic),
-                n if n > 0 => u32::try_from(n)
-                    .ok()
-                    .map(busbar_core::ir::IrReasoningAsk::Budget),
+                -1 => Some(crate::ir::IrReasoningAsk::Dynamic),
+                n if n > 0 => u32::try_from(n).ok().map(crate::ir::IrReasoningAsk::Budget),
                 _ => None, // 0 = thinking off; absent ask carries "off" faithfully
             });
         let stream = obj.get("stream").and_then(|v| v.as_bool()).unwrap_or(false);
@@ -685,7 +680,7 @@ impl ProtocolReader for GeminiReader {
             }
         }
 
-        Ok(busbar_core::ir::IrRequest {
+        Ok(crate::ir::IrRequest {
             reasoning,
             reasoning_budgets: None,
             logprobs,
@@ -715,7 +710,7 @@ impl ProtocolReader for GeminiReader {
         &self,
         _event_type: &str,
         data: &serde_json::Value,
-        state: &mut busbar_core::ir::StreamDecodeState,
+        state: &mut crate::ir::StreamDecodeState,
     ) -> Vec<IrStreamEvent> {
         let mut out: Vec<IrStreamEvent> = Vec::new();
 
@@ -780,7 +775,7 @@ impl ProtocolReader for GeminiReader {
                         .and_then(|m| m.as_str())
                         .map(String::from);
                     out.push(IrStreamEvent::MessageStart {
-                        role: busbar_core::ir::IrRole::Assistant,
+                        role: crate::ir::IrRole::Assistant,
                         usage: None,
                         id,
                         created: None,
@@ -831,7 +826,7 @@ impl ProtocolReader for GeminiReader {
                 .and_then(|m| m.as_str())
                 .map(String::from);
             out.push(IrStreamEvent::MessageStart {
-                role: busbar_core::ir::IrRole::Assistant,
+                role: crate::ir::IrRole::Assistant,
                 usage: None,
                 id,
                 created: None,
@@ -900,12 +895,12 @@ impl ProtocolReader for GeminiReader {
                                             state.thinking_block_open = true;
                                             out.push(IrStreamEvent::BlockStart {
                                                 index: 0,
-                                                block: busbar_core::ir::IrBlockMeta::Thinking,
+                                                block: crate::ir::IrBlockMeta::Thinking,
                                             });
                                         }
                                         out.push(IrStreamEvent::BlockDelta {
                                             index: 0,
-                                            delta: busbar_core::ir::IrDelta::ThinkingDelta(
+                                            delta: crate::ir::IrDelta::ThinkingDelta(
                                                 text.to_string(),
                                             ),
                                         });
@@ -914,7 +909,7 @@ impl ProtocolReader for GeminiReader {
                                         {
                                             out.push(IrStreamEvent::BlockDelta {
                                                 index: 0,
-                                                delta: busbar_core::ir::IrDelta::SignatureDelta(
+                                                delta: crate::ir::IrDelta::SignatureDelta(
                                                     sig.to_string(),
                                                 ),
                                             });
@@ -943,14 +938,12 @@ impl ProtocolReader for GeminiReader {
                                         state.text_index = Some(ti);
                                         out.push(IrStreamEvent::BlockStart {
                                             index: ti,
-                                            block: busbar_core::ir::IrBlockMeta::Text,
+                                            block: crate::ir::IrBlockMeta::Text,
                                         });
                                     }
                                     out.push(IrStreamEvent::BlockDelta {
                                         index: ti,
-                                        delta: busbar_core::ir::IrDelta::TextDelta(
-                                            text.to_string(),
-                                        ),
+                                        delta: crate::ir::IrDelta::TextDelta(text.to_string()),
                                     });
                                 }
                             }
@@ -1040,7 +1033,7 @@ impl ProtocolReader for GeminiReader {
                                     );
                                     out.push(IrStreamEvent::BlockStart {
                                         index: ir_idx,
-                                        block: busbar_core::ir::IrBlockMeta::ToolUse {
+                                        block: crate::ir::IrBlockMeta::ToolUse {
                                             id,
                                             name: name_val.clone(),
                                         },
@@ -1062,7 +1055,7 @@ impl ProtocolReader for GeminiReader {
                                         busbar_core::json::to_string(&args).unwrap_or_default();
                                     out.push(IrStreamEvent::BlockDelta {
                                         index: ir_idx,
-                                        delta: busbar_core::ir::IrDelta::InputJsonDelta(args_str),
+                                        delta: crate::ir::IrDelta::InputJsonDelta(args_str),
                                     });
                                 }
                             }
@@ -1106,12 +1099,12 @@ impl ProtocolReader for GeminiReader {
                     state.text_index = Some(ti);
                     out.push(IrStreamEvent::BlockStart {
                         index: ti,
-                        block: busbar_core::ir::IrBlockMeta::Text,
+                        block: crate::ir::IrBlockMeta::Text,
                     });
                 }
                 out.push(IrStreamEvent::BlockDelta {
                     index: ti,
-                    delta: busbar_core::ir::IrDelta::CitationsDelta(citations),
+                    delta: crate::ir::IrDelta::CitationsDelta(citations),
                 });
             }
 
@@ -1139,12 +1132,12 @@ impl ProtocolReader for GeminiReader {
                     state.text_index = Some(ti);
                     out.push(IrStreamEvent::BlockStart {
                         index: ti,
-                        block: busbar_core::ir::IrBlockMeta::Text,
+                        block: crate::ir::IrBlockMeta::Text,
                     });
                 }
                 out.push(IrStreamEvent::BlockDelta {
                     index: ti,
-                    delta: busbar_core::ir::IrDelta::LogprobsDelta(stream_logprobs),
+                    delta: crate::ir::IrDelta::LogprobsDelta(stream_logprobs),
                 });
             }
 
@@ -1166,10 +1159,8 @@ impl ProtocolReader for GeminiReader {
                 // `Some("tool_use")` back to STOP, keeping same-protocol streaming lossless. Only a
                 // bare `end_turn` is promoted; a tool-call truncated/blocked mid-flight keeps its
                 // stronger `max_tokens`/`safety` reason.
-                if stop_reason == busbar_core::ir::IrStopReason::EndTurn
-                    && !state.open_tools.is_empty()
-                {
-                    stop_reason = busbar_core::ir::IrStopReason::ToolUse;
+                if stop_reason == crate::ir::IrStopReason::EndTurn && !state.open_tools.is_empty() {
+                    stop_reason = crate::ir::IrStopReason::ToolUse;
                 }
 
                 // Close a still-open thinking block first (a thinking-only stream never opens a
@@ -1207,10 +1198,7 @@ impl ProtocolReader for GeminiReader {
         out
     }
 
-    fn read_response(
-        &self,
-        body: &serde_json::Value,
-    ) -> Result<busbar_core::ir::IrResponse, IrError> {
+    fn read_response(&self, body: &serde_json::Value) -> Result<crate::ir::IrResponse, IrError> {
         let obj = body.as_object().ok_or(IrError {
             class: StatusClass::ClientError,
             provider_signal: Some(busbar_core::proto::SIGNAL_IR_PARSE.to_string()),
@@ -1238,9 +1226,9 @@ impl ProtocolReader for GeminiReader {
                     .get(FIELD_RESPONSE_ID)
                     .and_then(|i| i.as_str())
                     .map(String::from);
-                return Ok(busbar_core::ir::IrResponse {
+                return Ok(crate::ir::IrResponse {
                     logprobs: Vec::new(),
-                    role: busbar_core::ir::IrRole::Assistant,
+                    role: crate::ir::IrRole::Assistant,
                     content: Vec::new(),
                     stop_reason: Some(prompt_block_stop_reason(block_reason)),
                     usage,
@@ -1292,7 +1280,7 @@ impl ProtocolReader for GeminiReader {
         // as an empty content list and continue to the `finishReason` mapping below — mirroring the
         // STREAMING reader, which guards content with `if let Some(content)` and skips it when absent.
         // Hard-failing here turned a legitimate filtered response into a spurious 500.
-        let mut content: Vec<busbar_core::ir::IrBlock> = Vec::new();
+        let mut content: Vec<crate::ir::IrBlock> = Vec::new();
         // Per-response tool-call index feeding `synth_tool_call_id` (Gemini carries no tool id).
         let mut tool_call_index: usize = 0;
         // This response's own `responseId`, salted into every synthesized tool-call id below so a
@@ -1329,7 +1317,7 @@ impl ProtocolReader for GeminiReader {
                         .get("thoughtSignature")
                         .and_then(|s| s.as_str())
                         .map(String::from);
-                    content.push(busbar_core::ir::IrBlock::Thinking {
+                    content.push(crate::ir::IrBlock::Thinking {
                         text,
                         signature,
                         redacted: false,
@@ -1339,7 +1327,7 @@ impl ProtocolReader for GeminiReader {
                 // Text part → IrBlock::Text
                 else if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
                     if !text.is_empty() {
-                        content.push(busbar_core::ir::IrBlock::Text {
+                        content.push(crate::ir::IrBlock::Text {
                             text: text.to_string(),
                             cache_control: None,
                             citations: Vec::new(),
@@ -1371,7 +1359,7 @@ impl ProtocolReader for GeminiReader {
                         .and_then(|s| s.as_str())
                         .filter(|s| !s.is_empty())
                         .map(String::from);
-                    content.push(busbar_core::ir::IrBlock::ToolUse {
+                    content.push(crate::ir::IrBlock::ToolUse {
                         id,
                         name: name_val,
                         input: args,
@@ -1413,12 +1401,12 @@ impl ProtocolReader for GeminiReader {
         // `max_tokens`/`safety`/etc. (a tool-call truncated/blocked mid-flight) keep their stronger
         // terminal reason.
         let stop_reason = match stop_reason {
-            Some(busbar_core::ir::IrStopReason::EndTurn)
+            Some(crate::ir::IrStopReason::EndTurn)
                 if content
                     .iter()
-                    .any(|b| matches!(b, busbar_core::ir::IrBlock::ToolUse { .. })) =>
+                    .any(|b| matches!(b, crate::ir::IrBlock::ToolUse { .. })) =>
             {
-                Some(busbar_core::ir::IrStopReason::ToolUse)
+                Some(crate::ir::IrStopReason::ToolUse)
             }
             other => other,
         };
@@ -1449,9 +1437,9 @@ impl ProtocolReader for GeminiReader {
         // OpenAI-dialect caller receives them as `choices[].logprobs.content[]`.
         let logprobs = read_gemini_logprobs(candidate.get("logprobsResult"));
 
-        Ok(busbar_core::ir::IrResponse {
+        Ok(crate::ir::IrResponse {
             logprobs,
-            role: busbar_core::ir::IrRole::Assistant,
+            role: crate::ir::IrRole::Assistant,
             content,
             stop_reason,
             usage,

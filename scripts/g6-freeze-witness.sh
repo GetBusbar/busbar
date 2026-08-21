@@ -25,6 +25,13 @@ CORE="crates/busbar-core/src"
 # IrError (= breaker::CanonicalSignal alias), and the genuinely-neutral cross-plane IRs InvokeReq/
 # InvokeResp/SubscribeReq/SubscribeResp (used by mcp+a2a per the 2+-planes decision rule).
 #
+# EgressPrep excluded — provably neutral (an all-primitives resolved-param bag the engine hands a
+# handle's `prepare_for_egress`; it names NO concrete IR), design-(b) retained in core (`ir::egress_prep`);
+# it is not a concrete-IR family type (cf. the A0 exclusions of IrError/Slot/Shape). It was counted in
+# the round-2 broadened set before the dissolve resolved which side of the seam it lands on; the A4b
+# dissolve places it neutral-in-core, so counting it would conflate a neutral param bag with the LLM
+# families and hold the freeze open on a type that correctly stays.
+#
 # The `IrReq`/`IrResp` hub enums are NOT listed: they do not relocate as a family — they DISSOLVE into
 # a neutral core-owned opaque handle plus the core-owned invoke/subscribe leaves. Counting them here
 # conflates "enum dissolved" with "concrete family named" and inflates the count while it still exists,
@@ -32,7 +39,7 @@ CORE="crates/busbar-core/src"
 TYPES=(
   IrRequest IrResponse IrMessage IrBlock IrBlockMeta IrRole IrTool IrToolChoice
   IrUsage IrUsageDetail IrDelta IrStreamEvent IrStopReason IrMediaKind IrCitation
-  IrResponseFormat CacheControl CacheKind StreamDecodeState EgressPrep
+  IrResponseFormat CacheControl CacheKind StreamDecodeState
   IrImageSource IrReasoningAsk IrReasoningEffort IrTokenLogprob IrTopLogprob
   StreamTranslate StreamFraming JsonArrayFramer
   EmbeddingsReq EmbeddingsResp ModerationReq ModerationResp ImageReq ImageResp

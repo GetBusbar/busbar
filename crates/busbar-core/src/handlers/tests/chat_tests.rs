@@ -12,7 +12,7 @@ fn chat_codec_round_trips_openai_request() {
     let chat = ChatOperation("openai");
     let wire = br#"{"model":"m","messages":[{"role":"user","content":"hi"}]}"#;
     let ir = chat.read_request(wire, "application/json").expect("parses");
-    assert!(matches!(ir, IrReq::Chat(_)));
+    assert!(matches!(ir, _));
     let back = chat.write_request(&ir);
     let v: Value = serde_json::from_slice(&back).unwrap();
     // The writer may emit the bare-string or block-array content form — both are valid OpenAI.

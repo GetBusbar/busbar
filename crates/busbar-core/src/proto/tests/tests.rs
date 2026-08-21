@@ -1,4 +1,5 @@
 use super::*;
+use axum::http::StatusCode;
 
 /// The cached streaming-CT set aggregated from the writer vtable must be exactly the SSE +
 /// AWS-event-stream pair the per-request sweep produced — the `OnceLock` only memoizes it.
@@ -496,8 +497,7 @@ fn test_openai_tool_schema_translates_to_anthropic() {
 
 #[test]
 fn test_roundtrip_identity() {
-    let registry = ProtocolRegistry::with_builtins();
-    let protocol = registry.get("anthropic").expect("anthropic should exist");
+    let protocol = crate::proto::protocol_for("anthropic").expect("anthropic should exist");
     let reader = protocol.reader();
     let writer = protocol.writer();
     let j = rich_fixture();
@@ -513,8 +513,7 @@ fn test_roundtrip_identity() {
 
 #[test]
 fn test_signature_verbatim() {
-    let registry = ProtocolRegistry::with_builtins();
-    let protocol = registry.get("anthropic").expect("anthropic should exist");
+    let protocol = crate::proto::protocol_for("anthropic").expect("anthropic should exist");
     let reader = protocol.reader();
     let writer = protocol.writer();
     let j = rich_fixture();
@@ -557,8 +556,7 @@ fn test_signature_verbatim() {
 
 #[test]
 fn test_cache_control_preserved() {
-    let registry = ProtocolRegistry::with_builtins();
-    let protocol = registry.get("anthropic").expect("anthropic should exist");
+    let protocol = crate::proto::protocol_for("anthropic").expect("anthropic should exist");
     let reader = protocol.reader();
     let writer = protocol.writer();
     let j = rich_fixture();
@@ -595,9 +593,8 @@ fn test_cache_control_preserved() {
 /// `reasoning` gate. With the flag, the marker flows (Claude-on-Bedrock keeps its caching).
 #[test]
 fn cache_breakpoints_gated_by_lane_capability_on_bedrock() {
-    let registry = ProtocolRegistry::with_builtins();
-    let anthropic = registry.get("anthropic").unwrap();
-    let bedrock = registry.get("bedrock").unwrap();
+    let anthropic = crate::proto::protocol_for("anthropic").unwrap();
+    let bedrock = crate::proto::protocol_for("bedrock").unwrap();
     assert!(crate::proto::decl_for("bedrock").is_some_and(|d| d.cache_markers_model_gated));
     assert!(crate::proto::decl_for("anthropic").is_some_and(|d| !d.cache_markers_model_gated));
 
@@ -611,7 +608,7 @@ fn cache_breakpoints_gated_by_lane_capability_on_bedrock() {
                    "cache_control": {"type": "ephemeral"}}]
     });
 
-    let prep = |allowed: bool| crate::ir::variant::EgressPrep {
+    let prep = |allowed: bool| crate::ir::egress_prep::EgressPrep {
         thought_signature_fill: false,
         ingress_protocol: "anthropic",
         egress_requires_max_tokens: false,
@@ -627,11 +624,9 @@ fn cache_breakpoints_gated_by_lane_capability_on_bedrock() {
 
     // Lane WITHOUT the capability: every breakpoint cleared, no cachePoint on the wire.
     let ir = anthropic.reader().read_request(&body).unwrap();
-    let mut req = crate::ir::variant::IrReq::Chat(ir);
-    req.prepare_for_egress(&prep(false));
-    let crate::ir::variant::IrReq::Chat(ir) = req else {
-        unreachable!()
-    };
+    let mut req = ir;
+    crate::proto::chat_handle::chat_prepare_for_egress(&mut req, &prep(false));
+    let ir = req;
     let wire = bedrock.writer().write_request(&ir);
     assert!(
         !contains_cache_point(&wire),
@@ -640,11 +635,9 @@ fn cache_breakpoints_gated_by_lane_capability_on_bedrock() {
 
     // Lane WITH `prompt_caching: true`: the breakpoints project (Claude on Bedrock).
     let ir = anthropic.reader().read_request(&body).unwrap();
-    let mut req = crate::ir::variant::IrReq::Chat(ir);
-    req.prepare_for_egress(&prep(true));
-    let crate::ir::variant::IrReq::Chat(ir) = req else {
-        unreachable!()
-    };
+    let mut req = ir;
+    crate::proto::chat_handle::chat_prepare_for_egress(&mut req, &prep(true));
+    let ir = req;
     let wire = bedrock.writer().write_request(&ir);
     assert!(
         contains_cache_point(&wire),
@@ -654,8 +647,7 @@ fn cache_breakpoints_gated_by_lane_capability_on_bedrock() {
 
 #[test]
 fn test_extra_passthrough() {
-    let registry = ProtocolRegistry::with_builtins();
-    let protocol = registry.get("anthropic").expect("anthropic should exist");
+    let protocol = crate::proto::protocol_for("anthropic").expect("anthropic should exist");
     let reader = protocol.reader();
     let writer = protocol.writer();
     let j = rich_fixture();
@@ -759,21 +751,18 @@ fn test_cross_protocol_top_k_dropped_for_openai_target() {
 
 #[test]
 fn test_registry_resolves_anthropic() {
-    let registry = ProtocolRegistry::with_builtins();
-
     // Anthropic should be present
-    let protocol = registry.get("anthropic").expect("anthropic should exist");
+    let protocol = crate::proto::protocol_for("anthropic").expect("anthropic should exist");
     assert_eq!(protocol.name(), "anthropic");
     assert_eq!(protocol.writer().upstream_path(), "/v1/messages");
 
     // Non-existent should return None
-    assert!(registry.get("nonexistent").is_none());
+    assert!(crate::proto::protocol_for("nonexistent").is_none());
 }
 
 #[test]
 fn test_reader_classify_behavior() {
-    let registry = ProtocolRegistry::with_builtins();
-    let protocol = registry.get("anthropic").expect("anthropic should exist");
+    let protocol = crate::proto::protocol_for("anthropic").expect("anthropic should exist");
     let reader = protocol.reader();
 
     // Test 429 → RateLimit
@@ -1143,8 +1132,7 @@ fn test_ping_returns_none() {
 
 #[test]
 fn test_openai_request_roundtrip_identity() {
-    let registry = ProtocolRegistry::with_builtins();
-    let protocol = registry.get("openai").expect("openai should exist");
+    let protocol = crate::proto::protocol_for("openai").expect("openai should exist");
     let reader = protocol.reader();
     let writer = protocol.writer();
 
@@ -1230,8 +1218,7 @@ fn test_openai_request_roundtrip_identity() {
 
 #[test]
 fn test_openai_tool_call_arguments_string_to_value() {
-    let registry = ProtocolRegistry::with_builtins();
-    let protocol = registry.get("openai").expect("openai should exist");
+    let protocol = crate::proto::protocol_for("openai").expect("openai should exist");
     let reader = protocol.reader();
     let writer = protocol.writer();
 
@@ -1298,21 +1285,22 @@ fn test_openai_tool_call_arguments_string_to_value() {
 
 #[test]
 fn test_registry_has_both_protocols() {
-    let registry = ProtocolRegistry::with_builtins();
-
     // Both should exist
     assert!(
-        registry.get("anthropic").is_some(),
+        crate::proto::protocol_for("anthropic").is_some(),
         "anthropic should exist"
     );
-    assert!(registry.get("openai").is_some(), "openai should exist");
+    assert!(
+        crate::proto::protocol_for("openai").is_some(),
+        "openai should exist"
+    );
 
     // Verify openai writer path
-    let openai = registry.get("openai").expect("openai should exist");
+    let openai = crate::proto::protocol_for("openai").expect("openai should exist");
     assert_eq!(openai.writer().upstream_path(), "/v1/chat/completions");
 
     // Verify anthropic writer path
-    let anthropic = registry.get("anthropic").expect("anthropic should exist");
+    let anthropic = crate::proto::protocol_for("anthropic").expect("anthropic should exist");
     assert_eq!(anthropic.writer().upstream_path(), "/v1/messages");
 }
 
@@ -1450,14 +1438,14 @@ fn string_args_writers_emit_raw_tool_args_verbatim() {
 }
 
 /// Regression: Cohere is a free-form-tool-id
-/// ingress with NO canonical prefix, so `native_tool_id_prefix("cohere")` must be `None` (like
+/// ingress with NO canonical prefix, so `crate::proto::native_tool_id_prefix("cohere")` must be `None` (like
 /// Gemini). An empty prefix would make the bare `bb1` marker the only distinguishing signal and
 /// silently hex-decode a legitimate client-authored id of shape `bb1<even-len-hex-UTF8>`,
 /// corrupting tool_use/tool_result correlation on a Cohere-ingress cross-protocol hop.
 #[test]
 fn cohere_tool_ids_pass_through_verbatim_no_decode() {
     // No prefix for Cohere — the encode never reshapes a Cohere-ingress tool id.
-    assert_eq!(native_tool_id_prefix("cohere"), None);
+    assert_eq!(crate::proto::native_tool_id_prefix("cohere"), None);
 
     // A client-authored Cohere id that matches the colliding `bb1<even-hex-UTF8>` shape
     // (`bb161626364` → `bb1` + hex("abcd")) must NOT be decoded — it passes through unchanged.
@@ -1573,8 +1561,7 @@ mod ir_property_tests {
     fn test_anthropic_request_decode_assertions() {
         // DECODE assertions on rich canonical fixture - exact field values that a doctored
         // fixture cannot fake
-        let registry = ProtocolRegistry::with_builtins();
-        let protocol = registry.get("anthropic").expect("anthropic should exist");
+        let protocol = crate::proto::protocol_for("anthropic").expect("anthropic should exist");
         let reader = protocol.reader();
         let j = anthropic_rich_fixture();
 
@@ -1705,8 +1692,7 @@ mod ir_property_tests {
         // serializer adds is_error:false for tool_result blocks that had no is_error field in input.
         // This is documented semantic equivalence per anti-fab spec - assert on DECODED IR directly
         // which is the ground truth that a doctored fixture cannot fake.
-        let registry = ProtocolRegistry::with_builtins();
-        let protocol = registry.get("anthropic").expect("anthropic should exist");
+        let protocol = crate::proto::protocol_for("anthropic").expect("anthropic should exist");
         let reader = protocol.reader();
         let writer = protocol.writer();
         let j = anthropic_rich_fixture();
@@ -1731,9 +1717,7 @@ mod ir_property_tests {
         let j = serde_json::json!({
             "messages": [{"role": "user", "content": "hi"}]
         });
-
-        let registry = ProtocolRegistry::with_builtins();
-        let protocol = registry.get("anthropic").expect("anthropic should exist");
+        let protocol = crate::proto::protocol_for("anthropic").expect("anthropic should exist");
         let reader = protocol.reader();
         let writer = protocol.writer();
 
@@ -1821,8 +1805,7 @@ mod ir_property_tests {
     fn test_openai_request_decode_assertions() {
         // DECODE assertions on canonical OpenAI fixture - exact field values that a doctored
         // fixture cannot fake
-        let registry = ProtocolRegistry::with_builtins();
-        let protocol = registry.get("openai").expect("openai should exist");
+        let protocol = crate::proto::protocol_for("openai").expect("openai should exist");
         let reader = protocol.reader();
         let j = openai_rich_fixture();
 
@@ -1899,8 +1882,7 @@ mod ir_property_tests {
     fn test_openai_tool_call_id_correlation_survives_write() {
         // tool_call id correlation survives write: after write_request, the assistant
         // tool_calls[0].id == "call_123" AND the tool message tool_call_id == "call_123" (same id)
-        let registry = ProtocolRegistry::with_builtins();
-        let protocol = registry.get("openai").expect("openai should exist");
+        let protocol = crate::proto::protocol_for("openai").expect("openai should exist");
         let reader = protocol.reader();
         let writer = protocol.writer();
         let j = openai_rich_fixture();
@@ -1945,8 +1927,7 @@ mod ir_property_tests {
     fn test_openai_arguments_string_to_value_roundtrip() {
         // arguments string↔Value: OpenAI function `arguments` (JSON string) → ToolUse.input
         // (Value/Object) on read, re-serialized to a string on write that re-parses equal
-        let registry = ProtocolRegistry::with_builtins();
-        let protocol = registry.get("openai").expect("openai should exist");
+        let protocol = crate::proto::protocol_for("openai").expect("openai should exist");
         let reader = protocol.reader();
         let writer = protocol.writer();
 

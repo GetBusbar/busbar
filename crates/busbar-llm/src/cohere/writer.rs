@@ -11,7 +11,7 @@ impl ProtocolWriter for CohereWriter {
         PATH_UPSTREAM
     }
 
-    fn write_request(&self, req: &busbar_core::ir::IrRequest) -> serde_json::Value {
+    fn write_request(&self, req: &crate::ir::IrRequest) -> serde_json::Value {
         // The reasoning carry has no Cohere shape in this pass; dropped observably (matching
         // the penalties/top_k convention) rather than silently.
         if req.reasoning.is_some() {
@@ -27,7 +27,7 @@ impl ProtocolWriter for CohereWriter {
             .system
             .iter()
             .filter_map(|b| {
-                if let busbar_core::ir::IrBlock::Text { text, .. } = b {
+                if let crate::ir::IrBlock::Text { text, .. } = b {
                     Some(text.as_str())
                 } else {
                     // A non-text system block (image/thinking/tool/…) has no Cohere v2 analog — the
@@ -47,10 +47,10 @@ impl ProtocolWriter for CohereWriter {
 
         for msg in &req.messages {
             let role_str = match msg.role {
-                busbar_core::ir::IrRole::System => "system",
-                busbar_core::ir::IrRole::User => "user",
-                busbar_core::ir::IrRole::Assistant => "assistant",
-                busbar_core::ir::IrRole::Tool => "tool",
+                crate::ir::IrRole::System => "system",
+                crate::ir::IrRole::User => "user",
+                crate::ir::IrRole::Assistant => "assistant",
+                crate::ir::IrRole::Tool => "tool",
             };
 
             // Build content from the text blocks actually present. A single text block is sent as
@@ -62,7 +62,7 @@ impl ProtocolWriter for CohereWriter {
                 .content
                 .iter()
                 .filter_map(|b| {
-                    if let busbar_core::ir::IrBlock::Text { text, .. } = b {
+                    if let crate::ir::IrBlock::Text { text, .. } = b {
                         Some(text)
                     } else {
                         None
@@ -82,7 +82,7 @@ impl ProtocolWriter for CohereWriter {
                 .content
                 .iter()
                 .filter_map(|b| {
-                    if let busbar_core::ir::IrBlock::Image { source, .. } = b {
+                    if let crate::ir::IrBlock::Image { source, .. } = b {
                         // A URL/base64 image projects to an `image_url`; a Responses `file_id` or
                         // Bedrock `s3Location` reference has no Cohere projection (returns None) and
                         // is skipped with a warn rather than corrupting the block.
@@ -134,8 +134,8 @@ impl ProtocolWriter for CohereWriter {
             let has_tool_result = msg
                 .content
                 .iter()
-                .any(|b| matches!(b, busbar_core::ir::IrBlock::ToolResult { .. }));
-            if msg.role == busbar_core::ir::IrRole::Tool || has_tool_result {
+                .any(|b| matches!(b, crate::ir::IrBlock::ToolResult { .. }));
+            if msg.role == crate::ir::IrRole::Tool || has_tool_result {
                 // Anthropic/Gemini put tool_results on the USER turn, and such a user message can
                 // bundle a tool_result block TOGETHER WITH genuine new user text (e.g.
                 // `[{tool_result...}, {text:"and now also do X"}]`). Cohere v2 `/chat` has no way to
@@ -149,11 +149,11 @@ impl ProtocolWriter for CohereWriter {
                 // On a genuine TOOL-role carrier there is no user text; any text is degenerate
                 // tool-channel text, so it is still folded onto the first tool result (or emitted
                 // as a standalone tool message) to stay lossless, as before.
-                let carrier_is_user = msg.role == busbar_core::ir::IrRole::User;
+                let carrier_is_user = msg.role == crate::ir::IrRole::User;
                 let fold_text_into_tool = !carrier_is_user;
                 let mut emitted_tool_result = false;
                 for block in &msg.content {
-                    if let busbar_core::ir::IrBlock::ToolResult {
+                    if let crate::ir::IrBlock::ToolResult {
                         tool_use_id,
                         content,
                         ..
@@ -168,7 +168,7 @@ impl ProtocolWriter for CohereWriter {
                         let mut text_parts: Vec<String> = content
                             .iter()
                             .filter_map(|b| {
-                                if let busbar_core::ir::IrBlock::Text { text, .. } = b {
+                                if let crate::ir::IrBlock::Text { text, .. } = b {
                                     Some(text.clone())
                                 } else {
                                     // A non-Text ToolResult block is a Bedrock json-tool-result
@@ -202,11 +202,11 @@ impl ProtocolWriter for CohereWriter {
                         // a warn.
                         let mut doc_parts: Vec<serde_json::Value> = Vec::new();
                         for b in content {
-                            let busbar_core::ir::IrBlock::Media { kind, source, .. } = b else {
+                            let crate::ir::IrBlock::Media { kind, source, .. } = b else {
                                 continue;
                             };
                             match source {
-                                busbar_core::ir::IrImageSource::Vendor { vendor, value }
+                                crate::ir::IrImageSource::Vendor { vendor, value }
                                     if *vendor == VENDOR_NAME =>
                                 {
                                     doc_parts.push(serde_json::json!({
@@ -289,10 +289,10 @@ impl ProtocolWriter for CohereWriter {
                 msg_obj.insert("content".to_string(), content_val);
             }
 
-            if msg.role == busbar_core::ir::IrRole::Assistant {
+            if msg.role == crate::ir::IrRole::Assistant {
                 let mut tool_calls_arr: Vec<serde_json::Value> = Vec::new();
                 for block in &msg.content {
-                    if let busbar_core::ir::IrBlock::ToolUse {
+                    if let crate::ir::IrBlock::ToolUse {
                         id, name, input, ..
                     } = block
                     {
@@ -369,12 +369,11 @@ impl ProtocolWriter for CohereWriter {
                 );
             } else {
                 let v = match tc {
-                    busbar_core::ir::IrToolChoice::Required
-                    | busbar_core::ir::IrToolChoice::Tool { .. } => {
+                    crate::ir::IrToolChoice::Required | crate::ir::IrToolChoice::Tool { .. } => {
                         Some(COHERE_TOOL_CHOICE_REQUIRED)
                     }
-                    busbar_core::ir::IrToolChoice::None => Some(COHERE_TOOL_CHOICE_NONE),
-                    busbar_core::ir::IrToolChoice::Auto => None,
+                    crate::ir::IrToolChoice::None => Some(COHERE_TOOL_CHOICE_NONE),
+                    crate::ir::IrToolChoice::Auto => None,
                 };
                 if let Some(s) = v {
                     out.insert("tool_choice".to_string(), serde_json::json!(s));
@@ -430,7 +429,7 @@ impl ProtocolWriter for CohereWriter {
             // (`stop_sequence_cap`) is retained for other planes.
             out.insert(
                 "stop_sequences".to_string(),
-                serde_json::json!(busbar_core::ir::clamp_stop(&req.stop, 5, "Cohere")),
+                serde_json::json!(crate::ir::clamp_stop(&req.stop, 5, "Cohere")),
             );
         }
         // Sampling/output controls in Cohere v2's native (OpenAI-shaped) names. Emitted
@@ -486,10 +485,10 @@ impl ProtocolWriter for CohereWriter {
         match ev {
             IrStreamEvent::MessageStart { role, id, .. } => {
                 let cohere_role = match role {
-                    busbar_core::ir::IrRole::Assistant => "assistant",
-                    busbar_core::ir::IrRole::System
-                    | busbar_core::ir::IrRole::User
-                    | busbar_core::ir::IrRole::Tool => return None,
+                    crate::ir::IrRole::Assistant => "assistant",
+                    crate::ir::IrRole::System
+                    | crate::ir::IrRole::User
+                    | crate::ir::IrRole::Tool => return None,
                 };
                 // Cohere v2 streams carry the response `id` on the message-start frame. Preserve a
                 // captured id; synthesize a shape-valid one for the cross-protocol case so the
@@ -506,7 +505,7 @@ impl ProtocolWriter for CohereWriter {
             }
 
             IrStreamEvent::BlockStart { index, block } => match block {
-                busbar_core::ir::IrBlockMeta::Text => {
+                crate::ir::IrBlockMeta::Text => {
                     // Record the open text index so its matching `BlockStop` emits `content-end`. A
                     // cross-protocol block that carries NO opening frame (Thinking / Image, below)
                     // is never recorded, so its `BlockStop` stays silent rather than emitting an
@@ -531,7 +530,7 @@ impl ProtocolWriter for CohereWriter {
                 // Omitting it made streamed tool calls invisible to a Cohere client. The reader
                 // expects `function.arguments` to be a (possibly empty) string and accumulates
                 // tool-call-delta argument fragments onto it, so we open with an empty string.
-                busbar_core::ir::IrBlockMeta::ToolUse { id, name } => {
+                crate::ir::IrBlockMeta::ToolUse { id, name } => {
                     // Record the open tool index so the matching `BlockStop` closes it with
                     // `tool-call-end` (the native Cohere v2 close event for a tool block) rather
                     // than `content-end` (the text-block close event) — see `open_tool_indices`.
@@ -555,13 +554,11 @@ impl ProtocolWriter for CohereWriter {
                 }
                 // Cohere v2 has no streamed thinking/image block shape. Emitting a fabricated frame
                 // would be a non-native proxy tell, so these IR block kinds carry no opening frame.
-                busbar_core::ir::IrBlockMeta::Thinking | busbar_core::ir::IrBlockMeta::Image => {
-                    None
-                }
+                crate::ir::IrBlockMeta::Thinking | crate::ir::IrBlockMeta::Image => None,
             },
 
             IrStreamEvent::BlockDelta { index, delta } => match delta {
-                busbar_core::ir::IrDelta::TextDelta(text) => Some((
+                crate::ir::IrDelta::TextDelta(text) => Some((
                     "".to_string(),
                     // Native Cohere v2 content-delta frames carry the text at
                     // delta.message.content.text (an object), matching the content-start shape and
@@ -588,7 +585,7 @@ impl ProtocolWriter for CohereWriter {
                 // carrying the argument chunk at delta.message.tool_calls.function.arguments — the
                 // exact path this file's reader reads. Without this arm, cross-protocol tool-call
                 // arguments never reached a Cohere-ingress client.
-                busbar_core::ir::IrDelta::InputJsonDelta(args) => Some((
+                crate::ir::IrDelta::InputJsonDelta(args) => Some((
                     "".to_string(),
                     serde_json::json!({
                         "type": ET_TOOL_CALL_DELTA,
@@ -605,7 +602,7 @@ impl ProtocolWriter for CohereWriter {
                 // rather than being suppressed. Without this arm the streamed plan reached a
                 // Cohere-ingress client as nothing while the same turn non-streamed arrived, which
                 // is the stream/non-stream asymmetry this pass exists to remove.
-                busbar_core::ir::IrDelta::ThinkingDelta(text) => Some((
+                crate::ir::IrDelta::ThinkingDelta(text) => Some((
                     "".to_string(),
                     serde_json::json!({
                         "type": ET_TOOL_PLAN_DELTA,
@@ -613,15 +610,15 @@ impl ProtocolWriter for CohereWriter {
                         "delta": { "message": { "tool_plan": text } }
                     }),
                 )),
-                busbar_core::ir::IrDelta::SignatureDelta(_)
-                | busbar_core::ir::IrDelta::RedactedReasoningDelta(_) => None,
+                crate::ir::IrDelta::SignatureDelta(_)
+                | crate::ir::IrDelta::RedactedReasoningDelta(_) => None,
                 // Cohere v2's SSE vocabulary DOES include `citation-start` (paired with
                 // `citation-end`), so a streamed citation re-emits natively instead of being
                 // suppressed. Suppressing it made the SAME request against the SAME backend return
                 // sources at `stream:false` and no sources at `stream:true` — the worst shape of a
                 // loss, because nothing about the request explains the difference. One frame per
                 // event carrying the whole batch; an empty batch emits nothing.
-                busbar_core::ir::IrDelta::CitationsDelta(cits) if !cits.is_empty() => Some((
+                crate::ir::IrDelta::CitationsDelta(cits) if !cits.is_empty() => Some((
                     "".to_string(),
                     serde_json::json!({
                         "type": ET_CITATION_START,
@@ -633,9 +630,9 @@ impl ProtocolWriter for CohereWriter {
                         }
                     }),
                 )),
-                busbar_core::ir::IrDelta::CitationsDelta(_) => None,
+                crate::ir::IrDelta::CitationsDelta(_) => None,
                 // Cohere v2 has no cross-protocol logprobs shape (token IDs only); dropped.
-                busbar_core::ir::IrDelta::LogprobsDelta(_) => None,
+                crate::ir::IrDelta::LogprobsDelta(_) => None,
             },
 
             IrStreamEvent::BlockStop { index } => {
@@ -777,7 +774,7 @@ impl ProtocolWriter for CohereWriter {
         self.write_response_event(&IrStreamEvent::Error(err.clone()))
     }
 
-    fn write_response(&self, resp: &busbar_core::ir::IrResponse) -> serde_json::Value {
+    fn write_response(&self, resp: &crate::ir::IrResponse) -> serde_json::Value {
         let mut out = serde_json::Map::new();
         let mut content_arr: Vec<serde_json::Value> = Vec::new();
         let mut tool_calls_arr: Vec<serde_json::Value> = Vec::new();
@@ -785,7 +782,7 @@ impl ProtocolWriter for CohereWriter {
 
         for block in &resp.content {
             match block {
-                busbar_core::ir::IrBlock::Text { text, .. } => {
+                crate::ir::IrBlock::Text { text, .. } => {
                     // KNOWN LIMITATION: Cohere's `message.tool_plan` (the
                     // assistant's pre-tool-call reasoning) is READ into a plain leading `IrBlock::Text`
                     // by both cohere readers (non-stream `read_response`, streaming
@@ -799,7 +796,7 @@ impl ProtocolWriter for CohereWriter {
                     // one exists, preserving the text as content is the correct, non-lossy choice.
                     content_arr.push(serde_json::json!({ "type": "text", "text": text }));
                 }
-                busbar_core::ir::IrBlock::ToolUse {
+                crate::ir::IrBlock::ToolUse {
                     id, name, input, ..
                 } => {
                     // Verbatim for a raw Value::String (avoid double-encoding), same as OpenAI/Responses.
@@ -814,7 +811,7 @@ impl ProtocolWriter for CohereWriter {
                 // Text (there was no marker to tell it apart from genuine content, so it came back
                 // as `content` and the model's internal plan was shown to the user). A REDACTED
                 // block is opaque ciphertext with no Cohere analog and is dropped.
-                busbar_core::ir::IrBlock::Thinking {
+                crate::ir::IrBlock::Thinking {
                     text,
                     redacted: false,
                     ..
@@ -823,11 +820,11 @@ impl ProtocolWriter for CohereWriter {
                         tool_plan.get_or_insert_with(String::new).push_str(text);
                     }
                 }
-                busbar_core::ir::IrBlock::Thinking { .. } => {}
-                busbar_core::ir::IrBlock::Image { .. }
-                | busbar_core::ir::IrBlock::Media { .. }
-                | busbar_core::ir::IrBlock::ToolResult { .. }
-                | busbar_core::ir::IrBlock::Json(_) => {}
+                crate::ir::IrBlock::Thinking { .. } => {}
+                crate::ir::IrBlock::Image { .. }
+                | crate::ir::IrBlock::Media { .. }
+                | crate::ir::IrBlock::ToolResult { .. }
+                | crate::ir::IrBlock::Json(_) => {}
             }
         }
 
@@ -880,7 +877,7 @@ impl ProtocolWriter for CohereWriter {
             .content
             .iter()
             .filter_map(|b| match b {
-                busbar_core::ir::IrBlock::Text { citations, .. } => Some(citations),
+                crate::ir::IrBlock::Text { citations, .. } => Some(citations),
                 _ => None,
             })
             .flatten()

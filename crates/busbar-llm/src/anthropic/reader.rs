@@ -5,12 +5,12 @@ impl ProtocolReader for AnthropicReader {
         let v = super::super::usage_tail::isolate_tail_usage_object(tail, b"\"usage\"")?;
         let u64_field = |k: &str| v.get(k).and_then(|x| x.as_u64());
         Some(
-            busbar_core::ir::IrUsage {
+            crate::ir::IrUsage {
                 input_tokens: u64_field("input_tokens").unwrap_or(0),
                 output_tokens: u64_field("output_tokens").unwrap_or(0),
                 cache_creation_input_tokens: u64_field("cache_creation_input_tokens"),
                 cache_read_input_tokens: u64_field("cache_read_input_tokens"),
-                detail: busbar_core::ir::IrUsageDetail::default(),
+                detail: crate::ir::IrUsageDetail::default(),
             }
             .to_token_usage(),
         )
@@ -189,10 +189,7 @@ impl ProtocolReader for AnthropicReader {
         Box::new(self.clone())
     }
 
-    fn read_request(
-        &self,
-        body: &serde_json::Value,
-    ) -> Result<busbar_core::ir::IrRequest, IrError> {
+    fn read_request(&self, body: &serde_json::Value) -> Result<crate::ir::IrRequest, IrError> {
         let obj = body.as_object().ok_or(IrError {
             class: StatusClass::ClientError,
             provider_signal: Some(busbar_core::proto::SIGNAL_IR_PARSE.to_string()),
@@ -200,13 +197,13 @@ impl ProtocolReader for AnthropicReader {
         })?;
 
         let mut extra = serde_json::Map::new();
-        let mut system_blocks: Vec<busbar_core::ir::IrBlock> = Vec::new();
+        let mut system_blocks: Vec<crate::ir::IrBlock> = Vec::new();
 
         // Handle system field (string or array)
         if let Some(system_val) = obj.get("system") {
             if system_val.is_string() {
                 let text = system_val.as_str().unwrap_or("").to_string();
-                system_blocks.push(busbar_core::ir::IrBlock::Text {
+                system_blocks.push(crate::ir::IrBlock::Text {
                     text,
                     cache_control: None,
                     citations: Vec::new(),
@@ -226,7 +223,7 @@ impl ProtocolReader for AnthropicReader {
         // writer never sees an `IrRole::System` message and can never emit the INVALID Anthropic
         // `role:"system"` (which upstream rejects with a 400). System blocks are appended in order,
         // preserving their position relative to any top-level `system` field already read above.
-        let mut messages: Vec<busbar_core::ir::IrMessage> = Vec::new();
+        let mut messages: Vec<crate::ir::IrMessage> = Vec::new();
         // Positions (post system-filter, matching `write_request`'s indexing) of any raw content
         // block whose type `read_block` cannot model (e.g. `document`) — parked here so an
         // Anthropic-to-Anthropic hop that goes through the IR (not the byte-verbatim same-protocol
@@ -236,7 +233,7 @@ impl ProtocolReader for AnthropicReader {
         if let Some(messages_val) = obj.get("messages") {
             for msg_val in messages_val.as_array().unwrap_or(&Vec::new()) {
                 let msg = read_message(msg_val)?;
-                if msg.role == busbar_core::ir::IrRole::System {
+                if msg.role == crate::ir::IrRole::System {
                     system_blocks.extend(msg.content);
                 } else {
                     stash_unmodeled_blocks(msg_val, messages.len(), &mut unmodeled_blocks);
@@ -252,7 +249,7 @@ impl ProtocolReader for AnthropicReader {
         }
 
         // Handle tools array
-        let mut tools: Vec<busbar_core::ir::IrTool> = Vec::new();
+        let mut tools: Vec<crate::ir::IrTool> = Vec::new();
         if let Some(tools_val) = obj.get("tools") {
             for tool_val in tools_val.as_array().unwrap_or(&Vec::new()) {
                 tools.push(read_tool(tool_val)?);
@@ -279,7 +276,7 @@ impl ProtocolReader for AnthropicReader {
             .and_then(|v| v.as_u64())
             .and_then(|v| u32::try_from(v).ok());
         // Anthropic's native `stop_sequences` is an array of strings.
-        let stop = busbar_core::ir::read_stop_sequences(obj.get("stop_sequences"));
+        let stop = crate::ir::read_stop_sequences(obj.get("stop_sequences"));
         // Anthropic `tool_choice` is an object: {type:"auto"|"any"|"tool"|"none", name?}. Normalize
         // into the IR union so forced/targeted tool use survives the cross-protocol seam.
         let tool_choice = read_anthropic_tool_choice(obj.get("tool_choice"));
@@ -309,7 +306,7 @@ impl ProtocolReader for AnthropicReader {
             .and_then(|t| t.get("budget_tokens"))
             .and_then(|v| v.as_u64())
             .and_then(|v| u32::try_from(v).ok())
-            .map(busbar_core::ir::IrReasoningAsk::Budget);
+            .map(crate::ir::IrReasoningAsk::Budget);
         let stream = obj.get("stream").and_then(|v| v.as_bool()).unwrap_or(false);
 
         // Collect unmodeled top-level keys into `extra`. The set of modeled keys is a static,
@@ -352,7 +349,7 @@ impl ProtocolReader for AnthropicReader {
         // `redacted_thinking`/`redactedContent` block — a client-supplied `signature` string can never
         // mark a block redacted, so the old `__busbar` sentinel forgery vector is structurally closed.)
 
-        Ok(busbar_core::ir::IrRequest {
+        Ok(crate::ir::IrRequest {
             reasoning,
             reasoning_budgets: None,
             logprobs: None,
@@ -388,8 +385,8 @@ impl ProtocolReader for AnthropicReader {
                 let msg = data.get("message")?;
                 let role_str = msg.get("role").and_then(|r| r.as_str())?;
                 let role = match role_str {
-                    "user" => busbar_core::ir::IrRole::User,
-                    "assistant" => busbar_core::ir::IrRole::Assistant,
+                    "user" => crate::ir::IrRole::User,
+                    "assistant" => crate::ir::IrRole::Assistant,
                     _ => return None,
                 };
                 let usage = data
@@ -584,7 +581,7 @@ impl ProtocolReader for AnthropicReader {
         &self,
         event_type: &str,
         data: &serde_json::Value,
-        _state: &mut busbar_core::ir::StreamDecodeState,
+        _state: &mut crate::ir::StreamDecodeState,
     ) -> Vec<IrStreamEvent> {
         // A streamed `redacted_thinking` block carries its full opaque encrypted `data` INLINE on the
         // `content_block_start` event (Anthropic sends NO deltas for redacted blocks), so the 1:1
@@ -623,10 +620,7 @@ impl ProtocolReader for AnthropicReader {
         }
     }
 
-    fn read_response(
-        &self,
-        body: &serde_json::Value,
-    ) -> Result<busbar_core::ir::IrResponse, IrError> {
+    fn read_response(&self, body: &serde_json::Value) -> Result<crate::ir::IrResponse, IrError> {
         let obj = body.as_object().ok_or(IrError {
             class: StatusClass::ClientError,
             provider_signal: Some(busbar_core::proto::SIGNAL_IR_PARSE.into()),
@@ -636,7 +630,7 @@ impl ProtocolReader for AnthropicReader {
         // Parse role (should be "assistant" for responses)
         let role_str = obj.get("role").and_then(|r| r.as_str()).unwrap_or("");
         let role = match role_str {
-            "assistant" => busbar_core::ir::IrRole::Assistant,
+            "assistant" => crate::ir::IrRole::Assistant,
             _ => {
                 return Err(IrError {
                     class: StatusClass::ClientError,
@@ -652,7 +646,7 @@ impl ProtocolReader for AnthropicReader {
             provider_signal: Some(busbar_core::proto::SIGNAL_IR_PARSE.into()),
             retry_after: None,
         })?;
-        let mut content: Vec<busbar_core::ir::IrBlock> = Vec::new();
+        let mut content: Vec<crate::ir::IrBlock> = Vec::new();
         if let Some(arr) = content_val.as_array() {
             for block_val in arr {
                 content.push(read_block(block_val)?);
@@ -673,7 +667,7 @@ impl ProtocolReader for AnthropicReader {
         // `usage` rather than bailing) and with the gemini/cohere reader tolerance. When `usage` is
         // absent each counter defaults to zero (`Some` → parse, `None` → 0).
         let usage_val = obj.get("usage");
-        let usage = busbar_core::ir::IrUsage {
+        let usage = crate::ir::IrUsage {
             input_tokens: usage_val
                 .and_then(|u| u.get("input_tokens"))
                 .and_then(|v| v.as_u64())
@@ -721,7 +715,7 @@ impl ProtocolReader for AnthropicReader {
             .and_then(|s| s.as_str())
             .map(String::from);
 
-        Ok(busbar_core::ir::IrResponse {
+        Ok(crate::ir::IrResponse {
             logprobs: Vec::new(),
             role,
             content,

@@ -4,13 +4,11 @@
 //! Tests for `crates/busbar/src/proto/openai_family.rs`.
 
 use crate::breaker::StatusClass;
-use crate::proto::ProtocolRegistry;
 use axum::http::StatusCode;
 
 #[test]
 fn test_openai_classify() {
-    let registry = ProtocolRegistry::with_builtins();
-    let protocol = registry.get("openai").expect("openai should exist");
+    let protocol = crate::proto::protocol_for("openai").expect("openai should exist");
     let reader = protocol.reader();
 
     // Test 429 → RateLimit

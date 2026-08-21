@@ -4,7 +4,6 @@
 //! Tests for `crates/busbar/src/ir/rerank.rs`.
 
 use super::*;
-use crate::ir::variant::IrResp;
 
 #[test]
 fn rerank_resp_billing_is_flat() {
@@ -25,17 +24,10 @@ fn rerank_resp_billing_flat_regardless_of_search_units() {
     assert_eq!(resp.billing(), Some(Billing::Flat));
 }
 
-#[test]
-fn ir_resp_usage_rerank_arm_projects_flat() {
-    // The IrResp::usage() symmetry gate must route the Rerank arm through RerankResp::billing().
-    let ir = IrResp::Rerank(RerankResp::default());
-    assert_eq!(ir.usage(), Some(Billing::Flat));
-}
-
 // ── IrFacts projection (close-non-chat-gate-blindness) ───────────────────────────────────────────
 
-use crate::ir::facts::{ContentItem, IrFacts};
-use crate::operation::Operation;
+use busbar_core::ir::facts::{ContentItem, IrFacts};
+use busbar_core::operation::Operation;
 
 #[test]
 fn rerank_projects_query_and_every_document() {

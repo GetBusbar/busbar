@@ -329,7 +329,7 @@ async fn translate_response_cross_protocol(
     chosen_policy_name: Option<&'static str>,
     degraded: bool,
 ) -> Response {
-    let egress_name = app.lanes[i].protocol.name();
+    let egress_name = app.lanes[i].protocol;
 
     // Size-capped buffer under the COMPLETION cap (not the tight error-body cap): a legitimate 2xx
     // completion can far exceed 256 KiB and must be buffered WHOLE to parse+translate. `truncated`
@@ -418,8 +418,7 @@ async fn translate_response_cross_protocol(
         if let Some(eh) = egress_op {
             match eh.translate_response(
                 crate::handlers::TranslateRespInput::Opaque(&bytes),
-                ingress_op,
-                None,
+                ingress_op.is_some(),
                 ingress_protocol,
                 now(),
                 false,
@@ -462,7 +461,11 @@ async fn translate_response_cross_protocol(
     }
     if let Ok(rv) = &body_json {
         if let Some(eh) = egress_op {
-            if let Some(ingress_proto) = crate::proto::protocol_for(ingress_protocol) {
+            // Gate translation on the ingress having a codec, exactly as the pre-cutover
+            // `protocol_for(ingress_protocol)` guard did; the neutral `translate_response` now takes
+            // the ingress protocol by NAME + a `serves-op` flag and reaches its writer through the
+            // codec cell, so the concrete `ProtocolWriter` is no longer named at this call site.
+            if crate::proto::decl_for(ingress_protocol).is_some_and(|d| d.codec.is_some()) {
                 // Read the wall-clock elapsed once for the wants-stream frame-synthesis fork (a
                 // Bedrock ConverseStream client served a buffered Converse body); the JSON-body path
                 // reads its own fresh elapsed for `inject_response_metrics` below, matching the two
@@ -470,8 +473,7 @@ async fn translate_response_cross_protocol(
                 let stream_elapsed_ms = u64::try_from(upstream_started.elapsed().as_millis()).ok();
                 match eh.translate_response(
                     crate::handlers::TranslateRespInput::Json(rv),
-                    ingress_op,
-                    Some(ingress_proto.writer()),
+                    ingress_op.is_some(),
                     ingress_protocol,
                     now(),
                     wants_stream,
@@ -564,10 +566,18 @@ async fn translate_response_cross_protocol(
                                 // read `metrics == None` — the proxy tell the streaming path already
                                 // injects against. Inject the real request elapsed wall-clock, and OMIT
                                 // `metrics` rather than fabricate a tell-tale `0` if timing is missing.
-                                ingress_proto.writer().inject_response_metrics(
-                                    &mut translated,
-                                    u64::try_from(upstream_started.elapsed().as_millis()).ok(),
-                                );
+                                // Neutral seam: the native response-metrics injection is a per-dialect
+                                // computed-codec method (`DialectCodec::inject_response_metrics`),
+                                // reached by protocol NAME through `decl_for(name).dialect()`, so the
+                                // concrete `ProtocolWriter` is no longer named here (G6 A4b).
+                                if let Some(dialect) = crate::proto::decl_for(ingress_protocol)
+                                    .and_then(|d| d.dialect())
+                                {
+                                    dialect.inject_response_metrics(
+                                        &mut translated,
+                                        u64::try_from(upstream_started.elapsed().as_millis()).ok(),
+                                    );
+                                }
                                 // Gemini JSON-array streaming (`:streamGenerateContent` WITHOUT
                                 // `?alt=sse`) answered by a BUFFERED non-SSE 2xx: the native endpoint
                                 // returns a JSON ARRAY of chunk objects, so a single bare `{...}` is
@@ -713,7 +723,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
     // removed (the deletion test).
     let mut cands: Vec<WeightedLane> = {
         let supports = |wl: &WeightedLane| {
-            crate::handlers::request_handler(app.lanes[wl.idx].protocol.name())
+            crate::handlers::request_handler(app.lanes[wl.idx].protocol)
                 .and_then(|rh| rh.operation_handler(op.operation))
                 .is_some()
         };
@@ -1583,7 +1593,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
         crate::telemetry::upstream_attempt(&app, metric_pool, i);
         tracing::debug!(pool = %pool_name, lane = %app.lanes[i].model, "upstream attempt");
 
-        let egress_name = app.lanes[i].protocol.name();
+        let egress_name = app.lanes[i].protocol;
         // Derive a FRESH per-hop body for translation. Each failover hop must translate/rewrite
         // starting from the ORIGINAL request, never from a previous hop's egress-shaped body. Re-PARSE
         // from the pristine `Bytes` (Arc-backed, so cheap to retain) rather than deep-cloning the
@@ -2349,7 +2359,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                 // non-streaming cross-protocol response → buffer the whole JSON and
                 // translate egress.read_response → IR → ingress.write_response. (Streaming
                 // cross-protocol is handled in FirstByteBody below; same-protocol passes through.)
-                if ingress_protocol != app.lanes[i].protocol.name() && !is_sse {
+                if ingress_protocol != app.lanes[i].protocol && !is_sse {
                     return translate_response_cross_protocol(
                         &app,
                         i,
@@ -2373,7 +2383,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
 
                 // Use FirstByteBody wrapper to track first byte and emit SSE error events on mid-stream failures
                 // on a cross-protocol SSE response, translate egress frames → ingress frames.
-                let egress_name_for_translate = app.lanes[i].protocol.name();
+                let egress_name_for_translate = app.lanes[i].protocol;
                 // ONE registry-resolved factory, IDENTICAL to the degraded `walk.rs` path (extracted so
                 // the two cannot drift): same-protocol SSE builds the verbatim same-proto translator
                 // (byte-exact re-emit + IR usage A-tap; billing sources `translate.usage()`, no IR
@@ -2398,8 +2408,9 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                 // reaches the streaming builder).
                 let json_array = (gemini_json_array && is_sse)
                     .then(|| {
-                        crate::proto::protocol_for(ingress_protocol)
-                            .and_then(|p| p.writer().make_array_stream_framer())
+                        crate::proto::decl_for(ingress_protocol)
+                            .and_then(|d| d.dialect())
+                            .and_then(|dc| dc.make_array_stream_framer())
                     })
                     .flatten();
                 // Handing the budget-refund decision to `FirstByteBody` (via `budget_spent` below,
@@ -2431,7 +2442,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                 // Cross-protocol streaming: the body is reframed to the client's format, so the CT
                 // must be the ingress client's, not the upstream's. Same-protocol passthrough keeps
                 // the upstream CT verbatim..
-                let cross_protocol = ingress_protocol != app.lanes[i].protocol.name();
+                let cross_protocol = ingress_protocol != app.lanes[i].protocol;
                 if gemini_json_array && is_sse {
                     // JSON-array streaming body: a `[ {...}, {...} ]` document, not SSE.
                     rb = rb.header(CONTENT_TYPE, APPLICATION_JSON);

@@ -159,7 +159,6 @@ where
         // interned `&'static` name we store (no per-response allocation for the name). An unknown
         // ingress protocol falls back to `openai` — the exact default `ingress_error` /
         // `mid_stream_error_bytes` already use for framing, so the fallback is behavior-preserving.
-        let ingress_proto = crate::proto::protocol_for(ingress_protocol);
         Self {
             inner,
             first_byte_sent: false,
@@ -169,9 +168,8 @@ where
             // no `== "bedrock"` branch — a future protocol with binary framing just overrides it.
             ingress_eventstream: crate::proto::decl_for(ingress_protocol)
                 .is_some_and(|d| d.ingress_is_eventstream),
-            ingress_protocol: ingress_proto
-                .as_ref()
-                .map(|p| p.name_static())
+            ingress_protocol: crate::proto::decl_for(ingress_protocol)
+                .map(|d| d.name)
                 .unwrap_or("openai"),
             op,
             permit: Some(permit),

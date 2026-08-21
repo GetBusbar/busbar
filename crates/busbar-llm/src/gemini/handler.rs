@@ -3,14 +3,14 @@
 
 //! Gemini `RequestHandler` + cells. Embeddings via `models/{id}:embedContent`.
 
+use crate::ir::audio::{SpeechResp, TranscriptionResp};
+use crate::ir::embeddings::{
+    EmbInput, EmbeddingItem, EmbeddingsReq, EmbeddingsResp, EncFmt, VectorData,
+};
 use busbar_core::handlers::{
     CodecError, EgressCtx, IngressReject, OperationHandler, RequestHandler, WireBody,
 };
-use busbar_core::ir::audio::{SpeechResp, TranscriptionResp};
-use busbar_core::ir::embeddings::{
-    EmbInput, EmbeddingItem, EmbeddingsReq, EmbeddingsResp, EncFmt, VectorData,
-};
-use busbar_core::ir::variant::{IrReq, IrResp};
+use busbar_core::ir::handle::IrHandle;
 use busbar_core::media::{base64_encode, MediaBlob, MediaPayload};
 use busbar_core::operation::Operation;
 use bytes::Bytes;
@@ -19,8 +19,8 @@ use serde_json::{json, Value};
 pub(crate) struct GeminiRequestHandler;
 /// This protocol's OWN chat instance — delete this line (and the registry arm) and this
 /// protocol's chat 404s via the standard no-handler path; everything else keeps working.
-static CHAT: busbar_core::handlers::chat::ChatOperation =
-    busbar_core::handlers::chat::ChatOperation("gemini");
+static CHAT: super::super::chat_handle::ChatOperation =
+    super::super::chat_handle::ChatOperation("gemini");
 static EMB: GeminiEmbeddings = GeminiEmbeddings;
 static IMG: GeminiImage = GeminiImage;
 static TRANSCRIPTION: GeminiTranscription = GeminiTranscription;
@@ -149,107 +149,27 @@ impl OperationHandler for GeminiTranscription {
     }
     /// gemini `generateContent`-with-audio wire → IR (gemini as INGRESS): `inline_data` part is the
     /// audio, a text part (if any) is the instruction/prompt. Model rides the PATH.
-    fn read_request(&self, body: &[u8], _content_type: &str) -> Result<IrReq, IngressReject> {
-        let wire: Value =
-            serde_json::from_slice(body).map_err(|e| IngressReject::BadRequest(e.to_string()))?;
-        let mut audio = None;
-        let mut prompt = None;
-        if let Some(parts) = wire.pointer("/contents/0/parts").and_then(Value::as_array) {
-            for p in parts {
-                let inline = p.get("inline_data").or_else(|| p.get("inlineData"));
-                if let Some(d) = inline {
-                    // Validate the client-supplied base64 at this trust boundary: a malformed
-                    // payload must 400 here, not silently become an empty audio body downstream
-                    // (the egress writer decodes it and any `unwrap_or_default` would truncate).
-                    let data = d
-                        .get("data")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                        .to_string();
-                    if busbar_core::media::base64_decode(&data).is_none() {
-                        return Err(IngressReject::BadRequest(
-                            "inline_data.data is not valid base64".into(),
-                        ));
-                    }
-                    audio = Some(MediaBlob {
-                        payload: MediaPayload::B64(data),
-                        mime_type: d
-                            .get("mime_type")
-                            .or_else(|| d.get("mimeType"))
-                            .and_then(Value::as_str)
-                            .unwrap_or("application/octet-stream")
-                            .to_string(),
-                        pcm: None,
-                    });
-                } else if let Some(t) = p.get("text").and_then(Value::as_str) {
-                    prompt = Some(t.to_string());
-                }
-            }
-        }
-        let Some(audio) = audio else {
-            return Err(IngressReject::BadRequest(
-                "transcription requires an inline_data audio part".into(),
-            ));
-        };
-        Ok(IrReq::Transcription(
-            busbar_core::ir::audio::TranscriptionReq {
-                audio: Some(audio),
-                prompt,
-                ..Default::default()
-            },
-        ))
+    fn read_request(
+        &self,
+        body: &[u8],
+        _content_type: &str,
+    ) -> Result<Box<dyn IrHandle>, IngressReject> {
+        Ok(Box::new(super::super::leaf_handles::TranscriptionReqHandle(
+            read_transcription_request(body, _content_type)?,
+        )) as Box<dyn IrHandle>)
     }
-    fn write_request(&self, ir: &IrReq) -> Bytes {
-        let IrReq::Transcription(r) = ir else {
-            return Bytes::new();
-        };
-        super::super::leaf_codec::transcription_write_request("gemini", r)
-    }
-    fn read_response(&self, wire: &[u8]) -> Result<IrResp, CodecError> {
-        let v: Value =
-            serde_json::from_slice(wire).map_err(|e| CodecError::Malformed(e.to_string()))?;
-        let text = v
-            .pointer("/candidates/0/content/parts")
-            .and_then(Value::as_array)
-            .map(|parts| {
-                parts
-                    .iter()
-                    .filter_map(|p| p.get("text").and_then(Value::as_str))
-                    .collect::<Vec<_>>()
-                    .join("")
-            })
-            .unwrap_or_default();
-        let usage = v.get("usageMetadata").map(|u| {
-            busbar_core::billing::Billing::Tokens(busbar_core::billing::TokenUsage {
-                input: u
-                    .get("promptTokenCount")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(0),
-                output: u
-                    .get("candidatesTokenCount")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(0),
-                ..Default::default()
-            })
-        });
-        Ok(IrResp::Transcription(TranscriptionResp {
-            text,
-            usage,
-            ..Default::default()
-        }))
-    }
-    /// IR → gemini candidates response (gemini as INGRESS): transcript text as the model turn.
-    fn write_response(&self, ir: &IrResp) -> WireBody {
-        let IrResp::Transcription(r) = ir else {
-            return WireBody::json(Bytes::new());
-        };
-        super::super::leaf_codec::transcription_write_response("gemini", r)
+    fn read_response(&self, wire: &[u8]) -> Result<Box<dyn IrHandle>, CodecError> {
+        Ok(
+            Box::new(super::super::leaf_handles::TranscriptionRespHandle(
+                read_transcription_response(wire)?,
+            )) as Box<dyn IrHandle>,
+        )
     }
 }
 
 /// IR → gemini candidates transcription request wire (the body of [`GeminiTranscription::write_request`],
 /// moved behind the `(transcription, gemini)` key — G6 A4b option-a). Byte-identical to the inline write.
-pub(crate) fn write_transcription_request(r: &busbar_core::ir::audio::TranscriptionReq) -> Bytes {
+pub(crate) fn write_transcription_request(r: &crate::ir::audio::TranscriptionReq) -> Bytes {
     let (mime, data) = match &r.audio {
         Some(blob) => {
             let d = match &blob.payload {
@@ -278,9 +198,7 @@ pub(crate) fn write_transcription_request(r: &busbar_core::ir::audio::Transcript
 /// IR → gemini candidates transcription response wire (the body of
 /// [`GeminiTranscription::write_response`], moved behind the `(transcription, gemini)` key — G6 A4b
 /// option-a). Byte-identical to the pre-cutover inline write.
-pub(crate) fn write_transcription_response(
-    r: &busbar_core::ir::audio::TranscriptionResp,
-) -> WireBody {
+pub(crate) fn write_transcription_response(r: &crate::ir::audio::TranscriptionResp) -> WireBody {
     let mut body = json!({
         "candidates": [{
             "content": { "parts": [{ "text": r.text }], "role": "model" },
@@ -308,102 +226,25 @@ impl OperationHandler for GeminiSpeech {
         busbar_core::handlers::protocol_error("gemini", status, body)
     }
     /// gemini TTS wire → IR (gemini as INGRESS): text part is the input; voice from speechConfig.
-    fn read_request(&self, body: &[u8], _content_type: &str) -> Result<IrReq, IngressReject> {
-        let wire: Value =
-            serde_json::from_slice(body).map_err(|e| IngressReject::BadRequest(e.to_string()))?;
-        let input = wire
-            .pointer("/contents/0/parts")
-            .and_then(Value::as_array)
-            .map(|parts| {
-                parts
-                    .iter()
-                    .filter_map(|p| p.get("text").and_then(Value::as_str))
-                    .collect::<Vec<_>>()
-                    .join("")
-            })
-            .unwrap_or_default();
-        if input.is_empty() {
-            return Err(IngressReject::BadRequest(
-                "speech requires a text part".into(),
-            ));
-        }
-        let voice = wire
-            .pointer("/generationConfig/speechConfig/voiceConfig/prebuiltVoiceConfig/voiceName")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string();
-        Ok(IrReq::Speech(busbar_core::ir::audio::SpeechReq {
-            input,
-            voice,
-            ..Default::default()
-        }))
+    fn read_request(
+        &self,
+        body: &[u8],
+        _content_type: &str,
+    ) -> Result<Box<dyn IrHandle>, IngressReject> {
+        Ok(Box::new(super::super::leaf_handles::SpeechReqHandle(
+            read_speech_request(body, _content_type)?,
+        )) as Box<dyn IrHandle>)
     }
-    fn write_request(&self, ir: &IrReq) -> Bytes {
-        let IrReq::Speech(r) = ir else {
-            return Bytes::new();
-        };
-        super::super::leaf_codec::speech_write_request("gemini", r)
-    }
-    fn read_response(&self, wire: &[u8]) -> Result<IrResp, CodecError> {
-        // Real Gemini → JSON with inline base64 audio; mock/raw → binary body. Try JSON, fall back.
-        if let Ok(v) = serde_json::from_slice::<Value>(wire) {
-            if let Some(data) = v
-                .pointer("/candidates/0/content/parts/0/inlineData/data")
-                .and_then(Value::as_str)
-            {
-                let mime = v
-                    .pointer("/candidates/0/content/parts/0/inlineData/mimeType")
-                    .and_then(Value::as_str)
-                    .unwrap_or("audio/L16;codec=pcm;rate=24000")
-                    .to_string();
-                let pcm = mime
-                    .contains("pcm")
-                    .then_some(busbar_core::media::PcmParams {
-                        sample_rate: 24000,
-                        channels: 1,
-                        bit_depth: 16,
-                    });
-                // Validate the backend's base64 at this trust boundary: a corrupt payload must fail
-                // loud here (CodecError) rather than reach the egress writer, where a decode failure
-                // would silently become an empty 200 audio body. This is the response-side twin of
-                // the ingress inline_data validation.
-                if busbar_core::media::base64_decode(data).is_none() {
-                    return Err(CodecError::Malformed(
-                        "gemini speech inlineData.data is not valid base64".into(),
-                    ));
-                }
-                return Ok(IrResp::Speech(SpeechResp {
-                    audio: Some(MediaBlob {
-                        payload: MediaPayload::B64(data.to_string()),
-                        mime_type: mime,
-                        pcm,
-                    }),
-                    ..Default::default()
-                }));
-            }
-        }
-        Ok(IrResp::Speech(SpeechResp {
-            audio: Some(MediaBlob {
-                payload: MediaPayload::Bytes(Bytes::copy_from_slice(wire)),
-                mime_type: "audio/mpeg".into(),
-                pcm: None,
-            }),
-            ..Default::default()
-        }))
-    }
-    /// IR → gemini TTS response (gemini as INGRESS): inline base64 audio as the model turn. Real
-    /// Gemini answers TTS in JSON (`inlineData`), never raw binary — the caller's dialect rules.
-    fn write_response(&self, ir: &IrResp) -> WireBody {
-        let IrResp::Speech(r) = ir else {
-            return WireBody::json(Bytes::new());
-        };
-        super::super::leaf_codec::speech_write_response("gemini", r)
+    fn read_response(&self, wire: &[u8]) -> Result<Box<dyn IrHandle>, CodecError> {
+        Ok(Box::new(super::super::leaf_handles::SpeechRespHandle(
+            read_speech_response(wire)?,
+        )) as Box<dyn IrHandle>)
     }
 }
 
 /// IR → gemini TTS request wire (the body of [`GeminiSpeech::write_request`], moved behind the
 /// `(speech, gemini)` key — G6 A4b option-a). Byte-identical to the pre-cutover inline write.
-pub(crate) fn write_speech_request(r: &busbar_core::ir::audio::SpeechReq) -> Bytes {
+pub(crate) fn write_speech_request(r: &crate::ir::audio::SpeechReq) -> Bytes {
     let speech_config = json!({
         "voiceConfig": { "prebuiltVoiceConfig": { "voiceName": r.voice } }
     });
@@ -454,75 +295,25 @@ impl OperationHandler for GeminiImage {
         busbar_core::handlers::protocol_error("gemini", status, body)
     }
     /// Imagen `:predict` wire → IR (gemini as INGRESS): `instances[].prompt` + `parameters`.
-    fn read_request(&self, body: &[u8], _content_type: &str) -> Result<IrReq, IngressReject> {
-        let wire: Value =
-            serde_json::from_slice(body).map_err(|e| IngressReject::BadRequest(e.to_string()))?;
-        let params = wire.get("parameters").cloned().unwrap_or_default();
-        Ok(IrReq::Image(busbar_core::ir::image::ImageReq {
-            prompt: wire
-                .pointer("/instances/0/prompt")
-                .and_then(Value::as_str)
-                .map(str::to_string),
-            n: params
-                .get("sampleCount")
-                .and_then(Value::as_u64)
-                .and_then(|n| u32::try_from(n).ok()),
-            aspect_ratio: params
-                .get("aspectRatio")
-                .and_then(Value::as_str)
-                .map(str::to_string),
-            person_generation: params
-                .get("personGeneration")
-                .and_then(Value::as_str)
-                .map(str::to_string),
-            ..Default::default()
-        }))
+    fn read_request(
+        &self,
+        body: &[u8],
+        _content_type: &str,
+    ) -> Result<Box<dyn IrHandle>, IngressReject> {
+        Ok(Box::new(super::super::leaf_handles::ImageReqHandle(
+            read_image_request(body, _content_type)?,
+        )) as Box<dyn IrHandle>)
     }
-    fn write_request(&self, ir: &IrReq) -> Bytes {
-        let IrReq::Image(r) = ir else {
-            return Bytes::new();
-        };
-        super::super::leaf_codec::image_write_request("gemini", r)
-    }
-    fn read_response(&self, wire: &[u8]) -> Result<IrResp, CodecError> {
-        let v: Value =
-            serde_json::from_slice(wire).map_err(|e| CodecError::Malformed(e.to_string()))?;
-        let images = v
-            .get("predictions")
-            .and_then(Value::as_array)
-            .map(|arr| {
-                arr.iter()
-                    .map(|p| busbar_core::media::ImageOutput {
-                        b64: p
-                            .get("bytesBase64Encoded")
-                            .and_then(Value::as_str)
-                            .map(str::to_string),
-                        mime_type: p
-                            .get("mimeType")
-                            .and_then(Value::as_str)
-                            .map(str::to_string),
-                        ..Default::default()
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        Ok(IrResp::Image(busbar_core::ir::image::ImageResp {
-            images,
-            ..Default::default()
-        }))
-    }
-    /// IR → Imagen `:predict` response (gemini as INGRESS): `predictions[].bytesBase64Encoded`.
-    fn write_response(&self, ir: &IrResp) -> WireBody {
-        let IrResp::Image(r) = ir else {
-            return WireBody::json(Bytes::new());
-        };
-        super::super::leaf_codec::image_write_response("gemini", r)
+    fn read_response(&self, wire: &[u8]) -> Result<Box<dyn IrHandle>, CodecError> {
+        Ok(Box::new(super::super::leaf_handles::ImageRespHandle(
+            read_image_response(wire)?,
+        )) as Box<dyn IrHandle>)
     }
 }
 
 /// IR → Imagen `:predict` request wire (the body of [`GeminiImage::write_request`], moved behind the
 /// `(image, gemini)` key — G6 A4b option-a). Byte-identical to the pre-cutover inline write.
-pub(crate) fn write_image_request(r: &busbar_core::ir::image::ImageReq) -> Bytes {
+pub(crate) fn write_image_request(r: &crate::ir::image::ImageReq) -> Bytes {
     let mut params = json!({ "sampleCount": r.n.unwrap_or(1) });
     // Carry the Imagen generation controls the reader captures; dropping them fell back to
     // Imagen's defaults (1:1 aspect, default person-generation policy) instead of the request.
@@ -541,7 +332,7 @@ pub(crate) fn write_image_request(r: &busbar_core::ir::image::ImageReq) -> Bytes
 
 /// IR → Imagen `:predict` response wire (the body of [`GeminiImage::write_response`], moved behind
 /// the `(image, gemini)` key — G6 A4b option-a). Byte-identical to the pre-cutover inline write.
-pub(crate) fn write_image_response(r: &busbar_core::ir::image::ImageResp) -> WireBody {
+pub(crate) fn write_image_response(r: &crate::ir::image::ImageResp) -> WireBody {
     let predictions: Vec<Value> = r
         .images
         .iter()
@@ -574,100 +365,24 @@ impl OperationHandler for GeminiEmbeddings {
     fn taps_usage(&self) -> bool {
         true
     }
-    /// Gemini `:embedContent` embeds a SINGLE input. v1.5.4-restored: a cross-protocol request
-    /// carrying N > 1 inputs (e.g. an OpenAI-family embeddings batch) is NOT rejected here. The
-    /// egress `write_request` embeds the FIRST input, emits a `warn!` naming how many were dropped,
-    /// and returns HTTP 200 with one vector — the silent-degrade v1.5.4 shipped. Fail-loud (a 400 up
-    /// front) is a deliberate future opt-in, not a 1.6.0 default, so this reports the request as
-    /// representable. (`:batchEmbedContents` support is the larger follow-up that would embed all N.)
-    fn egress_representable(&self, _ir: &IrReq) -> Result<(), String> {
-        Ok(())
+    // Gemini `:embedContent` embeds a SINGLE input. v1.5.4-restored: a cross-protocol request
+    // carrying N > 1 inputs (e.g. an OpenAI-family embeddings batch) is NOT rejected — the egress
+    // writer embeds the FIRST input, warns how many were dropped, and returns HTTP 200 with one
+    // vector (the silent-degrade v1.5.4 shipped). Representability is the leaf handle's default
+    // (`EmbeddingsReqHandle`), so no override is needed now the enum dissolved.
+    fn read_request(
+        &self,
+        body: &[u8],
+        _content_type: &str,
+    ) -> Result<Box<dyn IrHandle>, IngressReject> {
+        Ok(Box::new(super::super::leaf_handles::EmbeddingsReqHandle(
+            read_embeddings_request(body, _content_type)?,
+        )) as Box<dyn IrHandle>)
     }
-    fn read_request(&self, body: &[u8], _content_type: &str) -> Result<IrReq, IngressReject> {
-        // gemini `:embedContent` wire → IR (gemini as INGRESS). Model rides the PATH (routing fills
-        // it via `IrReq::set_model`); the body carries `content.parts[].text`.
-        let wire: Value =
-            serde_json::from_slice(body).map_err(|e| IngressReject::BadRequest(e.to_string()))?;
-        let text = wire
-            .pointer("/content/parts")
-            .and_then(Value::as_array)
-            .map(|parts| {
-                parts
-                    .iter()
-                    .filter_map(|p| p.get("text").and_then(Value::as_str))
-                    .collect::<Vec<_>>()
-                    .join("")
-            })
-            .unwrap_or_default();
-        if text.is_empty() {
-            return Err(IngressReject::BadRequest(
-                "embedContent requires `content.parts[].text`".into(),
-            ));
-        }
-        Ok(IrReq::Embeddings(
-            busbar_core::ir::embeddings::EmbeddingsReq {
-                input: EmbInput::Text(vec![text]),
-                task_type: wire
-                    .get("taskType")
-                    .and_then(Value::as_str)
-                    .map(str::to_string),
-                title: wire
-                    .get("title")
-                    .and_then(Value::as_str)
-                    .map(str::to_string),
-                dimensions: wire
-                    .get("outputDimensionality")
-                    .and_then(Value::as_u64)
-                    .and_then(|d| u32::try_from(d).ok()),
-                encoding_formats: vec![EncFmt::Float],
-                ..Default::default()
-            },
-        ))
-    }
-    fn write_request(&self, ir: &IrReq) -> Bytes {
-        let IrReq::Embeddings(r) = ir else {
-            return Bytes::new();
-        };
-        super::super::leaf_codec::embeddings_write_request("gemini", r)
-    }
-    fn read_response(&self, wire: &[u8]) -> Result<IrResp, CodecError> {
-        let v: Value =
-            serde_json::from_slice(wire).map_err(|e| CodecError::Malformed(e.to_string()))?;
-        let mut item = EmbeddingItem::default();
-        if let Some(f) = v
-            .get("embedding")
-            .and_then(|e| e.get("values"))
-            .and_then(Value::as_array)
-        {
-            item.vectors.insert(
-                EncFmt::Float,
-                VectorData::Float(
-                    f.iter()
-                        .filter_map(|x| x.as_f64().map(|n| n as f32))
-                        .collect(),
-                ),
-            );
-        }
-        let usage = v
-            .get("usageMetadata")
-            .and_then(|u| u.get("promptTokenCount"))
-            .and_then(Value::as_u64)
-            .map(|n| busbar_core::billing::TokenUsage {
-                input: n,
-                ..Default::default()
-            });
-        Ok(IrResp::Embeddings(EmbeddingsResp {
-            embeddings: vec![item],
-            usage,
-            ..Default::default()
-        }))
-    }
-    /// IR → gemini `:embedContent` response (gemini as INGRESS): `{"embedding":{"values":[..]}}`.
-    fn write_response(&self, ir: &IrResp) -> WireBody {
-        let IrResp::Embeddings(r) = ir else {
-            return WireBody::json(Bytes::new());
-        };
-        super::super::leaf_codec::embeddings_write_response("gemini", r)
+    fn read_response(&self, wire: &[u8]) -> Result<Box<dyn IrHandle>, CodecError> {
+        Ok(Box::new(super::super::leaf_handles::EmbeddingsRespHandle(
+            read_embeddings_response(wire)?,
+        )) as Box<dyn IrHandle>)
     }
 }
 
@@ -734,3 +449,333 @@ pub(crate) fn write_embeddings_response(r: &EmbeddingsResp) -> WireBody {
 #[cfg(test)]
 #[path = "tests/handler_tests.rs"]
 mod tests;
+
+/// Wire -> concrete `TranscriptionReq` parse, extracted from the `OperationHandler::read_request`
+/// body so a dissolved leaf-op handle and the `(op,proto)` `leaf_codec` read dispatch (G6 A4b,
+/// owner ruling b) can recover the concrete IR without a downcast. Byte-identical parse.
+pub(crate) fn read_transcription_request(
+    body: &[u8],
+    _content_type: &str,
+) -> Result<crate::ir::audio::TranscriptionReq, IngressReject> {
+    let wire: Value =
+        serde_json::from_slice(body).map_err(|e| IngressReject::BadRequest(e.to_string()))?;
+    let mut audio = None;
+    let mut prompt = None;
+    if let Some(parts) = wire.pointer("/contents/0/parts").and_then(Value::as_array) {
+        for p in parts {
+            let inline = p.get("inline_data").or_else(|| p.get("inlineData"));
+            if let Some(d) = inline {
+                // Validate the client-supplied base64 at this trust boundary: a malformed
+                // payload must 400 here, not silently become an empty audio body downstream
+                // (the egress writer decodes it and any `unwrap_or_default` would truncate).
+                let data = d
+                    .get("data")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                if busbar_core::media::base64_decode(&data).is_none() {
+                    return Err(IngressReject::BadRequest(
+                        "inline_data.data is not valid base64".into(),
+                    ));
+                }
+                audio = Some(MediaBlob {
+                    payload: MediaPayload::B64(data),
+                    mime_type: d
+                        .get("mime_type")
+                        .or_else(|| d.get("mimeType"))
+                        .and_then(Value::as_str)
+                        .unwrap_or("application/octet-stream")
+                        .to_string(),
+                    pcm: None,
+                });
+            } else if let Some(t) = p.get("text").and_then(Value::as_str) {
+                prompt = Some(t.to_string());
+            }
+        }
+    }
+    let Some(audio) = audio else {
+        return Err(IngressReject::BadRequest(
+            "transcription requires an inline_data audio part".into(),
+        ));
+    };
+    Ok(crate::ir::audio::TranscriptionReq {
+        audio: Some(audio),
+        prompt,
+        ..Default::default()
+    })
+}
+
+/// Wire -> concrete `TranscriptionResp` parse, extracted from the `OperationHandler::read_response`
+/// body so a dissolved leaf-op handle and the `(op,proto)` `leaf_codec` read dispatch (G6 A4b,
+/// owner ruling b) can recover the concrete IR without a downcast. Byte-identical parse.
+pub(crate) fn read_transcription_response(
+    wire: &[u8],
+) -> Result<crate::ir::audio::TranscriptionResp, CodecError> {
+    let v: Value =
+        serde_json::from_slice(wire).map_err(|e| CodecError::Malformed(e.to_string()))?;
+    let text = v
+        .pointer("/candidates/0/content/parts")
+        .and_then(Value::as_array)
+        .map(|parts| {
+            parts
+                .iter()
+                .filter_map(|p| p.get("text").and_then(Value::as_str))
+                .collect::<Vec<_>>()
+                .join("")
+        })
+        .unwrap_or_default();
+    let usage = v.get("usageMetadata").map(|u| {
+        busbar_core::billing::Billing::Tokens(busbar_core::billing::TokenUsage {
+            input: u
+                .get("promptTokenCount")
+                .and_then(Value::as_u64)
+                .unwrap_or(0),
+            output: u
+                .get("candidatesTokenCount")
+                .and_then(Value::as_u64)
+                .unwrap_or(0),
+            ..Default::default()
+        })
+    });
+    Ok(TranscriptionResp {
+        text,
+        usage,
+        ..Default::default()
+    })
+}
+
+/// Wire -> concrete `SpeechReq` parse, extracted from the `OperationHandler::read_request`
+/// body so a dissolved leaf-op handle and the `(op,proto)` `leaf_codec` read dispatch (G6 A4b,
+/// owner ruling b) can recover the concrete IR without a downcast. Byte-identical parse.
+pub(crate) fn read_speech_request(
+    body: &[u8],
+    _content_type: &str,
+) -> Result<crate::ir::audio::SpeechReq, IngressReject> {
+    let wire: Value =
+        serde_json::from_slice(body).map_err(|e| IngressReject::BadRequest(e.to_string()))?;
+    let input = wire
+        .pointer("/contents/0/parts")
+        .and_then(Value::as_array)
+        .map(|parts| {
+            parts
+                .iter()
+                .filter_map(|p| p.get("text").and_then(Value::as_str))
+                .collect::<Vec<_>>()
+                .join("")
+        })
+        .unwrap_or_default();
+    if input.is_empty() {
+        return Err(IngressReject::BadRequest(
+            "speech requires a text part".into(),
+        ));
+    }
+    let voice = wire
+        .pointer("/generationConfig/speechConfig/voiceConfig/prebuiltVoiceConfig/voiceName")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    Ok(crate::ir::audio::SpeechReq {
+        input,
+        voice,
+        ..Default::default()
+    })
+}
+
+/// Wire -> concrete `SpeechResp` parse, extracted from the `OperationHandler::read_response`
+/// body so a dissolved leaf-op handle and the `(op,proto)` `leaf_codec` read dispatch (G6 A4b,
+/// owner ruling b) can recover the concrete IR without a downcast. Byte-identical parse.
+pub(crate) fn read_speech_response(
+    wire: &[u8],
+) -> Result<crate::ir::audio::SpeechResp, CodecError> {
+    // Real Gemini → JSON with inline base64 audio; mock/raw → binary body. Try JSON, fall back.
+    if let Ok(v) = serde_json::from_slice::<Value>(wire) {
+        if let Some(data) = v
+            .pointer("/candidates/0/content/parts/0/inlineData/data")
+            .and_then(Value::as_str)
+        {
+            let mime = v
+                .pointer("/candidates/0/content/parts/0/inlineData/mimeType")
+                .and_then(Value::as_str)
+                .unwrap_or("audio/L16;codec=pcm;rate=24000")
+                .to_string();
+            let pcm = mime
+                .contains("pcm")
+                .then_some(busbar_core::media::PcmParams {
+                    sample_rate: 24000,
+                    channels: 1,
+                    bit_depth: 16,
+                });
+            // Validate the backend's base64 at this trust boundary: a corrupt payload must fail
+            // loud here (CodecError) rather than reach the egress writer, where a decode failure
+            // would silently become an empty 200 audio body. This is the response-side twin of
+            // the ingress inline_data validation.
+            if busbar_core::media::base64_decode(data).is_none() {
+                return Err(CodecError::Malformed(
+                    "gemini speech inlineData.data is not valid base64".into(),
+                ));
+            }
+            return Ok(SpeechResp {
+                audio: Some(MediaBlob {
+                    payload: MediaPayload::B64(data.to_string()),
+                    mime_type: mime,
+                    pcm,
+                }),
+                ..Default::default()
+            });
+        }
+    }
+    Ok(SpeechResp {
+        audio: Some(MediaBlob {
+            payload: MediaPayload::Bytes(Bytes::copy_from_slice(wire)),
+            mime_type: "audio/mpeg".into(),
+            pcm: None,
+        }),
+        ..Default::default()
+    })
+}
+
+/// Wire -> concrete `ImageReq` parse, extracted from the `OperationHandler::read_request`
+/// body so a dissolved leaf-op handle and the `(op,proto)` `leaf_codec` read dispatch (G6 A4b,
+/// owner ruling b) can recover the concrete IR without a downcast. Byte-identical parse.
+pub(crate) fn read_image_request(
+    body: &[u8],
+    _content_type: &str,
+) -> Result<crate::ir::image::ImageReq, IngressReject> {
+    let wire: Value =
+        serde_json::from_slice(body).map_err(|e| IngressReject::BadRequest(e.to_string()))?;
+    let params = wire.get("parameters").cloned().unwrap_or_default();
+    Ok(crate::ir::image::ImageReq {
+        prompt: wire
+            .pointer("/instances/0/prompt")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        n: params
+            .get("sampleCount")
+            .and_then(Value::as_u64)
+            .and_then(|n| u32::try_from(n).ok()),
+        aspect_ratio: params
+            .get("aspectRatio")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        person_generation: params
+            .get("personGeneration")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        ..Default::default()
+    })
+}
+
+/// Wire -> concrete `ImageResp` parse, extracted from the `OperationHandler::read_response`
+/// body so a dissolved leaf-op handle and the `(op,proto)` `leaf_codec` read dispatch (G6 A4b,
+/// owner ruling b) can recover the concrete IR without a downcast. Byte-identical parse.
+pub(crate) fn read_image_response(wire: &[u8]) -> Result<crate::ir::image::ImageResp, CodecError> {
+    let v: Value =
+        serde_json::from_slice(wire).map_err(|e| CodecError::Malformed(e.to_string()))?;
+    let images = v
+        .get("predictions")
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .map(|p| busbar_core::media::ImageOutput {
+                    b64: p
+                        .get("bytesBase64Encoded")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                    mime_type: p
+                        .get("mimeType")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                    ..Default::default()
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok(crate::ir::image::ImageResp {
+        images,
+        ..Default::default()
+    })
+}
+
+/// Wire -> concrete `EmbeddingsReq` parse, extracted from the `OperationHandler::read_request`
+/// body so a dissolved leaf-op handle and the `(op,proto)` `leaf_codec` read dispatch (G6 A4b,
+/// owner ruling b) can recover the concrete IR without a downcast. Byte-identical parse.
+pub(crate) fn read_embeddings_request(
+    body: &[u8],
+    _content_type: &str,
+) -> Result<crate::ir::embeddings::EmbeddingsReq, IngressReject> {
+    // gemini `:embedContent` wire → IR (gemini as INGRESS). Model rides the PATH (routing fills
+    // it via `IrReq::set_model`); the body carries `content.parts[].text`.
+    let wire: Value =
+        serde_json::from_slice(body).map_err(|e| IngressReject::BadRequest(e.to_string()))?;
+    let text = wire
+        .pointer("/content/parts")
+        .and_then(Value::as_array)
+        .map(|parts| {
+            parts
+                .iter()
+                .filter_map(|p| p.get("text").and_then(Value::as_str))
+                .collect::<Vec<_>>()
+                .join("")
+        })
+        .unwrap_or_default();
+    if text.is_empty() {
+        return Err(IngressReject::BadRequest(
+            "embedContent requires `content.parts[].text`".into(),
+        ));
+    }
+    Ok(crate::ir::embeddings::EmbeddingsReq {
+        input: EmbInput::Text(vec![text]),
+        task_type: wire
+            .get("taskType")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        title: wire
+            .get("title")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        dimensions: wire
+            .get("outputDimensionality")
+            .and_then(Value::as_u64)
+            .and_then(|d| u32::try_from(d).ok()),
+        encoding_formats: vec![EncFmt::Float],
+        ..Default::default()
+    })
+}
+
+/// Wire -> concrete `EmbeddingsResp` parse, extracted from the `OperationHandler::read_response`
+/// body so a dissolved leaf-op handle and the `(op,proto)` `leaf_codec` read dispatch (G6 A4b,
+/// owner ruling b) can recover the concrete IR without a downcast. Byte-identical parse.
+pub(crate) fn read_embeddings_response(
+    wire: &[u8],
+) -> Result<crate::ir::embeddings::EmbeddingsResp, CodecError> {
+    let v: Value =
+        serde_json::from_slice(wire).map_err(|e| CodecError::Malformed(e.to_string()))?;
+    let mut item = EmbeddingItem::default();
+    if let Some(f) = v
+        .get("embedding")
+        .and_then(|e| e.get("values"))
+        .and_then(Value::as_array)
+    {
+        item.vectors.insert(
+            EncFmt::Float,
+            VectorData::Float(
+                f.iter()
+                    .filter_map(|x| x.as_f64().map(|n| n as f32))
+                    .collect(),
+            ),
+        );
+    }
+    let usage = v
+        .get("usageMetadata")
+        .and_then(|u| u.get("promptTokenCount"))
+        .and_then(Value::as_u64)
+        .map(|n| busbar_core::billing::TokenUsage {
+            input: n,
+            ..Default::default()
+        });
+    Ok(EmbeddingsResp {
+        embeddings: vec![item],
+        usage,
+        ..Default::default()
+    })
+}
