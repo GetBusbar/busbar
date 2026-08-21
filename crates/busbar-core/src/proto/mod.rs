@@ -667,10 +667,10 @@ pub trait ProtocolWriter: Send + Sync {
 
     /// Build this protocol's array-stream framer (the JSON-array reframer engaged for a streaming
     /// response that must be delivered as a `[{...},{...}]` document instead of SSE), as a
-    /// `Box<dyn JsonArrayFramer>`, or `None` when this protocol has no such framing. The agnostic
+    /// `Box<dyn ArrayStreamFramer>`, or `None` when this protocol has no such framing. The agnostic
     /// forward path constructs the framer through this vtable method — gated by `uses_array_stream_shim()`
     /// — so it never names the gemini framer type. Default `None`; `GeminiWriter` overrides → `Some`.
-    fn make_array_stream_framer(&self) -> Option<Box<dyn JsonArrayFramer>> {
+    fn make_array_stream_framer(&self) -> Option<Box<dyn ArrayStreamFramer>> {
         None
     }
 
@@ -705,13 +705,13 @@ pub trait ProtocolWriter: Send + Sync {
 
 /// A streaming JSON-array reframer: consumes a protocol's SSE response bytes and re-emits them as one
 /// streaming JSON array (`[{...},{...}]`), the body shape a non-SSE streaming request expects. The
-/// agnostic forward path holds one `Box<dyn JsonArrayFramer>` (built via
+/// agnostic forward path holds one `Box<dyn ArrayStreamFramer>` (built via
 /// [`ProtocolWriter::make_array_stream_framer`]) and drives it, so it names no protocol's framer type.
 /// The sole implementor is `gemini::GeminiJsonArrayFramer` (Gemini `:streamGenerateContent` without
 /// `?alt=sse`). The trait exposes only the SUBSET of that type's API the agnostic core needs (`feed`,
 /// `finish_for_translate`, `finish_with_server_error`); the type's raw `finish` and its low-level
 /// `finish_with_error(code, status, …)` are absent, since the core never passes a wire status code.
-pub trait JsonArrayFramer: Send {
+pub trait ArrayStreamFramer: Send {
     /// Feed a chunk of SSE bytes; return JSON-array bytes for whatever complete frames are now
     /// available (empty if only a partial frame is buffered).
     fn feed(&mut self, chunk: &[u8]) -> Vec<u8>;

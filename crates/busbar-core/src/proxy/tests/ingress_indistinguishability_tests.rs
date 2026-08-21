@@ -1095,7 +1095,7 @@ async fn test_cross_protocol_stream_delivers_trailing_usage_gemini_json_array() 
     );
 
     let translate = crate::proto::StreamTranslate::new("gemini", "openai").expect("translator");
-    let json_array: Box<dyn crate::proto::JsonArrayFramer> =
+    let json_array: Box<dyn crate::proto::ArrayStreamFramer> =
         Box::new(crate::proto::gemini::GeminiJsonArrayFramer::new());
     let fbb = FirstByteBody::new(
         inner,

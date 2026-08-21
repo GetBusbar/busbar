@@ -89,7 +89,7 @@ pub(crate) struct FirstByteBody<S, P> {
     /// same-protocol passthrough or the cross-protocol `translate` stage above, both of which are
     /// gemini SSE here — are reframed into the JSON-array streaming format the native non-`alt=sse`
     /// `:streamGenerateContent` request expects (`[{...},{...}]`). Runs AFTER `translate`.
-    json_array: Option<Box<dyn crate::proto::JsonArrayFramer>>,
+    json_array: Option<Box<dyn crate::proto::ArrayStreamFramer>>,
     /// When set, the token usage tapped from this response is charged to a virtual key's budget at
     /// stream end (token-accurate accounting). Taken (fired) exactly once when the stream completes.
     usage_sink: Option<UsageSink>,
@@ -151,7 +151,7 @@ where
         breaker_cfg: Arc<crate::store::BreakerCfg>,
         pool: &str,
         translate: Option<Box<dyn crate::proto::StreamTranslator>>,
-        json_array: Option<Box<dyn crate::proto::JsonArrayFramer>>,
+        json_array: Option<Box<dyn crate::proto::ArrayStreamFramer>>,
         usage_sink: Option<UsageSink>,
         budget_spent: bool,
     ) -> Self {
