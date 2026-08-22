@@ -410,7 +410,7 @@ pub(crate) extern "C-unwind" fn approval_redeem_q(
         let Some(nonce) = (unsafe { subject(q.key_ptr, q.key_len) }) else {
             return StatusClass::Refused;
         };
-        if state.app.plane_approvals.spend(&nonce, q.expires_at, q.now) {
+        if redeem_approval(&state.app.plane_approvals, &nonce, q.expires_at, q.now) {
             StatusClass::Ok // first redemption, against the seal's own expiry.
         } else {
             StatusClass::Refused // already spent, or the ledger could not answer (fail-closed).
@@ -448,6 +448,24 @@ pub(crate) extern "C-unwind" fn drift_quarantine(host: HostCtx, key: *const Key)
     .unwrap_or(StatusClass::Fault)
 }
 
+/// THE ONE redemption body — the compiled-in veneer both approval veneers funnel through, the trust
+/// analogue of CLUSTER-1's [`crate::plane_host::scope::DispatchScope::settle_admission`]. Redeem a
+/// one-time approval against the shared spent-approval ledger, spending against the seal's OWN
+/// `expires_at` and the caller's `now`. `true` iff this is the FIRST redemption; `false` when already
+/// spent OR the durable ledger could not answer — [`spend`](crate::plane::approvals::PlaneApprovals::spend)
+/// fails closed on a store error (a ledger that cannot say "already spent" must not be read as "not
+/// spent"). The extern-C [`approval_redeem`]/[`approval_redeem_q`] slots map this bool onto the ABI
+/// [`StatusClass`]; the in-process plane (`mcp::callerask`) calls it directly — NEITHER reimplements
+/// the check-and-record, so the atomic redemption is written once.
+pub(crate) fn redeem_approval(
+    approvals: &crate::plane::approvals::PlaneApprovals,
+    nonce: &str,
+    expires_at: u64,
+    now: u64,
+) -> bool {
+    approvals.spend(nonce, expires_at, now)
+}
+
 /// WIRED `approval_redeem` → [`crate::plane::approvals::PlaneApprovals::spend`]: redeem a one-time
 /// approval (the [`Key`] bytes are the sealed state's nonce) against the shared spent-approval
 /// ledger. `Ok` iff this is the FIRST redemption; `Refused` when it was already spent OR the durable
@@ -469,7 +487,7 @@ pub(crate) extern "C-unwind" fn approval_redeem(host: HostCtx, key: *const Key) 
         };
         let now = crate::store::now();
         let expires_at = now.saturating_add(crate::plane::approvals::DEFAULT_TTL_SECS);
-        if state.app.plane_approvals.spend(&nonce, expires_at, now) {
+        if redeem_approval(&state.app.plane_approvals, &nonce, expires_at, now) {
             StatusClass::Ok // first redemption.
         } else {
             StatusClass::Refused // already spent, or the ledger could not answer (fail-closed).

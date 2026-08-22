@@ -421,7 +421,11 @@ pub(crate) fn decide(
         let Some((nonce, expires_at)) = presented else {
             return AskDecision::Refuse(Refusal::StateRejected(approvals::Rejected::AlreadySpent));
         };
-        if !spent.spend(&nonce, expires_at, bind.now) {
+        // THE REDEMPTION runs through the host's compiled-in veneer — the SAME
+        // `plane_host::trust::redeem_approval` body the extern-C `approval_redeem`/`approval_redeem_q`
+        // slots funnel through (CLUSTER-2), so the atomic check-and-record is written once and the
+        // in-process and dynamic-load veneers cannot diverge.
+        if !crate::plane_host::trust::redeem_approval(spent, &nonce, expires_at, bind.now) {
             return AskDecision::Refuse(Refusal::StateRejected(approvals::Rejected::AlreadySpent));
         }
         return AskDecision::Proceed;
