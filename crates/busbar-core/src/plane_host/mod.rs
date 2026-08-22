@@ -24,6 +24,7 @@
 //! * [`vtable`] — [`build_plane_host_vtable`], three wired proof-of-life slots, nineteen typed stubs.
 
 pub mod breaker;
+mod govern;
 pub mod scope;
 pub mod vtable;
 
@@ -98,7 +99,11 @@ pub fn with_dispatch_scope<R>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use busbar_plugin::hot::{Decision, Facts, MetricSample, StatusClass};
+    use busbar_plugin::hot::{
+        AdmissionId, AuthQuery, AuthResolved, Decision, Facts, MeterOutcome, MetricSample,
+        StatusClass, Usage, UsageComponent, POD_VERSION,
+    };
+    use core::mem::MaybeUninit;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 
@@ -156,6 +161,141 @@ mod tests {
             assert_eq!(
                 (vt.govern_admit.unwrap())(host, core::ptr::null()),
                 Decision::Deny
+            );
+        });
+    }
+
+    /// The GOVERNANCE `govern_admit` slot REGISTERS the real RAII grant in the dispatch arena on an
+    /// admit and reclaims it on scope-drop; a deny registers nothing. Drives the slot via the vtable.
+    #[test]
+    fn wired_govern_admit_registers_grant_in_arena_and_reclaims() {
+        with_test_state(|host, vt, scope| {
+            assert_eq!(scope.registered(), 0, "arena starts empty");
+            // Admit → the grant rides the arena.
+            let admit = Facts::new(10, 100, 7, 0, 0, b"pool");
+            assert_eq!(
+                (vt.govern_admit.unwrap())(host, &*admit as *const Facts),
+                Decision::Admit
+            );
+            assert_eq!(scope.registered(), 1, "an admitted grant is registered");
+            // Deny → nothing registered (still just the one from the admit above).
+            let deny = Facts::new(100, 10, 7, 0, 0, b"pool");
+            assert_eq!(
+                (vt.govern_admit.unwrap())(host, &*deny as *const Facts),
+                Decision::Deny
+            );
+            assert_eq!(scope.registered(), 1, "a denied request registers no grant");
+            // Explicit reclaim (the abort-path assertion): the arena empties.
+            scope.reclaim_all();
+            assert_eq!(scope.registered(), 0, "reclaim releases the registered grant");
+        });
+    }
+
+    /// With governance ENABLED, `govern_admit` drives the real `GovState::try_admit` limit engine and
+    /// still registers the RAII grant it returns. Exercises the delegation over a live `GovState`.
+    #[test]
+    fn wired_govern_admit_drives_the_real_limit_engine() {
+        let gov = Arc::new(
+            crate::governance::GovState::new(
+                Arc::new(crate::governance::MemoryStore::new()),
+                None,
+            )
+            .expect("memory store constructs"),
+        );
+        let app = crate::test_support::TestApp::new().governance(gov).build();
+        with_dispatch_scope(&app, |host, vt| {
+            // SAFETY: live HostState from `with_dispatch_scope`.
+            let state: &HostState = unsafe { recover(host) };
+            let admit = Facts::new(5, 50, 3, 0, 0, b"pool-a");
+            assert_eq!(
+                (vt.govern_admit.unwrap())(host, &*admit as *const Facts),
+                Decision::Admit,
+                "the real limit engine admits an ungrouped (unlimited) chain"
+            );
+            assert_eq!(
+                state.scope.registered(),
+                1,
+                "the engine's grant is registered in the arena"
+            );
+        });
+    }
+
+    /// The GOVERNANCE `meter_charge` slot charges a usage through the real metering path (money-scalar
+    /// breakdown + write-behind accrual), returning `Charged`; a null POD is fail-closed to `Rejected`.
+    #[test]
+    fn wired_meter_charge_charges_a_usage_pod() {
+        with_test_state(|host, vt, _scope| {
+            let usage = Usage {
+                size: core::mem::size_of::<Usage>() as u32,
+                version: POD_VERSION,
+                component: UsageComponent::Tokens,
+                _reserved: 0,
+                amount: 1_000,
+                unit_cost_micros: 3,
+                admission: AdmissionId(42),
+            };
+            assert_eq!(
+                (vt.meter_charge.unwrap())(host, &usage as *const Usage),
+                MeterOutcome::Charged,
+                "a well-formed usage charges"
+            );
+            // A zero-cost usage still charges (a sparse, empty breakdown is valid).
+            let zero = Usage {
+                amount: 0,
+                unit_cost_micros: 0,
+                ..usage
+            };
+            assert_eq!(
+                (vt.meter_charge.unwrap())(host, &zero as *const Usage),
+                MeterOutcome::Charged
+            );
+            // Fail-closed on a null POD.
+            assert_eq!(
+                (vt.meter_charge.unwrap())(host, core::ptr::null()),
+                MeterOutcome::Rejected
+            );
+        });
+    }
+
+    /// The GOVERNANCE `auth_resolve` slot resolves a credential REF to a host-side reference, writing
+    /// the out-param ONLY on `Ok`. A query naming no credential (or a null query) is `Refused` and
+    /// leaves the out-slot untouched.
+    #[test]
+    fn wired_auth_resolve_writes_pod_only_on_ok() {
+        with_test_state(|host, vt, _scope| {
+            let audience = b"aud:example";
+            let query = AuthQuery {
+                size: core::mem::size_of::<AuthQuery>() as u32,
+                version: POD_VERSION,
+                _reserved: 0,
+                credential_ref: 0x9abc,
+                audience_ptr: audience.as_ptr(),
+                audience_len: audience.len(),
+            };
+            let mut out = MaybeUninit::<AuthResolved>::uninit();
+            assert_eq!(
+                (vt.auth_resolve.unwrap())(host, &query as *const AuthQuery, &mut out as *mut MaybeUninit<AuthResolved>),
+                StatusClass::Ok
+            );
+            // SAFETY: the Ok status published the slot (init-only-on-Ok).
+            let resolved = unsafe { out.assume_init() };
+            assert_eq!(resolved.resolved_ref, 0x9abc, "host-side ref resolved");
+            assert!(resolved.expires_unix > 0, "a bounded expiry is stamped");
+
+            // A query naming no credential is refused; the out-slot is NOT written.
+            let none = AuthQuery {
+                credential_ref: 0,
+                ..query
+            };
+            let mut out2 = MaybeUninit::<AuthResolved>::uninit();
+            assert_eq!(
+                (vt.auth_resolve.unwrap())(host, &none as *const AuthQuery, &mut out2 as *mut MaybeUninit<AuthResolved>),
+                StatusClass::Refused
+            );
+            // Fail-closed on a null query.
+            assert_eq!(
+                (vt.auth_resolve.unwrap())(host, core::ptr::null(), &mut out2 as *mut MaybeUninit<AuthResolved>),
+                StatusClass::Refused
             );
         });
     }

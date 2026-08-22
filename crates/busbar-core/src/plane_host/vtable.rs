@@ -115,27 +115,21 @@ extern "C-unwind" fn metrics_emit(host: HostCtx, sample: *const MetricSample) ->
     .unwrap_or(StatusClass::Fault) // caught panic → the distinct fault class, never `Ok`.
 }
 
-/// WIRED `govern_admit` → a faithful MINIMAL admit over the real [`Facts`] POD: admit iff the tenant's
-/// remaining budget covers the requested units, else deny.
-///
-/// This is a real decision computed over the actual boundary POD, not a constant. It deliberately does
-/// NOT yet drive the full `crate::governance::GovState` admission (pool cells, rate limiters, the
-/// `AdmitGrant` release atomics) — that wiring, and registering the resulting admission guard in the
-/// [`DispatchScope`](super::DispatchScope), is a Phase-2 fan-out step. Fail-closed on panic.
+/// WIRED `govern_admit` → the REAL admission over `crate::governance` (see [`super::govern::admit`]):
+/// the budget gate the [`Facts`] POD encodes, then the `GovState::try_admit` limit engine. On `Admit`
+/// the RAII [`AdmitGrant`](crate::governance::AdmitGrant) it yields is REGISTERED in the
+/// [`DispatchScope`](super::DispatchScope) arena, so it is released on scope-drop no matter how the
+/// dispatch future ends (the §4 leak keystone). Fail-closed (`Deny`) on a null POD or any panic.
 extern "C-unwind" fn govern_admit(host: HostCtx, facts: *const Facts) -> Decision {
     catch_unwind(AssertUnwindSafe(|| {
         // SAFETY: recovery invariant (see `recover`).
-        let _state: &HostState = unsafe { recover(host) };
+        let state: &HostState = unsafe { recover(host) };
         if facts.is_null() {
             return Decision::Deny;
         }
         // SAFETY: a non-null `facts` is a live, initialized `Facts` for the call (ABI discipline).
         let f = unsafe { &*facts };
-        if f.budget_remaining >= f.tokens {
-            Decision::Admit
-        } else {
-            Decision::Deny
-        }
+        super::govern::admit(state, f)
     }))
     .unwrap_or(Decision::Deny) // fail-closed: a panicked admit denies.
 }
@@ -145,8 +139,22 @@ extern "C-unwind" fn govern_admit(host: HostCtx, facts: *const Facts) -> Decisio
 // fn-pointer signature of its vtable slot, so the whole surface type-checks.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
-extern "C-unwind" fn meter_charge(_host: HostCtx, _usage: *const Usage) -> MeterOutcome {
-    unimplemented!("plane_host::meter_charge — Phase 2")
+/// WIRED `meter_charge` → the REAL metering over `crate::governance` + `crate::plane::cost` (see
+/// [`super::govern::charge`]): compute the money-scalar [`CostBreakdown`](crate::plane::cost::CostBreakdown)
+/// this usage settles, then accrue it into the write-behind metering time-series. Fail-closed
+/// (`Rejected`) on a null POD, a malformed breakdown, or any panic.
+extern "C-unwind" fn meter_charge(host: HostCtx, usage: *const Usage) -> MeterOutcome {
+    catch_unwind(AssertUnwindSafe(|| {
+        // SAFETY: recovery invariant (see `recover`).
+        let state: &HostState = unsafe { recover(host) };
+        if usage.is_null() {
+            return MeterOutcome::Rejected;
+        }
+        // SAFETY: a non-null `usage` is a live, initialized `Usage` for the call (ABI discipline).
+        let u = unsafe { &*usage };
+        super::govern::charge(state, u)
+    }))
+    .unwrap_or(MeterOutcome::Rejected) // fail-closed: a panicked charge rejects.
 }
 // `breaker_admit` / `breaker_settle` are WIRED over the real breaker in `super::breaker` (the BREAKER
 // family fan-out); their vtable slots reference that module directly.
@@ -229,12 +237,34 @@ extern "C-unwind" fn drift_quarantine(_host: HostCtx, _key: *const Key) -> Statu
 extern "C-unwind" fn approval_redeem(_host: HostCtx, _key: *const Key) -> StatusClass {
     unimplemented!("plane_host::approval_redeem — Phase 2")
 }
+/// WIRED `auth_resolve` → the REAL principal resolution over `crate::auth` (see
+/// [`super::govern::resolve_auth`]): resolve a credential REF to an OPAQUE host-side reference (NEVER
+/// plaintext), writing the [`AuthResolved`] out-param ONLY on `Ok`. Fail-closed (`Refused`) on a null
+/// query or a query naming no credential; `Fault` on any panic.
 extern "C-unwind" fn auth_resolve(
-    _host: HostCtx,
-    _query: *const AuthQuery,
-    _out: *mut MaybeUninit<AuthResolved>,
+    host: HostCtx,
+    query: *const AuthQuery,
+    out: *mut MaybeUninit<AuthResolved>,
 ) -> StatusClass {
-    unimplemented!("plane_host::auth_resolve — Phase 2")
+    catch_unwind(AssertUnwindSafe(|| {
+        // SAFETY: recovery invariant (see `recover`).
+        let state: &HostState = unsafe { recover(host) };
+        if query.is_null() {
+            return StatusClass::Refused;
+        }
+        // SAFETY: a non-null `query` is a live, initialized `AuthQuery` for the call (ABI discipline).
+        let q = unsafe { &*query };
+        match super::govern::resolve_auth(state, q) {
+            Some(resolved) => {
+                // SAFETY: `out` is a writable, aligned `MaybeUninit<AuthResolved>` for the call; the
+                // write publishes ONLY on the Ok path (init-only-on-Ok), tolerating a null slot.
+                unsafe { busbar_plugin::write_out(out, resolved) };
+                StatusClass::Ok
+            }
+            None => StatusClass::Refused, // nothing to resolve → out-param left uninitialized.
+        }
+    }))
+    .unwrap_or(StatusClass::Fault) // caught panic → the distinct fault class, never `Ok`.
 }
 extern "C-unwind" fn trust_evaluate(
     _host: HostCtx,
