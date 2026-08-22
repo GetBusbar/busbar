@@ -135,6 +135,40 @@ pub(crate) const PLANE_DECL: crate::plane::registry::PlaneDecl =
         on_swap: None,
     };
 
+/// THE A2A RUNTIME OBJECT for this config generation, read through the TYPE-ERASED `plane_slots`
+/// seam ([`crate::state::App::plane_slot`]) and downcast back to [`crate::a2a::plane::A2aPlane`]
+/// HERE, inside the plane — so core OUTSIDE this module reaches the plane only as an opaque
+/// `Arc<dyn Any>` slot and names no `crate::a2a` type. `None` exactly when `agents:` is not
+/// configured this generation (the plane contributed no slot — the same absence the deleted
+/// `App::a2a: None` used to encode). The downcast never fails: the a2a slot is always an `A2aPlane`
+/// (`PLANE_DECL::build`). The exact byte-analog of [`crate::mcp::resource`]; A2A carries ONE object,
+/// so this single accessor is its whole runtime seam.
+// The first callers land in the next commit (the reader migration off `App::a2a`); until then this
+// neutral accessor is deliberately unreferenced.
+#[allow(dead_code)]
+pub(crate) fn runtime(app: &crate::state::App) -> Option<&crate::a2a::plane::A2aPlane> {
+    app.plane_slot(PLANE_DECL.key).map(|slot| {
+        slot.downcast_ref::<crate::a2a::plane::A2aPlane>()
+            .expect("the a2a plane's dispatch slot is an A2aPlane")
+    })
+}
+
+/// The OWNED-`Arc` twin of [`runtime`], for the callers that need the plane to OUTLIVE the `App`
+/// snapshot borrow it was read from (a moved snapshot guard, or a value carried past the borrow).
+/// Clones the SAME `Arc` `plane_slots` holds (a refcount bump, not a second construction). `None`
+/// and the never-fail downcast have the same meaning as [`runtime`]. The byte-analog of
+/// [`crate::mcp::resource_arc`].
+#[allow(dead_code)]
+pub(crate) fn runtime_arc(
+    app: &crate::state::App,
+) -> Option<std::sync::Arc<crate::a2a::plane::A2aPlane>> {
+    app.plane_slot(PLANE_DECL.key).map(|slot| {
+        slot.clone()
+            .downcast::<crate::a2a::plane::A2aPlane>()
+            .expect("the a2a plane's dispatch slot is an A2aPlane")
+    })
+}
+
 /// RESTORE THE A2A PLANE'S DURABLE TASK STATE, BEFORE a listener binds. A2A is ASYNC BY DESIGN: a
 /// task spans turns, can be interrupted waiting on a human, and can outlive the process that started
 /// it — an in-memory task table loses every in-flight task on restart, which is the difference between
