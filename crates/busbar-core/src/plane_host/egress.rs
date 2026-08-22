@@ -95,8 +95,13 @@ enum ChunkMsg {
 
 /// The connect outcome the streaming task reports back to [`egress_open`] BEFORE any body is pumped.
 enum HeadMsg {
-    /// Connected: the observed status and the observed peer identity (empty on a plaintext hop).
-    Ok { status: u16, spki: Vec<u8> },
+    /// Connected: the observed status, the observed peer identity (empty on a plaintext hop), and the
+    /// packed response headers the plane classifies on (content-type + Location).
+    Ok {
+        status: u16,
+        spki: Vec<u8>,
+        resp_headers: Vec<u8>,
+    },
     /// The resolve-then-pin guard refused the hop (SSRF / scheme / metadata).
     Refused(String),
     /// The transport failed before a response head arrived (connect / TLS / send).
@@ -122,6 +127,10 @@ struct HttpEgress {
     /// handed back at open stays valid for as long as the egress is open (the plane may read it after
     /// `egress_open` returns). Empty on a plaintext hop.
     observed_spki: Vec<u8>,
+    /// The packed response-header records (content-type + Location) the plane classifies on, kept alive
+    /// HERE for the same reason `observed_spki` is: the [`EgressHead::resp_headers_ptr`] handed back at
+    /// open borrows these and the plane reads them after `egress_open` returns.
+    resp_headers: Vec<u8>,
 }
 
 impl HttpEgress {
@@ -335,6 +344,37 @@ fn build_req_spec(d: &EgressDesc) -> ReqSpec {
     ReqSpec { method, headers, body }
 }
 
+/// Pack the RESPONSE headers the plane classifies on into the neutral name/value record format (`u32
+/// name_len` LE, name, `u32 value_len` LE, value) — the SAME packing the request header set uses, so
+/// the plane decodes both with one parser. `content-type` is surfaced whenever present (the plane keys
+/// SSE-vs-JSON on it); `Location` is surfaced whenever present (a redirect the plane refuses). Values
+/// are surfaced VERBATIM — the host lower-cases and interprets nothing; that stays plane-side.
+fn pack_response_headers(resp: &reqwest::Response) -> Vec<u8> {
+    let mut pairs: Vec<(&str, String)> = Vec::new();
+    for (name, header) in [
+        ("content-type", reqwest::header::CONTENT_TYPE),
+        ("location", reqwest::header::LOCATION),
+    ] {
+        if let Some(value) = resp.headers().get(&header).and_then(|v| v.to_str().ok()) {
+            pairs.push((name, value.to_string()));
+        }
+    }
+    pack_header_records(&pairs)
+}
+
+/// Pack `(name, value)` header pairs into length-prefixed records: `u32 name_len` (LE), name bytes,
+/// `u32 value_len` (LE), value bytes — the inverse of [`parse_headers`].
+fn pack_header_records(pairs: &[(&str, String)]) -> Vec<u8> {
+    let mut out = Vec::new();
+    for (name, value) in pairs {
+        out.extend_from_slice(&(name.len() as u32).to_le_bytes());
+        out.extend_from_slice(name.as_bytes());
+        out.extend_from_slice(&(value.len() as u32).to_le_bytes());
+        out.extend_from_slice(value.as_bytes());
+    }
+    out
+}
+
 /// Parse the request VERB bytes into a [`reqwest::Method`], or `None` (⇒ default `GET`) when absent or
 /// malformed.
 fn method_of(ptr: *const u8, len: usize) -> Option<reqwest::Method> {
@@ -537,8 +577,8 @@ fn open_http(
             return StatusClass::Fault;
         }
     };
-    let (status, spki) = match head {
-        HeadMsg::Ok { status, spki } => (status, spki),
+    let (status, spki, resp_headers) = match head {
+        HeadMsg::Ok { status, spki, resp_headers } => (status, spki, resp_headers),
         HeadMsg::Refused(reason) => {
             tracing::debug!(target: "busbar::plane_host::egress", %reason, "governed egress refused");
             let _ = join.join();
@@ -559,14 +599,20 @@ fn open_http(
         stop,
         join: Mutex::new(Some(join)),
         observed_spki: spki,
+        resp_headers,
     });
 
-    // The EgressHead borrows the backend's own SPKI bytes, which live until close — so the pointer
-    // handed back stays valid while the plane holds the EgressOpen.
+    // The EgressHead borrows the backend's own SPKI + response-header bytes, which live until close — so
+    // the pointers handed back stay valid while the plane holds the EgressOpen.
     let (spki_ptr, spki_len) = if egress.observed_spki.is_empty() {
         (std::ptr::null(), 0)
     } else {
         (egress.observed_spki.as_ptr(), egress.observed_spki.len())
+    };
+    let (rh_ptr, rh_len) = if egress.resp_headers.is_empty() {
+        (std::ptr::null(), 0)
+    } else {
+        (egress.resp_headers.as_ptr(), egress.resp_headers.len())
     };
     let open = EgressOpen {
         size: std::mem::size_of::<EgressOpen>() as u32,
@@ -580,6 +626,8 @@ fn open_http(
             status_code: status,
             observed_spki_ptr: spki_ptr,
             observed_spki_len: spki_len,
+            resp_headers_ptr: rh_ptr,
+            resp_headers_len: rh_len,
         },
     };
 
@@ -677,7 +725,11 @@ fn run_http_stream(
         let status = resp.status().as_u16();
         // READ THE CERTIFICATE BEFORE THE BODY — it belongs to THIS connection.
         let spki = observed_identity(&resp);
-        if head_tx.send(HeadMsg::Ok { status, spki }).is_err() {
+        // The RESPONSE HEADERS the plane classifies on, surfaced as neutral records — the host formats
+        // none of them. `content-type` (SSE vs JSON) is surfaced always; `Location` only when present
+        // (a redirect), so the plane can refuse the 3xx with the unguarded target's own location.
+        let resp_headers = pack_response_headers(&resp);
+        if head_tx.send(HeadMsg::Ok { status, spki, resp_headers }).is_err() {
             return; // the opener went away before we connected; nothing to stream to.
         }
 

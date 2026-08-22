@@ -796,6 +796,15 @@ pub struct EgressDesc {
 ///
 /// # Safety / discipline
 /// `observed_spki_ptr`/`observed_spki_len`, when non-null, borrow host-owned bytes valid for the call.
+/// ## The response-header tail (append-only minor-8 extension)
+///
+/// The tail block (`resp_headers_ptr`/`resp_headers_len`) is an APPEND-ONLY minor-8 extension carrying
+/// the small set of RESPONSE headers the plane classifies on — at least `content-type` (SSE vs JSON
+/// detection) and `Location` (redirect refusal) — as neutral length-prefixed name/value records (the
+/// SAME packing as the request header set: `u32 name_len` LE, name, `u32 value_len` LE, value). The
+/// host surfaces the bytes verbatim and formats NONE of them; every operator/cold-wire string the
+/// plane builds from them stays plane-side. The bytes are host-owned and live as long as the egress is
+/// open. A reader that predates the tail sees the shorter `size` and reads no response headers.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct EgressHead {
@@ -809,6 +818,11 @@ pub struct EgressHead {
     pub observed_spki_ptr: *const u8,
     /// Length of the observed SPKI range.
     pub observed_spki_len: usize,
+    /// (minor-8) Borrowed packed RESPONSE-header records (host-owned; at least `content-type` and, on a
+    /// redirect, `Location`). Null/`0` ⇒ none surfaced. Same name/value packing as the request set.
+    pub resp_headers_ptr: *const u8,
+    /// (minor-8) Length of the packed response-header range (`0` = none).
+    pub resp_headers_len: usize,
 }
 
 /// The out-param an `egress_open` writes on `StatusClass::Ok`: the egress id, an optional duplex

@@ -385,3 +385,90 @@ fn egress_open_injects_host_minted_credential_never_plane_plaintext() {
         let _ = (vt.egress_close.unwrap())(host, open.id);
     });
 }
+
+/// A loopback server that answers with a chosen status, a `Content-Type`, and (optionally) a
+/// `Location`, so a test can assert the RESPONSE headers the host surfaces on the connect head.
+fn spawn_header_mock(status_line: &'static str, content_type: &'static str, location: Option<&'static str>) -> u16 {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let mut buf = [0u8; 1024];
+            let _ = stream.read(&mut buf);
+            let mut head = format!(
+                "HTTP/1.1 {status_line}\r\nContent-Type: {content_type}\r\nContent-Length: 0\r\nConnection: close\r\n"
+            );
+            if let Some(loc) = location {
+                head.push_str(&format!("Location: {loc}\r\n"));
+            }
+            head.push_str("\r\n");
+            let _ = stream.write_all(head.as_bytes());
+            let _ = stream.flush();
+        }
+    });
+    port
+}
+
+/// Decode the host's packed response-header records (`u32 name_len | name | u32 val_len | val`, LE)
+/// into `(name, value)` pairs — the plane-side inverse of what the host packs into the head.
+fn decode_records(bytes: &[u8]) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    while i + 4 <= bytes.len() {
+        let nl = u32::from_le_bytes(bytes[i..i + 4].try_into().unwrap()) as usize;
+        i += 4;
+        if i + nl > bytes.len() { break; }
+        let name = String::from_utf8_lossy(&bytes[i..i + nl]).into_owned();
+        i += nl;
+        if i + 4 > bytes.len() { break; }
+        let vl = u32::from_le_bytes(bytes[i..i + 4].try_into().unwrap()) as usize;
+        i += 4;
+        if i + vl > bytes.len() { break; }
+        let value = String::from_utf8_lossy(&bytes[i..i + vl]).into_owned();
+        i += vl;
+        out.push((name, value));
+    }
+    out
+}
+
+#[test]
+fn the_connect_head_surfaces_content_type_and_location_as_neutral_records() {
+    // A 302 with a content-type AND a Location: the host surfaces both verbatim as neutral records, so
+    // the plane can key SSE-vs-JSON on content-type and refuse the redirect with the target's own
+    // Location — the host formats neither.
+    let port = spawn_header_mock("302 Found", "text/event-stream; charset=utf-8", Some("https://elsewhere.example/x"));
+    let url = format!("http://127.0.0.1:{port}/");
+    let desc = http_desc(url.as_bytes());
+
+    let app = crate::test_support::TestApp::new().build();
+    with_dispatch_scope(&app, |host, vt| {
+        let mut out = std::mem::MaybeUninit::<EgressOpen>::uninit();
+        assert_eq!(
+            (vt.egress_open.unwrap())(host, &desc as *const EgressDesc, &mut out),
+            StatusClass::Ok
+        );
+        // SAFETY: Ok ⇒ initialized.
+        let open = unsafe { out.assume_init() };
+        assert_eq!(open.head.status_code, 302, "the 3xx is surfaced, not followed");
+        assert!(!open.head.resp_headers_ptr.is_null(), "response headers are surfaced");
+        // SAFETY: the head's resp_headers pointer borrows host-owned bytes valid while the egress is open.
+        let bytes = unsafe {
+            std::slice::from_raw_parts(open.head.resp_headers_ptr, open.head.resp_headers_len)
+        };
+        let records = decode_records(bytes);
+        let content_type = records.iter().find(|(n, _)| n == "content-type").map(|(_, v)| v.as_str());
+        let location = records.iter().find(|(n, _)| n == "location").map(|(_, v)| v.as_str());
+        assert_eq!(
+            content_type,
+            Some("text/event-stream; charset=utf-8"),
+            "content-type is surfaced VERBATIM (the plane lower-cases, not the host)"
+        );
+        assert_eq!(
+            location,
+            Some("https://elsewhere.example/x"),
+            "the redirect Location is surfaced so the plane can refuse the unguarded target"
+        );
+        let _ = (vt.egress_close.unwrap())(host, open.id);
+    });
+}

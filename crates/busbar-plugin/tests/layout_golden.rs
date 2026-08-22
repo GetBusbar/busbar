@@ -140,7 +140,15 @@ fn compute_layout() -> String {
     record!(
         s,
         EgressHead,
-        [size, version, status_code, observed_spki_ptr, observed_spki_len]
+        [
+            size,
+            version,
+            status_code,
+            observed_spki_ptr,
+            observed_spki_len,
+            resp_headers_ptr,
+            resp_headers_len
+        ]
     );
     record!(s, EgressOpen, [size, version, _reserved, id, pipe, head]);
     record!(
