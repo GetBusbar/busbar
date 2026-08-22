@@ -663,7 +663,7 @@ pub(super) async fn exchange(
     timeout: Duration,
 ) -> Result<String, String> {
     let (client, _target) = pool
-        .client_for(&req.token_url, policy, timeout)
+        .client_for(&req.token_url, policy)
         .await
         .map_err(|e| format!("the token endpoint could not be reached: {e}"))?;
     let form = req.form_fields();

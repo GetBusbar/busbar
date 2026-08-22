@@ -227,6 +227,17 @@ impl std::fmt::Debug for PinnedClientPool {
     }
 }
 
+/// The cap a [`PinnedClientPool::default`] holds — enough distinct pinned clients that a busy fleet
+/// keeps its live upstreams warm, bounded so a DNS round-robin cannot grow the map without end. A
+/// pool that wants a different cap builds with [`PinnedClientPool::with_capacity`].
+const DEFAULT_MAX_PINNED_CLIENTS: usize = 64;
+
+impl Default for PinnedClientPool {
+    fn default() -> Self {
+        Self::with_capacity(DEFAULT_MAX_PINNED_CLIENTS)
+    }
+}
+
 impl PinnedClientPool {
     /// A pool that holds at most `max` distinct pinned clients. A bound rather than an unbounded map
     /// because the key contains a RESOLVED ADDRESS, and an upstream whose DNS round-robins across a

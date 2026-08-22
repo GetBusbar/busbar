@@ -352,9 +352,10 @@ async fn the_legs_timeout_binds_the_send_even_when_the_cached_client_was_built_l
     let url = format!("http://{addr}/mcp");
 
     let pool = McpConnectionPool::new();
-    // FIRST TOUCH: a generous caller (the refresh path's shape) builds and caches the client.
+    // FIRST TOUCH: the refresh path's shape builds and caches the client (its per-request deadline
+    // rides the send, not the pooled client).
     let _ = pool
-        .client_for(&url, private_ok(), Duration::from_secs(300))
+        .client_for(&url, private_ok())
         .await
         .expect("the pinned client builds");
 

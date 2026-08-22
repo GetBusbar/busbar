@@ -37,16 +37,7 @@
 use super::ssrf::{SsrfPolicy, SsrfRefusal};
 use crate::net_guard::PinnedTarget;
 use std::collections::HashMap;
-use std::net::SocketAddr;
-use std::sync::Mutex;
-use std::time::Duration;
-
-/// The cap on distinct pinned clients held at once.
-///
-/// A bound rather than an unbounded map because the key contains a RESOLVED ADDRESS, and an upstream
-/// whose DNS round-robins across a large pool would otherwise grow one client per address it ever
-/// answered with. Eviction is whole-entry: dropping a `reqwest::Client` closes its idle sockets.
-const MAX_PINNED_CLIENTS: usize = 64;
+use std::sync::{Arc, Mutex};
 
 /// One upstream's pooled clients, keyed by pinned address — and the live stdio children.
 ///
@@ -56,7 +47,11 @@ const MAX_PINNED_CLIENTS: usize = 64;
 /// remember to pass, and the site that forgot would be the one that could not reach a stdio server.
 #[derive(Default)]
 pub(crate) struct McpConnectionPool {
-    clients: Mutex<HashMap<(String, SocketAddr), reqwest::Client>>,
+    /// The pinned-client pool, keyed by the judged `(host, address)` — now the shared core backend
+    /// ([`crate::egress::PinnedClientPool`]), so mcp's dispatch hops are built to the same posture
+    /// every plane shares (the refusing resolver, `tls_info` so the peer SPKI is observable, and the
+    /// canonical connection knobs).
+    clients: crate::egress::PinnedClientPool,
     /// The supervised child processes. Empty on every deployment that registers no stdio server,
     /// and it costs a `BTreeMap` to be so.
     pub(crate) children: super::stdio::StdioPool,
@@ -241,9 +236,8 @@ impl std::fmt::Debug for McpConnectionPool {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // `reqwest::Client` has no useful Debug and printing the map's keys would put resolved
         // internal addresses into logs. Presence and size only.
-        let n = self.clients.lock().map(|m| m.len()).unwrap_or(0);
         f.debug_struct("McpConnectionPool")
-            .field("pinned_clients", &n)
+            .field("pinned_clients", &self.clients.len())
             .field("stdio_children", &self.children.len())
             .finish()
     }
@@ -260,74 +254,44 @@ impl McpConnectionPool {
     // Reached only by the connect/refresh path, which has no verb yet.
     #[allow(dead_code)]
     pub(crate) fn len(&self) -> usize {
-        self.clients.lock().map(|m| m.len()).unwrap_or(0)
+        self.clients.len()
     }
 
     /// Resolve, check, pin, and return a client bound to the checked address.
     ///
     /// The check runs BEFORE the cache is consulted for a NEW address and the cache is keyed on the
-    /// result, so there is no ordering in which an unchecked address gets a client.
+    /// result, so there is no ordering in which an unchecked address gets a client. The client is
+    /// built by the shared core backend ([`crate::egress::build_pinned_client`]): pinned to the
+    /// judged address, refusing a second lookup, `tls_info` on so the peer SPKI is observable, and
+    /// the canonical connection knobs. No total deadline is baked into the pooled client — every send
+    /// site applies its own on the request (see [`super::transport::HttpTransport::send`] and
+    /// [`crate::mcp::upstream::exchange`]).
     pub(crate) async fn client_for(
         &self,
         url: &str,
         policy: SsrfPolicy,
-        timeout: Duration,
     ) -> Result<(reqwest::Client, PinnedTarget), SsrfRefusal> {
         let target = super::ssrf::pin_upstream(url, policy).await?;
-        // THE KEY CONTAINS THE PINNED ADDRESS. Keying by host alone would let a pooled client
-        // re-resolve on its next new connection — the TOCTOU the pin closes, reintroduced by the
-        // cache in front of it. `socket_addr()` is the pinned address, never a fresh lookup.
-        let key = (target.host().to_string(), target.socket_addr());
-        if let Ok(map) = self.clients.lock() {
-            if let Some(c) = map.get(&key) {
-                return Ok((c.clone(), target));
-            }
-        }
-        let client = build_pinned_client(&target, timeout)?;
-        if let Ok(mut map) = self.clients.lock() {
-            if map.len() >= MAX_PINNED_CLIENTS {
-                // Evict one arbitrary entry rather than growing without bound. Arbitrary is honest:
-                // an LRU would need a second structure and a lock held longer, to choose between
-                // clients that are interchangeable except for their destination.
-                if let Some(victim) = map.keys().next().cloned() {
-                    map.remove(&victim);
-                }
-            }
-            map.insert(key, client.clone());
-        }
+        // THE KEY CONTAINS THE PINNED ADDRESS (`crate::egress::PinnedClientPool` keys on it): keying
+        // by host alone would let a pooled client re-resolve on its next new connection — the TOCTOU
+        // the pin closes, reintroduced by the cache in front of it.
+        let client = self
+            .clients
+            .client_for(target.host(), target.socket_addr(), || {
+                crate::egress::build_pinned_client(
+                    target.host(),
+                    target.socket_addr(),
+                    Arc::new(crate::egress::RefuseSecondLookup),
+                    None,
+                    &[],
+                )
+                .map_err(|e| SsrfRefusal::Unresolvable {
+                    host: target.host().to_string(),
+                    reason: format!("could not build a pinned HTTP client: {e}"),
+                })
+            })?;
         Ok((client, target))
     }
-}
-
-/// Build a `reqwest::Client` whose resolution for this one host is pinned to this one address.
-///
-/// The hostname is preserved for `Host` and SNI, so the certificate is still validated against the
-/// name the operator registered. Pinning the address without preserving the name would turn a
-/// validated TLS connection into an unvalidated one, which trades one hole for a bigger one.
-fn build_pinned_client(
-    target: &PinnedTarget,
-    timeout: Duration,
-) -> Result<reqwest::Client, SsrfRefusal> {
-    reqwest::Client::builder()
-        .resolve_to_addrs(target.host(), &[target.socket_addr()])
-        .redirect(reqwest::redirect::Policy::none())
-        .connect_timeout(super::ssrf::DISPATCH_CONNECT_TIMEOUT)
-        .timeout(timeout)
-        .tcp_nodelay(true)
-        // FOUR SECONDS, because the peer decides how long an idle connection lives and the most
-        // common server default is FIVE (Node's `keepAliveTimeout`; nginx and friends are longer
-        // but five is the ecosystem floor). A pool that idles connections for 90 seconds reuses
-        // sockets most upstreams closed a minute ago, and the reuse race surfaces as an
-        // `error sending request` on the FIRST call after a quiet spell — a non-idempotent POST
-        // hyper will not retry. Staying under the shortest common peer timeout means an idle
-        // connection is dropped by US before the peer can close it under us; the cost is a fresh
-        // TCP handshake on loopback-or-LAN scale after four quiet seconds.
-        .pool_idle_timeout(Duration::from_secs(4))
-        .build()
-        .map_err(|e| SsrfRefusal::Unresolvable {
-            host: target.host().to_string(),
-            reason: format!("could not build a pinned HTTP client: {e}"),
-        })
 }
 
 #[cfg(test)]

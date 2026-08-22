@@ -6,7 +6,6 @@
 
 use crate::mcp::client::pool::McpConnectionPool;
 use crate::mcp::client::ssrf::{SsrfPolicy, SsrfRefusal};
-use std::time::Duration;
 
 fn private_ok() -> SsrfPolicy {
     SsrfPolicy {
@@ -26,9 +25,7 @@ async fn a_refused_destination_never_produces_a_client() {
     assert_eq!(refused.len(), 4);
     for url in refused {
         assert!(
-            pool.client_for(url, SsrfPolicy::default(), Duration::from_secs(5))
-                .await
-                .is_err(),
+            pool.client_for(url, SsrfPolicy::default()).await.is_err(),
             "`{url}` must not yield a client"
         );
     }
@@ -39,13 +36,9 @@ async fn a_refused_destination_never_produces_a_client() {
         0,
         "a refused destination must leave no client behind"
     );
-    pool.client_for(
-        "http://127.0.0.1:9/mcp",
-        private_ok(),
-        Duration::from_secs(5),
-    )
-    .await
-    .expect("an opted-in private destination yields a client");
+    pool.client_for("http://127.0.0.1:9/mcp", private_ok())
+        .await
+        .expect("an opted-in private destination yields a client");
     assert_eq!(pool.len(), 1);
 }
 
@@ -53,13 +46,9 @@ async fn a_refused_destination_never_produces_a_client() {
 async fn a_repeated_destination_reuses_one_client() {
     let pool = McpConnectionPool::new();
     for _ in 0..5 {
-        pool.client_for(
-            "http://127.0.0.1:9/mcp",
-            private_ok(),
-            Duration::from_secs(5),
-        )
-        .await
-        .unwrap();
+        pool.client_for("http://127.0.0.1:9/mcp", private_ok())
+            .await
+            .unwrap();
     }
     assert_eq!(pool.len(), 1, "the pool must reuse, not accumulate");
 }
@@ -72,19 +61,11 @@ async fn a_repeated_destination_reuses_one_client() {
 async fn the_pool_key_is_the_pinned_address_and_not_just_the_host() {
     let pool = McpConnectionPool::new();
     let (_, a) = pool
-        .client_for(
-            "http://127.0.0.1:9/mcp",
-            private_ok(),
-            Duration::from_secs(5),
-        )
+        .client_for("http://127.0.0.1:9/mcp", private_ok())
         .await
         .unwrap();
     let (_, b) = pool
-        .client_for(
-            "http://127.0.0.1:10/mcp",
-            private_ok(),
-            Duration::from_secs(5),
-        )
+        .client_for("http://127.0.0.1:10/mcp", private_ok())
         .await
         .unwrap();
     assert_eq!(
@@ -103,20 +84,12 @@ async fn the_pool_key_is_the_pinned_address_and_not_just_the_host() {
 #[tokio::test]
 async fn two_hosts_are_two_entries() {
     let pool = McpConnectionPool::new();
-    pool.client_for(
-        "http://127.0.0.1:9/mcp",
-        private_ok(),
-        Duration::from_secs(5),
-    )
-    .await
-    .unwrap();
-    pool.client_for(
-        "http://127.0.0.2:9/mcp",
-        private_ok(),
-        Duration::from_secs(5),
-    )
-    .await
-    .unwrap();
+    pool.client_for("http://127.0.0.1:9/mcp", private_ok())
+        .await
+        .unwrap();
+    pool.client_for("http://127.0.0.2:9/mcp", private_ok())
+        .await
+        .unwrap();
     assert_eq!(pool.len(), 2);
 }
 
@@ -126,11 +99,7 @@ async fn two_hosts_are_two_entries() {
 async fn the_returned_target_is_the_one_that_passed_the_check() {
     let pool = McpConnectionPool::new();
     let (_client, target) = pool
-        .client_for(
-            "http://127.0.0.1:9/mcp",
-            private_ok(),
-            Duration::from_secs(5),
-        )
+        .client_for("http://127.0.0.1:9/mcp", private_ok())
         .await
         .unwrap();
     assert_eq!(target.socket_addr().to_string(), "127.0.0.1:9");
@@ -145,7 +114,6 @@ async fn an_unresolvable_host_is_reported_as_such_rather_than_as_a_connection_er
         .client_for(
             "https://this-name-must-not-resolve.invalid/mcp",
             SsrfPolicy::default(),
-            Duration::from_secs(5),
         )
         .await
         .expect_err("the `.invalid` TLD is reserved and never resolves");

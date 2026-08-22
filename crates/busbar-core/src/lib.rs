@@ -61,10 +61,10 @@ pub mod diagnostics;
 // (plugins.fetch cache write) can route through the SAME primitive. Re-exported here so every
 // existing `crate::durable::*` call site in this binary resolves unchanged.
 pub use busbar_api::durable;
-// The host-owned neutral outbound return surface, shared across protocol planes. Gated to the
-// planes that reach the network today (A2A now; MCP joins it as its pool repoints onto the unified
-// backend) so a `--no-default-features` build with no planes carries no unused outbound vocabulary.
-#[cfg(feature = "plane-a2a")]
+// The host-owned neutral outbound backend + return surface, shared across protocol planes. Gated to
+// the planes that reach the network (A2A and MCP both route their egress through it) so a
+// `--no-default-features` build with no planes carries no unused outbound machinery.
+#[cfg(any(feature = "plane-mcp", feature = "plane-a2a"))]
 pub mod egress;
 pub mod egress_auth;
 pub mod endpoints;

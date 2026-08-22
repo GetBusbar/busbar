@@ -84,7 +84,7 @@ impl HttpTransport {
     ) -> Result<TransportResponse, TransportError> {
         let (client, _target) = leg
             .pool
-            .client_for(&req.url, leg.policy, leg.timeout)
+            .client_for(&req.url, leg.policy)
             .await
             .map_err(TransportError::Refused)?;
         // THE LEG'S DEADLINE, ON THE REQUEST. The pooled client is cached per destination and a
