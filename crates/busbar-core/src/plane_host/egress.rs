@@ -52,7 +52,6 @@ use busbar_plugin::hot::host::HostCtx;
 use busbar_plugin::hot::pod::POD_VERSION;
 use busbar_plugin::hot::{EgressDesc, EgressHead, EgressId, EgressKind, EgressOpen, PipeId, StatusClass};
 use busbar_plugin::read_sized_field;
-use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::mem::MaybeUninit;
@@ -252,12 +251,16 @@ impl reqwest::dns::Resolve for RefuseSecondLookup {
     }
 }
 
-/// The observed peer identity: the SHA-256 of the leaf certificate the (already-verified) TLS
-/// handshake produced. Empty on a plaintext hop (nothing was proved) — reported honestly as absent
-/// rather than softened into a pass, exactly as `a2a::transport::peer_spki_of` reports `None`.
+/// The observed peer identity: the SubjectPublicKeyInfo PIN of the leaf certificate the
+/// (already-verified) TLS handshake produced, in the ONE canonical spelling
+/// (`sha256/<base64>` — [`super::spki::pin`]). Empty on a plaintext hop (nothing was proved) and
+/// empty where the certificate cannot be walked — reported honestly as absent rather than softened
+/// into a pass, exactly as `a2a::transport::peer_spki_of` reports `None`.
 ///
-/// Phase 2 narrows this to the certificate's SubjectPublicKeyInfo sub-field (the `a2a::spki` DER
-/// walk, once that leaf is de-feature-gated) so the pin survives a certificate renewal.
+/// This is the SAME pin the plane would compute itself: the host and the plane share one DER walk
+/// (lifted to [`super::spki`]), so a governed hop hands back the string the plane's own spelling
+/// yields, byte for byte — and it survives a certificate renewal because it pins the KEY, not the
+/// leaf bytes.
 fn observed_identity(resp: &reqwest::Response) -> Vec<u8> {
     let Some(info) = resp.extensions().get::<reqwest::tls::TlsInfo>() else {
         return Vec::new();
@@ -265,9 +268,10 @@ fn observed_identity(resp: &reqwest::Response) -> Vec<u8> {
     let Some(der) = info.peer_certificate() else {
         return Vec::new();
     };
-    let mut hasher = Sha256::new();
-    hasher.update(der);
-    hasher.finalize().to_vec()
+    match super::spki::pin(der) {
+        Ok(pin) => pin.into_bytes(),
+        Err(_) => Vec::new(), // an unwalkable certificate proves no pin — honestly absent.
+    }
 }
 
 /// Build the [`crate::net_guard::GuardPolicy`] for a hop from the host's allowlist-scope stance. Only

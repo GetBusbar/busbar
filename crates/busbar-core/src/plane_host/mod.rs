@@ -34,6 +34,7 @@ mod govern;
 pub mod journal;
 pub mod pipe;
 pub mod scope;
+pub(crate) mod spki;
 pub mod trust;
 pub mod vtable;
 
