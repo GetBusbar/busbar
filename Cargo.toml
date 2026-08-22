@@ -24,6 +24,7 @@ members = [
     "crates/store-memory",
     "crates/plane-abi-spike",
     "crates/plane-abi-spike-plugin",
+    "crates/busbar-plane-abi",
 ]
 
 # ── the single source of truth for external dependency VERSIONS ──────────────────────────────────
