@@ -38,7 +38,8 @@ use super::{recover, HostState};
 use crate::breaker::{CanonicalSignal, StatusClass as BreakerClass};
 use crate::store::{PlaneAdmission, PlaneBreakers, MAX_POOL_MEMBERS};
 use busbar_plugin::hot::host::HostCtx;
-use busbar_plugin::hot::{AdmissionId, Key, Signal, StatusClass};
+use busbar_plugin::hot::{AdmissionId, FaultClass, Key, Signal, StatusClass};
+use busbar_plugin::read_sized_field;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::Arc;
 
@@ -57,7 +58,9 @@ struct BreakerAdmission {
 
 impl SettleAdmission for BreakerAdmission {
     fn settle(&mut self, signal: &Signal) -> StatusClass {
-        match classify(signal.class) {
+        // SAFETY: `signal` is a live, initialized `Signal` for this call (settle's ABI discipline);
+        // its `provider_signal` borrowed range, when present, is valid for the duration of the call.
+        match unsafe { classify(signal) } {
             Outcome::Success => self.breakers.record_success(&self.key, self.lane),
             Outcome::Failure(sig) => {
                 self.breakers.record_signal(&self.key, self.lane, &sig);
@@ -82,26 +85,96 @@ enum Outcome {
     RecordNothing,
 }
 
-/// Map the neutral ABI outcome class a plane reports to the breaker's canonical disposition. The ABI
-/// [`StatusClass`] is the coarse `Ok/Refused/Gone/Unsupported/Fault` seam class; the breaker's own
-/// [`StatusClass`](crate::breaker::StatusClass) is the fine dialect-normalized class its classifier
-/// folds. `Gone`/`Fault` are transient upstream trouble (a vanished target / an internal fault);
-/// `Unsupported` is the caller's fault for this target; `Refused` penalizes nothing.
-fn classify(class: StatusClass) -> Outcome {
-    let signal = |c: BreakerClass| {
-        Outcome::Failure(CanonicalSignal {
-            class: c,
-            provider_signal: None,
-            retry_after: None,
-        })
-    };
-    match class {
-        StatusClass::Ok => Outcome::Success,
-        StatusClass::Refused => Outcome::RecordNothing,
-        StatusClass::Gone => signal(BreakerClass::Network),
-        StatusClass::Unsupported => signal(BreakerClass::ClientError),
-        StatusClass::Fault => signal(BreakerClass::ServerError),
+/// Reproduce the plane's `normalize_raw_error` disposition from a reported [`Signal`], building the
+/// FULL [`CanonicalSignal`] the store's `record_signal` folds — so routing a settle through the host
+/// is byte-for-byte the same disposition as the plane recording directly.
+///
+/// The coarse ABI [`StatusClass`] decides the top-level shape: `Ok` is a success, `Refused` records
+/// nothing (a policy refusal is not an upstream health signal), and `Gone`/`Unsupported`/`Fault` are
+/// failures to fold. On a failure, the FINE breaker class rides in the append-only [`Signal`] tail:
+/// when the sender wrote a real [`FaultClass`] (its `size` proves the field and it is not
+/// [`FaultClass::Unspecified`]), it maps 1:1 to the breaker's own [`StatusClass`](BreakerClass) and
+/// carries the upstream `Retry-After` floor and the borrowed provider error-code — the exact three
+/// inputs `record_signal` reads (the RateLimit cooldown floor, the transient/hard-down reason code).
+/// A sender that predates the tail (or leaves `Unspecified`) falls back to the coarse mapping the
+/// pre-enrichment host used: `Gone → Network`, `Unsupported → ClientError`, `Fault → ServerError`.
+///
+/// # Safety
+/// `signal.provider_signal_ptr`/`provider_signal_len`, when the tail is present and non-null/non-zero,
+/// MUST describe a live, initialized byte range for the duration of the call (settle's ABI discipline).
+unsafe fn classify(signal: &Signal) -> Outcome {
+    match signal.class {
+        StatusClass::Ok => return Outcome::Success,
+        // A policy refusal is not an upstream health signal — record nothing (ADR-0002).
+        StatusClass::Refused => return Outcome::RecordNothing,
+        // A failure to fold — fall through to the fine/coarse classification below.
+        StatusClass::Gone | StatusClass::Unsupported | StatusClass::Fault => {}
     }
+
+    // Prefer the FINE breaker class when the sender wrote it (append-only sized read); an older
+    // sender, a truncated tail, or an explicit `Unspecified` all fall back to the coarse map.
+    let fine = read_sized_field!(signal, Signal, fault_class).unwrap_or(FaultClass::Unspecified);
+    let class = match fine {
+        FaultClass::Unspecified => return Outcome::Failure(coarse_signal(signal.class)),
+        FaultClass::RateLimit => BreakerClass::RateLimit,
+        FaultClass::Overloaded => BreakerClass::Overloaded,
+        FaultClass::UpstreamError => BreakerClass::ServerError,
+        FaultClass::Timeout => BreakerClass::Timeout,
+        FaultClass::Network => BreakerClass::Network,
+        FaultClass::Auth => BreakerClass::Auth,
+        FaultClass::Billing => BreakerClass::Billing,
+        FaultClass::ClientError => BreakerClass::ClientError,
+        FaultClass::ContextLength => BreakerClass::ContextLength,
+    };
+
+    // The `Retry-After` floor: present only when the tail was written AND bit 0 of `fault_flags` is
+    // set (so a header value of `0` is distinct from "no header").
+    let retry_after = match read_sized_field!(signal, Signal, fault_flags) {
+        Some(flags) if flags & 0x01 != 0 => read_sized_field!(signal, Signal, retry_after_secs),
+        _ => None,
+    };
+
+    // The borrowed provider error-code (into the transient/hard-down reason), when present & UTF-8.
+    let provider_signal = provider_code(signal);
+
+    Outcome::Failure(CanonicalSignal {
+        class,
+        provider_signal,
+        retry_after,
+    })
+}
+
+/// The pre-enrichment coarse mapping, used as the forward-compat fallback for a sender that did not
+/// write the fine [`FaultClass`] tail. Preserves the exact legacy disposition (no `provider_signal`,
+/// no `retry_after`).
+fn coarse_signal(class: StatusClass) -> CanonicalSignal {
+    let class = match class {
+        StatusClass::Gone => BreakerClass::Network,
+        StatusClass::Unsupported => BreakerClass::ClientError,
+        // `Ok`/`Refused` never reach here (handled before the fallback); `Fault` is the only other.
+        StatusClass::Fault | StatusClass::Ok | StatusClass::Refused => BreakerClass::ServerError,
+    };
+    CanonicalSignal {
+        class,
+        provider_signal: None,
+        retry_after: None,
+    }
+}
+
+/// The borrowed provider error-CODE from a [`Signal`] tail, as an owned `String` for the canonical
+/// signal's reason field. `None` when the tail is absent, the range is null/empty, or non-UTF-8.
+///
+/// # Safety
+/// See [`classify`]: the borrowed range, when present, must be live for the call.
+unsafe fn provider_code(signal: &Signal) -> Option<String> {
+    let ptr = read_sized_field!(signal, Signal, provider_signal_ptr)?;
+    let len = read_sized_field!(signal, Signal, provider_signal_len)?;
+    if ptr.is_null() || len == 0 {
+        return None;
+    }
+    // SAFETY: the caller guarantees `(ptr, len)` is a live, initialized range for the call.
+    let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
+    std::str::from_utf8(bytes).ok().map(str::to_string)
 }
 
 /// Resolve the `(pool, lane)` cell key from a borrowed [`Key`] POD. `None` (→ refuse) on a null/empty
@@ -208,7 +281,8 @@ mod tests {
         }
     }
 
-    /// A `Signal` reporting `class` (health scalars are unused by the wiring).
+    /// A `Signal` reporting `class` with NO fine refinement (`FaultClass::Unspecified`) — exercises
+    /// the coarse fallback exactly as a pre-enrichment sender would.
     fn signal(class: StatusClass) -> Signal {
         Signal {
             size: core::mem::size_of::<Signal>() as u32,
@@ -217,6 +291,41 @@ mod tests {
             _reserved: 0,
             latency_nanos: 0,
             bytes: 0,
+            fault_class: FaultClass::Unspecified,
+            fault_flags: 0,
+            _reserved2: 0,
+            _reserved3: 0,
+            retry_after_secs: 0,
+            provider_signal_ptr: core::ptr::null(),
+            provider_signal_len: 0,
+        }
+    }
+
+    /// A failure `Signal` carrying a FINE [`FaultClass`], an optional `Retry-After` floor, and an
+    /// optional borrowed provider error-code — the enriched shape a real plane reports.
+    fn fine_signal(fault: FaultClass, retry_after: Option<u64>, code: Option<&[u8]>) -> Signal {
+        let (flags, secs) = match retry_after {
+            Some(s) => (0x01u8, s),
+            None => (0, 0),
+        };
+        let (ptr, len) = match code {
+            Some(c) => (c.as_ptr(), c.len()),
+            None => (core::ptr::null(), 0),
+        };
+        Signal {
+            size: core::mem::size_of::<Signal>() as u32,
+            version: POD_VERSION,
+            class: StatusClass::Fault,
+            _reserved: 0,
+            latency_nanos: 0,
+            bytes: 0,
+            fault_class: fault,
+            fault_flags: flags,
+            _reserved2: 0,
+            _reserved3: 0,
+            retry_after_secs: secs,
+            provider_signal_ptr: ptr,
+            provider_signal_len: len,
         }
     }
 
@@ -346,5 +455,121 @@ mod tests {
                 "a fault settle records a transient upstream signal and returns Ok"
             );
         });
+    }
+
+    /// FAITHFULNESS PROOF (classify level): the host's `classify` reproduces the EXACT
+    /// [`CanonicalSignal`] that `normalize_raw_error` produces for a 429-with-`Retry-After` and for a
+    /// 401 — the same class, provider code, and retry-after floor `record_signal` folds. Before the
+    /// enrichment the host lost the Retry-After floor and mapped 401 to a transient bleed; this asserts
+    /// it no longer does.
+    #[test]
+    fn classify_reproduces_normalize_raw_error() {
+        use crate::breaker::{normalize_raw_error, RawUpstreamError};
+        use std::collections::HashMap;
+        let no_map: HashMap<String, String> = HashMap::new();
+
+        // 429 + Retry-After: 30 + provider code → RateLimit, Some(code), Some(30).
+        let raw_429 = RawUpstreamError {
+            http_status: 429,
+            provider_code: Some("slow_down".to_string()),
+            structured_type: None,
+            retry_after_secs: Some(30),
+        };
+        let expect_429 = normalize_raw_error(&raw_429, &no_map);
+        let code = b"slow_down";
+        let sig_429 = fine_signal(FaultClass::RateLimit, Some(30), Some(code));
+        // SAFETY: `code` outlives this call; the tail is fully written.
+        match unsafe { classify(&sig_429) } {
+            Outcome::Failure(cs) => assert_eq!(
+                cs, expect_429,
+                "429 host classify must equal normalize_raw_error (class + code + retry_after)"
+            ),
+            _ => panic!("a 429 must classify as a failure to fold"),
+        }
+
+        // 401 auth → HardDown class, no code, no retry_after.
+        let raw_401 = RawUpstreamError {
+            http_status: 401,
+            provider_code: None,
+            structured_type: None,
+            retry_after_secs: None,
+        };
+        let expect_401 = normalize_raw_error(&raw_401, &no_map);
+        let sig_401 = fine_signal(FaultClass::Auth, None, None);
+        // SAFETY: no borrowed range; the tail is fully written.
+        match unsafe { classify(&sig_401) } {
+            Outcome::Failure(cs) => {
+                assert_eq!(cs, expect_401, "401 host classify must equal normalize_raw_error");
+                assert_eq!(
+                    crate::breaker::classify(&cs),
+                    crate::breaker::Disposition::HardDown,
+                    "401 must fold to a sticky HardDown, not a transient bleed"
+                );
+            }
+            _ => panic!("a 401 must classify as a failure to fold"),
+        }
+    }
+
+    /// FAITHFULNESS PROOF (end-to-end): driving the enriched 401 and 429 signals THROUGH
+    /// `breaker_admit` + `breaker_settle` leaves the target cell in the SAME state as recording the
+    /// `normalize_raw_error` `CanonicalSignal` directly onto an identical cell. This is the guarantee
+    /// CLUSTER-1 needs: the host settle path IS the plane's own `record_signal` disposition.
+    #[test]
+    fn settle_through_host_matches_direct_record_signal() {
+        use crate::breaker::{normalize_raw_error, RawUpstreamError};
+        use std::collections::HashMap;
+        let no_map: HashMap<String, String> = HashMap::new();
+
+        for (raw, fault, retry, code) in [
+            (
+                RawUpstreamError {
+                    http_status: 401,
+                    provider_code: None,
+                    structured_type: None,
+                    retry_after_secs: None,
+                },
+                FaultClass::Auth,
+                None,
+                None::<&[u8]>,
+            ),
+            (
+                RawUpstreamError {
+                    http_status: 429,
+                    provider_code: Some("slow_down".to_string()),
+                    structured_type: None,
+                    retry_after_secs: Some(30),
+                },
+                FaultClass::RateLimit,
+                Some(30u64),
+                Some(b"slow_down".as_slice()),
+            ),
+        ] {
+            // Direct path: normalize + record straight onto a fresh cell.
+            let direct = crate::test_support::TestApp::new().build();
+            let cs = normalize_raw_error(&raw, &no_map);
+            direct.plane_breakers.record_signal(POOL_STR, 0, &cs);
+            let direct_state = direct.plane_breakers.state_at(POOL_STR, 0);
+
+            // Host path: admit + settle the enriched Signal on an identical fresh cell.
+            let hosted = crate::test_support::TestApp::new().build();
+            with_dispatch_scope(&hosted, |host, vt| {
+                let k = key(0);
+                let id = (vt.breaker_admit.unwrap())(host, &k as *const Key);
+                assert!(!id.is_none());
+                let sig = fine_signal(fault, retry, code);
+                assert_eq!(
+                    (vt.breaker_settle.unwrap())(host, id, &sig as *const Signal),
+                    StatusClass::Ok,
+                );
+            });
+            let hosted_state = hosted.plane_breakers.state_at(POOL_STR, 0);
+
+            assert_eq!(
+                direct_state, hosted_state,
+                "host settle must leave the cell in the same state as a direct record_signal \
+                 for http {}",
+                raw.http_status
+            );
+        }
     }
 }

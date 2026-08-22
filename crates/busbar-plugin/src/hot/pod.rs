@@ -14,7 +14,7 @@ use std::os::raw::c_void;
 
 /// The POD schema version stamped into each struct's `version` field at construction. Distinct from
 /// the airlock [`ABI_MAJOR`](crate::ABI_MAJOR): this bumps additively as fields are appended.
-pub const POD_VERSION: u16 = 1;
+pub const POD_VERSION: u16 = 2;
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 // Handle-id newtypes — opaque host-side references a plane holds. `#[repr(transparent)]` over u64
@@ -194,6 +194,40 @@ pub enum GateDecision {
     Block = 1,
 }
 
+/// The FINE, dialect-normalized health class a plane reports for a FAILED guarded operation — the
+/// refinement of the coarse [`StatusClass`] that lets the host reproduce the breaker's exact
+/// disposition (transient cooldown vs. sticky hard-down vs. relay-verbatim) instead of a lossy
+/// 5-way guess. Carried in [`Signal::fault_class`]; only meaningful when the coarse class is a
+/// failure (`Gone`/`Unsupported`/`Fault`). Names are protocol-NEUTRAL (no protocol/role noun).
+/// Append-only: new classes go at the tail with a fresh discriminant, and `Unspecified` (= 0) is the
+/// forward-compat default a sender that predates this field leaves, so the host falls back to the
+/// coarse mapping rather than misreading it.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FaultClass {
+    /// No fine classification supplied — the host falls back to the coarse [`StatusClass`] mapping.
+    Unspecified = 0,
+    /// Rate-limited / slow-down — transient; honors a [`Signal::retry_after_secs`] cooldown floor.
+    RateLimit = 1,
+    /// Upstream reported itself overloaded — transient.
+    Overloaded = 2,
+    /// Upstream internal error (5xx-shaped) — transient.
+    UpstreamError = 3,
+    /// The call timed out — transient.
+    Timeout = 4,
+    /// A network-level failure reaching the upstream — transient.
+    Network = 5,
+    /// An authentication/authorization rejection — sticky hard-down (credential invalid).
+    Auth = 6,
+    /// A billing / balance rejection — sticky hard-down (account issue).
+    Billing = 7,
+    /// A caller-side request error (4xx-shaped other than auth) — relay verbatim, penalize nothing.
+    ClientError = 8,
+    /// The request exceeded the target's context/size window — the target is healthy; fail over
+    /// WITHOUT penalizing it.
+    ContextLength = 9,
+}
+
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 // The POD structs. Each leads with `size`/`version`; the shared preamble macro keeps that uniform.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -320,6 +354,19 @@ pub struct Key {
 
 /// The post-call signal a plane reports back to the breaker at `breaker_settle`: the outcome class
 /// plus cheap health scalars the breaker folds.
+///
+/// The tail block (`fault_class` … `provider_signal_len`) is an APPEND-ONLY minor-`1` extension: it
+/// refines the coarse [`class`](Self::class) into the FINE breaker disposition the host reproduces
+/// (transient-upstream cooldown vs. sticky hard-down vs. relay-verbatim), the upstream `Retry-After`
+/// cooldown floor, and a borrowed provider error-code the reason lines record. A sender that predates
+/// this block advertises the shorter `size`; the host reads the tail only when `size` proves it was
+/// written (the sized-struct guard) and otherwise falls back to the coarse mapping — so the addition
+/// is a MINOR airlock bump, never a MAJOR.
+///
+/// # Safety / discipline
+/// `provider_signal_ptr`/`provider_signal_len`, when non-null/non-zero, MUST describe a live,
+/// initialized byte range (a provider error CODE, NOT owned by `Signal`) for any call that receives
+/// `&Signal`.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct Signal {
@@ -335,6 +382,24 @@ pub struct Signal {
     pub latency_nanos: u64,
     /// Bytes transferred (0 if not applicable).
     pub bytes: u64,
+    /// (minor-1) The FINE breaker class refining a FAILURE `class`. [`FaultClass::Unspecified`] (the
+    /// zero default) means "no refinement — use the coarse mapping".
+    pub fault_class: FaultClass,
+    /// (minor-1) Bit 0: a `Retry-After` floor is present in [`retry_after_secs`](Self::retry_after_secs)
+    /// (distinguishes "no header" from a header value of `0`). Other bits reserved (must be 0).
+    pub fault_flags: u8,
+    /// (minor-1) Alignment padding before the scalars.
+    pub _reserved2: u16,
+    /// (minor-1) Alignment padding before the 8-byte-aligned tail.
+    pub _reserved3: u32,
+    /// (minor-1) The upstream `Retry-After` cooldown floor in whole seconds; read only when bit 0 of
+    /// [`fault_flags`](Self::fault_flags) is set.
+    pub retry_after_secs: u64,
+    /// (minor-1) Borrowed provider error-CODE bytes recorded into the transient/hard-down reason
+    /// (NOT owned; null/len 0 = none). NEVER a secret.
+    pub provider_signal_ptr: *const u8,
+    /// (minor-1) Length of the borrowed provider-code range.
+    pub provider_signal_len: usize,
 }
 
 /// The descriptor for opening a governed egress. Carries a credential-REF (which pool/hop/exchange),

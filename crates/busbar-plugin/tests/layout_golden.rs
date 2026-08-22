@@ -66,7 +66,25 @@ fn compute_layout() -> String {
         Key,
         [size, version, _reserved, scope, _reserved2, key_ptr, key_len]
     );
-    record!(s, Signal, [size, version, class, _reserved, latency_nanos, bytes]);
+    record!(
+        s,
+        Signal,
+        [
+            size,
+            version,
+            class,
+            _reserved,
+            latency_nanos,
+            bytes,
+            fault_class,
+            fault_flags,
+            _reserved2,
+            _reserved3,
+            retry_after_secs,
+            provider_signal_ptr,
+            provider_signal_len
+        ]
+    );
     record!(
         s,
         EgressDesc,
