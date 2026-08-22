@@ -647,6 +647,9 @@ pub(super) async fn call_response_caps(
     // did before verify-on-call. See `crate::test_support::prefresh_mcp_sightings`.
     crate::test_support::prefresh_mcp_sightings(app);
     let handle = std::sync::Arc::new(crate::state::AppHandle::new(app.clone()));
+    // The sync leg's shared host arena, exactly as production's `rpc_dispatch` opens one — so the
+    // breaker/reroute batteries drive the CLUSTER-1 admit+settle path, not a legacy in-place shim.
+    let host = crate::plane_host::HostDispatch::new(app);
     let ctx = crate::mcp::method::Ctx {
         app,
         handle: &handle,
@@ -654,6 +657,7 @@ pub(super) async fn call_response_caps(
         actor,
         capabilities,
         headers: &NO_HEADERS,
+        scope: Some(host.scope()),
     };
     let response = crate::mcp::method::dispatch(&ctx, method, Some(&params), Some(1.into()))
         .await

@@ -168,6 +168,12 @@ pub(crate) struct Ctx<'a> {
     /// here, rather than ingress growing a grant-scoped lookup or this module growing a second
     /// header parser. Both halves still answer `-32020` / `400`.
     pub(crate) headers: &'a axum::http::HeaderMap,
+    /// THE SYNC LEG'S SHARED HOST [`DispatchScope`](crate::plane_host::DispatchScope) — the arena the
+    /// `tools/call` breaker admit registers into and the leg settle folds through (CLUSTER-1). Opened
+    /// once at the top of `rpc_dispatch` and held for the whole future, so a host handle is reachable
+    /// at every downstream breaker admit/settle site and reclaims on any exit. `None` for the task
+    /// path (which re-homes its probe into a `DurableScope`) and for unit tests that admit directly.
+    pub(crate) scope: Option<&'a crate::plane_host::DispatchScope>,
 }
 
 impl Ctx<'_> {
@@ -1548,7 +1554,7 @@ async fn tools_call(
         authorised,
         &arguments,
     );
-    if let Err(refused) = route.admit(&breakers) {
+    if let Err(refused) = route.admit(&breakers, ctx.scope) {
         return log.refused(
             route_refusal_reason(&refused),
             refuse_route(id, &route, &refused),
@@ -1571,7 +1577,7 @@ async fn tools_call(
         // caller's id. An id chosen by the caller and echoed onto an upstream is a caller-controlled
         // value crossing a trust boundary for no reason.
         |round, satisfaction| {
-            route_ref.dispatch(pool, &breakers, &arguments, u64::from(round), satisfaction)
+            route_ref.dispatch(pool, &breakers, ctx.scope, &arguments, u64::from(round), satisfaction)
         },
         // THE GRANT, RE-READ LIVE ON EVERY ROUND. There is no handshake to authorise once and then
         // trust, so a revocation between rounds has to bite on the next one — which is the only
@@ -1873,7 +1879,9 @@ async fn create_task(
         authorised,
         &arguments,
     );
-    if let Err(refused) = route.admit(&breakers) {
+    // The task path admits with NO sync scope: the won probe is held raw and then re-homed into the
+    // runner's `DurableScope` by `into_task_dispatch`, where the detached leg settles it.
+    if let Err(refused) = route.admit(&breakers, None) {
         return log.refused(
             route_refusal_reason(&refused),
             refuse_route(id, &route, &refused),

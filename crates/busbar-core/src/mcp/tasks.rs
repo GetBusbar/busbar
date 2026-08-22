@@ -522,10 +522,11 @@ pub(crate) struct Runner {
     /// call cannot reach — and a settle through the host `breaker_settle` seam over
     /// `host.host_state()` makes that drop a no-op.
     ///
-    /// Never read on the breaker-preserving path: the field EXISTS to be dropped with the runner
-    /// (reclaiming the probe), which is what the allow says. CLUSTER-1 flips the detached settle leg to
-    /// record through this route rather than let it drop unsettled.
-    #[allow(dead_code)]
+    /// CLUSTER-1: the detached leg SETTLES its classified outcome through this route
+    /// (`host.durable().settle(host.admission(), signal)`) — folding it through the SAME
+    /// `record_signal`/`record_success` disposition the plane's own recorder runs — and the durable
+    /// scope's drop (with the runner) releases only an UNSETTLED probe, covering a `tasks/cancel`
+    /// abort as well as normal end.
     pub(crate) host: crate::plane_host::DurableHostDispatch,
     /// The breaker cell the admitted member records into — `("tool:<pool>", lane)` for a pooled
     /// member, the degenerate `("tool:<server>", 0)` otherwise. Carried from `create_task`'s walk
@@ -576,6 +577,41 @@ pub(crate) fn spawn(task: Arc<McpTask>, runner: Runner) {
 
 /// THE RUNNER. Ask, then dispatch, then settle — and every exit writes a terminal status, because
 /// a task that stops without one is a caller polling for ever.
+/// SETTLE one task leg's classified breaker outcome (CLUSTER-1). The runner owns ONE durable probe
+/// (fixed at task creation); fold this leg's outcome through it over the durable admission id. Once
+/// that single probe is settled (the first leg), later input-required rounds find no live admission
+/// (`settle` → `None`) and record IN PLACE against the same cell — byte-identical to the pre-flip
+/// per-round in-place records. A `Nothing` settles `Refused` (releases the probe, records nothing) or
+/// records nothing in place.
+fn settle_task_leg(
+    host: &crate::plane_host::DurableHostDispatch,
+    breakers: &crate::store::PlaneBreakers,
+    cell: &super::upstream::BreakerCell,
+    outcome: &super::upstream::LegOutcome,
+) {
+    use super::upstream::LegOutcome;
+    let id = host.admission();
+    if !id.is_none() {
+        let sig = match outcome {
+            LegOutcome::Success => crate::plane_host::breaker::success_signal(),
+            LegOutcome::Failure(cs) => crate::plane_host::breaker::failure_signal(cs),
+            LegOutcome::Nothing => crate::plane_host::breaker::refused_signal(),
+        };
+        if host.durable().settle(id, &sig).is_some() {
+            return;
+        }
+    }
+    match outcome {
+        LegOutcome::Success => {
+            breakers.record_success(&cell.key, cell.lane);
+        }
+        LegOutcome::Failure(cs) => {
+            breakers.record_signal(&cell.key, cell.lane, cs);
+        }
+        LegOutcome::Nothing => {}
+    }
+}
+
 async fn run(task: Arc<McpTask>, runner: Runner) {
     // (1) THE IN-TASK ASK ROUNDS. Ordered, and each one waits for every key it asked.
     for round in &runner.task_asks {
@@ -603,18 +639,29 @@ async fn run(task: Arc<McpTask>, runner: Runner) {
         &runner.server_id,
         runner.max_rounds,
         |round, satisfaction| {
-            let leg = super::upstream::call(
-                &runner.pool,
-                &runner.breakers,
-                &runner.cell,
-                &runner.authorised,
-                &arguments,
-                u64::from(round),
-                satisfaction,
-            );
-            // A task never reroutes mid-flight (the member was fixed at creation), so the leg's
-            // stage is not consulted here: only the message survives into the loop's refusal.
-            async move { leg.await.map_err(|f| f.message) }
+            // Reborrow the pieces the future needs; `async move` then moves these SHARED refs (a
+            // copy), not the `Runner`, so the closure stays callable per round.
+            let runner = &runner;
+            let arguments = &arguments;
+            // A task never reroutes mid-flight (the member was fixed at creation), so the leg's stage
+            // is not consulted here: only the message survives into the loop's refusal.
+            async move {
+                let mut leg_outcome = super::upstream::LegOutcome::Nothing;
+                let result = super::upstream::call(
+                    &runner.pool,
+                    &runner.authorised,
+                    arguments,
+                    u64::from(round),
+                    satisfaction,
+                    &mut leg_outcome,
+                )
+                .await;
+                // SETTLE this leg's classified outcome through the runner's durable host route
+                // (CLUSTER-1). The single durable probe is settled on the first round; later
+                // input-required rounds record in place against the same cell.
+                settle_task_leg(&runner.host, &runner.breakers, &runner.cell, &leg_outcome);
+                result.map_err(|f| f.message)
+            }
         },
         {
             let handle = Arc::clone(&handle);
@@ -667,11 +714,11 @@ async fn run(task: Arc<McpTask>, runner: Runner) {
         |_| Ok(()),
     )
     .await;
-    // `runner.host` (the durable host route holding the probe hold) drops with the runner — on this
-    // function's normal end AND on an abort — reclaiming the moved-in admission owner-checked; a
-    // recorded leg outcome makes that a no-op. This is the §4 durable handoff: the probe's lifetime
-    // was re-homed from the request future to the task's, so it is NOT released at request-drop.
-    // CLUSTER-1 settles through the route here (`runner.host.host_state()` → `breaker_settle`).
+    // The leg loop above SETTLED the durable admission through `runner.host` (CLUSTER-1). `runner.host`
+    // (the durable host route) still drops with the runner — on this function's normal end AND on an
+    // abort — reclaiming an UNSETTLED admission owner-checked (e.g. a task cancelled before its first
+    // leg); a settled probe makes that drop a no-op. This is the §4 durable handoff: the probe's
+    // lifetime was re-homed from the request future to the task's, so it is NOT released at request-drop.
 
     // (4) SETTLE. A tool that ran is `completed` whatever it said about itself; a refusal is a
     // PROTOCOL error and is `failed`.

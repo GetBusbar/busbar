@@ -30,9 +30,11 @@
 //!    conversation with ONE server, and moving it would hand a later round's `requestState` to a peer
 //!    that never issued it.
 
-use super::upstream::{Authorised, BreakerCell, LegFailure};
+use super::upstream::{Authorised, BreakerCell, LegFailure, LegOutcome};
 use crate::failover::{walk, Attempt, Candidate, Refusal, Repeatable, Stage};
+use crate::plane_host::DispatchScope;
 use crate::store::{PlaneAdmission, PlaneBreakers};
+use busbar_plugin::hot::AdmissionId;
 use std::sync::{Arc, Mutex};
 
 /// One pool member as the walk sees it. `auth` is `None` when THIS CALLER cannot dispatch to the
@@ -75,9 +77,16 @@ struct RouteState {
     /// Positions already dispatched to (or unauthorised for this caller). Handed to the walk,
     /// which never selects them again for this request.
     tried: Vec<usize>,
-    /// The RAII probe hold for `active`. Dropping it releases owner-checked; a recorded outcome
-    /// has already consumed the probe and makes that a no-op.
+    /// The RAII probe hold for `active` when NO host scope owns it (the task path, which re-homes it
+    /// into a `DurableScope` via `into_task_dispatch`, and legacy/None-scope callers). Dropping it
+    /// releases owner-checked; a recorded outcome has already consumed the probe and makes that a
+    /// no-op. `None` on the sync host-scoped path, where the probe lives in the `DispatchScope`
+    /// instead — see [`admission_id`](Self::admission_id).
     admission: Option<PlaneAdmission>,
+    /// The host [`AdmissionId`] for `active` when a shared [`DispatchScope`] owns the probe (the sync
+    /// CLUSTER-1 path): the id the leg's settle folds its outcome through. [`AdmissionId::NONE`] when
+    /// the probe is held raw in [`admission`](Self::admission) instead (task / legacy path).
+    admission_id: AdmissionId,
 }
 
 /// A dispatchable route: the candidate set, the cell key they share, and the walk's live state.
@@ -141,6 +150,7 @@ impl PoolRoute {
                     pinned: false,
                     tried: Vec::new(),
                     admission: None,
+                    admission_id: AdmissionId::NONE,
                 }),
             };
         };
@@ -209,6 +219,7 @@ impl PoolRoute {
                 pinned: false,
                 tried,
                 admission: None,
+                admission_id: AdmissionId::NONE,
             }),
         }
     }
@@ -234,9 +245,18 @@ impl PoolRoute {
 
     /// ADMIT: run the walk and hold the admitted member's probe. The pre-socket gate — a refusal
     /// here cost no token exchange and no socket, and the rendering is the caller's 503.
-    pub(crate) fn admit(&self, breakers: &Arc<PlaneBreakers>) -> Result<(), Box<RouteRefused>> {
+    ///
+    /// `scope` is the sync leg's shared [`DispatchScope`] (CLUSTER-1): when `Some`, the won probe is
+    /// REGISTERED there as a settle-capable admission and its outcome is later folded through the
+    /// scope; when `None` (the task path, which re-homes the raw probe into a `DurableScope`, and
+    /// legacy callers), the probe is held raw in `RouteState`.
+    pub(crate) fn admit(
+        &self,
+        breakers: &Arc<PlaneBreakers>,
+        scope: Option<&DispatchScope>,
+    ) -> Result<(), Box<RouteRefused>> {
         let mut s = lock(&self.state);
-        self.select_locked(&mut s, Stage::BeforeFirstByte, breakers)
+        self.select_locked(&mut s, Stage::BeforeFirstByte, breakers, scope)
             .map_err(|refusal| {
                 Box::new(RouteRefused {
                     refusal,
@@ -245,12 +265,15 @@ impl PoolRoute {
             })
     }
 
-    /// The walk, under the lock: selects into `state.active` and adopts the probe.
+    /// The walk, under the lock: selects into `state.active` and adopts the probe. With a shared
+    /// `scope` (sync CLUSTER-1) the adopted probe is registered there as a settle-capable admission
+    /// and its host id kept in `state.admission_id`; without one it is held raw in `state.admission`.
     fn select_locked(
         &self,
         s: &mut RouteState,
         stage: Stage,
         breakers: &Arc<PlaneBreakers>,
+        scope: Option<&DispatchScope>,
     ) -> Result<(), Refusal> {
         let attempt = Attempt {
             tried: &s.tried,
@@ -265,12 +288,29 @@ impl PoolRoute {
             &attempt,
             crate::store::now(),
         )?;
+        let lane = admitted.candidate().lane();
+        let probe = breakers.adopt(&self.pool_key, lane, admitted.probe_epoch());
         s.active = Some(admitted.position());
-        s.admission = Some(breakers.adopt(
-            &self.pool_key,
-            admitted.candidate().lane(),
-            admitted.probe_epoch(),
-        ));
+        match scope {
+            // Sync CLUSTER-1: re-home the won probe into the shared arena as settle-capable, minting
+            // this leg's host id. A reroute re-walks and re-admits, minting a fresh id per leg.
+            Some(scope) => {
+                let settling = crate::plane_host::breaker::settling_admission(
+                    Arc::clone(breakers),
+                    self.pool_key.clone(),
+                    lane,
+                    probe,
+                );
+                s.admission_id = scope.register_settling_admission(settling);
+                s.admission = None;
+            }
+            // Task / legacy: keep the raw probe hold for `into_task_dispatch` (durable handoff) or
+            // the drop-after-record lifetime.
+            None => {
+                s.admission = Some(probe);
+                s.admission_id = AdmissionId::NONE;
+            }
+        }
         Ok(())
     }
 
@@ -284,20 +324,22 @@ impl PoolRoute {
             .unwrap_or(1)
     }
 
-    /// ONE ROUND of the routed dispatch: send to the admitted member; on a failure the seam's
-    /// rules allow moving, record (already done inside `call`), mark tried, re-walk, and try the
-    /// next member. The caller sees exactly one answer, and an exhausted pool answers with the
-    /// LAST member's failure — the same rendering an un-pooled server's failure has always had.
+    /// ONE ROUND of the routed dispatch: send to the admitted member; `call` classifies the leg's
+    /// breaker outcome, this SETTLES it (CLUSTER-1 — through the shared `scope` when one owns the
+    /// probe, else in place), and on a failure the seam's rules allow moving it marks tried, re-walks,
+    /// and tries the next member. The caller sees exactly one answer, and an exhausted pool answers
+    /// with the LAST member's failure — the same rendering an un-pooled server's failure always had.
     pub(crate) async fn dispatch(
         &self,
         pool: &super::client::pool::McpConnectionPool,
         breakers: &Arc<PlaneBreakers>,
+        scope: Option<&DispatchScope>,
         arguments: &serde_json::Value,
         request_id: u64,
         satisfaction: Option<serde_json::Value>,
     ) -> Result<super::inputreq::Round, String> {
         loop {
-            let (idx, cell) = {
+            let (idx, cell, admission_id) = {
                 let s = lock(&self.state);
                 let idx = s
                     .active
@@ -308,22 +350,27 @@ impl PoolRoute {
                         key: self.pool_key.clone(),
                         lane: self.members[idx].lane,
                     },
+                    s.admission_id,
                 )
             };
             let auth = self.members[idx]
                 .auth
                 .as_ref()
                 .expect("the walk only selects authorised members (unauthorised are pre-tried)");
+            let mut leg_outcome = LegOutcome::Nothing;
             let outcome = super::upstream::call(
                 pool,
-                breakers,
-                &cell,
                 auth,
                 arguments,
                 request_id,
                 satisfaction.clone(),
+                &mut leg_outcome,
             )
             .await;
+            // SETTLE this leg's classified outcome where the probe lives (CLUSTER-1): through the
+            // shared scope over this leg's id, or — with no scope, or a multi-round leg whose probe
+            // was already settled on an earlier round — in place against the member's own cell.
+            settle_leg(breakers, &cell, scope, admission_id, &leg_outcome);
             let failure: LegFailure = match outcome {
                 Ok(round) => {
                     lock(&self.state).pinned = true;
@@ -338,16 +385,20 @@ impl PoolRoute {
                     // nothing to reroute without inventing a second conversation.
                     return Err(failure.message);
                 }
-                // The failed member is spent for this request, whatever happens next. Its outcome
-                // was recorded inside `call`, against its own cell; the admission drop below
-                // releases an unconsumed probe owner-checked.
+                // The failed member is spent for this request, whatever happens next. Its outcome was
+                // just settled above (consuming/releasing the scope's admission, or recorded in
+                // place); clearing the raw probe below releases an unconsumed one owner-checked.
                 s.tried.push(idx);
                 s.active = None;
                 s.admission = None;
+                s.admission_id = AdmissionId::NONE;
                 // RE-ENTER THE ONE WALK. Its safety rule — not this file — decides whether the
                 // failure's stage and the operator's `repeatable:` allow another member; a refusal
                 // keeps the failure the caller was already owed.
-                if self.select_locked(&mut s, failure.stage, breakers).is_err() {
+                if self
+                    .select_locked(&mut s, failure.stage, breakers, scope)
+                    .is_err()
+                {
                     s.pinned = true;
                     return Err(failure.message);
                 }
@@ -400,6 +451,46 @@ impl PoolRoute {
         let (durable, admission_id) =
             crate::plane_host::DurableScope::with_settling_handoff(settling);
         Some((member.auth?, cell, durable, admission_id, member.name))
+    }
+}
+
+/// SETTLE ONE dispatched leg's classified breaker outcome (CLUSTER-1). With a shared `scope` that
+/// owns this leg's probe (`admission_id` live), fold the outcome through it — the same
+/// `record_signal`/`record_success` disposition the plane's own recorder runs, byte-identically.
+/// Otherwise (no scope, or a multi-round leg whose one probe was already settled on an earlier round)
+/// record in place against the member's own cell — leaving a `Nothing` unrecorded exactly as dropping
+/// the raw probe did.
+fn settle_leg(
+    breakers: &Arc<PlaneBreakers>,
+    cell: &BreakerCell,
+    scope: Option<&DispatchScope>,
+    admission_id: AdmissionId,
+    outcome: &LegOutcome,
+) {
+    if let Some(scope) = scope {
+        if !admission_id.is_none() {
+            let sig = match outcome {
+                LegOutcome::Success => crate::plane_host::breaker::success_signal(),
+                LegOutcome::Failure(cs) => crate::plane_host::breaker::failure_signal(cs),
+                // A settled `Refused` records nothing and RELEASES the probe — the raw-drop behaviour.
+                LegOutcome::Nothing => crate::plane_host::breaker::refused_signal(),
+            };
+            // A live admission folds the outcome through the host scope; `None` means the probe was
+            // already settled (a later multi-round leg) → fall through to the in-place record.
+            if scope.settle_admission(admission_id, &sig).is_some() {
+                return;
+            }
+        }
+    }
+    match outcome {
+        LegOutcome::Success => {
+            breakers.record_success(&cell.key, cell.lane);
+        }
+        LegOutcome::Failure(cs) => {
+            breakers.record_signal(&cell.key, cell.lane, cs);
+        }
+        // Not an upstream health signal: record nothing (a raw probe, if any, releases on drop).
+        LegOutcome::Nothing => {}
     }
 }
 

@@ -117,6 +117,7 @@ async fn prompt_text(arguments: serde_json::Value) -> String {
         actor: "test-principal",
         capabilities: &ALL_CAPABILITIES,
         headers: &NO_HEADERS,
+        scope: None,
     };
     let params = serde_json::json!({ "name": "fs_greet", "arguments": arguments });
     let response = crate::mcp::method::dispatch(&ctx, "prompts/get", Some(&params), Some(1.into()))
@@ -190,6 +191,7 @@ async fn completion_complete_answers_an_empty_completion_rather_than_method_not_
         actor: "test-principal",
         capabilities: &ALL_CAPABILITIES,
         headers: &NO_HEADERS,
+        scope: None,
     };
     let params = serde_json::json!({
         "ref": { "type": "ref/prompt", "name": "fs_greet" },

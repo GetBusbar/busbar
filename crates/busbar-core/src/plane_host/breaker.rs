@@ -154,6 +154,28 @@ pub(crate) fn success_signal() -> Signal {
     }
 }
 
+/// The ABI [`Signal`] a host settle carries for an outcome that is NOT an upstream health signal —
+/// [`classify`] maps `Refused` to `RecordNothing`, so settling this RELEASES the half-open probe
+/// without recording, exactly as dropping the raw `PlaneAdmission` did (the "record nothing"
+/// disposition: a busbar-side refusal / a not-transmitted leg).
+pub(crate) fn refused_signal() -> Signal {
+    Signal {
+        size: core::mem::size_of::<Signal>() as u32,
+        version: busbar_plugin::hot::POD_VERSION,
+        class: StatusClass::Refused,
+        _reserved: 0,
+        latency_nanos: 0,
+        bytes: 0,
+        fault_class: FaultClass::Unspecified,
+        fault_flags: 0,
+        _reserved2: 0,
+        _reserved3: 0,
+        retry_after_secs: 0,
+        provider_signal_ptr: core::ptr::null(),
+        provider_signal_len: 0,
+    }
+}
+
 /// The inverse of [`classify`]'s fine [`FaultClass`] → [`BreakerClass`] table: the plane's own
 /// canonical class back to the ABI fine class the settle carries. Total — every [`BreakerClass`]
 /// maps to exactly one [`FaultClass`], so a settle built here round-trips through [`classify`].

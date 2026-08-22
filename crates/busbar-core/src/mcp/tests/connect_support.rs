@@ -316,6 +316,7 @@ pub(crate) async fn call(
         actor: "test-principal",
         capabilities: &ALL_CAPABILITIES,
         headers: &NO_HEADERS,
+        scope: None,
     };
     let response = crate::mcp::method::dispatch(&ctx, method, Some(&params), Some(1.into()))
         .await

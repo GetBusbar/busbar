@@ -437,13 +437,18 @@ impl LegFailure {
 /// `inputResponses`/`requestState` continuation.
 pub(crate) async fn call(
     pool: &McpConnectionPool,
-    breakers: &crate::store::PlaneBreakers,
-    cell: &BreakerCell,
     auth: &Authorised,
     arguments: &serde_json::Value,
     request_id: u64,
     satisfaction: Option<serde_json::Value>,
+    outcome: &mut LegOutcome,
 ) -> Result<Round, LegFailure> {
+    // STAGE-1 CLASSIFICATION stays HERE, where the raw transport/status structure still exists; the
+    // SETTLE moves to the caller's host scope (CLUSTER-1). `outcome` is the classified breaker fact
+    // this leg hands back — `Nothing` until a wire/status point overwrites it, so every pre-socket
+    // refusal below (a missing key, a credential plan / exchange failure) leaves it `Nothing`: no
+    // byte left busbar, so nothing is recorded against the target's cell.
+    *outcome = LegOutcome::Nothing;
     // A `tools/call` NAMES A TOOL, so this leg must carry one. The refusal is a `String` and not a
     // panic because `Authorised` is constructible for a server-scoped verb too, and the type cannot
     // yet say which shape a given value is — what it can say is that this path does not proceed
@@ -511,25 +516,26 @@ pub(crate) async fn call(
         command: auth.stdio.as_ref(),
         grants: auth.grants,
     };
-    // THE OUTCOME IS RECORDED WHERE THE STRUCTURE STILL EXISTS — the Stage-1 normalizer for this
-    // plane (the audit's closing design). One leg, one record, into the ONE core breaker's cell
-    // for this target (the caller-supplied `cell`, so a pooled member records against its own
-    // `(pool, lane)` and a degenerate server against `("tool:<id>", 0)`); by the time this
-    // function's failure reaches the caller the transport/status shape is gone, so classifying
-    // later would be guessing.
+    // THE OUTCOME IS CLASSIFIED WHERE THE STRUCTURE STILL EXISTS — the Stage-1 normalizer for this
+    // plane (the audit's closing design). One leg, one classified `outcome` handed back to the caller,
+    // which SETTLES it against the ONE core breaker's cell for this target (CLUSTER-1: the sync leg
+    // through its `DispatchScope` admission, the task leg through the runner's `DurableScope`); by the
+    // time this function's failure reaches the caller the transport/status shape is gone, so
+    // classifying later would be guessing — which is exactly why the classification stays HERE and
+    // only the settle moves out.
     //
     // `wire::send`, not `mcp_wire().send`: the client leg's `busbar_upstream_attempts_total` /
     // `busbar_upstream_failures_total` count lives on that seam so a leg that is not counted is a
-    // leg that did not happen. See `super::client::wire::send`. The breaker record and the counter
-    // are DIFFERENT observers of the same leg and both belong here — the breaker decides whether the
-    // next call is attempted, the counter tells an operator which registration is the one failing.
-    // They are also keyed differently ON PURPOSE: the counter labels the operator's REGISTRATION
-    // (`leg.server`), which is the thing an operator restarts, while the breaker records the POOL
-    // MEMBER (`cell`), which is the thing the reroute walk selects past.
+    // leg that did not happen. See `super::client::wire::send`. The breaker outcome and the counter
+    // are DIFFERENT observers of the same leg — the breaker decides whether the next call is
+    // attempted, the counter tells an operator which registration is the one failing — keyed
+    // differently ON PURPOSE: the counter labels the operator's REGISTRATION (`leg.server`), the
+    // breaker the POOL MEMBER cell the caller settles against.
     let response = match crate::mcp::client::wire::send(auth.transport, &leg, &outbound).await {
         Ok(r) => r,
         Err(e) => {
-            let stage = record_wire_failure(breakers, cell, &e);
+            let (stage, classified) = classify_wire_failure(&e);
+            *outcome = classified;
             return Err(LegFailure {
                 message: e.to_string(),
                 stage,
@@ -539,22 +545,18 @@ pub(crate) async fn call(
     if !(200..300).contains(&response.status) {
         // The status alone, claiming no provider vocabulary — `classify` still places the failure
         // (401/403 → Auth → hard down; 5xx → transient; true 4xx → ClientFault, never a penalty).
-        // Recording does NOT change what the caller is answered: the parse below renders exactly
-        // what it always rendered.
-        breakers.record_signal(
-            &cell.key,
-            cell.lane,
-            &crate::breaker::normalize_raw_error(
-                &crate::breaker::RawUpstreamError::from_status(response.status),
-                &std::collections::HashMap::new(),
-            ),
-        );
+        // Classifying does NOT change what the caller is answered: the parse below renders exactly
+        // what it always rendered. The SETTLE of this fact is the caller's (CLUSTER-1).
+        *outcome = LegOutcome::Failure(crate::breaker::normalize_raw_error(
+            &crate::breaker::RawUpstreamError::from_status(response.status),
+            &std::collections::HashMap::new(),
+        ));
     } else {
         // THE WIRE WORKED. A JSON-RPC error or a tool-level `isError` inside a 2xx is the SERVER
-        // answering — protocol- or work-level, never availability — so the success is recorded
+        // answering — protocol- or work-level, never availability — so the success is classified
         // here, on the status, before the body is interpreted. This is what closes a half-open
         // probe and what keeps a caller's bad arguments from ever penalizing the upstream.
-        breakers.record_success(&cell.key, cell.lane);
+        *outcome = LegOutcome::Success;
     }
     // `request_id` AGAIN, and that is the point: the id that went out in the body is the id the
     // answer must name. Both uses are on the screen together so a reader can see that they are the
@@ -590,10 +592,11 @@ pub(crate) async fn call(
     }
 }
 
-/// The TRANSPORT half of this plane's Stage-1 normalizer: what one failed wire leg records, and
-/// (for the reroute loop) the [`crate::failover::Stage`] the failure leaves the request at.
+/// The TRANSPORT half of this plane's Stage-1 normalizer: how one failed wire leg is CLASSIFIED (the
+/// caller settles it, CLUSTER-1), and (for the reroute loop) the [`crate::failover::Stage`] the
+/// failure leaves the request at.
 ///
-/// - `Unreachable` — a connect-class failure: the destination never received a byte. Recorded as
+/// - `Unreachable` — a connect-class failure: the destination never received a byte. Classified as
 ///   the same `Network` transient (a server that cannot be connected to is exactly what the
 ///   breaker exists for), and the ONE wire failure reported `BeforeFirstByte`: a reroute of it
 ///   duplicates nothing, by the transport's own testimony.
@@ -610,34 +613,40 @@ pub(crate) async fn call(
 /// - `Refused` — busbar's OWN dispatch-time refusal (SSRF, a malformed target): nothing left
 ///   busbar and the upstream answered nothing, so nothing is recorded against it.
 ///   `BeforeFirstByte` for the same reason.
-fn record_wire_failure(
-    breakers: &crate::store::PlaneBreakers,
-    cell: &BreakerCell,
-    err: &TransportError,
-) -> crate::failover::Stage {
-    let (class, stage) = match err {
-        TransportError::Unreachable(_) => (
-            crate::breaker::StatusClass::Network,
-            crate::failover::Stage::BeforeFirstByte,
-        ),
-        TransportError::Io(_) => (
-            crate::breaker::StatusClass::Network,
-            crate::failover::Stage::AfterDispatch,
-        ),
-        TransportError::Supervision(_) | TransportError::Refused(_) => {
-            return crate::failover::Stage::BeforeFirstByte
-        }
-    };
-    breakers.record_signal(
-        &cell.key,
-        cell.lane,
-        &crate::breaker::CanonicalSignal {
-            class,
+fn classify_wire_failure(err: &TransportError) -> (crate::failover::Stage, LegOutcome) {
+    let network = || {
+        LegOutcome::Failure(crate::breaker::CanonicalSignal {
+            class: crate::breaker::StatusClass::Network,
             provider_signal: None,
             retry_after: None,
-        },
-    );
-    stage
+        })
+    };
+    match err {
+        TransportError::Unreachable(_) => (crate::failover::Stage::BeforeFirstByte, network()),
+        TransportError::Io(_) => (crate::failover::Stage::AfterDispatch, network()),
+        // Nothing left busbar (supervisor backoff / busbar's own dispatch refusal): `Nothing`, so no
+        // fact is recorded against the target's cell. See the doc above for the double-accounting rule.
+        TransportError::Supervision(_) | TransportError::Refused(_) => {
+            (crate::failover::Stage::BeforeFirstByte, LegOutcome::Nothing)
+        }
+    }
+}
+
+/// The classified breaker outcome of ONE upstream leg — built in [`call`], where the raw
+/// transport/status structure still exists (Stage 1), and SETTLED by the CALLER through the host
+/// scope it owns (CLUSTER-1): the sync leg through its per-leg [`DispatchScope`](crate::plane_host::DispatchScope)
+/// admission, the task leg through the runner's [`DurableScope`](crate::plane_host::DurableScope).
+/// Classification stays put; only the settle moves — [`crate::plane_host::breaker::failure_signal`]
+/// is the inverse of the host `classify`, so a settle folds through the SAME `record_signal`/`record_success`
+/// disposition the in-place call ran.
+pub(crate) enum LegOutcome {
+    /// The wire worked (2xx): close the half-open probe / dilute the error window (`record_success`).
+    Success,
+    /// A wire or status failure to fold, carried as the plane's own canonical signal (`record_signal`).
+    Failure(crate::breaker::CanonicalSignal),
+    /// Not an upstream health signal — a busbar-side refusal or a leg that never left busbar. Records
+    /// nothing; a settled probe is released without a record, an unadmitted one is untouched.
+    Nothing,
 }
 
 /// PERFORM the RFC 8693 exchange and return the access token.

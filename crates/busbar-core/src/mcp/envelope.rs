@@ -345,9 +345,10 @@ pub(in crate::mcp) async fn rpc_dispatch(
     // the whole future, so a host handle is REACHABLE at every downstream breaker admit/settle site
     // (deep in `upstream::call`) and the per-dispatch arena reclaims on ANY exit of this future —
     // normal return, client-disconnect cancel, or panic. It BORROWS `app` and stack-pins an empty
-    // arena (no per-dispatch heap), and the guard is `Send`, so this future stays `Send`. CLUSTER-1
-    // flips the in-place breaker calls onto `_host.with_host(..)`; until then it is held-but-unused.
-    let _host = crate::plane_host::HostDispatch::new(app);
+    // arena (no per-dispatch heap), and the guard is `Send`, so this future stays `Send`. CLUSTER-1:
+    // the sync `tools/call` breaker admit registers into `host.scope()` (threaded via `Ctx::scope`)
+    // and each leg settles through it — the in-place record is gone on this path.
+    let host = crate::plane_host::HostDispatch::new(app);
     // From here `id` is a string or a number. It is carried as `Option` only because the method
     // table's constructors take one; it is never `None` on this path, and never `Null` at all.
     let id = Some(id);
@@ -488,6 +489,9 @@ pub(in crate::mcp) async fn rpc_dispatch(
         actor: principal.actor_id(),
         capabilities: &capabilities,
         headers,
+        // The sync leg's shared host arena (CLUSTER-1): `tools/call` admits its breaker probe into
+        // this scope and settles each leg through it, and it reclaims on any exit of this future.
+        scope: Some(host.scope()),
     };
     let params = value.get("params");
     // The slot the outbound transport appends upstream progress to, scoped to exactly this request.
