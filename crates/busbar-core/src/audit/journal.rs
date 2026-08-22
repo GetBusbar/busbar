@@ -310,6 +310,17 @@ impl<R: JournalRecord> Journal<R> {
     pub(crate) fn len(&self) -> usize {
         self.positions().len()
     }
+
+    /// RETENTION: ask the durable sink to drop records of this journal's kind older than `before`,
+    /// returning how many durable rows went. The policy (the window) lives at the call site; this owns
+    /// only the mechanism. Positions are NOT reset — reopening a scope at seq 1 after a purge would
+    /// collide with a sequence the store may still hold, the one thing the append contract forbids.
+    pub(crate) fn compact(&self, before: u64) -> StoreResult<u64> {
+        match self.sink() {
+            Some(store) => store.purge_plane_records_before(R::KIND, before),
+            None => Ok(0),
+        }
+    }
 }
 
 #[cfg(test)]

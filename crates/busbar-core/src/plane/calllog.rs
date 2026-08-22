@@ -108,14 +108,12 @@
 // ERROR). There is no on-demand admin verb, so between two boots a tamper is undetected. That is a
 // REAL GAP, it is named here, and it must not be described as continuous verification anywhere.
 
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
-
-use indexmap::IndexMap;
+use std::sync::Arc;
 
 use crate::plane::store::{call_record, decode, PlaneStore, KIND_CALL};
-use busbar_api::{McpCallRecord, PlaneSelector, StoreResult};
+use busbar_api::{McpCallRecord, PlaneRecord, PlaneSelector, StoreResult};
 
+use crate::audit::journal::{Journal, JournalError, JournalRecord};
 use crate::audit::{verify_chain, ChainBreak, ChainLabels, ChainedRecord, Digest, Framing};
 
 /// The outcome and reason tokens THIS stream uses, re-exported from the ONE audit vocabulary in
@@ -232,6 +230,16 @@ impl ChainedRecord for McpCallRecord {
     }
 }
 
+/// The MCP call record's contribution to the generic [`Journal`]: its neutral store kind and the
+/// envelope it crosses the store seam in. This is the whole of what the durable seq-authority machine
+/// needs from the plane — the position cache, LRU, write-ordering and store-resume are all core's.
+impl JournalRecord for McpCallRecord {
+    const KIND: &'static str = KIND_CALL;
+    fn to_plane_record(&self) -> StoreResult<PlaneRecord> {
+        call_record(self)
+    }
+}
+
 /// What a boot rehydrate actually found. Every number is reported rather than summed into one
 /// "restored" count: they mean different things to an operator, and a single number hides the two
 /// that are bad news.
@@ -283,24 +291,23 @@ impl std::fmt::Display for CallLogError {
 /// realistic working set of concurrently-active callers fits without a single eviction.
 const MAX_TRACKED_PRINCIPALS: usize = 16_384;
 
-/// THE PER-CALL LOG. No `Debug`: `dyn Store` is not `Debug` (a backend must not be obliged to render
-/// itself, and one that did would be a place a credential could surface in a log).
-#[derive(Default)]
+/// THE PER-CALL LOG. A thin MCP-facing wrapper over the generic core [`Journal`]: the principal-keyed
+/// position cache, the LRU bound, the store-resume of an evicted tail, the write-through sink and the
+/// write-ordering invariant all live in [`crate::audit::journal`] now — this file keeps only the
+/// MCP RECORD (`McpCallRecord`), the MCP operator vocabulary (the diagnostics its restore emits), and
+/// the read surface. No `Debug`: the journal holds a `dyn PlaneStore`, which is deliberately not
+/// `Debug` (a backend must not be obliged to render itself, where a credential could surface in a log).
 pub(crate) struct PlaneCallLog {
-    /// Chain POSITIONS only, keyed by principal — a tail hash and a next sequence, never the
-    /// records. The store owns the records. An [`IndexMap`] rather than a plain map so it can serve
-    /// as a bounded LRU: insertion order is recency order (most-recently-used at the back), the
-    /// coldest is evicted from the front once [`MAX_TRACKED_PRINCIPALS`] is exceeded, and an evicted
-    /// principal is resumed from the store on its next call so no chain ever forks.
-    chains: Mutex<IndexMap<String, CallChain>>,
-    /// Latched true the first time an eviction actually happens. Before any eviction a cache MISS is
-    /// unambiguously a first-seen principal (open at seq 1, no store read — byte-identical to the
-    /// pre-cap behaviour); after an eviction a miss MIGHT be an evicted principal whose tail lives in
-    /// the store, so the resume path reads it back rather than risk reopening a chain the store still
-    /// holds records for (a fork). Relaxed: a rare, monotonic false→true transition whose only effect
-    /// is whether a miss consults the store, never a correctness ordering against other state.
-    overflowed: AtomicBool,
-    sink: Mutex<Option<Arc<dyn PlaneStore>>>,
+    /// The generic durable journal, keyed by PRINCIPAL and bounded at [`MAX_TRACKED_PRINCIPALS`]
+    /// positions. Every chain mechanic (append, LRU, resume, write-ordering) is inherited from it; MCP
+    /// supplies only the record shape via [`McpCallRecord`]'s [`JournalRecord`] impl.
+    journal: Journal<McpCallRecord>,
+}
+
+impl Default for PlaneCallLog {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// THE PROCESS-WIDE CALL LOG. Process state, not config-derived state, so it lives as a global
@@ -313,97 +320,9 @@ pub(crate) static CALLS: std::sync::LazyLock<PlaneCallLog> =
 
 impl PlaneCallLog {
     pub(crate) fn new() -> Self {
-        Self::default()
-    }
-
-    /// Poison-recovering lock. The data behind it stays consistent after a panic (the critical
-    /// sections only mutate a map of chain positions), and cascading a poison would make every
-    /// subsequent tool call panic too — a data plane that wedges permanently because one request
-    /// panicked.
-    fn chains(&self) -> MutexGuard<'_, IndexMap<String, CallChain>> {
-        self.chains.lock().unwrap_or_else(|e| e.into_inner())
-    }
-
-    /// Commit `chain` as `principal`'s current position and record it as the MOST-recently-used,
-    /// evicting the coldest principal(s) from the front while the map exceeds
-    /// [`MAX_TRACKED_PRINCIPALS`]. Shared by the record hot path and the boot rehydrate so both keep
-    /// the same bound and the same recency discipline. An eviction latches `overflowed`, which is
-    /// what tells a later miss to consult the store instead of assuming the principal is new.
-    fn commit_position(
-        chains: &mut IndexMap<String, CallChain>,
-        overflowed: &AtomicBool,
-        principal: &str,
-        chain: CallChain,
-    ) {
-        match chains.get_index_of(principal) {
-            Some(idx) => {
-                if let Some((_, slot)) = chains.get_index_mut(idx) {
-                    *slot = chain;
-                }
-                // Move to the back: most-recently-used, so it is the last to be evicted.
-                chains.move_index(idx, chains.len() - 1);
-            }
-            None => {
-                // A new key appends at the back (most-recently-used) by IndexMap's contract.
-                chains.insert(principal.to_string(), chain);
-            }
+        Self {
+            journal: Journal::new(MAX_TRACKED_PRINCIPALS),
         }
-        while chains.len() > MAX_TRACKED_PRINCIPALS {
-            // Evict the front — the least-recently-used. Its records stay in the store; its position
-            // is rebuilt from there on the principal's next call.
-            chains.shift_remove_index(0);
-            overflowed.store(true, Ordering::Relaxed);
-        }
-    }
-
-    /// Resolve the chain position for a principal NOT currently cached.
-    ///
-    /// Before any eviction has ever occurred a miss is unambiguously a first-seen principal, so this
-    /// opens a fresh chain at seq 1 with NO store round-trip — byte-identical to the behaviour before
-    /// the cache was bounded, and the whole reason a small deployment (working set under the cap)
-    /// pays nothing for the bound.
-    ///
-    /// Once the cache HAS evicted, a miss might instead be a principal that was evicted while its
-    /// records still sit in the store. Reopening such a chain at seq 1 would FORK the durable log
-    /// (the next write collides with a sequence the store already holds — the one thing the append
-    /// contract refuses). So with a sink attached the resume READS THE TAIL BACK and continues from
-    /// it, exactly as a boot rehydrate does. A store that cannot answer is surfaced as an error
-    /// rather than papered over with a seq-1 chain that might fork — the same "evidence, not
-    /// admission" posture the write path takes. With no sink (the `store: memory` posture) there is
-    /// no durable log to fork, so a fresh chain is the honest answer.
-    fn resume_missing(&self, principal: &str) -> Result<CallChain, CallLogError> {
-        if !self.overflowed.load(Ordering::Relaxed) {
-            return Ok(CallChain::new());
-        }
-        let Some(store) = self.sink() else {
-            return Ok(CallChain::new());
-        };
-        let bodies = store
-            .list_plane_records(KIND_CALL, &PlaneSelector::Parent(principal.to_string()))
-            .map_err(CallLogError::Store)?;
-        if bodies.is_empty() {
-            // The store holds nothing for this principal: a genuinely first-seen caller (or one whose
-            // rows were lost), and seq 1 is the honest resumption.
-            return Ok(CallChain::new());
-        }
-        let records: Vec<McpCallRecord> = bodies
-            .iter()
-            .map(|body| decode(body))
-            .collect::<StoreResult<_>>()
-            .map_err(CallLogError::Store)?;
-        // A break here was already reported at boot (or would be by the verify verb); resume from the
-        // tail regardless, never re-based onto a fresh chain — the same judgement `restore_from_store`
-        // makes.
-        Ok(CallChain::from_persisted(&records)
-            .unwrap_or_else(|_brk| CallChain::from_persisted_unverified(&records)))
-    }
-
-    fn sink(&self) -> Option<Arc<dyn PlaneStore>> {
-        self.sink
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .as_ref()
-            .cloned()
     }
 
     /// Attach the configured governance store as the DURABLE SINK. Called once at boot. With no sink
@@ -411,101 +330,70 @@ impl PlaneCallLog {
     /// from here — the log keeps chain positions in RAM and nothing survives a restart. That is the
     /// documented `store: memory` behaviour.
     pub(crate) fn set_sink(&self, store: Arc<dyn PlaneStore>) {
-        *self.sink.lock().unwrap_or_else(|e| e.into_inner()) = Some(store);
+        self.journal.set_sink(store);
     }
 
     /// BOOT REHYDRATE. Enumerate the principals the store holds records for, resume each chain from
     /// its persisted tail, and REPORT what was found.
     ///
+    /// The generic [`Journal`] does the resume and the position accounting; this wrapper owns the MCP
+    /// OPERATOR VOCABULARY — it turns the neutral report into the MCP `Restored` and emits the MCP
+    /// diagnostics for the two findings that are bad news. An empty chain and a chain break are each
+    /// REPORTED rather than skipped or refused: the journal restores a broken chain from its tail
+    /// (refusing would convert a detection control into a deletion primitive), and this names it.
+    ///
     /// This is the ONLY place durability is learned. A write's `Ok(())` proves nothing (the trait
     /// default accepts and keeps nothing), so the engine finds out what its backend actually kept by
     /// reading it back.
     pub(crate) fn restore_from_store(&self, store: &dyn PlaneStore) -> StoreResult<Restored> {
-        let principals = store.list_plane_record_parents(KIND_CALL)?;
-        let mut out = Restored::default();
-        let mut chains = self.chains();
-        for principal in &principals {
-            let records: Vec<McpCallRecord> = store
-                .list_plane_records(KIND_CALL, &PlaneSelector::Parent(principal.clone()))?
-                .iter()
-                .map(|body| decode(body))
-                .collect::<StoreResult<_>>()?;
-            if records.is_empty() {
-                // The store named this principal and then produced nothing for it. Reported, never
-                // silently skipped: it is exactly what one caller's evidence being deleted wholesale
-                // looks like, and the verifier alone cannot tell it from "never called".
-                crate::diagnostics::diag_error!(
-                    crate::diagnostics::PLANE_CALLLOG_EMPTY_CHAIN,
-                    principal = %principal,
-                    "the durable MCP call log enumerates this principal but returned NO records \
-                     for it; the chain is being reopened at seq 1 and the discrepancy is reported \
-                     rather than skipped silently"
-                );
-                out.empty_chains += 1;
-                Self::commit_position(&mut chains, &self.overflowed, principal, CallChain::new());
-                out.principals += 1;
-                continue;
-            }
-            let chain = match CallChain::from_persisted(&records) {
-                Ok(c) => c,
-                Err(brk) => {
-                    // REPORTED, and the records stay restored. See the module header: refusing here
-                    // would convert a detection control into a deletion primitive.
-                    crate::diagnostics::diag_error!(
-                        crate::diagnostics::PLANE_CALLLOG_CHAIN_VERIFY_FAILED,
-                        principal = %principal,
-                        break_detail = %brk,
-                        "MCP per-call CHAIN VERIFICATION FAILED on restore — the persisted records \
-                         do not verify against their own hash chain. They are still restored and \
-                         the chain resumes from the broken tail; refusing to restore them would let \
-                         anyone able to write to the store DELETE a caller's history by corrupting \
-                         one record."
-                    );
-                    out.chain_breaks.push(brk);
-                    CallChain::from_persisted_unverified(&records)
-                }
-            };
-            out.records += records.len();
-            Self::commit_position(&mut chains, &self.overflowed, principal, chain);
-            out.principals += 1;
+        let report = self.journal.restore_from_store(store)?;
+        for principal in &report.empty_scopes {
+            // The store named this principal and then produced nothing for it. Reported, never
+            // silently skipped: it is exactly what one caller's evidence being deleted wholesale
+            // looks like, and the verifier alone cannot tell it from "never called".
+            crate::diagnostics::diag_error!(
+                crate::diagnostics::PLANE_CALLLOG_EMPTY_CHAIN,
+                principal = %principal,
+                "the durable MCP call log enumerates this principal but returned NO records \
+                 for it; the chain is being reopened at seq 1 and the discrepancy is reported \
+                 rather than skipped silently"
+            );
         }
-        Ok(out)
+        for brk in &report.chain_breaks {
+            // REPORTED, and the records stay restored. See the module header: refusing here would
+            // convert a detection control into a deletion primitive.
+            crate::diagnostics::diag_error!(
+                crate::diagnostics::PLANE_CALLLOG_CHAIN_VERIFY_FAILED,
+                principal = %brk.scope,
+                break_detail = %brk,
+                "MCP per-call CHAIN VERIFICATION FAILED on restore — the persisted records \
+                 do not verify against their own hash chain. They are still restored and \
+                 the chain resumes from the broken tail; refusing to restore them would let \
+                 anyone able to write to the store DELETE a caller's history by corrupting \
+                 one record."
+            );
+        }
+        Ok(Restored {
+            principals: report.scopes,
+            records: report.records,
+            empty_chains: report.empty_scopes.len(),
+            chain_breaks: report.chain_breaks,
+        })
     }
 
     /// RECORD one tool call: chain it, write it through, and advance the chain only once the durable
-    /// write has succeeded.
-    ///
-    /// The order matters. Advancing the in-memory chain first and writing afterwards leaves the
-    /// process believing a record exists that a restart will then un-happen, and — worse for a hash
-    /// chain — burns a sequence number that nothing occupies, so the next successful write lands on
-    /// a `seq` the verifier will report as a gap forever. On a failed write the position is left
-    /// exactly where it was, so the next call reuses the sequence and the chain stays contiguous.
-    ///
-    /// A cache MISS is resolved by [`resume_missing`](Self::resume_missing): a first-seen principal
-    /// opens at seq 1, but a principal EVICTED by the LRU bound (once the cache has ever overflowed)
-    /// is resumed from the store's persisted tail, so eviction never forks a durable chain. A
-    /// successful write then commits the advanced position as most-recently-used via
-    /// [`commit_position`](Self::commit_position), which also enforces the [`MAX_TRACKED_PRINCIPALS`]
-    /// bound.
+    /// write has succeeded — the write-ordering invariant is the journal's, inherited here. A cache
+    /// MISS is resolved by the journal's resume: a first-seen principal opens at seq 1, but a
+    /// principal EVICTED by the LRU bound (once the cache has ever overflowed) is resumed from the
+    /// store's persisted tail, so eviction never forks a durable chain.
     pub(crate) fn record(
         &self,
         principal: &str,
         input: CallInput,
     ) -> Result<McpCallRecord, CallLogError> {
-        let mut chains = self.chains();
-        let mut candidate = match chains.get(principal) {
-            Some(chain) => chain.clone(),
-            None => self.resume_missing(principal)?,
-        };
-        let record = candidate.append(principal, input);
-        if let Some(store) = self.sink() {
-            let plane = call_record(&record).map_err(CallLogError::Store)?;
-            store
-                .append_plane_record(&plane)
-                .map_err(CallLogError::Store)?;
-        }
-        Self::commit_position(&mut chains, &self.overflowed, principal, candidate);
-        Ok(record)
+        self.journal
+            .record(principal, input)
+            .map_err(|JournalError::Store(e)| CallLogError::Store(e))
     }
 
     /// The sequence the next record for `principal` will carry. 1 for a principal with no chain.
@@ -514,10 +402,7 @@ impl PlaneCallLog {
     /// piece of state the store does not own and the tests assert the append ordering through it.
     #[allow(dead_code)]
     pub(crate) fn next_seq(&self, principal: &str) -> u64 {
-        self.chains()
-            .get(principal)
-            .map(CallChain::next_seq)
-            .unwrap_or(1)
+        self.journal.next_seq(principal)
     }
 
     /// How many principals this process is holding a chain position for.
@@ -527,7 +412,7 @@ impl PlaneCallLog {
     /// would be a number that quietly means something else.
     #[allow(dead_code)]
     pub(crate) fn len(&self) -> usize {
-        self.chains().len()
+        self.journal.len()
     }
 
     /// READ ONE PRINCIPAL'S CALLS BACK from the store. The durability question, asked the only way
@@ -587,10 +472,7 @@ impl PlaneCallLog {
     /// deployment's call log grows without bound until an operator prunes it themselves.
     #[allow(dead_code)]
     pub(crate) fn compact(&self, before: u64) -> StoreResult<u64> {
-        match self.sink() {
-            Some(store) => store.purge_plane_records_before(KIND_CALL, before),
-            None => Ok(0),
-        }
+        self.journal.compact(before)
     }
 }
 
