@@ -19,13 +19,12 @@
 //! The stubs deliberately panic (`unimplemented!`) — they are typed placeholders proving the whole
 //! vtable constructs, not runnable host calls.
 
-use super::{recover, HostState};
+use super::{recover, trust, HostState};
 use busbar_plugin::hot::host::{HostCtx, PlaneHostVtable};
 use busbar_plugin::hot::{
-    AuthQuery, AuthResolved, CallerRef, ContentChunk, CounterpartyRef, Decision, EgressDesc, EgressId,
-    EgressOpen, Facts, FramingDesc, GateDecision, JournalQuery, Key, MeterOutcome, MetricSample,
-    OpDesc, OpResult, Seq, StatusClass, TargetRef, TrustVerdict, Usage, VerifyLease, VerifyVerdict,
-    WorkHandleDesc, WorkHandleId,
+    AuthQuery, AuthResolved, CallerRef, ContentChunk, Decision, EgressDesc, EgressId, EgressOpen,
+    Facts, FramingDesc, GateDecision, JournalQuery, MeterOutcome, MetricSample, OpDesc, OpResult,
+    Seq, StatusClass, TargetRef, Usage, WorkHandleDesc, WorkHandleId,
 };
 use busbar_plugin::AbiPreamble;
 use core::mem::MaybeUninit;
@@ -51,8 +50,8 @@ pub fn build_plane_host_vtable() -> PlaneHostVtable {
         meter_charge: Some(meter_charge),
         breaker_admit: Some(super::breaker::breaker_admit),
         breaker_settle: Some(super::breaker::breaker_settle),
-        verify_lookup: Some(verify_lookup),
-        verify_store: Some(verify_store),
+        verify_lookup: Some(trust::verify_lookup),
+        verify_store: Some(trust::verify_store),
         egress_open: Some(egress_open),
         egress_poll: Some(egress_poll),
         egress_write: Some(egress_write),
@@ -62,10 +61,10 @@ pub fn build_plane_host_vtable() -> PlaneHostVtable {
         nested_dispatch: Some(nested_dispatch),
         workhandle_open: Some(workhandle_open),
         workhandle_resume: Some(workhandle_resume),
-        drift_quarantine: Some(drift_quarantine),
-        approval_redeem: Some(approval_redeem),
+        drift_quarantine: Some(trust::drift_quarantine),
+        approval_redeem: Some(trust::approval_redeem),
         auth_resolve: Some(auth_resolve),
-        trust_evaluate: Some(trust_evaluate),
+        trust_evaluate: Some(trust::trust_evaluate),
         entitlement_check: Some(entitlement_check),
         gate_scan: Some(gate_scan),
     }
@@ -157,22 +156,8 @@ extern "C-unwind" fn meter_charge(host: HostCtx, usage: *const Usage) -> MeterOu
     .unwrap_or(MeterOutcome::Rejected) // fail-closed: a panicked charge rejects.
 }
 // `breaker_admit` / `breaker_settle` are WIRED over the real breaker in `super::breaker` (the BREAKER
-// family fan-out); their vtable slots reference that module directly.
-extern "C-unwind" fn verify_lookup(
-    _host: HostCtx,
-    _key: *const Key,
-    _out: *mut MaybeUninit<VerifyVerdict>,
-) -> StatusClass {
-    unimplemented!("plane_host::verify_lookup — Phase 2")
-}
-extern "C-unwind" fn verify_store(
-    _host: HostCtx,
-    _key: *const Key,
-    _lease: VerifyLease,
-    _ttl_secs: u64,
-) -> StatusClass {
-    unimplemented!("plane_host::verify_store — Phase 2")
-}
+// family fan-out); `verify_lookup` / `verify_store` are WIRED over the real trust store in
+// `super::trust` (the TRUST family fan-out); their vtable slots reference those modules directly.
 extern "C-unwind" fn egress_open(
     _host: HostCtx,
     _desc: *const EgressDesc,
@@ -231,12 +216,8 @@ extern "C-unwind" fn workhandle_open(_host: HostCtx, _desc: *const WorkHandleDes
 extern "C-unwind" fn workhandle_resume(_host: HostCtx, _handle: WorkHandleId) -> StatusClass {
     unimplemented!("plane_host::workhandle_resume — Phase 2")
 }
-extern "C-unwind" fn drift_quarantine(_host: HostCtx, _key: *const Key) -> StatusClass {
-    unimplemented!("plane_host::drift_quarantine — Phase 2")
-}
-extern "C-unwind" fn approval_redeem(_host: HostCtx, _key: *const Key) -> StatusClass {
-    unimplemented!("plane_host::approval_redeem — Phase 2")
-}
+// `drift_quarantine` / `approval_redeem` / `trust_evaluate` are WIRED over the real trust store in
+// `super::trust` (the TRUST family fan-out); their vtable slots reference that module directly.
 /// WIRED `auth_resolve` → the REAL principal resolution over `crate::auth` (see
 /// [`super::govern::resolve_auth`]): resolve a credential REF to an OPAQUE host-side reference (NEVER
 /// plaintext), writing the [`AuthResolved`] out-param ONLY on `Ok`. Fail-closed (`Refused`) on a null
@@ -265,12 +246,6 @@ extern "C-unwind" fn auth_resolve(
         }
     }))
     .unwrap_or(StatusClass::Fault) // caught panic → the distinct fault class, never `Ok`.
-}
-extern "C-unwind" fn trust_evaluate(
-    _host: HostCtx,
-    _counterparty: *const CounterpartyRef,
-) -> TrustVerdict {
-    unimplemented!("plane_host::trust_evaluate — Phase 2")
 }
 extern "C-unwind" fn entitlement_check(
     _host: HostCtx,

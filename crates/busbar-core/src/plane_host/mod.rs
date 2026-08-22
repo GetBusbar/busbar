@@ -26,6 +26,7 @@
 pub mod breaker;
 mod govern;
 pub mod scope;
+pub mod trust;
 pub mod vtable;
 
 pub use scope::{DispatchScope, DurableScope, SessionScope};
