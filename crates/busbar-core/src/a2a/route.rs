@@ -367,7 +367,7 @@ pub(super) fn extended_agent_card(
     key: &busbar_api::VirtualKey,
     rpc_id: &serde_json::Value,
 ) -> Response {
-    let Some(plane) = app.a2a.as_ref() else {
+    let Some(plane) = crate::a2a::runtime(app) else {
         return super::words::plane_absent();
     };
     let Some(public_url) = plane.public_url() else {

@@ -117,8 +117,9 @@ pub(crate) const PLANE_DECL: crate::plane::registry::PlaneDecl =
         // THE A2A SLOT: lowered from `agent_defs:`/`public_url` through the SAME `from_config` the
         // dispatch table and the re-verification job's registry are lowered from, so the object this
         // seam erases and the object every other A2A consumer reads are one lowering, not two. `None`
-        // when no agent is configured — matching `App::a2a`'s own absence, and NOT the same condition
-        // as `admission().is_none()` (a delegation-only plane has a slot but claims/admits nothing).
+        // when no agent is configured — the absence `crate::a2a::runtime` reports, and NOT the same
+        // condition as `admission().is_none()` (a delegation-only plane has a slot but claims/admits
+        // nothing).
         build: |ctx| {
             crate::a2a::plane::A2aPlane::from_config(ctx.agent_defs, ctx.public_url)
                 .map(|p| p as std::sync::Arc<dyn std::any::Any + Send + Sync>)
@@ -155,7 +156,6 @@ pub(crate) fn runtime(app: &crate::state::App) -> Option<&crate::a2a::plane::A2a
 /// Clones the SAME `Arc` `plane_slots` holds (a refcount bump, not a second construction). `None`
 /// and the never-fail downcast have the same meaning as [`runtime`]. The byte-analog of
 /// [`crate::mcp::resource_arc`].
-#[allow(dead_code)]
 pub(crate) fn runtime_arc(
     app: &crate::state::App,
 ) -> Option<std::sync::Arc<crate::a2a::plane::A2aPlane>> {
@@ -237,7 +237,7 @@ pub(crate) fn a2a_start(ctx: &crate::plane::registry::BootCtx) -> Result<(), Str
         .handle
         .expect("a2a start runs in the START phase, which supplies the live app handle");
     let app = handle.load();
-    if let Some(plane) = app.a2a.clone() {
+    if let Some(plane) = crate::a2a::runtime_arc(&app) {
         tracing::info!(
             agents = plane.len(),
             "a2a: verify-on-call is armed — fronted agents are re-verified on the delegation path \

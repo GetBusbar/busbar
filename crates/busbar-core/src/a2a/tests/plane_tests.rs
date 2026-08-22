@@ -181,7 +181,7 @@ fn a_booted_app_carries_the_plane_only_when_agents_are_configured() {
     crate::metrics::init();
     let none = crate::test_support::TestApp::new().build();
     assert!(
-        none.a2a.is_none(),
+        crate::a2a::runtime(&none).is_none(),
         "a deployment with no `agents:` holds no registry, so there is no job to spawn"
     );
 
@@ -189,7 +189,7 @@ fn a_booted_app_carries_the_plane_only_when_agents_are_configured() {
         .public_url("https://busbar.example")
         .agent_def("planner", unpinned_agent("https://a2a.vendor/planner"))
         .build();
-    let plane = one.a2a.as_ref().expect("an `agents:` entry is a plane");
+    let plane = crate::a2a::runtime(&one).expect("an `agents:` entry is a plane");
     assert_eq!(plane.len(), 1);
     assert_eq!(plane.public_url(), Some("https://busbar.example"));
 }

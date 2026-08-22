@@ -138,10 +138,7 @@ async fn serve(
         .governance(gov)
         .agent_def("echo", def)
         .build();
-    let plane = app
-        .a2a
-        .clone()
-        .expect("an `agents:` section is an A2A plane");
+    let plane = crate::a2a::runtime_arc(&app).expect("an `agents:` section is an A2A plane");
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();

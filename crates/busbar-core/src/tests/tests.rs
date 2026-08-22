@@ -1539,9 +1539,9 @@ fn a_changed_upstream_timeout_rebuilds_the_client_an_unrelated_apply_reuses_it()
     );
 }
 
-/// Removing the `agents:` block (so `app.a2a` becomes None) must STILL prune the carried A2A
-/// VerifyGate — matching the self-cleaning MCP arm, which always retains against its live server set.
-/// The old code gated the a2a prune on `app.a2a.is_some()`, so tearing the whole plane down skipped
+/// Removing the `agents:` block (so `crate::a2a::runtime(&app)` becomes None) must STILL prune the
+/// carried A2A VerifyGate — matching the self-cleaning MCP arm, which always retains against its live
+/// server set. The old code gated the a2a prune on the plane's presence, so tearing the whole plane down skipped
 /// the prune entirely and every removed agent's carried flight/drift-latch leaked forever. Here the
 /// carried gate holds a subject from an agent the deployment once fronted; an apply with no agents
 /// must drop it (retain against an EMPTY live set).
@@ -1565,7 +1565,7 @@ fn removing_the_agents_block_still_prunes_carried_a2a_verify_entries() {
         "seed: the carried a2a VerifyGate must track the subject before the apply"
     );
 
-    // Apply with NO `agents:` block (`app.a2a` is None). The prune must STILL run against an empty
+    // Apply with NO `agents:` block (`crate::a2a::runtime` is None). The prune must STILL run against an empty
     // live set and drop the carried subject.
     let next = build_once(cfg(), Some(&prior)).expect("apply with agents removed");
     assert!(
@@ -2736,9 +2736,10 @@ fn agents_cfg_with_one_receiving_agent() -> crate::a2a::config::AgentsCfg {
 
 /// THE POSITIVE CASE: with `mcp:` and a receiving `agents:` both configured,
 /// `App::plane_slot("mcp")`/`("a2a")` are `Some`, and downcasting each is the exact same `Arc`
-/// object its typed field (`App::mcp`/`App::a2a`) holds — not a second, merely-equal construction.
-/// Proves the dual-population `build_app_from_config` does (build once via `PlaneDecl::build`,
-/// clone the `Arc` into both the map and the typed field) actually shares one object.
+/// object the plane's neutral accessor (`crate::mcp::resource` / `crate::a2a::runtime`) reads — not a
+/// second, merely-equal construction. Both typed `App::mcp`/`App::a2a` fields are now dissolved, so
+/// this proves `build_app_from_config` builds each plane ONCE via `PlaneDecl::build` and the accessor
+/// reads that one slot object, rather than a typed-field mirror.
 #[test]
 fn plane_slot_mirrors_the_typed_mcp_and_a2a_fields_when_configured() {
     crate::metrics::init();
@@ -2793,19 +2794,24 @@ fn plane_slot_mirrors_the_typed_mcp_and_a2a_fields_when_configured() {
     let a2a_via_slot = a2a_slot
         .downcast::<crate::a2a::plane::A2aPlane>()
         .expect("the a2a plane's slot is an A2aPlane");
+    // `App::a2a` was dissolved exactly like `App::mcp`: the A2A plane now reads its runtime object
+    // ONLY through the type-erased slot, via the neutral accessor `crate::a2a::runtime`. The invariant
+    // this used to state as "typed field and slot are the same Arc" is now "the neutral accessor reads
+    // the SAME object the slot holds, not a second construction".
     assert!(
-        std::sync::Arc::ptr_eq(
-            &a2a_via_slot,
-            app.a2a
-                .as_ref()
-                .expect("App::a2a is Some when agents: is configured")
+        std::ptr::eq(
+            std::sync::Arc::as_ptr(&a2a_via_slot),
+            crate::a2a::runtime(&app).expect("agents: configured => runtime(app) is Some")
+                as *const crate::a2a::plane::A2aPlane
         ),
-        "plane_slot(\"a2a\") and App::a2a must be the SAME Arc, not two constructions"
+        "crate::a2a::runtime must read the SAME object plane_slot(\"a2a\") holds, not a second \
+         construction"
     );
 }
 
 /// THE NEGATIVE CASE (the RED-first gate): a deployment with NO `tools:`/`agents:` gets no slot
-/// for either plane — exactly the absence the neutral mcp accessor / `App::a2a: None` already encode.
+/// for either plane — exactly the absence the neutral accessors (`crate::mcp::resource` /
+/// `crate::a2a::runtime`) already encode.
 /// Watched RED before `PlaneDecl::build` guarded absence (an unconditional `build` that always
 /// constructs an object regardless of `ctx.mcp_slot`/`ctx.agent_defs` makes this fail: `plane_slot`
 /// answers `Some` on a deployment that configured no plane, disagreeing with the neutral accessor's
@@ -2828,14 +2834,17 @@ fn plane_slot_is_none_when_the_plane_is_not_configured() {
         crate::mcp::resource(&app).is_none(),
         "control: the neutral mcp accessor is None"
     );
-    assert!(app.a2a.is_none(), "control: App::a2a is None");
+    assert!(
+        crate::a2a::runtime(&app).is_none(),
+        "control: the neutral a2a accessor is None"
+    );
     assert!(
         app.plane_slot("mcp").is_none(),
         "no tools: => no mcp slot, matching the neutral accessor's own None"
     );
     assert!(
         app.plane_slot("a2a").is_none(),
-        "no agents: => no a2a slot, matching App::a2a's own None"
+        "no agents: => no a2a slot, matching the neutral a2a accessor's own None"
     );
 }
 

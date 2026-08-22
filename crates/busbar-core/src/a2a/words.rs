@@ -164,7 +164,7 @@ pub(super) fn refuse_admission(refusal: &InboundRefusal) -> Response {
 /// sides read it from `A2aPlane::admission`, so there is no second spelling of it anywhere.
 impl crate::ingress::protocol::ResourceMetadata for A2aWords {
     fn document(app: &App) -> Option<crate::ingress::protocol::Metadata<'_>> {
-        let admission = app.a2a.as_ref().and_then(|p| p.admission())?;
+        let admission = crate::a2a::runtime(app).and_then(|p| p.admission())?;
         Some(crate::ingress::protocol::Metadata {
             resource: std::borrow::Cow::Owned(admission.audience),
             authorization_servers: &[],

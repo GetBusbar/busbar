@@ -456,7 +456,7 @@ impl PlaneTrust for A2aAgents {
 
     fn resolve(app: &Arc<crate::state::App>, name: &str) -> Result<A2aSubject, AdminError> {
         planeverbs::registered(Plane::A2a, name, || {
-            let plane = app.a2a.clone()?;
+            let plane = crate::a2a::runtime_arc(app)?;
             let registration = plane
                 .with_registrations(|regs| regs.iter().find(|r| r.agent_id == name).cloned())?;
             let pin_cfg = plane.pin_for(name).cloned()?;

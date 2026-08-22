@@ -498,20 +498,12 @@ pub struct App {
     pub(crate) agent_defs: crate::plane::config::RawPlaneSection,
     #[cfg(feature = "plane-a2a")]
     pub(crate) agent_defs: crate::a2a::config::AgentsCfg,
-    /// THE RUNNING A2A PLANE — the registry `agent_defs` lowers to, plus everything that has
-    /// accumulated against it. `None` when no agent is configured, and that absence is the gate:
-    /// no plane means no re-verification job and no routes, so "is this deployment an A2A plane?"
-    /// is answered by what is mounted rather than by a flag.
-    ///
-    /// Distinct from `agent_defs` in the same way a resolved pool is distinct from `pools:`:
-    /// `agent_defs` is operator INTENT and is what the admin API serves; this is ACCUMULATION and is
-    /// what the job mutates. Rebuilt on every apply, so a removed agent's observations are dropped
-    /// with it rather than outliving the registration.
-    // Present only when the A2A plane is compiled in: the running plane and its accumulated state are
-    // `crate::a2a` types. With `plane-a2a` off there is no plane to run, no route mounted, and this
-    // field is absent (nothing outside `crate::a2a`/`appbuild` reads it).
-    #[cfg(feature = "plane-a2a")]
-    pub(crate) a2a: Option<Arc<crate::a2a::plane::A2aPlane>>,
+    // THE RUNNING A2A PLANE — the registry `agent_defs` lowers to, plus everything accumulated against
+    // it — has NO typed `App` field. Like its MCP sibling it lives ONLY in the type-erased
+    // `plane_slots` map, and `crate::a2a::runtime(app)`/`runtime_arc(app)` downcast that slot back to
+    // `A2aPlane` inside the a2a module. So `App` names no `crate::a2a` type for the runtime object, and
+    // its absence — no `agents:` this generation, the gate for "is this an A2A plane?" — is read
+    // straight off the slot the same way MCP reads its own, not off a typed field or a flag.
     /// THE A2A VERIFY-ON-CALL GATE — the per-agent single-flight coalescer that re-verifies a fronted
     /// agent's signed card on the DELEGATION path when its recorded observation is older than
     /// `verify_ttl` (see [`crate::trust::verify`]). It replaces the background re-verification sweep:

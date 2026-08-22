@@ -80,7 +80,7 @@ fn credential_kind_of(app: &App) -> &'static str {
 /// for what is deliberately left out of it — this endpoint cannot ask who is calling, so it must
 /// not name the agents busbar fronts.
 pub(crate) async fn well_known_card(CurrentApp(app): CurrentApp) -> Response {
-    let Some(plane) = app.a2a.as_ref() else {
+    let Some(plane) = crate::a2a::runtime(&app) else {
         return plane_absent();
     };
     // NO PUBLIC URL, NO CARD. A deployment with no receiving side is not an A2A server, and a card
@@ -152,7 +152,7 @@ fn admit(
     shape: &super::registry::TaskShape,
     now_secs: u64,
 ) -> Result<Admitted, Box<Response>> {
-    let Some(plane) = app.a2a.as_ref() else {
+    let Some(plane) = crate::a2a::runtime(app) else {
         return Err(Box::new(plane_absent()));
     };
     let kind = credential_kind_of(app);
@@ -259,7 +259,7 @@ fn select(
     key: &busbar_api::VirtualKey,
     shape: &super::registry::TaskShape,
 ) -> Result<String, Box<Response>> {
-    let Some(plane) = app.a2a.as_ref() else {
+    let Some(plane) = crate::a2a::runtime(app) else {
         return Err(Box::new(plane_absent()));
     };
     let caller = crate::catalogue::Caller {
@@ -537,7 +537,7 @@ pub(crate) async fn card(
     axum::extract::Extension(gov): axum::extract::Extension<crate::governance::GovCtx>,
     axum::extract::Path(agent_id): axum::extract::Path<String>,
 ) -> Response {
-    let Some(plane) = app.a2a.as_ref() else {
+    let Some(plane) = crate::a2a::runtime(&app) else {
         return plane_absent();
     };
     let Some(key) = gov.key.as_ref() else {
@@ -772,7 +772,7 @@ async fn invoke_inner(
     crate::ingress::protocol::serve(
         &A2aWords,
         crate::ingress::protocol::Request {
-            present: app.a2a.is_some(),
+            present: crate::a2a::runtime(&app).is_some(),
             origin: origin.as_deref(),
             // NO OPERATOR ALLOWLIST ON THIS PLANE, so loopback and nothing else. A2A is an
             // agent-to-agent protocol: its clients are servers and agents, which send no `Origin`
@@ -1702,7 +1702,7 @@ struct HopContext {
 
 /// The plane, if this deployment has one.
 pub(super) fn plane_of(app: &App) -> Option<Arc<super::plane::A2aPlane>> {
-    app.a2a.as_ref().map(Arc::clone)
+    crate::a2a::runtime_arc(app)
 }
 
 /// VERIFY-ON-CALL for one A2A delegation: re-verify `agent_id`'s card within `verify_ttl`,

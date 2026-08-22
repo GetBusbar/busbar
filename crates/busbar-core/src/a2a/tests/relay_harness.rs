@@ -664,7 +664,7 @@ pub(super) async fn harness_full(
     }
     let app = builder.build();
 
-    let plane = app.a2a.as_ref().expect("the plane exists").clone();
+    let plane = crate::a2a::runtime_arc(&app).expect("the plane exists");
     plane.with_registrations_mut(|regs| {
         for reg in regs.iter_mut() {
             approve(reg);

@@ -1553,20 +1553,12 @@ pub fn build_app_from_config(
         identity_providers: cfg.identity_providers.clone(),
         export_defs: cfg.export_defs.clone(),
         agent_defs: cfg.agent_defs.clone(),
-        // THE A2A PLANE, built only when `agents:` defines one. A deployment that fronts no agents
-        // gets `None` here and nothing downstream: no registry, no re-verification job. Built from
-        // THIS generation's config on every apply, deliberately — a registration an operator
-        // removed must stop being re-verified, and one whose pin they changed must be judged
-        // against the pin they now declare.
-        //
-        // Downcast off the `plane_slots` map rather than a second `A2aPlane::from_config` call —
-        // this and `App::plane_slots["a2a"]` are the SAME `Arc`, not two lowerings of one config.
-        // Both this typed handle and `a2a_cards` below name `crate::a2a` types that only exist when
-        // the plane is compiled in; with `plane-a2a` off the fields are absent (gated on `App`).
-        #[cfg(feature = "plane-a2a")]
-        a2a: plane_slots
-            .get(crate::a2a::PLANE_DECL.key)
-            .and_then(|obj| obj.clone().downcast::<crate::a2a::plane::A2aPlane>().ok()),
+        // THE A2A PLANE, built only when `agents:` defines one, is NOT mirrored into a typed `App`
+        // field any more: it lives solely in `plane_slots["a2a"]` (built once by `PlaneDecl::build`),
+        // and every reader reaches it through `crate::a2a::runtime(app)`/`runtime_arc(app)`, which
+        // downcast that slot inside the a2a module. So there is no `a2a:` initializer here and `App`
+        // names no `crate::a2a` type for the runtime object — the `a2a_cards` field below is the only
+        // remaining plane-gated `crate::a2a` handle on `App`.
         // CARRIED ACROSS THE APPLY, like the MCP verify gate: the A2A verify-on-call coalescing epochs
         // are accumulated coordination, not intent. (`VerifyGate` is a `trust` type, present in every
         // build, so this field survives even with the A2A plane compiled out.)

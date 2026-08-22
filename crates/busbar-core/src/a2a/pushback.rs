@@ -265,7 +265,7 @@ pub(crate) async fn push_notification(
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
-    let Some(plane) = app.a2a.as_ref().map(std::sync::Arc::clone) else {
+    let Some(plane) = crate::a2a::runtime_arc(&app) else {
         return refused(
             axum::http::StatusCode::NOT_FOUND,
             "no A2A plane is configured",

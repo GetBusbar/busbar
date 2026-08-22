@@ -43,12 +43,11 @@ fn minimal_app() -> Arc<App> {
         // dispatch table empty, which is what every path in this fixture is asserted against.
         oauth_as: None,
         planes: Arc::new(crate::plane::PlaneDispatch::default()),
-        // No `mcp:`/`agents:` configured — no slot for either (an empty map); the MCP plane reads its
-        // absence straight off this map now, and `a2a` still mirrors it in its typed field below.
+        // No `mcp:`/`agents:` configured — no slot for either (an empty map); both planes read their
+        // absence straight off this map now (`crate::mcp::resource` / `crate::a2a::runtime`), neither
+        // through a typed `App` field.
         plane_slots: Default::default(),
         agent_defs: Default::default(),
-        // No `agents:`, therefore no plane: the same `None` a deployment that fronts no agents gets.
-        a2a: None,
         upstream_credentials: crate::auth::UpstreamCreds::Own,
         any_pool_upstream_creds_override: false,
         probe_schedule: Arc::new(crate::health::ProbeSchedule::new(0)),

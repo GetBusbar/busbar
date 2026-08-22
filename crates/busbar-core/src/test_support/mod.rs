@@ -1308,9 +1308,6 @@ impl TestApp {
             0,
         );
         let app = std::sync::Arc::new(crate::state::App {
-            // Built from the SAME lowering production uses, so a test that configures agents gets
-            // the same registry a deployment would and one that configures none gets no plane.
-            a2a: a2a_plane.clone(),
             // No authorization server unless a test asked for one with `TestApp::oauth_as`, which is
             // the production default and is what keeps every existing test's route table unchanged
             // by this plane's arrival.
