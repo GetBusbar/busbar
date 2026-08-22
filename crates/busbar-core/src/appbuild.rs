@@ -1712,14 +1712,10 @@ pub fn build_app_from_config(
             .and_then(|a| a.key_ttl.as_deref())
             .map(|s| admin::parse_duration_secs(s).unwrap_or(admin::DEFAULT_KEY_TTL_SECS))
             .unwrap_or(admin::DEFAULT_KEY_TTL_SECS),
-        // Where `auth.policy.max_ttl` is finally READ: the deployment-wide mint TTL ceiling.
-        // Config-validate already proved this parses; a bad value falls back to `None` (no cap)
-        // rather than panicking or fabricating a ceiling nobody wrote.
-        mint_max_ttl_secs: cfg
-            .auth
-            .as_ref()
-            .and_then(|a| a.policy.max_ttl.as_deref())
-            .and_then(|s| admin::parse_duration_secs(s).ok()),
+        // Where `auth.policy:` is finally READ: the resolved mint policy (block TTL/mode ceiling +
+        // per-role `mint_ceilings`). Config-validate already proved the durations parse; a stray bad
+        // value falls back to no cap rather than fabricating a ceiling nobody wrote.
+        mint_policy: std::sync::Arc::new(admin::MintPolicy::from_auth(cfg.auth.as_ref())),
         // Arc-shared like `versions`/`mutation_limiter`: a REBUILD carries the SAME counter forward
         // (ids stay monotonic across a config reload) while a fresh boot seeds it once from OS
         // entropy (see `state::seed_request_id_counter`) so restarts don't restamp `0, 1, 2, …`.

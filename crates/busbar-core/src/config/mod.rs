@@ -700,6 +700,19 @@ pub(crate) enum BindingMode {
     Both,
 }
 
+impl BindingMode {
+    /// The WIRE spelling (kebab-case), matching both the `serde(rename_all)` deserialize and the
+    /// `VirtualKey.binding_mode` string a minted key records. The single source of truth a runtime
+    /// comparison (a mint request's mode vs a policy's allowed set) goes through.
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            BindingMode::TimeBound => "time-bound",
+            BindingMode::UserBound => "user-bound",
+            BindingMode::Both => "both",
+        }
+    }
+}
+
 /// One per-role MINT CEILING (`auth.policy.mint_ceilings.<role>:`), 1.6.0. The upper bound on what a
 /// DELEGATED minter holding that role may ever mint — the config-side DEFINITION of the ceiling whose
 /// CORE-SIDE enforcement (a later increment) mitigates the compromised-app-admin threat (review
