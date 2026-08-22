@@ -180,6 +180,19 @@ pub enum TrustVerdict {
     Denied = 2,
     /// Not yet approved — a one-time approval must be redeemed first.
     NeedsApproval = 3,
+    /// STEP 1 refusal — the principal is no longer live (deleted / disabled / expired). Append-only
+    /// minor-3: the host folds the plane's ordered validator, so a refusal keeps its SPECIFIC step
+    /// rather than collapsing to a bare `Denied`.
+    IdentityNotLive = 4,
+    /// STEP 2 refusal — the caller's grant does not reach the named capability.
+    NotGranted = 5,
+    /// STEP 2 refusal — the target's standing egress list does not name this caller.
+    EgressDenied = 6,
+    /// STEP 3 refusal — the named capability is offered at a fingerprint nobody approved (or the
+    /// reader could produce no fingerprint that could match).
+    ArtifactDrifted = 7,
+    /// STEP 4 refusal — the registry snapshot moved between admission and dispatch.
+    GenerationMoved = 8,
 }
 
 /// The decision of a streaming content-governance scan. `Continue` lets the chunk (and the stream)
@@ -763,6 +776,37 @@ pub struct CounterpartyRef {
     pub ref_ptr: *const u8,
     /// Length of the borrowed identity range.
     pub ref_len: usize,
+
+    // ── APPEND-ONLY minor-3 tail: the marshalled per-step FACTS of the plane's ordered
+    //    `crate::trust::validate::validate_request` (identity → grant → artifact → generation), so
+    //    the host `trust_evaluate` FOLDS them in the SAME order and reproduces the plane's
+    //    disposition — the `Signal`→`classify` precedent applied to trust. A sender that predates
+    //    this tail advertises the shorter `size`; the host reads the tail ONLY when `size` proves it
+    //    was written (the sized-struct guard) AND bit 0 of `fact_flags` is set, and otherwise falls
+    //    back to the legacy drift-map disposition. So the addition is a MINOR airlock bump. ──
+    /// STEP 1 — identity liveness fact: `0` not-live, `1` live, `2` no-principal (the honest
+    /// ungoverned `None`, which is not a way past the gate — the steps below still run).
+    pub identity_live: u8,
+    /// STEP 2 — grant fact for the FIRST failing grant: `0` all held, `1` not-granted, `2`
+    /// egress-denied.
+    pub grant_outcome: u8,
+    /// STEP 3a — registration-state fact, a neutral mirror of the plane's lifecycle state: `0`
+    /// absent/unspecified, `1` pending, `2` approved, `3` quarantined, `4` suspended, `5` failed.
+    pub registration_state: u8,
+    /// STEP 3b — artifact fact: `0` no-capability (the ask names none), `1` serves, `2` drifted, `3`
+    /// unobservable.
+    pub artifact_outcome: u8,
+    /// Tail flags. Bit 0 set ⇒ the fact tail (`identity_live` … `generation_live`) was written by
+    /// the sender; a `0` here (or a `size` too short to reach it) selects the legacy drift map.
+    pub fact_flags: u8,
+    /// Preamble/alignment padding.
+    pub _reserved3: u8,
+    /// Preamble/alignment padding.
+    pub _reserved4: u16,
+    /// STEP 4 — the generation the request was admitted under. Compared to `generation_live`.
+    pub generation_admitted: u64,
+    /// STEP 4 — the generation live now. A move (`admitted != live`) is `GenerationMoved`.
+    pub generation_live: u64,
 }
 
 /// A reference to a CALLER — the entitled principal (the host owns the caller's scopes/keys). Borrowed

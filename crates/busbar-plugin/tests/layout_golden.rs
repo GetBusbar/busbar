@@ -172,7 +172,24 @@ fn compute_layout() -> String {
     record!(
         s,
         CounterpartyRef,
-        [size, version, _reserved, scope, _reserved2, ref_ptr, ref_len]
+        [
+            size,
+            version,
+            _reserved,
+            scope,
+            _reserved2,
+            ref_ptr,
+            ref_len,
+            identity_live,
+            grant_outcome,
+            registration_state,
+            artifact_outcome,
+            fact_flags,
+            _reserved3,
+            _reserved4,
+            generation_admitted,
+            generation_live
+        ]
     );
     record!(
         s,

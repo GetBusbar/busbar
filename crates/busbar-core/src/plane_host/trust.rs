@@ -56,6 +56,7 @@ use busbar_plugin::hot::{
     CounterpartyRef, Key, StatusClass, TrustVerdict, VerifyLease, VerifyOutcome, VerifyVerdict,
     POD_VERSION,
 };
+use busbar_plugin::read_sized_field;
 use core::mem::MaybeUninit;
 use std::collections::{HashMap, HashSet};
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -315,15 +316,90 @@ pub(crate) extern "C-unwind" fn approval_redeem(host: HostCtx, key: *const Key) 
     .unwrap_or(StatusClass::Fault)
 }
 
-/// WIRED `trust_evaluate` → the admission-time trust verdict for a counterparty, over the real
-/// durable DRIFT state.
-///
-/// A counterparty with a durable demotion on record is [`TrustVerdict::Quarantined`] (drift the
-/// operator has not yet worked); otherwise it is [`TrustVerdict::Allow`]. The full ordered validator
-/// (`crate::trust::validate::validate_request`: identity → grant → artifact → generation, mapping to
-/// `Denied`/`NeedsApproval` too) is the Phase-2 wiring once the counterparty→registration resolution
-/// lands (see the header). A null/empty identity, or a caught panic, is [`TrustVerdict::Denied`] —
-/// trust fails closed.
+/// The neutral mirror of the plane's registration lifecycle state, as marshalled into
+/// [`CounterpartyRef::registration_state`] (see the POD field doc). `2` is `Approved` — the only
+/// state that serves; every other value is a `NotServing` fact the fold maps to a specific verdict.
+mod reg_state {
+    pub(super) const PENDING: u8 = 1;
+    pub(super) const APPROVED: u8 = 2;
+    pub(super) const QUARANTINED: u8 = 3;
+    pub(super) const SUSPENDED: u8 = 4;
+    pub(super) const FAILED: u8 = 5;
+}
+
+/// The legacy `trust_evaluate` disposition — the durable DRIFT map — used as the forward-compat
+/// fallback for a sender that predates the fact tail (bit 0 of `fact_flags` clear, or a `size` too
+/// short to reach it). A counterparty with a durable demotion on record is
+/// [`TrustVerdict::Quarantined`]; otherwise [`TrustVerdict::Allow`]; a null/empty identity is
+/// [`TrustVerdict::Denied`] (fail-closed). Preserves the exact pre-enrichment behaviour.
+fn legacy_drift_verdict(state: &HostState, cp: &CounterpartyRef) -> TrustVerdict {
+    // SAFETY: `cp` is a live `&CounterpartyRef`; `subject` upholds the borrow discipline.
+    let Some(subject) = (unsafe { subject(cp.ref_ptr, cp.ref_len) }) else {
+        return TrustVerdict::Denied; // no identity → fail-closed.
+    };
+    let quarantined = state
+        .app
+        .mcp_demotions
+        .list()
+        .iter()
+        .any(|row| row.server == subject);
+    if quarantined {
+        TrustVerdict::Quarantined
+    } else {
+        TrustVerdict::Allow
+    }
+}
+
+/// FOLD the plane's marshalled per-step FACTS into a [`TrustVerdict`] in the EXACT order of
+/// `crate::trust::validate::validate_request` (identity → grant → artifact → generation) — the
+/// `Signal`→`classify` precedent applied to trust. The plane computes each step's fact (its
+/// `validate_request` runs plane-side over its own registry); the host reproduces the ORDER and the
+/// verdict MAPPING, so a refusal keeps its SPECIFIC step rather than collapsing to `Denied`. Proven
+/// the inverse of the plane's `Refusal` disposition by `trust_evaluate_folds_validate_request_order`.
+fn fold_facts(cp: &CounterpartyRef) -> TrustVerdict {
+    // ── 1. IDENTITY ──────────────────────────────────────────────────────────────────────────────
+    // `0` not-live, `1` live, `2` no-principal (honest ungoverned `None` — passes identity).
+    if read_sized_field!(cp, CounterpartyRef, identity_live).unwrap_or(0) == 0 {
+        return TrustVerdict::IdentityNotLive;
+    }
+    // ── 2. GRANT ─────────────────────────────────────────────────────────────────────────────────
+    match read_sized_field!(cp, CounterpartyRef, grant_outcome).unwrap_or(0) {
+        1 => return TrustVerdict::NotGranted,
+        2 => return TrustVerdict::EgressDenied,
+        _ => {}
+    }
+    // ── 3a. REGISTRATION STATE ───────────────────────────────────────────────────────────────────
+    // Only `Approved` serves; every other state is a `NotServing` refusal mapped to the verdict that
+    // names its remedy (quarantine/failed → re-establish; pending → redeem approval; suspended →
+    // operator denial; absent/unknown → fail closed).
+    match read_sized_field!(cp, CounterpartyRef, registration_state).unwrap_or(0) {
+        reg_state::APPROVED => {}
+        reg_state::QUARANTINED | reg_state::FAILED => return TrustVerdict::Quarantined,
+        reg_state::PENDING => return TrustVerdict::NeedsApproval,
+        reg_state::SUSPENDED => return TrustVerdict::Denied,
+        _ => return TrustVerdict::Denied,
+    }
+    // ── 3b. ARTIFACT ─────────────────────────────────────────────────────────────────────────────
+    // `2` drifted, `3` unobservable — both are the plane's `ARTIFACT_DRIFTED` refusal word.
+    match read_sized_field!(cp, CounterpartyRef, artifact_outcome).unwrap_or(0) {
+        2 | 3 => return TrustVerdict::ArtifactDrifted,
+        _ => {}
+    }
+    // ── 4. GENERATION ────────────────────────────────────────────────────────────────────────────
+    let admitted = read_sized_field!(cp, CounterpartyRef, generation_admitted).unwrap_or(0);
+    let live = read_sized_field!(cp, CounterpartyRef, generation_live).unwrap_or(0);
+    if admitted != live {
+        return TrustVerdict::GenerationMoved;
+    }
+    TrustVerdict::Allow
+}
+
+/// WIRED `trust_evaluate` → the admission-time trust verdict for a counterparty. When the plane wrote
+/// the fact tail (bit 0 of `fact_flags`, proven present by the sized-struct guard), the host FOLDS
+/// those facts in `validate_request`'s exact order via [`fold_facts`] and reproduces the plane's
+/// disposition (identity → grant → artifact → generation, mapping each refusal to its specific
+/// verdict). A sender that predates the tail falls back to [`legacy_drift_verdict`] (the durable
+/// drift map). A null POD, or a caught panic, is [`TrustVerdict::Denied`] — trust fails closed.
 pub(crate) extern "C-unwind" fn trust_evaluate(
     host: HostCtx,
     counterparty: *const CounterpartyRef,
@@ -336,21 +412,14 @@ pub(crate) extern "C-unwind" fn trust_evaluate(
         }
         // SAFETY: a non-null `counterparty` is a live, initialized `CounterpartyRef` for the call.
         let cp = unsafe { &*counterparty };
-        // SAFETY: `cp` is a live `&CounterpartyRef`; `subject` upholds the borrow discipline.
-        let Some(subject) = (unsafe { subject(cp.ref_ptr, cp.ref_len) }) else {
-            return TrustVerdict::Denied; // no identity → fail-closed.
-        };
-        // The durable demotion records ARE the "drift lives host-side" trust state the ABI describes.
-        let quarantined = state
-            .app
-            .mcp_demotions
-            .list()
-            .iter()
-            .any(|row| row.server == subject);
-        if quarantined {
-            TrustVerdict::Quarantined
+        // The fact tail is authoritative only when the sender WROTE it (sized guard + flag bit 0);
+        // otherwise the legacy drift map is the faithful pre-enrichment disposition.
+        let facts_written =
+            read_sized_field!(cp, CounterpartyRef, fact_flags).is_some_and(|f| f & 0x01 != 0);
+        if facts_written {
+            fold_facts(cp)
         } else {
-            TrustVerdict::Allow
+            legacy_drift_verdict(state, cp)
         }
     }))
     .unwrap_or(TrustVerdict::Denied) // caught panic → denied, never allowed.
@@ -498,6 +567,222 @@ mod tests {
         });
     }
 
+    /// The six per-step facts a plane marshals into the [`CounterpartyRef`] tail — the inverse of the
+    /// arms the plane's own `validate_request` refuses at. A `would_pass` value fills every step so a
+    /// single failing step can be isolated (exactly as the ordered validator short-circuits).
+    #[derive(Clone, Copy)]
+    struct Facts {
+        identity_live: u8,
+        grant_outcome: u8,
+        registration_state: u8,
+        artifact_outcome: u8,
+        generation_admitted: u64,
+        generation_live: u64,
+    }
+
+    impl Facts {
+        /// Every step passes: live identity, all grants held, an Approved registration serving its
+        /// artifact, and a still-live generation.
+        fn would_pass() -> Self {
+            Facts {
+                identity_live: 1,
+                grant_outcome: 0,
+                registration_state: reg_state::APPROVED,
+                artifact_outcome: 1,
+                generation_admitted: 5,
+                generation_live: 5,
+            }
+        }
+    }
+
+    /// The neutral u8 mirror of the plane's `TrustState`, as the plane marshals it.
+    fn state_u8(state: crate::trust::TrustState) -> u8 {
+        match state {
+            crate::trust::TrustState::Pending => reg_state::PENDING,
+            crate::trust::TrustState::Approved => reg_state::APPROVED,
+            crate::trust::TrustState::Quarantined => reg_state::QUARANTINED,
+            crate::trust::TrustState::Suspended => reg_state::SUSPENDED,
+            crate::trust::TrustState::Error => reg_state::FAILED,
+        }
+    }
+
+    /// Build a `CounterpartyRef` carrying `facts` (fact tail written) over `id` for the duration of
+    /// `f`.
+    fn with_facts<R>(id: &[u8], facts: Facts, f: impl FnOnce(*const CounterpartyRef) -> R) -> R {
+        let cp = CounterpartyRef {
+            size: core::mem::size_of::<CounterpartyRef>() as u32,
+            version: POD_VERSION,
+            _reserved: 0,
+            scope: 0,
+            _reserved2: 0,
+            ref_ptr: id.as_ptr(),
+            ref_len: id.len(),
+            identity_live: facts.identity_live,
+            grant_outcome: facts.grant_outcome,
+            registration_state: facts.registration_state,
+            artifact_outcome: facts.artifact_outcome,
+            fact_flags: 0x01, // the fact tail is authoritative.
+            _reserved3: 0,
+            _reserved4: 0,
+            generation_admitted: facts.generation_admitted,
+            generation_live: facts.generation_live,
+        };
+        f(&cp as *const CounterpartyRef)
+    }
+
+    /// THE FAITHFULNESS PROOF: the host `trust_evaluate` FOLD reproduces the plane's
+    /// `validate_request` disposition EXACTLY — every `Refusal` arm (and the passing case) marshalled
+    /// to its per-step facts folds to the verdict that names that arm, in the validator's order. This
+    /// is the trust analogue of `failure_signal_round_trips_through_classify`: the facts encode the
+    /// step outcome, the fold independently reconstructs the disposition, and the two must agree.
+    #[test]
+    fn trust_evaluate_folds_validate_request_order() {
+        use crate::trust::TrustState;
+        // (a description, the facts that produce it, the verdict the plane's Refusal maps to).
+        let id = b"faithfulness/counterparty";
+        let cases: &[(&str, Facts, TrustVerdict)] = &[
+            ("all steps pass", Facts::would_pass(), TrustVerdict::Allow),
+            (
+                "identity not live",
+                Facts { identity_live: 0, ..Facts::would_pass() },
+                TrustVerdict::IdentityNotLive,
+            ),
+            (
+                "not granted",
+                Facts { grant_outcome: 1, ..Facts::would_pass() },
+                TrustVerdict::NotGranted,
+            ),
+            (
+                "egress denied",
+                Facts { grant_outcome: 2, ..Facts::would_pass() },
+                TrustVerdict::EgressDenied,
+            ),
+            (
+                "not serving: quarantined",
+                Facts { registration_state: state_u8(TrustState::Quarantined), ..Facts::would_pass() },
+                TrustVerdict::Quarantined,
+            ),
+            (
+                "not serving: error (last contact failed)",
+                Facts { registration_state: state_u8(TrustState::Error), ..Facts::would_pass() },
+                TrustVerdict::Quarantined,
+            ),
+            (
+                "not serving: pending",
+                Facts { registration_state: state_u8(TrustState::Pending), ..Facts::would_pass() },
+                TrustVerdict::NeedsApproval,
+            ),
+            (
+                "not serving: suspended",
+                Facts { registration_state: state_u8(TrustState::Suspended), ..Facts::would_pass() },
+                TrustVerdict::Denied,
+            ),
+            (
+                "artifact drifted",
+                Facts { artifact_outcome: 2, ..Facts::would_pass() },
+                TrustVerdict::ArtifactDrifted,
+            ),
+            (
+                "artifact unobservable",
+                Facts { artifact_outcome: 3, ..Facts::would_pass() },
+                TrustVerdict::ArtifactDrifted,
+            ),
+            (
+                "generation moved",
+                Facts { generation_admitted: 5, generation_live: 6, ..Facts::would_pass() },
+                TrustVerdict::GenerationMoved,
+            ),
+        ];
+        with_test_state(|host, vt, _scope| {
+            for (desc, facts, expect) in cases {
+                let got = with_facts(id, *facts, |cp| (vt.trust_evaluate.unwrap())(host, cp));
+                assert_eq!(got, *expect, "fold disposition for `{desc}`");
+            }
+        });
+    }
+
+    /// THE ORDER IS THE CONTENT: when several steps would refuse at once, the EARLIER step wins,
+    /// exactly as `validate_request` short-circuits. Identity beats grant beats registration beats
+    /// artifact beats generation.
+    #[test]
+    fn trust_evaluate_short_circuits_in_step_order() {
+        let id = b"faithfulness/order";
+        // Every step fails simultaneously.
+        let all_fail = Facts {
+            identity_live: 0,
+            grant_outcome: 1,
+            registration_state: reg_state::QUARANTINED,
+            artifact_outcome: 2,
+            generation_admitted: 5,
+            generation_live: 6,
+        };
+        with_test_state(|host, vt, _scope| {
+            // Identity is step 1 — it wins over every later failure.
+            assert_eq!(
+                with_facts(id, all_fail, |cp| (vt.trust_evaluate.unwrap())(host, cp)),
+                TrustVerdict::IdentityNotLive
+            );
+            // Fix identity → grant (step 2) wins over registration/artifact/generation.
+            let grant_first = Facts { identity_live: 1, ..all_fail };
+            assert_eq!(
+                with_facts(id, grant_first, |cp| (vt.trust_evaluate.unwrap())(host, cp)),
+                TrustVerdict::NotGranted
+            );
+            // Fix grant → registration (step 3a) wins over artifact/generation.
+            let reg_first = Facts { grant_outcome: 0, ..grant_first };
+            assert_eq!(
+                with_facts(id, reg_first, |cp| (vt.trust_evaluate.unwrap())(host, cp)),
+                TrustVerdict::Quarantined
+            );
+            // Fix registration → artifact (step 3b) wins over generation.
+            let artifact_first = Facts { registration_state: reg_state::APPROVED, ..reg_first };
+            assert_eq!(
+                with_facts(id, artifact_first, |cp| (vt.trust_evaluate.unwrap())(host, cp)),
+                TrustVerdict::ArtifactDrifted
+            );
+            // Fix artifact → generation (step 4) is the last refusal.
+            let gen_first = Facts { artifact_outcome: 1, ..artifact_first };
+            assert_eq!(
+                with_facts(id, gen_first, |cp| (vt.trust_evaluate.unwrap())(host, cp)),
+                TrustVerdict::GenerationMoved
+            );
+        });
+    }
+
+    /// FORWARD-COMPAT: a sender that predates the fact tail (fact flag clear) falls back to the
+    /// legacy drift map — an un-demoted counterparty is `Allow`, a null identity is `Denied` — so the
+    /// enrichment never changes the disposition an older plane would have received.
+    #[test]
+    fn trust_evaluate_falls_back_to_drift_map_without_facts() {
+        with_test_state(|host, vt, _scope| {
+            let id = b"faithfulness/legacy";
+            // fact_flags = 0 → the tail is ignored even though present; legacy map → Allow (undemoted).
+            let cp = CounterpartyRef {
+                size: core::mem::size_of::<CounterpartyRef>() as u32,
+                version: POD_VERSION,
+                _reserved: 0,
+                scope: 0,
+                _reserved2: 0,
+                ref_ptr: id.as_ptr(),
+                ref_len: id.len(),
+                identity_live: 0, // would be IdentityNotLive IF the tail were authoritative
+                grant_outcome: 1,
+                registration_state: reg_state::SUSPENDED,
+                artifact_outcome: 2,
+                fact_flags: 0, // NOT authoritative → legacy drift map.
+                _reserved3: 0,
+                _reserved4: 0,
+                generation_admitted: 5,
+                generation_live: 6,
+            };
+            assert_eq!(
+                (vt.trust_evaluate.unwrap())(host, &cp as *const CounterpartyRef),
+                TrustVerdict::Allow,
+                "no fact tail → legacy drift map, not the folded refusal"
+            );
+        });
+    }
+
     #[test]
     fn trust_evaluate_allows_unknown_and_denies_null() {
         with_test_state(|host, vt, _scope| {
@@ -510,6 +795,16 @@ mod tests {
                 _reserved2: 0,
                 ref_ptr: id.as_ptr(),
                 ref_len: id.len(),
+                // No fact tail → the legacy drift map governs (this test's subject).
+                identity_live: 0,
+                grant_outcome: 0,
+                registration_state: 0,
+                artifact_outcome: 0,
+                fact_flags: 0,
+                _reserved3: 0,
+                _reserved4: 0,
+                generation_admitted: 0,
+                generation_live: 0,
             };
             // No demotion on record → Allow.
             assert_eq!(
