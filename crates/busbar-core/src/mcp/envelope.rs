@@ -339,6 +339,15 @@ pub(in crate::mcp) async fn rpc_dispatch(
     id: serde_json::Value,
     method_name: String,
 ) -> Option<Response> {
+    // ── PHASE-1.5 HOST PLUMBING (ADDITIVE, not yet used by any capability inversion). ─────────────
+    //
+    // Open the async-capable dispatch guard at the TOP of the async body and hold it as a local for
+    // the whole future, so a host handle is REACHABLE at every downstream breaker admit/settle site
+    // (deep in `upstream::call`) and the per-dispatch arena reclaims on ANY exit of this future —
+    // normal return, client-disconnect cancel, or panic. It BORROWS `app` and stack-pins an empty
+    // arena (no per-dispatch heap), and the guard is `Send`, so this future stays `Send`. CLUSTER-1
+    // flips the in-place breaker calls onto `_host.with_host(..)`; until then it is held-but-unused.
+    let _host = crate::plane_host::HostDispatch::new(app);
     // From here `id` is a string or a number. It is carried as `Option` only because the method
     // table's constructors take one; it is never `None` on this path, and never `Null` at all.
     let id = Some(id);
