@@ -322,9 +322,13 @@ pub(crate) fn reverify_once(
     now_ms: u64,
     operator_sync: bool,
 ) -> Pass {
-    let due = reverify::due(
-        &registration.ledger,
-        &registration.reverify,
+    // Route the freshness decision through the host seam `verify_decide_due` (the same reverify-`due`
+    // reach `VerifyGate::ensure_fresh` funnels its bool decision through), rather than reaching
+    // `crate::trust::reverify::due` directly. The rich `Due` reason is preserved for the audit `Pass`,
+    // and `operator_sync` is passed straight through — a forced sync is unconditionally due there.
+    let due = crate::plane_host::trust::verify_decide_due(
+        registration.ledger.last_checked_ms,
+        registration.reverify.ttl_ms,
         now_ms,
         operator_sync,
     );

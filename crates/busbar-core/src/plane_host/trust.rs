@@ -281,6 +281,24 @@ unsafe fn cache_key_raw(scope: u32, ptr: *const u8, len: usize) -> Option<CacheK
 /// coalescing (the epoch/leadership), and its async await entirely plane-side — only this pure
 /// arithmetic crosses the seam, over the plane's authoritative `last_checked_ms`.
 pub(crate) fn verify_decide(last_checked_ms: Option<u64>, ttl_ms: u64, now_ms: u64) -> bool {
+    verify_decide_due(last_checked_ms, ttl_ms, now_ms, false).should_check()
+}
+
+/// THE reverify-`due` REACH, wrapped once — the richer sibling of [`verify_decide`] that returns the
+/// full [`crate::trust::reverify::Due`] REASON rather than collapsing it to a bool. The plane's a2a
+/// re-verify job (`crate::a2a::verify::reverify_once`) and the operator `sync` verb
+/// (`crate::a2a::verbs::sync`) funnel through here, so the a2a plane never reaches
+/// `crate::trust::reverify::due` itself post-extraction — only this host veneer does. `operator_sync`
+/// OUTRANKS the timer (an operator who asks does not wait): it is unconditionally [`Due::OperatorSync`],
+/// exactly as `due` promises. Reconstructs a minimal ledger/policy because `due` reads only
+/// `last_checked_ms` and `ttl_ms` — `recovery_backoff_ms` and the drift counters never enter the
+/// freshness decision.
+pub(crate) fn verify_decide_due(
+    last_checked_ms: Option<u64>,
+    ttl_ms: u64,
+    now_ms: u64,
+    operator_sync: bool,
+) -> crate::trust::reverify::Due {
     let ledger = crate::trust::reverify::Ledger {
         last_checked_ms,
         ..Default::default()
@@ -289,7 +307,7 @@ pub(crate) fn verify_decide(last_checked_ms: Option<u64>, ttl_ms: u64, now_ms: u
         ttl_ms,
         recovery_backoff_ms: 0,
     };
-    crate::trust::reverify::due(&ledger, &policy, now_ms, false).should_check()
+    crate::trust::reverify::due(&ledger, &policy, now_ms, operator_sync)
 }
 
 /// WIRED `verify_decide` → [`verify_decide`]: the STATELESS freshness DECISION over a [`VerifyQuery`]
