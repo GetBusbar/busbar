@@ -437,6 +437,12 @@ mod tests {
                 amount: 1_000,
                 unit_cost_micros: 3,
                 admission: AdmissionId(42),
+                key_id_ptr: core::ptr::null(),
+                key_id_len: 0,
+                model_ptr: core::ptr::null(),
+                model_len: 0,
+                provider_ptr: core::ptr::null(),
+                provider_len: 0,
             };
             assert_eq!(
                 (vt.meter_charge.unwrap())(host, &usage as *const Usage),

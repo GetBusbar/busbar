@@ -53,13 +53,31 @@ fn compute_layout() -> String {
             priority,
             flags,
             pool_name_ptr,
-            pool_name_len
+            pool_name_len,
+            identity_id_ptr,
+            identity_id_len,
+            group_ptr,
+            group_len
         ]
     );
     record!(
         s,
         Usage,
-        [size, version, component, _reserved, amount, unit_cost_micros, admission]
+        [
+            size,
+            version,
+            component,
+            _reserved,
+            amount,
+            unit_cost_micros,
+            admission,
+            key_id_ptr,
+            key_id_len,
+            model_ptr,
+            model_len,
+            provider_ptr,
+            provider_len
+        ]
     );
     record!(
         s,

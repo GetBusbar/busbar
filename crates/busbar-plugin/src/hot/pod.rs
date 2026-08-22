@@ -294,9 +294,22 @@ pub enum Unavailability {
 /// A `#[repr(C)]` governance fact bundle passed to `govern_admit` BY POINTER. Sized/versioned
 /// preamble, then scalars, then a BORROWED pool-name `(ptr, len)`.
 ///
+/// ## The identity tail (append-only minor extension)
+///
+/// The tail block (`identity_id_ptr` … `group_len`) is an APPEND-ONLY minor extension carrying the
+/// caller's RESOLVED admission identity: the attribution-bucket id (the real key id) and the key's
+/// enforcement `group` (empty = ungrouped). Without it the host can only admit against a SYNTHESIZED
+/// ungrouped key; with it the host drives the SAME `try_admit` chain — the key's own `total` bucket
+/// plus every ancestor group's window/concurrent caps — the in-process budget plane enforces. A
+/// sender that predates the tail advertises the shorter `size`; the host reads the tail only when
+/// `size` proves it was written (the sized-struct guard) AND `identity_id_len != 0`, otherwise it
+/// falls back to the synthesized key — a MINOR airlock bump, never a MAJOR.
+///
 /// # Safety / discipline
-/// `pool_name_ptr`/`pool_name_len` MUST describe a live, initialized byte range for any call that
-/// receives `&Facts`. Construct via [`Facts::new`], which ties the borrow to a [`FactsGuard`].
+/// `pool_name_ptr`/`pool_name_len` — and, when present, `identity_id_ptr`/`identity_id_len` and
+/// `group_ptr`/`group_len` — MUST describe a live, initialized byte range for any call that receives
+/// `&Facts`. Construct via [`Facts::new`] (no identity) or [`Facts::with_attribution`] (with the
+/// identity tail), which tie every borrow to a [`FactsGuard`].
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct Facts {
@@ -320,11 +333,23 @@ pub struct Facts {
     pub pool_name_ptr: *const u8,
     /// Length of the borrowed pool-name range.
     pub pool_name_len: usize,
+    /// (minor-5) Borrowed pointer to the resolved attribution-bucket id (the real key id). A null
+    /// pointer / zero [`identity_id_len`](Self::identity_id_len) means "no resolved identity — the
+    /// host synthesizes one", the pre-enrichment behaviour.
+    pub identity_id_ptr: *const u8,
+    /// (minor-5) Length of the borrowed attribution-id range (`0` = absent).
+    pub identity_id_len: usize,
+    /// (minor-5) Borrowed pointer to the key's enforcement `group` name (NOT owned). A null pointer /
+    /// zero [`group_len`](Self::group_len) means the key is UNGROUPED (an unlimited 1-bucket chain).
+    pub group_ptr: *const u8,
+    /// (minor-5) Length of the borrowed group-name range (`0` = ungrouped).
+    pub group_len: usize,
 }
 
 impl Facts {
-    /// Build a `Facts` borrowing `pool_name` for `'a`; returns a [`FactsGuard`] so the borrow can't
-    /// outlive the name. No allocation, no copy.
+    /// Build a `Facts` borrowing `pool_name` for `'a`, WITHOUT a resolved identity (the identity tail
+    /// is null → the host admits against a synthesized ungrouped key). Returns a [`FactsGuard`] so the
+    /// borrow can't outlive the name. No allocation, no copy.
     #[allow(clippy::new_ret_no_self)]
     pub fn new<'a>(
         tokens: u64,
@@ -346,6 +371,51 @@ impl Facts {
                 flags,
                 pool_name_ptr: pool_name.as_ptr(),
                 pool_name_len: pool_name.len(),
+                identity_id_ptr: core::ptr::null(),
+                identity_id_len: 0,
+                group_ptr: core::ptr::null(),
+                group_len: 0,
+            },
+            _borrow: core::marker::PhantomData,
+        }
+    }
+
+    /// Build a `Facts` carrying the RESOLVED admission identity: the attribution-bucket id
+    /// (`identity_id`) and the key's enforcement `group` (`None` = ungrouped). Every borrow —
+    /// `pool_name`, `identity_id`, and the optional `group` — is tied to the returned [`FactsGuard`]'s
+    /// lifetime `'a`. This is the enriched path the host drives the real `try_admit` chain over.
+    #[allow(clippy::new_ret_no_self)]
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_attribution<'a>(
+        tokens: u64,
+        budget_remaining: u64,
+        tenant_id: u64,
+        priority: u32,
+        flags: u32,
+        pool_name: &'a [u8],
+        identity_id: &'a [u8],
+        group: Option<&'a [u8]>,
+    ) -> FactsGuard<'a> {
+        let (group_ptr, group_len) = match group {
+            Some(g) => (g.as_ptr(), g.len()),
+            None => (core::ptr::null(), 0),
+        };
+        FactsGuard {
+            facts: Facts {
+                size: core::mem::size_of::<Facts>() as u32,
+                version: POD_VERSION,
+                _reserved: 0,
+                tokens,
+                budget_remaining,
+                tenant_id,
+                priority,
+                flags,
+                pool_name_ptr: pool_name.as_ptr(),
+                pool_name_len: pool_name.len(),
+                identity_id_ptr: identity_id.as_ptr(),
+                identity_id_len: identity_id.len(),
+                group_ptr,
+                group_len,
             },
             _borrow: core::marker::PhantomData,
         }
@@ -369,6 +439,22 @@ impl core::ops::Deref for FactsGuard<'_> {
 /// A metering charge: an opaque-component money scalar. `reserve/settle` (a `CostHold`) is
 /// DELIBERATELY NOT here and NOT on the hot vtable — it is an append-only EXTENSION POINT for a
 /// future high-rate carrier (see [`host`](super::host)).
+///
+/// ## The attribution tail (append-only minor extension)
+///
+/// The tail block (`key_id_ptr` … `provider_len`) is an APPEND-ONLY minor extension carrying the
+/// RESOLVED metering attribution: the `(key_id, model, provider)` the write-behind series records
+/// against. Without it the host records against a SYNTHETIC attribution derived from the admission id;
+/// with it the host records the EXACT `(key_id, model, provider)` the in-process meter would. A sender
+/// that predates the tail advertises the shorter `size`; the host reads the tail only when `size`
+/// proves it was written (the sized-struct guard) AND `key_id_len != 0`, otherwise it falls back to
+/// the synthetic attribution — a MINOR airlock bump, never a MAJOR.
+///
+/// # Safety / discipline
+/// When present, `key_id_ptr`/`key_id_len`, `model_ptr`/`model_len`, and `provider_ptr`/`provider_len`
+/// MUST describe live, initialized byte ranges (NOT owned by `Usage`) for any call receiving `&Usage`.
+/// Construct via [`Usage::charge`] (no attribution) or [`Usage::with_attribution`], which tie every
+/// borrow to a [`UsageGuard`].
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct Usage {
@@ -386,6 +472,100 @@ pub struct Usage {
     pub unit_cost_micros: u64,
     /// The admission grant this consumption is charged against.
     pub admission: AdmissionId,
+    /// (minor-5) Borrowed pointer to the resolved metering key id (NOT owned). A null pointer / zero
+    /// [`key_id_len`](Self::key_id_len) means "no resolved attribution — the host synthesizes one".
+    pub key_id_ptr: *const u8,
+    /// (minor-5) Length of the borrowed key-id range (`0` = absent).
+    pub key_id_len: usize,
+    /// (minor-5) Borrowed pointer to the metering `model` word (NOT owned).
+    pub model_ptr: *const u8,
+    /// (minor-5) Length of the borrowed model range (`0` = absent).
+    pub model_len: usize,
+    /// (minor-5) Borrowed pointer to the metering `provider` word (NOT owned).
+    pub provider_ptr: *const u8,
+    /// (minor-5) Length of the borrowed provider range (`0` = absent).
+    pub provider_len: usize,
+}
+
+impl Usage {
+    /// Build a `Usage` charging `amount × unit_cost_micros` against `admission`, WITHOUT a resolved
+    /// attribution (the tail is null → the host records against a synthetic attribution derived from
+    /// the admission id). Returns a [`UsageGuard`] (no borrows to tie yet, but uniform with
+    /// [`with_attribution`](Self::with_attribution)).
+    #[allow(clippy::new_ret_no_self)]
+    pub fn charge<'a>(
+        component: UsageComponent,
+        amount: u64,
+        unit_cost_micros: u64,
+        admission: AdmissionId,
+    ) -> UsageGuard<'a> {
+        UsageGuard {
+            usage: Usage {
+                size: core::mem::size_of::<Usage>() as u32,
+                version: POD_VERSION,
+                component,
+                _reserved: 0,
+                amount,
+                unit_cost_micros,
+                admission,
+                key_id_ptr: core::ptr::null(),
+                key_id_len: 0,
+                model_ptr: core::ptr::null(),
+                model_len: 0,
+                provider_ptr: core::ptr::null(),
+                provider_len: 0,
+            },
+            _borrow: core::marker::PhantomData,
+        }
+    }
+
+    /// Build a `Usage` carrying the RESOLVED metering attribution `(key_id, model, provider)`. Every
+    /// borrow is tied to the returned [`UsageGuard`]'s lifetime `'a`. This is the enriched path the
+    /// host records the EXACT `(key_id, model, provider)` metering row over.
+    #[allow(clippy::new_ret_no_self)]
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_attribution<'a>(
+        component: UsageComponent,
+        amount: u64,
+        unit_cost_micros: u64,
+        admission: AdmissionId,
+        key_id: &'a [u8],
+        model: &'a [u8],
+        provider: &'a [u8],
+    ) -> UsageGuard<'a> {
+        UsageGuard {
+            usage: Usage {
+                size: core::mem::size_of::<Usage>() as u32,
+                version: POD_VERSION,
+                component,
+                _reserved: 0,
+                amount,
+                unit_cost_micros,
+                admission,
+                key_id_ptr: key_id.as_ptr(),
+                key_id_len: key_id.len(),
+                model_ptr: model.as_ptr(),
+                model_len: model.len(),
+                provider_ptr: provider.as_ptr(),
+                provider_len: provider.len(),
+            },
+            _borrow: core::marker::PhantomData,
+        }
+    }
+}
+
+/// A [`Usage`] tied to the lifetime of its borrowed attribution words so the borrows can't dangle.
+pub struct UsageGuard<'a> {
+    usage: Usage,
+    _borrow: core::marker::PhantomData<&'a [u8]>,
+}
+
+impl core::ops::Deref for UsageGuard<'_> {
+    type Target = Usage;
+    #[inline]
+    fn deref(&self) -> &Usage {
+        &self.usage
+    }
 }
 
 /// A routing / circuit / verification key: a borrowed opaque key material `(ptr, len)` plus a scope.
