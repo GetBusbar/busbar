@@ -288,7 +288,11 @@ pub(crate) fn sync(
     now_ms: u64,
     probe: &CardProbe<'_>,
 ) -> SyncOutcome {
-    let due = reverify::due(ledger, policy, now_ms, true);
+    // The operator `sync` verb ALWAYS re-checks: `reverify::due(.., operator_sync = true)` is
+    // unconditionally `Due::OperatorSync`. Route it through the same host seam the background job uses
+    // (`plane_host::trust::verify_decide_due`, `operator_sync = true`) rather than reaching
+    // `crate::trust::reverify::due` directly, so the a2a plane no longer touches the reverify primitive.
+    let due = crate::plane_host::trust::verify_decide_due(ledger.last_checked_ms, policy.ttl_ms, now_ms, true);
     debug_assert!(due.should_check(), "an operator sync is always due");
     let observed = probe.look(agent_id);
     let settled = reverify::settle(approval, recorded, observed, ledger, policy, now_ms);
