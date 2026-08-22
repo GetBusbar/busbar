@@ -11,16 +11,20 @@
 //!
 //! ## What is wired here, and what is a faithful Phase-2 note
 //!
-//! * [`EgressKind::Http`] — FULLY wired for the streaming READ path: resolve-then-pin over
+//! * [`EgressKind::Http`] — FULLY wired for the request/READ round trip: the outbound request is
+//!   built from the [`EgressDesc`] outbound tail (the `verb`, the packed header set, and the one-shot
+//!   request `body`), the credential is INJECTED host-side (the resolved credential the plane named by
+//!   ref, never plaintext the plane held — see [`inject_credential`]), then resolve-then-pin over
 //!   [`crate::net_guard::resolve_and_pin_async`], a per-hop PINNED client (the a2a lesson — a pooled
 //!   client re-resolves and reopens the DNS-rebind window, so a governed hop pins the address and
 //!   refuses a second lookup), the post-connect observed peer identity handed back in the
 //!   [`EgressHead`], a background streaming task that pumps `resp.chunk().await` into a bounded
 //!   channel, and an arena [`Closer`](super::scope::DispatchScope::register_egress) that tears the
 //!   whole thing down on close / dispatch-drop / cancellation.
-//! * [`EgressKind::Http`] request-BODY duplex ([`egress_write`]) — a Phase-2 note. The shipped hop is
-//!   a bodyless streaming request; a client-streamed request body needs HTTP/2 `Body::wrap_stream`
-//!   plus a method/body field on [`EgressDesc`] that the ABI does not yet carry.
+//! * [`EgressKind::Http`] STREAMED request-body duplex ([`egress_write`]) — a Phase-2 note. The
+//!   one-shot request body rides [`EgressDesc::body_ptr`] at open; a CLIENT-STREAMED (chunk-by-chunk)
+//!   request body still needs HTTP/2 `Body::wrap_stream`, so `egress_write` stays `Unsupported` for
+//!   the HTTP kind.
 //! * [`EgressKind::RawConn`] / [`EgressKind::Subprocess`] — faithful Phase-2 notes (see
 //!   [`egress_open`]). The governance path is identical; only the channel SHAPE differs (a pinned raw
 //!   socket, a governed `tokio::process`), and each is a large wiring of its own.
@@ -47,6 +51,7 @@ use super::{recover, HostState};
 use busbar_plugin::hot::host::HostCtx;
 use busbar_plugin::hot::pod::POD_VERSION;
 use busbar_plugin::hot::{EgressDesc, EgressHead, EgressId, EgressKind, EgressOpen, PipeId, StatusClass};
+use busbar_plugin::read_sized_field;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::collections::VecDeque;
@@ -281,6 +286,147 @@ fn guard_policy(scope: u32) -> crate::net_guard::GuardPolicy {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
+// The outbound-request spec built from the EgressDesc DATA tail (verb / headers / body), plus the
+// host-side credential INJECTION. The plane sends only neutral data + an opaque credential ref; the
+// host resolves the ref to the plaintext it owns and places it — the secret is read here, never off
+// a plane POD.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+/// A fully-built outbound request: the method, the forwarded header set (the injected credential
+/// header, if any, is already among these), and the one-shot request body.
+struct ReqSpec {
+    /// The request method/verb (defaults to `GET` when the plane sent none).
+    method: reqwest::Method,
+    /// The header set the host forwards verbatim, plus the injected credential header (if any).
+    headers: Vec<(String, String)>,
+    /// The one-shot request body (empty ⇒ a bodyless request).
+    body: Vec<u8>,
+}
+
+/// Build the [`ReqSpec`] from the [`EgressDesc`] outbound tail, reading each tail field only behind
+/// the sized-struct guard (a sender that predates the tail yields a bodyless `GET`).
+fn build_req_spec(d: &EgressDesc) -> ReqSpec {
+    let method = read_sized_field!(d, EgressDesc, verb_ptr)
+        .zip(read_sized_field!(d, EgressDesc, verb_len))
+        .and_then(|(ptr, len)| method_of(ptr, len))
+        .unwrap_or(reqwest::Method::GET);
+    let headers = match (
+        read_sized_field!(d, EgressDesc, headers_ptr),
+        read_sized_field!(d, EgressDesc, headers_len),
+    ) {
+        // SAFETY: a non-null `(headers_ptr, headers_len)` is a live borrowed range for the call (ABI).
+        (Some(ptr), Some(len)) => unsafe { parse_headers(ptr, len) },
+        _ => Vec::new(),
+    };
+    let body = match (
+        read_sized_field!(d, EgressDesc, body_ptr),
+        read_sized_field!(d, EgressDesc, body_len),
+    ) {
+        // SAFETY: a non-null `(body_ptr, body_len)` is a live borrowed range for the call (ABI).
+        (Some(ptr), Some(len)) if !ptr.is_null() && len != 0 => {
+            unsafe { std::slice::from_raw_parts(ptr, len) }.to_vec()
+        }
+        _ => Vec::new(),
+    };
+    ReqSpec { method, headers, body }
+}
+
+/// Parse the request VERB bytes into a [`reqwest::Method`], or `None` (⇒ default `GET`) when absent or
+/// malformed.
+fn method_of(ptr: *const u8, len: usize) -> Option<reqwest::Method> {
+    if ptr.is_null() || len == 0 {
+        return None;
+    }
+    // SAFETY: `(ptr, len)` is a live borrowed range for the call (ABI borrow discipline).
+    let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
+    reqwest::Method::from_bytes(bytes).ok()
+}
+
+/// Parse the packed header set: a sequence of records, each `u32 name_len` (LE), `name_len` name
+/// bytes, `u32 value_len` (LE), `value_len` value bytes. Malformed / truncated input stops parsing
+/// and returns what was read so far — fail-safe (a bad header record is dropped, never guessed).
+///
+/// # Safety
+/// `(ptr, len)` MUST describe a live, initialized byte range for the call.
+unsafe fn parse_headers(ptr: *const u8, len: usize) -> Vec<(String, String)> {
+    if ptr.is_null() || len == 0 {
+        return Vec::new();
+    }
+    // SAFETY: caller's contract — `(ptr, len)` is a live borrowed range.
+    let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    while let Some(name_len) = read_u32(bytes, &mut i) {
+        let Some(name) = read_str(bytes, &mut i, name_len) else { break };
+        let Some(value_len) = read_u32(bytes, &mut i) else { break };
+        let Some(value) = read_str(bytes, &mut i, value_len) else { break };
+        out.push((name, value));
+    }
+    out
+}
+
+/// Read a little-endian `u32` at `*i`, advancing `*i` by 4; `None` when fewer than 4 bytes remain.
+fn read_u32(bytes: &[u8], i: &mut usize) -> Option<usize> {
+    let end = i.checked_add(4)?;
+    let word = bytes.get(*i..end)?;
+    *i = end;
+    Some(u32::from_le_bytes(word.try_into().ok()?) as usize)
+}
+
+/// Read `n` bytes at `*i` as a lossy UTF-8 string, advancing `*i` by `n`; `None` when fewer than `n`
+/// bytes remain.
+fn read_str(bytes: &[u8], i: &mut usize, n: usize) -> Option<String> {
+    let end = i.checked_add(n)?;
+    let slice = bytes.get(*i..end)?;
+    *i = end;
+    Some(String::from_utf8_lossy(slice).into_owned())
+}
+
+/// INJECT the resolved credential into `spec.headers`, host-side. The plane named the credential by an
+/// opaque `credential_ref` and its PLACEMENT (header name + auth-scheme prefix) as neutral data; the
+/// host resolves the ref to the plaintext it OWNS (see [`super::creds`]) and appends
+/// `{header_name}: {scheme}{secret}`. Nothing happens when the plane named no credential, no header,
+/// or the ref is unknown/expired (fail-closed — a stale ref injects nothing rather than a wrong token).
+/// The plaintext is read HERE and never crosses back to the plane.
+fn inject_credential(d: &EgressDesc, spec: &mut ReqSpec) {
+    if d.credential_ref == 0 {
+        return;
+    }
+    let header_name = match (
+        read_sized_field!(d, EgressDesc, cred_header_ptr),
+        read_sized_field!(d, EgressDesc, cred_header_len),
+    ) {
+        // SAFETY: a non-null `(cred_header_ptr, cred_header_len)` is a live borrowed range (ABI).
+        (Some(ptr), Some(len)) if !ptr.is_null() && len != 0 => unsafe { borrowed_string(ptr, len) },
+        _ => return, // no placement header → nothing to inject the credential into.
+    };
+    let scheme = match (
+        read_sized_field!(d, EgressDesc, cred_scheme_ptr),
+        read_sized_field!(d, EgressDesc, cred_scheme_len),
+    ) {
+        // SAFETY: a non-null `(cred_scheme_ptr, cred_scheme_len)` is a live borrowed range (ABI).
+        (Some(ptr), Some(len)) if !ptr.is_null() && len != 0 => unsafe { borrowed_string(ptr, len) },
+        _ => String::new(),
+    };
+    let now = crate::store::now_ms() / 1_000;
+    let Some(secret) = super::creds::resolve(d.credential_ref, now) else {
+        return; // unknown / expired ref → inject nothing (fail-closed).
+    };
+    let value = format!("{scheme}{}", String::from_utf8_lossy(&secret));
+    spec.headers.push((header_name, value));
+}
+
+/// Read a borrowed `(ptr, len)` byte range into an owned lossy-UTF-8 `String`.
+///
+/// # Safety
+/// `(ptr, len)` MUST describe a live, initialized byte range for the call.
+unsafe fn borrowed_string(ptr: *const u8, len: usize) -> String {
+    // SAFETY: caller's contract — `(ptr, len)` is a live borrowed range.
+    let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
+    String::from_utf8_lossy(bytes).into_owned()
+}
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
 // The four vtable slots. Each recovers the HostState FIRST, runs inside a MANDATORY catch_unwind,
 // and FAILS CLOSED (`Fault` / `Gone` / `Refused`) on a caught panic — never a permissive value.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -345,13 +491,18 @@ fn open_http(
         return StatusClass::Refused;
     }
 
-    // NOTE (Phase 2): `client_identity_ref` (mTLS) and `credential_ref` (the minted-host-side
-    // credential header) are accepted here as opaque REFs the HOST resolves — the plane never sees a
-    // key or a token. Wiring them needs the boot-time client-identity map and the credential minter
-    // plumbed onto `HostState`, which this scaffold does not yet carry; the refs are honored
-    // structurally (the chokepoint is here) and resolved in the capability fan-out.
+    // NOTE (Phase 2): `client_identity_ref` (mTLS) is accepted here as an opaque REF the HOST
+    // resolves — the plane never sees a key. Wiring it needs the boot-time client-identity map plumbed
+    // onto `HostState`; the ref is honored structurally (the chokepoint is here).
     let _client_identity_ref = d.client_identity_ref;
-    let _credential_ref = d.credential_ref;
+
+    // Build the outbound request from the neutral DATA tail (verb / packed headers / body), then
+    // INJECT the credential the plane named by ref — the host resolves the ref to the plaintext it
+    // owns (see `super::creds`) and places it under the plane-supplied header/scheme, so the secret
+    // is read HERE, never off a plane POD. The sized-struct guard means a sender that predates the
+    // tail leaves these null → a bodyless GET with no injected credential (the pre-enrichment shape).
+    let mut spec = build_req_spec(d);
+    inject_credential(d, &mut spec);
 
     let (head_tx, head_rx) = sync_channel::<HeadMsg>(1);
     let (chunk_tx, chunk_rx) = sync_channel::<ChunkMsg>(CHUNK_CHANNEL_DEPTH);
@@ -364,7 +515,7 @@ fn open_http(
     let join = std::thread::Builder::new()
         .name("busbar-egress".into())
         .spawn(move || {
-            run_http_stream(&url, &host_name, port, https, policy, &head_tx, &chunk_tx, &stop_task);
+            run_http_stream(&url, &host_name, port, https, policy, &spec, &head_tx, &chunk_tx, &stop_task);
         });
     let Ok(join) = join else {
         return StatusClass::Fault; // could not spawn the streaming thread.
@@ -450,6 +601,7 @@ fn run_http_stream(
     port: u16,
     https: bool,
     policy: crate::net_guard::GuardPolicy,
+    spec: &ReqSpec,
     head_tx: &SyncSender<HeadMsg>,
     chunk_tx: &SyncSender<ChunkMsg>,
     stop: &tokio::sync::Notify,
@@ -491,7 +643,17 @@ fn run_http_stream(
                 return;
             }
         };
-        let mut resp = match client.get(url).send().await {
+        // The outbound request: the plane's verb (default GET), its forwarded headers, and its
+        // one-shot body. The credential header (if any) is already in `spec.headers` — injected
+        // host-side from the resolved ref, so no plane-held plaintext reaches this builder.
+        let mut builder = client.request(spec.method.clone(), url);
+        for (name, value) in &spec.headers {
+            builder = builder.header(name.as_str(), value.as_str());
+        }
+        if !spec.body.is_empty() {
+            builder = builder.body(spec.body.clone());
+        }
+        let mut resp = match builder.send().await {
             Ok(resp) => resp,
             Err(e) => {
                 let _ = head_tx.send(HeadMsg::Fault(e.to_string()));

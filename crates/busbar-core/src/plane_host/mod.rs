@@ -27,6 +27,7 @@
 //!   rest forwarding into the capability modules), zero stubs remaining.
 
 pub mod breaker;
+mod creds;
 pub mod dispatch;
 pub mod egress;
 mod govern;
@@ -564,8 +565,18 @@ mod tests {
             );
             // SAFETY: the Ok status published the slot (init-only-on-Ok).
             let resolved = unsafe { out.assume_init() };
-            assert_eq!(resolved.resolved_ref, 0x9abc, "host-side ref resolved");
+            // The host MINTS a fresh, opaque, host-owned ref — distinct from the input `credential_ref`
+            // (the CLUSTER-3 (d) decision), never the echoed input.
+            assert_ne!(resolved.resolved_ref, 0, "a live host-side ref is minted");
+            assert_ne!(resolved.resolved_ref, 0x9abc, "the mint is a NEW ref, not the input echoed");
             assert!(resolved.expires_unix > 0, "a bounded expiry is stamped");
+            // The PLAINTEXT lives host-side behind the ref; the plane received only the opaque ref.
+            let secret = super::creds::resolve(resolved.resolved_ref, resolved.expires_unix - 1)
+                .expect("the minted ref resolves host-side");
+            assert!(
+                secret.starts_with(b"hostcred:"),
+                "the host owns the resolved credential; it never crossed to the plane"
+            );
 
             // A query naming no credential is refused; the out-slot is NOT written.
             let none = AuthQuery {

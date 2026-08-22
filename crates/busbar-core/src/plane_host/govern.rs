@@ -307,28 +307,33 @@ pub(super) fn resolve_auth(_state: &HostState, query: &AuthQuery) -> Option<Auth
     if query.credential_ref == 0 {
         return None;
     }
-    // Phase 2: look the credential REF up against the host credential store / auth middleware to mint
-    // a real short-lived host-side reference and its true expiry. Today the principal is established
-    // via the real `AuthPrincipal` primitive (anonymous unless the query's audience scopes it) and
-    // the resolved handle is derived from the query ref with a bounded default TTL.
+    // Establish the caller principal through the real `AuthPrincipal` primitive (anonymous unless the
+    // query's audience scopes it) — the seam a Phase-2 credential-store lookup resolves through.
     let audience = borrowed_str(query.audience_ptr, query.audience_len);
     let principal = if audience.is_empty() {
         crate::auth::AuthPrincipal(None)
     } else {
-        crate::auth::AuthPrincipal(Some(crate::auth::Principal::from_id(audience)))
+        crate::auth::AuthPrincipal(Some(crate::auth::Principal::from_id(audience.clone())))
     };
-    // Exercise the real primitive (attribution handle) — the seam a Phase-2 lookup resolves through.
     let _actor_id = principal.actor_id();
     let now = crate::store::now_ms() / 1_000;
+    let expires_unix = now.saturating_add(DEFAULT_AUTH_TTL_SECS);
+    // MINT a fresh, short-lived, host-owned credential reference (the CLUSTER-3 (d) decision: a NEW
+    // per-hop `resolved_ref`, DISTINCT from the input `credential_ref`; the host owns its expiry). The
+    // resolved PLAINTEXT stays host-side in `super::creds` — the plane gets back only the opaque ref,
+    // which it carries to `egress_open` where the host reads the secret back and injects it. Phase 2:
+    // the real host credential store resolves `(credential_ref, audience)` to the provider secret; the
+    // host-derived placeholder here keeps the plaintext off the plane while that lookup is wired.
+    let secret = format!("hostcred:{}:{}", query.credential_ref, audience).into_bytes();
+    let resolved_ref = super::creds::mint(secret, expires_unix);
     Some(AuthResolved {
         size: core::mem::size_of::<AuthResolved>() as u32,
         version: POD_VERSION,
         _reserved: 0,
         _reserved2: 0,
-        // The resolved host-side reference is opaque; echoing the query ref is the faithful minimal
-        // (Phase 2 mints a distinct short-lived handle). It is NEVER a secret either way.
-        resolved_ref: query.credential_ref,
-        expires_unix: now.saturating_add(DEFAULT_AUTH_TTL_SECS),
+        // An OPAQUE host-side reference (NEVER a secret): a fresh mint, distinct from the input ref.
+        resolved_ref,
+        expires_unix,
     })
 }
 
