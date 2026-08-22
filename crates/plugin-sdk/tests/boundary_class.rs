@@ -20,7 +20,7 @@
 //! and letting a panicking `Drop` unwind out of `close`. Routing every symbol through the choke
 //! point makes all three unrepresentable, and these assertions pin that.
 
-use busbar_plugin_abi::{STATUS_ERR, STATUS_OK, STATUS_PANIC, STATUS_PROTOCOL, STATUS_UNSUPPORTED};
+use busbar_plugin::cold::{STATUS_ERR, STATUS_OK, STATUS_PANIC, STATUS_PROTOCOL, STATUS_UNSUPPORTED};
 use busbar_plugin_sdk::boundary::{
     call_boundary, close_boundary, free_boundary, open_boundary, BoundaryOutcome,
 };

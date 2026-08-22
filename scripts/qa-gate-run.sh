@@ -229,7 +229,7 @@ cmd_build() {
 #
 # The obvious fix is to `touch` the restored target/ so the artifacts are newer than the sources.
 # THAT DOES NOT WORK, and it was measured rather than assumed. On this workspace, against
-# `cargo build --release -p busbar-plugin-abi` with every source file freshly re-stamped:
+# `cargo build --release -p busbar-plugin` with every source file freshly re-stamped:
 #     naive restore, no normalisation  ->  2 units recompiled
 #     touch the restored target/       -> 18 units recompiled   (strictly WORSE)
 #     age the SOURCES instead          ->  0 units recompiled   (and stable on a second run)

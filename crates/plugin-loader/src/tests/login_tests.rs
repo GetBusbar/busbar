@@ -4,7 +4,7 @@
 //! Tests for `crates/plugin-loader/src/auth.rs`.
 
 use super::*;
-use busbar_plugin_abi::auth::{HttpRequest, Identity};
+use busbar_plugin::cold::auth::{HttpRequest, Identity};
 
 #[test]
 fn dyn_auth_begin_login_wrong_variant_fail_closed() {

@@ -9,7 +9,7 @@ license = "Apache-2.0"
 
 [dependencies]
 busbar-api = { path = "../api" }
-busbar-plugin-abi = { path = "../plugin-abi" }
+busbar-plugin = { path = "../busbar-plugin" }
 busbar-plugin-sign = { path = "../plugin-sign" }
 libloading = { workspace = true }
 # The kind:hook seam: `DlopenPolicy` implements the async `busbar_api::RoutingPolicy` trait, running

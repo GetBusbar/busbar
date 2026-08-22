@@ -7,7 +7,7 @@ members = [
     "crates/busbar-mcp",
     "crates/busbar-a2a",
     "crates/api",
-    "crates/plugin-abi",
+    "crates/busbar-plugin",
     "crates/plugin-sdk",
     "crates/plugin-testkit",
     "crates/plugin-loader",
@@ -24,7 +24,6 @@ members = [
     "crates/store-memory",
     "crates/plane-abi-spike",
     "crates/plane-abi-spike-plugin",
-    "crates/busbar-plane-abi",
 ]
 
 # ── the single source of truth for external dependency VERSIONS ──────────────────────────────────

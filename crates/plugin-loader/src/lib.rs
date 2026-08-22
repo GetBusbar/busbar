@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! Runtime loading of a durable-store backend from a **dynamic library** (`.so`/`.dll`/`.dylib`) over
-//! the busbar store C ABI ([`busbar_plugin_abi`]).
+//! the busbar store C ABI ([`busbar_plugin::cold`]).
 //!
 //! This is the engine side of "drop a plugin in the folder and it works": [`load_store`] opens a
 //! library with `libloading` (portable `dlopen`/`LoadLibrary`), checks the ABI-version handshake,
@@ -22,7 +22,7 @@ use busbar_api::{
     AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, PlaneRecord,
     PlaneSelector, Store, StoreError, StoreResult, UsageDelta, UsageLedger, VirtualKey,
 };
-use busbar_plugin_abi::{
+use busbar_plugin::cold::{
     kind as abi_kind, symbol, CallFn, CloseFn, FreeFn, PluginKindFn, StoreRequest, StoreResponse,
     MAX_PLUGIN_RESPONSE_LEN, STATUS_ERR, STATUS_OK, STATUS_PANIC, STATUS_PROTOCOL,
     STATUS_UNSUPPORTED, TRANSPORT_VERSION,
@@ -44,15 +44,15 @@ pub mod tarball;
 pub use auth::DynAuth;
 /// Re-export the HTTP-endpoint wire types (plugin route registration + dispatch) so the engine
 /// (`crates/busbar`) names `busbar_plugin_loader::{Route, RouteAuth, ...}` without a direct
-/// `busbar-plugin-abi` dependency — mirroring how it already reaches the loader's typed seams.
-pub use busbar_plugin_abi::http_endpoint::{
+/// `busbar-plugin` dependency — mirroring how it already reaches the loader's typed seams.
+pub use busbar_plugin::cold::http_endpoint::{
     HttpEndpointRequest, HttpEndpointResponse, Route, RouteAuth, RouteMethod,
 };
 pub use export::{load_export_from_bytes, DynExport};
 // The export PROJECTION vocabulary (the frozen `streams:` / `fields:` word-space). Re-exported for
 // the same reason the http_endpoint types above are: the engine names these through the loader
 // rather than taking a second, direct dependency on the ABI crate.
-pub use busbar_plugin_abi::export::{ExportField, ExportStream};
+pub use busbar_plugin::cold::export::{ExportField, ExportStream};
 pub use fetch::{fetch_plugins, FetchOutcome, FetchSpec};
 pub use hook::DlopenPolicy;
 pub use registry::{
@@ -107,7 +107,7 @@ pub(crate) fn dlclose_on_worker(lib: Library) {
 
 /// Run an FFI call `f` across the plugin ABI boundary under `catch_unwind`, converting a plugin panic
 /// into a fail-closed `Err` string instead of a process abort. EFFECTIVE only because the ABI fn
-/// pointers are `extern "C-unwind"` (see [`busbar_plugin_abi`]): a Rust plugin's panic unwinds as a
+/// pointers are `extern "C-unwind"` (see [`busbar_plugin::cold`]): a Rust plugin's panic unwinds as a
 /// DEFINED forced unwind that lands here; a plain `extern "C"` boundary would have aborted at the
 /// plugin frame BEFORE returning. `op` names the crossing (`open`/`call`/`close`/`free`/`abi`/`kind`)
 /// for the diagnostic. Every host-side ABI call site routes through this so no crossing is unguarded.
@@ -137,7 +137,7 @@ fn ffi_guard_confined<R>(path: &str, op: &str, f: impl FnOnce() -> R) -> Result<
 /// Call the plugin's `busbar_free` on `(ptr, len)` under a panic guard. A panicking `free` is logged
 /// and swallowed (the buffer is leaked rather than aborting the engine) — free runs on the request hot
 /// path and on error/cleanup paths where an abort would be the worst possible outcome.
-fn free_guarded(free: busbar_plugin_abi::FreeFn, path: &str, ptr: *mut u8, len: usize) {
+fn free_guarded(free: busbar_plugin::cold::FreeFn, path: &str, ptr: *mut u8, len: usize) {
     if ptr.is_null() {
         return;
     }
@@ -427,7 +427,7 @@ fn wire_up_raw(
     // The `busbar_abi()` call runs plugin code, so it too rides `ffi_guard`: a plugin that panics in
     // its handshake fails the load CLOSED instead of aborting the engine during boot/reload.
     let transport = {
-        let f = unsafe { lib.get::<busbar_plugin_abi::AbiFn>(symbol::ABI) }
+        let f = unsafe { lib.get::<busbar_plugin::cold::AbiFn>(symbol::ABI) }
             .map_err(|_| format!("'{display}' is not a busbar plugin (no busbar_abi symbol)"))?;
         ffi_guard_confined(&display, "abi", || unsafe { (*f)() })?
     };
@@ -455,7 +455,7 @@ fn wire_up_raw(
     // ── 3. Resolve the operational symbols (copied out as plain fn pointers; valid while mapped). ──
     let (open, call, free, close) = unsafe {
         let open = *lib
-            .get::<busbar_plugin_abi::OpenFn>(symbol::OPEN)
+            .get::<busbar_plugin::cold::OpenFn>(symbol::OPEN)
             .map_err(|e| format!("plugin '{display}' missing busbar_open: {e}"))?;
         let call = *lib
             .get::<CallFn>(symbol::CALL)
@@ -486,7 +486,7 @@ fn wire_up_raw(
     // worth reporting (a rejected config, a refused target), and installing afterwards would drop
     // precisely those lines.
     unsafe {
-        if let Ok(set_sink) = lib.get::<busbar_plugin_abi::SetLogSinkFn>(symbol::SET_LOG_SINK) {
+        if let Ok(set_sink) = lib.get::<busbar_plugin::cold::SetLogSinkFn>(symbol::SET_LOG_SINK) {
             // The ctx identifies WHICH plugin is talking, since a bare fn pointer carries no
             // captured state. It points at the INTERNED name, not a fresh `Box::into_raw` per load.
             //
@@ -1102,17 +1102,17 @@ impl busbar_api::SecretModule for DynSecret {
         &self,
         settings: &serde_json::Map<String, serde_json::Value>,
     ) -> busbar_api::SecretResult<Vec<u8>> {
-        let req = busbar_plugin_abi::SecretRequest::Resolve {
+        let req = busbar_plugin::cold::SecretRequest::Resolve {
             settings: settings.clone(),
             deadline_ms: None,
         };
         match self
             .raw
-            .transport_call::<_, busbar_plugin_abi::SecretResponse>(&req)
+            .transport_call::<_, busbar_plugin::cold::SecretResponse>(&req)
             .map_err(busbar_api::SecretError::internal)?
         {
-            busbar_plugin_abi::SecretResponse::Bytes(b) => Ok(b),
-            busbar_plugin_abi::SecretResponse::Error { kind, message } => {
+            busbar_plugin::cold::SecretResponse::Bytes(b) => Ok(b),
+            busbar_plugin::cold::SecretResponse::Error { kind, message } => {
                 Err(busbar_api::SecretError::new(kind, message))
             }
         }
@@ -1254,7 +1254,7 @@ pub fn validate_plugin(lib_path: &Path) -> Result<u32, String> {
     let lib = dlopen_on_worker(lib_path.as_os_str())
         .map_err(|e| format!("failed to load plugin '{display}': {e}"))?;
     let transport = {
-        let f = unsafe { lib.get::<busbar_plugin_abi::AbiFn>(symbol::ABI) }
+        let f = unsafe { lib.get::<busbar_plugin::cold::AbiFn>(symbol::ABI) }
             .map_err(|_| format!("'{display}' is not a busbar plugin (no busbar_abi symbol)"))?;
         ffi_guard_confined(&display, "abi", || unsafe { (*f)() })?
     };
@@ -1273,7 +1273,7 @@ pub fn validate_plugin(lib_path: &Path) -> Result<u32, String> {
     // Confirm the operational symbols resolve too, so a half-built library is caught here rather than
     // at first use.
     unsafe {
-        lib.get::<busbar_plugin_abi::OpenFn>(symbol::OPEN)
+        lib.get::<busbar_plugin::cold::OpenFn>(symbol::OPEN)
             .map_err(|e| format!("plugin '{display}' missing busbar_open: {e}"))?;
         lib.get::<CallFn>(symbol::CALL)
             .map_err(|e| format!("plugin '{display}' missing busbar_call: {e}"))?;

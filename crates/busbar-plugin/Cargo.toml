@@ -1,0 +1,36 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (C) 2026 Busbar Inc and contributors
+#
+# busbar-plugin — ONE busbar plugin interface, TWO lanes over a shared root.
+#
+# This crate unifies the two plugin ABIs that used to live in separate crates:
+#
+#   * `busbar_plugin::cold` (was `busbar-plugin-abi`) — the COLD lane: a frozen, versioned wire
+#     (JSON over a tiny six-symbol `extern "C"` surface) between the engine and a dynamically-loaded
+#     or statically-linked backend (`store` | `secret` | `auth` | `hook` | `export`), all OFF the
+#     request hot path, where a serialize per call is irrelevant. Its `extern "C"` symbols, JSON
+#     shapes, and `TRANSPORT_VERSION` are a SIGNED wire contract that MUST NOT change — the move into
+#     this crate is a namespacing change only, byte-identical on the wire.
+#   * `busbar_plugin::hot` (was `busbar-plane-abi`) — the HOT lane: a `#[repr(C)]` fn-pointer vtable,
+#     POD args by pointer, results by value or into a caller `&mut MaybeUninit<Out>`, zero alloc /
+#     zero serde on the call. ADDITIVE / not yet wired into the engine.
+#
+# The crate ROOT (`src/lib.rs`) is the SHARED contract both lanes obey: the frozen `AbiPreamble`
+# airlock and the sized-struct discipline helpers. The two lanes keep their deliberately-opposite
+# call disciplines; what they share is the airlock and the append-only field-read rule.
+[package]
+name = "busbar-plugin"
+version = "1.5.0"
+publish = false            # internal workspace crate; never goes to crates.io
+edition = "2021"
+rust-version = "1.97"
+description = "The busbar plugin interface: one crate, two lanes — the COLD JSON-over-extern-C wire (store/secret/auth/hook/export backends) and the HOT repr(C) POD-by-pointer protocol-plane ABI — over a shared, frozen airlock-preamble + sized-struct root."
+license = "Apache-2.0"
+
+# The COLD lane serializes JSON and names `busbar-api` types; the HOT lane is pure `core`/`std`
+# repr(C) layout and inherits nothing. The whole crate's external surface is therefore the cold
+# lane's: `busbar-api` + serde.
+[dependencies]
+busbar-api = { path = "../api" }
+serde = { workspace = true }
+serde_json = { workspace = true }

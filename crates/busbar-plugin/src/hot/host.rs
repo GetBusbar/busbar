@@ -21,7 +21,7 @@
 //! carrier. It is DELIBERATELY absent from this vtable: adding it is a new trailing slot + a minor
 //! bump, never a reshape. Do not add it to the hot set until a real carrier needs it.
 
-use crate::pod::{
+use super::pod::{
     AdmissionId, AuthQuery, AuthResolved, CallerRef, ContentChunk, CounterpartyRef, Decision,
     EgressDesc, EgressId, EgressOpen, Facts, FramingDesc, GateDecision, JournalQuery, Key,
     MeterOutcome, MetricSample, OpDesc, OpResult, Seq, Signal, StatusClass, TargetRef, TrustVerdict,

@@ -151,7 +151,7 @@ fn real_multi_mb_library_round_trips_byte_for_byte() {
         kind: "store".into(),
         version: "1.0.0".into(),
         publisher: "busbar".into(),
-        abi_version: busbar_plugin_abi::ABI_VERSION,
+        abi_version: busbar_plugin::cold::ABI_VERSION,
         sha256: String::new(),
         signature: String::new(),
         description: String::new(),

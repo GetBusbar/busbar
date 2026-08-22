@@ -39,13 +39,13 @@ pub(crate) fn intern_log_ctx(name: &str) -> *mut c_void {
     addr as *mut c_void
 }
 
-/// The host's maximum enabled `tracing` level, as a [`busbar_plugin_abi::log_level`] constant.
+/// The host's maximum enabled `tracing` level, as a [`busbar_plugin::cold::log_level`] constant.
 ///
 /// Handed to the plugin so it can filter on ITS side of the FFI boundary. Without it a plugin's
 /// dispatcher claims interest in everything, and every `trace!`/`debug!` in the plugin's dependency
 /// tree renders a string and crosses the sink call on the REQUEST PATH just to be dropped here.
 pub(crate) fn host_max_level() -> u32 {
-    use busbar_plugin_abi::log_level;
+    use busbar_plugin::cold::log_level;
     match tracing::level_filters::LevelFilter::current() {
         tracing::level_filters::LevelFilter::OFF => log_level::OFF,
         tracing::level_filters::LevelFilter::ERROR => log_level::ERROR,
@@ -93,12 +93,12 @@ pub(crate) unsafe extern "C" fn host_log_sink(
         #[cfg(test)]
         log_tap::record(name, level, &text);
         match level {
-            busbar_plugin_abi::log_level::ERROR => {
+            busbar_plugin::cold::log_level::ERROR => {
                 tracing::error!(plugin = %name, "{text}")
             }
-            busbar_plugin_abi::log_level::WARN => tracing::warn!(plugin = %name, "{text}"),
-            busbar_plugin_abi::log_level::DEBUG => tracing::debug!(plugin = %name, "{text}"),
-            busbar_plugin_abi::log_level::TRACE => tracing::trace!(plugin = %name, "{text}"),
+            busbar_plugin::cold::log_level::WARN => tracing::warn!(plugin = %name, "{text}"),
+            busbar_plugin::cold::log_level::DEBUG => tracing::debug!(plugin = %name, "{text}"),
+            busbar_plugin::cold::log_level::TRACE => tracing::trace!(plugin = %name, "{text}"),
             // INFO, and anything a newer plugin invents: clamped to info rather than dropped. Losing
             // a record because its level is unrecognized would be the worst possible failure mode for
             // a channel that exists to stop losing records.

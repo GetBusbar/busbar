@@ -4,7 +4,7 @@
 //! The HOOK seam of the kind-neutral loader: [`DlopenPolicy`], a [`busbar_api::RoutingPolicy`] backed
 //! by a dynamically-loaded plugin whose kind was bound to `hook` at load. It translates each async
 //! trait method (`decide`/`transform`/`notify`/`configure`/`describe`/`status`) into a `busbar_call`
-//! with the matching op envelope ([`busbar_plugin_abi::hook`]).
+//! with the matching op envelope ([`busbar_plugin::cold::hook`]).
 //!
 //! ## Blocking call off the async runtime
 //!
@@ -26,7 +26,7 @@ use busbar_api::{
     Candidate, HookStatus, PolicyError, PolicyResult, RoutingContext, RoutingPolicy,
     RoutingRequest, TransformOutcome,
 };
-use busbar_plugin_abi::{
+use busbar_plugin::cold::{
     hook::{ConfigureBody, HookReply, HookRequest},
     kind as abi_kind,
 };

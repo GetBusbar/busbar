@@ -567,7 +567,7 @@ fn a_plugin_log_reaches_the_host() {
     );
     assert_eq!(
         mine[0].1,
-        busbar_plugin_abi::log_level::WARN,
+        busbar_plugin::cold::log_level::WARN,
         "the plugin's chosen level must survive the crossing"
     );
 
@@ -592,7 +592,7 @@ fn a_plugin_log_reaches_the_host() {
     );
     assert_eq!(
         traced[0].1,
-        busbar_plugin_abi::log_level::WARN,
+        busbar_plugin::cold::log_level::WARN,
         "the tracing level must map across"
     );
 
@@ -605,8 +605,8 @@ fn a_plugin_log_reaches_the_host() {
         .iter()
         .skip(before)
         .filter(|(_, lvl, _)| {
-            *lvl == busbar_plugin_abi::log_level::DEBUG
-                || *lvl == busbar_plugin_abi::log_level::TRACE
+            *lvl == busbar_plugin::cold::log_level::DEBUG
+                || *lvl == busbar_plugin::cold::log_level::TRACE
         })
         .collect();
     assert!(

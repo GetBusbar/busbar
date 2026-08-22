@@ -118,7 +118,7 @@ fn example_store_cdylib() -> PathBuf {
     let built = std::fs::metadata(&path)
         .and_then(|m| m.modified())
         .expect("the cdylib's build time");
-    for crate_dir in ["store-example-plugin", "plugin-sdk", "plugin-abi"] {
+    for crate_dir in ["store-example-plugin", "plugin-sdk", "busbar-plugin"] {
         let root = workspace.join("crates").join(crate_dir);
         if let Some(newer) = newest_source_under(&root, built) {
             panic!(

@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The **export** payload schema (kind = [`crate::kind::EXPORT`]) that rides the kind-neutral `call`.
+//! The **export** payload schema (kind = [`crate::cold::kind::EXPORT`]) that rides the kind-neutral `call`.
 //!
 //! ## One transport, every export op
 //!
 //! A `kind: export` plugin is a telemetry SINK behind the frozen six-symbol C ABI — the seam that
 //! carries the engine's observability streams OUT to an external backend (the frozen vocabulary is
-//! [`ExportStream`]). Like every other kind it exports the SAME six neutral symbols ([`crate::symbol`]) at
+//! [`ExportStream`]). Like every other kind it exports the SAME six neutral symbols ([`crate::cold::symbol`]) at
 //! `busbar_abi() == TRANSPORT_VERSION`; only its manifest `kind` and its own tiny request enum
 //! ([`ExportRequest`]) distinguish it. Every op rides the ONE `busbar_call` as an op-discriminated
 //! JSON envelope — the variant IS the op-code, so the C symbol set never grows.
@@ -20,7 +20,7 @@
 //!   carried as an opaque [`serde_json::Value`] the engine built; the export ABI adds the envelope,
 //!   never a second copy of the batch semantics.
 
-use crate::http_endpoint::{HttpEndpointRequest, HttpEndpointResponse, Route};
+use crate::cold::http_endpoint::{HttpEndpointRequest, HttpEndpointResponse, Route};
 use serde::{Deserialize, Serialize};
 
 /// The export-plugin PAYLOAD schema version (the signed manifest's `abi_version` for `kind: export`).
@@ -29,9 +29,9 @@ use serde::{Deserialize, Serialize};
 /// streams, not a data type), so a v1 sink that declared `audit` no longer has a stream to declare.
 /// A REMOVED wire token is a breaking payload change, so the floor moves rather than accepting a
 /// token the engine can no longer route. This is the per-kind PAYLOAD axis, NOT the transport axis
-/// — an export plugin exports the SAME six neutral symbols ([`crate::symbol`]) as every other kind, at
-/// `busbar_abi() == TRANSPORT_VERSION`. Named the same way [`crate::SECRET_ABI_VERSION`] and
-/// [`crate::hook::HOOK_ABI_VERSION`] are, so the loader floor and the SDK's declared version share one
+/// — an export plugin exports the SAME six neutral symbols ([`crate::cold::symbol`]) as every other kind, at
+/// `busbar_abi() == TRANSPORT_VERSION`. Named the same way [`crate::cold::SECRET_ABI_VERSION`] and
+/// [`crate::cold::hook::HOOK_ABI_VERSION`] are, so the loader floor and the SDK's declared version share one
 /// const and cannot silently drift apart.
 pub const EXPORT_ABI_VERSION: u32 = 2;
 
@@ -486,7 +486,7 @@ pub enum ExportRequest {
 ///
 /// UNLIKE [`ExportRequest`] (`op`-tagged, snake_case), this type carries NO `#[serde(...)]` attribute,
 /// so it serializes with serde's default externally-tagged representation — the SAME asymmetry
-/// [`crate::hook::HookReply`] carries and for the same reason: this is JSON over the frozen C-ABI
+/// [`crate::cold::hook::HookReply`] carries and for the same reason: this is JSON over the frozen C-ABI
 /// transport, so a tagging change is a wire-breaking change, not a cosmetic one.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ExportResponse {

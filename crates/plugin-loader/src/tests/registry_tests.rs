@@ -16,7 +16,7 @@ fn key(seed: u8) -> SigningKey {
 #[test]
 fn supported_abi_auth_floor_admits_v1() {
     let range = supported_abi("auth");
-    assert_eq!(range, &[1, busbar_plugin_abi::AUTH_ABI_VERSION]);
+    assert_eq!(range, &[1, busbar_plugin::cold::AUTH_ABI_VERSION]);
     let (floor, max) = (range[0], range[1]);
     assert_eq!(floor, 1, "v1 auth plugins must still load");
     assert_eq!(max, 2, "v2 is the current auth payload schema");
@@ -35,12 +35,12 @@ fn supported_abi_store_floor_is_v3() {
     assert_eq!(
         range,
         &[
-            busbar_plugin_abi::ABI_VERSION,
-            busbar_plugin_abi::ABI_VERSION
+            busbar_plugin::cold::ABI_VERSION,
+            busbar_plugin::cold::ABI_VERSION
         ]
     );
     assert_eq!(
-        busbar_plugin_abi::ABI_VERSION,
+        busbar_plugin::cold::ABI_VERSION,
         3,
         "store payload schema is v3"
     );
@@ -98,7 +98,7 @@ fn manifest(name: &str, alias: &str, publisher: &str) -> Manifest {
         kind: "store".into(),
         version: "1.5.0".into(),
         publisher: publisher.into(),
-        abi_version: busbar_plugin_abi::ABI_VERSION,
+        abi_version: busbar_plugin::cold::ABI_VERSION,
         sha256: String::new(),
         signature: String::new(),
         description: String::new(),
@@ -376,7 +376,7 @@ fn open_store_refuses_non_store_kind() {
     m.kind = "hook".into();
     // Stamp the hook-supported ABI version so the scan admits it and the KIND gate (not the
     // ABI gate) is what rejects.
-    m.abi_version = busbar_plugin_abi::hook::HOOK_ABI_VERSION;
+    m.abi_version = busbar_plugin::cold::hook::HOOK_ABI_VERSION;
     let m = sign(&release, m, b"hook lib");
     write_tarball(&dir, "hook.tar.gz", &m, b"hook lib");
     let reg = scan_and_validate(&dir, &policy(&release)).expect("scan");
@@ -396,7 +396,7 @@ fn open_secret_refuses_non_secret_kind_and_vice_versa() {
     // A trusted secret plugin (abi_version stamped to the secret ABI so the scan admits it).
     let mut m = manifest("busbar-secret-vault", "vault", "busbar");
     m.kind = "secret".into();
-    m.abi_version = busbar_plugin_abi::SECRET_ABI_VERSION;
+    m.abi_version = busbar_plugin::cold::SECRET_ABI_VERSION;
     let m = sign(&release, m, b"secret lib");
     write_tarball(&dir, "vault.tar.gz", &m, b"secret lib");
     // And a trusted store plugin beside it.
@@ -760,7 +760,7 @@ fn crafted_publisher_cannot_forge_signature_label() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The auth range's MAX reads `busbar_plugin_abi::AUTH_ABI_VERSION` (matching `"secret"`/`"hook"`
+/// The auth range's MAX reads `busbar_plugin::cold::AUTH_ABI_VERSION` (matching `"secret"`/`"hook"`
 /// on the max axis). Post-1.5.2 the FLOOR is pinned at 1 (v1 plugins still load — see
 /// `supported_abi_auth_floor_admits_v1`), so the range is `[1, AUTH_ABI_VERSION]`, not
 /// `[AUTH_ABI_VERSION, AUTH_ABI_VERSION]`.
@@ -768,7 +768,7 @@ fn crafted_publisher_cannot_forge_signature_label() {
 fn auth_supported_abi_reads_the_shared_const() {
     assert_eq!(
         supported_abi("auth"),
-        &[1, busbar_plugin_abi::AUTH_ABI_VERSION]
+        &[1, busbar_plugin::cold::AUTH_ABI_VERSION]
     );
 }
 
@@ -780,8 +780,8 @@ fn export_supported_abi_reads_the_shared_const() {
     assert_eq!(
         supported_abi("export"),
         &[
-            busbar_plugin_abi::export::EXPORT_ABI_VERSION,
-            busbar_plugin_abi::export::EXPORT_ABI_VERSION,
+            busbar_plugin::cold::export::EXPORT_ABI_VERSION,
+            busbar_plugin::cold::export::EXPORT_ABI_VERSION,
         ]
     );
     assert!(!supported_abi("export").is_empty());

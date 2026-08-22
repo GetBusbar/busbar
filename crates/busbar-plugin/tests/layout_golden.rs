@@ -9,12 +9,13 @@
 //!
 //! Offsets are stable across the 64-bit targets busbar ships (pointers/`usize` are 8 bytes on
 //! x86_64 and aarch64 alike; every field here is a fixed-width scalar or pointer), so ONE golden
-//! covers them. Re-seed intentionally with `BUSBAR_UPDATE_GOLDEN=1 cargo test -p busbar-plane-abi`.
+//! covers them. Re-seed intentionally with `BUSBAR_UPDATE_GOLDEN=1 cargo test -p busbar-plugin`.
 
-use busbar_plane_abi::decl::{BuildCtx, PlaneDecl};
-use busbar_plane_abi::host::PlaneHostVtable;
-use busbar_plane_abi::workitem::{EmitHandle, InboundHandle, WorkItem};
-use busbar_plane_abi::*;
+use busbar_plugin::hot::decl::{BuildCtx, PlaneDecl};
+use busbar_plugin::hot::host::PlaneHostVtable;
+use busbar_plugin::hot::workitem::{EmitHandle, InboundHandle, WorkItem};
+use busbar_plugin::hot::*;
+use busbar_plugin::AbiPreamble;
 use std::fmt::Write as _;
 
 /// Append `Struct.field=offset` lines for the given fields, then a `Struct.__size=N` line.

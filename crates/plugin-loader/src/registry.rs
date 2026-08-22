@@ -41,32 +41,32 @@ use std::path::{Path, PathBuf};
 pub fn supported_abi(kind: &str) -> &'static [u32] {
     match kind {
         "store" => &[
-            busbar_plugin_abi::ABI_VERSION,
-            busbar_plugin_abi::ABI_VERSION,
+            busbar_plugin::cold::ABI_VERSION,
+            busbar_plugin::cold::ABI_VERSION,
         ],
         // A `kind: secret` plugin resolves a secret reference's settings to bytes.
         "secret" => &[
-            busbar_plugin_abi::SECRET_ABI_VERSION,
-            busbar_plugin_abi::SECRET_ABI_VERSION,
+            busbar_plugin::cold::SECRET_ABI_VERSION,
+            busbar_plugin::cold::SECRET_ABI_VERSION,
         ],
         // A `kind: auth` plugin is a first-class identity provider (the engine's auth chain consumes
         // `Box<dyn AuthModule>` via `open_auth`). Payload schema v1 (verify-only) OR v2 (adds the
         // browser-login primitives). The FLOOR MUST STAY 1: the v2 wire additions are
         // externally-tagged additive variants, so a v1 plugin that only speaks `Authenticate`/
         // `Identity` still loads and works. `[1, AUTH_ABI_VERSION]` = `[1, 2]`.
-        "auth" => &[1, busbar_plugin_abi::AUTH_ABI_VERSION],
+        "auth" => &[1, busbar_plugin::cold::AUTH_ABI_VERSION],
         // A `kind: hook` plugin is an in-process routing policy (the engine's routing/hook chains
         // consume `Arc<dyn RoutingPolicy>` via `open_hook`). The 1.5.0 replacement for the retired
         // out-of-process socket/webhook hook transport. Payload schema v1.
         "hook" => &[
-            busbar_plugin_abi::hook::HOOK_ABI_VERSION,
-            busbar_plugin_abi::hook::HOOK_ABI_VERSION,
+            busbar_plugin::cold::hook::HOOK_ABI_VERSION,
+            busbar_plugin::cold::hook::HOOK_ABI_VERSION,
         ],
         // A `kind: export` plugin is a telemetry sink the engine's observability seam feeds
         // (`open_export`). Payload schema v1 (`streams`/`deliver`).
         "export" => &[
-            busbar_plugin_abi::export::EXPORT_ABI_VERSION,
-            busbar_plugin_abi::export::EXPORT_ABI_VERSION,
+            busbar_plugin::cold::export::EXPORT_ABI_VERSION,
+            busbar_plugin::cold::export::EXPORT_ABI_VERSION,
         ],
         _ => &[],
     }

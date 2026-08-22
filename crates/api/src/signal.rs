@@ -5,8 +5,8 @@
 //! enumeration of every observable busbar can produce about a request/decision/outcome, plus the
 //! compact wire value type and bag it rides the hook projections in. Lives here (`busbar-api`) —
 //! not a new crate — because `busbar-plugin-sdk` (a hook-plugin author's actual dependency) and
-//! `busbar-plugin-abi` both already depend on `busbar-api` directly, so both re-export [`Signal`]
-//! wholesale (see `busbar_plugin_abi::signal` / `busbar_plugin_sdk`); a plugin author never needs
+//! `busbar-plugin` both already depend on `busbar-api` directly, so both re-export [`Signal`]
+//! wholesale (see `busbar_plugin::cold::signal` / `busbar_plugin_sdk`); a plugin author never needs
 //! a raw `busbar-api` dependency to reference `Signal::CandidateBreakerState` at compile time.
 //! Placing the catalog in the SAME crate as [`crate::RoutingRequest`]/[`crate::Candidate`] also
 //! lets those projections carry a `signals` field directly, with no cross-crate cycle (`busbar-

@@ -3,24 +3,25 @@
 
 //! [`PlaneDecl`] — the core→plane direction: the surface a plane EXPORTS so core can validate its
 //! config, build it (with secrets PRE-RESOLVED to references), hydrate/start it, collect its admin
-//! and OpenAPI contribution, and drive its ingress carriers via a [`WorkItem`](crate::WorkItem)
+//! and OpenAPI contribution, and drive its ingress carriers via a [`WorkItem`](crate::hot::WorkItem)
 //! `dispatch`.
 //!
-//! Same `#[repr(C)]` discipline as [`PlaneHostVtable`](crate::host::PlaneHostVtable): a preamble, a
+//! Same `#[repr(C)]` discipline as [`PlaneHostVtable`](super::host::PlaneHostVtable): a preamble, a
 //! sized/versioned header, `extern "C-unwind"` fn-pointer slots, results into `&mut MaybeUninit<Out>`
 //! or bytes-tier caller buffers. `build` yields an [`OpaqueHandle`] — a plane-allocated `*mut c_void`
 //! plus a `free` fn — that core stores and NEVER downcasts.
 
-use crate::host::HostCtx;
-use crate::pod::StatusClass;
-use crate::{AbiPreamble, PlaneHostVtable};
+use super::host::HostCtx;
+use super::pod::StatusClass;
+use super::PlaneHostVtable;
+use crate::AbiPreamble;
 use core::mem::MaybeUninit;
 use std::os::raw::c_void;
 
 /// The opaque, plane-owned handle `build`/`config_validate` produce: a `*mut c_void` the plane
 /// allocated plus the `free` fn core calls on config swap. `free` MUST NEVER panic (wrap the body in
-/// `catch_unwind`). Re-exported from [`pod`](crate::pod) so both directions name one type.
-pub type OpaqueHandle = crate::pod::OpaqueState;
+/// `catch_unwind`). Re-exported from [`pod`](super::pod) so both directions name one type.
+pub type OpaqueHandle = super::pod::OpaqueState;
 
 /// The ingress carrier shapes a plane may provide. RESERVES all five from day one even though only
 /// three are wired — a `PlaneDecl` declares WHICH it provides via [`PlaneDecl::provided_carriers`],
@@ -112,10 +113,10 @@ pub type OpenApiFn = extern "C-unwind" fn(
     buf_cap: usize,
     out_written: *mut usize,
 ) -> StatusClass;
-/// Drive one [`WorkItem`](crate::WorkItem) through the plane's dispatch. THE ingress entry point:
+/// Drive one [`WorkItem`](crate::hot::WorkItem) through the plane's dispatch. THE ingress entry point:
 /// one signature carries every carrier shape via the work item's kind-tagged inbound/emit handles.
 pub type DispatchFn =
-    extern "C-unwind" fn(state: *mut c_void, work: *const crate::WorkItem) -> StatusClass;
+    extern "C-unwind" fn(state: *mut c_void, work: *const crate::hot::WorkItem) -> StatusClass;
 
 /// The `#[repr(C)]` surface a plane exports for core to drive. Leads with the FROZEN [`AbiPreamble`]
 /// and a sized/versioned header; carries the plane's vocabulary (borrowed name/section-key/scope/
@@ -266,7 +267,7 @@ pub mod stub {
     /// Stub: see module docs.
     pub extern "C-unwind" fn dispatch(
         _state: *mut c_void,
-        _work: *const crate::WorkItem,
+        _work: *const crate::hot::WorkItem,
     ) -> StatusClass {
         unimplemented!("PlaneDecl::dispatch — stub")
     }

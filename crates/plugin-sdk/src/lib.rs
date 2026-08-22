@@ -25,7 +25,7 @@
 //! a plugin in (e.g. Postgres compiled straight into a custom binary) without any `cfg` sprawl.
 
 use busbar_api::{Store, StoreError};
-use busbar_plugin_abi::{StoreRequest, StoreResponse, ABI_VERSION};
+use busbar_plugin::cold::{StoreRequest, StoreResponse, ABI_VERSION};
 use std::os::raw::c_void;
 
 pub mod boundary;
@@ -41,13 +41,13 @@ pub use busbar_api::Store as StoreTrait;
 /// `busbar_plugin_sdk::Signal::CandidateBreakerState` (etc.) at compile time to declare which
 /// catalog entries their hook wants computed + projected — see `busbar_api::Signal`'s doc comment
 /// for the full catalog and the append-only/non_exhaustive contract.
-pub use busbar_plugin_abi::{Signal, SignalBag, SignalValue};
+pub use busbar_plugin::cold::{Signal, SignalBag, SignalValue};
 
 /// Re-export used ONLY by the `export_plugin!` expansion, so a plugin crate does not need its own
-/// direct `busbar-plugin-abi` dependency just to name the log-sink type in the generated symbol.
+/// direct `busbar-plugin` dependency just to name the log-sink type in the generated symbol.
 #[doc(hidden)]
 pub mod __abi {
-    pub use busbar_plugin_abi::LogSinkFn;
+    pub use busbar_plugin::cold::LogSinkFn;
 }
 
 /// The handle type behind the opaque `*mut c_void` for a store plugin (a boxed trait object). Named at
@@ -65,10 +65,10 @@ pub fn abi_version() -> u32 {
 }
 
 /// The frozen kind-neutral TRANSPORT version this SDK builds against — a plugin exports it as
-/// `busbar_abi()`. Frozen at [`busbar_plugin_abi::TRANSPORT_VERSION`] (=1); distinct from the per-kind
+/// `busbar_abi()`. Frozen at [`busbar_plugin::cold::TRANSPORT_VERSION`] (=1); distinct from the per-kind
 /// payload schema version ([`abi_version`] / [`secret_abi_version`]).
 pub fn transport_version() -> u32 {
-    busbar_plugin_abi::TRANSPORT_VERSION
+    busbar_plugin::cold::TRANSPORT_VERSION
 }
 
 /// Run one [`StoreRequest`] against a `Store`. The single match that maps the wire enum to the trait
@@ -282,17 +282,17 @@ pub fn adapt_auth_handle(module: Box<dyn busbar_api::AuthModule>) -> AuthHandle 
 /// literal, so `plugin-loader::registry`'s floor and this SDK's declared version cannot drift apart.
 /// See `docs/plugins.md`'s `abi_version` manifest field for the engine-side boot-time check.
 pub fn auth_abi_version() -> u32 {
-    busbar_plugin_abi::AUTH_ABI_VERSION
+    busbar_plugin::cold::AUTH_ABI_VERSION
 }
 
-/// Run one [`busbar_plugin_abi::auth::AuthRequest`] against an `AuthModule` — the single match that
+/// Run one [`busbar_plugin::cold::auth::AuthRequest`] against an `AuthModule` — the single match that
 /// maps the wire enum to the trait, unit-testable without FFI. An empty `credential` (no usable
 /// credential presented) is passed to `authenticate(None)`.
 pub fn dispatch_auth(
     module: &dyn busbar_api::AuthPlugin,
-    req: busbar_plugin_abi::auth::AuthRequest,
-) -> busbar_plugin_abi::auth::AuthResponse {
-    use busbar_plugin_abi::auth::{AuthRequest, AuthResponse};
+    req: busbar_plugin::cold::auth::AuthRequest,
+) -> busbar_plugin::cold::auth::AuthResponse {
+    use busbar_plugin::cold::auth::{AuthRequest, AuthResponse};
     match req {
         AuthRequest::Name => AuthResponse::Name(module.name().to_string()),
         AuthRequest::Cacheable => AuthResponse::Cacheable(module.cacheable()),
@@ -318,15 +318,15 @@ pub fn dispatch_auth(
 }
 
 /// The per-kind `dispatch` closure `export_auth_plugin!` hands to [`boundary::call_boundary`]: decode an
-/// [`busbar_plugin_abi::auth::AuthRequest`], run it via [`dispatch_auth`], and encode the
-/// [`busbar_plugin_abi::auth::AuthResponse`] into a [`BoundaryOutcome`]. An `authenticate` verdict
+/// [`busbar_plugin::cold::auth::AuthRequest`], run it via [`dispatch_auth`], and encode the
+/// [`busbar_plugin::cold::auth::AuthResponse`] into a [`BoundaryOutcome`]. An `authenticate` verdict
 /// (`Reject`/`Pass`) rides the OK payload — only an undecodable request / encode failure is non-OK.
 ///
 /// # Safety
 /// `handle` is a live auth handle from `open` (guaranteed non-null by the boundary wrapper).
 pub unsafe fn auth_dispatch(handle: *mut c_void, bytes: &[u8]) -> BoundaryOutcome {
     let module: &BoxedAuth = &*(handle as *const BoxedAuth);
-    let request: busbar_plugin_abi::auth::AuthRequest = match serde_json::from_slice(bytes) {
+    let request: busbar_plugin::cold::auth::AuthRequest = match serde_json::from_slice(bytes) {
         Ok(r) => r,
         Err(e) => return BoundaryOutcome::Unsupported(format!("malformed request JSON: {e}")),
     };
@@ -353,7 +353,7 @@ pub unsafe fn auth_dispatch(handle: *mut c_void, bytes: &[u8]) -> BoundaryOutcom
 /// Until then — and forever, for a host too old to call it — [`hostlog::log`] falls back to `eprintln!`, so a
 /// plugin never loses a message by using this.
 pub mod hostlog {
-    use busbar_plugin_abi::{log_level, LogSinkFn};
+    use busbar_plugin::cold::{log_level, LogSinkFn};
     use std::sync::atomic::{AtomicPtr, AtomicU32, AtomicUsize, Ordering};
 
     /// The installed sink, as raw parts. Two atomics rather than a `OnceLock<(fn, ptr)>` because the
@@ -572,26 +572,26 @@ type BoxedSecret = SecretHandle;
 /// Return the SECRET ABI version this SDK builds against (`busbar_secret_abi_version`). See
 /// `docs/plugins.md`'s `abi_version` manifest field for the engine-side boot-time check against it.
 pub fn secret_abi_version() -> u32 {
-    busbar_plugin_abi::SECRET_ABI_VERSION
+    busbar_plugin::cold::SECRET_ABI_VERSION
 }
 
-/// Run one [`busbar_plugin_abi::SecretRequest`] against a secret module - the single match that
+/// Run one [`busbar_plugin::cold::SecretRequest`] against a secret module - the single match that
 /// maps the wire enum to the trait, unit-testable without FFI.
 pub fn dispatch_secret(
     module: &dyn busbar_api::SecretModule,
-    req: busbar_plugin_abi::SecretRequest,
-) -> Result<busbar_plugin_abi::SecretResponse, busbar_api::SecretError> {
+    req: busbar_plugin::cold::SecretRequest,
+) -> Result<busbar_plugin::cold::SecretResponse, busbar_api::SecretError> {
     match req {
         // `deadline_ms` is advisory-only at this layer — no enforcement here; a module
         // that can bound its own call reads it from the request before this dispatch runs.
-        busbar_plugin_abi::SecretRequest::Resolve { settings, .. } => Ok(
-            busbar_plugin_abi::SecretResponse::Bytes(module.resolve(&settings)?),
+        busbar_plugin::cold::SecretRequest::Resolve { settings, .. } => Ok(
+            busbar_plugin::cold::SecretResponse::Bytes(module.resolve(&settings)?),
         ),
     }
 }
 
 /// The per-kind `dispatch` closure `export_secret_plugin!` hands to [`boundary::call_boundary`]: decode
-/// a [`busbar_plugin_abi::SecretRequest`], run it via [`dispatch_secret`], and encode the response into
+/// a [`busbar_plugin::cold::SecretRequest`], run it via [`dispatch_secret`], and encode the response into
 /// a [`BoundaryOutcome`]. A resolve failure is a defined backend error → [`BoundaryOutcome::Error`]
 /// (the message must never carry secret material).
 ///
@@ -599,7 +599,7 @@ pub fn dispatch_secret(
 /// `handle` is a live secret handle from `open` (guaranteed non-null by the boundary wrapper).
 pub unsafe fn secret_dispatch(handle: *mut c_void, bytes: &[u8]) -> BoundaryOutcome {
     let module: &BoxedSecret = &*(handle as *const BoxedSecret);
-    let request: busbar_plugin_abi::SecretRequest = match serde_json::from_slice(bytes) {
+    let request: busbar_plugin::cold::SecretRequest = match serde_json::from_slice(bytes) {
         Ok(r) => r,
         Err(e) => return BoundaryOutcome::Unsupported(format!("malformed request JSON: {e}")),
     };
@@ -614,7 +614,7 @@ pub unsafe fn secret_dispatch(handle: *mut c_void, bytes: &[u8]) -> BoundaryOutc
         // unreachable". If encoding that itself fails (should be unreachable — the payload is two
         // primitives), fall back to the untyped channel rather than losing the failure entirely.
         Err(e) => {
-            let typed = busbar_plugin_abi::SecretResponse::Error {
+            let typed = busbar_plugin::cold::SecretResponse::Error {
                 kind: e.kind,
                 message: e.message.clone(),
             };
@@ -721,17 +721,17 @@ type BoxedHook = HookHandle;
 /// Return the HOOK PAYLOAD schema version this SDK builds against (`busbar_plugin_kind() == "hook"`).
 /// See `docs/plugins.md`'s `abi_version` manifest field for the engine-side boot-time check against it.
 pub fn hook_abi_version() -> u32 {
-    busbar_plugin_abi::hook::HOOK_ABI_VERSION
+    busbar_plugin::cold::hook::HOOK_ABI_VERSION
 }
 
-/// Run one [`busbar_plugin_abi::hook::HookRequest`] against a [`HookHandler`] — the single op-dispatch
+/// Run one [`busbar_plugin::cold::hook::HookRequest`] against a [`HookHandler`] — the single op-dispatch
 /// match that maps the wire envelope to the trait, unit-testable without FFI. This is the ergonomic
 /// helper a hook author never has to write.
 pub fn dispatch_hook(
     handler: &dyn HookHandler,
-    req: busbar_plugin_abi::hook::HookRequest,
-) -> busbar_plugin_abi::hook::HookReply {
-    use busbar_plugin_abi::hook::{HookReply, HookRequest};
+    req: busbar_plugin::cold::hook::HookRequest,
+) -> busbar_plugin::cold::hook::HookReply {
+    use busbar_plugin::cold::hook::{HookReply, HookRequest};
     match req {
         HookRequest::Decide { payload } => match handler.decide_result(&payload) {
             Ok(v) => HookReply::Reply(v),
@@ -763,14 +763,14 @@ pub fn dispatch_hook(
 }
 
 /// The per-kind `dispatch` closure `export_hook_plugin!` hands to [`boundary::call_boundary`]: decode a
-/// [`busbar_plugin_abi::hook::HookRequest`], run it via [`dispatch_hook`], and encode the reply into a
+/// [`busbar_plugin::cold::hook::HookRequest`], run it via [`dispatch_hook`], and encode the reply into a
 /// [`BoundaryOutcome`].
 ///
 /// # Safety
 /// `handle` is a live hook handle from `open` (guaranteed non-null by the boundary wrapper).
 pub unsafe fn hook_dispatch(handle: *mut c_void, bytes: &[u8]) -> BoundaryOutcome {
     let handler: &BoxedHook = &*(handle as *const BoxedHook);
-    let request: busbar_plugin_abi::hook::HookRequest = match serde_json::from_slice(bytes) {
+    let request: busbar_plugin::cold::hook::HookRequest = match serde_json::from_slice(bytes) {
         Ok(r) => r,
         Err(e) => return BoundaryOutcome::Unsupported(format!("malformed request JSON: {e}")),
     };
@@ -788,13 +788,13 @@ pub unsafe fn hook_dispatch(handle: *mut c_void, bytes: &[u8]) -> BoundaryOutcom
 // same `export_plugin!` shape, its own handle type (`Box<dyn ExportHandler>`), its own request enum.
 
 /// Re-export the export wire types so a plugin author names `busbar_plugin_sdk::ExportStream` (etc.)
-/// without a direct `busbar-plugin-abi` dependency, mirroring the hook/auth re-export path.
-pub use busbar_plugin_abi::export::{ExportField, ExportRequest, ExportResponse, ExportStream};
+/// without a direct `busbar-plugin` dependency, mirroring the hook/auth re-export path.
+pub use busbar_plugin::cold::export::{ExportField, ExportRequest, ExportResponse, ExportStream};
 
 /// Re-export the HTTP-endpoint wire types (plugin route registration + dispatch) so an export/hook
 /// author names `busbar_plugin_sdk::Route` / `HttpEndpointRequest` (etc.) without a direct
-/// `busbar-plugin-abi` dependency.
-pub use busbar_plugin_abi::http_endpoint::{
+/// `busbar-plugin` dependency.
+pub use busbar_plugin::cold::http_endpoint::{
     HttpEndpointRequest, HttpEndpointResponse, Route, RouteAuth, RouteMethod,
 };
 
@@ -839,7 +839,7 @@ type BoxedExport = ExportHandle;
 /// and this SDK's declared version cannot drift apart — mirroring `secret_abi_version()`/
 /// `hook_abi_version()`.
 pub fn export_abi_version() -> u32 {
-    busbar_plugin_abi::export::EXPORT_ABI_VERSION
+    busbar_plugin::cold::export::EXPORT_ABI_VERSION
 }
 
 /// Run one [`ExportRequest`] against an [`ExportHandler`] — the single op-dispatch match that maps the
@@ -931,7 +931,7 @@ macro_rules! export_plugin {
         /// # Safety
         /// Read only by the busbar loader as the frozen TRANSPORT handshake.
         ///
-        /// `extern "C-unwind"` (matches [`busbar_plugin_abi::AbiFn`]): a panic that unwinds out of
+        /// `extern "C-unwind"` (matches [`busbar_plugin::cold::AbiFn`]): a panic that unwinds out of
         /// this symbol propagates as a DEFINED forced unwind the engine's `catch_unwind` can catch,
         /// rather than an immediate abort at this frame (which plain `extern "C"` would force).
         #[no_mangle]

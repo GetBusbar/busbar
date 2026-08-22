@@ -173,7 +173,7 @@ fn export_abi_version_is_two() {
 /// additive wire behind plugin route registration + dispatch.
 #[test]
 fn http_endpoint_ops_roundtrip_and_tags() {
-    use crate::http_endpoint::{HttpEndpointRequest, RouteAuth, RouteMethod};
+    use crate::cold::http_endpoint::{HttpEndpointRequest, RouteAuth, RouteMethod};
     let reqs = vec![
         ExportRequest::Routes,
         ExportRequest::HttpEndpoint {

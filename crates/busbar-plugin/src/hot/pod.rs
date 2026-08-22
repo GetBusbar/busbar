@@ -275,7 +275,7 @@ impl core::ops::Deref for FactsGuard<'_> {
 
 /// A metering charge: an opaque-component money scalar. `reserve/settle` (a `CostHold`) is
 /// DELIBERATELY NOT here and NOT on the hot vtable — it is an append-only EXTENSION POINT for a
-/// future high-rate carrier (see [`host`](crate::host)).
+/// future high-rate carrier (see [`host`](super::host)).
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct Usage {
@@ -721,7 +721,7 @@ pub struct ContentChunk {
 /// treats it as `Send + Sync` (a plane may hold it across `.await` and worker threads). Paired with
 /// its own [`free`](Self::free) fn, which must NEVER panic (wrap the body in `catch_unwind`).
 ///
-/// This lives in `pod` because both a [`PlaneDecl`](crate::decl::PlaneDecl) build result and any
+/// This lives in `pod` because both a [`PlaneDecl`](super::decl::PlaneDecl) build result and any
 /// host-side slot store it.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]

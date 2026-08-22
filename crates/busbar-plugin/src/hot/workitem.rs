@@ -169,7 +169,7 @@ impl WorkItem {
     pub fn new(inbound: InboundHandle, emit: EmitHandle) -> Self {
         WorkItem {
             size: core::mem::size_of::<WorkItem>() as u32,
-            version: crate::pod::POD_VERSION,
+            version: super::pod::POD_VERSION,
             _reserved: 0,
             inbound,
             emit,

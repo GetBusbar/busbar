@@ -1,58 +1,64 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The busbar **protocol-plane HOT-tier ABI** — a `#[repr(C)]`, POD-by-pointer, zero-alloc seam
-//! between the neutral engine and a protocol plane (compiled-in or, later, `dlopen`ed).
+//! **ONE busbar plugin interface, TWO lanes** — over a single shared root.
 //!
-//! This crate is the FOUNDATION skeleton: every type and signature is real, every impl is a stub
-//! (`unimplemented!()` / defaults). It is ADDITIVE and UNUSED — nothing in the engine calls it yet;
-//! a later phase wires it in. Downstream plane authors build capability impls against these types.
+//! busbar has exactly one plugin boundary, but two disciplines ride it, because two classes of
+//! plugin have opposite performance shapes. Rather than cram both into one call convention, this
+//! crate exposes them as two lane modules over a shared contract:
 //!
-//! # The three disciplines this crate encodes (all frozen by construction)
+//! * [`cold`] — the COLD lane (was `busbar-plugin-abi`). A frozen, versioned wire: JSON over a tiny
+//!   six-symbol `extern "C"` surface, for backends OFF the request hot path (`store` | `secret` |
+//!   `auth` | `hook` | `export`), where a serialize per call never touches request latency. Its
+//!   `extern "C"` symbols, JSON shapes, and [`cold::TRANSPORT_VERSION`] are a SIGNED wire contract
+//!   that MUST NOT change; an external plugin's compiled artifact keeps working across this move —
+//!   only the SOURCE import path changes (`busbar_plugin_abi::X` → `busbar_plugin::cold::X`).
+//! * [`hot`] — the HOT lane (was `busbar-plane-abi`). A `#[repr(C)]` fn-pointer vtable, POD args by
+//!   pointer, small results by value, large results into a caller `&mut MaybeUninit<Out>`, zero
+//!   alloc / zero serde on the call. ADDITIVE and not yet wired into the engine.
+//!
+//! # The shared root (this module)
+//!
+//! Both lanes obey the SAME cross-boundary discipline, hoisted here so there is one definition:
 //!
 //! 1. **The airlock preamble** ([`AbiPreamble`], [`check_preamble`]) — a `#[repr(C)]` header FROZEN
 //!    FOR ALL TIME. Its three fields (`magic`, `abi_major`, `abi_minor`) may NEVER be reordered,
 //!    resized, or removed. A major mismatch or a magic mismatch is fail-closed (the seam refuses),
 //!    so an incompatible peer can never be reached across the boundary.
 //! 2. **Sized-struct / append-only discipline** — every cross-boundary POD struct LEADS with a
-//!    `size: u32` and a `version: u16`. A receiver reads a field only when `size` proves the sender
-//!    wrote it (see [`field_present`] / [`read_sized_field`]). New fields may ONLY be appended, and
-//!    a peer that predates a field simply never reads it. Reorder/resize/insert = a MAJOR airlock
-//!    bump, caught by both the preamble check and the layout golden.
-//! 3. **`extern "C-unwind"` fn-pointer vtables** ([`host::PlaneHostVtable`], [`decl::PlaneDecl`]) —
-//!    POD args by pointer, small results by value, large results into a caller
-//!    `&mut MaybeUninit<Out>` written INSIDE a `catch_unwind` and marked init only on Ok (the
-//!    [`plugin-sdk` boundary](write_out) discipline). NO `Vec` returns on the hot calls.
+//!    `size`/`version` and a receiver reads a field only when `size` proves the sender wrote it (see
+//!    [`field_present`] / [`read_sized_field`]). New fields may ONLY be appended; a peer that
+//!    predates a field simply never reads it. Reorder/resize/insert = a MAJOR airlock bump.
+//! 3. **The out-param write discipline** ([`write_out`]) — the init-only-on-Ok rule a callee uses to
+//!    publish a large POD result into a caller slot without a `Vec` return.
+//!
+//! The airlock and these helpers are what the two lanes SHARE. Their call conventions (JSON bytes
+//! over six C symbols vs. a repr(C) fn-pointer vtable) stay deliberately opposite, in [`cold`] and
+//! [`hot`] respectively.
 //!
 //! # Neutrality
 //!
-//! No type, function, variant, or carrier name here may contain a protocol/role noun. A CI witness
-//! (`scripts/plane-abi-neutrality.sh`) greps this crate for the banned set and asserts zero — proof
-//! the capability surface was DERIVED from a primitive taxonomy, not ENUMERATED from any one plane.
+//! The HOT lane's capability surface was DERIVED from a primitive taxonomy, not ENUMERATED from any
+//! one protocol plane: no type, function, variant, or carrier name under [`hot`] may contain a
+//! protocol/role noun. A CI witness (`scripts/plane-abi-neutrality.sh`) greps the [`hot`] tree for
+//! the banned set and asserts zero. The COLD lane's existing names (its `store`/`auth`/`hook`
+//! vocabulary) predate that rule and are exempt — the witness covers `::hot` only.
 
 #![deny(unsafe_op_in_unsafe_fn)]
 
 use core::mem::MaybeUninit;
 
-pub mod decl;
-pub mod host;
-pub mod pod;
-pub mod workitem;
-
-// Re-export the whole POD surface at the crate root so a plane author writes
-// `busbar_plane_abi::Facts`, not `busbar_plane_abi::pod::Facts`.
-pub use decl::{BuildCtx, IngressCarrier, OpaqueHandle, PlaneDecl};
-pub use host::PlaneHostVtable;
-pub use pod::*;
-pub use workitem::{EmitHandle, EmitKind, InboundHandle, InboundKind, WorkItem};
+pub mod cold;
+pub mod hot;
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
-// 1. The airlock preamble — FROZEN FOR ALL TIME.
+// 1. The airlock preamble — FROZEN FOR ALL TIME. Shared by both lanes.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
-/// The magic value every plane-ABI peer stamps into [`AbiPreamble::magic`]. A wrong magic means the
-/// bytes are not a plane-ABI preamble at all (a mislinked / corrupt / hostile peer) and the seam
-/// refuses. Chosen to be non-zero and unlikely to occur by accident: ASCII `"BUSPLANE"` little-end.
+/// The magic value every plugin-ABI peer stamps into [`AbiPreamble::magic`]. A wrong magic means the
+/// bytes are not a busbar-plugin-ABI preamble at all (a mislinked / corrupt / hostile peer) and the
+/// seam refuses. Chosen to be non-zero and unlikely to occur by accident: ASCII `"BUSPLANE"`
+/// little-end.
 pub const ABI_MAGIC: u64 = u64::from_le_bytes(*b"BUSPLANE");
 
 /// The MAJOR airlock version. Bumping this is a no-turning-back linker event: a reorder/resize/
@@ -73,7 +79,7 @@ pub const ABI_MINOR: u32 = 0;
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AbiPreamble {
-    /// Must equal [`ABI_MAGIC`]. A mismatch is fail-closed (not a plane-ABI peer).
+    /// Must equal [`ABI_MAGIC`]. A mismatch is fail-closed (not a plugin-ABI peer).
     pub magic: u64,
     /// The peer's [`ABI_MAJOR`]. A mismatch is fail-closed (incompatible airlock).
     pub abi_major: u32,
@@ -100,7 +106,7 @@ impl Default for AbiPreamble {
 /// NOT reachable — the caller must abort the crossing, never degrade to a partial read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PreambleError {
-    /// The peer's `magic` is not [`ABI_MAGIC`]: these are not plane-ABI bytes.
+    /// The peer's `magic` is not [`ABI_MAGIC`]: these are not plugin-ABI bytes.
     BadMagic {
         /// The magic the peer presented.
         found: u64,
@@ -132,7 +138,7 @@ pub fn check_preamble(peer: &AbiPreamble) -> Result<(), PreambleError> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
-// 2. Sized-struct discipline — the append-only field-read guard.
+// 2. Sized-struct discipline — the append-only field-read guard. Shared by both lanes.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
 /// True iff a sender who advertised `advertised_size` bytes definitely WROTE the field that ends at
@@ -150,7 +156,7 @@ pub const fn field_present(advertised_size: u32, field_end: usize) -> bool {
 /// in a later minor is `None` when read from an older sender's struct, never undefined.
 ///
 /// ```
-/// use busbar_plane_abi::{read_sized_field, Facts};
+/// use busbar_plugin::{read_sized_field, hot::Facts};
 /// let g = Facts::new(10, 100, 1, 0, 0, b"pool");
 /// // `tokens` lives within every non-truncated `Facts`, so it reads as `Some`.
 /// assert_eq!(read_sized_field!(&*g, Facts, tokens), Some(10));
@@ -169,14 +175,14 @@ macro_rules! read_sized_field {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
-// 3. The out-param write discipline — init-only-on-Ok, reused from plugin-sdk/boundary.rs.
+// 3. The out-param write discipline — init-only-on-Ok. Shared by both lanes.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
 /// Write `value` into a caller-provided `&mut MaybeUninit<T>` out-slot, the ONLY way a hot host-call
 /// returns a large POD without a `Vec`. Mirrors `plugin-sdk/boundary.rs`: the callee fully writes the
 /// slot INSIDE its `catch_unwind` and marks it initialized ONLY on the Ok path — so a caller that
-/// sees a non-`Ok` [`StatusClass`] must treat the slot as still uninitialized and never read it. A
-/// null `out` is tolerated (the value is dropped), matching the boundary's null-out-guard.
+/// sees a non-`Ok` status must treat the slot as still uninitialized and never read it. A null `out`
+/// is tolerated (the value is dropped), matching the boundary's null-out-guard.
 ///
 /// # Safety
 /// `out`, when non-null, must point to a writable, properly-aligned `MaybeUninit<T>` for the duration
@@ -195,6 +201,7 @@ pub unsafe fn write_out<T>(out: *mut MaybeUninit<T>, value: T) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::hot::Facts;
 
     #[test]
     fn preamble_layout_is_frozen() {

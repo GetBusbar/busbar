@@ -22,7 +22,7 @@
 //! that returns a [`BoundaryOutcome`] — a type that CANNOT name a raw pointer or a status integer — and
 //! the boundary helpers thread the guards. There is no seam on which an author can get a facet wrong.
 
-use busbar_plugin_abi::{STATUS_ERR, STATUS_OK, STATUS_PANIC, STATUS_PROTOCOL, STATUS_UNSUPPORTED};
+use busbar_plugin::cold::{STATUS_ERR, STATUS_OK, STATUS_PANIC, STATUS_PROTOCOL, STATUS_UNSUPPORTED};
 use std::os::raw::c_void;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 

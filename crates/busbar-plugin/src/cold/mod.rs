@@ -56,7 +56,7 @@ pub mod http_endpoint;
 
 /// The "decision observability" signal catalog — re-exported wholesale from
 /// `busbar-api` (where it actually lives; see that crate's `signal` module doc comment for why) so
-/// a hook plugin author can write `busbar_plugin_abi::Signal::CandidateBreakerState` without a
+/// a hook plugin author can write `busbar_plugin::cold::Signal::CandidateBreakerState` without a
 /// direct `busbar-api` dependency, mirroring every other type this crate re-exports for the same
 /// reason (`AuditRecord`, `VirtualKey`, …, imported above). `busbar-plugin-sdk` re-exports it again
 /// from here (or directly from `busbar-api`) so the common plugin-author path is
@@ -96,7 +96,7 @@ pub mod kind {
     pub const HOOK: &str = "hook";
     /// A telemetry export sink that carries the engine's observability streams
     /// (metrics/logs/audit/traces) OUT to an external backend. Its payload schema lives in
-    /// [`crate::export`].
+    /// [`crate::cold::export`].
     pub const EXPORT: &str = "export";
 
     /// [`STORE`], NUL-terminated — return `STORE_NUL.as_ptr()` from `busbar_plugin_kind()`.

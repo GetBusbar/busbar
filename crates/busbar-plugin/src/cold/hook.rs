@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The **hook** payload schema (kind = [`crate::kind::HOOK`]) that rides the kind-neutral `call`.
+//! The **hook** payload schema (kind = [`crate::cold::kind::HOOK`]) that rides the kind-neutral `call`.
 //!
 //! ## One transport, every hook op
 //!
@@ -27,13 +27,13 @@
 //! operator grant (AND the signed-manifest declared intent) allow it — the plugin has no say and
 //! cannot cause content to be sent. This ABI just carries whatever the core chose to project.
 
-use crate::http_endpoint::{HttpEndpointRequest, HttpEndpointResponse, Route};
+use crate::cold::http_endpoint::{HttpEndpointRequest, HttpEndpointResponse, Route};
 use serde::{Deserialize, Serialize};
 
 /// The hook-plugin PAYLOAD schema version (the signed manifest's `abi_version` for `kind: hook`).
 /// v1 (1.5.0): the op-discriminated `decide`/`transform`/`notify`/`configure`/`describe`/`status`
 /// envelope lifted verbatim from the retired socket/webhook wire. This is the per-kind PAYLOAD axis,
-/// NOT the transport axis — a hook plugin exports the SAME six neutral symbols ([`crate::symbol`]) as
+/// NOT the transport axis — a hook plugin exports the SAME six neutral symbols ([`crate::cold::symbol`]) as
 /// every other kind, at `busbar_abi() == TRANSPORT_VERSION`.
 pub const HOOK_ABI_VERSION: u32 = 1;
 

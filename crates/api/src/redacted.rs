@@ -17,7 +17,7 @@
 //!   an audit record, a config dump, or any JSON payload. The ONE place a resolved credential must
 //!   legitimately cross a boundary — the `complete_login` FFI call that hands a submitted credential
 //!   to the auth plugin that will verify it — does so through a plain `String` field on the WIRE type
-//!   (`busbar_plugin_abi::auth::CompleteLoginRequest.submitted`), an explicit, documented, single
+//!   (`busbar_plugin::cold::auth::CompleteLoginRequest.submitted`), an explicit, documented, single
 //!   plaintext boundary, converted from `Redacted` via [`Redacted::expose_secret`]. There is no
 //!   implicit serialization path.
 //! * **It zeroizes its backing memory on drop.** `T: Zeroize`, so when a `Redacted<String>` is

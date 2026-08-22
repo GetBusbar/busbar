@@ -945,7 +945,7 @@ fn no_plugin_crash_shape_can_empty_the_denylist() {
             "v1-SDK caller-protocol violation with a message",
         ),
         (
-            busbar_plugin_abi::STATUS_ERR,
+            busbar_plugin::cold::STATUS_ERR,
             b"backend read failed: unknown variant of corruption",
             "real backend error whose text mimics a decode failure",
         ),
@@ -1026,7 +1026,7 @@ fn denylist_backend_error_with_unknown_variant_text_propagates() {
     // A crafted / coincidental backend error: STATUS_ERR, but the body contains "unknown variant".
     FAKE_CALL_HANDLE.with(|c| {
         c.set((
-            busbar_plugin_abi::STATUS_ERR,
+            busbar_plugin::cold::STATUS_ERR,
             b"backend read failed: table 'denylist' reported unknown variant of corruption",
         ))
     });
@@ -1052,7 +1052,7 @@ fn audit_tail_backend_error_propagates_not_masked_by_fallback() {
     };
     FAKE_CALL_HANDLE.with(|c| {
         c.set((
-            busbar_plugin_abi::STATUS_ERR,
+            busbar_plugin::cold::STATUS_ERR,
             b"backend read failed: audit table I/O error",
         ))
     });
@@ -1171,7 +1171,7 @@ fn transport_error_classification() {
     assert!(!TransportError::from_status(STATUS_PANIC, "panicked", "p").is_unsupported());
     // A backend error whose body contains "unknown variant" is NOT unsupported.
     assert!(
-        !TransportError::from_status(busbar_plugin_abi::STATUS_ERR, "unknown variant", "p")
+        !TransportError::from_status(busbar_plugin::cold::STATUS_ERR, "unknown variant", "p")
             .is_unsupported()
     );
     // A BARE STATUS_PROTOCOL — null handle, null request pointer, or a v1-SDK caught panic — is a
@@ -1309,7 +1309,7 @@ fn export_example_plugin_path() -> Option<std::path::PathBuf> {
 /// observability export will consume: verified bytes in, a `DynExport` out.
 #[test]
 fn load_and_exercise_export_example_plugin() {
-    use busbar_plugin_abi::export::ExportStream;
+    use busbar_plugin::cold::export::ExportStream;
     let Some(path) = export_example_plugin_path() else {
         eprintln!("skip: export example plugin cdylib not built (run under --workspace)");
         return;
@@ -1336,7 +1336,7 @@ fn load_and_exercise_export_example_plugin() {
 // it is what let this test be run RED against the pre-fix ABI and watched to report the task
 // missing after the restart, instead of failing to build and proving nothing.
 //
-// The only shape of test that can see the defect these overrides close. `busbar-plugin-abi`'s
+// The only shape of test that can see the defect these overrides close. `busbar-plugin`'s
 // `StoreRequest` had NO variant for any of the ten A2A-task / MCP-call-log ops and `DynStore`
 // overrode none of them, so a store loaded as a plugin — which is BOTH deployment paths, file-drop
 // and runtime install — fell through to the trait's accept-and-keep-nothing defaults. `put_task`
@@ -1689,7 +1689,7 @@ fn every_store_trait_method_has_an_abi_variant_and_a_dynstore_override() {
     let trait_src = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../api/src/store.rs"));
     let abi_src = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../plugin-abi/src/lib.rs"
+        "/../busbar-plugin/src/cold/mod.rs"
     ));
     let loader_src = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/lib.rs"));
 

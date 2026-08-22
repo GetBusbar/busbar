@@ -7,8 +7,10 @@
 # The plane ABI's whole claim is that its capability surface was DERIVED from a primitive taxonomy
 # (carrier / scope / egress / metering), NOT ENUMERATED from any one protocol plane. That claim rots
 # silently the first time someone names a type/fn/variant after a protocol or role noun. This gate
-# greps the `busbar-plane-abi` crate for the banned set and asserts ZERO — a machine check that
-# "derived, not enumerated" STAYS true as capabilities are added.
+# greps the HOT lane of the `busbar-plugin` crate (`src/hot/`) for the banned set and asserts ZERO —
+# a machine check that "derived, not enumerated" STAYS true as capabilities are added. Only the HOT
+# lane is scanned: the COLD lane (`src/cold/`) keeps its pre-existing store/auth/hook vocabulary and
+# is deliberately exempt, and the shared crate root is neutral by construction.
 #
 # It ALSO covers its own token list: a self-check asserts every token the design mandates is present
 # in the ban regex below (the original witness once omitted `server`/`card` and so could not catch
@@ -21,7 +23,7 @@ set -euo pipefail
 # The directory this script lives in is `scripts/`; the crate is a sibling under `crates/`.
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo="$(cd "$here/.." && pwd)"
-crate_src="$repo/crates/busbar-plane-abi/src"
+crate_src="$repo/crates/busbar-plugin/src/hot"
 
 # The banned protocol/role nouns (DESIGN-v5 §neutrality-witness). Matched case-insensitively as
 # substrings of IDENTIFIERS on declaration lines (see the grep below).

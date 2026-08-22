@@ -6,7 +6,7 @@
 use super::*;
 use boundary::{call_boundary, close_boundary, free_boundary, open_boundary, BoundaryOutcome};
 use busbar_api::VirtualKey;
-use busbar_plugin_abi::{STATUS_ERR, STATUS_OK, STATUS_PROTOCOL, STATUS_UNSUPPORTED};
+use busbar_plugin::cold::{STATUS_ERR, STATUS_OK, STATUS_PROTOCOL, STATUS_UNSUPPORTED};
 use busbar_store_memory::MemoryStore;
 use std::os::raw::c_void;
 use std::ptr;
@@ -123,19 +123,19 @@ fn secret_dispatch_resolves_and_fails_closed() {
     settings.insert("name".to_string(), serde_json::Value::String("db".into()));
     match dispatch_secret(
         &EchoSecret,
-        busbar_plugin_abi::SecretRequest::Resolve {
+        busbar_plugin::cold::SecretRequest::Resolve {
             settings,
             deadline_ms: None,
         },
     )
     .expect("resolves")
     {
-        busbar_plugin_abi::SecretResponse::Bytes(b) => assert_eq!(b, b"resolved:db"),
+        busbar_plugin::cold::SecretResponse::Bytes(b) => assert_eq!(b, b"resolved:db"),
         other => panic!("expected Bytes, got {other:?}"),
     }
     let err = dispatch_secret(
         &EchoSecret,
-        busbar_plugin_abi::SecretRequest::Resolve {
+        busbar_plugin::cold::SecretRequest::Resolve {
             settings: serde_json::Map::new(),
             deadline_ms: None,
         },
@@ -169,7 +169,7 @@ fn secret_ffi_roundtrip_open_call_close() {
         // resolve success
         let mut settings = serde_json::Map::new();
         settings.insert("name".to_string(), serde_json::Value::String("x".into()));
-        let req = serde_json::to_vec(&busbar_plugin_abi::SecretRequest::Resolve {
+        let req = serde_json::to_vec(&busbar_plugin::cold::SecretRequest::Resolve {
             settings,
             deadline_ms: None,
         })
@@ -178,18 +178,18 @@ fn secret_ffi_roundtrip_open_call_close() {
         let mut out_len: usize = 0;
         let status = secret_call_impl(handle, req.as_ptr(), req.len(), &mut out, &mut out_len);
         assert_eq!(status, STATUS_OK);
-        let resp: busbar_plugin_abi::SecretResponse =
+        let resp: busbar_plugin::cold::SecretResponse =
             serde_json::from_slice(std::slice::from_raw_parts(out, out_len)).unwrap();
         free_impl(out, out_len);
         match resp {
-            busbar_plugin_abi::SecretResponse::Bytes(b) => assert_eq!(b, b"resolved:x"),
+            busbar_plugin::cold::SecretResponse::Bytes(b) => assert_eq!(b, b"resolved:x"),
             other => panic!("expected Bytes, got {other:?}"),
         }
 
         // resolve failure -> STATUS_OK carrying a typed SecretResponse::Error (never a panic
         // across the boundary, and never the untyped STATUS_ERR channel for a module-level
         // failure — see this test's own doc comment).
-        let req = serde_json::to_vec(&busbar_plugin_abi::SecretRequest::Resolve {
+        let req = serde_json::to_vec(&busbar_plugin::cold::SecretRequest::Resolve {
             settings: serde_json::Map::new(),
             deadline_ms: None,
         })
@@ -198,11 +198,11 @@ fn secret_ffi_roundtrip_open_call_close() {
         let mut out_len: usize = 0;
         let status = secret_call_impl(handle, req.as_ptr(), req.len(), &mut out, &mut out_len);
         assert_eq!(status, STATUS_OK);
-        let resp: busbar_plugin_abi::SecretResponse =
+        let resp: busbar_plugin::cold::SecretResponse =
             serde_json::from_slice(std::slice::from_raw_parts(out, out_len)).unwrap();
         free_impl(out, out_len);
         match resp {
-            busbar_plugin_abi::SecretResponse::Error { kind, message } => {
+            busbar_plugin::cold::SecretResponse::Error { kind, message } => {
                 assert_eq!(kind, busbar_api::SecretErrorKind::Invalid);
                 assert!(message.contains("settings.name required"), "got {message}");
             }
@@ -228,7 +228,7 @@ impl HookHandler for TestHook {
 /// object, notify returns None, configure ACKs the exact version, describe/status pass through.
 #[test]
 fn hook_dispatch_maps_ops() {
-    use busbar_plugin_abi::hook::{ConfigureBody, HookReply, HookRequest};
+    use busbar_plugin::cold::hook::{ConfigureBody, HookReply, HookRequest};
     match dispatch_hook(
         &TestHook,
         HookRequest::Decide {
@@ -285,7 +285,7 @@ fn hook_ffi_roundtrip_open_call_close() {
         assert_eq!(st, STATUS_OK);
         assert!(!handle.is_null());
 
-        let req = serde_json::to_vec(&busbar_plugin_abi::hook::HookRequest::Decide {
+        let req = serde_json::to_vec(&busbar_plugin::cold::hook::HookRequest::Decide {
             payload: serde_json::json!({}),
         })
         .unwrap();
@@ -293,11 +293,11 @@ fn hook_ffi_roundtrip_open_call_close() {
         let mut out_len: usize = 0;
         let st = hook_call_impl(handle, req.as_ptr(), req.len(), &mut out, &mut out_len);
         assert_eq!(st, STATUS_OK);
-        let resp: busbar_plugin_abi::hook::HookReply =
+        let resp: busbar_plugin::cold::hook::HookReply =
             serde_json::from_slice(std::slice::from_raw_parts(out, out_len)).unwrap();
         free_impl(out, out_len);
         match resp {
-            busbar_plugin_abi::hook::HookReply::Reply(v) => {
+            busbar_plugin::cold::hook::HookReply::Reply(v) => {
                 assert_eq!(v, serde_json::json!({"order": [0]}))
             }
             other => panic!("expected Reply, got {other:?}"),
@@ -436,7 +436,7 @@ fn export_default_handle_http_is_404() {
 fn export_abi_version_reads_the_shared_const_and_is_two() {
     assert_eq!(
         export_abi_version(),
-        busbar_plugin_abi::export::EXPORT_ABI_VERSION
+        busbar_plugin::cold::export::EXPORT_ABI_VERSION
     );
     assert_eq!(export_abi_version(), 2);
 }
@@ -758,12 +758,12 @@ fn ffi_ctor_error_surfaces() {
     }
 }
 
-/// `auth_abi_version()` reads `busbar_plugin_abi::AUTH_ABI_VERSION` rather than a bare literal,
+/// `auth_abi_version()` reads `busbar_plugin::cold::AUTH_ABI_VERSION` rather than a bare literal,
 /// mirroring `secret_abi_version()`/`hook_abi_version()`. The property that buys: a future bump
 /// of `AUTH_ABI_VERSION` propagates here automatically instead of silently drifting.
 #[test]
 fn auth_abi_version_reads_the_shared_const() {
-    assert_eq!(auth_abi_version(), busbar_plugin_abi::AUTH_ABI_VERSION);
+    assert_eq!(auth_abi_version(), busbar_plugin::cold::AUTH_ABI_VERSION);
 }
 
 /// Pin the auth payload schema at v2 (1.5.2 login primitives) — the SDK builds v2.
@@ -778,7 +778,7 @@ use busbar_api::{
     AuthModule, AuthOutcome, BeginLogin, CompleteLogin, LoginHop, LoginModule, LoginOutcome,
     Principal,
 };
-use busbar_plugin_abi::auth::{AuthRequest, AuthResponse, BeginLoginRequest, CompleteLoginRequest};
+use busbar_plugin::cold::auth::{AuthRequest, AuthResponse, BeginLoginRequest, CompleteLoginRequest};
 
 /// A verify-only module: implements AuthModule, takes LoginModule's fail-closed defaults.
 struct VerifyOnly;
@@ -862,7 +862,7 @@ fn dispatch_complete_login_identity() {
     let resp = dispatch_auth(
         &LoginMod,
         AuthRequest::CompleteLogin(CompleteLoginRequest {
-            token_response: Some(busbar_plugin_abi::auth::HttpResponse {
+            token_response: Some(busbar_plugin::cold::auth::HttpResponse {
                 status: 200,
                 body: "{}".into(),
             }),

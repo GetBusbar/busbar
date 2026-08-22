@@ -13,10 +13,10 @@ license = "Apache-2.0"
 tracing = { workspace = true }
 tracing-core = { workspace = true }
 busbar-api = { path = "../api" }
-busbar-plugin-abi = { path = "../plugin-abi" }
+busbar-plugin = { path = "../busbar-plugin" }
 serde_json = { workspace = true }
 
 [dev-dependencies]
 busbar-store-memory = { path = "../store-memory" }
 # The boundary_class integration test names the ABI status codes directly (STATUS_PANIC etc.).
-busbar-plugin-abi = { path = "../plugin-abi" }
+busbar-plugin = { path = "../busbar-plugin" }

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The **auth** payload schema (kind = [`crate::kind::AUTH`]) that rides the kind-neutral `call`.
+//! The **auth** payload schema (kind = [`crate::cold::kind::AUTH`]) that rides the kind-neutral `call`.
 //!
 //! ## Identity-only — STRUCTURAL, not merely conventional
 //!
