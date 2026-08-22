@@ -372,19 +372,34 @@ impl PoolRoute {
     /// and wedge the cell. Yielding the durable-scoped handle here is what re-homes that lifetime.
     pub(crate) fn into_task_dispatch(
         self,
-    ) -> Option<(Authorised, BreakerCell, crate::plane_host::DurableScope, String)> {
+        breakers: &Arc<PlaneBreakers>,
+    ) -> Option<(
+        Authorised,
+        BreakerCell,
+        crate::plane_host::DurableScope,
+        busbar_plugin::hot::AdmissionId,
+        String,
+    )> {
         let mut s = lock(&self.state);
         let idx = s.active?;
         let admission = s.admission.take()?;
         drop(s);
+        let lane = self.members[idx].lane;
+        let pool_key = self.pool_key.clone();
         let cell = BreakerCell {
-            key: self.pool_key.clone(),
-            lane: self.members[idx].lane,
+            key: pool_key.clone(),
+            lane,
         };
         let member = self.members.into_iter().nth(idx)?;
-        // The probe hold rides into the durable scope: reclaimed at task end, not request end.
-        let durable = crate::plane_host::DurableScope::with_handoff(Box::new(admission));
-        Some((member.auth?, cell, durable, member.name))
+        // The probe hold rides into the durable scope as a SETTLE-CAPABLE admission: the detached
+        // runner can record its observed outcome against the same `(key, lane)` cell through the host
+        // seam, and only an UNSETTLED probe releases when the durable scope drops at task end. This is
+        // the §4 handoff — the probe's lifetime re-homes from the request future to the task's.
+        let settling =
+            crate::plane_host::breaker::settling_admission(Arc::clone(breakers), pool_key, lane, admission);
+        let (durable, admission_id) =
+            crate::plane_host::DurableScope::with_settling_handoff(settling);
+        Some((member.auth?, cell, durable, admission_id, member.name))
     }
 }
 

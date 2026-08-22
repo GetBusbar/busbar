@@ -1879,7 +1879,9 @@ async fn create_task(
             refuse_route(id, &route, &refused),
         );
     }
-    let Some((authorised, cell, durable, member_id)) = route.into_task_dispatch() else {
+    let Some((authorised, cell, durable, admission_id, member_id)) =
+        route.into_task_dispatch(&breakers)
+    else {
         // Unreachable after a successful `admit`; refuse rather than panic on a caller's path.
         return log.refused(
             REASON_UPSTREAM_UNAVAILABLE,
@@ -1923,7 +1925,14 @@ async fn create_task(
             pool: std::sync::Arc::clone(&super::runtime(ctx.app).pool),
             handle: std::sync::Arc::clone(ctx.handle),
             breakers,
-            durable,
+            // The detached runner's host route: owns the app + the durable probe-hold + its id, so a
+            // `breaker_settle` over `host.host_state()` reaches the durable admission, and the probe
+            // releases owner-checked when the runner (and this guard) drop at task end.
+            host: crate::plane_host::DurableHostDispatch::new(
+                std::sync::Arc::clone(ctx.app),
+                durable,
+                admission_id,
+            ),
             cell,
             authorised,
             arguments,

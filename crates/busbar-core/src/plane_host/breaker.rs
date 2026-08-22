@@ -75,6 +75,27 @@ impl SettleAdmission for BreakerAdmission {
     }
 }
 
+/// Build a settle-capable breaker admission from an ALREADY-WON probe hold — the seam the failover
+/// reroute path (`mcp::reroute::into_task_dispatch`) uses to re-home a `PlaneAdmission` it won through
+/// [`crate::failover::walk`] into a [`DurableScope`](super::DurableScope) as a `Box<dyn SettleAdmission>`,
+/// so the detached runner can settle its observed outcome against the SAME `(key, lane)` cell (or let
+/// the durable scope release the unsettled probe on task-end drop). The reroute path owns a bare
+/// `PlaneAdmission` rather than one registered in a [`DispatchScope`](super::DispatchScope), so this
+/// wraps it exactly as [`breaker_admit`] wraps the token it registers.
+pub(crate) fn settling_admission(
+    breakers: Arc<PlaneBreakers>,
+    key: String,
+    lane: usize,
+    admission: PlaneAdmission,
+) -> Box<dyn SettleAdmission> {
+    Box::new(BreakerAdmission {
+        breakers,
+        key,
+        lane,
+        _admission: admission,
+    })
+}
+
 /// What a reported ABI [`StatusClass`] means to the breaker's disposition pipeline.
 enum Outcome {
     /// The guarded operation succeeded — close the half-open probe, dilute the error window.
@@ -405,6 +426,55 @@ mod tests {
                 "a second settle of the released id is a stale handle"
             );
         });
+    }
+
+    /// THE DURABLE SETTLE ROUTE IS REACHABLE (create_task site). Win a probe in a per-request
+    /// `DispatchScope`, hand the settling admission off into a `DurableScope` a `DurableHostDispatch`
+    /// owns, and settle it THROUGH the host `breaker_settle` seam over that durable arena — proving a
+    /// settle-capable host route reaches the detached-runner site with no change to the breaker path.
+    /// The recorded success recovers the HalfOpen cell to Closed, exactly as the per-request path does.
+    #[test]
+    fn durable_host_route_settles_through_breaker_settle() {
+        use crate::plane_host::{DispatchScope, DurableHostDispatch, DurableScope};
+        let app = std::sync::Arc::new(crate::test_support::TestApp::new().build());
+        app.plane_breakers.force_open(POOL_STR, 0, 1);
+
+        // Win the probe in the per-request arena, then hand it off to a runner-owned durable scope.
+        let disp = DispatchScope::new();
+        let id = {
+            let state = HostState {
+                app: &app,
+                scope: &disp,
+            };
+            let host: HostCtx =
+                (&state as *const HostState).cast_mut().cast::<std::os::raw::c_void>();
+            let k = key(0);
+            let id = breaker_admit(host, &k as *const Key);
+            assert!(!id.is_none(), "admit wins the half-open probe");
+            id
+        };
+        let durable = DurableScope::new();
+        let moved = disp
+            .handoff_settling_to(id, &durable)
+            .expect("the admission hands off to the durable scope");
+        assert_eq!(
+            app.plane_breakers.state(POOL_STR),
+            BreakerState::HalfOpen,
+            "the handed-off probe still holds the cell HalfOpen"
+        );
+
+        // The detached runner's host route: settle through the vtable over the DURABLE arena.
+        let route = DurableHostDispatch::new(std::sync::Arc::clone(&app), durable, moved);
+        let ok = signal(StatusClass::Ok);
+        let class = route.with_host(|host, vt| {
+            (vt.breaker_settle.unwrap())(host, route.admission(), &ok as *const Signal)
+        });
+        assert_eq!(class, StatusClass::Ok, "the durable admission settles through the host seam");
+        assert_eq!(
+            app.plane_breakers.state(POOL_STR),
+            BreakerState::Closed,
+            "the recorded success recovered the HalfOpen probe to Closed"
+        );
     }
 
     /// Fail-closed inputs: a null/empty/oversized-lane key refuses to `NONE`; a null signal and an
