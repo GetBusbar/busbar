@@ -31,6 +31,10 @@ busbar-api = { path = "../api" }
 # a profiling build with `--features busbar-timing/timing`. Method timers nest inside `profile.rs`.
 busbar-timing = { path = "../busbar-timing" }
 busbar-store-memory = { path = "../store-memory" }
+# The HOT-lane plugin/plane ABI (`busbar_plugin::hot`): the `#[repr(C)] PlaneHostVtable` and its POD
+# types. Consumed HOST-side by `src/plane_host` — the construction point + lifecycle arena the Phase-2
+# capability fan-out fills in. Additive: nothing in the engine calls the plane seam yet.
+busbar-plugin = { path = "../busbar-plugin" }
 busbar-plugin-loader = { path = "../plugin-loader" }
 busbar-plugin-sign = { path = "../plugin-sign" }
 busbar-secret-ref = { path = "../secret-ref" }
