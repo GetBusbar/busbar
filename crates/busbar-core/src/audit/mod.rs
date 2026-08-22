@@ -527,3 +527,7 @@ fn walk<R: ChainedRecord>(records: &[R], anchor: Anchor) -> Result<(), ChainBrea
 #[cfg(test)]
 #[path = "tests/chain_tests.rs"]
 mod chain_tests;
+
+#[cfg(test)]
+#[path = "tests/boot_verify_golden.rs"]
+mod boot_verify_golden;
