@@ -307,7 +307,11 @@ impl PlaneTrust for McpServers {
         // pressing this button is taking exactly the observation the sweep takes; if only one of
         // the two wrote the durable record, an operator's own remedy would be the one act that
         // could not clear a quarantine.
-        crate::plane::quarantine::settle(&subject.demotions, &subject.entry.id, report.state);
+        crate::plane_host::trust::quarantine_drift(
+            &subject.demotions,
+            &subject.entry.id,
+            report.state,
+        );
         // AND THE SAME LEDGER STAMP, for the same one-observation-one-set-of-books reason. Without
         // it a registration the operator just looked at was still `NeverChecked` to the unattended
         // timer, which re-fetched it on its very next tick — a second contact the operator's look

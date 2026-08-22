@@ -369,7 +369,7 @@ pub(crate) extern "C-unwind" fn drift_quarantine(host: HostCtx, key: *const Key)
             return StatusClass::Refused;
         };
         // THE ONE settle rule, written once: `Quarantined` records the durable demotion.
-        crate::plane::quarantine::settle(
+        quarantine_drift(
             &state.app.mcp_demotions,
             &subject,
             crate::trust::TrustState::Quarantined,
@@ -377,6 +377,21 @@ pub(crate) extern "C-unwind" fn drift_quarantine(host: HostCtx, key: *const Key)
         StatusClass::Ok
     }))
     .unwrap_or(StatusClass::Fault)
+}
+
+/// THE ONE drift-settle body — the compiled-in veneer both the extern-C [`drift_quarantine`] slot and
+/// the in-process plane (`mcp`'s verify-on-call and the admin trust-view verb) funnel through, the
+/// drift analogue of [`redeem_approval`]. Records `state` for `subject` in the durable demotion store:
+/// a `Quarantined` observation writes the demotion, an `Approved` one CLEARS it — the one settle rule,
+/// written once, so a single call site can never record a demotion the other never clears. The write
+/// is fire-and-forget at the primitive (the demotion is already in force in-process; a store hiccup
+/// costs durability, not the refusal). NEITHER the extern-C slot nor the plane reimplements the rule.
+pub(crate) fn quarantine_drift(
+    demotions: &crate::plane::quarantine::PlaneQuarantine,
+    subject: &str,
+    state: crate::trust::TrustState,
+) {
+    crate::plane::quarantine::settle(demotions, subject, state);
 }
 
 /// THE ONE redemption body — the compiled-in veneer both approval veneers funnel through, the trust

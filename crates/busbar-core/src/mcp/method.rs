@@ -1136,7 +1136,13 @@ async fn verify_on_call(ctx: &Ctx<'_>, name: &str) {
                         // `quarantine::settle`, shared with the admin `connect` verb, so one call site
                         // cannot record a demotion the other never clears. It keeps a demoted tool
                         // UN-ADVERTISED across a restart (`tools/list` does not itself re-verify).
-                        crate::plane::quarantine::settle(&demotions, &server.id, report.state);
+                        // Routed through the host drift veneer, the shared body the extern-C
+                        // `drift_quarantine` slot also funnels through — one settle rule, one seam.
+                        crate::plane_host::trust::quarantine_drift(
+                            &demotions,
+                            &server.id,
+                            report.state,
+                        );
                         if report.failure.is_some() {
                             // UNREACHABLE at verify → the gate below refuses fail-closed; latch the
                             // diagnostic so a persistent outage logs once.
