@@ -270,7 +270,10 @@ pub(crate) async fn refresh(
         // — never against a default this call site chose.
         grants: server.grants,
     };
-    let response = match server.transport.mcp_wire().send(&leg, &request).await {
+    let response = match crate::mcp::client::wire::wire_for(server.transport)
+        .send(&leg, &request)
+        .await
+    {
         Ok(r) => r,
         Err(e) => return Ok(record_failure(cache, server, &server_id, &e.to_string())),
     };

@@ -38,7 +38,7 @@
 //! the axis landed with one variant, the shape was proven by the one that existed, and every later
 //! variant was added by driving a real request down it rather than by anticipating one. A2A's three
 //! bindings arrived on the commits that armed them. `Stdio` arrived the same way, and what it bought
-//! is [`Transport::mcp_wire`] — the ONE match on this axis in the tree — and the deleted
+//! is [`Transport::upstream_wire`] — the ONE match on this axis in the tree — and the deleted
 //! `mcp/client/stdio.rs` supervisor coming back with a caller instead of an `#![allow(dead_code)]`.
 //!
 //! ## ONE VARIANT, ON PURPOSE
@@ -142,6 +142,22 @@ pub(crate) enum Transport {
     Stdio,
 }
 
+/// THE TWO MCP CLIENT WIRES a [`Transport`] can select — the neutral hand-off
+/// [`Transport::upstream_wire`] returns so the transport axis answers "which channel" without naming
+/// the MCP plane's wire vtable, which the plane maps to `&dyn McpWire` on its own side
+/// (`mcp/client/wire.rs`). A closed core enum rather than the plane's types, so the axis names no MCP
+/// plane type while the wire TYPES stay in the plane that owns them.
+// Constructed and read only on the MCP client leg (`plane-mcp`); with that plane compiled out there
+// is no client wire to select, so it is gated exactly as [`Transport::upstream_wire`] is.
+#[cfg(feature = "plane-mcp")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum UpstreamWireKind {
+    /// The streamable-HTTP POST wire (`mcp/client/transport.rs`'s `HttpTransport`).
+    StreamableHttp,
+    /// The child-process stdin/stdout wire (`mcp/client/stdio.rs`'s `StdioWire`).
+    Stdio,
+}
+
 impl Transport {
     /// Every transport, so a site that must cover all of them cannot silently cover some. The same
     /// role `Plane::ALL` plays for its axis: a variant absent from here is a variant nothing
@@ -187,36 +203,26 @@ impl Transport {
     ///
     /// `structure-lint.sh` bans the agnostic core from comparing a transport, and this is what
     /// replaces the comparison it bans: the axis answers "which channel" ONCE and hands back a
-    /// vtable, so `mcp/upstream.rs` sends bytes and cannot tell an HTTP POST from a write to a
-    /// child's stdin. A `match` in the dispatcher instead would have forked selection, credential
-    /// planning, timeout handling and error reporting the moment the second arm landed — which is
-    /// the shape the header above calls "a second dispatch path beside the matrix".
+    /// NEUTRAL discriminant, so `mcp/client/wire.rs` maps that to its own zero-sized vtable and
+    /// `mcp/upstream.rs` sends bytes without this axis naming the plane's wire types. A `match` in
+    /// the dispatcher instead would have forked selection, credential planning, timeout handling and
+    /// error reporting the moment the second arm landed — the shape the header calls "a second
+    /// dispatch path beside the matrix".
     ///
-    /// The returned wire is ZERO-SIZED and `'static`: everything per-upstream (sockets, children,
-    /// deadlines) rides on `WireLeg`, so this is a table lookup and not a construction.
-    // The one match on the transport axis, and it hands back an MCP client wire — a type that only
-    // exists when the MCP plane is compiled in. It is called ONLY from `crate::mcp` (the client
-    // legs), so with `plane-mcp` off it is dead; gating it here removes the last non-mcp source that
-    // would name an `mcp` type, without relocating the match off the transport axis.
+    /// The match on the transport axis stays HERE, where it is legitimate; only the mapping from this
+    /// discriminant to the plane's `&'static dyn McpWire` vtable moved into the plane, so the axis no
+    /// longer names an MCP plane type. `None` for the three A2A ingress bindings — they are never an
+    /// MCP client leg, and `mcp/config.rs` refuses any `transport:` that is not `streamable_http` or
+    /// `stdio` at boot, so a `None` here is a config-grammar defect the plane makes loud rather than a
+    /// silent wrong channel.
+    // Read only by the MCP client leg (`mcp/client/wire.rs`), which exists only when the MCP plane is
+    // compiled in; with `plane-mcp` off it is dead, so it is gated exactly as its one caller is.
     #[cfg(feature = "plane-mcp")]
-    pub(crate) fn mcp_wire(self) -> &'static dyn crate::mcp::client::wire::McpWire {
+    pub(crate) fn upstream_wire(self) -> Option<UpstreamWireKind> {
         match self {
-            Transport::Http => &crate::mcp::client::transport::HttpTransport,
-            Transport::Stdio => &crate::mcp::client::stdio::StdioWire,
-            // The three A2A bindings. They are legs of the AGENT plane's own ingress and no
-            // `tools:` entry can be configured onto one — `mcp/config.rs` accepts
-            // `streamable_http` and `stdio` and nothing else, so a value that would reach here is
-            // refused at boot with a named error rather than at first dispatch. The arm is loud
-            // rather than falling back to `HttpTransport`, because a silent fallback would turn a
-            // future config-grammar mistake into an MCP call quietly dispatched over the wrong
-            // channel, which is the exact failure this vtable exists to make impossible.
-            Transport::JsonRpc | Transport::HttpJson | Transport::Grpc => {
-                unreachable!(
-                    "transport `{}` is an A2A ingress binding and is never an MCP client leg; \
-                     mcp/config.rs refuses any other `transport:` value at boot",
-                    self.name()
-                )
-            }
+            Transport::Http => Some(UpstreamWireKind::StreamableHttp),
+            Transport::Stdio => Some(UpstreamWireKind::Stdio),
+            Transport::JsonRpc | Transport::HttpJson | Transport::Grpc => None,
         }
     }
 

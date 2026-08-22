@@ -867,7 +867,7 @@ pub(crate) enum Transport {
     /// Spelled and REFUSED for two releases, because there was no supervisor to reach — the one that
     /// existed was deleted rather than left unreachable. It is implemented now: `command:` names the
     /// binary, `mcp/client/stdio.rs` spawns and supervises it, and
-    /// [`crate::transport::Transport::mcp_wire`] is the arm a `tools/call` takes to get there.
+    /// [`crate::transport::Transport::upstream_wire`] is the arm a `tools/call` takes to get there.
     ///
     /// This registration is reached by SPAWNING, so the keys it takes are disjoint from the network
     /// ones: `command:`, `args:`, `env:` and `cwd:` instead of `url:`, and no credential keys at all

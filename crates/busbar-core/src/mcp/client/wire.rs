@@ -9,7 +9,7 @@
 //! [`crate::transport::Transport`] is an axis of the matrix, and `structure-lint.sh` bans the core
 //! from comparing one: a dispatch path that can see which transport it is on forks at every step it
 //! takes afterwards. So the axis answers the question once —
-//! [`crate::transport::Transport::mcp_wire`] is the only `match` on it in the tree — and hands back
+//! [`crate::transport::Transport::upstream_wire`] is the only `match` on it in the tree — and hands back
 //! an implementation of this trait. `mcp/upstream.rs` calls [`McpWire::send`] and cannot tell an
 //! HTTP POST from a child process's stdin, which is the property that keeps stdio from becoming a
 //! second dispatch path beside the first.
@@ -110,8 +110,7 @@ pub(crate) struct WireLeg<'a> {
 ///
 /// Implementors are ZERO-SIZED and hold no per-upstream state: the sockets live in the pool, the
 /// children live in the pool, and the trust lives in the catalogue. A wire is a function with a
-/// context handed to it, which is what lets [`crate::transport::Transport::mcp_wire`] return a
-/// `&'static` one.
+/// context handed to it, which is what lets [`wire_for`] return a `&'static` one.
 #[async_trait::async_trait]
 pub(crate) trait McpWire: Send + Sync {
     /// Send one JSON-RPC message and read the answer, bounded by `leg.timeout`.
@@ -145,6 +144,26 @@ pub(crate) trait McpWire: Send + Sync {
     async fn notify(&self, leg: &WireLeg<'_>, req: &OutboundRequest) -> Result<(), TransportError>;
 }
 
+/// RESOLVE A [`Transport`](crate::transport::Transport) TO ITS MCP CLIENT WIRE — the plane half of
+/// the split the axis makes in [`crate::transport::Transport::upstream_wire`]. The axis answers WHICH
+/// channel with a neutral discriminant (so it names no plane type); this maps that discriminant to
+/// the plane's own zero-sized `&'static dyn McpWire` vtable. The `None` arm is loud for the reason the
+/// old `match` was: an A2A binding is never an MCP client leg, and `mcp/config.rs` refuses any
+/// `transport:` that is not `streamable_http` or `stdio` at boot, so a value reaching it here is a
+/// config-grammar defect, never a silently wrong channel.
+pub(crate) fn wire_for(transport: crate::transport::Transport) -> &'static dyn McpWire {
+    use crate::transport::UpstreamWireKind;
+    match transport.upstream_wire() {
+        Some(UpstreamWireKind::StreamableHttp) => &super::transport::HttpTransport,
+        Some(UpstreamWireKind::Stdio) => &super::stdio::StdioWire,
+        None => unreachable!(
+            "transport `{}` is an A2A ingress binding and is never an MCP client leg; \
+             mcp/config.rs refuses any other `transport:` value at boot",
+            transport.name()
+        ),
+    }
+}
+
 /// SEND ONE LEG AND COUNT IT — the client direction's observability seam, and the ONLY way this
 /// tree reaches [`McpWire::send`].
 ///
@@ -160,7 +179,7 @@ pub(crate) trait McpWire: Send + Sync {
 /// than in each handler applies to the egress: there are two callers today (`mcp::upstream::call`
 /// and `mcp::client::issue::issue`) and a count at each of them is two sites that have to stay in
 /// agreement, plus a third the next verb author forgets. So the seam is the wire, the two callers
-/// stop naming `mcp_wire()` themselves, and a leg that is not counted is a leg that did not happen.
+/// stop naming `wire_for()` themselves, and a leg that is not counted is a leg that did not happen.
 ///
 /// ## The label pair, and why it is the model plane's and not a new one
 ///
@@ -203,7 +222,7 @@ pub(crate) async fn send(
     req: &OutboundRequest,
 ) -> Result<TransportResponse, TransportError> {
     crate::telemetry::upstream_attempt_on(leg.server, transport.name());
-    let out = transport.mcp_wire().send(leg, req).await;
+    let out = wire_for(transport).send(leg, req).await;
     if let Err(TransportError::Io(_) | TransportError::Unreachable(_)) = &out {
         crate::telemetry::upstream_failure_on(
             leg.server,
@@ -226,7 +245,7 @@ pub(crate) async fn notify(
     req: &OutboundRequest,
 ) -> Result<(), TransportError> {
     crate::telemetry::upstream_attempt_on(leg.server, transport.name());
-    let out = transport.mcp_wire().notify(leg, req).await;
+    let out = wire_for(transport).notify(leg, req).await;
     if let Err(TransportError::Io(_) | TransportError::Unreachable(_)) = &out {
         crate::telemetry::upstream_failure_on(
             leg.server,

@@ -97,7 +97,7 @@ pub(crate) struct Authorised {
     /// address; the wire that needs it is the wire that has one.
     pub(crate) url: String,
     /// THE CHANNEL this dispatch rides, resolved once here and turned into a vtable by
-    /// [`crate::transport::Transport::mcp_wire`] at the send site. Nothing between the two asks it
+    /// [`crate::transport::Transport::upstream_wire`] at the send site. Nothing between the two asks it
     /// which one it is — that is the axis rule, and it is what keeps a second transport from
     /// becoming a second dispatch path.
     pub(crate) transport: crate::transport::Transport,
@@ -506,7 +506,7 @@ pub(crate) async fn call(
         },
         satisfaction.as_ref(),
     );
-    // THE DISPATCH ARM, and it is a vtable lookup rather than a branch. `mcp_wire` is the only place
+    // THE DISPATCH ARM, and it is a vtable lookup rather than a branch. `upstream_wire` is the only place
     // in the tree that asks the transport axis which variant it is; from here down the leg is bytes
     // out and bytes back, identically for an HTTPS POST and for a write to a child's stdin.
     let leg = WireLeg {
@@ -525,7 +525,7 @@ pub(crate) async fn call(
     // classifying later would be guessing — which is exactly why the classification stays HERE and
     // only the settle moves out.
     //
-    // `wire::send`, not `mcp_wire().send`: the client leg's `busbar_upstream_attempts_total` /
+    // `wire::send`, not `wire_for().send`: the client leg's `busbar_upstream_attempts_total` /
     // `busbar_upstream_failures_total` count lives on that seam so a leg that is not counted is a
     // leg that did not happen. See `super::client::wire::send`. The breaker outcome and the counter
     // are DIFFERENT observers of the same leg — the breaker decides whether the next call is

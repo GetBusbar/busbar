@@ -168,7 +168,7 @@ pub(crate) async fn issue(
     };
 
     let outbound = verb.build(&auth.url, request_id, bearer.as_deref());
-    // THE DISPATCH ARM, and it is a vtable lookup rather than a branch. `mcp_wire` is the only place
+    // THE DISPATCH ARM, and it is a vtable lookup rather than a branch. `upstream_wire` is the only place
     // in the tree that asks the transport axis which variant it is; from here down the leg is bytes
     // out and bytes back, identically for an HTTPS POST and for a write to a child's stdin.
     let leg = WireLeg {
@@ -181,7 +181,7 @@ pub(crate) async fn issue(
     };
     // (2) THE SEND. A notification takes the one-way arm — see `super::wire::McpWire::notify` for
     // why sending one down the request path desynchronises a child's stream permanently. Both arms
-    // go through `super::wire`'s counted seam rather than through `mcp_wire()` directly, so every
+    // go through `super::wire`'s counted seam rather than through `wire_for()` directly, so every
     // verb busbar issues appears on `busbar_upstream_attempts_total` without this file remembering
     // to say so.
     if verb.is_notification() {
