@@ -99,6 +99,78 @@ pub(crate) fn settling_admission(
     })
 }
 
+/// Build the ABI [`Signal`] a host settle carries FROM the plane's own [`CanonicalSignal`] — the
+/// INVERSE of [`classify`], so a settle folded through the host scope reproduces the EXACT
+/// disposition the plane's own `record_signal` would (proven by `settle_through_host_matches_direct_record_signal`).
+/// A failure rides its fine [`FaultClass`], the `Retry-After` floor (flagged in `fault_flags` bit 0
+/// so a `0`-second header is distinct from "no header"), and the borrowed provider error-code — the
+/// exact three inputs [`classify`] reads back. The coarse `class` is the neutral failure carrier
+/// [`StatusClass::Fault`]; the FINE `fault_class` is what the host reads.
+///
+/// The returned `Signal` BORROWS `cs.provider_signal`; it MUST NOT outlive `cs`.
+pub(crate) fn failure_signal(cs: &CanonicalSignal) -> Signal {
+    let (flags, secs) = match cs.retry_after {
+        Some(s) => (0x01u8, s),
+        None => (0, 0),
+    };
+    let (ptr, len) = match cs.provider_signal.as_deref() {
+        Some(code) => (code.as_ptr(), code.len()),
+        None => (core::ptr::null(), 0),
+    };
+    Signal {
+        size: core::mem::size_of::<Signal>() as u32,
+        version: busbar_plugin::hot::POD_VERSION,
+        class: StatusClass::Fault,
+        _reserved: 0,
+        latency_nanos: 0,
+        bytes: 0,
+        fault_class: fault_of(cs.class),
+        fault_flags: flags,
+        _reserved2: 0,
+        _reserved3: 0,
+        retry_after_secs: secs,
+        provider_signal_ptr: ptr,
+        provider_signal_len: len,
+    }
+}
+
+/// The ABI [`Signal`] a host settle carries for a SUCCESS — [`classify`] maps `Ok` straight to
+/// `record_success`, closing the half-open probe exactly as the plane's own success record does.
+pub(crate) fn success_signal() -> Signal {
+    Signal {
+        size: core::mem::size_of::<Signal>() as u32,
+        version: busbar_plugin::hot::POD_VERSION,
+        class: StatusClass::Ok,
+        _reserved: 0,
+        latency_nanos: 0,
+        bytes: 0,
+        fault_class: FaultClass::Unspecified,
+        fault_flags: 0,
+        _reserved2: 0,
+        _reserved3: 0,
+        retry_after_secs: 0,
+        provider_signal_ptr: core::ptr::null(),
+        provider_signal_len: 0,
+    }
+}
+
+/// The inverse of [`classify`]'s fine [`FaultClass`] → [`BreakerClass`] table: the plane's own
+/// canonical class back to the ABI fine class the settle carries. Total — every [`BreakerClass`]
+/// maps to exactly one [`FaultClass`], so a settle built here round-trips through [`classify`].
+fn fault_of(class: BreakerClass) -> FaultClass {
+    match class {
+        BreakerClass::RateLimit => FaultClass::RateLimit,
+        BreakerClass::Overloaded => FaultClass::Overloaded,
+        BreakerClass::ServerError => FaultClass::UpstreamError,
+        BreakerClass::Timeout => FaultClass::Timeout,
+        BreakerClass::Network => FaultClass::Network,
+        BreakerClass::Auth => FaultClass::Auth,
+        BreakerClass::Billing => FaultClass::Billing,
+        BreakerClass::ClientError => FaultClass::ClientError,
+        BreakerClass::ContextLength => FaultClass::ContextLength,
+    }
+}
+
 /// What a reported ABI [`StatusClass`] means to the breaker's disposition pipeline.
 enum Outcome {
     /// The guarded operation succeeded — close the half-open probe, dilute the error window.
@@ -657,6 +729,42 @@ mod tests {
                 "a fault settle records a transient upstream signal and returns Ok"
             );
         });
+    }
+
+    /// INVERSE-BUILDER FAITHFULNESS: [`failure_signal`] is the exact inverse of [`classify`] — a
+    /// `CanonicalSignal` built into a `Signal` and classified back yields the SAME canonical signal
+    /// (class + provider code + retry-after floor), across every `BreakerClass` and with/without the
+    /// optional tail fields. This is what lets a settle folded through the host equal a direct
+    /// `record_signal`; the a2a/mcp CLUSTER-1 settle sites rely on it.
+    #[test]
+    fn failure_signal_round_trips_through_classify() {
+        use crate::breaker::StatusClass as BC;
+        let cases = [
+            CanonicalSignal { class: BC::RateLimit, provider_signal: Some("slow_down".to_string()), retry_after: Some(30) },
+            CanonicalSignal { class: BC::Overloaded, provider_signal: None, retry_after: Some(0) },
+            CanonicalSignal { class: BC::ServerError, provider_signal: None, retry_after: None },
+            CanonicalSignal { class: BC::Timeout, provider_signal: None, retry_after: None },
+            CanonicalSignal { class: BC::Network, provider_signal: None, retry_after: None },
+            CanonicalSignal { class: BC::Auth, provider_signal: Some("invalid_key".to_string()), retry_after: None },
+            CanonicalSignal { class: BC::Billing, provider_signal: None, retry_after: None },
+            CanonicalSignal { class: BC::ClientError, provider_signal: None, retry_after: None },
+            CanonicalSignal { class: BC::ContextLength, provider_signal: None, retry_after: None },
+        ];
+        for cs in cases {
+            let sig = failure_signal(&cs);
+            // SAFETY: `sig` borrows `cs`, which is live for this iteration; the tail is fully written.
+            match unsafe { classify(&sig) } {
+                Outcome::Failure(back) => assert_eq!(
+                    back, cs,
+                    "failure_signal must be the inverse of classify for {:?}",
+                    cs.class
+                ),
+                _ => panic!("a failure_signal must classify as a failure for {:?}", cs.class),
+            }
+        }
+        // The success builder maps straight to the Success outcome.
+        // SAFETY: no borrowed range; the tail is fully written.
+        assert!(matches!(unsafe { classify(&success_signal()) }, Outcome::Success));
     }
 
     /// FAITHFULNESS PROOF (classify level): the host's `classify` reproduces the EXACT

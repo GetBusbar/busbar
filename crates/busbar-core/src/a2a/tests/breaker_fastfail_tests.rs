@@ -185,12 +185,12 @@ fn a_backend_hard_down_opens_the_core_cell_and_the_second_hop_never_reaches_the_
     );
 }
 
-/// §4 A2A SCOPE UNIFICATION: with a shared host scope threaded, `prepare`'s un-pooled admit is
-/// RE-HOMED into that ONE scope (the same arena the relay-settle would run under) rather than held in
-/// `relay`'s local — so walk-admit and relay-settle share it. The outcome still records in place (PREP,
-/// unsettled), and the shared scope releases the probe as a no-op on its own drop.
+/// CLUSTER-1 A2A BREAKER INVERSION: with a shared host scope threaded, `prepare`'s un-pooled admit is
+/// RE-HOMED into that ONE scope, and the hop's outcome is SETTLED THROUGH that scope over the admit's
+/// id — so walk-admit and relay-settle share the arena and the settle consumes the probe (leaving the
+/// arena empty) while opening the cell, byte-identically to the legacy in-place record.
 #[test]
-fn a_shared_host_scope_rehomes_the_prepare_admit() {
+fn a_shared_host_scope_settles_the_prepare_admit() {
     use crate::plane_host::DispatchScope;
     let breakers = Arc::new(PlaneBreakers::new());
     let key = crate::store::PlaneBreakers::agent_key("planner");
@@ -204,7 +204,8 @@ fn a_shared_host_scope_rehomes_the_prepare_admit() {
     let rpc_id = serde_json::json!(1);
     let policy = FetchPolicy::default();
 
-    // WITH a shared scope: the admit is re-homed into it (registered), and the 401 opens the cell.
+    // WITH a shared scope: the admit is re-homed into it, then the 401 is SETTLED through the scope —
+    // consuming the probe (the arena is empty again) and opening the cell.
     let scope = DispatchScope::new();
     let mut call = a_call(&breakers, &rpc_id, &policy);
     call.host_scope = Some(&scope);
@@ -212,14 +213,14 @@ fn a_shared_host_scope_rehomes_the_prepare_admit() {
     assert!(matches!(out, Err(RelayRefusal::Status { status: 401, .. })));
     assert_eq!(
         scope.registered(),
-        1,
-        "the un-pooled admit was re-homed into the shared host scope, not held in relay's local"
+        0,
+        "the re-homed admit was SETTLED through the shared host scope, consuming the probe"
     );
     assert!(
         matches!(breakers.state(&key), crate::store::BreakerState::Open { .. }),
-        "the 401 still recorded in place and opened the cell (PREP: the shared probe is unsettled)"
+        "the settle folded the 401 through the same record_signal disposition and opened the cell"
     );
-    // The shared scope's own drop releases the (already-recorded) probe as a no-op.
+    // The shared scope's own drop finds nothing left — the settle already released the probe.
     drop(scope);
 
     // WITHOUT a shared scope (legacy / originate / unit tests): nothing is registered anywhere, and

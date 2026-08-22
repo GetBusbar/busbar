@@ -281,10 +281,10 @@ pub(crate) struct RelayCall<'a> {
     /// BEFORE `select_member` and moved onto the blocking relay thread, it is the single arena both
     /// the pooled WALK admit (pre-admitted upstream, its id in [`admission`](Self::admission)) and the
     /// un-pooled [`prepare`] admit register their settle-capable probe hold into — so
-    /// [`record_hop_outcome`] can settle EITHER by a host [`AdmissionId`](busbar_plugin::hot::AdmissionId)
-    /// in the same scope. `None` in the originate direction and in unit tests that admit directly, where
-    /// the probe hold keeps its legacy local lifetime (dropped after the record). ADDITIVE: the scope
-    /// re-homes the token's ownership; the settle itself is still the in-place record until CLUSTER-1.
+    /// [`record_hop_outcome`] settles through it by a host [`AdmissionId`](busbar_plugin::hot::AdmissionId)
+    /// in the same scope (the CLUSTER-1 inversion). `None` in the originate direction and in unit tests
+    /// that admit directly, where the probe hold keeps its legacy local lifetime (dropped after the
+    /// in-place record).
     pub(crate) host_scope: Option<&'a crate::plane_host::DispatchScope>,
     /// THE HOST ADMISSION ID FOR A PRE-ADMITTED (pooled WALK) HOP — the id the walk's probe hold was
     /// registered under in [`host_scope`](Self::host_scope) before this call was built.
@@ -1432,7 +1432,8 @@ fn outbound_of(body: &[u8]) -> (String, serde_json::Value) {
 /// end on the blocking thread) — the SAME "release after the record" ordering, since the record runs
 /// before the scope drops. When there is no shared scope (originate direction / a unit test that admits
 /// directly), the token is LEFT in the caller's local (its legacy lifetime) and this returns the
-/// pre-admitted walk id (or `NONE`). ADDITIVE: nothing settles by the returned id yet.
+/// pre-admitted walk id (or `NONE`). [`record_hop_outcome`] folds the hop's outcome through the scope
+/// by the returned id when one is live.
 fn rehome_admission(
     call: &RelayCall<'_>,
     token: &mut Option<crate::store::PlaneAdmission>,
@@ -1460,11 +1461,16 @@ fn rehome_admission(
 /// (see docs/circuit-breaker.md's two-stage pipeline), Stage 2 being the one core `breaker::classify`
 /// inside `PlaneBreakers::record_signal`. `refusal: None` is a hop that produced an answer.
 ///
-/// The `_settle` [`AdmissionId`](busbar_plugin::hot::AdmissionId) is the shared-scope handle CLUSTER-1
-/// will fold this outcome through (the §4 unification threaded it here); until then it is carried but
-/// the record is the in-place `breakers` call below.
+/// The `settle` [`AdmissionId`](busbar_plugin::hot::AdmissionId) is the shared-scope handle this hop's
+/// outcome is FOLDED THROUGH (CLUSTER-1 breaker inversion): when a [`host_scope`](RelayCall::host_scope)
+/// owns this hop's probe, the classified outcome is settled through it over `settle` — the same arena
+/// the walk-admit registered into. Without a shared scope (originate / unit tests that admit directly)
+/// the classified outcome records IN PLACE against the local probe. The disposition is byte-identical
+/// either way: [`crate::plane_host::breaker::failure_signal`] is the inverse of the host's `classify`,
+/// so a settle folds through the SAME `record_signal` the in-place call runs.
 ///
-/// What records and what deliberately does not:
+/// CLASSIFICATION stays here — where the refusal's transport/status structure still exists (Stage 1) —
+/// and only the SETTLE moves to the scope. What records and what deliberately does not:
 /// - `Transport` → `Network`; `Status` → classified from the HTTP status (401/403 → hard down,
 ///   5xx/429 → transient, true 4xx → ClientFault, never a penalty).
 /// - `BodyTooLarge` / `NotJson` / `Uncorrelated` → `ServerError`: the backend answered 2xx and the
@@ -1472,54 +1478,89 @@ fn rehome_admission(
 /// - `BackendError` records a SUCCESS: the backend was reachable and answered a well-formed A2A
 ///   error — a task-level failure from a backend that answered is the WORK failing, not the wire.
 /// - `Guard` / `Lease` / `Unframable` are busbar-side (nothing reached the backend); `Demoted` is
-///   TRUST, not health; `BreakerOpen` is the cell already speaking. None of them record.
+///   TRUST, not health; `BreakerOpen` is the cell already speaking. None of them record — through a
+///   shared scope this means the probe is left UNSETTLED so the scope's drop releases it.
 fn record_hop_outcome(
     call: &RelayCall<'_>,
-    _settle: busbar_plugin::hot::AdmissionId,
+    settle: busbar_plugin::hot::AdmissionId,
     refusal: Option<&RelayRefusal>,
 ) {
     let Some(target) = call.breakers.as_ref() else {
         return;
     };
-    let class = match refusal {
-        None | Some(RelayRefusal::BackendError { .. }) => {
-            target.breakers.record_success(&target.key, target.lane);
-            return;
-        }
-        Some(RelayRefusal::Transport { .. }) => crate::breaker::StatusClass::Network,
+    // STAGE 1 — classify the fine canonical outcome where the refusal's structure still exists.
+    let outcome = classify_hop(refusal);
+    // STAGE 2 — settle where the scope is. With a shared host scope owning this hop's probe, fold the
+    // outcome through it over `settle` (the CLUSTER-1 inversion); otherwise the legacy in-place record.
+    match call.host_scope {
+        Some(scope) if !settle.is_none() => match outcome {
+            HopOutcome::Success => {
+                scope.settle_admission(settle, &crate::plane_host::breaker::success_signal());
+            }
+            HopOutcome::Failure(cs) => {
+                scope.settle_admission(settle, &crate::plane_host::breaker::failure_signal(&cs));
+            }
+            // Not an upstream health signal: leave the probe UNSETTLED so the shared scope's drop
+            // releases it — the "record nothing" disposition, held to the scope's lifetime.
+            HopOutcome::Nothing => {}
+        },
+        _ => match outcome {
+            HopOutcome::Success => target.breakers.record_success(&target.key, target.lane),
+            HopOutcome::Failure(cs) => {
+                target.breakers.record_signal(&target.key, target.lane, &cs);
+            }
+            HopOutcome::Nothing => {}
+        },
+    }
+}
+
+/// The fine canonical outcome one hop's [`RelayRefusal`] means to the breaker — built where the
+/// refusal's transport/status structure still exists (Stage 1), then either recorded in place or
+/// folded through the shared host scope by [`record_hop_outcome`].
+enum HopOutcome {
+    /// Close the half-open probe / dilute the error window (a hop that produced an answer, or a
+    /// well-formed backend A2A error — the WORK failing, not the wire).
+    Success,
+    /// A wire/answer failure to fold, carried as the plane's own canonical signal.
+    Failure(crate::breaker::CanonicalSignal),
+    /// A busbar-side refusal that is not an upstream health signal — record nothing.
+    Nothing,
+}
+
+/// Stage-1 classification of one hop's [`RelayRefusal`] (see [`record_hop_outcome`] for the rationale
+/// of each arm). Pure: it reads the refusal's structure and yields the canonical outcome, recording
+/// nothing itself.
+fn classify_hop(refusal: Option<&RelayRefusal>) -> HopOutcome {
+    match refusal {
+        None | Some(RelayRefusal::BackendError { .. }) => HopOutcome::Success,
+        Some(RelayRefusal::Transport { .. }) => HopOutcome::Failure(crate::breaker::CanonicalSignal {
+            class: crate::breaker::StatusClass::Network,
+            provider_signal: None,
+            retry_after: None,
+        }),
         Some(RelayRefusal::Status { status, .. }) => {
-            target.breakers.record_signal(
-                &target.key,
-                target.lane,
-                &crate::breaker::normalize_raw_error(
-                    &crate::breaker::RawUpstreamError::from_status(*status),
-                    &std::collections::HashMap::new(),
-                ),
-            );
-            return;
+            HopOutcome::Failure(crate::breaker::normalize_raw_error(
+                &crate::breaker::RawUpstreamError::from_status(*status),
+                &std::collections::HashMap::new(),
+            ))
         }
         Some(
             RelayRefusal::BodyTooLarge { .. }
             | RelayRefusal::NotJson { .. }
             | RelayRefusal::Uncorrelated { .. },
-        ) => crate::breaker::StatusClass::ServerError,
+        ) => HopOutcome::Failure(crate::breaker::CanonicalSignal {
+            class: crate::breaker::StatusClass::ServerError,
+            provider_signal: None,
+            retry_after: None,
+        }),
         Some(
             RelayRefusal::Guard(_)
             | RelayRefusal::Demoted(_)
             | RelayRefusal::Lease(_)
             | RelayRefusal::Unframable { .. }
             | RelayRefusal::BreakerOpen { .. },
-        ) => return,
-    };
-    target.breakers.record_signal(
-        &target.key,
-        target.lane,
-        &crate::breaker::CanonicalSignal {
-            class,
-            provider_signal: None,
-            retry_after: None,
-        },
-    );
+        ) => HopOutcome::Nothing,
+    }
 }
 
 /// THE PREAMBLE EVERY HOP SHARES: guard the target, re-ask the trust question, build the request.
