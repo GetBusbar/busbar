@@ -375,25 +375,38 @@ impl GovState {
         self.signing_material().map(|m| m.signer.kid().to_string())
     }
 
-    /// BUSBAR'S AGENT-CARD ISSUER KEY, derived from the token signing key.
+    /// BUSBAR'S PUBLIC AGENT-CARD ISSUER KEY (`kid` + SPKI), derived from the token signing key — the
+    /// half a boot hook publishes for a caller to pin busbar by.
     ///
     /// A DERIVED SUBKEY, never the token signer itself — see
     /// [`crate::governance::signing::TokenSigner::derived_subkey_seed`] for the blast radius that
-    /// buys. `None` when this node has no signing key at all, which is the governance-off path;
-    /// [`crate::a2a::serve::rewrite_card`] then serves an unsigned card rather than no card.
+    /// buys. Derived through the A2A plane's `card_signer` seam rather than by naming that plane's
+    /// signer type, so this file names no `crate::a2a` type; the plane reduces the signer to these
+    /// PUBLIC halves core-side. `None` when this node has no signing key at all (the governance-off
+    /// path) or the A2A plane is compiled out (no plane declares a `card_signer`).
     ///
     /// Built per call rather than cached, and cheap enough to be: one SHA-256 and one ed25519 key
     /// expansion, on a card read rather than on the request hot path. A cached copy would be a
     /// second place the signing key lives that a rotation has to remember to invalidate, and
     /// `set_signing_key` swapping the material underneath a stale card signer is exactly the
     /// mint-under-one-key-verify-under-another failure the material is held together to prevent.
-    // Returns a `crate::a2a::sign::CardSigner`, a type that only exists when the A2A plane is compiled
-    // in. Its sole caller outside `crate::a2a` is the A2A `start`-hook plumbing in `boot.rs`, gated
-    // the same way — so it is compiled out with the plane (`plane-a2a` off).
+    pub(crate) fn a2a_card_issuer(&self) -> Option<crate::plane::registry::CardIssuer> {
+        let derive =
+            crate::plane::registry::builtin_plane_decl_for_config_section("agents")?.card_signer?;
+        self.signing_material().map(|m| derive(&m.signer).issuer)
+    }
+
+    /// BUSBAR'S AGENT-CARD SIGNER, TYPE-ERASED — derived from the token signing key through the same
+    /// plane seam and handed back opaque, so this file names no `crate::a2a` type. The A2A plane
+    /// downcasts it in `crate::a2a::sign::card_signer`. `None` when no signing key is configured; its
+    /// sole consumer is that plane-side helper, so it is gated with the plane.
     #[cfg(feature = "plane-a2a")]
-    pub(crate) fn a2a_card_signer(&self) -> Option<crate::a2a::sign::CardSigner> {
-        self.signing_material()
-            .map(|m| crate::a2a::sign::CardSigner::derived_from(&m.signer))
+    pub(crate) fn a2a_card_signer(
+        &self,
+    ) -> Option<std::sync::Arc<dyn std::any::Any + Send + Sync>> {
+        let derive =
+            crate::plane::registry::builtin_plane_decl_for_config_section("agents")?.card_signer?;
+        self.signing_material().map(|m| derive(&m.signer).signer)
     }
 
     /// The RAW SIGNING SECRET, for callers that need to DERIVE a key from it rather than sign with

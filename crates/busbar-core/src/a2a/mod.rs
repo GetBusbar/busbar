@@ -128,6 +128,7 @@ pub(crate) const PLANE_DECL: crate::plane::registry::PlaneDecl =
         admin_routes: Some(admin_routes),
         openapi: Some(openapi_fragment),
         config_validate: Some(a2a_config_validate),
+        card_signer: Some(crate::a2a::sign::derive_card_signer),
         hydrate: Some(a2a_hydrate),
         start: Some(a2a_start),
         // NOTHING TO CARRY ACROSS A SWAP. The A2A plane's runtime object (`A2aPlane`) is rebuilt from

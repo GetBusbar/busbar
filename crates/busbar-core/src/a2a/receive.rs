@@ -90,8 +90,8 @@ pub(crate) async fn well_known_card(CurrentApp(app): CurrentApp) -> Response {
     };
     // Signed by the same key that signs the fronted cards, read from the same place, so what an
     // external caller pins busbar by is one key rather than one per path.
-    let signer = app.governance.as_ref().and_then(|g| g.a2a_card_signer());
-    match super::serve::self_card(public_url, signer.as_ref()) {
+    let signer = crate::a2a::sign::card_signer(&app);
+    match super::serve::self_card(public_url, signer.as_deref()) {
         Ok(doc) => (
             [
                 (axum::http::header::CACHE_CONTROL, "public, max-age=3600"),
@@ -578,13 +578,13 @@ pub(crate) async fn card(
     // BUSBAR SIGNS WHAT BUSBAR SERVES. The vendor's signature cannot survive the rewrite, so the
     // served card carries busbar's own — which is what gives an external caller something to pin
     // busbar by.
-    let signer = app.governance.as_ref().and_then(|g| g.a2a_card_signer());
+    let signer = crate::a2a::sign::card_signer(&app);
     match super::serve::rewrite_card(
         &cached,
         &admitted.dispatch.backend_url,
         public_url,
         &admitted.dispatch.agent_id,
-        signer.as_ref(),
+        signer.as_deref(),
     ) {
         Ok(card) => (axum::http::StatusCode::OK, axum::Json(card)).into_response(),
         Err(e) => {

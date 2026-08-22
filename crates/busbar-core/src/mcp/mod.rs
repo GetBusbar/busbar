@@ -153,6 +153,7 @@ pub(crate) const PLANE_DECL: crate::plane::registry::PlaneDecl =
         admin_routes: Some(mcp_admin_routes),
         openapi: Some(mcp_openapi_fragment),
         config_validate: Some(mcp_config_validate),
+        card_signer: None,
         hydrate: Some(mcp_hydrate),
         // NO START HOOK. Verify-on-call is LAZY — it re-verifies on the `tools/call` path against a
         // ≤`verify_ttl` single-flight snapshot (see `crate::trust::verify`), so there is no background

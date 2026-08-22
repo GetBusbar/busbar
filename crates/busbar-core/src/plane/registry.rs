@@ -99,6 +99,21 @@ pub(crate) struct CardIssuer {
     pub(crate) issuer_spki_base64: String,
 }
 
+/// THE CARD-SIGNING MATERIAL a plane derives from busbar's token signer, in the ONE shape that lets
+/// core hold it without naming the plane's signer type. Built by [`PlaneDecl::card_signer`] entirely
+/// plane-side: the plane derives its own signer from the core [`TokenSigner`](crate::governance::signing::TokenSigner)
+/// (the seed is derived, never handed across raw), reduces it to the PUBLIC [`CardIssuer`] AND
+/// type-erases the private signer into an opaque `Arc<dyn Any>` — so governance can hand the public
+/// half to a boot hook and the opaque half to the plane's own card path while naming no
+/// `crate::a2a` type itself.
+pub(crate) struct CardSignerHandle {
+    /// The PUBLIC card-issuer key (`kid` + SPKI), the only half a boot hook or an operator ever sees.
+    pub(crate) issuer: CardIssuer,
+    /// The plane's card SIGNER, type-erased. Downcast back to its concrete type only inside the plane
+    /// that built it (`crate::a2a::sign`), never in core.
+    pub(crate) signer: std::sync::Arc<dyn std::any::Any + Send + Sync>,
+}
+
 /// EVERYTHING A PLANE'S BOOT HOOKS ([`PlaneDecl::hydrate`], [`PlaneDecl::start`]) MAY READ, and
 /// DELIBERATELY nothing that carries the audit chain, the governance context or the signing seed
 /// (invariant (a)). Its surface names [`PlaneStore`](crate::plane::store::PlaneStore) — never
@@ -332,6 +347,20 @@ pub struct PlaneDecl {
     #[allow(clippy::type_complexity)]
     pub(crate) config_validate:
         Option<fn(name: &str, def: &serde_json::Value) -> Result<(), String>>,
+
+    /// DERIVE THIS PLANE'S CARD-SIGNING MATERIAL from busbar's token signer — the seam that lets
+    /// governance hand out a card signer WITHOUT naming the plane's signer type. Given the core
+    /// [`TokenSigner`](crate::governance::signing::TokenSigner), the plane derives its own signer (a
+    /// derived subkey, never the token seed itself) and returns the PUBLIC [`CardIssuer`] plus that
+    /// private signer TYPE-ERASED in a [`CardSignerHandle`]. Only the A2A plane signs cards; `None`
+    /// for every other plane, so `GovState::a2a_card_signer`/`a2a_card_issuer` return `None` with the
+    /// plane compiled out and `governance/state.rs` names no `crate::a2a` type.
+    // Read only through the A2A card path (`plane-a2a`); with that plane compiled out nothing derives
+    // a card signer, so the field is genuinely unread there rather than dead.
+    #[cfg_attr(not(feature = "plane-a2a"), allow(dead_code))]
+    #[allow(clippy::type_complexity)]
+    pub(crate) card_signer:
+        Option<fn(&crate::governance::signing::TokenSigner) -> CardSignerHandle>,
 
     /// CARRY THIS PLANE'S ENGINE-OWNED STATE ACROSS A CONFIG SWAP — the plane half of
     /// [`crate::state::AppHandle::swap`]. Run once per swap, AFTER the next snapshot is fully built

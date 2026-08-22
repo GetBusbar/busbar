@@ -37,6 +37,7 @@ static WIDGET_PLANE: PlaneDecl = PlaneDecl {
     hydrate: None,
     start: None,
     config_validate: None,
+    card_signer: None,
     on_swap: None,
 };
 
@@ -137,6 +138,7 @@ fn a_same_key_registration_is_skipped_and_the_first_copy_wins() {
         hydrate: None,
         start: None,
         config_validate: None,
+        card_signer: None,
         on_swap: None,
     };
 
@@ -398,6 +400,7 @@ fn r2_a_mounted_plane_with_no_admission_refuses_boot() {
         hydrate: None,
         start: None,
         config_validate: None,
+        card_signer: None,
         on_swap: None,
     };
     let unit = ();
@@ -432,6 +435,7 @@ fn r2_a_mounted_plane_with_no_admission_refuses_boot() {
         hydrate: None,
         start: None,
         config_validate: None,
+        card_signer: None,
         on_swap: None,
     };
     let dispatch = build_dispatch(&[&MOUNTS_NOTHING], &slots)
@@ -469,6 +473,7 @@ fn r2_boot_a_plane_whose_start_errs_refuses_boot() {
         hydrate: None,
         start: Some(|_ctx| Err("refuser: outbound client identity did not resolve".to_string())),
         config_validate: None,
+        card_signer: None,
         on_swap: None,
     };
     let ctx = crate::plane::registry::BootCtx::stub();
@@ -498,6 +503,7 @@ fn r2_boot_a_plane_whose_start_errs_refuses_boot() {
         hydrate: None,
         start: Some(|_ctx| Ok(())),
         config_validate: None,
+        card_signer: None,
         on_swap: None,
     };
     crate::boot::run_start_hooks(&[&STARTS_CLEAN, &WIDGET_PLANE], &ctx)
@@ -525,6 +531,7 @@ fn r2_boot_a_plane_whose_hydrate_errs_refuses_boot() {
         hydrate: Some(|_ctx| Err("refuser: durable task state did not verify".to_string())),
         start: None,
         config_validate: None,
+        card_signer: None,
         on_swap: None,
     };
     let ctx = crate::plane::registry::BootCtx::stub();

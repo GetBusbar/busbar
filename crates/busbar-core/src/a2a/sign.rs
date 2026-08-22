@@ -112,6 +112,37 @@ impl std::fmt::Debug for CardSigner {
     }
 }
 
+/// DERIVE BUSBAR'S CARD-SIGNING MATERIAL for the plane seam — the A2A plane's half of
+/// [`crate::plane::registry::PlaneDecl::card_signer`]. Derives the [`CardSigner`] from the core token
+/// signer (a domain-separated subkey, never the token seed itself), reduces it to the PUBLIC
+/// [`crate::plane::registry::CardIssuer`], and TYPE-ERASES the private signer so governance can hold
+/// and hand it out without naming this type. Naming `CardSigner` HERE is correct: this is the A2A
+/// plane's own module, and it is what lets `governance/state.rs` derive a card signer without doing
+/// so.
+pub(crate) fn derive_card_signer(
+    signer: &crate::governance::signing::TokenSigner,
+) -> crate::plane::registry::CardSignerHandle {
+    let card = CardSigner::derived_from(signer);
+    crate::plane::registry::CardSignerHandle {
+        issuer: crate::plane::registry::CardIssuer {
+            kid: card.kid().to_string(),
+            issuer_spki_base64: card.issuer_spki_base64(),
+        },
+        signer: std::sync::Arc::new(card),
+    }
+}
+
+/// THE A2A PLANE'S CARD SIGNER for this deployment, downcast back HERE from the opaque handle
+/// `GovState::a2a_card_signer` holds — so the plane's card path reaches its signer while
+/// `governance/state.rs` names no `crate::a2a` type. `None` when no signing key is configured (the
+/// governance-off path), matching the old typed accessor's own absence.
+pub(crate) fn card_signer(app: &crate::state::App) -> Option<std::sync::Arc<CardSigner>> {
+    app.governance
+        .as_ref()
+        .and_then(|g| g.a2a_card_signer())
+        .and_then(|erased| erased.downcast::<CardSigner>().ok())
+}
+
 impl CardSigner {
     /// Derive the card-signing key from busbar's token signing key.
     ///

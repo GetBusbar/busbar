@@ -373,7 +373,7 @@ pub(super) fn extended_agent_card(
     let Some(public_url) = plane.public_url() else {
         return super::receive::no_receiving_side();
     };
-    let signer = app.governance.as_ref().and_then(|g| g.a2a_card_signer());
+    let signer = crate::a2a::sign::card_signer(app);
 
     // NOTHING FRONTED AT ALL is the one shape A2A has a specific error for: the card declares the
     // capability (it is a property of the binary, and busbar always has this verb) and the
@@ -404,7 +404,7 @@ pub(super) fn extended_agent_card(
         Some(super::serve::extended_card(
             public_url,
             &entitled,
-            signer.as_ref(),
+            signer.as_deref(),
         ))
     });
 
