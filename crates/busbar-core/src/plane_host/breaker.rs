@@ -85,6 +85,12 @@ impl SettleAdmission for BreakerAdmission {
 /// the durable scope release the unsettled probe on task-end drop). The reroute path owns a bare
 /// `PlaneAdmission` rather than one registered in a [`DispatchScope`](super::DispatchScope), so this
 /// wraps it exactly as [`breaker_admit`] wraps the token it registers.
+// Called only from the MCP (`mcp::reroute`) and A2A (`a2a::relay`/`a2a::receive`) plane paths, so it
+// reads dead when BOTH planes are compiled out; live with either on.
+#[cfg_attr(
+    not(any(feature = "plane-mcp", feature = "plane-a2a")),
+    allow(dead_code)
+)]
 pub(crate) fn settling_admission(
     breakers: Arc<PlaneBreakers>,
     key: String,
@@ -108,6 +114,12 @@ pub(crate) fn settling_admission(
 /// [`StatusClass::Fault`]; the FINE `fault_class` is what the host reads.
 ///
 /// The returned `Signal` BORROWS `cs.provider_signal`; it MUST NOT outlive `cs`.
+// Built only by the MCP and A2A plane settle paths, so it reads dead when both planes are compiled
+// out; live with either on.
+#[cfg_attr(
+    not(any(feature = "plane-mcp", feature = "plane-a2a")),
+    allow(dead_code)
+)]
 pub(crate) fn failure_signal(cs: &CanonicalSignal) -> Signal {
     let (flags, secs) = match cs.retry_after {
         Some(s) => (0x01u8, s),
@@ -136,6 +148,12 @@ pub(crate) fn failure_signal(cs: &CanonicalSignal) -> Signal {
 
 /// The ABI [`Signal`] a host settle carries for a SUCCESS — [`classify`] maps `Ok` straight to
 /// `record_success`, closing the half-open probe exactly as the plane's own success record does.
+// Built only by the MCP and A2A plane settle paths, so it reads dead when both planes are compiled
+// out; live with either on.
+#[cfg_attr(
+    not(any(feature = "plane-mcp", feature = "plane-a2a")),
+    allow(dead_code)
+)]
 pub(crate) fn success_signal() -> Signal {
     Signal {
         size: core::mem::size_of::<Signal>() as u32,
@@ -158,6 +176,9 @@ pub(crate) fn success_signal() -> Signal {
 /// [`classify`] maps `Refused` to `RecordNothing`, so settling this RELEASES the half-open probe
 /// without recording, exactly as dropping the raw `PlaneAdmission` did (the "record nothing"
 /// disposition: a busbar-side refusal / a not-transmitted leg).
+// Built only by the MCP plane leg (`mcp::tasks`/`mcp::reroute`) — the A2A relay never carries the
+// "record nothing" outcome — so it reads dead whenever the MCP plane is compiled out.
+#[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
 pub(crate) fn refused_signal() -> Signal {
     Signal {
         size: core::mem::size_of::<Signal>() as u32,
@@ -179,6 +200,12 @@ pub(crate) fn refused_signal() -> Signal {
 /// The inverse of [`classify`]'s fine [`FaultClass`] → [`BreakerClass`] table: the plane's own
 /// canonical class back to the ABI fine class the settle carries. Total — every [`BreakerClass`]
 /// maps to exactly one [`FaultClass`], so a settle built here round-trips through [`classify`].
+// Reached only through [`failure_signal`], so it shares that fn's liveness: dead when both planes are
+// compiled out, live with either on.
+#[cfg_attr(
+    not(any(feature = "plane-mcp", feature = "plane-a2a")),
+    allow(dead_code)
+)]
 fn fault_of(class: BreakerClass) -> FaultClass {
     match class {
         BreakerClass::RateLimit => FaultClass::RateLimit,
