@@ -831,6 +831,15 @@ async fn admitted(
     // re-serialising the parsed value would change a body busbar promised to pass through.
     body: axum::body::Bytes,
 ) -> Response {
+    // ── PHASE-1.5 HOST PLUMBING (ADDITIVE, not yet used by any capability inversion). ─────────────
+    //
+    // Hold the async-capable dispatch guard for the whole `admitted` future so a host handle is
+    // reachable at every synchronous breaker admit/settle site on this plane and the per-dispatch
+    // arena reclaims on any exit (return/cancel/panic). Borrows `app`, stack-pins an empty arena (no
+    // per-dispatch heap); the guard is `Send`, so this future stays `Send`. The SPAWN_BLOCKING relay
+    // hops need a `Send + 'static` route instead — that is the `SendHostDispatch` threaded into
+    // `unary_hop`/`stream_hop` below. Held-but-unused until CLUSTER-1 flips the in-place breaker calls.
+    let _host = crate::plane_host::HostDispatch::new(&app);
     // Re-read rather than threaded: `wire_refusal` above already refused every request that has no
     // key, so this branch is unreachable and is a clean refusal rather than an unwrap because it
     // is on a request path.
@@ -1577,10 +1586,14 @@ async fn admitted(
     let relayed_body = super::idmap::translate_request(&envelope, &admitted.dispatch.billed_key_id)
         .unwrap_or_else(|| body.to_vec());
 
+    // The `Send + 'static` host route for the SPAWN_BLOCKING relay hop (gap #2): a `HostDispatch`
+    // borrow cannot cross into `spawn_blocking`, so the blocking breaker admit/settle path takes an
+    // owned `SendHostDispatch` that materializes the raw `HostCtx` INSIDE the closure. ADDITIVE.
+    let hop_host = crate::plane_host::SendHostDispatch::new(std::sync::Arc::clone(&app));
     let response = if shape.requires_streaming {
-        stream_hop(hop_ctx, seam, gate, lease, relayed_body).await
+        stream_hop(hop_ctx, seam, gate, lease, relayed_body, hop_host).await
     } else {
-        unary_hop(hop_ctx, seam, gate, lease, relayed_body).await
+        unary_hop(hop_ctx, seam, gate, lease, relayed_body, hop_host).await
     };
     // The walked selection's probe hold outlives the hop that recorded its outcome (a record makes
     // this drop a no-op; an abandoned hop hands the probe back owner-checked).
@@ -1725,6 +1738,11 @@ async fn unary_hop(
     gate: Arc<dyn super::relay::DelegationGate>,
     lease: Option<super::creds::Lease>,
     body: Vec<u8>,
+    // The `Send + 'static` host route for the blocking relay call (gap #2, ADDITIVE, unused). Moved
+    // into the `spawn_blocking` closure below so the breaker admit/settle inside `relay` can reach a
+    // host handle without carrying the `!Send` `HostCtx` across the task boundary. CLUSTER-1 flips
+    // `relay`'s in-place breaker calls onto it; until then it is held-in-the-closure-but-unused.
+    host: crate::plane_host::SendHostDispatch,
 ) -> Response {
     let agent_id = ctx.agent_id.clone();
     let backend_url = ctx.backend_url.clone();
@@ -1738,6 +1756,9 @@ async fn unary_hop(
     let a2a_version = ctx.a2a_version;
     let breaker = ctx.breaker.clone();
     let relayed = tokio::task::spawn_blocking(move || {
+        // The Send host route rides onto the blocking thread; its arena reclaims when this closure
+        // ends (reclaim at HOP end). Held-but-unused until CLUSTER-1 wires `relay`'s breaker calls.
+        let _host = host;
         super::relay::relay(
             &super::relay::RelayCall {
                 agent_id: &agent_id,
@@ -1816,6 +1837,10 @@ async fn stream_hop(
     gate: Arc<dyn super::relay::DelegationGate>,
     lease: Option<super::creds::Lease>,
     body: Vec<u8>,
+    // The `Send + 'static` host route for the blocking relay call (gap #2, ADDITIVE, unused). See
+    // `unary_hop`; the streaming hop's `relay` runs on the same `spawn_blocking` thread and takes the
+    // same route so its breaker admit/settle can reach a host handle. Held-in-the-closure-but-unused.
+    host: crate::plane_host::SendHostDispatch,
 ) -> Response {
     let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(16);
 
@@ -1850,6 +1875,9 @@ async fn stream_hop(
         .get_unscoped(&ctx.task_id)
         .map_or(0, |t| t.artifact_cursor);
     let handle = tokio::task::spawn_blocking(move || {
+        // The Send host route rides onto the blocking thread; its arena reclaims when this closure
+        // ends (reclaim at HOP end). Held-but-unused until CLUSTER-1 wires `relay`'s breaker calls.
+        let _host = host;
         let mut sink = |ev: super::relay::RelayEvent| -> super::relay::ChunkFlow {
             // THE PAIRING, off the stream too. A streaming submission is the one case where the
             // caller is MOST likely to follow up by id - a resubscribe, a cancel - and a mapping
