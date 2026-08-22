@@ -206,6 +206,18 @@ impl ChainedRecord for TaskEventRow {
     }
 }
 
+/// The A2A task event's contribution to the generic [`crate::audit::journal::Journal`]: its neutral
+/// store kind and the envelope it crosses the store seam in. This is the whole of what the durable
+/// seq-authority machine needs from the plane — the per-task position cache, write-ordering and
+/// store-resume are all core's. Ungated (its deps are core), though its only instantiation is the
+/// `plane-a2a`-gated task store.
+impl crate::audit::journal::JournalRecord for TaskEventRow {
+    const KIND: &'static str = crate::plane::store::KIND_TASK_EVENT;
+    fn to_plane_record(&self) -> busbar_api::StoreResult<busbar_api::PlaneRecord> {
+        crate::plane::store::task_event_record(self)
+    }
+}
+
 #[cfg(test)]
 #[path = "tests/provenance_tests.rs"]
 mod provenance_tests;

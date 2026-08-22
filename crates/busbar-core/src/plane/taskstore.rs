@@ -43,22 +43,20 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use crate::audit::journal::{Journal, JournalError};
 use crate::audit::ChainBreak;
 
-use super::provenance::{self, EventInput, TaskChain};
+use super::provenance::{self, EventInput};
 use crate::a2a::task::{Task, TaskError, TaskState};
-use crate::plane::store::{
-    decode, task_event_record, task_record, PlaneStore, KIND_TASK, KIND_TASK_EVENT,
-};
+use crate::plane::store::{decode, task_record, PlaneStore, KIND_TASK, KIND_TASK_EVENT};
 use busbar_api::{PlaneSelector, StoreError, StoreResult, TaskEventRow, TaskRow};
 
-/// One task plus its provenance chain position. The events themselves are NOT held in RAM — the
-/// store owns them, and holding every event of every long-running task would defeat the point of
-/// having a durable store at all.
+/// One task in the working set. Its provenance chain POSITION is no longer held here — that moved to
+/// the generic [`Journal`], keyed by task id — and the events themselves were never in RAM: the store
+/// owns them, and holding every event of every long-running task would defeat a durable store.
 #[derive(Debug, Clone)]
 struct Entry {
     task: Task,
-    chain: TaskChain,
 }
 
 /// Why a scoped read was refused.
@@ -90,12 +88,26 @@ pub(crate) struct Rehydrated {
     pub(crate) chain_breaks: Vec<ChainBreak>,
 }
 
-/// The in-flight task registry. No `Debug`: `dyn Store` is not `Debug` (a store backend must not be
-/// obliged to render itself, and one that did would be a place a credential could surface in a log).
-#[derive(Default)]
+/// The in-flight task registry. No `Debug`: the journal holds a `dyn PlaneStore` (not `Debug` — a
+/// backend must not be obliged to render itself, where a credential could surface in a log).
+///
+/// The WORKING SET (`tasks`) and the per-task provenance CHAIN (`journal`) are two maps keyed by the
+/// same task id, kept in lockstep: a task is seeded into both at submit/restore and forgotten from
+/// both at terminal eviction/compaction. The journal is uncapped (`usize::MAX`) — a task table is
+/// bounded by its own lifecycle (terminal eviction + retention), not by an LRU, so no active task's
+/// position is ever evicted out from under a mutation.
 pub(crate) struct TaskRegistry {
     tasks: Mutex<HashMap<String, Entry>>,
-    sink: Mutex<Option<Arc<dyn PlaneStore>>>,
+    journal: Journal<TaskEventRow>,
+}
+
+impl Default for TaskRegistry {
+    fn default() -> Self {
+        Self {
+            tasks: Mutex::new(HashMap::new()),
+            journal: Journal::new(usize::MAX),
+        }
+    }
 }
 
 /// THE PROCESS-WIDE REGISTRY. Process state, not config-derived state, so it lives as a global
@@ -162,19 +174,17 @@ impl TaskRegistry {
         self.tasks.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    /// The durable sink, owned by the journal (the one handle both the `task_event` chain and the
+    /// `task` row upserts persist through). `None` is the documented `store: memory` RAM-cache posture.
     fn sink(&self) -> Option<Arc<dyn PlaneStore>> {
-        self.sink
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .as_ref()
-            .cloned()
+        self.journal.sink()
     }
 
     /// Attach the configured governance store as the DURABLE SINK. Called once at boot. With no
     /// sink attached (or with a backend that implements none of the task methods) the registry is a
     /// RAM cache and nothing survives a restart, which is the documented `store: memory` behaviour.
     pub(crate) fn set_sink(&self, store: Arc<dyn PlaneStore>) {
-        *self.sink.lock().unwrap_or_else(|e| e.into_inner()) = Some(store);
+        self.journal.set_sink(store);
     }
 
     /// TEST ONLY: drop the sink again, so a test that attached one to the process-wide [`TASKS`]
@@ -183,7 +193,7 @@ impl TaskRegistry {
     /// evidence, which is the failure this whole module exists to prevent.
     #[cfg(test)]
     pub(crate) fn clear_sink_for_test(&self) {
-        *self.sink.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        self.journal.clear_sink_for_test();
     }
 
     /// BOOT REHYDRATE. Reads every persisted task, loads the ACTIVE ones into the working set, and
@@ -218,9 +228,11 @@ impl TaskRegistry {
                 out.terminal += 1;
                 continue;
             }
-            // The chain is resumed from what is persisted, and VERIFIED first. A break is reported
-            // and the chain continues from the broken tail: refusing to continue would mean anybody
-            // who can corrupt one event can silently stop all further provenance for that task.
+            // The chain is resumed from what is persisted, and VERIFIED first — the journal seeds this
+            // one task's position from the events THIS loop read (it drives the row walk, not the
+            // whole-store enumeration, so terminal tasks' chains are never cached). A break is
+            // reported and the chain continues from the broken tail: refusing to continue would mean
+            // anybody who can corrupt one event can silently stop all further provenance for that task.
             let events: Vec<TaskEventRow> = store
                 .list_plane_records(
                     KIND_TASK_EVENT,
@@ -229,21 +241,17 @@ impl TaskRegistry {
                 .iter()
                 .map(|body| decode(body))
                 .collect::<StoreResult<_>>()?;
-            let chain = match TaskChain::from_persisted(&events) {
-                Ok(c) => c,
-                Err(brk) => {
-                    crate::diagnostics::diag_error!(
-                        crate::diagnostics::PLANE_TASK_CHAIN_VERIFY_FAILED,
-                        task_id = %task.task_id,
-                        break_detail = %brk,
-                        "A2A per-task provenance CHAIN VERIFICATION FAILED on restore — the \
-                         persisted events do not verify against their own hash chain"
-                    );
-                    out.chain_breaks.push(brk);
-                    TaskChain::from_persisted_unverified(&events)
-                }
-            };
-            tasks.insert(task.task_id.clone(), Entry { task, chain });
+            if let Some(brk) = self.journal.seed_position(&task.task_id, &events) {
+                crate::diagnostics::diag_error!(
+                    crate::diagnostics::PLANE_TASK_CHAIN_VERIFY_FAILED,
+                    task_id = %task.task_id,
+                    break_detail = %brk,
+                    "A2A per-task provenance CHAIN VERIFICATION FAILED on restore — the \
+                     persisted events do not verify against their own hash chain"
+                );
+                out.chain_breaks.push(brk);
+            }
+            tasks.insert(task.task_id.clone(), Entry { task });
             out.active += 1;
         }
         Ok(out)
@@ -255,34 +263,30 @@ impl TaskRegistry {
     /// caller but not yet persisted is precisely the task a crash loses while the caller believes it
     /// is running.
     pub(crate) fn submit(&self, task: &Task, request_id: &str) -> Result<Task, TaskStoreError> {
-        let mut chain = TaskChain::new();
-        let ev = chain.append(
-            &task.task_id,
-            EventInput {
-                kind: provenance::EV_SUBMITTED,
-                context_id: task.context_id.clone(),
-                principal: task.principal.clone(),
-                agent_id: task.agent_id.clone(),
-                state: task.state.as_str().to_string(),
-                request_id: request_id.to_string(),
-                ts: task.created_at,
-            },
-        );
+        // The task ROW is upserted first, then the genesis event is minted+appended+committed by the
+        // journal (the write-ordering invariant is the journal's) — the same order as before: row
+        // durable before the event, working set updated only after both succeed.
         if let Some(store) = self.sink() {
             store
                 .upsert_plane_record(&task_record(&task.to_row()).map_err(TaskStoreError::Store)?)
                 .map_err(TaskStoreError::Store)?;
-            store
-                .append_plane_record(&task_event_record(&ev).map_err(TaskStoreError::Store)?)
-                .map_err(TaskStoreError::Store)?;
         }
-        self.tasks().insert(
-            task.task_id.clone(),
-            Entry {
-                task: task.clone(),
-                chain,
-            },
-        );
+        self.journal
+            .record(
+                &task.task_id,
+                EventInput {
+                    kind: provenance::EV_SUBMITTED,
+                    context_id: task.context_id.clone(),
+                    principal: task.principal.clone(),
+                    agent_id: task.agent_id.clone(),
+                    state: task.state.as_str().to_string(),
+                    request_id: request_id.to_string(),
+                    ts: task.created_at,
+                },
+            )
+            .map_err(|JournalError::Store(e)| TaskStoreError::Store(e))?;
+        self.tasks()
+            .insert(task.task_id.clone(), Entry { task: task.clone() });
         Ok(task.clone())
     }
 
@@ -310,9 +314,8 @@ impl TaskRegistry {
         let kind = provenance::event_kind_for_transition(entry.task.state, to);
         candidate.transition_to(to, now)?;
 
-        let mut chain = entry.chain.clone();
-        let ev = chain.append(
-            task_id,
+        self.write_through(
+            &candidate,
             EventInput {
                 kind,
                 context_id: candidate.context_id.clone(),
@@ -322,20 +325,26 @@ impl TaskRegistry {
                 request_id: request_id.to_string(),
                 ts: now,
             },
-        );
+        )?;
+        entry.task = candidate.clone();
+        Ok(candidate)
+    }
+
+    /// The SHARED write-through for a mutation that changes the task row AND appends a provenance
+    /// event: upsert the row durably FIRST, then let the journal mint+append+commit the event under
+    /// its write-ordering invariant. Row-before-event and working-set-after-both, the order every
+    /// mutator kept before the cleave — extracted here so each one delegates instead of re-deriving it.
+    /// The in-memory working set is NOT touched (the caller updates it only after this returns `Ok`).
+    fn write_through(&self, task: &Task, event: EventInput) -> Result<(), TaskStoreError> {
         if let Some(store) = self.sink() {
             store
-                .upsert_plane_record(
-                    &task_record(&candidate.to_row()).map_err(TaskStoreError::Store)?,
-                )
-                .map_err(TaskStoreError::Store)?;
-            store
-                .append_plane_record(&task_event_record(&ev).map_err(TaskStoreError::Store)?)
+                .upsert_plane_record(&task_record(&task.to_row()).map_err(TaskStoreError::Store)?)
                 .map_err(TaskStoreError::Store)?;
         }
-        entry.task = candidate.clone();
-        entry.chain = chain;
-        Ok(candidate)
+        self.journal
+            .record(&task.task_id, event)
+            .map_err(|JournalError::Store(e)| TaskStoreError::Store(e))?;
+        Ok(())
     }
 
     /// DISPATCH: record which agent this task was routed to, and chain a `task.delegated` event.
@@ -356,9 +365,8 @@ impl TaskRegistry {
         let mut candidate = entry.task.clone();
         candidate.agent_id = agent_id.to_string();
         candidate.updated_at = now;
-        let mut chain = entry.chain.clone();
-        let ev = chain.append(
-            task_id,
+        self.write_through(
+            &candidate,
             EventInput {
                 kind: provenance::EV_DELEGATED,
                 context_id: candidate.context_id.clone(),
@@ -368,19 +376,8 @@ impl TaskRegistry {
                 request_id: request_id.to_string(),
                 ts: now,
             },
-        );
-        if let Some(store) = self.sink() {
-            store
-                .upsert_plane_record(
-                    &task_record(&candidate.to_row()).map_err(TaskStoreError::Store)?,
-                )
-                .map_err(TaskStoreError::Store)?;
-            store
-                .append_plane_record(&task_event_record(&ev).map_err(TaskStoreError::Store)?)
-                .map_err(TaskStoreError::Store)?;
-        }
+        )?;
         entry.task = candidate.clone();
-        entry.chain = chain;
         Ok(candidate)
     }
 
@@ -403,32 +400,27 @@ impl TaskRegistry {
         now: u64,
         request_id: &str,
     ) -> Result<(), TaskStoreError> {
-        let mut tasks = self.tasks();
+        let tasks = self.tasks();
         let entry = tasks
-            .get_mut(task_id)
+            .get(task_id)
             .ok_or_else(|| TaskStoreError::NoSuchTask(task_id.to_string()))?;
-        let mut chain = entry.chain.clone();
-        let ev = chain.append(
-            task_id,
-            EventInput {
-                kind,
-                context_id: entry.task.context_id.clone(),
-                principal: entry.task.principal.clone(),
-                agent_id: entry.task.agent_id.clone(),
-                // The state the task was in when the notification carrying it was attempted — the
-                // notification body is built from exactly this, so the record says what the receiver
-                // was told, not merely that it was told something.
-                state: entry.task.state.as_str().to_string(),
-                request_id: request_id.to_string(),
-                ts: now,
-            },
-        );
-        if let Some(store) = self.sink() {
-            store
-                .append_plane_record(&task_event_record(&ev).map_err(TaskStoreError::Store)?)
-                .map_err(TaskStoreError::Store)?;
-        }
-        entry.chain = chain;
+        // A delivery attempt changes neither the state nor the agent, so this appends an event and
+        // touches nothing else on the row — straight to the journal, no task-row upsert.
+        let event = EventInput {
+            kind,
+            context_id: entry.task.context_id.clone(),
+            principal: entry.task.principal.clone(),
+            agent_id: entry.task.agent_id.clone(),
+            // The state the task was in when the notification carrying it was attempted — the
+            // notification body is built from exactly this, so the record says what the receiver
+            // was told, not merely that it was told something.
+            state: entry.task.state.as_str().to_string(),
+            request_id: request_id.to_string(),
+            ts: now,
+        };
+        self.journal
+            .record(task_id, event)
+            .map_err(|JournalError::Store(e)| TaskStoreError::Store(e))?;
         Ok(())
     }
 
@@ -454,9 +446,8 @@ impl TaskRegistry {
         let mut candidate = entry.task.clone();
         candidate.artifact_cursor = cursor;
         candidate.updated_at = now;
-        let mut chain = entry.chain.clone();
-        let ev = chain.append(
-            task_id,
+        self.write_through(
+            &candidate,
             EventInput {
                 kind: provenance::EV_ARTIFACT,
                 context_id: candidate.context_id.clone(),
@@ -466,19 +457,8 @@ impl TaskRegistry {
                 request_id: request_id.to_string(),
                 ts: now,
             },
-        );
-        if let Some(store) = self.sink() {
-            store
-                .upsert_plane_record(
-                    &task_record(&candidate.to_row()).map_err(TaskStoreError::Store)?,
-                )
-                .map_err(TaskStoreError::Store)?;
-            store
-                .append_plane_record(&task_event_record(&ev).map_err(TaskStoreError::Store)?)
-                .map_err(TaskStoreError::Store)?;
-        }
+        )?;
         entry.task = candidate.clone();
-        entry.chain = chain;
         Ok(candidate)
     }
 
@@ -588,6 +568,10 @@ impl TaskRegistry {
         match tasks.get(task_id) {
             Some(e) if e.task.state.is_terminal() => {
                 tasks.remove(task_id);
+                // Release the journal position too, in lockstep with the working set — the durable
+                // events stay in the store, but a terminal task takes no more appends, so its RAM
+                // position is dropped rather than kept for the life of the process.
+                self.journal.forget(task_id);
                 true
             }
             _ => false,
@@ -605,7 +589,16 @@ impl TaskRegistry {
             None => 0,
         };
         let mut tasks = self.tasks();
-        tasks.retain(|_, e| !(e.task.state.is_terminal() && e.task.updated_at < before));
+        let dropped: Vec<String> = tasks
+            .iter()
+            .filter(|(_, e)| e.task.state.is_terminal() && e.task.updated_at < before)
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in &dropped {
+            tasks.remove(id);
+            // Release each dropped task's journal position in lockstep with the working set.
+            self.journal.forget(id);
+        }
         Ok(removed)
     }
 

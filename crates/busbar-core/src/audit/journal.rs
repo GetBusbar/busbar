@@ -40,10 +40,12 @@
 //! REPORTED and still resumed from its tail (via [`Chain::from_persisted_unverified`]): refusing to
 //! restore a tamper-detected chain would convert a detection control into a deletion primitive.
 
-// UNUSED IN PRODUCTION until the calllog/taskstore cleave wires it (Phase 3 commits 3 and 5). The
-// mechanism, the write-ordering and the restore are all real and tested here over a throwaway record
-// type; the plane record sites adopt them next. Scoped per-item as callers land, not left as a
-// module-wide blanket, so the next method to lose its caller breaks the build.
+// The MCP call log (`plane::calllog`, `plane-mcp`) and the A2A task store (`plane::taskstore`,
+// `plane-a2a`) both wire this in production. But with BOTH planes compiled out
+// (`--no-default-features`) nothing instantiates a `Journal`, so every method here is dead on that
+// configuration — exactly as the plane modules themselves are, which carry the same blanket. Hence
+// the module-wide allow rather than per-item: the "dead" set is the whole module under one cfg and
+// fully live under another, so a per-item list would be noise that says nothing a reader can act on.
 #![cfg_attr(not(test), allow(dead_code))]
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -154,7 +156,11 @@ impl<R: JournalRecord> Journal<R> {
         self.positions.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    fn sink(&self) -> Option<Arc<dyn PlaneStore>> {
+    /// The attached durable sink, if any. `pub(crate)` because a stream may persist OTHER durable
+    /// state beside its journaled chain (the A2A task table upserts a `task` row next to its
+    /// `task_event` chain) and must reach the same backend — the journal owns the one sink handle so
+    /// there is not a second to keep in sync.
+    pub(crate) fn sink(&self) -> Option<Arc<dyn PlaneStore>> {
         self.sink
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -165,6 +171,14 @@ impl<R: JournalRecord> Journal<R> {
     /// Attach the configured durable store as the write-through SINK. Called once at boot.
     pub(crate) fn set_sink(&self, store: Arc<dyn PlaneStore>) {
         *self.sink.lock().unwrap_or_else(|e| e.into_inner()) = Some(store);
+    }
+
+    /// TEST ONLY: drop the sink again, so a test that attached one to a process-wide journal leaves it
+    /// as it found it. No production caller: detaching a live deployment's sink mid-run would silently
+    /// stop persisting evidence, the exact failure this module exists to prevent.
+    #[cfg(test)]
+    pub(crate) fn clear_sink_for_test(&self) {
+        *self.sink.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
 
     /// Commit `chain` as `scope`'s current position and record it as the MOST-recently-used, evicting
@@ -275,6 +289,33 @@ impl<R: JournalRecord> Journal<R> {
             out.scopes += 1;
         }
         Ok(out)
+    }
+
+    /// SEED one scope's position from records the CALLER already read. For a rehydrate that drives its
+    /// own row loop rather than the whole-store enumeration [`Journal::restore_from_store`] does — the
+    /// A2A task table walks `task` rows and loads only the ACTIVE ones' event chains, so it hands each
+    /// active scope's events here instead of letting the journal enumerate (and cache) every terminal
+    /// task's chain too. Verifies and REPORTS a break exactly as `restore_from_store` does (the broken
+    /// chain still resumes from its tail via [`Chain::from_persisted_unverified`]); returns the break
+    /// for the caller to log in its own vocabulary, or `None` when the chain verifies.
+    pub(crate) fn seed_position(&self, scope: &str, records: &[R]) -> Option<ChainBreak> {
+        let (chain, brk) = match Chain::from_persisted(records) {
+            Ok(c) => (c, None),
+            Err(b) => (Chain::from_persisted_unverified(records), Some(b)),
+        };
+        let mut positions = self.positions();
+        Self::commit_position(&mut positions, &self.overflowed, self.cap, scope, chain);
+        brk
+    }
+
+    /// DROP one scope's cached position. For a stream whose scopes have a lifecycle the journal does
+    /// not (a task reaches a terminal state and is evicted from the working set, or a retention sweep
+    /// collects it): the durable records stay in the store, but the RAM position is released so the
+    /// cache does not grow one entry per scope ever seen. Never call it on a scope that may still be
+    /// appended to — reopening it would resume from the store tail (with a sink) or FORK at seq 1
+    /// (without one).
+    pub(crate) fn forget(&self, scope: &str) {
+        self.positions().shift_remove(scope);
     }
 
     /// RECORD one entry: chain it to MINT the sequence and link, write it through, and advance the
