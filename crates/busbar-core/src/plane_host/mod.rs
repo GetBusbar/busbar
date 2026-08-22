@@ -40,6 +40,7 @@ pub use vtable::build_plane_host_vtable;
 
 use busbar_plugin::hot::host::{HostCtx, PlaneHostVtable};
 use crate::state::App;
+use std::sync::Arc;
 
 /// Core's own state behind the opaque [`HostCtx`] the plane ABI threads through every host call. A
 /// plane never dereferences the `HostCtx`; it passes it back, and core recovers THIS via [`recover`].
@@ -89,18 +90,137 @@ pub fn with_dispatch_scope<R>(
     app: &App,
     f: impl FnOnce(HostCtx, &PlaneHostVtable) -> R,
 ) -> R {
-    let scope = DispatchScope::new();
-    let state = HostState { app, scope: &scope };
-    let vtable = build_plane_host_vtable();
-    // The stack `HostState`'s address IS the opaque HostCtx; it outlives every call `f` makes.
-    let host: HostCtx = (&state as *const HostState).cast_mut().cast::<std::os::raw::c_void>();
-    // `state` lives on this frame's stack until the function returns, so the `HostCtx` above stays
-    // valid for every host call `f` makes (the `recover` invariant). `HostState` has no `Drop`, so
-    // there is nothing to reclaim for it; the arena reclaim happens when `scope` drops below.
-    let out = f(host, &vtable);
-    let _keep_alive = &state;
-    out
-    // `scope` drops here → reclaim_all().
+    // Delegated to the owned [`HostDispatch`] guard so the SYNC seam and the ASYNC seam mint the exact
+    // same `HostCtx` from the exact same stack-pinned `HostState` — one recovery invariant, two entry
+    // shapes. `HostDispatch::new` allocates nothing (an empty `DispatchScope`), and the arena reclaim
+    // still fires when the guard drops at the end of this call.
+    HostDispatch::new(app).with_host(f)
+}
+
+/// The ASYNC-CAPABLE dispatch guard: an OWNED RAII handle a core `async` dispatch fn creates at the top
+/// of its body and holds as a LOCAL across every `.await`, so the [`DispatchScope`] arena lives for the
+/// whole future and reclaims on ANY exit — normal return, client-disconnect cancel, or panic. This is
+/// the fix for the sync-only [`with_dispatch_scope`]: an `async move {}` passed to the closure form
+/// would make `R` the future and drop the scope BEFORE it was awaited; an owned guard held on the async
+/// stack frame closes that hole (the §4 HalfOpen-wedge fix on the real `async` dispatch paths).
+///
+/// Zero-alloc on the fast lane: it BORROWS the live [`App`] and STACK-PINS its own [`DispatchScope`]
+/// (no heap until a handle is actually registered), so holding one across awaits costs no per-dispatch
+/// allocation — only the LLM-alloc-sensitive budget's price of a couple of pointers on the frame.
+///
+/// The raw [`HostCtx`] pointer is `!Send` (it aliases this stack `HostState`), so it is materialized
+/// ONLY inside the synchronous [`with_host`](Self::with_host) / [`host_ctx`](Self::host_ctx) runs and
+/// MUST NOT be held across an `.await` — the guard itself is `Send` (it holds only `&App` + the arena),
+/// so the enclosing future stays `Send`. For a `Send + 'static` route into `spawn_blocking`, take a
+/// [`SendHostDispatch`] on that branch instead.
+pub struct HostDispatch<'a> {
+    app: &'a App,
+    scope: DispatchScope,
+}
+
+impl<'a> HostDispatch<'a> {
+    /// Open an async dispatch guard over the live `app`. Allocates nothing (an empty arena).
+    #[must_use]
+    pub fn new(app: &'a App) -> Self {
+        HostDispatch {
+            app,
+            scope: DispatchScope::new(),
+        }
+    }
+
+    /// The per-dispatch arena. Every host handle a plane acquires during this dispatch registers here
+    /// and is reclaimed when this guard drops.
+    #[must_use]
+    pub fn scope(&self) -> &DispatchScope {
+        &self.scope
+    }
+
+    /// The live engine snapshot this dispatch was admitted on.
+    #[must_use]
+    pub fn app(&self) -> &App {
+        self.app
+    }
+
+    /// Borrow a [`HostState`] over this guard's `app` + arena. The raw `HostCtx` materialized from it
+    /// (see [`with_host`](Self::with_host)) is `!Send` and valid only while the returned borrow lives.
+    #[must_use]
+    pub fn host_state(&self) -> HostState<'_> {
+        HostState {
+            app: self.app,
+            scope: &self.scope,
+        }
+    }
+
+    /// Run `f` SYNCHRONOUSLY with a materialized [`HostCtx`] + the host `&PlaneHostVtable` — the
+    /// between-awaits seam a plane call rides. The `HostState` backing the `HostCtx` is stack-pinned
+    /// for exactly the duration of `f` (the [`recover`] invariant); the pointer must not escape it.
+    pub fn with_host<R>(&self, f: impl FnOnce(HostCtx, &PlaneHostVtable) -> R) -> R {
+        let state = self.host_state();
+        let vtable = build_plane_host_vtable();
+        // The stack `HostState`'s address IS the opaque HostCtx; it outlives every call `f` makes.
+        let host: HostCtx = (&state as *const HostState).cast_mut().cast::<std::os::raw::c_void>();
+        let out = f(host, &vtable);
+        let _keep_alive = &state;
+        out
+    }
+}
+
+/// A `Send + 'static` route to a host for the `spawn_blocking` breaker paths (a2a relay admit/settle
+/// run on a blocking thread; see `a2a::receive::{unary_hop,stream_hop}`). Unlike [`HostDispatch`] it
+/// OWNS its inputs — an `Arc<App>` (Send + Sync) and its own [`DispatchScope`] — so the whole guard can
+/// be MOVED into the `spawn_blocking` closure, which materializes the raw `HostCtx` INSIDE the closure
+/// (where the blocking body actually calls the vtable) and never carries the `!Send` pointer across the
+/// task boundary. The arena reclaims when the closure ends and the guard drops (reclaim at HOP end).
+///
+/// Hot-path note: this is taken ONLY on the `spawn_blocking` branch, never on the sync LLM fast lane —
+/// it is one `Arc<App>` refcount bump (~ns) and a stack-moved guard, no heap arena until a handle is
+/// registered. Do NOT reach for it on the fast path; use the borrowing [`HostDispatch`] there.
+pub struct SendHostDispatch {
+    app: Arc<App>,
+    scope: DispatchScope,
+}
+
+impl SendHostDispatch {
+    /// Open a Send host guard owning `app`. Allocates nothing beyond the caller's existing `Arc` bump.
+    #[must_use]
+    pub fn new(app: Arc<App>) -> Self {
+        SendHostDispatch {
+            app,
+            scope: DispatchScope::new(),
+        }
+    }
+
+    /// The per-hop arena (reclaimed when this guard drops at the end of the blocking closure).
+    #[must_use]
+    pub fn scope(&self) -> &DispatchScope {
+        &self.scope
+    }
+
+    /// The live engine snapshot the hop was admitted on.
+    #[must_use]
+    pub fn app(&self) -> &App {
+        &self.app
+    }
+
+    /// Borrow a [`HostState`] over the owned `app` + arena — the materialization seam, called INSIDE
+    /// the blocking closure so the raw `HostCtx` never crosses the `spawn_blocking` boundary.
+    #[must_use]
+    pub fn host_state(&self) -> HostState<'_> {
+        HostState {
+            app: &self.app,
+            scope: &self.scope,
+        }
+    }
+
+    /// Run `f` synchronously with a materialized [`HostCtx`] + host vtable, INSIDE the blocking body.
+    pub fn with_host<R>(&self, f: impl FnOnce(HostCtx, &PlaneHostVtable) -> R) -> R {
+        let state = self.host_state();
+        let vtable = build_plane_host_vtable();
+        let host: HostCtx = (&state as *const HostState).cast_mut().cast::<std::os::raw::c_void>();
+        let out = f(host, &vtable);
+        let _keep_alive = &state;
+        out
+    }
 }
 
 #[cfg(test)]
@@ -332,6 +452,65 @@ mod tests {
                 StatusClass::Refused
             );
         });
+    }
+
+    /// The async guard is `Send` (so a future holding it across `.await` stays `Send`) and the Send
+    /// route is `Send + 'static` (so it can be moved into `spawn_blocking`). Compile-time proof.
+    #[test]
+    fn guards_have_the_right_thread_bounds() {
+        fn assert_send<T: Send>() {}
+        fn assert_send_static<T: Send + 'static>() {}
+        assert_send::<HostDispatch<'static>>();
+        assert_send_static::<SendHostDispatch>();
+    }
+
+    /// The OWNED async guard held across an `.await` reclaims its arena when the future completes —
+    /// the fix for the sync-only closure form (which would drop the scope before the future ran).
+    #[tokio::test]
+    async fn host_dispatch_guard_reclaims_across_an_await() {
+        let reclaimed = Arc::new(AtomicUsize::new(0));
+        let app = crate::test_support::TestApp::new().build();
+        {
+            let host = HostDispatch::new(&app);
+            let f = reclaimed.clone();
+            host.scope().register_egress(Box::new(move || {
+                f.fetch_add(1, Ordering::SeqCst);
+            }));
+            // Materialize the HostCtx synchronously and recover a live HostState through it.
+            host.with_host(|ctx, vt| {
+                assert!(ctx as usize != 0, "a live HostCtx is minted");
+                assert!(vt.clock_now.is_some());
+            });
+            // The guard is held ACROSS this await — the scope must not reclaim yet.
+            tokio::task::yield_now().await;
+            assert_eq!(reclaimed.load(Ordering::SeqCst), 0, "held across await, not reclaimed");
+        }
+        // Guard dropped at the end of the future → the arena reclaimed exactly once.
+        assert_eq!(reclaimed.load(Ordering::SeqCst), 1);
+    }
+
+    /// The Send route survives a move into `spawn_blocking`, materializes a live `HostCtx` on the
+    /// blocking thread, and reclaims its arena when the closure (and the guard) end.
+    #[tokio::test]
+    async fn send_host_dispatch_works_inside_spawn_blocking() {
+        let reclaimed = Arc::new(AtomicUsize::new(0));
+        let app = Arc::new(crate::test_support::TestApp::new().build());
+        let host = SendHostDispatch::new(Arc::clone(&app));
+        let f = reclaimed.clone();
+        let now = tokio::task::spawn_blocking(move || {
+            host.scope().register_egress(Box::new(move || {
+                f.fetch_add(1, Ordering::SeqCst);
+            }));
+            // The raw HostCtx is minted and used INSIDE the blocking closure, never across the boundary.
+            let now = host.with_host(|ctx, vt| (vt.clock_now.unwrap())(ctx));
+            assert_eq!(host.scope().registered(), 1);
+            now
+            // `host` drops here → the hop arena reclaims on the blocking thread.
+        })
+        .await
+        .expect("blocking hop joins");
+        assert!(now > 0, "the host clock read on the blocking thread");
+        assert_eq!(reclaimed.load(Ordering::SeqCst), 1, "the hop arena reclaimed at closure end");
     }
 
     #[test]

@@ -287,17 +287,70 @@ impl SessionScope {
 /// durable work-handle is NOT reclaimed at dispatch-future drop (that was the v4 arena bug) — the async
 /// plane parks a handle at a `202` and resumes it later by nested lookup.
 ///
-/// STUB: minimal by design. The async/durable rider wires this out; it exists now only to name the
-/// scope so the later add is append-only.
+/// The DURABLE HANDOFF (§4, the `create_task` gap): a breaker probe-hold that `into_task_dispatch`
+/// moves out of the per-request [`DispatchScope`] into the detached runner must NOT reclaim when the
+/// REQUEST future drops (that would release the probe mid-task and wedge the cell). Handing it to a
+/// `DurableScope` the RUNNER owns re-homes its reclaim to TASK end: this scope drops with the runner —
+/// on the task's normal completion AND on a `tasks/cancel` abort — running the moved-in guard's `Drop`
+/// (the owner-checked probe release) exactly then, not a moment earlier.
+///
+/// Lazily allocated: the handle vector is empty (no heap) until a handle is actually handed off, so a
+/// durable scope that parks nothing costs nothing.
 #[derive(Default)]
 #[non_exhaustive]
-pub struct DurableScope {}
+pub struct DurableScope {
+    /// Handles handed to durable (unit-of-work) ownership. Each is an RAII guard whose `Drop`
+    /// reclaims it when THIS scope drops (task complete/expire/abort) — never at dispatch-future
+    /// drop. Boxed `dyn Send` so the runner can hold it behind the scope without naming the concrete
+    /// resource type (e.g. `store::planes::Admission`).
+    handles: Vec<Box<dyn Send>>,
+}
 
 impl DurableScope {
     /// Open an empty durable scope.
     #[must_use]
     pub fn new() -> Self {
-        DurableScope {}
+        DurableScope {
+            handles: Vec::new(),
+        }
+    }
+
+    /// Open a durable scope that already owns `guard` — the `into_task_dispatch` handoff in one step:
+    /// the breaker probe-hold moves from the per-request dispatch arena into a runner-owned durable
+    /// scope, so its `Drop` reclaim runs at TASK end rather than request end.
+    #[must_use]
+    pub fn with_handoff(guard: Box<dyn Send>) -> Self {
+        DurableScope {
+            handles: vec![guard],
+        }
+    }
+
+    /// Take durable ownership of `guard`: its `Drop` now reclaims when this scope drops (task end),
+    /// NOT at dispatch-future drop. This is the durable HANDOFF — the resource leaves the per-request
+    /// arena's lifetime and joins the unit-of-work's.
+    pub fn handoff(&mut self, guard: Box<dyn Send>) {
+        self.handles.push(guard);
+    }
+
+    /// How many durable handles this scope owns (test/observability hook).
+    #[must_use]
+    pub fn registered(&self) -> usize {
+        self.handles.len()
+    }
+
+    /// Reclaim EVERY handed-off handle NOW, in reverse (LIFO) handoff order — dropping each guard runs
+    /// its real `Drop` (the owner-checked release). Idempotent; called by `Drop`, exposed so an
+    /// explicit task-complete path can reclaim synchronously.
+    pub fn reclaim_all(&mut self) {
+        while let Some(guard) = self.handles.pop() {
+            drop(guard);
+        }
+    }
+}
+
+impl Drop for DurableScope {
+    fn drop(&mut self) {
+        self.reclaim_all();
     }
 }
 
@@ -356,6 +409,36 @@ mod tests {
         // Idempotent: a second reclaim (e.g. the Drop after an explicit reclaim) is a no-op.
         scope.reclaim_all();
         assert_eq!(count.load(Ordering::SeqCst), 4);
+    }
+
+    #[test]
+    fn durable_scope_reclaims_a_handed_off_guard_on_its_own_drop() {
+        let reclaimed = Arc::new(AtomicUsize::new(0));
+        {
+            let dur = DurableScope::with_handoff(Box::new(DropCounter(reclaimed.clone())));
+            assert_eq!(dur.registered(), 1, "the handoff took ownership");
+            // The durable handle does NOT reclaim while the scope is live — the whole point of the
+            // handoff is that it outlives the request future.
+            assert_eq!(reclaimed.load(Ordering::SeqCst), 0);
+        }
+        // The durable scope dropped (task end): the moved-in guard's real `Drop` ran exactly once.
+        assert_eq!(reclaimed.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn durable_scope_handoff_is_lazy_and_reclaims_lifo() {
+        let count = Arc::new(AtomicUsize::new(0));
+        let mut dur = DurableScope::new();
+        assert_eq!(dur.registered(), 0, "an empty durable scope owns nothing");
+        dur.handoff(Box::new(DropCounter(count.clone())));
+        dur.handoff(Box::new(DropCounter(count.clone())));
+        assert_eq!(dur.registered(), 2);
+        dur.reclaim_all();
+        assert_eq!(count.load(Ordering::SeqCst), 2, "both durable handles reclaimed");
+        assert_eq!(dur.registered(), 0);
+        // Idempotent: the Drop after an explicit reclaim is a no-op.
+        dur.reclaim_all();
+        assert_eq!(count.load(Ordering::SeqCst), 2);
     }
 
     #[test]
