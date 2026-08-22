@@ -134,27 +134,17 @@ pub(crate) trait RelayTransport: Send + Sync {
     ) -> Result<StreamHead, String>;
 }
 
-/// What the chunk sink says about continuing. A sink whose receiver has gone away asks the hop to
-/// STOP rather than being written to forever: a caller that disconnected mid-stream must not leave
-/// busbar holding a blocking thread against an upstream that is happy to keep talking.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ChunkFlow {
-    Continue,
-    Stop,
-}
+/// What the chunk sink says about continuing — the neutral host-owned [`crate::egress::ChunkFlow`],
+/// re-exported under this plane's historical name. A sink whose receiver has gone away asks the hop
+/// to STOP rather than being written to forever: a caller that disconnected mid-stream must not
+/// leave busbar holding a blocking thread against an upstream that is happy to keep talking.
+pub(crate) use crate::egress::ChunkFlow;
 
-/// The head of a streaming reply: what the backend answered before any body arrived.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct StreamHead {
-    pub(crate) status: u16,
-    /// The backend's `content-type`, lower-cased, or empty. Read because a backend that answers a
-    /// `message/stream` with `application/json` has answered a NON-stream, and relaying that to a
-    /// caller as `text/event-stream` would be busbar inventing a framing the backend never used.
-    pub(crate) content_type: String,
-    /// The body, for a reply the backend did NOT stream. Empty on a real stream: those bytes went
-    /// to `on_chunk`.
-    pub(crate) body: Vec<u8>,
-}
+/// The head of a streaming reply: what the backend answered before any body arrived — the neutral
+/// host-owned [`crate::egress::StreamHead`], re-exported under this plane's historical name so the
+/// relay call sites read unchanged. It lives in [`crate::egress`] because the streaming round trip
+/// is the same one whatever framing sits on top of it.
+pub(crate) use crate::egress::StreamHead;
 
 /// THE RELAY'S SEAMS, HELD TOGETHER, for the reason [`super::transport::LiveCardFetch`] gives for
 /// holding its own two: a caller that picked up a resolver and a transport from different places

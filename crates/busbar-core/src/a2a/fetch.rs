@@ -273,37 +273,15 @@ impl std::fmt::Display for FetchRefusal {
 }
 
 /// One HTTP response, reduced to what a card fetch reads.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct HttpResponse {
-    pub(crate) status: u16,
-    /// The `Location` header, verbatim, for a 3xx. Never followed by the transport itself.
-    pub(crate) location: Option<String>,
-    pub(crate) body: Vec<u8>,
-    /// THE TRANSPORT-LAYER IDENTITY OF THE PEER: the `sha256/…` pin of the leaf certificate's
-    /// SubjectPublicKeyInfo, where this hop ran over TLS ([`super::spki::spki_pin`]).
-    ///
-    /// `None` on a plaintext hop, and `None` is a REFUSAL upstream rather than a pass: a
-    /// `cert_spki` registration whose fetch produced no certificate has nothing to have been
-    /// pinned against. Carried on the response rather than fetched separately because it is a fact
-    /// about the connection THIS response arrived on, and a second look at "the certificate that
-    /// host serves" would be a second connection an attacker gets to answer differently.
-    pub(crate) peer_spki: Option<String>,
-    /// BUSBAR'S OWN END OF THE HANDSHAKE: whether this hop was made carrying the registration's
-    /// client certificate, so it went into the handshake if the peer asked for one.
-    ///
-    /// The OTHER direction from [`HttpResponse::peer_spki`], and it travels on the response for the
-    /// same reason: it is a fact about the connection this document arrived over, and
-    /// [`super::verify`] refuses an `mtls` registration whose card did NOT arrive over one. Reading
-    /// it off the configuration instead would answer "the operator named a certificate" to the
-    /// question "was one presented", and a registration does not have to have come from a config
-    /// file to reach the verifier.
-    ///
-    /// `false` means there was nothing to present at all. It cannot mean "the peer did not ask":
-    /// TLS gives a client no way to tell, after the fact, a handshake in which the peer sent no
-    /// `CertificateRequest` from one in which it did — and a peer that asks for no certificate is a
-    /// peer that is not doing mutual TLS, which is the case `pin.mechanism: cert_spki` is for.
-    pub(crate) client_identity_offered: bool,
-}
+///
+/// This is the neutral, host-owned [`crate::egress::Response`], re-exported under this plane's
+/// historical name so the card-fetch and relay call sites read unchanged. It lives in
+/// [`crate::egress`] rather than here because the same buffered round trip serves the MCP dispatch
+/// path too, and a return type owned by one plane could not be returned to the other. Its
+/// `peer_spki` / `client_identity_offered` fields carry the exact per-hop observations this plane's
+/// verifier reads ([`super::verify`] refuses a `cert_spki`/`mtls` registration whose card did not
+/// arrive over the connection those fields describe).
+pub(crate) use crate::egress::Response as HttpResponse;
 
 /// The HTTP round trip, as a seam.
 ///
