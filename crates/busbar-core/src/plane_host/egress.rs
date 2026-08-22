@@ -246,41 +246,6 @@ fn close_and_remove(id: u64) -> bool {
     }
 }
 
-/// A resolver the pinned client is handed that REFUSES every lookup. The `.resolve()` host override
-/// below means the client never needs a second lookup; installing a refusing resolver makes the
-/// difference between "never needs to" and "cannot" — if the pin is ever dropped the hop fails loudly
-/// instead of quietly re-resolving the name (the a2a `NoSecondLookup` discipline, restated).
-struct RefuseSecondLookup;
-
-impl reqwest::dns::Resolve for RefuseSecondLookup {
-    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
-        let name = name.as_str().to_string();
-        Box::pin(std::future::ready(Err(Box::<
-            dyn std::error::Error + Send + Sync,
-        >::from(format!(
-            "governed egress pins the resolved address before connecting; a second lookup of \
-             `{name}` is the DNS-rebind window the pin exists to close and must not happen"
-        )))))
-    }
-}
-
-/// A transport error WITH ITS CAUSE CHAIN, flattened. `reqwest::Error`'s own `Display` is the request
-/// that failed and nothing about WHY — the certificate refusal, the connection reset and the timeout
-/// all render identically — so the reason in the `source()` chain is appended here. This is the SAME
-/// flattening the a2a transport's `with_cause` does; the host produces the neutral cause bytes and the
-/// plane composes its operator string over them. The url is NOT included — it is surfaced separately so
-/// each plane chooses to include or strip it.
-fn with_cause(err: &dyn std::error::Error) -> String {
-    let mut out = err.to_string();
-    let mut cause = err.source();
-    while let Some(c) = cause {
-        out.push_str(": ");
-        out.push_str(&c.to_string());
-        cause = c.source();
-    }
-    out
-}
-
 /// Classify a transport error into the neutral [`EgressFailClass`] the plane fails over on: a connect/
 /// TLS/redirect-follow failure is `Connect` (the "unreachable" class), anything else that reached the
 /// wire is `Io`. The plane maps this onto its own taxonomy (the mcp `Unreachable` vs `Io` split).
@@ -770,23 +735,21 @@ fn run_http_stream(
                     return;
                 }
             };
-        // THE PINNED CLIENT: connects to the judged address, refuses a second lookup, follows no
-        // redirect (a 3xx is an unguarded URL), and reads the peer certificate off the verified
-        // handshake.
-        let mut builder = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .tls_info(true)
-            .timeout(EGRESS_TIMEOUT)
-            .dns_resolver(Arc::new(RefuseSecondLookup))
-            .resolve(host_name, pin.socket_addr());
-        // BUSBAR'S OWN END OF A MUTUAL HANDSHAKE. Offering a certificate ASKS FOR NOTHING and WEAKENS
-        // NOTHING: it is presented only when the peer's `CertificateRequest` asks for one, and the
-        // peer's certificate is still verified by the ordinary chain-and-name check. There is no knob
-        // here that turns verification off. Resolved host-side from the plane's opaque ref.
-        if let Some(id) = identity {
-            builder = builder.identity(id);
-        }
-        let client = match builder.build() {
+        // THE PINNED CLIENT, from the ONE shared core builder ([`crate::egress::build_pinned_client`]):
+        // connects to the judged address, refuses a second lookup, follows no redirect (a 3xx is an
+        // unguarded URL), reads the peer certificate off the verified handshake, and now carries the
+        // canonical connection knobs (tcp_nodelay / connect_timeout / pool_idle_timeout) this path had
+        // lacked. The mutual-TLS identity is resolved host-side from the plane's opaque ref — offering
+        // it ASKS FOR NOTHING (presented only when the peer's `CertificateRequest` asks), and there is
+        // no knob anywhere that turns verification off. The total deadline rides the REQUEST below, not
+        // the client.
+        let client = match crate::egress::build_pinned_client(
+            host_name,
+            pin.socket_addr(),
+            Arc::new(crate::egress::RefuseSecondLookup),
+            identity,
+            &[],
+        ) {
             Ok(client) => client,
             Err(e) => {
                 let _ = head_tx.send(HeadMsg::Fault {
@@ -798,8 +761,11 @@ fn run_http_stream(
         };
         // The outbound request: the plane's verb (default GET), its forwarded headers, and its
         // one-shot body. The credential header (if any) is already in `spec.headers` — injected
-        // host-side from the resolved ref, so no plane-held plaintext reaches this builder.
-        let mut builder = client.request(spec.method.clone(), url);
+        // host-side from the resolved ref, so no plane-held plaintext reaches this builder. The total
+        // deadline is applied here because the shared client carries none.
+        let mut builder = client
+            .request(spec.method.clone(), url)
+            .timeout(EGRESS_TIMEOUT);
         for (name, value) in &spec.headers {
             builder = builder.header(name.as_str(), value.as_str());
         }
@@ -818,7 +784,7 @@ fn run_http_stream(
                 let e = e.without_url();
                 let _ = head_tx.send(HeadMsg::Fault {
                     class,
-                    cause: with_cause(&e),
+                    cause: crate::egress::with_cause(&e),
                 });
                 return;
             }

@@ -18,6 +18,11 @@
 ///
 /// `Default` is the empty response — status `0`, no location, no body, no observed identity — used
 /// by a fixture that answers without a socket.
+///
+/// Gated to `plane-a2a`: the A2A card-fetch/relay path is its consumer today. The MCP dispatch path
+/// keeps its own `TransportResponse` projection, and the plugin egress vtable projects onto the ABI
+/// PODs — so a no-plane build carries no unused return vocabulary.
+#[cfg(feature = "plane-a2a")]
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Response {
     /// The HTTP status the peer answered with.
@@ -52,7 +57,8 @@ pub(crate) struct Response {
 ///
 /// The status is knowable before the first chunk because a caller that has already written bytes to
 /// its own consumer cannot then change its mind and answer an error — so the decision "is this a
-/// stream at all" is made on the head.
+/// stream at all" is made on the head. Gated to `plane-a2a`, its consumer (see [`Response`]).
+#[cfg(feature = "plane-a2a")]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct StreamHead {
     /// The HTTP status the peer answered with.
@@ -68,17 +74,21 @@ pub(crate) struct StreamHead {
 
 /// What a chunk sink says about continuing. A sink whose consumer has gone away asks the hop to
 /// STOP rather than being written to forever: a caller that disconnected mid-stream must not leave
-/// busbar holding a thread against an upstream that is happy to keep talking.
+/// busbar holding a thread against an upstream that is happy to keep talking. Gated to `plane-a2a`,
+/// its consumer (see [`Response`]).
+#[cfg(feature = "plane-a2a")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ChunkFlow {
     Continue,
     Stop,
 }
 
-use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
+// The pool's collections are needed only where the pool is — behind the same plane gate.
+#[cfg(any(feature = "plane-mcp", feature = "plane-a2a"))]
+use std::{collections::HashMap, sync::Mutex};
 
 /// How long the connect phase of one hop may take. Bounds only the connect, not the whole request —
 /// the total deadline rides the REQUEST (see [`PinnedClientPool`]), because a pooled client is
@@ -212,11 +222,17 @@ pub(crate) fn build_pinned_client(
 /// The owner supplies the client BUILD closure, so a per-registration identity or a test trust
 /// anchor stays a property of the owner and never has to enter this key: all clients in one pool
 /// share the owner's fixed posture, and only the destination varies.
+///
+/// Gated to `any(plane-mcp, plane-a2a)`: pooling is a plane property (the A2A card-fetch/relay
+/// transport and the MCP dispatch pool). The plugin egress vtable holds a single streamed connection
+/// per open, so it builds directly with [`build_pinned_client`] and needs no pool.
+#[cfg(any(feature = "plane-mcp", feature = "plane-a2a"))]
 pub(crate) struct PinnedClientPool {
     clients: Mutex<HashMap<(String, SocketAddr), reqwest::Client>>,
     max: usize,
 }
 
+#[cfg(any(feature = "plane-mcp", feature = "plane-a2a"))]
 impl std::fmt::Debug for PinnedClientPool {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // `reqwest::Client` has no useful Debug and the keys are resolved internal addresses. Size
@@ -230,14 +246,17 @@ impl std::fmt::Debug for PinnedClientPool {
 /// The cap a [`PinnedClientPool::default`] holds — enough distinct pinned clients that a busy fleet
 /// keeps its live upstreams warm, bounded so a DNS round-robin cannot grow the map without end. A
 /// pool that wants a different cap builds with [`PinnedClientPool::with_capacity`].
+#[cfg(any(feature = "plane-mcp", feature = "plane-a2a"))]
 const DEFAULT_MAX_PINNED_CLIENTS: usize = 64;
 
+#[cfg(any(feature = "plane-mcp", feature = "plane-a2a"))]
 impl Default for PinnedClientPool {
     fn default() -> Self {
         Self::with_capacity(DEFAULT_MAX_PINNED_CLIENTS)
     }
 }
 
+#[cfg(any(feature = "plane-mcp", feature = "plane-a2a"))]
 impl PinnedClientPool {
     /// A pool that holds at most `max` distinct pinned clients. A bound rather than an unbounded map
     /// because the key contains a RESOLVED ADDRESS, and an upstream whose DNS round-robins across a
@@ -287,6 +306,9 @@ impl PinnedClientPool {
     }
 }
 
-#[cfg(test)]
+// The backend's own tests exercise the pinned-client pool, which exists only where a plane consumes
+// it — so they are gated to the same planes. `build_pinned_client` and the refusing resolver keep
+// their coverage under a default build.
+#[cfg(all(test, any(feature = "plane-mcp", feature = "plane-a2a")))]
 #[path = "egress/tests.rs"]
 mod tests;
