@@ -513,12 +513,14 @@ pub(crate) struct Runner {
     /// `create_task` consulted for admission, carried so the runner cannot record into a different
     /// generation's cells than it was admitted against.
     pub(crate) breakers: Arc<crate::store::PlaneBreakers>,
-    /// The single-flight probe hold admission handed `create_task`. Releases owner-checked ON DROP
-    /// — which covers the runner being ABORTED by `tasks/cancel` as well as its normal end, the
+    /// The single-flight probe hold `create_task` won, re-homed to the DURABLE scope (§4 handoff):
+    /// `into_task_dispatch` moved the breaker `PlaneAdmission` out of the per-request dispatch arena
+    /// into this [`DurableScope`], so it releases owner-checked when the DURABLE scope drops WITH the
+    /// runner — covering the runner being ABORTED by `tasks/cancel` as well as its normal end, the
     /// case an explicit release call cannot reach. A recorded outcome makes the drop a no-op.
     /// Never read: the field EXISTS to be dropped with the runner, which is what the allow says.
     #[allow(dead_code)]
-    pub(crate) admission: crate::store::PlaneAdmission,
+    pub(crate) durable: crate::plane_host::DurableScope,
     /// The breaker cell the admitted member records into — `("tool:<pool>", lane)` for a pooled
     /// member, the degenerate `("tool:<server>", 0)` otherwise. Carried from `create_task`'s walk
     /// so the runner's legs record against exactly the cell the admission consulted.
@@ -659,8 +661,10 @@ async fn run(task: Arc<McpTask>, runner: Runner) {
         |_| Ok(()),
     )
     .await;
-    // `runner.admission` (the probe hold) drops with the runner — on this function's normal end
-    // AND on an abort — releasing owner-checked; a recorded leg outcome makes that a no-op.
+    // `runner.durable` (the durable scope holding the probe hold) drops with the runner — on this
+    // function's normal end AND on an abort — reclaiming the moved-in admission owner-checked; a
+    // recorded leg outcome makes that a no-op. This is the §4 durable handoff: the probe's lifetime
+    // was re-homed from the request future to the task's, so it is NOT released at request-drop.
 
     // (4) SETTLE. A tool that ran is `completed` whatever it said about itself; a refusal is a
     // PROTOCOL error and is `failed`.

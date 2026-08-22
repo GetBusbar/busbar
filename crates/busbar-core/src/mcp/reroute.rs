@@ -361,12 +361,18 @@ impl PoolRoute {
         }
     }
 
-    /// Hand the admitted member to the TASK path: its authorised leg, its cell, the probe hold,
-    /// and its server id (for per-server grants/roots lookups inside the runner). Consumes the
-    /// route — a task dispatches exactly one member and never reroutes mid-task.
+    /// Hand the admitted member to the TASK path: its authorised leg, its cell, the probe hold as a
+    /// DURABLE-SCOPED handle, and its server id (for per-server grants/roots lookups inside the
+    /// runner). Consumes the route — a task dispatches exactly one member and never reroutes mid-task.
+    ///
+    /// THE PROBE HOLD LEAVES THE REQUEST'S SCOPE (§4 durable handoff). The breaker `PlaneAdmission`
+    /// this route won moves out of the per-request dispatch arena into a [`DurableScope`] the RUNNER
+    /// owns, so its owner-checked release reclaims at TASK end (the runner's normal end OR a
+    /// `tasks/cancel` abort) — never at request-future drop, which would release the probe mid-task
+    /// and wedge the cell. Yielding the durable-scoped handle here is what re-homes that lifetime.
     pub(crate) fn into_task_dispatch(
         self,
-    ) -> Option<(Authorised, BreakerCell, PlaneAdmission, String)> {
+    ) -> Option<(Authorised, BreakerCell, crate::plane_host::DurableScope, String)> {
         let mut s = lock(&self.state);
         let idx = s.active?;
         let admission = s.admission.take()?;
@@ -376,7 +382,9 @@ impl PoolRoute {
             lane: self.members[idx].lane,
         };
         let member = self.members.into_iter().nth(idx)?;
-        Some((member.auth?, cell, admission, member.name))
+        // The probe hold rides into the durable scope: reclaimed at task end, not request end.
+        let durable = crate::plane_host::DurableScope::with_handoff(Box::new(admission));
+        Some((member.auth?, cell, durable, member.name))
     }
 }
 

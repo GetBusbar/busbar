@@ -1879,7 +1879,7 @@ async fn create_task(
             refuse_route(id, &route, &refused),
         );
     }
-    let Some((authorised, cell, admission, member_id)) = route.into_task_dispatch() else {
+    let Some((authorised, cell, durable, member_id)) = route.into_task_dispatch() else {
         // Unreachable after a successful `admit`; refuse rather than panic on a caller's path.
         return log.refused(
             REASON_UPSTREAM_UNAVAILABLE,
@@ -1901,8 +1901,8 @@ async fn create_task(
         },
         &mut holds,
     ) {
-        // The budget said no AFTER the breaker admitted: `admission` drops on this return, handing
-        // back a recovery probe this dispatch may have just won.
+        // The budget said no AFTER the breaker admitted: the durable scope holding the probe drops on
+        // this return, handing back a recovery probe this dispatch may have just won.
         let refusal =
             DispatchRefusal::NotGranted(format!("this task was refused by your budget: {reason}"));
         return log.refused(
@@ -1923,7 +1923,7 @@ async fn create_task(
             pool: std::sync::Arc::clone(&super::runtime(ctx.app).pool),
             handle: std::sync::Arc::clone(ctx.handle),
             breakers,
-            admission,
+            durable,
             cell,
             authorised,
             arguments,
