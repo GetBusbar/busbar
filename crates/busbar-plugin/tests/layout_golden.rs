@@ -85,6 +85,7 @@ fn compute_layout() -> String {
             provider_signal_len
         ]
     );
+    record!(s, AdmitRefusal, [size, version, reason, _reserved, retry_after_secs]);
     record!(
         s,
         EgressDesc,

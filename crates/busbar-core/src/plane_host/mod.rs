@@ -329,6 +329,8 @@ mod tests {
         assert_eq!(vt.size as usize, core::mem::size_of::<PlaneHostVtable>());
         // Every slot is populated and wired after the Phase-1 fan-out: no slot is a `None`.
         assert!(vt.govern_admit.is_some());
+        assert!(vt.breaker_admit.is_some());
+        assert!(vt.breaker_admit_reason.is_some());
         assert!(vt.clock_now.is_some());
         assert!(vt.metrics_emit.is_some());
         assert!(vt.egress_open.is_some());

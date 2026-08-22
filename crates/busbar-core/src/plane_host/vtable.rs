@@ -48,6 +48,7 @@ pub fn build_plane_host_vtable() -> PlaneHostVtable {
         //    egress / journal / dispatch), or a wired local fn (meter_charge, auth_resolve) ────────
         meter_charge: Some(meter_charge),
         breaker_admit: Some(super::breaker::breaker_admit),
+        breaker_admit_reason: Some(super::breaker::breaker_admit_reason),
         breaker_settle: Some(super::breaker::breaker_settle),
         verify_lookup: Some(trust::verify_lookup),
         verify_store: Some(trust::verify_store),

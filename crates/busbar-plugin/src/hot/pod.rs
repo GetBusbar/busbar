@@ -228,6 +228,37 @@ pub enum FaultClass {
     ContextLength = 9,
 }
 
+/// WHY an admit was REFUSED — the fine reason a refused acquire carries out through the host so a
+/// refusal keeps its specific meaning instead of collapsing to a bare [`AdmissionId::NONE`]. It is the
+/// admit-side counterpart of [`FaultClass`] (the settle-side fine class): where `FaultClass` refines a
+/// FAILURE signal, this refines a REFUSAL. Names are protocol-NEUTRAL (a health/availability taxonomy,
+/// no protocol/role noun). Append-only: new reasons at the tail with a fresh discriminant, and
+/// [`Unspecified`](Self::Unspecified) (= 0) is the forward-compat default a caller reads when the host
+/// wrote no fine reason (so it falls back to the coarse "refused" meaning rather than misreading it).
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Unavailability {
+    /// No fine reason supplied — a bare refusal, no self-recovery estimate.
+    Unspecified = 0,
+    /// The circuit is open (or inside a pending cooldown); recovery time is known — see
+    /// [`AdmitRefusal::retry_after_secs`].
+    Open = 1,
+    /// Lost the single-flight half-open probe race to a peer; the peer's probe resolves it within one
+    /// request (a "next tick" transient).
+    ProbeInFlight = 2,
+    /// Administratively down — does not self-recover until a configuration change.
+    Dead = 3,
+    /// The lifetime request budget is spent — does not self-recover.
+    Budget = 4,
+    /// All concurrency permits are held; the recovery hint is an ESTIMATE, not exact.
+    AtCapacity = 5,
+    /// Shed by inbound backpressure before selection.
+    Shedding = 6,
+    /// A selection over a set found NOTHING admissible (every interchangeable member refused) — the
+    /// set-level refusal a single-cell reason cannot express.
+    NoneAdmissible = 7,
+}
+
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 // The POD structs. Each leads with `size`/`version`; the shared preamble macro keeps that uniform.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -400,6 +431,32 @@ pub struct Signal {
     pub provider_signal_ptr: *const u8,
     /// (minor-1) Length of the borrowed provider-code range.
     pub provider_signal_len: usize,
+}
+
+/// The out-param a REFUSAL-fidelity acquire writes when it refuses — the fine [`Unavailability`] reason
+/// plus its recovery hint — so a refused acquire keeps its specific meaning across the host boundary
+/// instead of collapsing to a bare [`AdmissionId::NONE`]. The host ALWAYS initializes it (so the slot
+/// is never left uninitialized): a live [`AdmissionId`] return leaves it at
+/// [`Unavailability::Unspecified`], and a refusal writes the specific reason. The caller reads it
+/// exactly when the returned id [`is_none`](AdmissionId::is_none).
+///
+/// APPEND-ONLY minor extension alongside the [`Unavailability`] enum: a sender that predates it advertises
+/// the shorter table (its acquire has no such out-param), and a reader reads this only through a slot
+/// that exists in the bumped-minor table — a MINOR airlock bump, never a MAJOR.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct AdmitRefusal {
+    /// `size_of::<AdmitRefusal>()` when the host writes it.
+    pub size: u32,
+    /// POD schema version.
+    pub version: u16,
+    /// The fine refusal reason ([`Unavailability::Unspecified`] if the host wrote no fine reason).
+    pub reason: Unavailability,
+    /// Preamble tail padding.
+    pub _reserved: u8,
+    /// The known/estimated recovery floor in whole seconds (`0` when there is no basis to estimate,
+    /// e.g. an administratively-down or budget-exhausted refusal that does not self-recover).
+    pub retry_after_secs: u64,
 }
 
 /// The descriptor for opening a governed egress. Carries a credential-REF (which pool/hop/exchange),
@@ -837,6 +894,7 @@ mod tests {
         assert_preamble!(Usage);
         assert_preamble!(Key);
         assert_preamble!(Signal);
+        assert_preamble!(AdmitRefusal);
         assert_preamble!(EgressDesc);
         assert_preamble!(EgressHead);
         assert_preamble!(EgressOpen);

@@ -22,8 +22,8 @@
 //! bump, never a reshape. Do not add it to the hot set until a real carrier needs it.
 
 use super::pod::{
-    AdmissionId, AuthQuery, AuthResolved, CallerRef, ContentChunk, CounterpartyRef, Decision,
-    EgressDesc, EgressId, EgressOpen, Facts, FramingDesc, GateDecision, JournalQuery, Key,
+    AdmissionId, AdmitRefusal, AuthQuery, AuthResolved, CallerRef, ContentChunk, CounterpartyRef,
+    Decision, EgressDesc, EgressId, EgressOpen, Facts, FramingDesc, GateDecision, JournalQuery, Key,
     MeterOutcome, MetricSample, OpDesc, OpResult, Seq, Signal, StatusClass, TargetRef, TrustVerdict,
     Usage, VerifyLease, VerifyVerdict, WorkHandleDesc, WorkHandleId,
 };
@@ -43,6 +43,16 @@ pub type GovernAdmitFn = extern "C-unwind" fn(host: HostCtx, facts: *const Facts
 pub type MeterChargeFn = extern "C-unwind" fn(host: HostCtx, usage: *const Usage) -> MeterOutcome;
 /// Acquire a breaker/failover admission grant for a circuit key.
 pub type BreakerAdmitFn = extern "C-unwind" fn(host: HostCtx, key: *const Key) -> AdmissionId;
+/// Acquire a breaker/failover admission grant WITH REFUSAL FIDELITY: the host always initializes `out`
+/// (never uninitialized), writing the fine [`AdmitRefusal`] reason on a refusal (a returned
+/// [`AdmissionId::NONE`]) and leaving it at [`Unavailability`](super::pod::Unavailability)`::Unspecified`
+/// on a live id. The append-only counterpart of [`BreakerAdmitFn`], so a refusal keeps its specific
+/// meaning across the boundary; the caller reads `out` when the returned id is `NONE`.
+pub type BreakerAdmitReasonFn = extern "C-unwind" fn(
+    host: HostCtx,
+    key: *const Key,
+    out: *mut MaybeUninit<AdmitRefusal>,
+) -> AdmissionId;
 /// Settle a breaker admission with the observed outcome signal.
 pub type BreakerSettleFn =
     extern "C-unwind" fn(host: HostCtx, admission: AdmissionId, signal: *const Signal) -> StatusClass;
@@ -191,6 +201,10 @@ pub struct PlaneHostVtable {
     pub entitlement_check: Option<EntitlementCheckFn>,
     /// Scan a streaming content chunk through the governance gate.
     pub gate_scan: Option<GateScanFn>,
+    // ── APPENDED (refusal fidelity): a refusal-carrying acquire. Trailing slot, append-only, added
+    //    under the same sized/versioned discipline (a MINOR bump). ──────────────────────────────────
+    /// Acquire a breaker admission, carrying the fine [`AdmitRefusal`] reason out on a refusal.
+    pub breaker_admit_reason: Option<BreakerAdmitReasonFn>,
     // ── EXTENSION POINT (reserved) ──────────────────────────────────────────────────────────────
     // Metering reserve/settle (a `CostHold`) is DELIBERATELY NOT a slot here. When a high-rate
     // carrier needs it, add `cost_reserve`/`cost_settle` as trailing `Option` slots below this line
@@ -235,6 +249,7 @@ impl PlaneHostVtable {
         trust_evaluate: None,
         entitlement_check: None,
         gate_scan: None,
+        breaker_admit_reason: None,
     };
 
     /// A fully-populated STUB vtable: every slot points at an `unimplemented!()` stub. It exists to
@@ -268,6 +283,7 @@ impl PlaneHostVtable {
         trust_evaluate: Some(stub::trust_evaluate),
         entitlement_check: Some(stub::entitlement_check),
         gate_scan: Some(stub::gate_scan),
+        breaker_admit_reason: Some(stub::breaker_admit_reason),
     };
 }
 
@@ -289,6 +305,14 @@ pub mod stub {
     /// Stub: see module docs.
     pub extern "C-unwind" fn breaker_admit(_host: HostCtx, _key: *const Key) -> AdmissionId {
         unimplemented!("PlaneHost::breaker_admit — stub")
+    }
+    /// Stub: see module docs.
+    pub extern "C-unwind" fn breaker_admit_reason(
+        _host: HostCtx,
+        _key: *const Key,
+        _out: *mut MaybeUninit<AdmitRefusal>,
+    ) -> AdmissionId {
+        unimplemented!("PlaneHost::breaker_admit_reason — stub")
     }
     /// Stub: see module docs.
     pub extern "C-unwind" fn breaker_settle(

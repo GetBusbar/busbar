@@ -38,8 +38,11 @@ use super::{recover, HostState};
 use crate::breaker::{CanonicalSignal, StatusClass as BreakerClass};
 use crate::store::{PlaneAdmission, PlaneBreakers, MAX_POOL_MEMBERS};
 use busbar_plugin::hot::host::HostCtx;
-use busbar_plugin::hot::{AdmissionId, FaultClass, Key, Signal, StatusClass};
+use busbar_plugin::hot::{
+    AdmissionId, AdmitRefusal, FaultClass, Key, Signal, StatusClass, Unavailability,
+};
 use busbar_plugin::read_sized_field;
+use core::mem::MaybeUninit;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::Arc;
 
@@ -250,6 +253,87 @@ pub(super) extern "C-unwind" fn breaker_admit(host: HostCtx, key: *const Key) ->
         }
     }))
     .unwrap_or(AdmissionId::NONE) // fail-closed: a panicked admit refuses.
+}
+
+/// Map the store's [`Unavailable`](crate::store::Unavailable) refusal taxonomy onto the neutral ABI
+/// [`Unavailability`] reason + a recovery-floor in whole seconds — so a refused admit keeps its
+/// SPECIFIC meaning (Open vs probe-lost vs dead vs budget vs capacity) across the host boundary rather
+/// than collapsing to a bare [`AdmissionId::NONE`]. The floor is the store's own single definition of
+/// "when could this be usable again" (`recovery_hint_ms`), rounded up to seconds; `0` for a refusal
+/// that does not self-recover (administratively down / budget spent).
+fn classify_unavailable(u: &crate::store::Unavailable, now: u64) -> (Unavailability, u64) {
+    let retry = u
+        .recovery_hint_ms(now)
+        .map(|ms| ms.div_ceil(1_000))
+        .unwrap_or(0);
+    let reason = match u {
+        crate::store::Unavailable::Dead => Unavailability::Dead,
+        crate::store::Unavailable::BudgetExhausted => Unavailability::Budget,
+        crate::store::Unavailable::BreakerOpen { .. } => Unavailability::Open,
+        crate::store::Unavailable::ProbeInFlight => Unavailability::ProbeInFlight,
+        crate::store::Unavailable::AtCapacity { .. } => Unavailability::AtCapacity,
+        crate::store::Unavailable::Shedding => Unavailability::Shedding,
+    };
+    (reason, retry)
+}
+
+/// Write the fine refusal `reason` + recovery floor into the `out` param (tolerating a null slot).
+///
+/// # Safety
+/// `out`, when non-null, is a writable, aligned `MaybeUninit<AdmitRefusal>` for the call.
+unsafe fn write_refusal(out: *mut MaybeUninit<AdmitRefusal>, reason: Unavailability, retry_after_secs: u64) {
+    let refusal = AdmitRefusal {
+        size: core::mem::size_of::<AdmitRefusal>() as u32,
+        version: busbar_plugin::hot::POD_VERSION,
+        reason,
+        _reserved: 0,
+        retry_after_secs,
+    };
+    // SAFETY: `out` is a writable, aligned MaybeUninit slot (or null, which `write_out` tolerates).
+    unsafe { busbar_plugin::write_out(out, refusal) };
+}
+
+/// WIRED `breaker_admit_reason` — [`breaker_admit`] WITH REFUSAL FIDELITY. Identical admit behaviour
+/// (win the `(pool, lane)` probe, register the settle-capable `Admission` in the dispatch arena, return
+/// its [`AdmissionId`]); the difference is that a REFUSAL writes the fine [`AdmitRefusal`] reason into
+/// `out` (the specific [`Unavailability`] the store yielded, plus its recovery floor) instead of
+/// discarding it. `out` is initialized to [`Unavailability::Unspecified`] at the top so it is NEVER
+/// left uninitialized — on a live id it holds `Unspecified` (the caller reads it only when the id is
+/// [`NONE`](AdmissionId::NONE)); on a refusal it holds the real reason; on a caught panic it holds the
+/// eagerly-written `Unspecified`. Fail-closed: a bad key or a caught panic refuses.
+pub(super) extern "C-unwind" fn breaker_admit_reason(
+    host: HostCtx,
+    key: *const Key,
+    out: *mut MaybeUninit<AdmitRefusal>,
+) -> AdmissionId {
+    catch_unwind(AssertUnwindSafe(|| {
+        // Initialize `out` up front so no path (admit, refuse, or a caught panic below) leaves it
+        // uninitialized; a refusal overwrites it with the specific reason.
+        // SAFETY: ABI out-param discipline (writable/aligned or null; see `write_refusal`).
+        unsafe { write_refusal(out, Unavailability::Unspecified, 0) };
+        // SAFETY: recovery invariant (see `super::recover`).
+        let state: &HostState = unsafe { recover(host) };
+        // SAFETY: ABI key discipline (see `resolve_key`).
+        let Some((pool, lane)) = (unsafe { resolve_key(key) }) else {
+            return AdmissionId::NONE; // a bad key is not an availability fact → Unspecified.
+        };
+        let breakers = Arc::clone(&state.app.plane_breakers);
+        match breakers.admit(&pool, lane) {
+            Ok(admission) => state.scope.register_settling_admission(Box::new(BreakerAdmission {
+                breakers: Arc::clone(&breakers),
+                key: pool,
+                lane,
+                _admission: admission,
+            })),
+            Err(unavailable) => {
+                let (reason, retry) = classify_unavailable(&unavailable, crate::store::now());
+                // SAFETY: as above.
+                unsafe { write_refusal(out, reason, retry) };
+                AdmissionId::NONE
+            }
+        }
+    }))
+    .unwrap_or(AdmissionId::NONE) // fail-closed: a panicked admit refuses (out already Unspecified).
 }
 
 /// WIRED `breaker_settle`. Looks the admission up in the dispatch arena, records the reported
@@ -475,6 +559,54 @@ mod tests {
             BreakerState::Closed,
             "the recorded success recovered the HalfOpen probe to Closed"
         );
+    }
+
+    /// REFUSAL FIDELITY: `breaker_admit_reason` carries the SPECIFIC reason out on a refusal instead
+    /// of collapsing to `NONE`. An Open cell refuses with [`Unavailability::Open`] + a recovery floor;
+    /// a live admit returns an id and leaves the reason at `Unspecified`; a null key is `Unspecified`.
+    #[test]
+    fn breaker_admit_reason_carries_the_refusal_reason() {
+        let app = crate::test_support::TestApp::new().build();
+        // Park the cell Open with a FUTURE cooldown (absolute epoch) so the next admit is refused
+        // BreakerOpen rather than winning a half-open probe.
+        app.plane_breakers
+            .force_open(POOL_STR, 0, crate::store::now().saturating_add(3600));
+        with_dispatch_scope(&app, |host, vt| {
+            let admit_reason = vt.breaker_admit_reason.unwrap();
+            let k = key(0);
+            let mut out = MaybeUninit::<AdmitRefusal>::uninit();
+            let id = admit_reason(host, &k as *const Key, std::ptr::from_mut(&mut out));
+            assert!(id.is_none(), "an Open cell refuses");
+            // SAFETY: the host always initializes `out`.
+            let refusal = unsafe { out.assume_init() };
+            assert_eq!(refusal.reason, Unavailability::Open, "the fine reason survives the boundary");
+            assert!(refusal.retry_after_secs > 0, "an Open cell carries its known recovery floor");
+
+            // A null key is not an availability fact → Unspecified, still refused.
+            let mut out2 = MaybeUninit::<AdmitRefusal>::uninit();
+            let id2 = admit_reason(host, core::ptr::null(), std::ptr::from_mut(&mut out2));
+            assert!(id2.is_none());
+            // SAFETY: initialized up front.
+            assert_eq!(unsafe { out2.assume_init() }.reason, Unavailability::Unspecified);
+        });
+    }
+
+    /// A live admit through `breaker_admit_reason` returns an id and leaves the reason `Unspecified`;
+    /// the settle-capable admission is registered in the arena exactly as `breaker_admit`'s is.
+    #[test]
+    fn breaker_admit_reason_admits_and_leaves_reason_unspecified() {
+        let app = crate::test_support::TestApp::new().build();
+        with_dispatch_scope(&app, |host, vt| {
+            let k = key(0);
+            let mut out = MaybeUninit::<AdmitRefusal>::uninit();
+            let id = (vt.breaker_admit_reason.unwrap())(host, &k as *const Key, std::ptr::from_mut(&mut out));
+            assert!(!id.is_none(), "a Closed-ready cell admits");
+            // SAFETY: initialized up front; a live id leaves it Unspecified.
+            assert_eq!(unsafe { out.assume_init() }.reason, Unavailability::Unspecified);
+            // SAFETY: live HostState from `with_dispatch_scope`.
+            let state: &HostState = unsafe { recover(host) };
+            assert_eq!(state.scope.registered(), 1, "the settle-capable admission is registered");
+        });
     }
 
     /// Fail-closed inputs: a null/empty/oversized-lane key refuses to `NONE`; a null signal and an
