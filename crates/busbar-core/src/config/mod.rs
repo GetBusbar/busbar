@@ -676,6 +676,79 @@ pub(crate) struct RoleBindingCfg {
 pub(crate) type RoleBindings =
     std::collections::BTreeMap<String, std::collections::BTreeMap<String, RoleBindingCfg>>;
 
+/// A TOKEN BINDING MODE (`auth.policy.binding_modes:` / a mint ceiling's `binding_modes:`), 1.6.0.
+/// The lifecycle a minted token is bound to, admin-policied:
+/// - `time-bound` — expires at its `exp`, no identity tie (the app/service-token lifecycle).
+/// - `user-bound` — records the minting IdP subject for ATTRIBUTION and is short-lived; the client
+///   re-exchanges against the IdP to stay live (the honest, buildable form — NOT a per-use IdP
+///   introspection floor, which standard OIDC cannot provide).
+/// - `both` — strongest: time-bound AND carries the IdP subject.
+///
+/// Config grammar only in 1.6.0's first auth increment: the block is PARSED, VALIDATED and CARRIED,
+/// but the mint path does not yet consult it (enforcement is a later, Store-touching increment), so
+/// existing behavior is byte-identical. `rename_all = "kebab-case"` fixes the wire spelling
+/// (`time-bound` / `user-bound` / `both`); an enum (not a bare string) means an unknown mode fails
+/// boot rather than sitting inert, and adding a mode later is an additive enum-variant append.
+#[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum BindingMode {
+    /// Expires at `exp`; no identity tie. The app/service-token lifecycle.
+    TimeBound,
+    /// Records the IdP subject for attribution; short-lived + client re-exchange.
+    UserBound,
+    /// Time-bound AND carries the IdP subject (strongest).
+    Both,
+}
+
+/// One per-role MINT CEILING (`auth.policy.mint_ceilings.<role>:`), 1.6.0. The upper bound on what a
+/// DELEGATED minter holding that role may ever mint — the config-side DEFINITION of the ceiling whose
+/// CORE-SIDE enforcement (a later increment) mitigates the compromised-app-admin threat (review
+/// H2/H3). All fields optional; an omitted ceiling for a role imposes no additional cap here.
+/// `deny_unknown_fields`: a typo'd cap key must fail boot, never silently widen the ceiling.
+#[derive(Debug, Deserialize, Clone, Default, PartialEq)]
+#[serde(deny_unknown_fields, default)]
+pub(crate) struct MintCeilingCfg {
+    /// The longest TTL this role may mint, a duration string (`"7d"`, `"24h"`, …) parsed by
+    /// `parse_duration_secs`. Absent ⇒ no ceiling-specific cap (the block-level `max_ttl` still applies).
+    pub(crate) max_ttl: Option<String>,
+    /// The pools this role may mint tokens against — 3-state, matching `allowed_pools` everywhere:
+    /// OMITTED (`None`) = ALL pools; explicit `[]` = NO pools; `[list]` = exactly those. The ceiling
+    /// is an upper bound: an enforced mint must request a subset.
+    pub(crate) allowed_pools: Option<Vec<String>>,
+    /// The binding modes this role may mint. Absent ⇒ the block-level `binding_modes` applies.
+    pub(crate) binding_modes: Option<Vec<BindingMode>>,
+}
+
+/// The `auth.policy:` block (1.6.0, ADDITIVE) — operator-authored token-mint POLICY, the config half
+/// of the config-vs-store split (policy DECLARES how minting is bounded; the minted tokens themselves
+/// are DATA → store). Every field optional: an omitted `auth.policy:` block is `Default` and changes
+/// nothing (byte-identical existing behavior — this increment parses/validates/carries the block but
+/// does not yet enforce it; enforcement is the multi-mint / mint-ceiling increments).
+/// `deny_unknown_fields`: a typo'd policy key must fail boot, not silently disable a control.
+#[derive(Debug, Deserialize, Clone, Default, PartialEq)]
+#[serde(deny_unknown_fields, default)]
+pub(crate) struct AuthPolicyCfg {
+    /// May users SELF-SERVE mint (`POST /auth/token`)? `None` ⇒ today's behavior (self-mint available
+    /// whenever an IdP is configured), unchanged. `Some(false)` will (a later increment) disable the
+    /// self-serve path; `Some(true)` makes the intent explicit. Not yet consulted by the mint path.
+    pub(crate) self_mint: Option<bool>,
+    /// The binding modes the deployment permits at mint. `None` ⇒ all modes allowed. An explicit list
+    /// narrows what a minter may request; a mint of a mode outside it will (a later increment) be
+    /// refused.
+    pub(crate) binding_modes: Option<Vec<BindingMode>>,
+    /// The DEFAULT TTL applied to a minted token when the request names none, a duration string.
+    /// Absent ⇒ the built-in `DEFAULT_KEY_TTL_SECS` path (via `auth.key_ttl`) is unchanged.
+    pub(crate) default_ttl: Option<String>,
+    /// The MAX TTL any minted token may carry, a duration string. Absent ⇒ no policy ceiling (the
+    /// admin API's own default applies). When both are set, `default_ttl` must be ≤ `max_ttl`
+    /// (enforced at validate, fail boot).
+    pub(crate) max_ttl: Option<String>,
+    /// Per-role mint ceilings (`mint_ceilings.<role>:`) — the delegated-app-admin caps (review H2/H3).
+    /// Empty by default.
+    #[serde(default)]
+    pub(crate) mint_ceilings: std::collections::BTreeMap<String, MintCeilingCfg>,
+}
+
 /// Per-provider browser-login parameters (`identity-providers.<name>.browser_login:`). PRESENCE of
 /// this block is what makes a provider show a button on the hosted login page; a provider WITHOUT it
 /// is headless-only (still usable via `POST /auth/token`). Holds the confidential-client secret used by
@@ -745,6 +818,10 @@ pub(crate) struct AuthDeployCfg {
     /// See [`AuthCfg::key_ttl`].
     #[serde(default)]
     pub(crate) key_ttl: Option<String>,
+    /// The `auth.policy:` token-mint POLICY block (1.6.0, additive). See [`AuthPolicyCfg`]. Absent ⇒
+    /// `Default` (no policy caps), unchanged behavior.
+    #[serde(default)]
+    pub(crate) policy: AuthPolicyCfg,
 }
 
 impl Default for AuthDeployCfg {
@@ -757,6 +834,7 @@ impl Default for AuthDeployCfg {
             admin_auth: default_admin_auth_names(),
             role_bindings: RoleBindings::new(),
             key_ttl: None,
+            policy: AuthPolicyCfg::default(),
         }
     }
 }
@@ -789,6 +867,10 @@ pub struct AuthCfg {
     /// (`"90d"`, `"24h"`, …) parsed by `parse_duration_secs`. Absent ⇒ the built-in
     /// `DEFAULT_KEY_TTL_SECS` (90d).
     pub(crate) key_ttl: Option<String>,
+    /// The resolved `auth.policy:` token-mint POLICY block (1.6.0, additive). Carried verbatim from
+    /// [`AuthDeployCfg::policy`]; `Default` when the block is omitted. Parsed/validated/carried in
+    /// this increment; consulted by the mint path in a later, Store-touching increment.
+    pub(crate) policy: AuthPolicyCfg,
 }
 
 impl AuthCfg {
@@ -801,6 +883,7 @@ impl AuthCfg {
             role_bindings: RoleBindings::new(),
             methods: AuthMethods::new(),
             key_ttl: None,
+            policy: AuthPolicyCfg::default(),
         }
     }
 
@@ -983,6 +1066,7 @@ pub(crate) fn resolve_auth(
         role_bindings: auth.role_bindings.clone(),
         methods,
         key_ttl: auth.key_ttl.clone(),
+        policy: auth.policy.clone(),
     }
 }
 

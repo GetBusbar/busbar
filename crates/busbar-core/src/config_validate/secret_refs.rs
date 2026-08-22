@@ -214,6 +214,9 @@ pub(crate) fn secret_refs(cfg: &RootCfg) -> Vec<(String, &crate::config::SecretR
             role_bindings: _,
             // A duration string.
             key_ttl: _,
+            // Token-mint policy: bools, duration strings, pool-name strings, binding-mode enums —
+            // no secret references anywhere in the block.
+            policy: _,
         } = auth;
         if let Some(sk) = signing_key {
             refs.push(("auth.signing_key".to_string(), sk));

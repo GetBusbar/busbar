@@ -1724,6 +1724,7 @@ fn test_debug_of_full_config_never_shows_resolved_secrets() {
         admin_auth: vec![ADMIN_TOKENS_MODULE.to_string()],
         role_bindings: RoleBindings::new(),
         key_ttl: None,
+        policy: Default::default(),
     };
     let mut deploy = base_deploy();
     deploy.auth = Some(auth);
@@ -3808,4 +3809,149 @@ fn nothing_is_repeatable_unless_the_operator_names_it() {
         crate::failover::Repeatable::No,
         "and an empty declaration repeats nothing at all"
     );
+}
+
+// ── 1.6.0 auth.policy: block (additive, parse/resolve only in this increment) ────────────────────
+
+/// A fully-populated `auth.policy:` block parses and RESOLVES onto `AuthCfg.policy` verbatim —
+/// self-mint toggle, allowed binding modes, default/max TTLs, and a per-role mint ceiling with a
+/// 3-state `allowed_pools`. This increment PARSES and CARRIES the block; it is not yet consulted by
+/// the mint path (behavior byte-identical when the block is present but unenforced).
+#[test]
+fn test_auth_policy_block_parses_and_resolves() {
+    use crate::config::BindingMode;
+    let deploy: DeployCfg = serde_yaml::from_str(
+        "auth:\n  \
+           chain: [keys]\n  \
+           policy:\n    \
+             self_mint: true\n    \
+             binding_modes: [time-bound, user-bound, both]\n    \
+             default_ttl: \"24h\"\n    \
+             max_ttl: \"90d\"\n    \
+             mint_ceilings:\n      \
+               app-admin:\n        \
+                 max_ttl: \"7d\"\n        \
+                 allowed_pools: [growth, ops]\n        \
+                 binding_modes: [time-bound]\n\
+         providers: {}\nmodels: {}\npools: {}\n",
+    )
+    .expect("the 1.6.0 auth.policy grammar parses");
+
+    let mut errors = Vec::new();
+    let auth = crate::config::resolve_auth(
+        deploy.auth.as_ref().expect("auth block"),
+        &deploy.identity_providers,
+        &mut errors,
+    );
+    assert!(errors.is_empty(), "{errors:?}");
+
+    let p = &auth.policy;
+    assert_eq!(p.self_mint, Some(true));
+    assert_eq!(
+        p.binding_modes.as_deref(),
+        Some(
+            &[
+                BindingMode::TimeBound,
+                BindingMode::UserBound,
+                BindingMode::Both
+            ][..]
+        )
+    );
+    assert_eq!(p.default_ttl.as_deref(), Some("24h"));
+    assert_eq!(p.max_ttl.as_deref(), Some("90d"));
+
+    let ceiling = p
+        .mint_ceilings
+        .get("app-admin")
+        .expect("app-admin ceiling present");
+    assert_eq!(ceiling.max_ttl.as_deref(), Some("7d"));
+    // 3-state allowed_pools: an explicit list is exactly those pools.
+    assert_eq!(
+        ceiling.allowed_pools.as_deref(),
+        Some(&["growth".to_string(), "ops".to_string()][..])
+    );
+    assert_eq!(
+        ceiling.binding_modes.as_deref(),
+        Some(&[BindingMode::TimeBound][..])
+    );
+}
+
+/// An omitted `auth.policy:` block resolves to `Default` — every field None/empty — so a config that
+/// predates the block behaves exactly as before (byte-identical: nothing consults it).
+#[test]
+fn test_auth_policy_absent_is_default() {
+    let deploy: DeployCfg =
+        serde_yaml::from_str("auth:\n  chain: [keys]\nproviders: {}\nmodels: {}\npools: {}\n")
+            .expect("an auth block with no policy parses");
+    let mut errors = Vec::new();
+    let auth = crate::config::resolve_auth(
+        deploy.auth.as_ref().expect("auth block"),
+        &deploy.identity_providers,
+        &mut errors,
+    );
+    assert!(errors.is_empty(), "{errors:?}");
+    let p = &auth.policy;
+    assert_eq!(p.self_mint, None);
+    assert!(p.binding_modes.is_none());
+    assert!(p.default_ttl.is_none());
+    assert!(p.max_ttl.is_none());
+    assert!(p.mint_ceilings.is_empty());
+    assert_eq!(p, &crate::config::AuthPolicyCfg::default());
+}
+
+/// The 3-state `allowed_pools` on a mint ceiling is preserved through parse: OMITTED = None (all
+/// pools), explicit `[]` = Some(empty) (no pools), `[list]` = exactly those. Never conflated.
+#[test]
+fn test_auth_policy_ceiling_allowed_pools_three_state() {
+    let deploy: DeployCfg = serde_yaml::from_str(
+        "auth:\n  \
+           policy:\n    \
+             mint_ceilings:\n      \
+               all-pools: { max_ttl: \"1h\" }\n      \
+               no-pools: { allowed_pools: [] }\n      \
+               some-pools: { allowed_pools: [a, b] }\n\
+         providers: {}\nmodels: {}\npools: {}\n",
+    )
+    .expect("three-state allowed_pools parses");
+    let policy = &deploy.auth.expect("auth").policy;
+    assert!(
+        policy.mint_ceilings["all-pools"].allowed_pools.is_none(),
+        "omitted allowed_pools = None (all pools)"
+    );
+    assert_eq!(
+        policy.mint_ceilings["no-pools"].allowed_pools.as_deref(),
+        Some(&[][..]),
+        "explicit [] = the empty set (no pools)"
+    );
+    assert_eq!(
+        policy.mint_ceilings["some-pools"]
+            .allowed_pools
+            .as_deref()
+            .map(<[String]>::len),
+        Some(2)
+    );
+}
+
+/// An unknown binding-mode string is rejected at parse (the enum is closed), and an unknown key
+/// under `auth.policy:` or a ceiling is rejected by `deny_unknown_fields` — a typo'd control fails
+/// boot rather than sitting inert.
+#[test]
+fn test_auth_policy_rejects_bad_input_at_parse() {
+    let bad_mode = "policy:\n  binding_modes: [forever]\n";
+    let err = serde_yaml::from_str::<crate::config::AuthDeployCfg>(bad_mode)
+        .expect_err("an unknown binding mode must be rejected at parse");
+    assert!(
+        err.to_string().contains("forever") || err.to_string().contains("unknown variant"),
+        "got: {err}"
+    );
+
+    let typo = "policy:\n  slef_mint: true\n";
+    let err = serde_yaml::from_str::<crate::config::AuthDeployCfg>(typo)
+        .expect_err("a typo'd policy key must be rejected (deny_unknown_fields)");
+    assert!(err.to_string().contains("unknown field"), "got: {err}");
+
+    let ceiling_typo = "policy:\n  mint_ceilings:\n    app-admin: { max_tll: \"7d\" }\n";
+    let err = serde_yaml::from_str::<crate::config::AuthDeployCfg>(ceiling_typo)
+        .expect_err("a typo'd ceiling key must be rejected (deny_unknown_fields)");
+    assert!(err.to_string().contains("unknown field"), "got: {err}");
 }

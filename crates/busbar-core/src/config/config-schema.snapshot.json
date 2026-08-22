@@ -165,6 +165,10 @@
           "optional": true,
           "type": "String"
         },
+        "policy": {
+          "optional": true,
+          "type": "AuthPolicyCfg"
+        },
         "role_bindings": {
           "optional": true,
           "type": "RoleBindings"
@@ -176,6 +180,43 @@
       },
       "kind": "struct",
       "transparent": false
+    },
+    "AuthPolicyCfg": {
+      "deny_unknown_fields": true,
+      "fields": {
+        "binding_modes": {
+          "optional": true,
+          "type": "Vec<BindingMode>"
+        },
+        "default_ttl": {
+          "optional": true,
+          "type": "String"
+        },
+        "max_ttl": {
+          "optional": true,
+          "type": "String"
+        },
+        "mint_ceilings": {
+          "optional": true,
+          "type": "std::collections::BTreeMap<String, MintCeilingCfg>"
+        },
+        "self_mint": {
+          "optional": true,
+          "type": "bool"
+        }
+      },
+      "kind": "struct",
+      "transparent": false
+    },
+    "BindingMode": {
+      "deny_unknown_fields": false,
+      "kind": "enum",
+      "transparent": false,
+      "variants": [
+        "both",
+        "time-bound",
+        "user-bound"
+      ]
     },
     "BreakerCfg": {
       "deny_unknown_fields": true,
@@ -987,6 +1028,25 @@
           "type": "String"
         },
         "verify_ttl": {
+          "optional": true,
+          "type": "String"
+        }
+      },
+      "kind": "struct",
+      "transparent": false
+    },
+    "MintCeilingCfg": {
+      "deny_unknown_fields": true,
+      "fields": {
+        "allowed_pools": {
+          "optional": true,
+          "type": "Vec<String>"
+        },
+        "binding_modes": {
+          "optional": true,
+          "type": "Vec<BindingMode>"
+        },
+        "max_ttl": {
           "optional": true,
           "type": "String"
         }

@@ -827,6 +827,60 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
                 errors.push(format!("auth.key_ttl '{ttl}' is not a valid duration: {e}"));
             }
         }
+
+        // Rule (auth.policy): the token-mint policy block's duration bounds must parse, and a set
+        // default must not exceed a set ceiling. Additive 1.6.0 block; same fail-boot-on-garbage
+        // posture as `key_ttl` above (a policy that silently ignores a bad TTL is a policy that
+        // isn't a policy). Duration strings share the admin `expires_in` grammar.
+        let policy = &auth.policy;
+        let parse_policy_ttl = |label: &str, ttl: &str, errors: &mut Vec<String>| -> Option<u64> {
+            match crate::admin::parse_duration_secs(ttl) {
+                Ok(secs) => Some(secs),
+                Err(e) => {
+                    errors.push(format!("{label} '{ttl}' is not a valid duration: {e}"));
+                    None
+                }
+            }
+        };
+        let default_secs = policy
+            .default_ttl
+            .as_deref()
+            .and_then(|t| parse_policy_ttl("auth.policy.default_ttl", t, &mut errors));
+        let max_secs = policy
+            .max_ttl
+            .as_deref()
+            .and_then(|t| parse_policy_ttl("auth.policy.max_ttl", t, &mut errors));
+        if let (Some(d), Some(m)) = (default_secs, max_secs) {
+            if d > m {
+                errors.push(format!(
+                    "auth.policy.default_ttl ('{}', {d}s) exceeds auth.policy.max_ttl ('{}', {m}s); \
+                     the default a mint falls back to cannot be longer than the ceiling",
+                    policy.default_ttl.as_deref().unwrap_or(""),
+                    policy.max_ttl.as_deref().unwrap_or(""),
+                ));
+            }
+        }
+        for (role, ceiling) in &policy.mint_ceilings {
+            if let Some(ttl) = ceiling.max_ttl.as_deref() {
+                if let Some(c) = parse_policy_ttl(
+                    &format!("auth.policy.mint_ceilings.{role}.max_ttl"),
+                    ttl,
+                    &mut errors,
+                ) {
+                    // A role's ceiling cannot exceed the block-level `max_ttl` — that would let a
+                    // delegated minter outrun the deployment-wide cap it is meant to sit under.
+                    if let Some(m) = max_secs {
+                        if c > m {
+                            errors.push(format!(
+                                "auth.policy.mint_ceilings.{role}.max_ttl ('{ttl}', {c}s) exceeds \
+                                 auth.policy.max_ttl ({m}s); a per-role ceiling cannot exceed the \
+                                 deployment-wide mint ceiling"
+                            ));
+                        }
+                    }
+                }
+            }
+        }
         for (module, roles) in &auth.role_bindings {
             if !chain_modules.contains(module.as_str()) {
                 errors.push(format!(

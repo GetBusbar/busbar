@@ -5212,3 +5212,138 @@ fn distinct_names_across_nouns_and_pools_pass() {
     super::validate_unified_pool_names(&cfg, &mut errors);
     assert!(errors.is_empty(), "no collisions: {errors:?}");
 }
+
+// ── 1.6.0 auth.policy: validation (duration bounds + default≤max + per-role ceiling) ─────────────
+
+/// Build a RootCfg whose resolved `auth:` carries the given policy block, everything else default.
+fn root_with_auth_policy(policy: config::AuthPolicyCfg) -> RootCfg {
+    let mut auth = config::AuthCfg::default_none();
+    auth.policy = policy;
+    let mut cfg = make_root_cfg(HashMap::new(), HashMap::new(), HashMap::new());
+    cfg.auth = Some(auth);
+    cfg
+}
+
+/// Return the validation errors that mention `auth.policy`, so an assertion is not fooled by other
+/// unrelated errors a bare config may raise.
+fn policy_errors(cfg: &RootCfg) -> Vec<String> {
+    validate(cfg)
+        .err()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|e| e.contains("auth.policy"))
+        .collect()
+}
+
+/// A garbage `default_ttl` / `max_ttl` duration fails boot (same fail-closed posture as `key_ttl`).
+#[test]
+fn test_auth_policy_bad_duration_is_rejected() {
+    let policy = config::AuthPolicyCfg {
+        default_ttl: Some("not-a-duration".to_string()),
+        ..Default::default()
+    };
+    let errs = policy_errors(&root_with_auth_policy(policy));
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("auth.policy.default_ttl") && e.contains("not a valid duration")),
+        "a bad default_ttl must fail validation: {errs:?}"
+    );
+
+    let policy = config::AuthPolicyCfg {
+        max_ttl: Some("90x".to_string()),
+        ..Default::default()
+    };
+    let errs = policy_errors(&root_with_auth_policy(policy));
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("auth.policy.max_ttl") && e.contains("not a valid duration")),
+        "a bad max_ttl must fail validation: {errs:?}"
+    );
+}
+
+/// `default_ttl` must not exceed `max_ttl` — the fallback a mint uses cannot outrun the ceiling.
+#[test]
+fn test_auth_policy_default_exceeding_max_is_rejected() {
+    let policy = config::AuthPolicyCfg {
+        default_ttl: Some("90d".to_string()),
+        max_ttl: Some("24h".to_string()),
+        ..Default::default()
+    };
+    let errs = policy_errors(&root_with_auth_policy(policy));
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("default_ttl") && e.contains("exceeds") && e.contains("max_ttl")),
+        "default_ttl > max_ttl must fail validation: {errs:?}"
+    );
+}
+
+/// A per-role ceiling's `max_ttl` must parse, and cannot exceed the block-level `max_ttl`.
+#[test]
+fn test_auth_policy_ceiling_max_ttl_rules() {
+    // Bad duration on the ceiling.
+    let mut ceilings = std::collections::BTreeMap::new();
+    ceilings.insert(
+        "app-admin".to_string(),
+        config::MintCeilingCfg {
+            max_ttl: Some("wat".to_string()),
+            ..Default::default()
+        },
+    );
+    let policy = config::AuthPolicyCfg {
+        mint_ceilings: ceilings,
+        ..Default::default()
+    };
+    let errs = policy_errors(&root_with_auth_policy(policy));
+    assert!(
+        errs.iter().any(
+            |e| e.contains("auth.policy.mint_ceilings.app-admin.max_ttl")
+                && e.contains("not a valid duration")
+        ),
+        "a bad ceiling max_ttl must fail validation: {errs:?}"
+    );
+
+    // Ceiling exceeding the deployment-wide max.
+    let mut ceilings = std::collections::BTreeMap::new();
+    ceilings.insert(
+        "app-admin".to_string(),
+        config::MintCeilingCfg {
+            max_ttl: Some("30d".to_string()),
+            ..Default::default()
+        },
+    );
+    let policy = config::AuthPolicyCfg {
+        max_ttl: Some("7d".to_string()),
+        mint_ceilings: ceilings,
+        ..Default::default()
+    };
+    let errs = policy_errors(&root_with_auth_policy(policy));
+    assert!(
+        errs.iter().any(
+            |e| e.contains("auth.policy.mint_ceilings.app-admin.max_ttl") && e.contains("exceeds")
+        ),
+        "a ceiling exceeding the block max must fail validation: {errs:?}"
+    );
+}
+
+/// A well-formed policy block adds NO `auth.policy` validation error.
+#[test]
+fn test_auth_policy_valid_block_passes() {
+    let mut ceilings = std::collections::BTreeMap::new();
+    ceilings.insert(
+        "app-admin".to_string(),
+        config::MintCeilingCfg {
+            max_ttl: Some("7d".to_string()),
+            allowed_pools: Some(vec!["growth".to_string()]),
+            binding_modes: Some(vec![config::BindingMode::TimeBound]),
+        },
+    );
+    let policy = config::AuthPolicyCfg {
+        self_mint: Some(true),
+        binding_modes: Some(vec![config::BindingMode::Both]),
+        default_ttl: Some("24h".to_string()),
+        max_ttl: Some("90d".to_string()),
+        mint_ceilings: ceilings,
+    };
+    let errs = policy_errors(&root_with_auth_policy(policy));
+    assert!(errs.is_empty(), "a valid policy adds no error: {errs:?}");
+}

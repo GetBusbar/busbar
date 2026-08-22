@@ -1392,6 +1392,7 @@ fn cfg_with_credentials(
         role_bindings: crate::config::RoleBindings::new(),
         methods: Default::default(),
         key_ttl: None,
+        policy: Default::default(),
     });
     cfg
 }
