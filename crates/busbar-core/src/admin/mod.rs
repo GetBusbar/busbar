@@ -124,6 +124,38 @@ pub(crate) struct CreateKeyReq {
 /// token is not valid forever (the 1.x posture: keys never expired).
 pub(crate) const DEFAULT_KEY_TTL_SECS: u64 = 90 * 86_400;
 
+/// Apply the deployment-wide mint TTL ceiling (`auth.policy.max_ttl`, 1.6.0) to a resolved mint
+/// lifetime. CORE-SIDE enforcement — never the UI's job (auth design review M2) — of the block-level
+/// cap that bounds how long any minted token may live.
+///
+/// - `ceiling` is `None` ⇒ no policy cap: the requested TTL passes through unchanged (byte-identical
+///   pre-1.6.0 behavior for a deployment that set no `auth.policy.max_ttl`).
+/// - an EXPLICIT request (`expires_in`/`expires_at`, `explicit = true`) that exceeds the ceiling is
+///   REFUSED: the operator asked, in writing, for longer than policy allows, so a loud 4xx beats
+///   silently shortening what they typed.
+/// - the no-expiry DEFAULT (`explicit = false`) is CLAMPED down to the ceiling: a 90-day default that
+///   predates a shorter policy must not silently outlive the cap, and a default was never an explicit
+///   ask to refuse.
+///
+/// Returns the (possibly clamped) TTL in seconds, or an error message naming the ceiling for the 4xx.
+/// The per-role `mint_ceilings` narrowing composes ABOVE this by lowering `ceiling` before the call.
+pub(crate) fn apply_mint_ttl_ceiling(
+    requested_ttl_secs: u64,
+    explicit: bool,
+    ceiling_secs: Option<u64>,
+) -> Result<u64, String> {
+    match ceiling_secs {
+        None => Ok(requested_ttl_secs),
+        Some(max) if requested_ttl_secs <= max => Ok(requested_ttl_secs),
+        Some(max) if explicit => Err(format!(
+            "requested key lifetime ({requested_ttl_secs}s) exceeds the policy ceiling \
+             auth.policy.max_ttl ({max}s); request a shorter expires_in/expires_at"
+        )),
+        // Default (non-explicit) over the ceiling: clamp down to the cap.
+        Some(max) => Ok(max),
+    }
+}
+
 /// Parse a duration string (`<n><unit>`, unit in s|m|h|d) to seconds. Bounded so an absurd value
 /// cannot overflow the `exp` computation.
 pub(crate) fn parse_duration_secs(s: &str) -> Result<u64, String> {
@@ -756,8 +788,10 @@ pub(crate) async fn create_key(
         );
     }
     // `expires_in` and `expires_at` are mutually exclusive; resolve the token expiry (Unix secs).
+    // `explicit` records whether the operator NAMED a lifetime (so the policy ceiling refuses an
+    // over-ask but only clamps the default — see `apply_mint_ttl_ceiling`).
     let now = crate::store::now();
-    let exp = match (req.expires_in.as_deref(), req.expires_at) {
+    let (exp, explicit) = match (req.expires_in.as_deref(), req.expires_at) {
         (Some(_), Some(_)) => {
             return key_err(
                 who,
@@ -768,7 +802,7 @@ pub(crate) async fn create_key(
             );
         }
         (Some(dur), None) => match parse_duration_secs(dur) {
-            Ok(secs) => now.saturating_add(secs),
+            Ok(secs) => (now.saturating_add(secs), true),
             Err(msg) => return key_err(who, &AdminError::Validation(msg), Cond::KeyExpiryFields),
         },
         (None, Some(at)) => {
@@ -779,9 +813,16 @@ pub(crate) async fn create_key(
                     Cond::KeyExpiryFields,
                 );
             }
-            at
+            (at, true)
         }
-        (None, None) => now.saturating_add(DEFAULT_KEY_TTL_SECS),
+        (None, None) => (now.saturating_add(DEFAULT_KEY_TTL_SECS), false),
+    };
+    // Enforce the deployment-wide mint TTL ceiling (`auth.policy.max_ttl`, 1.6.0) CORE-SIDE: refuse
+    // an explicit over-ask, clamp an over-long default. `None` ceiling ⇒ unchanged behavior.
+    let requested_ttl = exp.saturating_sub(now);
+    let exp = match apply_mint_ttl_ceiling(requested_ttl, explicit, app.mint_max_ttl_secs) {
+        Ok(ttl) => now.saturating_add(ttl),
+        Err(msg) => return key_err(who, &AdminError::Validation(msg), Cond::KeyExpiryFields),
     };
     // `allowed_pools` (intent carried INTACT into the binding): OMITTED = all pools (`None`);
     // an explicit `[]` = NO pools; a list scopes it. NON-FATAL typo diagnostic on each named pool.

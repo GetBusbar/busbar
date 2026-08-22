@@ -719,6 +719,13 @@ pub struct App {
     /// the Step-1 `auth.key_ttl` field is finally READ: `POST /auth/token` mints every self key with
     /// `exp = now + self_key_ttl_secs`. Rebuilt on every apply/reload with the rest of the snapshot.
     pub(crate) self_key_ttl_secs: u64,
+    /// The deployment-wide MINT TTL CEILING in seconds, resolved from `auth.policy.max_ttl` (1.6.0).
+    /// `None` = no policy ceiling (unchanged behavior). When `Some(secs)`, every minted key's
+    /// lifetime is bounded by it: an EXPLICIT `expires_in`/`expires_at` that exceeds it is REJECTED
+    /// at the mint ingress, and the no-expiry DEFAULT is CLAMPED down to it (a default that predates
+    /// the policy must not silently outlive the cap). The per-role `mint_ceilings` narrowing sits
+    /// ABOVE this block-level cap and is applied at the delegated-mint authz layer.
+    pub(crate) mint_max_ttl_secs: Option<u64>,
     /// Per-request correlation-id generator: `fetch_add(1, Relaxed)` stamps a fresh `u64` on every
     /// inbound request (see [`App::next_request_id`]), so a routing DECISION (the hook seam) can be
     /// joined to its OUTCOME (the response tap) and per-request log lines are correlatable — a

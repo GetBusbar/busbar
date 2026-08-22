@@ -119,6 +119,7 @@ fn minimal_app() -> Arc<App> {
         default_max_tokens: crate::config::DEFAULT_DEFAULT_MAX_TOKENS,
         reasoning_effort_budgets: [1024, 4096, 8192, 16384],
         self_key_ttl_secs: crate::admin::DEFAULT_KEY_TTL_SECS,
+        mint_max_ttl_secs: None,
         request_id_counter: Arc::new(std::sync::atomic::AtomicU64::new(
             crate::state::seed_request_id_counter(),
         )),
