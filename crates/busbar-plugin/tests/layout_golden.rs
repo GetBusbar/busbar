@@ -118,7 +118,17 @@ fn compute_layout() -> String {
             target_ptr,
             target_len,
             client_identity_ref,
-            credential_ref
+            credential_ref,
+            verb_ptr,
+            verb_len,
+            headers_ptr,
+            headers_len,
+            body_ptr,
+            body_len,
+            cred_header_ptr,
+            cred_header_len,
+            cred_scheme_ptr,
+            cred_scheme_len
         ]
     );
     record!(

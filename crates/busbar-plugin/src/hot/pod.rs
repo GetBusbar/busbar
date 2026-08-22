@@ -703,8 +703,25 @@ pub struct GovRefusal {
 /// NEVER plaintext — the host mints and injects the credential app-layer. Also carries the mTLS
 /// client-identity REF for pinned client auth.
 ///
+/// ## The outbound-request tail (append-only minor-7 extension)
+///
+/// The tail block (`verb_ptr` … `cred_scheme_len`) is an APPEND-ONLY minor-7 extension carrying
+/// everything an OUTBOUND request needs as neutral DATA — the request `verb` (e.g. `GET`/`POST`), a
+/// packed `header set`, the request `body`, and the credential PLACEMENT (the header name + auth scheme
+/// the host injects the resolved credential under). It carries NO policy: the SSRF/allowlist/mint
+/// governance is the host's, applied identically whatever the plane sends. A sender that predates the
+/// tail advertises the shorter `size`; the host reads each tail field only when `size` proves it was
+/// written (the sized-struct guard), otherwise it falls back to a bodyless `GET` with no injected
+/// credential — the pre-enrichment behaviour. A MINOR airlock bump, never a MAJOR.
+///
+/// The packed header set (`headers_ptr`/`headers_len`) is a sequence of records, each a little-endian
+/// `u32 name_len`, `name_len` name bytes, a little-endian `u32 value_len`, then `value_len` value
+/// bytes. The host forwards the names/values verbatim and interprets none of them.
+///
 /// # Safety / discipline
 /// `target_ptr`/`target_len` MUST describe a live, initialized byte range (URL / address / program).
+/// Each tail `(ptr, len)`, when non-null/non-zero, MUST likewise describe a live borrowed range for
+/// the call.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct EgressDesc {
@@ -728,6 +745,28 @@ pub struct EgressDesc {
     pub client_identity_ref: u64,
     /// A REF to the credential the host mints and injects (0 = none). NEVER plaintext.
     pub credential_ref: u64,
+    /// (minor-7) Borrowed request VERB bytes (e.g. `POST`). Null/empty ⇒ the host defaults to `GET`.
+    pub verb_ptr: *const u8,
+    /// (minor-7) Length of the borrowed verb range (`0` = default `GET`).
+    pub verb_len: usize,
+    /// (minor-7) Borrowed packed header-set bytes (length-prefixed name/value records; NOT owned).
+    pub headers_ptr: *const u8,
+    /// (minor-7) Length of the packed header-set range (`0` = no extra headers).
+    pub headers_len: usize,
+    /// (minor-7) Borrowed request BODY bytes (NOT owned). Null/`0` ⇒ a bodyless request.
+    pub body_ptr: *const u8,
+    /// (minor-7) Length of the borrowed body range (`0` = no body).
+    pub body_len: usize,
+    /// (minor-7) Borrowed credential-placement HEADER-NAME bytes (e.g. `authorization`) the host
+    /// injects the resolved credential under. Null/`0` ⇒ no credential injection. NEVER a secret.
+    pub cred_header_ptr: *const u8,
+    /// (minor-7) Length of the credential header-name range (`0` = no injection).
+    pub cred_header_len: usize,
+    /// (minor-7) Borrowed credential-placement SCHEME-prefix bytes (e.g. `Bearer `). The host renders
+    /// `{scheme}{resolved-credential}` into the credential header. Null/`0` ⇒ raw value, no prefix.
+    pub cred_scheme_ptr: *const u8,
+    /// (minor-7) Length of the credential scheme-prefix range (`0` = no scheme prefix).
+    pub cred_scheme_len: usize,
 }
 
 /// What the host observed at connect time (post-connect, pre-body), handed back with an [`EgressOpen`].
