@@ -978,8 +978,11 @@ async fn admitted(
 
     // 5. METER, before the work rather than after: an over-budget caller is refused instead of
     //    served and billed. The pool name is this plane's own resource spelling, so an `agent`
-    //    line is distinguishable from a pool line in the same ledger.
-    let Some(gov_state) = app.governance.as_ref() else {
+    //    line is distinguishable from a pool line in the same ledger. Governance MUST be present for
+    //    this plane to admit/meter at all — the admission and the meter both ride the host seam below,
+    //    but this plane still refuses outright when governance is absent (the LLM path admits an empty
+    //    chain; a2a does not), so the guard stays even though the binding is now consumed host-side.
+    let Some(_gov_state) = app.governance.as_ref() else {
         return governance_required();
     };
     // ADMIT through the host govern seam (CLUSTER-4). The grant `try_admit` yields is registered in
@@ -1463,13 +1466,23 @@ async fn admitted(
         super::pushdeliver::remember_auth(&task_id, callback_auth.as_ref());
     }
 
-    gov_state.record_metering(
-        &hop.billed_key_id,
-        &resource,
-        crate::plane::Plane::A2a.key(),
-        None,
-        now,
-    );
+    // METER through the host meter_charge seam (CLUSTER-4). A pure request meter with no token split
+    // (component `Queries` → `None`), so the recorded (key_id, model, provider) row is byte-identical
+    // to the in-place `record_metering(&hop.billed_key_id, &resource, Plane::A2a.key(), None, ..)`:
+    // the attribution tail carries those exact three words, and the amount-0 charge validates an empty
+    // breakdown and always accrues one request. Fire-and-forget, exactly as the direct call was.
+    let _ = host.with_host(|hctx, vt| {
+        let usage = busbar_plugin::hot::Usage::with_attribution(
+            busbar_plugin::hot::UsageComponent::Queries,
+            0,
+            0,
+            busbar_plugin::hot::AdmissionId::NONE,
+            hop.billed_key_id.as_bytes(),
+            resource.as_bytes(),
+            crate::plane::Plane::A2a.key().as_bytes(),
+        );
+        (vt.meter_charge.unwrap())(hctx, &*usage as *const busbar_plugin::hot::Usage)
+    });
 
     // 6. AUDIT. One record per admitted call, under this plane's own action and resource spelling.
     crate::admin::audit::AUDIT.record_by(
