@@ -277,6 +277,20 @@ pub(crate) struct RelayCall<'a> {
     /// same cell on the way out. `None` (the originate direction, which the audit scopes out of
     /// this unit) admits everything and records nothing.
     pub(crate) breakers: Option<RelayBreaker>,
+    /// THE ONE HOST SCOPE THIS HOP'S ADMIT AND SETTLE SHARE (§4 a2a scope unification). Created
+    /// BEFORE `select_member` and moved onto the blocking relay thread, it is the single arena both
+    /// the pooled WALK admit (pre-admitted upstream, its id in [`admission`](Self::admission)) and the
+    /// un-pooled [`prepare`] admit register their settle-capable probe hold into — so
+    /// [`record_hop_outcome`] can settle EITHER by a host [`AdmissionId`](busbar_plugin::hot::AdmissionId)
+    /// in the same scope. `None` in the originate direction and in unit tests that admit directly, where
+    /// the probe hold keeps its legacy local lifetime (dropped after the record). ADDITIVE: the scope
+    /// re-homes the token's ownership; the settle itself is still the in-place record until CLUSTER-1.
+    pub(crate) host_scope: Option<&'a crate::plane_host::DispatchScope>,
+    /// THE HOST ADMISSION ID FOR A PRE-ADMITTED (pooled WALK) HOP — the id the walk's probe hold was
+    /// registered under in [`host_scope`](Self::host_scope) before this call was built.
+    /// [`AdmissionId::NONE`](busbar_plugin::hot::AdmissionId::NONE) for an un-pooled hop (whose id
+    /// [`prepare`]/[`relay`] mint when they re-home their own admit) and in the originate direction.
+    pub(crate) admission: busbar_plugin::hot::AdmissionId,
 }
 
 /// The breaker cell one relayed hop admits against and records into — plane-qualified key plus
@@ -1411,9 +1425,44 @@ fn outbound_of(body: &[u8]) -> (String, serde_json::Value) {
     )
 }
 
+/// RE-HOME an un-pooled hop's just-won probe hold into the ONE shared [`host_scope`](RelayCall::host_scope)
+/// (§4 scope unification), returning the host [`AdmissionId`](busbar_plugin::hot::AdmissionId) that
+/// hop's settle answers to. The `token` is MOVED out of the caller's local into the scope's arena, so
+/// its owner-checked release re-lifetimes from the local's drop to the shared scope's drop (the hop's
+/// end on the blocking thread) — the SAME "release after the record" ordering, since the record runs
+/// before the scope drops. When there is no shared scope (originate direction / a unit test that admits
+/// directly), the token is LEFT in the caller's local (its legacy lifetime) and this returns the
+/// pre-admitted walk id (or `NONE`). ADDITIVE: nothing settles by the returned id yet.
+fn rehome_admission(
+    call: &RelayCall<'_>,
+    token: &mut Option<crate::store::PlaneAdmission>,
+) -> busbar_plugin::hot::AdmissionId {
+    match (call.host_scope, call.breakers.as_ref(), token.take()) {
+        (Some(scope), Some(target), Some(won)) => {
+            let settling = crate::plane_host::breaker::settling_admission(
+                std::sync::Arc::clone(&target.breakers),
+                target.key.clone(),
+                target.lane,
+                won,
+            );
+            scope.register_settling_admission(settling)
+        }
+        // No shared scope: put the token back so the caller's local keeps its legacy drop-after-record
+        // lifetime, and report the pre-admitted walk id (or NONE for an un-pooled hop admitted here).
+        (_, _, put_back) => {
+            *token = put_back;
+            call.admission
+        }
+    }
+}
+
 /// RECORD ONE HOP'S OUTCOME against the agent's breaker cell — this plane's Stage-1 normalizer
 /// (see docs/circuit-breaker.md's two-stage pipeline), Stage 2 being the one core `breaker::classify`
 /// inside `PlaneBreakers::record_signal`. `refusal: None` is a hop that produced an answer.
+///
+/// The `_settle` [`AdmissionId`](busbar_plugin::hot::AdmissionId) is the shared-scope handle CLUSTER-1
+/// will fold this outcome through (the §4 unification threaded it here); until then it is carried but
+/// the record is the in-place `breakers` call below.
 ///
 /// What records and what deliberately does not:
 /// - `Transport` → `Network`; `Status` → classified from the HTTP status (401/403 → hard down,
@@ -1424,7 +1473,11 @@ fn outbound_of(body: &[u8]) -> (String, serde_json::Value) {
 ///   error — a task-level failure from a backend that answered is the WORK failing, not the wire.
 /// - `Guard` / `Lease` / `Unframable` are busbar-side (nothing reached the backend); `Demoted` is
 ///   TRUST, not health; `BreakerOpen` is the cell already speaking. None of them record.
-fn record_hop_outcome(call: &RelayCall<'_>, refusal: Option<&RelayRefusal>) {
+fn record_hop_outcome(
+    call: &RelayCall<'_>,
+    _settle: busbar_plugin::hot::AdmissionId,
+    refusal: Option<&RelayRefusal>,
+) {
     let Some(target) = call.breakers.as_ref() else {
         return;
     };
@@ -1615,7 +1668,11 @@ pub(crate) fn relay(
     // admission and the wire genuinely abandons it and the drop hands it back.
     let mut admission: Option<crate::store::PlaneAdmission> = None;
     let outcome = relay_once(call, seam, now_ms, &mut admission);
-    record_hop_outcome(call, outcome.as_ref().err());
+    // §4: re-home an un-pooled admit into the shared host scope (or keep the pre-admitted walk id),
+    // BEFORE the record — so whether the probe lives in the shared arena or this local, it is still
+    // released only after the outcome is recorded.
+    let settle = rehome_admission(call, &mut admission);
+    record_hop_outcome(call, settle, outcome.as_ref().err());
     outcome
 }
 
@@ -2158,7 +2215,9 @@ pub(crate) fn relay_stream(
         sink,
         &mut admission,
     );
-    record_hop_outcome(call, outcome.as_ref().err());
+    // §4: same re-home as the unary [`relay`], before the record.
+    let settle = rehome_admission(call, &mut admission);
+    record_hop_outcome(call, settle, outcome.as_ref().err());
     outcome
 }
 

@@ -126,6 +126,8 @@ fn a_call<'a>(
             "planner",
             Arc::clone(breakers),
         )),
+        host_scope: None,
+        admission: busbar_plugin::hot::AdmissionId::NONE,
     }
 }
 
@@ -180,6 +182,56 @@ fn a_backend_hard_down_opens_the_core_cell_and_the_second_hop_never_reaches_the_
         transport.hits.load(Ordering::SeqCst),
         1,
         "the dead backend must never be touched again"
+    );
+}
+
+/// §4 A2A SCOPE UNIFICATION: with a shared host scope threaded, `prepare`'s un-pooled admit is
+/// RE-HOMED into that ONE scope (the same arena the relay-settle would run under) rather than held in
+/// `relay`'s local — so walk-admit and relay-settle share it. The outcome still records in place (PREP,
+/// unsettled), and the shared scope releases the probe as a no-op on its own drop.
+#[test]
+fn a_shared_host_scope_rehomes_the_prepare_admit() {
+    use crate::plane_host::DispatchScope;
+    let breakers = Arc::new(PlaneBreakers::new());
+    let key = crate::store::PlaneBreakers::agent_key("planner");
+    let transport = CountingDenier {
+        status: 401,
+        hits: AtomicUsize::new(0),
+    };
+    let seam = Seam {
+        transport: &transport,
+    };
+    let rpc_id = serde_json::json!(1);
+    let policy = FetchPolicy::default();
+
+    // WITH a shared scope: the admit is re-homed into it (registered), and the 401 opens the cell.
+    let scope = DispatchScope::new();
+    let mut call = a_call(&breakers, &rpc_id, &policy);
+    call.host_scope = Some(&scope);
+    let out = crate::a2a::relay::relay(&call, &seam, 1_000);
+    assert!(matches!(out, Err(RelayRefusal::Status { status: 401, .. })));
+    assert_eq!(
+        scope.registered(),
+        1,
+        "the un-pooled admit was re-homed into the shared host scope, not held in relay's local"
+    );
+    assert!(
+        matches!(breakers.state(&key), crate::store::BreakerState::Open { .. }),
+        "the 401 still recorded in place and opened the cell (PREP: the shared probe is unsettled)"
+    );
+    // The shared scope's own drop releases the (already-recorded) probe as a no-op.
+    drop(scope);
+
+    // WITHOUT a shared scope (legacy / originate / unit tests): nothing is registered anywhere, and
+    // the probe keeps its local drop-after-record lifetime — behaviour byte-for-byte as before.
+    let scope2 = DispatchScope::new();
+    let fresh = Arc::new(PlaneBreakers::new());
+    let call2 = a_call(&fresh, &rpc_id, &policy); // host_scope: None
+    let _ = crate::a2a::relay::relay(&call2, &seam, 1_000);
+    assert_eq!(scope2.registered(), 0, "no shared scope → the local holds the probe, nothing registered");
+    assert!(
+        matches!(fresh.state(&key), crate::store::BreakerState::Open { .. }),
+        "the legacy path still records and opens the cell"
     );
 }
 

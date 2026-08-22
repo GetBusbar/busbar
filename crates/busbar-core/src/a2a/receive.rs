@@ -1274,6 +1274,13 @@ async fn admitted(
         .as_ref()
         .or(resumed.as_ref())
         .map(|t| t.agent_id.clone());
+    // THE ONE HOST SCOPE THIS HOP'S ADMIT AND SETTLE SHARE (§4 a2a scope unification). Created BEFORE
+    // `select_member` so the pooled WALK admit below joins the SAME `Send + 'static` arena the blocking
+    // relay's settle later runs under — no longer two scopes (the async-frame `_host` for the walk and
+    // a `spawn_blocking` `hop_host` for the settle) with nothing spanning both. It is moved onto the
+    // blocking thread with the hop and reclaims at hop end; on an early return before the hop it drops
+    // here, releasing any registered walk probe owner-checked — exactly as the bare hold used to.
+    let hop_host = crate::plane_host::SendHostDispatch::new(std::sync::Arc::clone(&app));
     let selected_member = super::route::select_member(
         &app,
         &plane,
@@ -1289,8 +1296,24 @@ async fn admitted(
     let hop_breaker = selected_member.breaker;
     let walk_refusal = selected_member.walk_refusal;
     let pin_mismatch = selected_member.pin_mismatch;
-    // Held across the hop below; the recorded outcome consumes it and the drop is then a no-op.
-    let route_admission = selected_member.admission;
+    // THE WALK'S PROBE HOLD JOINS THE SHARED SCOPE. A pooled fresh submission whose member the walk
+    // already admitted rides its probe here as a SETTLE-CAPABLE admission, so the hop's settle and its
+    // record share one arena and the same host `AdmissionId`. The recorded outcome consumes it and the
+    // scope-drop release is then a no-op; an abandoned hop hands it back when `hop_host` drops. NONE
+    // when the walk won nothing (un-pooled/pinned hops admit later, inside `prepare`). PREP: registered
+    // settle-capable but not yet settled through the host.
+    let walk_admission_id = match selected_member.admission {
+        Some(admission) => {
+            let settling = crate::plane_host::breaker::settling_admission(
+                std::sync::Arc::clone(&hop_breaker.breakers),
+                hop_breaker.key.clone(),
+                hop_breaker.lane,
+                admission,
+            );
+            hop_host.scope().register_settling_admission(settling)
+        }
+        None => busbar_plugin::hot::AdmissionId::NONE,
+    };
 
     // ── VERIFY-ON-CALL. Re-verify the agent this hop will actually delegate to, within `verify_ttl`,
     //    single-flight, fail-closed — BEFORE the relay preamble's live `still_delegable` gate compares
@@ -1545,6 +1568,7 @@ async fn admitted(
         request_id,
         a2a_version,
         breaker: hop_breaker,
+        walk_admission_id,
         now,
         now_ms,
         // Established by the envelope reader at the top of this handler, where `null` and absent
@@ -1586,19 +1610,15 @@ async fn admitted(
     let relayed_body = super::idmap::translate_request(&envelope, &admitted.dispatch.billed_key_id)
         .unwrap_or_else(|| body.to_vec());
 
-    // The `Send + 'static` host route for the SPAWN_BLOCKING relay hop (gap #2): a `HostDispatch`
-    // borrow cannot cross into `spawn_blocking`, so the blocking breaker admit/settle path takes an
-    // owned `SendHostDispatch` that materializes the raw `HostCtx` INSIDE the closure. ADDITIVE.
-    let hop_host = crate::plane_host::SendHostDispatch::new(std::sync::Arc::clone(&app));
-    let response = if shape.requires_streaming {
+    // `hop_host` (the ONE shared host scope, created before `select_member` and now holding the walk's
+    // probe) is MOVED onto the blocking relay thread with the hop: its arena reclaims when the hop's
+    // closure ends — AFTER the outcome was recorded, so the walk probe's release is a no-op — and the
+    // un-pooled `prepare` admit re-homes its own probe into the SAME scope. One scope spans both.
+    if shape.requires_streaming {
         stream_hop(hop_ctx, seam, gate, lease, relayed_body, hop_host).await
     } else {
         unary_hop(hop_ctx, seam, gate, lease, relayed_body, hop_host).await
-    };
-    // The walked selection's probe hold outlives the hop that recorded its outcome (a record makes
-    // this drop a no-op; an abandoned hop hands the probe back owner-checked).
-    drop(route_admission);
-    response
+    }
 }
 
 /// Everything one hop needs that is neither a seam nor a secret. One struct because the two hop
@@ -1640,6 +1660,11 @@ struct HopContext {
     /// lane, resolved by the member selection (`super::route`) and cloned into each hop's
     /// `RelayCall`.
     breaker: super::relay::RelayBreaker,
+    /// THE SHARED-SCOPE HOST ADMISSION ID FOR A PRE-ADMITTED (pooled WALK) HOP — the id the walk's
+    /// probe hold was registered under in the one `hop_host` scope before the hop was built, threaded
+    /// onto the blocking relay's `RelayCall`. `AdmissionId::NONE` for an un-pooled/pinned hop (whose
+    /// probe `prepare` admits and re-homes itself). See the §4 scope-unification note.
+    walk_admission_id: busbar_plugin::hot::AdmissionId,
     now: u64,
     now_ms: u64,
     rpc_id: serde_json::Value,
@@ -1755,10 +1780,14 @@ async fn unary_hop(
     let rpc_id = ctx.rpc_id.clone();
     let a2a_version = ctx.a2a_version;
     let breaker = ctx.breaker.clone();
+    // The pre-admitted WALK id (if this is a pooled fresh submission); its probe already rides in
+    // `host`'s shared scope. NONE for an un-pooled/pinned hop, whose probe `prepare` re-homes itself.
+    let walk_admission_id = ctx.walk_admission_id;
     let relayed = tokio::task::spawn_blocking(move || {
-        // The Send host route rides onto the blocking thread; its arena reclaims when this closure
-        // ends (reclaim at HOP end). Held-but-unused until CLUSTER-1 wires `relay`'s breaker calls.
-        let _host = host;
+        // The ONE shared host scope rides onto the blocking thread; its arena reclaims when this
+        // closure ends (reclaim at HOP end, after the outcome was recorded). Both the walk admit
+        // (already registered) and `prepare`'s un-pooled admit settle by a host AdmissionId here.
+        let hop_host = host;
         super::relay::relay(
             &super::relay::RelayCall {
                 agent_id: &agent_id,
@@ -1772,6 +1801,8 @@ async fn unary_hop(
                 a2a_version,
                 framing,
                 breakers: Some(breaker),
+                host_scope: Some(hop_host.scope()),
+                admission: walk_admission_id,
             },
             seam.as_ref(),
             now_ms,
@@ -1866,6 +1897,8 @@ async fn stream_hop(
     let notify_seam = Arc::clone(&seam);
     let a2a_version = ctx.a2a_version;
     let breaker = ctx.breaker.clone();
+    // The pre-admitted WALK id (if pooled); its probe already rides in `host`'s shared scope.
+    let walk_admission_id = ctx.walk_admission_id;
 
     // THE CURSOR RESUMES WHERE THE TASK LEFT OFF rather than at zero. On a resumed stream, starting
     // at zero would spend the first N advances re-asserting a position the store already holds —
@@ -1875,9 +1908,10 @@ async fn stream_hop(
         .get_unscoped(&ctx.task_id)
         .map_or(0, |t| t.artifact_cursor);
     let handle = tokio::task::spawn_blocking(move || {
-        // The Send host route rides onto the blocking thread; its arena reclaims when this closure
-        // ends (reclaim at HOP end). Held-but-unused until CLUSTER-1 wires `relay`'s breaker calls.
-        let _host = host;
+        // The ONE shared host scope rides onto the blocking thread; its arena reclaims when this
+        // closure ends (reclaim at HOP end, after the outcome was recorded). Both the walk admit and
+        // `prepare`'s un-pooled admit settle by a host AdmissionId here.
+        let hop_host = host;
         let mut sink = |ev: super::relay::RelayEvent| -> super::relay::ChunkFlow {
             // THE PAIRING, off the stream too. A streaming submission is the one case where the
             // caller is MOST likely to follow up by id - a resubscribe, a cancel - and a mapping
@@ -1942,6 +1976,8 @@ async fn stream_hop(
                 a2a_version,
                 framing,
                 breakers: Some(breaker),
+                host_scope: Some(hop_host.scope()),
+                admission: walk_admission_id,
             },
             seam.as_ref(),
             &task_id,
