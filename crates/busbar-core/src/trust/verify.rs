@@ -49,7 +49,7 @@ use std::future::Future;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use super::reverify::{self, Ledger, Policy};
+use super::reverify::{Ledger, Policy};
 use crate::diagnostics::{
     diag_debug, diag_warn, TRUST_VERIFY_REFUSED_ON_DRIFT, TRUST_VERIFY_UNREACHABLE,
 };
@@ -114,10 +114,13 @@ impl VerifyGate {
         F: FnOnce() -> Fut,
         Fut: Future<Output = ()>,
     {
-        // FAST PATH: fresh, and nothing to coordinate. `due` with `operator_sync: false` is the same
-        // freshness arithmetic the old daemon used, so "reaching the TTL is stale" means exactly what
-        // the operator wrote.
-        if !reverify::due(&ledger(), policy, now_ms, false).should_check() {
+        // FAST PATH: fresh, and nothing to coordinate. The freshness DECISION runs through the host's
+        // compiled-in `plane_host::trust::verify_decide` veneer — the SAME body the extern-C
+        // `verify_decide` slot funnels through (CLUSTER-2) — so the plane stops calling
+        // `reverify::due` directly, yet the arithmetic ("reaching the TTL is stale") is byte-for-byte
+        // what the operator wrote. The ledger, coalescing and await stay plane-side; only the
+        // arithmetic crosses, over the plane's OWN `last_checked_ms`.
+        if !crate::plane_host::trust::verify_decide(ledger().last_checked_ms, policy.ttl_ms, now_ms) {
             return false;
         }
         let flight = self.flight_for(subject);
@@ -129,7 +132,8 @@ impl VerifyGate {
             return false;
         }
         // A prior fetch under a longer ttl may already have made us fresh at the same epoch read.
-        if !reverify::due(&ledger(), policy, now_ms, false).should_check() {
+        // Same host veneer as the fast path — the double-check funnels through the one seam too.
+        if !crate::plane_host::trust::verify_decide(ledger().last_checked_ms, policy.ttl_ms, now_ms) {
             return false;
         }
         fetch().await;
