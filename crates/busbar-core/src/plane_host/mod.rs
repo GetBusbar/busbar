@@ -24,6 +24,7 @@
 //! * [`vtable`] — [`build_plane_host_vtable`], three wired proof-of-life slots, nineteen typed stubs.
 
 pub mod scope;
+pub mod trust;
 pub mod vtable;
 
 pub use scope::{DispatchScope, DurableScope, SessionScope};
