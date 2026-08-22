@@ -4815,8 +4815,8 @@ fn flush_metering_failure_warns_once_per_tick_not_per_key() {
 // on every use) is NOT implementable on standard OIDC and is NOT built. What IS true, built, and
 // demonstrable TODAY is MANUAL revocation: an operator revokes a minted key and it dies — on the
 // issuing node immediately, and cluster-wide within REVOCATION_SYNC_TTL_SECS×2 (~10s). These tests
-// are that proof, red-before-green: a freshly minted token VERIFIES (green), and after a manual
-// revoke it is DEAD (red) — on the minting node AND on a second fleet node over the shared store.
+// are that proof: a freshly minted token VERIFIES, and after a manual revoke it is DEAD — on the
+// minting node AND on a second fleet node over the shared store.
 // No claim here that the review cut: no per-use IdP introspection, no SCIM/SET webhook.
 
 /// SINGLE NODE: mint → use (verify OK, GREEN) → manual revoke → DEAD (verify fails). This is the
@@ -4832,7 +4832,7 @@ fn proof_manual_revoke_kills_a_minted_key() {
     let (binding, token) = gov.issue_self(sub, None, now + 3600, now).unwrap();
     assert!(
         gov.verify_token(&token, now, None).is_some(),
-        "RED-BEFORE-GREEN precondition: the freshly minted token MUST verify before revoke, or the \
+        "precondition: the freshly minted token MUST verify before revoke, or the \
          post-revoke assertion proves nothing"
     );
     assert!(!gov.is_revoked(&binding.id));
