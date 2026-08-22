@@ -65,6 +65,12 @@ pub(crate) const SELF_KEY_GROUP_PREFIX: &str = "user:";
 /// through the admin API carry a different (or absent) mode.
 pub(crate) const SELF_KEY_BINDING_MODE: &str = "user-bound";
 
+/// The [`busbar_api::VirtualKey::binding_mode`] recorded on an ADMIN-minted APP/service token: it is
+/// TIME-BOUND (bounded by its `exp`, no IdP-subject tie), the app-token lifecycle that deliberately
+/// OUTLIVES its minter (review H2/H3). Matches the `auth.policy` `BindingMode::TimeBound` wire
+/// spelling (`"time-bound"`). Named `_APP` to contrast the self-serve personal `user-bound` key.
+pub(crate) const SELF_KEY_BINDING_MODE_APP: &str = "time-bound";
+
 /// The `generation_hash` marker for a signed-token binding at a given rotation generation.
 pub(crate) fn binding_marker(id: &str, generation: &str) -> String {
     format!("{BINDING_MARKER_PREFIX}{id}:{generation}")
@@ -611,6 +617,11 @@ pub(crate) struct RotatedCredential {
 
 /// Parameters for minting a new virtual key (from the management API) - PURE AUTH: identity,
 /// pool grants, at most one group binding, labels. No limits: they live on the bound group.
+///
+/// `Default` (1.6.0) is a construction convenience so a call site names the fields it cares about and
+/// leaves the 1.6.0 provenance/mode additions (`minted_by`/`binding_mode`) at `None` via
+/// `..Default::default()` — an omitted-provenance mint is byte-identical to a pre-1.6.0 one.
+#[derive(Default)]
 pub(crate) struct NewKeySpec {
     pub(crate) name: String,
     /// Pool grants with the intent carried intact: `None` = the mint body OMITTED
@@ -620,6 +631,16 @@ pub(crate) struct NewKeySpec {
     pub(crate) group: Option<String>,
     /// Optional mint-time labels echoed onto metrics (never interpreted by enforcement).
     pub(crate) labels: std::collections::BTreeMap<String, String>,
+    /// PROVENANCE (1.6.0): the principal that minted this key, recorded on
+    /// [`busbar_api::VirtualKey::minted_by`]. `Some` for an APP/service token minted through the
+    /// admin API by a (possibly delegated) admin — the token OUTLIVES its minter (review H2/H3), and
+    /// this enables "list tokens minted-by X" re-attestation + mint-ceiling accounting. `None` leaves
+    /// the field unset (byte-identical to a pre-1.6.0 mint).
+    pub(crate) minted_by: Option<String>,
+    /// The BINDING MODE (1.6.0, wire spelling) recorded on [`busbar_api::VirtualKey::binding_mode`].
+    /// `Some("time-bound")` for an admin-minted app/service token (bounded by `exp`, no IdP tie);
+    /// `None` leaves it unset.
+    pub(crate) binding_mode: Option<String>,
 }
 
 pub(crate) mod revocation;

@@ -17,6 +17,7 @@ fn mint(gov: &GovState, name: &str, group: Option<&str>) -> crate::governance::V
             allowed_pools: None,
             group: group.map(str::to_string),
             labels: Default::default(),
+            ..Default::default()
         },
         0,
     )

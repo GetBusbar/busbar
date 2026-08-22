@@ -1478,6 +1478,7 @@ async fn test_disabled_virtual_key_is_rejected_401() {
         allowed_pools: Some(vec!["pa".to_string()]),
         group: None,
         labels: Default::default(),
+        ..Default::default()
     };
     let (dis_key, disabled_secret) = gov
         .mint_signed(mk_spec("kdis"), 2_000_000_000, 1_000_000_000)
@@ -2171,6 +2172,7 @@ async fn test_audience_bound_token_is_rejected_on_the_data_plane() {
                 allowed_pools: Some(vec!["pa".to_string()]),
                 group: None,
                 labels: Default::default(),
+                ..Default::default()
             },
             2_000_000_000,
             1_000_000_000,
@@ -2317,6 +2319,7 @@ async fn test_mcp_token_is_confined_to_the_mcp_plane() {
                 allowed_pools: None,
                 group: None,
                 labels: Default::default(),
+                ..Default::default()
             },
             2_000_000_000,
             1_000_000_000,
@@ -2635,6 +2638,7 @@ async fn test_governance_accepts_vendor_carriers_and_native_401() {
                 allowed_pools: Some(vec!["pa".to_string()]),
                 group: None,
                 labels: Default::default(),
+                ..Default::default()
             },
             2_000_000_000,
             1_000_000_000,
@@ -2853,6 +2857,7 @@ async fn test_governance_revoked_signed_token_key_rejected() {
                 allowed_pools: Some(vec!["pa".to_string()]),
                 group: None,
                 labels: Default::default(),
+                ..Default::default()
             },
             2_000_000_000,
             1_000_000_000,
@@ -3044,6 +3049,7 @@ fn gov_with_aws_key() -> (std::sync::Arc<crate::governance::GovState>, String, S
                 allowed_pools: None,
                 group: None,
                 labels: Default::default(),
+                ..Default::default()
             },
             crate::store::now(),
         )
@@ -3228,6 +3234,7 @@ fn test_verify_bedrock_sigv4_disabled_key_rejected() {
                 allowed_pools: None,
                 group: None,
                 labels: Default::default(),
+                ..Default::default()
             },
             crate::store::now(),
         )
@@ -3266,6 +3273,7 @@ fn test_verify_bedrock_sigv4_revoked_key_rejected() {
                 allowed_pools: None,
                 group: None,
                 labels: Default::default(),
+                ..Default::default()
             },
             crate::store::now(),
         )
@@ -3643,6 +3651,7 @@ async fn test_governance_active_with_admin_token_enforces_minted_key() {
                 allowed_pools: Some(vec!["pa".to_string()]),
                 group: None,
                 labels: Default::default(),
+                ..Default::default()
             },
             2_000_000_000,
             1_000_000_000,
@@ -3939,6 +3948,7 @@ async fn test_active_governance_persisted_key_is_enforced() {
                 allowed_pools: Some(vec!["restricted".to_string()]), // NOT "pa"
                 group: None,
                 labels: Default::default(),
+                ..Default::default()
             },
             2_000_000_000,
             1_000_000_000,
@@ -4162,6 +4172,7 @@ fn dp_gov_with_key() -> (std::sync::Arc<crate::governance::GovState>, String) {
                 allowed_pools: Some(vec!["pa".to_string()]),
                 group: None,
                 labels: Default::default(),
+                ..Default::default()
             },
             2_000_000_000,
             1_000_000_000,
@@ -4483,6 +4494,7 @@ fn test_1_5_2_keys_arm_is_cache_exempt() {
                 allowed_pools: None,
                 group: None,
                 labels: Default::default(),
+                ..Default::default()
             },
             2_000_000_000,
             1_000_000_000,
@@ -4537,6 +4549,7 @@ async fn test_1_5_2_sigv4_ingress_under_keys_chain_admitted() {
                 allowed_pools: None,
                 group: None,
                 labels: Default::default(),
+                ..Default::default()
             },
             crate::store::now(),
         )

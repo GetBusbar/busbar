@@ -90,6 +90,7 @@ async fn a_governed_deployment(
                 allowed_pools: Some(vec!["A".to_string()]),
                 group: None,
                 labels: Default::default(),
+                ..Default::default()
             },
             2_000_000_000,
             1_000_000_000,

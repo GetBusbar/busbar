@@ -289,6 +289,10 @@ impl GovState {
             expires_at: None,
             deleted_at: None,
             revision: 0,
+            // PROVENANCE + binding mode carried from the mint spec (1.6.0): set for an admin-minted
+            // APP token, `None` for a mint that named neither (byte-identical to before).
+            minted_by: spec.minted_by,
+            binding_mode: spec.binding_mode,
             ..Default::default()
         };
         self.store.put_key(&binding)?;
@@ -336,6 +340,8 @@ impl GovState {
             expires_at: None,
             deleted_at: None,
             revision: 0,
+            minted_by: spec.minted_by,
+            binding_mode: spec.binding_mode,
             ..Default::default()
         };
         // SigV4: kind belongs to `credentials` because it IS row-looked-up (by AccessKeyId), unlike

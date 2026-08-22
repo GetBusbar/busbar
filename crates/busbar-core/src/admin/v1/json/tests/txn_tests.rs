@@ -393,6 +393,7 @@ async fn concurrent_rebinds_never_bind_a_deleted_group() {
                     allowed_pools: None,
                     group: Some("other".to_string()),
                     labels: Default::default(),
+                    ..Default::default()
                 },
                 u64::MAX,
                 0,

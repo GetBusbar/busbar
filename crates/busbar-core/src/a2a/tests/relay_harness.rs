@@ -612,6 +612,7 @@ pub(super) async fn harness_full(
                 allowed_pools: None,
                 group: None,
                 labels: Default::default(),
+                ..Default::default()
             },
             2_000_000_000,
             crate::store::now(),

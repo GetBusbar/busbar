@@ -1493,6 +1493,7 @@ async fn send_user_projects_governance_key_identity() {
                 allowed_pools: None,
                 group: None,
                 labels: Default::default(),
+                ..Default::default()
             },
             2_000_000_000,
             1_000_000_000,
@@ -1655,6 +1656,7 @@ async fn send_user_prefers_resolved_key_over_disabled_legacy_lookup() {
                 allowed_pools: None,
                 group: None,
                 labels: Default::default(),
+                ..Default::default()
             },
             1,
         )

@@ -1099,11 +1099,18 @@ pub(crate) async fn create_key(
         AtCap { group: String, n: usize, cap: usize },
     }
     // Keys carry NO inline limits; enforcement flows through the bound group.
+    // An admin-minted key IS an APP/service token (1.6.0): stamp PROVENANCE (minted-by the
+    // authenticated caller) so it can be re-attested / bulk-revoked by provenance (review H2/H3), and
+    // the `time-bound` binding mode (bounded by `exp`, no IdP-subject tie — distinct from the
+    // self-serve personal user-bound key). Attribution metadata only: never read by enforcement, and
+    // `key_meta` does not echo it, so the admin response shape is unchanged.
     let spec = NewKeySpec {
         name: req.name,
         allowed_pools,
         group: req.group.clone(),
         labels: req.labels,
+        minted_by: Some(actor.clone()),
+        binding_mode: Some(crate::governance::SELF_KEY_BINDING_MODE_APP.to_string()),
     };
     let issue_aws = req.issue_aws_credential;
     let want_group = req.group.clone();

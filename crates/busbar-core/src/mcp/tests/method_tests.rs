@@ -543,6 +543,7 @@ async fn a_tool_call_is_charged_metered_and_audited_on_the_ordinary_budget_plane
                 allowed_pools: None,
                 group: None,
                 labels: Default::default(),
+                ..Default::default()
             },
             2_000_000_000,
             1_000_000_000,

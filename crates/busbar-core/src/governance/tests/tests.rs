@@ -274,6 +274,7 @@ async fn test_concurrent_govstate_admission_respects_cap() {
                 allowed_pools: None,
                 group: Some("team".to_string()),
                 labels: std::collections::BTreeMap::new(),
+                ..Default::default()
             },
             1_700_000_000,
         )
@@ -337,6 +338,7 @@ async fn test_charge_refund_readmit_cycle() {
                 allowed_pools: None,
                 group: Some("solo".to_string()),
                 labels: std::collections::BTreeMap::new(),
+                ..Default::default()
             },
             1_700_000_000,
         )
@@ -387,6 +389,7 @@ async fn test_try_admit_rejects_at_group_cap() {
                 allowed_pools: None,
                 group: Some("g".to_string()),
                 labels: std::collections::BTreeMap::new(),
+                ..Default::default()
             },
             1_700_000_000,
         )
@@ -557,6 +560,7 @@ fn test_create_key_with_aws_issues_and_resolves_credential() {
                 allowed_pools: Some(vec!["prod".to_string()]),
                 group: None,
                 labels: std::collections::BTreeMap::new(),
+                ..Default::default()
             },
             1_700_000_000,
         )
@@ -636,6 +640,7 @@ fn test_aws_credential_persists_across_reload() {
                     allowed_pools: None,
                     group: None,
                     labels: std::collections::BTreeMap::new(),
+                    ..Default::default()
                 },
                 0,
             )
@@ -661,6 +666,7 @@ fn test_delete_key_removes_aws_credential() {
                 allowed_pools: None,
                 group: None,
                 labels: std::collections::BTreeMap::new(),
+                ..Default::default()
             },
             0,
         )
@@ -695,6 +701,7 @@ fn test_refresh_updates_both_indices_atomically() {
                 allowed_pools: None,
                 group: None,
                 labels: std::collections::BTreeMap::new(),
+                ..Default::default()
             },
             2_000_000_000,
             1_700_000_000,
@@ -773,6 +780,7 @@ fn test_generated_aws_credentials_are_distinct() {
                 allowed_pools: None,
                 group: None,
                 labels: std::collections::BTreeMap::new(),
+                ..Default::default()
             },
             0,
         )
@@ -1924,6 +1932,7 @@ fn test_create_key_minted_id_is_free_so_mint_succeeds() {
         allowed_pools: None,
         group: None,
         labels: std::collections::BTreeMap::new(),
+        ..Default::default()
     };
     let (key, _secret) = gov.create_key(spec, 1_700_000_000).unwrap();
     assert!(key.id.starts_with("vk_")); // golden wire-contract literal (kept bare on purpose)
@@ -1946,6 +1955,7 @@ fn test_update_key_toggles_enabled_and_rebinds_group_in_place() {
                 allowed_pools: None,
                 group: Some("growth".to_string()),
                 labels: std::collections::BTreeMap::new(),
+                ..Default::default()
             },
             1_700_000_000,
         )
@@ -2820,6 +2830,7 @@ mod signed_token {
             allowed_pools: pools.map(|p| p.into_iter().map(str::to_string).collect()),
             group: group.map(str::to_string),
             labels: std::collections::BTreeMap::new(),
+            ..Default::default()
         }
     }
 
@@ -4036,6 +4047,7 @@ fn delete_key_with_a_failing_refresh_still_stops_the_credential_and_says_so() {
                 allowed_pools: None,
                 group: None,
                 labels: std::collections::BTreeMap::new(),
+                ..Default::default()
             },
             1_700_000_000,
         )
@@ -4089,6 +4101,7 @@ fn rotate_key_with_a_failing_refresh_kills_the_old_credential_and_says_so() {
                 allowed_pools: None,
                 group: None,
                 labels: std::collections::BTreeMap::new(),
+                ..Default::default()
             },
             2_000,
             1_000,
@@ -4868,4 +4881,96 @@ fn proof_manual_revoke_is_authoritative_across_the_fleet() {
         "the revoke MUST be authoritative on every fleet node reading the shared store"
     );
     assert!(node_c.is_revoked(&binding.id));
+}
+
+/// MULTI-MINT PROOF (1.6.0): one app-admin session mints 1 PERSONAL (user-bound) key + N labeled,
+/// independently-scoped APP tokens (app-bound: time-bound, minted-by the admin as provenance). This
+/// is the two-token-type story on the mint engine: the app tokens are NOT the idempotent single
+/// self-serve key — each is a DISTINCT, labeled, differently-scoped credential carrying provenance,
+/// and revoking ONE leaves every sibling AND the personal token fully alive (independent
+/// revocability). The store/VirtualKey plumbing for this is what the earlier increments landed.
+#[test]
+fn proof_one_session_mints_a_personal_key_plus_n_independent_app_tokens() {
+    let store = Arc::new(MemoryStore::new());
+    let gov = GovState::new_with_signer(store, None, Some(self_serve_signer())).unwrap();
+    let admin = "oidc:matthew"; // the app-admin, minting many tokens in one session
+    let now = 1_700_000_000u64;
+
+    // ── 1 PERSONAL token: user-bound, records the IdP subject, no separate minter (self-minted). ──
+    let (personal, personal_tok) = gov.issue_self(admin, None, now + 3600, now).unwrap();
+    assert_eq!(personal.binding_mode.as_deref(), Some("user-bound"));
+    assert_eq!(personal.idp_subject.as_deref(), Some(admin));
+    assert_eq!(personal.minted_by, None);
+    assert!(gov.verify_token(&personal_tok, now, None).is_some());
+
+    // ── N APP tokens: each LABELED, independently SCOPED to its own pool, minted-by the admin
+    //    (provenance), time-bound. Minted in the same session — NOT idempotent, NOT the personal key.
+    let apps = [
+        ("billing", "pool-billing"),
+        ("search", "pool-search"),
+        ("etl", "pool-etl"),
+    ];
+    let mut minted = Vec::new();
+    for (label, pool) in apps {
+        let mut labels = std::collections::BTreeMap::new();
+        labels.insert("app".to_string(), label.to_string());
+        let spec = NewKeySpec {
+            name: format!("app-token-{label}"),
+            allowed_pools: Some(vec![pool.to_string()]),
+            group: None,
+            labels,
+            minted_by: Some(admin.to_string()),
+            binding_mode: Some("time-bound".to_string()),
+        };
+        let (key, token) = gov.mint_signed(spec, now + 30 * 86_400, now).unwrap();
+        minted.push((label, pool, key, token));
+    }
+
+    // Every app token is a DISTINCT key (not an idempotent reuse), correctly attributed + scoped.
+    let ids: std::collections::HashSet<String> =
+        minted.iter().map(|(_, _, k, _)| k.id.clone()).collect();
+    assert_eq!(
+        ids.len(),
+        apps.len(),
+        "N app tokens minted in one session are N DISTINCT keys"
+    );
+    assert!(
+        !ids.contains(&personal.id),
+        "no app token collides with the personal key"
+    );
+    for (label, pool, key, token) in &minted {
+        assert_eq!(key.minted_by.as_deref(), Some(admin), "provenance recorded");
+        assert_eq!(key.binding_mode.as_deref(), Some("time-bound"));
+        assert_eq!(key.labels.get("app").map(String::as_str), Some(*label));
+        let scopes = key.allowed_scopes.as_ref().expect("scoped");
+        assert!(
+            scopes.iter().all(|s| s.value == *pool) && scopes.len() == 1,
+            "each app token is scoped to EXACTLY its own pool: {scopes:?}"
+        );
+        assert!(
+            gov.verify_token(token, now, None).is_some(),
+            "each app token verifies"
+        );
+    }
+
+    // ── INDEPENDENT REVOCATION: revoke ONE app token; only it dies. ──
+    let (_, _, victim_key, victim_tok) = &minted[1];
+    gov.revoke(&victim_key.id, "compromised app token").unwrap();
+    assert!(
+        gov.verify_token(victim_tok, now, None).is_none(),
+        "the revoked app token is dead"
+    );
+    assert!(
+        gov.verify_token(&personal_tok, now, None).is_some(),
+        "the personal token is untouched by an app-token revoke"
+    );
+    for (i, (_, _, _, token)) in minted.iter().enumerate() {
+        if i == 1 {
+            continue;
+        }
+        assert!(
+            gov.verify_token(token, now, None).is_some(),
+            "a sibling app token is untouched by revoking a different one"
+        );
+    }
 }

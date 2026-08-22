@@ -257,6 +257,7 @@ fn test_nonstream_token_fee_uses_charged_at_window_not_clock() {
                 allowed_pools: None,
                 group: Some("daygrp".to_string()),
                 labels: Default::default(),
+                ..Default::default()
             },
             1_700_000_000,
         )
@@ -352,6 +353,7 @@ fn test_nonstream_token_sum_saturates_no_panic_on_overflow() {
                 allowed_pools: None,
                 group: None,
                 labels: Default::default(),
+                ..Default::default()
             },
             1_700_000_000,
         )
@@ -456,6 +458,7 @@ fn ledger_prices_an_aliased_lane_at_the_rate_card() {
                 allowed_pools: None,
                 group: Some("g".to_string()),
                 labels: Default::default(),
+                ..Default::default()
             },
             1_700_000_000,
         )

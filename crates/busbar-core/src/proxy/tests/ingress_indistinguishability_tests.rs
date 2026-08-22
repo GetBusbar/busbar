@@ -472,6 +472,7 @@ async fn test_untranslatable_2xx_does_not_charge_tokens() {
                 allowed_pools: None,
                 group: None,
                 labels: Default::default(),
+                ..Default::default()
             },
             1_700_000_000,
         )
@@ -671,6 +672,7 @@ async fn test_same_protocol_nonstream_multichunk_counts_usage() {
                 allowed_pools: None,
                 group: None,
                 labels: Default::default(),
+                ..Default::default()
             },
             1_700_000_000,
         )
@@ -807,6 +809,7 @@ async fn test_same_protocol_nonstream_over_cap_body_still_bills_tail_usage() {
                 allowed_pools: None,
                 group: None,
                 labels: Default::default(),
+                ..Default::default()
             },
             1_700_000_000,
         )
@@ -963,6 +966,7 @@ fn nonstream_tap_cap_is_read_once_per_decision() {
                 allowed_pools: None,
                 group: None,
                 labels: Default::default(),
+                ..Default::default()
             },
             1_700_000_000,
         )
@@ -1227,6 +1231,7 @@ async fn test_mid_stream_transport_error_does_not_bill_partial_usage() {
                 allowed_pools: None,
                 group: None,
                 labels: Default::default(),
+                ..Default::default()
             },
             1_700_000_000,
         )
@@ -3304,6 +3309,7 @@ async fn test_streaming_translate_abort_trips_breaker_and_skips_billing() {
                 allowed_pools: None,
                 group: None,
                 labels: Default::default(),
+                ..Default::default()
             },
             charged_at,
         )
@@ -3427,6 +3433,7 @@ async fn test_cancel_drop_bills_partial_tokens() {
                 allowed_pools: None,
                 group: None,
                 labels: Default::default(),
+                ..Default::default()
             },
             charged_at,
         )
@@ -3530,6 +3537,7 @@ async fn test_cancel_drop_skips_billing_on_aborted_translate() {
                 allowed_pools: None,
                 group: None,
                 labels: Default::default(),
+                ..Default::default()
             },
             charged_at,
         )

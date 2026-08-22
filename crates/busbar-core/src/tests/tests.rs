@@ -1639,6 +1639,7 @@ fn signing_key_secret_ref_re_resolves_on_apply_and_fails_closed() {
         allowed_pools: None,
         group: None,
         labels: Default::default(),
+        ..Default::default()
     };
     let now = crate::store::now();
     let (_binding, old_token) = gov.mint_signed(spec, now + 10_000, now).expect("mint");
@@ -1660,6 +1661,7 @@ fn signing_key_secret_ref_re_resolves_on_apply_and_fails_closed() {
         allowed_pools: None,
         group: None,
         labels: Default::default(),
+        ..Default::default()
     };
     let (_b2, fresh) = gov
         .mint_signed(spec2, now + 10_000, now)

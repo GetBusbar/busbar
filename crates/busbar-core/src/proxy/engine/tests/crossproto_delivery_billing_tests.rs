@@ -53,6 +53,7 @@ fn fixture() -> (
                 allowed_pools: None,
                 group: Some("g".to_string()),
                 labels: Default::default(),
+                ..Default::default()
             },
             1_700_000_000,
         )

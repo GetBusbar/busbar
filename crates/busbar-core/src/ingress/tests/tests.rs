@@ -233,6 +233,7 @@ fn governed_app_with_key() -> (Arc<App>, crate::governance::VirtualKey) {
                 allowed_pools: None,
                 group: None,
                 labels: Default::default(),
+                ..Default::default()
             },
             1_700_000_000,
         )
@@ -424,6 +425,7 @@ fn test_flat_fee_charge_and_refund_use_charged_at_window() {
                 allowed_pools: None,
                 group: None,
                 labels: Default::default(),
+                ..Default::default()
             },
             1_700_000_000,
         )
@@ -547,6 +549,7 @@ async fn test_admit_check_uses_charged_at_window_not_clock() {
                 allowed_pools: None,
                 group: Some("daycap".to_string()),
                 labels: Default::default(),
+                ..Default::default()
             },
             1_700_000_000,
         )
@@ -3210,6 +3213,7 @@ fn governed_app_pool_restricted() -> (Arc<App>, crate::governance::VirtualKey) {
                 allowed_pools: Some(vec!["allowed-only".to_string()]),
                 group: None,
                 labels: Default::default(),
+                ..Default::default()
             },
             1_700_000_000,
         )
@@ -3451,6 +3455,7 @@ fn governed_app_over_budget() -> (Arc<App>, crate::governance::VirtualKey) {
                 allowed_pools: None,
                 group: Some("empty".to_string()),
                 labels: Default::default(),
+                ..Default::default()
             },
             1_700_000_000,
         )
@@ -3493,6 +3498,7 @@ fn governed_app_rate_limited() -> (Arc<App>, crate::governance::VirtualKey) {
                 allowed_pools: None,
                 group: Some("closed".to_string()),
                 labels: Default::default(),
+                ..Default::default()
             },
             1_700_000_000,
         )
@@ -4943,6 +4949,7 @@ async fn governed_pool_acl_router(
                 allowed_pools: Some(vec!["other-pool".to_string()]),
                 group: None,
                 labels: Default::default(),
+                ..Default::default()
             },
             2_000_000_000,
             1_000_000_000,
@@ -5205,6 +5212,7 @@ async fn test_fallback_pool_acl_denies_key_not_allowed_on_fallback_target() {
                 allowed_pools: Some(vec!["A".to_string()]),
                 group: None,
                 labels: Default::default(),
+                ..Default::default()
             },
             2_000_000_000,
             1_000_000_000,
@@ -5295,6 +5303,7 @@ async fn test_fallback_pool_acl_allows_key_permitted_on_both_pools() {
                 allowed_pools: Some(vec!["A".to_string(), "B".to_string()]),
                 group: None,
                 labels: Default::default(),
+                ..Default::default()
             },
             2_000_000_000,
             1_000_000_000,
@@ -5469,6 +5478,7 @@ async fn test_adhoc_governance_pool_acl_403_via_router() {
                 allowed_pools: Some(vec!["other-pool".to_string()]),
                 group: None,
                 labels: Default::default(),
+                ..Default::default()
             },
             2_000_000_000,
             1_000_000_000,
@@ -5788,6 +5798,7 @@ async fn governed_limit_router(
                 allowed_pools: None, // all pools; ACL never short-circuits
                 group: Some("tripped".to_string()),
                 labels: Default::default(),
+                ..Default::default()
             },
             2_000_000_000,
             1_000_000_000,
@@ -6150,6 +6161,7 @@ fn governed_app_group_blocked() -> (Arc<App>, crate::governance::VirtualKey) {
                 allowed_pools: None,
                 group: Some("finance".to_string()),
                 labels: Default::default(),
+                ..Default::default()
             },
             1_700_000_000,
         )
@@ -6235,6 +6247,7 @@ async fn test_unpriced_passthrough_model_rejected_when_rate_card_present() {
                 allowed_pools: None,
                 group: None,
                 labels: Default::default(),
+                ..Default::default()
             },
             1_700_000_000,
         )
@@ -6322,6 +6335,7 @@ fn governed_app_downgrade(
                 allowed_pools,
                 group: Some("team".to_string()),
                 labels: Default::default(),
+                ..Default::default()
             },
             1_700_000_000,
         )
@@ -6421,6 +6435,7 @@ async fn test_downgrade_cycle_terminates_via_the_revisit_guard() {
                 allowed_pools: None,
                 group: Some("team".to_string()),
                 labels: Default::default(),
+                ..Default::default()
             },
             1_700_000_000,
         )

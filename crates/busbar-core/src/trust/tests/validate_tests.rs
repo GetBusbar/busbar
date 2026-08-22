@@ -557,6 +557,7 @@ fn a_live_key(gov: &crate::governance::GovState) -> VirtualKey {
                 allowed_pools: None,
                 group: None,
                 labels: BTreeMap::new(),
+                ..Default::default()
             },
             1_700_000_000,
         )

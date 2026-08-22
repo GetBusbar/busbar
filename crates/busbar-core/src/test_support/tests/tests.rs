@@ -399,6 +399,7 @@ async fn test_cross_protocol_nonstream_records_tokens_for_tpm() {
                 allowed_pools: Some(vec!["pa".to_string()]),
                 group: Some("tpmgrp".to_string()),
                 labels: Default::default(),
+                ..Default::default()
             },
             2_000_000_000,
             1_000_000_000,
@@ -531,6 +532,7 @@ async fn test_cross_protocol_stream_records_tokens_for_tpm() {
                 allowed_pools: Some(vec!["pas".to_string()]),
                 group: Some("tpmsgrp".to_string()),
                 labels: Default::default(),
+                ..Default::default()
             },
             2_000_000_000,
             1_000_000_000,
@@ -957,6 +959,7 @@ async fn test_governance_vkey_auth_and_pool_acl() {
                 allowed_pools: Some(vec!["allowedpool".to_string()]),
                 group: None,
                 labels: Default::default(),
+                ..Default::default()
             },
             2_000_000_000,
             1_000_000_000,
@@ -1036,6 +1039,7 @@ async fn test_governance_budget_over_quota() {
                 // The 100c budget cap lives on the bound GROUP (keys are pure auth).
                 group: Some("bgrp".to_string()),
                 labels: Default::default(),
+                ..Default::default()
             },
             2_000_000_000,
             1_000_000_000,
@@ -1154,6 +1158,7 @@ async fn over_budget_router() -> (std::net::SocketAddr, tokio::task::JoinHandle<
                 // The 100c budget cap lives on the bound GROUP (keys are pure auth).
                 group: Some("bgrpm".to_string()),
                 labels: Default::default(),
+                ..Default::default()
             },
             2_000_000_000,
             1_000_000_000,
@@ -1397,6 +1402,7 @@ async fn test_governance_rate_limit_429() {
                 // The 2-requests-per-minute limit lives on the bound GROUP (keys are pure auth).
                 group: Some("rl2".to_string()),
                 labels: Default::default(),
+                ..Default::default()
             },
             2_000_000_000,
             1_000_000_000,
@@ -1506,6 +1512,7 @@ async fn over_rpm_router() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>
                 allowed_pools: None, // all pools
                 group: Some("rl0".to_string()),
                 labels: Default::default(),
+                ..Default::default()
             },
             2_000_000_000,
             1_000_000_000,

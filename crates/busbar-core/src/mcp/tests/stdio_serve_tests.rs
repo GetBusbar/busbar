@@ -553,6 +553,7 @@ async fn a_budgeted_key_is_refused_over_budget_through_the_stdio_binding() {
                 allowed_pools: None,
                 group: Some("tiny".to_string()),
                 labels: Default::default(),
+                ..Default::default()
             },
             2_000_000_000,
             1_000_000_000,
@@ -942,6 +943,7 @@ async fn an_early_closed_subscription_is_announced_with_cancelled() {
                 allowed_pools: None,
                 group: None,
                 labels: Default::default(),
+                ..Default::default()
             },
             2_000_000_000,
             1_000_000_000,

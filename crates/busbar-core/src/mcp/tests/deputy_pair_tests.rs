@@ -257,6 +257,7 @@ async fn the_callers_busbar_key_appears_nowhere_on_the_upstream_wire() {
                 allowed_pools: None,
                 group: None,
                 labels: Default::default(),
+                ..Default::default()
             },
             2_000_000_000,
             crate::store::now(),

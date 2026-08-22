@@ -544,6 +544,7 @@ async fn test_admin_v1_get_single_key() {
                 allowed_pools: None,
                 group: None,
                 labels: Default::default(),
+                ..Default::default()
             },
             crate::store::now(),
         )
@@ -624,6 +625,7 @@ async fn test_admin_v1_usage_meters_by_model_and_key() {
                 allowed_pools: None,
                 group: None,
                 labels: Default::default(),
+                ..Default::default()
             },
             now,
         )
@@ -3076,6 +3078,7 @@ async fn test_admin_v1_list_keys_filters() {
                 allowed_pools: None,
                 group: None,
                 labels: Default::default(),
+                ..Default::default()
             },
             crate::store::now(),
         )
@@ -3141,6 +3144,7 @@ async fn test_admin_v1_list_keys_group_filter() {
                 allowed_pools: None,
                 group: group.map(String::from),
                 labels: Default::default(),
+                ..Default::default()
             },
             crate::store::now(),
         )
@@ -5158,6 +5162,7 @@ async fn test_delete_existing_key_returns_200() {
                 allowed_pools: None,
                 group: None,
                 labels: Default::default(),
+                ..Default::default()
             },
             0,
         )
@@ -5297,6 +5302,7 @@ async fn test_single_key_reads_use_get_key_not_list_keys() {
                 allowed_pools: None,
                 group: None,
                 labels: Default::default(),
+                ..Default::default()
             },
             0,
         )
@@ -5308,6 +5314,7 @@ async fn test_single_key_reads_use_get_key_not_list_keys() {
                 allowed_pools: None,
                 group: None,
                 labels: Default::default(),
+                ..Default::default()
             },
             0,
         )
@@ -5319,6 +5326,7 @@ async fn test_single_key_reads_use_get_key_not_list_keys() {
                 allowed_pools: None,
                 group: None,
                 labels: Default::default(),
+                ..Default::default()
             },
             0,
         )
@@ -5420,6 +5428,7 @@ async fn test_single_key_writes_use_get_key_for_their_existence_check() {
                 allowed_pools: None,
                 group: None,
                 labels: Default::default(),
+                ..Default::default()
             },
             0,
         )
@@ -5431,6 +5440,7 @@ async fn test_single_key_writes_use_get_key_for_their_existence_check() {
                 allowed_pools: None,
                 group: None,
                 labels: Default::default(),
+                ..Default::default()
             },
             0,
         )
@@ -5503,6 +5513,7 @@ async fn test_delete_key_is_not_idempotent_204() {
                 allowed_pools: None,
                 group: None,
                 labels: Default::default(),
+                ..Default::default()
             },
             0,
         )
@@ -5543,6 +5554,7 @@ async fn test_concurrent_delete_returns_exactly_one_204() {
                 allowed_pools: None,
                 group: None,
                 labels: Default::default(),
+                ..Default::default()
             },
             0,
         )
@@ -5603,6 +5615,7 @@ async fn test_patch_after_delete_404s_and_does_not_recreate_key() {
                 allowed_pools: None,
                 group: None,
                 labels: Default::default(),
+                ..Default::default()
             },
             0,
         )
@@ -5765,6 +5778,7 @@ async fn test_patch_interleaved_with_delete_never_resurrects_key() {
                 allowed_pools: None,
                 group: None,
                 labels: Default::default(),
+                ..Default::default()
             },
             0,
         )
@@ -5858,6 +5872,7 @@ async fn test_rotate_interleaved_with_delete_never_resurrects_key() {
                 allowed_pools: None,
                 group: None,
                 labels: Default::default(),
+                ..Default::default()
             },
             0,
         )
@@ -5974,6 +5989,7 @@ async fn test_cancelled_patch_keeps_gate_held_for_full_store_mutation() {
                 allowed_pools: None,
                 group: None,
                 labels: Default::default(),
+                ..Default::default()
             },
             0,
         )
@@ -7686,6 +7702,7 @@ async fn test_admin_v1_patch_no_op_on_an_already_counted_key_is_not_an_admission
                 allowed_pools: None,
                 group: Some("capped".to_string()),
                 labels: Default::default(),
+                ..Default::default()
             },
             crate::store::now(),
         )
@@ -10507,6 +10524,7 @@ async fn serve_keys_fixture(
                     allowed_pools: None,
                     group: None,
                     labels: Default::default(),
+                    ..Default::default()
                 },
                 crate::store::now() + 3600,
                 crate::store::now(),

@@ -524,6 +524,7 @@ fn a_recorded_update_is_not_delivered_to_a_caller_whose_grant_does_not_reach_it(
                 allowed_pools: None, // the store's wildcard: every scope kind
                 group: None,
                 labels: Default::default(),
+                ..Default::default()
             },
             0,
         )
@@ -535,6 +536,7 @@ fn a_recorded_update_is_not_delivered_to_a_caller_whose_grant_does_not_reach_it(
                 allowed_pools: Some(vec![]), // exactly nothing
                 group: None,
                 labels: Default::default(),
+                ..Default::default()
             },
             0,
         )
@@ -731,6 +733,7 @@ fn a_revoked_key_stops_being_served_on_the_next_poll() {
                 allowed_pools: None,
                 group: None,
                 labels: Default::default(),
+                ..Default::default()
             },
             0,
         )
