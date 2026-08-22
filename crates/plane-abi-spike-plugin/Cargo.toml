@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (C) 2026 Busbar Inc and contributors
+#
+# P0 SPIKE plugin — a cdylib the bench `dlopen`s to measure the REAL cross-`.so` PLT delta of a
+# repr(C) POD host-call, versus the in-process fn-pointer proxy. Dependency-free on purpose: it
+# re-declares the frozen repr(C) `Facts`/`Decision` layout (the ABI contract) so it shares no Rust
+# types with the host — exactly as a third-party plugin would.
+[package]
+name = "plane-abi-spike-plugin"
+version = "0.0.0"
+publish = false
+edition = "2021"
+rust-version = "1.97"
+description = "P0 spike cdylib: an extern-C-unwind govern_admit reached across a dlopen boundary."
+license = "Apache-2.0"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]

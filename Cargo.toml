@@ -22,6 +22,8 @@ members = [
     "crates/export-example-plugin",
     "crates/hooks-ranking",
     "crates/store-memory",
+    "crates/plane-abi-spike",
+    "crates/plane-abi-spike-plugin",
 ]
 
 # ── the single source of truth for external dependency VERSIONS ──────────────────────────────────
