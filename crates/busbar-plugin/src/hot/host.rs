@@ -24,9 +24,9 @@
 use super::pod::{
     AdmissionId, AdmitRefusal, ApprovalQuery, AuthQuery, AuthResolved, CallerRef, ContentChunk,
     CounterpartyRef, Decision, EgressDesc, EgressId, EgressOpen, Facts, FramingDesc, GateDecision,
-    JournalQuery, Key, MeterOutcome, MetricSample, OpDesc, OpResult, Seq, Signal, StatusClass,
-    TargetRef, TrustVerdict, Usage, VerifyDecision, VerifyLease, VerifyQuery, VerifyVerdict,
-    WorkHandleDesc, WorkHandleId,
+    GovRefusal, JournalQuery, Key, MeterOutcome, MetricSample, OpDesc, OpResult, Seq, Signal,
+    StatusClass, TargetRef, TrustVerdict, Usage, VerifyDecision, VerifyLease, VerifyQuery,
+    VerifyVerdict, WorkHandleDesc, WorkHandleId,
 };
 use crate::AbiPreamble;
 use core::mem::MaybeUninit;
@@ -54,6 +54,20 @@ pub type BreakerAdmitReasonFn = extern "C-unwind" fn(
     key: *const Key,
     out: *mut MaybeUninit<AdmitRefusal>,
 ) -> AdmissionId;
+/// Admit (authorize + budget-reserve) a unit of work WITH REFUSAL FIDELITY: the host always
+/// initializes `out`, and on a blocked limit (a returned [`Decision::Deny`]) it RENDERS the blocking
+/// limit's reason into the caller's `reason_buf` (up to `reason_cap` bytes, the `egress_poll`
+/// variable-length pattern) and records its length + recovery hint in [`GovRefusal`], leaving
+/// `reason_len == 0` on a [`Decision::Admit`]. The append-only counterpart of [`GovernAdmitFn`], so a
+/// budget refusal keeps its specific meaning across the boundary (the meaning the wired `govern_admit`
+/// slot drops); the caller reads `reason_buf[..out.reason_len]` when the returned decision is `Deny`.
+pub type GovernAdmitReasonFn = extern "C-unwind" fn(
+    host: HostCtx,
+    facts: *const Facts,
+    reason_buf: *mut u8,
+    reason_cap: usize,
+    out: *mut MaybeUninit<GovRefusal>,
+) -> Decision;
 /// Settle a breaker admission with the observed outcome signal.
 pub type BreakerSettleFn =
     extern "C-unwind" fn(host: HostCtx, admission: AdmissionId, signal: *const Signal) -> StatusClass;
@@ -225,6 +239,12 @@ pub struct PlaneHostVtable {
     pub verify_decide: Option<VerifyDecideFn>,
     /// Redeem a one-time approval over an [`ApprovalQuery`] (nonce + seal `expires_at` + `now`).
     pub approval_redeem_q: Option<ApprovalRedeemQFn>,
+    // ── APPENDED (govern refusal fidelity): the admit-side analogue of `breaker_admit_reason`, so a
+    //    blocked BUDGET limit carries its rendered reason out instead of the wired `govern_admit`
+    //    dropping it to a bare `Deny`. Trailing slot, append-only, same sized/versioned discipline
+    //    (a MINOR bump). ─────────────────────────────────────────────────────────────────────────
+    /// Admit a unit of work, rendering a blocked limit's reason into `reason_buf` on a `Deny`.
+    pub govern_admit_reason: Option<GovernAdmitReasonFn>,
     // ── EXTENSION POINT (reserved) ──────────────────────────────────────────────────────────────
     // Metering reserve/settle (a `CostHold`) is DELIBERATELY NOT a slot here. When a high-rate
     // carrier needs it, add `cost_reserve`/`cost_settle` as trailing `Option` slots below this line
@@ -272,6 +292,7 @@ impl PlaneHostVtable {
         breaker_admit_reason: None,
         verify_decide: None,
         approval_redeem_q: None,
+        govern_admit_reason: None,
     };
 
     /// A fully-populated STUB vtable: every slot points at an `unimplemented!()` stub. It exists to
@@ -308,6 +329,7 @@ impl PlaneHostVtable {
         breaker_admit_reason: Some(stub::breaker_admit_reason),
         verify_decide: Some(stub::verify_decide),
         approval_redeem_q: Some(stub::approval_redeem_q),
+        govern_admit_reason: Some(stub::govern_admit_reason),
     };
 }
 
@@ -329,6 +351,16 @@ pub mod stub {
     /// Stub: see module docs.
     pub extern "C-unwind" fn breaker_admit(_host: HostCtx, _key: *const Key) -> AdmissionId {
         unimplemented!("PlaneHost::breaker_admit — stub")
+    }
+    /// Stub: see module docs.
+    pub extern "C-unwind" fn govern_admit_reason(
+        _host: HostCtx,
+        _facts: *const Facts,
+        _reason_buf: *mut u8,
+        _reason_cap: usize,
+        _out: *mut MaybeUninit<GovRefusal>,
+    ) -> Decision {
+        unimplemented!("PlaneHost::govern_admit_reason — stub")
     }
     /// Stub: see module docs.
     pub extern "C-unwind" fn breaker_admit_reason(

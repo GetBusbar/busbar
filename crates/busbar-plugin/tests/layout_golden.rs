@@ -104,6 +104,7 @@ fn compute_layout() -> String {
         ]
     );
     record!(s, AdmitRefusal, [size, version, reason, _reserved, retry_after_secs]);
+    record!(s, GovRefusal, [size, version, _reserved, retry_after_secs, reason_len]);
     record!(
         s,
         EgressDesc,

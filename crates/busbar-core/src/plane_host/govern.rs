@@ -22,7 +22,7 @@
 //! `// Phase 2:` note. Nothing here is called by the engine yet (the module is ADDITIVE).
 
 use super::HostState;
-use crate::governance::AdmitGrant;
+use crate::governance::{AdmitGrant, LimitBlocked};
 use crate::plane::cost::{CostAmount, CostBreakdown, CostComponent};
 use busbar_plugin::hot::{
     AuthQuery, AuthResolved, Decision, Facts, MeterOutcome, Usage, UsageComponent, POD_VERSION,
@@ -75,6 +75,15 @@ pub(super) fn admit(state: &HostState, facts: &Facts) -> Decision {
 /// chain limit blocked. When governance is disabled this is an enforcement no-op (matching an empty
 /// `GovCtx { key: None }`) that still returns a real — empty — grant so the arena path is uniform.
 fn grant_for(state: &HostState, facts: &Facts) -> Result<AdmitGrant, ()> {
+    grant_for_blocked(state, facts).map_err(|_| ())
+}
+
+/// [`grant_for`] WITHOUT discarding the block reason: `Err` carries the real
+/// [`LimitBlocked`](crate::governance::LimitBlocked) the chain engine yielded, so the refusal-fidelity
+/// admit ([`admit_reason`]) can render it for an operator instead of collapsing it to a bare `Deny`.
+/// The admit path itself is byte-for-byte [`grant_for`]'s — same identity resolution, same `try_admit`
+/// over the same clock — so `grant_for`'s `Err(())` and this `Err(blocked)` name the SAME block.
+fn grant_for_blocked(state: &HostState, facts: &Facts) -> Result<AdmitGrant, LimitBlocked> {
     let Some(gov) = state.app.governance.as_ref() else {
         return Ok(AdmitGrant::default());
     };
@@ -88,7 +97,53 @@ fn grant_for(state: &HostState, facts: &Facts) -> Result<AdmitGrant, ()> {
     let key = resolved_key(facts).unwrap_or_else(|| synth_key(facts.tenant_id));
     let now = crate::store::now_ms() / 1_000;
     gov.try_admit(state.app.cost.as_ref(), &key, &pool, now)
-        .map_err(|_| ())
+}
+
+/// A blocked admission carried out of [`admit_reason`]: the RENDERED reason (the exact
+/// `format!("{blocked:?}")` bytes the mcp budget-refusal surfaces today) plus the block's recovery
+/// floor in whole seconds. Kept as an owned `String` on the cold refusal path only.
+pub(super) struct GovBlocked {
+    /// The rendered reason bytes the host copies into the caller's `reason_buf`.
+    pub(super) reason: String,
+    /// The recovery floor in whole seconds (`0` when the block does not self-recover / never rolls).
+    pub(super) retry_after_secs: u64,
+}
+
+/// The refusal-fidelity analogue of [`admit`]: identical admit behaviour (the budget-POD gate, then
+/// the real `try_admit` chain, REGISTERING the RAII grant in the dispatch arena on success), but a
+/// blocked limit returns the RENDERED [`GovBlocked`] reason instead of a bare `Deny`. `Ok(())` =
+/// admitted (grant registered); `Err(blocked)` = refused with the reason to surface. Called from
+/// inside the slot's `catch_unwind`, so a panic maps to `Deny` upstream and this stays fail-closed.
+pub(super) fn admit_reason(state: &HostState, facts: &Facts) -> Result<(), GovBlocked> {
+    // The budget gate the Facts POD encodes has no chain-limit reason to render (it is the POD's own
+    // pre-chain refusal), so a gate block carries an empty reason + no recovery floor. `charge_round`
+    // never trips it (its Facts carry tokens = budget = 0); the chain below is the sole decider there.
+    if facts.budget_remaining < facts.tokens {
+        return Err(GovBlocked {
+            reason: String::new(),
+            retry_after_secs: 0,
+        });
+    }
+    match grant_for_blocked(state, facts) {
+        Ok(grant) => {
+            state.scope.register_admission(Box::new(grant));
+            Ok(())
+        }
+        Err(blocked) => {
+            // The recovery floor a windowed-limit block knows; a `total` window never rolls and a
+            // missing/disabled group does not self-recover, so both carry `0`.
+            let retry_after_secs = match &blocked {
+                LimitBlocked::Limit { retry_after, .. } => retry_after.unwrap_or(0),
+                LimitBlocked::Disabled(_) | LimitBlocked::MissingGroup(_) => 0,
+            };
+            // BYTE-IDENTICAL to the mcp `charge_round`'s current `Err(format!("{blocked:?}"))`: the
+            // plane cannot hold `LimitBlocked` post-flip, so the host renders the SAME Debug bytes.
+            Err(GovBlocked {
+                reason: format!("{blocked:?}"),
+                retry_after_secs,
+            })
+        }
+    }
 }
 
 /// Reconstruct the caller's [`VirtualKey`](busbar_api::VirtualKey) from the [`Facts`] identity tail,
@@ -296,7 +351,10 @@ fn borrowed_str(ptr: *const u8, len: usize) -> String {
 #[cfg(test)]
 mod tests {
     use crate::plane_host::with_dispatch_scope;
-    use busbar_plugin::hot::{AdmissionId, Decision, Facts, MeterOutcome, Usage, UsageComponent};
+    use busbar_plugin::hot::{
+        AdmissionId, Decision, Facts, GovRefusal, MeterOutcome, Usage, UsageComponent,
+    };
+    use core::mem::MaybeUninit;
     use std::sync::Arc;
 
     /// A cost model with ONE budget group (`name`, `cap` cents on the total window, no parent) and a
@@ -322,6 +380,48 @@ mod tests {
             },
         );
         crate::cost::CostModel::resolve_parts(None, 1, &groups)
+    }
+
+    /// Like [`group_cost`] but the single group is FROZEN (`enabled: false`), so every request
+    /// charging through it is rejected with [`LimitBlocked::Disabled`].
+    fn disabled_group_cost(name: &str) -> crate::cost::CostModel {
+        use crate::config::groups::{LimitCfg, LimitMetric, LimitWindow};
+        let mut groups = std::collections::BTreeMap::new();
+        groups.insert(
+            name.to_string(),
+            crate::config::GroupCfg {
+                parent: None,
+                enabled: false,
+                limits: vec![LimitCfg {
+                    metric: LimitMetric::Budget,
+                    amount: 100,
+                    per: Some(LimitWindow::Total),
+                    scope: None,
+                    on_exhaust: None,
+                    downgrade_to: None,
+                }],
+                ..Default::default()
+            },
+        );
+        crate::cost::CostModel::resolve_parts(None, 1, &groups)
+    }
+
+    /// The minimal [`VirtualKey`](busbar_api::VirtualKey) `try_admit`/`chain_for` read — `id` + `group`
+    /// — so a direct `try_admit` and the host `govern_admit_reason` drive the identical chain.
+    fn test_key(id: &str, group: Option<&str>) -> busbar_api::VirtualKey {
+        busbar_api::VirtualKey {
+            generation_hash: String::new(),
+            name: id.to_string(),
+            id: id.to_string(),
+            allowed_scopes: None,
+            enabled: true,
+            created_at: 0,
+            group: group.map(str::to_string),
+            labels: std::collections::BTreeMap::new(),
+            expires_at: None,
+            deleted_at: None,
+            revision: 0,
+        }
     }
 
     fn gov() -> Arc<crate::governance::GovState> {
@@ -412,6 +512,103 @@ mod tests {
                 (vt.govern_admit.unwrap())(host, &*facts as *const Facts),
                 Decision::Admit
             );
+        });
+    }
+
+    /// THE GOVERN-REFUSAL FAITHFULNESS PROOF (the govern analogue of the breaker's
+    /// `settle_through_host_matches_direct_record_signal`): for every blocked-limit shape, driving the
+    /// host `govern_admit_reason` slot yields the SAME `Decision::Deny` AND the SAME rendered reason
+    /// bytes as the direct `try_admit(...)`→`format!("{blocked:?}")` the mcp `charge_round` returns
+    /// today — the byte-identity Option A rests on. Covers `MissingGroup`, `Disabled`, and an
+    /// exhausted `Limit{..}`.
+    #[test]
+    fn govern_admit_reason_reason_bytes_match_direct_try_admit() {
+        // Run ONE blocked shape over a SHARED gov: drain `drain` requests, capture the direct block's
+        // `{blocked:?}`, then drive the host slot over an identical cost + Facts and compare.
+        fn faithful_case(
+            make_cost: &dyn Fn() -> crate::cost::CostModel,
+            key_group: Option<&str>,
+            facts_group: Option<&[u8]>,
+            drain: usize,
+        ) {
+            let pool = "pool-x";
+            let key = test_key("vk_reason", key_group);
+            let gov = gov();
+            let cost = make_cost();
+            let now = crate::store::now_ms() / 1_000;
+            // Exhaust the budget for the Limit case (a no-op for MissingGroup/Disabled, drain = 0).
+            for _ in 0..drain {
+                let _ = gov.try_admit(&cost, &key, pool, now);
+            }
+            // DIRECT: the exact `LimitBlocked` the mcp `charge_round` renders today.
+            let blocked = gov
+                .try_admit(&cost, &key, pool, now)
+                .expect_err("this shape must block");
+            let expected = format!("{blocked:?}");
+
+            // HOST: drive the slot over the SAME gov (shared drained state) + an identical cost.
+            let app = crate::test_support::TestApp::new()
+                .governance(Arc::clone(&gov))
+                .cost(make_cost())
+                .build();
+            with_dispatch_scope(&app, |host, vt| {
+                let facts =
+                    Facts::with_attribution(0, 0, 0, 0, 0, pool.as_bytes(), key.id.as_bytes(), facts_group);
+                let mut buf = [0u8; 512];
+                let mut out = MaybeUninit::<GovRefusal>::uninit();
+                let decision = (vt.govern_admit_reason.unwrap())(
+                    host,
+                    &*facts as *const Facts,
+                    buf.as_mut_ptr(),
+                    buf.len(),
+                    std::ptr::from_mut(&mut out),
+                );
+                assert_eq!(decision, Decision::Deny, "a blocked limit denies");
+                // SAFETY: the host always initializes `out`.
+                let refusal = unsafe { out.assume_init() };
+                assert!(refusal.reason_len <= buf.len(), "written length fits the buffer");
+                let actual = String::from_utf8_lossy(&buf[..refusal.reason_len]).into_owned();
+                assert_eq!(
+                    actual, expected,
+                    "host-rendered reason must be byte-identical to the direct {{blocked:?}}"
+                );
+            });
+        }
+
+        // MissingGroup: the key names a group the cost model does not have.
+        faithful_case(&|| group_cost("team", 5), Some("ghost"), Some(b"ghost"), 0);
+        // Disabled: the key's group is frozen (`enabled: false`).
+        faithful_case(&|| disabled_group_cost("frozen"), Some("frozen"), Some(b"frozen"), 0);
+        // Limit: a 5c total cap at 1c/request → the 6th request blocks after draining 5.
+        faithful_case(&|| group_cost("team", 5), Some("team"), Some(b"team"), 5);
+    }
+
+    /// A live admit through `govern_admit_reason` returns `Admit`, leaves `reason_len == 0`, and
+    /// registers the RAII grant in the arena exactly as `govern_admit` does.
+    #[test]
+    fn govern_admit_reason_admits_and_registers_grant() {
+        let gov = gov();
+        let app = crate::test_support::TestApp::new()
+            .governance(gov)
+            .cost(group_cost("team", 5))
+            .build();
+        with_dispatch_scope(&app, |host, vt| {
+            let facts = Facts::with_attribution(0, 0, 0, 0, 0, b"pool-x", b"vk_ok", Some(b"team"));
+            let mut buf = [0u8; 64];
+            let mut out = MaybeUninit::<GovRefusal>::uninit();
+            let decision = (vt.govern_admit_reason.unwrap())(
+                host,
+                &*facts as *const Facts,
+                buf.as_mut_ptr(),
+                buf.len(),
+                std::ptr::from_mut(&mut out),
+            );
+            assert_eq!(decision, Decision::Admit, "under the cap → admit");
+            // SAFETY: the host always initializes `out`.
+            assert_eq!(unsafe { out.assume_init() }.reason_len, 0, "an admit renders no reason");
+            // SAFETY: live HostState from `with_dispatch_scope`.
+            let state: &crate::plane_host::HostState = unsafe { crate::plane_host::recover(host) };
+            assert_eq!(state.scope.registered(), 1, "the RAII grant is registered in the arena");
         });
     }
 

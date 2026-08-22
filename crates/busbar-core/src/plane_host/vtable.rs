@@ -21,8 +21,8 @@
 use super::{recover, trust, HostState};
 use busbar_plugin::hot::host::{HostCtx, PlaneHostVtable};
 use busbar_plugin::hot::{
-    AuthQuery, AuthResolved, Decision, EgressDesc, EgressId, EgressOpen, Facts, MeterOutcome,
-    MetricSample, StatusClass, Usage,
+    AuthQuery, AuthResolved, Decision, EgressDesc, EgressId, EgressOpen, Facts, GovRefusal,
+    MeterOutcome, MetricSample, StatusClass, Usage,
 };
 use busbar_plugin::AbiPreamble;
 use core::mem::MaybeUninit;
@@ -41,6 +41,7 @@ pub fn build_plane_host_vtable() -> PlaneHostVtable {
 
         // ── WIRED proof-of-life (real primitives) ──────────────────────────────────────────────
         govern_admit: Some(govern_admit),
+        govern_admit_reason: Some(govern_admit_reason),
         metrics_emit: Some(metrics_emit),
         clock_now: Some(clock_now),
 
@@ -136,6 +137,84 @@ extern "C-unwind" fn govern_admit(host: HostCtx, facts: *const Facts) -> Decisio
         super::govern::admit(state, f)
     }))
     .unwrap_or(Decision::Deny) // fail-closed: a panicked admit denies.
+}
+
+/// Copy up to `cap` of `bytes` into the caller's `buf` (tolerating a null/zero-cap slot), returning
+/// the number of bytes written. The `egress_poll` variable-length copy: a caller sizes `buf` and
+/// learns the written length from [`GovRefusal::reason_len`].
+///
+/// # Safety
+/// `buf`, when non-null, is a writable range of at least `cap` bytes for the call.
+unsafe fn write_reason(buf: *mut u8, cap: usize, bytes: &[u8]) -> usize {
+    if buf.is_null() || cap == 0 {
+        return 0;
+    }
+    let n = bytes.len().min(cap);
+    // SAFETY: `bytes[..n]` is initialized and `buf[..n]` is a writable range (n ≤ cap, caller ABI).
+    unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), buf, n) };
+    n
+}
+
+/// Write the [`GovRefusal`] out-param (tolerating a null slot): the recovery floor + the rendered
+/// reason length.
+///
+/// # Safety
+/// `out`, when non-null, is a writable, aligned `MaybeUninit<GovRefusal>` for the call.
+unsafe fn write_gov_refusal(
+    out: *mut MaybeUninit<GovRefusal>,
+    retry_after_secs: u64,
+    reason_len: usize,
+) {
+    let refusal = GovRefusal {
+        size: core::mem::size_of::<GovRefusal>() as u32,
+        version: busbar_plugin::hot::POD_VERSION,
+        _reserved: 0,
+        retry_after_secs,
+        reason_len,
+    };
+    // SAFETY: `out` is a writable, aligned MaybeUninit slot (or null, which `write_out` tolerates).
+    unsafe { busbar_plugin::write_out(out, refusal) };
+}
+
+/// WIRED `govern_admit_reason` — [`govern_admit`] WITH REFUSAL FIDELITY. Identical admit behaviour
+/// (the budget-POD gate, the real `try_admit` chain, the RAII grant registered in the dispatch arena),
+/// the difference being that a BLOCKED limit RENDERS its reason into `reason_buf` (the exact
+/// `format!("{blocked:?}")` bytes the mcp budget refusal surfaces today — the plane can no longer hold
+/// `LimitBlocked`, so the host formats it) and records its length + recovery floor in [`GovRefusal`],
+/// instead of discarding it. `out` is initialized up front (never left uninitialized): on an `Admit`
+/// it holds `reason_len == 0`; on a `Deny` it holds the reason length; on a caught panic the eagerly
+/// written zero. Fail-closed: a null POD or a caught panic denies.
+extern "C-unwind" fn govern_admit_reason(
+    host: HostCtx,
+    facts: *const Facts,
+    reason_buf: *mut u8,
+    reason_cap: usize,
+    out: *mut MaybeUninit<GovRefusal>,
+) -> Decision {
+    catch_unwind(AssertUnwindSafe(|| {
+        // Initialize `out` up front so no path (admit, block, or a caught panic below) leaves it
+        // uninitialized; a block overwrites it with the rendered reason length + recovery floor.
+        // SAFETY: ABI out-param discipline (writable/aligned or null; see `write_gov_refusal`).
+        unsafe { write_gov_refusal(out, 0, 0) };
+        // SAFETY: recovery invariant (see `recover`).
+        let state: &HostState = unsafe { recover(host) };
+        if facts.is_null() {
+            return Decision::Deny;
+        }
+        // SAFETY: a non-null `facts` is a live, initialized `Facts` for the call (ABI discipline).
+        let f = unsafe { &*facts };
+        match super::govern::admit_reason(state, f) {
+            Ok(()) => Decision::Admit,
+            Err(blocked) => {
+                // SAFETY: `reason_buf`/`reason_cap` are a writable range (or null) per the ABI.
+                let written = unsafe { write_reason(reason_buf, reason_cap, blocked.reason.as_bytes()) };
+                // SAFETY: as above.
+                unsafe { write_gov_refusal(out, blocked.retry_after_secs, written) };
+                Decision::Deny
+            }
+        }
+    }))
+    .unwrap_or(Decision::Deny) // fail-closed: a panicked admit denies (out already zero).
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────

@@ -667,6 +667,38 @@ pub struct AdmitRefusal {
     pub retry_after_secs: u64,
 }
 
+/// The out-param a REFUSAL-fidelity ADMIT (`govern_admit_reason`) writes when a limit blocks — the
+/// recovery hint plus the LENGTH of the rendered refusal reason the host copied into the caller's
+/// `reason_buf` — so a blocked admission keeps its SPECIFIC meaning (which group / metric / window
+/// blocked) across the host boundary instead of collapsing to a bare [`Decision::Deny`]. It is the
+/// admit-side counterpart of [`AdmitRefusal`] (the breaker refusal): where `AdmitRefusal` carries a
+/// fine [`Unavailability`] enum, this carries a variable-length rendered reason via the `egress_poll`
+/// `(reason_buf, reason_cap, reason_len)` pattern — the blocking limit's own rendering, which the
+/// plane cannot hold, formatted host-side. The host ALWAYS initializes it: a [`Decision::Admit`] leaves
+/// `reason_len == 0`, and a [`Decision::Deny`] on a blocked limit writes the reason bytes and their
+/// length. The caller reads `reason_buf[..reason_len]` exactly when the returned [`Decision`] is `Deny`.
+///
+/// APPEND-ONLY minor extension alongside the [`host::GovernAdmitReasonFn`](super::host::GovernAdmitReasonFn)
+/// slot: a sender that predates it has no such slot, and a reader reads this only through a slot that
+/// exists in the bumped-minor table — a MINOR airlock bump, never a MAJOR.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct GovRefusal {
+    /// `size_of::<GovRefusal>()` when the host writes it.
+    pub size: u32,
+    /// POD schema version.
+    pub version: u16,
+    /// Preamble tail padding.
+    pub _reserved: u16,
+    /// The known/estimated recovery floor in whole seconds (`0` when there is no basis to estimate —
+    /// a `total`-window budget block never rolls, a missing-group / disabled-group block does not
+    /// self-recover).
+    pub retry_after_secs: u64,
+    /// The number of rendered-reason bytes the host copied into the caller's `reason_buf` (`0` on an
+    /// [`Decision::Admit`], or when no buffer was supplied). Read `reason_buf[..reason_len]`.
+    pub reason_len: usize,
+}
+
 /// The descriptor for opening a governed egress. Carries a credential-REF (which pool/hop/exchange),
 /// NEVER plaintext — the host mints and injects the credential app-layer. Also carries the mTLS
 /// client-identity REF for pinned client auth.
@@ -1198,6 +1230,7 @@ mod tests {
         assert_preamble!(Key);
         assert_preamble!(Signal);
         assert_preamble!(AdmitRefusal);
+        assert_preamble!(GovRefusal);
         assert_preamble!(EgressDesc);
         assert_preamble!(EgressHead);
         assert_preamble!(EgressOpen);
