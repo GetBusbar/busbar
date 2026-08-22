@@ -152,6 +152,7 @@ pub(crate) const PLANE_DECL: crate::plane::registry::PlaneDecl =
         mount: Some(mcp_mount),
         admin_routes: Some(mcp_admin_routes),
         openapi: Some(mcp_openapi_fragment),
+        config_validate: Some(mcp_config_validate),
         hydrate: Some(mcp_hydrate),
         // NO START HOOK. Verify-on-call is LAZY — it re-verifies on the `tools/call` path against a
         // ≤`verify_ttl` single-flight snapshot (see `crate::trust::verify`), so there is no background
@@ -160,6 +161,18 @@ pub(crate) const PLANE_DECL: crate::plane::registry::PlaneDecl =
         start: None,
         on_swap: Some(mcp_on_swap),
     };
+
+/// VALIDATE ONE `tools:` NAMED-DEFINITION DOCUMENT — the MCP plane's half of
+/// [`crate::plane::registry::PlaneDecl::config_validate`]. Parses the raw document into
+/// [`config::McpServerDefCfg`] (`deny_unknown_fields`, so a typo'd key is refused HERE exactly as the
+/// file refuses it) and applies the same value rules boot applies through the identical
+/// [`config::validate_server`]. Naming `crate::mcp` types HERE is correct: this is the MCP plane's
+/// own module, and it is what lets `config::named_map` validate a `tools:` write without doing so.
+fn mcp_config_validate(name: &str, def: &serde_json::Value) -> Result<(), String> {
+    let cfg: config::McpServerDefCfg = serde_json::from_value(def.clone())
+        .map_err(|e| format!("invalid `tools.{name}` definition: {e}"))?;
+    config::validate_server(name, &cfg)
+}
 
 /// THE MCP RUNTIME OBJECT for this config generation, read through the TYPE-ERASED `plane_slots`
 /// seam ([`crate::state::App::plane_slot`]) and downcast back to [`McpResource`] HERE, inside the

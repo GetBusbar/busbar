@@ -277,18 +277,21 @@ impl NamedMapSection {
                 .map(NamedDef::Export)
                 .map_err(|e| format!("invalid `export.{name}` definition: {e}")),
             #[cfg(feature = "plane-mcp")]
-            NamedMapSection::Tools => serde_json::from_value(def.clone())
-                .map_err(|e| format!("invalid `tools.{name}` definition: {e}"))
-                .and_then(|cfg: crate::mcp::config::McpServerDefCfg| {
-                    // THE VALUE RULES, run through the very function the FILE path runs (the custom
-                    // `Deserialize` for `ToolsCfg` calls the same `validate_server`). ONE GRAMMAR,
-                    // TWO PATHS: the API rejects exactly what `config.yaml` rejects, because both
-                    // reach this function. Without it the API would accept an `unpinned` server
-                    // carrying key material, or a `stdio` transport nothing implements, persist it,
-                    // and then have boot refuse the file it wrote.
-                    crate::mcp::config::validate_server(name, &cfg)?;
-                    Ok(NamedDef::Tool(Box::new(cfg)))
-                }),
+            NamedMapSection::Tools => {
+                // THE VALUE RULES, run through the MCP plane's `config_validate` seam rather than a
+                // named `crate::mcp::config::validate_server` call — the write path enforces exactly
+                // the grammar boot enforces (the plane's own `Deserialize`/boot reaches the identical
+                // function), so the API rejects exactly what `config.yaml` rejects, and core names no
+                // plane validate function here. Without this an `unpinned` server carrying key
+                // material, or a `stdio` transport nothing implements, would be persisted and then
+                // refused by boot. The typed parse below still builds the object the overlay
+                // installs; that config STRUCT leaves core with the plane at the physical relocation,
+                // not at this seam.
+                plane_config_validate(self, name, def)?;
+                serde_json::from_value(def.clone())
+                    .map_err(|e| format!("invalid `tools.{name}` definition: {e}"))
+                    .map(|cfg: crate::mcp::config::McpServerDefCfg| NamedDef::Tool(Box::new(cfg)))
+            }
             // With the MCP plane compiled out, a `tools:` definition names a plane this build does
             // not carry — refuse it, exactly as `resolve` refuses a `tools:` section.
             #[cfg(not(feature = "plane-mcp"))]
@@ -300,17 +303,20 @@ impl NamedMapSection {
                 ))
             }
             #[cfg(feature = "plane-a2a")]
-            NamedMapSection::Agents => serde_json::from_value(def.clone())
-                .map_err(|e| format!("invalid `agents.{name}` definition: {e}"))
-                .and_then(|cfg: AgentDefCfg| {
-                    // THE SAME VALUE RULES BOOT APPLIES, through the same function boot calls: the
-                    // pin's mechanism must match the material it carries, the durations must
-                    // parse, and no hook reference may reach onto another plane. Without this the
-                    // API would accept a `jws_issuer_key` pin with nothing to verify against, and
-                    // the operator would read a registration as protected when it is not.
-                    crate::a2a::config::validate_agent(name, &cfg)?;
-                    Ok(NamedDef::Agent(cfg))
-                }),
+            NamedMapSection::Agents => {
+                // THE SAME VALUE RULES BOOT APPLIES, routed through the A2A plane's `config_validate`
+                // seam rather than a named `crate::a2a::config::validate_agent` call: the pin's
+                // mechanism must match the material it carries, the durations must parse, and no hook
+                // reference may reach onto another plane. Without this the API would accept a
+                // `jws_issuer_key` pin with nothing to verify against, and the operator would read a
+                // registration as protected when it is not. The typed parse below still builds the
+                // object the overlay installs; that config STRUCT leaves core with the plane at the
+                // physical relocation, not at this seam.
+                plane_config_validate(self, name, def)?;
+                serde_json::from_value(def.clone())
+                    .map_err(|e| format!("invalid `agents.{name}` definition: {e}"))
+                    .map(NamedDef::Agent)
+            }
             // With the A2A plane compiled out, an `agents:` definition names a plane this build does
             // not carry — refuse it, exactly as `resolve` refuses an `agents:` section.
             #[cfg(not(feature = "plane-a2a"))]
@@ -386,6 +392,25 @@ impl NamedMapSection {
             NamedMapSection::Tools => None,
             NamedMapSection::Agents => None,
         }
+    }
+}
+
+/// Validate a named-definition write through the OWNING PLANE's
+/// [`config_validate`](crate::plane::registry::PlaneDecl::config_validate) seam, resolved by config
+/// section — so core routes a `tools:`/`agents:` write to the plane's own validator without naming a
+/// `crate::mcp`/`crate::a2a` validate function. A section whose plane declares no validator (none of
+/// the sections that reach this helper) validates vacuously.
+#[cfg(any(feature = "plane-mcp", feature = "plane-a2a"))]
+fn plane_config_validate(
+    section: NamedMapSection,
+    name: &str,
+    def: &serde_json::Value,
+) -> Result<(), String> {
+    match crate::plane::registry::builtin_plane_decl_for_config_section(section.key())
+        .and_then(|d| d.config_validate)
+    {
+        Some(f) => f(name, def),
+        None => Ok(()),
     }
 }
 

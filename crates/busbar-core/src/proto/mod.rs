@@ -958,6 +958,10 @@ pub(crate) const PLANE_DECL: crate::plane::registry::PlaneDecl =
         // state is RAM-only and re-learned from live traffic. So it hydrates nothing and starts no job.
         hydrate: None,
         start: None,
+        // NO NAMED-DEFINITION WRITE GRAMMAR. `pools:` predates the 1.5.3 generic named-map path and
+        // keeps its own richer validation elsewhere, so there is no per-entry document for the admin
+        // write path to validate through this seam.
+        config_validate: None,
         // NOTHING TO CARRY ACROSS A SWAP. The LLM plane holds no engine-owned object that outlives an
         // apply through this seam — its reliability/breaker state rides the `App` fields the data
         // plane reads directly, not reconciled here.

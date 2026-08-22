@@ -309,6 +309,30 @@ pub struct PlaneDecl {
     /// failure, never a warning — so [`crate::boot::start_planes`] propagates it with `?`.
     pub(crate) start: Option<BootHook>,
 
+    /// VALIDATE ONE RAW NAMED-DEFINITION DOCUMENT for this plane's config section — the write-path
+    /// grammar the admin API enforces so a definition the API accepts is exactly one `config.yaml`
+    /// would accept. Handed the entry `name` and its raw definition document, it parses that document
+    /// into the plane's own typed config and applies the plane's VALUE-level rules (an MCP server's
+    /// pin matching its material, an agent's durations parsing, no cross-plane hook reference),
+    /// returning `Ok(())` or the SAME error string boot produces — because the plane's own
+    /// `Deserialize`/boot path reaches the identical function. It is the seam that lets
+    /// [`crate::config::named_map::NamedMapSection::parse_def`] validate a `tools:`/`agents:` write
+    /// without core naming a `crate::mcp`/`crate::a2a` validate function.
+    ///
+    /// `None` for a plane whose section is not a 1.5.3 named-definition map (the LLM plane — `pools:`
+    /// predates the generic path and keeps its own richer validation — and the residual `proto`
+    /// plane, which owns no config section of its own).
+    // Read only through the named-definition write path, which exists only when at least one plane
+    // section (`plane-mcp`/`plane-a2a`) is compiled in; a build with neither never resolves a decl
+    // to call it, so the field is genuinely unread there rather than dead.
+    #[cfg_attr(
+        not(any(feature = "plane-mcp", feature = "plane-a2a")),
+        allow(dead_code)
+    )]
+    #[allow(clippy::type_complexity)]
+    pub(crate) config_validate:
+        Option<fn(name: &str, def: &serde_json::Value) -> Result<(), String>>,
+
     /// CARRY THIS PLANE'S ENGINE-OWNED STATE ACROSS A CONFIG SWAP — the plane half of
     /// [`crate::state::AppHandle::swap`]. Run once per swap, AFTER the next snapshot is fully built
     /// and BEFORE it is published, with the PRIOR and NEXT snapshots each type-erased as `&dyn Any`.
@@ -415,6 +439,23 @@ pub(crate) fn plane_decls() -> &'static [&'static PlaneDecl] {
 #[allow(dead_code)] // the by-key resolver a registered plane's admin/router surface will read
 pub(crate) fn plane_decl_for(key: &str) -> Option<&'static PlaneDecl> {
     plane_decls().iter().copied().find(|d| d.key == key)
+}
+
+/// RESOLVE A BUILT-IN PLANE DECLARATION BY ITS CONFIG SECTION — the neutral bridge the
+/// named-definition write path crosses to reach a plane's [`PlaneDecl::config_validate`] without
+/// naming the plane. Resolves against [`builtin_plane_decls`] rather than the process list for the
+/// same reason [`Plane::decl`] does: the `tools:`/`agents:` sections are the two BUILT-IN plane
+/// sections, so their validator is a built-in fact that must not depend on the composition root
+/// having run (every config unit test would otherwise have to install planes first).
+#[cfg_attr(
+    not(any(feature = "plane-mcp", feature = "plane-a2a")),
+    allow(dead_code)
+)]
+pub(crate) fn builtin_plane_decl_for_config_section(section: &str) -> Option<&'static PlaneDecl> {
+    builtin_plane_decls()
+        .iter()
+        .copied()
+        .find(|d| d.config_section == section)
 }
 
 /// FOLD THE DISPATCH TABLE from the registered plane declarations and the per-plane runtime objects

@@ -127,6 +127,7 @@ pub(crate) const PLANE_DECL: crate::plane::registry::PlaneDecl =
         mount: Some(crate::a2a::receive::mount),
         admin_routes: Some(admin_routes),
         openapi: Some(openapi_fragment),
+        config_validate: Some(a2a_config_validate),
         hydrate: Some(a2a_hydrate),
         start: Some(a2a_start),
         // NOTHING TO CARRY ACROSS A SWAP. The A2A plane's runtime object (`A2aPlane`) is rebuilt from
@@ -135,6 +136,19 @@ pub(crate) const PLANE_DECL: crate::plane::registry::PlaneDecl =
         // outlives an apply for this seam to carry.
         on_swap: None,
     };
+
+/// VALIDATE ONE `agents:` NAMED-DEFINITION DOCUMENT — the A2A plane's half of
+/// [`crate::plane::registry::PlaneDecl::config_validate`]. Parses the raw document into
+/// [`crate::a2a::config::AgentDefCfg`] (`deny_unknown_fields`, refusing a typo'd key HERE exactly as
+/// the file refuses it) and applies the same value rules boot applies through the identical
+/// [`crate::a2a::config::validate_agent`]. Naming `crate::a2a` types HERE is correct: this is the A2A
+/// plane's own module, and it is what lets `config::named_map` validate an `agents:` write without
+/// doing so.
+fn a2a_config_validate(name: &str, def: &serde_json::Value) -> Result<(), String> {
+    let cfg: crate::a2a::config::AgentDefCfg = serde_json::from_value(def.clone())
+        .map_err(|e| format!("invalid `agents.{name}` definition: {e}"))?;
+    crate::a2a::config::validate_agent(name, &cfg)
+}
 
 /// THE A2A RUNTIME OBJECT for this config generation, read through the TYPE-ERASED `plane_slots`
 /// seam ([`crate::state::App::plane_slot`]) and downcast back to [`crate::a2a::plane::A2aPlane`]
