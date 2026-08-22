@@ -173,32 +173,35 @@ extern "C-unwind" fn verify_store(
 ) -> StatusClass {
     unimplemented!("plane_host::verify_store — Phase 2")
 }
+// ── WIRED EGRESS family (fan-egress): the `extern "C-unwind"` seam shims. The recovery, the
+//    catch_unwind, the fail-closed mapping and the real guarded transport all live in
+//    [`super::egress`]; these four are the ABI boundary that forwards into it. ─────────────────────
 extern "C-unwind" fn egress_open(
-    _host: HostCtx,
-    _desc: *const EgressDesc,
-    _out: *mut MaybeUninit<EgressOpen>,
+    host: HostCtx,
+    desc: *const EgressDesc,
+    out: *mut MaybeUninit<EgressOpen>,
 ) -> StatusClass {
-    unimplemented!("plane_host::egress_open — Phase 2")
+    super::egress::egress_open(host, desc, out)
 }
 extern "C-unwind" fn egress_poll(
-    _host: HostCtx,
-    _egress: EgressId,
-    _buf: *mut u8,
-    _buf_cap: usize,
-    _out_written: *mut usize,
+    host: HostCtx,
+    egress: EgressId,
+    buf: *mut u8,
+    buf_cap: usize,
+    out_written: *mut usize,
 ) -> StatusClass {
-    unimplemented!("plane_host::egress_poll — Phase 2")
+    super::egress::egress_poll(host, egress, buf, buf_cap, out_written)
 }
 extern "C-unwind" fn egress_write(
-    _host: HostCtx,
-    _egress: EgressId,
-    _buf: *const u8,
-    _len: usize,
+    host: HostCtx,
+    egress: EgressId,
+    buf: *const u8,
+    len: usize,
 ) -> StatusClass {
-    unimplemented!("plane_host::egress_write — Phase 2")
+    super::egress::egress_write(host, egress, buf, len)
 }
-extern "C-unwind" fn egress_close(_host: HostCtx, _egress: EgressId) -> StatusClass {
-    unimplemented!("plane_host::egress_close — Phase 2")
+extern "C-unwind" fn egress_close(host: HostCtx, egress: EgressId) -> StatusClass {
+    super::egress::egress_close(host, egress)
 }
 extern "C-unwind" fn journal_append(
     _host: HostCtx,
