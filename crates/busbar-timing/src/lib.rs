@@ -358,8 +358,7 @@ mod imp {
         if !enabled() {
             return;
         }
-        let snapshot =
-            LOCAL.with(|a| a.lock().unwrap_or_else(|p| p.into_inner()).clone());
+        let snapshot = LOCAL.with(|a| a.lock().unwrap_or_else(|p| p.into_inner()).clone());
         print_table("thread", &snapshot);
     }
 
@@ -371,12 +370,8 @@ mod imp {
             return;
         }
         let mut merged: ThreadRegistry = HashMap::new();
-        let handles: Vec<Arc<Mutex<ThreadRegistry>>> = {
-            threads()
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .clone()
-        };
+        let handles: Vec<Arc<Mutex<ThreadRegistry>>> =
+            { threads().lock().unwrap_or_else(|p| p.into_inner()).clone() };
         for h in handles {
             let g = h.lock().unwrap_or_else(|p| p.into_inner());
             for (name, stat) in g.iter() {
@@ -526,7 +521,11 @@ mod zero_cost_when_off {
 
     #[test]
     fn timer_off_is_zero_sized() {
-        assert_eq!(core::mem::size_of::<Timer>(), 0, "feature-off Timer must be a ZST");
+        assert_eq!(
+            core::mem::size_of::<Timer>(),
+            0,
+            "feature-off Timer must be a ZST"
+        );
     }
 
     #[test]
@@ -539,7 +538,11 @@ mod zero_cost_when_off {
     #[test]
     fn instrumented_matches_bare() {
         for x in [0u64, 1, 42, u64::MAX, 1 << 40] {
-            assert_eq!(instrumented(x), bare(x), "instrumentation changed the result");
+            assert_eq!(
+                instrumented(x),
+                bare(x),
+                "instrumentation changed the result"
+            );
         }
     }
 

@@ -45,7 +45,12 @@ fn old_lookup(runtime: &HashMap<String, Option<Creds>>, pool: &str, default: Cre
 
 /// The post-fix fast path: no pool overrides, so return the default with a `Copy` read.
 #[inline]
-fn new_flag_copy(any_override: bool, runtime: &HashMap<String, Option<Creds>>, pool: &str, default: Creds) -> Creds {
+fn new_flag_copy(
+    any_override: bool,
+    runtime: &HashMap<String, Option<Creds>>,
+    pool: &str,
+    default: Creds,
+) -> Creds {
     if !any_override {
         return default;
     }
@@ -64,7 +69,11 @@ fn bench(c: &mut Criterion) {
         b.iter(|| {
             let pool = &names[i % names.len()];
             i = i.wrapping_add(1);
-            black_box(old_lookup(black_box(&runtime), black_box(pool), black_box(default)))
+            black_box(old_lookup(
+                black_box(&runtime),
+                black_box(pool),
+                black_box(default),
+            ))
         })
     });
 
@@ -74,7 +83,12 @@ fn bench(c: &mut Criterion) {
         b.iter(|| {
             let pool = &names[i % names.len()];
             i = i.wrapping_add(1);
-            black_box(new_flag_copy(black_box(false), black_box(&runtime), black_box(pool), black_box(default)))
+            black_box(new_flag_copy(
+                black_box(false),
+                black_box(&runtime),
+                black_box(pool),
+                black_box(default),
+            ))
         })
     });
 
@@ -87,7 +101,12 @@ fn bench(c: &mut Criterion) {
         b.iter(|| {
             let pool = &names[i % names.len()];
             i = i.wrapping_add(1);
-            black_box(new_flag_copy(black_box(true), black_box(&runtime), black_box(pool), black_box(pt_default)))
+            black_box(new_flag_copy(
+                black_box(true),
+                black_box(&runtime),
+                black_box(pool),
+                black_box(pt_default),
+            ))
         })
     });
 }

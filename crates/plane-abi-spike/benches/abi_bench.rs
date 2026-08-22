@@ -141,26 +141,51 @@ fn manual_report(dl: Option<DlGovernAdmit>) {
     eprintln!("(c) vec-returning : {c_ns:8.3} ns/call");
     match d_ns {
         Some(d) => eprintln!("(d) dlopen PLT    : {d:8.3} ns/call"),
-        None => eprintln!("(d) dlopen PLT    :   (cdylib not found — build plane-abi-spike-plugin)"),
+        None => {
+            eprintln!("(d) dlopen PLT    :   (cdylib not found — build plane-abi-spike-plugin)")
+        }
     }
     eprintln!("---------------------------------------------------------------------");
-    eprintln!("delta (b)-(a) vtable overhead : {:+8.3} ns   (budget: < 1000 ns)", b_ns - a_ns);
+    eprintln!(
+        "delta (b)-(a) vtable overhead : {:+8.3} ns   (budget: < 1000 ns)",
+        b_ns - a_ns
+    );
     if let Some(d) = d_ns {
-        eprintln!("delta (d)-(a) dlopen overhead : {:+8.3} ns   (budget: < 1000 ns)", d - a_ns);
+        eprintln!(
+            "delta (d)-(a) dlopen overhead : {:+8.3} ns   (budget: < 1000 ns)",
+            d - a_ns
+        );
     }
-    eprintln!("delta (c)-(a) anti-pattern    : {:+8.3} ns   ({:.1}x the direct call)", c_ns - a_ns, c_ns / a_ns);
+    eprintln!(
+        "delta (c)-(a) anti-pattern    : {:+8.3} ns   ({:.1}x the direct call)",
+        c_ns - a_ns,
+        c_ns / a_ns
+    );
     eprintln!("---------------------------------------------------------------------");
     eprintln!("ALLOC-GATE ({M} calls each):");
-    eprintln!("  (a) direct        allocs = {a_alloc}   {}", if a_alloc == 0 { "PASS (0)" } else { "FAIL" });
-    eprintln!("  (b) vtable fnptr  allocs = {b_alloc}   {}", if b_alloc == 0 { "PASS (0)" } else { "FAIL" });
-    eprintln!("  (c) vec-returning allocs = {c_alloc}   ({} per call)", c_alloc as f64 / M as f64);
+    eprintln!(
+        "  (a) direct        allocs = {a_alloc}   {}",
+        if a_alloc == 0 { "PASS (0)" } else { "FAIL" }
+    );
+    eprintln!(
+        "  (b) vtable fnptr  allocs = {b_alloc}   {}",
+        if b_alloc == 0 { "PASS (0)" } else { "FAIL" }
+    );
+    eprintln!(
+        "  (c) vec-returning allocs = {c_alloc}   ({} per call)",
+        c_alloc as f64 / M as f64
+    );
     eprintln!("---------------------------------------------------------------------");
     let vtable_ok = (b_ns - a_ns) < 1000.0;
     eprintln!(
         "VERDICT: vtable overhead {:+.3} ns is {} the 1µs budget by {:.0}x",
         b_ns - a_ns,
         if vtable_ok { "UNDER" } else { "OVER" },
-        if (b_ns - a_ns).abs() > 0.0 { 1000.0 / (b_ns - a_ns).abs() } else { f64::INFINITY }
+        if (b_ns - a_ns).abs() > 0.0 {
+            1000.0 / (b_ns - a_ns).abs()
+        } else {
+            f64::INFINITY
+        }
     );
     eprintln!("=====================================================================\n");
 }

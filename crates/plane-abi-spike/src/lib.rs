@@ -364,7 +364,10 @@ mod tests {
             black_box(govern_admit_direct(black_box(&g)));
         }
         let a_allocs = CountingAlloc::count();
-        assert_eq!(a_allocs, 0, "direct POD call must allocate 0, saw {a_allocs}");
+        assert_eq!(
+            a_allocs, 0,
+            "direct POD call must allocate 0, saw {a_allocs}"
+        );
 
         // (b) vtable fn-pointer — zero allocs.
         let vt = &PlaneHostVtable::IN_CORE;
@@ -373,7 +376,10 @@ mod tests {
             black_box((vt.govern_admit)(black_box(&*g as *const Facts)));
         }
         let b_allocs = CountingAlloc::count();
-        assert_eq!(b_allocs, 0, "vtable POD call must allocate 0, saw {b_allocs}");
+        assert_eq!(
+            b_allocs, 0,
+            "vtable POD call must allocate 0, saw {b_allocs}"
+        );
 
         // (c) vec-returning — exactly one alloc per call (the returned Vec).
         CountingAlloc::reset();

@@ -212,7 +212,8 @@ extern "C-unwind" fn govern_admit_reason(
             Ok(()) => Decision::Admit,
             Err(blocked) => {
                 // SAFETY: `reason_buf`/`reason_cap` are a writable range (or null) per the ABI.
-                let written = unsafe { write_reason(reason_buf, reason_cap, blocked.reason.as_bytes()) };
+                let written =
+                    unsafe { write_reason(reason_buf, reason_cap, blocked.reason.as_bytes()) };
                 // SAFETY: as above.
                 unsafe { write_gov_refusal(out, blocked.retry_after_secs, written) };
                 Decision::Deny

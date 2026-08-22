@@ -431,11 +431,8 @@ mod tests {
 
     fn gov() -> Arc<crate::governance::GovState> {
         Arc::new(
-            crate::governance::GovState::new(
-                Arc::new(crate::governance::MemoryStore::new()),
-                None,
-            )
-            .expect("memory store constructs"),
+            crate::governance::GovState::new(Arc::new(crate::governance::MemoryStore::new()), None)
+                .expect("memory store constructs"),
         )
     }
 
@@ -557,8 +554,16 @@ mod tests {
                 .cost(make_cost())
                 .build();
             with_dispatch_scope(&app, |host, vt| {
-                let facts =
-                    Facts::with_attribution(0, 0, 0, 0, 0, pool.as_bytes(), key.id.as_bytes(), facts_group);
+                let facts = Facts::with_attribution(
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    pool.as_bytes(),
+                    key.id.as_bytes(),
+                    facts_group,
+                );
                 let mut buf = [0u8; 512];
                 let mut out = MaybeUninit::<GovRefusal>::uninit();
                 let decision = (vt.govern_admit_reason.unwrap())(
@@ -571,7 +576,10 @@ mod tests {
                 assert_eq!(decision, Decision::Deny, "a blocked limit denies");
                 // SAFETY: the host always initializes `out`.
                 let refusal = unsafe { out.assume_init() };
-                assert!(refusal.reason_len <= buf.len(), "written length fits the buffer");
+                assert!(
+                    refusal.reason_len <= buf.len(),
+                    "written length fits the buffer"
+                );
                 let actual = String::from_utf8_lossy(&buf[..refusal.reason_len]).into_owned();
                 assert_eq!(
                     actual, expected,
@@ -583,7 +591,12 @@ mod tests {
         // MissingGroup: the key names a group the cost model does not have.
         faithful_case(&|| group_cost("team", 5), Some("ghost"), Some(b"ghost"), 0);
         // Disabled: the key's group is frozen (`enabled: false`).
-        faithful_case(&|| disabled_group_cost("frozen"), Some("frozen"), Some(b"frozen"), 0);
+        faithful_case(
+            &|| disabled_group_cost("frozen"),
+            Some("frozen"),
+            Some(b"frozen"),
+            0,
+        );
         // Limit: a 5c total cap at 1c/request → the 6th request blocks after draining 5.
         faithful_case(&|| group_cost("team", 5), Some("team"), Some(b"team"), 5);
     }
@@ -610,10 +623,18 @@ mod tests {
             );
             assert_eq!(decision, Decision::Admit, "under the cap → admit");
             // SAFETY: the host always initializes `out`.
-            assert_eq!(unsafe { out.assume_init() }.reason_len, 0, "an admit renders no reason");
+            assert_eq!(
+                unsafe { out.assume_init() }.reason_len,
+                0,
+                "an admit renders no reason"
+            );
             // SAFETY: live HostState from `with_dispatch_scope`.
             let state: &crate::plane_host::HostState = unsafe { crate::plane_host::recover(host) };
-            assert_eq!(state.scope.registered(), 1, "the RAII grant is registered in the arena");
+            assert_eq!(
+                state.scope.registered(),
+                1,
+                "the RAII grant is registered in the arena"
+            );
         });
     }
 
@@ -657,9 +678,15 @@ mod tests {
         });
         // The two accruals coalesced into ONE cell (same attribution key) with summed counts.
         let (cells, counts) = gov.pending_metering_totals();
-        assert_eq!(cells, 1, "direct + host recorded the SAME (key_id, model, provider) cell");
+        assert_eq!(
+            cells, 1,
+            "direct + host recorded the SAME (key_id, model, provider) cell"
+        );
         assert_eq!(counts.requests, 2, "both accruals counted");
-        assert_eq!(counts.tokens_input, 200, "100 direct + 100 host input tokens");
+        assert_eq!(
+            counts.tokens_input, 200,
+            "100 direct + 100 host input tokens"
+        );
     }
 
     /// A [`Usage`] WITHOUT the attribution tail (`Usage::charge`) still records against the synthetic

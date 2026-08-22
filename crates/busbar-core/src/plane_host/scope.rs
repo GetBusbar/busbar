@@ -27,7 +27,9 @@
 //! killing subprocesses — no matter how the dispatch future ends. RAII across the FFI seam, scoped to
 //! exactly what core controls.
 
-use busbar_plugin::hot::{AdmissionId, EgressFailClass, EgressId, PipeId, Signal, StatusClass, VerifyLease};
+use busbar_plugin::hot::{
+    AdmissionId, EgressFailClass, EgressId, PipeId, Signal, StatusClass, VerifyLease,
+};
 use std::sync::Mutex;
 
 /// The neutral FAILURE detail the host stashes when an `egress_open` fails, so the plane can read it
@@ -160,7 +162,10 @@ impl DispatchScope {
     /// TAKE (and clear) the stashed egress fault, or `None` when none is pending. Consuming so a stale
     /// fault cannot be re-read against a later, unrelated open.
     pub fn take_egress_fault(&self) -> Option<EgressFaultDetail> {
-        self.egress_fault.lock().unwrap_or_else(|e| e.into_inner()).take()
+        self.egress_fault
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
     }
 
     /// Poison-recovering lock: a panic mid-register must not wedge the arena for the reclaim path, so
@@ -214,9 +219,10 @@ impl DispatchScope {
         }
         let entry = {
             let mut reg = self.lock();
-            let pos = reg.entries.iter().position(|e| {
-                e.raw == id.0 && matches!(e.res, Resource::Admission(_))
-            })?;
+            let pos = reg
+                .entries
+                .iter()
+                .position(|e| e.raw == id.0 && matches!(e.res, Resource::Admission(_)))?;
             reg.entries.remove(pos)
         };
         match entry.res {
@@ -235,7 +241,11 @@ impl DispatchScope {
     /// [`handoff_settling_to`](Self::handoff_settling_to)). The monotonic `next` counter is advanced
     /// past `raw` so a later mint in this arena cannot collide with the adopted id. Returns the
     /// [`AdmissionId`] the entry now answers to (== `AdmissionId(raw)`).
-    pub fn adopt_settling_admission(&self, raw: u64, guard: Box<dyn SettleAdmission>) -> AdmissionId {
+    pub fn adopt_settling_admission(
+        &self,
+        raw: u64,
+        guard: Box<dyn SettleAdmission>,
+    ) -> AdmissionId {
         let mut reg = self.lock();
         if raw > reg.next {
             reg.next = raw;
@@ -440,7 +450,11 @@ impl DurableScope {
 
     /// Adopt a settling admission under a caller-supplied `id` — the receiving half of
     /// [`DispatchScope::handoff_settling_to`], preserving the id across the arena move.
-    pub(super) fn adopt_settling(&self, id: AdmissionId, guard: Box<dyn SettleAdmission>) -> AdmissionId {
+    pub(super) fn adopt_settling(
+        &self,
+        id: AdmissionId,
+        guard: Box<dyn SettleAdmission>,
+    ) -> AdmissionId {
         self.arena.adopt_settling_admission(id.0, guard)
     }
 
@@ -554,7 +568,11 @@ mod tests {
         dur.handoff(Box::new(DropCounter(count.clone())));
         assert_eq!(dur.registered(), 2);
         dur.reclaim_all();
-        assert_eq!(count.load(Ordering::SeqCst), 2, "both durable handles reclaimed");
+        assert_eq!(
+            count.load(Ordering::SeqCst),
+            2,
+            "both durable handles reclaimed"
+        );
         assert_eq!(dur.registered(), 0);
         // Idempotent: the Drop after an explicit reclaim is a no-op.
         dur.reclaim_all();
@@ -616,10 +634,18 @@ mod tests {
             }));
             assert!(!id.is_none(), "a settling handoff yields a live id");
             assert_eq!(dur.registered(), 1);
-            assert_eq!(released.load(Ordering::SeqCst), 0, "not released while the scope is live");
+            assert_eq!(
+                released.load(Ordering::SeqCst),
+                0,
+                "not released while the scope is live"
+            );
         }
         assert_eq!(settled.load(Ordering::SeqCst), 0, "never settled");
-        assert_eq!(released.load(Ordering::SeqCst), 1, "the unsettled probe released on drop");
+        assert_eq!(
+            released.load(Ordering::SeqCst),
+            1,
+            "the unsettled probe released on drop"
+        );
     }
 
     /// `DurableScope::settle` records the outcome exactly once and makes the drop a no-op; a replay is
@@ -641,7 +667,11 @@ mod tests {
             // Replay: the id was consumed → Gone (None).
             assert_eq!(dur.settle(id, &sig), None);
         }
-        assert_eq!(released.load(Ordering::SeqCst), 0, "a settled probe does not also release");
+        assert_eq!(
+            released.load(Ordering::SeqCst),
+            0,
+            "a settled probe does not also release"
+        );
     }
 
     /// The §4 handoff PRIMITIVE: a settling admission registered in a per-request `DispatchScope`
@@ -660,18 +690,28 @@ mod tests {
                 done: false,
             }));
             assert_eq!(disp.registered(), 1);
-            let moved = disp.handoff_settling_to(id, &dur).expect("the admission hands off");
+            let moved = disp
+                .handoff_settling_to(id, &dur)
+                .expect("the admission hands off");
             assert_eq!(moved, id, "the id is preserved across the arena move");
             assert_eq!(disp.registered(), 0, "the dispatch arena no longer owns it");
             assert_eq!(dur.registered(), 1, "the durable scope now owns it");
             // The dispatch arena drops HERE (end of block) — the probe must NOT release, it is durable.
             id
         };
-        assert_eq!(released.load(Ordering::SeqCst), 0, "the dispatch-drop did not release the moved probe");
+        assert_eq!(
+            released.load(Ordering::SeqCst),
+            0,
+            "the dispatch-drop did not release the moved probe"
+        );
         // A stale handoff of the same id is None.
         assert!(DispatchScope::new().handoff_settling_to(id, &dur).is_none());
         drop(dur);
-        assert_eq!(released.load(Ordering::SeqCst), 1, "the durable scope's drop released it");
+        assert_eq!(
+            released.load(Ordering::SeqCst),
+            1,
+            "the durable scope's drop released it"
+        );
         assert_eq!(settled.load(Ordering::SeqCst), 0);
     }
 

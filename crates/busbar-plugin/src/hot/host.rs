@@ -23,10 +23,10 @@
 
 use super::pod::{
     AdmissionId, AdmitRefusal, ApprovalQuery, AuthQuery, AuthResolved, CallerRef, ContentChunk,
-    CounterpartyRef, Decision, EgressDesc, EgressFault, EgressId, EgressOpen, Facts, FramingDesc, GateDecision,
-    GovRefusal, JournalQuery, Key, MeterOutcome, MetricSample, OpDesc, OpResult, PipeId, Seq, Signal,
-    StatusClass, TargetRef, TrustVerdict, Usage, VerifyDecision, VerifyLease, VerifyQuery,
-    VerifyVerdict, WorkHandleDesc, WorkHandleId,
+    CounterpartyRef, Decision, EgressDesc, EgressFault, EgressId, EgressOpen, Facts, FramingDesc,
+    GateDecision, GovRefusal, JournalQuery, Key, MeterOutcome, MetricSample, OpDesc, OpResult,
+    PipeId, Seq, Signal, StatusClass, TargetRef, TrustVerdict, Usage, VerifyDecision, VerifyLease,
+    VerifyQuery, VerifyVerdict, WorkHandleDesc, WorkHandleId,
 };
 use crate::AbiPreamble;
 use core::mem::MaybeUninit;
@@ -69,8 +69,11 @@ pub type GovernAdmitReasonFn = extern "C-unwind" fn(
     out: *mut MaybeUninit<GovRefusal>,
 ) -> Decision;
 /// Settle a breaker admission with the observed outcome signal.
-pub type BreakerSettleFn =
-    extern "C-unwind" fn(host: HostCtx, admission: AdmissionId, signal: *const Signal) -> StatusClass;
+pub type BreakerSettleFn = extern "C-unwind" fn(
+    host: HostCtx,
+    admission: AdmissionId,
+    signal: *const Signal,
+) -> StatusClass;
 /// Append content-suffix bytes to a scope's hash-chained journal; the host frames the prelude.
 pub type JournalAppendFn = extern "C-unwind" fn(
     host: HostCtx,
@@ -90,7 +93,8 @@ pub type DriftQuarantineFn = extern "C-unwind" fn(host: HostCtx, key: *const Key
 /// Redeem a one-time approval / single-use nonce for a counterparty.
 pub type ApprovalRedeemFn = extern "C-unwind" fn(host: HostCtx, key: *const Key) -> StatusClass;
 /// Emit a plane metric sample (label passthrough).
-pub type MetricsEmitFn = extern "C-unwind" fn(host: HostCtx, sample: *const MetricSample) -> StatusClass;
+pub type MetricsEmitFn =
+    extern "C-unwind" fn(host: HostCtx, sample: *const MetricSample) -> StatusClass;
 /// The host clock, in Unix nanoseconds (so a plane takes no ambient clock).
 pub type ClockNowFn = extern "C-unwind" fn(host: HostCtx) -> u64;
 
@@ -124,8 +128,12 @@ pub type EgressPollFn = extern "C-unwind" fn(
     out_written: *mut usize,
 ) -> StatusClass;
 /// Write bytes to a governed egress.
-pub type EgressWriteFn =
-    extern "C-unwind" fn(host: HostCtx, egress: EgressId, buf: *const u8, len: usize) -> StatusClass;
+pub type EgressWriteFn = extern "C-unwind" fn(
+    host: HostCtx,
+    egress: EgressId,
+    buf: *const u8,
+    len: usize,
+) -> StatusClass;
 /// Close a governed egress (idempotent).
 pub type EgressCloseFn = extern "C-unwind" fn(host: HostCtx, egress: EgressId) -> StatusClass;
 /// Retrieve the neutral FAILURE detail of the last failed `egress_open` in this dispatch scope: writes
@@ -168,11 +176,17 @@ pub type JournalReadFn = extern "C-unwind" fn(
     out_written: *mut usize,
 ) -> StatusClass;
 /// Route an opaque sub-request through the SAME router (depth-bounded); writes an [`OpResult`] on Ok.
-pub type NestedDispatchFn =
-    extern "C-unwind" fn(host: HostCtx, desc: *const OpDesc, out: *mut MaybeUninit<OpResult>) -> StatusClass;
+pub type NestedDispatchFn = extern "C-unwind" fn(
+    host: HostCtx,
+    desc: *const OpDesc,
+    out: *mut MaybeUninit<OpResult>,
+) -> StatusClass;
 /// Resolve a credential REF to a host-side reference (NEVER plaintext); writes an [`AuthResolved`].
-pub type AuthResolveFn =
-    extern "C-unwind" fn(host: HostCtx, query: *const AuthQuery, out: *mut MaybeUninit<AuthResolved>) -> StatusClass;
+pub type AuthResolveFn = extern "C-unwind" fn(
+    host: HostCtx,
+    query: *const AuthQuery,
+    out: *mut MaybeUninit<AuthResolved>,
+) -> StatusClass;
 /// Evaluate the stateful admission-time trust of a counterparty (sightings/approvals/drift live
 /// host-side); returns a [`TrustVerdict`] BY VALUE. The trust-family's stateful evaluator, distinct
 /// from the `verify_*` digest cache.
@@ -184,7 +198,8 @@ pub type EntitlementCheckFn =
     extern "C-unwind" fn(host: HostCtx, caller: *const CallerRef, target: *const TargetRef) -> bool;
 /// Feed one content chunk to the streaming content-governance gate; returns a [`GateDecision`] BY
 /// VALUE (Continue / Block). The host owns the gate policy; the plane scans incrementally.
-pub type GateScanFn = extern "C-unwind" fn(host: HostCtx, chunk: *const ContentChunk) -> GateDecision;
+pub type GateScanFn =
+    extern "C-unwind" fn(host: HostCtx, chunk: *const ContentChunk) -> GateDecision;
 /// The STATELESS verify-freshness DECISION over a [`VerifyQuery`] (`last_checked_ms` + `ttl_ms` +
 /// `now_ms`): returns [`VerifyDecision::Fresh`] (reuse the snapshot) or [`VerifyDecision::Stale`]
 /// (re-verify), reproducing `reverify::due`'s arithmetic EXACTLY. The host owns NO freshness cache
@@ -542,7 +557,10 @@ pub mod stub {
         unimplemented!("PlaneHost::approval_redeem — stub")
     }
     /// Stub: see module docs.
-    pub extern "C-unwind" fn metrics_emit(_host: HostCtx, _sample: *const MetricSample) -> StatusClass {
+    pub extern "C-unwind" fn metrics_emit(
+        _host: HostCtx,
+        _sample: *const MetricSample,
+    ) -> StatusClass {
         unimplemented!("PlaneHost::metrics_emit — stub")
     }
     /// Stub: see module docs.
@@ -573,7 +591,10 @@ pub mod stub {
         unimplemented!("PlaneHost::entitlement_check — stub")
     }
     /// Stub: see module docs.
-    pub extern "C-unwind" fn gate_scan(_host: HostCtx, _chunk: *const ContentChunk) -> GateDecision {
+    pub extern "C-unwind" fn gate_scan(
+        _host: HostCtx,
+        _chunk: *const ContentChunk,
+    ) -> GateDecision {
         unimplemented!("PlaneHost::gate_scan — stub")
     }
     /// Stub: see module docs.

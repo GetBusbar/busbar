@@ -1533,11 +1533,13 @@ enum HopOutcome {
 fn classify_hop(refusal: Option<&RelayRefusal>) -> HopOutcome {
     match refusal {
         None | Some(RelayRefusal::BackendError { .. }) => HopOutcome::Success,
-        Some(RelayRefusal::Transport { .. }) => HopOutcome::Failure(crate::breaker::CanonicalSignal {
-            class: crate::breaker::StatusClass::Network,
-            provider_signal: None,
-            retry_after: None,
-        }),
+        Some(RelayRefusal::Transport { .. }) => {
+            HopOutcome::Failure(crate::breaker::CanonicalSignal {
+                class: crate::breaker::StatusClass::Network,
+                provider_signal: None,
+                retry_after: None,
+            })
+        }
         Some(RelayRefusal::Status { status, .. }) => {
             HopOutcome::Failure(crate::breaker::normalize_raw_error(
                 &crate::breaker::RawUpstreamError::from_status(*status),

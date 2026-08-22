@@ -123,8 +123,15 @@ fn subprocess_pipe_echoes_bytes_through_cat() {
         // SAFETY: Ok ⇒ initialized.
         let open = unsafe { out.assume_init() };
         assert!(!open.pipe.is_none(), "a real PipeId is handed back");
-        assert!(open.id.is_none(), "a subprocess is a duplex pipe, not a one-shot egress");
-        assert_eq!(scope.registered(), 1, "open registers exactly one arena closer");
+        assert!(
+            open.id.is_none(),
+            "a subprocess is a duplex pipe, not a one-shot egress"
+        );
+        assert_eq!(
+            scope.registered(),
+            1,
+            "open registers exactly one arena closer"
+        );
 
         // WRITE → the child's stdin; READ ← its stdout. cat echoes byte for byte.
         let payload = b"ping-through-the-duplex\n";
@@ -133,7 +140,11 @@ fn subprocess_pipe_echoes_bytes_through_cat() {
             StatusClass::Ok
         );
         let echoed = read_at_least(vt, host, open.pipe, payload.len());
-        assert_eq!(&echoed[..payload.len()], payload, "the duplex echoed the bytes verbatim");
+        assert_eq!(
+            &echoed[..payload.len()],
+            payload,
+            "the duplex echoed the bytes verbatim"
+        );
 
         // A write to an unknown pipe is Gone.
         assert_eq!(

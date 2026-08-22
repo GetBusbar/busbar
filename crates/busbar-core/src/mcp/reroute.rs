@@ -446,8 +446,12 @@ impl PoolRoute {
         // runner can record its observed outcome against the same `(key, lane)` cell through the host
         // seam, and only an UNSETTLED probe releases when the durable scope drops at task end. This is
         // the §4 handoff — the probe's lifetime re-homes from the request future to the task's.
-        let settling =
-            crate::plane_host::breaker::settling_admission(Arc::clone(breakers), pool_key, lane, admission);
+        let settling = crate::plane_host::breaker::settling_admission(
+            Arc::clone(breakers),
+            pool_key,
+            lane,
+            admission,
+        );
         let (durable, admission_id) =
             crate::plane_host::DurableScope::with_settling_handoff(settling);
         Some((member.auth?, cell, durable, admission_id, member.name))

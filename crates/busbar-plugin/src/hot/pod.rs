@@ -1342,7 +1342,12 @@ mod tests {
         // The sized-struct discipline: `size` at offset 0, `version` at offset 4, on every struct.
         macro_rules! assert_preamble {
             ($t:ty) => {{
-                assert_eq!(core::mem::offset_of!($t, size), 0, "size@0 on {}", stringify!($t));
+                assert_eq!(
+                    core::mem::offset_of!($t, size),
+                    0,
+                    "size@0 on {}",
+                    stringify!($t)
+                );
                 assert_eq!(
                     core::mem::offset_of!($t, version),
                     4,

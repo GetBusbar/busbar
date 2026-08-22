@@ -336,12 +336,14 @@ pub(super) extern "C-unwind" fn breaker_admit(host: HostCtx, key: *const Key) ->
         };
         let breakers = Arc::clone(&state.app.plane_breakers);
         match breakers.admit(&pool, lane) {
-            Ok(admission) => state.scope.register_settling_admission(Box::new(BreakerAdmission {
-                breakers: Arc::clone(&breakers),
-                key: pool,
-                lane,
-                _admission: admission,
-            })),
+            Ok(admission) => state
+                .scope
+                .register_settling_admission(Box::new(BreakerAdmission {
+                    breakers: Arc::clone(&breakers),
+                    key: pool,
+                    lane,
+                    _admission: admission,
+                })),
             // Unavailable (Open / probe-in-flight / dead / budget) → refuse with the NONE sentinel.
             Err(_unavailable) => AdmissionId::NONE,
         }
@@ -375,7 +377,11 @@ fn classify_unavailable(u: &crate::store::Unavailable, now: u64) -> (Unavailabil
 ///
 /// # Safety
 /// `out`, when non-null, is a writable, aligned `MaybeUninit<AdmitRefusal>` for the call.
-unsafe fn write_refusal(out: *mut MaybeUninit<AdmitRefusal>, reason: Unavailability, retry_after_secs: u64) {
+unsafe fn write_refusal(
+    out: *mut MaybeUninit<AdmitRefusal>,
+    reason: Unavailability,
+    retry_after_secs: u64,
+) {
     let refusal = AdmitRefusal {
         size: core::mem::size_of::<AdmitRefusal>() as u32,
         version: busbar_plugin::hot::POD_VERSION,
@@ -413,12 +419,14 @@ pub(super) extern "C-unwind" fn breaker_admit_reason(
         };
         let breakers = Arc::clone(&state.app.plane_breakers);
         match breakers.admit(&pool, lane) {
-            Ok(admission) => state.scope.register_settling_admission(Box::new(BreakerAdmission {
-                breakers: Arc::clone(&breakers),
-                key: pool,
-                lane,
-                _admission: admission,
-            })),
+            Ok(admission) => state
+                .scope
+                .register_settling_admission(Box::new(BreakerAdmission {
+                    breakers: Arc::clone(&breakers),
+                    key: pool,
+                    lane,
+                    _admission: admission,
+                })),
             Err(unavailable) => {
                 let (reason, retry) = classify_unavailable(&unavailable, crate::store::now());
                 // SAFETY: as above.
@@ -462,7 +470,7 @@ mod tests {
     use crate::plane_host::{recover, with_dispatch_scope, HostState};
     use crate::store::BreakerState;
     use busbar_plugin::hot::host::{HostCtx, PlaneHostVtable};
-    use busbar_plugin::hot::{POD_VERSION, Signal};
+    use busbar_plugin::hot::{Signal, POD_VERSION};
 
     const POOL: &[u8] = b"tool:fs";
     const POOL_STR: &str = "tool:fs";
@@ -547,7 +555,10 @@ mod tests {
         with_dispatch_scope(&app, |host, vt| {
             let k = key(0);
             let id = (vt.breaker_admit.unwrap())(host, &k as *const Key);
-            assert!(!id.is_none(), "admit must win the probe and return a live id");
+            assert!(
+                !id.is_none(),
+                "admit must win the probe and return a live id"
+            );
             assert_eq!(
                 app.plane_breakers.state(POOL_STR),
                 BreakerState::HalfOpen,
@@ -624,8 +635,9 @@ mod tests {
                 app: &app,
                 scope: &disp,
             };
-            let host: HostCtx =
-                (&state as *const HostState).cast_mut().cast::<std::os::raw::c_void>();
+            let host: HostCtx = (&state as *const HostState)
+                .cast_mut()
+                .cast::<std::os::raw::c_void>();
             let k = key(0);
             let id = breaker_admit(host, &k as *const Key);
             assert!(!id.is_none(), "admit wins the half-open probe");
@@ -647,7 +659,11 @@ mod tests {
         let class = route.with_host(|host, vt| {
             (vt.breaker_settle.unwrap())(host, route.admission(), &ok as *const Signal)
         });
-        assert_eq!(class, StatusClass::Ok, "the durable admission settles through the host seam");
+        assert_eq!(
+            class,
+            StatusClass::Ok,
+            "the durable admission settles through the host seam"
+        );
         assert_eq!(
             app.plane_breakers.state(POOL_STR),
             BreakerState::Closed,
@@ -673,15 +689,25 @@ mod tests {
             assert!(id.is_none(), "an Open cell refuses");
             // SAFETY: the host always initializes `out`.
             let refusal = unsafe { out.assume_init() };
-            assert_eq!(refusal.reason, Unavailability::Open, "the fine reason survives the boundary");
-            assert!(refusal.retry_after_secs > 0, "an Open cell carries its known recovery floor");
+            assert_eq!(
+                refusal.reason,
+                Unavailability::Open,
+                "the fine reason survives the boundary"
+            );
+            assert!(
+                refusal.retry_after_secs > 0,
+                "an Open cell carries its known recovery floor"
+            );
 
             // A null key is not an availability fact → Unspecified, still refused.
             let mut out2 = MaybeUninit::<AdmitRefusal>::uninit();
             let id2 = admit_reason(host, core::ptr::null(), std::ptr::from_mut(&mut out2));
             assert!(id2.is_none());
             // SAFETY: initialized up front.
-            assert_eq!(unsafe { out2.assume_init() }.reason, Unavailability::Unspecified);
+            assert_eq!(
+                unsafe { out2.assume_init() }.reason,
+                Unavailability::Unspecified
+            );
         });
     }
 
@@ -693,13 +719,24 @@ mod tests {
         with_dispatch_scope(&app, |host, vt| {
             let k = key(0);
             let mut out = MaybeUninit::<AdmitRefusal>::uninit();
-            let id = (vt.breaker_admit_reason.unwrap())(host, &k as *const Key, std::ptr::from_mut(&mut out));
+            let id = (vt.breaker_admit_reason.unwrap())(
+                host,
+                &k as *const Key,
+                std::ptr::from_mut(&mut out),
+            );
             assert!(!id.is_none(), "a Closed-ready cell admits");
             // SAFETY: initialized up front; a live id leaves it Unspecified.
-            assert_eq!(unsafe { out.assume_init() }.reason, Unavailability::Unspecified);
+            assert_eq!(
+                unsafe { out.assume_init() }.reason,
+                Unavailability::Unspecified
+            );
             // SAFETY: live HostState from `with_dispatch_scope`.
             let state: &HostState = unsafe { recover(host) };
-            assert_eq!(state.scope.registered(), 1, "the settle-capable admission is registered");
+            assert_eq!(
+                state.scope.registered(),
+                1,
+                "the settle-capable admission is registered"
+            );
         });
     }
 
@@ -762,15 +799,51 @@ mod tests {
     fn failure_signal_round_trips_through_classify() {
         use crate::breaker::StatusClass as BC;
         let cases = [
-            CanonicalSignal { class: BC::RateLimit, provider_signal: Some("slow_down".to_string()), retry_after: Some(30) },
-            CanonicalSignal { class: BC::Overloaded, provider_signal: None, retry_after: Some(0) },
-            CanonicalSignal { class: BC::ServerError, provider_signal: None, retry_after: None },
-            CanonicalSignal { class: BC::Timeout, provider_signal: None, retry_after: None },
-            CanonicalSignal { class: BC::Network, provider_signal: None, retry_after: None },
-            CanonicalSignal { class: BC::Auth, provider_signal: Some("invalid_key".to_string()), retry_after: None },
-            CanonicalSignal { class: BC::Billing, provider_signal: None, retry_after: None },
-            CanonicalSignal { class: BC::ClientError, provider_signal: None, retry_after: None },
-            CanonicalSignal { class: BC::ContextLength, provider_signal: None, retry_after: None },
+            CanonicalSignal {
+                class: BC::RateLimit,
+                provider_signal: Some("slow_down".to_string()),
+                retry_after: Some(30),
+            },
+            CanonicalSignal {
+                class: BC::Overloaded,
+                provider_signal: None,
+                retry_after: Some(0),
+            },
+            CanonicalSignal {
+                class: BC::ServerError,
+                provider_signal: None,
+                retry_after: None,
+            },
+            CanonicalSignal {
+                class: BC::Timeout,
+                provider_signal: None,
+                retry_after: None,
+            },
+            CanonicalSignal {
+                class: BC::Network,
+                provider_signal: None,
+                retry_after: None,
+            },
+            CanonicalSignal {
+                class: BC::Auth,
+                provider_signal: Some("invalid_key".to_string()),
+                retry_after: None,
+            },
+            CanonicalSignal {
+                class: BC::Billing,
+                provider_signal: None,
+                retry_after: None,
+            },
+            CanonicalSignal {
+                class: BC::ClientError,
+                provider_signal: None,
+                retry_after: None,
+            },
+            CanonicalSignal {
+                class: BC::ContextLength,
+                provider_signal: None,
+                retry_after: None,
+            },
         ];
         for cs in cases {
             let sig = failure_signal(&cs);
@@ -781,12 +854,18 @@ mod tests {
                     "failure_signal must be the inverse of classify for {:?}",
                     cs.class
                 ),
-                _ => panic!("a failure_signal must classify as a failure for {:?}", cs.class),
+                _ => panic!(
+                    "a failure_signal must classify as a failure for {:?}",
+                    cs.class
+                ),
             }
         }
         // The success builder maps straight to the Success outcome.
         // SAFETY: no borrowed range; the tail is fully written.
-        assert!(matches!(unsafe { classify(&success_signal()) }, Outcome::Success));
+        assert!(matches!(
+            unsafe { classify(&success_signal()) },
+            Outcome::Success
+        ));
     }
 
     /// FAITHFULNESS PROOF (classify level): the host's `classify` reproduces the EXACT
@@ -831,7 +910,10 @@ mod tests {
         // SAFETY: no borrowed range; the tail is fully written.
         match unsafe { classify(&sig_401) } {
             Outcome::Failure(cs) => {
-                assert_eq!(cs, expect_401, "401 host classify must equal normalize_raw_error");
+                assert_eq!(
+                    cs, expect_401,
+                    "401 host classify must equal normalize_raw_error"
+                );
                 assert_eq!(
                     crate::breaker::classify(&cs),
                     crate::breaker::Disposition::HardDown,

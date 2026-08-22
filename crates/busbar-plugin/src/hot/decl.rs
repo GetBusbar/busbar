@@ -91,8 +91,10 @@ pub type ConfigValidateFn = extern "C-unwind" fn(
     out_parsed: *mut MaybeUninit<OpaqueHandle>,
 ) -> StatusClass;
 /// Build the plane from a [`BuildCtx`] (secrets pre-resolved), producing the opaque plane handle.
-pub type BuildFn =
-    extern "C-unwind" fn(ctx: *const BuildCtx, out_handle: *mut MaybeUninit<OpaqueHandle>) -> StatusClass;
+pub type BuildFn = extern "C-unwind" fn(
+    ctx: *const BuildCtx,
+    out_handle: *mut MaybeUninit<OpaqueHandle>,
+) -> StatusClass;
 /// Hydrate persisted state into a built plane (idempotent).
 pub type HydrateFn = extern "C-unwind" fn(state: *mut c_void) -> StatusClass;
 /// Start the plane's ingress (begin accepting work).

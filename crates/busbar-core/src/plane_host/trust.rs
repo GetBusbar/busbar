@@ -602,7 +602,11 @@ mod tests {
         f(&key as *const Key)
     }
 
-    fn read_lookup(host: HostCtx, vt: &PlaneHostVtable, key: *const Key) -> (StatusClass, VerifyVerdict) {
+    fn read_lookup(
+        host: HostCtx,
+        vt: &PlaneHostVtable,
+        key: *const Key,
+    ) -> (StatusClass, VerifyVerdict) {
         let mut out = MaybeUninit::<VerifyVerdict>::uninit();
         let status = (vt.verify_lookup.unwrap())(host, key, core::ptr::from_mut(&mut out));
         // SAFETY: on `Ok` the out-slot is initialized; the tests only read it on `Ok`.
@@ -653,7 +657,11 @@ mod tests {
             let first = with_key(9, subject, |key| read_lookup(host, vt, key).1.outcome);
             let second = with_key(9, subject, |key| read_lookup(host, vt, key).1.outcome);
             assert_eq!(first, VerifyOutcome::Lead, "first caller leads the fetch");
-            assert_eq!(second, VerifyOutcome::Follow, "a leader is fetching → follow");
+            assert_eq!(
+                second,
+                VerifyOutcome::Follow,
+                "a leader is fetching → follow"
+            );
         });
     }
 
@@ -909,52 +917,83 @@ mod tests {
             ("all steps pass", Facts::would_pass(), TrustVerdict::Allow),
             (
                 "identity not live",
-                Facts { identity_live: 0, ..Facts::would_pass() },
+                Facts {
+                    identity_live: 0,
+                    ..Facts::would_pass()
+                },
                 TrustVerdict::IdentityNotLive,
             ),
             (
                 "not granted",
-                Facts { grant_outcome: 1, ..Facts::would_pass() },
+                Facts {
+                    grant_outcome: 1,
+                    ..Facts::would_pass()
+                },
                 TrustVerdict::NotGranted,
             ),
             (
                 "egress denied",
-                Facts { grant_outcome: 2, ..Facts::would_pass() },
+                Facts {
+                    grant_outcome: 2,
+                    ..Facts::would_pass()
+                },
                 TrustVerdict::EgressDenied,
             ),
             (
                 "not serving: quarantined",
-                Facts { registration_state: state_u8(TrustState::Quarantined), ..Facts::would_pass() },
+                Facts {
+                    registration_state: state_u8(TrustState::Quarantined),
+                    ..Facts::would_pass()
+                },
                 TrustVerdict::Quarantined,
             ),
             (
                 "not serving: error (last contact failed)",
-                Facts { registration_state: state_u8(TrustState::Error), ..Facts::would_pass() },
+                Facts {
+                    registration_state: state_u8(TrustState::Error),
+                    ..Facts::would_pass()
+                },
                 TrustVerdict::Quarantined,
             ),
             (
                 "not serving: pending",
-                Facts { registration_state: state_u8(TrustState::Pending), ..Facts::would_pass() },
+                Facts {
+                    registration_state: state_u8(TrustState::Pending),
+                    ..Facts::would_pass()
+                },
                 TrustVerdict::NeedsApproval,
             ),
             (
                 "not serving: suspended",
-                Facts { registration_state: state_u8(TrustState::Suspended), ..Facts::would_pass() },
+                Facts {
+                    registration_state: state_u8(TrustState::Suspended),
+                    ..Facts::would_pass()
+                },
                 TrustVerdict::Denied,
             ),
             (
                 "artifact drifted",
-                Facts { artifact_outcome: 2, ..Facts::would_pass() },
+                Facts {
+                    artifact_outcome: 2,
+                    ..Facts::would_pass()
+                },
                 TrustVerdict::ArtifactDrifted,
             ),
             (
                 "artifact unobservable",
-                Facts { artifact_outcome: 3, ..Facts::would_pass() },
+                Facts {
+                    artifact_outcome: 3,
+                    ..Facts::would_pass()
+                },
                 TrustVerdict::ArtifactDrifted,
             ),
             (
                 "generation moved",
-                Facts { generation_admitted: 5, generation_live: 6, ..Facts::would_pass() },
+                Facts {
+                    generation_admitted: 5,
+                    generation_live: 6,
+                    ..Facts::would_pass()
+                },
                 TrustVerdict::GenerationMoved,
             ),
         ];
@@ -988,25 +1027,39 @@ mod tests {
                 TrustVerdict::IdentityNotLive
             );
             // Fix identity → grant (step 2) wins over registration/artifact/generation.
-            let grant_first = Facts { identity_live: 1, ..all_fail };
+            let grant_first = Facts {
+                identity_live: 1,
+                ..all_fail
+            };
             assert_eq!(
                 with_facts(id, grant_first, |cp| (vt.trust_evaluate.unwrap())(host, cp)),
                 TrustVerdict::NotGranted
             );
             // Fix grant → registration (step 3a) wins over artifact/generation.
-            let reg_first = Facts { grant_outcome: 0, ..grant_first };
+            let reg_first = Facts {
+                grant_outcome: 0,
+                ..grant_first
+            };
             assert_eq!(
                 with_facts(id, reg_first, |cp| (vt.trust_evaluate.unwrap())(host, cp)),
                 TrustVerdict::Quarantined
             );
             // Fix registration → artifact (step 3b) wins over generation.
-            let artifact_first = Facts { registration_state: reg_state::APPROVED, ..reg_first };
+            let artifact_first = Facts {
+                registration_state: reg_state::APPROVED,
+                ..reg_first
+            };
             assert_eq!(
-                with_facts(id, artifact_first, |cp| (vt.trust_evaluate.unwrap())(host, cp)),
+                with_facts(id, artifact_first, |cp| (vt.trust_evaluate.unwrap())(
+                    host, cp
+                )),
                 TrustVerdict::ArtifactDrifted
             );
             // Fix artifact → generation (step 4) is the last refusal.
-            let gen_first = Facts { artifact_outcome: 1, ..artifact_first };
+            let gen_first = Facts {
+                artifact_outcome: 1,
+                ..artifact_first
+            };
             assert_eq!(
                 with_facts(id, gen_first, |cp| (vt.trust_evaluate.unwrap())(host, cp)),
                 TrustVerdict::GenerationMoved

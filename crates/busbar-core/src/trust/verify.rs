@@ -120,7 +120,8 @@ impl VerifyGate {
         // `reverify::due` directly, yet the arithmetic ("reaching the TTL is stale") is byte-for-byte
         // what the operator wrote. The ledger, coalescing and await stay plane-side; only the
         // arithmetic crosses, over the plane's OWN `last_checked_ms`.
-        if !crate::plane_host::trust::verify_decide(ledger().last_checked_ms, policy.ttl_ms, now_ms) {
+        if !crate::plane_host::trust::verify_decide(ledger().last_checked_ms, policy.ttl_ms, now_ms)
+        {
             return false;
         }
         let flight = self.flight_for(subject);
@@ -133,7 +134,8 @@ impl VerifyGate {
         }
         // A prior fetch under a longer ttl may already have made us fresh at the same epoch read.
         // Same host veneer as the fast path — the double-check funnels through the one seam too.
-        if !crate::plane_host::trust::verify_decide(ledger().last_checked_ms, policy.ttl_ms, now_ms) {
+        if !crate::plane_host::trust::verify_decide(ledger().last_checked_ms, policy.ttl_ms, now_ms)
+        {
             return false;
         }
         fetch().await;

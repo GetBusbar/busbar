@@ -27,9 +27,7 @@
 use super::{recover, HostState};
 use busbar_plugin::hot::host::HostCtx;
 use busbar_plugin::hot::pod::POD_VERSION;
-use busbar_plugin::hot::{
-    EgressDesc, EgressHead, EgressId, EgressOpen, PipeId, StatusClass,
-};
+use busbar_plugin::hot::{EgressDesc, EgressHead, EgressId, EgressOpen, PipeId, StatusClass};
 use busbar_plugin::read_sized_field;
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -420,7 +418,12 @@ pub(crate) extern "C-unwind" fn pipe_read(
 }
 
 /// Write raw bytes to a governed pipe (the child's stdin).
-pub(crate) extern "C-unwind" fn pipe_write(host: HostCtx, pipe: PipeId, buf: *const u8, len: usize) -> StatusClass {
+pub(crate) extern "C-unwind" fn pipe_write(
+    host: HostCtx,
+    pipe: PipeId,
+    buf: *const u8,
+    len: usize,
+) -> StatusClass {
     catch_unwind(AssertUnwindSafe(|| {
         // SAFETY: recovery invariant (see `super::recover`).
         let _state: &HostState = unsafe { recover(host) };

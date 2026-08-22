@@ -1595,7 +1595,14 @@ async fn tools_call(
         // caller's id. An id chosen by the caller and echoed onto an upstream is a caller-controlled
         // value crossing a trust boundary for no reason.
         |round, satisfaction| {
-            route_ref.dispatch(pool, &breakers, ctx.scope, &arguments, u64::from(round), satisfaction)
+            route_ref.dispatch(
+                pool,
+                &breakers,
+                ctx.scope,
+                &arguments,
+                u64::from(round),
+                satisfaction,
+            )
         },
         // THE GRANT, RE-READ LIVE ON EVERY ROUND. There is no handshake to authorise once and then
         // trust, so a revocation between rounds has to bite on the next one — which is the only
@@ -2135,13 +2142,15 @@ fn charge_round(
     // `budget_remaining` are 0 so the POD gate is a no-op and the chain is the sole decider. On a
     // BLOCKED limit the host renders the SAME `format!("{blocked:?}")` bytes the in-place
     // `Err(format!("{blocked:?}"))` returned, so the operator-facing refusal is byte-identical.
-    if let crate::plane_host::GovAdmit::Blocked { reason, .. } = crate::plane_host::govern_admit_reason_over(
-        ctx.app,
-        scope,
-        namespaced.as_bytes(),
-        key.id.as_bytes(),
-        key.group.as_deref().map(str::as_bytes),
-    ) {
+    if let crate::plane_host::GovAdmit::Blocked { reason, .. } =
+        crate::plane_host::govern_admit_reason_over(
+            ctx.app,
+            scope,
+            namespaced.as_bytes(),
+            key.id.as_bytes(),
+            key.group.as_deref().map(str::as_bytes),
+        )
+    {
         // Byte-identical to the in-place `Err(format!("{blocked:?}"))` the flip replaced.
         return Err(reason);
     }

@@ -103,8 +103,16 @@ fn compute_layout() -> String {
             provider_signal_len
         ]
     );
-    record!(s, AdmitRefusal, [size, version, reason, _reserved, retry_after_secs]);
-    record!(s, GovRefusal, [size, version, _reserved, retry_after_secs, reason_len]);
+    record!(
+        s,
+        AdmitRefusal,
+        [size, version, reason, _reserved, retry_after_secs]
+    );
+    record!(
+        s,
+        GovRefusal,
+        [size, version, _reserved, retry_after_secs, reason_len]
+    );
     record!(
         s,
         EgressDesc,
@@ -154,12 +162,29 @@ fn compute_layout() -> String {
     record!(
         s,
         EgressFault,
-        [size, version, fail_class, _reserved, status_code, _reserved2, cause_len, url_len]
+        [
+            size,
+            version,
+            fail_class,
+            _reserved,
+            status_code,
+            _reserved2,
+            cause_len,
+            url_len
+        ]
     );
     record!(
         s,
         CmdDesc,
-        [size, version, argv_count, program_ptr, program_len, argv_ptr, argv_len]
+        [
+            size,
+            version,
+            argv_count,
+            program_ptr,
+            program_len,
+            argv_ptr,
+            argv_len
+        ]
     );
     record!(s, FramingDesc, [size, version, framing, digests_scope]);
     record!(
@@ -181,7 +206,11 @@ fn compute_layout() -> String {
             work_len
         ]
     );
-    record!(s, OpResult, [size, version, class, _reserved, body_len, seq]);
+    record!(
+        s,
+        OpResult,
+        [size, version, class, _reserved, body_len, seq]
+    );
     record!(
         s,
         WorkHandleDesc,
@@ -195,25 +224,32 @@ fn compute_layout() -> String {
     record!(
         s,
         AuthQuery,
-        [size, version, _reserved, credential_ref, audience_ptr, audience_len]
+        [
+            size,
+            version,
+            _reserved,
+            credential_ref,
+            audience_ptr,
+            audience_len
+        ]
     );
     record!(
         s,
         AuthResolved,
-        [size, version, _reserved, _reserved2, resolved_ref, expires_unix]
-    );
-    record!(
-        s,
-        MetricSample,
         [
             size,
             version,
             _reserved,
             _reserved2,
-            value_bits,
-            name_ptr,
-            name_len,
-            labels_ptr,
+            resolved_ref,
+            expires_unix
+        ]
+    );
+    record!(
+        s,
+        MetricSample,
+        [
+            size, version, _reserved, _reserved2, value_bits, name_ptr, name_len, labels_ptr,
             labels_len
         ]
     );
@@ -325,7 +361,10 @@ fn compute_layout() -> String {
 #[test]
 fn abi_layout_matches_golden() {
     let actual = compute_layout();
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/golden/abi-layout.golden");
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/golden/abi-layout.golden"
+    );
 
     let existing = std::fs::read_to_string(path).unwrap_or_default();
     let update = std::env::var_os("BUSBAR_UPDATE_GOLDEN").is_some();

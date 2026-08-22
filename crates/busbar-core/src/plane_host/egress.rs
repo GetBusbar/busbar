@@ -47,11 +47,11 @@
 //! `Pending` collapses into a BLOCKING per-chunk `recv`: each [`egress_poll`] returns the next
 //! network chunk or EOF, so a crossing happens per NETWORK CHUNK — never per token.
 
+use super::scope::EgressFaultDetail;
 use super::{recover, HostState};
 use busbar_plugin::hot::host::HostCtx;
-use busbar_plugin::hot::pod::POD_VERSION;
-use super::scope::EgressFaultDetail;
 use busbar_plugin::hot::pod::EgressFault;
+use busbar_plugin::hot::pod::POD_VERSION;
 use busbar_plugin::hot::{
     EgressDesc, EgressFailClass, EgressHead, EgressId, EgressKind, EgressOpen, PipeId, StatusClass,
 };
@@ -110,7 +110,10 @@ enum HeadMsg {
     Refused(String),
     /// The transport failed before a response head arrived. Carries the neutral CLASS (connect vs io
     /// vs host-fault) and the flattened cause, so the plane reproduces its own failover taxonomy.
-    Fault { class: EgressFailClass, cause: String },
+    Fault {
+        class: EgressFailClass,
+        cause: String,
+    },
 }
 
 /// One open governed HTTP egress the host owns end to end. The plane holds only its [`EgressId`].
@@ -191,11 +194,7 @@ impl HttpEgress {
         self.stop.notify_one();
         // Dropping the receiver makes a task blocked on a full channel `send` observe a disconnect
         // and break, complementing the `stop` notify that unblocks a task parked in `chunk().await`.
-        let _ = self
-            .chunks
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .take();
+        let _ = self.chunks.lock().unwrap_or_else(|e| e.into_inner()).take();
         if let Some(handle) = self.join.lock().unwrap_or_else(|e| e.into_inner()).take() {
             let _ = handle.join();
         }
@@ -374,7 +373,11 @@ fn build_req_spec(d: &EgressDesc) -> ReqSpec {
         }
         _ => Vec::new(),
     };
-    ReqSpec { method, headers, body }
+    ReqSpec {
+        method,
+        headers,
+        body,
+    }
 }
 
 /// Pack the RESPONSE headers the plane classifies on into the neutral name/value record format (`u32
@@ -434,9 +437,15 @@ unsafe fn parse_headers(ptr: *const u8, len: usize) -> Vec<(String, String)> {
     let mut out = Vec::new();
     let mut i = 0usize;
     while let Some(name_len) = read_u32(bytes, &mut i) {
-        let Some(name) = read_str(bytes, &mut i, name_len) else { break };
-        let Some(value_len) = read_u32(bytes, &mut i) else { break };
-        let Some(value) = read_str(bytes, &mut i, value_len) else { break };
+        let Some(name) = read_str(bytes, &mut i, name_len) else {
+            break;
+        };
+        let Some(value_len) = read_u32(bytes, &mut i) else {
+            break;
+        };
+        let Some(value) = read_str(bytes, &mut i, value_len) else {
+            break;
+        };
         out.push((name, value));
     }
     out
@@ -474,7 +483,9 @@ fn inject_credential(d: &EgressDesc, spec: &mut ReqSpec) {
         read_sized_field!(d, EgressDesc, cred_header_len),
     ) {
         // SAFETY: a non-null `(cred_header_ptr, cred_header_len)` is a live borrowed range (ABI).
-        (Some(ptr), Some(len)) if !ptr.is_null() && len != 0 => unsafe { borrowed_string(ptr, len) },
+        (Some(ptr), Some(len)) if !ptr.is_null() && len != 0 => unsafe {
+            borrowed_string(ptr, len)
+        },
         _ => return, // no placement header → nothing to inject the credential into.
     };
     let scheme = match (
@@ -482,7 +493,9 @@ fn inject_credential(d: &EgressDesc, spec: &mut ReqSpec) {
         read_sized_field!(d, EgressDesc, cred_scheme_len),
     ) {
         // SAFETY: a non-null `(cred_scheme_ptr, cred_scheme_len)` is a live borrowed range (ABI).
-        (Some(ptr), Some(len)) if !ptr.is_null() && len != 0 => unsafe { borrowed_string(ptr, len) },
+        (Some(ptr), Some(len)) if !ptr.is_null() && len != 0 => unsafe {
+            borrowed_string(ptr, len)
+        },
         _ => String::new(),
     };
     let now = crate::store::now_ms() / 1_000;
@@ -541,11 +554,7 @@ pub(crate) fn egress_open(
 
 /// The HTTP open: resolve-then-pin, connect over a pinned per-hop client, observe the peer identity,
 /// spawn the streaming task, register the arena closer, and hand back the [`EgressOpen`].
-fn open_http(
-    state: &HostState,
-    d: &EgressDesc,
-    out: *mut MaybeUninit<EgressOpen>,
-) -> StatusClass {
+fn open_http(state: &HostState, d: &EgressDesc, out: *mut MaybeUninit<EgressOpen>) -> StatusClass {
     // The borrowed target URL bytes.
     if d.target_ptr.is_null() || d.target_len == 0 {
         return StatusClass::Refused;
@@ -567,12 +576,24 @@ fn open_http(
     let (https, host_name, port, _path) = match crate::net_guard::split_url(&url) {
         Ok(parts) => parts,
         Err(refusal) => {
-            stash_fault(state, EgressFailClass::Refused, 0, refusal.to_string(), &fault_url);
+            stash_fault(
+                state,
+                EgressFailClass::Refused,
+                0,
+                refusal.to_string(),
+                &fault_url,
+            );
             return StatusClass::Refused;
         }
     };
     if let Err(refusal) = crate::net_guard::judge_scheme(&url, https, policy) {
-        stash_fault(state, EgressFailClass::Refused, 0, refusal.to_string(), &fault_url);
+        stash_fault(
+            state,
+            EgressFailClass::Refused,
+            0,
+            refusal.to_string(),
+            &fault_url,
+        );
         return StatusClass::Refused;
     }
 
@@ -602,11 +623,20 @@ fn open_http(
     let join = std::thread::Builder::new()
         .name("busbar-egress".into())
         .spawn(move || {
-            run_http_stream(&url, &host_name, port, https, policy, &spec, identity, &head_tx, &chunk_tx, &stop_task);
+            run_http_stream(
+                &url, &host_name, port, https, policy, &spec, identity, &head_tx, &chunk_tx,
+                &stop_task,
+            );
         });
     let Ok(join) = join else {
         // Could not even spawn the streaming thread: a host-side fault, no cause from the wire.
-        stash_fault(state, EgressFailClass::Fault, 0, "governed egress could not start its streaming task".to_string(), &fault_url);
+        stash_fault(
+            state,
+            EgressFailClass::Fault,
+            0,
+            "governed egress could not start its streaming task".to_string(),
+            &fault_url,
+        );
         return StatusClass::Fault;
     };
 
@@ -616,12 +646,22 @@ fn open_http(
         Err(RecvTimeoutError::Timeout) | Err(RecvTimeoutError::Disconnected) => {
             stop.notify_one();
             let _ = join.join();
-            stash_fault(state, EgressFailClass::Io, 0, "governed egress timed out waiting for the connect head".to_string(), &fault_url);
+            stash_fault(
+                state,
+                EgressFailClass::Io,
+                0,
+                "governed egress timed out waiting for the connect head".to_string(),
+                &fault_url,
+            );
             return StatusClass::Fault;
         }
     };
     let (status, spki, resp_headers) = match head {
-        HeadMsg::Ok { status, spki, resp_headers } => (status, spki, resp_headers),
+        HeadMsg::Ok {
+            status,
+            spki,
+            resp_headers,
+        } => (status, spki, resp_headers),
         HeadMsg::Refused(reason) => {
             tracing::debug!(target: "busbar::plane_host::egress", %reason, "governed egress refused");
             let _ = join.join();
@@ -682,11 +722,9 @@ fn open_http(
     // reads the id can immediately find the backend, and the dispatch arena reclaims it on drop.
     registry().insert(id, Arc::clone(&egress));
     // The arena returns its own id; we ignore it and hand the plane the global id (see `REGISTRY`).
-    let _ = state
-        .scope
-        .register_egress(Box::new(move || {
-            close_and_remove(id);
-        }));
+    let _ = state.scope.register_egress(Box::new(move || {
+        close_and_remove(id);
+    }));
 
     // SAFETY: `out` is non-null (checked) and writable for one `EgressOpen`; written only on Ok.
     unsafe {
@@ -724,14 +762,14 @@ fn run_http_stream(
     };
     rt.block_on(async move {
         // THE GUARD: exactly one resolution, every answered address judged, the survivor pinned.
-        let pin = match crate::net_guard::resolve_and_pin_async(host_name, port, https, policy).await
-        {
-            Ok(pin) => pin,
-            Err(refusal) => {
-                let _ = head_tx.send(HeadMsg::Refused(refusal.to_string()));
-                return;
-            }
-        };
+        let pin =
+            match crate::net_guard::resolve_and_pin_async(host_name, port, https, policy).await {
+                Ok(pin) => pin,
+                Err(refusal) => {
+                    let _ = head_tx.send(HeadMsg::Refused(refusal.to_string()));
+                    return;
+                }
+            };
         // THE PINNED CLIENT: connects to the judged address, refuses a second lookup, follows no
         // redirect (a 3xx is an unguarded URL), and reads the peer certificate off the verified
         // handshake.
@@ -778,7 +816,10 @@ fn run_http_stream(
                 // exactly the `without_url()`-then-flatten the mcp transport does today.
                 let class = classify_transport_error(&e);
                 let e = e.without_url();
-                let _ = head_tx.send(HeadMsg::Fault { class, cause: with_cause(&e) });
+                let _ = head_tx.send(HeadMsg::Fault {
+                    class,
+                    cause: with_cause(&e),
+                });
                 return;
             }
         };
@@ -789,7 +830,14 @@ fn run_http_stream(
         // none of them. `content-type` (SSE vs JSON) is surfaced always; `Location` only when present
         // (a redirect), so the plane can refuse the 3xx with the unguarded target's own location.
         let resp_headers = pack_response_headers(&resp);
-        if head_tx.send(HeadMsg::Ok { status, spki, resp_headers }).is_err() {
+        if head_tx
+            .send(HeadMsg::Ok {
+                status,
+                spki,
+                resp_headers,
+            })
+            .is_err()
+        {
             return; // the opener went away before we connected; nothing to stream to.
         }
 

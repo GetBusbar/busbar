@@ -42,8 +42,8 @@ pub mod vtable;
 pub use scope::{DispatchScope, DurableScope, SessionScope};
 pub use vtable::build_plane_host_vtable;
 
-use busbar_plugin::hot::host::{HostCtx, PlaneHostVtable};
 use crate::state::App;
+use busbar_plugin::hot::host::{HostCtx, PlaneHostVtable};
 use std::sync::Arc;
 
 /// Core's own state behind the opaque [`HostCtx`] the plane ABI threads through every host call. A
@@ -90,10 +90,7 @@ pub unsafe fn recover<'a>(host: HostCtx) -> &'a HostState<'a> {
 /// for the whole `f` call, satisfying [`recover`]'s invariant. When `f` returns (or unwinds), the
 /// `DispatchScope` drops and [`DispatchScope::reclaim_all`] runs — so a dropped/cancelled dispatch
 /// future never leaks a bare host handle (the HalfOpen-wedge bug).
-pub fn with_dispatch_scope<R>(
-    app: &App,
-    f: impl FnOnce(HostCtx, &PlaneHostVtable) -> R,
-) -> R {
+pub fn with_dispatch_scope<R>(app: &App, f: impl FnOnce(HostCtx, &PlaneHostVtable) -> R) -> R {
     // Delegated to the owned [`HostDispatch`] guard so the SYNC seam and the ASYNC seam mint the exact
     // same `HostCtx` from the exact same stack-pinned `HostState` — one recovery invariant, two entry
     // shapes. `HostDispatch::new` allocates nothing (an empty `DispatchScope`), and the arena reclaim
@@ -115,7 +112,9 @@ pub fn with_borrowed_host<R>(
     let state = HostState { app, scope };
     let vtable = build_plane_host_vtable();
     // The stack `HostState`'s address IS the opaque HostCtx; it outlives every call `f` makes.
-    let host: HostCtx = (&state as *const HostState).cast_mut().cast::<std::os::raw::c_void>();
+    let host: HostCtx = (&state as *const HostState)
+        .cast_mut()
+        .cast::<std::os::raw::c_void>();
     let out = f(host, &vtable);
     let _keep_alive = &state;
     out
@@ -152,10 +151,10 @@ pub fn govern_admit_reason_over(
     let mut reason_buf = [0u8; 512];
     let mut out = core::mem::MaybeUninit::<busbar_plugin::hot::GovRefusal>::uninit();
     let decision = with_borrowed_host(app, scope, |hctx, vt| {
-        let facts = busbar_plugin::hot::Facts::with_attribution(
-            0, 0, 0, 0, 0, pool, identity_id, group,
-        );
-        (vt.govern_admit_reason.expect("govern_admit_reason is a wired slot"))(
+        let facts =
+            busbar_plugin::hot::Facts::with_attribution(0, 0, 0, 0, 0, pool, identity_id, group);
+        (vt.govern_admit_reason
+            .expect("govern_admit_reason is a wired slot"))(
             hctx,
             &*facts as *const busbar_plugin::hot::Facts,
             reason_buf.as_mut_ptr(),
@@ -237,7 +236,9 @@ impl<'a> HostDispatch<'a> {
         let state = self.host_state();
         let vtable = build_plane_host_vtable();
         // The stack `HostState`'s address IS the opaque HostCtx; it outlives every call `f` makes.
-        let host: HostCtx = (&state as *const HostState).cast_mut().cast::<std::os::raw::c_void>();
+        let host: HostCtx = (&state as *const HostState)
+            .cast_mut()
+            .cast::<std::os::raw::c_void>();
         let out = f(host, &vtable);
         let _keep_alive = &state;
         out
@@ -295,7 +296,9 @@ impl SendHostDispatch {
     pub fn with_host<R>(&self, f: impl FnOnce(HostCtx, &PlaneHostVtable) -> R) -> R {
         let state = self.host_state();
         let vtable = build_plane_host_vtable();
-        let host: HostCtx = (&state as *const HostState).cast_mut().cast::<std::os::raw::c_void>();
+        let host: HostCtx = (&state as *const HostState)
+            .cast_mut()
+            .cast::<std::os::raw::c_void>();
         let out = f(host, &vtable);
         let _keep_alive = &state;
         out
@@ -370,7 +373,9 @@ impl DurableHostDispatch {
     pub fn with_host<R>(&self, f: impl FnOnce(HostCtx, &PlaneHostVtable) -> R) -> R {
         let state = self.host_state();
         let vtable = build_plane_host_vtable();
-        let host: HostCtx = (&state as *const HostState).cast_mut().cast::<std::os::raw::c_void>();
+        let host: HostCtx = (&state as *const HostState)
+            .cast_mut()
+            .cast::<std::os::raw::c_void>();
         let out = f(host, &vtable);
         let _keep_alive = &state;
         out
@@ -421,7 +426,10 @@ mod tests {
     fn wired_clock_now_returns_a_nonzero_nanos_clock() {
         with_test_state(|host, vt, _scope| {
             let now = (vt.clock_now.unwrap())(host);
-            assert!(now > 0, "host clock must be a live nonzero nanosecond reading");
+            assert!(
+                now > 0,
+                "host clock must be a live nonzero nanosecond reading"
+            );
         });
     }
 
@@ -470,7 +478,11 @@ mod tests {
             assert_eq!(scope.registered(), 1, "a denied request registers no grant");
             // Explicit reclaim (the abort-path assertion): the arena empties.
             scope.reclaim_all();
-            assert_eq!(scope.registered(), 0, "reclaim releases the registered grant");
+            assert_eq!(
+                scope.registered(),
+                0,
+                "reclaim releases the registered grant"
+            );
         });
     }
 
@@ -479,11 +491,8 @@ mod tests {
     #[test]
     fn wired_govern_admit_drives_the_real_limit_engine() {
         let gov = Arc::new(
-            crate::governance::GovState::new(
-                Arc::new(crate::governance::MemoryStore::new()),
-                None,
-            )
-            .expect("memory store constructs"),
+            crate::governance::GovState::new(Arc::new(crate::governance::MemoryStore::new()), None)
+                .expect("memory store constructs"),
         );
         let app = crate::test_support::TestApp::new().governance(gov).build();
         with_dispatch_scope(&app, |host, vt| {
@@ -563,7 +572,11 @@ mod tests {
             };
             let mut out = MaybeUninit::<AuthResolved>::uninit();
             assert_eq!(
-                (vt.auth_resolve.unwrap())(host, &query as *const AuthQuery, &mut out as *mut MaybeUninit<AuthResolved>),
+                (vt.auth_resolve.unwrap())(
+                    host,
+                    &query as *const AuthQuery,
+                    &mut out as *mut MaybeUninit<AuthResolved>
+                ),
                 StatusClass::Ok
             );
             // SAFETY: the Ok status published the slot (init-only-on-Ok).
@@ -571,7 +584,10 @@ mod tests {
             // The host MINTS a fresh, opaque, host-owned ref — distinct from the input `credential_ref`
             // (the CLUSTER-3 (d) decision), never the echoed input.
             assert_ne!(resolved.resolved_ref, 0, "a live host-side ref is minted");
-            assert_ne!(resolved.resolved_ref, 0x9abc, "the mint is a NEW ref, not the input echoed");
+            assert_ne!(
+                resolved.resolved_ref, 0x9abc,
+                "the mint is a NEW ref, not the input echoed"
+            );
             assert!(resolved.expires_unix > 0, "a bounded expiry is stamped");
             // The PLAINTEXT lives host-side behind the ref; the plane received only the opaque ref.
             let secret = super::creds::resolve(resolved.resolved_ref, resolved.expires_unix - 1)
@@ -588,12 +604,20 @@ mod tests {
             };
             let mut out2 = MaybeUninit::<AuthResolved>::uninit();
             assert_eq!(
-                (vt.auth_resolve.unwrap())(host, &none as *const AuthQuery, &mut out2 as *mut MaybeUninit<AuthResolved>),
+                (vt.auth_resolve.unwrap())(
+                    host,
+                    &none as *const AuthQuery,
+                    &mut out2 as *mut MaybeUninit<AuthResolved>
+                ),
                 StatusClass::Refused
             );
             // Fail-closed on a null query.
             assert_eq!(
-                (vt.auth_resolve.unwrap())(host, core::ptr::null(), &mut out2 as *mut MaybeUninit<AuthResolved>),
+                (vt.auth_resolve.unwrap())(
+                    host,
+                    core::ptr::null(),
+                    &mut out2 as *mut MaybeUninit<AuthResolved>
+                ),
                 StatusClass::Refused
             );
         });
@@ -657,7 +681,11 @@ mod tests {
             });
             // The guard is held ACROSS this await — the scope must not reclaim yet.
             tokio::task::yield_now().await;
-            assert_eq!(reclaimed.load(Ordering::SeqCst), 0, "held across await, not reclaimed");
+            assert_eq!(
+                reclaimed.load(Ordering::SeqCst),
+                0,
+                "held across await, not reclaimed"
+            );
         }
         // Guard dropped at the end of the future → the arena reclaimed exactly once.
         assert_eq!(reclaimed.load(Ordering::SeqCst), 1);
@@ -684,7 +712,11 @@ mod tests {
         .await
         .expect("blocking hop joins");
         assert!(now > 0, "the host clock read on the blocking thread");
-        assert_eq!(reclaimed.load(Ordering::SeqCst), 1, "the hop arena reclaimed at closure end");
+        assert_eq!(
+            reclaimed.load(Ordering::SeqCst),
+            1,
+            "the hop arena reclaimed at closure end"
+        );
     }
 
     #[test]

@@ -217,7 +217,10 @@ fn a_shared_host_scope_settles_the_prepare_admit() {
         "the re-homed admit was SETTLED through the shared host scope, consuming the probe"
     );
     assert!(
-        matches!(breakers.state(&key), crate::store::BreakerState::Open { .. }),
+        matches!(
+            breakers.state(&key),
+            crate::store::BreakerState::Open { .. }
+        ),
         "the settle folded the 401 through the same record_signal disposition and opened the cell"
     );
     // The shared scope's own drop finds nothing left — the settle already released the probe.
@@ -229,7 +232,11 @@ fn a_shared_host_scope_settles_the_prepare_admit() {
     let fresh = Arc::new(PlaneBreakers::new());
     let call2 = a_call(&fresh, &rpc_id, &policy); // host_scope: None
     let _ = crate::a2a::relay::relay(&call2, &seam, 1_000);
-    assert_eq!(scope2.registered(), 0, "no shared scope → the local holds the probe, nothing registered");
+    assert_eq!(
+        scope2.registered(),
+        0,
+        "no shared scope → the local holds the probe, nothing registered"
+    );
     assert!(
         matches!(fresh.state(&key), crate::store::BreakerState::Open { .. }),
         "the legacy path still records and opens the cell"

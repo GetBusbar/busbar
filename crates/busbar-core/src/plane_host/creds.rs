@@ -47,7 +47,13 @@ fn registry() -> std::sync::MutexGuard<'static, HashMap<u64, Mint>> {
 #[must_use]
 pub(crate) fn mint(secret: Vec<u8>, expires_unix: u64) -> u64 {
     let resolved_ref = NEXT_REF.fetch_add(1, Ordering::Relaxed);
-    registry().insert(resolved_ref, Mint { secret, expires_unix });
+    registry().insert(
+        resolved_ref,
+        Mint {
+            secret,
+            expires_unix,
+        },
+    );
     resolved_ref
 }
 
@@ -61,7 +67,9 @@ pub(crate) fn resolve(resolved_ref: u64, now_unix: u64) -> Option<Vec<u8>> {
         return None;
     }
     let mut reg = registry();
-    let expired = reg.get(&resolved_ref).is_some_and(|m| now_unix > m.expires_unix);
+    let expired = reg
+        .get(&resolved_ref)
+        .is_some_and(|m| now_unix > m.expires_unix);
     if expired {
         reg.remove(&resolved_ref);
         return None;
@@ -77,16 +85,32 @@ mod tests {
     fn mint_then_resolve_returns_plaintext_then_expires() {
         let r = mint(b"tok-abc".to_vec(), 1_000);
         assert_ne!(r, 0, "a live ref is nonzero");
-        assert_eq!(resolve(r, 999), Some(b"tok-abc".to_vec()), "before expiry resolves");
+        assert_eq!(
+            resolve(r, 999),
+            Some(b"tok-abc".to_vec()),
+            "before expiry resolves"
+        );
         // At/after expiry it fails closed AND drops (cannot be replayed).
         assert_eq!(resolve(r, 1_001), None, "past expiry is refused");
-        assert_eq!(resolve(r, 999), None, "the expired mint was dropped, not just skipped");
+        assert_eq!(
+            resolve(r, 999),
+            None,
+            "the expired mint was dropped, not just skipped"
+        );
     }
 
     #[test]
     fn zero_and_unknown_refs_resolve_to_none() {
-        assert_eq!(resolve(0, 0), None, "the reserved 0 ref names no credential");
-        assert_eq!(resolve(u64::MAX, 0), None, "an unknown ref resolves to nothing");
+        assert_eq!(
+            resolve(0, 0),
+            None,
+            "the reserved 0 ref names no credential"
+        );
+        assert_eq!(
+            resolve(u64::MAX, 0),
+            None,
+            "an unknown ref resolves to nothing"
+        );
     }
 
     #[test]

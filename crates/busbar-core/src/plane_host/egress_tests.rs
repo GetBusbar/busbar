@@ -154,7 +154,11 @@ fn http_egress_opens_streams_and_close_reclaims() {
         );
 
         // The arena registered the closer (leak-safety keystone).
-        assert_eq!(scope.registered(), 1, "open registers exactly one arena closer");
+        assert_eq!(
+            scope.registered(),
+            1,
+            "open registers exactly one arena closer"
+        );
 
         // ── STREAM ────────────────────────────────────────────────────────────────────────────
         let got = drain(vt, host, open.id);
@@ -272,7 +276,13 @@ fn open_and_poll_fail_closed_on_null_and_bad_kind() {
         let mut written = 0usize;
         let mut b = [0u8; 4];
         assert_eq!(
-            (vt.egress_poll.unwrap())(host, EgressId(999_999), b.as_mut_ptr(), b.len(), &mut written),
+            (vt.egress_poll.unwrap())(
+                host,
+                EgressId(999_999),
+                b.as_mut_ptr(),
+                b.len(),
+                &mut written
+            ),
             StatusClass::Gone
         );
     });
@@ -305,9 +315,14 @@ fn http_egress_sends_verb_headers_and_body() {
         // SAFETY: Ok ⇒ initialized.
         let open = unsafe { out.assume_init() };
         let echoed = String::from_utf8_lossy(&drain(vt, host, open.id)).into_owned();
-        assert!(echoed.starts_with("POST /rpc "), "the verb + path were sent: {echoed:?}");
         assert!(
-            echoed.to_ascii_lowercase().contains("x-plane-header: plane-value"),
+            echoed.starts_with("POST /rpc "),
+            "the verb + path were sent: {echoed:?}"
+        );
+        assert!(
+            echoed
+                .to_ascii_lowercase()
+                .contains("x-plane-header: plane-value"),
             "the plane's header was forwarded verbatim"
         );
         assert!(
@@ -351,7 +366,10 @@ fn egress_open_injects_host_minted_credential_never_plane_plaintext() {
         );
         // SAFETY: Ok ⇒ initialized.
         let resolved = unsafe { resolved.assume_init() };
-        assert_ne!(resolved.resolved_ref, 0x1234, "the plane holds a NEW opaque ref, not the input");
+        assert_ne!(
+            resolved.resolved_ref, 0x1234,
+            "the plane holds a NEW opaque ref, not the input"
+        );
 
         // STEP 2: the plane opens an egress carrying the opaque ref + the neutral placement.
         let mut desc = http_desc(url.as_bytes());
@@ -373,13 +391,17 @@ fn egress_open_injects_host_minted_credential_never_plane_plaintext() {
         let echoed = String::from_utf8_lossy(&drain(vt, host, open.id)).into_owned();
         // The host injected the credential header — with the host-owned plaintext, under the scheme.
         assert!(
-            echoed.to_ascii_lowercase().contains("authorization: bearer hostcred:"),
+            echoed
+                .to_ascii_lowercase()
+                .contains("authorization: bearer hostcred:"),
             "the host injected `Authorization: Bearer <host-owned credential>`: {echoed:?}"
         );
         // The plane never carried the plaintext: the ref it holds is NOT the secret on the wire.
         assert!(
             !echoed.contains(&resolved.resolved_ref.to_string())
-                || !echoed.to_ascii_lowercase().contains(&format!("bearer {}", resolved.resolved_ref)),
+                || !echoed
+                    .to_ascii_lowercase()
+                    .contains(&format!("bearer {}", resolved.resolved_ref)),
             "the injected credential is the resolved secret, never the bare opaque ref"
         );
         let _ = (vt.egress_close.unwrap())(host, open.id);
@@ -388,7 +410,11 @@ fn egress_open_injects_host_minted_credential_never_plane_plaintext() {
 
 /// A loopback server that answers with a chosen status, a `Content-Type`, and (optionally) a
 /// `Location`, so a test can assert the RESPONSE headers the host surfaces on the connect head.
-fn spawn_header_mock(status_line: &'static str, content_type: &'static str, location: Option<&'static str>) -> u16 {
+fn spawn_header_mock(
+    status_line: &'static str,
+    content_type: &'static str,
+    location: Option<&'static str>,
+) -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
     let port = listener.local_addr().unwrap().port();
     std::thread::spawn(move || {
@@ -418,13 +444,19 @@ fn decode_records(bytes: &[u8]) -> Vec<(String, String)> {
     while i + 4 <= bytes.len() {
         let nl = u32::from_le_bytes(bytes[i..i + 4].try_into().unwrap()) as usize;
         i += 4;
-        if i + nl > bytes.len() { break; }
+        if i + nl > bytes.len() {
+            break;
+        }
         let name = String::from_utf8_lossy(&bytes[i..i + nl]).into_owned();
         i += nl;
-        if i + 4 > bytes.len() { break; }
+        if i + 4 > bytes.len() {
+            break;
+        }
         let vl = u32::from_le_bytes(bytes[i..i + 4].try_into().unwrap()) as usize;
         i += 4;
-        if i + vl > bytes.len() { break; }
+        if i + vl > bytes.len() {
+            break;
+        }
         let value = String::from_utf8_lossy(&bytes[i..i + vl]).into_owned();
         i += vl;
         out.push((name, value));
@@ -437,7 +469,11 @@ fn the_connect_head_surfaces_content_type_and_location_as_neutral_records() {
     // A 302 with a content-type AND a Location: the host surfaces both verbatim as neutral records, so
     // the plane can key SSE-vs-JSON on content-type and refuse the redirect with the target's own
     // Location — the host formats neither.
-    let port = spawn_header_mock("302 Found", "text/event-stream; charset=utf-8", Some("https://elsewhere.example/x"));
+    let port = spawn_header_mock(
+        "302 Found",
+        "text/event-stream; charset=utf-8",
+        Some("https://elsewhere.example/x"),
+    );
     let url = format!("http://127.0.0.1:{port}/");
     let desc = http_desc(url.as_bytes());
 
@@ -450,15 +486,27 @@ fn the_connect_head_surfaces_content_type_and_location_as_neutral_records() {
         );
         // SAFETY: Ok ⇒ initialized.
         let open = unsafe { out.assume_init() };
-        assert_eq!(open.head.status_code, 302, "the 3xx is surfaced, not followed");
-        assert!(!open.head.resp_headers_ptr.is_null(), "response headers are surfaced");
+        assert_eq!(
+            open.head.status_code, 302,
+            "the 3xx is surfaced, not followed"
+        );
+        assert!(
+            !open.head.resp_headers_ptr.is_null(),
+            "response headers are surfaced"
+        );
         // SAFETY: the head's resp_headers pointer borrows host-owned bytes valid while the egress is open.
         let bytes = unsafe {
             std::slice::from_raw_parts(open.head.resp_headers_ptr, open.head.resp_headers_len)
         };
         let records = decode_records(bytes);
-        let content_type = records.iter().find(|(n, _)| n == "content-type").map(|(_, v)| v.as_str());
-        let location = records.iter().find(|(n, _)| n == "location").map(|(_, v)| v.as_str());
+        let content_type = records
+            .iter()
+            .find(|(n, _)| n == "content-type")
+            .map(|(_, v)| v.as_str());
+        let location = records
+            .iter()
+            .find(|(n, _)| n == "location")
+            .map(|(_, v)| v.as_str());
         assert_eq!(
             content_type,
             Some("text/event-stream; charset=utf-8"),
@@ -514,7 +562,11 @@ fn a_connect_failure_surfaces_class_connect_with_cause_and_url_kept_separate() {
     with_dispatch_scope(&app, |host, vt| {
         let mut out = std::mem::MaybeUninit::<EgressOpen>::uninit();
         let class = (vt.egress_open.unwrap())(host, &desc as *const EgressDesc, &mut out);
-        assert_eq!(class, StatusClass::Fault, "a refused connect faults the open");
+        assert_eq!(
+            class,
+            StatusClass::Fault,
+            "a refused connect faults the open"
+        );
         let (fault, cause, got_url) = read_fault(vt, host).expect("a fault was stashed");
         assert_eq!(
             fault.fail_class,
@@ -522,14 +574,20 @@ fn a_connect_failure_surfaces_class_connect_with_cause_and_url_kept_separate() {
             "a connect failure is the neutral Connect class the plane fails over on"
         );
         // The URL is surfaced SEPARATELY from the cause — a plane keeps or strips it independently.
-        assert_eq!(got_url, url, "the target url is surfaced separately, verbatim");
+        assert_eq!(
+            got_url, url,
+            "the target url is surfaced separately, verbatim"
+        );
         assert!(!cause.is_empty(), "the flattened cause is surfaced");
         assert!(
             !cause.contains(&url),
             "the cause is url-FREE so the plane composes the url in itself: {cause:?}"
         );
         // Consumed: a second read finds nothing pending.
-        assert!(read_fault(vt, host).is_none(), "the fault is consumed once read");
+        assert!(
+            read_fault(vt, host).is_none(),
+            "the fault is consumed once read"
+        );
     });
 }
 
@@ -547,7 +605,14 @@ fn a_guard_refusal_surfaces_class_refused_with_the_guards_own_reason() {
         let class = (vt.egress_open.unwrap())(host, &desc as *const EgressDesc, &mut out);
         assert_eq!(class, StatusClass::Refused, "the guard refuses the hop");
         let (fault, cause, _url) = read_fault(vt, host).expect("a refusal fault was stashed");
-        assert_eq!(fault.fail_class, EgressFailClass::Refused, "a guard refusal is the Refused class");
-        assert!(!cause.is_empty(), "the guard's own reason is surfaced as the cause");
+        assert_eq!(
+            fault.fail_class,
+            EgressFailClass::Refused,
+            "a guard refusal is the Refused class"
+        );
+        assert!(
+            !cause.is_empty(),
+            "the guard's own reason is surfaced as the cause"
+        );
     });
 }

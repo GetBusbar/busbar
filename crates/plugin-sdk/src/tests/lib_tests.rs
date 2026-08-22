@@ -778,7 +778,9 @@ use busbar_api::{
     AuthModule, AuthOutcome, BeginLogin, CompleteLogin, LoginHop, LoginModule, LoginOutcome,
     Principal,
 };
-use busbar_plugin::cold::auth::{AuthRequest, AuthResponse, BeginLoginRequest, CompleteLoginRequest};
+use busbar_plugin::cold::auth::{
+    AuthRequest, AuthResponse, BeginLoginRequest, CompleteLoginRequest,
+};
 
 /// A verify-only module: implements AuthModule, takes LoginModule's fail-closed defaults.
 struct VerifyOnly;

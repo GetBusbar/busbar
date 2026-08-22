@@ -1814,8 +1814,9 @@ pub(crate) async fn forward_with_pool_parsed_inner(
         };
         // MEASUREMENT ONLY: isolates the auth-header build call specifically (SigV4 signing on
         // Bedrock; a cheap static/bearer header build on every other lane, where this reads ~0).
-        let auth =
-            busbar_timing::scope("egress_sigv4", || lane_auth_headers(&app.lanes[i], key, &signing_ctx));
+        let auth = busbar_timing::scope("egress_sigv4", || {
+            lane_auth_headers(&app.lanes[i], key, &signing_ctx)
+        });
         drop(_cb_auth);
 
         // Egress request Content-Type: JSON bodies stay JSON (chat byte-identical). An OPAQUE body

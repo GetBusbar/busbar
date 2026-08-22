@@ -82,9 +82,18 @@ mod tests {
     fn register_then_resolve_returns_the_identity_and_unknown_is_none() {
         let r = register(an_identity());
         assert_ne!(r, 0, "a live ref is nonzero");
-        assert!(resolve(r).is_some(), "the registered ref resolves to its identity");
-        assert!(resolve(0).is_none(), "the reserved 0 ref presents no identity");
-        assert!(resolve(u64::MAX).is_none(), "an unknown ref resolves to nothing (fail to no-cert)");
+        assert!(
+            resolve(r).is_some(),
+            "the registered ref resolves to its identity"
+        );
+        assert!(
+            resolve(0).is_none(),
+            "the reserved 0 ref presents no identity"
+        );
+        assert!(
+            resolve(u64::MAX).is_none(),
+            "an unknown ref resolves to nothing (fail to no-cert)"
+        );
     }
 
     #[test]

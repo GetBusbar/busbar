@@ -118,7 +118,12 @@ impl ChainedRecord for PlaneJournalRecord {
         // calls are a pure byte concat, so `sha256_hex(prelude ⧺ suffix)` matches the legacy single
         // buffer for BOTH framings (the PipeSeparated join `|` lives inside `content`).
         let scope = self.digests_scope.then_some(self.scope.as_str());
-        d.raw(&frame_prelude(self.framing, &self.prev_hash, scope, self.seq));
+        d.raw(&frame_prelude(
+            self.framing,
+            &self.prev_hash,
+            scope,
+            self.seq,
+        ));
         d.raw(&self.content);
     }
 }
@@ -252,7 +257,11 @@ pub(crate) extern "C-unwind" fn journal_read(
 /// `count:u32-le`, then per row `seq:u64-le · prev_hash · hash · content`, each variable field as
 /// `len:u32-le ⧺ bytes`. A neutral bytes-tier shape (the cold read carries bytes, not typed rows).
 fn encode_rows(rows: &[PlaneJournalRecord], from_seq: u64, limit: u64) -> Vec<u8> {
-    let take = if limit == 0 { usize::MAX } else { limit as usize };
+    let take = if limit == 0 {
+        usize::MAX
+    } else {
+        limit as usize
+    };
     let selected: Vec<&PlaneJournalRecord> = rows
         .iter()
         .filter(|r| r.seq >= from_seq)
@@ -327,8 +336,20 @@ mod tests {
             let append = vt.journal_append.unwrap();
             let c1 = b"|ts1|first"; // Option A: leading `|` is inert under LengthPrefixed, load-bearing under PipeSeparated
             let c2 = b"|ts2|second";
-            let s1 = append(host, scope, c1.as_ptr(), c1.len(), &fd as *const FramingDesc);
-            let s2 = append(host, scope, c2.as_ptr(), c2.len(), &fd as *const FramingDesc);
+            let s1 = append(
+                host,
+                scope,
+                c1.as_ptr(),
+                c1.len(),
+                &fd as *const FramingDesc,
+            );
+            let s2 = append(
+                host,
+                scope,
+                c2.as_ptr(),
+                c2.len(),
+                &fd as *const FramingDesc,
+            );
             assert_eq!(s1, Seq(1), "genesis record is seq 1");
             assert_eq!(s2, Seq(2), "second record is seq 2");
         });
@@ -393,7 +414,11 @@ mod tests {
             frame_prelude(Framing::PipeSeparated, "", Some(&scope.to_string()), 1);
         expected_input.extend_from_slice(b"|ts|kind|state");
         let expected = busbar_api::sha256_hex(&expected_input);
-        assert_eq!(st.rows[0].hash(), expected, "genesis hash == sha256(prelude ⧺ suffix)");
+        assert_eq!(
+            st.rows[0].hash(),
+            expected,
+            "genesis hash == sha256(prelude ⧺ suffix)"
+        );
     }
 
     #[test]
@@ -403,7 +428,13 @@ mod tests {
         let q = query(scope);
         with_test_state(|host, vt| {
             let c = b"payload";
-            (vt.journal_append.unwrap())(host, scope, c.as_ptr(), c.len(), &fd as *const FramingDesc);
+            (vt.journal_append.unwrap())(
+                host,
+                scope,
+                c.as_ptr(),
+                c.len(),
+                &fd as *const FramingDesc,
+            );
 
             let mut out_written: usize = 0;
             let read = vt.journal_read.unwrap();
@@ -440,7 +471,8 @@ mod tests {
         let fd = framing_desc(AbiFraming::LengthPrefixed, 1);
         with_test_state(|host, vt| {
             // Null framing → Seq::NONE, not a fabricated sequence.
-            let s = (vt.journal_append.unwrap())(host, 999_001, std::ptr::null(), 0, std::ptr::null());
+            let s =
+                (vt.journal_append.unwrap())(host, 999_001, std::ptr::null(), 0, std::ptr::null());
             assert_eq!(s, Seq::NONE);
             let _ = fd;
             // Null query → Refused.
