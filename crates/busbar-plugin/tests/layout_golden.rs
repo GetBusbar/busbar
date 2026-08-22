@@ -171,6 +171,16 @@ fn compute_layout() -> String {
     );
     record!(
         s,
+        VerifyQuery,
+        [size, version, _reserved, scope, _reserved2, ttl_ms, now_ms, key_ptr, key_len]
+    );
+    record!(
+        s,
+        ApprovalQuery,
+        [size, version, _reserved, scope, _reserved2, expires_at, now, key_ptr, key_len]
+    );
+    record!(
+        s,
         CounterpartyRef,
         [
             size,

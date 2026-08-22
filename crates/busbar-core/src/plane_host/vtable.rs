@@ -67,6 +67,11 @@ pub fn build_plane_host_vtable() -> PlaneHostVtable {
         trust_evaluate: Some(trust::trust_evaluate),
         entitlement_check: Some(super::dispatch::entitlement_check),
         gate_scan: Some(super::dispatch::gate_scan),
+        // ── The freshness/expiry-carrying siblings (verify/approval faithfulness), WIRED over the
+        //    same host trust store as their originals. ────────────────────────────────────────────
+        verify_lookup_q: Some(trust::verify_lookup_q),
+        verify_store_q: Some(trust::verify_store_q),
+        approval_redeem_q: Some(trust::approval_redeem_q),
     }
 }
 

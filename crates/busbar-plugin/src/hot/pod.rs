@@ -665,6 +665,72 @@ pub struct WorkHandleDesc {
     pub correlation_id: u64,
 }
 
+/// A counterparty-verification FRESHNESS query — the input to the richer `verify_lookup_q` /
+/// `verify_store_q` slots (added append-only alongside the original `verify_lookup`/`verify_store`,
+/// the `breaker_admit_reason` precedent). It carries the subject key PLUS the operator's freshness
+/// `ttl_ms` and the caller's `now_ms`, so the host reproduces `reverify::due`'s freshness arithmetic
+/// (the plane's own gate) EXACTLY rather than baking an opaque expiry. The host's own cache owns the
+/// per-subject `last_checked_ms` (written by `verify_store_q`), so THAT is not marshalled — only the
+/// genuinely plane-supplied scalars are.
+///
+/// # Safety / discipline
+/// `key_ptr`/`key_len`, when non-null, borrow live bytes for the call.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct VerifyQuery {
+    /// `size_of::<VerifyQuery>()` at construction.
+    pub size: u32,
+    /// POD schema version.
+    pub version: u16,
+    /// Preamble tail padding.
+    pub _reserved: u16,
+    /// The scope this key is interpreted within (host-defined namespace id).
+    pub scope: u32,
+    /// Preamble/alignment padding.
+    pub _reserved2: u32,
+    /// The operator's freshness window in milliseconds (the plane's `Policy::ttl_ms`). Reaching it is
+    /// stale, exactly as `reverify::due` reads it.
+    pub ttl_ms: u64,
+    /// The caller's clock reading in milliseconds — captured once by the plane and reused for the
+    /// whole freshness decision, so a fixed-clock test coalesces identically to the async gate.
+    pub now_ms: u64,
+    /// Borrowed pointer to the opaque subject key bytes (NOT owned).
+    pub key_ptr: *const u8,
+    /// Length of the borrowed key range.
+    pub key_len: usize,
+}
+
+/// A one-time-approval REDEMPTION query — the input to the richer `approval_redeem_q` slot (added
+/// append-only alongside the original `approval_redeem`). It carries the sealed-state nonce PLUS the
+/// seal's own `expires_at` and the caller's `now`, so the host spends against the ledger with the
+/// EXACT expiry the seal minted rather than recomputing a default TTL — the behavior-identity the
+/// call site (`mcp::callerask`) requires.
+///
+/// # Safety / discipline
+/// `key_ptr`/`key_len`, when non-null, borrow live bytes for the call.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct ApprovalQuery {
+    /// `size_of::<ApprovalQuery>()` at construction.
+    pub size: u32,
+    /// POD schema version.
+    pub version: u16,
+    /// Preamble tail padding.
+    pub _reserved: u16,
+    /// The scope this nonce is interpreted within (host-defined namespace id).
+    pub scope: u32,
+    /// Preamble/alignment padding.
+    pub _reserved2: u32,
+    /// The seal's own expiry, in the ledger's time unit — the value the plane sealed the state with.
+    pub expires_at: u64,
+    /// The caller's clock reading, in the ledger's time unit.
+    pub now: u64,
+    /// Borrowed pointer to the opaque nonce bytes (NOT owned).
+    pub key_ptr: *const u8,
+    /// Length of the borrowed nonce range.
+    pub key_len: usize,
+}
+
 /// The out-param a `verify_lookup` writes on `StatusClass::Ok`: the outcome, a leadership lease (when
 /// `Lead`), and a borrowed cached-digest range (when `Hit`, host-owned).
 #[repr(C)]
@@ -948,6 +1014,8 @@ mod tests {
         assert_preamble!(OpDesc);
         assert_preamble!(OpResult);
         assert_preamble!(WorkHandleDesc);
+        assert_preamble!(VerifyQuery);
+        assert_preamble!(ApprovalQuery);
         assert_preamble!(VerifyVerdict);
         assert_preamble!(AuthQuery);
         assert_preamble!(AuthResolved);

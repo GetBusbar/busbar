@@ -53,8 +53,8 @@
 use super::{recover, HostState};
 use busbar_plugin::hot::host::HostCtx;
 use busbar_plugin::hot::{
-    CounterpartyRef, Key, StatusClass, TrustVerdict, VerifyLease, VerifyOutcome, VerifyVerdict,
-    POD_VERSION,
+    ApprovalQuery, CounterpartyRef, Key, StatusClass, TrustVerdict, VerifyLease, VerifyOutcome,
+    VerifyQuery, VerifyVerdict, POD_VERSION,
 };
 use busbar_plugin::read_sized_field;
 use core::mem::MaybeUninit;
@@ -71,8 +71,14 @@ type CacheKey = (u32, Vec<u8>);
 /// for a ttl after a [`verify_store`], and at most one caller leads the re-fetch of a stale subject.
 #[derive(Default)]
 struct VerifyCache {
-    /// `key` → the wall-clock millisecond after which the verification is stale.
+    /// `key` → the wall-clock millisecond after which the verification is stale. Written by the
+    /// original [`verify_store`] (opaque baked expiry); read by the original [`verify_lookup`].
     fresh: HashMap<CacheKey, u64>,
+    /// `key` → the wall-clock millisecond the subject was LAST CHECKED — the host's authoritative
+    /// freshness state for the richer [`verify_lookup_q`]/[`verify_store_q`] slots, over which the
+    /// host reproduces `reverify::due` EXACTLY (rather than baking an opaque expiry). Written by
+    /// [`verify_store_q`].
+    checked: HashMap<CacheKey, u64>,
     /// The keys with an ACTIVE leader fetching right now (single-flight: a second caller follows).
     leading: HashSet<CacheKey>,
     /// A leadership lease's raw id → the key it leads, so [`verify_store`] can resolve the lease the
@@ -100,12 +106,8 @@ fn lock_cache() -> std::sync::MutexGuard<'static, VerifyCache> {
 /// `key` must be a live `&Key` whose `(key_ptr, key_len)`, when non-null, borrows an initialized
 /// range for the call (the ABI's borrow discipline).
 unsafe fn cache_key(key: &Key) -> Option<CacheKey> {
-    if key.key_ptr.is_null() || key.key_len == 0 {
-        return None;
-    }
-    // SAFETY: a non-null `(key_ptr, key_len)` borrows a live, initialized range for the call.
-    let bytes = unsafe { std::slice::from_raw_parts(key.key_ptr, key.key_len) };
-    Some((key.scope, bytes.to_vec()))
+    // SAFETY: `(key_ptr, key_len)` upholds the borrow discipline (delegated to `cache_key_raw`).
+    unsafe { cache_key_raw(key.scope, key.key_ptr, key.key_len) }
 }
 
 /// The counterparty/approval SUBJECT as a string, or `None` when the borrowed identity is null/empty
@@ -253,6 +255,166 @@ pub(crate) extern "C-unwind" fn verify_store(
         c.leading.remove(&ckey);
         c.inflight.remove(&lease.0);
         StatusClass::Ok
+    }))
+    .unwrap_or(StatusClass::Fault)
+}
+
+/// Copy an owned cache key from a borrowed `(scope, ptr, len)` range, or `None` when null/empty — the
+/// shared body of [`cache_key`] (over a [`Key`]) and the [`VerifyQuery`]/[`ApprovalQuery`] paths.
+///
+/// # Safety
+/// `(ptr, len)`, when non-null, borrow a live, initialized range for the call.
+unsafe fn cache_key_raw(scope: u32, ptr: *const u8, len: usize) -> Option<CacheKey> {
+    if ptr.is_null() || len == 0 {
+        return None;
+    }
+    // SAFETY: a non-null `(ptr, len)` borrows a live, initialized range for the call.
+    let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
+    Some((scope, bytes.to_vec()))
+}
+
+/// Reproduce `crate::trust::reverify::due(..).should_check()` for the fast-path
+/// (`operator_sync = false`) — the EXACT freshness arithmetic the plane's `VerifyGate` runs before it
+/// coalesces. A subject is DUE (must re-verify) when it was never checked (`Due::NeverChecked`), when
+/// the clock went backwards since the last check (`Due::ClockWentBackwards` — treated as due, never as
+/// permanent freshness), or when the operator's `ttl_ms` window has elapsed (`Due::TtlExpired`);
+/// otherwise it is fresh (`Due::No`). Proven equal to `reverify::due` by
+/// `should_recheck_matches_reverify_due`.
+fn should_recheck(last_checked_ms: Option<u64>, ttl_ms: u64, now_ms: u64) -> bool {
+    match last_checked_ms {
+        None => true,                          // Due::NeverChecked
+        Some(last) if now_ms < last => true,   // Due::ClockWentBackwards
+        Some(last) => now_ms - last >= ttl_ms, // Due::TtlExpired vs Due::No
+    }
+}
+
+/// WIRED `verify_lookup_q` → the host-side verify FRESHNESS cache, over a richer [`VerifyQuery`]. The
+/// difference from [`verify_lookup`] is that freshness is the host reproducing `reverify::due` over
+/// the query's `ttl_ms`/`now_ms` and the host's OWN authoritative `last_checked_ms` (written by
+/// [`verify_store_q`]) — byte-for-byte the plane's gate — rather than an opaque baked expiry. The
+/// single-flight leadership (`Hit`/`Lead`/`Follow`), the dispatch-scoped lease, and the fail-closed
+/// discipline are [`verify_lookup`]'s, unchanged.
+pub(crate) extern "C-unwind" fn verify_lookup_q(
+    host: HostCtx,
+    query: *const VerifyQuery,
+    out: *mut MaybeUninit<VerifyVerdict>,
+) -> StatusClass {
+    catch_unwind(AssertUnwindSafe(|| {
+        // SAFETY: recovery invariant (see `super::recover`).
+        let state: &HostState = unsafe { recover(host) };
+        if query.is_null() {
+            return StatusClass::Refused;
+        }
+        // SAFETY: a non-null `query` is a live, initialized `VerifyQuery` for the call (ABI).
+        let q = unsafe { &*query };
+        // SAFETY: `(key_ptr, key_len)` upholds the borrow discipline.
+        let Some(ckey) = (unsafe { cache_key_raw(q.scope, q.key_ptr, q.key_len) }) else {
+            return StatusClass::Refused; // no subject bytes → fail-closed, never a Hit.
+        };
+
+        enum Decision {
+            Hit,
+            Follow,
+            Lead,
+        }
+        let decision = {
+            let mut c = lock_cache();
+            let last = c.checked.get(&ckey).copied();
+            if !should_recheck(last, q.ttl_ms, q.now_ms) {
+                Decision::Hit
+            } else if c.leading.insert(ckey.clone()) {
+                Decision::Lead
+            } else {
+                Decision::Follow
+            }
+        };
+
+        let (outcome, lease) = match decision {
+            Decision::Hit => (VerifyOutcome::Hit, VerifyLease::NONE),
+            Decision::Follow => (VerifyOutcome::Follow, VerifyLease::NONE),
+            Decision::Lead => {
+                // Register the leadership lease in the dispatch scope so a leader whose dispatch is
+                // dropped BEFORE it stores does not wedge followers forever (the §4 leak keystone),
+                // idempotent with `verify_store_q`. Same discipline as `verify_lookup`.
+                let reclaim_key = ckey.clone();
+                let lease = state.scope.register_lease(Box::new(move || {
+                    let mut c = lock_cache();
+                    c.leading.remove(&reclaim_key);
+                    c.inflight.retain(|_, v| v != &reclaim_key);
+                }));
+                lock_cache().inflight.insert(lease.0, ckey);
+                (VerifyOutcome::Lead, lease)
+            }
+        };
+
+        if write_verdict(out, outcome, lease) {
+            StatusClass::Ok
+        } else {
+            StatusClass::Refused // null out-slot → fail-closed.
+        }
+    }))
+    .unwrap_or(StatusClass::Fault) // caught panic → fault, never a Hit.
+}
+
+/// WIRED `verify_store_q` → the host-side verify freshness cache: the LEADER records that it completed
+/// a fetch for a [`VerifyQuery`]'s subject, stamping the host's authoritative `last_checked_ms` at
+/// `query.now_ms` and releasing its leadership so the next caller reads a `Hit` (subject to
+/// `reverify::due`) rather than re-leading. A null query is `Refused`; a caught panic is `Fault`.
+pub(crate) extern "C-unwind" fn verify_store_q(
+    host: HostCtx,
+    query: *const VerifyQuery,
+    lease: VerifyLease,
+) -> StatusClass {
+    catch_unwind(AssertUnwindSafe(|| {
+        // SAFETY: recovery invariant (see `super::recover`).
+        let _state: &HostState = unsafe { recover(host) };
+        if query.is_null() {
+            return StatusClass::Refused;
+        }
+        // SAFETY: a non-null `query` is a live, initialized `VerifyQuery` for the call (ABI).
+        let q = unsafe { &*query };
+        // SAFETY: `(key_ptr, key_len)` upholds the borrow discipline.
+        let Some(ckey) = (unsafe { cache_key_raw(q.scope, q.key_ptr, q.key_len) }) else {
+            return StatusClass::Refused;
+        };
+        let mut c = lock_cache();
+        // Stamp the subject as checked NOW (the plane's captured `now_ms`) — the host's authoritative
+        // freshness input to `reverify::due` on the next lookup.
+        c.checked.insert(ckey.clone(), q.now_ms);
+        c.leading.remove(&ckey);
+        c.inflight.remove(&lease.0);
+        StatusClass::Ok
+    }))
+    .unwrap_or(StatusClass::Fault)
+}
+
+/// WIRED `approval_redeem_q` → [`crate::plane::approvals::PlaneApprovals::spend`], over a richer
+/// [`ApprovalQuery`]. Identical to [`approval_redeem`] except it spends against the seal's OWN
+/// `expires_at` and the caller's `now` (marshalled in the query) rather than recomputing a default
+/// TTL — the behavior-identity the `mcp::callerask` call site requires. `Ok` iff this is the FIRST
+/// redemption; `Refused` when already spent OR the ledger could not answer (fail-closed). A null query
+/// is `Refused`; a caught panic is `Fault`.
+pub(crate) extern "C-unwind" fn approval_redeem_q(
+    host: HostCtx,
+    query: *const ApprovalQuery,
+) -> StatusClass {
+    catch_unwind(AssertUnwindSafe(|| {
+        // SAFETY: recovery invariant (see `super::recover`).
+        let state: &HostState = unsafe { recover(host) };
+        if query.is_null() {
+            return StatusClass::Refused;
+        }
+        // SAFETY: a non-null `query` is a live, initialized `ApprovalQuery` for the call (ABI).
+        let q = unsafe { &*query };
+        // SAFETY: `(key_ptr, key_len)` upholds the borrow discipline.
+        let Some(nonce) = (unsafe { subject(q.key_ptr, q.key_len) }) else {
+            return StatusClass::Refused;
+        };
+        if state.app.plane_approvals.spend(&nonce, q.expires_at, q.now) {
+            StatusClass::Ok // first redemption, against the seal's own expiry.
+        } else {
+            StatusClass::Refused // already spent, or the ledger could not answer (fail-closed).
+        }
     }))
     .unwrap_or(StatusClass::Fault)
 }
@@ -534,6 +696,149 @@ mod tests {
         with_test_state(|host, vt, _scope| {
             let status = (vt.verify_store.unwrap())(host, core::ptr::null(), VerifyLease::NONE, 60);
             assert_eq!(status, StatusClass::Refused);
+        });
+    }
+
+    /// Build a borrowed `VerifyQuery` over `bytes` with the given freshness inputs for `f`.
+    fn with_vquery<R>(
+        scope: u32,
+        bytes: &[u8],
+        ttl_ms: u64,
+        now_ms: u64,
+        f: impl FnOnce(*const VerifyQuery) -> R,
+    ) -> R {
+        let q = VerifyQuery {
+            size: core::mem::size_of::<VerifyQuery>() as u32,
+            version: POD_VERSION,
+            _reserved: 0,
+            scope,
+            _reserved2: 0,
+            ttl_ms,
+            now_ms,
+            key_ptr: bytes.as_ptr(),
+            key_len: bytes.len(),
+        };
+        f(&q as *const VerifyQuery)
+    }
+
+    fn read_lookup_q(
+        host: HostCtx,
+        vt: &PlaneHostVtable,
+        q: *const VerifyQuery,
+    ) -> (StatusClass, VerifyVerdict) {
+        let mut out = MaybeUninit::<VerifyVerdict>::uninit();
+        let status = (vt.verify_lookup_q.unwrap())(host, q, core::ptr::from_mut(&mut out));
+        let verdict = if status == StatusClass::Ok {
+            // SAFETY: on `Ok` the out-slot is initialized.
+            unsafe { out.assume_init() }
+        } else {
+            VerifyVerdict {
+                size: 0,
+                version: 0,
+                outcome: VerifyOutcome::Follow,
+                _reserved: 0,
+                lease: VerifyLease::NONE,
+                digest_ptr: core::ptr::null(),
+                digest_len: 0,
+            }
+        };
+        (status, verdict)
+    }
+
+    /// THE VERIFY FAITHFULNESS PROOF: the host's freshness DECISION reproduces the plane's
+    /// `reverify::due(..).should_check()` EXACTLY — for a never-checked subject, an elapsed ttl, the
+    /// exact-ttl boundary (reaching it is due), a still-fresh subject, and a clock that went backwards
+    /// (due, never permanent freshness). This is the trust-verify analogue of the breaker's
+    /// `classify_reproduces_normalize_raw_error`.
+    #[test]
+    fn should_recheck_matches_reverify_due() {
+        use crate::trust::reverify::{due, Ledger, Policy};
+        let policy = Policy {
+            ttl_ms: 1_000,
+            recovery_backoff_ms: 0,
+        };
+        let cases: &[(Option<u64>, u64)] = &[
+            (None, 10_000),          // never checked
+            (Some(5_000), 5_000),    // just checked (fresh)
+            (Some(5_000), 5_999),    // within ttl (fresh)
+            (Some(5_000), 6_000),    // exactly ttl (due)
+            (Some(5_000), 9_000),    // ttl elapsed (due)
+            (Some(5_000), 4_000),    // clock went backwards (due)
+        ];
+        for (last, now) in cases.iter().copied() {
+            let ledger = Ledger {
+                last_checked_ms: last,
+                ..Ledger::default()
+            };
+            assert_eq!(
+                should_recheck(last, policy.ttl_ms, now),
+                due(&ledger, &policy, now, false).should_check(),
+                "host freshness must equal reverify::due for last={last:?} now={now}"
+            );
+        }
+    }
+
+    #[test]
+    fn verify_store_q_then_lookup_q_is_hit_until_ttl() {
+        let subject = b"verify-q/store-then-hit";
+        with_test_state(|host, vt, _scope| {
+            // First lookup at t=1000, ttl=1000, never checked → Lead.
+            let lease = with_vquery(7, subject, 1_000, 1_000, |q| read_lookup_q(host, vt, q).1.lease);
+            // The leader stores its completed fetch (checked at now=1000).
+            let stored = with_vquery(7, subject, 1_000, 1_000, |q| {
+                (vt.verify_store_q.unwrap())(host, q, lease)
+            });
+            assert_eq!(stored, StatusClass::Ok);
+            // Within ttl (t=1500) → Hit.
+            let (status, verdict) =
+                with_vquery(7, subject, 1_000, 1_500, |q| read_lookup_q(host, vt, q));
+            assert_eq!(status, StatusClass::Ok);
+            assert_eq!(verdict.outcome, VerifyOutcome::Hit, "within ttl → Hit");
+            // At exactly ttl (t=2000) → due again → Lead (re-verify).
+            let outcome = with_vquery(7, subject, 1_000, 2_000, |q| read_lookup_q(host, vt, q).1.outcome);
+            assert_eq!(outcome, VerifyOutcome::Lead, "reaching ttl is due → re-lead");
+        });
+    }
+
+    #[test]
+    fn verify_lookup_q_fail_closed_on_null() {
+        with_test_state(|host, vt, _scope| {
+            let mut out = MaybeUninit::<VerifyVerdict>::uninit();
+            assert_eq!(
+                (vt.verify_lookup_q.unwrap())(host, core::ptr::null(), core::ptr::from_mut(&mut out)),
+                StatusClass::Refused
+            );
+            assert_eq!(
+                (vt.verify_store_q.unwrap())(host, core::ptr::null(), VerifyLease::NONE),
+                StatusClass::Refused
+            );
+        });
+    }
+
+    #[test]
+    fn approval_redeem_q_spends_against_the_marshalled_expiry() {
+        with_test_state(|host, vt, _scope| {
+            let nonce = b"verify-q/approval/one-time";
+            let q = ApprovalQuery {
+                size: core::mem::size_of::<ApprovalQuery>() as u32,
+                version: POD_VERSION,
+                _reserved: 0,
+                scope: 0,
+                _reserved2: 0,
+                expires_at: crate::store::now().saturating_add(3_600),
+                now: crate::store::now(),
+                key_ptr: nonce.as_ptr(),
+                key_len: nonce.len(),
+            };
+            let first = (vt.approval_redeem_q.unwrap())(host, &q as *const ApprovalQuery);
+            let second = (vt.approval_redeem_q.unwrap())(host, &q as *const ApprovalQuery);
+            assert_eq!(first, StatusClass::Ok, "first redemption is fresh");
+            assert_eq!(second, StatusClass::Refused, "already spent → refused");
+            // Null query → fail-closed.
+            assert_eq!(
+                (vt.approval_redeem_q.unwrap())(host, core::ptr::null()),
+                StatusClass::Refused
+            );
         });
     }
 

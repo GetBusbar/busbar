@@ -22,10 +22,11 @@
 //! bump, never a reshape. Do not add it to the hot set until a real carrier needs it.
 
 use super::pod::{
-    AdmissionId, AdmitRefusal, AuthQuery, AuthResolved, CallerRef, ContentChunk, CounterpartyRef,
-    Decision, EgressDesc, EgressId, EgressOpen, Facts, FramingDesc, GateDecision, JournalQuery, Key,
-    MeterOutcome, MetricSample, OpDesc, OpResult, Seq, Signal, StatusClass, TargetRef, TrustVerdict,
-    Usage, VerifyLease, VerifyVerdict, WorkHandleDesc, WorkHandleId,
+    AdmissionId, AdmitRefusal, ApprovalQuery, AuthQuery, AuthResolved, CallerRef, ContentChunk,
+    CounterpartyRef, Decision, EgressDesc, EgressId, EgressOpen, Facts, FramingDesc, GateDecision,
+    JournalQuery, Key, MeterOutcome, MetricSample, OpDesc, OpResult, Seq, Signal, StatusClass,
+    TargetRef, TrustVerdict, Usage, VerifyLease, VerifyQuery, VerifyVerdict, WorkHandleDesc,
+    WorkHandleId,
 };
 use crate::AbiPreamble;
 use core::mem::MaybeUninit;
@@ -139,6 +140,24 @@ pub type EntitlementCheckFn =
 /// Feed one content chunk to the streaming content-governance gate; returns a [`GateDecision`] BY
 /// VALUE (Continue / Block). The host owns the gate policy; the plane scans incrementally.
 pub type GateScanFn = extern "C-unwind" fn(host: HostCtx, chunk: *const ContentChunk) -> GateDecision;
+/// Look up a counterparty-verification verdict over a richer [`VerifyQuery`] (subject + `ttl_ms` +
+/// `now_ms`), so the host reproduces `reverify::due`'s freshness arithmetic EXACTLY. The freshness-
+/// carrying sibling of [`VerifyLookupFn`]; writes a [`VerifyVerdict`] on Ok.
+pub type VerifyLookupQFn = extern "C-unwind" fn(
+    host: HostCtx,
+    query: *const VerifyQuery,
+    out: *mut MaybeUninit<VerifyVerdict>,
+) -> StatusClass;
+/// Record a completed fetch for a [`VerifyQuery`]'s subject (marking it checked at `query.now_ms`)
+/// and release the leadership `lease`. The freshness-carrying sibling of [`VerifyStoreFn`] (which
+/// baked an opaque `ttl_secs` expiry instead).
+pub type VerifyStoreQFn =
+    extern "C-unwind" fn(host: HostCtx, query: *const VerifyQuery, lease: VerifyLease) -> StatusClass;
+/// Redeem a one-time approval over a richer [`ApprovalQuery`] (nonce + the seal's `expires_at` +
+/// `now`), so the host spends against the EXACT expiry the seal minted. The expiry-carrying sibling
+/// of [`ApprovalRedeemFn`].
+pub type ApprovalRedeemQFn =
+    extern "C-unwind" fn(host: HostCtx, query: *const ApprovalQuery) -> StatusClass;
 
 /// The `#[repr(C)]` inbound-capability vtable a plane calls back into. Leads with the FROZEN
 /// [`AbiPreamble`] (a receiver `check_preamble`s it before using any slot) and a `size`/`version`
@@ -205,6 +224,15 @@ pub struct PlaneHostVtable {
     //    under the same sized/versioned discipline (a MINOR bump). ──────────────────────────────────
     /// Acquire a breaker admission, carrying the fine [`AdmitRefusal`] reason out on a refusal.
     pub breaker_admit_reason: Option<BreakerAdmitReasonFn>,
+    // ── APPENDED (verify/approval faithfulness): freshness/expiry-carrying siblings of the original
+    //    verify/approval slots, so the host reproduces `reverify::due`+epoch and the seal's expiry
+    //    EXACTLY. Trailing slots, append-only, same sized/versioned discipline (a MINOR bump). ──────
+    /// Look up a counterparty verdict over a [`VerifyQuery`] (subject + `ttl_ms` + `now_ms`).
+    pub verify_lookup_q: Option<VerifyLookupQFn>,
+    /// Store a completed fetch over a [`VerifyQuery`], releasing the leadership lease.
+    pub verify_store_q: Option<VerifyStoreQFn>,
+    /// Redeem a one-time approval over an [`ApprovalQuery`] (nonce + seal `expires_at` + `now`).
+    pub approval_redeem_q: Option<ApprovalRedeemQFn>,
     // ── EXTENSION POINT (reserved) ──────────────────────────────────────────────────────────────
     // Metering reserve/settle (a `CostHold`) is DELIBERATELY NOT a slot here. When a high-rate
     // carrier needs it, add `cost_reserve`/`cost_settle` as trailing `Option` slots below this line
@@ -250,6 +278,9 @@ impl PlaneHostVtable {
         entitlement_check: None,
         gate_scan: None,
         breaker_admit_reason: None,
+        verify_lookup_q: None,
+        verify_store_q: None,
+        approval_redeem_q: None,
     };
 
     /// A fully-populated STUB vtable: every slot points at an `unimplemented!()` stub. It exists to
@@ -284,6 +315,9 @@ impl PlaneHostVtable {
         entitlement_check: Some(stub::entitlement_check),
         gate_scan: Some(stub::gate_scan),
         breaker_admit_reason: Some(stub::breaker_admit_reason),
+        verify_lookup_q: Some(stub::verify_lookup_q),
+        verify_store_q: Some(stub::verify_store_q),
+        approval_redeem_q: Some(stub::approval_redeem_q),
     };
 }
 
@@ -338,6 +372,29 @@ pub mod stub {
         _ttl_secs: u64,
     ) -> StatusClass {
         unimplemented!("PlaneHost::verify_store — stub")
+    }
+    /// Stub: see module docs.
+    pub extern "C-unwind" fn verify_lookup_q(
+        _host: HostCtx,
+        _query: *const VerifyQuery,
+        _out: *mut MaybeUninit<VerifyVerdict>,
+    ) -> StatusClass {
+        unimplemented!("PlaneHost::verify_lookup_q — stub")
+    }
+    /// Stub: see module docs.
+    pub extern "C-unwind" fn verify_store_q(
+        _host: HostCtx,
+        _query: *const VerifyQuery,
+        _lease: VerifyLease,
+    ) -> StatusClass {
+        unimplemented!("PlaneHost::verify_store_q — stub")
+    }
+    /// Stub: see module docs.
+    pub extern "C-unwind" fn approval_redeem_q(
+        _host: HostCtx,
+        _query: *const ApprovalQuery,
+    ) -> StatusClass {
+        unimplemented!("PlaneHost::approval_redeem_q — stub")
     }
     /// Stub: see module docs.
     pub extern "C-unwind" fn egress_open(
