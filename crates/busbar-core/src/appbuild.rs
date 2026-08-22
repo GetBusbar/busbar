@@ -995,6 +995,13 @@ pub fn build_app_from_config(
         );
     }
 
+    // Does ANY pool override `upstream_credentials:`? Resolved ONCE here so the per-request
+    // `App::pool_upstream_creds` accessor can skip the String-keyed `pool_runtime` HashMap probe on
+    // the common config (no override) and return the all-pools default with a `Copy` read.
+    let any_pool_upstream_creds_override = pool_runtime
+        .values()
+        .any(|rt| rt.upstream_credentials.is_some());
+
     // Parse on_exhausted configs per pool
     let mut on_exhausted_cfgs = std::collections::HashMap::new();
     for (pool_name, pool_cfg) in &cfg.pools {
@@ -1425,6 +1432,7 @@ pub fn build_app_from_config(
     let app = App {
         // The all-pools `upstream_credentials:` default (1.5.3 — moved off `auth:`).
         upstream_credentials: cfg.upstream_credentials,
+        any_pool_upstream_creds_override,
         // Telemetry-bank slot table for this generation, registered BEFORE the config-derived
         // collections move into the snapshot. Identical label sets across applies re-intern to the
         // same slots, so hot-path counters accumulate monotonically across config generations.

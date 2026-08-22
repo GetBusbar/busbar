@@ -223,6 +223,10 @@ mod ingress_indistinguishability_tests;
 mod forward_once_pool_cell_tests;
 
 #[cfg(test)]
+#[path = "tests/pool_upstream_creds_tests.rs"]
+mod pool_upstream_creds_tests;
+
+#[cfg(test)]
 #[path = "tests/ordered_walk_tests.rs"]
 mod ordered_walk_tests;
 

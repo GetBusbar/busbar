@@ -1328,6 +1328,13 @@ impl TestApp {
             by_model,
             pools: self.pools,
             upstream_credentials: self.upstream_credentials,
+            // Mirror production (`appbuild`): the accessor's fast path is enabled only when no pool
+            // installs an override, so a test that sets one via `.pool_runtime(...)` still exercises
+            // the full lookup.
+            any_pool_upstream_creds_override: self
+                .pool_runtime
+                .values()
+                .any(|rt| rt.upstream_credentials.is_some()),
             client: crate::state::UpstreamClients::build(1, || {
                 reqwest::Client::builder().build().unwrap()
             }),

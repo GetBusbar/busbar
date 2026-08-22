@@ -1497,6 +1497,15 @@ pub(crate) async fn forward_with_pool_parsed_inner(
     // Why the PREVIOUS attempt failed — feeds the routing-stage tap payload (the failover story).
     let mut last_failure: Option<&'static str> = None;
 
+    // Upstream-credential mode for THIS pool, resolved ONCE (a String-keyed `pool_runtime` HashMap
+    // lookup — a SipHash of the pool name) and carried as a `Copy` scalar for the whole dispatch. It
+    // is invariant across every failover hop (the pool does not change mid-request), so hoisting it
+    // out of the loop replaces a per-attempt (and per-error-classification) hash lookup with a single
+    // register read on the always-on egress path — restoring the pre-1.5.3 `Copy` read that the
+    // per-pool override turned into a per-call `App::pool_upstream_creds(pool_name)` map probe. Same
+    // value the accessor returns (pool override else all-pools default), same passthrough-40x logic.
+    let upstream_creds = app.pool_upstream_creds(pool_name);
+
     // PREPARE ends here (dispatch loop begins).
     drop(_prep);
     let mut first_hop_v = v;
@@ -1738,8 +1747,9 @@ pub(crate) async fn forward_with_pool_parsed_inner(
         let _cbuild = crate::profile::start(crate::profile::Stage::ClientBuild);
         let base = &app.lanes[i].base_url;
 
-        // Mode-aware key selection: passthrough uses caller token, others use lane's api_key
-        let key = match app.pool_upstream_creds(pool_name) {
+        // Mode-aware key selection: passthrough uses caller token, others use lane's api_key.
+        // `upstream_creds` was resolved once before the loop (invariant per request).
+        let key = match upstream_creds {
             // Passthrough forwards the CALLER's credential upstream. When the caller presents NO
             // credential, fall back to an EMPTY credential — NOT the lane operator's `api_key`
             // (a SECURITY boundary): borrowing the operator key would let an unauthenticated caller
@@ -1930,7 +1940,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                 if !status.is_success() {
                     // caveat: passthrough 401/403 is caller's key failing, not busbar's
                     // Do NOT trip breaker / change member health; relay verbatim to caller
-                    let is_passthrough_40x = app.pool_upstream_creds(pool_name)
+                    let is_passthrough_40x = upstream_creds
                         == crate::auth::UpstreamCreds::Passthrough
                         && (status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN);
 
