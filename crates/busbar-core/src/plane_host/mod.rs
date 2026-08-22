@@ -23,6 +23,7 @@
 //!   [`DurableScope`] stubs.
 //! * [`vtable`] — [`build_plane_host_vtable`], three wired proof-of-life slots, nineteen typed stubs.
 
+pub mod breaker;
 pub mod scope;
 pub mod vtable;
 

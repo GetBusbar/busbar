@@ -27,13 +27,29 @@
 //! killing subprocesses — no matter how the dispatch future ends. RAII across the FFI seam, scoped to
 //! exactly what core controls.
 
-use busbar_plugin::hot::{AdmissionId, EgressId, PipeId, VerifyLease};
+use busbar_plugin::hot::{AdmissionId, EgressId, PipeId, Signal, StatusClass, VerifyLease};
 use std::sync::Mutex;
 
 /// A reclaim action for a handle whose release is an explicit host call (close an egress, kill a
 /// subprocess, drop a leadership lease). Phase 2 fills these with the real host-side calls; each runs
 /// exactly once, when the [`DispatchScope`] drops.
 type Reclaim = Box<dyn FnOnce() + Send + 'static>;
+
+/// A settle-capable breaker admission held in the arena — the leak-safety-critical resource of the
+/// BREAKER family. Its `Drop` (run by [`DispatchScope::reclaim_all`]) releases the real single-flight
+/// half-open probe, so a dropped/cancelled dispatch that never settled cannot wedge the cell in
+/// `HalfOpen`; [`settle`](Self::settle) instead records the observed outcome against the breaker,
+/// after which the guard's release `Drop` is a no-op.
+///
+/// The concrete implementor (`plane_host::breaker::BreakerAdmission`) owns the real
+/// `store::planes::Admission` RAII token; this trait lets the arena hold it behind a boxed object and
+/// still drive its one settle, WITHOUT `scope` depending on the private breaker types.
+pub trait SettleAdmission: Send {
+    /// Record the observed `signal` against the breaker exactly once and return the resulting ABI
+    /// [`StatusClass`]. Invoked at most once via [`DispatchScope::settle_admission`]; after it, the
+    /// guard's probe-release `Drop` becomes a no-op (the recorded outcome already consumed HalfOpen).
+    fn settle(&mut self, signal: &Signal) -> StatusClass;
+}
 
 /// Which kind of host handle an [`Entry`] carries. Kept alongside the raw id so the Phase-2 fan-out
 /// can resolve a plane-held handle-id back to its registered resource (e.g. `egress_write(id)`), and
@@ -59,6 +75,10 @@ enum Resource {
     Guard(Box<dyn Send>),
     /// An explicit reclaim call, taken and run once on scope drop.
     Closer(Option<Reclaim>),
+    /// A breaker admission: dropping it releases the single-flight half-open probe (the leak-safety
+    /// reclaim), and it can be SETTLED once — recording the outcome — before the scope ends. Boxed
+    /// behind [`SettleAdmission`] so the arena never names the private breaker types.
+    Admission(Box<dyn SettleAdmission>),
 }
 
 /// A registered handle: its kind, its raw id (what the plane holds), and the resource to reclaim.
@@ -133,6 +153,48 @@ impl DispatchScope {
         AdmissionId(raw)
     }
 
+    /// Register a settle-capable breaker admission (the real `store::planes::Admission` RAII token,
+    /// wrapped so it can also be settled) — the BREAKER family's leak-safety keystone. Returns the
+    /// arena's [`AdmissionId`]; the plane never holds the bare probe. On scope drop the guard's `Drop`
+    /// releases the probe; a prior [`settle_admission`](Self::settle_admission) makes that a no-op.
+    pub fn register_settling_admission(&self, guard: Box<dyn SettleAdmission>) -> AdmissionId {
+        let mut reg = self.lock();
+        let raw = Self::next_raw(&mut reg);
+        reg.entries.push(Entry {
+            kind: HandleKind::Admission,
+            raw,
+            res: Resource::Admission(guard),
+        });
+        AdmissionId(raw)
+    }
+
+    /// Settle the breaker admission `id`: record the observed `signal` against the breaker and return
+    /// the resulting ABI [`StatusClass`], REMOVING the entry (so the guard's probe-release `Drop` runs
+    /// now, a no-op after the record). Returns `None` when no live admission carries `id` — a stale or
+    /// already-settled handle the caller maps to `Gone`. Recording runs with the lock released, matching
+    /// [`reclaim_all`](Self::reclaim_all)'s discipline.
+    pub fn settle_admission(&self, id: AdmissionId, signal: &Signal) -> Option<StatusClass> {
+        if id.is_none() {
+            return None;
+        }
+        let entry = {
+            let mut reg = self.lock();
+            let pos = reg.entries.iter().position(|e| {
+                e.raw == id.0 && matches!(e.res, Resource::Admission(_))
+            })?;
+            reg.entries.remove(pos)
+        };
+        match entry.res {
+            Resource::Admission(mut guard) => {
+                let class = guard.settle(signal);
+                drop(guard); // release the probe (a no-op now the outcome is recorded)
+                Some(class)
+            }
+            // Unreachable: the `matches!` above selected an `Admission` entry.
+            _ => None,
+        }
+    }
+
     /// Register an open governed egress with the `reclaim` that closes it (Phase 2: `egress_close`).
     pub fn register_egress(&self, reclaim: Reclaim) -> EgressId {
         let mut reg = self.lock();
@@ -188,6 +250,7 @@ impl DispatchScope {
         for entry in drained.into_iter().rev() {
             match entry.res {
                 Resource::Guard(g) => drop(g),
+                Resource::Admission(g) => drop(g), // Drop releases the single-flight probe.
                 Resource::Closer(Some(reclaim)) => reclaim(),
                 Resource::Closer(None) => {}
             }

@@ -22,10 +22,10 @@
 use super::{recover, HostState};
 use busbar_plugin::hot::host::{HostCtx, PlaneHostVtable};
 use busbar_plugin::hot::{
-    AdmissionId, AuthQuery, AuthResolved, CallerRef, ContentChunk, CounterpartyRef, Decision,
-    EgressDesc, EgressId, EgressOpen, Facts, FramingDesc, GateDecision, JournalQuery, Key,
-    MeterOutcome, MetricSample, OpDesc, OpResult, Seq, Signal, StatusClass, TargetRef, TrustVerdict,
-    Usage, VerifyLease, VerifyVerdict, WorkHandleDesc, WorkHandleId,
+    AuthQuery, AuthResolved, CallerRef, ContentChunk, CounterpartyRef, Decision, EgressDesc, EgressId,
+    EgressOpen, Facts, FramingDesc, GateDecision, JournalQuery, Key, MeterOutcome, MetricSample,
+    OpDesc, OpResult, Seq, StatusClass, TargetRef, TrustVerdict, Usage, VerifyLease, VerifyVerdict,
+    WorkHandleDesc, WorkHandleId,
 };
 use busbar_plugin::AbiPreamble;
 use core::mem::MaybeUninit;
@@ -49,8 +49,8 @@ pub fn build_plane_host_vtable() -> PlaneHostVtable {
 
         // ── STUBBED (Phase 2 fan-out — one slot each) ──────────────────────────────────────────
         meter_charge: Some(meter_charge),
-        breaker_admit: Some(breaker_admit),
-        breaker_settle: Some(breaker_settle),
+        breaker_admit: Some(super::breaker::breaker_admit),
+        breaker_settle: Some(super::breaker::breaker_settle),
         verify_lookup: Some(verify_lookup),
         verify_store: Some(verify_store),
         egress_open: Some(egress_open),
@@ -148,16 +148,8 @@ extern "C-unwind" fn govern_admit(host: HostCtx, facts: *const Facts) -> Decisio
 extern "C-unwind" fn meter_charge(_host: HostCtx, _usage: *const Usage) -> MeterOutcome {
     unimplemented!("plane_host::meter_charge — Phase 2")
 }
-extern "C-unwind" fn breaker_admit(_host: HostCtx, _key: *const Key) -> AdmissionId {
-    unimplemented!("plane_host::breaker_admit — Phase 2")
-}
-extern "C-unwind" fn breaker_settle(
-    _host: HostCtx,
-    _admission: AdmissionId,
-    _signal: *const Signal,
-) -> StatusClass {
-    unimplemented!("plane_host::breaker_settle — Phase 2")
-}
+// `breaker_admit` / `breaker_settle` are WIRED over the real breaker in `super::breaker` (the BREAKER
+// family fan-out); their vtable slots reference that module directly.
 extern "C-unwind" fn verify_lookup(
     _host: HostCtx,
     _key: *const Key,
