@@ -195,6 +195,52 @@ impl DispatchScope {
         }
     }
 
+    /// Register a settle-capable breaker admission under a CALLER-SUPPLIED raw id rather than a
+    /// freshly-minted one — the receiving half of the [`DurableScope`] handoff (see
+    /// [`handoff_settling_to`](Self::handoff_settling_to)). The monotonic `next` counter is advanced
+    /// past `raw` so a later mint in this arena cannot collide with the adopted id. Returns the
+    /// [`AdmissionId`] the entry now answers to (== `AdmissionId(raw)`).
+    pub fn adopt_settling_admission(&self, raw: u64, guard: Box<dyn SettleAdmission>) -> AdmissionId {
+        let mut reg = self.lock();
+        if raw > reg.next {
+            reg.next = raw;
+        }
+        reg.entries.push(Entry {
+            kind: HandleKind::Admission,
+            raw,
+            res: Resource::Admission(guard),
+        });
+        AdmissionId(raw)
+    }
+
+    /// HAND OFF the settling admission `id` from THIS (per-request) arena into `dst`, a
+    /// [`DurableScope`] whose lifetime is the unit of work's — WITHOUT losing settle-ability. The
+    /// `Box<dyn SettleAdmission>` (its real single-flight probe hold) is REMOVED from this arena so
+    /// the per-request future's drop no longer reclaims it, and re-homed into `dst` under the SAME
+    /// [`AdmissionId`] so a later [`DurableScope::settle`] still resolves it. Returns the preserved
+    /// id on success, `None` when `id` names no live settling admission here (stale / already handed).
+    ///
+    /// This is the §4 durable handoff at the arena level: the breaker probe-hold leaves request scope
+    /// and joins the durable scope, so its owner-checked release fires at TASK end, not request end.
+    pub fn handoff_settling_to(&self, id: AdmissionId, dst: &DurableScope) -> Option<AdmissionId> {
+        if id.is_none() {
+            return None;
+        }
+        let entry = {
+            let mut reg = self.lock();
+            let pos = reg
+                .entries
+                .iter()
+                .position(|e| e.raw == id.0 && matches!(e.res, Resource::Admission(_)))?;
+            reg.entries.remove(pos)
+        };
+        match entry.res {
+            Resource::Admission(guard) => Some(dst.adopt_settling(id, guard)),
+            // Unreachable: the `position` above selected an `Admission` entry.
+            _ => None,
+        }
+    }
+
     /// Register an open governed egress with the `reclaim` that closes it (Phase 2: `egress_close`).
     pub fn register_egress(&self, reclaim: Reclaim) -> EgressId {
         let mut reg = self.lock();
@@ -294,16 +340,23 @@ impl SessionScope {
 /// on the task's normal completion AND on a `tasks/cancel` abort — running the moved-in guard's `Drop`
 /// (the owner-checked probe release) exactly then, not a moment earlier.
 ///
-/// Lazily allocated: the handle vector is empty (no heap) until a handle is actually handed off, so a
+/// SETTLE-CAPABLE, not merely drop-only (the §4 create_task gap): a breaker probe-hold handed here
+/// can be RECORDED against the breaker exactly once via [`settle`](Self::settle) before the scope
+/// drops — so a detached runner leg can fold its observed outcome into the same `(key, lane)` cell
+/// the admission consulted, and only the UNSETTLED probe releases on drop. A settle before the drop
+/// makes the drop a no-op, exactly as it does in the per-request [`DispatchScope`].
+///
+/// Lazily allocated: the inner arena is empty (no heap) until a handle is actually handed off, so a
 /// durable scope that parks nothing costs nothing.
 #[derive(Default)]
 #[non_exhaustive]
 pub struct DurableScope {
-    /// Handles handed to durable (unit-of-work) ownership. Each is an RAII guard whose `Drop`
-    /// reclaims it when THIS scope drops (task complete/expire/abort) — never at dispatch-future
-    /// drop. Boxed `dyn Send` so the runner can hold it behind the scope without naming the concrete
-    /// resource type (e.g. `store::planes::Admission`).
-    handles: Vec<Box<dyn Send>>,
+    /// The durable arena. Reuses the [`DispatchScope`] machinery (register / settle / reclaim) so the
+    /// handoff, the one settle, and the owner-checked release are byte-for-byte the per-request
+    /// arena's — the ONLY difference is WHO owns this scope (the detached runner, so it drops at TASK
+    /// end) rather than any change in mechanics. A [`super::HostState`] materialized over this arena
+    /// therefore drives the exact same `breaker_settle` seam the per-request path does.
+    arena: DispatchScope,
 }
 
 impl DurableScope {
@@ -311,46 +364,78 @@ impl DurableScope {
     #[must_use]
     pub fn new() -> Self {
         DurableScope {
-            handles: Vec::new(),
+            arena: DispatchScope::new(),
         }
     }
 
-    /// Open a durable scope that already owns `guard` — the `into_task_dispatch` handoff in one step:
-    /// the breaker probe-hold moves from the per-request dispatch arena into a runner-owned durable
-    /// scope, so its `Drop` reclaim runs at TASK end rather than request end.
+    /// Open a durable scope that already owns a DROP-ONLY `guard` — the legacy `into_task_dispatch`
+    /// handoff in one step (the guard's `Drop` reclaims at TASK end). Prefer
+    /// [`with_settling_handoff`](Self::with_settling_handoff) when the moved resource is a breaker
+    /// admission that a detached leg may still want to settle.
     #[must_use]
     pub fn with_handoff(guard: Box<dyn Send>) -> Self {
-        DurableScope {
-            handles: vec![guard],
-        }
+        let dur = DurableScope::new();
+        dur.handoff(guard);
+        dur
     }
 
-    /// Take durable ownership of `guard`: its `Drop` now reclaims when this scope drops (task end),
-    /// NOT at dispatch-future drop. This is the durable HANDOFF — the resource leaves the per-request
-    /// arena's lifetime and joins the unit-of-work's.
-    pub fn handoff(&mut self, guard: Box<dyn Send>) {
-        self.handles.push(guard);
+    /// Open a durable scope that already owns a SETTLE-CAPABLE breaker admission — the settling
+    /// `into_task_dispatch` handoff in one step. Returns the scope and the [`AdmissionId`] a later
+    /// [`settle`](Self::settle) (or the host `breaker_settle` seam over this scope) resolves it by.
+    #[must_use]
+    pub fn with_settling_handoff(guard: Box<dyn SettleAdmission>) -> (Self, AdmissionId) {
+        let dur = DurableScope::new();
+        let id = dur.register_settling(guard);
+        (dur, id)
+    }
+
+    /// Take DROP-ONLY durable ownership of `guard`: its `Drop` now reclaims when this scope drops
+    /// (task end), NOT at dispatch-future drop.
+    pub fn handoff(&self, guard: Box<dyn Send>) {
+        self.arena.register_admission(guard);
+    }
+
+    /// Take SETTLE-CAPABLE durable ownership of `guard` and return the [`AdmissionId`] it answers to.
+    /// Its probe-release `Drop` runs at scope drop unless [`settle`](Self::settle) records an outcome
+    /// first; this is the reroute path's handoff, which owns a bare probe hold rather than one already
+    /// registered in a [`DispatchScope`].
+    pub fn register_settling(&self, guard: Box<dyn SettleAdmission>) -> AdmissionId {
+        self.arena.register_settling_admission(guard)
+    }
+
+    /// Adopt a settling admission under a caller-supplied `id` — the receiving half of
+    /// [`DispatchScope::handoff_settling_to`], preserving the id across the arena move.
+    pub(super) fn adopt_settling(&self, id: AdmissionId, guard: Box<dyn SettleAdmission>) -> AdmissionId {
+        self.arena.adopt_settling_admission(id.0, guard)
+    }
+
+    /// SETTLE the durable breaker admission `id`: record `signal` against the breaker exactly once and
+    /// return the resulting ABI [`StatusClass`], releasing the probe (a no-op after the record).
+    /// `None` when no live admission carries `id` here (stale / already settled). This is the
+    /// detached-leg settle the runner reaches for on the create_task path.
+    pub fn settle(&self, id: AdmissionId, signal: &Signal) -> Option<StatusClass> {
+        self.arena.settle_admission(id, signal)
+    }
+
+    /// Borrow the durable arena as a [`DispatchScope`] so a [`super::HostState`] can be materialized
+    /// over it — the seam that lets the host `breaker_settle` vtable slot settle a durable admission
+    /// with no change to the breaker path.
+    #[must_use]
+    pub fn arena(&self) -> &DispatchScope {
+        &self.arena
     }
 
     /// How many durable handles this scope owns (test/observability hook).
     #[must_use]
     pub fn registered(&self) -> usize {
-        self.handles.len()
+        self.arena.registered()
     }
 
-    /// Reclaim EVERY handed-off handle NOW, in reverse (LIFO) handoff order — dropping each guard runs
-    /// its real `Drop` (the owner-checked release). Idempotent; called by `Drop`, exposed so an
-    /// explicit task-complete path can reclaim synchronously.
-    pub fn reclaim_all(&mut self) {
-        while let Some(guard) = self.handles.pop() {
-            drop(guard);
-        }
-    }
-}
-
-impl Drop for DurableScope {
-    fn drop(&mut self) {
-        self.reclaim_all();
+    /// Reclaim EVERY handed-off handle NOW, in reverse (LIFO) handoff order. Idempotent; the inner
+    /// arena's own `Drop` runs it when this scope drops, so an explicit call is only for a task-complete
+    /// path that reclaims synchronously.
+    pub fn reclaim_all(&self) {
+        self.arena.reclaim_all();
     }
 }
 
@@ -428,7 +513,7 @@ mod tests {
     #[test]
     fn durable_scope_handoff_is_lazy_and_reclaims_lifo() {
         let count = Arc::new(AtomicUsize::new(0));
-        let mut dur = DurableScope::new();
+        let dur = DurableScope::new();
         assert_eq!(dur.registered(), 0, "an empty durable scope owns nothing");
         dur.handoff(Box::new(DropCounter(count.clone())));
         dur.handoff(Box::new(DropCounter(count.clone())));
@@ -439,6 +524,120 @@ mod tests {
         // Idempotent: the Drop after an explicit reclaim is a no-op.
         dur.reclaim_all();
         assert_eq!(count.load(Ordering::SeqCst), 2);
+    }
+
+    /// A test settling admission: its `Drop` bumps `released` (the probe-release path), and `settle`
+    /// bumps `settled` and then makes the drop a no-op — the exact shape the real `BreakerAdmission`
+    /// has (record-once, release-if-unsettled).
+    struct TestSettling {
+        settled: Arc<AtomicUsize>,
+        released: Arc<AtomicUsize>,
+        done: bool,
+    }
+    impl SettleAdmission for TestSettling {
+        fn settle(&mut self, _signal: &Signal) -> StatusClass {
+            self.settled.fetch_add(1, Ordering::SeqCst);
+            self.done = true;
+            StatusClass::Ok
+        }
+    }
+    impl Drop for TestSettling {
+        fn drop(&mut self) {
+            if !self.done {
+                self.released.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+    }
+
+    fn ok_signal() -> Signal {
+        Signal {
+            size: core::mem::size_of::<Signal>() as u32,
+            version: busbar_plugin::hot::POD_VERSION,
+            class: StatusClass::Ok,
+            _reserved: 0,
+            latency_nanos: 0,
+            bytes: 0,
+            fault_class: busbar_plugin::hot::FaultClass::Unspecified,
+            fault_flags: 0,
+            _reserved2: 0,
+            _reserved3: 0,
+            retry_after_secs: 0,
+            provider_signal_ptr: core::ptr::null(),
+            provider_signal_len: 0,
+        }
+    }
+
+    /// A settling admission handed to a durable scope RELEASES its probe on scope drop when never
+    /// settled — the leak-safety keystone re-homed to task lifetime.
+    #[test]
+    fn durable_scope_releases_an_unsettled_admission_on_drop() {
+        let settled = Arc::new(AtomicUsize::new(0));
+        let released = Arc::new(AtomicUsize::new(0));
+        {
+            let (dur, id) = DurableScope::with_settling_handoff(Box::new(TestSettling {
+                settled: settled.clone(),
+                released: released.clone(),
+                done: false,
+            }));
+            assert!(!id.is_none(), "a settling handoff yields a live id");
+            assert_eq!(dur.registered(), 1);
+            assert_eq!(released.load(Ordering::SeqCst), 0, "not released while the scope is live");
+        }
+        assert_eq!(settled.load(Ordering::SeqCst), 0, "never settled");
+        assert_eq!(released.load(Ordering::SeqCst), 1, "the unsettled probe released on drop");
+    }
+
+    /// `DurableScope::settle` records the outcome exactly once and makes the drop a no-op; a replay is
+    /// `None` (the entry was consumed).
+    #[test]
+    fn durable_scope_settle_records_once_and_is_gone_on_replay() {
+        let settled = Arc::new(AtomicUsize::new(0));
+        let released = Arc::new(AtomicUsize::new(0));
+        let sig = ok_signal();
+        {
+            let (dur, id) = DurableScope::with_settling_handoff(Box::new(TestSettling {
+                settled: settled.clone(),
+                released: released.clone(),
+                done: false,
+            }));
+            assert_eq!(dur.settle(id, &sig), Some(StatusClass::Ok));
+            assert_eq!(settled.load(Ordering::SeqCst), 1);
+            assert_eq!(dur.registered(), 0, "a settled admission leaves the arena");
+            // Replay: the id was consumed → Gone (None).
+            assert_eq!(dur.settle(id, &sig), None);
+        }
+        assert_eq!(released.load(Ordering::SeqCst), 0, "a settled probe does not also release");
+    }
+
+    /// The §4 handoff PRIMITIVE: a settling admission registered in a per-request `DispatchScope`
+    /// moves into a `DurableScope` preserving its id, and no longer reclaims at the dispatch arena's
+    /// drop — only at the durable scope's.
+    #[test]
+    fn dispatch_to_durable_handoff_preserves_id_and_relifetimes() {
+        let settled = Arc::new(AtomicUsize::new(0));
+        let released = Arc::new(AtomicUsize::new(0));
+        let dur = DurableScope::new();
+        let id = {
+            let disp = DispatchScope::new();
+            let id = disp.register_settling_admission(Box::new(TestSettling {
+                settled: settled.clone(),
+                released: released.clone(),
+                done: false,
+            }));
+            assert_eq!(disp.registered(), 1);
+            let moved = disp.handoff_settling_to(id, &dur).expect("the admission hands off");
+            assert_eq!(moved, id, "the id is preserved across the arena move");
+            assert_eq!(disp.registered(), 0, "the dispatch arena no longer owns it");
+            assert_eq!(dur.registered(), 1, "the durable scope now owns it");
+            // The dispatch arena drops HERE (end of block) — the probe must NOT release, it is durable.
+            id
+        };
+        assert_eq!(released.load(Ordering::SeqCst), 0, "the dispatch-drop did not release the moved probe");
+        // A stale handoff of the same id is None.
+        assert!(DispatchScope::new().handoff_settling_to(id, &dur).is_none());
+        drop(dur);
+        assert_eq!(released.load(Ordering::SeqCst), 1, "the durable scope's drop released it");
+        assert_eq!(settled.load(Ordering::SeqCst), 0);
     }
 
     #[test]
