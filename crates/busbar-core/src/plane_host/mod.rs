@@ -25,6 +25,7 @@
 
 pub mod breaker;
 mod govern;
+pub mod journal;
 pub mod scope;
 pub mod trust;
 pub mod vtable;

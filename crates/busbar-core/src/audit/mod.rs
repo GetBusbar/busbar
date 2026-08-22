@@ -133,9 +133,44 @@ impl Digest {
         self
     }
 
+    /// Feed ALREADY-FRAMED raw bytes verbatim — the join primitive for the host-side journal cleave.
+    /// The plane hands a pre-framed content SUFFIX and the host byte-concatenates it after the framed
+    /// prelude, so `sha256_hex(frame_prelude(..) ⧺ suffix)` byte-equals the legacy single-[`Digest`]
+    /// output (the Phase-3 chain-cleave contract, §3 of the spec). Frame-independent: it appends no
+    /// length prefix and no separator of its own — the suffix already carries the leading `|` a
+    /// PipeSeparated stream owes (Option A). It still flips `started`. ADDITIVE: no existing digest
+    /// calls it, so not a single persisted byte changes.
+    pub(crate) fn raw(&mut self, bytes: &[u8]) -> &mut Self {
+        self.buf.extend_from_slice(bytes);
+        self.started = true;
+        self
+    }
+
     fn finish(self) -> String {
         busbar_api::sha256_hex(&self.buf)
     }
+}
+
+/// Frame a chain record's PRELUDE — `prev_hash`, then `scope` IFF `digests_scope` (some streams omit
+/// it), then `seq` — in `framing`, returning the raw framed bytes. The host owns the prelude; a plane
+/// supplies only its own content suffix, and the digest input is `frame_prelude(..) ⧺ suffix`. The
+/// PipeSeparated genesis landmine is preserved BY CONSTRUCTION: `prev_hash` is pushed FIRST and always
+/// (even when empty), which flips `started`, so an empty genesis `prev_hash` still yields the leading
+/// `|` before `seq`/`scope` that every deployed store was written with. ADDITIVE — not yet on any
+/// persisted path; the Phase-3 `audit::Journal` will own the whole append through it.
+pub(crate) fn frame_prelude(
+    framing: Framing,
+    prev_hash: &str,
+    scope: Option<&str>,
+    seq: u64,
+) -> Vec<u8> {
+    let mut d = Digest::new(framing);
+    d.text(prev_hash);
+    if let Some(s) = scope {
+        d.text(s);
+    }
+    d.num(seq);
+    d.buf
 }
 
 /// The operator-facing words for one stream: what to call the chain, and what to call the thing a
