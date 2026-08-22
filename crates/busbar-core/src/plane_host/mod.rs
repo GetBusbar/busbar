@@ -24,6 +24,7 @@
 //! * [`vtable`] — [`build_plane_host_vtable`], three wired proof-of-life slots, nineteen typed stubs.
 
 pub mod breaker;
+pub mod egress;
 mod govern;
 pub mod journal;
 pub mod scope;
