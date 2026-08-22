@@ -2,9 +2,11 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The HOST side of the [`PlaneHostVtable`]: the construction point that fills every slot with a
-//! host-side `extern "C-unwind"` fn, plus the three PROOF-OF-LIFE impls wired over real core
-//! primitives. The remaining nineteen are `unimplemented!()` stubs — one slot each for the Phase-2
-//! capability fan-out to fill against this scaffold.
+//! host-side `extern "C-unwind"` fn wired over a real core primitive. After the Phase-1 capability
+//! fan-out (breaker, govern, trust, journal, egress, dispatch) every slot is now wired — ZERO
+//! `unimplemented!()` stubs remain. The three PROOF-OF-LIFE impls (`clock_now`, `metrics_emit`,
+//! `govern_admit`) live here; the rest forward into their capability modules ([`super::breaker`],
+//! [`super::govern`], [`super::trust`], [`super::journal`], [`super::egress`], [`super::dispatch`]).
 //!
 //! ## Boundary discipline (reused from `plugin-sdk/boundary.rs`)
 //!
@@ -15,25 +17,21 @@
 //!    panic maps to the FAIL-CLOSED value for that slot (`Decision::Deny`, `StatusClass::Fault`, a `0`
 //!    clock), never to a permissive one;
 //! 3. translates POD ↔ primitive by pointer, writing any out-param only on the `Ok` path.
-//!
-//! The stubs deliberately panic (`unimplemented!`) — they are typed placeholders proving the whole
-//! vtable constructs, not runnable host calls.
 
 use super::{recover, trust, HostState};
 use busbar_plugin::hot::host::{HostCtx, PlaneHostVtable};
 use busbar_plugin::hot::{
-    AuthQuery, AuthResolved, CallerRef, ContentChunk, Decision, EgressDesc, EgressId, EgressOpen,
-    Facts, GateDecision, MeterOutcome, MetricSample, OpDesc, OpResult, StatusClass, TargetRef,
-    Usage, WorkHandleDesc, WorkHandleId,
+    AuthQuery, AuthResolved, Decision, EgressDesc, EgressId, EgressOpen, Facts, MeterOutcome,
+    MetricSample, StatusClass, Usage,
 };
 use busbar_plugin::AbiPreamble;
 use core::mem::MaybeUninit;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
 /// Build the host's [`PlaneHostVtable`]: the FROZEN preamble + sized/versioned header, then every
-/// capability slot `Some(<a host-side fn>)`. Three slots are wired over real primitives; the rest are
-/// typed `unimplemented!()` stubs the Phase-2 fan-out replaces. Every slot type-checks, so the fan-out
-/// has exactly one hole to fill per capability.
+/// capability slot `Some(<a host-side fn>)`. Three slots are wired over real primitives here
+/// (`clock_now`, `metrics_emit`, `govern_admit`); every other slot forwards into its capability
+/// module. After the Phase-1 fan-out every slot is wired — no `unimplemented!()` stub remains.
 #[must_use]
 pub fn build_plane_host_vtable() -> PlaneHostVtable {
     PlaneHostVtable {
@@ -46,7 +44,8 @@ pub fn build_plane_host_vtable() -> PlaneHostVtable {
         metrics_emit: Some(metrics_emit),
         clock_now: Some(clock_now),
 
-        // ── STUBBED (Phase 2 fan-out — one slot each) ──────────────────────────────────────────
+        // ── WIRED capability slots — each forwards into its capability module (breaker / trust /
+        //    egress / journal / dispatch), or a wired local fn (meter_charge, auth_resolve) ────────
         meter_charge: Some(meter_charge),
         breaker_admit: Some(super::breaker::breaker_admit),
         breaker_settle: Some(super::breaker::breaker_settle),
@@ -58,15 +57,15 @@ pub fn build_plane_host_vtable() -> PlaneHostVtable {
         egress_close: Some(egress_close),
         journal_append: Some(super::journal::journal_append),
         journal_read: Some(super::journal::journal_read),
-        nested_dispatch: Some(nested_dispatch),
-        workhandle_open: Some(workhandle_open),
-        workhandle_resume: Some(workhandle_resume),
+        nested_dispatch: Some(super::dispatch::nested_dispatch),
+        workhandle_open: Some(super::dispatch::workhandle_open),
+        workhandle_resume: Some(super::dispatch::workhandle_resume),
         drift_quarantine: Some(trust::drift_quarantine),
         approval_redeem: Some(trust::approval_redeem),
         auth_resolve: Some(auth_resolve),
         trust_evaluate: Some(trust::trust_evaluate),
-        entitlement_check: Some(entitlement_check),
-        gate_scan: Some(gate_scan),
+        entitlement_check: Some(super::dispatch::entitlement_check),
+        gate_scan: Some(super::dispatch::gate_scan),
     }
 }
 
@@ -134,8 +133,8 @@ extern "C-unwind" fn govern_admit(host: HostCtx, facts: *const Facts) -> Decisio
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
-// STUBBED slots — typed placeholders; the Phase-2 fan-out fills one each. Each has the EXACT
-// fn-pointer signature of its vtable slot, so the whole surface type-checks.
+// WIRED capability slots — local host-side fns and forwarders into the capability modules. No
+// `unimplemented!()` stub remains: the Phase-1 fan-out filled every slot.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
 /// WIRED `meter_charge` → the REAL metering over `crate::governance` + `crate::plane::cost` (see
@@ -190,19 +189,8 @@ extern "C-unwind" fn egress_close(host: HostCtx, egress: EgressId) -> StatusClas
 }
 // journal_append / journal_read are WIRED in `super::journal` (the JOURNAL family, over the real
 // `crate::audit` hash chain). The builder references them directly; no stub lives here.
-extern "C-unwind" fn nested_dispatch(
-    _host: HostCtx,
-    _desc: *const OpDesc,
-    _out: *mut MaybeUninit<OpResult>,
-) -> StatusClass {
-    unimplemented!("plane_host::nested_dispatch — Phase 2")
-}
-extern "C-unwind" fn workhandle_open(_host: HostCtx, _desc: *const WorkHandleDesc) -> WorkHandleId {
-    unimplemented!("plane_host::workhandle_open — Phase 2")
-}
-extern "C-unwind" fn workhandle_resume(_host: HostCtx, _handle: WorkHandleId) -> StatusClass {
-    unimplemented!("plane_host::workhandle_resume — Phase 2")
-}
+// `nested_dispatch` / `workhandle_open` / `workhandle_resume` / `entitlement_check` / `gate_scan`
+// are WIRED in `super::dispatch` (the DISPATCH family); their vtable slots reference that module.
 // `drift_quarantine` / `approval_redeem` / `trust_evaluate` are WIRED over the real trust store in
 // `super::trust` (the TRUST family fan-out); their vtable slots reference that module directly.
 /// WIRED `auth_resolve` → the REAL principal resolution over `crate::auth` (see
@@ -233,14 +221,4 @@ extern "C-unwind" fn auth_resolve(
         }
     }))
     .unwrap_or(StatusClass::Fault) // caught panic → the distinct fault class, never `Ok`.
-}
-extern "C-unwind" fn entitlement_check(
-    _host: HostCtx,
-    _caller: *const CallerRef,
-    _target: *const TargetRef,
-) -> bool {
-    unimplemented!("plane_host::entitlement_check — Phase 2")
-}
-extern "C-unwind" fn gate_scan(_host: HostCtx, _chunk: *const ContentChunk) -> GateDecision {
-    unimplemented!("plane_host::gate_scan — Phase 2")
 }

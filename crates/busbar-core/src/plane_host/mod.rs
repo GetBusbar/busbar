@@ -11,8 +11,10 @@
 //! [`DispatchScope`] arena that reclaims every host handle a plane acquired when the dispatch ends.
 //!
 //! ADDITIVE and UNUSED: nothing in the engine calls the plane seam yet. Phase 2 wires the in-place
-//! plane calls against [`with_dispatch_scope`]; the fan-out fills the nineteen stubbed vtable slots
-//! (see [`vtable`]). The shipped in-process `plane::host` seam is untouched.
+//! plane calls against [`with_dispatch_scope`]. After the Phase-1 capability fan-out (breaker,
+//! govern, trust, journal, egress, dispatch) EVERY vtable slot is wired over a real primitive — no
+//! `unimplemented!()` stub remains (see [`vtable`]). The shipped in-process `plane::host` seam is
+//! untouched.
 //!
 //! ## The three pieces
 //!
@@ -21,9 +23,11 @@
 //!   [`DispatchScope`]) from it.
 //! * [`scope`] — the [`DispatchScope`] arena (the §4 leak keystone) plus the [`SessionScope`] /
 //!   [`DurableScope`] stubs.
-//! * [`vtable`] — [`build_plane_host_vtable`], three wired proof-of-life slots, nineteen typed stubs.
+//! * [`vtable`] — [`build_plane_host_vtable`]; every slot wired (three proof-of-life fns here, the
+//!   rest forwarding into the capability modules), zero stubs remaining.
 
 pub mod breaker;
+pub mod dispatch;
 pub mod egress;
 mod govern;
 pub mod journal;
@@ -128,7 +132,7 @@ mod tests {
         let vt = build_plane_host_vtable();
         assert_eq!(busbar_plugin::check_preamble(&vt.abi), Ok(()));
         assert_eq!(vt.size as usize, core::mem::size_of::<PlaneHostVtable>());
-        // Every slot is populated (3 wired + 19 stubbed): the fan-out has one hole each, not a `None`.
+        // Every slot is populated and wired after the Phase-1 fan-out: no slot is a `None`.
         assert!(vt.govern_admit.is_some());
         assert!(vt.clock_now.is_some());
         assert!(vt.metrics_emit.is_some());
