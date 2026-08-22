@@ -701,7 +701,12 @@ fn prompts_get(
             request_state,
             round,
         } => {
-            let mut holds: Vec<crate::governance::AdmitGrant> = Vec::new();
+            // The govern grant rides the request-wide arena (`ctx.scope`, the same arena the breaker
+            // admission registers into) so it releases when the request future ends — the lifetime
+            // the caller-held `Vec<AdmitGrant>` had. A `None` scope (unit tests) falls back to a local
+            // arena that drops at this fn's return, the same drop point.
+            let fallback_scope = crate::plane_host::DispatchScope::new();
+            let scope = ctx.scope.unwrap_or(&fallback_scope);
             if let Err(reason) = charge_round(
                 ctx,
                 &prompt.namespaced,
@@ -709,7 +714,7 @@ fn prompts_get(
                     round,
                     satisfied: None,
                 },
-                &mut holds,
+                scope,
             ) {
                 return error(
                     StatusCode::TOO_MANY_REQUESTS,
@@ -1326,7 +1331,10 @@ async fn tools_call(
             // returns before the upstream leg is ever entered, so a caller-facing exchange would be
             // charged exactly ZERO without this. An ask loop that is free is precisely the
             // amplification the upstream cap exists to stop, pointed the other way.
-            let mut holds: Vec<crate::governance::AdmitGrant> = Vec::new();
+            // The govern grant rides the request-wide arena (`ctx.scope`) — released at request end,
+            // the `Vec<AdmitGrant>` lifetime; a `None` scope (tests) uses a local arena dropped here.
+            let fallback_scope = crate::plane_host::DispatchScope::new();
+            let scope = ctx.scope.unwrap_or(&fallback_scope);
             if let Err(reason) = charge_round(
                 ctx,
                 &selected.namespaced,
@@ -1334,7 +1342,7 @@ async fn tools_call(
                     round,
                     satisfied: None,
                 },
-                &mut holds,
+                scope,
             ) {
                 let refusal = DispatchRefusal::NotGranted(format!(
                     "this round of the input exchange was refused by your budget: {reason}"
@@ -1569,10 +1577,14 @@ async fn tools_call(
 
     // (4) THE BOUNDED, METERED, PER-ROUND-GATED LOOP.
     //
-    // Every concurrency hold taken by `try_admit` is parked here so it lives exactly as long as the
-    // dispatch does: an `AdmitGrant` releases its gauges on drop, and dropping it inside the loop
-    // would return the slot while the round it guards is still running.
-    let mut holds: Vec<crate::governance::AdmitGrant> = Vec::new();
+    // Every concurrency hold `try_admit` takes now rides the request-wide dispatch arena (`ctx.scope`,
+    // the SAME arena this `tools/call`'s breaker admission registers into) via the host
+    // `govern_admit_reason` seam, so it lives exactly as long as the dispatch does and releases when
+    // the request future ends — the lifetime the caller-held `Vec<AdmitGrant>` had, and never inside
+    // the loop while the round it guards is still running. A `None` scope (unit tests) falls back to a
+    // local arena that drops at this fn's return, the same drop point.
+    let fallback_scope = crate::plane_host::DispatchScope::new();
+    let scope = ctx.scope.unwrap_or(&fallback_scope);
     let server_id = selected.server.clone();
     let pool = super::runtime(ctx.app).pool.as_ref();
     let route_ref = &route;
@@ -1632,7 +1644,7 @@ async fn tools_call(
                 }
             }
         },
-        |rec| charge_round(ctx, &selected.namespaced, rec, &mut holds),
+        |rec| charge_round(ctx, &selected.namespaced, rec, scope),
     )
     .await;
     // The route (and with it any un-consumed single-flight probe hold) drops at the end of this
@@ -1907,7 +1919,11 @@ async fn create_task(
     // the caller as a refusal. Once the `CreateTaskResult` is on the wire the request has been
     // answered, so a later budget failure could only be expressed by failing the task — which
     // reports a cost decision as an execution failure. See `tasks::run` for the other half.
-    let mut holds: Vec<crate::governance::AdmitGrant> = Vec::new();
+    // The task path has NO sync `ctx.scope` (the request future ends the moment the task id is on the
+    // wire), so the govern grant rides a SHORT-LIVED `DurableScope` opened just for this charge and
+    // reclaimed immediately below — NOT the runner's durable scope, which holds the probe for the
+    // task's whole life. The host `govern_admit_reason` seam registers the grant in this arena.
+    let grant_scope = crate::plane_host::DurableScope::new();
     if let Err(reason) = charge_round(
         ctx,
         &selected.namespaced,
@@ -1915,7 +1931,7 @@ async fn create_task(
             round: 0,
             satisfied: None,
         },
-        &mut holds,
+        grant_scope.arena(),
     ) {
         // The budget said no AFTER the breaker admitted: the durable scope holding the probe drops on
         // this return, handing back a recovery probe this dispatch may have just won.
@@ -1928,8 +1944,9 @@ async fn create_task(
     }
     // The admission hold is RELEASED rather than parked for the life of the task. A concurrency
     // slot models a request in flight, and the request ends here; holding it for a task that may
-    // run for minutes would make the gauge report queue depth for something that is not queued.
-    drop(holds);
+    // run for minutes would make the gauge report queue depth for something that is not queued. The
+    // grant scope's reclaim releases the registered grant now — the old `drop(holds)`.
+    drop(grant_scope);
 
     let task = super::tasks::TASKS.create(task_principal(ctx));
     let created = task.created();
@@ -2102,31 +2119,50 @@ fn charge_round(
     ctx: &Ctx<'_>,
     namespaced: &str,
     rec: &RoundRecord,
-    holds: &mut Vec<crate::governance::AdmitGrant>,
+    scope: &crate::plane_host::DispatchScope,
 ) -> Result<(), String> {
-    let (Some(gov_state), Some(key)) = (ctx.app.governance.as_ref(), ctx.gov.key.as_ref()) else {
+    let (Some(_gov_state), Some(key)) = (ctx.app.governance.as_ref(), ctx.gov.key.as_ref()) else {
         // Governance disabled: no key, no budget, nothing to charge. The same posture the LLM path
         // takes, and the reason a deployment without governance still serves.
         return Ok(());
     };
-    // The SAME clock the LLM request path charges against (`ingress::dispatch`'s `charged_at`), so a
-    // tool call and a model call land in the same budget window rather than in two windows that
-    // happen to be close.
-    let now = crate::store::now();
-    match gov_state.try_admit(&ctx.app.cost, key, namespaced, now) {
-        Ok(grant) => holds.push(grant),
-        Err(blocked) => return Err(format!("{blocked:?}")),
+    // ADMIT through the host `govern_admit_reason` seam (CLUSTER-4). The grant `try_admit` yields is
+    // registered in `scope`'s dispatch arena (the request-wide arena the breaker admission already
+    // rides, threaded through `Ctx::scope`), so it releases exactly when that arena reclaims — the
+    // lifetime the caller-held `Vec<AdmitGrant>` had. The `Facts` carry this caller's REAL
+    // `(key.id, key.group)`, so the host reconstructs the SAME enforcement chain
+    // `try_admit(&ctx.app.cost, key, namespaced)` walks (`namespaced` is the pool); `tokens`/
+    // `budget_remaining` are 0 so the POD gate is a no-op and the chain is the sole decider. On a
+    // BLOCKED limit the host renders the SAME `format!("{blocked:?}")` bytes the in-place
+    // `Err(format!("{blocked:?}"))` returned, so the operator-facing refusal is byte-identical.
+    if let crate::plane_host::GovAdmit::Blocked { reason, .. } = crate::plane_host::govern_admit_reason_over(
+        ctx.app,
+        scope,
+        namespaced.as_bytes(),
+        key.id.as_bytes(),
+        key.group.as_deref().map(str::as_bytes),
+    ) {
+        // Byte-identical to the in-place `Err(format!("{blocked:?}"))` the flip replaced.
+        return Err(reason);
     }
-    // ONE METERED, ATTRIBUTED EVENT PER ROUND. `model` carries the namespaced tool and `provider`
-    // carries the plane, so an existing cost dashboard groups MCP traffic without knowing what MCP
-    // is — which is the whole govern-first thesis in one call.
-    gov_state.record_metering(
-        &key.id,
-        namespaced,
-        crate::plane::Plane::Mcp.key(),
-        None,
-        now,
-    );
+    // ONE METERED, ATTRIBUTED EVENT PER ROUND, through the host `meter_charge` seam (CLUSTER-4). A
+    // pure request meter with no token split (component `Queries` → `None`), so the recorded
+    // `(key_id, model, provider)` row is byte-identical to the in-place
+    // `record_metering(&key.id, namespaced, Plane::Mcp.key(), None, ..)`: `model` carries the
+    // namespaced tool and `provider` the plane, so an existing cost dashboard groups MCP traffic
+    // without knowing what MCP is. Fire-and-forget, exactly as the direct call was.
+    let _ = crate::plane_host::with_borrowed_host(ctx.app, scope, |hctx, vt| {
+        let usage = busbar_plugin::hot::Usage::with_attribution(
+            busbar_plugin::hot::UsageComponent::Queries,
+            0,
+            0,
+            busbar_plugin::hot::AdmissionId::NONE,
+            key.id.as_bytes(),
+            namespaced.as_bytes(),
+            crate::plane::Plane::Mcp.key().as_bytes(),
+        );
+        (vt.meter_charge.unwrap())(hctx, &*usage as *const busbar_plugin::hot::Usage)
+    });
     tracing::debug!(
         capability = %namespaced,
         round = rec.round,

@@ -97,6 +97,81 @@ pub fn with_dispatch_scope<R>(
     HostDispatch::new(app).with_host(f)
 }
 
+/// Run `f` with a [`HostCtx`] + host `&PlaneHostVtable` materialized over a BORROWED `app` and an
+/// EXISTING [`DispatchScope`] arena — the seam a sync plane leg uses to drive a host vtable slot while
+/// REGISTERING acquired handles into the request-wide arena it already owns (e.g. the one threaded
+/// through [`crate::mcp`]'s `Ctx::scope`), rather than a fresh per-call arena a [`HostDispatch`] would
+/// mint. The `HostState` is stack-pinned for exactly the duration of `f` (the [`recover`] invariant);
+/// the pointer must not escape it. Reclaim of the borrowed arena stays with WHOEVER owns it, not `f`.
+pub fn with_borrowed_host<R>(
+    app: &App,
+    scope: &DispatchScope,
+    f: impl FnOnce(HostCtx, &PlaneHostVtable) -> R,
+) -> R {
+    let state = HostState { app, scope };
+    let vtable = build_plane_host_vtable();
+    // The stack `HostState`'s address IS the opaque HostCtx; it outlives every call `f` makes.
+    let host: HostCtx = (&state as *const HostState).cast_mut().cast::<std::os::raw::c_void>();
+    let out = f(host, &vtable);
+    let _keep_alive = &state;
+    out
+}
+
+/// The outcome of a refusal-fidelity admit driven over the host `govern_admit_reason` seam.
+pub enum GovAdmit {
+    /// Admitted — the RAII grant is registered in the arena the caller passed.
+    Admitted,
+    /// A limit blocked — the RENDERED reason (byte-identical to the plane's own
+    /// `format!("{blocked:?}")`) and the block's recovery floor in whole seconds.
+    Blocked {
+        /// The rendered reason bytes the host copied out (the exact `{blocked:?}` the plane surfaces).
+        reason: String,
+        /// The recovery floor in whole seconds (`0` when the block does not self-recover / never rolls).
+        retry_after_secs: u64,
+    },
+}
+
+/// Admit one unit of work over the host [`govern_admit_reason`](vtable) seam, REGISTERING the RAII
+/// grant in `scope`'s arena on success and returning the RENDERED refusal reason on a blocked limit —
+/// a SAFE wrapper that keeps the `#[repr(C)]` [`GovRefusal`](busbar_plugin::hot::GovRefusal) out-param
+/// read inside this audited module (busbar-core denies `unsafe` everywhere else). The `Facts` carry the
+/// caller's REAL `(identity_id, group)` and `tokens = budget_remaining = 0`, so the POD gate is a no-op
+/// and the reconstructed chain is the sole decider — identical to the in-place `try_admit`.
+#[must_use]
+pub fn govern_admit_reason_over(
+    app: &App,
+    scope: &DispatchScope,
+    pool: &[u8],
+    identity_id: &[u8],
+    group: Option<&[u8]>,
+) -> GovAdmit {
+    let mut reason_buf = [0u8; 512];
+    let mut out = core::mem::MaybeUninit::<busbar_plugin::hot::GovRefusal>::uninit();
+    let decision = with_borrowed_host(app, scope, |hctx, vt| {
+        let facts = busbar_plugin::hot::Facts::with_attribution(
+            0, 0, 0, 0, 0, pool, identity_id, group,
+        );
+        (vt.govern_admit_reason.expect("govern_admit_reason is a wired slot"))(
+            hctx,
+            &*facts as *const busbar_plugin::hot::Facts,
+            reason_buf.as_mut_ptr(),
+            reason_buf.len(),
+            std::ptr::from_mut(&mut out),
+        )
+    });
+    if decision == busbar_plugin::hot::Decision::Admit {
+        return GovAdmit::Admitted;
+    }
+    // SAFETY: the host ALWAYS initializes `out` up front (see `vtable::govern_admit_reason`), so it is
+    // a live `GovRefusal` on every non-`Admit` return.
+    let refusal = unsafe { out.assume_init() };
+    let n = refusal.reason_len.min(reason_buf.len());
+    GovAdmit::Blocked {
+        reason: String::from_utf8_lossy(&reason_buf[..n]).into_owned(),
+        retry_after_secs: refusal.retry_after_secs,
+    }
+}
+
 /// The ASYNC-CAPABLE dispatch guard: an OWNED RAII handle a core `async` dispatch fn creates at the top
 /// of its body and holds as a LOCAL across every `.await`, so the [`DispatchScope`] arena lives for the
 /// whole future and reclaims on ANY exit — normal return, client-disconnect cancel, or panic. This is
