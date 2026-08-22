@@ -13,9 +13,13 @@
 // signer, the durable-state statics, the trust sweeper — stay `pub(crate)` behind one boot entry
 // point each; see `boot.rs`.
 
-// busbar contains ZERO `unsafe` code; enforce that as a compile-time guarantee so any future PR
-// that introduces an `unsafe` block fails to build rather than slipping in unreviewed.
-#![forbid(unsafe_code)]
+// busbar contains ZERO `unsafe` code OUTSIDE the audited `plane_host` FFI seam; enforce that as a
+// compile-time guarantee so any future PR that introduces an `unsafe` block elsewhere fails to build
+// rather than slipping in unreviewed. `deny` (not `forbid`) so the ONE module that MUST speak the
+// `#[repr(C)]` plane ABI — recovering `&HostState` from the opaque `HostCtx` a plane hands back across
+// the seam — can opt in with a narrow, documented `#[allow(unsafe_code)]`; every other module still
+// hard-fails on `unsafe`. See `plane_host`.
+#![deny(unsafe_code)]
 
 // The crate's own name, aliased. The extracted protocol dialects are written against
 // `busbar_core::` paths so ONE set of sources compiles both as its own crate (the production
@@ -81,6 +85,11 @@ pub mod oauth_as;
 pub mod observability;
 pub mod operation;
 pub mod plane;
+// The ONLY module permitted `unsafe`: it recovers `&HostState` from the opaque `HostCtx` the
+// `#[repr(C)]` plane ABI threads through every host call — a raw-pointer deref that cannot be
+// expressed safely. The `unsafe` is confined here and audited (see `plane_host::recover`).
+#[allow(unsafe_code)]
+pub mod plane_host;
 pub mod plugin_routes;
 pub mod profile;
 pub mod proto;

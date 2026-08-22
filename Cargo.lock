@@ -398,6 +398,7 @@ dependencies = [
  "busbar-api",
  "busbar-auth-admin-tokens",
  "busbar-hooks-ranking",
+ "busbar-plugin",
  "busbar-plugin-loader",
  "busbar-plugin-sign",
  "busbar-secret-ref",
