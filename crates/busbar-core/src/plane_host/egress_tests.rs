@@ -472,3 +472,82 @@ fn the_connect_head_surfaces_content_type_and_location_as_neutral_records() {
         let _ = (vt.egress_close.unwrap())(host, open.id);
     });
 }
+
+/// Call `egress_fault` with generous buffers, returning the header plus the decoded cause/url strings.
+fn read_fault(
+    vt: &PlaneHostVtable,
+    host: HostCtx,
+) -> Option<(busbar_plugin::hot::pod::EgressFault, String, String)> {
+    let mut out = std::mem::MaybeUninit::<busbar_plugin::hot::pod::EgressFault>::uninit();
+    let mut cause = vec![0u8; 8192];
+    let mut url = vec![0u8; 8192];
+    let class = (vt.egress_fault.unwrap())(
+        host,
+        &mut out,
+        cause.as_mut_ptr(),
+        cause.len(),
+        url.as_mut_ptr(),
+        url.len(),
+    );
+    if class != StatusClass::Ok {
+        return None;
+    }
+    // SAFETY: Ok ⇒ initialized.
+    let fault = unsafe { out.assume_init() };
+    let cause_s = String::from_utf8_lossy(&cause[..fault.cause_len as usize]).into_owned();
+    let url_s = String::from_utf8_lossy(&url[..fault.url_len as usize]).into_owned();
+    Some((fault, cause_s, url_s))
+}
+
+#[test]
+fn a_connect_failure_surfaces_class_connect_with_cause_and_url_kept_separate() {
+    use busbar_plugin::hot::EgressFailClass;
+    // Bind then DROP a listener to obtain a port nothing is listening on, so the connect is refused.
+    let port = {
+        let l = TcpListener::bind("127.0.0.1:0").expect("bind");
+        l.local_addr().unwrap().port()
+    };
+    let url = format!("http://127.0.0.1:{port}/some/path");
+    let desc = http_desc(url.as_bytes());
+
+    let app = crate::test_support::TestApp::new().build();
+    with_dispatch_scope(&app, |host, vt| {
+        let mut out = std::mem::MaybeUninit::<EgressOpen>::uninit();
+        let class = (vt.egress_open.unwrap())(host, &desc as *const EgressDesc, &mut out);
+        assert_eq!(class, StatusClass::Fault, "a refused connect faults the open");
+        let (fault, cause, got_url) = read_fault(vt, host).expect("a fault was stashed");
+        assert_eq!(
+            fault.fail_class,
+            EgressFailClass::Connect,
+            "a connect failure is the neutral Connect class the plane fails over on"
+        );
+        // The URL is surfaced SEPARATELY from the cause — a plane keeps or strips it independently.
+        assert_eq!(got_url, url, "the target url is surfaced separately, verbatim");
+        assert!(!cause.is_empty(), "the flattened cause is surfaced");
+        assert!(
+            !cause.contains(&url),
+            "the cause is url-FREE so the plane composes the url in itself: {cause:?}"
+        );
+        // Consumed: a second read finds nothing pending.
+        assert!(read_fault(vt, host).is_none(), "the fault is consumed once read");
+    });
+}
+
+#[test]
+fn a_guard_refusal_surfaces_class_refused_with_the_guards_own_reason() {
+    use busbar_plugin::hot::EgressFailClass;
+    // A private/loopback target with a scope that permits neither is refused by the guard.
+    let url = b"http://127.0.0.1:9/".to_vec();
+    let mut desc = http_desc(&url);
+    desc.allowlist_scope = 0; // permits neither private nor plaintext.
+
+    let app = crate::test_support::TestApp::new().build();
+    with_dispatch_scope(&app, |host, vt| {
+        let mut out = std::mem::MaybeUninit::<EgressOpen>::uninit();
+        let class = (vt.egress_open.unwrap())(host, &desc as *const EgressDesc, &mut out);
+        assert_eq!(class, StatusClass::Refused, "the guard refuses the hop");
+        let (fault, cause, _url) = read_fault(vt, host).expect("a refusal fault was stashed");
+        assert_eq!(fault.fail_class, EgressFailClass::Refused, "a guard refusal is the Refused class");
+        assert!(!cause.is_empty(), "the guard's own reason is surfaced as the cause");
+    });
+}

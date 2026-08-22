@@ -50,7 +50,11 @@
 use super::{recover, HostState};
 use busbar_plugin::hot::host::HostCtx;
 use busbar_plugin::hot::pod::POD_VERSION;
-use busbar_plugin::hot::{EgressDesc, EgressHead, EgressId, EgressKind, EgressOpen, PipeId, StatusClass};
+use super::scope::EgressFaultDetail;
+use busbar_plugin::hot::pod::EgressFault;
+use busbar_plugin::hot::{
+    EgressDesc, EgressFailClass, EgressHead, EgressId, EgressKind, EgressOpen, PipeId, StatusClass,
+};
 use busbar_plugin::read_sized_field;
 use std::collections::HashMap;
 use std::collections::VecDeque;
@@ -104,8 +108,9 @@ enum HeadMsg {
     },
     /// The resolve-then-pin guard refused the hop (SSRF / scheme / metadata).
     Refused(String),
-    /// The transport failed before a response head arrived (connect / TLS / send).
-    Fault(String),
+    /// The transport failed before a response head arrived. Carries the neutral CLASS (connect vs io
+    /// vs host-fault) and the flattened cause, so the plane reproduces its own failover taxonomy.
+    Fault { class: EgressFailClass, cause: String },
 }
 
 /// One open governed HTTP egress the host owns end to end. The plane holds only its [`EgressId`].
@@ -257,6 +262,34 @@ impl reqwest::dns::Resolve for RefuseSecondLookup {
             "governed egress pins the resolved address before connecting; a second lookup of \
              `{name}` is the DNS-rebind window the pin exists to close and must not happen"
         )))))
+    }
+}
+
+/// A transport error WITH ITS CAUSE CHAIN, flattened. `reqwest::Error`'s own `Display` is the request
+/// that failed and nothing about WHY — the certificate refusal, the connection reset and the timeout
+/// all render identically — so the reason in the `source()` chain is appended here. This is the SAME
+/// flattening the a2a transport's `with_cause` does; the host produces the neutral cause bytes and the
+/// plane composes its operator string over them. The url is NOT included — it is surfaced separately so
+/// each plane chooses to include or strip it.
+fn with_cause(err: &dyn std::error::Error) -> String {
+    let mut out = err.to_string();
+    let mut cause = err.source();
+    while let Some(c) = cause {
+        out.push_str(": ");
+        out.push_str(&c.to_string());
+        cause = c.source();
+    }
+    out
+}
+
+/// Classify a transport error into the neutral [`EgressFailClass`] the plane fails over on: a connect/
+/// TLS/redirect-follow failure is `Connect` (the "unreachable" class), anything else that reached the
+/// wire is `Io`. The plane maps this onto its own taxonomy (the mcp `Unreachable` vs `Io` split).
+fn classify_transport_error(err: &reqwest::Error) -> EgressFailClass {
+    if err.is_connect() {
+        EgressFailClass::Connect
+    } else {
+        EgressFailClass::Io
     }
 }
 
@@ -523,6 +556,9 @@ fn open_http(
         return StatusClass::Refused;
     };
     let url = url.to_string();
+    // Kept for the fault surface: the streaming thread MOVES `url`, so a separate copy stays here to be
+    // surfaced (separately from the cause) if the hop fails.
+    let fault_url = url.clone();
 
     let policy = guard_policy(d.allowlist_scope);
 
@@ -530,9 +566,13 @@ fn open_http(
     // inadmissible-plaintext target fails fast without spawning a thread.
     let (https, host_name, port, _path) = match crate::net_guard::split_url(&url) {
         Ok(parts) => parts,
-        Err(_) => return StatusClass::Refused,
+        Err(refusal) => {
+            stash_fault(state, EgressFailClass::Refused, 0, refusal.to_string(), &fault_url);
+            return StatusClass::Refused;
+        }
     };
-    if crate::net_guard::judge_scheme(&url, https, policy).is_err() {
+    if let Err(refusal) = crate::net_guard::judge_scheme(&url, https, policy) {
+        stash_fault(state, EgressFailClass::Refused, 0, refusal.to_string(), &fault_url);
         return StatusClass::Refused;
     }
 
@@ -565,7 +605,9 @@ fn open_http(
             run_http_stream(&url, &host_name, port, https, policy, &spec, identity, &head_tx, &chunk_tx, &stop_task);
         });
     let Ok(join) = join else {
-        return StatusClass::Fault; // could not spawn the streaming thread.
+        // Could not even spawn the streaming thread: a host-side fault, no cause from the wire.
+        stash_fault(state, EgressFailClass::Fault, 0, "governed egress could not start its streaming task".to_string(), &fault_url);
+        return StatusClass::Fault;
     };
 
     // Block for the connect head (or a bounded timeout so a wedged connect cannot pin the caller).
@@ -574,6 +616,7 @@ fn open_http(
         Err(RecvTimeoutError::Timeout) | Err(RecvTimeoutError::Disconnected) => {
             stop.notify_one();
             let _ = join.join();
+            stash_fault(state, EgressFailClass::Io, 0, "governed egress timed out waiting for the connect head".to_string(), &fault_url);
             return StatusClass::Fault;
         }
     };
@@ -582,11 +625,15 @@ fn open_http(
         HeadMsg::Refused(reason) => {
             tracing::debug!(target: "busbar::plane_host::egress", %reason, "governed egress refused");
             let _ = join.join();
+            // The guard refused the hop before a socket — surface the class + the guard's own reason
+            // (the plane composes its refusal string over the neutral cause).
+            stash_fault(state, EgressFailClass::Refused, 0, reason, &fault_url);
             return StatusClass::Refused;
         }
-        HeadMsg::Fault(reason) => {
-            tracing::debug!(target: "busbar::plane_host::egress", %reason, "governed egress faulted");
+        HeadMsg::Fault { class, cause } => {
+            tracing::debug!(target: "busbar::plane_host::egress", %cause, "governed egress faulted");
             let _ = join.join();
+            stash_fault(state, class, 0, cause, &fault_url);
             return StatusClass::Fault;
         }
     };
@@ -668,7 +715,10 @@ fn run_http_stream(
     {
         Ok(rt) => rt,
         Err(e) => {
-            let _ = head_tx.send(HeadMsg::Fault(format!("egress runtime: {e}")));
+            let _ = head_tx.send(HeadMsg::Fault {
+                class: EgressFailClass::Fault,
+                cause: format!("egress runtime: {e}"),
+            });
             return;
         }
     };
@@ -701,7 +751,10 @@ fn run_http_stream(
         let client = match builder.build() {
             Ok(client) => client,
             Err(e) => {
-                let _ = head_tx.send(HeadMsg::Fault(format!("egress client: {e}")));
+                let _ = head_tx.send(HeadMsg::Fault {
+                    class: EgressFailClass::Fault,
+                    cause: format!("egress client: {e}"),
+                });
                 return;
             }
         };
@@ -718,7 +771,14 @@ fn run_http_stream(
         let mut resp = match builder.send().await {
             Ok(resp) => resp,
             Err(e) => {
-                let _ = head_tx.send(HeadMsg::Fault(e.to_string()));
+                // The real transport failure: classify it (connect vs io) FIRST (the connect verdict is
+                // read off the original error), then strip the url and flatten the cause chain so the
+                // cause is URL-FREE — the url is surfaced SEPARATELY, so a plane includes or strips it
+                // as it chooses (mcp uses the url-free cause directly; a2a re-inserts the url). This is
+                // exactly the `without_url()`-then-flatten the mcp transport does today.
+                let class = classify_transport_error(&e);
+                let e = e.without_url();
+                let _ = head_tx.send(HeadMsg::Fault { class, cause: with_cause(&e) });
                 return;
             }
         };
@@ -759,6 +819,82 @@ fn run_http_stream(
             }
         }
     });
+}
+
+/// Stash a neutral fault into the dispatch scope so a following `egress_fault` hands it to the plane.
+fn stash_fault(state: &HostState, class: EgressFailClass, status: u16, cause: String, url: &str) {
+    state.scope.stash_egress_fault(EgressFaultDetail {
+        class,
+        status,
+        cause,
+        url: url.to_string(),
+    });
+}
+
+/// Copy `min(cap, bytes.len())` of `bytes` into `buf` (tolerating a null/zero slot), returning the
+/// count copied.
+///
+/// # Safety
+/// `buf`, when non-null, is a writable range of at least `cap` bytes for the call.
+unsafe fn copy_capped(buf: *mut u8, cap: usize, bytes: &[u8]) -> usize {
+    if buf.is_null() || cap == 0 {
+        return 0;
+    }
+    let n = bytes.len().min(cap);
+    // SAFETY: `bytes[..n]` is initialized and `buf[..n]` is writable (n ≤ cap, caller ABI).
+    unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), buf, n) };
+    n
+}
+
+/// Retrieve the neutral FAILURE detail of the last failed `egress_open` in this dispatch scope. Writes
+/// an [`EgressFault`] header (class + status + the FULL cause/url lengths) and copies the flattened
+/// cause bytes and the target url bytes into SEPARATE caller buffers. `Gone` when no fault is pending.
+///
+/// The cause and url are kept SEPARATE so a plane composes its own operator string — one keeps the url,
+/// another strips it. The header carries the FULL lengths even when a buffer was too small, and in that
+/// case the fault is LEFT stashed so the plane can re-call with a larger buffer (the read is not
+/// destructive until it fits); a read that fit consumes it.
+pub(crate) fn egress_fault(
+    host: HostCtx,
+    out: *mut MaybeUninit<EgressFault>,
+    cause_buf: *mut u8,
+    cause_cap: usize,
+    url_buf: *mut u8,
+    url_cap: usize,
+) -> StatusClass {
+    catch_unwind(AssertUnwindSafe(|| {
+        // SAFETY: recovery invariant (see `super::recover`).
+        let state: &HostState = unsafe { recover(host) };
+        let Some(detail) = state.scope.take_egress_fault() else {
+            return StatusClass::Gone; // no fault pending.
+        };
+        let cause_bytes = detail.cause.as_bytes();
+        let url_bytes = detail.url.as_bytes();
+        // SAFETY: caller's `(cause_buf, cause_cap)` / `(url_buf, url_cap)` are writable ranges (ABI).
+        let cause_written = unsafe { copy_capped(cause_buf, cause_cap, cause_bytes) };
+        let url_written = unsafe { copy_capped(url_buf, url_cap, url_bytes) };
+        // If either did not fit, LEAVE the fault stashed so the plane can re-call with bigger buffers.
+        let truncated = cause_written < cause_bytes.len() || url_written < url_bytes.len();
+        if truncated {
+            state.scope.stash_egress_fault(detail.clone());
+        }
+        let fault = EgressFault {
+            size: std::mem::size_of::<EgressFault>() as u32,
+            version: POD_VERSION,
+            fail_class: detail.class,
+            _reserved: 0,
+            status_code: detail.status,
+            _reserved2: 0,
+            // The FULL lengths (not the capped written counts), so a plane detects truncation and
+            // re-calls with a buffer sized to the header it just read.
+            cause_len: cause_bytes.len() as u32,
+            url_len: url_bytes.len() as u32,
+        };
+        // SAFETY: `out`, when non-null, is a writable/aligned `MaybeUninit<EgressFault>` for the call.
+        unsafe { busbar_plugin::write_out(out, fault) };
+        StatusClass::Ok
+    }))
+    .unwrap_or(StatusClass::Fault)
 }
 
 /// Pump readable bytes from a governed egress into the caller's buffer. Blocks for the next network

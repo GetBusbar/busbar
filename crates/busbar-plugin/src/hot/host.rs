@@ -23,7 +23,7 @@
 
 use super::pod::{
     AdmissionId, AdmitRefusal, ApprovalQuery, AuthQuery, AuthResolved, CallerRef, ContentChunk,
-    CounterpartyRef, Decision, EgressDesc, EgressId, EgressOpen, Facts, FramingDesc, GateDecision,
+    CounterpartyRef, Decision, EgressDesc, EgressFault, EgressId, EgressOpen, Facts, FramingDesc, GateDecision,
     GovRefusal, JournalQuery, Key, MeterOutcome, MetricSample, OpDesc, OpResult, PipeId, Seq, Signal,
     StatusClass, TargetRef, TrustVerdict, Usage, VerifyDecision, VerifyLease, VerifyQuery,
     VerifyVerdict, WorkHandleDesc, WorkHandleId,
@@ -128,6 +128,20 @@ pub type EgressWriteFn =
     extern "C-unwind" fn(host: HostCtx, egress: EgressId, buf: *const u8, len: usize) -> StatusClass;
 /// Close a governed egress (idempotent).
 pub type EgressCloseFn = extern "C-unwind" fn(host: HostCtx, egress: EgressId) -> StatusClass;
+/// Retrieve the neutral FAILURE detail of the last failed `egress_open` in this dispatch scope: writes
+/// an [`EgressFault`] header (class + status + the two lengths) and copies the flattened CAUSE-message
+/// bytes and the TARGET-url bytes into SEPARATE caller buffers, so a plane composes its own operator
+/// string (one keeps the url, another strips it). `Ok` when a fault was stashed (and consumed);
+/// `Gone` when none is pending. The host formats no operator string. The failure-side counterpart of
+/// the Ok-path [`EgressHead`].
+pub type EgressFaultFn = extern "C-unwind" fn(
+    host: HostCtx,
+    out: *mut MaybeUninit<EgressFault>,
+    cause_buf: *mut u8,
+    cause_cap: usize,
+    url_buf: *mut u8,
+    url_cap: usize,
+) -> StatusClass;
 /// Read readable bytes from a governed byte-duplex PIPE (raw-connection / subprocess tier) into a
 /// caller buffer; sets `out_written`. The host moves RAW BYTES only — line/message framing stays
 /// PLANE-side, layered on top (the CLUSTER-3 (c) decision: the host is byte-level, the plane frames).
@@ -270,6 +284,12 @@ pub struct PlaneHostVtable {
     pub pipe_read: Option<PipeReadFn>,
     /// Write raw bytes to a governed byte-duplex pipe (raw-connection / subprocess).
     pub pipe_write: Option<PipeWriteFn>,
+    // ── APPENDED (CLUSTER-3 egress, rich return surface): the FAILURE-side counterpart of the
+    //    Ok-path `EgressHead` — the neutral failure detail (class + flattened cause + url) for the last
+    //    failed `egress_open`, so a plane reproduces its own failover/refusal taxonomy byte for byte.
+    //    Trailing slot, append-only, same sized/versioned discipline (the Stage-A MINOR bump). ───────
+    /// Retrieve the last failed egress's neutral fault detail (class + cause bytes + url bytes).
+    pub egress_fault: Option<EgressFaultFn>,
     // ── EXTENSION POINT (reserved) ──────────────────────────────────────────────────────────────
     // Metering reserve/settle (a `CostHold`) is DELIBERATELY NOT a slot here. When a high-rate
     // carrier needs it, add `cost_reserve`/`cost_settle` as trailing `Option` slots below this line
@@ -320,6 +340,7 @@ impl PlaneHostVtable {
         govern_admit_reason: None,
         pipe_read: None,
         pipe_write: None,
+        egress_fault: None,
     };
 
     /// A fully-populated STUB vtable: every slot points at an `unimplemented!()` stub. It exists to
@@ -359,6 +380,7 @@ impl PlaneHostVtable {
         govern_admit_reason: Some(stub::govern_admit_reason),
         pipe_read: Some(stub::pipe_read),
         pipe_write: Some(stub::pipe_write),
+        egress_fault: Some(stub::egress_fault),
     };
 }
 
@@ -572,6 +594,17 @@ pub mod stub {
         _len: usize,
     ) -> StatusClass {
         unimplemented!("PlaneHost::pipe_write — stub")
+    }
+    /// Stub: see module docs.
+    pub extern "C-unwind" fn egress_fault(
+        _host: HostCtx,
+        _out: *mut MaybeUninit<EgressFault>,
+        _cause_buf: *mut u8,
+        _cause_cap: usize,
+        _url_buf: *mut u8,
+        _url_cap: usize,
+    ) -> StatusClass {
+        unimplemented!("PlaneHost::egress_fault — stub")
     }
 }
 

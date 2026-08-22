@@ -153,6 +153,11 @@ fn compute_layout() -> String {
     record!(s, EgressOpen, [size, version, _reserved, id, pipe, head]);
     record!(
         s,
+        EgressFault,
+        [size, version, fail_class, _reserved, status_code, _reserved2, cause_len, url_len]
+    );
+    record!(
+        s,
         CmdDesc,
         [size, version, argv_count, program_ptr, program_len, argv_ptr, argv_len]
     );

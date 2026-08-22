@@ -27,8 +27,25 @@
 //! killing subprocesses — no matter how the dispatch future ends. RAII across the FFI seam, scoped to
 //! exactly what core controls.
 
-use busbar_plugin::hot::{AdmissionId, EgressId, PipeId, Signal, StatusClass, VerifyLease};
+use busbar_plugin::hot::{AdmissionId, EgressFailClass, EgressId, PipeId, Signal, StatusClass, VerifyLease};
 use std::sync::Mutex;
+
+/// The neutral FAILURE detail the host stashes when an `egress_open` fails, so the plane can read it
+/// back through `egress_fault` and compose its OWN operator string. Held in the [`DispatchScope`] (not
+/// a process global) so the bytes live exactly for the dispatch that produced them and are reclaimed
+/// with it; the CAUSE (the flattened transport-error chain) and the URL are kept SEPARATE so each
+/// plane chooses to include or strip the url.
+#[derive(Clone, Debug)]
+pub struct EgressFaultDetail {
+    /// The neutral failure class the plane maps to its own failover/refusal taxonomy.
+    pub class: EgressFailClass,
+    /// The observed status (0 when the failure was before a response head).
+    pub status: u16,
+    /// The flattened cause-message bytes (the transport-error chain), url-free.
+    pub cause: String,
+    /// The target url bytes, kept separate from the cause.
+    pub url: String,
+}
 
 /// A reclaim action for a handle whose release is an explicit host call (close an egress, kill a
 /// subprocess, drop a leadership lease). Phase 2 fills these with the real host-side calls; each runs
@@ -111,6 +128,11 @@ struct Registry {
 /// reclaims every registered handle, so a cancelled/dropped dispatch can never leak a bare host handle.
 pub struct DispatchScope {
     reg: Mutex<Registry>,
+    /// The last failed `egress_open`'s neutral fault detail, stashed here so the plane reads it back
+    /// through `egress_fault` after a non-`Ok` open. Lives with the dispatch (reclaimed on drop); holds
+    /// only the LAST fault (the "read it immediately after the failing open" contract, like the govern
+    /// refusal reason).
+    egress_fault: Mutex<Option<EgressFaultDetail>>,
 }
 
 impl Default for DispatchScope {
@@ -125,7 +147,20 @@ impl DispatchScope {
     pub fn new() -> Self {
         DispatchScope {
             reg: Mutex::new(Registry::default()),
+            egress_fault: Mutex::new(None),
         }
+    }
+
+    /// STASH the neutral fault detail of a just-failed `egress_open`, so a following `egress_fault`
+    /// hands it to the plane. Overwrites any prior unread fault (the last-fault contract).
+    pub fn stash_egress_fault(&self, detail: EgressFaultDetail) {
+        *self.egress_fault.lock().unwrap_or_else(|e| e.into_inner()) = Some(detail);
+    }
+
+    /// TAKE (and clear) the stashed egress fault, or `None` when none is pending. Consuming so a stale
+    /// fault cannot be re-read against a later, unrelated open.
+    pub fn take_egress_fault(&self) -> Option<EgressFaultDetail> {
+        self.egress_fault.lock().unwrap_or_else(|e| e.into_inner()).take()
     }
 
     /// Poison-recovering lock: a panic mid-register must not wedge the arena for the reclaim path, so

@@ -143,6 +143,56 @@ pub enum EgressKind {
     Subprocess = 2,
 }
 
+/// WHY a governed egress FAILED — the neutral failure CLASS the host surfaces on a non-`Ok`
+/// `egress_open`, so the plane reproduces its OWN failover/refusal taxonomy (the mcp `Unreachable` vs
+/// `Io` split, the a2a transport-error framing) instead of a lossy coarse [`StatusClass`]. The host
+/// classifies the underlying transport outcome; the plane keeps every operator string. Names are
+/// protocol-NEUTRAL (a connectivity taxonomy, no protocol/role noun). Append-only: new classes at the
+/// tail with a fresh discriminant; [`Unspecified`](Self::Unspecified) (= 0) is the forward-compat
+/// default a reader sees when the host wrote no fine class (fall back to the coarse meaning).
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EgressFailClass {
+    /// No fine class supplied — fall back to the coarse [`StatusClass`] mapping.
+    Unspecified = 0,
+    /// The hop could not REACH the upstream (connect / TLS / DNS-pin failure) — the "unreachable"
+    /// class a plane fails over on without penalising a healthy-but-unreached target.
+    Connect = 1,
+    /// The connection was made but the exchange failed mid-flight (a read/write/body I/O failure).
+    Io = 2,
+    /// The governance guard REFUSED the hop before any socket (SSRF / scheme / metadata / allowlist).
+    Refused = 3,
+    /// An internal host fault (a caught panic, a runtime that would not start) — never the upstream's.
+    Fault = 4,
+}
+
+/// The out-param an `egress_fault` writes: the neutral failure detail for the LAST failed
+/// `egress_open` in this dispatch scope. The variable CAUSE-message bytes and the TARGET-url bytes are
+/// copied into SEPARATE caller buffers (so each plane chooses to include or strip the url — one keeps
+/// it, another strips it), and this header carries the class, the observed status (0 when none), and
+/// the two lengths. The host formats NO operator string; it hands back the flattened cause and the url
+/// as neutral bytes.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct EgressFault {
+    /// `size_of::<EgressFault>()` when the host writes it.
+    pub size: u32,
+    /// POD schema version.
+    pub version: u16,
+    /// The neutral failure class (see [`EgressFailClass`]).
+    pub fail_class: EgressFailClass,
+    /// Preamble tail padding.
+    pub _reserved: u8,
+    /// The observed response/status code, or `0` when the failure was before a response head.
+    pub status_code: u16,
+    /// Alignment padding before the lengths.
+    pub _reserved2: u16,
+    /// The number of CAUSE-message bytes the host copied into the caller's cause buffer.
+    pub cause_len: u32,
+    /// The number of TARGET-url bytes the host copied into the caller's url buffer.
+    pub url_len: u32,
+}
+
 /// The wire framing the host reproduces for a journal stream's prelude, so stored bytes stay
 /// byte-identical to every deployed store.
 #[repr(u8)]
@@ -1310,6 +1360,7 @@ mod tests {
         assert_preamble!(EgressDesc);
         assert_preamble!(EgressHead);
         assert_preamble!(EgressOpen);
+        assert_preamble!(EgressFault);
         assert_preamble!(CmdDesc);
         assert_preamble!(FramingDesc);
         assert_preamble!(JournalQuery);

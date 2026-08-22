@@ -57,6 +57,7 @@ pub fn build_plane_host_vtable() -> PlaneHostVtable {
         egress_poll: Some(egress_poll),
         egress_write: Some(egress_write),
         egress_close: Some(egress_close),
+        egress_fault: Some(egress_fault),
         journal_append: Some(super::journal::journal_append),
         journal_read: Some(super::journal::journal_read),
         nested_dispatch: Some(super::dispatch::nested_dispatch),
@@ -275,6 +276,16 @@ extern "C-unwind" fn egress_write(
 }
 extern "C-unwind" fn egress_close(host: HostCtx, egress: EgressId) -> StatusClass {
     super::egress::egress_close(host, egress)
+}
+extern "C-unwind" fn egress_fault(
+    host: HostCtx,
+    out: *mut MaybeUninit<busbar_plugin::hot::pod::EgressFault>,
+    cause_buf: *mut u8,
+    cause_cap: usize,
+    url_buf: *mut u8,
+    url_cap: usize,
+) -> StatusClass {
+    super::egress::egress_fault(host, out, cause_buf, cause_cap, url_buf, url_cap)
 }
 // journal_append / journal_read are WIRED in `super::journal` (the JOURNAL family, over the real
 // `crate::audit` hash chain). The builder references them directly; no stub lives here.
