@@ -143,9 +143,6 @@ pub(crate) const PLANE_DECL: crate::plane::registry::PlaneDecl =
 /// `App::a2a: None` used to encode). The downcast never fails: the a2a slot is always an `A2aPlane`
 /// (`PLANE_DECL::build`). The exact byte-analog of [`crate::mcp::resource`]; A2A carries ONE object,
 /// so this single accessor is its whole runtime seam.
-// The first callers land in the next commit (the reader migration off `App::a2a`); until then this
-// neutral accessor is deliberately unreferenced.
-#[allow(dead_code)]
 pub(crate) fn runtime(app: &crate::state::App) -> Option<&crate::a2a::plane::A2aPlane> {
     app.plane_slot(PLANE_DECL.key).map(|slot| {
         slot.downcast_ref::<crate::a2a::plane::A2aPlane>()

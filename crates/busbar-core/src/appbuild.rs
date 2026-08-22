@@ -1742,19 +1742,16 @@ pub fn build_app_from_config(
     #[cfg(feature = "plane-a2a")]
     {
         // UNCONDITIONAL, like the MCP arm below: when the operator REMOVES the `agents:` block
-        // (`app.a2a` is None) the live subject set is EMPTY, so retain drops every carried a2a
-        // VerifyGate flight/drift-latch instead of leaking one per removed agent forever. Gating this
-        // on `app.a2a.is_some()` (as it once was) skipped the prune exactly when it was needed most —
+        // (`crate::a2a::runtime(&app)` is None) the live subject set is EMPTY, so retain drops every
+        // carried a2a VerifyGate flight/drift-latch instead of leaking one per removed agent forever.
+        // Gating this on the plane's presence (as it once was) skipped the prune exactly when it was
+        // needed most —
         // the whole plane going away. Fail-closed intact: a pruned subject is one no delegation can
         // name, so dropping its coalescing state cannot race a verify.
         let live: std::collections::HashSet<String> =
-            app.a2a
-                .as_ref()
-                .map_or_else(std::collections::HashSet::new, |plane| {
-                    plane.with_registrations(|regs| {
-                        regs.iter().map(|r| r.agent_id.clone()).collect()
-                    })
-                });
+            crate::a2a::runtime(&app).map_or_else(std::collections::HashSet::new, |plane| {
+                plane.with_registrations(|regs| regs.iter().map(|r| r.agent_id.clone()).collect())
+            });
         app.a2a_verify.retain(&live);
     }
     #[cfg(feature = "plane-mcp")]
