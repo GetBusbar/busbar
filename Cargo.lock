@@ -509,6 +509,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "busbar-plane-abi"
+version = "1.5.0"
+
+[[package]]
 name = "busbar-plugin-abi"
 version = "1.5.0"
 dependencies = [
