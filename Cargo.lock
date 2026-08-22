@@ -2423,6 +2423,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "19f132c84eca552bf34cab8ec81f1c1dcc229b811638f9d283dceabe58c5569e"
 
 [[package]]
+name = "plane-abi-spike"
+version = "0.0.0"
+dependencies = [
+ "criterion",
+ "libloading",
+]
+
+[[package]]
+name = "plane-abi-spike-plugin"
+version = "0.0.0"
+
+[[package]]
 name = "portable-atomic"
 version = "1.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
