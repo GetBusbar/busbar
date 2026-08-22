@@ -11,8 +11,10 @@
 //! [`DispatchScope`] arena that reclaims every host handle a plane acquired when the dispatch ends.
 //!
 //! ADDITIVE and UNUSED: nothing in the engine calls the plane seam yet. Phase 2 wires the in-place
-//! plane calls against [`with_dispatch_scope`]; the fan-out fills the nineteen stubbed vtable slots
-//! (see [`vtable`]). The shipped in-process `plane::host` seam is untouched.
+//! plane calls against [`with_dispatch_scope`]; the fan-out fills the stubbed vtable slots (see
+//! [`vtable`]). The DISPATCH family — `nested_dispatch`, `workhandle_open`/`_resume`,
+//! `entitlement_check`, `gate_scan` — is already wired over real primitives in [`dispatch`]. The
+//! shipped in-process `plane::host` seam is untouched.
 //!
 //! ## The three pieces
 //!
@@ -23,6 +25,7 @@
 //!   [`DurableScope`] stubs.
 //! * [`vtable`] — [`build_plane_host_vtable`], three wired proof-of-life slots, nineteen typed stubs.
 
+pub mod dispatch;
 pub mod scope;
 pub mod vtable;
 

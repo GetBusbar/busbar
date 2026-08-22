@@ -3,8 +3,9 @@
 
 //! The HOST side of the [`PlaneHostVtable`]: the construction point that fills every slot with a
 //! host-side `extern "C-unwind"` fn, plus the three PROOF-OF-LIFE impls wired over real core
-//! primitives. The remaining nineteen are `unimplemented!()` stubs — one slot each for the Phase-2
-//! capability fan-out to fill against this scaffold.
+//! primitives. The DISPATCH family (five more — `nested_dispatch`, `workhandle_open`/`_resume`,
+//! `entitlement_check`, `gate_scan`) is wired in [`super::dispatch`]. The remaining fourteen are
+//! `unimplemented!()` stubs — one slot each for the Phase-2 capability fan-out to fill.
 //!
 //! ## Boundary discipline (reused from `plugin-sdk/boundary.rs`)
 //!
@@ -22,19 +23,19 @@
 use super::{recover, HostState};
 use busbar_plugin::hot::host::{HostCtx, PlaneHostVtable};
 use busbar_plugin::hot::{
-    AdmissionId, AuthQuery, AuthResolved, CallerRef, ContentChunk, CounterpartyRef, Decision,
-    EgressDesc, EgressId, EgressOpen, Facts, FramingDesc, GateDecision, JournalQuery, Key,
-    MeterOutcome, MetricSample, OpDesc, OpResult, Seq, Signal, StatusClass, TargetRef, TrustVerdict,
-    Usage, VerifyLease, VerifyVerdict, WorkHandleDesc, WorkHandleId,
+    AdmissionId, AuthQuery, AuthResolved, CounterpartyRef, Decision, EgressDesc, EgressId,
+    EgressOpen, Facts, FramingDesc, JournalQuery, Key, MeterOutcome, MetricSample, Seq, Signal,
+    StatusClass, TrustVerdict, Usage, VerifyLease, VerifyVerdict,
 };
 use busbar_plugin::AbiPreamble;
 use core::mem::MaybeUninit;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
 /// Build the host's [`PlaneHostVtable`]: the FROZEN preamble + sized/versioned header, then every
-/// capability slot `Some(<a host-side fn>)`. Three slots are wired over real primitives; the rest are
-/// typed `unimplemented!()` stubs the Phase-2 fan-out replaces. Every slot type-checks, so the fan-out
-/// has exactly one hole to fill per capability.
+/// capability slot `Some(<a host-side fn>)`. Three slots are wired over real primitives here and the
+/// DISPATCH family (five) in [`super::dispatch`]; the rest are typed `unimplemented!()` stubs the
+/// Phase-2 fan-out replaces. Every slot type-checks, so the fan-out has exactly one hole to fill per
+/// capability.
 #[must_use]
 pub fn build_plane_host_vtable() -> PlaneHostVtable {
     PlaneHostVtable {
@@ -47,7 +48,9 @@ pub fn build_plane_host_vtable() -> PlaneHostVtable {
         metrics_emit: Some(metrics_emit),
         clock_now: Some(clock_now),
 
-        // ── STUBBED (Phase 2 fan-out — one slot each) ──────────────────────────────────────────
+        // ── STUBBED (Phase 2 fan-out — one slot each), except the DISPATCH family wired in
+        //    `super::dispatch` (nested_dispatch / workhandle_open / workhandle_resume /
+        //    entitlement_check / gate_scan) ──────────────────────────────────────────────────────
         meter_charge: Some(meter_charge),
         breaker_admit: Some(breaker_admit),
         breaker_settle: Some(breaker_settle),
@@ -59,15 +62,15 @@ pub fn build_plane_host_vtable() -> PlaneHostVtable {
         egress_close: Some(egress_close),
         journal_append: Some(journal_append),
         journal_read: Some(journal_read),
-        nested_dispatch: Some(nested_dispatch),
-        workhandle_open: Some(workhandle_open),
-        workhandle_resume: Some(workhandle_resume),
+        nested_dispatch: Some(super::dispatch::nested_dispatch),
+        workhandle_open: Some(super::dispatch::workhandle_open),
+        workhandle_resume: Some(super::dispatch::workhandle_resume),
         drift_quarantine: Some(drift_quarantine),
         approval_redeem: Some(approval_redeem),
         auth_resolve: Some(auth_resolve),
         trust_evaluate: Some(trust_evaluate),
-        entitlement_check: Some(entitlement_check),
-        gate_scan: Some(gate_scan),
+        entitlement_check: Some(super::dispatch::entitlement_check),
+        gate_scan: Some(super::dispatch::gate_scan),
     }
 }
 
@@ -218,19 +221,6 @@ extern "C-unwind" fn journal_read(
 ) -> StatusClass {
     unimplemented!("plane_host::journal_read — Phase 2")
 }
-extern "C-unwind" fn nested_dispatch(
-    _host: HostCtx,
-    _desc: *const OpDesc,
-    _out: *mut MaybeUninit<OpResult>,
-) -> StatusClass {
-    unimplemented!("plane_host::nested_dispatch — Phase 2")
-}
-extern "C-unwind" fn workhandle_open(_host: HostCtx, _desc: *const WorkHandleDesc) -> WorkHandleId {
-    unimplemented!("plane_host::workhandle_open — Phase 2")
-}
-extern "C-unwind" fn workhandle_resume(_host: HostCtx, _handle: WorkHandleId) -> StatusClass {
-    unimplemented!("plane_host::workhandle_resume — Phase 2")
-}
 extern "C-unwind" fn drift_quarantine(_host: HostCtx, _key: *const Key) -> StatusClass {
     unimplemented!("plane_host::drift_quarantine — Phase 2")
 }
@@ -249,14 +239,4 @@ extern "C-unwind" fn trust_evaluate(
     _counterparty: *const CounterpartyRef,
 ) -> TrustVerdict {
     unimplemented!("plane_host::trust_evaluate — Phase 2")
-}
-extern "C-unwind" fn entitlement_check(
-    _host: HostCtx,
-    _caller: *const CallerRef,
-    _target: *const TargetRef,
-) -> bool {
-    unimplemented!("plane_host::entitlement_check — Phase 2")
-}
-extern "C-unwind" fn gate_scan(_host: HostCtx, _chunk: *const ContentChunk) -> GateDecision {
-    unimplemented!("plane_host::gate_scan — Phase 2")
 }
