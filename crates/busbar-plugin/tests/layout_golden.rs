@@ -128,7 +128,13 @@ fn compute_layout() -> String {
             cred_header_ptr,
             cred_header_len,
             cred_scheme_ptr,
-            cred_scheme_len
+            cred_scheme_len,
+            env_ptr,
+            env_len,
+            cwd_ptr,
+            cwd_len,
+            stderr_inherit,
+            _reserved3
         ]
     );
     record!(

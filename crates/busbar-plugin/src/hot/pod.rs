@@ -767,6 +767,29 @@ pub struct EgressDesc {
     pub cred_scheme_ptr: *const u8,
     /// (minor-7) Length of the credential scheme-prefix range (`0` = no scheme prefix).
     pub cred_scheme_len: usize,
+    /// (minor-8) Borrowed packed subprocess-ENVIRONMENT records (SUBPROCESS kind only). The child gets
+    /// ONLY these, never the host's own environment — the host applies `env_clear()` first, so a
+    /// provider secret in the host's environment cannot leak into an operator-configured child. Each
+    /// record is `u32 name_len` (LE), `name_len` name bytes, a `u8` VALUE-KIND (`0` = a literal value,
+    /// `1` = a host-resolved secret reference), a `u32 value_len` (LE), then `value_len` value bytes.
+    /// For a literal the value is the environment value verbatim; for a secret reference the value is
+    /// an OPAQUE host-resolved reference the host turns into plaintext at spawn (never the plaintext
+    /// itself). Null/`0` ⇒ an empty child environment. NOT interpreted for non-subprocess kinds.
+    pub env_ptr: *const u8,
+    /// (minor-8) Length of the packed environment-records range (`0` = an empty child environment).
+    pub env_len: usize,
+    /// (minor-8) Borrowed subprocess WORKING-DIRECTORY bytes (SUBPROCESS kind only). Null/`0` ⇒ the
+    /// child inherits the host's own working directory (the host does not call `current_dir`).
+    pub cwd_ptr: *const u8,
+    /// (minor-8) Length of the working-directory range (`0` = inherit the host's cwd).
+    pub cwd_len: usize,
+    /// (minor-8) Subprocess STDERR disposition (SUBPROCESS kind only): `0` = discard (the child's
+    /// stderr goes to the null device — the forward-compatible default a sender that predates this
+    /// field leaves), `1` = inherit (the child's stderr is the host's own stderr, where an operator
+    /// reads a child's diagnostics). Any other value is read as the `0` default.
+    pub stderr_inherit: u8,
+    /// (minor-8) Preamble/alignment padding after the stderr byte.
+    pub _reserved3: [u8; 7],
 }
 
 /// What the host observed at connect time (post-connect, pre-body), handed back with an [`EgressOpen`].

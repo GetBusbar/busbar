@@ -30,6 +30,7 @@ use busbar_plugin::hot::pod::POD_VERSION;
 use busbar_plugin::hot::{
     EgressDesc, EgressHead, EgressId, EgressOpen, PipeId, StatusClass,
 };
+use busbar_plugin::read_sized_field;
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::mem::MaybeUninit;
@@ -169,6 +170,106 @@ unsafe fn decode_command(ptr: *const u8, len: usize) -> Option<(String, Vec<Stri
     Some((program, it.collect()))
 }
 
+/// The result of resolving the child's environment: the fully-resolved `(name, value)` pairs the child
+/// will get, or a fail-closed refusal (a malformed record, or a secret reference the host could not
+/// resolve — the child is NOT spawned with a missing variable).
+enum EnvOutcome {
+    /// The child's whole environment, resolved. Applied under `env_clear()` so it is the ONLY
+    /// environment the child sees.
+    Ready(Vec<(String, String)>),
+    /// A record was malformed or a secret could not be resolved — refuse the spawn.
+    Refuse,
+}
+
+/// The child-environment VALUE-KIND byte in a packed env record: a literal value, or a host-resolved
+/// secret reference (see [`EgressDesc::env_ptr`]).
+const ENV_KIND_PLAIN: u8 = 0;
+const ENV_KIND_SECRET: u8 = 1;
+
+/// Decode + RESOLVE the packed subprocess environment the [`EgressDesc::env_ptr`] tail carries. Each
+/// record is `u32 name_len` (LE), `name_len` name bytes, a `u8` value-kind, a `u32 value_len` (LE),
+/// then `value_len` value bytes. A literal value is taken verbatim; a secret reference is the opaque
+/// JSON of a host secret-ref the host turns into plaintext HERE (never off a plane POD), through the
+/// SAME built-in resolver the in-process stdio transport uses — so a rotated secret needs no restart
+/// and the plaintext never crosses the seam. Fail-closed: a malformed record or an unresolvable secret
+/// refuses the whole spawn rather than starting the child with a missing variable.
+///
+/// # Safety
+/// `(ptr, len)`, when non-null, MUST describe a live, initialized byte range for the call.
+unsafe fn resolve_child_env(ptr: *const u8, len: usize) -> EnvOutcome {
+    if ptr.is_null() || len == 0 {
+        return EnvOutcome::Ready(Vec::new()); // no records ⇒ an empty (cleared) child environment.
+    }
+    // SAFETY: caller's contract — `(ptr, len)` is a live borrowed range.
+    let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
+    let mut out: Vec<(String, String)> = Vec::new();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let Some(name) = read_len_prefixed(bytes, &mut i) else {
+            return EnvOutcome::Refuse;
+        };
+        let Some(&kind) = bytes.get(i) else {
+            return EnvOutcome::Refuse;
+        };
+        i += 1;
+        let Some(value_bytes) = read_len_prefixed_bytes(bytes, &mut i) else {
+            return EnvOutcome::Refuse;
+        };
+        let value = match kind {
+            ENV_KIND_PLAIN => String::from_utf8_lossy(value_bytes).into_owned(),
+            ENV_KIND_SECRET => {
+                // The value is the OPAQUE JSON of a host secret-ref; deserialize and resolve it HERE
+                // through the built-in resolver — the same `resolve_builtin_string` the in-process
+                // stdio spawn reads a `ChildEnvValue::Secret` with. A failure refuses the spawn.
+                let Ok(secret_ref) =
+                    serde_json::from_slice::<crate::config::SecretRef>(value_bytes)
+                else {
+                    return EnvOutcome::Refuse;
+                };
+                match crate::config::secret::resolve_builtin_string(&secret_ref) {
+                    Ok(plaintext) => plaintext,
+                    Err(_) => return EnvOutcome::Refuse, // unresolvable secret ⇒ fail-closed.
+                }
+            }
+            _ => return EnvOutcome::Refuse, // an unknown value-kind is never guessed.
+        };
+        out.push((String::from_utf8_lossy(name).into_owned(), value));
+    }
+    EnvOutcome::Ready(out)
+}
+
+/// Read a `u32 len` (LE) then `len` bytes as a borrowed slice, advancing `*i`; `None` on truncation.
+fn read_len_prefixed_bytes<'a>(bytes: &'a [u8], i: &mut usize) -> Option<&'a [u8]> {
+    let end = i.checked_add(4)?;
+    let word = bytes.get(*i..end)?;
+    *i = end;
+    let n = u32::from_le_bytes(word.try_into().ok()?) as usize;
+    let tok_end = i.checked_add(n)?;
+    let slice = bytes.get(*i..tok_end)?;
+    *i = tok_end;
+    Some(slice)
+}
+
+/// As [`read_len_prefixed_bytes`], but the name arm — kept a distinct helper for the read site's
+/// readability (a record reads its name, its kind, then its value).
+fn read_len_prefixed<'a>(bytes: &'a [u8], i: &mut usize) -> Option<&'a [u8]> {
+    read_len_prefixed_bytes(bytes, i)
+}
+
+/// Read the subprocess working directory off the [`EgressDesc`] tail: `Some(dir)` when a non-empty cwd
+/// was written, `None` (⇒ inherit the host's cwd) when the field is absent or empty. Read only behind
+/// the sized-struct guard so a sender that predates the tail leaves the host's cwd untouched.
+fn read_child_cwd(d: &EgressDesc) -> Option<String> {
+    let ptr = read_sized_field!(d, EgressDesc, cwd_ptr)?;
+    let len = read_sized_field!(d, EgressDesc, cwd_len)?;
+    if ptr.is_null() || len == 0 {
+        return None;
+    }
+    // SAFETY: a non-null `(cwd_ptr, cwd_len)` is a live borrowed range for the call (ABI discipline).
+    let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
+    Some(String::from_utf8_lossy(bytes).into_owned())
+}
+
 /// The HOST command allowlist: a program is admissible only when it is an ABSOLUTE path AND the egress
 /// scope permits the subprocess tier. This is policy the HOST owns — the plane's [`EgressDesc`] carried
 /// only data. Phase 2 resolves the scope id against operator config and adds a per-program allowlist;
@@ -193,14 +294,48 @@ pub(super) fn open_subprocess(
     if !command_admissible(&program, d.allowlist_scope) {
         return StatusClass::Refused; // not absolute / scope forbids the subprocess tier.
     }
+    // THE CHILD'S ENVIRONMENT, resolved host-side and applied under `env_clear()` so the child gets
+    // ONLY these variables — NEVER the host's own environment, which holds provider API keys, store
+    // credentials and admin tokens. Inheriting them (as this path once did) would make every governed
+    // subprocess a silent credential-exfiltration primitive; clearing first is the fix the in-process
+    // stdio transport already applies, restated at the seam. A malformed record or an unresolvable
+    // secret refuses the spawn rather than starting the child with a missing variable.
+    // SAFETY: `(env_ptr, env_len)`, when present, is a live borrowed range for the call (ABI).
+    let env = match unsafe {
+        resolve_child_env(
+            read_sized_field!(d, EgressDesc, env_ptr).unwrap_or(std::ptr::null()),
+            read_sized_field!(d, EgressDesc, env_len).unwrap_or(0),
+        )
+    } {
+        EnvOutcome::Ready(env) => env,
+        EnvOutcome::Refuse => return StatusClass::Refused,
+    };
+    // The working directory (empty ⇒ inherit the host's own) and the stderr disposition (default
+    // discard; inherit sends the child's diagnostics to the host's stderr where an operator reads
+    // them), both read only behind the sized-struct guard so a sender that predates the tail keeps the
+    // pre-enrichment shape (an empty environment, the host's cwd, a discarded stderr).
+    let cwd = read_child_cwd(d);
+    let stderr = if read_sized_field!(d, EgressDesc, stderr_inherit) == Some(1) {
+        Stdio::inherit()
+    } else {
+        Stdio::null()
+    };
     // NO SHELL: the program goes to `Command::new` and argv as a vector — never a shell string, so a
-    // metacharacter in an arg has no meaning. Stderr is discarded (the duplex is stdin/stdout only).
-    let child = Command::new(&program)
+    // metacharacter in an arg has no meaning.
+    let mut builder = Command::new(&program);
+    builder
         .args(&argv)
+        // THE WHOLE environment, not additions to the host's — `env_clear()` first, then only the
+        // resolved records. See the note above.
+        .env_clear()
+        .envs(env)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn();
+        .stderr(stderr);
+    if let Some(dir) = &cwd {
+        builder.current_dir(dir);
+    }
+    let child = builder.spawn();
     let mut child = match child {
         Ok(child) => child,
         Err(_) => return StatusClass::Fault, // spawn failed (e.g. ENOENT) — a host-side fault.

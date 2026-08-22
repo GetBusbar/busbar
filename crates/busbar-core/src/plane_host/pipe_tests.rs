@@ -46,7 +46,40 @@ fn subprocess_desc(command: &[u8], scope: u32) -> EgressDesc {
         cred_header_len: 0,
         cred_scheme_ptr: std::ptr::null(),
         cred_scheme_len: 0,
+        env_ptr: std::ptr::null(),
+        env_len: 0,
+        cwd_ptr: std::ptr::null(),
+        cwd_len: 0,
+        stderr_inherit: 0,
+        _reserved3: [0; 7],
     }
+}
+
+/// A packed child-environment record: `u32 name_len | name | u8 kind | u32 value_len | value`.
+fn env_record(name: &str, kind: u8, value: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(&(name.len() as u32).to_le_bytes());
+    out.extend_from_slice(name.as_bytes());
+    out.push(kind);
+    out.extend_from_slice(&(value.len() as u32).to_le_bytes());
+    out.extend_from_slice(value);
+    out
+}
+
+/// Read a subprocess's whole stdout to EOF (the child is expected to exit after printing).
+fn read_to_eof(vt: &PlaneHostVtable, host: HostCtx, pipe: PipeId) -> Vec<u8> {
+    let mut got = Vec::new();
+    let mut buf = [0u8; 256];
+    for _ in 0..256 {
+        let mut written: usize = 0;
+        let class = (vt.pipe_read.unwrap())(host, pipe, buf.as_mut_ptr(), buf.len(), &mut written);
+        assert_eq!(class, StatusClass::Ok, "pipe_read stays Ok until EOF");
+        if written == 0 {
+            break; // EOF
+        }
+        got.extend_from_slice(&buf[..written]);
+    }
+    got
 }
 
 /// Read up to `want` bytes from the pipe, accumulating across blocking reads until it has them or the
@@ -106,6 +139,84 @@ fn subprocess_pipe_echoes_bytes_through_cat() {
         assert_eq!(
             (vt.pipe_write.unwrap())(host, PipeId(999_999), payload.as_ptr(), payload.len()),
             StatusClass::Gone
+        );
+    });
+}
+
+#[test]
+fn subprocess_env_is_cleared_and_selective_never_leaking_the_hosts() {
+    // `/usr/bin/env` prints the child's whole environment, one `NAME=value` per line. Under the seam's
+    // `env_clear()` + selective `envs`, the child must see ONLY the records the plane named — never the
+    // host's own environment (which holds provider keys), so the marker is present and the host's
+    // always-present `PATH` is not. This is the CONFIRMED regression this carrier closes.
+    if !std::path::Path::new("/usr/bin/env").exists() {
+        return;
+    }
+    let command = pack_command(&["/usr/bin/env"]);
+    let env = env_record("BUSBAR_ENV_MARKER", 0, b"present");
+    let mut desc = subprocess_desc(&command, SCOPE_ALLOW_SUBPROCESS);
+    desc.env_ptr = env.as_ptr();
+    desc.env_len = env.len();
+
+    let app = crate::test_support::TestApp::new().build();
+    with_dispatch_scope(&app, |host, vt| {
+        let mut out = std::mem::MaybeUninit::<EgressOpen>::uninit();
+        assert_eq!(
+            (vt.egress_open.unwrap())(host, &desc as *const EgressDesc, &mut out),
+            StatusClass::Ok
+        );
+        // SAFETY: Ok ⇒ initialized.
+        let open = unsafe { out.assume_init() };
+        let printed = String::from_utf8_lossy(&read_to_eof(vt, host, open.pipe)).into_owned();
+        assert!(
+            printed.contains("BUSBAR_ENV_MARKER=present"),
+            "the child sees the variable the plane named; got: {printed:?}"
+        );
+        assert!(
+            !printed.contains("PATH="),
+            "env_clear() ran first, so the host's own environment (its PATH, its secrets) never \
+             reaches the child; got: {printed:?}"
+        );
+    });
+}
+
+#[test]
+fn subprocess_env_resolves_a_secret_reference_host_side() {
+    // A `Secret` env record carries the OPAQUE JSON of a host secret-ref; the host resolves it to
+    // plaintext at spawn through the built-in resolver, exactly as the in-process stdio spawn does.
+    // The `env` module reads a host environment variable — `HOME` is present in any test environment —
+    // so the child ends up with the resolved value the plane never held.
+    if !std::path::Path::new("/usr/bin/env").exists() {
+        return;
+    }
+    let Ok(home) = std::env::var("HOME") else {
+        return; // no HOME to resolve against — skip rather than fail.
+    };
+    if home.is_empty() {
+        return;
+    }
+    let command = pack_command(&["/usr/bin/env"]);
+    // The sugar form the config layer accepts: `{ env: HOME }` ⇒ the `env` secret module, key `HOME`.
+    let secret_json = br#"{"env":"HOME"}"#;
+    let env = env_record("BUSBAR_INJECTED", 1, secret_json);
+    let mut desc = subprocess_desc(&command, SCOPE_ALLOW_SUBPROCESS);
+    desc.env_ptr = env.as_ptr();
+    desc.env_len = env.len();
+
+    let app = crate::test_support::TestApp::new().build();
+    with_dispatch_scope(&app, |host, vt| {
+        let mut out = std::mem::MaybeUninit::<EgressOpen>::uninit();
+        assert_eq!(
+            (vt.egress_open.unwrap())(host, &desc as *const EgressDesc, &mut out),
+            StatusClass::Ok
+        );
+        // SAFETY: Ok ⇒ initialized.
+        let open = unsafe { out.assume_init() };
+        let printed = String::from_utf8_lossy(&read_to_eof(vt, host, open.pipe)).into_owned();
+        assert!(
+            printed.contains(&format!("BUSBAR_INJECTED={home}")),
+            "the host resolved the secret reference to plaintext and handed it to the child; got: \
+             {printed:?}"
         );
     });
 }

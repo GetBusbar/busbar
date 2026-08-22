@@ -101,6 +101,12 @@ fn http_desc(url: &[u8]) -> EgressDesc {
         cred_header_len: 0,
         cred_scheme_ptr: std::ptr::null(),
         cred_scheme_len: 0,
+        env_ptr: std::ptr::null(),
+        env_len: 0,
+        cwd_ptr: std::ptr::null(),
+        cwd_len: 0,
+        stderr_inherit: 0,
+        _reserved3: [0; 7],
     }
 }
 
