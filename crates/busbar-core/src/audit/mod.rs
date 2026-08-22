@@ -57,6 +57,7 @@
 //! the records off-box to something the compromised host cannot rewrite. Anything stronger said
 //! about it is oversold.
 
+pub(crate) mod journal;
 pub(crate) mod vocab;
 
 use std::marker::PhantomData;
