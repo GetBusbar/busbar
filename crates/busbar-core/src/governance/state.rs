@@ -548,6 +548,14 @@ impl GovState {
             expires_at: None,
             deleted_at: None,
             revision: 0,
+            // A self-serve key IS the PERSONAL (user-bound) token: record the IdP subject for
+            // ATTRIBUTION (1.6.0) so per-user budget/audit resolves to a named person. This is the
+            // honest, buildable half of "user-bound" — it is recorded, NOT re-checked against the
+            // IdP on use (standard OIDC cannot provide a per-use subject floor; auth review C1).
+            // `verify_token`/enforcement never read these fields, so stamping them is behavior-
+            // preserving; they are pure attribution metadata.
+            idp_subject: Some(user_sub.to_string()),
+            binding_mode: Some(SELF_KEY_BINDING_MODE.to_string()),
             ..Default::default()
         };
         self.store.put_key(&binding)?;

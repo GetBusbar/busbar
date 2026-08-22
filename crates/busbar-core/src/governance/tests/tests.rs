@@ -3699,6 +3699,37 @@ fn refresh_self_rolls_back_the_new_binding_when_the_old_tombstone_fails() {
     );
 }
 
+/// A self-serve (PERSONAL) key records the IdP subject for ATTRIBUTION and stamps the user-bound
+/// binding mode (1.6.0) — the honest, buildable half of "user-bound". These are pure attribution
+/// metadata: `verify_token` still succeeds exactly as before (they are not an enforcement input),
+/// and a refresh carries the same attribution onto the rotated binding.
+#[test]
+fn self_serve_key_records_idp_subject_and_user_bound_mode() {
+    let store = Arc::new(MemoryStore::new());
+    let gov = GovState::new_with_signer(store, None, Some(self_serve_signer())).unwrap();
+    let sub = "oidc:carol";
+    let now = 1_700_000_000u64;
+
+    let (binding, token) = gov.issue_self(sub, None, now + 3600, now).unwrap();
+    assert_eq!(
+        binding.idp_subject.as_deref(),
+        Some(sub),
+        "the personal key records the IdP subject for attribution"
+    );
+    assert_eq!(binding.binding_mode.as_deref(), Some("user-bound"));
+    assert_eq!(
+        binding.minted_by, None,
+        "a self-minted personal token has no separate minter provenance"
+    );
+    // Attribution is metadata only: the token still verifies exactly as before.
+    assert!(gov.verify_token(&token, now, None).is_some());
+
+    // A refresh carries the same attribution onto the rotated binding.
+    let (rotated, _t) = gov.refresh_self(sub, None, now + 3600, now).unwrap();
+    assert_eq!(rotated.idp_subject.as_deref(), Some(sub));
+    assert_eq!(rotated.binding_mode.as_deref(), Some("user-bound"));
+}
+
 /// The mirror-image happy path stays intact: a SUCCESSFUL refresh still tombstones the old
 /// binding (the prior token stops verifying) and only the new one remains.
 #[test]

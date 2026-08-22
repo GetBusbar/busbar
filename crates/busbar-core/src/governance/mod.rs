@@ -59,6 +59,12 @@ pub(crate) const BINDING_MARKER_PREFIX: &str = "binding:";
 /// and so the deterministic subject id derives under a stable, non-attacker-chosen prefix.
 pub(crate) const SELF_KEY_GROUP_PREFIX: &str = "user:";
 
+/// The [`busbar_api::VirtualKey::binding_mode`] recorded on a SELF-SERVE (personal) key: it is the
+/// PERSONAL user-bound token (records the IdP subject for attribution, short-lived). Matches the
+/// `auth.policy` `BindingMode::UserBound` wire spelling (`"user-bound"`). App/service tokens minted
+/// through the admin API carry a different (or absent) mode.
+pub(crate) const SELF_KEY_BINDING_MODE: &str = "user-bound";
+
 /// The `generation_hash` marker for a signed-token binding at a given rotation generation.
 pub(crate) fn binding_marker(id: &str, generation: &str) -> String {
     format!("{BINDING_MARKER_PREFIX}{id}:{generation}")
