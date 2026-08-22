@@ -160,6 +160,9 @@ where
         // interned `&'static` name we store (no per-response allocation for the name). An unknown
         // ingress protocol falls back to `openai` — the exact default `ingress_error` /
         // `mid_stream_error_bytes` already use for framing, so the fallback is behavior-preserving.
+        // Resolve the ingress protocol ONCE (was two linear `decl_for` scans) — it supplies both the
+        // binary-eventstream flag AND the interned `&'static` name we store.
+        let ingress_decl = crate::proto::decl_for(ingress_protocol);
         Self {
             inner,
             first_byte_sent: false,
@@ -167,11 +170,8 @@ where
             // Whether the client expects a binary event-stream body (Bedrock) rather than SSE text.
             // Dispatches through the `ingress_is_eventstream` vtable method so this constructor carries
             // no `== "bedrock"` branch — a future protocol with binary framing just overrides it.
-            ingress_eventstream: crate::proto::decl_for(ingress_protocol)
-                .is_some_and(|d| d.ingress_is_eventstream),
-            ingress_protocol: crate::proto::decl_for(ingress_protocol)
-                .map(|d| d.name)
-                .unwrap_or("openai"),
+            ingress_eventstream: ingress_decl.is_some_and(|d| d.ingress_is_eventstream),
+            ingress_protocol: ingress_decl.map(|d| d.name).unwrap_or("openai"),
             op,
             permit: Some(permit),
             app: Some(app),
