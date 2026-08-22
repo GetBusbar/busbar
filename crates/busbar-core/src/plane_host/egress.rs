@@ -496,10 +496,12 @@ fn open_http(
         return StatusClass::Refused;
     }
 
-    // NOTE (Phase 2): `client_identity_ref` (mTLS) is accepted here as an opaque REF the HOST
-    // resolves — the plane never sees a key. Wiring it needs the boot-time client-identity map plumbed
-    // onto `HostState`; the ref is honored structurally (the chokepoint is here).
-    let _client_identity_ref = d.client_identity_ref;
+    // THE mTLS CLIENT IDENTITY, resolved host-side from the opaque ref the plane named — the plane
+    // never sees a key. An unknown/zero ref resolves to `None`, which is the honest mTLS outcome: the
+    // hop presents no certificate and an mTLS peer closes the handshake itself rather than the host
+    // forging one (the a2a `presenting`/no-identity posture, restated at the seam). See
+    // [`super::identity`].
+    let identity = super::identity::resolve(d.client_identity_ref);
 
     // Build the outbound request from the neutral DATA tail (verb / packed headers / body), then
     // INJECT the credential the plane named by ref — the host resolves the ref to the plaintext it
@@ -520,7 +522,7 @@ fn open_http(
     let join = std::thread::Builder::new()
         .name("busbar-egress".into())
         .spawn(move || {
-            run_http_stream(&url, &host_name, port, https, policy, &spec, &head_tx, &chunk_tx, &stop_task);
+            run_http_stream(&url, &host_name, port, https, policy, &spec, identity, &head_tx, &chunk_tx, &stop_task);
         });
     let Ok(join) = join else {
         return StatusClass::Fault; // could not spawn the streaming thread.
@@ -607,6 +609,7 @@ fn run_http_stream(
     https: bool,
     policy: crate::net_guard::GuardPolicy,
     spec: &ReqSpec,
+    identity: Option<reqwest::Identity>,
     head_tx: &SyncSender<HeadMsg>,
     chunk_tx: &SyncSender<ChunkMsg>,
     stop: &tokio::sync::Notify,
@@ -634,14 +637,20 @@ fn run_http_stream(
         // THE PINNED CLIENT: connects to the judged address, refuses a second lookup, follows no
         // redirect (a 3xx is an unguarded URL), and reads the peer certificate off the verified
         // handshake.
-        let client = match reqwest::Client::builder()
+        let mut builder = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .tls_info(true)
             .timeout(EGRESS_TIMEOUT)
             .dns_resolver(Arc::new(RefuseSecondLookup))
-            .resolve(host_name, pin.socket_addr())
-            .build()
-        {
+            .resolve(host_name, pin.socket_addr());
+        // BUSBAR'S OWN END OF A MUTUAL HANDSHAKE. Offering a certificate ASKS FOR NOTHING and WEAKENS
+        // NOTHING: it is presented only when the peer's `CertificateRequest` asks for one, and the
+        // peer's certificate is still verified by the ordinary chain-and-name check. There is no knob
+        // here that turns verification off. Resolved host-side from the plane's opaque ref.
+        if let Some(id) = identity {
+            builder = builder.identity(id);
+        }
+        let client = match builder.build() {
             Ok(client) => client,
             Err(e) => {
                 let _ = head_tx.send(HeadMsg::Fault(format!("egress client: {e}")));

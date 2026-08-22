@@ -31,6 +31,7 @@ mod creds;
 pub mod dispatch;
 pub mod egress;
 mod govern;
+pub(crate) mod identity;
 pub mod journal;
 pub mod pipe;
 pub mod scope;
