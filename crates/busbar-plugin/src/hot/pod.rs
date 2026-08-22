@@ -207,6 +207,21 @@ pub enum GateDecision {
     Block = 1,
 }
 
+/// The decision of a STATELESS verify-freshness check (`verify_decide` over a [`VerifyQuery`]): may
+/// the plane reuse its recorded observation, or must it re-verify? Returned BY VALUE (kept out of the
+/// hot PODs so it stays a bare `#[repr(u8)]`, like [`GateDecision`]). `Stale` is the FAIL-CLOSED
+/// answer — a null query or a caught panic answers `Stale`, so an undecidable freshness re-verifies
+/// rather than serving unchecked. Append-only.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VerifyDecision {
+    /// The recorded observation is still within `ttl_ms`; reuse the snapshot (no re-fetch).
+    Fresh = 0,
+    /// The subject is DUE for re-verification — never-checked, ttl-elapsed (reaching the ttl is due),
+    /// or the clock went backwards; the plane must re-fetch. Also the fail-closed default.
+    Stale = 1,
+}
+
 /// The FINE, dialect-normalized health class a plane reports for a FAILED guarded operation — the
 /// refinement of the coarse [`StatusClass`] that lets the host reproduce the breaker's exact
 /// disposition (transient cooldown vs. sticky hard-down vs. relay-verbatim) instead of a lossy
@@ -665,16 +680,14 @@ pub struct WorkHandleDesc {
     pub correlation_id: u64,
 }
 
-/// A counterparty-verification FRESHNESS query — the input to the richer `verify_lookup_q` /
-/// `verify_store_q` slots (added append-only alongside the original `verify_lookup`/`verify_store`,
-/// the `breaker_admit_reason` precedent). It carries the subject key PLUS the operator's freshness
-/// `ttl_ms` and the caller's `now_ms`, so the host reproduces `reverify::due`'s freshness arithmetic
-/// (the plane's own gate) EXACTLY rather than baking an opaque expiry. The host's own cache owns the
-/// per-subject `last_checked_ms` (written by `verify_store_q`), so THAT is not marshalled — only the
-/// genuinely plane-supplied scalars are.
+/// A counterparty-verification FRESHNESS query — the input to the STATELESS `verify_decide` slot
+/// (added append-only, the `breaker_admit_reason` precedent). It carries ONLY the freshness scalars
+/// `reverify::due` reads: the plane's authoritative `last_checked_ms` (with a present flag, so
+/// `None`/never-checked marshals faithfully), the operator's `ttl_ms`, and the caller's `now_ms`.
 ///
-/// # Safety / discipline
-/// `key_ptr`/`key_len`, when non-null, borrow live bytes for the call.
+/// There is NO subject key and NO host cache: `verify_decide` is a pure decision over these three
+/// inputs. The plane keeps its OWN ledger, coalescing and single-flight — only the `reverify::due`
+/// arithmetic crosses this seam, so the plane's freshness state never has to live host-side.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct VerifyQuery {
@@ -684,20 +697,20 @@ pub struct VerifyQuery {
     pub version: u16,
     /// Preamble tail padding.
     pub _reserved: u16,
-    /// The scope this key is interpreted within (host-defined namespace id).
-    pub scope: u32,
+    /// Whether `last_checked_ms` carries the plane's last-checked stamp (`1`), or the subject was
+    /// NEVER checked (`0` — `reverify::due`'s `NeverChecked`). The marshalled form of `Option<u64>`.
+    pub last_checked_present: u32,
     /// Preamble/alignment padding.
     pub _reserved2: u32,
     /// The operator's freshness window in milliseconds (the plane's `Policy::ttl_ms`). Reaching it is
     /// stale, exactly as `reverify::due` reads it.
     pub ttl_ms: u64,
     /// The caller's clock reading in milliseconds — captured once by the plane and reused for the
-    /// whole freshness decision, so a fixed-clock test coalesces identically to the async gate.
+    /// whole freshness decision, so a fixed-clock test decides identically to the async gate.
     pub now_ms: u64,
-    /// Borrowed pointer to the opaque subject key bytes (NOT owned).
-    pub key_ptr: *const u8,
-    /// Length of the borrowed key range.
-    pub key_len: usize,
+    /// The plane's authoritative last-checked stamp, on OUR clock (valid ONLY when
+    /// `last_checked_present != 0`). Supplied by the plane's ledger; never a value the upstream gave.
+    pub last_checked_ms: u64,
 }
 
 /// A one-time-approval REDEMPTION query — the input to the richer `approval_redeem_q` slot (added

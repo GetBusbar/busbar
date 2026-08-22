@@ -172,7 +172,16 @@ fn compute_layout() -> String {
     record!(
         s,
         VerifyQuery,
-        [size, version, _reserved, scope, _reserved2, ttl_ms, now_ms, key_ptr, key_len]
+        [
+            size,
+            version,
+            _reserved,
+            last_checked_present,
+            _reserved2,
+            ttl_ms,
+            now_ms,
+            last_checked_ms
+        ]
     );
     record!(
         s,

@@ -67,10 +67,10 @@ pub fn build_plane_host_vtable() -> PlaneHostVtable {
         trust_evaluate: Some(trust::trust_evaluate),
         entitlement_check: Some(super::dispatch::entitlement_check),
         gate_scan: Some(super::dispatch::gate_scan),
-        // ── The freshness/expiry-carrying siblings (verify/approval faithfulness), WIRED over the
-        //    same host trust store as their originals. ────────────────────────────────────────────
-        verify_lookup_q: Some(trust::verify_lookup_q),
-        verify_store_q: Some(trust::verify_store_q),
+        // ── The stateless verify-freshness DECISION + expiry-carrying approval redemption (verify/
+        //    approval faithfulness). `verify_decide` funnels to the SAME `trust::verify_decide` body
+        //    the plane's `VerifyGate` calls in-process, so the two veneers cannot diverge. ──────────
+        verify_decide: Some(trust::verify_decide_q),
         approval_redeem_q: Some(trust::approval_redeem_q),
     }
 }
