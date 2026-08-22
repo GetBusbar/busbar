@@ -362,6 +362,72 @@ pub struct PlaneDecl {
     pub(crate) card_signer:
         Option<fn(&crate::governance::signing::TokenSigner) -> CardSignerHandle>,
 
+    /// PROJECT THIS PLANE'S NAMED-DEFINITION REGISTRATIONS onto the shared read view — the plane half
+    /// of the generic `GET /api/v1/admin/<section>` list, so `admin::v1::service` reads a plane's
+    /// registrations without naming the plane's config or view types. Returns the empty vec for a
+    /// plane with no live registry this generation. `None` for a plane whose section is not a
+    /// named-definition map (the LLM plane; `proto`).
+    // Read only through the admin named-def surface, which the two plane sections drive; with neither
+    // plane compiled in nothing resolves a decl to call it, so the field is genuinely unread there.
+    #[cfg_attr(
+        not(any(feature = "plane-mcp", feature = "plane-a2a")),
+        allow(dead_code)
+    )]
+    #[allow(clippy::type_complexity)]
+    pub(crate) named_def_list:
+        Option<fn(&crate::state::App) -> Vec<crate::admin::v1::contract::NamedDefView>>,
+
+    /// PROJECT ONE NAMED-DEFINITION REGISTRATION by name onto the shared read view — the single-entry
+    /// twin of [`Self::named_def_list`], the plane half of `GET /api/v1/admin/<section>/{name}`.
+    /// `None` (the fn returns `None`) when the plane has no entry by that name; the FIELD is `None` for
+    /// a plane with no named-definition map.
+    #[cfg_attr(
+        not(any(feature = "plane-mcp", feature = "plane-a2a")),
+        allow(dead_code)
+    )]
+    #[allow(clippy::type_complexity)]
+    pub(crate) named_def_get:
+        Option<fn(&crate::state::App, &str) -> Option<crate::admin::v1::contract::NamedDefView>>,
+
+    /// IS `name` A LIVE REGISTRATION on this plane's effective snapshot — the read-side membership
+    /// check the admin write path consults so it names no plane registry type. `None` for a plane with
+    /// no named-definition map.
+    #[cfg_attr(
+        not(any(feature = "plane-mcp", feature = "plane-a2a")),
+        allow(dead_code)
+    )]
+    #[allow(clippy::type_complexity)]
+    pub(crate) registry_contains: Option<fn(&crate::state::App, &str) -> bool>,
+
+    /// RE-RESOLVE THIS PLANE'S PER-REGISTRATION HOOK GATES against the next snapshot — the plane half
+    /// of the config-swap gate rebuild. Reads the plane's own registry off the `&mut App` and writes
+    /// its own gate field back, so `admin::v1::service::reresolve_plane_gates` names no plane registry
+    /// type. `None` for a plane with no per-registration hook gates (the LLM plane).
+    #[cfg_attr(
+        not(any(feature = "plane-mcp", feature = "plane-a2a")),
+        allow(dead_code)
+    )]
+    pub(crate) reresolve_gates: Option<fn(&mut crate::state::App)>,
+
+    /// ATTACH THIS PLANE'S ADMIN TRUST-VERB SCHEMAS to the OpenAPI document — the plane half of the
+    /// schema pass in [`crate::admin::v1::json::handlers::openapi_doc`]. Handed the SHARED response
+    /// and request [`schemars::SchemaGenerator`]s and the `paths` map, it registers its own view/body
+    /// types into `#/components/schemas` and attaches their `$ref`s onto the paths its [`Self::openapi`]
+    /// fragment inserted — so `handlers` names no `crate::mcp`/`crate::a2a` view type and the document
+    /// stays byte-identical. `None` for a plane with no admin verbs (the LLM plane).
+    ///
+    /// Gated with `openapi-schema` because it is the only place `schemars` is named; a build without
+    /// that feature generates no document, so the field is genuinely absent rather than unused.
+    #[cfg(feature = "openapi-schema")]
+    #[allow(clippy::type_complexity)]
+    pub(crate) openapi_schemas: Option<
+        fn(
+            &mut schemars::SchemaGenerator,
+            &mut schemars::SchemaGenerator,
+            &mut serde_json::Map<String, serde_json::Value>,
+        ),
+    >,
+
     /// CARRY THIS PLANE'S ENGINE-OWNED STATE ACROSS A CONFIG SWAP — the plane half of
     /// [`crate::state::AppHandle::swap`]. Run once per swap, AFTER the next snapshot is fully built
     /// and BEFORE it is published, with the PRIOR and NEXT snapshots each type-erased as `&dyn Any`.

@@ -154,6 +154,12 @@ pub(crate) const PLANE_DECL: crate::plane::registry::PlaneDecl =
         openapi: Some(mcp_openapi_fragment),
         config_validate: Some(mcp_config_validate),
         card_signer: None,
+        named_def_list: Some(admin_view::list),
+        named_def_get: Some(admin_view::get),
+        registry_contains: Some(admin_view::contains),
+        reresolve_gates: Some(admin_view::reresolve_gates),
+        #[cfg(feature = "openapi-schema")]
+        openapi_schemas: Some(admin_view::openapi_schemas),
         hydrate: Some(mcp_hydrate),
         // NO START HOOK. Verify-on-call is LAZY — it re-verifies on the `tools/call` path against a
         // ≤`verify_ttl` single-flight snapshot (see `crate::trust::verify`), so there is no background

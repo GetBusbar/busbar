@@ -662,29 +662,12 @@ fn section_contains(app: &App, section: NamedMapSection, name: &str) -> bool {
     match section {
         NamedMapSection::IdentityProviders => app.identity_providers.contains_key(name),
         NamedMapSection::Export => app.export_defs.contains_key(name),
-        NamedMapSection::Tools => {
-            #[cfg(feature = "plane-mcp")]
-            {
-                crate::mcp::runtime(app).servers.servers.contains_key(name)
-            }
-            // No MCP plane compiled in ⇒ no live `tools:` registry.
-            #[cfg(not(feature = "plane-mcp"))]
-            {
-                let _ = (app, name);
-                false
-            }
-        }
-        NamedMapSection::Agents => {
-            #[cfg(feature = "plane-a2a")]
-            {
-                app.agent_defs.agents.contains_key(name)
-            }
-            // No A2A plane compiled in ⇒ no live `agents:` registry.
-            #[cfg(not(feature = "plane-a2a"))]
-            {
-                let _ = (app, name);
-                false
-            }
+        // Both plane sections answer membership through the plane's `registry_contains` seam, so this
+        // read names no plane registry type; a plane compiled out has no decl and answers `false`.
+        NamedMapSection::Tools | NamedMapSection::Agents => {
+            crate::plane::registry::builtin_plane_decl_for_config_section(section.key())
+                .and_then(|d| d.registry_contains)
+                .is_some_and(|f| f(app, name))
         }
     }
 }

@@ -129,6 +129,12 @@ pub(crate) const PLANE_DECL: crate::plane::registry::PlaneDecl =
         openapi: Some(openapi_fragment),
         config_validate: Some(a2a_config_validate),
         card_signer: Some(crate::a2a::sign::derive_card_signer),
+        named_def_list: Some(crate::a2a::admin_view::list),
+        named_def_get: Some(crate::a2a::admin_view::get),
+        registry_contains: Some(crate::a2a::admin_view::contains),
+        reresolve_gates: Some(crate::a2a::admin_view::reresolve_gates),
+        #[cfg(feature = "openapi-schema")]
+        openapi_schemas: Some(crate::a2a::admin_view::openapi_schemas),
         hydrate: Some(a2a_hydrate),
         start: Some(a2a_start),
         // NOTHING TO CARRY ACROSS A SWAP. The A2A plane's runtime object (`A2aPlane`) is rebuilt from
@@ -356,6 +362,7 @@ pub(crate) fn openapi_fragment() -> serde_json::Value {
     })
 }
 
+pub(crate) mod admin_view;
 pub(crate) mod anomaly;
 pub(crate) mod canonical;
 pub(crate) mod card;

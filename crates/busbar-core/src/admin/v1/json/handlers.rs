@@ -3662,6 +3662,57 @@ pub(crate) const V1_GET_PATHS: &[(&str, &str)] = &[
 /// The generated doc is committed as `json/openapi.json` and served verbatim by the live handler
 /// (`openapi()` via `include_str!`); the golden/drift test keeps the committed file byte-equal to
 /// this function's output, so the static file can never drift from the code.
+/// Attach a `$ref` schema onto `<abs_path>.<method>.responses.<status>.content` — the module-level
+/// twin of `openapi_doc`'s nested `set_content`, exposed so a plane's `openapi_schemas` contributor
+/// attaches its verb's typed success body through the SAME logic (byte-identical output). Creates the
+/// status response entry if the op did not already document it.
+#[cfg(feature = "openapi-schema")]
+pub(crate) fn set_response_schema(
+    paths: &mut serde_json::Map<String, serde_json::Value>,
+    abs_path: &str,
+    method: &str,
+    status: &str,
+    schema: serde_json::Value,
+) {
+    let Some(op) = paths.get_mut(abs_path).and_then(|p| p.get_mut(method)) else {
+        return;
+    };
+    let Some(responses) = op.get_mut("responses").and_then(|r| r.as_object_mut()) else {
+        return;
+    };
+    let entry = responses
+        .entry(status.to_string())
+        .or_insert_with(|| json!({"description": "OK"}));
+    if let Some(obj) = entry.as_object_mut() {
+        obj.insert(
+            "content".to_string(),
+            json!({"application/json": {"schema": schema}}),
+        );
+    }
+}
+
+/// Attach a REQUIRED request-body `$ref` schema onto `<abs_path>.<method>` — the module-level twin of
+/// `openapi_doc`'s nested `body_raw!`, exposed for a plane's `openapi_schemas` contributor.
+#[cfg(feature = "openapi-schema")]
+pub(crate) fn set_request_body(
+    paths: &mut serde_json::Map<String, serde_json::Value>,
+    abs_path: &str,
+    method: &str,
+    schema: serde_json::Value,
+) {
+    if let Some(op) = paths.get_mut(abs_path).and_then(|p| p.get_mut(method)) {
+        if let Some(obj) = op.as_object_mut() {
+            obj.insert(
+                "requestBody".to_string(),
+                json!({
+                    "required": true,
+                    "content": {"application/json": {"schema": schema}}
+                }),
+            );
+        }
+    }
+}
+
 #[cfg(feature = "openapi-schema")]
 // Invoked from the openapi tests + the CI artifact/drift jobs (all test targets); a non-test
 // feature-on bin build has no caller, so allow it dead there.
@@ -4647,51 +4698,17 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
     typed!("/hooks/{name}", "put", "200", HookView);
     typed!("/hooks/{name}/settings", "patch", "200", HookView);
     typed!("/hooks/{name}/health", "get", "200", HookHealthView);
-    // MCP trust verbs — present only when the MCP plane is compiled in (`plane-mcp`). With the plane
-    // off these paths are not served and carry no response schema.
-    #[cfg(feature = "plane-mcp")]
-    typed!(
-        "/tools/{name}/connect",
-        "post",
-        "200",
-        crate::mcp::admin_view::McpTrustView
-    );
-    #[cfg(feature = "plane-mcp")]
-    typed!(
-        "/tools/{name}/changes",
-        "get",
-        "200",
-        crate::mcp::admin_view::McpTrustView
-    );
-    #[cfg(feature = "plane-mcp")]
-    typed!(
-        "/tools/{name}/health",
-        "get",
-        "200",
-        crate::mcp::admin_view::McpHealthView
-    );
-    // A2A trust verbs — present only when the A2A plane is compiled in (`plane-a2a`). With the plane
-    // off these paths are not served and carry no response/request schema.
-    #[cfg(feature = "plane-a2a")]
-    typed!(
-        "/agents/{name}/connect",
-        "post",
-        "200",
-        crate::a2a::verbs::A2aTrustView
-    );
-    #[cfg(feature = "plane-a2a")]
-    typed!(
-        "/agents/{name}/approve",
-        "post",
-        "200",
-        crate::a2a::verbs::A2aTrustView
-    );
-    #[cfg(feature = "plane-a2a")]
-    body!(
-        "/agents/{name}/approve",
-        "post",
-        crate::a2a::verbs::ApproveReq
-    );
+    // THE PLANES' TRUST-VERB SCHEMAS, contributed through the registry rather than named here. Each
+    // plane attaches its own typed success-body (and, for A2A, request-body) schemas onto the paths
+    // its `openapi()` fragment inserted above, using the SAME shared `gen`/`req_gen` — so the plane
+    // types register into `#/components/schemas` exactly as the inline `typed!`/`body!` calls used to,
+    // and this document is byte-identical while this function names no `crate::mcp`/`crate::a2a` view
+    // type. Folded in `plane_decls()` order (MCP then A2A), matching the source order those calls had.
+    for decl in crate::plane::registry::plane_decls() {
+        if let Some(schemas) = decl.openapi_schemas {
+            schemas(&mut gen, &mut req_gen, &mut paths);
+        }
+    }
     typed!("/hooks/{name}/schema", "get", "200", sview::HookSchemaView);
     typed!("/hooks/{name}/status", "get", "200", sview::HookStatusView);
     // Groups (the limit tree).

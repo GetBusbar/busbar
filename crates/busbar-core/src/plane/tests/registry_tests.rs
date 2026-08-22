@@ -38,6 +38,12 @@ static WIDGET_PLANE: PlaneDecl = PlaneDecl {
     start: None,
     config_validate: None,
     card_signer: None,
+    named_def_list: None,
+    named_def_get: None,
+    registry_contains: None,
+    reresolve_gates: None,
+    #[cfg(feature = "openapi-schema")]
+    openapi_schemas: None,
     on_swap: None,
 };
 
@@ -139,6 +145,12 @@ fn a_same_key_registration_is_skipped_and_the_first_copy_wins() {
         start: None,
         config_validate: None,
         card_signer: None,
+        named_def_list: None,
+        named_def_get: None,
+        registry_contains: None,
+        reresolve_gates: None,
+        #[cfg(feature = "openapi-schema")]
+        openapi_schemas: None,
         on_swap: None,
     };
 
@@ -401,6 +413,12 @@ fn r2_a_mounted_plane_with_no_admission_refuses_boot() {
         start: None,
         config_validate: None,
         card_signer: None,
+        named_def_list: None,
+        named_def_get: None,
+        registry_contains: None,
+        reresolve_gates: None,
+        #[cfg(feature = "openapi-schema")]
+        openapi_schemas: None,
         on_swap: None,
     };
     let unit = ();
@@ -436,6 +454,12 @@ fn r2_a_mounted_plane_with_no_admission_refuses_boot() {
         start: None,
         config_validate: None,
         card_signer: None,
+        named_def_list: None,
+        named_def_get: None,
+        registry_contains: None,
+        reresolve_gates: None,
+        #[cfg(feature = "openapi-schema")]
+        openapi_schemas: None,
         on_swap: None,
     };
     let dispatch = build_dispatch(&[&MOUNTS_NOTHING], &slots)
@@ -474,6 +498,12 @@ fn r2_boot_a_plane_whose_start_errs_refuses_boot() {
         start: Some(|_ctx| Err("refuser: outbound client identity did not resolve".to_string())),
         config_validate: None,
         card_signer: None,
+        named_def_list: None,
+        named_def_get: None,
+        registry_contains: None,
+        reresolve_gates: None,
+        #[cfg(feature = "openapi-schema")]
+        openapi_schemas: None,
         on_swap: None,
     };
     let ctx = crate::plane::registry::BootCtx::stub();
@@ -504,6 +534,12 @@ fn r2_boot_a_plane_whose_start_errs_refuses_boot() {
         start: Some(|_ctx| Ok(())),
         config_validate: None,
         card_signer: None,
+        named_def_list: None,
+        named_def_get: None,
+        registry_contains: None,
+        reresolve_gates: None,
+        #[cfg(feature = "openapi-schema")]
+        openapi_schemas: None,
         on_swap: None,
     };
     crate::boot::run_start_hooks(&[&STARTS_CLEAN, &WIDGET_PLANE], &ctx)
@@ -532,6 +568,12 @@ fn r2_boot_a_plane_whose_hydrate_errs_refuses_boot() {
         start: None,
         config_validate: None,
         card_signer: None,
+        named_def_list: None,
+        named_def_get: None,
+        registry_contains: None,
+        reresolve_gates: None,
+        #[cfg(feature = "openapi-schema")]
+        openapi_schemas: None,
         on_swap: None,
     };
     let ctx = crate::plane::registry::BootCtx::stub();

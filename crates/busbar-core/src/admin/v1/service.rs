@@ -90,10 +90,7 @@ pub(crate) fn redact_settings_bags(v: &mut serde_json::Value) {
     }
 }
 
-use super::named_def_views::{
-    agent_def_view_opt, agent_def_views, export_def_view, identity_provider_view,
-    unparseable_def_view,
-};
+use super::named_def_views::{export_def_view, identity_provider_view, unparseable_def_view};
 
 /// Derive busbar's spend ESTIMATE (micro-units, abstract cost units) for one PER-MODEL metering
 /// row from the CURRENT rate card: the row's tier-token split priced at that model's rates, plus
@@ -1067,19 +1064,12 @@ impl AdminService {
                 .iter()
                 .map(|(name, cfg)| export_def_view(name, cfg))
                 .collect(),
-            NamedMapSection::Tools => {
-                #[cfg(feature = "plane-mcp")]
-                {
-                    crate::mcp::admin_view::list(&self.app)
-                }
-                #[cfg(not(feature = "plane-mcp"))]
-                {
-                    Vec::new() // no `tools:` registry when the MCP plane is compiled out
-                }
+            // Both plane sections read their registrations through the plane's `named_def_list` seam,
+            // so this arm names no `crate::mcp`/`crate::a2a` view or registry type; the empty vec for
+            // a plane compiled out is the seam's own `None`.
+            NamedMapSection::Tools | NamedMapSection::Agents => {
+                plane_named_def_list(section, &self.app)
             }
-            // Empty when the A2A plane is compiled out — the helper carries the cfg split so this
-            // arm names no `crate::a2a` type (see `named_def_views::agent_def_views`).
-            NamedMapSection::Agents => agent_def_views(&self.app),
         };
         // Plus every overlay entry this binary could not parse, explicitly FLAGGED. They are stored
         // but NOT live (dropped at each rebuild), and listing them here is what makes that
@@ -1115,18 +1105,11 @@ impl AdminService {
                 .export_defs
                 .get(name)
                 .map(|cfg| export_def_view(name, cfg)),
-            NamedMapSection::Tools => {
-                #[cfg(feature = "plane-mcp")]
-                {
-                    crate::mcp::admin_view::get(&self.app, name)
-                }
-                #[cfg(not(feature = "plane-mcp"))]
-                {
-                    None
-                }
+            // Both plane sections read their one registration through the plane's `named_def_get`
+            // seam; `None` for a plane compiled out is the seam's own `None`.
+            NamedMapSection::Tools | NamedMapSection::Agents => {
+                plane_named_def_get(section, &self.app, name)
             }
-            // `None` when the A2A plane is compiled out — the helper carries the cfg split.
-            NamedMapSection::Agents => agent_def_view_opt(&self.app, name),
         };
         view.or_else(|| {
             // A stored-but-unparseable overlay entry answers the FLAGGED view rather than a 404: a
@@ -2458,41 +2441,36 @@ fn rebuild_hook_derived(next: &mut crate::state::App) {
     reresolve_plane_gates(next);
 }
 
-// `next` is consulted only inside the two plane-gated blocks below; with BOTH planes compiled out
-// there is no registry to re-resolve, so the parameter goes unread in that config alone.
-#[cfg_attr(
-    not(any(feature = "plane-mcp", feature = "plane-a2a")),
-    allow(unused_variables)
-)]
+// Each plane re-resolves its OWN per-registration hook gates through the `reresolve_gates` seam, so
+// this fold names no plane registry type. A plane with no per-registration gates (the LLM plane)
+// declares `None` and is skipped, exactly as the old plane-gated blocks skipped a compiled-out plane.
 fn reresolve_plane_gates(next: &mut crate::state::App) {
-    #[cfg(feature = "plane-mcp")] // no MCP runtime to read when the plane is compiled out
-    {
-        let servers = std::sync::Arc::clone(&crate::mcp::runtime(next).servers);
-        next.mcp_server_gates = crate::hooks::resolve_container_gates(
-            servers
-                .servers
-                .iter()
-                .map(|(n, d)| (n.as_str(), d.hooks.as_slice())),
-            &servers.all_server_hooks,
-            &next.hook_registry,
-            &next.hook_env,
-            next.config_version,
-        );
+    for decl in crate::plane::registry::plane_decls() {
+        if let Some(reresolve) = decl.reresolve_gates {
+            reresolve(next);
+        }
     }
-    #[cfg(feature = "plane-a2a")] // no A2A registry to read when the plane is compiled out
-    {
-        let agents = next.agent_defs.clone();
-        next.a2a_agent_gates = crate::hooks::resolve_container_gates(
-            agents
-                .agents
-                .iter()
-                .map(|(n, d)| (n.as_str(), d.hooks.as_slice())),
-            &agents.all_agent_hooks,
-            &next.hook_registry,
-            &next.hook_env,
-            next.config_version,
-        );
-    }
+}
+
+/// Project a plane section's registrations onto the shared view through the plane's `named_def_list`
+/// seam — resolved by config section, so the admin read path names no plane view type. Empty for a
+/// section whose plane is compiled out (no decl) or is not a named-definition map.
+fn plane_named_def_list(section: NamedMapSection, app: &crate::state::App) -> Vec<NamedDefView> {
+    crate::plane::registry::builtin_plane_decl_for_config_section(section.key())
+        .and_then(|d| d.named_def_list)
+        .map_or_else(Vec::new, |f| f(app))
+}
+
+/// One registration from a plane section, through the plane's `named_def_get` seam. `None` when the
+/// plane has no such entry, is compiled out, or is not a named-definition map.
+fn plane_named_def_get(
+    section: NamedMapSection,
+    app: &crate::state::App,
+    name: &str,
+) -> Option<NamedDefView> {
+    crate::plane::registry::builtin_plane_decl_for_config_section(section.key())
+        .and_then(|d| d.named_def_get)
+        .and_then(|f| f(app, name))
 }
 
 #[cfg(test)]

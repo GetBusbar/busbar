@@ -963,6 +963,12 @@ pub(crate) const PLANE_DECL: crate::plane::registry::PlaneDecl =
         // write path to validate through this seam.
         config_validate: None,
         card_signer: None,
+        named_def_list: None,
+        named_def_get: None,
+        registry_contains: None,
+        reresolve_gates: None,
+        #[cfg(feature = "openapi-schema")]
+        openapi_schemas: None,
         // NOTHING TO CARRY ACROSS A SWAP. The LLM plane holds no engine-owned object that outlives an
         // apply through this seam — its reliability/breaker state rides the `App` fields the data
         // plane reads directly, not reconciled here.

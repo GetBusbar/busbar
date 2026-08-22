@@ -102,6 +102,55 @@ pub(crate) fn get(app: &crate::state::App, name: &str) -> Option<NamedDefView> {
         .map(|cfg| mcp_server_view(name, cfg))
 }
 
+/// Attach the MCP trust verbs' typed success-body schemas — the MCP half of
+/// [`crate::plane::registry::PlaneDecl::openapi_schemas`]. Registers `McpTrustView`/`McpHealthView`
+/// into the SHARED response generator and attaches their `$ref`s onto the paths this plane's
+/// `openapi()` fragment inserted, byte-identically to the inline `typed!` calls it replaced (same
+/// types, same order, same generator).
+#[cfg(feature = "openapi-schema")]
+pub(crate) fn openapi_schemas(
+    schema_gen: &mut schemars::SchemaGenerator,
+    _req_gen: &mut schemars::SchemaGenerator,
+    paths: &mut serde_json::Map<String, serde_json::Value>,
+) {
+    use crate::admin::v1::json::ap;
+    use crate::admin::v1::json::set_response_schema;
+    let connect = serde_json::to_value(schema_gen.subschema_for::<McpTrustView>())
+        .unwrap_or_else(|_| serde_json::json!({}));
+    set_response_schema(paths, &ap("/tools/{name}/connect"), "post", "200", connect);
+    let changes = serde_json::to_value(schema_gen.subschema_for::<McpTrustView>())
+        .unwrap_or_else(|_| serde_json::json!({}));
+    set_response_schema(paths, &ap("/tools/{name}/changes"), "get", "200", changes);
+    let health = serde_json::to_value(schema_gen.subschema_for::<McpHealthView>())
+        .unwrap_or_else(|_| serde_json::json!({}));
+    set_response_schema(paths, &ap("/tools/{name}/health"), "get", "200", health);
+}
+
+/// Is `name` a live registered MCP server on this snapshot — the membership check the admin write
+/// path consults through the plane's `registry_contains` seam, so core names no `crate::mcp` runtime
+/// type.
+pub(crate) fn contains(app: &crate::state::App, name: &str) -> bool {
+    super::runtime(app).servers.servers.contains_key(name)
+}
+
+/// RE-RESOLVE THE MCP PLANE'S PER-SERVER HOOK GATES against the next snapshot — the MCP half of the
+/// config-swap gate rebuild, moved HERE so `admin::v1::service::reresolve_plane_gates` names no
+/// `crate::mcp` runtime type. Reads this plane's own registry off the snapshot and writes its own
+/// gate field back.
+pub(crate) fn reresolve_gates(next: &mut crate::state::App) {
+    let servers = std::sync::Arc::clone(&super::runtime(next).servers);
+    next.mcp_server_gates = crate::hooks::resolve_container_gates(
+        servers
+            .servers
+            .iter()
+            .map(|(n, d)| (n.as_str(), d.hooks.as_slice())),
+        &servers.all_server_hooks,
+        &next.hook_registry,
+        &next.hook_env,
+        next.config_version,
+    );
+}
+
 // ── THE TRUST SURFACE: `connect`, `changes`, `health` ───────────────────────────────────────────
 //
 // These projections live here rather than beside the other sections' in `admin::v1::service` for

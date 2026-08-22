@@ -52,71 +52,10 @@ pub(super) fn export_def_view(name: &str, cfg: &crate::config::ExportDefCfg) -> 
     }
 }
 
-/// Project one `agents:` DEFINITION onto the shared named-map view.
-///
-/// The backend `url:` is NOT projected. It is the real remote endpoint, this surface is reachable
-/// at read-only admin scope, and "which third party is behind this name" is exactly the fact the
-/// rewrite-through-busbar posture exists to keep on the server side. What IS projected is what an
-/// operator auditing trust needs and cannot get anywhere else: which root the entry is pinned to,
-/// whether a fingerprint has been approved yet, and how often it is re-checked.
-// Names `crate::a2a::config` types (`AgentDefCfg`, `DEFAULT_REVERIFY_TTL`) and is called only from
-// the gated `Agents` admin arms, so it is compiled out with the A2A plane (`plane-a2a` off).
-#[cfg(feature = "plane-a2a")]
-pub(super) fn agent_def_view(name: &str, cfg: &crate::a2a::config::AgentDefCfg) -> NamedDefView {
-    NamedDefView {
-        name: name.to_string(),
-        module: String::new(),
-        settings_keys: Vec::new(),
-        max_admin_scope: None,
-        token_configured: None,
-        browser_login_configured: None,
-        pin_mechanism: Some(
-            serde_json::to_value(cfg.pin.mechanism)
-                .ok()
-                .and_then(|v| v.as_str().map(str::to_string))
-                .unwrap_or_default(),
-        ),
-        fingerprint_pinned: Some(cfg.pin.fingerprint.is_some()),
-        reverify_ttl: Some(
-            cfg.reverify_ttl
-                .clone()
-                .unwrap_or_else(|| crate::a2a::config::DEFAULT_REVERIFY_TTL.to_string()),
-        ),
-        unparseable: None,
-    }
-}
-
-/// Every `agents:` DEFINITION projected onto the shared view, or an empty list when the A2A plane is
-/// compiled out (`plane-a2a` off). The cfg split lives HERE so the admin `list` arm names no
-/// `crate::a2a` type — the neutral analogue of how the MCP `tools:` list arm is gated in `service`.
-#[cfg(feature = "plane-a2a")]
-pub(super) fn agent_def_views(app: &crate::state::App) -> Vec<NamedDefView> {
-    app.agent_defs
-        .agents
-        .iter()
-        .map(|(name, cfg)| agent_def_view(name, cfg))
-        .collect()
-}
-#[cfg(not(feature = "plane-a2a"))]
-pub(super) fn agent_def_views(app: &crate::state::App) -> Vec<NamedDefView> {
-    let _ = app;
-    Vec::new()
-}
-
-/// The `agents:` DEFINITION for `name` projected onto the shared view, or `None` — always `None` when
-/// the A2A plane is compiled out. Companion to [`agent_def_views`], carrying the same cfg split.
-#[cfg(feature = "plane-a2a")]
-pub(super) fn agent_def_view_opt(app: &crate::state::App, name: &str) -> Option<NamedDefView> {
-    app.agent_defs
-        .agents
-        .get(name)
-        .map(|cfg| agent_def_view(name, cfg))
-}
-#[cfg(not(feature = "plane-a2a"))]
-pub(super) fn agent_def_view_opt(app: &crate::state::App, name: &str) -> Option<NamedDefView> {
-    let _ = (app, name);
-    None
-}
+// The `agents:` projection (`agent_def_view`/`agent_def_views`/`agent_def_view_opt`) MOVED into the
+// A2A plane (`crate::a2a::admin_view`), reached through the plane's `named_def_list`/`named_def_get`
+// seam — so this core module names no `crate::a2a` config type. The `tools:` projection lives the
+// same way in `crate::mcp::admin_view`.
 
 /// Project one overlay definition this binary CANNOT parse onto the same named-map view, explicitly
 /// FLAGGED (`unparseable`). Such an entry is stored in the overlay but dropped at every rebuild, so
