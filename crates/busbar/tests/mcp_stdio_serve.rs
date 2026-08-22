@@ -24,6 +24,14 @@
 //! `serve_io` loop against `TestApp` fixtures for the per-method behaviours; this file is the
 //! process boundary those tests cannot cross.
 
+// The `--mcp-stdio` serve mode exists only when the MCP plane is compiled in: with `plane-mcp` off
+// the flag falls through to the listener path (main.rs, "a build without MCP falls through to its
+// listener path"), so the spawned child is a normal HTTP server that never emits a stdio frame and
+// never exits on stdin EOF. These end-to-end tests drive that stdio channel, so they belong to the
+// same feature as the mode they exercise — matching the binary's own `#[cfg(feature = "plane-mcp")]`
+// on the serve block.
+#![cfg(feature = "plane-mcp")]
+
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
