@@ -24,7 +24,7 @@
 use super::pod::{
     AdmissionId, AdmitRefusal, ApprovalQuery, AuthQuery, AuthResolved, CallerRef, ContentChunk,
     CounterpartyRef, Decision, EgressDesc, EgressId, EgressOpen, Facts, FramingDesc, GateDecision,
-    GovRefusal, JournalQuery, Key, MeterOutcome, MetricSample, OpDesc, OpResult, Seq, Signal,
+    GovRefusal, JournalQuery, Key, MeterOutcome, MetricSample, OpDesc, OpResult, PipeId, Seq, Signal,
     StatusClass, TargetRef, TrustVerdict, Usage, VerifyDecision, VerifyLease, VerifyQuery,
     VerifyVerdict, WorkHandleDesc, WorkHandleId,
 };
@@ -128,6 +128,23 @@ pub type EgressWriteFn =
     extern "C-unwind" fn(host: HostCtx, egress: EgressId, buf: *const u8, len: usize) -> StatusClass;
 /// Close a governed egress (idempotent).
 pub type EgressCloseFn = extern "C-unwind" fn(host: HostCtx, egress: EgressId) -> StatusClass;
+/// Read readable bytes from a governed byte-duplex PIPE (raw-connection / subprocess tier) into a
+/// caller buffer; sets `out_written`. The host moves RAW BYTES only — line/message framing stays
+/// PLANE-side, layered on top (the CLUSTER-3 (c) decision: the host is byte-level, the plane frames).
+/// `Ok` with `out_written = 0` is a clean end of stream (the child closed its output). The duplex
+/// counterpart of [`EgressPollFn`], keyed by a [`PipeId`] rather than an [`EgressId`].
+pub type PipeReadFn = extern "C-unwind" fn(
+    host: HostCtx,
+    pipe: PipeId,
+    buf: *mut u8,
+    buf_cap: usize,
+    out_written: *mut usize,
+) -> StatusClass;
+/// Write RAW BYTES to a governed byte-duplex PIPE (the child's input / the raw socket). The plane
+/// frames on top; the host moves bytes. The duplex counterpart of [`EgressWriteFn`], keyed by a
+/// [`PipeId`].
+pub type PipeWriteFn =
+    extern "C-unwind" fn(host: HostCtx, pipe: PipeId, buf: *const u8, len: usize) -> StatusClass;
 /// Read journal rows into a caller buffer; sets `out_written`.
 pub type JournalReadFn = extern "C-unwind" fn(
     host: HostCtx,
@@ -245,6 +262,14 @@ pub struct PlaneHostVtable {
     //    (a MINOR bump). ─────────────────────────────────────────────────────────────────────────
     /// Admit a unit of work, rendering a blocked limit's reason into `reason_buf` on a `Deny`.
     pub govern_admit_reason: Option<GovernAdmitReasonFn>,
+    // ── APPENDED (CLUSTER-3 egress): the byte-duplex PIPE read/write, shared by the raw-connection
+    //    and subprocess egress tiers (both are byte channels keyed by a `PipeId`; the kind is a field
+    //    on the open POD, not a separate slot). The host moves RAW BYTES; the plane frames on top.
+    //    Trailing slots, append-only, same sized/versioned discipline (the cluster's MINOR bump). ──
+    /// Read raw bytes from a governed byte-duplex pipe (raw-connection / subprocess).
+    pub pipe_read: Option<PipeReadFn>,
+    /// Write raw bytes to a governed byte-duplex pipe (raw-connection / subprocess).
+    pub pipe_write: Option<PipeWriteFn>,
     // ── EXTENSION POINT (reserved) ──────────────────────────────────────────────────────────────
     // Metering reserve/settle (a `CostHold`) is DELIBERATELY NOT a slot here. When a high-rate
     // carrier needs it, add `cost_reserve`/`cost_settle` as trailing `Option` slots below this line
@@ -293,6 +318,8 @@ impl PlaneHostVtable {
         verify_decide: None,
         approval_redeem_q: None,
         govern_admit_reason: None,
+        pipe_read: None,
+        pipe_write: None,
     };
 
     /// A fully-populated STUB vtable: every slot points at an `unimplemented!()` stub. It exists to
@@ -330,6 +357,8 @@ impl PlaneHostVtable {
         verify_decide: Some(stub::verify_decide),
         approval_redeem_q: Some(stub::approval_redeem_q),
         govern_admit_reason: Some(stub::govern_admit_reason),
+        pipe_read: Some(stub::pipe_read),
+        pipe_write: Some(stub::pipe_write),
     };
 }
 
@@ -524,6 +553,25 @@ pub mod stub {
     /// Stub: see module docs.
     pub extern "C-unwind" fn gate_scan(_host: HostCtx, _chunk: *const ContentChunk) -> GateDecision {
         unimplemented!("PlaneHost::gate_scan — stub")
+    }
+    /// Stub: see module docs.
+    pub extern "C-unwind" fn pipe_read(
+        _host: HostCtx,
+        _pipe: PipeId,
+        _buf: *mut u8,
+        _buf_cap: usize,
+        _out_written: *mut usize,
+    ) -> StatusClass {
+        unimplemented!("PlaneHost::pipe_read — stub")
+    }
+    /// Stub: see module docs.
+    pub extern "C-unwind" fn pipe_write(
+        _host: HostCtx,
+        _pipe: PipeId,
+        _buf: *const u8,
+        _len: usize,
+    ) -> StatusClass {
+        unimplemented!("PlaneHost::pipe_write — stub")
     }
 }
 

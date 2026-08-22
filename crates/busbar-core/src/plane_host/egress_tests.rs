@@ -241,14 +241,25 @@ fn open_and_poll_fail_closed_on_null_and_bad_kind() {
             (vt.egress_open.unwrap())(host, std::ptr::null(), &mut out),
             StatusClass::Refused
         );
-        // RawConn / Subprocess are honest Phase-2 Unsupported.
-        for kind in [EgressKind::RawConn, EgressKind::Subprocess] {
+        // RawConn is an honest Phase-2 Unsupported (it joins the pipe tier with no ABI change).
+        {
             let url = b"http://example.test/".to_vec();
             let mut d = http_desc(&url);
-            d.kind = kind;
+            d.kind = EgressKind::RawConn;
             assert_eq!(
                 (vt.egress_open.unwrap())(host, &d as *const EgressDesc, &mut out),
                 StatusClass::Unsupported
+            );
+        }
+        // Subprocess IS wired (the pipe tier), so a non-command target is REFUSED at the host command
+        // allowlist (undecodable blob / not an absolute program), never spawned.
+        {
+            let url = b"http://example.test/".to_vec();
+            let mut d = http_desc(&url);
+            d.kind = EgressKind::Subprocess;
+            assert_eq!(
+                (vt.egress_open.unwrap())(host, &d as *const EgressDesc, &mut out),
+                StatusClass::Refused
             );
         }
         // Poll of an unknown id → Gone.

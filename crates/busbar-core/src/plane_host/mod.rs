@@ -32,6 +32,7 @@ pub mod dispatch;
 pub mod egress;
 mod govern;
 pub mod journal;
+pub mod pipe;
 pub mod scope;
 pub mod trust;
 pub mod vtable;

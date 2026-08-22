@@ -73,6 +73,10 @@ pub fn build_plane_host_vtable() -> PlaneHostVtable {
         //    the plane's `VerifyGate` calls in-process, so the two veneers cannot diverge. ──────────
         verify_decide: Some(trust::verify_decide_q),
         approval_redeem_q: Some(trust::approval_redeem_q),
+        // ── The byte-duplex PIPE tier (CLUSTER-3 egress): raw-connection / subprocess byte channels,
+        //    keyed by a `PipeId`, wired over the real governed child process in `super::pipe`. ──────
+        pipe_read: Some(super::pipe::pipe_read),
+        pipe_write: Some(super::pipe::pipe_write),
     }
 }
 

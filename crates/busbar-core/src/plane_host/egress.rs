@@ -449,13 +449,14 @@ pub(crate) fn egress_open(
 
         match d.kind {
             EgressKind::Http => open_http(state, d, out),
-            // Phase 2: a governed RAW duplex byte channel. The governance path is identical
-            // (resolve-then-pin, SPKI, mTLS, breaker, meter); only the channel is a pinned socket
-            // handed back as a `PipeId`. Large enough to be its own wiring — refused honestly here.
+            // Phase 2: a governed RAW duplex byte channel. It SHARES the subprocess pipe shape
+            // (`pipe_read`/`pipe_write` keyed by a `PipeId`); only the channel differs — a pinned
+            // socket rather than a child's stdio. The governance path is identical (resolve-then-pin,
+            // SPKI, mTLS, breaker, meter); joining it is append-only (no ABI change). Refused honestly.
             EgressKind::RawConn => StatusClass::Unsupported,
-            // Phase 2: a governed child process framed over stdio (MCP stdio). A `tokio::process`
-            // under the command allowlist, its stdio the duplex `PipeId`. Also its own wiring.
-            EgressKind::Subprocess => StatusClass::Unsupported,
+            // A governed child process, its stdin/stdout the duplex `PipeId` — spawned under the HOST
+            // command allowlist. See [`super::pipe`]; the plane frames on top of the raw byte channel.
+            EgressKind::Subprocess => super::pipe::open_subprocess(state, d, out),
         }
     }))
     .unwrap_or(StatusClass::Fault)
