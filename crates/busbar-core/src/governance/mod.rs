@@ -757,6 +757,7 @@ pub(crate) fn synthesize_principal_key(
         expires_at: None,
         deleted_at: None,
         revision: 0,
+        ..Default::default()
     }))
 }
 

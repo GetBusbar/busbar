@@ -83,6 +83,12 @@ mod virtual_key_wire {
         pub deleted_at: Option<u64>,
         #[serde(default)]
         pub revision: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub idp_subject: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub binding_mode: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub minted_by: Option<String>,
     }
 
     /// The per-kind wire partition: `(allowed_pools, allowed_mcp_servers, allowed_mcp_tools)`.
@@ -171,6 +177,9 @@ mod virtual_key_wire {
                 expires_at: self.expires_at,
                 deleted_at: self.deleted_at,
                 revision: self.revision,
+                idp_subject: self.idp_subject.clone(),
+                binding_mode: self.binding_mode.clone(),
+                minted_by: self.minted_by.clone(),
             }
             .serialize(s)
         }
@@ -198,6 +207,9 @@ mod virtual_key_wire {
                 expires_at: w.expires_at,
                 deleted_at: w.deleted_at,
                 revision: w.revision,
+                idp_subject: w.idp_subject,
+                binding_mode: w.binding_mode,
+                minted_by: w.minted_by,
             })
         }
     }
@@ -210,7 +222,12 @@ mod virtual_key_wire {
 /// Serde note: `Serialize`/`Deserialize` are HAND-IMPLEMENTED in [`virtual_key_wire`] (the
 /// kind-partitioned scope wire, 1.6.0 P0) - keep the wire mirror struct's fields/defaults in
 /// lockstep with this struct when adding a field.
-#[derive(Clone, PartialEq)]
+///
+/// `Default` (1.6.0) is a construction convenience only — `..Default::default()` lets a call site
+/// name the fields it cares about and leave the rest at their zero value (empty id, `enabled:
+/// false`, no scopes, `None` attribution). It is NEVER a valid stored key on its own; every real
+/// mint sets `id`/`generation_hash`/`enabled` explicitly.
+#[derive(Clone, PartialEq, Default)]
 pub struct VirtualKey {
     pub id: String,
     /// A ROTATION FINGERPRINT, not a lookup credential. For a 1.5.0 signed-token key this is the
@@ -251,6 +268,27 @@ pub struct VirtualKey {
     /// never stamped (treated as "always changed" by a delta consumer, which is safe — a bare
     /// full-scan degrades to correct-but-inefficient, never incorrect).
     pub revision: u64,
+    /// The IdP SUBJECT recorded at mint for a PERSONAL (user-bound) token — ATTRIBUTION ONLY (1.6.0).
+    /// `None` for every key minted before this field existed and for app/service tokens (which are
+    /// not tied to a live human). This is the honest, buildable half of "user-bound": it records WHO
+    /// minted the personal token so per-user budget/audit can attribute to a named person. It is NOT
+    /// a per-use IdP introspection floor (standard OIDC cannot provide that; see the auth design
+    /// review C1) — busbar never re-checks this subject against the IdP on use. Trailing `Option` for
+    /// backward-compatible deserialize (existing keys read `None`).
+    pub idp_subject: Option<String>,
+    /// The BINDING MODE this key was minted under (1.6.0): `"time-bound"` (app/service token, no
+    /// identity tie), `"user-bound"` (personal, records `idp_subject`, short-lived + client
+    /// re-exchange), or `"both"`. `None` = a key minted before binding modes existed (treated as the
+    /// legacy time-bound-by-`exp` behavior). Mirrors the `auth.policy` `BindingMode` wire spelling;
+    /// kept a `String` here because the protocol-agnostic api crate carries no config enum.
+    pub binding_mode: Option<String>,
+    /// PROVENANCE: the principal id (an app-admin's key/subject) that minted this key (1.6.0). Set on
+    /// APP/service tokens, whose defining feature is that they OUTLIVE their minter — offboarding the
+    /// minter revokes only the minter's personal token, never these (auth design H2/H3). Recorded so
+    /// an operator can "list all tokens minted-by X" for re-attestation and so per-role MINT-CEILING
+    /// accounting can count how many an app-admin has minted. `None` for self-minted personal tokens
+    /// and pre-field keys. Provenance, NOT an automatic revocation trigger.
+    pub minted_by: Option<String>,
 }
 
 impl VirtualKey {
@@ -323,6 +361,9 @@ impl std::fmt::Debug for VirtualKey {
             .field("expires_at", &self.expires_at)
             .field("deleted_at", &self.deleted_at)
             .field("revision", &self.revision)
+            .field("idp_subject", &self.idp_subject)
+            .field("binding_mode", &self.binding_mode)
+            .field("minted_by", &self.minted_by)
             .finish()
     }
 }

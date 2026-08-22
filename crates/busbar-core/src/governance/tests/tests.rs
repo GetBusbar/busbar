@@ -154,6 +154,7 @@ fn sample_key(id: &str, hash: &str) -> VirtualKey {
         expires_at: None,
         deleted_at: None,
         revision: 1,
+        ..Default::default()
     }
 }
 

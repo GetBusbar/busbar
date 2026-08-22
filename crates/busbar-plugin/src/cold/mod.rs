@@ -264,6 +264,15 @@ pub const STATUS_PANIC: i32 = 3;
 /// A `Store` operation and its arguments, serialized as the `call` request payload. One
 /// self-describing enum keeps the C ABI to a single `call` symbol regardless of how many methods
 /// the `Store` trait grows — the variant IS the op-code. Mirrors [`busbar_api::Store`] one-to-one.
+///
+/// `large_enum_variant`: the `PutKey`/`PutKeyWithCredential` variants carry a whole `VirtualKey`
+/// by value — inherent to a store-WRITE request payload — so the size spread is by design, not an
+/// oversight. This enum is a short-lived, serialized-then-dropped request object (never held in a
+/// hot collection), so boxing would only add a heap allocation on every store call for no real
+/// benefit; the payload also crosses the plugin C ABI via serde, where `Box<VirtualKey>` and
+/// `VirtualKey` are wire-identical anyway. (The lint began firing when 1.6.0 added three trailing
+/// attribution `Option<String>` fields to `VirtualKey`, nudging the spread past the threshold.)
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Serialize, Deserialize)]
 pub enum StoreRequest {
     PutKey(VirtualKey),

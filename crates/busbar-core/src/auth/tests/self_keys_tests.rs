@@ -401,6 +401,7 @@ fn rejects_static_key_400() {
         expires_at: None,
         deleted_at: None,
         revision: 0,
+        ..Default::default()
     });
     let v = ChainVerdict::Identified {
         module: "oidc".into(),

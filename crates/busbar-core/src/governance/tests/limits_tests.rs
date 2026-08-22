@@ -78,6 +78,7 @@ fn key(id: &str, group: Option<&str>) -> VirtualKey {
         expires_at: None,
         deleted_at: None,
         revision: 1,
+        ..Default::default()
     }
 }
 

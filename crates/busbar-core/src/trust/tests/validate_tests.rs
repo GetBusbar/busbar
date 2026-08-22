@@ -80,6 +80,7 @@ fn key(scopes: Option<Vec<ScopeRef>>) -> VirtualKey {
         deleted_at: None,
         created_at: 0,
         revision: 0,
+        ..Default::default()
     }
 }
 

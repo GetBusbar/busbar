@@ -289,6 +289,7 @@ impl GovState {
             expires_at: None,
             deleted_at: None,
             revision: 0,
+            ..Default::default()
         };
         self.store.put_key(&binding)?;
         self.refresh()?;
@@ -335,6 +336,7 @@ impl GovState {
             expires_at: None,
             deleted_at: None,
             revision: 0,
+            ..Default::default()
         };
         // SigV4: kind belongs to `credentials` because it IS row-looked-up (by AccessKeyId), unlike
         // the signed token above (see CredentialMeta's doc). `secret_form: Recoverable` — HMAC
@@ -546,6 +548,7 @@ impl GovState {
             expires_at: None,
             deleted_at: None,
             revision: 0,
+            ..Default::default()
         };
         self.store.put_key(&binding)?;
         self.refresh()?;
@@ -1110,6 +1113,7 @@ impl GovState {
             expires_at: None,
             deleted_at: None,
             revision: 0,
+            ..Default::default()
         };
         self.store.put_key(&key)?;
         self.refresh()?;
@@ -1164,6 +1168,7 @@ impl GovState {
             expires_at: None,
             deleted_at: None,
             revision: 0,
+            ..Default::default()
         };
         // ATOMIC: persist the bearer key row and its paired credential in ONE transaction (see
         // `put_key_with_credential`). The previous two-call autocommit sequence could orphan an

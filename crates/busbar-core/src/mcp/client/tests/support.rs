@@ -63,6 +63,7 @@ pub(super) fn key_wildcard(id: &str) -> VirtualKey {
         expires_at: None,
         deleted_at: None,
         revision: 0,
+        ..Default::default()
     }
 }
 

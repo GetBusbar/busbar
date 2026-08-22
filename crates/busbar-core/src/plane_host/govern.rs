@@ -191,6 +191,7 @@ fn virtual_key(id: String, group: Option<String>) -> busbar_api::VirtualKey {
         expires_at: None,
         deleted_at: None,
         revision: 1,
+        ..Default::default()
     }
 }
 
@@ -426,6 +427,7 @@ mod tests {
             expires_at: None,
             deleted_at: None,
             revision: 0,
+            ..Default::default()
         }
     }
 
@@ -460,6 +462,7 @@ mod tests {
             expires_at: None,
             deleted_at: None,
             revision: 0,
+            ..Default::default()
         };
         // DIRECT: take 3 of the 5 through the real `try_admit`, exactly as `charge_round` does.
         for _ in 0..3 {

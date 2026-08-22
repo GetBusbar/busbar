@@ -68,6 +68,7 @@ pub(crate) fn key(group: Option<&str>) -> VirtualKey {
         expires_at: None,
         deleted_at: None,
         revision: 1,
+        ..Default::default()
     }
 }
 

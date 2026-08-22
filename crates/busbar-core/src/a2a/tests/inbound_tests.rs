@@ -27,6 +27,7 @@ fn a_key(id: &str, scopes: Option<Vec<ScopeRef>>) -> VirtualKey {
         expires_at: None,
         deleted_at: None,
         revision: 1,
+        ..Default::default()
     }
 }
 

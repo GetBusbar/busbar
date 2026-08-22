@@ -566,6 +566,7 @@ fn end_to_end_open_store_from_signed_tarball() {
         expires_at: None,
         deleted_at: None,
         revision: 1,
+        ..Default::default()
     };
     store.put_key(&key).expect("put over the ABI");
     let got = store.get_key("vk_pipeline").unwrap().unwrap();

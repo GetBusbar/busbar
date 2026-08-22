@@ -341,6 +341,7 @@ fn ungoverned_principal() -> VirtualKey {
         deleted_at: None,
         created_at: 0,
         revision: 0,
+        ..Default::default()
     }
 }
 

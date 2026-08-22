@@ -113,6 +113,7 @@ fn wildcard_key(id: &str) -> busbar_api::VirtualKey {
         expires_at: None,
         deleted_at: None,
         revision: 1,
+        ..Default::default()
     }
 }
 

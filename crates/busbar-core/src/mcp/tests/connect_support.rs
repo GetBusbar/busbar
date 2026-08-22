@@ -297,6 +297,7 @@ pub(crate) fn gov_with_key(id: &str, pairs: &[(&str, &str)]) -> crate::governanc
             deleted_at: None,
             created_at: 0,
             revision: 0,
+            ..Default::default()
         })),
     }
 }

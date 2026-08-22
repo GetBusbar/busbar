@@ -121,6 +121,7 @@ fn gov_with_scopes(pairs: &[(&str, &str)]) -> crate::governance::GovCtx {
         deleted_at: None,
         created_at: 0,
         revision: 0,
+        ..Default::default()
     };
     crate::governance::GovCtx {
         key: Some(Arc::new(key)),

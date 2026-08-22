@@ -585,6 +585,7 @@ mod tests {
             expires_at: None,
             deleted_at: None,
             revision: 1,
+            ..Default::default()
         }
     }
 

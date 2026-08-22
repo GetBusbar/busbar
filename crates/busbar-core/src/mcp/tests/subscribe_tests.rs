@@ -841,6 +841,7 @@ fn the_placebo_fix_would_still_have_been_a_placebo() {
         deleted_at: None,
         created_at: 0,
         revision: 0,
+        ..Default::default()
     };
 
     // HALF ONE: the grant predicate does not read liveness at all, so a dead key answers a grant

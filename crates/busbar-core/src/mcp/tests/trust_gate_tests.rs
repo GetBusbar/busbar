@@ -139,6 +139,7 @@ fn key_of(pairs: &[(&str, &str)]) -> busbar_api::VirtualKey {
         deleted_at: None,
         created_at: 0,
         revision: 0,
+        ..Default::default()
     }
 }
 

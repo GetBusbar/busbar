@@ -111,6 +111,7 @@ fn sample_vkey(id: &str) -> VirtualKey {
         expires_at: None,
         deleted_at: None,
         revision: 1,
+        ..Default::default()
     }
 }
 
@@ -950,6 +951,7 @@ fn test_key_gauge_limit_truncation() {
             expires_at: None,
             deleted_at: None,
             revision: 1,
+            ..Default::default()
         };
         store.put_key(&key).unwrap();
         // Seed minimal usage so the key has a row in usage_counters and the spend gauge is
@@ -1029,6 +1031,7 @@ fn app_with_n_keys(n: usize) -> Arc<App> {
             expires_at: None,
             deleted_at: None,
             revision: 1,
+            ..Default::default()
         };
         store.put_key(&key).unwrap();
         store

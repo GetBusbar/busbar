@@ -18,6 +18,7 @@ fn sample_key() -> VirtualKey {
         expires_at: None,
         deleted_at: None,
         revision: 1,
+        ..Default::default()
     }
 }
 
@@ -168,6 +169,48 @@ fn allowed_pools_wire_shape_is_byte_identical_to_pre_generalization() {
         json_empty.contains(r#""allowed_pools":[]"#),
         "explicit-empty grant serializes as a bare `[]`, same as before: {json_empty}"
     );
+}
+
+/// The 1.6.0 attribution/provenance fields (`idp_subject`, `binding_mode`, `minted_by`) survive a
+/// store wire round-trip, are OMITTED from the wire when `None` (so an app/service token carries no
+/// empty attribution keys), and a legacy wire row with none of them deserializes to `None` — the
+/// additive, backward-compatible pattern the trailing-Option fields exist to guarantee.
+#[test]
+fn attribution_fields_round_trip_and_are_backward_compatible() {
+    // Absent by default: a key that set none of the three must not emit the keys at all.
+    let bare = sample_key();
+    let json_bare = serde_json::to_string(&bare).unwrap();
+    assert!(
+        !json_bare.contains("idp_subject")
+            && !json_bare.contains("binding_mode")
+            && !json_bare.contains("minted_by"),
+        "None attribution fields are skipped on the wire: {json_bare}"
+    );
+
+    // A personal (user-bound) token records the IdP subject for attribution.
+    let mut personal = sample_key();
+    personal.idp_subject = Some("okta|matthew".to_string());
+    personal.binding_mode = Some("user-bound".to_string());
+    let rt: VirtualKey = serde_json::from_str(&serde_json::to_string(&personal).unwrap()).unwrap();
+    assert_eq!(rt.idp_subject.as_deref(), Some("okta|matthew"));
+    assert_eq!(rt.binding_mode.as_deref(), Some("user-bound"));
+    assert_eq!(rt.minted_by, None);
+
+    // An app/service token records provenance (minted_by) and outlives its minter.
+    let mut app = sample_key();
+    app.binding_mode = Some("time-bound".to_string());
+    app.minted_by = Some("vk_admin".to_string());
+    let rt: VirtualKey = serde_json::from_str(&serde_json::to_string(&app).unwrap()).unwrap();
+    assert_eq!(rt.minted_by.as_deref(), Some("vk_admin"));
+    assert_eq!(rt.binding_mode.as_deref(), Some("time-bound"));
+    assert_eq!(rt.idp_subject, None);
+
+    // A legacy wire row predating these fields deserializes with all three None.
+    let legacy = r#"{"id":"vk_1","generation_hash":"h","name":"n","allowed_pools":null,"enabled":true,"created_at":1}"#;
+    let back: VirtualKey = serde_json::from_str(legacy).unwrap();
+    assert_eq!(back.idp_subject, None);
+    assert_eq!(back.binding_mode, None);
+    assert_eq!(back.minted_by, None);
 }
 
 /// Scope KINDS survive a store wire round-trip (1.6.0).

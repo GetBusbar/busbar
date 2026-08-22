@@ -1508,6 +1508,7 @@ fn build_without_group_conflict_when_keys_still_bound() {
             expires_at: None,
             deleted_at: None,
             revision: 1,
+            ..Default::default()
         })
         .unwrap();
     let gov = Arc::new(GovState::new(store, None).unwrap());
@@ -1594,6 +1595,7 @@ fn usage_key(group: &str) -> VirtualKey {
         expires_at: None,
         deleted_at: None,
         revision: 1,
+        ..Default::default()
     }
 }
 

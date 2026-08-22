@@ -440,6 +440,7 @@ fn load_store_from_bytes_loads_the_given_bytes() {
         expires_at: None,
         deleted_at: None,
         revision: 1,
+        ..Default::default()
     };
     store.put_key(&key).expect("put_key over from-bytes load");
     assert_eq!(
@@ -610,6 +611,7 @@ fn hot_swap_old_and_new_coexist_then_old_unmaps_new_keeps_serving() {
         expires_at: None,
         deleted_at: None,
         revision: 1,
+        ..Default::default()
     };
     old.put_key(&key).expect("old put");
 
@@ -669,6 +671,7 @@ fn hot_swap_old_and_new_coexist_then_old_unmaps_new_keeps_serving() {
         expires_at: None,
         deleted_at: None,
         revision: 1,
+        ..Default::default()
     })
     .expect("new keeps serving after old unmaps");
     assert_eq!(
