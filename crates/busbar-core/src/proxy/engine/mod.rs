@@ -1872,6 +1872,9 @@ pub(crate) async fn forward_with_pool_parsed_inner(
         drop(_cbuild);
         // MEASUREMENT ONLY: `egress_assemble` ends here — everything above this point was
         // assembly (credential select, path/header/request build); everything below is the send.
+        // Only compiled under `timing`: with the feature off `_asm` is a zero-sized no-op guard
+        // (`()`), and `drop`ping a `Copy` value does nothing — the `dropping_copy_types` lint.
+        #[cfg(feature = "timing")]
         drop(_asm);
         let _send = crate::profile::start(crate::profile::Stage::UpstreamSend);
         // MEASUREMENT ONLY: `egress_send` spans ONLY the `req.send().await` round-trip below
@@ -1931,6 +1934,8 @@ pub(crate) async fn forward_with_pool_parsed_inner(
             None => req.send().await,
         };
         // MEASUREMENT ONLY: `egress_send` ends here, matching `UPSTREAM_SEND` below exactly.
+        // Only compiled under `timing` — see the `drop(_asm)` note above (feature-off `_snd` is `()`).
+        #[cfg(feature = "timing")]
         drop(_snd);
         // UPSTREAM_SEND ends here (response headers received or transport error).
         drop(_send);

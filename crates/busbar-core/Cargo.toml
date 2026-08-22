@@ -121,6 +121,12 @@ txn-fence-red = []
 # Exposes `test_support` to a DEPENDENT crate's tests (the bin's). Never on in a normal build;
 # the bin enables it from its [dev-dependencies] edge only.
 test-support = []
+# Passthrough to `busbar-timing`'s debug-only per-method micro-timing. DEFAULT OFF: with this off,
+# `busbar_timing::timeit!` expands to `()` and the RAII guards it produces are zero-sized no-ops, so
+# the `drop(_guard)` calls that end a timed span are compiled in ONLY under this feature (dropping a
+# `()` is a no-op the `dropping_copy_types` lint rightly rejects). Enabling it forwards to
+# `busbar-timing/timing`, making those guards real `Timer`s whose `Drop` records the elapsed span.
+timing = ["busbar-timing/timing"]
 
 [dev-dependencies]
 busbar-store-example-plugin = { path = "../store-example-plugin" }
