@@ -4795,3 +4795,77 @@ fn flush_metering_failure_warns_once_per_tick_not_per_key() {
         "the deltas are retained and retried, still failing while the store is down"
     );
 }
+
+// ── PHASE-11 PROOF HARNESS: MANUAL REVOCATION (the honest, demonstrable enterprise story) ─────────
+//
+// The auth design review (C1/C2) is blunt: AUTOMATIC IdP-driven revocation (introspect the subject
+// on every use) is NOT implementable on standard OIDC and is NOT built. What IS true, built, and
+// demonstrable TODAY is MANUAL revocation: an operator revokes a minted key and it dies — on the
+// issuing node immediately, and cluster-wide within REVOCATION_SYNC_TTL_SECS×2 (~10s). These tests
+// are that proof, red-before-green: a freshly minted token VERIFIES (green), and after a manual
+// revoke it is DEAD (red) — on the minting node AND on a second fleet node over the shared store.
+// No claim here that the review cut: no per-use IdP introspection, no SCIM/SET webhook.
+
+/// SINGLE NODE: mint → use (verify OK, GREEN) → manual revoke → DEAD (verify fails). This is the
+/// kill switch the enterprise "offboarding = revoke the key, access ends in seconds" story rests on.
+#[test]
+fn proof_manual_revoke_kills_a_minted_key() {
+    let store = Arc::new(MemoryStore::new());
+    let gov = GovState::new_with_signer(store, None, Some(self_serve_signer())).unwrap();
+    let sub = "oidc:dave";
+    let now = 1_700_000_000u64;
+
+    // MINT + USE: a fresh personal token verifies — the dev can call through busbar.
+    let (binding, token) = gov.issue_self(sub, None, now + 3600, now).unwrap();
+    assert!(
+        gov.verify_token(&token, now, None).is_some(),
+        "RED-BEFORE-GREEN precondition: the freshly minted token MUST verify before revoke, or the \
+         post-revoke assertion proves nothing"
+    );
+    assert!(!gov.is_revoked(&binding.id));
+
+    // MANUAL REVOKE: the operator kills the key (POST /keys/{id}/revoke → GovState::revoke).
+    gov.revoke(&binding.id, "offboarded").unwrap();
+
+    // DEAD: the same token no longer verifies, and the subject reads as revoked. Immediate on the
+    // issuing node (no sync window on the node that performed the revoke).
+    assert!(
+        gov.verify_token(&token, now, None).is_none(),
+        "after a manual revoke the token MUST be dead on the issuing node"
+    );
+    assert!(gov.is_revoked(&binding.id));
+}
+
+/// CLUSTER: the revoke is AUTHORITATIVE fleet-wide, not process-local. A second node sharing the
+/// durable store (same signing key) hydrates the denylist from the store, so a token revoked on
+/// node A is already dead on node B — the honest core of "cluster-wide within ~10s" (a live peer
+/// closes the gap within REVOCATION_SYNC_TTL_SECS×2 via its staleness sync; a node hydrating fresh,
+/// as modeled here, sees it at once). Before the fix this test guards, the denylist was hydrated
+/// ONCE at construction and a peer's revoke never propagated — an auth bypass, not a lag.
+#[test]
+fn proof_manual_revoke_is_authoritative_across_the_fleet() {
+    let store = Arc::new(MemoryStore::new());
+    let node_a = GovState::new_with_signer(store.clone(), None, Some(self_serve_signer())).unwrap();
+    let sub = "oidc:erin";
+    let now = 1_700_000_000u64;
+
+    // Node A mints; the token verifies on A AND on a peer B over the same store + signing key.
+    let (binding, token) = node_a.issue_self(sub, None, now + 3600, now).unwrap();
+    let node_b = GovState::new_with_signer(store.clone(), None, Some(self_serve_signer())).unwrap();
+    assert!(
+        node_b.verify_token(&token, now, None).is_some(),
+        "a second fleet node over the shared store must accept the token BEFORE the revoke"
+    );
+
+    // Node A revokes (writes the denylist to the shared store).
+    node_a.revoke(&binding.id, "offboarded").unwrap();
+
+    // A fleet node hydrating from the store AFTER the revoke sees it immediately — the revoke is a
+    // durable, fleet-authoritative fact, not a cache local to the node that issued it.
+    let node_c = GovState::new_with_signer(store, None, Some(self_serve_signer())).unwrap();
+    assert!(
+        node_c.verify_token(&token, now, None).is_none(),
+        "the revoke MUST be authoritative on every fleet node reading the shared store"
+    );
+    assert!(node_c.is_revoked(&binding.id));
+}
