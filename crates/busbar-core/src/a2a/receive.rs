@@ -834,12 +834,12 @@ async fn admitted(
     // ── PHASE-1.5 HOST PLUMBING (ADDITIVE, not yet used by any capability inversion). ─────────────
     //
     // Hold the async-capable dispatch guard for the whole `admitted` future so a host handle is
-    // reachable at every synchronous breaker admit/settle site on this plane and the per-dispatch
-    // arena reclaims on any exit (return/cancel/panic). Borrows `app`, stack-pins an empty arena (no
+    // reachable at every synchronous host admit/settle site on this plane and the per-dispatch arena
+    // reclaims on any exit (return/cancel/panic). Borrows `app`, stack-pins an empty arena (no
     // per-dispatch heap); the guard is `Send`, so this future stays `Send`. The SPAWN_BLOCKING relay
     // hops need a `Send + 'static` route instead — that is the `SendHostDispatch` threaded into
-    // `unary_hop`/`stream_hop` below. Held-but-unused until CLUSTER-1 flips the in-place breaker calls.
-    let _host = crate::plane_host::HostDispatch::new(&app);
+    // `unary_hop`/`stream_hop` below. CLUSTER-4 admits this call's budget through `host`'s arena.
+    let host = crate::plane_host::HostDispatch::new(&app);
     // Re-read rather than threaded: `wire_refusal` above already refused every request that has no
     // key, so this branch is unreachable and is a clean refusal rather than an unwrap because it
     // is on a request path.
@@ -982,26 +982,43 @@ async fn admitted(
     let Some(gov_state) = app.governance.as_ref() else {
         return governance_required();
     };
-    let _hold = match gov_state.try_admit(&app.cost, key, &resource, now) {
-        Ok(grant) => grant,
-        Err(_) => {
-            crate::admin::audit::AUDIT.record_by(
-                AUDIT_ACTION,
-                &resource,
-                crate::admin::audit::OUTCOME_REJECTED,
-                &actor,
-            );
-            return (
-                axum::http::StatusCode::TOO_MANY_REQUESTS,
-                axum::Json(super::rpcerror::body(
-                    &rpc_id,
-                    super::rpcerror::A2aError::UnsupportedOperation,
-                    "this key's budget is spent",
-                )),
-            )
-                .into_response();
-        }
-    };
+    // ADMIT through the host govern seam (CLUSTER-4). The grant `try_admit` yields is registered in
+    // `host`'s dispatch arena and released when this future ends — return, client-cancel, or panic —
+    // the EXACT lifetime the named `_hold` grant had (the guard drops at the end of `admitted`). The
+    // `Facts` carry this caller's REAL `(key.id, key.group)`, so the host reconstructs the same
+    // enforcement chain `try_admit(&app.cost, key, &resource)` walks; `resource` is the pool. This
+    // refusal already discards `LimitBlocked`'s detail (a fixed "budget is spent" reply), so a bare
+    // `Deny` is behavior-identical.
+    let admitted_budget = host.with_host(|hctx, vt| {
+        let facts = busbar_plugin::hot::Facts::with_attribution(
+            0, // no tokens reserved: `try_admit` charges the flat per-request fee, not tokens.
+            0, // budget_remaining ≥ tokens (0 ≥ 0), so the POD gate is a no-op; the chain decides.
+            0,
+            0,
+            0,
+            resource.as_bytes(),
+            key.id.as_bytes(),
+            key.group.as_deref().map(str::as_bytes),
+        );
+        (vt.govern_admit.unwrap())(hctx, &*facts as *const busbar_plugin::hot::Facts)
+    });
+    if admitted_budget == busbar_plugin::hot::Decision::Deny {
+        crate::admin::audit::AUDIT.record_by(
+            AUDIT_ACTION,
+            &resource,
+            crate::admin::audit::OUTCOME_REJECTED,
+            &actor,
+        );
+        return (
+            axum::http::StatusCode::TOO_MANY_REQUESTS,
+            axum::Json(super::rpcerror::body(
+                &rpc_id,
+                super::rpcerror::A2aError::UnsupportedOperation,
+                "this key's budget is spent",
+            )),
+        )
+            .into_response();
+    }
 
     // ── THE VERBS BUSBAR ANSWERS ITSELF. ────────────────────────────────────────────────────────
     //
