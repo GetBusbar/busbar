@@ -155,6 +155,7 @@ where
         usage_sink: Option<UsageSink>,
         budget_spent: bool,
     ) -> Self {
+        let _t = busbar_timing::timeit!("rb_first_byte_body_new");
         // Resolve the ingress protocol ONCE: it supplies both the binary-eventstream flag AND the
         // interned `&'static` name we store (no per-response allocation for the name). An unknown
         // ingress protocol falls back to `openai` — the exact default `ingress_error` /

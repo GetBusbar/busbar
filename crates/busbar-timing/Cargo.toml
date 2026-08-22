@@ -1,0 +1,39 @@
+# busbar-timing — a DEBUG-ONLY, feature-gated, per-method micro-timing facility.
+#
+# WHY A SEPARATE CRATE, and why a NEUTRAL name. The existing `busbar-core::profile` module answers
+# "which STAGE ate the request" over a CLOSED enum of ~13 hot-path stages. This crate answers the
+# adjacent, finer question — "is this hot cost 1000 calls x 500ns or 1 call x 25us?" — over an OPEN
+# set of methods keyed by `&'static str`, so any crate (core, llm, a plugin) can drop a one-line
+# timer at the top of a method without editing a central enum. It is deliberately named with NO
+# protocol nouns (no "llm", "proxy", "egress"): method timers nest INSIDE the stage profiler and
+# must be linkable from every layer, so the crate has to sit below all of them in the graph.
+#
+# THE DEFAULT IS OFF, AT COMPILE TIME. With the `timing` feature disabled (the default, and always
+# the shipped configuration) `timeit!` expands to `()`, `Timer` is a zero-sized type with an empty
+# `Drop`, and NO registry / atomics / thread-locals are compiled in at all. There is nothing to
+# optimize away because there is nothing there — the instrumented function is byte-identical to the
+# uninstrumented one. See the `zero_cost_when_off` test for the proof.
+[package]
+name = "busbar-timing"
+version = "1.6.0"
+publish = false            # internal workspace crate; never goes to crates.io
+edition = "2021"
+# `rust-version` rationale: see busbar-core/Cargo.toml — one pinned number, set to what CI verifies.
+rust-version = "1.97"
+description = "Debug-only, feature-gated per-method micro-timing (count/total/mean/p50/p99/min/max). Default OFF and zero-cost; method timers nest inside busbar-core's stage profiler."
+license = "Apache-2.0"
+
+[lib]
+name = "busbar_timing"
+path = "src/lib.rs"
+
+[features]
+# DEFAULT OFF. Turning this on is what makes the registry, the atomics and the thread-local
+# accumulators exist. A dependent enables it transitively, e.g. `--features busbar-timing/timing`.
+default = []
+timing = ["dep:libc"]
+
+[dependencies]
+# Only pulled in when `timing` is on, and only for `atexit(3)` — the process-wide dump at exit. The
+# feature-off build has ZERO dependencies, which is the point.
+libc = { workspace = true, optional = true }

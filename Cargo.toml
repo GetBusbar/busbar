@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/busbar",
     "crates/busbar-core",
+    "crates/busbar-timing",
     "crates/busbar-llm",
     "crates/busbar-mcp",
     "crates/busbar-a2a",

@@ -12,6 +12,7 @@ impl ProtocolWriter for CohereWriter {
     }
 
     fn write_request(&self, req: &crate::ir::IrRequest) -> serde_json::Value {
+        let _t = busbar_timing::timeit!("cohere_write_request");
         // The reasoning carry has no Cohere shape in this pass; dropped observably (matching
         // the penalties/top_k convention) rather than silently.
         if req.reasoning.is_some() {
@@ -813,6 +814,7 @@ impl ProtocolWriter for CohereWriter {
     }
 
     fn write_response(&self, resp: &crate::ir::IrResponse) -> serde_json::Value {
+        let _t = busbar_timing::timeit!("cohere_write_response");
         let mut out = serde_json::Map::new();
         let mut content_arr: Vec<serde_json::Value> = Vec::new();
         let mut tool_calls_arr: Vec<serde_json::Value> = Vec::new();

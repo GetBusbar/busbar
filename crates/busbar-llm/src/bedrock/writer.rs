@@ -172,6 +172,7 @@ impl ProtocolWriter for BedrockWriter {
     }
 
     fn write_request(&self, req: &crate::ir::IrRequest) -> serde_json::Value {
+        let _t = busbar_timing::timeit!("bedrock_write_request");
         // The reasoning carry has no Bedrock Converse shape in this pass; dropped observably (matching
         // the penalties/top_k convention) rather than silently.
         if req.reasoning.is_some() {
@@ -1021,6 +1022,7 @@ impl ProtocolWriter for BedrockWriter {
     }
 
     fn write_response(&self, resp: &crate::ir::IrResponse) -> serde_json::Value {
+        let _t = busbar_timing::timeit!("bedrock_write_response");
         let mut content_arr: Vec<serde_json::Value> = Vec::new();
 
         for block in &resp.content {

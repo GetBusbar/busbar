@@ -152,6 +152,7 @@ impl ProtocolReader for BedrockReader {
     }
 
     fn read_request(&self, body: &serde_json::Value) -> Result<crate::ir::IrRequest, IrError> {
+        let _t = busbar_timing::timeit!("bedrock_read_request");
         let obj = body.as_object().ok_or(IrError {
             class: StatusClass::ClientError,
             provider_signal: Some(busbar_core::proto::SIGNAL_IR_PARSE.to_string()),
@@ -1135,6 +1136,7 @@ impl ProtocolReader for BedrockReader {
     }
 
     fn read_response(&self, body: &serde_json::Value) -> Result<crate::ir::IrResponse, IrError> {
+        let _t = busbar_timing::timeit!("bedrock_read_response");
         let obj = body.as_object().ok_or(IrError {
             class: StatusClass::ClientError,
             provider_signal: Some(busbar_core::proto::SIGNAL_IR_PARSE.to_string()),

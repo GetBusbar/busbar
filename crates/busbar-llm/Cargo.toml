@@ -40,6 +40,10 @@ test-support = ["busbar-core/test-support"]
 # The engine's public surface — the ONLY busbar crate this plugin may name. `default-features =
 # false` for the same reason the binary does it: the feature decisions are the composition root's.
 busbar-core = { path = "../busbar-core", default-features = false }
+# Debug-only per-method micro-timing (DEFAULT OFF, zero cost). Instruments the per-dialect
+# reader/writer translate entry points (bedrock/cohere — the heavy cells). Enable the registry via
+# `--features busbar-timing/timing`.
+busbar-timing = { path = "../busbar-timing" }
 axum = { workspace = true }
 bytes = { workspace = true }
 serde_json = { workspace = true }
