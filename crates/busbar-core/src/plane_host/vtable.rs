@@ -23,8 +23,8 @@ use super::{recover, HostState};
 use busbar_plugin::hot::host::{HostCtx, PlaneHostVtable};
 use busbar_plugin::hot::{
     AdmissionId, AuthQuery, AuthResolved, CallerRef, ContentChunk, CounterpartyRef, Decision,
-    EgressDesc, EgressId, EgressOpen, Facts, FramingDesc, GateDecision, JournalQuery, Key,
-    MeterOutcome, MetricSample, OpDesc, OpResult, Seq, Signal, StatusClass, TargetRef, TrustVerdict,
+    EgressDesc, EgressId, EgressOpen, Facts, GateDecision, Key,
+    MeterOutcome, MetricSample, OpDesc, OpResult, Signal, StatusClass, TargetRef, TrustVerdict,
     Usage, VerifyLease, VerifyVerdict, WorkHandleDesc, WorkHandleId,
 };
 use busbar_plugin::AbiPreamble;
@@ -57,8 +57,8 @@ pub fn build_plane_host_vtable() -> PlaneHostVtable {
         egress_poll: Some(egress_poll),
         egress_write: Some(egress_write),
         egress_close: Some(egress_close),
-        journal_append: Some(journal_append),
-        journal_read: Some(journal_read),
+        journal_append: Some(super::journal::journal_append),
+        journal_read: Some(super::journal::journal_read),
         nested_dispatch: Some(nested_dispatch),
         workhandle_open: Some(workhandle_open),
         workhandle_resume: Some(workhandle_resume),
@@ -200,24 +200,8 @@ extern "C-unwind" fn egress_write(
 extern "C-unwind" fn egress_close(_host: HostCtx, _egress: EgressId) -> StatusClass {
     unimplemented!("plane_host::egress_close — Phase 2")
 }
-extern "C-unwind" fn journal_append(
-    _host: HostCtx,
-    _scope: u32,
-    _content_ptr: *const u8,
-    _content_len: usize,
-    _framing: *const FramingDesc,
-) -> Seq {
-    unimplemented!("plane_host::journal_append — Phase 2")
-}
-extern "C-unwind" fn journal_read(
-    _host: HostCtx,
-    _query: *const JournalQuery,
-    _buf: *mut u8,
-    _buf_cap: usize,
-    _out_written: *mut usize,
-) -> StatusClass {
-    unimplemented!("plane_host::journal_read — Phase 2")
-}
+// journal_append / journal_read are WIRED in `super::journal` (the JOURNAL family, over the real
+// `crate::audit` hash chain). The builder references them directly; no stub lives here.
 extern "C-unwind" fn nested_dispatch(
     _host: HostCtx,
     _desc: *const OpDesc,
