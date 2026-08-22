@@ -50,6 +50,7 @@ fn minimal_app() -> Arc<App> {
         // No `agents:`, therefore no plane: the same `None` a deployment that fronts no agents gets.
         a2a: None,
         upstream_credentials: crate::auth::UpstreamCreds::Own,
+        any_pool_upstream_creds_override: false,
         probe_schedule: Arc::new(crate::health::ProbeSchedule::new(0)),
         tslots: Arc::new(crate::telemetry::AppSlots::build(
             &[],

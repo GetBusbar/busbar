@@ -343,6 +343,14 @@ pub struct App {
     pub(crate) pools: HashMap<String, Vec<WeightedLane>>,
     /// The ALL-POOLS `upstream_credentials:` default — see [`App::upstream_creds`].
     pub(crate) upstream_credentials: crate::auth::UpstreamCreds,
+    /// Does ANY pool set its own `upstream_credentials:` override? Resolved ONCE at config apply
+    /// (`false` for the overwhelmingly common config where no pool overrides — the all-pools default
+    /// governs everywhere). It exists so [`App::pool_upstream_creds`] can restore the pre-1.5.3
+    /// per-request `Copy` read: when this is `false`, the accessor returns `upstream_credentials`
+    /// directly and skips the `pool_runtime` String-keyed (SipHash) HashMap probe entirely. The
+    /// probe only ever runs when an override actually exists, so the fast path is provably behavior-
+    /// identical to the full lookup (no pool has a `Some(_)` to find).
+    pub(crate) any_pool_upstream_creds_override: bool,
     pub client: UpstreamClients,
     /// The client-affecting resolved-limits snapshot THIS `client` was built from. Carried so the
     /// next config apply can tell whether reusing `client` (warm pool) is safe: reuse only when this
@@ -775,6 +783,13 @@ impl App {
     /// union — the pool's value REPLACES the inherited one. An empty/unknown pool name
     /// (the direct-model and degraded ad-hoc routes) falls back to the default.
     pub(crate) fn pool_upstream_creds(&self, pool: &str) -> crate::auth::UpstreamCreds {
+        // Fast path (the norm): no pool overrides `upstream_credentials:`, so the all-pools default
+        // governs every pool — return it with a `Copy` read and skip the String-keyed `pool_runtime`
+        // SipHash probe. Behavior-identical: with no override present, the full lookup below could
+        // only ever fall through to `self.upstream_credentials` anyway.
+        if !self.any_pool_upstream_creds_override {
+            return self.upstream_credentials;
+        }
         self.pool_runtime
             .get(pool)
             .and_then(|rt| rt.upstream_credentials)

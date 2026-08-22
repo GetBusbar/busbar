@@ -405,6 +405,7 @@ dependencies = [
  "busbar-store-memory",
  "bytes",
  "crc32fast",
+ "criterion",
  "ed25519-dalek",
  "futures",
  "getrandom 0.3.4",
