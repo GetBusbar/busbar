@@ -356,7 +356,7 @@ fn the_clients_refusing_resolver_names_the_invariant_when_it_is_reached() {
         .enable_all()
         .build()
         .expect("runtime");
-    let refuser = NoSecondLookup;
+    let refuser = crate::egress::RefuseSecondLookup;
     let err = rt.block_on(async {
         reqwest::dns::Resolve::resolve(&refuser, HOST.parse().expect("a name"))
             .await

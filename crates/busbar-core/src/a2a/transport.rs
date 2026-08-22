@@ -53,15 +53,15 @@
 //! on a runtime worker or on a plain thread — a nested `block_on` on a runtime thread would panic.
 //! The same shape the plugin downloader uses, for the same reason.
 //!
-//! A card fetch happens on a re-verification tick, so a thread and a client per hop was a cost not
-//! worth engineering away. THE RELAY CHANGED THAT: [`super::relay`] is a second caller and it IS the
-//! request hot path. Two consequences, and only one of them is fixed here. The blocking is handled
-//! at the call site — `ingress::invoke` enters this seam through `spawn_blocking`, so no axum worker is
-//! held for a backend agent's think time. The CLIENT PER HOP is not: every relayed submission builds
-//! a fresh `reqwest::Client` and therefore a fresh TLS session, with no connection reuse. That is a
-//! real per-request cost and it is recorded here rather than hidden, because the fix — a client
-//! cache keyed by host and pinned address — is a cache of objects that carry the pin, and getting
-//! that wrong reintroduces the hazard this whole file exists to remove.
+//! A card fetch happens on a re-verification tick, so a thread per hop was a cost not worth
+//! engineering away. THE RELAY CHANGED THAT: [`super::relay`] is a second caller and it IS the
+//! request hot path. The blocking is handled at the call site — `ingress::invoke` enters this seam
+//! through `spawn_blocking`, so no axum worker is held for a backend agent's think time. The CLIENT
+//! is no longer per hop: this transport now holds a [`crate::egress::PinnedClientPool`] keyed by the
+//! judged `(host, pinned address)`, so a repeated hop to an already-judged target reuses the
+//! connection. That reuse is safe precisely because the key is the PINNED address and the pooled
+//! client still refuses a second lookup — reuse only ever reaches the address the guard already
+//! judged, so the cache cannot launder an unvalidated destination.
 
 // PARTLY UNMOUNTED. The live card fetch is driven by the re-verification job and the relay POST by
 // the receiving ingress. The pieces a caller-supplied root or an injected client would use are
@@ -155,53 +155,6 @@ impl Resolver for TokioResolver {
     }
 }
 
-/// The client's own resolver, in production: one that refuses.
-///
-/// The pin below means the client never needs to resolve anything. This makes the difference
-/// between "never needs to" and "cannot" observable: if the pin is ever dropped, the fetch fails
-/// with this message rather than succeeding against whatever the name means the second time.
-struct NoSecondLookup;
-
-impl reqwest::dns::Resolve for NoSecondLookup {
-    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
-        let name = name.as_str().to_string();
-        Box::pin(std::future::ready(Err(Box::<
-            dyn std::error::Error + Send + Sync,
-        >::from(format!(
-            "the agent card fetch resolves a name exactly once, before the guard judges the \
-             answer, and connects to the address that survived; the HTTP client asked to resolve \
-             `{name}` a second time, which is the lookup an attacker needs and must not exist"
-        )))))
-    }
-}
-
-/// A client error WITH ITS CAUSE CHAIN.
-///
-/// `reqwest::Error`'s own `Display` is the request that failed and nothing about why — "error
-/// sending request for url (…)" is the whole message, and the certificate refusal, the connection
-/// reset and the timeout all render identically. The reason lives in the `source()` chain, so it is
-/// flattened here. An operator reading a refused card fetch is entitled to the reason, and so is
-/// [`super::fetch::FetchRefusal::Transport`], which carries this string verbatim.
-fn with_cause(err: &dyn std::error::Error) -> String {
-    let mut out = err.to_string();
-    let mut cause = err.source();
-    while let Some(c) = cause {
-        out.push_str(": ");
-        out.push_str(&c.to_string());
-        cause = c.source();
-    }
-    out
-}
-
-/// Hands a shared resolver to the client, which wants a concrete type.
-struct DelegatingDns(Arc<dyn reqwest::dns::Resolve>);
-
-impl reqwest::dns::Resolve for DelegatingDns {
-    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
-        self.0.resolve(name)
-    }
-}
-
 /// THE PEER'S TRANSPORT-LAYER IDENTITY, off a response whose handshake already verified.
 ///
 /// `None` on a plaintext hop and `None` where the certificate cannot be read. Neither is softened
@@ -285,10 +238,13 @@ pub(crate) fn resolve_client_identities(
     Ok(out)
 }
 
-/// THE REAL TRANSPORT: one `reqwest` GET per hop, to the PINNED ADDRESS.
+/// THE REAL TRANSPORT: a pinned `reqwest` hop to the PINNED ADDRESS, over the unified core egress
+/// backend ([`crate::egress`]) — pooled by the pinned address, so a repeated hop to an
+/// already-judged target reuses the connection, and the client still refuses a second lookup.
 pub(crate) struct ReqwestTransport {
-    /// The resolver the CLIENT is given. Production installs [`NoSecondLookup`]; the tests install
-    /// a counting one, which is the only way to assert that the client did not perform a lookup.
+    /// The resolver the CLIENT is given. Production installs [`crate::egress::RefuseSecondLookup`];
+    /// the tests install a counting one, which is the only way to assert that the client did not
+    /// perform a lookup.
     dns: Arc<dyn reqwest::dns::Resolve>,
     /// Body ceiling, mirrored from the policy so the read stops at the cap rather than buffering an
     /// upstream-chosen number of bytes and measuring afterwards.
@@ -304,11 +260,21 @@ pub(crate) struct ReqwestTransport {
     /// fallback identity and no plane-wide one — a transport carrying an identity belonging to
     /// another registration would present busbar as somebody it was not asked to be.
     identity: Option<reqwest::Identity>,
+    /// THE PINNED-CLIENT POOL for this transport's hops, keyed by the judged `(host, address)`. One
+    /// per transport, so every client it caches shares this transport's fixed posture (its resolver,
+    /// its one identity, its trust anchors) and only the destination varies — a per-agent identity
+    /// never has to enter the pool key.
+    pool: crate::egress::PinnedClientPool,
 }
+
+/// The cap on distinct pinned clients ONE transport holds at once. A card-fetch/relay transport
+/// talks to a single registration's endpoint, so a handful covers a DNS round-robin; the bound stops
+/// a hostile upstream that answers a fresh address per lookup from growing the map without end.
+const MAX_PINNED_CLIENTS: usize = 16;
 
 impl ReqwestTransport {
     pub(crate) fn new(policy: &FetchPolicy) -> Self {
-        Self::with_client_resolver(policy, Arc::new(NoSecondLookup))
+        Self::with_client_resolver(policy, Arc::new(crate::egress::RefuseSecondLookup))
     }
 
     pub(crate) fn with_client_resolver(
@@ -321,6 +287,7 @@ impl ReqwestTransport {
             timeout: CARD_FETCH_TIMEOUT,
             extra_roots: Vec::new(),
             identity: None,
+            pool: crate::egress::PinnedClientPool::with_capacity(MAX_PINNED_CLIENTS),
         }
     }
 
@@ -387,46 +354,25 @@ impl ReqwestTransport {
         })
     }
 
-    /// The client every hop on this plane is made with. THE PIN, the refusing resolver, the
-    /// no-redirect policy and the readable peer certificate, in one place.
-    fn client_for(
-        &self,
-        wire: &Wire,
-        timeout: Duration,
-    ) -> Result<reqwest::Client, reqwest::Error> {
-        let dns = Arc::new(DelegatingDns(Arc::clone(&self.dns)));
-        let mut builder = reqwest::Client::builder()
-            // A 3xx is a fresh, fully untrusted URL that the GUARD must see. A client that
-            // followed it would perform the next hop with no guard at all.
-            .redirect(reqwest::redirect::Policy::none())
-            // THE PEER CERTIFICATE, on the response. This ASKS FOR NOTHING: it does not
-            // change which certificates are accepted, only whether the one that was
-            // accepted is readable afterwards. See the module note.
-            .tls_info(true)
-            .timeout(timeout)
-            .dns_resolver(dns)
-            // THE PIN. A host→address override for the one host this request is about, so
-            // the socket goes to the address the guard already judged. It overrides the
-            // client's resolver rather than replacing it, which is why the refusing
-            // resolver above is still reachable if this line is ever lost.
-            //
-            // The REQUEST is unchanged: it still carries the host, so the `Host` header, the
-            // TLS SNI and the certificate's name check are all still about the hostname.
-            // Rewriting the URL to the address would have connected to the same socket and
-            // silently changed all three.
-            .resolve(&wire.host, wire.pinned);
-        for root in self.extra_roots.clone() {
-            builder = builder.add_root_certificate(root);
-        }
-        // BUSBAR'S OWN END OF A MUTUAL HANDSHAKE. Offering a certificate ASKS FOR NOTHING and
-        // WEAKENS NOTHING: it is presented only when the peer's `CertificateRequest` asks for one,
-        // and the peer's certificate is still verified by exactly the chain-and-name check above.
-        // The module note's rule holds unchanged — there is still no knob here that turns
-        // verification off.
-        if let Some(identity) = self.identity.clone() {
-            builder = builder.identity(identity);
-        }
-        builder.build()
+    /// The client for a hop to `wire`, POOLED by the pinned `(host, address)`.
+    ///
+    /// Built once to the unified core posture ([`crate::egress::build_pinned_client`]: the pin, the
+    /// refusing resolver, the no-redirect policy, the readable peer certificate and the canonical
+    /// connection knobs) and reused for a repeated destination — still pinned, so reuse only ever
+    /// reaches the already-judged target. The per-request DEADLINE is applied by the caller rather
+    /// than baked into the client, because one pooled client serves hops with different ceilings (a
+    /// card fetch, a unary relay, a stream); a client-level total would silently make the first
+    /// caller's deadline every later caller's.
+    fn client_for(&self, wire: &Wire) -> Result<reqwest::Client, reqwest::Error> {
+        self.pool.client_for(&wire.host, wire.pinned, || {
+            crate::egress::build_pinned_client(
+                &wire.host,
+                wire.pinned,
+                Arc::clone(&self.dns),
+                self.identity.clone(),
+                &self.extra_roots,
+            )
+        })
     }
 
     fn execute(
@@ -451,20 +397,28 @@ impl ReqwestTransport {
         let wire = Self::wire_for(url, addr)?;
         let headers = headers.to_vec();
         let url = wire.url.clone();
-        let client = self
-            .client_for(&wire, timeout)
-            .map_err(|e| format!("could not build the {what} client: {}", with_cause(&e)))?;
+        let client = self.client_for(&wire).map_err(|e| {
+            format!(
+                "could not build the {what} client: {}",
+                crate::egress::with_cause(&e)
+            )
+        })?;
 
         on_a_dedicated_runtime(what, move |rt| {
             rt.block_on(async move {
-                let mut req = client.request(method, url.clone());
+                // THE DEADLINE, ON THE REQUEST. The pooled client carries no total timeout — it is
+                // shared across hops with different ceilings — so each hop applies its own here.
+                let mut req = client.request(method, url.clone()).timeout(timeout);
                 for (name, value) in &headers {
                     req = req.header(name, value);
                 }
                 if let Some(body) = body {
                     req = req.body(body);
                 }
-                let resp = req.send().await.map_err(|e| with_cause(&e))?;
+                let resp = req
+                    .send()
+                    .await
+                    .map_err(|e| crate::egress::with_cause(&e))?;
                 let status = resp.status().as_u16();
                 // READ BEFORE THE BODY, because reading the body consumes the response. The
                 // certificate belongs to THIS connection: taking it later, from a fresh one, would
@@ -572,20 +526,27 @@ impl RelayTransport for ReqwestTransport {
         let body = body.to_vec();
         let url = wire.url.clone();
         let cap = self.max_body_bytes.saturating_add(1);
-        let client = self.client_for(&wire, RELAY_STREAM_TIMEOUT).map_err(|e| {
+        let client = self.client_for(&wire).map_err(|e| {
             format!(
                 "could not build the a2a stream relay client: {}",
-                with_cause(&e)
+                crate::egress::with_cause(&e)
             )
         })?;
 
         on_a_dedicated_runtime("a2a task stream relay", move |rt| {
             rt.block_on(async move {
-                let mut req = client.post(url.clone()).body(body);
+                // The streaming deadline rides the request; the pooled client carries none.
+                let mut req = client
+                    .post(url.clone())
+                    .timeout(RELAY_STREAM_TIMEOUT)
+                    .body(body);
                 for (name, value) in &headers {
                     req = req.header(name, value);
                 }
-                let mut resp = req.send().await.map_err(|e| with_cause(&e))?;
+                let mut resp = req
+                    .send()
+                    .await
+                    .map_err(|e| crate::egress::with_cause(&e))?;
                 let status = resp.status().as_u16();
                 let content_type = resp
                     .headers()
@@ -620,7 +581,7 @@ impl RelayTransport for ReqwestTransport {
                         // A stream that dies mid-body is reported as a transport failure. The
                         // driver has already written what arrived, so this is what turns "the
                         // caller's stream just stopped" into a line an operator can read.
-                        Err(e) => return Err(with_cause(&e)),
+                        Err(e) => return Err(crate::egress::with_cause(&e)),
                     }
                 }
                 Ok(StreamHead {
