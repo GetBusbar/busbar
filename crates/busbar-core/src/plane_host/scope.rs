@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The lifecycle SCOPES a plane's host handles live at (DESIGN-LOCKED §4, DESIGN-v5-taxonomy Axis 2).
+//! The lifecycle SCOPES a plane's host handles live at.
 //!
 //! Every host handle a plane acquires is acquired AT a scope, and the host reclaims it when that
 //! scope ends or is dropped. The taxonomy names three:
@@ -122,7 +122,7 @@ struct Registry {
     next: u64,
 }
 
-/// The per-dispatch-invocation arena of acquired host handles — the leak-safety keystone (§4).
+/// The per-dispatch-invocation arena of acquired host handles — the leak-safety keystone.
 ///
 /// Core opens ONE of these per dispatch, hands the plane a [`HostCtx`](super::HostCtx) that recovers a
 /// `HostState` referencing it, and the plane's host calls register every handle they acquire here. On
@@ -265,7 +265,7 @@ impl DispatchScope {
     /// [`AdmissionId`] so a later [`DurableScope::settle`] still resolves it. Returns the preserved
     /// id on success, `None` when `id` names no live settling admission here (stale / already handed).
     ///
-    /// This is the §4 durable handoff at the arena level: the breaker probe-hold leaves request scope
+    /// This is the durable handoff at the arena level: the breaker probe-hold leaves request scope
     /// and joins the durable scope, so its owner-checked release fires at TASK end, not request end.
     pub fn handoff_settling_to(&self, id: AdmissionId, dst: &DurableScope) -> Option<AdmissionId> {
         if id.is_none() {
@@ -359,7 +359,7 @@ impl Drop for DispatchScope {
 /// per-connection state, a pooled backend connection, and in-flight leases (a2a session; DB-wire).
 ///
 /// STUB: minimal by design. The riders that add a duplex/session plane wire this out (a per-connection
-/// opaque-state slot joins the per-plane one, §6); until then it exists only to NAME the scope in the
+/// opaque-state slot joins the per-plane one); until then it exists only to NAME the scope in the
 /// hierarchy so a future add is append-only, never a reshape.
 #[derive(Default)]
 #[non_exhaustive]
@@ -378,14 +378,14 @@ impl SessionScope {
 /// durable work-handle is NOT reclaimed at dispatch-future drop (that was the v4 arena bug) — the async
 /// plane parks a handle at a `202` and resumes it later by nested lookup.
 ///
-/// The DURABLE HANDOFF (§4, the `create_task` gap): a breaker probe-hold that `into_task_dispatch`
+/// The DURABLE HANDOFF (the `create_task` gap): a breaker probe-hold that `into_task_dispatch`
 /// moves out of the per-request [`DispatchScope`] into the detached runner must NOT reclaim when the
 /// REQUEST future drops (that would release the probe mid-task and wedge the cell). Handing it to a
 /// `DurableScope` the RUNNER owns re-homes its reclaim to TASK end: this scope drops with the runner —
 /// on the task's normal completion AND on a `tasks/cancel` abort — running the moved-in guard's `Drop`
 /// (the owner-checked probe release) exactly then, not a moment earlier.
 ///
-/// SETTLE-CAPABLE, not merely drop-only (the §4 create_task gap): a breaker probe-hold handed here
+/// SETTLE-CAPABLE, not merely drop-only (the create_task gap): a breaker probe-hold handed here
 /// can be RECORDED against the breaker exactly once via [`settle`](Self::settle) before the scope
 /// drops — so a detached runner leg can fold its observed outcome into the same `(key, lane)` cell
 /// the admission consulted, and only the UNSETTLED probe releases on drop. A settle before the drop
@@ -674,7 +674,7 @@ mod tests {
         );
     }
 
-    /// The §4 handoff PRIMITIVE: a settling admission registered in a per-request `DispatchScope`
+    /// The handoff PRIMITIVE: a settling admission registered in a per-request `DispatchScope`
     /// moves into a `DurableScope` preserving its id, and no longer reclaims at the dispatch arena's
     /// drop — only at the durable scope's.
     #[test]

@@ -416,7 +416,7 @@ impl PoolRoute {
     /// DURABLE-SCOPED handle, and its server id (for per-server grants/roots lookups inside the
     /// runner). Consumes the route — a task dispatches exactly one member and never reroutes mid-task.
     ///
-    /// THE PROBE HOLD LEAVES THE REQUEST'S SCOPE (§4 durable handoff). The breaker `PlaneAdmission`
+    /// THE PROBE HOLD LEAVES THE REQUEST'S SCOPE (durable handoff). The breaker `PlaneAdmission`
     /// this route won moves out of the per-request dispatch arena into a [`DurableScope`] the RUNNER
     /// owns, so its owner-checked release reclaims at TASK end (the runner's normal end OR a
     /// `tasks/cancel` abort) — never at request-future drop, which would release the probe mid-task
@@ -445,7 +445,7 @@ impl PoolRoute {
         // The probe hold rides into the durable scope as a SETTLE-CAPABLE admission: the detached
         // runner can record its observed outcome against the same `(key, lane)` cell through the host
         // seam, and only an UNSETTLED probe releases when the durable scope drops at task end. This is
-        // the §4 handoff — the probe's lifetime re-homes from the request future to the task's.
+        // the durable handoff — the probe's lifetime re-homes from the request future to the task's.
         let settling = crate::plane_host::breaker::settling_admission(
             Arc::clone(breakers),
             pool_key,

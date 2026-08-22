@@ -955,7 +955,7 @@ pub struct JournalQuery {
 
 /// A depth-bounded nested-dispatch descriptor: the host routes an opaque sub-request through the SAME
 /// router, never knowing what it is. Carries a depth bound and a correlation id so a re-entrant call
-/// reuses the originating budget/audit correlation (RR7) instead of double-counting.
+/// reuses the originating budget/audit correlation instead of double-counting.
 ///
 /// # Safety / discipline
 /// `work_ptr`/`work_len` MUST describe a live, initialized byte range for the call.

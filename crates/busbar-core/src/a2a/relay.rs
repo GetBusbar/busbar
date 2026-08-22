@@ -1426,7 +1426,7 @@ fn outbound_of(body: &[u8]) -> (String, serde_json::Value) {
 }
 
 /// RE-HOME an un-pooled hop's just-won probe hold into the ONE shared [`host_scope`](RelayCall::host_scope)
-/// (§4 scope unification), returning the host [`AdmissionId`](busbar_plugin::hot::AdmissionId) that
+/// (scope unification), returning the host [`AdmissionId`](busbar_plugin::hot::AdmissionId) that
 /// hop's settle answers to. The `token` is MOVED out of the caller's local into the scope's arena, so
 /// its owner-checked release re-lifetimes from the local's drop to the shared scope's drop (the hop's
 /// end on the blocking thread) — the SAME "release after the record" ordering, since the record runs
@@ -1711,7 +1711,7 @@ pub(crate) fn relay(
     // admission and the wire genuinely abandons it and the drop hands it back.
     let mut admission: Option<crate::store::PlaneAdmission> = None;
     let outcome = relay_once(call, seam, now_ms, &mut admission);
-    // §4: re-home an un-pooled admit into the shared host scope (or keep the pre-admitted walk id),
+    // Re-home an un-pooled admit into the shared host scope (or keep the pre-admitted walk id),
     // BEFORE the record — so whether the probe lives in the shared arena or this local, it is still
     // released only after the outcome is recorded.
     let settle = rehome_admission(call, &mut admission);
@@ -2258,7 +2258,7 @@ pub(crate) fn relay_stream(
         sink,
         &mut admission,
     );
-    // §4: same re-home as the unary [`relay`], before the record.
+    // Same re-home as the unary [`relay`], before the record.
     let settle = rehome_admission(call, &mut admission);
     record_hop_outcome(call, settle, outcome.as_ref().err());
     outcome

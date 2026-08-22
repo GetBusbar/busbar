@@ -4,7 +4,7 @@
 //! The JOURNAL family of the plane host-vtable, wired over busbar-core's ONE real audit chain
 //! ([`crate::audit`]).
 //!
-//! ## The seam contract (from the Phase-3 chain-cleave spec, §3)
+//! ## The seam contract
 //!
 //! The HOST owns the ONE hash chain; a plane keeps only its *record shape + framing* and hands the
 //! host its OWN fields as a pre-framed content SUFFIX (bytes). The host frames the PRELUDE
@@ -19,7 +19,7 @@
 //! and it is produced through the SAME [`crate::audit::Digest`] mechanism the verifier re-runs, so an
 //! appended chain [`crate::audit::verify_chain`]-passes byte-identically.
 //!
-//! ## The PipeSeparated landmine (spec §3b/§3c)
+//! ## The PipeSeparated landmine
 //!
 //! For [`Framing::PipeSeparated`] a `|` is emitted BEFORE every field except the first (`started`).
 //! The prelude always writes `prev_hash` first (even when empty at genesis), so `started` is true by
@@ -31,14 +31,14 @@
 //! exact with no separator. Both cases are handled uniformly here: the prelude is framed, the suffix is
 //! appended RAW.
 //!
-//! ## Phase 3 note
+//! ## Durability
 //!
-//! The full generic `audit::Journal` (host-side seq-authority + per-scope position cache + LRU +
-//! store-resume, naming no plane type) is PHASE 3. This module wires FAITHFULLY to the existing
-//! [`crate::audit::Chain::append`] per scope — same seq authority, same seal/digest — producing
-//! byte-identical digests, and holds the positions + rows in a process-local registry. No persisted
-//! byte format is changed. The `// Phase 3: cleave to audit::Journal` markers below flag the two
-//! places that relocate onto the durable store.
+//! This module holds the per-scope positions and rows in a PROCESS-LOCAL registry and wires
+//! FAITHFULLY to the existing [`crate::audit::Chain::append`] per scope — same seq authority, same
+//! seal/digest — producing byte-identical digests. No persisted byte format is changed. A generic
+//! store-backed `audit::Journal` (host-side seq-authority + per-scope position cache + LRU +
+//! store-resume, naming no plane type) is not yet wired; the two `// durable-store cleave point`
+//! markers below flag where it would attach to the durable store.
 
 use super::recover;
 use crate::audit::{frame_prelude, Chain, ChainLabels, ChainedRecord, Digest, Framing};
@@ -135,8 +135,8 @@ struct ScopeState {
     rows: Vec<PlaneJournalRecord>,
 }
 
-/// The process-local per-scope registry. Phase 3: cleave to `audit::Journal` — this map (position
-/// cache + rows) becomes the generic scope-keyed Journal over an `Arc<dyn PlaneStore>`.
+/// The process-local per-scope registry. Durable-store cleave point: this map (position cache + rows)
+/// would become the generic scope-keyed Journal over an `Arc<dyn PlaneStore>`.
 fn journals() -> &'static Mutex<HashMap<u32, ScopeState>> {
     static J: OnceLock<Mutex<HashMap<u32, ScopeState>>> = OnceLock::new();
     J.get_or_init(|| Mutex::new(HashMap::new()))
@@ -193,8 +193,9 @@ pub(crate) extern "C-unwind" fn journal_append(
             chain: Chain::new(),
             rows: Vec::new(),
         });
-        // Phase 3: cleave to audit::Journal — advance the RAM position only AFTER a durable write ok.
-        // Here (no durable store yet) append == commit; the seq authority is already the real `Chain`.
+        // Durable-store cleave point: a store-backed Journal would advance the RAM position only AFTER
+        // a durable write ok. Here (no durable store yet) append == commit; the seq authority is
+        // already the real `Chain`.
         let record = st.chain.append(&scope_str, input);
         let seq = record.seq();
         st.rows.push(record);
@@ -235,7 +236,7 @@ pub(crate) extern "C-unwind" fn journal_read(
         if crate::audit::verify_chain(&st.rows).is_err() {
             return StatusClass::Fault;
         }
-        // Phase 3: cleave to audit::Journal — this window read becomes a store range scan.
+        // Durable-store cleave point: a store-backed Journal would make this window read a range scan.
         let encoded = encode_rows(&st.rows, q.from_seq, q.limit);
         if encoded.len() > buf_cap {
             // SAFETY: see above — report the required length so the caller can size a retry.
@@ -392,7 +393,7 @@ mod tests {
     }
 
     /// The digest is byte-exact against a hand-built `frame_prelude ⧺ content` recompute — this
-    /// localizes any failure to the reframe rather than the whole chain walk (spec §4b direct assert).
+    /// localizes any failure to the reframe rather than the whole chain walk.
     #[test]
     fn genesis_digest_matches_hand_built_prelude_join() {
         let scope = fresh_scope();

@@ -136,7 +136,7 @@ impl Digest {
     /// Feed ALREADY-FRAMED raw bytes verbatim — the join primitive for the host-side journal cleave.
     /// The plane hands a pre-framed content SUFFIX and the host byte-concatenates it after the framed
     /// prelude, so `sha256_hex(frame_prelude(..) ⧺ suffix)` byte-equals the legacy single-[`Digest`]
-    /// output (the Phase-3 chain-cleave contract, §3 of the spec). Frame-independent: it appends no
+    /// output (the chain-cleave contract). Frame-independent: it appends no
     /// length prefix and no separator of its own — the suffix already carries the leading `|` a
     /// PipeSeparated stream owes (Option A). It still flips `started`. ADDITIVE: no existing digest
     /// calls it, so not a single persisted byte changes.

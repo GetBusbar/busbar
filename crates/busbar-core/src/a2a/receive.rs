@@ -1693,7 +1693,7 @@ struct HopContext {
     /// THE SHARED-SCOPE HOST ADMISSION ID FOR A PRE-ADMITTED (pooled WALK) HOP — the id the walk's
     /// probe hold was registered under in the one `hop_host` scope before the hop was built, threaded
     /// onto the blocking relay's `RelayCall`. `AdmissionId::NONE` for an un-pooled/pinned hop (whose
-    /// probe `prepare` admits and re-homes itself). See the §4 scope-unification note.
+    /// probe `prepare` admits and re-homes itself into the shared host scope).
     walk_admission_id: busbar_plugin::hot::AdmissionId,
     now: u64,
     now_ms: u64,
@@ -1793,7 +1793,7 @@ async fn unary_hop(
     gate: Arc<dyn super::relay::DelegationGate>,
     lease: Option<super::creds::Lease>,
     body: Vec<u8>,
-    // The `Send + 'static` host route for the blocking relay call (gap #2, ADDITIVE, unused). Moved
+    // The `Send + 'static` host route for the blocking relay call (an ADDITIVE, currently-unused route). Moved
     // into the `spawn_blocking` closure below so the breaker admit/settle inside `relay` can reach a
     // host handle without carrying the `!Send` `HostCtx` across the task boundary. CLUSTER-1 flips
     // `relay`'s in-place breaker calls onto it; until then it is held-in-the-closure-but-unused.
@@ -1898,7 +1898,7 @@ async fn stream_hop(
     gate: Arc<dyn super::relay::DelegationGate>,
     lease: Option<super::creds::Lease>,
     body: Vec<u8>,
-    // The `Send + 'static` host route for the blocking relay call (gap #2, ADDITIVE, unused). See
+    // The `Send + 'static` host route for the blocking relay call (an ADDITIVE, currently-unused route). See
     // `unary_hop`; the streaming hop's `relay` runs on the same `spawn_blocking` thread and takes the
     // same route so its breaker admit/settle can reach a host handle. Held-in-the-closure-but-unused.
     host: crate::plane_host::SendHostDispatch,

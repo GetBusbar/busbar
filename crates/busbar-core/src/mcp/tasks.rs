@@ -513,7 +513,7 @@ pub(crate) struct Runner {
     /// `create_task` consulted for admission, carried so the runner cannot record into a different
     /// generation's cells than it was admitted against.
     pub(crate) breakers: Arc<crate::store::PlaneBreakers>,
-    /// THE DETACHED RUNNER'S HOST ROUTE (§4 durable handoff). Owns the runner's `Arc<App>`, the
+    /// THE DETACHED RUNNER'S HOST ROUTE (durable handoff). Owns the runner's `Arc<App>`, the
     /// [`DurableScope`](crate::plane_host::DurableScope) holding the single-flight probe `create_task`
     /// won, and the durable `AdmissionId` the detached leg settles by. `into_task_dispatch` moved the
     /// breaker probe-hold out of the per-request dispatch arena into this scope as a SETTLE-CAPABLE
@@ -717,7 +717,7 @@ async fn run(task: Arc<McpTask>, runner: Runner) {
     // The leg loop above SETTLED the durable admission through `runner.host` (CLUSTER-1). `runner.host`
     // (the durable host route) still drops with the runner — on this function's normal end AND on an
     // abort — reclaiming an UNSETTLED admission owner-checked (e.g. a task cancelled before its first
-    // leg); a settled probe makes that drop a no-op. This is the §4 durable handoff: the probe's
+    // leg); a settled probe makes that drop a no-op. This is the durable handoff: the probe's
     // lifetime was re-homed from the request future to the task's, so it is NOT released at request-drop.
 
     // (4) SETTLE. A tool that ran is `completed` whatever it said about itself; a refusal is a

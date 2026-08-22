@@ -129,7 +129,7 @@ extern "C-unwind" fn metrics_emit(host: HostCtx, sample: *const MetricSample) ->
 /// the budget gate the [`Facts`] POD encodes, then the `GovState::try_admit` limit engine. On `Admit`
 /// the RAII [`AdmitGrant`](crate::governance::AdmitGrant) it yields is REGISTERED in the
 /// [`DispatchScope`](super::DispatchScope) arena, so it is released on scope-drop no matter how the
-/// dispatch future ends (the §4 leak keystone). Fail-closed (`Deny`) on a null POD or any panic.
+/// dispatch future ends (the leak keystone). Fail-closed (`Deny`) on a null POD or any panic.
 extern "C-unwind" fn govern_admit(host: HostCtx, facts: *const Facts) -> Decision {
     catch_unwind(AssertUnwindSafe(|| {
         // SAFETY: recovery invariant (see `recover`).

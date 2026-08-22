@@ -50,7 +50,7 @@ const PROVIDER_UNATTRIBUTED: &str = "plane:unattributed";
 /// The real admission decision over a borrowed [`Facts`]. On `Admit` the RAII
 /// [`AdmitGrant`](crate::governance::AdmitGrant) obtained from the governance engine is REGISTERED in
 /// the dispatch arena, so its release runs on scope-drop no matter how the dispatch future ends (the
-/// §4 leak keystone). Called from inside the slot's `catch_unwind`; the caller maps a panic to
+/// leak keystone). Called from inside the slot's `catch_unwind`; the caller maps a panic to
 /// `Deny`, so this stays fail-closed by construction.
 pub(super) fn admit(state: &HostState, facts: &Facts) -> Decision {
     // The budget gate the Facts POD encodes: the caller's remaining budget MUST cover the requested

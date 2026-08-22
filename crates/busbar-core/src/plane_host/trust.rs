@@ -198,7 +198,7 @@ pub(crate) extern "C-unwind" fn verify_lookup(
             Decision::Lead => {
                 // Register the leadership lease in the dispatch scope so a leader whose dispatch is
                 // dropped BEFORE it stores does not wedge followers forever: the reclaim clears the
-                // leadership when the scope ends (the §4 leak-safety keystone, applied to trust). It
+                // leadership when the scope ends (the leak-safety keystone, applied to trust). It
                 // is idempotent with `verify_store`, which clears the same entry on the happy path.
                 let reclaim_key = ckey.clone();
                 let lease = state.scope.register_lease(Box::new(move || {

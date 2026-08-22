@@ -78,8 +78,8 @@ const CHUNK_CHANNEL_DEPTH: usize = 16;
 // ── The host's allowlist-scope stance, read off `EgressDesc::allowlist_scope`. ──────────────────
 // `allowlist_scope` is "the host-defined allowlist scope this egress is checked against" — so the
 // host, not the plane, decides whether a scope may reach a private/loopback or plaintext endpoint.
-// The scaffold reads these convention bits directly; Phase 2 resolves the scope id against operator
-// config. The guard stays FAIL-CLOSED by default: a scope of 0 reaches neither.
+// These convention bits are read directly; resolving the scope id against operator config is not yet
+// wired. The guard stays FAIL-CLOSED by default: a scope of 0 reaches neither.
 
 /// This allowlist scope permits private / loopback / CGNAT addresses (cloud-metadata stays refused —
 /// that is the guard, not a policy the scope can speak for; see [`crate::net_guard`]).

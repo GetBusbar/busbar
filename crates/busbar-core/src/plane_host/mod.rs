@@ -21,7 +21,7 @@
 //! * [`HostState`] + [`recover`] — the `HostCtx` recovery invariant. The ABI hands every host call an
 //!   opaque `HostCtx` (a `*mut c_void`); core recovers its [`HostState`] (the live `App` + the active
 //!   [`DispatchScope`]) from it.
-//! * [`scope`] — the [`DispatchScope`] arena (the §4 leak keystone) plus the [`SessionScope`] /
+//! * [`scope`] — the [`DispatchScope`] arena (the leak keystone) plus the [`SessionScope`] /
 //!   [`DurableScope`] stubs.
 //! * [`vtable`] — [`build_plane_host_vtable`]; every slot wired (three proof-of-life fns here, the
 //!   rest forwarding into the capability modules), zero stubs remaining.
@@ -180,7 +180,7 @@ pub fn govern_admit_reason_over(
 /// whole future and reclaims on ANY exit — normal return, client-disconnect cancel, or panic. This is
 /// the fix for the sync-only [`with_dispatch_scope`]: an `async move {}` passed to the closure form
 /// would make `R` the future and drop the scope BEFORE it was awaited; an owned guard held on the async
-/// stack frame closes that hole (the §4 HalfOpen-wedge fix on the real `async` dispatch paths).
+/// stack frame closes that hole (the HalfOpen-wedge fix on the real `async` dispatch paths).
 ///
 /// Zero-alloc on the fast lane: it BORROWS the live [`App`] and STACK-PINS its own [`DispatchScope`]
 /// (no heap until a handle is actually registered), so holding one across awaits costs no per-dispatch

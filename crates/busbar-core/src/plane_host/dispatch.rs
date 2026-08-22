@@ -17,7 +17,7 @@
 //! a MANDATORY `catch_unwind`, and map any caught panic (or malformed input) to the FAIL-CLOSED value
 //! for that slot — never a permissive one.
 //!
-//! ## The two scopes this family straddles (§4 taxonomy)
+//! ## The two scopes this family straddles
 //!
 //! [`nested_dispatch`] and [`gate_scan`] live at the DISPATCH scope: they run and complete within the
 //! originating work-item's future. The work-handle pair does NOT — a durable work-handle is the
@@ -38,7 +38,7 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::{LazyLock, Mutex};
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
-// nested_dispatch — re-enter core's OWN operation router, DEPTH-BOUND (RR7).
+// nested_dispatch — re-enter core's OWN operation router, DEPTH-BOUND.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
 /// The HOST CEILING on nested re-entry. A plane→dispatch→plane loop is bounded by the per-request
@@ -53,7 +53,7 @@ const MAX_NESTED_DEPTH: u32 = 8;
 /// the sub-request is an LLM completion (that is the whole point of the slot — MCP sampling re-enters
 /// the governed pipeline this way, `mcp/sampling.rs`).
 ///
-/// DEPTH-BOUND per RR7: the re-entry is REFUSED when the caller's remaining `depth` is exhausted
+/// DEPTH-BOUND: the re-entry is REFUSED when the caller's remaining `depth` is exhausted
 /// (`0`) or exceeds [`MAX_NESTED_DEPTH`], which bounds unbounded plane→dispatch→plane recursion. The
 /// originating `correlation_id` is carried so the sub-operation is metered and audited against the
 /// ORIGINATING request's budget/correlation rather than double-counted as a fresh top-level request.
@@ -76,13 +76,13 @@ pub(crate) extern "C-unwind" fn nested_dispatch(
         }
         // SAFETY: a non-null `desc` is a live, initialized `OpDesc` for the call (ABI discipline).
         let d = unsafe { &*desc };
-        // DEPTH-BOUND (RR7): refuse at exhaustion OR beyond the host ceiling — both are the re-entrancy
+        // DEPTH-BOUND: refuse at exhaustion OR beyond the host ceiling — both are the re-entrancy
         // guard rejecting, and conflating them is correct (each is "this re-entry is not permitted").
         if d.depth == 0 || d.depth > MAX_NESTED_DEPTH {
             return StatusClass::Refused;
         }
-        // Carry the originating correlation for SINGLE budget/audit accounting (RR7): the Phase-2
-        // router re-entry threads this so the sub-op charges the originating request, not a new one.
+        // Carry the originating correlation for SINGLE budget/audit accounting: the router re-entry
+        // threads this so the sub-op charges the originating request, not a new one.
         let _correlation_id = d.correlation_id;
         // SAFETY: `(work_ptr, work_len)` is a live borrowed range for the call (ABI discipline).
         let _work: &[u8] = unsafe { borrow_bytes(d.work_ptr, d.work_len) };

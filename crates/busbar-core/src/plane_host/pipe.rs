@@ -270,8 +270,8 @@ fn read_child_cwd(d: &EgressDesc) -> Option<String> {
 
 /// The HOST command allowlist: a program is admissible only when it is an ABSOLUTE path AND the egress
 /// scope permits the subprocess tier. This is policy the HOST owns — the plane's [`EgressDesc`] carried
-/// only data. Phase 2 resolves the scope id against operator config and adds a per-program allowlist;
-/// the scaffold enforces the two invariants the stdio transport already relies on.
+/// only data. Resolving the scope id against operator config and adding a per-program allowlist is not
+/// yet wired; the current guard enforces the two invariants the stdio transport already relies on.
 fn command_admissible(program: &str, scope: u32) -> bool {
     scope & SCOPE_ALLOW_SUBPROCESS != 0 && std::path::Path::new(program).is_absolute()
 }
