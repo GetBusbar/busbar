@@ -1745,6 +1745,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
         // + URL/path build + reqwest RequestBuilder construction that follows.
         drop(_xlate);
         let _cbuild = crate::profile::start(crate::profile::Stage::ClientBuild);
+        let _t = busbar_timing::timeit!("egress_client_build");
         let base = &app.lanes[i].base_url;
 
         // Mode-aware key selection: passthrough uses caller token, others use lane's api_key.

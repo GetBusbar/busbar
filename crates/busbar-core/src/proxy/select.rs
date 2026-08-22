@@ -265,6 +265,7 @@ pub(crate) async fn pick_among(
     // lanes through the unchanged breaker filter instead of the blind SWRR pick (see SELECTION below).
     policy_order: Option<&[usize]>,
 ) -> Option<(usize, Permit, u64)> {
+    let _t = busbar_timing::timeit!("lane_pick_among");
     // THE MODEL PLANE'S CANDIDATE VIEW, for the ONE selection loop. Built once per pick (never inside
     // the walk's retry hops) and borrowed for its whole life: `wl` is the pool member as configured,
     // `model` is the operator-facing name a refusal must be able to say, and `pool_name` is this

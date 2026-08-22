@@ -26,6 +26,10 @@ path = "src/lib.rs"
 
 [dependencies]
 busbar-api = { path = "../api" }
+# Debug-only per-method micro-timing. DEFAULT OFF: with `busbar-timing`'s `timing` feature disabled
+# (the shipped default) every `timeit!` call site below compiles to `()` — zero cost. Turn it on for
+# a profiling build with `--features busbar-timing/timing`. Method timers nest inside `profile.rs`.
+busbar-timing = { path = "../busbar-timing" }
 busbar-store-memory = { path = "../store-memory" }
 busbar-plugin-loader = { path = "../plugin-loader" }
 busbar-plugin-sign = { path = "../plugin-sign" }

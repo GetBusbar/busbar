@@ -403,6 +403,7 @@ dependencies = [
  "busbar-secret-ref",
  "busbar-store-example-plugin",
  "busbar-store-memory",
+ "busbar-timing",
  "bytes",
  "crc32fast",
  "criterion",
@@ -485,6 +486,7 @@ version = "1.6.0"
 dependencies = [
  "axum",
  "busbar-core",
+ "busbar-timing",
  "bytes",
  "getrandom 0.3.4",
  "hex",
@@ -619,6 +621,13 @@ version = "1.5.0"
 dependencies = [
  "busbar-api",
  "busbar-plugin-testkit",
+]
+
+[[package]]
+name = "busbar-timing"
+version = "1.6.0"
+dependencies = [
+ "libc",
 ]
 
 [[package]]

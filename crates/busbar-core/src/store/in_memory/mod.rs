@@ -342,6 +342,7 @@ impl HealthState {
     /// default cell (the `LaneState` itself) — used by direct/ad-hoc routes. A named pool gets a
     /// dedicated `BreakerCell`, created Closed on first access.
     pub(crate) fn cell(&self, pool: &str, lane: usize) -> Arc<dyn BreakerCellAccess> {
+        let _t = busbar_timing::timeit!("store_cell_lookup");
         if pool.is_empty() {
             return self.lanes[lane].clone();
         }
