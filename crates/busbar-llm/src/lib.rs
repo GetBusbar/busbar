@@ -56,6 +56,10 @@ pub mod gemini;
 pub mod openai_chat;
 pub mod openai_responses;
 
+/// Thread-local OS-entropy pool shared by every writer's synthesized-wire-id path — amortises the
+/// per-id `getrandom` syscall (the whole `rb_finish` cost on the anthropic-ingress hot path).
+pub(crate) mod synth_rng;
+
 /// The dialect-neutral tail-usage isolation helper shared by every reader's
 /// `recover_truncated_usage` override.
 pub(crate) mod usage_tail;

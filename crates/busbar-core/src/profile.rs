@@ -65,6 +65,35 @@ pub(crate) enum Stage {
     RbBody,
     /// The ingress `finish` boundary: metrics record + request-log gate + refund check.
     Finish,
+    /// Inbound request-body JSON validate + head-project (`LazyBody::parse`) in `forward_with_pool_keyed`
+    /// — busbar's OWN parse of the caller's request bytes, BEFORE any stage below. Not part of the
+    /// upstream RTT; pure busbar CPU. (Zero when the caller pre-parsed, e.g. the real ingress layer.)
+    InboundParse,
+    /// `forward_with_pool_parsed` wrapper setup BEFORE the dispatch core: `next_request_id` + span
+    /// record + response-tap shape capture (light path: taps empty → near-zero) + `app.clone()`.
+    WrapSetup,
+    /// Per-attempt pre-dispatch bookkeeping BETWEEN lane_pick and translate_req: routing-stage taps
+    /// (light path: none), `metric_pool_label`, and the `upstream_attempt` telemetry bump.
+    AttemptSetup,
+    /// Sub-stage of RbBody: `r.bytes_stream()` + `FirstByteBody::new` + `into_body` (the streaming
+    /// body wrapper construction).
+    RbNew,
+    /// Sub-stage of RbBody: the axum `Response::builder` chain + CT/relay-id/route-policy header
+    /// attaches + `.body(axum_body)` (the response head assembly + return).
+    RbFinish,
+    /// Sub-stage of RbFinish: `Response::builder().status()` + the Content-Type header attach
+    /// (fresh `HeaderMap` alloc + `HeaderName`/`HeaderValue` parse-validate).
+    RbfBuild,
+    /// Sub-stage of RbFinish: `maybe_attach_response_request_id` + `maybe_attach_route_policy`
+    /// (the `decl_for` protocol resolves + conditional header attaches).
+    RbfAttach,
+    /// Sub-stage of RbFinish: `.body(axum_body)` finalize + return.
+    RbfBody,
+    /// Between UpstreamSend end and RecordSuccess: the post-`.send()` response handling on the
+    /// SUCCESS path — status/`StatusClass` classification, 2xx detection, the failover/refund branch
+    /// selection up to the success arm. This is the last uncounted span inside `busbar;dur` (the
+    /// former ~2µs residual); on a non-2xx/failover path it covers the error-classify work instead.
+    PostSend,
 }
 
 impl Stage {
@@ -86,6 +115,15 @@ impl Stage {
             Stage::RbPre => "  rb_pre",
             Stage::RbBody => "  rb_body",
             Stage::Finish => "finish",
+            Stage::InboundParse => "inbound_parse",
+            Stage::WrapSetup => "wrap_setup",
+            Stage::AttemptSetup => "attempt_setup",
+            Stage::RbNew => "    rb_new",
+            Stage::RbFinish => "    rb_finish",
+            Stage::RbfBuild => "      rbf_build",
+            Stage::RbfAttach => "      rbf_attach",
+            Stage::RbfBody => "      rbf_body",
+            Stage::PostSend => "post_send",
         }
     }
 
@@ -96,7 +134,7 @@ impl Stage {
 }
 
 /// Number of `Stage` variants (the bucket-array length). Must equal the number of enum arms above.
-const STAGE_COUNT: usize = 13;
+const STAGE_COUNT: usize = 22;
 
 /// Per-stage sample CAP. Buckets are bounded so a long-lived enabled binary cannot grow them without
 /// limit (and re-sort an ever-larger `Vec` under the global `Mutex` on every [`dump`]). Once a bucket
@@ -246,17 +284,26 @@ pub fn dump() {
     // Iterate in enum order for a stable, readable report.
     let stages = [
         Stage::MwAuth,
+        Stage::InboundParse,
+        Stage::WrapSetup,
         Stage::Prepare,
         Stage::LanePick,
+        Stage::AttemptSetup,
         Stage::TranslateReq,
         Stage::ClientBuild,
         Stage::CbAuth,
         Stage::CbReqwest,
         Stage::UpstreamSend,
+        Stage::PostSend,
         Stage::RecordSuccess,
         Stage::RespBuild,
         Stage::RbPre,
         Stage::RbBody,
+        Stage::RbNew,
+        Stage::RbFinish,
+        Stage::RbfBuild,
+        Stage::RbfAttach,
+        Stage::RbfBody,
         Stage::Finish,
     ];
     for stage in stages {

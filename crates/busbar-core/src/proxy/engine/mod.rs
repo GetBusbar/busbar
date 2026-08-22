@@ -79,6 +79,7 @@ pub(crate) async fn forward_with_pool_keyed(
 ) -> Response {
     // Validate + head-project WITHOUT building a DOM (same malformed-body 400 contract as the old
     // eager parse — `LazyBody::parse` goes through the identical `crate::json` guard + parser).
+    let _parse = crate::profile::start(crate::profile::Stage::InboundParse);
     let v: LazyBody = match LazyBody::parse(&body) {
         Ok(v) => v,
         Err(_) => {
@@ -91,6 +92,7 @@ pub(crate) async fn forward_with_pool_keyed(
             );
         }
     };
+    drop(_parse);
     forward_with_pool_parsed(
         app,
         cands,
@@ -156,6 +158,7 @@ pub(crate) async fn forward_with_pool_parsed(
     // for the whole failover walk) AND kept as this plain local so the COMPLETION tap fired below —
     // after `inner` has returned and `RequestCtx` has gone out of scope — stamps the SAME value. That
     // identity (pre-forward routing message vs. post-response tap) is the whole join-key contract.
+    let _wrap = crate::profile::start(crate::profile::Stage::WrapSetup);
     let request_id = app.next_request_id();
     // Tag every event this span covers with the correlation id — a native `u64` `record`, not a
     // `format!`, so this costs nothing beyond what the (already debug-gated) span pays. A no-op at
@@ -194,6 +197,7 @@ pub(crate) async fn forward_with_pool_parsed(
         ))
     };
     let completion_app = app.clone();
+    drop(_wrap);
     let resp = forward_with_pool_parsed_inner(
         app,
         cands,
@@ -1574,6 +1578,9 @@ pub(crate) async fn forward_with_pool_parsed_inner(
         };
         // LANE_PICK ends here (a lane + permit are in hand).
         drop(_pick);
+        // ATTEMPT_SETUP: per-hop bookkeeping between lane_pick and translate_req — exclude, routing
+        // taps (light path: none), metric-pool label, upstream-attempt telemetry.
+        let _asetup = crate::profile::start(crate::profile::Stage::AttemptSetup);
 
         // Mark this lane as excluded for future attempts in this request
         request_ctx.exclude(i);
@@ -1625,6 +1632,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
         // parsed `Value` tree per hop: a single JSON parse is far cheaper in time and peak heap than
         // an O(n) `Value::clone` of a large request (long histories / base64 images / big tool
         // schemas), which under sustained failover compounded to O(n × max_cap) allocations.
+        drop(_asetup);
         let _xlate = crate::profile::start(crate::profile::Stage::TranslateReq);
         // REQUEST SHORT-CIRCUIT WITHOUT A DOM: hop 1 of a SAME-protocol
         // JSON dispatch whose head projection PROVES no same-proto invalidator (#1-#4, Vertex)
@@ -1746,6 +1754,12 @@ pub(crate) async fn forward_with_pool_parsed_inner(
         drop(_xlate);
         let _cbuild = crate::profile::start(crate::profile::Stage::ClientBuild);
         let _t = busbar_timing::timeit!("egress_client_build");
+        // MEASUREMENT ONLY (busbar-timing, additive): `egress_assemble` sub-scopes everything
+        // below that is NOT the network send — credential select, path/URI build, auth-header
+        // build (itself sub-timed as `egress_sigv4`), and reqwest `RequestBuilder` construction.
+        // Dropped explicitly just before the send so its span never overlaps `egress_send`; the
+        // outer `egress_client_build` (`_t` above) is untouched and should ~= assemble + send.
+        let _asm = busbar_timing::timeit!("egress_assemble");
         let base = &app.lanes[i].base_url;
 
         // Mode-aware key selection: passthrough uses caller token, others use lane's api_key.
@@ -1798,7 +1812,10 @@ pub(crate) async fn forward_with_pool_parsed_inner(
             timestamp_epoch: now(),
             upstream_creds: app.upstream_creds(),
         };
-        let auth = lane_auth_headers(&app.lanes[i], key, &signing_ctx);
+        // MEASUREMENT ONLY: isolates the auth-header build call specifically (SigV4 signing on
+        // Bedrock; a cheap static/bearer header build on every other lane, where this reads ~0).
+        let auth =
+            busbar_timing::scope("egress_sigv4", || lane_auth_headers(&app.lanes[i], key, &signing_ctx));
         drop(_cb_auth);
 
         // Egress request Content-Type: JSON bodies stay JSON (chat byte-identical). An OPAQUE body
@@ -1852,7 +1869,13 @@ pub(crate) async fn forward_with_pool_parsed_inner(
         // CLIENT_BUILD ends here (the RequestBuilder is fully assembled). UPSTREAM_SEND spans the
         // `req.send().await` round-trip to response headers.
         drop(_cbuild);
+        // MEASUREMENT ONLY: `egress_assemble` ends here — everything above this point was
+        // assembly (credential select, path/header/request build); everything below is the send.
+        drop(_asm);
         let _send = crate::profile::start(crate::profile::Stage::UpstreamSend);
+        // MEASUREMENT ONLY: `egress_send` spans ONLY the `req.send().await` round-trip below
+        // (both the attempt-capped and uncapped arms), dropped right after the match resolves.
+        let _snd = busbar_timing::timeit!("egress_send");
         // Wall-clock start of the upstream call, for the `metrics.latencyMs` a native bedrock
         // ConverseStream `metadata` frame carries on the buffered-synthesis path below.
         let upstream_started = std::time::Instant::now();
@@ -1906,10 +1929,16 @@ pub(crate) async fn forward_with_pool_parsed_inner(
             }
             None => req.send().await,
         };
+        // MEASUREMENT ONLY: `egress_send` ends here, matching `UPSTREAM_SEND` below exactly.
+        drop(_snd);
         // UPSTREAM_SEND ends here (response headers received or transport error).
         drop(_send);
         record_upstream_rtt(upstream_started.elapsed());
 
+        // POST_SEND: the last uncounted span inside `busbar;dur` — response status/StatusClass
+        // classification + 2xx/failover branch selection, up to the RecordSuccess boundary on the
+        // success arm (dropped there). On a failover `continue` it records that attempt's classify.
+        let _postsend = crate::profile::start(crate::profile::Stage::PostSend);
         match res {
             Err(e) => {
                 // Pre-response error: classify and potentially failover
@@ -2318,6 +2347,8 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                     }
                 }
 
+                // POST_SEND ends here (success arm reached); RECORD_SUCCESS begins.
+                drop(_postsend);
                 // RECORD_SUCCESS: the post-2xx breaker/latency/budget bookkeeping (store lock ops).
                 let _rec = crate::profile::start(crate::profile::Stage::RecordSuccess);
                 // SUCCESS case: the upstream served a 2xx. Record the success for this lane (feeds
@@ -2447,6 +2478,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                 // RB_PRE ends; RB_BODY spans the FirstByteBody wiring + response builder + return.
                 drop(_rb_pre);
                 let _rb_body = crate::profile::start(crate::profile::Stage::RbBody);
+                let _rb_new = crate::profile::start(crate::profile::Stage::RbNew);
                 let upstream_stream = r.bytes_stream();
                 let guarded_body = FirstByteBody::new(
                     upstream_stream,
@@ -2464,7 +2496,10 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                     budget_spent,
                 );
                 let axum_body = guarded_body.into_body();
+                drop(_rb_new);
+                let _rb_finish = crate::profile::start(crate::profile::Stage::RbFinish);
 
+                let _rbf_build = crate::profile::start(crate::profile::Stage::RbfBuild);
                 let mut rb = Response::builder().status(status);
                 // Cross-protocol streaming: the body is reframed to the client's format, so the CT
                 // must be the ingress client's, not the upstream's. Same-protocol passthrough keeps
@@ -2488,6 +2523,8 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                         }
                     }
                 }
+                drop(_rbf_build);
+                let _rbf_attach = crate::profile::start(crate::profile::Stage::RbfAttach);
                 // Bedrock-ingress streaming 2xx must carry `x-amzn-RequestId` (a real ConverseStream
                 // always does, preferring the captured same-protocol upstream id else synthesizing);
                 // anthropic-ingress streaming 2xx must carry `request-id` (the SDK reads it into
@@ -2501,6 +2538,8 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                 // TRANSPARENCY: stamp which routing policy chose this target (no-op on the default
                 // path / when the policy Abstained). Covers same-protocol passthrough + all streaming.
                 rb = maybe_attach_route_policy(rb, chosen_policy_name, &app.lanes[i].model);
+                drop(_rbf_attach);
+                let _rbf_body = crate::profile::start(crate::profile::Stage::RbfBody);
                 return rb
                     .body(axum_body)
                     .unwrap_or_else(|_| status.into_response());

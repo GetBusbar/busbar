@@ -356,7 +356,13 @@ fn fill_base62(out: &mut [u8], alphabet: &[u8; 62]) -> bool {
     'outer: while filled < len {
         let mut batch = [0u8; 32];
         let batch = &mut batch[..len];
-        if getrandom::fill(batch).is_err() {
+        // Draw from the thread-local OS-entropy pool (same OS-CSPRNG bytes, syscall amortised across
+        // ~130 ids per `getentropy` instead of one syscall per id — the whole `rb_finish` cost on the
+        // anthropic-ingress hot path). Same false-on-CSPRNG-failure contract as `getrandom::fill`.
+        // `super::synth_rng` (not `crate::`) so this resolves in BOTH the native busbar-llm build
+        // (`crate::synth_rng`) and the `#[path]` dual-compile into busbar-core (`crate::proto::synth_rng`),
+        // matching the `super::super::usage_tail` convention the readers use.
+        if !super::synth_rng::fill_entropy(batch) {
             return false;
         }
         for &byte in batch.iter() {

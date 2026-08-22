@@ -129,17 +129,25 @@ async fn capture_latency_metrics() {
         let i = (((durs.len() - 1) as f64) * p).round() as usize;
         durs[i] as f64 / 1000.0
     };
+    // MEASUREMENT ONLY: arithmetic means, so the `BUSBAR_PROFILE` per-stage MEANS (which the stage
+    // profiler reports) can be reconciled against the whole-span means — `sum(stage means) + residual
+    // == mean busbar;dur` — rather than against a percentile they cannot sum to.
+    let mean_us = |xs: &[u64]| -> f64 {
+        (xs.iter().map(|&x| x as f64).sum::<f64>() / xs.len() as f64) / 1000.0
+    };
     eprintln!(
-        "BUSBAR_METRICS busbar.latency.inproc_handle_us n={} p50={:.2} p90={:.2} p99={:.2}",
+        "BUSBAR_METRICS busbar.latency.inproc_handle_us n={} mean={:.2} p50={:.2} p90={:.2} p99={:.2}",
         n,
+        mean_us(&ns),
         pct(0.50),
         pct(0.90),
         pct(0.99)
     );
     // THE number that counts: busbar's own added latency (total minus upstream RTT), i.e. `busbar;dur`.
     eprintln!(
-        "BUSBAR_METRICS busbar.dur_us n={} p50={:.2} p90={:.2} p99={:.2}",
+        "BUSBAR_METRICS busbar.dur_us n={} mean={:.2} p50={:.2} p90={:.2} p99={:.2}",
         n,
+        mean_us(&durs),
         pct_dur(0.50),
         pct_dur(0.90),
         pct_dur(0.99)

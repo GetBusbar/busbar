@@ -779,6 +779,14 @@ pub mod registry;
 #[path = "../../../busbar-llm/src/usage_tail.rs"]
 pub mod usage_tail;
 
+/// THE THREAD-LOCAL OS-ENTROPY POOL for synthesized wire ids, compiled back in for TEST BUILDS ONLY.
+/// Sources live in `crates/busbar-llm/src/synth_rng.rs` (the dialect writers reach it via
+/// `super::synth_rng` from a `mod.rs`); same `#[path]` dual-compile mechanism as `usage_tail` above.
+/// Production core drives the writers through the vtable and never names this module directly.
+#[cfg(any(test, feature = "test-support"))]
+#[path = "../../../busbar-llm/src/synth_rng.rs"]
+pub mod synth_rng;
+
 /// THE EXTRACTED OPENAI-FAMILY CITATION MAPPING, compiled back in for TEST BUILDS ONLY. Sources live
 /// in `crates/busbar-llm/src/openai_annotations.rs` (the openai Chat/Responses codecs call it via
 /// `super::super::openai_annotations`); same `#[path]` dual-compile mechanism as `mod anthropic` and

@@ -431,7 +431,7 @@ fn synth_completion_id() -> String {
     // bytes we draw another; on an entropy failure (getrandom errors) we stop and leave '0' fill.
     'outer: while filled < COMPLETION_ID_TOKEN_LEN {
         let mut batch = [0u8; COMPLETION_ID_TOKEN_LEN];
-        if getrandom::fill(&mut batch).is_err() {
+        if !super::synth_rng::fill_entropy(&mut batch) {
             // Near-impossible entropy failure: keep the remaining '0' fill rather than panic.
             break 'outer;
         }
