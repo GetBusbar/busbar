@@ -16,7 +16,8 @@ use crate::auth::AuthMiddleware;
 use crate::diagnostics::{
     diag_error, diag_warn, DURABLE_KEYS_INERT, GOVERNANCE_STORE_EPHEMERAL,
     OAUTH_AS_EPHEMERAL_SIGNING_KEY, OPEN_RELAY_NO_AUTH, PLUGINS_FETCH_RELOAD_MISS,
-    PROVIDER_API_KEY_UNRESOLVED, SAFE_MODE_OVERLAY_QUARANTINED, STORE_SECRET_REF_UNRESOLVED,
+    PROVIDER_API_KEY_UNRESOLVED, SAFE_MODE_OVERLAY_QUARANTINED, STATEFUL_PLANE_EPHEMERAL_STORE,
+    STORE_SECRET_REF_UNRESOLVED,
 };
 #[allow(unused_imports)]
 #[cfg(feature = "plane-mcp")]
@@ -95,6 +96,33 @@ pub fn inert_durable_keys_banner(
              allowed_pools are bypassed; no data-plane request resolves them). Add `keys` to \
              auth.chain to enforce them."
         ))
+    } else {
+        None
+    }
+}
+
+/// Return the STATEFUL-PLANE ephemeral-store WARN to emit, or `None` when no sharper warn applies.
+///
+/// The generic [`crate::diagnostics::GOVERNANCE_STORE_EPHEMERAL`] notice beside the store resolution
+/// speaks to GOVERNANCE state (keys / usage / ledgers). MCP and A2A are ALSO stateful planes: their
+/// in-flight TASK state lives only in the resolved store, so on the RAM store it is dropped on
+/// restart and any task that was mid-flight breaks on its next request. This returns a sharper warn
+/// NAMING that consequence — but ONLY when the RAM store is resolved AND a stateful plane is actually
+/// configured (`mcp_stateful` = an MCP server or tool-pool is present; `a2a_stateful` = an A2A agent
+/// or agent-pool is present). An LLM-only deployment is STATELESS — a restart costs it nothing — so
+/// it gets only the generic notice: a sharper warn there would be noise that trains operators to
+/// ignore warnings. This is a WARN, never a boot-block: a durable store is opt-in and RAM is the
+/// convenience default, so busbar does not refuse to start.
+pub fn stateful_plane_ephemeral_store_warn(
+    store_is_memory: bool,
+    mcp_stateful: bool,
+    a2a_stateful: bool,
+) -> Option<&'static str> {
+    if store_is_memory && (mcp_stateful || a2a_stateful) {
+        Some(
+            "MCP/A2A task state will NOT survive a restart — in-flight tasks will break on the next \
+             request. Configure a durable store (sqlite/postgres).",
+        )
     } else {
         None
     }
@@ -1085,6 +1113,21 @@ pub fn build_app_from_config(
         // (resolved by alias or canonical name from the validated registry — the engine sees only the
         // returned `dyn Store`, exactly like a compiled-in backend).
         let g = cfg.store.clone().unwrap_or_default();
+        // Is a STATEFUL plane (MCP / A2A) actually configured? Those planes carry per-task state that
+        // the RAM store drops on restart. "Configured" = any MCP server / A2A agent OR any MCP
+        // tool-pool / A2A agent-pool; the pool maps are always typed (present regardless of which
+        // planes are compiled in), while the def sections are only typed when their plane is compiled
+        // in. A bare `tools:`/`agents:` entry (the common case, no failover pool) is just as stateful
+        // as a pooled one, so both are checked. Computed here so the sharper warn below can fire only
+        // for a stateful deployment — never for an LLM-only (stateless) one.
+        #[cfg(feature = "plane-mcp")]
+        let mcp_stateful = !cfg.tool_defs.servers.is_empty() || !cfg.tool_pools.is_empty();
+        #[cfg(not(feature = "plane-mcp"))]
+        let mcp_stateful = !cfg.tool_pools.is_empty();
+        #[cfg(feature = "plane-a2a")]
+        let a2a_stateful = !cfg.agent_defs.agents.is_empty() || !cfg.agent_pools.is_empty();
+        #[cfg(not(feature = "plane-a2a"))]
+        let a2a_stateful = !cfg.agent_pools.is_empty();
         let store: Arc<dyn governance::Store> =
             if g.module == crate::config::GOVERNANCE_STORE_MEMORY {
                 diag_warn!(
@@ -1092,6 +1135,15 @@ pub fn build_app_from_config(
                     "store: in-memory (ephemeral) - keys, groups' usage, and ledgers reset on \
                      restart; configure a durable store plugin for persistence"
                 );
+                // SHARPER, CONDITIONAL warn: the generic notice above is about governance state; MCP
+                // and A2A task state also lives only in this RAM store. Fire the specific warn (naming
+                // the consequence) ONLY when a stateful plane is configured — an LLM-only deploy keeps
+                // just the generic notice. Additive to, not a replacement for, the notice above.
+                if let Some(msg) =
+                    stateful_plane_ephemeral_store_warn(true, mcp_stateful, a2a_stateful)
+                {
+                    diag_warn!(STATEFUL_PLANE_EPHEMERAL_STORE, "{msg}");
+                }
                 Arc::new(governance::MemoryStore::new())
             } else {
                 // Resolve any SecretRef-typed setting (e.g. a `licenseKey`) against the secret

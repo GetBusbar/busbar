@@ -1624,6 +1624,17 @@ The outcome of a push-notification delivery could not be appended to its provena
 
 **What to do:** None — self-heals for delivery. If it recurs, investigate the durable provenance store, since delivery outcomes are then going unchained.
 
+<a id="stateful-plane-ephemeral-store"></a>
+### BUSBAR-7030 — Stateful plane on the in-memory store — MCP/A2A task state is lost on restart
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `stateful-plane-ephemeral-store`
+
+busbar resolved the in-memory (ephemeral) store while a STATEFUL plane is configured — an MCP tool (or tool-pool) and/or an A2A agent (or agent-pool). MCP and A2A carry per-task state that lives only in RAM with this store, so it is DROPPED on restart: a task that was mid-flight when the process restarts will break on its next request. LLM-only deployments are stateless and are deliberately NOT warned — a restart costs them nothing, so warning there would be noise. This is a WARN, not a boot refusal: a durable store is opt-in and RAM is the convenience default.
+
+**What to do:** Configure a durable store (sqlite/postgres) so MCP/A2A task state survives a restart. No action is needed if losing in-flight task state on restart is acceptable for this deployment.
+
 <a id="mcp-calllog-empty-chains"></a>
 ### BUSBAR-7060 — Durable MCP call log enumerates principals with NO records
 

@@ -2184,6 +2184,28 @@ pub const A2A_PUSH_OUTCOME_UNCHAINED: Diagnostic = Diagnostic {
     retired: false,
 };
 
+/// The RAM (ephemeral) store was resolved while a STATEFUL plane (MCP tools / A2A agents) is
+/// configured, so in-flight MCP/A2A task state is dropped on restart.
+pub const STATEFUL_PLANE_EPHEMERAL_STORE: Diagnostic = Diagnostic {
+    code: 7030,
+    class: Class::Plane,
+    slug: "stateful-plane-ephemeral-store",
+    title: "Stateful plane on the in-memory store — MCP/A2A task state is lost on restart",
+    severity: Severity::Actionable,
+    summary: "busbar resolved the in-memory (ephemeral) store while a STATEFUL plane is configured — \
+              an MCP tool (or tool-pool) and/or an A2A agent (or agent-pool). MCP and A2A carry \
+              per-task state that lives only in RAM with this store, so it is DROPPED on restart: a \
+              task that was mid-flight when the process restarts will break on its next request. \
+              LLM-only deployments are stateless and are deliberately NOT warned — a restart costs \
+              them nothing, so warning there would be noise. This is a WARN, not a boot refusal: a \
+              durable store is opt-in and RAM is the convenience default.",
+    action: "Configure a durable store (sqlite/postgres) so MCP/A2A task state survives a restart. \
+             No action is needed if losing in-flight task state on restart is acceptable for this \
+             deployment.",
+    since: "1.6.0",
+    retired: false,
+};
+
 // ── 8000 — Governance & cost ────────────────────────────────────────────────────────────────────
 
 /// A revocation denylist re-sync is still outstanding from an earlier window; store hasn't answered.
@@ -4038,6 +4060,7 @@ pub static REGISTRY: &[&Diagnostic] = &[
     &A2A_REVERIFY_CADENCE_UNPARSED,
     &A2A_CARD_CERT_NO_SPKI,
     &A2A_PUSH_OUTCOME_UNCHAINED,
+    &STATEFUL_PLANE_EPHEMERAL_STORE,
     &REVOCATION_RESYNC_OUTSTANDING,
     &REVOCATION_RESYNC_FAILED,
     &GOVERNANCE_KEY_RESERVED_NAMESPACE_COLLISION,

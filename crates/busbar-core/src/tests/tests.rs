@@ -4,7 +4,10 @@ use crate::test_support::EnvVarGuard;
 // those items in appbuild/preflight/router/boot; this block restores the same names to this file's
 // scope. Allowed-unused as one block: which of these a given test build exercises varies by cfg.
 #[allow(unused_imports)]
-use crate::appbuild::{inert_durable_keys_banner, open_relay_banner, resolve_model_context_max};
+use crate::appbuild::{
+    inert_durable_keys_banner, open_relay_banner, resolve_model_context_max,
+    stateful_plane_ephemeral_store_warn,
+};
 #[allow(unused_imports)]
 use crate::boot::is_audit_restore_read_hiccup;
 #[allow(unused_imports)]
@@ -309,6 +312,43 @@ fn test_inert_durable_keys_banner_fires_only_for_durable_keyed_no_token() {
     assert!(
         inert_durable_keys_banner(false, 5, false).is_none(),
         "the inert-keys banner is scoped to durable stores"
+    );
+}
+
+/// STATEFUL-PLANE EPHEMERAL-STORE WARN: the sharper, conditional boot warn fires EXACTLY when the
+/// RAM store is resolved AND a stateful plane (MCP tools / A2A agents, whether bare or pooled) is
+/// configured — and names the CONSEQUENCE (in-flight task loss on restart), not just advice. An
+/// LLM-only deploy (no stateful plane) and any durable store both stay silent: the sharper warn
+/// would be noise there. This is a WARN, never a boot-block.
+#[test]
+fn test_stateful_plane_ephemeral_store_warn_fires_only_for_ram_plus_stateful() {
+    // RAM store + an MCP plane configured (tool or tool-pool) → the specific warn fires.
+    let w = stateful_plane_ephemeral_store_warn(true, true, false)
+        .expect("RAM + MCP stateful → sharper warn fires");
+    assert!(
+        w.contains("in-flight tasks will break")
+            && w.contains("sqlite/postgres")
+            && w.contains("NOT survive a restart"),
+        "the warn must name the CONSEQUENCE and the durable-store fix; got: {w}"
+    );
+
+    // RAM store + an A2A plane configured (agent or agent-pool) → fires (either stateful plane does).
+    assert!(
+        stateful_plane_ephemeral_store_warn(true, false, true).is_some(),
+        "RAM + A2A stateful → the sharper warn fires"
+    );
+
+    // RAM store but LLM-only (no stateful plane) → stateless, a restart costs nothing → NO warn.
+    assert!(
+        stateful_plane_ephemeral_store_warn(true, false, false).is_none(),
+        "an LLM-only (stateless) deploy must NOT get the sharper warn — noise trains people to \
+         ignore warnings"
+    );
+
+    // A DURABLE store → task state survives a restart → no warn, even with stateful planes present.
+    assert!(
+        stateful_plane_ephemeral_store_warn(false, true, true).is_none(),
+        "a durable store persists MCP/A2A task state across restarts — no sharper warn"
     );
 }
 
