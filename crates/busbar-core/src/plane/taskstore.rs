@@ -305,15 +305,11 @@ impl TaskRegistry {
             .ok_or_else(|| TaskStoreError::NoSuchTask(task_id.to_string()))?;
 
         let mut candidate = entry.task.clone();
+        // The event kind is chosen by A2A domain logic (record-shape side, `provenance`) BEFORE the
+        // write path, off the from-state and the to-state — never fused into the store append.
+        let kind = provenance::event_kind_for_transition(entry.task.state, to);
         candidate.transition_to(to, now)?;
 
-        let kind = match to {
-            TaskState::Working if entry.task.state.is_interrupted() => provenance::EV_RESUMED,
-            TaskState::Working => provenance::EV_WORKING,
-            s if s.is_interrupted() => provenance::EV_INTERRUPTED,
-            s if s.is_terminal() => provenance::EV_TERMINAL,
-            _ => provenance::EV_WORKING,
-        };
         let mut chain = entry.chain.clone();
         let ev = chain.append(
             task_id,
@@ -512,22 +508,13 @@ impl TaskRegistry {
         callback: Option<String>,
         now: u64,
     ) -> Result<Task, TaskStoreError> {
-        let callback = match callback {
-            Some(url) => match crate::a2a::pushnotify::structural_refusal(&url) {
-                Some(refusal) => {
-                    crate::diagnostics::diag_error!(
-                        crate::diagnostics::PLANE_SSRF_CALLBACK_AT_STORE,
-                        task = %task_id,
-                        error = %refusal,
-                        "a2a: a push callback the SSRF guard refuses reached the task store and was \
-                         DROPPED; the caller that stored it did not validate first"
-                    );
-                    None
-                }
-                None => Some(url),
-            },
-            None => None,
-        };
+        // The SSRF floor is A2A domain logic and runs HERE, as a distinct pre-step, so the store-write
+        // path below carries no security decision of its own — it persists whatever the floor already
+        // cleared. The floor stays AT the store boundary on purpose (defence-in-depth under the
+        // ingress/delivery checks); it is factored to a named helper, not moved upstream, because
+        // moving it would remove exactly the floor its own doc says the tree must not depend on
+        // call-order for.
+        let callback = floor_push_callback(task_id, callback);
         let mut tasks = self.tasks();
         let entry = tasks
             .get_mut(task_id)
@@ -641,6 +628,34 @@ impl TaskRegistry {
             Ok(()) => Ok(Ok(events.len())),
             Err(brk) => Ok(Err(brk)),
         }
+    }
+}
+
+/// THE PUSH-CALLBACK SSRF FLOOR — the resolver-free half of the guard, applied at the store boundary.
+///
+/// A2A domain logic, factored OUT of [`TaskRegistry::set_push_callback`]'s store-write path so that
+/// method persists what this already cleared and makes no security decision inline. A URL the
+/// structural guard refuses is DROPPED (returned `None`) rather than stored, and the drop is logged
+/// loudly: by the time a refusable URL reaches the store something upstream already failed to
+/// validate, and the useful response is to make the callback not exist, not to fail a task the caller
+/// is owed. The full resolving SSRF decision still runs TWICE elsewhere (`ingress::invoke` before the
+/// registration is accepted, `a2a::pushdeliver` before every delivery); this is the floor under both.
+fn floor_push_callback(task_id: &str, callback: Option<String>) -> Option<String> {
+    match callback {
+        Some(url) => match crate::a2a::pushnotify::structural_refusal(&url) {
+            Some(refusal) => {
+                crate::diagnostics::diag_error!(
+                    crate::diagnostics::PLANE_SSRF_CALLBACK_AT_STORE,
+                    task = %task_id,
+                    error = %refusal,
+                    "a2a: a push callback the SSRF guard refuses reached the task store and was \
+                     DROPPED; the caller that stored it did not validate first"
+                );
+                None
+            }
+            None => Some(url),
+        },
+        None => None,
     }
 }
 

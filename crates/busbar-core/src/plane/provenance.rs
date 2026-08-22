@@ -43,6 +43,11 @@
 
 use busbar_api::TaskEventRow;
 
+// The transition→event-kind mapping below is the ONLY A2A-type-dependent thing in this record-shape
+// module; the rest (the record + its digest) stays in core ungated. So the `TaskState` import — and
+// the mapping that needs it — are gated to `plane-a2a`, matching `plane::taskstore` (its only caller).
+#[cfg(feature = "plane-a2a")]
+use crate::a2a::task::TaskState;
 use crate::audit::{ChainLabels, ChainedRecord, Digest, Framing};
 
 /// This plane's chain: one per task. A type alias over the core mechanism — there is no second
@@ -94,6 +99,26 @@ pub(crate) const EV_PUSH_REFUSED: &str = "task.push_refused";
 /// it is not [`EV_PUSH_REFUSED`], for the same reason `audit::vocab::REASON_UPSTREAM_FAILED` rides
 /// `dispatched` rather than `refused`.
 pub(crate) const EV_PUSH_FAILED: &str = "task.push_failed";
+
+/// MAP AN A2A STATE TRANSITION TO ITS PROVENANCE EVENT KIND. This is A2A DOMAIN LOGIC — the
+/// record-shape half of the chain — deliberately kept OUT of the durable write path so a mutator
+/// chooses the kind HERE and hands the journal a ready `EventInput`, never a match on task state
+/// fused into the store append. Factoring it out is what lets the write path delegate to the generic
+/// `audit::Journal` without carrying a scrap of A2A vocabulary into core's seq authority.
+///
+/// `from` is the state BEFORE the move and it is load-bearing: an `interrupted → working` move is a
+/// RESUME, a distinct event from a fresh `working`, and the two are only separable by looking at the
+/// prior state. The fallthrough is `working`, matching the pre-cleave inline mapping byte-for-byte.
+#[cfg(feature = "plane-a2a")]
+pub(crate) fn event_kind_for_transition(from: TaskState, to: TaskState) -> &'static str {
+    match to {
+        TaskState::Working if from.is_interrupted() => EV_RESUMED,
+        TaskState::Working => EV_WORKING,
+        s if s.is_interrupted() => EV_INTERRUPTED,
+        s if s.is_terminal() => EV_TERMINAL,
+        _ => EV_WORKING,
+    }
+}
 
 /// The fields a caller supplies for one event. `seq`, `prev_hash` and `hash` are NOT here: they are
 /// the chain's own business and are supplied by [`crate::audit::Chain::append`], so no call site can
