@@ -953,6 +953,127 @@ pub struct JournalQuery {
     pub limit: u64,
 }
 
+/// A DURABLE journal-stream registration descriptor (minor-9): the plane names a stream's neutral
+/// `kind` bytes (e.g. `task_event` — OPAQUE to the host), the prelude `framing`, whether the scope
+/// participates in the digest, and a host-assigned `kind_id` it will address every later scoped op by.
+/// The host learns the `kind` as DATA at register time and NAMES no plane type; the `kind_id` is the
+/// cheap integer handle the hot append/read/restore path keys on.
+///
+/// # Safety / discipline
+/// `kind_ptr`/`kind_len` MUST describe a live, initialized byte range for the register call.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct JournalStreamDesc {
+    /// `size_of::<JournalStreamDesc>()` at construction.
+    pub size: u32,
+    /// POD schema version.
+    pub version: u16,
+    /// The prelude framing this stream reproduces (byte-identical to its deployed store).
+    pub framing: Framing,
+    /// `1` if the scope field participates in the digest, `0` if it does not.
+    pub digests_scope: u8,
+    /// The host-assigned integer handle the scoped ops address this stream by.
+    pub kind_id: u32,
+    /// Preamble/alignment padding before the borrowed range.
+    pub _reserved: u32,
+    /// Borrowed opaque neutral-kind bytes (e.g. `task_event`; NOT owned; the host stores them verbatim).
+    pub kind_ptr: *const u8,
+    /// Length of the borrowed kind range.
+    pub kind_len: usize,
+}
+
+/// The out-param a plane-provided REFRAME writes (minor-9): the chain fields the host needs to
+/// reconstruct one record from an opaque stored body, WITHOUT the host decoding a plane type. The
+/// plane decodes the body (its own serde row, OR the journal's neutral body) and reports the minted
+/// `seq`, whether the scope digests, and the LENGTHS of the `prev_hash`, `hash` and pre-framed content
+/// `suffix` it copied into the caller's three buffers (the `egress_poll` variable-length pattern).
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct ReframeOut {
+    /// `size_of::<ReframeOut>()` when the plane writes it.
+    pub size: u32,
+    /// POD schema version.
+    pub version: u16,
+    /// `1` if the scope participates in the digest for this record, `0` if not.
+    pub digests_scope: u8,
+    /// Preamble tail padding.
+    pub _r: u8,
+    /// The record's chain sequence.
+    pub seq: u64,
+    /// The number of `prev_hash` bytes the plane copied into the caller's prev buffer.
+    pub prev_len: usize,
+    /// The number of `hash` bytes the plane copied into the caller's hash buffer.
+    pub hash_len: usize,
+    /// The number of pre-framed content-SUFFIX bytes the plane copied into the caller's suffix buffer.
+    pub suffix_len: usize,
+}
+
+/// The out-param a `journal_restore` writes (minor-9): the neutral COUNTS a boot rehydrate found —
+/// the [`crate::hot`]-neutral mirror of core's `Restored`. No scope names cross (a plane logs its own
+/// vocabulary from its own rows); only the four counts do.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct RestoredHdr {
+    /// `size_of::<RestoredHdr>()` when the host writes it.
+    pub size: u32,
+    /// POD schema version.
+    pub version: u16,
+    /// Preamble tail padding.
+    pub _reserved: u16,
+    /// Scopes whose chain position was resumed.
+    pub scopes: u64,
+    /// Records read back across every scope (the durability signal — zero on a serving deployment
+    /// means the backend kept none).
+    pub records: u64,
+    /// Scopes the store enumerated but returned no records for.
+    pub empty_scopes: u64,
+    /// Chains that FAILED to verify (tamper evidence; still restored from the broken tail).
+    pub chain_breaks: u64,
+}
+
+/// The out-param a `journal_seed` writes (minor-9): whether the seeded chain verified, and WHERE it
+/// broke if not. A break is REPORTED and the chain still resumes from its tail (never re-based).
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct ChainBreakHdr {
+    /// `size_of::<ChainBreakHdr>()` when the host writes it.
+    pub size: u32,
+    /// POD schema version.
+    pub version: u16,
+    /// `1` if the chain broke (read `at_index`/`seq`), `0` if it verified.
+    pub broke: u8,
+    /// Preamble tail padding.
+    pub _reserved: u8,
+    /// Preamble/alignment padding before the 8-byte-aligned tail.
+    pub _reserved2: u32,
+    /// The 1-based slice index at which the break was found (`0` when it verified).
+    pub at_index: u64,
+    /// The claimed sequence at the break (`0` when it verified).
+    pub seq: u64,
+}
+
+/// The out-param a `journal_verify_scoped` writes (minor-9): whether one scope's persisted chain
+/// verifies, and where it breaks if not. Same shape as [`ChainBreakHdr`] but a distinct type so the
+/// two seams (seed vs. verify) stay independently versionable.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct VerifyChainHdr {
+    /// `size_of::<VerifyChainHdr>()` when the host writes it.
+    pub size: u32,
+    /// POD schema version.
+    pub version: u16,
+    /// `1` if the chain verified, `0` if it broke (read `at_index`/`seq`).
+    pub verified: u8,
+    /// Preamble tail padding.
+    pub _reserved: u8,
+    /// Preamble/alignment padding before the 8-byte-aligned tail.
+    pub _reserved2: u32,
+    /// The 1-based slice index at which a break was found (`0` when verified).
+    pub at_index: u64,
+    /// The claimed sequence at the break (`0` when verified).
+    pub seq: u64,
+}
+
 /// A depth-bounded nested-dispatch descriptor: the host routes an opaque sub-request through the SAME
 /// router, never knowing what it is. Carries a depth bound and a correlation id so a re-entrant call
 /// reuses the originating budget/audit correlation instead of double-counting.
@@ -1369,6 +1490,11 @@ mod tests {
         assert_preamble!(CmdDesc);
         assert_preamble!(FramingDesc);
         assert_preamble!(JournalQuery);
+        assert_preamble!(JournalStreamDesc);
+        assert_preamble!(ReframeOut);
+        assert_preamble!(RestoredHdr);
+        assert_preamble!(ChainBreakHdr);
+        assert_preamble!(VerifyChainHdr);
         assert_preamble!(OpDesc);
         assert_preamble!(OpResult);
         assert_preamble!(WorkHandleDesc);

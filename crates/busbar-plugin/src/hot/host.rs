@@ -22,11 +22,12 @@
 //! bump, never a reshape. Do not add it to the hot set until a real carrier needs it.
 
 use super::pod::{
-    AdmissionId, AdmitRefusal, ApprovalQuery, AuthQuery, AuthResolved, CallerRef, ContentChunk,
-    CounterpartyRef, Decision, EgressDesc, EgressFault, EgressId, EgressOpen, Facts, FramingDesc,
-    GateDecision, GovRefusal, JournalQuery, Key, MeterOutcome, MetricSample, OpDesc, OpResult,
-    PipeId, Seq, Signal, StatusClass, TargetRef, TrustVerdict, Usage, VerifyDecision, VerifyLease,
-    VerifyQuery, VerifyVerdict, WorkHandleDesc, WorkHandleId,
+    AdmissionId, AdmitRefusal, ApprovalQuery, AuthQuery, AuthResolved, CallerRef, ChainBreakHdr,
+    ContentChunk, CounterpartyRef, Decision, EgressDesc, EgressFault, EgressId, EgressOpen, Facts,
+    FramingDesc, GateDecision, GovRefusal, JournalQuery, JournalStreamDesc, Key, MeterOutcome,
+    MetricSample, OpDesc, OpResult, PipeId, ReframeOut, RestoredHdr, Seq, Signal, StatusClass,
+    TargetRef, TrustVerdict, Usage, VerifyChainHdr, VerifyDecision, VerifyLease, VerifyQuery,
+    VerifyVerdict, WorkHandleDesc, WorkHandleId,
 };
 use crate::AbiPreamble;
 use core::mem::MaybeUninit;
@@ -175,6 +176,114 @@ pub type JournalReadFn = extern "C-unwind" fn(
     buf_cap: usize,
     out_written: *mut usize,
 ) -> StatusClass;
+// ── APPENDED (minor-9, the DURABLE journal seam): the append-only trailing family that makes the
+//    journal store-backed. A plane REGISTERS a stream (its neutral `kind`, framing, digests_scope +
+//    a plane-provided REFRAME callback), then addresses every scoped op by the host-assigned
+//    `kind_id`. The host owns the ONE chain authority (seq/prev_hash/hash minted via the core audit
+//    chain) and the durable store; the plane owns only its record shape, carried as an opaque
+//    pre-framed content suffix in and reconstructed by its reframe out. Core names no plane type. ──
+
+/// PLANE-PROVIDED: reconstruct one record's chain fields from an opaque stored `body` and its `scope`,
+/// WITHOUT the host decoding a plane type. The plane decodes the body (its own serde row, OR the
+/// journal's neutral `{seq, prev_hash, hash, content}` body) and writes the minted [`ReframeOut`] plus
+/// the `prev_hash`, `hash` and pre-framed content `suffix` bytes into the three caller buffers (the
+/// `egress_poll` variable-length pattern: on a too-small buffer, report the required length in
+/// `ReframeOut` and return [`StatusClass::Refused`]). The suffix carries its own leading `|` for
+/// [`Framing::PipeSeparated`] (Option A), so the host appends it RAW after the framed prelude.
+pub type JournalReframeFn = extern "C-unwind" fn(
+    host: HostCtx,
+    kind_id: u32,
+    body_ptr: *const u8,
+    body_len: usize,
+    out: *mut MaybeUninit<ReframeOut>,
+    prev_buf: *mut u8,
+    prev_cap: usize,
+    hash_buf: *mut u8,
+    hash_cap: usize,
+    suffix_buf: *mut u8,
+    suffix_cap: usize,
+) -> StatusClass;
+/// Register a durable journal stream: the host records its neutral `kind`/framing/`digests_scope` and
+/// its plane-provided [`JournalReframeFn`] under the descriptor's `kind_id`, so later scoped ops
+/// address it by that integer. Idempotent per `kind_id`.
+pub type JournalRegisterFn = extern "C-unwind" fn(
+    host: HostCtx,
+    desc: *const JournalStreamDesc,
+    reframe: JournalReframeFn,
+) -> StatusClass;
+/// APPEND one record to a registered stream's `scope` (a DURABLE `String` key, e.g. `task-1`): the
+/// host MINTS the seq/prev_hash/hash via the ONE core chain, frames the prelude in the stream's
+/// framing, joins the plane's opaque pre-framed content SUFFIX, digests, and persists — returning the
+/// assigned [`Seq`] (or [`Seq::NONE`] fail-closed). The stream's framing/digests_scope come from its
+/// registration; the plane supplies only the content suffix.
+pub type JournalAppendScopedFn = extern "C-unwind" fn(
+    host: HostCtx,
+    kind_id: u32,
+    scope_ptr: *const u8,
+    scope_len: usize,
+    content_ptr: *const u8,
+    content_len: usize,
+) -> Seq;
+/// Read a registered stream's `scope` window (the durable cold read) into a caller buffer; sets
+/// `out_written`. Same bytes-tier encoding as [`JournalReadFn`], keyed by `kind_id` + a `String` scope.
+pub type JournalReadScopedFn = extern "C-unwind" fn(
+    host: HostCtx,
+    kind_id: u32,
+    scope_ptr: *const u8,
+    scope_len: usize,
+    from_seq: u64,
+    limit: u64,
+    buf: *mut u8,
+    buf_cap: usize,
+    out_written: *mut usize,
+) -> StatusClass;
+/// BOOT REHYDRATE a registered stream from the durable store: resume every scope's position and write
+/// the neutral [`RestoredHdr`] counts on Ok. The host reframes each stored body through the stream's
+/// registered callback; no scope name crosses.
+pub type JournalRestoreFn = extern "C-unwind" fn(
+    host: HostCtx,
+    kind_id: u32,
+    out: *mut MaybeUninit<RestoredHdr>,
+) -> StatusClass;
+/// SEED one scope's position from a packed set of already-read stored bodies (a `u32` count, then per
+/// body a `u32` little-endian length + bytes) — the caller-driven rehydrate the A2A task table uses
+/// for its active tasks. Writes a [`ChainBreakHdr`] (reporting a broken-but-resumed chain) on Ok.
+pub type JournalSeedFn = extern "C-unwind" fn(
+    host: HostCtx,
+    kind_id: u32,
+    scope_ptr: *const u8,
+    scope_len: usize,
+    bodies_ptr: *const u8,
+    bodies_len: usize,
+    out: *mut MaybeUninit<ChainBreakHdr>,
+) -> StatusClass;
+/// FORGET one scope's cached position (a terminal task evicted from the working set); the durable rows
+/// stay in the store. Keyed by `kind_id` + a `String` scope.
+pub type JournalForgetFn = extern "C-unwind" fn(
+    host: HostCtx,
+    kind_id: u32,
+    scope_ptr: *const u8,
+    scope_len: usize,
+) -> StatusClass;
+/// RETENTION: drop a registered stream's durable rows older than `before`, writing the number removed
+/// into `out_removed` on Ok. Positions are not reset (reopening at seq 1 after a purge would collide).
+pub type JournalCompactFn = extern "C-unwind" fn(
+    host: HostCtx,
+    kind_id: u32,
+    before: u64,
+    out_removed: *mut u64,
+) -> StatusClass;
+/// VERIFY one scope's persisted chain (reframed) and write a [`VerifyChainHdr`] on Ok — the durable
+/// `verify_task_chain` seam. A too-small/unknown scope verifies vacuously; a tamper is reported, not
+/// a fault.
+pub type JournalVerifyScopedFn = extern "C-unwind" fn(
+    host: HostCtx,
+    kind_id: u32,
+    scope_ptr: *const u8,
+    scope_len: usize,
+    out: *mut MaybeUninit<VerifyChainHdr>,
+) -> StatusClass;
+
 /// Route an opaque sub-request through the SAME router (depth-bounded); writes an [`OpResult`] on Ok.
 pub type NestedDispatchFn = extern "C-unwind" fn(
     host: HostCtx,

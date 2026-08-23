@@ -194,6 +194,40 @@ fn compute_layout() -> String {
     );
     record!(
         s,
+        JournalStreamDesc,
+        [
+            size,
+            version,
+            framing,
+            digests_scope,
+            kind_id,
+            _reserved,
+            kind_ptr,
+            kind_len
+        ]
+    );
+    record!(
+        s,
+        ReframeOut,
+        [size, version, digests_scope, _r, seq, prev_len, hash_len, suffix_len]
+    );
+    record!(
+        s,
+        RestoredHdr,
+        [size, version, _reserved, scopes, records, empty_scopes, chain_breaks]
+    );
+    record!(
+        s,
+        ChainBreakHdr,
+        [size, version, broke, _reserved, _reserved2, at_index, seq]
+    );
+    record!(
+        s,
+        VerifyChainHdr,
+        [size, version, verified, _reserved, _reserved2, at_index, seq]
+    );
+    record!(
+        s,
         OpDesc,
         [
             size,
