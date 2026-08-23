@@ -59,7 +59,7 @@ use std::sync::Arc;
 /// The method names and signatures MIRROR `Store`'s neutral verbs so a `Store` implementation
 /// forwards to them one-to-one (see [`PlaneStoreView`]); the mirroring is deliberate and is NOT a
 /// modification of `Store` — this is an additional, strictly-narrower trait owned by core.
-pub(crate) trait PlaneStore: Send + Sync + 'static {
+pub trait PlaneStore: Send + Sync + 'static {
     /// See [`Store::upsert_plane_record`] — the neutral upsert (kind `task` / `demotion`).
     fn upsert_plane_record(&self, record: &PlaneRecord) -> StoreResult<()>;
     /// See [`Store::get_plane_record`] — the neutral point read (kind `task`).
@@ -94,7 +94,7 @@ pub(crate) trait PlaneStore: Send + Sync + 'static {
 ///
 /// No `Debug`: `dyn Store` is deliberately not `Debug` (a backend must not be obliged to render
 /// itself, where a credential could surface in a log), so neither is this.
-pub(crate) struct PlaneStoreView(Arc<dyn Store>);
+pub struct PlaneStoreView(Arc<dyn Store>);
 
 impl PlaneStoreView {
     /// Narrow a real store handle to a plane-facing one. The ONLY place an `Arc<dyn Store>` becomes
@@ -148,11 +148,11 @@ impl PlaneStore for PlaneStoreView {
 // on; they match the reference `impl Store` in `store-example-plugin` verbatim.
 
 /// The A2A task row kind — the neutral `put_task`/`get_task`/`list_tasks`/`purge_tasks_before`.
-pub(crate) const KIND_TASK: &str = "task";
+pub const KIND_TASK: &str = "task";
 /// The A2A per-task provenance event kind — the neutral `append_task_event`/`list_task_events`.
-pub(crate) const KIND_TASK_EVENT: &str = "task_event";
+pub const KIND_TASK_EVENT: &str = "task_event";
 /// The MCP per-call log record kind — the neutral `append_mcp_call`/`list_mcp_calls`/… .
-pub(crate) const KIND_CALL: &str = "call";
+pub const KIND_CALL: &str = "call";
 /// The MCP demotion record kind — the neutral `put_mcp_demotion`/`list_mcp_demotions`/… .
 pub(crate) const KIND_DEMOTION: &str = "demotion";
 /// The spent-approval ledger kind — the neutral `redeem_ask_state` (a single-use token).
@@ -165,13 +165,13 @@ const TERMINAL_TASK_STATES: [&str; 4] = ["completed", "failed", "canceled", "rej
 
 /// Serialize a typed plane row into an opaque [`PlaneRecord::body`]. `serde_json`, matching the
 /// store plugins' decode, so the bytes round-trip identically across the plugin ABI.
-pub(crate) fn encode<T: serde::Serialize>(row: &T) -> StoreResult<Vec<u8>> {
+pub fn encode<T: serde::Serialize>(row: &T) -> StoreResult<Vec<u8>> {
     serde_json::to_vec(row).map_err(|e| StoreError(format!("plane body encode: {e}")))
 }
 
 /// Decode an opaque [`PlaneRecord::body`] back into its typed plane row — the exact inverse of
 /// [`encode`]. A malformed body is a STORE ERROR the caller sees, never a silently-dropped read.
-pub(crate) fn decode<T: serde::de::DeserializeOwned>(body: &[u8]) -> StoreResult<T> {
+pub fn decode<T: serde::de::DeserializeOwned>(body: &[u8]) -> StoreResult<T> {
     serde_json::from_slice(body).map_err(|e| StoreError(format!("plane body decode: {e}")))
 }
 
@@ -179,7 +179,7 @@ pub(crate) fn decode<T: serde::de::DeserializeOwned>(body: &[u8]) -> StoreResult
 /// `updated_at` (the axis retention compares against) and `disposition` is `Terminal` exactly when
 /// the task's state is final, so `purge_plane_records_before` can honor the terminal-only contract
 /// from the typed sidecar without decoding the body.
-pub(crate) fn task_record(row: &TaskRow) -> StoreResult<PlaneRecord> {
+pub fn task_record(row: &TaskRow) -> StoreResult<PlaneRecord> {
     let disposition = if TERMINAL_TASK_STATES.contains(&row.state.as_str()) {
         PlaneDisposition::Terminal
     } else {
@@ -198,7 +198,7 @@ pub(crate) fn task_record(row: &TaskRow) -> StoreResult<PlaneRecord> {
 
 /// Build the neutral append envelope for a per-task provenance event (kind `task_event`), hung off
 /// its task via `parent` and ordered by the event's own `seq`.
-pub(crate) fn task_event_record(event: &TaskEventRow) -> StoreResult<PlaneRecord> {
+pub fn task_event_record(event: &TaskEventRow) -> StoreResult<PlaneRecord> {
     Ok(PlaneRecord {
         kind: KIND_TASK_EVENT.to_string(),
         id: event.task_id.clone(),
@@ -213,7 +213,7 @@ pub(crate) fn task_event_record(event: &TaskEventRow) -> StoreResult<PlaneRecord
 /// Build the neutral append envelope for an MCP per-call record (kind `call`), hung off its
 /// principal via `parent` and ordered by the record's own `seq`. The `call` kind's retention drops
 /// ALL rows older than a cutoff, so its disposition is immaterial to the purge and is left `Active`.
-pub(crate) fn call_record(record: &McpCallRecord) -> StoreResult<PlaneRecord> {
+pub fn call_record(record: &McpCallRecord) -> StoreResult<PlaneRecord> {
     Ok(PlaneRecord {
         kind: KIND_CALL.to_string(),
         id: record.principal.clone(),
