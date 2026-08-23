@@ -755,6 +755,9 @@ pub(crate) struct TestApp {
     mcp_sightings: Option<std::sync::Arc<crate::mcp::client::catalogue::CatalogueCache>>,
     mcp_durable_store: Option<std::sync::Arc<dyn busbar_api::Store>>,
     role_bindings: Option<crate::config::RoleBindings>,
+    /// The resolved token-mint policy (`auth.policy:`) for the built App. `None` (default) = the empty
+    /// policy (no caps). Set by tests that exercise `MintPolicy` enforcement at the mint site.
+    mint_policy: Option<crate::admin::MintPolicy>,
     governance: Option<std::sync::Arc<crate::governance::GovState>>,
     cost: Option<std::sync::Arc<crate::cost::CostModel>>,
     failover_cfg: Option<crate::config::FailoverCfg>,
@@ -808,6 +811,7 @@ impl TestApp {
             mcp: None,
             oauth_as: None,
             role_bindings: None,
+            mint_policy: None,
             governance: None,
             cost: None,
             failover_cfg: None,
@@ -1185,6 +1189,13 @@ impl TestApp {
 
     /// Set the `role_bindings:` table used by the built `App` (default: empty). Needed by tests that
     /// exercise the group re-key (an IdP/test principal whose role binds a group grant).
+    /// Set the resolved token-mint policy (`auth.policy:`) on the built `App` (default: empty, no
+    /// caps). Used by tests exercising `MintPolicy::check_mint` enforcement at `POST /keys`.
+    pub(crate) fn mint_policy(mut self, policy: crate::admin::MintPolicy) -> Self {
+        self.mint_policy = Some(policy);
+        self
+    }
+
     pub(crate) fn role_bindings(mut self, rb: crate::config::RoleBindings) -> Self {
         self.role_bindings = Some(rb);
         self
@@ -1499,7 +1510,7 @@ impl TestApp {
             default_max_tokens: crate::config::DEFAULT_DEFAULT_MAX_TOKENS,
             reasoning_effort_budgets: [1024, 4096, 8192, 16384],
             self_key_ttl_secs: crate::admin::DEFAULT_KEY_TTL_SECS,
-            mint_policy: std::sync::Arc::new(crate::admin::MintPolicy::default()),
+            mint_policy: std::sync::Arc::new(self.mint_policy.unwrap_or_default()),
             request_id_counter: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(
                 crate::state::seed_request_id_counter(),
             )),

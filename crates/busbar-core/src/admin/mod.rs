@@ -1027,18 +1027,23 @@ pub(crate) async fn create_key(
     // Enforce the mint POLICY (`auth.policy:`, 1.6.0) CORE-SIDE (never the UI's job; review M2/M4):
     // the block-level TTL ceiling AND the caller's per-role `mint_ceilings` (pools/TTL/mode — the
     // delegated-app-admin cap, review H2/H3). An explicit TTL over-ask is refused, a default clamped;
-    // a pool/mode outside the role ceiling is refused. Empty policy ⇒ unchanged behavior. The mint
-    // path names no binding mode today, so the mode ceiling is inert here (exercised once app-token
-    // minting carries a mode). Cond reuses the mint-endpoint's declared `KeyExpiryFields` family so
-    // no new error is introduced into the frozen admin taxonomy / openapi.json.
+    // a pool/mode outside the role ceiling is refused. Empty policy ⇒ unchanged behavior. Cond reuses
+    // the mint-endpoint's declared `KeyExpiryFields` family so no new error is introduced into the
+    // frozen admin taxonomy / openapi.json.
     let requested_ttl = exp.saturating_sub(now);
     let caller_roles: &[String] = principal.0.as_ref().map_or(&[], |p| p.roles.as_slice());
+    // The binding mode this admin mint WILL stamp on the key (below, into `NewKeySpec`). An
+    // admin-minted key is an app/service token, always `time-bound`. Bound ONCE here and threaded
+    // both into the ceiling check and the stamp so the mode the policy is checked against is exactly
+    // the mode the key is minted with — the per-role `binding_modes` ceiling is reachable and refuses
+    // a caller whose role may not mint this mode.
+    let requested_binding_mode = crate::governance::SELF_KEY_BINDING_MODE_APP;
     let mint_req = MintRequest {
         roles: caller_roles,
         requested_pools: req.allowed_pools.as_deref(),
         requested_ttl_secs: requested_ttl,
         explicit_ttl: explicit,
-        requested_mode: None,
+        requested_mode: Some(requested_binding_mode),
     };
     let exp = match app.mint_policy.check_mint(&mint_req) {
         Ok(ttl) => now.saturating_add(ttl),
@@ -1116,7 +1121,7 @@ pub(crate) async fn create_key(
         group: req.group.clone(),
         labels: req.labels,
         minted_by: Some(actor.clone()),
-        binding_mode: Some(crate::governance::SELF_KEY_BINDING_MODE_APP.to_string()),
+        binding_mode: Some(requested_binding_mode.to_string()),
     };
     let issue_aws = req.issue_aws_credential;
     let want_group = req.group.clone();

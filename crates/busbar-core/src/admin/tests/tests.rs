@@ -5150,6 +5150,87 @@ fn test_create_key_unconfigured_allowed_pool_is_nonfatal_and_quiet() {
     );
 }
 
+/// The per-role binding-MODE ceiling (`auth.policy.mint_ceilings.<role>.binding_modes`) bounds a
+/// delegated app-admin at `POST /keys`. Every admin mint stamps its key `time-bound`, and
+/// that stamped mode is threaded into the ceiling check — so a caller whose role may NOT mint
+/// `time-bound` is REFUSED (400) and NO key row is written, while a caller whose role permits
+/// `time-bound` mints (201, one row). The refused and allowed attempts are IDENTICAL but for the
+/// role's allowed-mode set, so the ceiling — not some other guard — is what admits or refuses.
+#[tokio::test]
+async fn proof_role_binding_mode_ceiling_bounds_a_delegated_admin() {
+    crate::metrics::init();
+
+    // A delegated app-admin identity holding the role the ceiling keys off.
+    let principal = crate::auth::Principal {
+        id: "delegated-admin".to_string(),
+        name: None,
+        roles: vec!["app-admin".to_string()],
+        ttl_secs: None,
+    };
+
+    // Mint ONE keyless key under a policy whose `app-admin` ceiling permits exactly `allowed_modes`;
+    // return (HTTP status, count of live key rows in the store after the attempt).
+    async fn mint_under(
+        principal: &crate::auth::Principal,
+        allowed_modes: Vec<String>,
+    ) -> (u16, usize) {
+        let store = Arc::new(MemoryStore::new());
+        let gov = gov_with_signer(store, Some("admintok".to_string()));
+        let mut ceilings = std::collections::BTreeMap::new();
+        ceilings.insert(
+            "app-admin".to_string(),
+            crate::admin::RoleCeiling {
+                max_ttl_secs: None,
+                allowed_pools: None,
+                binding_modes: Some(allowed_modes),
+            },
+        );
+        let policy = crate::admin::MintPolicy {
+            self_mint: None,
+            block_max_ttl_secs: None,
+            block_binding_modes: None,
+            ceilings,
+        };
+        let app = TestApp::new()
+            .governance(gov.clone())
+            .mint_policy(policy)
+            .build();
+        let handle = Arc::new(crate::state::AppHandle::new(app));
+        let body = axum::body::Bytes::from(serde_json::json!({ "name": "svc" }).to_string());
+        let resp = super::create_key(
+            axum::extract::State(handle),
+            axum::Extension(crate::auth::AuthPrincipal(Some(principal.clone()))),
+            axum::http::HeaderMap::new(),
+            body,
+        )
+        .await;
+        let live = gov
+            .all_keys()
+            .unwrap()
+            .into_iter()
+            .filter(|k| k.enabled && k.deleted_at.is_none())
+            .count();
+        (resp.status().as_u16(), live)
+    }
+
+    // The role permits ONLY `user-bound`; the mint's `time-bound` stamp is outside it → refused, no row.
+    let (refused_status, refused_rows) =
+        mint_under(&principal, vec!["user-bound".to_string()]).await;
+    assert_eq!(
+        refused_status, 400,
+        "a role whose binding_modes excludes time-bound must be refused at the mint ceiling"
+    );
+    assert_eq!(refused_rows, 0, "the refused mint writes NO key row");
+
+    // The role now permits `time-bound`; the SAME mint request succeeds → one row.
+    let (ok_status, ok_rows) = mint_under(&principal, vec!["time-bound".to_string()]).await;
+    assert_eq!(
+        ok_status, 201,
+        "a role whose binding_modes includes time-bound mints the key"
+    );
+    assert_eq!(ok_rows, 1, "the allowed mint writes exactly one key row");
+}
+
 #[tokio::test]
 async fn test_delete_existing_key_returns_200() {
     crate::metrics::init();
