@@ -918,6 +918,12 @@ impl AuditLog {
     /// A page of entries newest-first, optionally filtered by exact `action` and/or `resource`:
     /// skip `offset`, then take `limit`. `None` filters match everything.
     /// The transport fetches `limit + 1` to detect whether a further page exists (the cursor envelope).
+    ///
+    /// NO PRODUCTION CALLER after the 1.6.0 seam read cutover: `GET /audit` now reads the durable
+    /// journal seam's [`crate::plane::auditlog::AUDIT_LOG`]. This legacy ring stays as the
+    /// belt-and-suspenders dual-write (BUSBAR-1002, retired only when the legacy table is removed) and
+    /// its `list_filtered`/`list` remain the direct-ring read the audit unit tests still assert on.
+    #[allow(dead_code)]
     pub(crate) fn list_filtered(
         &self,
         offset: usize,

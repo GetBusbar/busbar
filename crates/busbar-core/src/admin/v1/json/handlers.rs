@@ -1833,7 +1833,12 @@ pub(crate) async fn get_audit(
     let action = q.get("action").map(String::as_str);
     let resource = q.get("resource").map(String::as_str);
     // Fetch one past the page to learn whether a further page exists, then trim to `limit`.
-    let mut entries = audit::AUDIT.list_filtered(start, limit + 1, action, resource);
+    // READ FROM THE SEAM read model: the durable journal seam is now the ONE code path (fed by
+    // `record_by` through `emit_admin_hostless`, seeded on boot from the durable tail). The legacy
+    // `audit::AUDIT` ring stays as a belt-and-suspenders dual-write (BUSBAR-1002), but the seam is the
+    // read source, byte-identical (same fields, same order) to the ring it replaces.
+    let mut entries =
+        crate::plane::auditlog::AUDIT_LOG.list_filtered(start, limit + 1, action, resource);
     let next_cursor = page_cursor(&mut entries, start, limit);
     ok_json(
         StatusCode::OK,

@@ -321,9 +321,8 @@ impl PlaneAuditLog {
 
     /// A page of entries newest-first, optionally filtered by exact `action` and/or `resource`:
     /// skip `offset`, then take `limit`. `None` filters match everything. Copied VERBATIM from
-    /// [`crate::admin::audit::AuditLog::list_filtered`] — the read surface `GET /audit` is cut over to
-    /// once the ring is seeded and fed, byte-identical to the legacy ring it replaces.
-    #[allow(dead_code)] // no production caller until the audit read path is cut over to the seam
+    /// [`crate::admin::audit::AuditLog::list_filtered`] — THE read surface `GET /audit` serves,
+    /// byte-identical to the legacy ring it replaced.
     pub(crate) fn list_filtered(
         &self,
         offset: usize,
