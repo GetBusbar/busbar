@@ -935,6 +935,15 @@ pub struct EgressDesc {
     pub stderr_inherit: u8,
     /// (minor-8) Preamble/alignment padding after the stderr byte.
     pub _reserved3: [u8; 7],
+    /// (minor-15) A REF to the set of EXTRA trust anchors (private-CA roots) the host adds to the
+    /// pinned client for this hop (`0` = none — trust only the platform roots). Never certificate
+    /// bytes: the host resolves the ref to the parsed roots it owns (see
+    /// [`crate::plane_host`](super)'s `trust_anchor` registry) and adds them, so a plane whose upstream
+    /// chains to a private CA names it by ref exactly as it names its client identity by ref. A sender
+    /// that predates this field advertises the shorter `size`; the host reads it only when `size`
+    /// proves it was written (the sized-struct guard), otherwise it falls back to no extra roots — a
+    /// MINOR airlock bump, never a MAJOR.
+    pub trust_anchor_ref: u64,
 }
 
 /// What the host observed at connect time (post-connect, pre-body), handed back with an [`EgressOpen`].

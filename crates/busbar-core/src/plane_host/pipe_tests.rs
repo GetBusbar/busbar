@@ -52,6 +52,7 @@ fn subprocess_desc(command: &[u8], scope: u32) -> EgressDesc {
         cwd_len: 0,
         stderr_inherit: 0,
         _reserved3: [0; 7],
+        trust_anchor_ref: 0,
     }
 }
 

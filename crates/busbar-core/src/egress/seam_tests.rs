@@ -124,6 +124,7 @@ fn hop<'a>(url: &'a str) -> HopSpec<'a> {
         allow_private: true,
         allow_plaintext: true,
         client_identity_ref: 0,
+        trust_anchor_ref: 0,
     }
 }
 
@@ -326,6 +327,7 @@ fn stream_adapter_concatenation_matches_post_stream() {
             allow_private: true,
             allow_plaintext: true,
             client_identity_ref: 0,
+            trust_anchor_ref: 0,
         };
         match super::stream_head(host, &spec, cap).expect("seam stream_head") {
             StreamOutcome::Buffered(h) => (h, Vec::new()),

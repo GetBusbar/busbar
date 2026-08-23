@@ -55,6 +55,9 @@ pub(crate) struct HopSpec<'a> {
     pub allow_plaintext: bool,
     /// The opaque host-side client-identity ref (`0` = present none). Never a key.
     pub client_identity_ref: u64,
+    /// The opaque host-side trust-anchor ref (`0` = no extra roots — trust only the platform roots).
+    /// Never certificate bytes. Carries a private-CA registration (the a2a `trusting_root` fixture).
+    pub trust_anchor_ref: u64,
 }
 
 /// One buffered outbound round trip, reduced to what a caller reads back — the NEUTRAL projection both
@@ -134,6 +137,7 @@ fn build_desc<'a>(spec: &'a HopSpec<'a>, packed_headers: &'a [u8]) -> EgressDesc
         cwd_len: 0,
         stderr_inherit: 0,
         _reserved3: [0; 7],
+        trust_anchor_ref: spec.trust_anchor_ref,
     }
 }
 

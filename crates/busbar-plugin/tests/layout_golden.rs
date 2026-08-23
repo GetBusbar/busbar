@@ -156,7 +156,8 @@ fn compute_layout() -> String {
             cwd_ptr,
             cwd_len,
             stderr_inherit,
-            _reserved3
+            _reserved3,
+            trust_anchor_ref
         ]
     );
     record!(

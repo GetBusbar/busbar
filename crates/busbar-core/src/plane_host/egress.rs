@@ -568,6 +568,14 @@ fn open_http(state: &HostState, d: &EgressDesc, out: *mut MaybeUninit<EgressOpen
     // forging one (the a2a `presenting`/no-identity posture, restated at the seam). See
     // [`super::identity`].
     let identity = super::identity::resolve(d.client_identity_ref);
+    // THE EXTRA TRUST ANCHORS, resolved host-side from the opaque ref the plane named — the plane never
+    // holds certificate bytes. A zero/unknown ref resolves to no extra roots (the ordinary public-CA
+    // hop); a real ref adds the private-CA roots the registration parsed at boot (the a2a `trusting_root`
+    // path). The sized-struct guard means a sender that predates the field leaves it `0` → no extra
+    // roots. See [`super::trust_anchor`].
+    let extra_roots = super::trust_anchor::resolve(
+        read_sized_field!(d, EgressDesc, trust_anchor_ref).unwrap_or(0),
+    );
     // BUSBAR'S OWN END OF THE HANDSHAKE, decided HERE — before the streaming thread MOVES `identity`.
     // `1` when a client certificate is carried into the handshake (offered if the peer asks), `0`
     // when none was resolved. A fact about the connection this hop opens, handed back on the head.
@@ -593,7 +601,16 @@ fn open_http(state: &HostState, d: &EgressDesc, out: *mut MaybeUninit<EgressOpen
         .name("busbar-egress".into())
         .spawn(move || {
             run_http_stream(
-                &url, &host_name, port, https, policy, &spec, identity, &head_tx, &chunk_tx,
+                &url,
+                &host_name,
+                port,
+                https,
+                policy,
+                &spec,
+                identity,
+                &extra_roots,
+                &head_tx,
+                &chunk_tx,
                 &stop_task,
             );
         });
@@ -714,6 +731,7 @@ fn run_http_stream(
     policy: crate::net_guard::GuardPolicy,
     spec: &ReqSpec,
     identity: Option<reqwest::Identity>,
+    extra_roots: &[reqwest::Certificate],
     head_tx: &SyncSender<HeadMsg>,
     chunk_tx: &SyncSender<ChunkMsg>,
     stop: &tokio::sync::Notify,
@@ -754,7 +772,7 @@ fn run_http_stream(
             pin.socket_addr(),
             Arc::new(crate::egress::RefuseSecondLookup),
             identity,
-            &[],
+            extra_roots,
         ) {
             Ok(client) => client,
             Err(e) => {

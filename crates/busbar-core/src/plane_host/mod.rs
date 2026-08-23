@@ -38,6 +38,7 @@ pub mod pipe;
 pub mod scope;
 pub(crate) mod spki;
 pub mod trust;
+pub(crate) mod trust_anchor;
 pub mod vtable;
 
 pub use guard::{guard_url_over, GuardOutcome};
