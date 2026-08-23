@@ -78,6 +78,16 @@ pub fn build_plane_host_vtable() -> PlaneHostVtable {
         //    keyed by a `PipeId`, wired over the real governed child process in `super::pipe`. ──────
         pipe_read: Some(super::pipe::pipe_read),
         pipe_write: Some(super::pipe::pipe_write),
+        // ── The DURABLE journal seam (minor-9): slots present, WIRED in C8d over the store-backed
+        //    `audit::journal::Journal`. Left `None` here so C8c is a pure ABI-surface bump. ──────────
+        journal_register: None,
+        journal_append_scoped: None,
+        journal_read_scoped: None,
+        journal_restore: None,
+        journal_seed: None,
+        journal_forget: None,
+        journal_compact: None,
+        journal_verify_scoped: None,
     }
 }
 

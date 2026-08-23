@@ -414,6 +414,27 @@ pub struct PlaneHostVtable {
     //    Trailing slot, append-only, same sized/versioned discipline (the Stage-A MINOR bump). ───────
     /// Retrieve the last failed egress's neutral fault detail (class + cause bytes + url bytes).
     pub egress_fault: Option<EgressFaultFn>,
+    // ── APPENDED (minor-9, the DURABLE journal seam): the store-backed journal family. A plane
+    //    REGISTERS a stream and then addresses append/read/restore/seed/forget/compact/verify by the
+    //    host-assigned `kind_id`. The host owns the ONE chain authority + the durable store; the plane
+    //    owns only its record shape (carried as an opaque suffix in, reconstructed by its reframe out).
+    //    Trailing slots, append-only, same sized/versioned discipline (the minor-9 bump). ────────────
+    /// Register a durable journal stream (neutral kind/framing/digests_scope + a reframe callback).
+    pub journal_register: Option<JournalRegisterFn>,
+    /// Append one record to a registered stream's durable `String` scope (host mints the chain).
+    pub journal_append_scoped: Option<JournalAppendScopedFn>,
+    /// Read a registered stream's durable `String` scope window (cold bytes tier).
+    pub journal_read_scoped: Option<JournalReadScopedFn>,
+    /// Boot-rehydrate a registered stream from the durable store (writes neutral counts).
+    pub journal_restore: Option<JournalRestoreFn>,
+    /// Seed one scope's position from already-read stored bodies (writes a chain-break report).
+    pub journal_seed: Option<JournalSeedFn>,
+    /// Forget one scope's cached position (durable rows stay).
+    pub journal_forget: Option<JournalForgetFn>,
+    /// Drop a registered stream's durable rows older than a cutoff (writes the count removed).
+    pub journal_compact: Option<JournalCompactFn>,
+    /// Verify one scope's persisted chain (writes a verify report).
+    pub journal_verify_scoped: Option<JournalVerifyScopedFn>,
     // ── EXTENSION POINT (reserved) ──────────────────────────────────────────────────────────────
     // Metering reserve/settle (a `CostHold`) is DELIBERATELY NOT a slot here. When a high-rate
     // carrier needs it, add `cost_reserve`/`cost_settle` as trailing `Option` slots below this line
@@ -465,6 +486,14 @@ impl PlaneHostVtable {
         pipe_read: None,
         pipe_write: None,
         egress_fault: None,
+        journal_register: None,
+        journal_append_scoped: None,
+        journal_read_scoped: None,
+        journal_restore: None,
+        journal_seed: None,
+        journal_forget: None,
+        journal_compact: None,
+        journal_verify_scoped: None,
     };
 
     /// A fully-populated STUB vtable: every slot points at an `unimplemented!()` stub. It exists to
@@ -505,6 +534,14 @@ impl PlaneHostVtable {
         pipe_read: Some(stub::pipe_read),
         pipe_write: Some(stub::pipe_write),
         egress_fault: Some(stub::egress_fault),
+        journal_register: Some(stub::journal_register),
+        journal_append_scoped: Some(stub::journal_append_scoped),
+        journal_read_scoped: Some(stub::journal_read_scoped),
+        journal_restore: Some(stub::journal_restore),
+        journal_seed: Some(stub::journal_seed),
+        journal_forget: Some(stub::journal_forget),
+        journal_compact: Some(stub::journal_compact),
+        journal_verify_scoped: Some(stub::journal_verify_scoped),
     };
 }
 
@@ -736,6 +773,87 @@ pub mod stub {
     ) -> StatusClass {
         unimplemented!("PlaneHost::egress_fault — stub")
     }
+    /// Stub: see module docs.
+    pub extern "C-unwind" fn journal_register(
+        _host: HostCtx,
+        _desc: *const JournalStreamDesc,
+        _reframe: JournalReframeFn,
+    ) -> StatusClass {
+        unimplemented!("PlaneHost::journal_register — stub")
+    }
+    /// Stub: see module docs.
+    pub extern "C-unwind" fn journal_append_scoped(
+        _host: HostCtx,
+        _kind_id: u32,
+        _scope_ptr: *const u8,
+        _scope_len: usize,
+        _content_ptr: *const u8,
+        _content_len: usize,
+    ) -> Seq {
+        unimplemented!("PlaneHost::journal_append_scoped — stub")
+    }
+    /// Stub: see module docs.
+    pub extern "C-unwind" fn journal_read_scoped(
+        _host: HostCtx,
+        _kind_id: u32,
+        _scope_ptr: *const u8,
+        _scope_len: usize,
+        _from_seq: u64,
+        _limit: u64,
+        _buf: *mut u8,
+        _buf_cap: usize,
+        _out_written: *mut usize,
+    ) -> StatusClass {
+        unimplemented!("PlaneHost::journal_read_scoped — stub")
+    }
+    /// Stub: see module docs.
+    pub extern "C-unwind" fn journal_restore(
+        _host: HostCtx,
+        _kind_id: u32,
+        _out: *mut MaybeUninit<RestoredHdr>,
+    ) -> StatusClass {
+        unimplemented!("PlaneHost::journal_restore — stub")
+    }
+    /// Stub: see module docs.
+    pub extern "C-unwind" fn journal_seed(
+        _host: HostCtx,
+        _kind_id: u32,
+        _scope_ptr: *const u8,
+        _scope_len: usize,
+        _bodies_ptr: *const u8,
+        _bodies_len: usize,
+        _out: *mut MaybeUninit<ChainBreakHdr>,
+    ) -> StatusClass {
+        unimplemented!("PlaneHost::journal_seed — stub")
+    }
+    /// Stub: see module docs.
+    pub extern "C-unwind" fn journal_forget(
+        _host: HostCtx,
+        _kind_id: u32,
+        _scope_ptr: *const u8,
+        _scope_len: usize,
+    ) -> StatusClass {
+        unimplemented!("PlaneHost::journal_forget — stub")
+    }
+    /// Stub: see module docs.
+    pub extern "C-unwind" fn journal_compact(
+        _host: HostCtx,
+        _kind_id: u32,
+        _before: u64,
+        _out_removed: *mut u64,
+    ) -> StatusClass {
+        unimplemented!("PlaneHost::journal_compact — stub")
+    }
+    /// Stub: see module docs.
+    pub extern "C-unwind" fn journal_verify_scoped(
+        _host: HostCtx,
+        _kind_id: u32,
+        _scope_ptr: *const u8,
+        _scope_len: usize,
+        _out: *mut MaybeUninit<VerifyChainHdr>,
+    ) -> StatusClass {
+        unimplemented!("PlaneHost::journal_verify_scoped — stub")
+    }
 }
 
 #[cfg(test)]
@@ -748,6 +866,9 @@ mod tests {
         assert!(vt.govern_admit.is_none());
         assert!(vt.egress_open.is_none());
         assert!(vt.auth_resolve.is_none());
+        assert!(vt.journal_register.is_none());
+        assert!(vt.journal_append_scoped.is_none());
+        assert!(vt.journal_verify_scoped.is_none());
         assert_eq!(crate::check_preamble(&vt.abi), Ok(()));
     }
 
@@ -777,6 +898,14 @@ mod tests {
         assert!(vt.trust_evaluate.is_some());
         assert!(vt.entitlement_check.is_some());
         assert!(vt.gate_scan.is_some());
+        assert!(vt.journal_register.is_some());
+        assert!(vt.journal_append_scoped.is_some());
+        assert!(vt.journal_read_scoped.is_some());
+        assert!(vt.journal_restore.is_some());
+        assert!(vt.journal_seed.is_some());
+        assert!(vt.journal_forget.is_some());
+        assert!(vt.journal_compact.is_some());
+        assert!(vt.journal_verify_scoped.is_some());
         assert_eq!(vt.size as usize, core::mem::size_of::<PlaneHostVtable>());
     }
 
