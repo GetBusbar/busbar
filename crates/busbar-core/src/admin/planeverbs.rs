@@ -64,7 +64,7 @@ use crate::state::AppHandle;
 /// verbs need is on the live [`crate::state::App`] snapshot the handler already loads. That also
 /// makes the plane a TYPE parameter at the mount, so the router names which plane it is wiring and
 /// the handler cannot be mounted without one.
-pub(crate) trait PlaneTrust: Send + Sync + 'static {
+pub trait PlaneTrust: Send + Sync + 'static {
     /// Which plane this surface belongs to. Supplies the `404` noun and the audit resource kind.
     const PLANE: Plane;
 
@@ -99,7 +99,7 @@ pub(crate) trait PlaneTrust: Send + Sync + 'static {
 /// `lookup` returns `Some` only when EVERY half a plane needs is present. See the module note: the
 /// halves are never distinguished in the answer, because a refusal that distinguishes them is an
 /// existence oracle.
-pub(crate) fn registered<T>(
+pub fn registered<T>(
     plane: Plane,
     name: &str,
     lookup: impl FnOnce() -> Option<T>,
@@ -141,7 +141,7 @@ const VERB_CONNECT: &str = "connect";
 /// AUDITED WHATEVER IT FOUND. A look that landed a quarantine, or that could not authenticate the
 /// endpoint at all, is the single most operator-relevant thing this surface does, and recording only
 /// the clean ones would make the trail silent at exactly the moment it matters.
-pub(crate) async fn connect<P: PlaneTrust>(
+pub async fn connect<P: PlaneTrust>(
     State(handle): State<Arc<AppHandle>>,
     axum::Extension(principal): axum::Extension<crate::auth::AuthPrincipal>,
     Path(name): Path<String>,

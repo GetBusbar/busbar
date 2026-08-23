@@ -875,7 +875,7 @@ fn extract_admin_header_token(req: &Request<Body>) -> Option<String> {
 /// consumers (audit attribution, the hook `send_user` projection, admin scopes) can extract it
 /// without an is-it-there dance. Never carries the credential.
 #[derive(Debug, Clone)]
-pub(crate) struct AuthPrincipal(pub(crate) Option<Principal>);
+pub struct AuthPrincipal(pub(crate) Option<Principal>);
 
 impl AuthPrincipal {
     /// The attribution handle for audit records: the principal id, or `anonymous` for the
