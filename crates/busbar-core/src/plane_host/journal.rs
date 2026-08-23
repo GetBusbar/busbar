@@ -1361,9 +1361,9 @@ mod tests {
     const G_A2A_TAIL: &str = "6059096fd763aa3293489637e995f70ca396752aa2313d7d4a05105883fe7e19";
     const G_AD_TAIL: &str = "33a3906258375ea69278797ddd446d4f2d3f24e91eee181e1f26e0fef19a5264";
 
-    /// If this flips true, the reframe DROPS the leading `|` of the pre-framed suffix — the exact
-    /// PipeSeparated genesis-landmine perturbation. Left `false`; a maintainer proving the tripwire is
-    /// LIVE sets it true, watches the golden go RED, and reverts. (Red-before-green is run by hand.)
+    /// When true, the reframe DROPS the leading `|` of the pre-framed suffix — the exact PipeSeparated
+    /// genesis-landmine perturbation, which makes the golden below report a chain break. Left `false`
+    /// in the shipped tree; set true locally to confirm the golden is a live tripwire, not a decoration.
     const DROP_SEPARATOR: bool = false;
 
     // Mirrors the FFI `JournalReframeFn` buffer-out signature verbatim, so the arg count is fixed by the ABI.
