@@ -36,7 +36,7 @@ pub(crate) const API_ROOT: &str = "/api";
 /// The frozen Admin API v1 path prefix — `API_ROOT` + version + area. Every admin endpoint hangs
 /// off this; the router nest, the scope matrix, and the OpenAPI doc all derive from it (one source
 /// of truth, drift-proof by construction — see `admin::transport::mount`).
-pub(crate) const ADMIN_PREFIX: &str = "/api/v1/admin";
+pub const ADMIN_PREFIX: &str = "/api/v1/admin";
 
 /// Relative (post-`ADMIN_PREFIX`) path segments matched in more than one place — the scope matrix
 /// (`required_scope`), auth.rs's mutation-rate classifier, and the json.rs router/OpenAPI builder —
@@ -256,7 +256,7 @@ pub(crate) fn required_scope(method: &axum::http::Method, path: &str) -> Scope {
 /// the start.
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
-pub(crate) enum AdminError {
+pub enum AdminError {
     /// The named resource does not exist. `code = not_found`. `what` NAMES the missing thing (the
     /// message is `"<what> not found"`), and the optional `note` appends a parenthetical reason for
     /// the cases where "missing" has a cause worth stating — e.g. a single-key read on a server with
@@ -598,9 +598,9 @@ pub(crate) struct HookView {
 /// could ride out on: the same discipline `token_configured` already applies to the reference.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
-pub(crate) struct NamedDefView {
+pub struct NamedDefView {
     /// The instance NAME: the map key, and the token every reference site uses.
-    pub(crate) name: String,
+    pub name: String,
     /// The `module:` backing this instance (a built-in name or a signed-plugin name/alias).
     ///
     /// OMITTED, not empty-stringed, for a section whose entries are not plugin instances -- today
@@ -609,44 +609,44 @@ pub(crate) struct NamedDefView {
     /// Every section that HAS a module requires it to be non-empty, so this can never be omitted
     /// for one that does.
     #[serde(skip_serializing_if = "String::is_empty")]
-    pub(crate) module: String,
+    pub module: String,
     /// The KEY NAMES of the module's opaque settings bag, sorted, WITHOUT their values, the
     /// redacted projection of `settings:`. Operator/API-owned and never interpreted here, but also
     /// never a place a VALUE can leak from: a settings value may be a credential (see the type doc),
     /// and this surface is reachable at READ-ONLY admin scope. An empty bag ⇒ an empty list. The
     /// values are readable only where they are writable: the config file and the config overlay.
-    pub(crate) settings_keys: Vec<String>,
+    pub settings_keys: Vec<String>,
     /// `identity-providers` ONLY: the per-provider ADMIN CEILING (`read-only` | `full`). There is no
     /// `none` token: `Scope::parse_ceiling` rejects it (see `Scope::parse` above), because a ceiling
     /// caps what a grant can reach and cannot express the absence of one.
     /// `None` ⇒ the definition names no ceiling, so the most restrictive default applies. Omitted
     /// entirely for a section that carries no ceiling.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) max_admin_scope: Option<String>,
+    pub max_admin_scope: Option<String>,
     /// `identity-providers` ONLY: whether a `token:` secret REFERENCE is configured (the built-in
     /// `admin-tokens` operator credential). The reference itself is never projected.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) token_configured: Option<bool>,
+    pub token_configured: Option<bool>,
     /// `identity-providers` ONLY: whether a `browser_login:` block is configured, the presence that
     /// puts a button on the hosted login page.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) browser_login_configured: Option<bool>,
+    pub browser_login_configured: Option<bool>,
     /// `agents` ONLY: which authenticity root this registration is pinned to (`jws_issuer_key` |
     /// `cert_spki` | `mtls` | `unpinned`). Projected because an operator scanning a registration
     /// list needs to SEE which entries have no root; a mechanism that could only be discovered by
     /// reading the config file is a mechanism nobody audits.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) pin_mechanism: Option<String>,
+    pub pin_mechanism: Option<String>,
     /// `agents` ONLY: whether an approved card FINGERPRINT is pinned yet. A registration with a
     /// root but no fingerprint is the normal state of a fresh entry awaiting approval, and it is
     /// the state an operator most needs to be able to see.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) fingerprint_pinned: Option<bool>,
+    pub fingerprint_pinned: Option<bool>,
     /// `agents` ONLY: the re-verification cadence this registration carries, as written. The
     /// backend `url:` is deliberately NOT projected here: it is the real remote endpoint and is
     /// never client-visible.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) reverify_ttl: Option<String>,
+    pub reverify_ttl: Option<String>,
     /// Set ONLY on an entry that is STORED in the config overlay but could NOT be parsed into this
     /// section's typed config by this binary (a downgrade whose struct lost a field, a hand-edited
     /// overlay); the value is the parse error. Such an entry is dropped at every rebuild, so it is
@@ -654,7 +654,7 @@ pub(crate) struct NamedDefView {
     /// a resolved definition. Present so the drop is DISCOVERABLE here rather than only in a boot
     /// log line. Absent (and omitted from the body) for every live definition.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) unparseable: Option<String>,
+    pub unparseable: Option<String>,
 }
 
 /// A group definition in the registry read (`GET /api/v1/admin/groups`,
