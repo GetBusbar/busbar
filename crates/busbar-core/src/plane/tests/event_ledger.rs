@@ -188,10 +188,7 @@ impl EventLedger {
     /// scope on `parent` and the minted sequence on `seq`, so the double keeps the opaque body a real
     /// backend would, no decode on the write path.
     fn append_event_body(&self, record: &busbar_api::PlaneRecord) -> StoreResult<()> {
-        let task_id = record
-            .parent
-            .clone()
-            .unwrap_or_else(|| record.id.clone());
+        let task_id = record.parent.clone().unwrap_or_else(|| record.id.clone());
         self.events
             .lock()
             .unwrap_or_else(|e| e.into_inner())

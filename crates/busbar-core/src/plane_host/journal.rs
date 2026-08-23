@@ -84,6 +84,10 @@ impl PlaneJournalInput {
     /// The one constructor a WITHIN-CORE plane seam user (e.g. `plane::taskstore`) reaches, so the
     /// record's fields stay private to this module while the neutral append path is drivable directly
     /// (no FFI `HostCtx`), exactly as the vtable `journal_append_scoped` drives it over the border.
+    #[cfg_attr(
+        not(any(feature = "plane-mcp", feature = "plane-a2a")),
+        allow(dead_code)
+    )]
     pub(crate) fn new(content: Vec<u8>, framing: Framing, digests_scope: bool) -> Self {
         PlaneJournalInput {
             content,
@@ -98,6 +102,10 @@ impl PlaneJournalRecord {
     /// FFI bridge, OR an in-core seam user's own decode bridge like `plane::taskstore`) uses to turn a
     /// stored body + its scope back into a chain record. `scope` is the store parent, never read from
     /// the body; `content` is the plane's opaque pre-framed suffix carried verbatim.
+    #[cfg_attr(
+        not(any(feature = "plane-mcp", feature = "plane-a2a")),
+        allow(dead_code)
+    )]
     pub(crate) fn from_parts(
         scope: String,
         seq: u64,

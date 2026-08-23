@@ -1101,14 +1101,16 @@ impl busbar_api::Store for ChainSink {
         selector: &busbar_api::PlaneSelector,
     ) -> busbar_api::StoreResult<Vec<Vec<u8>>> {
         match (kind, selector) {
-            (crate::plane::store::KIND_TASK_EVENT, busbar_api::PlaneSelector::Parent(p)) => Ok(self
-                .events
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .iter()
-                .filter(|(id, _)| id == p)
-                .map(|(_, body)| body.clone())
-                .collect()),
+            (crate::plane::store::KIND_TASK_EVENT, busbar_api::PlaneSelector::Parent(p)) => {
+                Ok(self
+                    .events
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .iter()
+                    .filter(|(id, _)| id == p)
+                    .map(|(_, body)| body.clone())
+                    .collect())
+            }
             _ => Ok(Vec::new()),
         }
     }

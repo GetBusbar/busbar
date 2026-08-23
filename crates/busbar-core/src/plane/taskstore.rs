@@ -698,12 +698,11 @@ impl TaskRegistry {
         store: &dyn PlaneStore,
         task_id: &str,
     ) -> StoreResult<Result<usize, ChainBreak>> {
-        let events = self.journal.read_scoped(
-            KIND_TASK_EVENT,
-            task_id,
-            store,
-            &|s: &str, b: &[u8]| reframe_task_event(s, b),
-        )?;
+        let events =
+            self.journal
+                .read_scoped(KIND_TASK_EVENT, task_id, store, &|s: &str, b: &[u8]| {
+                    reframe_task_event(s, b)
+                })?;
         match crate::audit::verify_chain(&events) {
             Ok(()) => Ok(Ok(events.len())),
             Err(brk) => Ok(Err(brk)),

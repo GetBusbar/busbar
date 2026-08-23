@@ -152,14 +152,16 @@ impl busbar_api::Store for DurableTaskStore {
                 .iter()
                 .map(crate::plane::store::encode)
                 .collect(),
-            (crate::plane::store::KIND_TASK_EVENT, busbar_api::PlaneSelector::Parent(p)) => Ok(self
-                .events
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .iter()
-                .filter(|((id, _), _)| id == p)
-                .map(|(_, body)| body.clone())
-                .collect()),
+            (crate::plane::store::KIND_TASK_EVENT, busbar_api::PlaneSelector::Parent(p)) => {
+                Ok(self
+                    .events
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .iter()
+                    .filter(|((id, _), _)| id == p)
+                    .map(|(_, body)| body.clone())
+                    .collect())
+            }
             _ => Ok(Vec::new()),
         }
     }
