@@ -5139,3 +5139,72 @@ fn proof_minted_key_verifies_locally_and_never_calls_the_idp() {
         );
     }
 }
+
+// ── PHASE-11 PROOF: ADMISSION IS STORE STATE; SIGNING IS CONFIG (#10) ─────────────────────────────
+//
+// The config-vs-store split, made concrete. The SIGNING KEY (config) decides whether a token's
+// SIGNATURE is authentic; the STORE decides whether the subject is ADMITTED (has a live binding).
+// Mint a key on store S, drop that GovState, then rebuild a NEW GovState with the SAME signing key
+// but a FRESH, EMPTY store. The token's signature STILL validates against the shared key (config
+// carried over) — yet `verify_token` returns `None`, because `lookup_by_sub` finds no binding in the
+// empty store (admission is a store fact the new node never recorded). This is precisely why a
+// memory-store restart LOSES admission even though every minted token is still cryptographically
+// genuine: config declares the key, the store records the admission, and the two are independent.
+#[test]
+fn proof_minted_admission_is_store_state_config_signing_is_not() {
+    use crate::governance::signing::{TokenVerifier, DEFAULT_KID};
+    let now = 1_700_000_000u64;
+    let exp = now + 30 * 86_400;
+
+    // Mint on store S.
+    let store_s = Arc::new(MemoryStore::new());
+    let gov_s = GovState::new_with_signer(store_s, None, Some(self_serve_signer())).unwrap();
+    let (binding, token) = gov_s
+        .mint_signed(
+            NewKeySpec {
+                name: "config-vs-store".to_string(),
+                allowed_pools: None,
+                group: None,
+                labels: Default::default(),
+                ..Default::default()
+            },
+            exp,
+            now,
+        )
+        .unwrap();
+    assert!(
+        gov_s.verify_token(&token, now, None).is_some(),
+        "precondition: the token verifies on the node that minted it (config + store agree)"
+    );
+
+    // Drop the minting node and its store entirely — the admission record is gone with it.
+    drop(gov_s);
+
+    // Rebuild a node with the SAME signing key (config) but a FRESH EMPTY store (no admission).
+    let fresh_store = Arc::new(MemoryStore::new());
+    let gov_fresh =
+        GovState::new_with_signer(fresh_store, None, Some(self_serve_signer())).unwrap();
+
+    // CONFIG half — the SIGNATURE is still authentic under the shared signing key. Check the raw
+    // verifier directly to isolate "signature authentic" (crypto/config) from "subject admitted"
+    // (store): the same public key that `SigningMaterial` derives from `self_serve_signer()`.
+    let verifier = TokenVerifier::single(DEFAULT_KID, self_serve_signer().verifying_key());
+    let claims = verifier
+        .verify(&token, now, None)
+        .expect("the signature is still authentic under the shared signing key");
+    assert_eq!(
+        claims.sub, binding.id,
+        "the authentic claims still name the minted subject"
+    );
+
+    // STORE half — admission is GONE. The fresh store has no binding for this sub, so `verify_token`
+    // (signature-authentic but store-unadmitted) returns None. `lookup_by_sub` is empty.
+    assert!(
+        gov_fresh.lookup_by_sub(&binding.id).is_none(),
+        "the fresh store records NO binding for the minted subject"
+    );
+    assert!(
+        gov_fresh.verify_token(&token, now, None).is_none(),
+        "admission is store state: a genuinely-signed token is refused when the store has no binding"
+    );
+}
