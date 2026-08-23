@@ -397,6 +397,11 @@ impl AuditLog {
         // seq and pushes first, thread A pushes its lower seq behind it), producing out-of-order
         // seq numbers in the ring. Under the lock, Relaxed is sufficient (the mutex is the ordering
         // point).
+        // ONE clock read for this mutation, shared by the legacy `seal` below AND the journal-seam
+        // emitter after the ring block. Reading the clock twice (once here, once seam-side) would let
+        // the two records carry timestamps up to a second apart at the cutover — a latent divergence
+        // that a single read eliminates.
+        let ts = crate::store::now();
         let record = {
             let mut q = self.entries.lock().unwrap_or_else(|e| e.into_inner());
             let seq = self.seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -411,7 +416,7 @@ impl AuditLog {
                 seq,
                 prev_hash,
                 AuditInput {
-                    ts: crate::store::now(),
+                    ts,
                     action: action.to_string(),
                     resource: resource.to_string(),
                     outcome: outcome.to_string(),
@@ -427,6 +432,12 @@ impl AuditLog {
             q.push_back(entry);
             record
         };
+        // THE CHOKEPOINT FEED onto the durable journal seam. `record_by` is the ONE place an admin
+        // mutation is recorded, so this ONE call — with the SAME `ts` sealed above — replaces the 20
+        // explicit plane-side `mirror` sites. Fire-and-forget: it NEVER fails the mutation it records
+        // (see `plane::auditlog::emit_admin_hostless`), and the seam's own seq/prev_hash/hash are
+        // minted independently of the legacy ring's (both continue the same persisted chain).
+        crate::plane::auditlog::emit_admin_hostless(ts, action, resource, outcome, principal);
         // Write-through to the durable sink (best-effort): the store keeps the FULL history so a hard
         // crash loses ~0 entries and pruning the RAM ring never loses durable history. A failure is
         // logged and swallowed - an audit-store hiccup must NEVER fail the admin mutation it records

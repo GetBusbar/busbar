@@ -279,7 +279,6 @@ pub(crate) struct PlaneAuditLog {
 /// [`crate::admin::audit::AUDIT`] and [`crate::plane::calllog::CALLS`], and for the same reason: a
 /// config apply must not fork the chain by opening a SECOND ring at seq 1 under a chain that already
 /// has one.
-#[allow(dead_code)] // fed by the record_by seam emitter (A7.2b); read once GET /audit cuts over (A7.3c)
 pub(crate) static AUDIT_LOG: std::sync::LazyLock<PlaneAuditLog> =
     std::sync::LazyLock::new(PlaneAuditLog::new);
 
@@ -313,7 +312,6 @@ impl PlaneAuditLog {
     /// here happens after that lock is released, so two records can arrive out of mint order — a
     /// by-seq insert restores order so [`list_filtered`](PlaneAuditLog::list_filtered)'s `rev()`
     /// newest-first holds.
-    #[allow(dead_code)] // fed by the record_by seam emitter (A7.2b) / boot restore (A7.3b)
     pub(crate) fn push_entry(&self, entry: AuditEntry) {
         let mut q = self.ring.lock().unwrap_or_else(|e| e.into_inner());
         let pos = q.iter().position(|e| e.seq > entry.seq).unwrap_or(q.len());
@@ -504,6 +502,69 @@ pub(crate) fn register_and_migrate(app: &Arc<crate::state::App>, store: &dyn bus
             );
         }
     });
+}
+
+/// THE ADMIN-AUDIT CHOKEPOINT EMITTER, hostless. Called once from
+/// [`crate::admin::audit::AuditLog::record_by`] — which is the ONE place an admin mutation is recorded
+/// — with the SAME `ts` `record_by` sealed the legacy ring under (never a second clock read, which
+/// would let the seam and the legacy ring diverge by up to a second). `record_by` is a method on the
+/// process-global `AUDIT` static and has NO `app`/host to open a dispatch scope with, so it reaches the
+/// chain through the HOSTLESS seam append ([`crate::plane_host::journal::journal_append_scoped_full_hostless`]),
+/// which resolves the registered `audit` stream from the process-global stream registry, mints
+/// `(seq, prev_hash, hash)` through the ONE core chain, and persists the neutral body — then the minted
+/// record is pushed into the process-global [`AUDIT_LOG`] read-model ring.
+///
+/// FIRE-AND-FORGET, loudly, exactly like [`emit`]: a durable-store write failure (or an unregistered
+/// stream, e.g. the RAM-only test harnesses that never boot the migration) must NEVER fail the mutation
+/// it records. The chain position is left untouched on failure so the next mutation reuses the sequence
+/// and the chain stays contiguous.
+pub(crate) fn emit_admin_hostless(
+    ts: u64,
+    action: &str,
+    resource: &str,
+    outcome: &str,
+    principal: &str,
+) {
+    static WRITE_FAILED_LATCHED: AtomicBool = AtomicBool::new(false);
+    let suffix = audit_suffix(ts, action, resource, outcome, principal);
+    match crate::plane_host::journal::journal_append_scoped_full_hostless(
+        KIND_ID_AUDIT,
+        ADMIN_LOG,
+        &suffix,
+    ) {
+        Ok((seq, prev_hash, hash)) => {
+            WRITE_FAILED_LATCHED.store(false, Ordering::Relaxed);
+            AUDIT_LOG.push_entry(AuditEntry {
+                seq,
+                ts,
+                action: action.to_string(),
+                resource: resource.to_string(),
+                outcome: outcome.to_string(),
+                principal: principal.to_string(),
+                prev_hash,
+                hash,
+                recorded_here: true,
+            });
+        }
+        Err(_e) => {
+            if !WRITE_FAILED_LATCHED.swap(true, Ordering::Relaxed) {
+                crate::diagnostics::diag_error!(
+                    crate::diagnostics::PLANE_AUDITLOG_WRITE_FAILED,
+                    "the durable admin audit record could NOT be written through the journal seam: \
+                     this mutation is being served and its evidence is being LOST on that path. The \
+                     chain position is unchanged, so the chain stays contiguous — what is missing is \
+                     this record, not the ones after it."
+                );
+            } else {
+                crate::diagnostics::diag_debug!(
+                    crate::diagnostics::PLANE_AUDITLOG_WRITE_FAILED,
+                    "the durable admin audit record could NOT be written through the journal seam; \
+                     its evidence is being LOST. The chain position is unchanged, so the chain stays \
+                     contiguous."
+                );
+            }
+        }
+    }
 }
 
 /// MIRROR one admin-audit record onto the durable journal seam beside its legacy-ring write. Mints the
