@@ -252,11 +252,12 @@ impl PoolRoute {
     /// legacy callers), the probe is held raw in `RouteState`.
     pub(crate) fn admit(
         &self,
+        app: &crate::state::App,
         breakers: &Arc<PlaneBreakers>,
         scope: Option<&DispatchScope>,
     ) -> Result<(), Box<RouteRefused>> {
         let mut s = lock(&self.state);
-        self.select_locked(&mut s, Stage::BeforeFirstByte, breakers, scope)
+        self.select_locked(app, &mut s, Stage::BeforeFirstByte, breakers, scope)
             .map_err(|refusal| {
                 Box::new(RouteRefused {
                     refusal,
@@ -270,6 +271,7 @@ impl PoolRoute {
     /// and its host id kept in `state.admission_id`; without one it is held raw in `state.admission`.
     fn select_locked(
         &self,
+        app: &crate::state::App,
         s: &mut RouteState,
         stage: Stage,
         breakers: &Arc<PlaneBreakers>,
@@ -281,32 +283,47 @@ impl PoolRoute {
             repeatable: self.repeatable,
             operation: &self.operation,
         };
-        let admitted = walk(
-            breakers.runtime(),
-            &self.pool_key,
-            &self.members,
-            &attempt,
-            crate::store::now(),
-        )?;
-        let lane = admitted.candidate().lane();
-        let probe = breakers.adopt(&self.pool_key, lane, admitted.probe_epoch());
-        s.active = Some(admitted.position());
         match scope {
-            // Sync CLUSTER-1: re-home the won probe into the shared arena as settle-capable, minting
-            // this leg's host id. A reroute re-walks and re-admits, minting a fresh id per leg.
+            // Sync CLUSTER-1: the WIN rides the host `breaker_admit` seam PER CANDIDATE. The walk's own
+            // pin/repeatability/order still select (probe-win-last preserved: `walk_with` runs the pin
+            // check BEFORE the admit closure), and the host wins+registers+mints ATOMICALLY, so the
+            // plane holds only the POD `AdmissionId` and never a `PlaneAdmission`. A reroute re-walks
+            // and re-admits through the same seam, minting a fresh id per leg.
             Some(scope) => {
-                let settling = crate::plane_host::breaker::settling_admission(
-                    Arc::clone(breakers),
-                    self.pool_key.clone(),
-                    lane,
-                    probe,
-                );
-                s.admission_id = scope.register_settling_admission(settling);
+                let mut order = crate::failover::InOrder::new(&s.tried, self.members.len());
+                let mut passed_over = Vec::new();
+                let admitted = crate::failover::walk_with(
+                    &self.pool_key,
+                    &self.members,
+                    &attempt,
+                    &mut order,
+                    &mut passed_over,
+                    &mut |_position, member: &RouteMember| {
+                        crate::plane_host::breaker::breaker_admit_over(
+                            app,
+                            scope,
+                            self.pool_key.as_bytes(),
+                            member.lane() as u32,
+                        )
+                    },
+                )?;
+                s.active = Some(admitted.position());
+                s.admission_id = admitted.into_token();
                 s.admission = None;
             }
-            // Task / legacy: keep the raw probe hold for `into_task_dispatch` (durable handoff) or
-            // the drop-after-record lifetime.
+            // Task / legacy: keep the raw probe hold for `into_task_dispatch` (durable handoff) or the
+            // drop-after-record lifetime. This path is inverted onto the durable handoff slot separately.
             None => {
+                let admitted = walk(
+                    breakers.runtime(),
+                    &self.pool_key,
+                    &self.members,
+                    &attempt,
+                    crate::store::now(),
+                )?;
+                let lane = admitted.candidate().lane();
+                let probe = breakers.adopt(&self.pool_key, lane, admitted.probe_epoch());
+                s.active = Some(admitted.position());
                 s.admission = Some(probe);
                 s.admission_id = AdmissionId::NONE;
             }
@@ -329,8 +346,10 @@ impl PoolRoute {
     /// probe, else in place), and on a failure the seam's rules allow moving it marks tried, re-walks,
     /// and tries the next member. The caller sees exactly one answer, and an exhausted pool answers
     /// with the LAST member's failure — the same rendering an un-pooled server's failure always had.
+    #[allow(clippy::too_many_arguments)] // the routed dispatch's own facts, gathered where made.
     pub(crate) async fn dispatch(
         &self,
+        app: &crate::state::App,
         pool: &super::client::pool::McpConnectionPool,
         breakers: &Arc<PlaneBreakers>,
         scope: Option<&DispatchScope>,
@@ -370,7 +389,7 @@ impl PoolRoute {
             // SETTLE this leg's classified outcome where the probe lives (CLUSTER-1): through the
             // shared scope over this leg's id, or — with no scope, or a multi-round leg whose probe
             // was already settled on an earlier round — in place against the member's own cell.
-            settle_leg(breakers, &cell, scope, admission_id, &leg_outcome);
+            settle_leg(app, breakers, &cell, scope, admission_id, &leg_outcome);
             let failure: LegFailure = match outcome {
                 Ok(round) => {
                     lock(&self.state).pinned = true;
@@ -396,7 +415,7 @@ impl PoolRoute {
                 // failure's stage and the operator's `repeatable:` allow another member; a refusal
                 // keeps the failure the caller was already owed.
                 if self
-                    .select_locked(&mut s, failure.stage, breakers, scope)
+                    .select_locked(app, &mut s, failure.stage, breakers, scope)
                     .is_err()
                 {
                     s.pinned = true;
@@ -465,6 +484,7 @@ impl PoolRoute {
 /// record in place against the member's own cell — leaving a `Nothing` unrecorded exactly as dropping
 /// the raw probe did.
 fn settle_leg(
+    app: &crate::state::App,
     breakers: &Arc<PlaneBreakers>,
     cell: &BreakerCell,
     scope: Option<&DispatchScope>,
@@ -479,9 +499,17 @@ fn settle_leg(
                 // A settled `Refused` records nothing and RELEASES the probe — the raw-drop behaviour.
                 LegOutcome::Nothing => crate::plane_host::breaker::refused_signal(),
             };
-            // A live admission folds the outcome through the host scope; `None` means the probe was
-            // already settled (a later multi-round leg) → fall through to the in-place record.
-            if scope.settle_admission(admission_id, &sig).is_some() {
+            // Fold the outcome through the host `breaker_settle` seam over this leg's id. `Ok` means the
+            // live admission was found and settled; `Gone` means the probe was already settled (a later
+            // multi-round leg) → fall through to the in-place record, exactly as before.
+            let settled = crate::plane_host::with_borrowed_host(app, scope, |host, vt| {
+                (vt.breaker_settle.expect("breaker_settle is a wired slot"))(
+                    host,
+                    admission_id,
+                    &sig as *const busbar_plugin::hot::Signal,
+                )
+            });
+            if settled == busbar_plugin::hot::StatusClass::Ok {
                 return;
             }
         }

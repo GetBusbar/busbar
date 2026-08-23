@@ -105,6 +105,90 @@ pub(crate) fn settling_admission(
     })
 }
 
+/// WIN ONE `(pool, lane)` PROBE THROUGH THE HOST SEAM — the SAFE wrapper the failover sync sites drive
+/// per candidate, so the plane never touches the `#[repr(C)]` [`AdmitRefusal`] out-param read or the
+/// raw vtable pointer (busbar-core denies `unsafe` outside this audited module; precedent:
+/// [`govern_admit_reason_over`](super::govern_admit_reason_over)). Materializes a host over `(app,
+/// scope)`, calls the wired [`breaker_admit_reason`] slot for the `(pool, lane)` cell, and — on a live
+/// id — leaves the settle-capable [`BreakerAdmission`] REGISTERED in `scope`'s arena (the leak-safety
+/// keystone: a dropped dispatch releases the probe). The plane holds only the returned POD
+/// [`AdmissionId`]; it NEVER holds a [`PlaneAdmission`].
+///
+/// On a refusal the returned [`AdmissionId`] is [`NONE`](AdmissionId::NONE), reconstructed into the
+/// store's own [`Unavailable`](crate::store::Unavailable) taxonomy so [`crate::failover::walk_with`]'s
+/// `admit` closure gets the SAME refusal shape `try_admit_breaker` handed it — the reconstruction is
+/// the inverse of [`classify_unavailable`] (coarse: the ABI carries a fine [`Unavailability`] + a
+/// second-rounded recovery floor, not the exact internal epoch; the sync sites render `Retry-After`
+/// from the store's own `retry_after_secs`, never from this reconstructed value).
+// Driven only by the MCP failover sync site (the A2A sync sites are not yet inverted), so it reads
+// dead when plane-mcp is compiled out.
+#[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
+pub(crate) fn breaker_admit_over(
+    app: &crate::state::App,
+    scope: &super::DispatchScope,
+    pool: &[u8],
+    lane: u32,
+) -> Result<AdmissionId, crate::store::Unavailable> {
+    let key = Key {
+        size: core::mem::size_of::<Key>() as u32,
+        version: busbar_plugin::hot::POD_VERSION,
+        _reserved: 0,
+        scope: lane,
+        _reserved2: 0,
+        key_ptr: pool.as_ptr(),
+        key_len: pool.len(),
+        drift_state: 0,
+    };
+    let mut out = MaybeUninit::<AdmitRefusal>::uninit();
+    let id = super::with_borrowed_host(app, scope, |host, vt| {
+        (vt.breaker_admit_reason
+            .expect("breaker_admit_reason is a wired slot"))(
+            host,
+            &key as *const Key,
+            std::ptr::from_mut(&mut out),
+        )
+    });
+    if !id.is_none() {
+        return Ok(id);
+    }
+    // SAFETY: the host ALWAYS initializes `out` up front (see `breaker_admit_reason`), so it is a live
+    // `AdmitRefusal` on every non-live-id return.
+    let refusal = unsafe { out.assume_init() };
+    Err(reconstruct_unavailable(
+        refusal.reason,
+        refusal.retry_after_secs,
+    ))
+}
+
+/// The inverse of [`classify_unavailable`]: rebuild the store's own [`Unavailable`](crate::store::Unavailable)
+/// from the ABI [`Unavailability`] reason + the second-rounded recovery floor a [`breaker_admit_over`]
+/// refusal carried back. Coarse by construction — the ABI does not carry the exact internal epoch, so
+/// the `BreakerOpen`/`AtCapacity` payloads are reconstituted from the floor. This feeds
+/// [`crate::failover::walk_with`]'s `passed_over` reasons (an operator-facing LOG on the sync sites),
+/// never a caller-facing `Retry-After` (that is the store's own `retry_after_secs`).
+#[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
+fn reconstruct_unavailable(
+    reason: Unavailability,
+    retry_after_secs: u64,
+) -> crate::store::Unavailable {
+    use crate::store::Unavailable;
+    match reason {
+        Unavailability::Dead => Unavailable::Dead,
+        Unavailability::Budget => Unavailable::BudgetExhausted,
+        Unavailability::Open | Unavailability::NoneAdmissible => Unavailable::BreakerOpen {
+            until: crate::store::now().saturating_add(retry_after_secs),
+        },
+        Unavailability::AtCapacity => Unavailable::AtCapacity {
+            drain_hint_ms: Some(retry_after_secs.saturating_mul(1_000)),
+        },
+        Unavailability::Shedding => Unavailable::Shedding,
+        // A "next-tick" transient covers both an explicit probe-loss and a bare unspecified refusal:
+        // neither is a sticky administrative fact, and the sync sites read only the store's own
+        // `retry_after_secs` for the caller's wait.
+        Unavailability::ProbeInFlight | Unavailability::Unspecified => Unavailable::ProbeInFlight,
+    }
+}
+
 /// Build the ABI [`Signal`] a host settle carries FROM the plane's own [`CanonicalSignal`] — the
 /// INVERSE of [`classify`], so a settle folded through the host scope reproduces the EXACT
 /// disposition the plane's own `record_signal` would (proven by `settle_through_host_matches_direct_record_signal`).

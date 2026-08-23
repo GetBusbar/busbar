@@ -1589,7 +1589,7 @@ async fn tools_call(
         authorised,
         &arguments,
     );
-    if let Err(refused) = route.admit(&breakers, ctx.scope) {
+    if let Err(refused) = route.admit(ctx.app, &breakers, ctx.scope) {
         return log.refused(
             route_refusal_reason(&refused),
             refuse_route(id, &route, &refused),
@@ -1617,6 +1617,7 @@ async fn tools_call(
         // value crossing a trust boundary for no reason.
         |round, satisfaction| {
             route_ref.dispatch(
+                ctx.app,
                 pool,
                 &breakers,
                 ctx.scope,
@@ -1927,7 +1928,7 @@ async fn create_task(
     );
     // The task path admits with NO sync scope: the won probe is held raw and then re-homed into the
     // runner's `DurableScope` by `into_task_dispatch`, where the detached leg settles it.
-    if let Err(refused) = route.admit(&breakers, None) {
+    if let Err(refused) = route.admit(ctx.app, &breakers, None) {
         return log.refused(
             route_refusal_reason(&refused),
             refuse_route(id, &route, &refused),
