@@ -153,6 +153,10 @@ pub const KIND_TASK: &str = "task";
 pub const KIND_TASK_EVENT: &str = "task_event";
 /// The MCP per-call log record kind — the neutral `append_mcp_call`/`list_mcp_calls`/… .
 pub const KIND_CALL: &str = "call";
+/// The admin AUDIT chain record kind — the neutral store tag the admin mutation log's durable
+/// journal seam persists its hash-chained records under (scope = the constant `admin` log). Distinct
+/// from the legacy `append_audit`/`list_audit` table; the durable seam writes these as plane records.
+pub const KIND_AUDIT: &str = "audit";
 /// The MCP demotion record kind — the neutral `put_mcp_demotion`/`list_mcp_demotions`/… .
 pub(crate) const KIND_DEMOTION: &str = "demotion";
 /// The spent-approval ledger kind — the neutral `redeem_ask_state` (a single-use token).

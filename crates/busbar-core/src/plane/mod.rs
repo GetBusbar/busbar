@@ -91,6 +91,7 @@
 #![cfg_attr(not(test), allow(dead_code))]
 
 pub(crate) mod approvals;
+pub(crate) mod auditlog;
 pub(crate) mod calllog;
 pub(crate) mod config;
 pub mod cost;

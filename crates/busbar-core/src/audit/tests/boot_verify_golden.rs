@@ -39,10 +39,12 @@
 //! bytes to make a failing test pass: a change here is a change to a persisted digest, and the test
 //! failing is the tripwire working.
 
-use super::*;
-use crate::admin::audit::AuditEntry;
-use crate::plane::store::{decode, encode, PlaneStore, KIND_CALL, KIND_TASK, KIND_TASK_EVENT};
-use busbar_api::{McpCallRecord, PlaneRecord, PlaneSelector, StoreResult, TaskEventRow, TaskRow};
+use crate::plane::store::{
+    decode, encode, PlaneStore, KIND_AUDIT, KIND_CALL, KIND_TASK, KIND_TASK_EVENT,
+};
+use busbar_api::{
+    AuditRecord, McpCallRecord, PlaneRecord, PlaneSelector, StoreResult, TaskEventRow, TaskRow,
+};
 
 // ── THE FROZEN PERSISTED BYTES — captured from the pre-cleave build, opaque on purpose ──────────
 //
@@ -219,13 +221,32 @@ fn a2a_task_chain_boot_verifies_from_frozen_bytes() {
     assert_eq!(tail.hash, A2A_TAIL_HASH);
 }
 
-/// Admin audit chain (PipeSeparated, NO scope in the digest): the frozen opaque records verify
-/// through the SHARED `verify_chain` the admin ring restore walks. This is the `digests_scope = false`
-/// framing shape — the scope must NOT enter the digest.
+/// Admin audit chain (PipeSeparated, NO scope in the digest): the frozen opaque records restore
+/// through the REAL boot path — the NEUTRAL journal seam the admin audit stream is registered on, with
+/// `digests_scope = false` — and verify byte-identically (zero chain breaks) with the tail hash intact.
+/// This is the `digests_scope = false` framing shape: the scope must NOT enter the digest, and the
+/// frozen bytes are the legacy `serde(AuditRecord)` rows, reframed by the stream's own decode bridge.
 #[test]
 fn admin_audit_chain_boot_verifies_from_frozen_bytes() {
-    let records: Vec<AuditEntry> = vec![decode(AD_1).unwrap(), decode(AD_2).unwrap()];
-    verify_chain(&records)
-        .expect("a persisted admin chain reported TAMPERED means the digest drifted");
-    assert_eq!(records[1].hash, AD_TAIL_HASH);
+    let mut store = FrozenStore::new();
+    store.put(KIND_AUDIT, Some("admin"), AD_1);
+    store.put(KIND_AUDIT, Some("admin"), AD_2);
+
+    // The chain position cache is host-side now: register a fresh isolated stream and host-drive the
+    // restore. The FROZEN BYTES/HASHES above are unchanged — only the scaffolding that replays them
+    // through the durable seam changed. The restore SEEDS positions from the store passed here (the
+    // frozen bytes), so the throwaway app the harness registers against is immaterial to the digests.
+    let h = crate::plane::auditlog::AuditTestHarness::over(std::sync::Arc::new(
+        busbar_store_memory::MemoryStore::new(),
+    ));
+    let restored = h.restore_from_store(&store).expect("store read");
+    assert!(
+        restored.chain_breaks.is_empty(),
+        "a persisted admin chain reported TAMPERED means the digest drifted: {:?}",
+        restored.chain_breaks
+    );
+    assert_eq!(restored.records, 2, "both frozen records restored");
+
+    let tail: AuditRecord = decode(AD_2).unwrap();
+    assert_eq!(tail.hash, AD_TAIL_HASH);
 }

@@ -75,6 +75,11 @@ pub fn hydrate_all(app: &Arc<crate::state::App>) -> Result<(), String> {
                  against its own hash chain; starting with an empty audit ring"
             ),
         }
+        // DUAL-WRITE MIGRATION: register the admin `audit` durable stream on the neutral journal seam
+        // and seed its chain position from the SAME legacy durable table restored above, so the seam
+        // continues the one chain rather than forking. The legacy ring/sink stays authoritative for
+        // reads; this only mirrors the chain position so a seam append lands on the right sequence.
+        crate::plane::auditlog::register_and_migrate(app, store.as_ref());
     }
 
     // THE PLANE HYDRATION FOLD. Each plane restores its OWN durable state through the `hydrate` hook

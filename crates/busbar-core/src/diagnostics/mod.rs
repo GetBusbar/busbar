@@ -2706,6 +2706,42 @@ pub const PLANE_CALLLOG_CHAIN_VERIFY_FAILED: Diagnostic = Diagnostic {
     retired: false,
 };
 
+pub const PLANE_AUDITLOG_CHAIN_VERIFY_FAILED: Diagnostic = Diagnostic {
+    code: 2043,
+    class: Class::Audit,
+    slug: "plane-auditlog-chain-verify-failed",
+    title: "Admin audit records failed hash-chain verification on restore (tamper evidence)",
+    severity: Severity::Actionable,
+    summary: "The persisted admin audit records were read at boot through the durable journal seam \
+              but do NOT verify against their own hash chain, which is tamper evidence. They are \
+              still restored and the chain resumes from the broken tail, because refusing here would \
+              convert a detection control into a deletion primitive — anyone able to write to the \
+              store could delete audit history by corrupting one record.",
+    action: "Treat the durable governance store as compromised until explained: capture it for \
+             forensic review before it is overwritten, then restore from a trusted backup once the \
+             cause is understood.",
+    since: "1.6.0",
+    retired: false,
+};
+
+pub const PLANE_AUDITLOG_WRITE_FAILED: Diagnostic = Diagnostic {
+    code: 2044,
+    class: Class::Audit,
+    slug: "plane-auditlog-write-failed",
+    title: "Admin audit record could not be written through the durable journal seam (evidence lost)",
+    severity: Severity::Actionable,
+    summary: "The admin audit record could NOT be written through the durable journal seam, so this \
+              mutation is being served but its evidence is being lost on that path. The chain \
+              position is unchanged, so the chain stays contiguous — what is missing is this one \
+              record, not the ones after it. This can recur per mutation during a store outage, so \
+              it warns on the transition into the failing state and holds subsequent occurrences at \
+              debug.",
+    action: "Restore the durable governance store's write path. Once writes succeed again the latch \
+             resets and a future outage re-warns.",
+    since: "1.6.0",
+    retired: false,
+};
+
 pub const MCP_CALLLOG_EMPTY_CHAINS: Diagnostic = Diagnostic {
     code: 7060,
     class: Class::Plane,
@@ -4088,6 +4124,8 @@ pub static REGISTRY: &[&Diagnostic] = &[
     &MCP_CALLLOG_CHAIN_VERIFY_FAILED,
     &PLANE_TASK_CHAIN_VERIFY_FAILED,
     &PLANE_CALLLOG_CHAIN_VERIFY_FAILED,
+    &PLANE_AUDITLOG_CHAIN_VERIFY_FAILED,
+    &PLANE_AUDITLOG_WRITE_FAILED,
     &MCP_CALLLOG_EMPTY_CHAINS,
     &MCP_CALLLOG_UNREAD,
     &MCP_DEMOTIONS_RESTORED,
