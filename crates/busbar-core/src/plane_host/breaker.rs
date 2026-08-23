@@ -120,7 +120,7 @@ pub(crate) fn settling_admission(
     not(any(feature = "plane-mcp", feature = "plane-a2a")),
     allow(dead_code)
 )]
-pub(crate) fn failure_signal(cs: &CanonicalSignal) -> Signal {
+pub fn failure_signal(cs: &CanonicalSignal) -> Signal {
     let (flags, secs) = match cs.retry_after {
         Some(s) => (0x01u8, s),
         None => (0, 0),
@@ -154,7 +154,7 @@ pub(crate) fn failure_signal(cs: &CanonicalSignal) -> Signal {
     not(any(feature = "plane-mcp", feature = "plane-a2a")),
     allow(dead_code)
 )]
-pub(crate) fn success_signal() -> Signal {
+pub fn success_signal() -> Signal {
     Signal {
         size: core::mem::size_of::<Signal>() as u32,
         version: busbar_plugin::hot::POD_VERSION,
@@ -179,7 +179,7 @@ pub(crate) fn success_signal() -> Signal {
 // Built only by the MCP plane leg (`mcp::tasks`/`mcp::reroute`) — the A2A relay never carries the
 // "record nothing" outcome — so it reads dead whenever the MCP plane is compiled out.
 #[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
-pub(crate) fn refused_signal() -> Signal {
+pub fn refused_signal() -> Signal {
     Signal {
         size: core::mem::size_of::<Signal>() as u32,
         version: busbar_plugin::hot::POD_VERSION,
