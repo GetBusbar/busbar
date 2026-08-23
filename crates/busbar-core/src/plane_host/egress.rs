@@ -988,6 +988,232 @@ pub(crate) fn egress_close(host: HostCtx, egress: EgressId) -> StatusClass {
     .unwrap_or(StatusClass::Fault)
 }
 
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// SAFE DRIVER WRAPPERS for the neutral fetch adapter (`crate::egress::seam`).
+//
+// busbar-core denies `unsafe` everywhere EXCEPT this audited `plane_host` FFI module. The fetch
+// adapter that re-expresses `egress_poll` as the planes' existing buffered/streamed return types
+// lives in `crate::egress` (a `#![deny(unsafe_code)]` module) and drives the egress slots through
+// these wrappers — each does the raw out-param read / borrowed-bytes decode HERE and hands back only
+// OWNED, fully-decoded values, so no raw pointer ever escapes to the seam. This keeps ALL egress-slot
+// `unsafe` in the one sanctioned module while the neutral adapter (and the `Response`/`StreamHead`
+// projection) stays plane-blind in `crate::egress`.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+/// Map two host allowlist-scope bools onto the [`EgressDesc::allowlist_scope`] bit convention this
+/// module reads. Exposed so the seam builds a desc without duplicating the bit values.
+#[cfg(any(feature = "plane-mcp", feature = "plane-a2a"))]
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn scope_bits(allow_private: bool, allow_plaintext: bool) -> u32 {
+    let mut scope = 0u32;
+    if allow_private {
+        scope |= SCOPE_ALLOW_PRIVATE;
+    }
+    if allow_plaintext {
+        scope |= SCOPE_ALLOW_PLAINTEXT;
+    }
+    scope
+}
+
+/// The fully-decoded connect head of a governed egress the seam adopts — every field OWNED, no
+/// borrowed host pointer. The `peer_spki` / `location` / `content_type` strings are decoded HERE from
+/// the borrowed head bytes; the plane composes its own return types over them.
+#[cfg(any(feature = "plane-mcp", feature = "plane-a2a"))]
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) struct OpenedHead {
+    /// The opaque egress handle the seam polls the body off and closes.
+    pub id: EgressId,
+    /// The observed status/response code.
+    pub status: u16,
+    /// The observed peer SPKI pin (`sha256/…`), or `None` on a plaintext hop / an unwalkable cert.
+    /// Decoded from the SAME bytes `crate::plane_host::spki::pin` produced, so it is byte-identical to
+    /// the pin a plane's own `peer_spki_of` would compute (they share that one function).
+    pub peer_spki: Option<String>,
+    /// The response `Location`, verbatim, when the head surfaced one (a redirect).
+    pub location: Option<String>,
+    /// The response `content-type`, verbatim, when the head surfaced one.
+    pub content_type: Option<String>,
+    /// Busbar's own end of the handshake: whether a client identity was carried into the TLS
+    /// handshake (offered if the peer asked). See [`EgressHead::client_identity_offered`].
+    pub client_identity_offered: bool,
+}
+
+/// A fully-decoded egress fault the seam composes its own operator string over — the class, the status,
+/// and the flattened CAUSE and TARGET-url kept SEPARATE (one plane keeps the url, another strips it),
+/// exactly as [`egress_fault`] hands them across the ABI.
+// Read by the plane fetch converters (sub-commits 3/4) that compose an operator string over the
+// neutral fault; unread until then, so allow it unconditionally on this scaffold.
+#[cfg(any(feature = "plane-mcp", feature = "plane-a2a"))]
+#[allow(dead_code)]
+#[derive(Debug)]
+pub(crate) struct EgressFaultInfo {
+    pub class: EgressFailClass,
+    pub status: u16,
+    pub cause: String,
+    pub url: String,
+}
+
+/// The outcome of driving [`egress_open`] over a host: the adopted head, or the neutral fault detail.
+#[cfg(any(feature = "plane-mcp", feature = "plane-a2a"))]
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) enum OpenOutcome {
+    Opened(OpenedHead),
+    Fault(EgressFaultInfo),
+}
+
+/// Decode the host's packed response-header records (`u32 name_len | name | u32 val_len | val`, LE)
+/// and pull out `content-type` and `location` (the two the host surfaces). The names are packed
+/// lower-case by the host; matched case-insensitively for robustness.
+#[cfg(any(feature = "plane-mcp", feature = "plane-a2a"))]
+fn decode_head_headers(bytes: &[u8]) -> (Option<String>, Option<String>) {
+    let mut content_type = None;
+    let mut location = None;
+    let mut i = 0usize;
+    while let Some(name) = read_u32(bytes, &mut i)
+        .and_then(|nl| read_str(bytes, &mut i, nl))
+        .and_then(|name| {
+            let vl = read_u32(bytes, &mut i)?;
+            let value = read_str(bytes, &mut i, vl)?;
+            Some((name, value))
+        })
+    {
+        let (n, v) = name;
+        if n.eq_ignore_ascii_case("content-type") {
+            content_type = Some(v);
+        } else if n.eq_ignore_ascii_case("location") {
+            location = Some(v);
+        }
+    }
+    (content_type, location)
+}
+
+/// Drive [`egress_open`] over `host` for `desc`, returning a fully-decoded [`OpenOutcome`]. All raw
+/// out-param reads and borrowed-head-byte decodes happen here; the caller receives only owned values.
+#[cfg(any(feature = "plane-mcp", feature = "plane-a2a"))]
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn drive_open(host: HostCtx, desc: &EgressDesc) -> OpenOutcome {
+    let mut out = MaybeUninit::<EgressOpen>::uninit();
+    let status = egress_open(host, desc as *const EgressDesc, &mut out);
+    if status != StatusClass::Ok {
+        return OpenOutcome::Fault(drive_fault(host));
+    }
+    // SAFETY: `egress_open` returned `Ok`, so it initialized the out-param (init-only-on-Ok).
+    let open = unsafe { out.assume_init() };
+    let head = open.head;
+    let peer_spki = if head.observed_spki_ptr.is_null() || head.observed_spki_len == 0 {
+        None
+    } else {
+        // SAFETY: on `Ok`, the head's SPKI pointer borrows host-owned bytes live while the egress is
+        // open. We copy them into an owned String immediately, before any close.
+        let bytes =
+            unsafe { std::slice::from_raw_parts(head.observed_spki_ptr, head.observed_spki_len) };
+        Some(String::from_utf8_lossy(bytes).into_owned())
+    };
+    let (content_type, location) = if head.resp_headers_ptr.is_null() || head.resp_headers_len == 0
+    {
+        (None, None)
+    } else {
+        // SAFETY: as above — the head's response-header pointer borrows host-owned bytes live while
+        // the egress is open; decoded into owned Strings here.
+        let bytes =
+            unsafe { std::slice::from_raw_parts(head.resp_headers_ptr, head.resp_headers_len) };
+        decode_head_headers(bytes)
+    };
+    OpenOutcome::Opened(OpenedHead {
+        id: open.id,
+        status: head.status_code,
+        peer_spki,
+        location,
+        content_type,
+        client_identity_offered: head.client_identity_offered != 0,
+    })
+}
+
+/// Read the neutral fault detail of the last failed [`egress_open`] in this dispatch scope through
+/// [`egress_fault`], with generous buffers. Returns a host-fault fallback when none is pending (which
+/// should not happen after a non-`Ok` open, but keeps the seam total).
+#[cfg(any(feature = "plane-mcp", feature = "plane-a2a"))]
+fn drive_fault(host: HostCtx) -> EgressFaultInfo {
+    // A first read with fixed buffers; if the header reports a longer cause/url, re-read once with
+    // exact buffers (the read is non-destructive until it fits — see `egress_fault`).
+    fn read_once(
+        host: HostCtx,
+        cause_cap: usize,
+        url_cap: usize,
+    ) -> Option<(EgressFault, String, String)> {
+        let mut out = MaybeUninit::<EgressFault>::uninit();
+        let mut cause = vec![0u8; cause_cap];
+        let mut url = vec![0u8; url_cap];
+        let status = egress_fault(
+            host,
+            &mut out,
+            cause.as_mut_ptr(),
+            cause.len(),
+            url.as_mut_ptr(),
+            url.len(),
+        );
+        if status != StatusClass::Ok {
+            return None;
+        }
+        // SAFETY: `Ok` ⇒ the out-param is initialized.
+        let fault = unsafe { out.assume_init() };
+        let c = String::from_utf8_lossy(&cause[..(fault.cause_len as usize).min(cause.len())])
+            .into_owned();
+        let u =
+            String::from_utf8_lossy(&url[..(fault.url_len as usize).min(url.len())]).into_owned();
+        Some((fault, c, u))
+    }
+
+    let first = read_once(host, 4096, 4096);
+    let Some((fault, cause, url)) = first else {
+        return EgressFaultInfo {
+            class: EgressFailClass::Fault,
+            status: 0,
+            cause: String::new(),
+            url: String::new(),
+        };
+    };
+    // Re-read with exact buffers if the fixed ones truncated (the header carries the FULL lengths).
+    let (fault, cause, url) = if fault.cause_len as usize > cause.len().max(4096)
+        || fault.url_len as usize > url.len().max(4096)
+        || cause.len() < fault.cause_len as usize
+        || url.len() < fault.url_len as usize
+    {
+        read_once(
+            host,
+            (fault.cause_len as usize).max(1),
+            (fault.url_len as usize).max(1),
+        )
+        .unwrap_or((fault, cause, url))
+    } else {
+        (fault, cause, url)
+    };
+    EgressFaultInfo {
+        class: fault.fail_class,
+        status: fault.status_code,
+        cause,
+        url,
+    }
+}
+
+/// Poll up to `buf.len()` readable bytes off a governed egress into `buf`. Returns the status class
+/// and the count written. A safe wrapper around [`egress_poll`]: the raw buffer pointer read stays
+/// HERE. `Ok`+`0` is EOF; `Fault` is a mid-body transport failure; `Gone` is a reclaimed id.
+#[cfg(any(feature = "plane-mcp", feature = "plane-a2a"))]
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn drive_poll(host: HostCtx, id: EgressId, buf: &mut [u8]) -> (StatusClass, usize) {
+    let mut written: usize = 0;
+    let class = egress_poll(host, id, buf.as_mut_ptr(), buf.len(), &mut written);
+    (class, written)
+}
+
+/// Close and reclaim a governed egress — the seam's teardown once the body is read or the stream ends.
+#[cfg(any(feature = "plane-mcp", feature = "plane-a2a"))]
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn drive_close(host: HostCtx, id: EgressId) -> StatusClass {
+    egress_close(host, id)
+}
+
 #[cfg(test)]
 #[path = "egress_tests.rs"]
 mod tests;

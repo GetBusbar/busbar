@@ -306,6 +306,13 @@ impl PinnedClientPool {
     }
 }
 
+/// THE NEUTRAL FETCH ADAPTER: re-express a host-owned governed egress as the buffered / streamed
+/// return shapes the protocol planes already consume, so an extracted plane never holds a concrete
+/// `reqwest::Response`. Gated to `any(plane-mcp, plane-a2a)` — its only consumers are the plane
+/// transports (A2A card-fetch/relay, MCP dispatch).
+#[cfg(any(feature = "plane-mcp", feature = "plane-a2a"))]
+pub(crate) mod seam;
+
 // The backend's own tests exercise the pinned-client pool, which exists only where a plane consumes
 // it — so they are gated to the same planes. `build_pinned_client` and the refusing resolver keep
 // their coverage under a default build.
