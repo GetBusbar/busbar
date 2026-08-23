@@ -392,15 +392,15 @@ impl<R: ChainedRecord> Journal<R> {
 /// persists THIS, and a plane's reframe callback is the decode bridge that turns EITHER shape back
 /// into a record on restore (so a store still holding old serde rows verifies unchanged). ADDITIVE.
 #[derive(serde::Serialize, serde::Deserialize)]
-struct NeutralBody {
+pub(crate) struct NeutralBody {
     /// The chain sequence the host minted for this record.
-    seq: u64,
+    pub(crate) seq: u64,
     /// The link to the previous record (empty at genesis).
-    prev_hash: String,
+    pub(crate) prev_hash: String,
     /// This record's sealed digest.
-    hash: String,
+    pub(crate) hash: String,
     /// The plane's OPAQUE pre-framed content suffix (the bytes the digest appends RAW).
-    content: Vec<u8>,
+    pub(crate) content: Vec<u8>,
 }
 
 /// A record whose durable body is the neutral [`NeutralBody`] envelope. The generic scope-keyed

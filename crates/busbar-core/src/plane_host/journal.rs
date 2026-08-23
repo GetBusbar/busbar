@@ -41,16 +41,23 @@
 //! markers below flag where it would attach to the durable store.
 
 use super::recover;
+use crate::audit::journal::{Journal, NeutralRecord};
 use crate::audit::{frame_prelude, Chain, ChainLabels, ChainedRecord, Digest, Framing};
-use busbar_plugin::hot::host::HostCtx;
-use busbar_plugin::hot::{Framing as AbiFraming, FramingDesc, JournalQuery, Seq, StatusClass};
+use crate::plane::store::PlaneStoreView;
+use busbar_plugin::hot::host::{HostCtx, JournalReframeFn};
+use busbar_plugin::hot::{
+    ChainBreakHdr, Framing as AbiFraming, FramingDesc, JournalQuery, JournalStreamDesc, ReframeOut,
+    RestoredHdr, Seq, StatusClass, VerifyChainHdr, POD_VERSION,
+};
+use core::mem::MaybeUninit;
 use std::collections::HashMap;
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 /// One appended journal record: the host-assigned prelude (`scope`/`seq`/`prev_hash`/`hash`) plus the
 /// plane's opaque pre-framed content suffix and the stream's framing declaration. Implements the real
 /// [`ChainedRecord`] so the ONE [`crate::audit`] verifier walks it unchanged.
+#[derive(Clone)]
 pub(crate) struct PlaneJournalRecord {
     scope: String,
     seq: u64,
@@ -126,6 +133,533 @@ impl ChainedRecord for PlaneJournalRecord {
         ));
         d.raw(&self.content);
     }
+}
+
+impl NeutralRecord for PlaneJournalRecord {
+    fn content(&self) -> &[u8] {
+        &self.content
+    }
+}
+
+// ── THE DURABLE JOURNAL SEAM (minor-9) — store-backed, keyed by a plane-registered `kind_id` ───────
+//
+// A plane REGISTERS a stream (its neutral `kind`, framing, digests_scope + a plane-provided REFRAME
+// callback) and thereafter addresses append/read/restore/seed/forget/compact/verify by the integer
+// `kind_id`. Each stream owns ONE store-backed [`crate::audit::journal::Journal<PlaneJournalRecord>`]
+// — the SAME seq-authority + position-cache + write-ordering machinery the three shipped streams use,
+// naming no plane type. The host mints seq/prev_hash/hash through the ONE core chain and persists the
+// neutral `{seq, prev_hash, hash, content}` body; the plane's reframe is the decode bridge that turns
+// a stored body (this neutral body OR a legacy serde row) back into a record on read/restore/verify.
+
+/// One registered durable stream. Holds the neutral facts the host learned at register time and the
+/// store-backed journal it drives. The `journal` is an [`Arc`] so an op clones it out from under the
+/// registry lock and does its store I/O + reframe callbacks WITHOUT holding the registry.
+struct DurableStream {
+    kind: String,
+    framing: Framing,
+    digests_scope: bool,
+    reframe: JournalReframeFn,
+    journal: Arc<Journal<PlaneJournalRecord>>,
+}
+
+/// The process-local registry of durable streams, keyed by the host-assigned `kind_id`.
+fn streams() -> &'static Mutex<HashMap<u32, DurableStream>> {
+    static S: OnceLock<Mutex<HashMap<u32, DurableStream>>> = OnceLock::new();
+    S.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Poison-recovering lock for the durable-stream registry (same discipline as the RAM registry above).
+fn streams_lock() -> MutexGuard<'static, HashMap<u32, DurableStream>> {
+    streams().lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// The addressable parts of one registered stream, snapshotted so the registry lock is released before
+/// any store I/O or reframe callback runs.
+struct StreamHandle {
+    kind: String,
+    framing: Framing,
+    digests_scope: bool,
+    reframe: JournalReframeFn,
+    journal: Arc<Journal<PlaneJournalRecord>>,
+}
+
+fn stream_handle(kind_id: u32) -> Option<StreamHandle> {
+    let map = streams_lock();
+    map.get(&kind_id).map(|s| StreamHandle {
+        kind: s.kind.clone(),
+        framing: s.framing,
+        digests_scope: s.digests_scope,
+        reframe: s.reframe,
+        journal: s.journal.clone(),
+    })
+}
+
+/// Read a borrowed `(ptr, len)` range into owned bytes; a null/empty range is the empty vector.
+fn read_bytes(ptr: *const u8, len: usize) -> Vec<u8> {
+    if ptr.is_null() || len == 0 {
+        Vec::new()
+    } else {
+        // SAFETY: a non-null `(ptr, len)` is a live borrowed range for the call (ABI discipline).
+        unsafe { std::slice::from_raw_parts(ptr, len) }.to_vec()
+    }
+}
+
+/// Read a borrowed `(ptr, len)` range into a `String`; a null/empty range is `None` (a durable scope
+/// is a non-empty key, so an empty one is a caller error the slot fails closed on).
+fn read_scope(ptr: *const u8, len: usize) -> Option<String> {
+    if ptr.is_null() || len == 0 {
+        return None;
+    }
+    // SAFETY: a non-null `(ptr, len)` is a live borrowed range for the call (ABI discipline).
+    let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
+    Some(String::from_utf8_lossy(bytes).into_owned())
+}
+
+/// Turn one stored body + its scope back into a [`PlaneJournalRecord`] by calling the stream's
+/// PLANE-PROVIDED reframe fn-pointer. The plane decodes the body and writes `(seq, prev_hash, hash,
+/// pre-framed suffix, digests_scope)`; the host assembles the record with the scope IT knows (the
+/// store parent) and the stream's framing. On a too-small buffer the reframe reports the required
+/// lengths in [`ReframeOut`] (always initialized) and the host grows and retries.
+fn call_reframe(
+    host: HostCtx,
+    kind_id: u32,
+    reframe: JournalReframeFn,
+    framing: Framing,
+    scope: &str,
+    body: &[u8],
+) -> busbar_api::StoreResult<PlaneJournalRecord> {
+    let mut prev = vec![0u8; 128];
+    let mut hash = vec![0u8; 128];
+    let mut suffix = vec![0u8; 512];
+    loop {
+        let mut out = MaybeUninit::<ReframeOut>::uninit();
+        let status = reframe(
+            host,
+            kind_id,
+            body.as_ptr(),
+            body.len(),
+            &mut out,
+            prev.as_mut_ptr(),
+            prev.len(),
+            hash.as_mut_ptr(),
+            hash.len(),
+            suffix.as_mut_ptr(),
+            suffix.len(),
+        );
+        // SAFETY: the reframe contract ALWAYS initializes `out` (the length-report discipline, like
+        // `AdmitRefusal`), so it is readable on both `Ok` and `Refused`.
+        let o = unsafe { out.assume_init() };
+        match status {
+            StatusClass::Ok => {
+                let prev_hash = String::from_utf8_lossy(&prev[..o.prev_len.min(prev.len())])
+                    .into_owned();
+                let hash = String::from_utf8_lossy(&hash[..o.hash_len.min(hash.len())]).into_owned();
+                let content = suffix[..o.suffix_len.min(suffix.len())].to_vec();
+                return Ok(PlaneJournalRecord {
+                    scope: scope.to_string(),
+                    seq: o.seq,
+                    prev_hash,
+                    hash,
+                    content,
+                    framing,
+                    digests_scope: o.digests_scope != 0,
+                });
+            }
+            StatusClass::Refused => {
+                // Grow whichever buffer was short and retry (the `egress_poll` length-report pattern).
+                let grew = (o.prev_len > prev.len())
+                    || (o.hash_len > hash.len())
+                    || (o.suffix_len > suffix.len());
+                if !grew {
+                    return Err(busbar_api::StoreError(
+                        "journal reframe refused without a larger-buffer request".to_string(),
+                    ));
+                }
+                if o.prev_len > prev.len() {
+                    prev = vec![0u8; o.prev_len];
+                }
+                if o.hash_len > hash.len() {
+                    hash = vec![0u8; o.hash_len];
+                }
+                if o.suffix_len > suffix.len() {
+                    suffix = vec![0u8; o.suffix_len];
+                }
+            }
+            other => {
+                return Err(busbar_api::StoreError(format!(
+                    "journal reframe failed: {other:?}"
+                )))
+            }
+        }
+    }
+}
+
+/// REGISTER a durable journal stream: record its neutral facts + reframe callback under `kind_id` and
+/// attach the durable sink from the app's governance store (the boot rehydrate pattern; no governance
+/// store ⇒ the stream is ephemeral, exactly as the shipped plane state is). Fail-closed on a null/empty
+/// descriptor.
+pub(crate) extern "C-unwind" fn journal_register(
+    host: HostCtx,
+    desc: *const JournalStreamDesc,
+    reframe: JournalReframeFn,
+) -> StatusClass {
+    catch_unwind(AssertUnwindSafe(|| {
+        // SAFETY: recovery invariant (see `super::recover`).
+        let state = unsafe { recover(host) };
+        if desc.is_null() {
+            return StatusClass::Refused;
+        }
+        // SAFETY: a non-null `desc` is a live, initialized `JournalStreamDesc` for the call (ABI).
+        let d = unsafe { &*desc };
+        let Some(kind) = read_scope(d.kind_ptr, d.kind_len) else {
+            return StatusClass::Refused;
+        };
+        // `usize::MAX`: a durable table opts OUT of position eviction (its working set is bounded
+        // elsewhere), exactly as the A2A task journal does.
+        let journal = Arc::new(Journal::<PlaneJournalRecord>::new(usize::MAX));
+        if let Some(gov) = state.app.governance.as_ref() {
+            journal.set_sink(PlaneStoreView::narrow(gov.store()));
+        }
+        let stream = DurableStream {
+            kind,
+            framing: map_framing(d.framing),
+            digests_scope: d.digests_scope != 0,
+            reframe,
+            journal,
+        };
+        streams_lock().insert(d.kind_id, stream);
+        StatusClass::Ok
+    }))
+    .unwrap_or(StatusClass::Fault)
+}
+
+/// APPEND one record to a registered stream's durable `scope`: mint the seq/prev_hash/hash through the
+/// ONE core chain, frame the prelude in the stream's framing, join the plane's opaque content suffix,
+/// and persist the neutral body. Returns the minted [`Seq`], or [`Seq::NONE`] fail-closed.
+pub(crate) extern "C-unwind" fn journal_append_scoped(
+    host: HostCtx,
+    kind_id: u32,
+    scope_ptr: *const u8,
+    scope_len: usize,
+    content_ptr: *const u8,
+    content_len: usize,
+) -> Seq {
+    catch_unwind(AssertUnwindSafe(|| {
+        // SAFETY: recovery invariant (see `super::recover`).
+        let _state = unsafe { recover(host) };
+        let Some(h) = stream_handle(kind_id) else {
+            return Seq::NONE;
+        };
+        let Some(scope) = read_scope(scope_ptr, scope_len) else {
+            return Seq::NONE;
+        };
+        let content = read_bytes(content_ptr, content_len);
+        let input = PlaneJournalInput {
+            content,
+            framing: h.framing,
+            digests_scope: h.digests_scope,
+        };
+        let reframe = |sc: &str, body: &[u8]| call_reframe(host, kind_id, h.reframe, h.framing, sc, body);
+        match h.journal.append_scoped(&h.kind, &scope, input, &reframe) {
+            Ok(record) => Seq(record.seq()),
+            Err(_) => Seq::NONE,
+        }
+    }))
+    .unwrap_or(Seq::NONE)
+}
+
+/// READ a registered stream's `scope` window (durable cold read) into the caller buffer; sets
+/// `out_written`. Fail-closed on a null query/out; a too-small buffer is `Refused` with the required
+/// length reported.
+pub(crate) extern "C-unwind" fn journal_read_scoped(
+    host: HostCtx,
+    kind_id: u32,
+    scope_ptr: *const u8,
+    scope_len: usize,
+    from_seq: u64,
+    limit: u64,
+    buf: *mut u8,
+    buf_cap: usize,
+    out_written: *mut usize,
+) -> StatusClass {
+    catch_unwind(AssertUnwindSafe(|| {
+        // SAFETY: recovery invariant (see `super::recover`).
+        let _state = unsafe { recover(host) };
+        if out_written.is_null() {
+            return StatusClass::Refused;
+        }
+        // SAFETY: `out_written` is a live, writable `usize` for the call (ABI). Default to 0.
+        unsafe { *out_written = 0 };
+        let Some(h) = stream_handle(kind_id) else {
+            return StatusClass::Refused;
+        };
+        let Some(scope) = read_scope(scope_ptr, scope_len) else {
+            return StatusClass::Refused;
+        };
+        let Some(store) = h.journal.sink() else {
+            // No durable sink → a legitimate empty read.
+            return StatusClass::Ok;
+        };
+        let reframe = |sc: &str, body: &[u8]| call_reframe(host, kind_id, h.reframe, h.framing, sc, body);
+        let rows = match h.journal.read_scoped(&h.kind, &scope, store.as_ref(), &reframe) {
+            Ok(r) => r,
+            Err(_) => return StatusClass::Fault,
+        };
+        // Verify before trusting the stored chain (mirrors the RAM `journal_read`).
+        if crate::audit::verify_chain(&rows).is_err() {
+            return StatusClass::Fault;
+        }
+        let encoded = encode_rows(&rows, from_seq, limit);
+        if encoded.len() > buf_cap {
+            // SAFETY: see above — report the required length so the caller can size a retry.
+            unsafe { *out_written = encoded.len() };
+            return StatusClass::Refused;
+        }
+        if !buf.is_null() && !encoded.is_empty() {
+            // SAFETY: `encoded.len() <= buf_cap` and `buf` is a live range of `buf_cap` bytes (ABI).
+            unsafe { std::ptr::copy_nonoverlapping(encoded.as_ptr(), buf, encoded.len()) };
+        }
+        // SAFETY: see above.
+        unsafe { *out_written = encoded.len() };
+        StatusClass::Ok
+    }))
+    .unwrap_or(StatusClass::Fault)
+}
+
+/// BOOT REHYDRATE a registered stream from the durable store: resume every scope's position and write
+/// the neutral [`RestoredHdr`] counts. No durable sink ⇒ honest zeros.
+pub(crate) extern "C-unwind" fn journal_restore(
+    host: HostCtx,
+    kind_id: u32,
+    out: *mut MaybeUninit<RestoredHdr>,
+) -> StatusClass {
+    catch_unwind(AssertUnwindSafe(|| {
+        // SAFETY: recovery invariant (see `super::recover`).
+        let _state = unsafe { recover(host) };
+        if out.is_null() {
+            return StatusClass::Refused;
+        }
+        let Some(h) = stream_handle(kind_id) else {
+            return StatusClass::Refused;
+        };
+        let reframe = |sc: &str, body: &[u8]| call_reframe(host, kind_id, h.reframe, h.framing, sc, body);
+        let restored = match h.journal.sink() {
+            Some(store) => match h.journal.restore_scoped(&h.kind, store.as_ref(), &reframe) {
+                Ok(r) => r,
+                Err(_) => return StatusClass::Fault,
+            },
+            None => crate::audit::journal::Restored::default(),
+        };
+        let hdr = RestoredHdr {
+            size: core::mem::size_of::<RestoredHdr>() as u32,
+            version: POD_VERSION,
+            _reserved: 0,
+            scopes: restored.scopes as u64,
+            records: restored.records as u64,
+            empty_scopes: restored.empty_scopes.len() as u64,
+            chain_breaks: restored.chain_breaks.len() as u64,
+        };
+        // SAFETY: non-null `out` is a writable `MaybeUninit<RestoredHdr>`; write only on the Ok path.
+        unsafe { (*out).write(hdr) };
+        StatusClass::Ok
+    }))
+    .unwrap_or(StatusClass::Fault)
+}
+
+/// SEED one scope's position from a packed set of already-read stored bodies (`u32` count LE, then per
+/// body `u32` len LE + bytes) — the caller-driven rehydrate. Writes a [`ChainBreakHdr`] reporting a
+/// broken-but-resumed chain (or a clean verify).
+pub(crate) extern "C-unwind" fn journal_seed(
+    host: HostCtx,
+    kind_id: u32,
+    scope_ptr: *const u8,
+    scope_len: usize,
+    bodies_ptr: *const u8,
+    bodies_len: usize,
+    out: *mut MaybeUninit<ChainBreakHdr>,
+) -> StatusClass {
+    catch_unwind(AssertUnwindSafe(|| {
+        // SAFETY: recovery invariant (see `super::recover`).
+        let _state = unsafe { recover(host) };
+        if out.is_null() {
+            return StatusClass::Refused;
+        }
+        let Some(h) = stream_handle(kind_id) else {
+            return StatusClass::Refused;
+        };
+        let Some(scope) = read_scope(scope_ptr, scope_len) else {
+            return StatusClass::Refused;
+        };
+        let packed = read_bytes(bodies_ptr, bodies_len);
+        let Some(bodies) = unpack_bodies(&packed) else {
+            return StatusClass::Refused;
+        };
+        let mut records = Vec::with_capacity(bodies.len());
+        for body in &bodies {
+            match call_reframe(host, kind_id, h.reframe, h.framing, &scope, body) {
+                Ok(r) => records.push(r),
+                Err(_) => return StatusClass::Fault,
+            }
+        }
+        let brk = h.journal.seed_position(&scope, &records);
+        let hdr = match brk {
+            Some(b) => ChainBreakHdr {
+                size: core::mem::size_of::<ChainBreakHdr>() as u32,
+                version: POD_VERSION,
+                broke: 1,
+                _reserved: 0,
+                _reserved2: 0,
+                at_index: b.at_index as u64,
+                seq: b.seq,
+            },
+            None => ChainBreakHdr {
+                size: core::mem::size_of::<ChainBreakHdr>() as u32,
+                version: POD_VERSION,
+                broke: 0,
+                _reserved: 0,
+                _reserved2: 0,
+                at_index: 0,
+                seq: 0,
+            },
+        };
+        // SAFETY: non-null `out` is a writable `MaybeUninit<ChainBreakHdr>`; write only on Ok.
+        unsafe { (*out).write(hdr) };
+        StatusClass::Ok
+    }))
+    .unwrap_or(StatusClass::Fault)
+}
+
+/// FORGET one scope's cached position (a terminal unit evicted from the working set). The durable rows
+/// stay in the store.
+pub(crate) extern "C-unwind" fn journal_forget(
+    host: HostCtx,
+    kind_id: u32,
+    scope_ptr: *const u8,
+    scope_len: usize,
+) -> StatusClass {
+    catch_unwind(AssertUnwindSafe(|| {
+        // SAFETY: recovery invariant (see `super::recover`).
+        let _state = unsafe { recover(host) };
+        let Some(h) = stream_handle(kind_id) else {
+            return StatusClass::Refused;
+        };
+        let Some(scope) = read_scope(scope_ptr, scope_len) else {
+            return StatusClass::Refused;
+        };
+        h.journal.forget(&scope);
+        StatusClass::Ok
+    }))
+    .unwrap_or(StatusClass::Fault)
+}
+
+/// RETENTION: drop a registered stream's durable rows older than `before`, writing the count removed.
+pub(crate) extern "C-unwind" fn journal_compact(
+    host: HostCtx,
+    kind_id: u32,
+    before: u64,
+    out_removed: *mut u64,
+) -> StatusClass {
+    catch_unwind(AssertUnwindSafe(|| {
+        // SAFETY: recovery invariant (see `super::recover`).
+        let _state = unsafe { recover(host) };
+        if out_removed.is_null() {
+            return StatusClass::Refused;
+        }
+        // SAFETY: `out_removed` is a live, writable `u64` for the call (ABI). Default to 0.
+        unsafe { *out_removed = 0 };
+        let Some(h) = stream_handle(kind_id) else {
+            return StatusClass::Refused;
+        };
+        match h.journal.compact_scoped(&h.kind, before) {
+            Ok(n) => {
+                // SAFETY: see above.
+                unsafe { *out_removed = n };
+                StatusClass::Ok
+            }
+            Err(_) => StatusClass::Fault,
+        }
+    }))
+    .unwrap_or(StatusClass::Fault)
+}
+
+/// VERIFY one scope's persisted chain (reframed), writing a [`VerifyChainHdr`]. A tamper is REPORTED
+/// (not a fault); an unknown/empty scope verifies vacuously.
+pub(crate) extern "C-unwind" fn journal_verify_scoped(
+    host: HostCtx,
+    kind_id: u32,
+    scope_ptr: *const u8,
+    scope_len: usize,
+    out: *mut MaybeUninit<VerifyChainHdr>,
+) -> StatusClass {
+    catch_unwind(AssertUnwindSafe(|| {
+        // SAFETY: recovery invariant (see `super::recover`).
+        let _state = unsafe { recover(host) };
+        if out.is_null() {
+            return StatusClass::Refused;
+        }
+        let Some(h) = stream_handle(kind_id) else {
+            return StatusClass::Refused;
+        };
+        let Some(scope) = read_scope(scope_ptr, scope_len) else {
+            return StatusClass::Refused;
+        };
+        let reframe = |sc: &str, body: &[u8]| call_reframe(host, kind_id, h.reframe, h.framing, sc, body);
+        let brk = match h.journal.sink() {
+            Some(store) => match h.journal.verify_scoped(&h.kind, &scope, store.as_ref(), &reframe) {
+                Ok(b) => b,
+                Err(_) => return StatusClass::Fault,
+            },
+            None => None,
+        };
+        let hdr = match brk {
+            Some(b) => VerifyChainHdr {
+                size: core::mem::size_of::<VerifyChainHdr>() as u32,
+                version: POD_VERSION,
+                verified: 0,
+                _reserved: 0,
+                _reserved2: 0,
+                at_index: b.at_index as u64,
+                seq: b.seq,
+            },
+            None => VerifyChainHdr {
+                size: core::mem::size_of::<VerifyChainHdr>() as u32,
+                version: POD_VERSION,
+                verified: 1,
+                _reserved: 0,
+                _reserved2: 0,
+                at_index: 0,
+                seq: 0,
+            },
+        };
+        // SAFETY: non-null `out` is a writable `MaybeUninit<VerifyChainHdr>`; write only on Ok.
+        unsafe { (*out).write(hdr) };
+        StatusClass::Ok
+    }))
+    .unwrap_or(StatusClass::Fault)
+}
+
+/// Unpack the packed body set a [`journal_seed`] carries: `u32` count LE, then per body a `u32` length
+/// LE + that many bytes. Returns `None` on a truncated/oversized blob (fail-closed).
+fn unpack_bodies(packed: &[u8]) -> Option<Vec<Vec<u8>>> {
+    if packed.len() < 4 {
+        return Some(Vec::new());
+    }
+    let count = u32::from_le_bytes(packed[0..4].try_into().ok()?) as usize;
+    let mut off = 4;
+    let mut out = Vec::with_capacity(count);
+    for _ in 0..count {
+        if off + 4 > packed.len() {
+            return None;
+        }
+        let len = u32::from_le_bytes(packed[off..off + 4].try_into().ok()?) as usize;
+        off += 4;
+        if off + len > packed.len() {
+            return None;
+        }
+        out.push(packed[off..off + len].to_vec());
+        off += len;
+    }
+    Some(out)
 }
 
 /// One scope's live position + its appended rows. The `Chain` is the seq authority (identical to the
@@ -464,6 +998,315 @@ mod tests {
             assert_eq!(out_written, needed);
             // First 4 bytes are the row count = 1.
             assert_eq!(u32::from_le_bytes(big[0..4].try_into().unwrap()), 1);
+        });
+    }
+
+    // ── THE DURABLE SEAM — register + append_scoped + verify/read/restore over a real store ────────
+
+    use crate::audit::journal::NeutralBody;
+    use busbar_plugin::hot::{JournalStreamDesc, ReframeOut, RestoredHdr, VerifyChainHdr};
+    use std::sync::Arc;
+
+    static NEXT_KIND_ID: AtomicU32 = AtomicU32::new(1);
+    fn fresh_kind_id() -> u32 {
+        NEXT_KIND_ID.fetch_add(1, Ordering::SeqCst)
+    }
+
+    /// A test PLANE reframe: decode the journal's own neutral `{seq, prev_hash, hash, content}` body
+    /// back into a record's chain fields (the durable path's decode bridge for CORE-written bodies).
+    /// This stream digests its scope, so it reports `digests_scope = 1`. Always initializes `out`.
+    extern "C-unwind" fn neutral_reframe(
+        _host: HostCtx,
+        _kind_id: u32,
+        body_ptr: *const u8,
+        body_len: usize,
+        out: *mut MaybeUninit<ReframeOut>,
+        prev_buf: *mut u8,
+        prev_cap: usize,
+        hash_buf: *mut u8,
+        hash_cap: usize,
+        suffix_buf: *mut u8,
+        suffix_cap: usize,
+    ) -> StatusClass {
+        // SAFETY: a live borrowed body range for the call (ABI).
+        let body = unsafe { std::slice::from_raw_parts(body_ptr, body_len) };
+        let nb: NeutralBody = serde_json::from_slice(body).expect("neutral body decodes");
+        let prev = nb.prev_hash.as_bytes();
+        let hash = nb.hash.as_bytes();
+        let suffix = &nb.content;
+        let o = ReframeOut {
+            size: core::mem::size_of::<ReframeOut>() as u32,
+            version: POD_VERSION,
+            digests_scope: 1,
+            _r: 0,
+            seq: nb.seq,
+            prev_len: prev.len(),
+            hash_len: hash.len(),
+            suffix_len: suffix.len(),
+        };
+        // SAFETY: `out` is a live, writable slot; always initialized (the length-report discipline).
+        unsafe { (*out).write(o) };
+        if prev.len() > prev_cap || hash.len() > hash_cap || suffix.len() > suffix_cap {
+            return StatusClass::Refused;
+        }
+        // SAFETY: each destination has cap >= the source length (checked above); ranges are live.
+        unsafe {
+            std::ptr::copy_nonoverlapping(prev.as_ptr(), prev_buf, prev.len());
+            std::ptr::copy_nonoverlapping(hash.as_ptr(), hash_buf, hash.len());
+            std::ptr::copy_nonoverlapping(suffix.as_ptr(), suffix_buf, suffix.len());
+        }
+        StatusClass::Ok
+    }
+
+    /// A generic PERSISTING `Store` double: the shipped `busbar_store_memory` keeps NO plane records
+    /// (the lossy RAM default), so this delegates the required key/usage/metering surface to a real
+    /// memory store (so `GovState::new` sees genuine governance behaviour) and PERSISTS the neutral
+    /// plane-record verbs generically by `(kind, parent)` — exactly what a durable backend does.
+    struct GenericPlaneStore {
+        inner: busbar_store_memory::MemoryStore,
+        rows: Mutex<Vec<busbar_api::PlaneRecord>>,
+    }
+
+    impl GenericPlaneStore {
+        fn new() -> Self {
+            Self {
+                inner: busbar_store_memory::MemoryStore::new(),
+                rows: Mutex::new(Vec::new()),
+            }
+        }
+        fn rows(&self) -> std::sync::MutexGuard<'_, Vec<busbar_api::PlaneRecord>> {
+            self.rows.lock().unwrap_or_else(|e| e.into_inner())
+        }
+    }
+
+    impl busbar_api::Store for GenericPlaneStore {
+        fn put_key(&self, key: &busbar_api::VirtualKey) -> busbar_api::StoreResult<()> {
+            self.inner.put_key(key)
+        }
+        fn get_key(&self, id: &str) -> busbar_api::StoreResult<Option<busbar_api::VirtualKey>> {
+            self.inner.get_key(id)
+        }
+        fn list_keys(&self) -> busbar_api::StoreResult<Vec<busbar_api::VirtualKey>> {
+            self.inner.list_keys()
+        }
+        fn delete_key(&self, id: &str) -> busbar_api::StoreResult<()> {
+            self.inner.delete_key(id)
+        }
+        fn get_usage(
+            &self,
+            bucket_id: &str,
+            window_start: u64,
+        ) -> busbar_api::StoreResult<busbar_api::UsageLedger> {
+            self.inner.get_usage(bucket_id, window_start)
+        }
+        fn put_usage(
+            &self,
+            bucket_id: &str,
+            window_start: u64,
+            ledger: &busbar_api::UsageLedger,
+        ) -> busbar_api::StoreResult<()> {
+            self.inner.put_usage(bucket_id, window_start, ledger)
+        }
+        fn add_metering(&self, delta: &busbar_api::MeteringDelta) -> busbar_api::StoreResult<()> {
+            self.inner.add_metering(delta)
+        }
+        fn list_metering(
+            &self,
+            bucket: u64,
+        ) -> busbar_api::StoreResult<Vec<busbar_api::MeteringRow>> {
+            self.inner.list_metering(bucket)
+        }
+        // ── The neutral kind-tagged verbs — the durable half this double actually keeps ─────────────
+        fn append_plane_record(
+            &self,
+            record: &busbar_api::PlaneRecord,
+        ) -> busbar_api::StoreResult<()> {
+            self.rows().push(record.clone());
+            Ok(())
+        }
+        fn upsert_plane_record(
+            &self,
+            record: &busbar_api::PlaneRecord,
+        ) -> busbar_api::StoreResult<()> {
+            self.rows().push(record.clone());
+            Ok(())
+        }
+        fn list_plane_records(
+            &self,
+            kind: &str,
+            selector: &busbar_api::PlaneSelector,
+        ) -> busbar_api::StoreResult<Vec<Vec<u8>>> {
+            Ok(self
+                .rows()
+                .iter()
+                .filter(|r| r.kind == kind)
+                .filter(|r| match selector {
+                    busbar_api::PlaneSelector::All => true,
+                    busbar_api::PlaneSelector::Parent(p) => r.parent.as_deref() == Some(p.as_str()),
+                })
+                .map(|r| r.body.clone())
+                .collect())
+        }
+        fn list_plane_record_parents(&self, kind: &str) -> busbar_api::StoreResult<Vec<String>> {
+            let mut parents: Vec<String> = self
+                .rows()
+                .iter()
+                .filter(|r| r.kind == kind)
+                .filter_map(|r| r.parent.clone())
+                .collect();
+            parents.sort();
+            parents.dedup();
+            Ok(parents)
+        }
+    }
+
+    fn durable_app() -> Arc<crate::state::App> {
+        let store = Arc::new(GenericPlaneStore::new());
+        let gov = Arc::new(
+            crate::governance::GovState::new(store, None).expect("governance store constructs"),
+        );
+        crate::test_support::TestApp::new().governance(gov).build()
+    }
+
+    fn register(host: HostCtx, vt: &PlaneHostVtable, kind_id: u32, framing: AbiFraming) {
+        let kind = b"durable_test_event";
+        let desc = JournalStreamDesc {
+            size: core::mem::size_of::<JournalStreamDesc>() as u32,
+            version: POD_VERSION,
+            framing,
+            digests_scope: 1,
+            kind_id,
+            _reserved: 0,
+            kind_ptr: kind.as_ptr(),
+            kind_len: kind.len(),
+        };
+        assert_eq!(
+            (vt.journal_register.unwrap())(host, &desc as *const JournalStreamDesc, neutral_reframe),
+            StatusClass::Ok
+        );
+    }
+
+    /// The durable analogue of `append_two_and_verify`: register a store-backed stream, append two
+    /// records via `journal_append_scoped` (each PERSISTED to the store as a neutral body), then the
+    /// durable `journal_verify_scoped` reframes them back and the REAL `verify_chain` passes; a
+    /// `journal_restore` counts both records and one scope; a `journal_read_scoped` yields the rows.
+    fn durable_append_two_and_verify(framing: AbiFraming) {
+        let app = durable_app();
+        let kind_id = fresh_kind_id();
+        let scope = b"task-1";
+        with_dispatch_scope(&app, |host, vt| {
+            register(host, vt, kind_id, framing);
+
+            let c1 = b"|ts1|first"; // Option A leading `|` (load-bearing under PipeSeparated)
+            let c2 = b"|ts2|second";
+            let s1 = (vt.journal_append_scoped.unwrap())(
+                host,
+                kind_id,
+                scope.as_ptr(),
+                scope.len(),
+                c1.as_ptr(),
+                c1.len(),
+            );
+            let s2 = (vt.journal_append_scoped.unwrap())(
+                host,
+                kind_id,
+                scope.as_ptr(),
+                scope.len(),
+                c2.as_ptr(),
+                c2.len(),
+            );
+            assert_eq!(s1, Seq(1), "genesis record is seq 1");
+            assert_eq!(s2, Seq(2), "second record is seq 2");
+
+            // VERIFY: reframes the persisted neutral bodies and runs the real verifier.
+            let mut vout = MaybeUninit::<VerifyChainHdr>::uninit();
+            assert_eq!(
+                (vt.journal_verify_scoped.unwrap())(
+                    host,
+                    kind_id,
+                    scope.as_ptr(),
+                    scope.len(),
+                    &mut vout as *mut MaybeUninit<VerifyChainHdr>,
+                ),
+                StatusClass::Ok
+            );
+            // SAFETY: Ok published the slot.
+            let vhdr = unsafe { vout.assume_init() };
+            assert_eq!(vhdr.verified, 1, "the persisted durable chain verifies byte-identically");
+
+            // RESTORE: counts both durable records under the one scope, zero breaks.
+            let mut rout = MaybeUninit::<RestoredHdr>::uninit();
+            assert_eq!(
+                (vt.journal_restore.unwrap())(
+                    host,
+                    kind_id,
+                    &mut rout as *mut MaybeUninit<RestoredHdr>,
+                ),
+                StatusClass::Ok
+            );
+            // SAFETY: Ok published the slot.
+            let rhdr = unsafe { rout.assume_init() };
+            assert_eq!(rhdr.records, 2, "both records were durable");
+            assert_eq!(rhdr.scopes, 1);
+            assert_eq!(rhdr.chain_breaks, 0);
+
+            // READ the window back: the encoded blob's row count is 2.
+            let mut written: usize = 0;
+            let s = (vt.journal_read_scoped.unwrap())(
+                host,
+                kind_id,
+                scope.as_ptr(),
+                scope.len(),
+                0,
+                0,
+                std::ptr::null_mut(),
+                0,
+                &mut written as *mut usize,
+            );
+            assert_eq!(s, StatusClass::Refused, "a zero buffer reports the required size");
+            let mut big = vec![0u8; written];
+            let s = (vt.journal_read_scoped.unwrap())(
+                host,
+                kind_id,
+                scope.as_ptr(),
+                scope.len(),
+                0,
+                0,
+                big.as_mut_ptr(),
+                big.len(),
+                &mut written as *mut usize,
+            );
+            assert_eq!(s, StatusClass::Ok);
+            assert_eq!(u32::from_le_bytes(big[0..4].try_into().unwrap()), 2, "two rows read back");
+        });
+    }
+
+    #[test]
+    fn durable_append_two_and_verify_length_prefixed() {
+        durable_append_two_and_verify(AbiFraming::LengthPrefixed);
+    }
+
+    #[test]
+    fn durable_append_two_and_verify_pipe_separated() {
+        // The PipeSeparated genesis landmine, now through the DURABLE store round-trip.
+        durable_append_two_and_verify(AbiFraming::PipeSeparated);
+    }
+
+    /// An unregistered `kind_id` fails closed on every scoped op, never fabricating a sequence.
+    #[test]
+    fn durable_unregistered_kind_fails_closed() {
+        let app = durable_app();
+        let scope = b"nope";
+        with_dispatch_scope(&app, |host, vt| {
+            let s = (vt.journal_append_scoped.unwrap())(
+                host,
+                9_999_001,
+                scope.as_ptr(),
+                scope.len(),
+                scope.as_ptr(),
+                scope.len(),
+            );
+            assert_eq!(s, Seq::NONE, "an unregistered stream mints no sequence");
         });
     }
 
