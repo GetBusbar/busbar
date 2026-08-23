@@ -433,7 +433,11 @@ fn neutral_records_survive_a_restart_and_the_chain_verifies() {
             chain_breaks: vec![],
         }
     );
-    assert_eq!(j2.next_seq("acme"), 3, "the resumed chain continues, not forks");
+    assert_eq!(
+        j2.next_seq("acme"),
+        3,
+        "the resumed chain continues, not forks"
+    );
     assert_eq!(
         j2.verify_scoped(KIND_NEUTRAL, "acme", store.as_ref(), &neutral_reframe)
             .unwrap(),
@@ -463,8 +467,15 @@ fn neutral_failed_write_does_not_burn_a_sequence() {
         },
         &neutral_reframe,
     );
-    assert!(err.is_err(), "the durable write failed, so append must surface it");
-    assert_eq!(j.next_seq("acme"), 2, "a failed write did NOT burn the sequence");
+    assert!(
+        err.is_err(),
+        "the durable write failed, so append must surface it"
+    );
+    assert_eq!(
+        j.next_seq("acme"),
+        2,
+        "a failed write did NOT burn the sequence"
+    );
 
     store.set_failing(false);
     let r = write_neutral(&j, "acme", b"|two");

@@ -209,12 +209,29 @@ fn compute_layout() -> String {
     record!(
         s,
         ReframeOut,
-        [size, version, digests_scope, _r, seq, prev_len, hash_len, suffix_len]
+        [
+            size,
+            version,
+            digests_scope,
+            _r,
+            seq,
+            prev_len,
+            hash_len,
+            suffix_len
+        ]
     );
     record!(
         s,
         RestoredHdr,
-        [size, version, _reserved, scopes, records, empty_scopes, chain_breaks]
+        [
+            size,
+            version,
+            _reserved,
+            scopes,
+            records,
+            empty_scopes,
+            chain_breaks
+        ]
     );
     record!(
         s,

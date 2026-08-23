@@ -251,9 +251,10 @@ fn call_reframe(
         let o = unsafe { out.assume_init() };
         match status {
             StatusClass::Ok => {
-                let prev_hash = String::from_utf8_lossy(&prev[..o.prev_len.min(prev.len())])
-                    .into_owned();
-                let hash = String::from_utf8_lossy(&hash[..o.hash_len.min(hash.len())]).into_owned();
+                let prev_hash =
+                    String::from_utf8_lossy(&prev[..o.prev_len.min(prev.len())]).into_owned();
+                let hash =
+                    String::from_utf8_lossy(&hash[..o.hash_len.min(hash.len())]).into_owned();
                 let content = suffix[..o.suffix_len.min(suffix.len())].to_vec();
                 return Ok(PlaneJournalRecord {
                     scope: scope.to_string(),
@@ -359,7 +360,8 @@ pub(crate) extern "C-unwind" fn journal_append_scoped(
             framing: h.framing,
             digests_scope: h.digests_scope,
         };
-        let reframe = |sc: &str, body: &[u8]| call_reframe(host, kind_id, h.reframe, h.framing, sc, body);
+        let reframe =
+            |sc: &str, body: &[u8]| call_reframe(host, kind_id, h.reframe, h.framing, sc, body);
         match h.journal.append_scoped(&h.kind, &scope, input, &reframe) {
             Ok(record) => Seq(record.seq()),
             Err(_) => Seq::NONE,
@@ -400,8 +402,12 @@ pub(crate) extern "C-unwind" fn journal_read_scoped(
             // No durable sink → a legitimate empty read.
             return StatusClass::Ok;
         };
-        let reframe = |sc: &str, body: &[u8]| call_reframe(host, kind_id, h.reframe, h.framing, sc, body);
-        let rows = match h.journal.read_scoped(&h.kind, &scope, store.as_ref(), &reframe) {
+        let reframe =
+            |sc: &str, body: &[u8]| call_reframe(host, kind_id, h.reframe, h.framing, sc, body);
+        let rows = match h
+            .journal
+            .read_scoped(&h.kind, &scope, store.as_ref(), &reframe)
+        {
             Ok(r) => r,
             Err(_) => return StatusClass::Fault,
         };
@@ -442,7 +448,8 @@ pub(crate) extern "C-unwind" fn journal_restore(
         let Some(h) = stream_handle(kind_id) else {
             return StatusClass::Refused;
         };
-        let reframe = |sc: &str, body: &[u8]| call_reframe(host, kind_id, h.reframe, h.framing, sc, body);
+        let reframe =
+            |sc: &str, body: &[u8]| call_reframe(host, kind_id, h.reframe, h.framing, sc, body);
         let restored = match h.journal.sink() {
             Some(store) => match h.journal.restore_scoped(&h.kind, store.as_ref(), &reframe) {
                 Ok(r) => r,
@@ -603,9 +610,13 @@ pub(crate) extern "C-unwind" fn journal_verify_scoped(
         let Some(scope) = read_scope(scope_ptr, scope_len) else {
             return StatusClass::Refused;
         };
-        let reframe = |sc: &str, body: &[u8]| call_reframe(host, kind_id, h.reframe, h.framing, sc, body);
+        let reframe =
+            |sc: &str, body: &[u8]| call_reframe(host, kind_id, h.reframe, h.framing, sc, body);
         let brk = match h.journal.sink() {
-            Some(store) => match h.journal.verify_scoped(&h.kind, &scope, store.as_ref(), &reframe) {
+            Some(store) => match h
+                .journal
+                .verify_scoped(&h.kind, &scope, store.as_ref(), &reframe)
+            {
                 Ok(b) => b,
                 Err(_) => return StatusClass::Fault,
             },
@@ -1184,7 +1195,11 @@ mod tests {
             kind_len: kind.len(),
         };
         assert_eq!(
-            (vt.journal_register.unwrap())(host, &desc as *const JournalStreamDesc, neutral_reframe),
+            (vt.journal_register.unwrap())(
+                host,
+                &desc as *const JournalStreamDesc,
+                neutral_reframe
+            ),
             StatusClass::Ok
         );
     }
@@ -1235,7 +1250,10 @@ mod tests {
             );
             // SAFETY: Ok published the slot.
             let vhdr = unsafe { vout.assume_init() };
-            assert_eq!(vhdr.verified, 1, "the persisted durable chain verifies byte-identically");
+            assert_eq!(
+                vhdr.verified, 1,
+                "the persisted durable chain verifies byte-identically"
+            );
 
             // RESTORE: counts both durable records under the one scope, zero breaks.
             let mut rout = MaybeUninit::<RestoredHdr>::uninit();
@@ -1266,7 +1284,11 @@ mod tests {
                 0,
                 &mut written as *mut usize,
             );
-            assert_eq!(s, StatusClass::Refused, "a zero buffer reports the required size");
+            assert_eq!(
+                s,
+                StatusClass::Refused,
+                "a zero buffer reports the required size"
+            );
             let mut big = vec![0u8; written];
             let s = (vt.journal_read_scoped.unwrap())(
                 host,
@@ -1280,7 +1302,11 @@ mod tests {
                 &mut written as *mut usize,
             );
             assert_eq!(s, StatusClass::Ok);
-            assert_eq!(u32::from_le_bytes(big[0..4].try_into().unwrap()), 2, "two rows read back");
+            assert_eq!(
+                u32::from_le_bytes(big[0..4].try_into().unwrap()),
+                2,
+                "two rows read back"
+            );
         });
     }
 
@@ -1340,6 +1366,8 @@ mod tests {
     /// LIVE sets it true, watches the golden go RED, and reverts. (Red-before-green is run by hand.)
     const DROP_SEPARATOR: bool = false;
 
+    // Mirrors the FFI `JournalReframeFn` buffer-out signature verbatim, so the arg count is fixed by the ABI.
+    #[allow(clippy::too_many_arguments)]
     fn write_reframe(
         out: *mut MaybeUninit<ReframeOut>,
         seq: u64,
@@ -1396,15 +1424,26 @@ mod tests {
     ) -> StatusClass {
         // SAFETY: live borrowed body range (ABI).
         let body = unsafe { std::slice::from_raw_parts(body_ptr, body_len) };
-        let r: busbar_api::TaskEventRow = serde_json::from_slice(body).expect("TaskEventRow decodes");
+        let r: busbar_api::TaskEventRow =
+            serde_json::from_slice(body).expect("TaskEventRow decodes");
         let lead = if DROP_SEPARATOR { "" } else { "|" };
         let suffix = format!(
             "{lead}{}|{}|{}|{}|{}|{}",
             r.ts, r.kind, r.context_id, r.principal, r.agent_id, r.state
         );
         write_reframe(
-            out, r.seq, 1, r.prev_hash.as_bytes(), r.hash.as_bytes(), suffix.as_bytes(), prev_buf,
-            prev_cap, hash_buf, hash_cap, suffix_buf, suffix_cap,
+            out,
+            r.seq,
+            1,
+            r.prev_hash.as_bytes(),
+            r.hash.as_bytes(),
+            suffix.as_bytes(),
+            prev_buf,
+            prev_cap,
+            hash_buf,
+            hash_cap,
+            suffix_buf,
+            suffix_cap,
         )
     }
 
@@ -1426,7 +1465,8 @@ mod tests {
     ) -> StatusClass {
         // SAFETY: live borrowed body range (ABI).
         let body = unsafe { std::slice::from_raw_parts(body_ptr, body_len) };
-        let r: busbar_api::McpCallRecord = serde_json::from_slice(body).expect("McpCallRecord decodes");
+        let r: busbar_api::McpCallRecord =
+            serde_json::from_slice(body).expect("McpCallRecord decodes");
         let mut suffix = Vec::new();
         let lp = |buf: &mut Vec<u8>, b: &[u8]| {
             buf.extend_from_slice(&(b.len() as u64).to_be_bytes());
@@ -1440,8 +1480,18 @@ mod tests {
         lp(&mut suffix, r.tool_digest.as_bytes());
         lp(&mut suffix, &r.pin_generation.to_be_bytes());
         write_reframe(
-            out, r.seq, 1, r.prev_hash.as_bytes(), r.hash.as_bytes(), &suffix, prev_buf, prev_cap,
-            hash_buf, hash_cap, suffix_buf, suffix_cap,
+            out,
+            r.seq,
+            1,
+            r.prev_hash.as_bytes(),
+            r.hash.as_bytes(),
+            &suffix,
+            prev_buf,
+            prev_cap,
+            hash_buf,
+            hash_cap,
+            suffix_buf,
+            suffix_cap,
         )
     }
 
@@ -1465,15 +1515,22 @@ mod tests {
         let body = unsafe { std::slice::from_raw_parts(body_ptr, body_len) };
         let r: crate::admin::audit::AuditEntry =
             serde_json::from_slice(body).expect("AuditEntry decodes");
-        let suffix = format!(
-            "|{}|{}|{}|{}",
-            r.ts, r.action, r.resource, r.outcome
-        );
+        let suffix = format!("|{}|{}|{}|{}", r.ts, r.action, r.resource, r.outcome);
         // The last field is `principal`; append it (kept off the format! line only for readability).
         let suffix = format!("{suffix}|{}", r.principal);
         write_reframe(
-            out, r.seq, 0, r.prev_hash.as_bytes(), r.hash.as_bytes(), suffix.as_bytes(), prev_buf,
-            prev_cap, hash_buf, hash_cap, suffix_buf, suffix_cap,
+            out,
+            r.seq,
+            0,
+            r.prev_hash.as_bytes(),
+            r.hash.as_bytes(),
+            suffix.as_bytes(),
+            prev_buf,
+            prev_cap,
+            hash_buf,
+            hash_cap,
+            suffix_buf,
+            suffix_cap,
         )
     }
 
@@ -1528,7 +1585,11 @@ mod tests {
         // RESTORE: both frozen records, one scope, zero breaks (the digest recompute matched).
         let mut rout = MaybeUninit::<RestoredHdr>::uninit();
         assert_eq!(
-            (vt.journal_restore.unwrap())(host, kind_id, &mut rout as *mut MaybeUninit<RestoredHdr>),
+            (vt.journal_restore.unwrap())(
+                host,
+                kind_id,
+                &mut rout as *mut MaybeUninit<RestoredHdr>
+            ),
             StatusClass::Ok
         );
         // SAFETY: Ok published the slot.
@@ -1554,7 +1615,10 @@ mod tests {
         );
         // SAFETY: Ok published the slot.
         let v = unsafe { vout.assume_init() };
-        assert_eq!(v.verified, 1, "the frozen chain verifies through the durable seam");
+        assert_eq!(
+            v.verified, 1,
+            "the frozen chain verifies through the durable seam"
+        );
         assert_eq!(expect_tail, tail_hash, "the frozen tail hash is intact");
     }
 
@@ -1576,9 +1640,33 @@ mod tests {
         let mcp_id = fresh_kind_id();
         let admin_id = fresh_kind_id();
         with_dispatch_scope(&app, |host, vt| {
-            register_stream(host, vt, a2a_id, b"task_event", AbiFraming::PipeSeparated, 1, a2a_reframe);
-            register_stream(host, vt, mcp_id, b"call", AbiFraming::LengthPrefixed, 1, mcp_reframe);
-            register_stream(host, vt, admin_id, b"admin_audit", AbiFraming::PipeSeparated, 0, admin_reframe);
+            register_stream(
+                host,
+                vt,
+                a2a_id,
+                b"task_event",
+                AbiFraming::PipeSeparated,
+                1,
+                a2a_reframe,
+            );
+            register_stream(
+                host,
+                vt,
+                mcp_id,
+                b"call",
+                AbiFraming::LengthPrefixed,
+                1,
+                mcp_reframe,
+            );
+            register_stream(
+                host,
+                vt,
+                admin_id,
+                b"admin_audit",
+                AbiFraming::PipeSeparated,
+                0,
+                admin_reframe,
+            );
 
             let a2a_tail: busbar_api::TaskEventRow = serde_json::from_slice(G_A2A_2).unwrap();
             let mcp_tail: busbar_api::McpCallRecord = serde_json::from_slice(G_MCP_2).unwrap();
