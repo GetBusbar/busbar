@@ -526,7 +526,7 @@ pub struct App {
     // both inside the plane's own module. Kept `plane-a2a`-gated because with the plane off nothing
     // publishes or reads it and the field would sit permanently `None`.
     #[cfg(feature = "plane-a2a")]
-    pub(crate) a2a_cards: Arc<std::sync::OnceLock<Arc<dyn std::any::Any + Send + Sync>>>,
+    pub a2a_cards: Arc<std::sync::OnceLock<Arc<dyn std::any::Any + Send + Sync>>>,
     /// Per-principal ADMIN MUTATION rate limiter. Arc-shared across apply snapshots so the
     /// windows survive every swap.
     pub(crate) mutation_limiter: Arc<crate::admin::rate::MutationLimiter>,
@@ -606,7 +606,7 @@ pub struct App {
     /// unrelated section of config — which is the moment a caller holding a spent approval would
     /// like it rebuilt. See [`crate::plane::approvals::PlaneApprovals`] for what a RESTART does to it
     /// and why that trade was taken.
-    pub(crate) plane_approvals: Arc<crate::plane::approvals::PlaneApprovals>,
+    pub plane_approvals: Arc<crate::plane::approvals::PlaneApprovals>,
     /// DEMOTIONS THAT OUTLIVE THE PROCESS THAT TOOK THEM — the write side of the durable quarantine
     /// record, and the reason a restart no longer hands a demoted upstream its approval back.
     ///
@@ -614,7 +614,7 @@ pub struct App {
     /// extra: the durable sink is attached to it ONCE at boot, so an instance rebuilt on an apply
     /// would be an instance with no sink — a quarantine that stopped being written down because
     /// somebody edited an unrelated section of config. See [`crate::plane::quarantine`].
-    pub(crate) mcp_demotions: Arc<crate::plane::quarantine::PlaneQuarantine>,
+    pub mcp_demotions: Arc<crate::plane::quarantine::PlaneQuarantine>,
     /// PLANE DISPATCH for this config generation: which plane an inbound path belongs to, and — for
     /// an audience-bound plane — what a token presented there must carry and where a refused caller
     /// is told to go. Consulted by the auth middleware on every request, which is why it is a
@@ -814,7 +814,7 @@ impl App {
     // MCP-only today: the MCP plane reads its runtime slot through this accessor; with `plane-mcp`
     // off (and A2A on) it has no caller (A2A still reads its typed field).
     #[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
-    pub(crate) fn plane_slot(&self, key: &str) -> Option<&Arc<dyn std::any::Any + Send + Sync>> {
+    pub fn plane_slot(&self, key: &str) -> Option<&Arc<dyn std::any::Any + Send + Sync>> {
         self.plane_slots.get(key)
     }
 }

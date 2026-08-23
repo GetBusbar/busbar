@@ -56,7 +56,7 @@ use std::sync::{Arc, Mutex};
 /// a backend must not be obliged to render itself, and one that did would be a place a credential
 /// could surface in a log.
 #[derive(Default)]
-pub(crate) struct PlaneQuarantine {
+pub struct PlaneQuarantine {
     sink: Mutex<Option<Arc<dyn PlaneStore>>>,
 }
 

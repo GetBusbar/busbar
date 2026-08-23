@@ -377,7 +377,7 @@ pub(crate) fn digest_arguments(arguments: &serde_json::Value) -> String {
 /// every redemption so it can bound its own table the same way. Minting an approval costs the caller
 /// a metered, budget-charged round, so the rate is bounded by governance rather than by this map.
 #[derive(Default)]
-pub(crate) struct PlaneApprovals {
+pub struct PlaneApprovals {
     /// nonce ⇒ the instant after which the entry is meaningless, because the state it records can
     /// no longer be opened anyway.
     seen: std::sync::Mutex<std::collections::HashMap<String, u64>>,
