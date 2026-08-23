@@ -28,6 +28,7 @@ fn role_policy(role: &str, ceiling: RoleCeiling, block_max_ttl: Option<u64>) -> 
     let mut ceilings = std::collections::BTreeMap::new();
     ceilings.insert(role.to_string(), ceiling);
     MintPolicy {
+        self_mint: None,
         block_max_ttl_secs: block_max_ttl,
         block_binding_modes: None,
         ceilings,
@@ -151,6 +152,7 @@ fn mint_ceiling_role_mode_membership_is_enforced() {
 #[test]
 fn mint_ceiling_no_role_ceiling_falls_back_to_block() {
     let policy = MintPolicy {
+        self_mint: None,
         block_max_ttl_secs: Some(14 * DAY),
         block_binding_modes: None,
         ceilings: std::collections::BTreeMap::new(),

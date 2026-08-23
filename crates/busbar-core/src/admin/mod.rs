@@ -173,6 +173,11 @@ pub(crate) struct RoleCeiling {
 /// `self_key_ttl_secs`. `Default` = the empty policy (no caps) ⇒ byte-identical pre-1.6.0 behavior.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct MintPolicy {
+    /// SELF-SERVE mint switch (`auth.policy.self_mint`). `None` ⇒ today's behavior (the `POST
+    /// /auth/token` self-serve path is available whenever an IdP is configured); `Some(true)` makes
+    /// that intent explicit; `Some(false)` DISABLES the self-serve mint path (the exchange refuses,
+    /// 403). Read only by the self-serve exchange (`resolve_exchange`), never by the admin mint.
+    pub(crate) self_mint: Option<bool>,
     /// Deployment-wide TTL ceiling (`auth.policy.max_ttl`). A hard cap: a per-role ceiling narrows
     /// BELOW it, never above it.
     pub(crate) block_max_ttl_secs: Option<u64>,
@@ -213,6 +218,7 @@ impl MintPolicy {
                 .map(|list| list.iter().map(|b| b.as_str().to_string()).collect())
         };
         MintPolicy {
+            self_mint: policy.self_mint,
             block_max_ttl_secs: policy
                 .max_ttl
                 .as_deref()

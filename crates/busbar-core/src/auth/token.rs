@@ -608,7 +608,7 @@ async fn issue_and_render(
         resolved: None,
     };
     let (principal, team, pools) =
-        match resolve_exchange(&verdict, &app.role_bindings) {
+        match resolve_exchange(&verdict, &app.role_bindings, app.mint_policy.self_mint) {
             Ok(v) => v,
             Err(_) => return error_page(
                 StatusCode::FORBIDDEN,

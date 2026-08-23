@@ -234,13 +234,17 @@ impl SelfGroupProvisioner for HandleProvisioner {
 }
 
 /// Why an exchange was refused. Mapped to a status by the HTTP handler: `StaticKeyPresented`
-/// → 400, `Unauthorized` → 401, `Unbound`/`BadSubject` → 403, `MintFailed` → 500.
+/// → 400, `Unauthorized` → 401, `SelfMintDisabled`/`Unbound`/`BadSubject` → 403, `MintFailed` → 500.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ExchangeError {
     /// A static busbar key was presented (`resolved.is_some()`), not an IdP identity → 400.
     StaticKeyPresented,
     /// The chain did not identify anyone (Open/Denied) → vendor 401.
     Unauthorized,
+    /// Self-serve minting is disabled by policy (`auth.policy.self_mint: false`) → 403. Checked only
+    /// AFTER an identity is established, so an anonymous caller still reads as `Unauthorized` (401)
+    /// and the disabled-mint policy is not disclosed to the unauthenticated.
+    SelfMintDisabled,
     /// Identified, but no role of the principal is bound under the identifying module, or the bound
     /// role has no `group` to charge through → 403.
     Unbound,
@@ -296,6 +300,7 @@ fn sanitize_self_sub(sub: &str) -> Result<(), ExchangeError> {
 pub(crate) fn resolve_exchange<'a>(
     verdict: &'a ChainVerdict,
     role_bindings: &RoleBindings,
+    self_mint: Option<bool>,
 ) -> Result<(&'a Principal, String, Option<Vec<String>>), ExchangeError> {
     match verdict {
         ChainVerdict::Identified {
@@ -303,6 +308,15 @@ pub(crate) fn resolve_exchange<'a>(
             principal,
             resolved,
         } => {
+            // POLICY GATE (`auth.policy.self_mint`, 1.6.0): `Some(false)` DISABLES the self-serve mint
+            // path outright — an authenticated, otherwise-eligible identity is refused (403). `None`
+            // (the documented default: self-mint available whenever an IdP is configured) and
+            // `Some(true)` both leave the path open. Checked AFTER identity is established so an
+            // anonymous caller falls through to `Unauthorized` (401) below and this policy is not
+            // disclosed to the unauthenticated.
+            if self_mint == Some(false) {
+                return Err(ExchangeError::SelfMintDisabled);
+            }
             // A STATIC busbar key was presented (the engine resolved a VirtualKey). Token-exchange
             // is for IdP identities minting THEIR OWN key — not for re-wrapping an existing one.
             if resolved.is_some() {

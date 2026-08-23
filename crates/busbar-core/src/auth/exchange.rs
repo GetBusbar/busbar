@@ -66,10 +66,11 @@ pub(crate) async fn exchange(
     )
     .await;
 
-    let (principal, team, pools) = match resolve_exchange(&verdict, &app.role_bindings) {
-        Ok(v) => v,
-        Err(e) => return refusal(e),
-    };
+    let (principal, team, pools) =
+        match resolve_exchange(&verdict, &app.role_bindings, app.mint_policy.self_mint) {
+            Ok(v) => v,
+            Err(e) => return refusal(e),
+        };
 
     let Some(gov) = app.governance.clone() else {
         return refusal(ExchangeError::MintFailed(
@@ -117,6 +118,10 @@ fn refusal(e: ExchangeError) -> Response {
             "present an IdP identity, not a busbar key",
         ),
         ExchangeError::Unauthorized => (StatusCode::UNAUTHORIZED, "not authenticated"),
+        ExchangeError::SelfMintDisabled => (
+            StatusCode::FORBIDDEN,
+            "self-serve minting is disabled by policy",
+        ),
         ExchangeError::Unbound => (
             StatusCode::FORBIDDEN,
             "no self-serve grant for this identity",

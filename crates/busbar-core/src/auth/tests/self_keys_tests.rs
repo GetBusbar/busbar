@@ -374,7 +374,7 @@ fn identity_from_principal_not_body() {
     // could assert a different identity. The subject it resolves is exactly the verified principal.
     let rb = bindings("oidc", "eng", Some("team"));
     let v = identified("oidc", principal("sam", &["eng"]));
-    let (p, team, _pools) = resolve_exchange(&v, &rb).expect("bound principal admitted");
+    let (p, team, _pools) = resolve_exchange(&v, &rb, None).expect("bound principal admitted");
     assert_eq!(
         p.id, "sam",
         "self-scope comes from the verified principal, never a body"
@@ -409,7 +409,7 @@ fn rejects_static_key_400() {
         resolved: Some(key),
     };
     assert_eq!(
-        resolve_exchange(&v, &rb).unwrap_err(),
+        resolve_exchange(&v, &rb, None).unwrap_err(),
         ExchangeError::StaticKeyPresented
     );
 }
@@ -418,11 +418,11 @@ fn rejects_static_key_400() {
 fn open_and_denied_are_unauthorized() {
     let rb = bindings("oidc", "eng", Some("team"));
     assert_eq!(
-        resolve_exchange(&ChainVerdict::Open, &rb).unwrap_err(),
+        resolve_exchange(&ChainVerdict::Open, &rb, None).unwrap_err(),
         ExchangeError::Unauthorized
     );
     assert_eq!(
-        resolve_exchange(&ChainVerdict::Denied, &rb).unwrap_err(),
+        resolve_exchange(&ChainVerdict::Denied, &rb, None).unwrap_err(),
         ExchangeError::Unauthorized
     );
 }
@@ -433,7 +433,7 @@ fn unbound_role_is_403() {
     let rb = bindings("oidc", "eng", Some("team"));
     let v = identified("oidc", principal("sam", &["other"]));
     assert_eq!(
-        resolve_exchange(&v, &rb).unwrap_err(),
+        resolve_exchange(&v, &rb, None).unwrap_err(),
         ExchangeError::Unbound
     );
 }
@@ -444,7 +444,7 @@ fn bound_role_without_group_is_403() {
     let rb = bindings("oidc", "eng", None);
     let v = identified("oidc", principal("sam", &["eng"]));
     assert_eq!(
-        resolve_exchange(&v, &rb).unwrap_err(),
+        resolve_exchange(&v, &rb, None).unwrap_err(),
         ExchangeError::Unbound
     );
 }
@@ -483,7 +483,7 @@ fn later_role_group_used_when_earlier_role_bound_but_groupless() {
     rb.insert("oidc".to_string(), inner);
 
     let v = identified("oidc", principal("sam", &["A", "B"]));
-    let (_p, team, pools) = resolve_exchange(&v, &rb)
+    let (_p, team, pools) = resolve_exchange(&v, &rb, None)
         .expect("a later granting role's group must admit the principal, not Unbound");
     assert_eq!(team, "x", "resolves to role B's group, not Unbound");
     let pools = pools.expect("neither granting binding omits allowed_pools");
@@ -530,7 +530,7 @@ fn omitted_pools_on_any_granting_binding_widens_union_to_all_pools() {
     rb.insert("oidc".to_string(), inner);
 
     let v = identified("oidc", principal("sam", &["A", "B"]));
-    let (_p, team, pools) = resolve_exchange(&v, &rb).expect("both roles grant");
+    let (_p, team, pools) = resolve_exchange(&v, &rb, None).expect("both roles grant");
     assert_eq!(team, "x");
     assert_eq!(
         pools, None,
@@ -546,7 +546,7 @@ fn sub_sanitization_refused() {
     for bad in ["a/b", "vk_evil", "group:x", "user:x", "", "a\tb", "a\nb"] {
         let v = identified("oidc", principal(bad, &["eng"]));
         assert_eq!(
-            resolve_exchange(&v, &rb).unwrap_err(),
+            resolve_exchange(&v, &rb, None).unwrap_err(),
             ExchangeError::BadSubject,
             "unsafe subject {bad:?} must be refused"
         );
@@ -555,7 +555,7 @@ fn sub_sanitization_refused() {
     for ok in ["sam", "oidc:alice", "github:torvalds"] {
         let v = identified("oidc", principal(ok, &["eng"]));
         assert!(
-            resolve_exchange(&v, &rb).is_ok(),
+            resolve_exchange(&v, &rb, None).is_ok(),
             "legitimate subject {ok:?} must be admitted"
         );
     }
@@ -568,7 +568,7 @@ async fn resolve_then_issue_via_real_seam() {
     let gov = gov();
     let rb = bindings("oidc", "eng", Some("team"));
     let v = identified("oidc", principal("sam", &["eng"]));
-    let (p, team, pools) = resolve_exchange(&v, &rb).unwrap();
+    let (p, team, pools) = resolve_exchange(&v, &rb, None).unwrap();
     let keys = DeterministicEd25519Keys::new(gov.clone(), team, pools, Arc::new(NoopProvisioner));
     let issued = issue_key(&keys, p, Duration::from_secs(3600), false)
         .await
@@ -590,8 +590,8 @@ async fn module_namespaced_sub_is_admitted_and_grouped_under_user() {
     let gov = gov();
     let rb = bindings("oidc", "eng", Some("team"));
     let v = identified("oidc", principal("oidc:alice", &["eng"]));
-    let (p, team, pools) =
-        resolve_exchange(&v, &rb).expect("a module-namespaced subject is legitimate + verified");
+    let (p, team, pools) = resolve_exchange(&v, &rb, None)
+        .expect("a module-namespaced subject is legitimate + verified");
     let keys = DeterministicEd25519Keys::new(gov.clone(), team, pools, Arc::new(NoopProvisioner));
     let issued = issue_key(&keys, p, Duration::from_secs(3600), false)
         .await
@@ -629,7 +629,7 @@ impl SelfServeKeys for FakeKeys {
 async fn endpoint_is_scheme_agnostic_over_the_trait() {
     let rb = bindings("oidc", "eng", Some("team"));
     let v = identified("oidc", principal("sam", &["eng"]));
-    let (p, _team, _pools) = resolve_exchange(&v, &rb).unwrap();
+    let (p, _team, _pools) = resolve_exchange(&v, &rb, None).unwrap();
     let issued = issue_key(&FakeKeys, p, Duration::from_secs(60), false)
         .await
         .unwrap();
@@ -639,4 +639,54 @@ async fn endpoint_is_scheme_agnostic_over_the_trait() {
         .await
         .unwrap();
     assert_eq!(refreshed.secret, "fake-scheme-token:sam");
+}
+
+// ── PROOF: auth.policy.self_mint enforced on the self-serve mint path ─────────────────────────────
+
+/// `auth.policy.self_mint: false` DISABLES the self-serve mint path. The SAME authenticated,
+/// otherwise-eligible identity that mints a real key under `self_mint: true` is REFUSED (403
+/// `SelfMintDisabled`) under `self_mint: false`, and NO VirtualKey row is written; the documented
+/// default (`None` ⇒ self-mint available whenever an IdP is configured) leaves the path open. The
+/// `Some(true)` case establishes that the identity is eligible, so the refusal under `Some(false)` is
+/// the policy switch closing the path — not a pre-existing rejection of this identity.
+#[tokio::test]
+async fn proof_self_mint_disabled_refuses_self_serve() {
+    let rb = bindings("oidc", "eng", Some("team"));
+    let v = identified("oidc", principal("sam", &["eng"]));
+
+    // PRECONDITION: with the knob explicitly OPEN (`Some(true)`), this identity resolves and mints
+    // exactly one self-serve key — so the ONLY thing that changes below is the policy switch.
+    let gov_open = gov();
+    let (p, team, pools) =
+        resolve_exchange(&v, &rb, Some(true)).expect("self_mint=true admits the eligible identity");
+    let keys =
+        DeterministicEd25519Keys::new(gov_open.clone(), team, pools, Arc::new(NoopProvisioner));
+    issue_key(&keys, p, Duration::from_secs(3600), false)
+        .await
+        .expect("self_mint=true mints a key");
+    assert_eq!(
+        self_rows(&gov_open, "sam").len(),
+        1,
+        "self_mint=true minted exactly one self-serve key for the eligible identity"
+    );
+
+    // DISABLED: `self_mint: false` refuses the SAME verdict at resolve — before any mint runs. The
+    // refusal short-circuits the exchange, so on a fresh store NO VirtualKey row is ever written.
+    let gov_disabled = gov();
+    assert_eq!(
+        resolve_exchange(&v, &rb, Some(false)).unwrap_err(),
+        ExchangeError::SelfMintDisabled,
+        "self_mint=false MUST refuse the self-serve mint path"
+    );
+    assert!(
+        self_rows(&gov_disabled, "sam").is_empty(),
+        "a refused self-mint writes NO VirtualKey row"
+    );
+
+    // DEFAULT (`None`): unchanged — the self-serve path stays open (self-mint available whenever an
+    // IdP is configured), so an omitted `auth.policy.self_mint` is byte-identical pre-1.6.0 behavior.
+    assert!(
+        resolve_exchange(&v, &rb, None).is_ok(),
+        "None ⇒ self-mint available (the documented default)"
+    );
 }
