@@ -309,7 +309,7 @@ pub(crate) async fn push_notification(
     // THE STATE THE BACKEND REPORTED, read by the SAME function that reads a relayed answer's
     // state. A push and a reply are two spellings of one fact and must not be read by two readers.
     let reported = super::relay::reported_task_state(&document);
-    let now = crate::store::now();
+    let now = crate::plane_host::clock_now_secs_over(&app);
     let moved = if reported == task.state {
         // Not an error and not a transition: a backend re-reporting a state busbar already holds is
         // a retry, and `transition` would refuse a move to the state it is already in.

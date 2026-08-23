@@ -393,7 +393,7 @@ pub(super) fn extended_agent_card(
     // what the caller is entitled to be told.
     let caller = crate::catalogue::Caller {
         key: Some(key),
-        now: crate::store::now(),
+        now: crate::plane_host::clock_now_secs_over(app),
         generation: crate::trust::validate::Generations::at_admission(plane.generation()),
     };
     let anything = super::registry::Wanted::default();

@@ -374,7 +374,7 @@ impl PlaneTrust for McpServers {
         crate::mcp::connect::stamp(
             &subject.sightings,
             &subject.entry.id,
-            crate::store::now_ms(),
+            crate::plane_host::clock_now_ms_over(&subject.app),
             !report.drift.is_empty(),
         );
         Ok(trust_view(&report, &subject.entry, &subject.cfg))

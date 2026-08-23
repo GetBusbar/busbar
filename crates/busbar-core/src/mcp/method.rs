@@ -211,7 +211,7 @@ impl Ctx<'_> {
     fn caller(&self) -> crate::catalogue::Caller<'_> {
         crate::catalogue::Caller {
             key: self.gov.key(),
-            now: crate::store::now(),
+            now: crate::plane_host::clock_now_secs_over(self.app),
             generation: crate::trust::validate::Generations::at_admission(
                 super::runtime(self.app).catalogue.generation(),
             ),
@@ -1052,7 +1052,7 @@ impl<'a> CallLog<'a> {
 
     fn write(&self, outcome: &'static str, reason: &str) {
         let input = crate::plane::calllog::CallInput {
-            ts: crate::store::now(),
+            ts: crate::plane_host::clock_now_secs_over(self.app),
             server: self.server.clone(),
             tool: self.tool.clone(),
             outcome,
@@ -1113,7 +1113,7 @@ async fn verify_on_call(ctx: &Ctx<'_>, name: &str) {
     let Some((server_id, server)) = super::runtime(ctx.app).catalogue.verify_target(name) else {
         return;
     };
-    let now_ms = crate::store::now_ms();
+    let now_ms = crate::plane_host::clock_now_ms_over(ctx.app);
     let policy = server.verify_policy.clone();
     let server = server.clone();
     let subject = server_id.to_string();
@@ -1237,7 +1237,7 @@ async fn tools_call(
         LiveSightings::of(&admitted_sightings),
         name,
         crate::trust::validate::Generations::at_admission(selected_gen),
-        crate::store::now(),
+        crate::plane_host::clock_now_secs_over(ctx.app),
     ) {
         Ok(entry) => entry.clone(),
         Err(refusal) => {
@@ -1262,7 +1262,7 @@ async fn tools_call(
         LiveSightings::of(&live_sightings),
         &selected,
         selected_gen,
-        crate::store::now(),
+        crate::plane_host::clock_now_secs_over(ctx.app),
     ) {
         return log.refused(
             refusal.audit_reason(),
@@ -1499,7 +1499,7 @@ async fn tools_call(
                         crate::hooks::gate::IncrementalScan {
                             store: &ctx.app.session_store,
                             session: crate::session::SessionKey(crate::store::fnv1a_u64(sid)),
-                            now_ms: crate::store::now_ms(),
+                            now_ms: crate::plane_host::clock_now_ms_over(ctx.app),
                         }
                     })
                 },
@@ -2656,7 +2656,7 @@ fn caller_ask_decision(
                     method,
                     capability,
                     generation,
-                    now: crate::store::now(),
+                    now: crate::plane_host::clock_now_secs_over(ctx.app),
                     // The live roots epoch for THIS principal — the value a received
                     // `notifications/roots/list_changed` moves, read under the same name the seal
                     // binds. See `crate::mcp::roots`.

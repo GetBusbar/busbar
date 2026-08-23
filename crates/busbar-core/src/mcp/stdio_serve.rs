@@ -1043,7 +1043,7 @@ impl<W: AsyncWrite + Unpin + Send + 'static> Session<W> {
     fn visible_resource_fingerprint(&self, app: &Arc<crate::state::App>, uri: &str) -> Option<u64> {
         let caller = crate::catalogue::Caller {
             key: self.gov.key(),
-            now: crate::store::now(),
+            now: crate::plane_host::clock_now_secs_over(app),
             generation: crate::trust::validate::Generations::at_admission(
                 super::runtime(app).catalogue.generation(),
             ),

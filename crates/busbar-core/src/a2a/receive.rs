@@ -264,7 +264,7 @@ fn select(
     };
     let caller = crate::catalogue::Caller {
         key: Some(key),
-        now: crate::store::now(),
+        now: crate::plane_host::clock_now_secs_over(app),
         generation: crate::trust::validate::Generations::at_admission(plane.generation()),
     };
     let wanted = super::registry::Wanted {
@@ -550,7 +550,13 @@ pub(crate) async fn card(
     // A card read asks for no particular work, so the shape is the empty one: every filter that
     // depends on the requested capability is vacuous and only trust, scope and a cached card decide.
     let shape = super::registry::TaskShape::default();
-    let admitted = match admit(&app, key, &agent_id, &shape, crate::store::now()) {
+    let admitted = match admit(
+        &app,
+        key,
+        &agent_id,
+        &shape,
+        crate::plane_host::clock_now_secs_over(&app),
+    ) {
         Ok(a) => a,
         Err(resp) => return *resp,
     };
@@ -846,7 +852,7 @@ async fn admitted(
     let Some(key) = gov.key.as_ref() else {
         return governance_required();
     };
-    let now = crate::store::now();
+    let now = crate::plane_host::clock_now_secs_over(&app);
 
     // ── THE ONE VERB THAT NAMES NO AGENT. ───────────────────────────────────────────────────────
     //
@@ -933,7 +939,7 @@ async fn admitted(
                     crate::hooks::gate::IncrementalScan {
                         store: &app.session_store,
                         session: crate::session::SessionKey(crate::store::fnv1a_u64(context_id)),
-                        now_ms: crate::store::now_ms(),
+                        now_ms: crate::plane_host::clock_now_ms_over(&app),
                     }
                 }),
             },
@@ -1769,7 +1775,7 @@ async fn verify_agent_on_call(app: &Arc<App>, plane: &Arc<super::plane::A2aPlane
     let Some((_, policy)) = plane.verify_state_of(agent_id) else {
         return;
     };
-    let now_ms = crate::store::now_ms();
+    let now_ms = crate::plane_host::clock_now_ms_over(app);
     let ledger_plane = Arc::clone(plane);
     let ledger_id = agent_id.to_string();
     let fetch_plane = Arc::clone(plane);

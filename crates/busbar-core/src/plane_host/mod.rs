@@ -197,6 +197,35 @@ pub fn govern_admit_reason_over(
     }
 }
 
+/// Read the host wall clock in whole SECONDS through the wired [`clock_now`](vtable) seam — the
+/// host-driven form of a plane's [`crate::store::now`]. The slot's ABI unit is Unix NANOSECONDS
+/// (see [`vtable`]'s `clock_now`, which scales the host milliseconds clock up), so this scales it
+/// back down to the seconds `store::now` returns; the value is identical to reading `store::now`
+/// in place. A fresh per-call [`DispatchScope`] backs the borrow — a clock read acquires no host
+/// handle, so nothing outlives the call — mirroring [`card_sign_over`]. A SAFE wrapper that keeps
+/// the raw fn-pointer read inside this audited module (busbar-core denies `unsafe` elsewhere).
+#[must_use]
+pub fn clock_now_secs_over(app: &App) -> u64 {
+    let scope = DispatchScope::new();
+    with_borrowed_host(app, &scope, |host, vt| {
+        (vt.clock_now.expect("clock_now is a wired slot"))(host)
+    }) / 1_000_000_000
+}
+
+/// Read the host wall clock in MILLISECONDS through the wired [`clock_now`](vtable) seam — the
+/// host-driven form of [`crate::store::now_ms`]. The slot's ABI unit is Unix NANOSECONDS, sourced
+/// host-side from `store::now_ms` scaled up; this scales it back to milliseconds, so the value is
+/// identical to reading `store::now_ms` in place. `store::now_ms` is crate-private, so this is the
+/// form a plane compiled apart from the host reaches the same clock through. Backed by a fresh
+/// per-call [`DispatchScope`], as [`clock_now_secs_over`].
+#[must_use]
+pub fn clock_now_ms_over(app: &App) -> u64 {
+    let scope = DispatchScope::new();
+    with_borrowed_host(app, &scope, |host, vt| {
+        (vt.clock_now.expect("clock_now is a wired slot"))(host)
+    }) / 1_000_000
+}
+
 /// The ASYNC-CAPABLE dispatch guard: an OWNED RAII handle a core `async` dispatch fn creates at the top
 /// of its body and holds as a LOCAL across every `.await`, so the [`DispatchScope`] arena lives for the
 /// whole future and reclaims on ANY exit — normal return, client-disconnect cancel, or panic. This is

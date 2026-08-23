@@ -143,7 +143,7 @@ pub(crate) async fn satisfy_upstream_ask(
     // multi-entry ask fits the budget is a fact about the ask rather than about how long its
     // earlier entries took to complete — an upstream must not be able to buy a fresh window by
     // being slow across a minute boundary.
-    let now = crate::store::now();
+    let now = crate::plane_host::clock_now_secs_over(app);
     let mut responses = serde_json::Map::new();
     for (entry, request) in requests {
         if request.get("method").and_then(|m| m.as_str()) != Some("sampling/createMessage") {
@@ -290,7 +290,7 @@ async fn complete(
         parsed,
         None,
         std::time::Instant::now(),
-        crate::store::now(),
+        crate::plane_host::clock_now_secs_over(app),
         None,
     )
     .await;

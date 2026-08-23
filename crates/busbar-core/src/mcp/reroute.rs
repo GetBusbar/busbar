@@ -160,7 +160,7 @@ impl PoolRoute {
         let generation = crate::trust::validate::Generations::at_admission(
             super::runtime(app).catalogue.generation(),
         );
-        let now = crate::store::now();
+        let now = crate::plane_host::clock_now_secs_over(app);
         let mut selected_auth = Some(selected_auth);
         let mut tried = Vec::new();
         let members: Vec<RouteMember> =
@@ -319,7 +319,7 @@ impl PoolRoute {
                     &self.pool_key,
                     &self.members,
                     &attempt,
-                    crate::store::now(),
+                    crate::plane_host::clock_now_secs_over(app),
                 )?;
                 let lane = admitted.candidate().lane();
                 let probe = breakers.adopt(&self.pool_key, lane, admitted.probe_epoch());

@@ -412,7 +412,7 @@ impl Listen {
         let key = match self.standing.still_permitted(
             app.governance.as_deref(),
             catalogue.generation(),
-            crate::store::now(),
+            crate::plane_host::clock_now_secs_over(&app),
         ) {
             Ok(key) => key,
             Err(lapsed) => {
