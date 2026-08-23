@@ -5047,8 +5047,12 @@ fn proof_minted_key_verifies_locally_and_never_calls_the_idp() {
     // A node with a signer but NO IdP configured: `verify_token` has no IdP to call even if it
     // wanted to — the whole decision is local to this store + signing key.
     let new_gov = || {
-        GovState::new_with_signer(Arc::new(MemoryStore::new()), None, Some(self_serve_signer()))
-            .unwrap()
+        GovState::new_with_signer(
+            Arc::new(MemoryStore::new()),
+            None,
+            Some(self_serve_signer()),
+        )
+        .unwrap()
     };
 
     // GREEN precondition: a freshly minted key verifies locally.

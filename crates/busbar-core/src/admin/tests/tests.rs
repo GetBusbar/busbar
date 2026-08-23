@@ -5236,8 +5236,8 @@ async fn proof_role_binding_mode_ceiling_bounds_a_delegated_admin() {
 /// (`expires_in` beyond the ceiling) is REFUSED (400) and writes NO key; a mint with NO expiry is
 /// CLAMPED to the ceiling (24h), NOT left at the 90-day default. Both requests ride the SAME handler
 /// under the SAME 24h policy, so the ceiling — not some unrelated guard — is what refuses one and
-/// clamps the other. The clamped `expires_at` being strictly below the 90-day default is the
-/// red-before-green witness: without the clamp the default mint would outlive the cap.
+/// clamps the other. The clamped `expires_at` sits strictly below the 90-day default, so the clamp
+/// — not the default path — is what produced it: without the ceiling the default mint outlives the cap.
 #[tokio::test]
 async fn proof_max_ttl_ceiling_refuses_overask_and_clamps_default() {
     crate::metrics::init();
@@ -5306,7 +5306,7 @@ async fn proof_max_ttl_ceiling_refuses_overask_and_clamps_default() {
         (t0 + CEIL..=crate::store::now() + CEIL).contains(&exp),
         "the default lifetime is CLAMPED to the 24h ceiling (exp≈now+24h): exp={exp}, ceiling={CEIL}"
     );
-    // Red-before-green witness: without the clamp the default is the 90-day TTL, far past this.
+    // Strictly below the 90-day default: the clamp produced this exp, not the default TTL path.
     assert!(
         exp < t0 + crate::admin::DEFAULT_KEY_TTL_SECS,
         "the clamped exp is strictly below the unclamped 90-day default"
