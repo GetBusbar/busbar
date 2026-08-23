@@ -36,7 +36,7 @@
 
 use crate::mcp::callerask::{decide, Approvals, AskDecision, Bind, Refusal, Retry};
 use crate::mcp::config::{AskEntryCfg, AskRoundCfg};
-use crate::plane::approvals::{PlaneApprovals, Sealer};
+use crate::plane::approvals::Sealer;
 use crate::test_support::plugin_store::{durable_cfg, open_plugin};
 
 /// THE FLEET-SHARED SECRET. One key for every node below — that is the premise, not a shortcut: it
@@ -83,57 +83,63 @@ fn all_capabilities() -> serde_json::Value {
     serde_json::json!({ "sampling": {}, "elicitation": {}, "roots": { "listChanged": true } })
 }
 
-/// ONE NODE of a deployment: its own in-process ledger, and its own `dlopen` of the shared store
-/// when there is one. `None` is a node that configures no durable store.
-fn node(cfg: Option<&str>) -> PlaneApprovals {
-    let spent = PlaneApprovals::new();
+/// ONE NODE of a deployment: a real in-core App with its own in-process spent-approval ledger
+/// (`App::plane_approvals`, which the redemption edge now reaches host-side), and its own `dlopen` of
+/// the shared store when there is one. `None` is a node that configures no durable store.
+fn node(cfg: Option<&str>) -> std::sync::Arc<crate::state::App> {
+    let mut app = crate::test_support::TestApp::new();
     if let Some(cfg) = cfg {
-        spent.set_sink(crate::plane::store::PlaneStoreView::narrow(open_plugin(
-            cfg,
-        )));
+        app = app.mcp_durable_store(open_plugin(cfg));
     }
-    spent
+    app.build()
 }
 
-/// Ask this node for an approval — the opening round, which mints the sealed state.
-fn ask(spent: &PlaneApprovals) -> String {
+/// Ask this node for an approval — the opening round, which mints the sealed state. Opens a host over
+/// the node's App so the decision reaches the same spent-approval ledger the redemption will.
+fn ask(app: &crate::state::App) -> String {
     let rounds = confirm_round();
-    match decide(
-        &rounds,
-        3,
-        &all_capabilities(),
-        Retry::default(),
-        bind(),
-        DIGEST,
-        Approvals {
-            sealer: Some(&sealer()),
-            spent,
-        },
-    ) {
+    let decision = crate::plane_host::with_dispatch_scope(app, |host, _| {
+        decide(
+            &rounds,
+            3,
+            &all_capabilities(),
+            Retry::default(),
+            bind(),
+            DIGEST,
+            Approvals {
+                sealer: Some(&sealer()),
+                host,
+            },
+        )
+    });
+    match decision {
         AskDecision::Ask { request_state, .. } => request_state,
         other => panic!("the opening round must ask: {other:?}"),
     }
 }
 
-/// Present `state` to this node as the answered confirmation — the redemption.
-fn redeem(spent: &PlaneApprovals, state: &str) -> AskDecision {
+/// Present `state` to this node as the answered confirmation — the redemption, spent through the
+/// node's own host against the ledger that App carries.
+fn redeem(app: &crate::state::App, state: &str) -> AskDecision {
     let rounds = confirm_round();
     let responses = serde_json::json!({ "confirm": { "action": "accept", "content": {} } });
-    decide(
-        &rounds,
-        3,
-        &all_capabilities(),
-        Retry {
-            responses: Some(&responses),
-            state: Some(state),
-        },
-        bind(),
-        DIGEST,
-        Approvals {
-            sealer: Some(&sealer()),
-            spent,
-        },
-    )
+    crate::plane_host::with_dispatch_scope(app, |host, _| {
+        decide(
+            &rounds,
+            3,
+            &all_capabilities(),
+            Retry {
+                responses: Some(&responses),
+                state: Some(state),
+            },
+            bind(),
+            DIGEST,
+            Approvals {
+                sealer: Some(&sealer()),
+                host,
+            },
+        )
+    })
 }
 
 /// `true` when the decision was the already-spent refusal specifically, not merely any refusal. A
@@ -288,14 +294,12 @@ fn two_nodes_sharing_no_store_each_redeem_once_which_is_the_documented_ram_postu
 /// already-signed store plugin built before this method existed.
 #[test]
 fn the_memory_store_shares_no_ledger_which_is_the_documented_contract() {
-    let node_a = PlaneApprovals::new();
-    node_a.set_sink(crate::plane::store::PlaneStoreView::narrow(
-        std::sync::Arc::new(busbar_store_memory::MemoryStore::new()),
-    ));
-    let node_b = PlaneApprovals::new();
-    node_b.set_sink(crate::plane::store::PlaneStoreView::narrow(
-        std::sync::Arc::new(busbar_store_memory::MemoryStore::new()),
-    ));
+    let node_a = crate::test_support::TestApp::new()
+        .mcp_durable_store(std::sync::Arc::new(busbar_store_memory::MemoryStore::new()))
+        .build();
+    let node_b = crate::test_support::TestApp::new()
+        .mcp_durable_store(std::sync::Arc::new(busbar_store_memory::MemoryStore::new()))
+        .build();
 
     let state = ask(&node_a);
     assert_eq!(redeem(&node_a, &state), AskDecision::Proceed);

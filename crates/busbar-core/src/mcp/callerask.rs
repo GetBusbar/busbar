@@ -297,19 +297,23 @@ pub(crate) struct Bind<'a> {
     pub(crate) roots_epoch: u64,
 }
 
-/// THE APPROVAL MACHINERY: what mints continuation state, and what remembers it was spent.
+/// THE APPROVAL MACHINERY: what mints continuation state, and what redeems it once.
 ///
 /// One parameter rather than two because they are one thing viewed from either end — a `Sealer` with
-/// no ledger issues approvals nothing retires, which is precisely the defect
-/// [`approvals::PlaneApprovals`] exists to close, and a call site that could pass the first without
-/// the second is a call site that can reintroduce it.
+/// no way to retire what it issues mints approvals nothing spends, which is precisely the defect the
+/// spent-approval ledger exists to close, and a call site that could pass the first without the
+/// second is a call site that can reintroduce it. The ledger is not named here any longer: the
+/// completion arm redeems through the host `approval_redeem_q` slot, which pulls the shared ledger
+/// host-side, so this carries the host handle rather than a `&PlaneApprovals` an extracted plane
+/// could not hold.
 #[derive(Clone, Copy)]
 pub(crate) struct Approvals<'a> {
     /// Mints and opens the sealed `requestState`. `None` is a deployment with no signing key, which
     /// refuses to ask at all rather than issue state it could not verify.
     pub(crate) sealer: Option<&'a Sealer>,
-    /// The approvals already redeemed. See [`approvals::PlaneApprovals`].
-    pub(crate) spent: &'a approvals::PlaneApprovals,
+    /// The host the completion arm redeems the one-time approval through — the extern-C
+    /// `approval_redeem_q` slot spends against the shared spent-approval ledger it pulls host-side.
+    pub(crate) host: busbar_plugin::hot::host::HostCtx,
 }
 
 /// THE DECISION. Config, caller input, a clock — and the ledger of approvals already spent. It is
@@ -331,7 +335,7 @@ pub(crate) fn decide(
     args_digest: &str,
     approvals: Approvals<'_>,
 ) -> AskDecision {
-    let Approvals { sealer, spent } = approvals;
+    let Approvals { sealer, host } = approvals;
     // (1) A capability that declares NO ask never asks, and never accepts state either. Accepting
     // state here would mean busbar verifying a blob it had no reason to have minted.
     if rounds.is_empty() {
@@ -421,11 +425,27 @@ pub(crate) fn decide(
         let Some((nonce, expires_at)) = presented else {
             return AskDecision::Refuse(Refusal::StateRejected(approvals::Rejected::AlreadySpent));
         };
-        // THE REDEMPTION runs through the host's compiled-in veneer — the SAME
-        // `plane_host::trust::redeem_approval` body the extern-C `approval_redeem`/`approval_redeem_q`
-        // slots funnel through (CLUSTER-2), so the atomic check-and-record is written once and the
-        // in-process and dynamic-load veneers cannot diverge.
-        if !crate::plane_host::trust::redeem_approval(spent, &nonce, expires_at, bind.now) {
+        // THE REDEMPTION runs through the host `approval_redeem_q` slot, which spends against the
+        // shared spent-approval ledger it pulls host-side — the atomic check-and-record stays behind
+        // the seam, so this arm names no `PlaneApprovals` an extracted plane could not hold. Only
+        // `StatusClass::Ok` (the FIRST redemption) allows; already-spent, a ledger that could not
+        // answer, and a caught fault all come back non-`Ok` and land on the same fail-closed refusal.
+        let query = busbar_plugin::hot::ApprovalQuery {
+            size: core::mem::size_of::<busbar_plugin::hot::ApprovalQuery>() as u32,
+            version: busbar_plugin::hot::POD_VERSION,
+            _reserved: 0,
+            scope: 0,
+            _reserved2: 0,
+            expires_at,
+            now: bind.now,
+            key_ptr: nonce.as_ptr(),
+            key_len: nonce.len(),
+        };
+        if crate::plane_host::trust::approval_redeem_q(
+            host,
+            &query as *const busbar_plugin::hot::ApprovalQuery,
+        ) != busbar_plugin::hot::StatusClass::Ok
+        {
             return AskDecision::Refuse(Refusal::StateRejected(approvals::Rejected::AlreadySpent));
         }
         return AskDecision::Proceed;

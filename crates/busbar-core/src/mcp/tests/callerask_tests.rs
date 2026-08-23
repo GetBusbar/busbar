@@ -14,7 +14,6 @@
 
 use super::*;
 use crate::mcp::config::{AskEntryCfg, AskRoundCfg};
-use crate::plane::approvals::PlaneApprovals;
 
 const KEY: [u8; 32] = [3u8; 32];
 const NOW: u64 = 1_700_000_000;
@@ -72,19 +71,30 @@ fn all_capabilities() -> serde_json::Value {
 
 const DIGEST: &str = "d";
 
+/// Drive `decide` with a live host over a fresh in-core App — the redemption edge the completion arm
+/// now spends through. Each call gets its own App, hence its own spent-approval ledger, which is all
+/// these behavioural cases want: single use across two presentations of ONE approval is proven in
+/// `spentledger_tests`, over one shared ledger.
+fn with_host<R>(f: impl FnOnce(busbar_plugin::hot::host::HostCtx) -> R) -> R {
+    let app = crate::test_support::TestApp::new().build();
+    crate::plane_host::with_dispatch_scope(&app, |host, _| f(host))
+}
+
 fn decide_with(rounds: &[AskRoundCfg], caps: &serde_json::Value, retry: Retry<'_>) -> AskDecision {
-    decide(
-        rounds,
-        3,
-        caps,
-        retry,
-        bind(),
-        DIGEST,
-        Approvals {
-            sealer: Some(&sealer()),
-            spent: &PlaneApprovals::new(),
-        },
-    )
+    with_host(|host| {
+        decide(
+            rounds,
+            3,
+            caps,
+            retry,
+            bind(),
+            DIGEST,
+            Approvals {
+                sealer: Some(&sealer()),
+                host,
+            },
+        )
+    })
 }
 
 /// DENY BY DEFAULT, BY ABSENCE. A capability with no `ask_caller` never asks — which is every
@@ -267,21 +277,23 @@ fn one_callers_state_is_not_redeemable_by_another() {
     let responses = serde_json::json!({ "user_name": { "action": "accept", "content": {} } });
     let mut b = bind();
     b.principal = "vk_caller_b";
-    let got = decide(
-        &rounds,
-        3,
-        &all_capabilities(),
-        Retry {
-            responses: Some(&responses),
-            state: Some(&request_state),
-        },
-        b,
-        DIGEST,
-        Approvals {
-            sealer: Some(&sealer()),
-            spent: &PlaneApprovals::new(),
-        },
-    );
+    let got = with_host(|host| {
+        decide(
+            &rounds,
+            3,
+            &all_capabilities(),
+            Retry {
+                responses: Some(&responses),
+                state: Some(&request_state),
+            },
+            b,
+            DIGEST,
+            Approvals {
+                sealer: Some(&sealer()),
+                host,
+            },
+        )
+    });
     assert!(matches!(
         got,
         AskDecision::Refuse(Refusal::StateRejected(
@@ -359,18 +371,20 @@ fn the_round_cap_is_hard_and_cannot_be_reset_by_replaying_an_earlier_state() {
             request_state,
             round,
             ..
-        } = decide(
-            &rounds,
-            2,
-            &all_capabilities(),
-            retry,
-            bind(),
-            DIGEST,
-            Approvals {
-                sealer: Some(&sealer()),
-                spent: &PlaneApprovals::new(),
-            },
-        )
+        } = with_host(|host| {
+            decide(
+                &rounds,
+                2,
+                &all_capabilities(),
+                retry,
+                bind(),
+                DIGEST,
+                Approvals {
+                    sealer: Some(&sealer()),
+                    host,
+                },
+            )
+        })
         else {
             panic!("round {expected} must be allowed under a cap of 2");
         };
@@ -379,21 +393,23 @@ fn the_round_cap_is_hard_and_cannot_be_reset_by_replaying_an_earlier_state() {
     }
     // The third is past the cap and stays refused.
     for _ in 0..3 {
-        let got = decide(
-            &rounds,
-            2,
-            &all_capabilities(),
-            Retry {
-                responses: Some(&responses),
-                state: state.as_deref(),
-            },
-            bind(),
-            DIGEST,
-            Approvals {
-                sealer: Some(&sealer()),
-                spent: &PlaneApprovals::new(),
-            },
-        );
+        let got = with_host(|host| {
+            decide(
+                &rounds,
+                2,
+                &all_capabilities(),
+                Retry {
+                    responses: Some(&responses),
+                    state: state.as_deref(),
+                },
+                bind(),
+                DIGEST,
+                Approvals {
+                    sealer: Some(&sealer()),
+                    host,
+                },
+            )
+        });
         assert!(
             matches!(got, AskDecision::Refuse(Refusal::RoundCapExceeded { .. })),
             "a cap that resets is not a cap: {got:?}"
@@ -405,18 +421,20 @@ fn the_round_cap_is_hard_and_cannot_be_reset_by_replaying_an_earlier_state() {
 #[test]
 fn a_cap_of_zero_never_asks() {
     let rounds = vec![round("user_name", "elicitation/create")];
-    let got = decide(
-        &rounds,
-        0,
-        &all_capabilities(),
-        Retry::default(),
-        bind(),
-        DIGEST,
-        Approvals {
-            sealer: Some(&sealer()),
-            spent: &PlaneApprovals::new(),
-        },
-    );
+    let got = with_host(|host| {
+        decide(
+            &rounds,
+            0,
+            &all_capabilities(),
+            Retry::default(),
+            bind(),
+            DIGEST,
+            Approvals {
+                sealer: Some(&sealer()),
+                host,
+            },
+        )
+    });
     assert!(matches!(
         got,
         AskDecision::Refuse(Refusal::RoundCapExceeded { .. })
@@ -472,18 +490,17 @@ fn structurally_invalid_input_responses_never_produce_a_complete_result() {
 #[test]
 fn a_deployment_with_no_signing_key_refuses_rather_than_asking_with_unprotected_state() {
     let rounds = vec![round("user_name", "elicitation/create")];
-    let got = decide(
-        &rounds,
-        3,
-        &all_capabilities(),
-        Retry::default(),
-        bind(),
-        DIGEST,
-        Approvals {
-            sealer: None,
-            spent: &PlaneApprovals::new(),
-        },
-    );
+    let got = with_host(|host| {
+        decide(
+            &rounds,
+            3,
+            &all_capabilities(),
+            Retry::default(),
+            bind(),
+            DIGEST,
+            Approvals { sealer: None, host },
+        )
+    });
     assert!(matches!(got, AskDecision::Refuse(Refusal::NoSealer { .. })));
 }
 

@@ -2624,45 +2624,53 @@ fn caller_ask_decision(
     let sealer = ctx
         .gov_signing_secret()
         .map(|s| crate::plane::approvals::Sealer::derive(&s));
-    callerask::decide(
-        rounds,
-        cap,
-        ctx.capabilities,
-        Retry {
-            responses: params.and_then(|p| p.get("inputResponses")),
-            state: params
-                .and_then(|p| p.get("requestState"))
-                .and_then(|v| v.as_str()),
-        },
-        {
-            // The AUTHENTICATED PRINCIPAL (`mrtr.mdx:235`), which is the key's stable id and not
-            // the actor string: the actor is for reading, the key id is what a grant is bound to.
-            // With governance disabled there is no key, and the constant below is honest about
-            // that — such a deployment has one principal, so binding to it is a true statement
-            // rather than a fake distinction.
-            let principal = ctx
-                .gov
-                .key
-                .as_ref()
-                .map_or("<ungoverned>", |k| k.id.as_str());
-            Bind {
-                principal,
-                method,
-                capability,
-                generation,
-                now: crate::store::now(),
-                // The live roots epoch for THIS principal — the value a received
-                // `notifications/roots/list_changed` moves, read under the same name the seal
-                // binds. See `crate::mcp::roots`.
-                roots_epoch: super::runtime(ctx.app).roots_epochs.current(principal),
-            }
-        },
-        &crate::plane::approvals::digest_arguments(arguments),
-        callerask::Approvals {
-            sealer: sealer.as_ref(),
-            spent: &ctx.app.plane_approvals,
-        },
-    )
+    // The completion arm redeems the one-time approval through the host `approval_redeem_q` slot, so
+    // the decision needs a host handle. Reuse the request-wide arena when this call rides one
+    // (`Ctx::scope`), else open a fresh per-call scope — the redemption registers no host handle, so
+    // which arena reclaims is immaterial to the spend.
+    let fallback_scope = crate::plane_host::DispatchScope::new();
+    let scope = ctx.scope.unwrap_or(&fallback_scope);
+    crate::plane_host::with_borrowed_host(ctx.app, scope, |host, _| {
+        callerask::decide(
+            rounds,
+            cap,
+            ctx.capabilities,
+            Retry {
+                responses: params.and_then(|p| p.get("inputResponses")),
+                state: params
+                    .and_then(|p| p.get("requestState"))
+                    .and_then(|v| v.as_str()),
+            },
+            {
+                // The AUTHENTICATED PRINCIPAL (`mrtr.mdx:235`), which is the key's stable id and not
+                // the actor string: the actor is for reading, the key id is what a grant is bound to.
+                // With governance disabled there is no key, and the constant below is honest about
+                // that — such a deployment has one principal, so binding to it is a true statement
+                // rather than a fake distinction.
+                let principal = ctx
+                    .gov
+                    .key
+                    .as_ref()
+                    .map_or("<ungoverned>", |k| k.id.as_str());
+                Bind {
+                    principal,
+                    method,
+                    capability,
+                    generation,
+                    now: crate::store::now(),
+                    // The live roots epoch for THIS principal — the value a received
+                    // `notifications/roots/list_changed` moves, read under the same name the seal
+                    // binds. See `crate::mcp::roots`.
+                    roots_epoch: super::runtime(ctx.app).roots_epochs.current(principal),
+                }
+            },
+            &crate::plane::approvals::digest_arguments(arguments),
+            callerask::Approvals {
+                sealer: sealer.as_ref(),
+                host,
+            },
+        )
+    })
 }
 
 /// Delegates to the ingress envelope builder so the status and the code cannot drift apart between
