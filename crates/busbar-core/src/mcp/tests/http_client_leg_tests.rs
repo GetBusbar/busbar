@@ -147,6 +147,9 @@ async fn rig(behaviour: Behaviour) -> (Peer, std::sync::Arc<crate::state::App>) 
         .mcp(&mcp_cfg(CANONICAL))
         .mcp_server(SERVER, exchanging_server(&peer, SUBJECT))
         .build();
+    // The client-leg `issue()` chains its outcome on the process-wide `call` stream; this harness does
+    // not boot through `mcp_hydrate`, so register that stream once (no-sink) so the emit mints a Seq.
+    crate::plane::calllog::ensure_global_call_stream_registered();
     (peer, app)
 }
 

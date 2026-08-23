@@ -97,8 +97,14 @@ pub(crate) async fn issue(
     let server: &ServerId = &auth.server;
     let method = verb.method();
     let principal = auth.caller.id.clone();
+    // DEFERRED (busbar 1.6.0 R2): the per-call chain lives HOST-SIDE now and is reached over a
+    // `HostCtx`, which this `async` client-leg path cannot hold across its `.await`s and has no `&App`
+    // to mint (issue() is `#[allow(dead_code)]` with no inbound caller — see the module header). So it
+    // emits through the HOSTLESS in-core path (`emit_hostless`), the durable-cleave twin the seam keeps
+    // for exactly this site until the SERVER-plane proxy method that would drive this verb supplies a
+    // host; wiring the host emit in is then a one-line swap here.
     let record = |outcome: &'static str, reason: String| {
-        crate::plane::calllog::emit(
+        crate::plane::calllog::emit_hostless(
             &principal,
             CallInput {
                 ts: crate::store::now(),

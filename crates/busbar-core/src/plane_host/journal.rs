@@ -79,24 +79,6 @@ pub(crate) struct PlaneJournalInput {
     digests_scope: bool,
 }
 
-impl PlaneJournalInput {
-    /// Build an append input from a plane's pre-framed content suffix + the stream's framing facts.
-    /// The one constructor a WITHIN-CORE plane seam user (e.g. `plane::taskstore`) reaches, so the
-    /// record's fields stay private to this module while the neutral append path is drivable directly
-    /// (no FFI `HostCtx`), exactly as the vtable `journal_append_scoped` drives it over the border.
-    #[cfg_attr(
-        not(any(feature = "plane-mcp", feature = "plane-a2a")),
-        allow(dead_code)
-    )]
-    pub(crate) fn new(content: Vec<u8>, framing: Framing, digests_scope: bool) -> Self {
-        PlaneJournalInput {
-            content,
-            framing,
-            digests_scope,
-        }
-    }
-}
-
 impl PlaneJournalRecord {
     /// Assemble a record from reframed parts — the constructor a plane-side reframe (the `call_reframe`
     /// FFI bridge, OR an in-core seam user's own decode bridge like `plane::taskstore`) uses to turn a
@@ -381,6 +363,19 @@ pub(crate) fn seed_scoped_via_seam(
     Ok(unsafe { out.assume_init() })
 }
 
+/// SAFE COMPACT WRAPPER for a within-core seam user: drive [`journal_compact`] over a registered
+/// stream and return the count of durable rows dropped. `Err(())` is a seam fault. No `unsafe` is
+/// needed: `removed` is an ordinary stack `u64` the host writes on the `Ok` path.
+#[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
+pub(crate) fn compact_via_seam(host: HostCtx, kind_id: u32, before: u64) -> Result<u64, ()> {
+    let mut removed: u64 = 0;
+    let status = journal_compact(host, kind_id, before, &mut removed as *mut u64);
+    if status != StatusClass::Ok {
+        return Err(());
+    }
+    Ok(removed)
+}
+
 /// Turn one stored body + its scope back into a [`PlaneJournalRecord`] by calling the stream's
 /// PLANE-PROVIDED reframe fn-pointer. The plane decodes the body and writes `(seq, prev_hash, hash,
 /// pre-framed suffix, digests_scope)`; the host assembles the record with the scope IT knows (the
@@ -470,6 +465,34 @@ pub(crate) extern "C-unwind" fn journal_register(
     desc: *const JournalStreamDesc,
     reframe: JournalReframeFn,
 ) -> StatusClass {
+    // `usize::MAX` over the ABI seam: the [`JournalStreamDesc`] POD carries no LRU cap, and a durable
+    // TABLE (the A2A task journal) opts OUT of position eviction — its working set is bounded by its own
+    // lifecycle. A stream that needs an LRU cap (the MCP call log, keyed by an unbounded principal space)
+    // registers WITHIN CORE through [`journal_register_capped`], which the ABI descriptor cannot express.
+    register_stream(host, desc, reframe, usize::MAX)
+}
+
+/// REGISTER a durable journal stream with an explicit LRU `cap` on its position cache — the WITHIN-CORE
+/// entry point for a stream (the MCP `call` log) whose scope space is unbounded (one position per
+/// principal) and must be bounded in RAM. The [`JournalStreamDesc`] ABI POD carries no cap, and this
+/// crate must not touch the hot ABI to add one, so an in-core plane seam user reaches this directly
+/// instead of the vtable's `journal_register`. Byte-behaviour is identical to the ABI path but for the
+/// bound; an evicted position is resumed from the store on the principal's next call.
+pub(crate) fn journal_register_capped(
+    host: HostCtx,
+    desc: *const JournalStreamDesc,
+    reframe: JournalReframeFn,
+    cap: usize,
+) -> StatusClass {
+    register_stream(host, desc, reframe, cap)
+}
+
+fn register_stream(
+    host: HostCtx,
+    desc: *const JournalStreamDesc,
+    reframe: JournalReframeFn,
+    cap: usize,
+) -> StatusClass {
     catch_unwind(AssertUnwindSafe(|| {
         // SAFETY: recovery invariant (see `super::recover`).
         let state = unsafe { recover(host) };
@@ -481,9 +504,7 @@ pub(crate) extern "C-unwind" fn journal_register(
         let Some(kind) = read_scope(d.kind_ptr, d.kind_len) else {
             return StatusClass::Refused;
         };
-        // `usize::MAX`: a durable table opts OUT of position eviction (its working set is bounded
-        // elsewhere), exactly as the A2A task journal does.
-        let journal = Arc::new(Journal::<PlaneJournalRecord>::new(usize::MAX));
+        let journal = Arc::new(Journal::<PlaneJournalRecord>::new(cap));
         if let Some(gov) = state.app.governance.as_ref() {
             journal.set_sink(PlaneStoreView::narrow(gov.store()));
         }
@@ -498,6 +519,120 @@ pub(crate) extern "C-unwind" fn journal_register(
         StatusClass::Ok
     }))
     .unwrap_or(StatusClass::Fault)
+}
+
+/// APPEND one record and return its MINTED chain fields `(seq, prev_hash, hash)` — the WITHIN-CORE
+/// analogue of [`journal_append_scoped`] for a seam user that must reconstruct the TYPED record it
+/// returns to its caller (the MCP call log hands back an `McpCallRecord` carrying `prev_hash`/`hash`,
+/// which the `Seq`-only ABI append does not surface). `Err` carries the STORE's own error verbatim (a
+/// durable-write failure the caller surfaces to decide on), an unregistered stream / empty scope, or a
+/// caught panic — so the caller reports the same reason the pre-cleave `Journal::record` did.
+pub(crate) fn journal_append_scoped_full(
+    host: HostCtx,
+    kind_id: u32,
+    scope: &str,
+    content: &[u8],
+) -> Result<(u64, String, String), busbar_api::StoreError> {
+    catch_unwind(AssertUnwindSafe(|| {
+        // SAFETY: recovery invariant (see `super::recover`).
+        let _state = unsafe { recover(host) };
+        let Some(h) = stream_handle(kind_id) else {
+            return Err(busbar_api::StoreError(
+                "journal stream is not registered".to_string(),
+            ));
+        };
+        if scope.is_empty() {
+            return Err(busbar_api::StoreError(
+                "journal scope must be a non-empty key".to_string(),
+            ));
+        }
+        let input = PlaneJournalInput {
+            content: content.to_vec(),
+            framing: h.framing,
+            digests_scope: h.digests_scope,
+        };
+        let reframe =
+            |sc: &str, body: &[u8]| call_reframe(host, kind_id, h.reframe, h.framing, sc, body);
+        match h.journal.append_scoped(&h.kind, scope, input, &reframe) {
+            Ok(record) => Ok((
+                record.seq(),
+                record.prev_hash().to_string(),
+                record.hash().to_string(),
+            )),
+            Err(crate::audit::journal::JournalError::Store(e)) => Err(e),
+        }
+    }))
+    .unwrap_or_else(|_| {
+        Err(busbar_api::StoreError(
+            "journal append panicked".to_string(),
+        ))
+    })
+}
+
+/// HOSTLESS append for a within-core seam user that has NO `HostCtx` to open — the deferred MCP
+/// client-leg path (`mcp::client::issue`), which is `async` (a `HostCtx` is `!Send` and cannot cross
+/// its `.await`s) and reaches no `App`. It appends to the registered `kind_id` stream WITHOUT recovering
+/// a host: the append itself never reads host state, and the ONLY host-consuming step (the reframe on a
+/// cache-miss resume) is a no-op for the shipped in-core reframes (which ignore the host) and is not
+/// reached at all on a stream with no eviction. `Err` carries the store's reason verbatim, as
+/// [`journal_append_scoped_full`] does. This is the hostless in-core emit path the durable cleave keeps
+/// for the deferred site, not a route any plane crosses the FFI border on.
+#[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
+pub(crate) fn journal_append_scoped_full_hostless(
+    kind_id: u32,
+    scope: &str,
+    content: &[u8],
+) -> Result<(u64, String, String), busbar_api::StoreError> {
+    catch_unwind(AssertUnwindSafe(|| {
+        let Some(h) = stream_handle(kind_id) else {
+            return Err(busbar_api::StoreError(
+                "journal stream is not registered".to_string(),
+            ));
+        };
+        if scope.is_empty() {
+            return Err(busbar_api::StoreError(
+                "journal scope must be a non-empty key".to_string(),
+            ));
+        }
+        let input = PlaneJournalInput {
+            content: content.to_vec(),
+            framing: h.framing,
+            digests_scope: h.digests_scope,
+        };
+        // The reframe is reached ONLY on an LRU-evicted-scope resume; the shipped in-core reframes
+        // ignore the `host` argument (see `reframe_bridge`), so a null host here is never dereferenced.
+        let null_host: HostCtx = core::ptr::null_mut();
+        let reframe = |sc: &str, body: &[u8]| {
+            call_reframe(null_host, kind_id, h.reframe, h.framing, sc, body)
+        };
+        match h.journal.append_scoped(&h.kind, scope, input, &reframe) {
+            Ok(record) => Ok((
+                record.seq(),
+                record.prev_hash().to_string(),
+                record.hash().to_string(),
+            )),
+            Err(crate::audit::journal::JournalError::Store(e)) => Err(e),
+        }
+    }))
+    .unwrap_or_else(|_| {
+        Err(busbar_api::StoreError(
+            "journal append panicked".to_string(),
+        ))
+    })
+}
+
+/// The sequence the next record for `scope` on the registered `kind_id` stream will carry (1 for an
+/// uncached scope) — a diagnostic on the position, read WITHIN CORE (the ABI exposes no `next_seq`).
+pub(crate) fn journal_next_seq_scoped(kind_id: u32, scope: &str) -> u64 {
+    stream_handle(kind_id)
+        .map(|h| h.journal.next_seq(scope))
+        .unwrap_or(1)
+}
+
+/// How many scope positions the registered `kind_id` stream is holding — the diagnostic the MCP call
+/// log's bounded-map test reads, exposed WITHIN CORE (the ABI has no `len`).
+pub(crate) fn journal_len_scoped(kind_id: u32) -> usize {
+    stream_handle(kind_id).map(|h| h.journal.len()).unwrap_or(0)
 }
 
 /// APPEND one record to a registered stream's durable `scope`: mint the seq/prev_hash/hash through the

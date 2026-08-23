@@ -43,7 +43,7 @@ use super::upstream_support::{
     call_as, exchanging_server, gov_with_scopes, mcp_cfg, Behaviour, Peer,
 };
 use crate::audit::verify_chain;
-use crate::plane::calllog::{CALLS, OUTCOME_DISPATCHED, OUTCOME_REFUSED, REASON_UPSTREAM_FAILED};
+use crate::plane::calllog::{OUTCOME_DISPATCHED, OUTCOME_REFUSED, REASON_UPSTREAM_FAILED};
 use crate::plane::store::StoreNamedTestExt;
 use crate::test_support::TestApp;
 use busbar_api::{McpCallRecord, Store};
@@ -275,7 +275,9 @@ async fn a_dispatched_tools_call_lands_a_durable_record_through_a_real_dlopened_
     // store only through the dispatcher.
     {
         let store = open_plugin(&cfg);
-        CALLS.set_sink(crate::plane::store::PlaneStoreView::narrow(store));
+        crate::plane::calllog::aim_global_call_sink(Some(
+            crate::plane::store::PlaneStoreView::narrow(store),
+        ));
     }
 
     let (status, body) = call_as(
@@ -295,9 +297,7 @@ async fn a_dispatched_tools_call_lands_a_durable_record_through_a_real_dlopened_
     // ledger file. The plugin's persist is atomic (see `FileStore::mutate`), so those writes can't
     // tear the reopen below; detaching anyway keeps this test's ledger holding exactly what this
     // test wrote, so the `records.len()` assertion is about dispatch, not about scheduling.
-    CALLS.set_sink(crate::plane::store::PlaneStoreView::narrow(Arc::new(
-        busbar_store_memory::MemoryStore::new(),
-    )));
+    crate::plane::calllog::aim_global_call_sink(None);
 
     // THE RESTART. A fresh `dlopen` + `busbar_open` over the same on-disk ledger — the only way a
     // durability claim can be made honestly, because a write's `Ok(())` is worth nothing.
@@ -364,7 +364,9 @@ async fn a_refused_tools_call_lands_a_durable_record_carrying_the_refusal_reason
 
     {
         let store = open_plugin(&cfg);
-        CALLS.set_sink(crate::plane::store::PlaneStoreView::narrow(store));
+        crate::plane::calllog::aim_global_call_sink(Some(
+            crate::plane::store::PlaneStoreView::narrow(store),
+        ));
     }
 
     let (status, _body) = call_as(
@@ -381,9 +383,7 @@ async fn a_refused_tools_call_lands_a_durable_record_carrying_the_refusal_reason
     // DETACH before the read-back — same isolation as the dispatched-call test above: siblings
     // record through the process-global `CALLS` without the lock, and this test's ledger must hold
     // exactly what this test wrote when the reopened handle reads it.
-    CALLS.set_sink(crate::plane::store::PlaneStoreView::narrow(Arc::new(
-        busbar_store_memory::MemoryStore::new(),
-    )));
+    crate::plane::calllog::aim_global_call_sink(None);
 
     let reopened = open_plugin(&cfg);
     let records = reopened
@@ -424,9 +424,7 @@ async fn with_no_durable_sink_the_call_still_serves_and_nothing_is_kept() {
     // The RAM default: `busbar-store-memory` implements none of the call-log methods, so attaching
     // it is indistinguishable from attaching nothing — which is the documented `store: memory`
     // contract, asserted rather than assumed.
-    CALLS.set_sink(crate::plane::store::PlaneStoreView::narrow(Arc::new(
-        busbar_store_memory::MemoryStore::new(),
-    )));
+    crate::plane::calllog::aim_global_call_sink(None);
 
     let (status, body) = call_as(
         &app,
@@ -487,7 +485,9 @@ async fn the_client_legs_own_outcome_is_what_the_chain_records_success_and_failu
 
     {
         let store = open_plugin(&cfg);
-        CALLS.set_sink(crate::plane::store::PlaneStoreView::narrow(store));
+        crate::plane::calllog::aim_global_call_sink(Some(
+            crate::plane::store::PlaneStoreView::narrow(store),
+        ));
     }
 
     // ── LEG 1: THE UPSTREAM ANSWERS BADLY. A JSON-RPC error from the registered server. ──────────
@@ -537,9 +537,7 @@ async fn the_client_legs_own_outcome_is_what_the_chain_records_success_and_failu
 
     // Detach before the read-back, for the reason the headline test states: siblings in this binary
     // dispatch through the process-global `CALLS` without taking the serialising lock.
-    CALLS.set_sink(crate::plane::store::PlaneStoreView::narrow(Arc::new(
-        busbar_store_memory::MemoryStore::new(),
-    )));
+    crate::plane::calllog::aim_global_call_sink(None);
 
     let reopened = open_plugin(&cfg);
     let records = reopened

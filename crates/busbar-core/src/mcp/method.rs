@@ -1016,6 +1016,13 @@ struct CallLog<'a> {
     server: String,
     tool_digest: String,
     pin_generation: u64,
+    /// The live engine snapshot the call was admitted on, carried so [`CallLog::write`] can open a
+    /// host to reach the durable per-call chain seam.
+    app: &'a crate::state::App,
+    /// The request-wide dispatch arena, when this call rides one (the sync tools/call path threads it
+    /// on `Ctx::scope`). `None` on the task path and in tests, where `write` opens a fresh per-call
+    /// scope instead — a chain append registers no host handle, so the arena choice is immaterial.
+    scope: Option<&'a crate::plane_host::DispatchScope>,
 }
 
 impl<'a> CallLog<'a> {
@@ -1027,6 +1034,8 @@ impl<'a> CallLog<'a> {
             server: String::new(),
             tool_digest: String::new(),
             pin_generation: generation,
+            app: ctx.app,
+            scope: ctx.scope,
         }
     }
 
@@ -1042,19 +1051,27 @@ impl<'a> CallLog<'a> {
     }
 
     fn write(&self, outcome: &'static str, reason: &str) {
-        crate::plane::calllog::emit(
-            self.principal,
-            crate::plane::calllog::CallInput {
-                ts: crate::store::now(),
-                server: self.server.clone(),
-                tool: self.tool.clone(),
-                outcome,
-                reason: reason.to_string(),
-                tool_digest: self.tool_digest.clone(),
-                pin_generation: self.pin_generation,
-                request_id: self.request_id.clone(),
-            },
-        );
+        let input = crate::plane::calllog::CallInput {
+            ts: crate::store::now(),
+            server: self.server.clone(),
+            tool: self.tool.clone(),
+            outcome,
+            reason: reason.to_string(),
+            tool_digest: self.tool_digest.clone(),
+            pin_generation: self.pin_generation,
+            request_id: self.request_id.clone(),
+        };
+        // The per-call chain lives host-side now; open a host to reach it. Reuse the request-wide
+        // arena when this call rides one (`Ctx::scope`), else open a fresh per-call scope — the append
+        // registers no host handle, so which arena reclaims is immaterial to the write.
+        match self.scope {
+            Some(scope) => crate::plane_host::with_borrowed_host(self.app, scope, |host, _| {
+                crate::plane::calllog::emit(host, self.principal, input)
+            }),
+            None => crate::plane_host::with_dispatch_scope(self.app, |host, _| {
+                crate::plane::calllog::emit(host, self.principal, input)
+            }),
+        }
     }
 
     /// Record a refusal and hand the response back. Takes the response BY VALUE so the record and

@@ -113,9 +113,95 @@ use std::sync::Arc;
 use crate::plane::store::{call_record, decode, PlaneStore, KIND_CALL};
 use busbar_api::{McpCallRecord, PlaneRecord, PlaneSelector, StoreError, StoreResult};
 
-use crate::audit::journal::{Journal, JournalError, JournalRecord, NeutralBody};
+use crate::audit::journal::{JournalRecord, NeutralBody};
 use crate::audit::{verify_chain, ChainBreak, ChainLabels, ChainedRecord, Digest, Framing};
-use crate::plane_host::journal::{PlaneJournalInput, PlaneJournalRecord};
+use crate::plane_host::journal::PlaneJournalRecord;
+use busbar_plugin::hot::host::HostCtx;
+use busbar_plugin::hot::{
+    Framing as AbiFraming, JournalStreamDesc, ReframeOut, StatusClass, POD_VERSION,
+};
+use core::mem::MaybeUninit;
+
+/// The host-assigned `kind_id` the MCP `call` durable stream is registered under and addressed by on
+/// every scoped op. Distinct from the A2A `task_event` stream's id (1); process-global.
+pub(crate) const KIND_ID_CALL: u32 = 2;
+
+/// The MCP `call` stream's FFI reframe slot: delegates the raw-buffer work to the audited
+/// [`crate::plane_host::journal::reframe_bridge`] (so this file stays `deny(unsafe)`) over the native
+/// [`reframe_call`] decode, which handles BOTH the neutral body and a legacy `serde(McpCallRecord)` row.
+extern "C-unwind" fn reframe_call_ffi(
+    _host: HostCtx,
+    _kind_id: u32,
+    body_ptr: *const u8,
+    body_len: usize,
+    out: *mut MaybeUninit<ReframeOut>,
+    prev_buf: *mut u8,
+    prev_cap: usize,
+    hash_buf: *mut u8,
+    hash_cap: usize,
+    suffix_buf: *mut u8,
+    suffix_cap: usize,
+) -> StatusClass {
+    crate::plane_host::journal::reframe_bridge(
+        body_ptr,
+        body_len,
+        out,
+        prev_buf,
+        prev_cap,
+        hash_buf,
+        hash_cap,
+        suffix_buf,
+        suffix_cap,
+        reframe_call,
+    )
+}
+
+/// REGISTER the MCP `call` durable stream with the host (once, at boot, before the rehydrate):
+/// `LengthPrefixed` framing with the principal in the digest, under [`KIND_ID_CALL`], bounded at
+/// [`MAX_TRACKED_PRINCIPALS`] positions. Uses the WITHIN-CORE capped register (the ABI descriptor
+/// carries no LRU cap, and this crate must not touch the hot ABI); the host attaches the durable sink
+/// from `app.governance` at register time.
+#[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
+pub(crate) fn register_call_stream(app: &Arc<crate::state::App>) {
+    register_call_stream_as(KIND_ID_CALL, app);
+}
+
+/// Register the `call` stream under an ARBITRARY `kind_id` — production pins [`KIND_ID_CALL`], a TEST
+/// drives over a FRESH id so parallel tests never share one process-global chain.
+#[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
+pub(crate) fn register_call_stream_as(kind_id: u32, app: &Arc<crate::state::App>) {
+    let kind = KIND_CALL.as_bytes();
+    let desc = JournalStreamDesc {
+        size: core::mem::size_of::<JournalStreamDesc>() as u32,
+        version: POD_VERSION,
+        framing: AbiFraming::LengthPrefixed,
+        digests_scope: 1,
+        kind_id,
+        _reserved: 0,
+        kind_ptr: kind.as_ptr(),
+        kind_len: kind.len(),
+    };
+    crate::plane_host::with_dispatch_scope(app, |host, _vt| {
+        crate::plane_host::journal::journal_register_capped(
+            host,
+            &desc as *const JournalStreamDesc,
+            reframe_call_ffi,
+            MAX_TRACKED_PRINCIPALS,
+        );
+    });
+}
+
+/// Pack a set of stored bodies into the [`journal_seed`](crate::plane_host::journal) wire shape:
+/// `u32` count LE, then per body a `u32` length LE + its bytes — the inverse of the host's unpack.
+fn pack_bodies(bodies: &[Vec<u8>]) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(&(bodies.len() as u32).to_le_bytes());
+    for b in bodies {
+        out.extend_from_slice(&(b.len() as u32).to_le_bytes());
+        out.extend_from_slice(b);
+    }
+    out
+}
 
 /// The outcome and reason tokens THIS stream uses, re-exported from the ONE audit vocabulary in
 /// [`crate::audit::vocab`]. They are core's, not MCP's: the ruling promoted the richer set of words
@@ -482,12 +568,13 @@ const MAX_TRACKED_PRINCIPALS: usize = 16_384;
 /// the read surface. No `Debug`: the journal holds a `dyn PlaneStore`, which is deliberately not
 /// `Debug` (a backend must not be obliged to render itself, where a credential could surface in a log).
 pub(crate) struct PlaneCallLog {
-    /// The generic durable journal, keyed by PRINCIPAL and bounded at [`MAX_TRACKED_PRINCIPALS`]
-    /// positions. Now the NEUTRAL store-backed journal — the same seq-authority, position cache, LRU,
-    /// resume and write-ordering the shipped streams use, over the record shape the plane-side
-    /// [`reframe_call`] bridge supplies. Core's durable path names no MCP type; the `call` stream's
-    /// framing/suffix live here (plane-side), moving out with the mcp/ relocation.
-    journal: Journal<PlaneJournalRecord>,
+    /// The host-side durable stream this log's per-principal chain is addressed by. Production is
+    /// always [`KIND_ID_CALL`] (one process, one MCP call stream); a TEST constructs a log over a
+    /// FRESH id (see [`PlaneCallLog::with_kind_id`]) so parallel tests never share one process-global
+    /// chain. The chain's seq-authority, position cache, LRU bound ([`MAX_TRACKED_PRINCIPALS`]) and
+    /// store-resume all live host-side in the registered DurableStream now; this wrapper keeps only the
+    /// MCP RECORD (`McpCallRecord`), the operator vocabulary, and the read surface.
+    kind_id: u32,
 }
 
 impl Default for PlaneCallLog {
@@ -507,83 +594,114 @@ pub(crate) static CALLS: std::sync::LazyLock<PlaneCallLog> =
 impl PlaneCallLog {
     pub(crate) fn new() -> Self {
         Self {
-            journal: Journal::new(MAX_TRACKED_PRINCIPALS),
+            kind_id: KIND_ID_CALL,
         }
     }
 
-    /// Attach the configured governance store as the DURABLE SINK. Called once at boot. With no sink
-    /// attached — or with a backend that implements none of these methods, which is the same thing
-    /// from here — the log keeps chain positions in RAM and nothing survives a restart. That is the
-    /// documented `store: memory` behaviour.
-    pub(crate) fn set_sink(&self, store: Arc<dyn PlaneStore>) {
-        self.journal.set_sink(store);
+    /// TEST ONLY: a log whose per-principal chain is addressed by a specific host-side stream id, so
+    /// parallel tests never share one process-global chain. Production uses the default
+    /// [`KIND_ID_CALL`] via [`PlaneCallLog::new`].
+    #[cfg(test)]
+    pub(crate) fn with_kind_id(kind_id: u32) -> Self {
+        Self { kind_id }
     }
 
     /// BOOT REHYDRATE. Enumerate the principals the store holds records for, resume each chain from
-    /// its persisted tail, and REPORT what was found.
+    /// its persisted tail HOST-SIDE, and REPORT what was found.
     ///
-    /// The generic [`Journal`] does the resume and the position accounting; this wrapper owns the MCP
-    /// OPERATOR VOCABULARY — it turns the neutral report into the MCP `Restored` and emits the MCP
-    /// diagnostics for the two findings that are bad news. An empty chain and a chain break are each
-    /// REPORTED rather than skipped or refused: the journal restores a broken chain from its tail
-    /// (refusing would convert a detection control into a deletion primitive), and this names it.
+    /// This wrapper owns the MCP OPERATOR VOCABULARY — it emits the MCP diagnostics for the two
+    /// findings that are bad news. It drives the enumeration itself (rather than the whole-store
+    /// `journal_restore`) so it can recompute the RICH [`ChainBreak`] locally on a break — the neutral
+    /// seam header carries only counts. An empty chain and a chain break are each REPORTED rather than
+    /// skipped or refused (refusing would convert a detection control into a deletion primitive).
     ///
     /// This is the ONLY place durability is learned. A write's `Ok(())` proves nothing (the trait
     /// default accepts and keeps nothing), so the engine finds out what its backend actually kept by
     /// reading it back.
-    pub(crate) fn restore_from_store(&self, store: &dyn PlaneStore) -> StoreResult<Restored> {
-        let report = self
-            .journal
-            .restore_scoped(KIND_CALL, store, &|s: &str, b: &[u8]| reframe_call(s, b))?;
-        for principal in &report.empty_scopes {
-            // The store named this principal and then produced nothing for it. Reported, never
-            // silently skipped: it is exactly what one caller's evidence being deleted wholesale
-            // looks like, and the verifier alone cannot tell it from "never called".
-            crate::diagnostics::diag_error!(
-                crate::diagnostics::PLANE_CALLLOG_EMPTY_CHAIN,
-                principal = %principal,
-                "the durable MCP call log enumerates this principal but returned NO records \
-                 for it; the chain is being reopened at seq 1 and the discrepancy is reported \
-                 rather than skipped silently"
-            );
+    pub(crate) fn restore_from_store(
+        &self,
+        host: HostCtx,
+        store: &dyn PlaneStore,
+    ) -> StoreResult<Restored> {
+        let principals = store.list_plane_record_parents(KIND_CALL)?;
+        let mut out = Restored::default();
+        for principal in &principals {
+            let bodies =
+                store.list_plane_records(KIND_CALL, &PlaneSelector::Parent(principal.clone()))?;
+            out.principals += 1;
+            out.records += bodies.len();
+            if bodies.is_empty() {
+                // The store named this principal and then produced nothing for it. Reported, never
+                // silently skipped: it is exactly what one caller's evidence being deleted wholesale
+                // looks like, and the verifier alone cannot tell it from "never called".
+                out.empty_chains += 1;
+                crate::diagnostics::diag_error!(
+                    crate::diagnostics::PLANE_CALLLOG_EMPTY_CHAIN,
+                    principal = %principal,
+                    "the durable MCP call log enumerates this principal but returned NO records \
+                     for it; the chain is being reopened at seq 1 and the discrepancy is reported \
+                     rather than skipped silently"
+                );
+            }
+            if let Some(brk) = self.seed_chain(host, principal, &bodies)? {
+                // REPORTED, and the records stay restored. See the module header: refusing here would
+                // convert a detection control into a deletion primitive.
+                crate::diagnostics::diag_error!(
+                    crate::diagnostics::PLANE_CALLLOG_CHAIN_VERIFY_FAILED,
+                    principal = %brk.scope,
+                    break_detail = %brk,
+                    "MCP per-call CHAIN VERIFICATION FAILED on restore — the persisted records \
+                     do not verify against their own hash chain. They are still restored and \
+                     the chain resumes from the broken tail; refusing to restore them would let \
+                     anyone able to write to the store DELETE a caller's history by corrupting \
+                     one record."
+                );
+                out.chain_breaks.push(brk);
+            }
         }
-        for brk in &report.chain_breaks {
-            // REPORTED, and the records stay restored. See the module header: refusing here would
-            // convert a detection control into a deletion primitive.
-            crate::diagnostics::diag_error!(
-                crate::diagnostics::PLANE_CALLLOG_CHAIN_VERIFY_FAILED,
-                principal = %brk.scope,
-                break_detail = %brk,
-                "MCP per-call CHAIN VERIFICATION FAILED on restore — the persisted records \
-                 do not verify against their own hash chain. They are still restored and \
-                 the chain resumes from the broken tail; refusing to restore them would let \
-                 anyone able to write to the store DELETE a caller's history by corrupting \
-                 one record."
-            );
-        }
-        Ok(Restored {
-            principals: report.scopes,
-            records: report.records,
-            empty_chains: report.empty_scopes.len(),
-            chain_breaks: report.chain_breaks,
-        })
+        Ok(out)
     }
 
-    /// RECORD one tool call: chain it, write it through, and advance the chain only once the durable
-    /// write has succeeded — the write-ordering invariant is the journal's, inherited here. A cache
-    /// MISS is resolved by the journal's resume: a first-seen principal opens at seq 1, but a
-    /// principal EVICTED by the LRU bound (once the cache has ever overflowed) is resumed from the
-    /// store's persisted tail, so eviction never forks a durable chain.
+    /// SEED one principal's host-side chain position from its raw stored bodies through the durable
+    /// seam. On a break the RICH [`ChainBreak`] is recomputed locally (read-only, touching no position)
+    /// so the operator diagnostic still names WHICH break and WHERE; a clean verify returns `None`.
+    fn seed_chain(
+        &self,
+        host: HostCtx,
+        principal: &str,
+        bodies: &[Vec<u8>],
+    ) -> StoreResult<Option<ChainBreak>> {
+        let packed = pack_bodies(bodies);
+        let hdr = crate::plane_host::journal::seed_scoped_via_seam(
+            host,
+            self.kind_id,
+            principal,
+            &packed,
+        )
+        .map_err(|()| {
+            StoreError("MCP per-call chain seed failed at the durable seam".to_string())
+        })?;
+        if hdr.broke == 0 {
+            return Ok(None);
+        }
+        let records: Vec<PlaneJournalRecord> = bodies
+            .iter()
+            .map(|b| reframe_call(principal, b))
+            .collect::<StoreResult<_>>()?;
+        Ok(verify_chain(&records).err())
+    }
+
+    /// RECORD one tool call: mint the seq/prev_hash/hash through the ONE core chain (host-side, under
+    /// [`KIND_ID_CALL`]), persist the neutral body under the journal's write-ordering invariant, and
+    /// return the TYPED record. A cache MISS is resolved host-side by the journal's resume: a first-seen
+    /// principal opens at seq 1, an LRU-evicted one is resumed from the store's persisted tail (via the
+    /// registered reframe), so eviction never forks a durable chain.
     pub(crate) fn record(
         &self,
+        host: HostCtx,
         principal: &str,
         input: CallInput,
     ) -> Result<McpCallRecord, CallLogError> {
-        // Build the plane's pre-framed content suffix and hand the neutral journal the scope (the
-        // principal) plus the framing input; the ONE core chain mints the seq/prev_hash/hash and
-        // persists the neutral `{seq, prev_hash, hash, content}` body under its write-ordering
-        // invariant. The reframe bridge is consulted on a cache-miss resume (an LRU-evicted
-        // principal), so the same [`reframe_call`] the boot rehydrate uses is threaded through.
         let content = call_suffix(
             input.ts,
             &input.server,
@@ -593,18 +711,20 @@ impl PlaneCallLog {
             &input.tool_digest,
             input.pin_generation,
         );
-        let journal_input = PlaneJournalInput::new(content, CALL_FRAMING, CALL_DIGESTS_SCOPE);
-        let record = self
-            .journal
-            .append_scoped(KIND_CALL, principal, journal_input, &|s: &str, b: &[u8]| {
-                reframe_call(s, b)
-            })
-            .map_err(|JournalError::Store(e)| CallLogError::Store(e))?;
+        // The full append returns the chain's minted `(seq, prev_hash, hash)` — the `Seq`-only ABI
+        // append does not surface the link, which the typed `McpCallRecord` carries.
+        let (seq, prev_hash, hash) = crate::plane_host::journal::journal_append_scoped_full(
+            host,
+            self.kind_id,
+            principal,
+            &content,
+        )
+        .map_err(CallLogError::Store)?;
         // Return the TYPED record for the caller: the chain's minted seq/prev_hash/hash plus the
         // caller's own fields (including `request_id`, which the neutral body deliberately drops).
         Ok(McpCallRecord {
             principal: principal.to_string(),
-            seq: record.seq(),
+            seq,
             ts: input.ts,
             server: input.server,
             tool: input.tool,
@@ -613,18 +733,59 @@ impl PlaneCallLog {
             tool_digest: input.tool_digest,
             pin_generation: input.pin_generation,
             request_id: input.request_id,
-            prev_hash: record.prev_hash().to_string(),
-            hash: record.hash().to_string(),
+            prev_hash,
+            hash,
+        })
+    }
+
+    /// RECORD one call WITHOUT a host — the deferred MCP client-leg path (`mcp::client::issue`), which
+    /// is `async` (a `HostCtx` is `!Send`) and reaches no `App` to open one. Same chain, same store,
+    /// same typed record as [`PlaneCallLog::record`]; only the host-recovery step (which the append
+    /// never uses) is skipped. This is the hostless in-core emit the cleave keeps for that one site.
+    pub(crate) fn record_hostless(
+        &self,
+        principal: &str,
+        input: CallInput,
+    ) -> Result<McpCallRecord, CallLogError> {
+        let content = call_suffix(
+            input.ts,
+            &input.server,
+            &input.tool,
+            input.outcome,
+            &input.reason,
+            &input.tool_digest,
+            input.pin_generation,
+        );
+        let (seq, prev_hash, hash) =
+            crate::plane_host::journal::journal_append_scoped_full_hostless(
+                self.kind_id,
+                principal,
+                &content,
+            )
+            .map_err(CallLogError::Store)?;
+        Ok(McpCallRecord {
+            principal: principal.to_string(),
+            seq,
+            ts: input.ts,
+            server: input.server,
+            tool: input.tool,
+            outcome: input.outcome.to_string(),
+            reason: input.reason,
+            tool_digest: input.tool_digest,
+            pin_generation: input.pin_generation,
+            request_id: input.request_id,
+            prev_hash,
+            hash,
         })
     }
 
     /// The sequence the next record for `principal` will carry. 1 for a principal with no chain.
     ///
-    /// NO PRODUCTION CALLER. A diagnostic on the chain position, kept because the position is the one
-    /// piece of state the store does not own and the tests assert the append ordering through it.
+    /// NO PRODUCTION CALLER. A diagnostic on the host-side chain position, kept because the position is
+    /// the one piece of state the store does not own and the tests assert the append ordering through it.
     #[allow(dead_code)]
     pub(crate) fn next_seq(&self, principal: &str) -> u64 {
-        self.journal.next_seq(principal)
+        crate::plane_host::journal::journal_next_seq_scoped(self.kind_id, principal)
     }
 
     /// How many principals this process is holding a chain position for.
@@ -634,7 +795,7 @@ impl PlaneCallLog {
     /// would be a number that quietly means something else.
     #[allow(dead_code)]
     pub(crate) fn len(&self) -> usize {
-        self.journal.len()
+        crate::plane_host::journal::journal_len_scoped(self.kind_id)
     }
 
     /// READ ONE PRINCIPAL'S CALLS BACK from the store. The durability question, asked the only way
@@ -670,11 +831,14 @@ impl PlaneCallLog {
         store: &dyn PlaneStore,
         principal: &str,
     ) -> StoreResult<Result<usize, ChainBreak>> {
-        let records =
-            self.journal
-                .read_scoped(KIND_CALL, principal, store, &|s: &str, b: &[u8]| {
-                    reframe_call(s, b)
-                })?;
+        // Reads the store directly and reframes locally — the operator-facing verify wants the rich
+        // break and the record count, neither of which the neutral seam header carries. Touches no
+        // chain position, so it needs no host.
+        let records: Vec<PlaneJournalRecord> = store
+            .list_plane_records(KIND_CALL, &PlaneSelector::Parent(principal.to_string()))?
+            .iter()
+            .map(|b| reframe_call(principal, b))
+            .collect::<StoreResult<_>>()?;
         match verify_chain(&records) {
             Ok(()) => Ok(Ok(records.len())),
             Err(brk) => Ok(Err(brk)),
@@ -693,8 +857,10 @@ impl PlaneCallLog {
     /// so nothing purges it. The mechanism is here and the POLICY is absent, which means a durable
     /// deployment's call log grows without bound until an operator prunes it themselves.
     #[allow(dead_code)]
-    pub(crate) fn compact(&self, before: u64) -> StoreResult<u64> {
-        self.journal.compact_scoped(KIND_CALL, before)
+    pub(crate) fn compact(&self, host: HostCtx, before: u64) -> StoreResult<u64> {
+        crate::plane_host::journal::compact_via_seam(host, self.kind_id, before).map_err(|()| {
+            StoreError("MCP per-call log compaction failed at the durable seam".to_string())
+        })
     }
 }
 
@@ -719,7 +885,7 @@ impl PlaneCallLog {
 /// It is emitted on the success line too, at `debug!`, because a join key that appears in exactly
 /// one place joins nothing. That line is what lets an operator holding a request id find the durable
 /// record, and holding a durable record find the request.
-pub(crate) fn emit(principal: &str, input: CallInput) {
+pub(crate) fn emit(host: HostCtx, principal: &str, input: CallInput) {
     let (server, tool, outcome, request_id) = (
         input.server.clone(),
         input.tool.clone(),
@@ -732,7 +898,7 @@ pub(crate) fn emit(principal: &str, input: CallInput) {
     // shape as the metrics scrape's `KEY_GAUGE_LIMIT_WARNED` latch.)
     static WRITE_FAILED_LATCHED: std::sync::atomic::AtomicBool =
         std::sync::atomic::AtomicBool::new(false);
-    match CALLS.record(principal, input) {
+    match CALLS.record(host, principal, input) {
         Ok(record) => {
             WRITE_FAILED_LATCHED.store(false, std::sync::atomic::Ordering::Relaxed);
             tracing::debug!(
@@ -775,6 +941,146 @@ pub(crate) fn emit(principal: &str, input: CallInput) {
             }
         }
     }
+}
+
+/// THE DEFERRED-SITE EMITTER: the hostless twin of [`emit`] for `mcp::client::issue` — the MCP
+/// client-leg verb path that has no `HostCtx` to open (see [`PlaneCallLog::record_hostless`]). It
+/// swallows a durable-write failure the same way [`emit`] does (evidence, not admission), so the
+/// deferred path's behaviour matches the production emitter but for the host it never had.
+#[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
+pub(crate) fn emit_hostless(principal: &str, input: CallInput) {
+    let (server, tool, outcome, request_id) = (
+        input.server.clone(),
+        input.tool.clone(),
+        input.outcome,
+        input.request_id.clone(),
+    );
+    if let Err(e) = CALLS.record_hostless(principal, input) {
+        crate::diagnostics::diag_debug!(
+            crate::diagnostics::PLANE_CALLLOG_WRITE_FAILED,
+            principal = %principal,
+            request_id = %request_id,
+            server = %server,
+            tool = %tool,
+            outcome = %outcome,
+            error = %e,
+            "the durable MCP per-call record could NOT be written on the client-leg path; its \
+             evidence is being LOST. The chain position is unchanged, so the chain stays contiguous."
+        );
+    }
+}
+
+// ── TEST HARNESS — the per-principal chain is host-side now, so a test drives it over a host ──────
+
+/// TEST ONLY: a fresh, process-unique `call` stream id, well above the production ids (1/2) and the
+/// `plane_host::journal` test range (base 10_000) and the A2A `task_event` test range (base 100_000).
+#[cfg(test)]
+pub(crate) fn fresh_test_kind_id() -> u32 {
+    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(200_000);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+}
+
+/// TEST ONLY: a `PlaneCallLog` + an app whose governance store is `store`, with the `call` stream
+/// registered against it under a FRESH host-side id so parallel tests are isolated. Every chain write
+/// is driven inside [`CallTestHarness::host`].
+#[cfg(test)]
+pub(crate) struct CallTestHarness {
+    pub(crate) log: PlaneCallLog,
+    pub(crate) app: Arc<crate::state::App>,
+}
+
+#[cfg(test)]
+impl CallTestHarness {
+    /// Fresh isolated harness over `store` (the chain sink, via registration against an app whose
+    /// governance wraps it). A "restart" is just a second `over` the SAME store — the chain persists
+    /// in the store, so the fresh log reads it back through its own rehydrate.
+    pub(crate) fn over(store: Arc<dyn busbar_api::Store>) -> Self {
+        let kind_id = fresh_test_kind_id();
+        let gov =
+            Arc::new(crate::governance::GovState::new(store, None).expect("gov store constructs"));
+        let app = crate::test_support::TestApp::new().governance(gov).build();
+        register_call_stream_as(kind_id, &app);
+        Self {
+            log: PlaneCallLog::with_kind_id(kind_id),
+            app,
+        }
+    }
+
+    /// Drive one synchronous chain op with a live `HostCtx` over this harness's app.
+    pub(crate) fn host<R>(&self, f: impl FnOnce(HostCtx) -> R) -> R {
+        crate::plane_host::with_dispatch_scope(&self.app, |h, _| f(h))
+    }
+
+    // ── forwarders: the host-taking chain ops driven over this harness's app, the position-reading
+    //    diagnostics forwarded straight through (they touch no chain position, so they need no host) ──
+    pub(crate) fn record(
+        &self,
+        principal: &str,
+        input: CallInput,
+    ) -> Result<McpCallRecord, CallLogError> {
+        self.host(|host| self.log.record(host, principal, input))
+    }
+    pub(crate) fn restore_from_store(&self, store: &dyn PlaneStore) -> StoreResult<Restored> {
+        self.host(|host| self.log.restore_from_store(host, store))
+    }
+    pub(crate) fn compact(&self, before: u64) -> StoreResult<u64> {
+        self.host(|host| self.log.compact(host, before))
+    }
+    pub(crate) fn next_seq(&self, principal: &str) -> u64 {
+        self.log.next_seq(principal)
+    }
+    pub(crate) fn len(&self) -> usize {
+        self.log.len()
+    }
+    pub(crate) fn read_back(
+        &self,
+        store: &dyn PlaneStore,
+        principal: &str,
+    ) -> StoreResult<Vec<McpCallRecord>> {
+        self.log.read_back(store, principal)
+    }
+    pub(crate) fn verify_principal_chain(
+        &self,
+        store: &dyn PlaneStore,
+        principal: &str,
+    ) -> StoreResult<Result<usize, ChainBreak>> {
+        self.log.verify_principal_chain(store, principal)
+    }
+}
+
+/// TEST ONLY: the PRODUCTION `call` stream ([`KIND_ID_CALL`]), registered ONCE against a shared
+/// no-sink app so the working-set / global-`CALLS` tests mint sequences without racing to re-register
+/// (a re-register resets every position). A chain-asserting test aims this stream at its own store
+/// with [`aim_global_call_sink`] while it holds the process-wide call-log test lock.
+#[cfg(test)]
+fn global_call_host_app() -> &'static Arc<crate::state::App> {
+    static APP: std::sync::OnceLock<Arc<crate::state::App>> = std::sync::OnceLock::new();
+    APP.get_or_init(|| {
+        let app = crate::test_support::TestApp::new().build();
+        register_call_stream(&app);
+        app
+    })
+}
+
+/// TEST ONLY: ensure the process-wide `call` stream is registered ONCE (no-sink) — for a front-door
+/// integration harness whose app is not booted through `mcp_hydrate`. Idempotent (never re-registers).
+#[cfg(test)]
+pub(crate) fn ensure_global_call_stream_registered() {
+    let _ = global_call_host_app();
+}
+
+/// TEST ONLY: run `f` with a host over the shared global-`CALLS` app (registration ensured).
+#[cfg(test)]
+pub(crate) fn with_global_call_host<R>(f: impl FnOnce(HostCtx) -> R) -> R {
+    crate::plane_host::with_dispatch_scope(global_call_host_app(), |h, _| f(h))
+}
+
+/// TEST ONLY: aim (or detach, with `None`) the process-wide `call` stream's durable sink — for a
+/// chain-asserting global-`CALLS` test.
+#[cfg(test)]
+pub(crate) fn aim_global_call_sink(store: Option<Arc<dyn PlaneStore>>) {
+    let _ = global_call_host_app();
+    crate::plane_host::journal::set_stream_sink_for_test(KIND_ID_CALL, store);
 }
 
 #[cfg(test)]

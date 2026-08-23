@@ -18,7 +18,7 @@
 //!    proven nothing at all.
 
 use super::super::calllog::{
-    CallChain, CallInput, PlaneCallLog, OUTCOME_DISPATCHED, OUTCOME_REFUSED,
+    CallChain, CallInput, CallTestHarness, PlaneCallLog, OUTCOME_DISPATCHED, OUTCOME_REFUSED,
 };
 use crate::plane::store::StoreNamedTestExt;
 // The chain, the verifier and the break vocabulary are CORE's — this plane supplies only the record
@@ -355,8 +355,7 @@ fn refused(ts: u64, tool: &str, reason: &str) -> CallInput {
 /// Write three calls through a log attached to `store`, then DROP the log. Returns what was written,
 /// so the read-back can be compared against it field by field.
 fn write_then_drop(store: &Arc<dyn Store>) -> Vec<McpCallRecord> {
-    let log = PlaneCallLog::new();
-    log.set_sink(crate::plane::store::PlaneStoreView::narrow(store.clone()));
+    let log = CallTestHarness::over(store.clone());
     let a = log
         .record(P, dispatched(1000, "fs_read", "sha256:aaa", 7))
         .expect("first call records");
@@ -423,8 +422,7 @@ fn a_durable_store_returns_every_record_field_for_field_across_a_restart() {
     let written = write_then_drop(&store);
 
     // Process 2: nothing carried over.
-    let log2 = PlaneCallLog::new();
-    log2.set_sink(crate::plane::store::PlaneStoreView::narrow(store.clone()));
+    let log2 = CallTestHarness::over(store.clone());
     assert_eq!(
         log2.len(),
         0,
@@ -493,8 +491,7 @@ fn the_ram_default_accepts_every_write_and_keeps_nothing_and_says_so() {
     let written = write_then_drop(&store);
     assert_eq!(written.len(), 3, "all three writes returned Ok");
 
-    let log2 = PlaneCallLog::new();
-    log2.set_sink(crate::plane::store::PlaneStoreView::narrow(store.clone()));
+    let log2 = CallTestHarness::over(store.clone());
     let restored = log2
         .restore_from_store(crate::plane::store::PlaneStoreView::narrow(store.clone()).as_ref())
         .expect("the restore reads");
@@ -528,8 +525,7 @@ fn the_ram_default_accepts_every_write_and_keeps_nothing_and_says_so() {
 fn a_failed_durable_write_leaves_the_sequence_where_it_was() {
     let backing = Arc::new(DurableCallStore::new());
     let store: Arc<dyn Store> = backing.clone();
-    let log = PlaneCallLog::new();
-    log.set_sink(crate::plane::store::PlaneStoreView::narrow(store.clone()));
+    let log = CallTestHarness::over(store.clone());
 
     log.record(P, dispatched(1000, "fs_read", "sha256:aaa", 7))
         .expect("the first call records");
@@ -741,8 +737,7 @@ fn a_boot_chain_break_is_reported_while_the_rows_are_still_restored() {
     let written = write_then_drop(&store);
     backing.tamper(P, 2, |row| row.tool = "fs_exfiltrate".to_string());
 
-    let log2 = PlaneCallLog::new();
-    log2.set_sink(crate::plane::store::PlaneStoreView::narrow(store.clone()));
+    let log2 = CallTestHarness::over(store.clone());
     let restored = log2
         .restore_from_store(crate::plane::store::PlaneStoreView::narrow(store.clone()).as_ref())
         .expect("the restore reads");
@@ -802,7 +797,7 @@ fn an_enumerated_principal_with_no_rows_is_reported_as_an_empty_chain() {
             .is_empty(),
         "with no rows at all an honest backend names no principals"
     );
-    let control = PlaneCallLog::new();
+    let control = CallTestHarness::over(Arc::new(RamDefaultStore::new()));
     assert_eq!(
         control
             .restore_from_store(crate::plane::store::PlaneStoreView::narrow(store.clone()).as_ref())
@@ -813,7 +808,7 @@ fn an_enumerated_principal_with_no_rows_is_reported_as_an_empty_chain() {
     );
 
     let store2: Arc<dyn Store> = Arc::new(NamesOnePrincipalWithNoRows);
-    let log2 = PlaneCallLog::new();
+    let log2 = CallTestHarness::over(Arc::new(RamDefaultStore::new()));
     let restored = log2
         .restore_from_store(crate::plane::store::PlaneStoreView::narrow(store2.clone()).as_ref())
         .expect("the restore reads");
@@ -1039,8 +1034,7 @@ fn field_boundaries_cannot_be_forged_by_moving_text_across_them() {
 fn an_occupied_chain_position_takes_the_retry_and_refuses_the_fork() {
     let backing = Arc::new(DurableCallStore::new());
     let store: Arc<dyn Store> = backing.clone();
-    let log = PlaneCallLog::new();
-    log.set_sink(crate::plane::store::PlaneStoreView::narrow(store.clone()));
+    let log = CallTestHarness::over(store.clone());
     let first = log
         .record(P, dispatched(1000, "fs_read", "sha256:aaa", 7))
         .expect("records");
@@ -1063,8 +1057,7 @@ fn an_occupied_chain_position_takes_the_retry_and_refuses_the_fork() {
 fn retention_purges_rows_without_rewinding_the_chain() {
     let backing = Arc::new(DurableCallStore::new());
     let store: Arc<dyn Store> = backing.clone();
-    let log = PlaneCallLog::new();
-    log.set_sink(crate::plane::store::PlaneStoreView::narrow(store.clone()));
+    let log = CallTestHarness::over(store.clone());
     log.record(P, dispatched(1000, "fs_read", "sha256:aaa", 7))
         .expect("records");
     log.record(P, dispatched(2000, "fs_read", "sha256:aaa", 7))
@@ -1079,10 +1072,7 @@ fn retention_purges_rows_without_rewinding_the_chain() {
     );
 
     // The RAM default has nothing to purge and reports exactly that, rather than claiming a number.
-    let ram = PlaneCallLog::new();
-    ram.set_sink(crate::plane::store::PlaneStoreView::narrow(Arc::new(
-        RamDefaultStore::new(),
-    )));
+    let ram = CallTestHarness::over(Arc::new(RamDefaultStore::new()));
     assert_eq!(
         ram.compact(1500).expect("compact runs"),
         0,
@@ -1110,10 +1100,18 @@ fn an_empty_chain_verifies_because_the_records_alone_cannot_say_otherwise() {
 fn the_process_global_call_log_is_the_seam_a_call_site_records_through() {
     use super::super::calllog::CALLS;
     const GLOBAL_P: &str = "key_process_global_probe";
+    // The per-principal chain lives host-side; ensure the process-wide stream is registered (once,
+    // no-sink) and drive the global's record over a host.
+    crate::plane::calllog::ensure_global_call_stream_registered();
     let before = CALLS.next_seq(GLOBAL_P);
-    let rec = CALLS
-        .record(GLOBAL_P, dispatched(3000, "fs_read", "sha256:ggg", 11))
-        .expect("the global records with no sink attached");
+    let rec = crate::plane::calllog::with_global_call_host(|host| {
+        CALLS.record(
+            host,
+            GLOBAL_P,
+            dispatched(3000, "fs_read", "sha256:ggg", 11),
+        )
+    })
+    .expect("the global records with no sink attached");
     assert_eq!(
         rec.seq, before,
         "the record takes the sequence the chain offered"
@@ -1139,7 +1137,9 @@ fn the_process_global_call_log_is_the_seam_a_call_site_records_through() {
 #[test]
 fn the_chain_position_map_stays_bounded_across_many_distinct_principals() {
     use super::super::calllog::MAX_TRACKED_PRINCIPALS;
-    let log = PlaneCallLog::new();
+    // No durability claim here — the harness registers the CAPPED stream over a RAM default that keeps
+    // nothing, so this isolates the LRU bound from any store behaviour.
+    let log = CallTestHarness::over(Arc::new(RamDefaultStore::new()));
     let overflow_by = 1_000;
     for i in 0..(MAX_TRACKED_PRINCIPALS + overflow_by) {
         log.record(
@@ -1166,8 +1166,7 @@ fn an_evicted_principal_resumes_from_the_store_instead_of_forking_its_chain() {
     use super::super::calllog::MAX_TRACKED_PRINCIPALS;
     let backing = Arc::new(DurableCallStore::new());
     let store: Arc<dyn Store> = backing.clone();
-    let log = PlaneCallLog::new();
-    log.set_sink(crate::plane::store::PlaneStoreView::narrow(store.clone()));
+    let log = CallTestHarness::over(store.clone());
 
     // P makes two calls, then goes cold. It sits at the FRONT of the LRU (recorded first, never
     // re-touched), so it is the first to be evicted.
@@ -1237,8 +1236,7 @@ fn an_evicted_principal_whose_readback_fails_is_surfaced_not_forked() {
     use super::super::calllog::MAX_TRACKED_PRINCIPALS;
     let backing = Arc::new(DurableCallStore::new());
     let store: Arc<dyn Store> = backing.clone();
-    let log = PlaneCallLog::new();
-    log.set_sink(crate::plane::store::PlaneStoreView::narrow(store.clone()));
+    let log = CallTestHarness::over(store.clone());
 
     log.record(P, dispatched(1000, "fs_read", "sha256:aaa", 7))
         .expect("P records");

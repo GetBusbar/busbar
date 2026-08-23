@@ -331,8 +331,15 @@ pub(crate) fn mcp_hydrate(ctx: &crate::plane::registry::BootCtx) -> Result<(), S
     // chain is recomputed, so it is also the only place a tamper is detected — every break it finds is
     // logged at ERROR, naming the principal, while the records stay restored (refusing to restore them
     // would let anyone able to write to the store DELETE a caller's history by corrupting one byte).
-    crate::plane::calllog::CALLS.set_sink(plane_store.clone());
-    match crate::plane::calllog::CALLS.restore_from_store(plane_store.as_ref()) {
+    // REGISTER the durable `call` stream FIRST — the host attaches its sink from `app.governance` (the
+    // same plane-narrowed store) at register time, bounded at the MCP call log's LRU cap — then rehydrate
+    // through the seam, opening a dispatch scope so the caller-driven seed reaches the host over a live
+    // `HostCtx`.
+    crate::plane::calllog::register_call_stream(app);
+    let restored = crate::plane_host::with_dispatch_scope(app, |host, _| {
+        crate::plane::calllog::CALLS.restore_from_store(host, plane_store.as_ref())
+    });
+    match restored {
         Ok(r) if r == crate::plane::calllog::Restored::default() => {}
         Ok(r) => {
             tracing::info!(

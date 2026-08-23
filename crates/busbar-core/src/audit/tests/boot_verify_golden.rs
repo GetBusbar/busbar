@@ -41,7 +41,6 @@
 
 use super::*;
 use crate::admin::audit::AuditEntry;
-use crate::plane::calllog::PlaneCallLog;
 use crate::plane::store::{decode, encode, PlaneStore, KIND_CALL, KIND_TASK, KIND_TASK_EVENT};
 use busbar_api::{McpCallRecord, PlaneRecord, PlaneSelector, StoreResult, TaskEventRow, TaskRow};
 
@@ -152,8 +151,14 @@ fn mcp_call_chain_boot_verifies_from_frozen_bytes() {
     store.put(KIND_CALL, Some("vk_alice"), MCP_1);
     store.put(KIND_CALL, Some("vk_alice"), MCP_2);
 
-    let log = PlaneCallLog::new();
-    let restored = log.restore_from_store(&store).expect("store read");
+    // The chain position cache is host-side now: register a fresh isolated stream and host-drive the
+    // rehydrate. The FROZEN BYTES/HASHES above are unchanged — only the scaffolding that replays them
+    // through the durable seam changed. The rehydrate SEEDS positions from the store passed here (the
+    // frozen bytes), so the throwaway app the harness registers against is immaterial to the digests.
+    let h = crate::plane::calllog::CallTestHarness::over(std::sync::Arc::new(
+        busbar_store_memory::MemoryStore::new(),
+    ));
+    let restored = h.restore_from_store(&store).expect("store read");
     assert!(
         restored.chain_breaks.is_empty(),
         "a persisted MCP chain reported TAMPERED means the digest drifted: {:?}",
