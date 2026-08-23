@@ -372,6 +372,8 @@ pub(super) fn open_subprocess(
             observed_spki_len: 0,
             resp_headers_ptr: std::ptr::null(), // a raw byte channel surfaces no response headers.
             resp_headers_len: 0,
+            client_identity_offered: 0, // a raw byte channel offers no client identity.
+            _reserved4: [0; 7],
         },
     };
     // SAFETY: `out` is non-null (checked by the caller) and writable for one `EgressOpen`; written on Ok.

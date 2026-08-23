@@ -568,6 +568,10 @@ fn open_http(state: &HostState, d: &EgressDesc, out: *mut MaybeUninit<EgressOpen
     // forging one (the a2a `presenting`/no-identity posture, restated at the seam). See
     // [`super::identity`].
     let identity = super::identity::resolve(d.client_identity_ref);
+    // BUSBAR'S OWN END OF THE HANDSHAKE, decided HERE — before the streaming thread MOVES `identity`.
+    // `1` when a client certificate is carried into the handshake (offered if the peer asks), `0`
+    // when none was resolved. A fact about the connection this hop opens, handed back on the head.
+    let client_identity_offered = u8::from(identity.is_some());
 
     // Build the outbound request from the neutral DATA tail (verb / packed headers / body), then
     // INJECT the credential the plane named by ref — the host resolves the ref to the plaintext it
@@ -680,6 +684,8 @@ fn open_http(state: &HostState, d: &EgressDesc, out: *mut MaybeUninit<EgressOpen
             observed_spki_len: spki_len,
             resp_headers_ptr: rh_ptr,
             resp_headers_len: rh_len,
+            client_identity_offered,
+            _reserved4: [0; 7],
         },
     };
 

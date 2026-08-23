@@ -968,6 +968,16 @@ pub struct EgressHead {
     pub resp_headers_ptr: *const u8,
     /// (minor-8) Length of the packed response-header range (`0` = none).
     pub resp_headers_len: usize,
+    /// (minor-14) BUSBAR'S OWN END OF THE HANDSHAKE: `1` when this hop carried a client certificate
+    /// into the TLS handshake (so it was presented if the peer's `CertificateRequest` asked), `0`
+    /// otherwise. `0` also on a plaintext or raw hop (nothing was offered). A plane reads this as the
+    /// mutual-TLS half of the connection the response arrived over — it CANNOT mean "the peer did not
+    /// ask", because TLS gives a client no after-the-fact way to tell a handshake in which the peer
+    /// sent no `CertificateRequest` from one in which it did. A reader that predates this field sees
+    /// the shorter `size` and reads `0`.
+    pub client_identity_offered: u8,
+    /// (minor-14) Preamble/alignment padding after the client-identity byte.
+    pub _reserved4: [u8; 7],
 }
 
 /// The out-param an `egress_open` writes on `StatusClass::Ok`: the egress id, an optional duplex

@@ -169,7 +169,9 @@ fn compute_layout() -> String {
             observed_spki_ptr,
             observed_spki_len,
             resp_headers_ptr,
-            resp_headers_len
+            resp_headers_len,
+            client_identity_offered,
+            _reserved4
         ]
     );
     record!(s, EgressOpen, [size, version, _reserved, id, pipe, head]);
