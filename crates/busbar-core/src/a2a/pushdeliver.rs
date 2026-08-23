@@ -369,7 +369,7 @@ fn record_attempt(
         host,
         &task.task_id,
         kind,
-        crate::store::now(),
+        crate::plane_host::clock_now_secs_via(host),
         // No inbound request originates a delivery; `request_id` is a join key and is excluded from
         // the digest for exactly this reason (see `provenance::digest_fields`).
         "",

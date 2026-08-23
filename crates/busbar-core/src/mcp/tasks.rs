@@ -198,8 +198,11 @@ impl McpTask {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    fn touch(state: &mut State) {
-        state.updated_ms = crate::store::now_ms();
+    /// Stamp `updated_ms` with the millisecond clock read the caller took over the host
+    /// [`clock_now`](crate::plane_host) seam (`clock_now_ms_over`) and threaded in — the plane keeps
+    /// off the ambient clock, so this method reads none of its own.
+    fn touch(state: &mut State, now_ms: u64) {
+        state.updated_ms = now_ms;
     }
 
     /// The `DetailedTask` a `tasks/get` answers with, minus the `resultType` the response builder
@@ -264,7 +267,7 @@ impl McpTask {
 
     /// PARK on a round of asks. Any ask already answered by an earlier `tasks/update` is not
     /// re-asked.
-    fn park(&self, asks: Vec<CallerAsk>) {
+    fn park(&self, asks: Vec<CallerAsk>, now_ms: u64) {
         let mut state = self.lock();
         state.input_requests = asks
             .into_iter()
@@ -278,7 +281,7 @@ impl McpTask {
             .collect();
         if !state.input_requests.is_empty() {
             state.status = Status::InputRequired;
-            Self::touch(&mut state);
+            Self::touch(&mut state, now_ms);
         }
     }
 
@@ -288,7 +291,7 @@ impl McpTask {
     ///
     /// Returns nothing — the resulting task state is observed on the next `tasks/get`, which is
     /// what makes the ack an empty `{resultType:"complete"}` rather than a task envelope.
-    fn deliver(&self, responses: &serde_json::Map<String, serde_json::Value>) {
+    fn deliver(&self, responses: &serde_json::Map<String, serde_json::Value>, now_ms: u64) {
         let mut state = self.lock();
         for (key, value) in responses {
             state.answers.insert(key.clone(), value.clone());
@@ -296,7 +299,7 @@ impl McpTask {
         state
             .input_requests
             .retain(|(k, _)| !responses.contains_key(k));
-        Self::touch(&mut state);
+        Self::touch(&mut state, now_ms);
         if state.input_requests.is_empty() && state.status == Status::InputRequired {
             state.status = Status::Working;
         }
@@ -327,16 +330,16 @@ impl McpTask {
         self.lock().answers.clone()
     }
 
-    fn set_working(&self) {
+    fn set_working(&self, now_ms: u64) {
         let mut state = self.lock();
         if !state.status.is_terminal() {
             state.status = Status::Working;
-            Self::touch(&mut state);
+            Self::touch(&mut state, now_ms);
         }
     }
 
     /// The tool RAN. `result` is its own answer, `isError` and all — see the module header.
-    fn complete(&self, result: serde_json::Value) {
+    fn complete(&self, result: serde_json::Value, now_ms: u64) {
         let mut state = self.lock();
         if state.status.is_terminal() {
             return;
@@ -345,11 +348,11 @@ impl McpTask {
         state.result = Some(result);
         state.input_requests.clear();
         state.abort = None;
-        Self::touch(&mut state);
+        Self::touch(&mut state, now_ms);
     }
 
     /// A PROTOCOL-level failure. `error` only, never a `result` beside it.
-    fn fail(&self, code: i64, message: String) {
+    fn fail(&self, code: i64, message: String, now_ms: u64) {
         let mut state = self.lock();
         if state.status.is_terminal() {
             return;
@@ -359,7 +362,7 @@ impl McpTask {
         state.result = None;
         state.input_requests.clear();
         state.abort = None;
-        Self::touch(&mut state);
+        Self::touch(&mut state, now_ms);
     }
 
     /// CANCEL. Idempotent on a terminal task, which is the whole of the `tasks/cancel` contract:
@@ -368,14 +371,14 @@ impl McpTask {
     /// The runner is aborted rather than asked to stop, because the thing it is usually blocked on
     /// is an upstream HTTP round trip with a 30-second budget and a cooperative check would not be
     /// reached until it returned. Aborting drops the request future, which closes the connection.
-    fn cancel(&self) {
+    fn cancel(&self, now_ms: u64) {
         let mut state = self.lock();
         if state.status.is_terminal() {
             return;
         }
         state.status = Status::Cancelled;
         state.input_requests.clear();
-        Self::touch(&mut state);
+        Self::touch(&mut state, now_ms);
         if let Some(abort) = state.abort.take() {
             abort.abort();
         }
@@ -426,8 +429,11 @@ impl Registry {
     /// never hold a `taskId` that a `tasks/get` issued in the next breath would not resolve. The
     /// insert therefore happens here, under the lock, and the runner is attached afterwards — so
     /// even a runner that has not been scheduled yet cannot make the id unresolvable.
-    pub(crate) fn create(&self, principal: &str) -> Arc<McpTask> {
-        let now = crate::store::now_ms();
+    ///
+    /// `now` is the millisecond clock read the caller took over the host
+    /// [`clock_now`](crate::plane_host) seam (`clock_now_ms_over`) — the plane reads no ambient
+    /// clock of its own — and it stamps both `created_ms` and `updated_ms` and drives the sweep.
+    pub(crate) fn create(&self, principal: &str, now: u64) -> Arc<McpTask> {
         let task = Arc::new(McpTask {
             id: new_task_id(),
             principal: principal.to_string(),
@@ -490,16 +496,17 @@ impl Registry {
         id: &str,
         principal: &str,
         responses: &serde_json::Map<String, serde_json::Value>,
+        now_ms: u64,
     ) -> Option<()> {
         let task = self.get(id, principal)?;
-        task.deliver(responses);
+        task.deliver(responses, now_ms);
         Some(())
     }
 
     /// Cancel a task this caller owns. Idempotent — see [`McpTask::cancel`].
-    pub(crate) fn cancel(&self, id: &str, principal: &str) -> Option<()> {
+    pub(crate) fn cancel(&self, id: &str, principal: &str, now_ms: u64) -> Option<()> {
         let task = self.get(id, principal)?;
-        task.cancel();
+        task.cancel(now_ms);
         Some(())
     }
 }
@@ -615,13 +622,16 @@ fn settle_task_leg(
 async fn run(task: Arc<McpTask>, runner: Runner) {
     // (1) THE IN-TASK ASK ROUNDS. Ordered, and each one waits for every key it asked.
     for round in &runner.task_asks {
-        task.park(round.clone());
+        task.park(
+            round.clone(),
+            crate::plane_host::clock_now_ms_over(&runner.handle.load()),
+        );
         task.await_answers().await;
         if task.lock().status.is_terminal() {
             return;
         }
     }
-    task.set_working();
+    task.set_working(crate::plane_host::clock_now_ms_over(&runner.handle.load()));
 
     // (2) THE ANSWERS BECOME ARGUMENTS. An `ask_caller`/`task_ask_caller` entry keyed `user_name`
     // supplies the tool argument `user_name` — which is what an operator writing a confirmation
@@ -732,13 +742,21 @@ async fn run(task: Arc<McpTask>, runner: Runner) {
     // `protocol_error_job` fixture. So the two paths agree about the FACT and differ about the
     // SHAPE, because the shapes are what the two surfaces provide.
     match outcome {
-        Ok_(value) => task.complete(super::sanitize::normalise_json(&value)),
-        Err_(refusal) => task.fail(TASK_PROTOCOL_ERROR_CODE, refusal.to_string()),
+        Ok_(value) => task.complete(
+            super::sanitize::normalise_json(&value),
+            crate::plane_host::clock_now_ms_over(&handle.load()),
+        ),
+        Err_(refusal) => task.fail(
+            TASK_PROTOCOL_ERROR_CODE,
+            refusal.to_string(),
+            crate::plane_host::clock_now_ms_over(&handle.load()),
+        ),
         // The message keeps its exact former wording, because the split is about ATTRIBUTION and a
         // task's inlined error text is already on the wire for a scenario that reads it.
         Upstream_(reason) => task.fail(
             TASK_PROTOCOL_ERROR_CODE,
             format!("the MCP upstream call failed: {reason}"),
+            crate::plane_host::clock_now_ms_over(&handle.load()),
         ),
     }
 }

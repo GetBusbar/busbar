@@ -226,6 +226,21 @@ pub fn clock_now_ms_over(app: &App) -> u64 {
     }) / 1_000_000
 }
 
+/// Read the host wall clock in whole SECONDS through the wired [`clock_now`](vtable) seam using a
+/// [`HostCtx`] the caller ALREADY holds — the form a plane leg that was handed a raw host (over
+/// [`with_borrowed_host`] / a [`HostDispatch`]) but has no `&App` in scope to mint a fresh
+/// [`DispatchScope`] reaches the same clock through. It builds the host vtable and drives the
+/// `clock_now` slot against the caller's live host directly (the slot recovers and discards the
+/// [`HostState`], so no scope is minted); the value is identical to [`clock_now_secs_over`] and to
+/// reading `store::now` in place. A SAFE wrapper that keeps the raw fn-pointer read inside this
+/// audited module (busbar-core denies `unsafe` elsewhere).
+#[cfg(feature = "plane-a2a")]
+#[must_use]
+pub fn clock_now_secs_via(host: HostCtx) -> u64 {
+    let vtable = build_plane_host_vtable();
+    (vtable.clock_now.expect("clock_now is a wired slot"))(host) / 1_000_000_000
+}
+
 /// The ASYNC-CAPABLE dispatch guard: an OWNED RAII handle a core `async` dispatch fn creates at the top
 /// of its body and holds as a LOCAL across every `.await`, so the [`DispatchScope`] arena lives for the
 /// whole future and reclaims on ANY exit — normal return, client-disconnect cancel, or panic. This is

@@ -377,7 +377,12 @@ fn tasks_update(
         .and_then(|v| v.as_object())
         .cloned()
         .unwrap_or_default();
-    super::tasks::TASKS.update(&task.id, task_principal(ctx), &responses);
+    super::tasks::TASKS.update(
+        &task.id,
+        task_principal(ctx),
+        &responses,
+        crate::plane_host::clock_now_ms_over(ctx.app),
+    );
     result(id, serde_json::json!({}))
 }
 
@@ -399,7 +404,11 @@ fn tasks_cancel(
         Ok(task) => task,
         Err(refusal) => return *refusal,
     };
-    super::tasks::TASKS.cancel(&task.id, task_principal(ctx));
+    super::tasks::TASKS.cancel(
+        &task.id,
+        task_principal(ctx),
+        crate::plane_host::clock_now_ms_over(ctx.app),
+    );
     crate::admin::audit::AUDIT.record_by(
         "mcp_task.cancel",
         &format!("mcp_task:{}", task.id),
@@ -1971,7 +1980,10 @@ async fn create_task(
     // grant scope's reclaim releases the registered grant now — the old `drop(holds)`.
     drop(grant_scope);
 
-    let task = super::tasks::TASKS.create(task_principal(ctx));
+    let task = super::tasks::TASKS.create(
+        task_principal(ctx),
+        crate::plane_host::clock_now_ms_over(ctx.app),
+    );
     let created = task.created();
     super::tasks::spawn(
         std::sync::Arc::clone(&task),

@@ -337,12 +337,13 @@ struct Listen {
 /// It builds a `Caller` rather than a grant closure so that the per-frame catalogue read asks the
 /// same ordered gate every other catalogue read asks, identity step included.
 fn caller_of<'a>(
+    app: &crate::state::App,
     key: Option<&'a std::sync::Arc<busbar_api::VirtualKey>>,
     generation: u64,
 ) -> crate::catalogue::Caller<'a> {
     crate::catalogue::Caller {
         key: key.map(|k| &**k),
-        now: crate::store::now(),
+        now: crate::plane_host::clock_now_secs_over(app),
         // AT ADMISSION for the FRAME, not for the stream. This value is re-built on every poll from
         // the generation the frame is being computed against, so the catalogue read cannot be judged
         // against a snapshot other than the one it is reading. The stream's own relationship to the
@@ -420,7 +421,7 @@ impl Listen {
                 return Some(self.closing_frame(&lapsed));
             }
         };
-        let caller = caller_of(key.as_ref(), catalogue.generation());
+        let caller = caller_of(&app, key.as_ref(), catalogue.generation());
         let now = Instant::now();
         match &mut self.phase {
             Phase::Acknowledge => {
@@ -543,7 +544,7 @@ pub(crate) fn listen(
     // poll at delivery — this read only decides what the acknowledgement may NAME.
     let accepted = {
         let catalogue = &super::runtime(ctx.app).catalogue;
-        let caller = caller_of(ctx.gov.key.as_ref(), catalogue.generation());
+        let caller = caller_of(ctx.app, ctx.gov.key.as_ref(), catalogue.generation());
         accept(&requested, |uri| {
             matches!(
                 catalogue.resource_by_uri(&caller, uri),

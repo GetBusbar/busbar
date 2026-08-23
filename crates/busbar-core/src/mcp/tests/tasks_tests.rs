@@ -14,7 +14,7 @@ use super::*;
 /// from an unknown id on purpose — see `Registry::get`.
 #[test]
 fn a_task_is_addressable_only_by_the_principal_it_was_created_for() {
-    let mine = TASKS.create("key-a");
+    let mine = TASKS.create("key-a", crate::store::now_ms());
     assert!(TASKS.get(&mine.id, "key-a").is_some());
     assert!(
         TASKS.get(&mine.id, "key-b").is_none(),
@@ -28,7 +28,7 @@ fn a_task_is_addressable_only_by_the_principal_it_was_created_for() {
 /// readable the instant the id exists, because `create` inserts before it returns.
 #[test]
 fn a_created_task_resolves_before_anything_else_runs() {
-    let task = TASKS.create("key-consistency");
+    let task = TASKS.create("key-consistency", crate::store::now_ms());
     assert!(
         TASKS.get(&task.id, "key-consistency").is_some(),
         "a `tasks/get` issued with no delay after `CreateTaskResult` must resolve; returning an id \
@@ -41,11 +41,14 @@ fn a_created_task_resolves_before_anything_else_runs() {
 /// the distinction the extension is most often implemented backwards.
 #[test]
 fn a_tool_error_settles_as_completed_and_a_protocol_error_settles_as_failed() {
-    let ran = TASKS.create("key-status");
-    ran.complete(serde_json::json!({
-        "isError": true,
-        "content": [{ "type": "text", "text": "the file was not found" }],
-    }));
+    let ran = TASKS.create("key-status", crate::store::now_ms());
+    ran.complete(
+        serde_json::json!({
+            "isError": true,
+            "content": [{ "type": "text", "text": "the file was not found" }],
+        }),
+        crate::store::now_ms(),
+    );
     let detailed = ran.detailed();
     assert_eq!(detailed["status"], "completed");
     assert_eq!(detailed["result"]["isError"], true);
@@ -54,8 +57,12 @@ fn a_tool_error_settles_as_completed_and_a_protocol_error_settles_as_failed() {
         "a tool that RAN carries no protocol `error`"
     );
 
-    let broke = TASKS.create("key-status");
-    broke.fail(-32603, "the upstream answered JSON-RPC error -32000".into());
+    let broke = TASKS.create("key-status", crate::store::now_ms());
+    broke.fail(
+        -32603,
+        "the upstream answered JSON-RPC error -32000".into(),
+        crate::store::now_ms(),
+    );
     let detailed = broke.detailed();
     assert_eq!(detailed["status"], "failed");
     assert_eq!(detailed["error"]["code"], -32603);
@@ -69,9 +76,9 @@ fn a_tool_error_settles_as_completed_and_a_protocol_error_settles_as_failed() {
 /// contract requires so a client need not handle the terminate-then-cancel race.
 #[test]
 fn cancelling_a_terminal_task_leaves_its_settled_status_alone() {
-    let task = TASKS.create("key-cancel");
-    task.complete(serde_json::json!({ "content": [] }));
-    task.cancel();
+    let task = TASKS.create("key-cancel", crate::store::now_ms());
+    task.complete(serde_json::json!({ "content": [] }), crate::store::now_ms());
+    task.cancel(crate::store::now_ms());
     assert_eq!(
         task.detailed()["status"],
         "completed",
@@ -100,13 +107,16 @@ fn elicitation(key: &str) -> CallerAsk {
 /// parked on the other.
 #[test]
 fn answering_one_of_two_asks_leaves_the_task_parked_on_the_other() {
-    let task = TASKS.create("key-partial");
-    task.park(vec![elicitation("first"), elicitation("second")]);
+    let task = TASKS.create("key-partial", crate::store::now_ms());
+    task.park(
+        vec![elicitation("first"), elicitation("second")],
+        crate::store::now_ms(),
+    );
     assert_eq!(task.detailed()["status"], "input_required");
 
     let mut answered = serde_json::Map::new();
     answered.insert("first".into(), serde_json::json!({ "action": "accept" }));
-    task.deliver(&answered);
+    task.deliver(&answered, crate::store::now_ms());
 
     let detailed = task.detailed();
     assert_eq!(detailed["status"], "input_required");
@@ -122,7 +132,7 @@ fn answering_one_of_two_asks_leaves_the_task_parked_on_the_other() {
 
     let mut rest = serde_json::Map::new();
     rest.insert("second".into(), serde_json::json!({ "action": "accept" }));
-    task.deliver(&rest);
+    task.deliver(&rest, crate::store::now_ms());
     assert_eq!(
         task.detailed()["status"],
         "working",
@@ -133,7 +143,7 @@ fn answering_one_of_two_asks_leaves_the_task_parked_on_the_other() {
 /// The CreateTaskResult is FLAT and carries none of the DetailedTask-only members.
 #[test]
 fn the_creation_result_is_flat_and_carries_no_detailed_task_members() {
-    let task = TASKS.create("key-shape");
+    let task = TASKS.create("key-shape", crate::store::now_ms());
     let created = task.created();
     let obj = created.as_object().expect("an object");
     assert!(obj.contains_key("taskId"));
@@ -159,10 +169,10 @@ fn the_creation_result_is_flat_and_carries_no_detailed_task_members() {
 /// documents read together, which is why this is asserted rather than assumed.
 #[test]
 fn no_task_shape_ever_carries_request_state() {
-    let task = TASKS.create("key-no-state");
+    let task = TASKS.create("key-no-state", crate::store::now_ms());
     assert!(task.created().get("requestState").is_none());
     assert!(task.detailed().get("requestState").is_none());
-    task.park(vec![elicitation("confirm")]);
+    task.park(vec![elicitation("confirm")], crate::store::now_ms());
     assert!(task.detailed().get("requestState").is_none());
 }
 

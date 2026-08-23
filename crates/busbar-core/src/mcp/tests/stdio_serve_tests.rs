@@ -1030,14 +1030,14 @@ async fn a_tasks_transition_is_pushed_over_the_channel() {
     let (_peer, app) = plain_deployment().await;
     let mut client = Client::open(app, crate::governance::PlaneRequestCtx::default());
     // The session's actor is `anonymous` (ungoverned fixture); create its task in the registry.
-    let task = crate::mcp::tasks::TASKS.create("anonymous");
+    let task = crate::mcp::tasks::TASKS.create("anonymous", crate::store::now_ms());
     // Attach the watcher exactly as `deliver` does when it hands the caller a task result.
     client.session.watch_task_result(&serde_json::json!({
         "jsonrpc": "2.0", "id": "t0",
         "result": { "resultType": "task", "taskId": task.id, "status": "submitted" },
     }));
     crate::mcp::tasks::TASKS
-        .cancel(&task.id, "anonymous")
+        .cancel(&task.id, "anonymous", crate::store::now_ms())
         .expect("cancel the task");
     let pushed = client.recv().await;
     assert_eq!(
