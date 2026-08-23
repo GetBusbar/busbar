@@ -134,18 +134,6 @@ impl PlaneBreakers {
         }
     }
 
-    /// The cell store as the [`LaneRuntime`] the failover seam's `walk` consults — the SAME object
-    /// every method below writes, so a selection admitted by `failover::walk` and an outcome
-    /// recorded by [`Self::record_signal`] meet on one cell. Exposed as the trait rather than the
-    /// concrete type so the walk cannot grow a plane-store-specific dependency.
-    // MCP-only now: the A2A failover sync sites win their probe through the host `breaker_admit` seam
-    // (CLUSTER-1), so only the MCP legacy None-scope `walk` still consults this directly. With
-    // `plane-mcp` off (and A2A on) it has no caller.
-    #[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
-    pub(crate) fn runtime(&self) -> &dyn super::LaneRuntime {
-        &self.health
-    }
-
     /// The MCP plane's key for one registered tool server. The `tool:` prefix is the audit's
     /// keyspace rule; the id is the operator's registration id, which is what every refusal names.
     // MCP-only: keyed by the MCP plane alone, so with `plane-mcp` off (and A2A on) it has no caller.
@@ -194,23 +182,6 @@ impl PlaneBreakers {
             lane,
             epoch,
         })
-    }
-
-    /// A probe token won OUTSIDE this module — by `failover::walk`, whose admission is the same
-    /// [`LaneRuntime::try_admit_breaker`] against the same cell — wrapped into the RAII
-    /// [`Admission`] so a walked selection inherits the identical cannot-be-leaked discipline the
-    /// degenerate path has.
-    // MCP-only now: the A2A walk wins+registers its probe through the host `breaker_admit` seam
-    // (CLUSTER-1) rather than adopting a bare epoch here, so only the MCP legacy None-scope path still
-    // adopts. With `plane-mcp` off (and A2A on) it has no caller.
-    #[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
-    pub(crate) fn adopt(self: &Arc<Self>, key: &str, lane: usize, epoch: u64) -> Admission {
-        Admission {
-            breakers: Arc::clone(self),
-            key: key.to_string(),
-            lane,
-            epoch,
-        }
     }
 
     /// OWNER-CHECKED release of the probe token [`Self::try_admit`] returned, for a dispatch that

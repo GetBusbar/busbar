@@ -1593,7 +1593,13 @@ async fn tools_call(
     let breakers = std::sync::Arc::clone(&ctx.app.plane_breakers);
     let route =
         super::reroute::PoolRoute::build(&live, ctx.gov.key(), &selected, authorised, &arguments);
-    if let Err(refused) = route.admit(ctx.app, &breakers, ctx.scope) {
+    // The request-wide dispatch arena the breaker admission (and every concurrency hold below)
+    // registers into: `ctx.scope` in production, a local fallback that drops at this fn's return for a
+    // `None` scope (unit tests). Resolved BEFORE the admit so the won probe is born in it — the breaker
+    // admit now always registers through a real arena, never a raw hold.
+    let fallback_scope = crate::plane_host::DispatchScope::new();
+    let scope = ctx.scope.unwrap_or(&fallback_scope);
+    if let Err(refused) = route.admit(ctx.app, &breakers, scope) {
         return log.refused(
             route_refusal_reason(&refused),
             refuse_route(id, &route, &refused),
@@ -1602,14 +1608,11 @@ async fn tools_call(
 
     // (4) THE BOUNDED, METERED, PER-ROUND-GATED LOOP.
     //
-    // Every concurrency hold `try_admit` takes now rides the request-wide dispatch arena (`ctx.scope`,
-    // the SAME arena this `tools/call`'s breaker admission registers into) via the host
-    // `govern_admit_reason` seam, so it lives exactly as long as the dispatch does and releases when
-    // the request future ends — the lifetime the caller-held `Vec<AdmitGrant>` had, and never inside
-    // the loop while the round it guards is still running. A `None` scope (unit tests) falls back to a
-    // local arena that drops at this fn's return, the same drop point.
-    let fallback_scope = crate::plane_host::DispatchScope::new();
-    let scope = ctx.scope.unwrap_or(&fallback_scope);
+    // Every concurrency hold `try_admit` takes rides the request-wide dispatch `scope` (the SAME arena
+    // this `tools/call`'s breaker admission registered into) via the host `govern_admit_reason` seam, so
+    // it lives exactly as long as the dispatch does and releases when the request future ends — the
+    // lifetime the caller-held `Vec<AdmitGrant>` had, and never inside the loop while the round it
+    // guards is still running.
     let server_id = selected.server.clone();
     let pool = super::runtime(ctx.app).pool.as_ref();
     let route_ref = &route;
@@ -1624,7 +1627,7 @@ async fn tools_call(
                 ctx.app,
                 pool,
                 &breakers,
-                ctx.scope,
+                scope,
                 &arguments,
                 u64::from(round),
                 satisfaction,
@@ -1918,8 +1921,8 @@ async fn create_task(
     // BEFORE the task row is minted, because a pool with nothing admissible must be a refusal the
     // caller sees NOW, not a task id for work busbar already knows it will not dispatch. The
     // admitted member is FIXED for the task's whole life (`into_task_dispatch`): a task is one
-    // conversation with one deployment, and its probe hold rides into the runner, which releases
-    // it after its loop settles (a recorded outcome makes that a no-op).
+    // conversation with one deployment, and its probe is BORN in the runner's `DurableScope`, which
+    // releases it after the detached loop settles (a recorded outcome makes that a no-op).
     let breakers = std::sync::Arc::clone(&ctx.app.plane_breakers);
     let live_app = ctx.handle.load();
     let route = super::reroute::PoolRoute::build(
@@ -1929,17 +1932,19 @@ async fn create_task(
         authorised,
         &arguments,
     );
-    // The task path admits with NO sync scope: the won probe is held raw and then re-homed into the
-    // runner's `DurableScope` by `into_task_dispatch`, where the detached leg settles it.
-    if let Err(refused) = route.admit(ctx.app, &breakers, None) {
+    // The runner-owned durable scope, opened UP FRONT so the task admit runs its walk through the host
+    // `breaker_admit` seam over THIS arena: the probe is born durable (no per-request re-home, no
+    // settling-handoff), so its owner-checked release already reclaims at TASK end, not request-future
+    // drop. The immutable borrow the admit takes on `durable.arena()` ends when `admit` returns, so
+    // `durable` moves into the runner's `DurableHostDispatch` below.
+    let durable = crate::plane_host::DurableScope::new();
+    if let Err(refused) = route.admit(ctx.app, &breakers, durable.arena()) {
         return log.refused(
             route_refusal_reason(&refused),
             refuse_route(id, &route, &refused),
         );
     }
-    let Some((authorised, cell, durable, admission_id, member_id)) =
-        route.into_task_dispatch(&breakers)
-    else {
+    let Some((authorised, cell, admission_id, member_id)) = route.into_task_dispatch() else {
         // Unreachable after a successful `admit`; refuse rather than panic on a caller's path.
         return log.refused(
             REASON_UPSTREAM_UNAVAILABLE,

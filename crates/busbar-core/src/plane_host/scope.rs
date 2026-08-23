@@ -413,25 +413,14 @@ impl DurableScope {
         }
     }
 
-    /// Open a durable scope that already owns a DROP-ONLY `guard` — the legacy `into_task_dispatch`
-    /// handoff in one step (the guard's `Drop` reclaims at TASK end). Prefer
-    /// [`with_settling_handoff`](Self::with_settling_handoff) when the moved resource is a breaker
-    /// admission that a detached leg may still want to settle.
+    /// Open a durable scope that already owns a DROP-ONLY `guard` in one step (the guard's `Drop`
+    /// reclaims at TASK end). Prefer [`register_settling`](Self::register_settling) when the moved
+    /// resource is a breaker admission that a detached leg may still want to settle.
     #[must_use]
     pub fn with_handoff(guard: Box<dyn Send>) -> Self {
         let dur = DurableScope::new();
         dur.handoff(guard);
         dur
-    }
-
-    /// Open a durable scope that already owns a SETTLE-CAPABLE breaker admission — the settling
-    /// `into_task_dispatch` handoff in one step. Returns the scope and the [`AdmissionId`] a later
-    /// [`settle`](Self::settle) (or the host `breaker_settle` seam over this scope) resolves it by.
-    #[must_use]
-    pub fn with_settling_handoff(guard: Box<dyn SettleAdmission>) -> (Self, AdmissionId) {
-        let dur = DurableScope::new();
-        let id = dur.register_settling(guard);
-        (dur, id)
     }
 
     /// Take DROP-ONLY durable ownership of `guard`: its `Drop` now reclaims when this scope drops
@@ -627,12 +616,13 @@ mod tests {
         let settled = Arc::new(AtomicUsize::new(0));
         let released = Arc::new(AtomicUsize::new(0));
         {
-            let (dur, id) = DurableScope::with_settling_handoff(Box::new(TestSettling {
+            let dur = DurableScope::new();
+            let id = dur.register_settling(Box::new(TestSettling {
                 settled: settled.clone(),
                 released: released.clone(),
                 done: false,
             }));
-            assert!(!id.is_none(), "a settling handoff yields a live id");
+            assert!(!id.is_none(), "a settling registration yields a live id");
             assert_eq!(dur.registered(), 1);
             assert_eq!(
                 released.load(Ordering::SeqCst),
@@ -656,7 +646,8 @@ mod tests {
         let released = Arc::new(AtomicUsize::new(0));
         let sig = ok_signal();
         {
-            let (dur, id) = DurableScope::with_settling_handoff(Box::new(TestSettling {
+            let dur = DurableScope::new();
+            let id = dur.register_settling(Box::new(TestSettling {
                 settled: settled.clone(),
                 released: released.clone(),
                 done: false,

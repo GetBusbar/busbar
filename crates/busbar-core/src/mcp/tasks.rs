@@ -520,13 +520,13 @@ pub(crate) struct Runner {
     /// `create_task` consulted for admission, carried so the runner cannot record into a different
     /// generation's cells than it was admitted against.
     pub(crate) breakers: Arc<crate::store::PlaneBreakers>,
-    /// THE DETACHED RUNNER'S HOST ROUTE (durable handoff). Owns the runner's `Arc<App>`, the
+    /// THE DETACHED RUNNER'S HOST ROUTE. Owns the runner's `Arc<App>`, the
     /// [`DurableScope`](crate::plane_host::DurableScope) holding the single-flight probe `create_task`
-    /// won, and the durable `AdmissionId` the detached leg settles by. `into_task_dispatch` moved the
-    /// breaker probe-hold out of the per-request dispatch arena into this scope as a SETTLE-CAPABLE
-    /// admission, so it releases owner-checked when THIS guard drops WITH the runner — covering the
-    /// runner being ABORTED by `tasks/cancel` as well as its normal end, the case an explicit release
-    /// call cannot reach — and a settle through the host `breaker_settle` seam over
+    /// won, and the durable `AdmissionId` the detached leg settles by. `create_task` ran the task admit
+    /// through the host `breaker_admit` seam OVER this scope's arena, so the probe was BORN durable
+    /// (no per-request win + re-home) and releases owner-checked when THIS guard drops WITH the runner
+    /// — covering the runner being ABORTED by `tasks/cancel` as well as its normal end, the case an
+    /// explicit release call cannot reach — and a settle through the host `breaker_settle` seam over
     /// `host.host_state()` makes that drop a no-op.
     ///
     /// CLUSTER-1: the detached leg SETTLES its classified outcome through this route

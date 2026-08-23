@@ -78,32 +78,6 @@ impl SettleAdmission for BreakerAdmission {
     }
 }
 
-/// Build a settle-capable breaker admission from an ALREADY-WON probe hold — the seam the failover
-/// reroute path (`mcp::reroute::into_task_dispatch`) uses to re-home a `PlaneAdmission` it won through
-/// [`crate::failover::walk`] into a [`DurableScope`](super::DurableScope) as a `Box<dyn SettleAdmission>`,
-/// so the detached runner can settle its observed outcome against the SAME `(key, lane)` cell (or let
-/// the durable scope release the unsettled probe on task-end drop). The reroute path owns a bare
-/// `PlaneAdmission` rather than one registered in a [`DispatchScope`](super::DispatchScope), so this
-/// wraps it exactly as [`breaker_admit`] wraps the token it registers.
-// MCP-only now: the A2A failover sync sites win+register their probe through the host
-// `breaker_admit` seam directly (CLUSTER-1), so only the MCP reroute durable-handoff path
-// (`mcp::reroute::into_task_dispatch`) still re-homes a bare `PlaneAdmission` through this. With
-// `plane-mcp` off it has no caller.
-#[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
-pub(crate) fn settling_admission(
-    breakers: Arc<PlaneBreakers>,
-    key: String,
-    lane: usize,
-    admission: PlaneAdmission,
-) -> Box<dyn SettleAdmission> {
-    Box::new(BreakerAdmission {
-        breakers,
-        key,
-        lane,
-        _admission: admission,
-    })
-}
-
 /// WIN ONE `(pool, lane)` PROBE THROUGH THE HOST SEAM — the SAFE wrapper the failover sync sites drive
 /// per candidate, so the plane never touches the `#[repr(C)]` [`AdmitRefusal`] out-param read or the
 /// raw vtable pointer (busbar-core denies `unsafe` outside this audited module; precedent:
@@ -789,6 +763,106 @@ mod tests {
             BreakerState::Closed,
             "the recorded success recovered the HalfOpen probe to Closed"
         );
+    }
+
+    /// THE CREATE_TASK ADMIT PATH: the runner's durable scope is opened UP FRONT and the task admit
+    /// runs through the host `breaker_admit` seam OVER ITS ARENA — so the probe is BORN durable (no
+    /// per-request win + re-home). It holds the cell HalfOpen until the detached runner settles it
+    /// through the same host seam over that durable arena, recovering it to Closed — mirroring
+    /// `durable_host_route_settles_through_breaker_settle` but entered via the durable-arena admit.
+    #[test]
+    fn task_admit_bears_the_probe_in_the_durable_scope_and_settles() {
+        use crate::plane_host::{DurableHostDispatch, DurableScope, HostState};
+        let app = std::sync::Arc::new(crate::test_support::TestApp::new().build());
+        app.plane_breakers.force_open(POOL_STR, 0, 1);
+
+        // Admit DIRECTLY into the runner-owned durable arena (what `create_task` now does via the
+        // pooled walk): the won probe is registered in the DurableScope, never a per-request one.
+        let durable = DurableScope::new();
+        let id = {
+            let state = HostState {
+                app: &app,
+                scope: durable.arena(),
+            };
+            let host: HostCtx = (&state as *const HostState)
+                .cast_mut()
+                .cast::<std::os::raw::c_void>();
+            let k = key(0);
+            let id = breaker_admit(host, &k as *const Key);
+            assert!(!id.is_none(), "the task admit wins the half-open probe");
+            id
+        };
+        assert_eq!(
+            durable.registered(),
+            1,
+            "the probe is BORN in the runner's durable scope — no re-home"
+        );
+        assert_eq!(
+            app.plane_breakers.state(POOL_STR),
+            BreakerState::HalfOpen,
+            "the durable-born probe holds the cell HalfOpen until the runner settles"
+        );
+
+        // The detached runner settles through the vtable over the DURABLE arena.
+        let route = DurableHostDispatch::new(std::sync::Arc::clone(&app), durable, id);
+        let ok = signal(StatusClass::Ok);
+        let class = route.with_host(|host, vt| {
+            (vt.breaker_settle.unwrap())(host, route.admission(), &ok as *const Signal)
+        });
+        assert_eq!(
+            class,
+            StatusClass::Ok,
+            "the durable-born admission settles through the host seam"
+        );
+        assert_eq!(
+            app.plane_breakers.state(POOL_STR),
+            BreakerState::Closed,
+            "the recorded success recovered the HalfOpen probe to Closed"
+        );
+    }
+
+    /// BUDGET REFUSES AFTER THE ADMIT: `create_task` charges the budget once the breaker already
+    /// admitted, and a refusal there drops the runner's durable scope WITHOUT a settle. The probe the
+    /// task admit won into that scope must release on the drop (RAII), so the cell is NOT wedged
+    /// HalfOpen — a fresh admit wins it again.
+    #[test]
+    fn task_admit_releases_the_probe_when_the_durable_scope_drops_unsettled() {
+        use crate::plane_host::{DurableScope, HostState};
+        let app = crate::test_support::TestApp::new().build();
+        app.plane_breakers.force_open(POOL_STR, 0, 1);
+
+        {
+            let durable = DurableScope::new();
+            let state = HostState {
+                app: &app,
+                scope: durable.arena(),
+            };
+            let host: HostCtx = (&state as *const HostState)
+                .cast_mut()
+                .cast::<std::os::raw::c_void>();
+            let k = key(0);
+            let id = breaker_admit(host, &k as *const Key);
+            assert!(
+                !id.is_none(),
+                "the task admit wins the probe into the durable scope"
+            );
+            assert_eq!(
+                app.plane_breakers.state(POOL_STR),
+                BreakerState::HalfOpen,
+                "the durable-born probe holds the cell HalfOpen"
+            );
+            // The budget refuses here: the durable scope drops WITHOUT a settle (end of block).
+        }
+
+        // The drop released the unsettled probe — the cell is winnable again, no HalfOpen wedge.
+        with_dispatch_scope(&app, |host, vt| {
+            let k = key(0);
+            let id = (vt.breaker_admit.unwrap())(host, &k as *const Key);
+            assert!(
+                !id.is_none(),
+                "after the budget-refused durable scope dropped, the probe is winnable again"
+            );
+        });
     }
 
     /// REFUSAL FIDELITY: `breaker_admit_reason` carries the SPECIFIC reason out on a refusal instead
