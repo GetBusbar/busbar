@@ -1124,7 +1124,10 @@ async fn verify_on_call(ctx: &Ctx<'_>, name: &str) {
     let cache_fetch = cache.clone();
     let pool = super::runtime(ctx.app).pool.clone();
     let gate = ctx.app.mcp_verify.clone();
-    let demotions = ctx.app.mcp_demotions.clone();
+    // The durable demotion settle now runs through the host `drift_quarantine` slot, which pulls the
+    // demotion store host-side, so the fetch closure carries the live `App` rather than a bare
+    // `&PlaneQuarantine` an extracted plane could not hold.
+    let app = std::sync::Arc::clone(ctx.app);
     // A peer's `list_changed` may only mark the snapshot STALE (never read its body): if this server
     // was signalled, clear its freshness clock so this call re-verifies even inside `verify_ttl`.
     if super::runtime(ctx.app)
@@ -1158,10 +1161,11 @@ async fn verify_on_call(ctx: &Ctx<'_>, name: &str) {
                         // `quarantine::settle`, shared with the admin `connect` verb, so one call site
                         // cannot record a demotion the other never clears. It keeps a demoted tool
                         // UN-ADVERTISED across a restart (`tools/list` does not itself re-verify).
-                        // Routed through the host drift veneer, the shared body the extern-C
-                        // `drift_quarantine` slot also funnels through — one settle rule, one seam.
-                        crate::plane_host::trust::quarantine_drift(
-                            &demotions,
+                        // Routed through the host `drift_quarantine` vtable slot, which carries the
+                        // observed state and pulls the demotion store host-side — one settle rule, one
+                        // seam. The settle is fire-and-forget, so the durability bool is not a refusal.
+                        let _ = crate::plane_host::trust::quarantine_settle_over(
+                            &app,
                             &server.id,
                             report.state,
                         );

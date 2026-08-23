@@ -368,11 +368,15 @@ pub(crate) extern "C-unwind" fn approval_redeem_q(
     .unwrap_or(StatusClass::Fault)
 }
 
-/// WIRED `drift_quarantine` → [`crate::plane::quarantine::settle`]: record a durable demotion for a
-/// counterparty a plane found DRIFTED, so the quarantine outlives the process that noticed it. The
-/// write is fire-and-forget at the primitive (the demotion is already in force in-process; a store
-/// hiccup costs durability, not the refusal), so a clean call is `Ok`. A null key is `Refused`; a
-/// caught panic is `Fault` — either way the counterparty is treated as untrusted.
+/// WIRED `drift_quarantine` → [`crate::plane::quarantine::settle`]: settle the durable demotion record
+/// for a counterparty a plane just took a live observation of, so the disposition outlives the process
+/// that noticed it. The slot carries the CALLER's trust-state in [`Key::drift_state`]: a `Quarantined`
+/// observation RECORDS the demotion, an `Approved` one CLEARS it (an operator's remedy, or a clean
+/// re-verification) — the one settle rule, so a caller that demotes and a caller that clears reach the
+/// same books. A sender that predates the field (guarded out by `size`) settles the pre-extension
+/// demote-only [`crate::trust::TrustState::Quarantined`]. The write is fire-and-forget at the primitive
+/// (the disposition is already in force in-process; a store hiccup costs durability, not the refusal),
+/// so a clean call is `Ok`. A null key is `Refused`; a caught panic is `Fault`.
 pub(crate) extern "C-unwind" fn drift_quarantine(host: HostCtx, key: *const Key) -> StatusClass {
     catch_unwind(AssertUnwindSafe(|| {
         // SAFETY: recovery invariant (see `super::recover`).
@@ -386,12 +390,11 @@ pub(crate) extern "C-unwind" fn drift_quarantine(host: HostCtx, key: *const Key)
         let Some(subject) = (unsafe { subject(k.key_ptr, k.key_len) }) else {
             return StatusClass::Refused;
         };
-        // THE ONE settle rule, written once: `Quarantined` records the durable demotion.
-        quarantine_drift(
-            &state.app.mcp_demotions,
-            &subject,
-            crate::trust::TrustState::Quarantined,
-        );
+        // The caller's disposition, read ONLY when `size` proves the field was written; a predating
+        // sender (or an unknown value) falls back to the demote-only `Quarantined`.
+        let settle_state = trust_state_from_u8(read_sized_field!(k, Key, drift_state).unwrap_or(0));
+        // THE ONE settle rule, written once: `Quarantined` records the demotion, `Approved` clears it.
+        quarantine_drift(&state.app.mcp_demotions, &subject, settle_state);
         StatusClass::Ok
     }))
     .unwrap_or(StatusClass::Fault)
@@ -410,6 +413,39 @@ pub(crate) fn quarantine_drift(
     state: crate::trust::TrustState,
 ) {
     crate::plane::quarantine::settle(demotions, subject, state);
+}
+
+/// Settle a drift disposition for `subject` through the host `drift_quarantine` vtable slot — the SAFE
+/// wrapper a core plane call site uses to reach the slot without naming the core-private
+/// [`PlaneQuarantine`](crate::plane::quarantine::PlaneQuarantine) an extracted plane could not hold
+/// (the [`card_sign_over`](crate::plane_host::card_sign_over) pattern applied to drift). It marshals
+/// `state` into [`Key::drift_state`] and lets the slot pull the demotion store host-side, so the
+/// caller passes only the subject bytes and its disposition. Returns whether the slot answered `Ok`;
+/// the settle is fire-and-forget at the primitive, so the caller may treat a non-`Ok` as a durability
+/// miss, not a refusal. Opens its own [`DispatchScope`] — the drift settle registers no host handle,
+/// so which arena reclaims is immaterial.
+#[cfg(feature = "plane-mcp")]
+pub(crate) fn quarantine_settle_over(
+    app: &crate::state::App,
+    subject: &str,
+    state: crate::trust::TrustState,
+) -> bool {
+    let scope = crate::plane_host::DispatchScope::new();
+    crate::plane_host::with_borrowed_host(app, &scope, |host, vt| {
+        let key = Key {
+            size: core::mem::size_of::<Key>() as u32,
+            version: POD_VERSION,
+            _reserved: 0,
+            scope: 0,
+            _reserved2: 0,
+            key_ptr: subject.as_ptr(),
+            key_len: subject.len(),
+            drift_state: trust_state_u8(state),
+        };
+        (vt.drift_quarantine
+            .expect("drift_quarantine is a wired slot"))(host, &key as *const Key)
+            == StatusClass::Ok
+    })
 }
 
 /// THE ONE redemption body — the compiled-in veneer both approval veneers funnel through, the trust
@@ -469,6 +505,37 @@ mod reg_state {
     pub(super) const QUARANTINED: u8 = 3;
     pub(super) const SUSPENDED: u8 = 4;
     pub(super) const FAILED: u8 = 5;
+}
+
+/// Marshal a [`crate::trust::TrustState`] into the neutral u8 mirror the drift path carries in
+/// [`Key::drift_state`] (the same numbering [`reg_state`] names). The inverse of
+/// [`trust_state_from_u8`]; the drift call sites use it to hand the slot the CALLER's disposition.
+#[cfg(feature = "plane-mcp")]
+pub(crate) fn trust_state_u8(state: crate::trust::TrustState) -> u8 {
+    use crate::trust::TrustState;
+    match state {
+        TrustState::Pending => reg_state::PENDING,
+        TrustState::Approved => reg_state::APPROVED,
+        TrustState::Quarantined => reg_state::QUARANTINED,
+        TrustState::Suspended => reg_state::SUSPENDED,
+        TrustState::Error => reg_state::FAILED,
+    }
+}
+
+/// Reconstruct a [`crate::trust::TrustState`] from the neutral u8 mirror in [`Key::drift_state`].
+/// `0`/absent (a sender that predates the field, guarded out by `size`) and any unknown value fail
+/// SAFE to [`crate::trust::TrustState::Quarantined`] — the pre-extension demote-only disposition, so
+/// a drift the caller could not name still records rather than silently clearing.
+fn trust_state_from_u8(v: u8) -> crate::trust::TrustState {
+    use crate::trust::TrustState;
+    match v {
+        reg_state::PENDING => TrustState::Pending,
+        reg_state::APPROVED => TrustState::Approved,
+        reg_state::QUARANTINED => TrustState::Quarantined,
+        reg_state::SUSPENDED => TrustState::Suspended,
+        reg_state::FAILED => TrustState::Error,
+        _ => TrustState::Quarantined,
+    }
 }
 
 /// The legacy `trust_evaluate` disposition — the durable DRIFT map — used as the forward-compat
@@ -598,6 +665,7 @@ mod tests {
             _reserved2: 0,
             key_ptr: bytes.as_ptr(),
             key_len: bytes.len(),
+            drift_state: 0,
         };
         f(&key as *const Key)
     }
@@ -822,6 +890,75 @@ mod tests {
             // Null key → fail-closed.
             let status = (vt.drift_quarantine.unwrap())(host, core::ptr::null());
             assert_eq!(status, StatusClass::Refused);
+        });
+    }
+
+    /// The neutral u8 mirror the drift path carries round-trips through
+    /// [`trust_state_u8`]/[`trust_state_from_u8`] for every state, and an ABSENT/unknown value fails
+    /// SAFE to `Quarantined` — the pre-extension demote-only disposition.
+    #[cfg(feature = "plane-mcp")]
+    #[test]
+    fn drift_state_mirror_round_trips_and_fails_safe() {
+        use crate::trust::TrustState;
+        for state in [
+            TrustState::Pending,
+            TrustState::Approved,
+            TrustState::Quarantined,
+            TrustState::Suspended,
+            TrustState::Error,
+        ] {
+            assert_eq!(trust_state_from_u8(trust_state_u8(state)), state);
+        }
+        // 0 (a predating sender's zeroed field) and any unknown value → the demote-only fallback.
+        assert_eq!(trust_state_from_u8(0), TrustState::Quarantined);
+        assert_eq!(trust_state_from_u8(99), TrustState::Quarantined);
+    }
+
+    /// The slot RECORDS or CLEARS by the caller's `drift_state`, and a Key that predates the field
+    /// (the pre-extension `size`, so the sized guard hides `drift_state`) settles the demote-only
+    /// fallback. The test app has no durable sink, so the settle is a fire-and-forget `Ok`; the
+    /// disposition carried is asserted via the mirror above and the durable settle rule in
+    /// `plane::quarantine`'s own tests.
+    #[cfg(feature = "plane-mcp")]
+    #[test]
+    fn drift_quarantine_carries_the_caller_state() {
+        use crate::trust::TrustState;
+        with_test_state(|host, vt, _scope| {
+            let subject = b"drift/carry/counterparty";
+            // A full Key carrying an explicit disposition (CLEAR and DEMOTE both answer Ok).
+            let with_state = |state: TrustState| {
+                let key = Key {
+                    size: core::mem::size_of::<Key>() as u32,
+                    version: POD_VERSION,
+                    _reserved: 0,
+                    scope: 0,
+                    _reserved2: 0,
+                    key_ptr: subject.as_ptr(),
+                    key_len: subject.len(),
+                    drift_state: trust_state_u8(state),
+                };
+                (vt.drift_quarantine.unwrap())(host, &key as *const Key)
+            };
+            assert_eq!(with_state(TrustState::Approved), StatusClass::Ok);
+            assert_eq!(with_state(TrustState::Quarantined), StatusClass::Ok);
+
+            // A PREDATING sender advertises the pre-extension size, so the guard hides `drift_state`
+            // and the slot still settles (the demote-only fallback) rather than refusing.
+            let pre_ext_size = core::mem::offset_of!(Key, key_len) + core::mem::size_of::<usize>();
+            let legacy = Key {
+                size: pre_ext_size as u32,
+                version: POD_VERSION,
+                _reserved: 0,
+                scope: 0,
+                _reserved2: 0,
+                key_ptr: subject.as_ptr(),
+                key_len: subject.len(),
+                drift_state: trust_state_u8(TrustState::Approved), // present in memory, hidden by size
+            };
+            assert_eq!(
+                (vt.drift_quarantine.unwrap())(host, &legacy as *const Key),
+                StatusClass::Ok
+            );
         });
     }
 

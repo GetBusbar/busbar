@@ -512,6 +512,7 @@ mod tests {
             _reserved2: 0,
             key_ptr: POOL.as_ptr(),
             key_len: POOL.len(),
+            drift_state: 0,
         }
     }
 

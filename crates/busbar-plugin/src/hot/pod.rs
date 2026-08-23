@@ -639,6 +639,19 @@ pub struct Key {
     pub key_ptr: *const u8,
     /// Length of the borrowed key range.
     pub key_len: usize,
+
+    // ── APPEND-ONLY minor-11 tail: the drift DISPOSITION the `drift_quarantine` slot settles for
+    //    this key, so the slot records the CALLER's trust-state (demote OR clear) instead of a
+    //    hardcoded quarantine. Read ONLY by `drift_quarantine`, and ONLY when `size` proves it was
+    //    written (the sized-struct guard); every other slot that takes a `Key` ignores it. A sender
+    //    that predates this field advertises the shorter `size`; the drift slot then falls back to
+    //    the pre-extension demote-only disposition (`Quarantined`), so the addition is a MINOR
+    //    airlock bump, never a MAJOR — no existing member changes meaning. ──
+    /// The trust-state the caller settles for this key on the drift path — a neutral u8 mirror of the
+    /// plane's lifecycle state: `0` absent/unspecified (the drift slot fails safe to a demotion), `1`
+    /// pending, `2` approved (CLEARS the durable demotion), `3` quarantined (RECORDS it), `4`
+    /// suspended, `5` failed. Only `drift_quarantine` reads it; on every other slot it is inert.
+    pub drift_state: u8,
 }
 
 /// The post-call signal a plane reports back to the breaker at `breaker_settle`: the outcome class

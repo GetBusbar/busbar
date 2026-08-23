@@ -82,7 +82,16 @@ fn compute_layout() -> String {
     record!(
         s,
         Key,
-        [size, version, _reserved, scope, _reserved2, key_ptr, key_len]
+        [
+            size,
+            version,
+            _reserved,
+            scope,
+            _reserved2,
+            key_ptr,
+            key_len,
+            drift_state
+        ]
     );
     record!(
         s,

@@ -310,11 +310,12 @@ pub(crate) struct McpSubject {
     cfg: crate::mcp::config::McpServerDefCfg,
     pool: Arc<crate::mcp::client::pool::McpConnectionPool>,
     sightings: Arc<crate::mcp::client::catalogue::CatalogueCache>,
-    /// The durable demotion record. Carried on the subject because `connect` takes a LIVE
-    /// observation, which is the only kind of event that may write one — and because an operator
-    /// who works a remedy through this verb and is told `approved` must not find the upstream
-    /// quarantined again at the next restart.
-    demotions: Arc<crate::plane::quarantine::PlaneQuarantine>,
+    /// The live engine snapshot, carried on the subject so `look` can settle the durable demotion
+    /// through the host `drift_quarantine` slot (which pulls the demotion store host-side). Held here
+    /// because `connect` takes a LIVE observation, the only kind of event that may write one — and
+    /// because an operator who works a remedy through this verb and is told `approved` must not find
+    /// the upstream quarantined again at the next restart.
+    app: Arc<crate::state::App>,
 }
 
 /// THE MCP PLANE'S TRUST SURFACE. Three items, and the surface owns everything else.
@@ -336,7 +337,7 @@ impl PlaneTrust for McpServers {
                     cfg: cfg.clone(),
                     pool: super::runtime(app).pool.clone(),
                     sightings: super::runtime(app).sightings.clone(),
-                    demotions: app.mcp_demotions.clone(),
+                    app: Arc::clone(app),
                 }),
                 _ => None,
             }
@@ -356,8 +357,12 @@ impl PlaneTrust for McpServers {
         // pressing this button is taking exactly the observation the sweep takes; if only one of
         // the two wrote the durable record, an operator's own remedy would be the one act that
         // could not clear a quarantine.
-        crate::plane_host::trust::quarantine_drift(
-            &subject.demotions,
+        // Settle the durable demotion through the host `drift_quarantine` slot, which carries the
+        // observed state and pulls the demotion store host-side — the same one settle rule the
+        // verify-on-call path reaches, so an operator's `approved` clears what the sweep demoted. The
+        // settle is fire-and-forget, so the durability bool is not a refusal.
+        let _ = crate::plane_host::trust::quarantine_settle_over(
+            &subject.app,
             &subject.entry.id,
             report.state,
         );
