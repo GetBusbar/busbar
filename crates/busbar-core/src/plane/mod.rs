@@ -357,17 +357,17 @@ struct Claim {
 /// middleware before anyone thought about it. Keeping it beside the MOUNT means the check is a
 /// property of the door, so every path behind that door inherits it and a new handler cannot forget.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct PlaneAdmission {
+pub struct PlaneAdmission {
     /// RFC 8707 resource indicator: the exact `aud` an admitted token must carry. Compared for
     /// EQUALITY, never prefix or suffix — a resource indicator is an opaque identifier, and treating
     /// it as a namespace is how `https://gw.example.com/mcp` starts admitting tokens minted for
     /// `https://gw.example.com/mcp-staging`.
-    pub(crate) audience: String,
+    pub audience: String,
     /// The absolute URL of this resource's RFC 9728 protected-resource metadata document, quoted
     /// verbatim in the `resource_metadata` parameter of the `WWW-Authenticate` challenge. This is
     /// the whole of an MCP client's discovery story: it arrives with no credential, reads this URL
     /// out of the `401`, and follows it to the operator's authorization server.
-    pub(crate) resource_metadata: String,
+    pub resource_metadata: String,
 }
 
 impl PlaneDispatch {
