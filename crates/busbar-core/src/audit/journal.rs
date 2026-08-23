@@ -53,9 +53,9 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use indexmap::IndexMap;
 
-use crate::audit::{Chain, ChainBreak, ChainedRecord};
-use crate::plane::store::{decode, PlaneStore};
-use busbar_api::{PlaneRecord, PlaneSelector, StoreError, StoreResult};
+use crate::audit::{verify_chain, Chain, ChainBreak, ChainedRecord};
+use crate::plane::store::{decode, encode, PlaneStore};
+use busbar_api::{PlaneDisposition, PlaneRecord, PlaneSelector, StoreError, StoreResult};
 
 /// A RECORD A JOURNAL CAN PERSIST. A plane's chained record type implements this to say TWO things
 /// the generic journal cannot know: which neutral store `kind` its rows are tagged with, and how one
@@ -115,7 +115,7 @@ pub(crate) struct Restored {
 /// sequence per scope), never the records — the store owns those. No `Debug`: it holds a
 /// `dyn PlaneStore`, which is deliberately not `Debug` (a backend must not be obliged to render
 /// itself, where a credential could surface in a log).
-pub(crate) struct Journal<R: JournalRecord> {
+pub(crate) struct Journal<R> {
     /// Chain POSITIONS, keyed by scope. An [`IndexMap`] so it doubles as a bounded LRU: insertion
     /// order is recency order (most-recently-used at the back), the coldest is evicted from the front
     /// once [`Journal::cap`] is exceeded, and an evicted scope is resumed from the store on its next
@@ -138,7 +138,7 @@ pub(crate) struct Journal<R: JournalRecord> {
     cap: usize,
 }
 
-impl<R: JournalRecord> Journal<R> {
+impl<R: ChainedRecord> Journal<R> {
     /// A journal with an LRU bound of `cap` scope positions. `cap == usize::MAX` disables eviction.
     pub(crate) fn new(cap: usize) -> Self {
         Journal {
@@ -225,7 +225,10 @@ impl<R: JournalRecord> Journal<R> {
     /// READS THE TAIL BACK and continues from it, exactly as a boot rehydrate does. A store that cannot
     /// answer is surfaced as an error rather than papered over with a seq-1 chain that might fork. With
     /// no sink there is no durable log to fork, so a fresh chain is the honest answer.
-    fn resume_missing(&self, scope: &str) -> Result<Chain<R>, JournalError> {
+    fn resume_missing(&self, scope: &str) -> Result<Chain<R>, JournalError>
+    where
+        R: JournalRecord,
+    {
         if !self.overflowed.load(Ordering::Relaxed) {
             return Ok(Chain::new());
         }
@@ -255,7 +258,10 @@ impl<R: JournalRecord> Journal<R> {
     /// This is the ONLY place durability is learned. A write's `Ok(())` proves nothing (the store
     /// trait default accepts and keeps nothing), so the engine finds out what its backend actually
     /// kept by reading it back.
-    pub(crate) fn restore_from_store(&self, store: &dyn PlaneStore) -> StoreResult<Restored> {
+    pub(crate) fn restore_from_store(&self, store: &dyn PlaneStore) -> StoreResult<Restored>
+    where
+        R: JournalRecord,
+    {
         let scopes = store.list_plane_record_parents(R::KIND)?;
         let mut out = Restored::default();
         let mut positions = self.positions();
@@ -321,7 +327,10 @@ impl<R: JournalRecord> Journal<R> {
     /// RECORD one entry: chain it to MINT the sequence and link, write it through, and advance the
     /// position only once the durable write has succeeded. See the module header for why the order is
     /// load-bearing. A cache MISS is resolved by [`Journal::resume_missing`].
-    pub(crate) fn record(&self, scope: &str, input: R::Input) -> Result<R, JournalError> {
+    pub(crate) fn record(&self, scope: &str, input: R::Input) -> Result<R, JournalError>
+    where
+        R: JournalRecord,
+    {
         let mut positions = self.positions();
         let mut candidate = match positions.get(scope) {
             Some(chain) => chain.clone(),
@@ -356,9 +365,212 @@ impl<R: JournalRecord> Journal<R> {
     /// returning how many durable rows went. The policy (the window) lives at the call site; this owns
     /// only the mechanism. Positions are NOT reset — reopening a scope at seq 1 after a purge would
     /// collide with a sequence the store may still hold, the one thing the append contract forbids.
-    pub(crate) fn compact(&self, before: u64) -> StoreResult<u64> {
+    pub(crate) fn compact(&self, before: u64) -> StoreResult<u64>
+    where
+        R: JournalRecord,
+    {
         match self.sink() {
             Some(store) => store.purge_plane_records_before(R::KIND, before),
+            None => Ok(0),
+        }
+    }
+}
+
+// ── THE NEUTRAL DURABLE PATH — kind/framing/digests_scope as DATA, record shape as a REFRAME ──────
+//
+// The three shipped streams cross here as a TYPED `R: JournalRecord` whose `const KIND` and
+// `to_plane_record` name the plane's own row. The DURABLE SEAM a plane reaches over the host vtable
+// cannot: the host serves many streams at once, learns each stream's `kind` at REGISTER time (runtime
+// DATA, never a const), and must NAME NO PLANE TYPE. So this parallel surface takes the `kind` as a
+// `&str`, persists a NEUTRAL `{seq, prev_hash, hash, content}` body (the plane's `content` is an opaque
+// pre-framed suffix carried verbatim), and turns a stored body back into a record through a plane-side
+// REFRAME callback rather than `serde`-decoding it into a type core would have to name. The chain
+// authority, the position cache, the LRU and the write-ordering are the SAME `Journal` machinery above.
+
+/// The NEUTRAL durable body the store-backed journal persists per record — `{seq, prev_hash, hash,
+/// content}`, naming no plane type. A TYPED stream persists its own serde row; this neutral journal
+/// persists THIS, and a plane's reframe callback is the decode bridge that turns EITHER shape back
+/// into a record on restore (so a store still holding old serde rows verifies unchanged). ADDITIVE.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct NeutralBody {
+    /// The chain sequence the host minted for this record.
+    seq: u64,
+    /// The link to the previous record (empty at genesis).
+    prev_hash: String,
+    /// This record's sealed digest.
+    hash: String,
+    /// The plane's OPAQUE pre-framed content suffix (the bytes the digest appends RAW).
+    content: Vec<u8>,
+}
+
+/// A record whose durable body is the neutral [`NeutralBody`] envelope. The generic scope-keyed
+/// journal persists and resumes it WITHOUT naming any plane type: `content` is the plane's opaque
+/// pre-framed suffix, carried through verbatim, and `scope` is supplied by the caller (the store
+/// parent), never read from the body.
+pub(crate) trait NeutralRecord: ChainedRecord + Clone {
+    /// The opaque pre-framed content suffix this record carries (the bytes the digest appends RAW).
+    fn content(&self) -> &[u8];
+}
+
+/// A plane-side REFRAME: turn one stored body + its scope back into a record. The store bodies may be
+/// this journal's own [`NeutralBody`] OR a legacy serde row from before the cleave — the callback owns
+/// which, so core never decodes a plane type. Boxed as a trait object so the neutral methods take one
+/// uniform argument regardless of the closure's captures (the per-scope framing/digests_scope).
+pub(crate) type Reframe<'a, R> = dyn Fn(&str, &[u8]) -> StoreResult<R> + 'a;
+
+impl<R: NeutralRecord> Journal<R> {
+    /// Resolve a NOT-cached scope's position on the neutral path (the [`Journal::resume_missing`]
+    /// analogue): before any eviction a miss is a first-seen scope (fresh chain, no store read); after
+    /// one, a miss might be an evicted scope whose tail lives in the store, so it reads the tail back
+    /// (reframing each body) and resumes from it rather than forking at seq 1.
+    fn resume_scoped(
+        &self,
+        kind: &str,
+        scope: &str,
+        reframe: &Reframe<'_, R>,
+    ) -> Result<Chain<R>, JournalError> {
+        if !self.overflowed.load(Ordering::Relaxed) {
+            return Ok(Chain::new());
+        }
+        let Some(store) = self.sink() else {
+            return Ok(Chain::new());
+        };
+        let bodies = store
+            .list_plane_records(kind, &PlaneSelector::Parent(scope.to_string()))
+            .map_err(JournalError::Store)?;
+        if bodies.is_empty() {
+            return Ok(Chain::new());
+        }
+        let records: Vec<R> = bodies
+            .iter()
+            .map(|body| reframe(scope, body))
+            .collect::<StoreResult<_>>()
+            .map_err(JournalError::Store)?;
+        Ok(Chain::from_persisted(&records)
+            .unwrap_or_else(|_brk| Chain::from_persisted_unverified(&records)))
+    }
+
+    /// APPEND one neutral record: chain it to MINT the sequence and link (the SOLE chain authority),
+    /// persist the neutral `{seq, prev_hash, hash, content}` envelope under `kind`/`scope`, and advance
+    /// the position only once the durable write succeeded — the SAME write-ordering the typed
+    /// [`Journal::record`] holds, so a failed write does not burn a sequence.
+    pub(crate) fn append_scoped(
+        &self,
+        kind: &str,
+        scope: &str,
+        input: R::Input,
+        reframe: &Reframe<'_, R>,
+    ) -> Result<R, JournalError> {
+        let mut positions = self.positions();
+        let mut candidate = match positions.get(scope) {
+            Some(chain) => chain.clone(),
+            None => self.resume_scoped(kind, scope, reframe)?,
+        };
+        let record = candidate.append(scope, input);
+        if let Some(store) = self.sink() {
+            let body = NeutralBody {
+                seq: record.seq(),
+                prev_hash: record.prev_hash().to_string(),
+                hash: record.hash().to_string(),
+                content: record.content().to_vec(),
+            };
+            let envelope = PlaneRecord {
+                kind: kind.to_string(),
+                id: scope.to_string(),
+                parent: Some(scope.to_string()),
+                seq: record.seq(),
+                ts: 0,
+                disposition: PlaneDisposition::Active,
+                body: encode(&body).map_err(JournalError::Store)?,
+            };
+            store
+                .append_plane_record(&envelope)
+                .map_err(JournalError::Store)?;
+        }
+        Self::commit_position(&mut positions, &self.overflowed, self.cap, scope, candidate);
+        Ok(record)
+    }
+
+    /// BOOT REHYDRATE on the neutral path (the [`Journal::restore_from_store`] analogue): enumerate the
+    /// scopes the store holds `kind` records for, reframe each scope's bodies, resume its chain from the
+    /// persisted tail, and REPORT what was found (empty scopes + chain breaks) without logging. A broken
+    /// chain is reported and STILL resumed from its tail, never re-based onto a fresh chain.
+    pub(crate) fn restore_scoped(
+        &self,
+        kind: &str,
+        store: &dyn PlaneStore,
+        reframe: &Reframe<'_, R>,
+    ) -> StoreResult<Restored> {
+        let scopes = store.list_plane_record_parents(kind)?;
+        let mut out = Restored::default();
+        let mut positions = self.positions();
+        for scope in &scopes {
+            let records: Vec<R> = store
+                .list_plane_records(kind, &PlaneSelector::Parent(scope.clone()))?
+                .iter()
+                .map(|body| reframe(scope, body))
+                .collect::<StoreResult<_>>()?;
+            if records.is_empty() {
+                out.empty_scopes.push(scope.clone());
+                Self::commit_position(
+                    &mut positions,
+                    &self.overflowed,
+                    self.cap,
+                    scope,
+                    Chain::new(),
+                );
+                out.scopes += 1;
+                continue;
+            }
+            let chain = match Chain::from_persisted(&records) {
+                Ok(c) => c,
+                Err(brk) => {
+                    out.chain_breaks.push(brk);
+                    Chain::from_persisted_unverified(&records)
+                }
+            };
+            out.records += records.len();
+            Self::commit_position(&mut positions, &self.overflowed, self.cap, scope, chain);
+            out.scopes += 1;
+        }
+        Ok(out)
+    }
+
+    /// Read one scope's rows back from the store (reframed), oldest-first — the cold read the neutral
+    /// `journal_read` window scans. Returns every stored row for the scope; the caller windows it.
+    pub(crate) fn read_scoped(
+        &self,
+        kind: &str,
+        scope: &str,
+        store: &dyn PlaneStore,
+        reframe: &Reframe<'_, R>,
+    ) -> StoreResult<Vec<R>> {
+        store
+            .list_plane_records(kind, &PlaneSelector::Parent(scope.to_string()))?
+            .iter()
+            .map(|body| reframe(scope, body))
+            .collect()
+    }
+
+    /// VERIFY one scope's persisted chain (reframed), returning the break if any and `None` when it
+    /// verifies — the neutral analogue of the boot-verify walk, for a `verify_task_chain`-style seam.
+    pub(crate) fn verify_scoped(
+        &self,
+        kind: &str,
+        scope: &str,
+        store: &dyn PlaneStore,
+        reframe: &Reframe<'_, R>,
+    ) -> StoreResult<Option<ChainBreak>> {
+        let records = self.read_scoped(kind, scope, store, reframe)?;
+        Ok(verify_chain(&records).err())
+    }
+
+    /// RETENTION on the neutral path (the [`Journal::compact`] analogue): ask the sink to drop `kind`
+    /// records older than `before`. Positions are NOT reset, exactly as the typed path — reopening a
+    /// scope at seq 1 after a purge would collide with a sequence the store may still hold.
+    pub(crate) fn compact_scoped(&self, kind: &str, before: u64) -> StoreResult<u64> {
+        match self.sink() {
+            Some(store) => store.purge_plane_records_before(kind, before),
             None => Ok(0),
         }
     }

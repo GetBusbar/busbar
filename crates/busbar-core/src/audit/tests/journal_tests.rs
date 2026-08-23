@@ -16,9 +16,9 @@
 //!  3. **LRU + store-resume.** An evicted scope resumes from its persisted tail, never forking at 1.
 //!  4. **Tamper is reported, not deleted.** A corrupted stored row restores AND names the break.
 
-use super::{Journal, JournalRecord, Restored};
-use crate::audit::{ChainLabels, ChainedRecord, Digest, Framing};
-use crate::plane::store::{encode, PlaneStore};
+use super::{Journal, JournalRecord, NeutralRecord, Restored};
+use crate::audit::{frame_prelude, ChainLabels, ChainedRecord, Digest, Framing};
+use crate::plane::store::{decode, encode, PlaneStore};
 use busbar_api::{PlaneDisposition, PlaneRecord, PlaneSelector, StoreError, StoreResult};
 use std::sync::{Arc, Mutex};
 
@@ -308,6 +308,167 @@ fn an_evicted_scope_resumes_from_the_store_not_from_seq_one() {
         "no fork: {:?}",
         restored.chain_breaks
     );
+}
+
+// ── THE NEUTRAL PATH — a record whose durable body is `{seq, prev_hash, hash, content}` ───────────
+//
+// Mirrors the shape a plane reaches over the host vtable: `content` is an opaque pre-framed suffix and
+// the digest is `frame_prelude(..) ⧺ content` fed RAW (byte-identical to the host-side journal). The
+// scope is supplied by the caller, never read from the body — so the reframe callback captures it.
+
+/// A neutral record carrying an opaque `content` suffix. Its digest is the framed prelude followed by
+/// the suffix RAW — the SAME shape `plane_host::journal::PlaneJournalRecord` uses.
+#[derive(Clone)]
+struct NeutralRec {
+    tenant: String,
+    seq: u64,
+    content: Vec<u8>,
+    prev_hash: String,
+    hash: String,
+}
+
+struct NeutralInput {
+    content: Vec<u8>,
+}
+
+const KIND_NEUTRAL: &str = "neutral_test";
+
+impl ChainedRecord for NeutralRec {
+    type Input = NeutralInput;
+    const LABELS: &'static ChainLabels = &ChainLabels {
+        chain: "the neutral test chain",
+        scope: "tenant",
+    };
+    // Unused for framing: `digest_fields` frames the prelude itself and appends the suffix RAW.
+    const FRAMING: Framing = Framing::LengthPrefixed;
+    fn scope_of(&self) -> &str {
+        &self.tenant
+    }
+    fn seq(&self) -> u64 {
+        self.seq
+    }
+    fn prev_hash(&self) -> &str {
+        &self.prev_hash
+    }
+    fn hash(&self) -> &str {
+        &self.hash
+    }
+    fn link(scope: &str, seq: u64, prev_hash: String, input: NeutralInput) -> Self {
+        NeutralRec {
+            tenant: scope.to_string(),
+            seq,
+            content: input.content,
+            prev_hash,
+            hash: String::new(),
+        }
+    }
+    fn set_hash(&mut self, hash: String) {
+        self.hash = hash;
+    }
+    fn digest_fields(&self, d: &mut Digest) {
+        d.raw(&frame_prelude(
+            Framing::LengthPrefixed,
+            &self.prev_hash,
+            Some(&self.tenant),
+            self.seq,
+        ));
+        d.raw(&self.content);
+    }
+}
+
+impl NeutralRecord for NeutralRec {
+    fn content(&self) -> &[u8] {
+        &self.content
+    }
+}
+
+/// The plane-side reframe for the neutral test: decode the journal's own `NeutralBody` back into a
+/// `NeutralRec`, taking the scope from the store parent (never the body).
+fn neutral_reframe(scope: &str, body: &[u8]) -> StoreResult<NeutralRec> {
+    let nb: super::NeutralBody = decode(body)?;
+    Ok(NeutralRec {
+        tenant: scope.to_string(),
+        seq: nb.seq,
+        content: nb.content,
+        prev_hash: nb.prev_hash,
+        hash: nb.hash,
+    })
+}
+
+fn write_neutral(j: &Journal<NeutralRec>, tenant: &str, content: &[u8]) -> NeutralRec {
+    j.append_scoped(
+        KIND_NEUTRAL,
+        tenant,
+        NeutralInput {
+            content: content.to_vec(),
+        },
+        &neutral_reframe,
+    )
+    .expect("append_scoped")
+}
+
+/// The neutral durable path survives a restart: two records appended via `append_scoped` (persisting
+/// the neutral `{seq, prev_hash, hash, content}` body) are read back by a fresh journal via
+/// `restore_scoped` — chain intact, sequence resumed at 3, zero breaks — and `verify_scoped` agrees.
+#[test]
+fn neutral_records_survive_a_restart_and_the_chain_verifies() {
+    let store = Arc::new(MockStore::new());
+    let j1: Journal<NeutralRec> = Journal::new(1024);
+    j1.set_sink(store.clone());
+    write_neutral(&j1, "acme", b"|first");
+    write_neutral(&j1, "acme", b"|second");
+    drop(j1);
+
+    let j2: Journal<NeutralRec> = Journal::new(1024);
+    j2.set_sink(store.clone());
+    let restored = j2
+        .restore_scoped(KIND_NEUTRAL, store.as_ref(), &neutral_reframe)
+        .unwrap();
+    assert_eq!(
+        restored,
+        Restored {
+            scopes: 1,
+            records: 2,
+            empty_scopes: vec![],
+            chain_breaks: vec![],
+        }
+    );
+    assert_eq!(j2.next_seq("acme"), 3, "the resumed chain continues, not forks");
+    assert_eq!(
+        j2.verify_scoped(KIND_NEUTRAL, "acme", store.as_ref(), &neutral_reframe)
+            .unwrap(),
+        None,
+        "the persisted neutral chain verifies"
+    );
+    // Retention runs through the neutral kind (this MockStore keeps everything → 0 purged).
+    assert_eq!(j2.compact_scoped(KIND_NEUTRAL, u64::MAX).unwrap(), 0);
+}
+
+/// Neutral write-ordering: a failed durable append does not burn a sequence on the neutral path
+/// either — the retry reuses the sequence the failed write did not consume.
+#[test]
+fn neutral_failed_write_does_not_burn_a_sequence() {
+    let store = Arc::new(MockStore::new());
+    let j: Journal<NeutralRec> = Journal::new(1024);
+    j.set_sink(store.clone());
+    write_neutral(&j, "acme", b"|one");
+    assert_eq!(j.next_seq("acme"), 2);
+
+    store.set_failing(true);
+    let err = j.append_scoped(
+        KIND_NEUTRAL,
+        "acme",
+        NeutralInput {
+            content: b"|two".to_vec(),
+        },
+        &neutral_reframe,
+    );
+    assert!(err.is_err(), "the durable write failed, so append must surface it");
+    assert_eq!(j.next_seq("acme"), 2, "a failed write did NOT burn the sequence");
+
+    store.set_failing(false);
+    let r = write_neutral(&j, "acme", b"|two");
+    assert_eq!(r.seq, 2, "the retry reuses the sequence");
 }
 
 /// TAMPER is reported and still restored: a corrupted stored row is named in `chain_breaks`, and the
