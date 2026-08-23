@@ -1161,7 +1161,10 @@ mod tests {
     }
 
     fn durable_app() -> Arc<crate::state::App> {
-        let store = Arc::new(GenericPlaneStore::new());
+        durable_app_over(Arc::new(GenericPlaneStore::new()))
+    }
+
+    fn durable_app_over(store: Arc<GenericPlaneStore>) -> Arc<crate::state::App> {
         let gov = Arc::new(
             crate::governance::GovState::new(store, None).expect("governance store constructs"),
         );
@@ -1307,6 +1310,283 @@ mod tests {
                 scope.len(),
             );
             assert_eq!(s, Seq::NONE, "an unregistered stream mints no sequence");
+        });
+    }
+
+    // ── THE CHAIN-COMPAT GOLDEN (minor-9) — frozen PRE-CHANGE bodies through the DURABLE seam ──────
+    //
+    // The SECOND, independent tripwire beside `audit::boot_verify_golden`. Those same frozen
+    // `serde_json` bodies a store held before the cleave are fed through the NEW durable seam
+    // (`journal_register` + `journal_restore` + `journal_verify_scoped`), reframed PLANE-SIDE back into
+    // records, and the host's ONE verifier RECOMPUTES each digest from the reframed prelude ⧺ suffix.
+    // If that recompute no longer equals the frozen `hash`, restore reports a chain break and verify
+    // fails — RED before a single deployed store does. The frozen bytes are DUPLICATED from
+    // `boot_verify_golden.rs` on purpose: two independent tripwires, so a slip in one is caught by the
+    // other. DO NOT regenerate these bytes to make a failing test pass.
+
+    const G_MCP_1: &[u8] = br#"{"principal":"vk_alice","seq":1,"ts":1700000000,"server":"srv","tool":"srv_tool","outcome":"dispatched","reason":"","tool_digest":"abc123","pin_generation":7,"request_id":"req-1","prev_hash":"","hash":"f1e8c2ec47e8199499663f3e08272d67b96ed4d56bddc8fa9e9371352e5ba718"}"#;
+    const G_MCP_2: &[u8] = br#"{"principal":"vk_alice","seq":2,"ts":1700000060,"server":"srv","tool":"srv_other","outcome":"refused","reason":"not_granted","tool_digest":"","pin_generation":7,"request_id":"req-2","prev_hash":"f1e8c2ec47e8199499663f3e08272d67b96ed4d56bddc8fa9e9371352e5ba718","hash":"721c70456695c90b0085e3ef0170d413a6fa3a1e0ebb65eb02730ab6597ef47a"}"#;
+    const G_A2A_1: &[u8] = br#"{"task_id":"task-1","seq":1,"ts":1700000000,"kind":"task.submitted","context_id":"ctx-1","principal":"vk_alice","agent_id":"planner","state":"submitted","request_id":"req-1","prev_hash":"","hash":"1b293d0202f52529b9ae75292c5638675a4ed2ab59e57db5b0f26016a7ef22e1"}"#;
+    const G_A2A_2: &[u8] = br#"{"task_id":"task-1","seq":2,"ts":1700000060,"kind":"task.working","context_id":"ctx-1","principal":"vk_alice","agent_id":"planner","state":"working","request_id":"req-2","prev_hash":"1b293d0202f52529b9ae75292c5638675a4ed2ab59e57db5b0f26016a7ef22e1","hash":"6059096fd763aa3293489637e995f70ca396752aa2313d7d4a05105883fe7e19"}"#;
+    const G_AD_1: &[u8] = br#"{"seq":1,"ts":1700000000,"action":"hook.register","resource":"hook:compress","outcome":"applied","principal":"admin","prev_hash":"","hash":"52258f59f0ccf11e717462b0cbd040e6bfa7f576624c77a9e332e483553f56aa"}"#;
+    const G_AD_2: &[u8] = br#"{"seq":2,"ts":1700000060,"action":"hook.delete","resource":"hook:compress","outcome":"applied","principal":"admin","prev_hash":"52258f59f0ccf11e717462b0cbd040e6bfa7f576624c77a9e332e483553f56aa","hash":"33a3906258375ea69278797ddd446d4f2d3f24e91eee181e1f26e0fef19a5264"}"#;
+
+    const G_MCP_TAIL: &str = "721c70456695c90b0085e3ef0170d413a6fa3a1e0ebb65eb02730ab6597ef47a";
+    const G_A2A_TAIL: &str = "6059096fd763aa3293489637e995f70ca396752aa2313d7d4a05105883fe7e19";
+    const G_AD_TAIL: &str = "33a3906258375ea69278797ddd446d4f2d3f24e91eee181e1f26e0fef19a5264";
+
+    /// If this flips true, the reframe DROPS the leading `|` of the pre-framed suffix — the exact
+    /// PipeSeparated genesis-landmine perturbation. Left `false`; a maintainer proving the tripwire is
+    /// LIVE sets it true, watches the golden go RED, and reverts. (Red-before-green is run by hand.)
+    const DROP_SEPARATOR: bool = false;
+
+    fn write_reframe(
+        out: *mut MaybeUninit<ReframeOut>,
+        seq: u64,
+        digests_scope: u8,
+        prev: &[u8],
+        hash: &[u8],
+        suffix: &[u8],
+        prev_buf: *mut u8,
+        prev_cap: usize,
+        hash_buf: *mut u8,
+        hash_cap: usize,
+        suffix_buf: *mut u8,
+        suffix_cap: usize,
+    ) -> StatusClass {
+        let o = ReframeOut {
+            size: core::mem::size_of::<ReframeOut>() as u32,
+            version: POD_VERSION,
+            digests_scope,
+            _r: 0,
+            seq,
+            prev_len: prev.len(),
+            hash_len: hash.len(),
+            suffix_len: suffix.len(),
+        };
+        // SAFETY: `out` is a live writable slot; always initialized (the length-report discipline).
+        unsafe { (*out).write(o) };
+        if prev.len() > prev_cap || hash.len() > hash_cap || suffix.len() > suffix_cap {
+            return StatusClass::Refused;
+        }
+        // SAFETY: each destination cap >= source length (checked above); ranges are live for the call.
+        unsafe {
+            std::ptr::copy_nonoverlapping(prev.as_ptr(), prev_buf, prev.len());
+            std::ptr::copy_nonoverlapping(hash.as_ptr(), hash_buf, hash.len());
+            std::ptr::copy_nonoverlapping(suffix.as_ptr(), suffix_buf, suffix.len());
+        }
+        StatusClass::Ok
+    }
+
+    /// A2A plane reframe: decode the legacy `TaskEventRow` and emit the PipeSeparated suffix (Option A
+    /// leading `|`), scope-in-digest. `frame_prelude(prev_hash, task_id, seq) ⧺ suffix` == the legacy
+    /// `TaskEventRow::digest_fields` byte stream.
+    extern "C-unwind" fn a2a_reframe(
+        _host: HostCtx,
+        _kind_id: u32,
+        body_ptr: *const u8,
+        body_len: usize,
+        out: *mut MaybeUninit<ReframeOut>,
+        prev_buf: *mut u8,
+        prev_cap: usize,
+        hash_buf: *mut u8,
+        hash_cap: usize,
+        suffix_buf: *mut u8,
+        suffix_cap: usize,
+    ) -> StatusClass {
+        // SAFETY: live borrowed body range (ABI).
+        let body = unsafe { std::slice::from_raw_parts(body_ptr, body_len) };
+        let r: busbar_api::TaskEventRow = serde_json::from_slice(body).expect("TaskEventRow decodes");
+        let lead = if DROP_SEPARATOR { "" } else { "|" };
+        let suffix = format!(
+            "{lead}{}|{}|{}|{}|{}|{}",
+            r.ts, r.kind, r.context_id, r.principal, r.agent_id, r.state
+        );
+        write_reframe(
+            out, r.seq, 1, r.prev_hash.as_bytes(), r.hash.as_bytes(), suffix.as_bytes(), prev_buf,
+            prev_cap, hash_buf, hash_cap, suffix_buf, suffix_cap,
+        )
+    }
+
+    /// MCP plane reframe: decode the legacy `McpCallRecord` and emit the LengthPrefixed suffix
+    /// (every field self-delimits: `u64` big-endian length + bytes; a num is its 8-byte big-endian
+    /// form). `frame_prelude(prev_hash, principal, seq) ⧺ suffix` == `McpCallRecord::digest_fields`.
+    extern "C-unwind" fn mcp_reframe(
+        _host: HostCtx,
+        _kind_id: u32,
+        body_ptr: *const u8,
+        body_len: usize,
+        out: *mut MaybeUninit<ReframeOut>,
+        prev_buf: *mut u8,
+        prev_cap: usize,
+        hash_buf: *mut u8,
+        hash_cap: usize,
+        suffix_buf: *mut u8,
+        suffix_cap: usize,
+    ) -> StatusClass {
+        // SAFETY: live borrowed body range (ABI).
+        let body = unsafe { std::slice::from_raw_parts(body_ptr, body_len) };
+        let r: busbar_api::McpCallRecord = serde_json::from_slice(body).expect("McpCallRecord decodes");
+        let mut suffix = Vec::new();
+        let lp = |buf: &mut Vec<u8>, b: &[u8]| {
+            buf.extend_from_slice(&(b.len() as u64).to_be_bytes());
+            buf.extend_from_slice(b);
+        };
+        lp(&mut suffix, &r.ts.to_be_bytes());
+        lp(&mut suffix, r.server.as_bytes());
+        lp(&mut suffix, r.tool.as_bytes());
+        lp(&mut suffix, r.outcome.as_bytes());
+        lp(&mut suffix, r.reason.as_bytes());
+        lp(&mut suffix, r.tool_digest.as_bytes());
+        lp(&mut suffix, &r.pin_generation.to_be_bytes());
+        write_reframe(
+            out, r.seq, 1, r.prev_hash.as_bytes(), r.hash.as_bytes(), &suffix, prev_buf, prev_cap,
+            hash_buf, hash_cap, suffix_buf, suffix_cap,
+        )
+    }
+
+    /// Admin plane reframe: decode the legacy `AuditEntry` and emit the PipeSeparated suffix, scope
+    /// NOT in the digest (`digests_scope = 0`). `frame_prelude(prev_hash, <no scope>, seq) ⧺ suffix`
+    /// == `AuditEntry::digest_fields`.
+    extern "C-unwind" fn admin_reframe(
+        _host: HostCtx,
+        _kind_id: u32,
+        body_ptr: *const u8,
+        body_len: usize,
+        out: *mut MaybeUninit<ReframeOut>,
+        prev_buf: *mut u8,
+        prev_cap: usize,
+        hash_buf: *mut u8,
+        hash_cap: usize,
+        suffix_buf: *mut u8,
+        suffix_cap: usize,
+    ) -> StatusClass {
+        // SAFETY: live borrowed body range (ABI).
+        let body = unsafe { std::slice::from_raw_parts(body_ptr, body_len) };
+        let r: crate::admin::audit::AuditEntry =
+            serde_json::from_slice(body).expect("AuditEntry decodes");
+        let suffix = format!(
+            "|{}|{}|{}|{}",
+            r.ts, r.action, r.resource, r.outcome
+        );
+        // The last field is `principal`; append it (kept off the format! line only for readability).
+        let suffix = format!("{suffix}|{}", r.principal);
+        write_reframe(
+            out, r.seq, 0, r.prev_hash.as_bytes(), r.hash.as_bytes(), suffix.as_bytes(), prev_buf,
+            prev_cap, hash_buf, hash_cap, suffix_buf, suffix_cap,
+        )
+    }
+
+    fn put_frozen(store: &GenericPlaneStore, kind: &str, parent: &str, seq: u64, body: &[u8]) {
+        use busbar_api::{PlaneDisposition, PlaneRecord, Store};
+        store
+            .append_plane_record(&PlaneRecord {
+                kind: kind.to_string(),
+                id: parent.to_string(),
+                parent: Some(parent.to_string()),
+                seq,
+                ts: 0,
+                disposition: PlaneDisposition::Active,
+                body: body.to_vec(),
+            })
+            .expect("frozen body persists");
+    }
+
+    fn register_stream(
+        host: HostCtx,
+        vt: &PlaneHostVtable,
+        kind_id: u32,
+        kind: &[u8],
+        framing: AbiFraming,
+        digests_scope: u8,
+        reframe: JournalReframeFn,
+    ) {
+        let desc = JournalStreamDesc {
+            size: core::mem::size_of::<JournalStreamDesc>() as u32,
+            version: POD_VERSION,
+            framing,
+            digests_scope,
+            kind_id,
+            _reserved: 0,
+            kind_ptr: kind.as_ptr(),
+            kind_len: kind.len(),
+        };
+        assert_eq!(
+            (vt.journal_register.unwrap())(host, &desc as *const JournalStreamDesc, reframe),
+            StatusClass::Ok
+        );
+    }
+
+    fn restore_and_verify(
+        host: HostCtx,
+        vt: &PlaneHostVtable,
+        kind_id: u32,
+        scope: &[u8],
+        expect_tail: &str,
+        tail_hash: &str,
+    ) {
+        // RESTORE: both frozen records, one scope, zero breaks (the digest recompute matched).
+        let mut rout = MaybeUninit::<RestoredHdr>::uninit();
+        assert_eq!(
+            (vt.journal_restore.unwrap())(host, kind_id, &mut rout as *mut MaybeUninit<RestoredHdr>),
+            StatusClass::Ok
+        );
+        // SAFETY: Ok published the slot.
+        let r = unsafe { rout.assume_init() };
+        assert_eq!(
+            r.chain_breaks, 0,
+            "a frozen chain reported TAMPERED means the durable-seam digest drifted"
+        );
+        assert_eq!(r.records, 2, "both frozen records restored");
+        assert_eq!(r.scopes, 1);
+
+        // VERIFY the scope explicitly.
+        let mut vout = MaybeUninit::<VerifyChainHdr>::uninit();
+        assert_eq!(
+            (vt.journal_verify_scoped.unwrap())(
+                host,
+                kind_id,
+                scope.as_ptr(),
+                scope.len(),
+                &mut vout as *mut MaybeUninit<VerifyChainHdr>,
+            ),
+            StatusClass::Ok
+        );
+        // SAFETY: Ok published the slot.
+        let v = unsafe { vout.assume_init() };
+        assert_eq!(v.verified, 1, "the frozen chain verifies through the durable seam");
+        assert_eq!(expect_tail, tail_hash, "the frozen tail hash is intact");
+    }
+
+    /// The chain-compat golden: the frozen A2A/MCP/Admin bodies restore + verify through the DURABLE
+    /// seam byte-identically — all three framings, including the PipeSeparated genesis landmine and the
+    /// `digests_scope = false` admin shape.
+    #[test]
+    fn frozen_chains_boot_verify_through_the_durable_seam() {
+        let store = Arc::new(GenericPlaneStore::new());
+        put_frozen(&store, "task_event", "task-1", 1, G_A2A_1);
+        put_frozen(&store, "task_event", "task-1", 2, G_A2A_2);
+        put_frozen(&store, "call", "vk_alice", 1, G_MCP_1);
+        put_frozen(&store, "call", "vk_alice", 2, G_MCP_2);
+        put_frozen(&store, "admin_audit", "log", 1, G_AD_1);
+        put_frozen(&store, "admin_audit", "log", 2, G_AD_2);
+
+        let app = durable_app_over(store);
+        let a2a_id = fresh_kind_id();
+        let mcp_id = fresh_kind_id();
+        let admin_id = fresh_kind_id();
+        with_dispatch_scope(&app, |host, vt| {
+            register_stream(host, vt, a2a_id, b"task_event", AbiFraming::PipeSeparated, 1, a2a_reframe);
+            register_stream(host, vt, mcp_id, b"call", AbiFraming::LengthPrefixed, 1, mcp_reframe);
+            register_stream(host, vt, admin_id, b"admin_audit", AbiFraming::PipeSeparated, 0, admin_reframe);
+
+            let a2a_tail: busbar_api::TaskEventRow = serde_json::from_slice(G_A2A_2).unwrap();
+            let mcp_tail: busbar_api::McpCallRecord = serde_json::from_slice(G_MCP_2).unwrap();
+            let ad_tail: crate::admin::audit::AuditEntry = serde_json::from_slice(G_AD_2).unwrap();
+
+            restore_and_verify(host, vt, a2a_id, b"task-1", &a2a_tail.hash, G_A2A_TAIL);
+            restore_and_verify(host, vt, mcp_id, b"vk_alice", &mcp_tail.hash, G_MCP_TAIL);
+            restore_and_verify(host, vt, admin_id, b"log", &ad_tail.hash, G_AD_TAIL);
         });
     }
 
