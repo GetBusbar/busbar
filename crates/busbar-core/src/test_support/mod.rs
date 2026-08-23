@@ -1535,6 +1535,13 @@ impl TestApp {
             app.mcp_demotions.set_sink(plane_store);
             crate::mcp::demotion::hydrate(&app);
         }
+        // Register the process-wide admin `audit` seam stream ONCE (no-sink), the way the call/task
+        // streams' front-door harnesses do. Production boots this through `register_and_migrate`; the
+        // test HTTP harness never does, so the seam read model `AUDIT_LOG` (which `GET /audit` reads
+        // once cut over) would stay empty. This funnel guarantees every live-server audit test's
+        // `record_by` feeds the seam. Idempotent + re-entrancy-guarded (this is itself on the shared
+        // global app's build path).
+        crate::plane::auditlog::ensure_global_audit_stream_registered();
         (app, store)
     }
 }

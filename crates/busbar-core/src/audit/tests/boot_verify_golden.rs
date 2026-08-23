@@ -249,4 +249,31 @@ fn admin_audit_chain_boot_verifies_from_frozen_bytes() {
 
     let tail: AuditRecord = decode(AD_2).unwrap();
     assert_eq!(tail.hash, AD_TAIL_HASH);
+
+    // A7.3b: the restore ALSO seeds the read-model RING (the source `GET /audit` reads once cut over).
+    // The seeded ring must equal the frozen tail byte-for-byte, newest-first — a perturbation of the
+    // reframe/decode or the seq-ordered push would fail this against the same frozen bytes above.
+    let head: AuditRecord = decode(AD_1).unwrap();
+    let ring = h
+        .log
+        .list_filtered(0, crate::admin::audit::MAX_AUDIT_ENTRIES, None, None);
+    assert_eq!(
+        ring.len(),
+        2,
+        "the ring is seeded with both restored records"
+    );
+    assert_eq!(
+        (ring[0].seq, ring[0].hash.as_str()),
+        (tail.seq, tail.hash.as_str()),
+        "newest-first: the tail record leads"
+    );
+    assert_eq!(
+        (ring[1].seq, ring[1].hash.as_str()),
+        (head.seq, head.hash.as_str()),
+        "the older record follows, seq-ordered"
+    );
+    assert!(
+        ring.iter().all(|e| !e.recorded_here),
+        "restored ring entries are seeded (recorded_here = false), never live appends"
+    );
 }

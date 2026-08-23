@@ -158,7 +158,6 @@ pub(crate) fn audit_suffix(
 /// Parse a `PipeSeparated` admin audit SUFFIX back into its typed fields — the inverse of
 /// [`audit_suffix`], for reconstructing an [`AuditEntry`] from a stored neutral body. The leading `|`
 /// is stripped and the five fields are split; the framing contract guarantees no field carries a `|`.
-#[allow(dead_code)] // read-back bridge: no production caller until the audit read path is cut over
 fn parse_audit_suffix(content: &[u8]) -> (u64, String, String, String, String) {
     let s = String::from_utf8_lossy(content);
     let f: Vec<&str> = s.trim_start_matches('|').splitn(5, '|').collect();
@@ -215,7 +214,6 @@ fn reframe_audit(scope: &str, body: &[u8]) -> StoreResult<PlaneJournalRecord> {
 /// stored `hash` was sealed over, so a chain read back through it `verify_chain`-passes byte-identically.
 /// `recorded_here` comes back FALSE: this is the store-seeding path, never a live append. `scope` is the
 /// constant `admin` log, never read from the body.
-#[allow(dead_code)] // read-back bridge: no production caller until the audit read path is cut over
 pub(crate) fn audit_entry_from_body(_scope: &str, body: &[u8]) -> StoreResult<AuditEntry> {
     if let Ok(nb) = decode::<NeutralBody>(body) {
         let (ts, action, resource, outcome, principal) = parse_audit_suffix(&nb.content);
@@ -373,6 +371,15 @@ impl PlaneAuditLog {
             })
             .collect::<StoreResult<_>>()?;
         out.records = bodies.len();
+        // SEED THE READ-MODEL RING beside the chain position: reconstruct each record from its body
+        // and push the (already ≤ MAX_AUDIT_ENTRIES) durable tail so a post-restart GET /audit — once
+        // cut over to the seam — shows history immediately, reproducing the legacy ring's restore. On
+        // the production boot path `self` is the process-global `AUDIT_LOG`.
+        for body in &bodies {
+            if let Ok(entry) = audit_entry_from_body(ADMIN_LOG, body) {
+                self.push_entry(entry);
+            }
+        }
         if let Some(brk) = self.seed_chain(host, ADMIN_LOG, &bodies)? {
             crate::diagnostics::diag_error!(
                 crate::diagnostics::PLANE_AUDITLOG_CHAIN_VERIFY_FAILED,
@@ -403,6 +410,12 @@ impl PlaneAuditLog {
             let bodies =
                 store.list_plane_records(KIND_AUDIT, &PlaneSelector::Parent(scope.clone()))?;
             out.records += bodies.len();
+            // Seed the read-model ring from the neutral bodies too (see `restore_legacy_table`).
+            for body in &bodies {
+                if let Ok(entry) = audit_entry_from_body(scope, body) {
+                    self.push_entry(entry);
+                }
+            }
             if let Some(brk) = self.seed_chain(host, scope, &bodies)? {
                 crate::diagnostics::diag_error!(
                     crate::diagnostics::PLANE_AUDITLOG_CHAIN_VERIFY_FAILED,
@@ -491,9 +504,11 @@ pub(crate) fn emit(host: HostCtx, scope: &str, suffix: Vec<u8>) {
 /// error is surfaced here as the boot diagnostic.
 pub(crate) fn register_and_migrate(app: &Arc<crate::state::App>, store: &dyn busbar_api::Store) {
     register_audit_stream(app);
-    let log = PlaneAuditLog::new();
+    // Restore into the process-global read model `AUDIT_LOG` (not a throwaway local): the restore
+    // seeds BOTH the host-side chain position AND `AUDIT_LOG`'s ring, so the seam read source is
+    // populated from the durable tail at boot exactly as the legacy ring was.
     crate::plane_host::with_dispatch_scope(app, |host, _vt| {
-        if let Err(e) = log.restore_legacy_table(host, store) {
+        if let Err(e) = AUDIT_LOG.restore_legacy_table(host, store) {
             crate::diagnostics::diag_warn!(
                 crate::diagnostics::BOOT_AUDIT_RESTORE_READ_FAILED,
                 error = %e.0,
@@ -594,6 +609,47 @@ pub(crate) fn mirror(
 pub(crate) fn fresh_test_kind_id() -> u32 {
     static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(300_000);
     NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+}
+
+/// TEST ONLY: the PRODUCTION `audit` stream ([`KIND_ID_AUDIT`]), registered ONCE against a shared
+/// no-sink app so the live-server `GET /audit` tests mint sequences without racing to re-register (a
+/// re-register resets every position — see [`crate::plane_host::journal::register_stream`]). The direct
+/// twin of [`crate::plane::calllog`]'s `global_call_host_app`. Audit is the ONLY seam stream with a
+/// mounted read verb (`get_audit`) exercised by live-server assertions, so it is the only one that
+/// needs the process-wide registration the test HTTP harness never boots through `register_and_migrate`.
+///
+/// A NO-SINK registration is sufficient: the seam append mints and returns `(seq, prev_hash, hash)`
+/// even with no durable sink attached, so [`emit_admin_hostless`] still pushes to [`AUDIT_LOG`]; these
+/// tests assert the in-session read-model ring, never durable persistence.
+#[cfg(any(test, feature = "test-support"))]
+fn global_audit_host_app() -> &'static Arc<crate::state::App> {
+    static APP: std::sync::OnceLock<Arc<crate::state::App>> = std::sync::OnceLock::new();
+    APP.get_or_init(|| {
+        let app = crate::test_support::TestApp::new().build();
+        register_audit_stream(&app);
+        app
+    })
+}
+
+/// TEST ONLY: ensure the process-wide `audit` stream is registered ONCE (no-sink) — the single funnel
+/// every HTTP test's [`crate::test_support::TestApp::build_with_store`] passes through, so no live-server
+/// audit test can forget it. Idempotent (never re-registers, which would reset the chain position).
+///
+/// RE-ENTRANCY GUARD: building the shared global app itself goes through `build_with_store`, which calls
+/// this — a `thread_local` flag makes that nested call a no-op so the `OnceLock` is not re-entered
+/// (which panics). A DIFFERENT thread racing the first init still goes through `global_audit_host_app`
+/// and blocks on the `OnceLock` until init completes, so it is correctly serialized.
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) fn ensure_global_audit_stream_registered() {
+    thread_local! {
+        static BUILDING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+    if BUILDING.with(std::cell::Cell::get) {
+        return;
+    }
+    BUILDING.with(|b| b.set(true));
+    let _ = global_audit_host_app();
+    BUILDING.with(|b| b.set(false));
 }
 
 /// TEST ONLY: a `PlaneAuditLog` + an app whose governance store is `store`, with the `audit` stream
