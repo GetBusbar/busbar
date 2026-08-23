@@ -5231,6 +5231,88 @@ async fn proof_role_binding_mode_ceiling_bounds_a_delegated_admin() {
     assert_eq!(ok_rows, 1, "the allowed mint writes exactly one key row");
 }
 
+/// The deployment-wide TTL ceiling (`auth.policy.max_ttl`) enforced END-TO-END through the mint
+/// handler (`POST /keys`), not the `apply_mint_ttl_ceiling` unit in isolation: an EXPLICIT over-ask
+/// (`expires_in` beyond the ceiling) is REFUSED (400) and writes NO key; a mint with NO expiry is
+/// CLAMPED to the ceiling (24h), NOT left at the 90-day default. Both requests ride the SAME handler
+/// under the SAME 24h policy, so the ceiling — not some unrelated guard — is what refuses one and
+/// clamps the other. The clamped `expires_at` being strictly below the 90-day default is the
+/// red-before-green witness: without the clamp the default mint would outlive the cap.
+#[tokio::test]
+async fn proof_max_ttl_ceiling_refuses_overask_and_clamps_default() {
+    crate::metrics::init();
+    const CEIL: u64 = 24 * 3600; // auth.policy.max_ttl = "24h"
+
+    // Mint through the real handler under a 24h block ceiling; return (status, gov, expires_at).
+    async fn mint(body: serde_json::Value) -> (u16, Arc<GovState>, Option<u64>) {
+        let store = Arc::new(MemoryStore::new());
+        let gov = gov_with_signer(store, Some("admintok".to_string()));
+        let policy = crate::admin::MintPolicy {
+            self_mint: None,
+            block_max_ttl_secs: Some(CEIL),
+            block_binding_modes: None,
+            ceilings: Default::default(),
+        };
+        let app = TestApp::new()
+            .governance(gov.clone())
+            .mint_policy(policy)
+            .build();
+        let handle = Arc::new(crate::state::AppHandle::new(app));
+        let resp = super::create_key(
+            axum::extract::State(handle),
+            axum::Extension(crate::auth::AuthPrincipal(None)),
+            axum::http::HeaderMap::new(),
+            axum::body::Bytes::from(body.to_string()),
+        )
+        .await;
+        let status = resp.status().as_u16();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value =
+            serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+        let exp = json.get("expires_at").and_then(|v| v.as_u64());
+        (status, gov, exp)
+    }
+
+    fn live_rows(gov: &GovState) -> usize {
+        gov.all_keys()
+            .unwrap()
+            .into_iter()
+            .filter(|k| k.enabled && k.deleted_at.is_none())
+            .count()
+    }
+
+    // OVER-ASK: an explicit 48h beyond the 24h ceiling is REFUSED — the operator asked, in writing,
+    // for longer than policy allows.
+    let t0 = crate::store::now();
+    let (refused, gov_refused, _) =
+        mint(serde_json::json!({ "name": "svc", "expires_in": "48h" })).await;
+    assert_eq!(
+        refused, 400,
+        "an explicit expires_in over the max_ttl ceiling MUST be refused"
+    );
+    assert_eq!(
+        live_rows(&gov_refused),
+        0,
+        "the refused over-ask writes NO key row"
+    );
+
+    // DEFAULT: no expiry named → CLAMPED to the ceiling (24h), never the 90-day default.
+    let (ok, _gov_ok, exp) = mint(serde_json::json!({ "name": "svc" })).await;
+    assert_eq!(ok, 201, "a mint with no expiry succeeds");
+    let exp = exp.expect("the 201 response carries expires_at");
+    assert!(
+        (t0 + CEIL..=crate::store::now() + CEIL).contains(&exp),
+        "the default lifetime is CLAMPED to the 24h ceiling (exp≈now+24h): exp={exp}, ceiling={CEIL}"
+    );
+    // Red-before-green witness: without the clamp the default is the 90-day TTL, far past this.
+    assert!(
+        exp < t0 + crate::admin::DEFAULT_KEY_TTL_SECS,
+        "the clamped exp is strictly below the unclamped 90-day default"
+    );
+}
+
 #[tokio::test]
 async fn test_delete_existing_key_returns_200() {
     crate::metrics::init();
