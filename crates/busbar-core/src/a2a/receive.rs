@@ -1309,6 +1309,7 @@ async fn admitted(
     let hop_host = crate::plane_host::SendHostDispatch::new(std::sync::Arc::clone(&app));
     let selected_member = super::route::select_member(
         &app,
+        hop_host.scope(),
         &plane,
         key,
         credential_kind_of(&app),
@@ -1322,24 +1323,14 @@ async fn admitted(
     let hop_breaker = selected_member.breaker;
     let walk_refusal = selected_member.walk_refusal;
     let pin_mismatch = selected_member.pin_mismatch;
-    // THE WALK'S PROBE HOLD JOINS THE SHARED SCOPE. A pooled fresh submission whose member the walk
-    // already admitted rides its probe here as a SETTLE-CAPABLE admission, so the hop's settle and its
-    // record share one arena and the same host `AdmissionId`. The recorded outcome consumes it and the
-    // scope-drop release is then a no-op; an abandoned hop hands it back when `hop_host` drops. NONE
-    // when the walk won nothing (un-pooled/pinned hops admit later, inside `prepare`). PREP: registered
-    // settle-capable but not yet settled through the host.
-    let walk_admission_id = match selected_member.admission {
-        Some(admission) => {
-            let settling = crate::plane_host::breaker::settling_admission(
-                std::sync::Arc::clone(&hop_breaker.breakers),
-                hop_breaker.key.clone(),
-                hop_breaker.lane,
-                admission,
-            );
-            hop_host.scope().register_settling_admission(settling)
-        }
-        None => busbar_plugin::hot::AdmissionId::NONE,
-    };
+    // THE WALK'S PROBE HOLD ALREADY RIDES THE SHARED SCOPE. `select_member` inverted the pooled
+    // fresh-submission walk onto the host `breaker_admit` seam (CLUSTER-1): a won member's
+    // settle-capable probe hold is REGISTERED in `hop_host`'s arena and the plane holds only the POD
+    // `AdmissionId` returned here — never a `PlaneAdmission`. The hop's settle and its record share
+    // that one arena over this id; the recorded outcome consumes it and the scope-drop release is then
+    // a no-op; an abandoned hop hands it back when `hop_host` drops. NONE when the walk won nothing
+    // (un-pooled/pinned hops admit later, inside `prepare`).
+    let walk_admission_id = selected_member.admission_id;
 
     // ── VERIFY-ON-CALL. Re-verify the agent this hop will actually delegate to, within `verify_ttl`,
     //    single-flight, fail-closed — BEFORE the relay preamble's live `still_delegable` gate compares
@@ -1860,6 +1851,7 @@ async fn unary_hop(
                 a2a_version,
                 framing,
                 breakers: Some(breaker),
+                host_app: Some(hop_host.app()),
                 host_scope: Some(hop_host.scope()),
                 admission: walk_admission_id,
             },
@@ -2042,6 +2034,7 @@ async fn stream_hop(
                 a2a_version,
                 framing,
                 breakers: Some(breaker),
+                host_app: Some(hop_host.app()),
                 host_scope: Some(hop_host.scope()),
                 admission: walk_admission_id,
             },

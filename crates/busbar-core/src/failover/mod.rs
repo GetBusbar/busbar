@@ -400,12 +400,11 @@ impl<'a, C: Candidate, T> Admitted<'a, C, T> {
 impl<'a, C: Candidate> Admitted<'a, C, u64> {
     /// The single-flight probe owner token, for the owner-checked release after the outcome is
     /// recorded. The MCP/A2A spelling of [`Admitted::into_token`].
-    // Read only by the MCP and A2A dispatch paths; with BOTH planes compiled out neither `walk`
-    // consumer exists, so it reads dead in that config alone.
-    #[cfg_attr(
-        not(any(feature = "plane-mcp", feature = "plane-a2a")),
-        allow(dead_code)
-    )]
+    // MCP-only now: the A2A sync sites win their probe through the host `breaker_admit` seam
+    // (CLUSTER-1) rather than adopting a bare epoch, so only the MCP legacy None-scope path still
+    // reads this. With `plane-mcp` off it has no caller (the failover unit tests exercise it under
+    // `#[cfg(test)]`).
+    #[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
     pub(crate) fn probe_epoch(&self) -> u64 {
         self.token
     }
@@ -630,12 +629,10 @@ pub(crate) fn walk_with<'a, C: Candidate, T>(
 /// The MCP and A2A call sites' entry point. It adds NO selection logic — it names the two things
 /// those planes supply ([`InOrder`] and [`LaneRuntime::try_admit_breaker`]) and hands them to the one
 /// loop.
-// The MCP and A2A call sites are this seam's only entry point; with BOTH planes compiled out neither
-// exists, so it reads dead in that config alone.
-#[cfg_attr(
-    not(any(feature = "plane-mcp", feature = "plane-a2a")),
-    allow(dead_code)
-)]
+// MCP-only now: the A2A sync sites drive [`walk_with`] with the host `breaker_admit` seam directly
+// (CLUSTER-1), so only the MCP legacy None-scope path still calls this breaker-only spelling. With
+// `plane-mcp` off it has no non-test caller (the failover unit tests drive it under `#[cfg(test)]`).
+#[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
 pub(crate) fn walk<'a, C: Candidate>(
     store: &dyn LaneRuntime,
     pool: &str,

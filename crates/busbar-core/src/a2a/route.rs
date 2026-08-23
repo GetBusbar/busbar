@@ -71,9 +71,13 @@ pub(super) struct SelectedMember {
     pub(super) agent_id: String,
     /// The breaker cell the hop admits against and records into.
     pub(super) breaker: RelayBreaker,
-    /// The probe hold a walked selection already won (RAII; held by the caller across the hop —
-    /// the recorded outcome consumes it and the drop is then a no-op).
-    pub(super) admission: Option<crate::store::PlaneAdmission>,
+    /// The host [`AdmissionId`](busbar_plugin::hot::AdmissionId) a walked selection already won and
+    /// REGISTERED in the shared dispatch scope (CLUSTER-1: the WIN rode `breaker_admit_over`, so the
+    /// plane holds only this POD id and never a `PlaneAdmission`). The hop's recorded outcome settles
+    /// through the same scope over this id; an abandoned hop releases the probe when the scope drops.
+    /// [`NONE`](busbar_plugin::hot::AdmissionId::NONE) when the walk won nothing (un-pooled / pinned
+    /// hops admit later, inside `prepare`).
+    pub(super) admission_id: busbar_plugin::hot::AdmissionId,
     /// Set when the walk found nothing admissible: the ingress renders it AFTER the task row
     /// exists, through the degenerate breaker refusal's own rendering.
     pub(super) walk_refusal: Option<super::relay::RelayRefusal>,
@@ -85,6 +89,7 @@ pub(super) struct SelectedMember {
 #[allow(clippy::too_many_arguments)] // the admission's own facts, gathered where they were made.
 pub(super) fn select_member(
     app: &App,
+    scope: &crate::plane_host::DispatchScope,
     plane: &super::plane::A2aPlane,
     key: &busbar_api::VirtualKey,
     kind: &'static str,
@@ -99,7 +104,7 @@ pub(super) fn select_member(
     let mut selected = SelectedMember {
         agent_id: admitted_agent.to_string(),
         breaker: RelayBreaker::degenerate(admitted_agent, Arc::clone(&breakers)),
-        admission: None,
+        admission_id: busbar_plugin::hot::AdmissionId::NONE,
         walk_refusal: None,
         pin_mismatch: None,
     };
@@ -168,13 +173,35 @@ pub(super) fn select_member(
                 repeatable: crate::failover::Repeatable::No,
                 operation: method,
             };
-            match crate::failover::walk(breakers.runtime(), &pool_key, &candidates, &attempt, now) {
+            // THE WALK, INVERTED onto the host `breaker_admit` seam (CLUSTER-1, mirroring the MCP
+            // sync site): the WIN rides `breaker_admit_over` per candidate, which wins+registers
+            // the settle-capable probe hold in the shared `scope`'s arena and mints the POD
+            // `AdmissionId` — so this plane holds ONLY the id, NEVER a `PlaneAdmission`. The walk's own
+            // pin/repeatability/order still select (probe-win-last preserved: `walk_with` runs the pin
+            // check BEFORE the admit closure). The hop's recorded outcome settles through the same
+            // arena over that id; an abandoned hop releases the probe when the scope drops.
+            let mut order = crate::failover::InOrder::new(&tried, candidates.len());
+            let mut passed_over = Vec::new();
+            match crate::failover::walk_with(
+                &pool_key,
+                &candidates,
+                &attempt,
+                &mut order,
+                &mut passed_over,
+                &mut |_position, member: &AgentCandidate| {
+                    crate::plane_host::breaker::breaker_admit_over(
+                        app,
+                        scope,
+                        pool_key.as_bytes(),
+                        member.lane as u32,
+                    )
+                },
+            ) {
                 Ok(adm) => {
                     let lane = adm.candidate().lane;
                     let chosen = adm.candidate().name.clone();
-                    // The probe hold, adopted RAII and held across the hop; the recorded outcome
-                    // consumes it and the drop after the hop is then a no-op.
-                    selected.admission = Some(breakers.adopt(&pool_key, lane, adm.probe_epoch()));
+                    // The plane holds only the POD id; the settle-capable probe hold lives in `scope`.
+                    selected.admission_id = adm.into_token();
                     if lane != 0 {
                         tracing::info!(
                             pool = %pool_name,

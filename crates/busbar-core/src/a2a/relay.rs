@@ -267,19 +267,26 @@ pub(crate) struct RelayCall<'a> {
     /// same cell on the way out. `None` (the originate direction, which the audit scopes out of
     /// this unit) admits everything and records nothing.
     pub(crate) breakers: Option<RelayBreaker>,
+    /// THE LIVE ENGINE SNAPSHOT this hop was admitted on — the `&App` [`prepare`]'s un-pooled admit
+    /// materializes a host over (with [`host_scope`](Self::host_scope)) to WIN its probe through the
+    /// `breaker_admit` seam (CLUSTER-1: the plane holds only the POD id, never a `PlaneAdmission`).
+    /// Threaded from the `SendHostDispatch` that owns the hop's arena. `None` in the originate
+    /// direction and in unit tests that admit directly, where [`prepare`] wins the probe in place and
+    /// holds it in a local for the record-then-drop lifetime.
+    pub(crate) host_app: Option<&'a crate::state::App>,
     /// THE ONE HOST SCOPE THIS HOP'S ADMIT AND SETTLE SHARE (§4 a2a scope unification). Created
     /// BEFORE `select_member` and moved onto the blocking relay thread, it is the single arena both
     /// the pooled WALK admit (pre-admitted upstream, its id in [`admission`](Self::admission)) and the
-    /// un-pooled [`prepare`] admit register their settle-capable probe hold into — so
-    /// [`record_hop_outcome`] settles through it by a host [`AdmissionId`](busbar_plugin::hot::AdmissionId)
-    /// in the same scope (the CLUSTER-1 inversion). `None` in the originate direction and in unit tests
-    /// that admit directly, where the probe hold keeps its legacy local lifetime (dropped after the
-    /// in-place record).
+    /// un-pooled [`prepare`] admit (through [`host_app`](Self::host_app)) register their settle-capable
+    /// probe hold into — so [`record_hop_outcome`] settles through it by a host
+    /// [`AdmissionId`](busbar_plugin::hot::AdmissionId) in the same scope (the CLUSTER-1 inversion).
+    /// `None` in the originate direction and in unit tests that admit directly, where the probe hold
+    /// keeps its legacy local lifetime (dropped after the in-place record).
     pub(crate) host_scope: Option<&'a crate::plane_host::DispatchScope>,
     /// THE HOST ADMISSION ID FOR A PRE-ADMITTED (pooled WALK) HOP — the id the walk's probe hold was
     /// registered under in [`host_scope`](Self::host_scope) before this call was built.
     /// [`AdmissionId::NONE`](busbar_plugin::hot::AdmissionId::NONE) for an un-pooled hop (whose id
-    /// [`prepare`]/[`relay`] mint when they re-home their own admit) and in the originate direction.
+    /// [`prepare`] mints directly through the host `breaker_admit` seam) and in the originate direction.
     pub(crate) admission: busbar_plugin::hot::AdmissionId,
 }
 
@@ -1415,38 +1422,6 @@ fn outbound_of(body: &[u8]) -> (String, serde_json::Value) {
     )
 }
 
-/// RE-HOME an un-pooled hop's just-won probe hold into the ONE shared [`host_scope`](RelayCall::host_scope)
-/// (scope unification), returning the host [`AdmissionId`](busbar_plugin::hot::AdmissionId) that
-/// hop's settle answers to. The `token` is MOVED out of the caller's local into the scope's arena, so
-/// its owner-checked release re-lifetimes from the local's drop to the shared scope's drop (the hop's
-/// end on the blocking thread) — the SAME "release after the record" ordering, since the record runs
-/// before the scope drops. When there is no shared scope (originate direction / a unit test that admits
-/// directly), the token is LEFT in the caller's local (its legacy lifetime) and this returns the
-/// pre-admitted walk id (or `NONE`). [`record_hop_outcome`] folds the hop's outcome through the scope
-/// by the returned id when one is live.
-fn rehome_admission(
-    call: &RelayCall<'_>,
-    token: &mut Option<crate::store::PlaneAdmission>,
-) -> busbar_plugin::hot::AdmissionId {
-    match (call.host_scope, call.breakers.as_ref(), token.take()) {
-        (Some(scope), Some(target), Some(won)) => {
-            let settling = crate::plane_host::breaker::settling_admission(
-                std::sync::Arc::clone(&target.breakers),
-                target.key.clone(),
-                target.lane,
-                won,
-            );
-            scope.register_settling_admission(settling)
-        }
-        // No shared scope: put the token back so the caller's local keeps its legacy drop-after-record
-        // lifetime, and report the pre-admitted walk id (or NONE for an un-pooled hop admitted here).
-        (_, _, put_back) => {
-            *token = put_back;
-            call.admission
-        }
-    }
-}
-
 /// RECORD ONE HOP'S OUTCOME against the agent's breaker cell — this plane's Stage-1 normalizer
 /// (see docs/circuit-breaker.md's two-stage pipeline), Stage 2 being the one core `breaker::classify`
 /// inside `PlaneBreakers::record_signal`. `refusal: None` is a hop that produced an answer.
@@ -1566,6 +1541,7 @@ fn prepare<'a>(
     streaming: bool,
     now_ms: u64,
     admission: &mut Option<crate::store::PlaneAdmission>,
+    admit_id: &mut busbar_plugin::hot::AdmissionId,
 ) -> Result<(reqwest::Url, PinnedTarget, OutboundRelayRequest), RelayRefusal> {
     // ── THE GUARD. One resolution, every answered address judged, one pinned address out. It is
     //    `crate::net_guard`'s, reached through the card fetch's hop door, so a relayed submission
@@ -1585,23 +1561,50 @@ fn prepare<'a>(
     //    then availability, per the audit's ordering. One admission here covers JsonRpc, HttpJson
     //    and Grpc by construction: this preamble is beneath the transport axis, the same argument
     //    `transport.rs` already makes. On refusal the request NEVER LEFT busbar; the ingress
-    //    renders a fresh submission `rejected` with its task id. The probe hold rides out through
-    //    `admission` so the caller drops it AFTER the outcome is recorded. A `pre_admitted` target
-    //    — a pooled fresh submission whose member `failover::walk` already selected AND admitted —
-    //    is not admitted a second time: the walk holds the probe, and re-admitting a HalfOpen cell
-    //    would lose the single-flight race to our own token.
+    //    renders a fresh submission `rejected` with its task id. A `pre_admitted` target — a pooled
+    //    fresh submission whose member `select_member`'s walk already selected AND admitted through
+    //    the host seam — is not admitted a second time: the walk holds the probe, and re-admitting a
+    //    HalfOpen cell would lose the single-flight race to our own token.
     if let Some(target) = call.breakers.as_ref() {
         if !target.pre_admitted {
-            match target.breakers.admit(&target.key, target.lane) {
-                Ok(token) => *admission = Some(token),
-                Err(_) => {
-                    return Err(RelayRefusal::BreakerOpen {
-                        agent_id: call.agent_id.to_string(),
-                        retry_after_secs: target
-                            .breakers
-                            .retry_after_secs(&target.key, target.lane),
-                    })
+            match (call.host_app, call.host_scope) {
+                // Receive direction (CLUSTER-1 inversion): WIN the probe THROUGH the host
+                // `breaker_admit` seam, which registers the settle-capable hold in the shared scope
+                // and mints the POD id — so the plane holds ONLY the id, never a `PlaneAdmission`.
+                // `record_hop_outcome` settles this hop over `*admit_id` through the same scope; an
+                // abandoned hop releases the probe when the scope drops.
+                (Some(app), Some(scope)) => {
+                    match crate::plane_host::breaker::breaker_admit_over(
+                        app,
+                        scope,
+                        target.key.as_bytes(),
+                        target.lane as u32,
+                    ) {
+                        Ok(id) => *admit_id = id,
+                        Err(_) => {
+                            return Err(RelayRefusal::BreakerOpen {
+                                agent_id: call.agent_id.to_string(),
+                                retry_after_secs: target
+                                    .breakers
+                                    .retry_after_secs(&target.key, target.lane),
+                            })
+                        }
+                    }
                 }
+                // Originate direction / unit tests that admit directly (no shared host scope): win the
+                // probe IN PLACE and hold it in the caller's local, released after the in-place record
+                // — its legacy drop-after-record lifetime, byte-identical to before.
+                _ => match target.breakers.admit(&target.key, target.lane) {
+                    Ok(token) => *admission = Some(token),
+                    Err(_) => {
+                        return Err(RelayRefusal::BreakerOpen {
+                            agent_id: call.agent_id.to_string(),
+                            retry_after_secs: target
+                                .breakers
+                                .retry_after_secs(&target.key, target.lane),
+                        })
+                    }
+                },
             }
         }
     }
@@ -1696,15 +1699,16 @@ pub(crate) fn relay(
     seam: &dyn RelaySeam,
     now_ms: u64,
 ) -> Result<RelayReply, RelayRefusal> {
-    // Declared BEFORE `outcome` so it drops AFTER the record below (locals drop in reverse
-    // order): a recorded outcome consumes the probe and makes the drop a no-op; a refusal between
-    // admission and the wire genuinely abandons it and the drop hands it back.
+    // The LEGACY-PATH local, declared BEFORE `outcome` so it drops AFTER the record below (locals
+    // drop in reverse order): only the originate/unit-test path (no shared host scope) fills it, and
+    // there a recorded outcome consumes the probe and makes the drop a no-op while a refusal between
+    // admission and the wire abandons it and the drop hands it back.
     let mut admission: Option<crate::store::PlaneAdmission> = None;
-    let outcome = relay_once(call, seam, now_ms, &mut admission);
-    // Re-home an un-pooled admit into the shared host scope (or keep the pre-admitted walk id),
-    // BEFORE the record — so whether the probe lives in the shared arena or this local, it is still
-    // released only after the outcome is recorded.
-    let settle = rehome_admission(call, &mut admission);
+    // THE HOST ID THIS HOP SETTLES OVER (CLUSTER-1): the pre-admitted WALK id when this is a pooled
+    // fresh submission, or the un-pooled admit `prepare` mints through the host `breaker_admit` seam.
+    // Stays `NONE` on the originate/legacy path, where the probe is held in `admission` above instead.
+    let mut settle = call.admission;
+    let outcome = relay_once(call, seam, now_ms, &mut admission, &mut settle);
     record_hop_outcome(call, settle, outcome.as_ref().err());
     outcome
 }
@@ -1716,8 +1720,9 @@ fn relay_once(
     seam: &dyn RelaySeam,
     now_ms: u64,
     admission: &mut Option<crate::store::PlaneAdmission>,
+    admit_id: &mut busbar_plugin::hot::AdmissionId,
 ) -> Result<RelayReply, RelayRefusal> {
-    let (url, pin, request) = prepare(call, seam, false, now_ms, admission)?;
+    let (url, pin, request) = prepare(call, seam, false, now_ms, admission, admit_id)?;
 
     // The PINNED ADDRESS goes to the transport beside the URL. The transport connects to the
     // address and sends the URL's host as `Host` and as TLS SNI; see `transport.rs`.
@@ -2236,8 +2241,10 @@ pub(crate) fn relay_stream(
     now_ms: u64,
     sink: &mut (dyn FnMut(RelayEvent) -> ChunkFlow + Send),
 ) -> Result<RelayStream, RelayRefusal> {
-    // Same shape as [`relay`]: admission outlives the record, and every exit path records.
+    // Same shape as [`relay`]: the legacy-path probe local outlives the record, the host id carries
+    // the shared-scope handle, and every exit path records.
     let mut admission: Option<crate::store::PlaneAdmission> = None;
+    let mut settle = call.admission;
     let outcome = relay_stream_once(
         call,
         seam,
@@ -2247,9 +2254,8 @@ pub(crate) fn relay_stream(
         now_ms,
         sink,
         &mut admission,
+        &mut settle,
     );
-    // Same re-home as the unary [`relay`], before the record.
-    let settle = rehome_admission(call, &mut admission);
     record_hop_outcome(call, settle, outcome.as_ref().err());
     outcome
 }
@@ -2265,8 +2271,9 @@ fn relay_stream_once(
     now_ms: u64,
     sink: &mut (dyn FnMut(RelayEvent) -> ChunkFlow + Send),
     admission: &mut Option<crate::store::PlaneAdmission>,
+    admit_id: &mut busbar_plugin::hot::AdmissionId,
 ) -> Result<RelayStream, RelayRefusal> {
-    let (url, pin, request) = prepare(call, seam, true, now_ms, admission)?;
+    let (url, pin, request) = prepare(call, seam, true, now_ms, admission, admit_id)?;
     let cap = call.policy.max_body_bytes;
 
     // THE BINDING'S OWN FRAME READER. Whatever it reads — SSE with an envelope payload, SSE with a

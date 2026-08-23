@@ -126,6 +126,7 @@ fn a_call<'a>(
             "planner",
             Arc::clone(breakers),
         )),
+        host_app: None,
         host_scope: None,
         admission: busbar_plugin::hot::AdmissionId::NONE,
     }

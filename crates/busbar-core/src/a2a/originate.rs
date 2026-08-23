@@ -160,7 +160,8 @@ fn issue_originated(
             // The originate direction is scoped OUT of the breaker unit (the audit's own table row);
             // `None` admits everything and records nothing until unification mounts it.
             breakers: None,
-            // No breaker cell here, so no admit to re-home and no shared host scope to thread.
+            // No breaker cell here, so no admit to re-home and no shared host to thread.
+            host_app: None,
             host_scope: None,
             admission: busbar_plugin::hot::AdmissionId::NONE,
         },

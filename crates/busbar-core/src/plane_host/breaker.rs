@@ -85,12 +85,11 @@ impl SettleAdmission for BreakerAdmission {
 /// the durable scope release the unsettled probe on task-end drop). The reroute path owns a bare
 /// `PlaneAdmission` rather than one registered in a [`DispatchScope`](super::DispatchScope), so this
 /// wraps it exactly as [`breaker_admit`] wraps the token it registers.
-// Called only from the MCP (`mcp::reroute`) and A2A (`a2a::relay`/`a2a::receive`) plane paths, so it
-// reads dead when BOTH planes are compiled out; live with either on.
-#[cfg_attr(
-    not(any(feature = "plane-mcp", feature = "plane-a2a")),
-    allow(dead_code)
-)]
+// MCP-only now: the A2A failover sync sites win+register their probe through the host
+// `breaker_admit` seam directly (CLUSTER-1), so only the MCP reroute durable-handoff path
+// (`mcp::reroute::into_task_dispatch`) still re-homes a bare `PlaneAdmission` through this. With
+// `plane-mcp` off it has no caller.
+#[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
 pub(crate) fn settling_admission(
     breakers: Arc<PlaneBreakers>,
     key: String,
@@ -120,9 +119,13 @@ pub(crate) fn settling_admission(
 /// the inverse of [`classify_unavailable`] (coarse: the ABI carries a fine [`Unavailability`] + a
 /// second-rounded recovery floor, not the exact internal epoch; the sync sites render `Retry-After`
 /// from the store's own `retry_after_secs`, never from this reconstructed value).
-// Driven only by the MCP failover sync site (the A2A sync sites are not yet inverted), so it reads
-// dead when plane-mcp is compiled out.
-#[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
+// Driven by BOTH the MCP failover sync site (`mcp::reroute`) and the A2A failover sync sites
+// (`a2a::route::select_member`'s pooled walk and `a2a::relay::prepare`'s un-pooled admit), so it
+// reads dead only when BOTH planes are compiled out.
+#[cfg_attr(
+    not(any(feature = "plane-mcp", feature = "plane-a2a")),
+    allow(dead_code)
+)]
 pub(crate) fn breaker_admit_over(
     app: &crate::state::App,
     scope: &super::DispatchScope,
@@ -166,7 +169,12 @@ pub(crate) fn breaker_admit_over(
 /// the `BreakerOpen`/`AtCapacity` payloads are reconstituted from the floor. This feeds
 /// [`crate::failover::walk_with`]'s `passed_over` reasons (an operator-facing LOG on the sync sites),
 /// never a caller-facing `Retry-After` (that is the store's own `retry_after_secs`).
-#[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
+// Reached only through [`breaker_admit_over`], so it shares that fn's dual-plane liveness: dead only
+// when BOTH planes are compiled out.
+#[cfg_attr(
+    not(any(feature = "plane-mcp", feature = "plane-a2a")),
+    allow(dead_code)
+)]
 fn reconstruct_unavailable(
     reason: Unavailability,
     retry_after_secs: u64,
