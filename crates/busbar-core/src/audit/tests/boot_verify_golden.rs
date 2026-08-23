@@ -43,7 +43,6 @@ use super::*;
 use crate::admin::audit::AuditEntry;
 use crate::plane::calllog::PlaneCallLog;
 use crate::plane::store::{decode, encode, PlaneStore, KIND_CALL, KIND_TASK, KIND_TASK_EVENT};
-use crate::plane::taskstore::TaskRegistry;
 use busbar_api::{McpCallRecord, PlaneRecord, PlaneSelector, StoreResult, TaskEventRow, TaskRow};
 
 // ── THE FROZEN PERSISTED BYTES — captured from the pre-cleave build, opaque on purpose ──────────
@@ -193,8 +192,16 @@ fn a2a_task_chain_boot_verifies_from_frozen_bytes() {
     store.put(KIND_TASK_EVENT, Some("task-1"), A2A_1);
     store.put(KIND_TASK_EVENT, Some("task-1"), A2A_2);
 
-    let registry = TaskRegistry::new();
-    let rehydrated = registry.restore_from_store(&store).expect("store read");
+    // The chain position cache is host-side now: register a fresh isolated stream and host-drive the
+    // rehydrate. The FROZEN BYTES/HASHES above are unchanged — only the scaffolding that replays them
+    // through the durable seam changed. The rehydrate SEEDS positions from the store passed here (the
+    // frozen bytes), so the throwaway app the harness registers against is immaterial to the digests.
+    let h = crate::plane::taskstore::TaskTestHarness::over(std::sync::Arc::new(
+        busbar_store_memory::MemoryStore::new(),
+    ));
+    let rehydrated = h
+        .host(|host| h.reg.restore_from_store(host, &store))
+        .expect("store read");
     assert!(
         rehydrated.chain_breaks.is_empty(),
         "a persisted A2A chain reported TAMPERED means the digest drifted: {:?}",

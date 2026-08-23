@@ -38,6 +38,12 @@ use std::sync::Arc;
 async fn with_ledger() -> (Arc<EventLedger>, tokio::sync::MutexGuard<'static, ()>) {
     let guard = TASKS_SINK_LOCK.lock().await;
     let ledger = Arc::new(EventLedger::new());
+    // Aim the process-wide `task_event` stream (which the front door writes through) at THIS ledger
+    // for the duration of the lock — a sink swap, not a re-register, so positions stay intact — and
+    // attach the row-upsert sink.
+    crate::plane::taskstore::aim_global_task_sink(Some(
+        crate::plane::store::PlaneStoreView::narrow(ledger.clone()),
+    ));
     TASKS.set_sink(crate::plane::store::PlaneStoreView::narrow(ledger.clone()));
     (ledger, guard)
 }
@@ -64,6 +70,7 @@ async fn an_inbound_task_leaves_a_verifying_chain_in_the_store_the_front_door_wr
         .to_string();
 
     let events = ledger.events_for(&task_id);
+    crate::plane::taskstore::aim_global_task_sink(None);
     TASKS.clear_sink_for_test();
     assert!(
         !events.is_empty(),
@@ -120,6 +127,7 @@ async fn editing_a_persisted_event_breaks_the_chain_the_front_door_wrote() {
         .to_string();
 
     let mut events = ledger.events_for(&task_id);
+    crate::plane::taskstore::aim_global_task_sink(None);
     TASKS.clear_sink_for_test();
     assert!(
         !events.is_empty(),

@@ -30,12 +30,14 @@ use crate::plane::taskstore::TASKS;
 fn open(principal: &str, task_id: &str, context_id: &str, state: TaskState, now: u64) {
     let task = Task::submitted(task_id, context_id, principal, Direction::Inbound, now)
         .expect("a task with these fields is constructible");
-    TASKS.submit(&task, task_id).expect("the row records");
-    if state != TaskState::Submitted {
-        TASKS
-            .transition(task_id, state, now, task_id)
-            .expect("the transition is legal");
-    }
+    crate::plane::taskstore::with_global_task_host(|host| {
+        TASKS.submit(host, &task, task_id).expect("the row records");
+        if state != TaskState::Submitted {
+            TASKS
+                .transition(host, task_id, state, now, task_id)
+                .expect("the transition is legal");
+        }
+    });
 }
 
 fn envelope(method: &str, params: serde_json::Value) -> serde_json::Value {

@@ -222,8 +222,19 @@ pub(crate) fn a2a_hydrate(ctx: &crate::plane::registry::BootCtx) -> Result<(), S
     let Some(plane_store) = ctx.store.clone() else {
         return Ok(());
     };
+    let app = ctx
+        .app
+        .expect("a2a hydrate runs in the HYDRATE phase, which supplies the freshly-built app");
+    // REGISTER the durable `task_event` stream FIRST — the host attaches its own sink from
+    // `app.governance` (the same plane-narrowed store) at register time, so the host-side chain and the
+    // task-row upserts reach one backend. THEN attach the row-upsert sink and rehydrate through the
+    // seam, opening a dispatch scope so the caller-driven `seed` reaches the host over a live `HostCtx`.
+    crate::plane::taskstore::register_task_event_stream(app);
     crate::plane::taskstore::TASKS.set_sink(plane_store.clone());
-    match crate::plane::taskstore::TASKS.restore_from_store(plane_store.as_ref()) {
+    let restored = crate::plane_host::with_dispatch_scope(app, |host, _vt| {
+        crate::plane::taskstore::TASKS.restore_from_store(host, plane_store.as_ref())
+    });
+    match restored {
         Ok(r) if r == crate::plane::taskstore::Rehydrated::default() => {}
         Ok(r) => {
             tracing::info!(

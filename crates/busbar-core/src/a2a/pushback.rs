@@ -315,7 +315,10 @@ pub(crate) async fn push_notification(
         // a retry, and `transition` would refuse a move to the state it is already in.
         task
     } else {
-        match crate::plane::taskstore::TASKS.transition(&task_id, reported, now, &task_id) {
+        let recorded = crate::plane_host::HostDispatch::new(&app).with_host(|h, _| {
+            crate::plane::taskstore::TASKS.transition(h, &task_id, reported, now, &task_id)
+        });
+        match recorded {
             Ok(t) => t,
             Err(e) => {
                 // REPORTED, NEVER 5xx. The commonest arrival here is a push about a task busbar
@@ -334,9 +337,14 @@ pub(crate) async fn push_notification(
     // customer's slow receiver slow another party's agent down.
     if moved.push_callback.is_some() {
         let seam = plane.relay_seam();
+        let deliver_app = std::sync::Arc::clone(&app);
         tokio::task::spawn_blocking(move || {
             let id = moved.task_id.clone();
-            if let Err(e) = super::pushdeliver::deliver(seam.as_ref(), &moved) {
+            // DETACHED: open a `Send + 'static` host route on the blocking thread so the delivery's
+            // chained outcome reaches the durable seam (the raw `HostCtx` stays inside `with_host`).
+            let delivered = crate::plane_host::SendHostDispatch::new(deliver_app)
+                .with_host(|h, _| super::pushdeliver::deliver(h, seam.as_ref(), &moved));
+            if let Err(e) = delivered {
                 diag_debug!(A2A_PUSHBACK_NOT_DELIVERED, task = %id, error = %e, "a2a: a pushed state was not delivered onward");
             }
         });

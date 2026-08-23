@@ -691,9 +691,13 @@ async fn an_interrupt_the_relay_produced_rehydrates_only_where_the_store_is_dura
     // deployment wrote through to.
     let fresh = crate::plane::taskstore::TaskRegistry::new();
     let store = h.gov.store();
-    let rehydrated = fresh
-        .restore_from_store(crate::plane::store::PlaneStoreView::narrow(store.clone()).as_ref())
-        .expect("the rehydrate completes");
+    let rehydrated = crate::plane::taskstore::with_global_task_host(|host| {
+        fresh.restore_from_store(
+            host,
+            crate::plane::store::PlaneStoreView::narrow(store.clone()).as_ref(),
+        )
+    })
+    .expect("the rehydrate completes");
 
     if rehydrated.active == 0 {
         // THE RAM DEFAULT. Nothing survives, and saying so is the truth being reported rather than

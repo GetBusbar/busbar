@@ -347,6 +347,9 @@ pub(super) async fn refresh_listed_tasks(
         .or_else(|| reply.result.as_array())
         .cloned()
         .unwrap_or_default();
+    // One host route over the admitted `app` for the whole refresh: each matched observation is a
+    // transition through the durable `task_event` seam, driven synchronously between the awaits.
+    let host = crate::plane_host::HostDispatch::new(app);
     for entry in listed {
         let Some(backend_id) = entry.get("id").and_then(serde_json::Value::as_str) else {
             continue;
@@ -367,8 +370,10 @@ pub(super) async fn refresh_listed_tasks(
         // A refusal is the table doing its job — a backend re-reporting a state busbar already
         // holds, or one the table forbids — and is not an error to raise at a caller who asked for
         // a list.
-        match crate::plane::taskstore::TASKS.transition(busbar_id, state, now, busbar_id) {
-            Ok(task) => notify_push(&seam, task),
+        match host.with_host(|h, _| {
+            crate::plane::taskstore::TASKS.transition(h, busbar_id, state, now, busbar_id)
+        }) {
+            Ok(task) => notify_push(Arc::clone(app), &seam, task),
             Err(e) => {
                 tracing::trace!(task = %busbar_id, error = %e, "a2a: a listed state was not recordable")
             }

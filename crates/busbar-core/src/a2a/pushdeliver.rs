@@ -329,9 +329,13 @@ pub(crate) fn notification_body(task: &Task) -> Vec<u8> {
 /// chain mechanism itself is under.
 ///
 /// The record is written BEFORE the outcome is returned, so no caller can decide not to be audited.
-pub(crate) fn deliver(seam: &dyn RelaySeam, task: &Task) -> Result<(), PushRefusal> {
+pub(crate) fn deliver(
+    host: busbar_plugin::hot::host::HostCtx,
+    seam: &dyn RelaySeam,
+    task: &Task,
+) -> Result<(), PushRefusal> {
     let outcome = attempt(seam, task);
-    record_attempt(task, &outcome);
+    record_attempt(host, task, &outcome);
     outcome
 }
 
@@ -346,7 +350,11 @@ pub(crate) fn deliver(seam: &dyn RelaySeam, task: &Task) -> Result<(), PushRefus
 /// never touches the task"), and turning a bookkeeping problem into a failed task would be exactly
 /// the harm that posture exists to prevent — but it is logged at WARN rather than swallowed, because
 /// a missing audit record is itself the thing this file was changed to stop.
-fn record_attempt(task: &Task, outcome: &Result<(), PushRefusal>) {
+fn record_attempt(
+    host: busbar_plugin::hot::host::HostCtx,
+    task: &Task,
+    outcome: &Result<(), PushRefusal>,
+) {
     let kind = match outcome {
         Ok(()) => provenance::EV_PUSH_DELIVERED,
         // NOTHING WENT OUT — busbar's own guard, the resolver, or the stored URL stopped it.
@@ -358,6 +366,7 @@ fn record_attempt(task: &Task, outcome: &Result<(), PushRefusal>) {
         Err(PushRefusal::NoCallback) => return,
     };
     if let Err(e) = crate::plane::taskstore::TASKS.record_push_delivery(
+        host,
         &task.task_id,
         kind,
         crate::store::now(),

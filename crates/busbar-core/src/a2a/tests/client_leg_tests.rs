@@ -1157,6 +1157,11 @@ async fn the_delegation_hop_lands_in_the_per_task_chain_naming_the_agent_it_was_
     // that has nothing to do with the client leg. See `taskstore::TASKS_SINK_LOCK`.
     let _sink_guard = crate::plane::taskstore::TASKS_SINK_LOCK.lock().await;
     let sink = std::sync::Arc::new(ChainSink::new());
+    // Aim the process-wide `task_event` stream the front door writes through at THIS sink (a swap, not
+    // a re-register) and attach the row-upsert sink.
+    crate::plane::taskstore::aim_global_task_sink(Some(
+        crate::plane::store::PlaneStoreView::narrow(sink.clone()),
+    ));
     crate::plane::taskstore::TASKS
         .set_sink(crate::plane::store::PlaneStoreView::narrow(sink.clone()));
 
@@ -1218,6 +1223,7 @@ async fn the_delegation_hop_lands_in_the_per_task_chain_naming_the_agent_it_was_
         events.iter().map(|e| &e.kind).collect::<Vec<_>>()
     );
 
+    crate::plane::taskstore::aim_global_task_sink(None);
     crate::plane::taskstore::TASKS.set_sink(crate::plane::store::PlaneStoreView::narrow(
         std::sync::Arc::new(busbar_store_memory::MemoryStore::new()),
     ));
@@ -1237,6 +1243,11 @@ async fn a_failed_hop_is_chained_too_and_the_chain_carries_its_terminal_outcome(
     // that has nothing to do with the client leg. See `taskstore::TASKS_SINK_LOCK`.
     let _sink_guard = crate::plane::taskstore::TASKS_SINK_LOCK.lock().await;
     let sink = std::sync::Arc::new(ChainSink::new());
+    // Aim the process-wide `task_event` stream the front door writes through at THIS sink (a swap, not
+    // a re-register) and attach the row-upsert sink.
+    crate::plane::taskstore::aim_global_task_sink(Some(
+        crate::plane::store::PlaneStoreView::narrow(sink.clone()),
+    ));
     crate::plane::taskstore::TASKS
         .set_sink(crate::plane::store::PlaneStoreView::narrow(sink.clone()));
 
@@ -1295,6 +1306,7 @@ async fn a_failed_hop_is_chained_too_and_the_chain_carries_its_terminal_outcome(
     crate::audit::verify_chain(&events)
         .expect("the failed leg's persisted chain must verify against its own hashes");
 
+    crate::plane::taskstore::aim_global_task_sink(None);
     crate::plane::taskstore::TASKS.set_sink(crate::plane::store::PlaneStoreView::narrow(
         std::sync::Arc::new(busbar_store_memory::MemoryStore::new()),
     ));

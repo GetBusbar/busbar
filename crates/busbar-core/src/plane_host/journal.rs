@@ -242,6 +242,24 @@ fn stream_handle(kind_id: u32) -> Option<StreamHandle> {
     })
 }
 
+/// TEST ONLY: point an already-registered stream's durable journal at `store` (or detach it) WITHOUT
+/// re-registering — so a global-`TASKS` chain test can aim the process-wide `kind_id` at its own
+/// ledger for the duration it holds `TASKS_SINK_LOCK`, leaving the chain POSITIONS untouched (a
+/// re-register would reset every position and race the no-sink registration the working-set tests
+/// share). A no-op if the stream is not registered.
+#[cfg(test)]
+pub(crate) fn set_stream_sink_for_test(
+    kind_id: u32,
+    store: Option<Arc<dyn crate::plane::store::PlaneStore>>,
+) {
+    if let Some(s) = streams_lock().get(&kind_id) {
+        match store {
+            Some(store) => s.journal.set_sink(store),
+            None => s.journal.clear_sink_for_test(),
+        }
+    }
+}
+
 /// Read a borrowed `(ptr, len)` range into owned bytes; a null/empty range is the empty vector.
 fn read_bytes(ptr: *const u8, len: usize) -> Vec<u8> {
     if ptr.is_null() || len == 0 {
@@ -261,6 +279,106 @@ fn read_scope(ptr: *const u8, len: usize) -> Option<String> {
     // SAFETY: a non-null `(ptr, len)` is a live borrowed range for the call (ABI discipline).
     let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
     Some(String::from_utf8_lossy(bytes).into_owned())
+}
+
+/// THE IN-CORE REFRAME BRIDGE. A within-core plane seam user (`plane::taskstore`, `plane::calllog`)
+/// still owns its own native `Fn(&str, &[u8]) -> StoreResult<PlaneJournalRecord>` decode bridge, but
+/// the durable seam addresses reframe over the [`JournalReframeFn`] FFI shape. This is the adapter:
+/// the plane's `extern "C-unwind"` reframe slot forwards the raw buffers here, and this reads the body,
+/// runs the native decode, and writes `(seq, prev_hash, hash, pre-framed suffix, digests_scope)` back
+/// into the caller's three buffers under the same length-report discipline [`call_reframe`] expects —
+/// so the unsafe buffer work stays in this audited host module and the plane files stay `deny(unsafe)`.
+/// The scope the host assembles the record with is its own (the store parent), so the native decode's
+/// scope argument is inert here; a placeholder is passed.
+#[cfg_attr(
+    not(any(feature = "plane-mcp", feature = "plane-a2a")),
+    allow(dead_code)
+)]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn reframe_bridge(
+    body_ptr: *const u8,
+    body_len: usize,
+    out: *mut MaybeUninit<ReframeOut>,
+    prev_buf: *mut u8,
+    prev_cap: usize,
+    hash_buf: *mut u8,
+    hash_cap: usize,
+    suffix_buf: *mut u8,
+    suffix_cap: usize,
+    native: impl FnOnce(&str, &[u8]) -> busbar_api::StoreResult<PlaneJournalRecord>,
+) -> StatusClass {
+    if out.is_null() {
+        return StatusClass::Refused;
+    }
+    let body = read_bytes(body_ptr, body_len);
+    let record = match native("", &body) {
+        Ok(r) => r,
+        Err(_) => return StatusClass::Fault,
+    };
+    let prev = record.prev_hash.as_bytes();
+    let hash = record.hash.as_bytes();
+    let suffix = record.content.as_slice();
+    let o = ReframeOut {
+        size: core::mem::size_of::<ReframeOut>() as u32,
+        version: POD_VERSION,
+        digests_scope: u8::from(record.digests_scope),
+        _r: 0,
+        seq: record.seq,
+        prev_len: prev.len(),
+        hash_len: hash.len(),
+        suffix_len: suffix.len(),
+    };
+    // SAFETY: non-null `out` is a live, writable `MaybeUninit<ReframeOut>`; always initialized (the
+    // length-report discipline), so it is readable on both `Ok` and `Refused`.
+    unsafe { (*out).write(o) };
+    if prev.len() > prev_cap || hash.len() > hash_cap || suffix.len() > suffix_cap {
+        return StatusClass::Refused;
+    }
+    // SAFETY: each destination cap >= the source length (checked above); the ranges are live for the
+    // call (ABI discipline), and a null buffer only occurs paired with a zero cap ⇒ zero-length copy.
+    unsafe {
+        if !prev.is_empty() {
+            std::ptr::copy_nonoverlapping(prev.as_ptr(), prev_buf, prev.len());
+        }
+        if !hash.is_empty() {
+            std::ptr::copy_nonoverlapping(hash.as_ptr(), hash_buf, hash.len());
+        }
+        if !suffix.is_empty() {
+            std::ptr::copy_nonoverlapping(suffix.as_ptr(), suffix_buf, suffix.len());
+        }
+    }
+    StatusClass::Ok
+}
+
+/// SAFE SEED WRAPPER for a within-core seam user: drive [`journal_seed`] over a registered stream and
+/// return the reported [`ChainBreakHdr`] by value, keeping the `MaybeUninit` read (the one unsafe step)
+/// inside this audited module so `plane::taskstore` stays `deny(unsafe)`. `Err(())` is a seam fault
+/// (an unregistered stream, an empty scope, or a reframe that could not decode a body).
+#[cfg_attr(
+    not(any(feature = "plane-mcp", feature = "plane-a2a")),
+    allow(dead_code)
+)]
+pub(crate) fn seed_scoped_via_seam(
+    host: HostCtx,
+    kind_id: u32,
+    scope: &str,
+    packed: &[u8],
+) -> Result<ChainBreakHdr, ()> {
+    let mut out = MaybeUninit::<ChainBreakHdr>::uninit();
+    let status = journal_seed(
+        host,
+        kind_id,
+        scope.as_ptr(),
+        scope.len(),
+        packed.as_ptr(),
+        packed.len(),
+        &mut out as *mut MaybeUninit<ChainBreakHdr>,
+    );
+    if status != StatusClass::Ok {
+        return Err(());
+    }
+    // SAFETY: an `Ok` status published the slot (the seed's write-only-on-Ok discipline).
+    Ok(unsafe { out.assume_init() })
 }
 
 /// Turn one stored body + its scope back into a [`PlaneJournalRecord`] by calling the stream's
@@ -1066,7 +1184,10 @@ mod tests {
     use busbar_plugin::hot::{JournalStreamDesc, ReframeOut, RestoredHdr, VerifyChainHdr};
     use std::sync::Arc;
 
-    static NEXT_KIND_ID: AtomicU32 = AtomicU32::new(1);
+    // Base 10_000 so these unit streams never collide in the process-global registry with the
+    // production ids (1 = A2A `task_event`, 2 = MCP `call`) a within-core plane test registers, nor
+    // with the plane test ranges (taskstore 100_000+, calllog 200_000+).
+    static NEXT_KIND_ID: AtomicU32 = AtomicU32::new(10_000);
     fn fresh_kind_id() -> u32 {
         NEXT_KIND_ID.fetch_add(1, Ordering::SeqCst)
     }

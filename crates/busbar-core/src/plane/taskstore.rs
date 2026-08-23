@@ -43,14 +43,102 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use crate::audit::journal::{Journal, JournalError, NeutralBody};
-use crate::audit::{ChainBreak, Framing};
+use crate::audit::journal::NeutralBody;
+use crate::audit::{verify_chain, ChainBreak, Framing};
 
 use super::provenance::{self, EventInput};
 use crate::a2a::task::{Task, TaskError, TaskState};
 use crate::plane::store::{decode, task_record, PlaneStore, KIND_TASK, KIND_TASK_EVENT};
-use crate::plane_host::journal::{PlaneJournalInput, PlaneJournalRecord};
+use crate::plane_host::journal::PlaneJournalRecord;
 use busbar_api::{PlaneSelector, StoreError, StoreResult, TaskEventRow, TaskRow};
+use busbar_plugin::hot::host::HostCtx;
+use busbar_plugin::hot::{
+    Framing as AbiFraming, JournalStreamDesc, ReframeOut, Seq, StatusClass, POD_VERSION,
+};
+use core::mem::MaybeUninit;
+
+/// The host-assigned `kind_id` the A2A `task_event` durable stream is registered under and addressed
+/// by on every scoped op. Process-global (the host's stream registry is), distinct from every other
+/// stream's id (the MCP `call` stream takes its own).
+pub(crate) const KIND_ID_TASK_EVENT: u32 = 1;
+
+/// The A2A `task_event` stream's FFI reframe slot: the [`JournalReframeFn`](busbar_plugin::hot::host::JournalReframeFn)
+/// the host calls to reconstruct a record's chain fields from a stored body. Delegates the raw-buffer
+/// work to the audited [`crate::plane_host::journal::reframe_bridge`] (so this file stays `deny(unsafe)`)
+/// over the native [`reframe_task_event`] decode, which handles BOTH the neutral body and a legacy row.
+extern "C-unwind" fn reframe_task_event_ffi(
+    _host: HostCtx,
+    _kind_id: u32,
+    body_ptr: *const u8,
+    body_len: usize,
+    out: *mut MaybeUninit<ReframeOut>,
+    prev_buf: *mut u8,
+    prev_cap: usize,
+    hash_buf: *mut u8,
+    hash_cap: usize,
+    suffix_buf: *mut u8,
+    suffix_cap: usize,
+) -> StatusClass {
+    crate::plane_host::journal::reframe_bridge(
+        body_ptr,
+        body_len,
+        out,
+        prev_buf,
+        prev_cap,
+        hash_buf,
+        hash_cap,
+        suffix_buf,
+        suffix_cap,
+        reframe_task_event,
+    )
+}
+
+/// REGISTER the A2A `task_event` durable stream with the host (once, at boot, before the rehydrate):
+/// its neutral `kind`, `PipeSeparated` framing with the scope in the digest, and the reframe slot,
+/// under [`KIND_ID_TASK_EVENT`]. The host attaches the durable sink from `app.governance` at register
+/// time — the same plane-narrowed store the task-row upserts write through — so the host-side journal
+/// and the row upserts reach one backend. Idempotent per `kind_id`.
+pub(crate) fn register_task_event_stream(app: &std::sync::Arc<crate::state::App>) {
+    register_task_event_stream_as(KIND_ID_TASK_EVENT, app);
+}
+
+/// Register the `task_event` stream under an ARBITRARY `kind_id` — the parameterized form production's
+/// [`register_task_event_stream`] pins to [`KIND_ID_TASK_EVENT`], and a TEST drives over a FRESH id so
+/// parallel tests never share one process-global chain (the host stream registry is a singleton per id).
+pub(crate) fn register_task_event_stream_as(kind_id: u32, app: &std::sync::Arc<crate::state::App>) {
+    let kind = KIND_TASK_EVENT.as_bytes();
+    let desc = JournalStreamDesc {
+        size: core::mem::size_of::<JournalStreamDesc>() as u32,
+        version: POD_VERSION,
+        framing: AbiFraming::PipeSeparated,
+        digests_scope: 1,
+        kind_id,
+        _reserved: 0,
+        kind_ptr: kind.as_ptr(),
+        kind_len: kind.len(),
+    };
+    crate::plane_host::with_dispatch_scope(app, |host, vt| {
+        (vt.journal_register
+            .expect("journal_register is a wired host slot"))(
+            host,
+            &desc as *const JournalStreamDesc,
+            reframe_task_event_ffi,
+        );
+    });
+}
+
+/// Pack a set of stored bodies into the [`journal_seed`](crate::plane_host::journal) wire shape:
+/// `u32` count LE, then per body a `u32` length LE + its bytes. The inverse of the host's
+/// `unpack_bodies` — the durable seam takes the raw bodies packed and reframes each host-side.
+fn pack_bodies(bodies: &[Vec<u8>]) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(&(bodies.len() as u32).to_le_bytes());
+    for b in bodies {
+        out.extend_from_slice(&(b.len() as u32).to_le_bytes());
+        out.extend_from_slice(b);
+    }
+    out
+}
 
 /// The A2A `task_event` stream's framing facts, held PLANE-SIDE (this file moves to `busbar-a2a` in
 /// commit 10). Core's chain mechanism carries NONE of them — they ride each record/input across the
@@ -154,25 +242,33 @@ pub(crate) struct Rehydrated {
 /// The in-flight task registry. No `Debug`: the journal holds a `dyn PlaneStore` (not `Debug` — a
 /// backend must not be obliged to render itself, where a credential could surface in a log).
 ///
-/// The WORKING SET (`tasks`) and the per-task provenance CHAIN (`journal`) are two maps keyed by the
-/// same task id, kept in lockstep: a task is seeded into both at submit/restore and forgotten from
-/// both at terminal eviction/compaction. The journal is uncapped (`usize::MAX`) — a task table is
-/// bounded by its own lifecycle (terminal eviction + retention), not by an LRU, so no active task's
-/// position is ever evicted out from under a mutation.
+/// The WORKING SET (`tasks`) is keyed by task id. The per-task provenance CHAIN's position cache no
+/// longer lives here: it moved host-side into the durable-seam DurableStream registered under
+/// [`KIND_ID_TASK_EVENT`], reached over the vtable `journal_*_scoped` fns with a threaded [`HostCtx`].
+/// This registry keeps only the working set and the durable sink for the `task` ROW upserts (which are
+/// NOT chained — the chain is the `task_event` stream's, host-side). The two stay in lockstep: a task
+/// is seeded into the working set and its host-side chain at submit/restore and forgotten from both at
+/// terminal eviction/compaction. The host-side journal is uncapped (`usize::MAX`) — a task table is
+/// bounded by its own lifecycle (terminal eviction + retention), not by an LRU.
 pub(crate) struct TaskRegistry {
     tasks: Mutex<HashMap<String, Entry>>,
-    /// The per-task provenance chain, now the NEUTRAL store-backed journal — the same seq-authority,
-    /// position cache and write-ordering the shipped streams use, over the record shape the plane-side
-    /// [`reframe_task_event`] bridge supplies. Core's durable path names no A2A type; the `task_event`
-    /// framing/suffix live here (plane-side), moving out with this file in commit 10.
-    journal: Journal<PlaneJournalRecord>,
+    /// The durable sink for the `task` ROW upserts (see [`task_record`]). NOT the event chain — that
+    /// chain's seq-authority + position cache is the host-side DurableStream's now. Attached at boot
+    /// beside the stream registration; `None` is the documented `store: memory` RAM-cache posture.
+    sink: Mutex<Option<Arc<dyn PlaneStore>>>,
+    /// The host-side durable stream this registry's `task_event` chain is addressed by. Production is
+    /// always [`KIND_ID_TASK_EVENT`] (one process, one A2A task stream); a TEST constructs a registry
+    /// over a FRESH id (see [`TaskRegistry::with_kind_id`]) so parallel tests never share one
+    /// process-global chain.
+    kind_id: u32,
 }
 
 impl Default for TaskRegistry {
     fn default() -> Self {
         Self {
             tasks: Mutex::new(HashMap::new()),
-            journal: Journal::new(usize::MAX),
+            sink: Mutex::new(None),
+            kind_id: KIND_ID_TASK_EVENT,
         }
     }
 }
@@ -200,6 +296,111 @@ pub(crate) static TASKS: std::sync::LazyLock<TaskRegistry> =
 /// over one global is the same thing as no lock.
 #[cfg(test)]
 pub(crate) static TASKS_SINK_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// TEST ONLY: a fresh, process-unique `task_event` stream id, well above the production ids (1/2) and
+/// the `plane_host::journal` test range (base 10_000) and the MCP `call` test range (base 200_000), so
+/// a test's local chain never shares the process-global host stream registry with another test's.
+#[cfg(test)]
+pub(crate) fn fresh_test_kind_id() -> u32 {
+    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(100_000);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+}
+
+/// TEST ONLY: a registry + an app whose governance store is `store`, with the `task_event` stream
+/// registered against it under a FRESH host-side id so parallel tests are isolated. The registry's
+/// row-upsert sink is attached too. Every chain write is driven inside [`TaskTestHarness::host`].
+#[cfg(test)]
+pub(crate) struct TaskTestHarness {
+    pub(crate) reg: TaskRegistry,
+    pub(crate) app: Arc<crate::state::App>,
+    kind_id: u32,
+}
+
+#[cfg(test)]
+impl TaskTestHarness {
+    /// Fresh isolated harness over `store` (used as BOTH the chain sink, via registration against an
+    /// app whose governance wraps it, AND the row-upsert sink).
+    pub(crate) fn over(store: Arc<dyn busbar_api::Store>) -> Self {
+        let kind_id = fresh_test_kind_id();
+        Self::install(kind_id, store)
+    }
+
+    /// Re-open a harness over `store` under the SAME `kind_id` — a RESTART: the host-side stream is
+    /// re-registered (fresh positions), the durable store is unchanged, and a new registry (empty
+    /// working set) is returned for the rehydrate to fill.
+    pub(crate) fn restart(kind_id: u32, store: Arc<dyn busbar_api::Store>) -> Self {
+        Self::install(kind_id, store)
+    }
+
+    fn install(kind_id: u32, store: Arc<dyn busbar_api::Store>) -> Self {
+        let app = test_app_over(store.clone());
+        register_task_event_stream_as(kind_id, &app);
+        let reg = TaskRegistry::with_kind_id(kind_id);
+        reg.set_sink(crate::plane::store::PlaneStoreView::narrow(store));
+        Self { reg, app, kind_id }
+    }
+
+    /// This harness's stream id, so a paired [`TaskTestHarness::restart`] addresses the same store.
+    pub(crate) fn kind_id(&self) -> u32 {
+        self.kind_id
+    }
+
+    /// Drive one synchronous chain op with a live `HostCtx` over this harness's app.
+    pub(crate) fn host<R>(&self, f: impl FnOnce(busbar_plugin::hot::host::HostCtx) -> R) -> R {
+        crate::plane_host::with_dispatch_scope(&self.app, |h, _| f(h))
+    }
+}
+
+/// TEST ONLY: a TestApp whose governance store is `store` — the seam a chain test registers its
+/// `task_event` stream against so the chain persists to `store`.
+#[cfg(test)]
+pub(crate) fn test_app_over(store: Arc<dyn busbar_api::Store>) -> Arc<crate::state::App> {
+    let gov =
+        Arc::new(crate::governance::GovState::new(store, None).expect("gov store constructs"));
+    crate::test_support::TestApp::new().governance(gov).build()
+}
+
+/// TEST ONLY: the PRODUCTION `task_event` stream ([`KIND_ID_TASK_EVENT`]), registered ONCE against a
+/// shared no-sink app so the many working-set tests over the process-wide [`TASKS`] mint sequences
+/// without each racing to re-register (a re-register resets every chain position). A chain-asserting
+/// test aims this same stream at its own ledger with [`aim_global_task_sink`] while it holds
+/// [`TASKS_SINK_LOCK`] — a sink swap, never a re-register, so positions are left intact.
+#[cfg(test)]
+fn global_task_host_app() -> &'static Arc<crate::state::App> {
+    static APP: std::sync::OnceLock<Arc<crate::state::App>> = std::sync::OnceLock::new();
+    APP.get_or_init(|| {
+        let app = crate::test_support::TestApp::new().build();
+        register_task_event_stream(&app);
+        app
+    })
+}
+
+/// TEST ONLY: ensure the process-wide `task_event` stream ([`KIND_ID_TASK_EVENT`]) is registered
+/// ONCE (no-sink) — for a front-door INTEGRATION harness whose app is not booted through the real
+/// `a2a_hydrate`, so the relay's `TASKS.submit`/`transition` mint sequences. Idempotent (never
+/// re-registers, so it never resets a chain position a concurrent test is mid-write on).
+#[cfg(test)]
+pub(crate) fn ensure_global_task_stream_registered() {
+    let _ = global_task_host_app();
+}
+
+/// TEST ONLY: run `f` with a host over the shared global-[`TASKS`] app (registration ensured). The
+/// chain append addresses the process-wide [`KIND_ID_TASK_EVENT`] stream; a working-set test leaves it
+/// no-sink and only needs a minted `Seq`, a chain test has aimed it at its ledger.
+#[cfg(test)]
+pub(crate) fn with_global_task_host<R>(
+    f: impl FnOnce(busbar_plugin::hot::host::HostCtx) -> R,
+) -> R {
+    crate::plane_host::with_dispatch_scope(global_task_host_app(), |h, _| f(h))
+}
+
+/// TEST ONLY: aim (or detach, with `None`) the process-wide `task_event` stream's durable sink — for a
+/// chain-asserting global-[`TASKS`] test holding [`TASKS_SINK_LOCK`].
+#[cfg(test)]
+pub(crate) fn aim_global_task_sink(store: Option<Arc<dyn PlaneStore>>) {
+    let _ = global_task_host_app();
+    crate::plane_host::journal::set_stream_sink_for_test(KIND_ID_TASK_EVENT, store);
+}
 
 /// What went wrong servicing a task mutation.
 #[derive(Debug)]
@@ -234,6 +435,18 @@ impl TaskRegistry {
         Self::default()
     }
 
+    /// TEST ONLY: a registry whose `task_event` chain is addressed by a specific host-side stream id,
+    /// so parallel tests never share one process-global chain. Production always uses the default
+    /// [`KIND_ID_TASK_EVENT`] via [`TaskRegistry::new`].
+    #[cfg(test)]
+    pub(crate) fn with_kind_id(kind_id: u32) -> Self {
+        Self {
+            tasks: Mutex::new(HashMap::new()),
+            sink: Mutex::new(None),
+            kind_id,
+        }
+    }
+
     /// Poison-recovering lock. The data behind it is always still consistent after a panic (the
     /// critical sections only mutate a map), and cascading a poison would make every subsequent task
     /// operation panic too — a task plane that wedges permanently because one request panicked.
@@ -241,26 +454,31 @@ impl TaskRegistry {
         self.tasks.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// The durable sink, owned by the journal (the one handle both the `task_event` chain and the
-    /// `task` row upserts persist through). `None` is the documented `store: memory` RAM-cache posture.
+    /// The durable sink for the `task` ROW upserts. `None` is the documented `store: memory`
+    /// RAM-cache posture. The `task_event` chain reaches its OWN sink host-side (attached to the
+    /// registered DurableStream), pointing at the same backend.
     fn sink(&self) -> Option<Arc<dyn PlaneStore>> {
-        self.journal.sink()
+        self.sink
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .cloned()
     }
 
-    /// Attach the configured governance store as the DURABLE SINK. Called once at boot. With no
-    /// sink attached (or with a backend that implements none of the task methods) the registry is a
-    /// RAM cache and nothing survives a restart, which is the documented `store: memory` behaviour.
+    /// Attach the configured governance store as the DURABLE SINK for the `task` row upserts. Called
+    /// once at boot, beside the `task_event` stream registration (which attaches its own sink from the
+    /// same `app.governance`). With no sink the registry is a RAM cache — the `store: memory` posture.
     pub(crate) fn set_sink(&self, store: Arc<dyn PlaneStore>) {
-        self.journal.set_sink(store);
+        *self.sink.lock().unwrap_or_else(|e| e.into_inner()) = Some(store);
     }
 
-    /// TEST ONLY: drop the sink again, so a test that attached one to the process-wide [`TASKS`]
-    /// leaves the registry as it found it. There is no production caller and there must not be:
-    /// detaching a live deployment's durable sink mid-run would silently stop persisting task
+    /// TEST ONLY: drop the row-upsert sink again, so a test that attached one to the process-wide
+    /// [`TASKS`] leaves the registry as it found it. There is no production caller and there must not
+    /// be: detaching a live deployment's durable sink mid-run would silently stop persisting task
     /// evidence, which is the failure this whole module exists to prevent.
     #[cfg(test)]
     pub(crate) fn clear_sink_for_test(&self) {
-        self.journal.clear_sink_for_test();
+        *self.sink.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
 
     /// BOOT REHYDRATE. Reads every persisted task, loads the ACTIVE ones into the working set, and
@@ -268,7 +486,11 @@ impl TaskRegistry {
     ///
     /// Terminal tasks are counted and left in the store: they are not in flight, and loading them
     /// would grow the working set without bound over a deployment's life for no resume value.
-    pub(crate) fn restore_from_store(&self, store: &dyn PlaneStore) -> StoreResult<Rehydrated> {
+    pub(crate) fn restore_from_store(
+        &self,
+        host: HostCtx,
+        store: &dyn PlaneStore,
+    ) -> StoreResult<Rehydrated> {
         let rows: Vec<TaskRow> = store
             .list_plane_records(KIND_TASK, &PlaneSelector::All)?
             .iter()
@@ -295,20 +517,17 @@ impl TaskRegistry {
                 out.terminal += 1;
                 continue;
             }
-            // The chain is resumed from what is persisted, and VERIFIED first — the journal seeds this
-            // one task's position from the events THIS loop read (it drives the row walk, not the
-            // whole-store enumeration, so terminal tasks' chains are never cached). A break is
-            // reported and the chain continues from the broken tail: refusing to continue would mean
-            // anybody who can corrupt one event can silently stop all further provenance for that task.
-            let events: Vec<PlaneJournalRecord> = store
-                .list_plane_records(
-                    KIND_TASK_EVENT,
-                    &PlaneSelector::Parent(task.task_id.clone()),
-                )?
-                .iter()
-                .map(|body| reframe_task_event(&task.task_id, body))
-                .collect::<StoreResult<_>>()?;
-            if let Some(brk) = self.journal.seed_position(&task.task_id, &events) {
+            // The chain is resumed host-side from what is persisted, and VERIFIED first — the durable
+            // seam SEEDS this one task's position from the RAW event bodies THIS loop read (it drives
+            // the row walk, not the whole-store enumeration, so terminal tasks' chains are never
+            // cached). A break is reported and the chain continues from the broken tail: refusing to
+            // continue would mean anybody who can corrupt one event can silently stop all further
+            // provenance for that task.
+            let bodies = store.list_plane_records(
+                KIND_TASK_EVENT,
+                &PlaneSelector::Parent(task.task_id.clone()),
+            )?;
+            if let Some(brk) = self.seed_chain(host, &task.task_id, &bodies)? {
                 crate::diagnostics::diag_error!(
                     crate::diagnostics::PLANE_TASK_CHAIN_VERIFY_FAILED,
                     task_id = %task.task_id,
@@ -324,21 +543,55 @@ impl TaskRegistry {
         Ok(out)
     }
 
+    /// SEED one task's HOST-SIDE chain position from its raw stored event bodies, through the durable
+    /// seam. The host reframes each body (via [`reframe_task_event_ffi`]), resumes the chain from its
+    /// tail and reports whether it verified. On a break the RICH [`ChainBreak`] is recomputed locally
+    /// (read-only, touching no position, so it changes no byte) so the operator diagnostic still names
+    /// WHICH break and WHERE — the seam header carries only broke/at_index/seq, and the boot log wants
+    /// the full vocabulary. A clean verify returns `None`.
+    fn seed_chain(
+        &self,
+        host: HostCtx,
+        task_id: &str,
+        bodies: &[Vec<u8>],
+    ) -> StoreResult<Option<ChainBreak>> {
+        let packed = pack_bodies(bodies);
+        let hdr =
+            crate::plane_host::journal::seed_scoped_via_seam(host, self.kind_id, task_id, &packed)
+                .map_err(|()| {
+                    StoreError("A2A task-event chain seed failed at the durable seam".to_string())
+                })?;
+        if hdr.broke == 0 {
+            return Ok(None);
+        }
+        let records: Vec<PlaneJournalRecord> = bodies
+            .iter()
+            .map(|b| reframe_task_event(task_id, b))
+            .collect::<StoreResult<_>>()?;
+        Ok(verify_chain(&records).err())
+    }
+
     /// SUBMIT a new task: record it, write it through, and open its provenance chain.
     ///
     /// The durable write happens BEFORE the task is announced as accepted. A task acknowledged to a
     /// caller but not yet persisted is precisely the task a crash loses while the caller believes it
     /// is running.
-    pub(crate) fn submit(&self, task: &Task, request_id: &str) -> Result<Task, TaskStoreError> {
+    pub(crate) fn submit(
+        &self,
+        host: HostCtx,
+        task: &Task,
+        request_id: &str,
+    ) -> Result<Task, TaskStoreError> {
         // The task ROW is upserted first, then the genesis event is minted+appended+committed by the
-        // journal (the write-ordering invariant is the journal's) — the same order as before: row
-        // durable before the event, working set updated only after both succeed.
+        // host-side journal (the write-ordering invariant is the journal's) — the same order as
+        // before: row durable before the event, working set updated only after both succeed.
         if let Some(store) = self.sink() {
             store
                 .upsert_plane_record(&task_record(&task.to_row()).map_err(TaskStoreError::Store)?)
                 .map_err(TaskStoreError::Store)?;
         }
         self.append_event(
+            host,
             &task.task_id,
             EventInput {
                 kind: provenance::EV_SUBMITTED,
@@ -363,6 +616,7 @@ impl TaskRegistry {
     /// then un-happen.
     pub(crate) fn transition(
         &self,
+        host: HostCtx,
         task_id: &str,
         to: TaskState,
         now: u64,
@@ -380,6 +634,7 @@ impl TaskRegistry {
         candidate.transition_to(to, now)?;
 
         self.write_through(
+            host,
             &candidate,
             EventInput {
                 kind,
@@ -400,13 +655,18 @@ impl TaskRegistry {
     /// its write-ordering invariant. Row-before-event and working-set-after-both, the order every
     /// mutator kept before the cleave — extracted here so each one delegates instead of re-deriving it.
     /// The in-memory working set is NOT touched (the caller updates it only after this returns `Ok`).
-    fn write_through(&self, task: &Task, event: EventInput) -> Result<(), TaskStoreError> {
+    fn write_through(
+        &self,
+        host: HostCtx,
+        task: &Task,
+        event: EventInput,
+    ) -> Result<(), TaskStoreError> {
         if let Some(store) = self.sink() {
             store
                 .upsert_plane_record(&task_record(&task.to_row()).map_err(TaskStoreError::Store)?)
                 .map_err(TaskStoreError::Store)?;
         }
-        self.append_event(&task.task_id, event)?;
+        self.append_event(host, &task.task_id, event)?;
         Ok(())
     }
 
@@ -417,7 +677,12 @@ impl TaskRegistry {
     /// reframe bridge is consulted only on a cache-miss resume — which never happens here, since the
     /// task journal opts out of position eviction (`usize::MAX`) — but the seam requires it, so the
     /// same [`reframe_task_event`] that boot rehydrate uses is threaded through.
-    fn append_event(&self, scope: &str, event: EventInput) -> Result<(), TaskStoreError> {
+    fn append_event(
+        &self,
+        host: HostCtx,
+        scope: &str,
+        event: EventInput,
+    ) -> Result<(), TaskStoreError> {
         let content = task_event_suffix(
             event.ts,
             event.kind,
@@ -426,12 +691,24 @@ impl TaskRegistry {
             &event.agent_id,
             &event.state,
         );
-        let input = PlaneJournalInput::new(content, TASK_EVENT_FRAMING, TASK_EVENT_DIGESTS_SCOPE);
-        self.journal
-            .append_scoped(KIND_TASK_EVENT, scope, input, &|s: &str, b: &[u8]| {
-                reframe_task_event(s, b)
-            })
-            .map_err(|JournalError::Store(e)| TaskStoreError::Store(e))?;
+        // The ONE core chain (host-side, under [`KIND_ID_TASK_EVENT`]) mints the seq/prev_hash/hash,
+        // frames the `PipeSeparated` prelude in the stream's registered framing, joins this pre-framed
+        // suffix and persists the neutral body under the journal's write-ordering invariant. The stream
+        // was registered with the SAME framing/digests_scope this suffix was built for, so the appended
+        // chain verifies byte-identically against events written before the seam.
+        let seq = crate::plane_host::journal::journal_append_scoped(
+            host,
+            self.kind_id,
+            scope.as_ptr(),
+            scope.len(),
+            content.as_ptr(),
+            content.len(),
+        );
+        if seq == Seq::NONE {
+            return Err(TaskStoreError::Store(StoreError(
+                "A2A task-event chain append failed at the durable seam".to_string(),
+            )));
+        }
         Ok(())
     }
 
@@ -441,6 +718,7 @@ impl TaskRegistry {
     /// delegating side's provenance has to carry: who delegated, to which registered agent.
     pub(crate) fn record_dispatch(
         &self,
+        host: HostCtx,
         task_id: &str,
         agent_id: &str,
         now: u64,
@@ -454,6 +732,7 @@ impl TaskRegistry {
         candidate.agent_id = agent_id.to_string();
         candidate.updated_at = now;
         self.write_through(
+            host,
             &candidate,
             EventInput {
                 kind: provenance::EV_DELEGATED,
@@ -483,6 +762,7 @@ impl TaskRegistry {
     /// rather than swallowed here so the decision stays with the caller.
     pub(crate) fn record_push_delivery(
         &self,
+        host: HostCtx,
         task_id: &str,
         kind: &'static str,
         now: u64,
@@ -506,7 +786,7 @@ impl TaskRegistry {
             request_id: request_id.to_string(),
             ts: now,
         };
-        self.append_event(task_id, event)?;
+        self.append_event(host, task_id, event)?;
         Ok(())
     }
 
@@ -517,6 +797,7 @@ impl TaskRegistry {
     /// has, and on a chunked assembly that is corruption rather than duplication.
     pub(crate) fn advance_cursor(
         &self,
+        host: HostCtx,
         task_id: &str,
         cursor: u64,
         now: u64,
@@ -533,6 +814,7 @@ impl TaskRegistry {
         candidate.artifact_cursor = cursor;
         candidate.updated_at = now;
         self.write_through(
+            host,
             &candidate,
             EventInput {
                 kind: provenance::EV_ARTIFACT,
@@ -649,15 +931,20 @@ impl TaskRegistry {
     /// Refusing to evict an ACTIVE task is the guard that matters: evicting one loses its chain
     /// position, and the next event for it would open a SECOND chain at seq 1 under the same task
     /// id — two chains that each verify and together describe nothing.
-    pub(crate) fn evict_terminal(&self, task_id: &str) -> bool {
+    pub(crate) fn evict_terminal(&self, host: HostCtx, task_id: &str) -> bool {
         let mut tasks = self.tasks();
         match tasks.get(task_id) {
             Some(e) if e.task.state.is_terminal() => {
                 tasks.remove(task_id);
-                // Release the journal position too, in lockstep with the working set — the durable
-                // events stay in the store, but a terminal task takes no more appends, so its RAM
-                // position is dropped rather than kept for the life of the process.
-                self.journal.forget(task_id);
+                // Release the host-side chain position too, in lockstep with the working set — the
+                // durable events stay in the store, but a terminal task takes no more appends, so its
+                // RAM position is dropped rather than kept for the life of the process.
+                crate::plane_host::journal::journal_forget(
+                    host,
+                    self.kind_id,
+                    task_id.as_ptr(),
+                    task_id.len(),
+                );
                 true
             }
             _ => false,
@@ -669,7 +956,7 @@ impl TaskRegistry {
     ///
     /// The policy lives at the call site, not here: retention is a setting on the store, not a
     /// subsystem of its own, so this file owns the mechanism and nothing about the window.
-    pub(crate) fn compact(&self, before: u64) -> StoreResult<u64> {
+    pub(crate) fn compact(&self, host: HostCtx, before: u64) -> StoreResult<u64> {
         let removed = match self.sink() {
             Some(store) => store.purge_plane_records_before(KIND_TASK, before)?,
             None => 0,
@@ -682,8 +969,8 @@ impl TaskRegistry {
             .collect();
         for id in &dropped {
             tasks.remove(id);
-            // Release each dropped task's journal position in lockstep with the working set.
-            self.journal.forget(id);
+            // Release each dropped task's host-side chain position in lockstep with the working set.
+            crate::plane_host::journal::journal_forget(host, self.kind_id, id.as_ptr(), id.len());
         }
         Ok(removed)
     }
@@ -698,12 +985,15 @@ impl TaskRegistry {
         store: &dyn PlaneStore,
         task_id: &str,
     ) -> StoreResult<Result<usize, ChainBreak>> {
-        let events =
-            self.journal
-                .read_scoped(KIND_TASK_EVENT, task_id, store, &|s: &str, b: &[u8]| {
-                    reframe_task_event(s, b)
-                })?;
-        match crate::audit::verify_chain(&events) {
+        // Reads the store directly and reframes locally — the operator-facing verify wants the rich
+        // break (which log, which index) and the record count, both of which the neutral seam header
+        // does not carry. It touches no chain position, so it needs no host.
+        let events: Vec<PlaneJournalRecord> = store
+            .list_plane_records(KIND_TASK_EVENT, &PlaneSelector::Parent(task_id.to_string()))?
+            .iter()
+            .map(|b| reframe_task_event(task_id, b))
+            .collect::<StoreResult<_>>()?;
+        match verify_chain(&events) {
             Ok(()) => Ok(Ok(events.len())),
             Err(brk) => Ok(Err(brk)),
         }

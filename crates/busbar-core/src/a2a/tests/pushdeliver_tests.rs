@@ -147,6 +147,15 @@ fn task_with_callback(task_id: &str, state: TaskState) -> Task {
     task
 }
 
+/// Drive [`pushdeliver::deliver`] with a live `HostCtx` — the delivery's chained outcome
+/// (`record_push_delivery`) now reaches the durable seam over a host, but these tests assert on the
+/// TRANSPORT / guard, never the chain (the standalone `task` is not in the global working set, so the
+/// chain append is a swallowed `NoSuchTask` — exactly the best-effort posture the delivery path takes).
+fn deliver_hosted(seam: &dyn RelaySeam, task: &Task) -> Result<(), PushRefusal> {
+    let app = crate::test_support::TestApp::new().build();
+    crate::plane_host::with_dispatch_scope(&app, |host, _| pushdeliver::deliver(host, seam, task))
+}
+
 /// REGISTER the callback the way `ingress::invoke` does: validate against the addresses it resolves to
 /// NOW, and keep the pin. Every test that starts here is testing a callback that was legitimate.
 fn register(task_id: &str) {
@@ -176,7 +185,7 @@ fn a_plaintext_callback_is_refused_and_no_policy_reaches_the_delivery_guard() {
     // A PUBLIC host that RESOLVES CLEANLY, so nothing but the scheme can be doing the refusing.
     task.push_callback = Some("http://hook.caller.test/notify".to_string());
 
-    let err = pushdeliver::deliver(&seam, &task).expect_err("a plaintext callback must be refused");
+    let err = deliver_hosted(&seam, &task).expect_err("a plaintext callback must be refused");
     assert_eq!(
         err,
         PushRefusal::Guard(PushNotifyError::Scheme("http".to_string())),
@@ -200,7 +209,7 @@ fn a_completed_task_with_a_callback_is_delivered() {
     let (seam, log) = seam_answering(&[AT_REGISTRATION], 200);
     let task = task_with_callback(id, TaskState::Completed);
 
-    pushdeliver::deliver(&seam, &task).expect("the delivery succeeds");
+    deliver_hosted(&seam, &task).expect("the delivery succeeds");
 
     let sent = log.lock().unwrap();
     assert_eq!(sent.len(), 1, "nothing was delivered: {sent:?}");
@@ -232,7 +241,7 @@ fn a_delivery_for_a_config_with_no_authentication_carries_no_header_but_the_cont
     let id = "t-deliver-nocred";
     register(id);
     let (seam, log) = seam_answering(&[AT_REGISTRATION], 202);
-    pushdeliver::deliver(&seam, &task_with_callback(id, TaskState::Completed)).expect("delivered");
+    deliver_hosted(&seam, &task_with_callback(id, TaskState::Completed)).expect("delivered");
 
     let sent = log.lock().unwrap();
     let names: Vec<String> = sent[0]
@@ -267,7 +276,7 @@ fn the_callers_own_webhook_credential_is_presented_on_the_delivery() {
         }),
     );
     let (seam, log) = seam_answering(&[AT_REGISTRATION], 200);
-    pushdeliver::deliver(&seam, &task_with_callback(id, TaskState::Working)).expect("delivered");
+    deliver_hosted(&seam, &task_with_callback(id, TaskState::Working)).expect("delivered");
 
     let sent = log.lock().unwrap();
     let auth = sent[0]
@@ -303,7 +312,7 @@ fn re_registering_without_authentication_stops_the_credential_being_sent() {
     pushdeliver::remember_auth(id, None);
 
     let (seam, log) = seam_answering(&[AT_REGISTRATION], 200);
-    pushdeliver::deliver(&seam, &task_with_callback(id, TaskState::Working)).expect("delivered");
+    deliver_hosted(&seam, &task_with_callback(id, TaskState::Working)).expect("delivered");
 
     let sent = log.lock().unwrap();
     assert!(
@@ -333,7 +342,7 @@ fn a_terminal_delivery_drops_the_credential_as_well_as_the_pin() {
         }),
     );
     let (seam, _log) = seam_answering(&[AT_REGISTRATION], 200);
-    pushdeliver::deliver(&seam, &task_with_callback(id, TaskState::Completed)).expect("delivered");
+    deliver_hosted(&seam, &task_with_callback(id, TaskState::Completed)).expect("delivered");
 
     assert_eq!(pushdeliver::pin_for_test(id), None);
     assert_eq!(pushdeliver::auth_for_test(id), None);
@@ -362,10 +371,7 @@ fn the_delivery_credential_does_not_appear_in_its_own_debug_rendering() {
 fn a_task_with_no_callback_delivers_nothing() {
     let (seam, log) = seam_answering(&[AT_REGISTRATION], 200);
     let task = Task::submitted("t-none", "ctx-1", "key-1", Direction::Inbound, 100).unwrap();
-    assert_eq!(
-        pushdeliver::deliver(&seam, &task),
-        Err(PushRefusal::NoCallback)
-    );
+    assert_eq!(deliver_hosted(&seam, &task), Err(PushRefusal::NoCallback));
     assert!(log.lock().unwrap().is_empty());
 }
 
@@ -386,7 +392,7 @@ fn a_callback_that_became_internal_after_registration_is_refused_at_delivery() {
     let (seam, log) = seam_answering(&[METADATA], 200);
 
     assert_eq!(
-        pushdeliver::deliver(&seam, &task_with_callback(id, TaskState::Completed)),
+        deliver_hosted(&seam, &task_with_callback(id, TaskState::Completed)),
         Err(PushRefusal::Guard(PushNotifyError::InternalAddress(
             METADATA
         ))),
@@ -409,7 +415,7 @@ fn the_rebind_is_still_refused_when_no_pin_survives_the_restart() {
     let (seam, log) = seam_answering(&[METADATA], 200);
 
     assert_eq!(
-        pushdeliver::deliver(&seam, &task_with_callback(id, TaskState::Completed)),
+        deliver_hosted(&seam, &task_with_callback(id, TaskState::Completed)),
         Err(PushRefusal::Guard(PushNotifyError::InternalAddress(
             METADATA
         )))
@@ -427,7 +433,7 @@ fn a_wholesale_move_to_another_public_address_is_held_rather_than_followed() {
     let (seam, log) = seam_answering(&[MOVED_TO], 200);
 
     assert_eq!(
-        pushdeliver::deliver(&seam, &task_with_callback(id, TaskState::Completed)),
+        deliver_hosted(&seam, &task_with_callback(id, TaskState::Completed)),
         Err(PushRefusal::Guard(PushNotifyError::PinDrifted {
             host: "hook.caller.test".to_string()
         })),
@@ -446,7 +452,7 @@ fn an_overlapping_answer_is_a_legitimate_dns_change_and_still_delivers() {
     register(id);
     let (seam, log) = seam_answering(&[MOVED_TO, AT_REGISTRATION], 200);
 
-    pushdeliver::deliver(&seam, &task_with_callback(id, TaskState::Completed))
+    deliver_hosted(&seam, &task_with_callback(id, TaskState::Completed))
         .expect("an overlapping answer is a legitimate DNS change");
     assert_eq!(log.lock().unwrap().len(), 1);
     pushdeliver::forget(id);
@@ -462,7 +468,7 @@ fn a_name_that_resolves_to_nothing_at_delivery_time_is_refused() {
     let (seam, log) = seam_answering(&[], 200);
 
     assert_eq!(
-        pushdeliver::deliver(&seam, &task_with_callback(id, TaskState::Completed)),
+        deliver_hosted(&seam, &task_with_callback(id, TaskState::Completed)),
         Err(PushRefusal::Unresolved("hook.caller.test".to_string()))
     );
     assert!(log.lock().unwrap().is_empty());
@@ -481,7 +487,7 @@ fn a_plaintext_callback_is_refused_at_delivery() {
     task.push_callback = Some("http://hook.caller.test/notify".to_string());
 
     assert_eq!(
-        pushdeliver::deliver(&seam, &task),
+        deliver_hosted(&seam, &task),
         Err(PushRefusal::Guard(PushNotifyError::Scheme(
             "http".to_string()
         )))
@@ -502,7 +508,7 @@ fn a_receiver_that_answers_500_is_a_refusal_that_names_the_status() {
     let (seam, log) = seam_answering(&[AT_REGISTRATION], 500);
 
     assert_eq!(
-        pushdeliver::deliver(&seam, &task_with_callback(id, TaskState::Completed)),
+        deliver_hosted(&seam, &task_with_callback(id, TaskState::Completed)),
         Err(PushRefusal::Status(500))
     );
     // The hop DID happen — this is not a guard refusal and must not be mistaken for one.
@@ -550,12 +556,12 @@ fn the_terminal_delivery_drops_its_pin() {
     register(id);
     let (seam, _log) = seam_answering(&[AT_REGISTRATION], 200);
 
-    pushdeliver::deliver(&seam, &task_with_callback(id, TaskState::Working)).expect("delivered");
+    deliver_hosted(&seam, &task_with_callback(id, TaskState::Working)).expect("delivered");
     // Still held after a NON-terminal delivery: more are coming, and each should be able to require
     // an overlap with the last.
     assert!(pushdeliver::pin_for_test(id).is_some());
 
-    pushdeliver::deliver(&seam, &task_with_callback(id, TaskState::Completed)).expect("delivered");
+    deliver_hosted(&seam, &task_with_callback(id, TaskState::Completed)).expect("delivered");
     assert!(
         pushdeliver::pin_for_test(id).is_none(),
         "a terminal task's pin outlived the task"
@@ -643,12 +649,20 @@ async fn a_task_in_the_registry(
 ) {
     let guard = crate::plane::taskstore::TASKS_SINK_LOCK.lock().await;
     let ledger = Arc::new(crate::plane::taskstore::event_ledger::EventLedger::new());
+    // Aim the process-wide `task_event` stream at THIS ledger for the duration of the lock — a sink
+    // swap, not a re-register, so the working-set tests' shared registration (and every position) is
+    // left intact — and attach the row-upsert sink.
+    crate::plane::taskstore::aim_global_task_sink(Some(
+        crate::plane::store::PlaneStoreView::narrow(ledger.clone()),
+    ));
     crate::plane::taskstore::TASKS
         .set_sink(crate::plane::store::PlaneStoreView::narrow(ledger.clone()));
     let task = task_with_callback(task_id, state);
-    crate::plane::taskstore::TASKS
-        .submit(&task, "req-1")
-        .expect("the task is admitted");
+    crate::plane::taskstore::with_global_task_host(|host| {
+        crate::plane::taskstore::TASKS
+            .submit(host, &task, "req-1")
+            .expect("the task is admitted");
+    });
     (task, ledger, guard)
 }
 
@@ -675,7 +689,7 @@ async fn a_delivery_the_ssrf_guard_refuses_lands_a_refusal_on_the_tasks_own_chai
     register(id);
     let (seam, log) = seam_answering(&[METADATA], 200);
 
-    let refusal = pushdeliver::deliver(&seam, &task).expect_err("the guard must refuse");
+    let refusal = deliver_hosted(&seam, &task).expect_err("the guard must refuse");
     assert!(
         matches!(refusal, PushRefusal::Guard(_)),
         "this must be the GUARD refusing, not some other failure: {refusal}"
@@ -687,6 +701,7 @@ async fn a_delivery_the_ssrf_guard_refuses_lands_a_refusal_on_the_tasks_own_chai
 
     let kinds = kinds_of(&ledger, id);
     crate::plane::taskstore::TASKS.clear_sink_for_test();
+    crate::plane::taskstore::aim_global_task_sink(None);
     pushdeliver::forget(id);
     assert!(
         kinds.contains(&provenance::EV_PUSH_REFUSED.to_string()),
@@ -711,11 +726,12 @@ async fn a_delivered_notification_lands_a_delivered_record_on_the_tasks_own_chai
     register(id);
     let (seam, log) = seam_answering(&[AT_REGISTRATION], 200);
 
-    pushdeliver::deliver(&seam, &task).expect("the delivery succeeds");
+    deliver_hosted(&seam, &task).expect("the delivery succeeds");
     assert_eq!(log.lock().unwrap().len(), 1, "the notification went out");
 
     let kinds = kinds_of(&ledger, id);
     crate::plane::taskstore::TASKS.clear_sink_for_test();
+    crate::plane::taskstore::aim_global_task_sink(None);
     pushdeliver::forget(id);
     assert_eq!(
         kinds,
@@ -738,11 +754,12 @@ async fn a_receiver_that_answers_non_2xx_is_recorded_as_failed_and_not_as_refuse
     register(id);
     let (seam, _log) = seam_answering(&[AT_REGISTRATION], 500);
 
-    let refusal = pushdeliver::deliver(&seam, &task).expect_err("a 500 is not a delivery");
+    let refusal = deliver_hosted(&seam, &task).expect_err("a 500 is not a delivery");
     assert!(matches!(refusal, PushRefusal::Status(500)), "{refusal}");
 
     let kinds = kinds_of(&ledger, id);
     crate::plane::taskstore::TASKS.clear_sink_for_test();
+    crate::plane::taskstore::aim_global_task_sink(None);
     pushdeliver::forget(id);
     assert!(
         kinds.contains(&provenance::EV_PUSH_FAILED.to_string())

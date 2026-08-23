@@ -242,32 +242,54 @@ fn ram_default() -> Arc<dyn busbar_api::Store> {
 
 /// "Process 1": submit two tasks, take one to `working`, interrupt the other on `auth-required`
 /// with a real artifact cursor. Returns the registry so a caller can inspect it before dropping it.
-fn process_one(store: Arc<dyn busbar_api::Store>) -> TaskRegistry {
-    let reg = TaskRegistry::new();
-    reg.set_sink(crate::plane::store::PlaneStoreView::narrow(store));
+fn process_one(store: Arc<dyn busbar_api::Store>) -> TaskTestHarness {
+    let h = TaskTestHarness::over(store);
+    let reg = &h.reg;
+    h.host(|host| {
+        reg.submit(
+            host,
+            &Task::submitted("t-work", "ctx-a", "key-1", Direction::Inbound, NOW).unwrap(),
+            "req-1",
+        )
+        .expect("submit t-work");
+        reg.transition(host, "t-work", TaskState::Working, NOW + 1, "req-1")
+            .expect("t-work -> working");
 
-    reg.submit(
-        &Task::submitted("t-work", "ctx-a", "key-1", Direction::Inbound, NOW).unwrap(),
-        "req-1",
-    )
-    .expect("submit t-work");
-    reg.transition("t-work", TaskState::Working, NOW + 1, "req-1")
-        .expect("t-work -> working");
+        reg.submit(
+            host,
+            &Task::submitted("t-paused", "ctx-b", "key-2", Direction::Outbound, NOW).unwrap(),
+            "req-2",
+        )
+        .expect("submit t-paused");
+        reg.record_dispatch(host, "t-paused", "planner", NOW + 1, "req-2")
+            .expect("dispatch");
+        reg.transition(host, "t-paused", TaskState::Working, NOW + 2, "req-2")
+            .expect("t-paused -> working");
+        reg.advance_cursor(host, "t-paused", 7, NOW + 3, "req-2")
+            .expect("cursor");
+        reg.transition(host, "t-paused", TaskState::AuthRequired, NOW + 4, "req-2")
+            .expect("t-paused -> auth-required");
+    });
+    h
+}
 
-    reg.submit(
-        &Task::submitted("t-paused", "ctx-b", "key-2", Direction::Outbound, NOW).unwrap(),
-        "req-2",
-    )
-    .expect("submit t-paused");
-    reg.record_dispatch("t-paused", "planner", NOW + 1, "req-2")
-        .expect("dispatch");
-    reg.transition("t-paused", TaskState::Working, NOW + 2, "req-2")
-        .expect("t-paused -> working");
-    reg.advance_cursor("t-paused", 7, NOW + 3, "req-2")
-        .expect("cursor");
-    reg.transition("t-paused", TaskState::AuthRequired, NOW + 4, "req-2")
-        .expect("t-paused -> auth-required");
-    reg
+/// Restart over the SAME durable `store` and REHYDRATE — the "process 2" half every restart test runs.
+/// Re-registers the chain stream under `kind_id` (fresh host-side positions), reads the persisted rows
+/// back, and returns the fresh harness + the rehydrate report.
+fn restart_and_restore(
+    kind_id: u32,
+    store: Arc<dyn busbar_api::Store>,
+) -> (TaskTestHarness, Rehydrated) {
+    let h = TaskTestHarness::restart(kind_id, store.clone());
+    let out = h
+        .host(|host| {
+            h.reg.restore_from_store(
+                host,
+                crate::plane::store::PlaneStoreView::narrow(store).as_ref(),
+            )
+        })
+        .expect("rehydrate must succeed");
+    (h, out)
 }
 
 // ── ITEM 19: the durable task store ──────────────────────────────────────────────────────────
@@ -280,17 +302,15 @@ fn in_flight_tasks_survive_a_restart_over_a_durable_backend() {
     let store = durable();
     let handle: Arc<dyn busbar_api::Store> = store.clone();
 
-    {
-        let reg1 = process_one(handle.clone());
-        assert_eq!(reg1.len(), 2, "process 1 holds both tasks");
-        drop(reg1); // THE RESTART. Every byte of in-memory state is gone from here on.
-    }
+    let kind_id = {
+        let h1 = process_one(handle.clone());
+        assert_eq!(h1.reg.len(), 2, "process 1 holds both tasks");
+        h1.kind_id()
+        // h1 dropped here — THE RESTART. Every byte of in-memory state is gone from here on.
+    };
 
-    let reg2 = TaskRegistry::new();
-    reg2.set_sink(crate::plane::store::PlaneStoreView::narrow(handle.clone()));
-    let rehydrated = reg2
-        .restore_from_store(crate::plane::store::PlaneStoreView::narrow(handle.clone()).as_ref())
-        .expect("rehydrate must succeed");
+    let (h2, rehydrated) = restart_and_restore(kind_id, handle.clone());
+    let reg2 = &h2.reg;
 
     assert_eq!(rehydrated.active, 2, "both in-flight tasks came back");
     assert_eq!(rehydrated.terminal, 0);
@@ -331,16 +351,13 @@ fn in_flight_tasks_survive_a_restart_over_a_durable_backend() {
 #[test]
 fn the_ram_default_loses_every_in_flight_task_and_the_registry_says_so() {
     let store = ram_default();
-    {
-        let reg1 = process_one(store.clone());
-        assert_eq!(reg1.len(), 2, "process 1 holds both tasks IN RAM");
-        drop(reg1);
-    }
-    let reg2 = TaskRegistry::new();
-    reg2.set_sink(crate::plane::store::PlaneStoreView::narrow(store.clone()));
-    let rehydrated = reg2
-        .restore_from_store(crate::plane::store::PlaneStoreView::narrow(store.clone()).as_ref())
-        .unwrap();
+    let kind_id = {
+        let h1 = process_one(store.clone());
+        assert_eq!(h1.reg.len(), 2, "process 1 holds both tasks IN RAM");
+        h1.kind_id()
+    };
+    let (h2, rehydrated) = restart_and_restore(kind_id, store.clone());
+    let reg2 = &h2.reg;
     assert_eq!(
         rehydrated,
         Rehydrated::default(),
@@ -360,18 +377,23 @@ fn the_ram_default_loses_every_in_flight_task_and_the_registry_says_so() {
 fn an_interrupt_resumes_after_a_restart_and_its_chain_continues() {
     let store = durable();
     let handle: Arc<dyn busbar_api::Store> = store.clone();
-    drop(process_one(handle.clone()));
+    let kind_id = process_one(handle.clone()).kind_id();
 
     let seq_before = handle.list_task_events("t-paused").unwrap().len() as u64;
     assert!(seq_before >= 4, "process 1 wrote a real chain");
 
-    let reg2 = TaskRegistry::new();
-    reg2.set_sink(crate::plane::store::PlaneStoreView::narrow(handle.clone()));
-    reg2.restore_from_store(crate::plane::store::PlaneStoreView::narrow(handle.clone()).as_ref())
-        .unwrap();
+    let (h2, _) = restart_and_restore(kind_id, handle.clone());
 
-    let resumed = reg2
-        .transition("t-paused", TaskState::Working, NOW + 100, "req-resume")
+    let resumed = h2
+        .host(|host| {
+            h2.reg.transition(
+                host,
+                "t-paused",
+                TaskState::Working,
+                NOW + 100,
+                "req-resume",
+            )
+        })
         .expect("the caller supplied the required auth on the same contextId");
     assert_eq!(resumed.state, TaskState::Working);
 
@@ -403,10 +425,11 @@ fn an_interrupt_resumes_after_a_restart_and_its_chain_continues() {
 fn the_verifier_detects_a_tampered_link_in_the_persisted_chain() {
     let store = durable();
     let handle: Arc<dyn busbar_api::Store> = store.clone();
-    let reg = process_one(handle.clone());
+    let h = process_one(handle.clone());
 
     // GREEN first: the untouched chain verifies, and it verified over a chain with real length.
-    let n = reg
+    let n = h
+        .reg
         .verify_task_chain(
             crate::plane::store::PlaneStoreView::narrow(handle.clone()).as_ref(),
             "t-paused",
@@ -420,7 +443,8 @@ fn the_verifier_detects_a_tampered_link_in_the_persisted_chain() {
         e.agent_id = "attacker-agent".to_string();
     });
 
-    let brk = reg
+    let brk = h
+        .reg
         .verify_task_chain(
             crate::plane::store::PlaneStoreView::narrow(handle.clone()).as_ref(),
             "t-paused",
@@ -446,14 +470,11 @@ fn the_verifier_detects_a_tampered_link_in_the_persisted_chain() {
 fn a_tampered_chain_is_reported_on_restore_and_the_task_is_still_restored() {
     let store = durable();
     let handle: Arc<dyn busbar_api::Store> = store.clone();
-    drop(process_one(handle.clone()));
+    let kind_id = process_one(handle.clone()).kind_id();
     store.tamper_event("t-paused", 1, |e| e.principal = "someone-else".to_string());
 
-    let reg2 = TaskRegistry::new();
-    reg2.set_sink(crate::plane::store::PlaneStoreView::narrow(handle.clone()));
-    let out = reg2
-        .restore_from_store(crate::plane::store::PlaneStoreView::narrow(handle.clone()).as_ref())
-        .unwrap();
+    let (h2, out) = restart_and_restore(kind_id, handle.clone());
+    let reg2 = &h2.reg;
 
     assert_eq!(out.active, 2, "both tasks are still restored");
     assert_eq!(out.chain_breaks.len(), 1, "exactly one chain failed");
@@ -473,7 +494,8 @@ fn a_tampered_chain_is_reported_on_restore_and_the_task_is_still_restored() {
 fn a_caller_can_never_read_another_tenants_task_and_cannot_probe_for_it() {
     let store = durable();
     let handle: Arc<dyn busbar_api::Store> = store.clone();
-    let reg = process_one(handle);
+    let h = process_one(handle);
+    let reg = &h.reg;
 
     assert!(reg.get_scoped("key-1", "t-work").is_ok());
     assert_eq!(
@@ -517,20 +539,25 @@ fn a_caller_can_never_read_another_tenants_task_and_cannot_probe_for_it() {
 fn compaction_collects_terminal_tasks_and_never_an_interrupt() {
     let store = durable();
     let handle: Arc<dyn busbar_api::Store> = store.clone();
-    let reg = process_one(handle.clone());
-    reg.transition("t-work", TaskState::Completed, NOW + 10, "req-1")
-        .expect("t-work completes");
-    assert!(
-        reg.evict_terminal("t-work"),
-        "a terminal task may be evicted"
-    );
-    assert!(
-        !reg.evict_terminal("t-paused"),
-        "an ACTIVE task may NOT be evicted — evicting it loses its chain position and the next \
-         event would open a SECOND chain at seq 1 under the same task id"
-    );
+    let h = process_one(handle.clone());
+    let reg = &h.reg;
+    h.host(|host| {
+        reg.transition(host, "t-work", TaskState::Completed, NOW + 10, "req-1")
+            .expect("t-work completes");
+        assert!(
+            reg.evict_terminal(host, "t-work"),
+            "a terminal task may be evicted"
+        );
+        assert!(
+            !reg.evict_terminal(host, "t-paused"),
+            "an ACTIVE task may NOT be evicted — evicting it loses its chain position and the next \
+             event would open a SECOND chain at seq 1 under the same task id"
+        );
+    });
 
-    let removed = reg.compact(NOW + 1_000).expect("compact");
+    let removed = h
+        .host(|host| reg.compact(host, NOW + 1_000))
+        .expect("compact");
     assert_eq!(removed, 1, "exactly the completed task was collected");
     assert!(
         handle.get_task("t-work").unwrap().is_none(),
@@ -550,16 +577,17 @@ fn compaction_collects_terminal_tasks_and_never_an_interrupt() {
 fn a_terminal_task_is_counted_on_restore_and_deliberately_not_loaded() {
     let store = durable();
     let handle: Arc<dyn busbar_api::Store> = store.clone();
-    {
-        let reg1 = process_one(handle.clone());
-        reg1.transition("t-work", TaskState::Completed, NOW + 10, "req-1")
-            .unwrap();
-    }
-    let reg2 = TaskRegistry::new();
-    reg2.set_sink(crate::plane::store::PlaneStoreView::narrow(handle.clone()));
-    let out = reg2
-        .restore_from_store(crate::plane::store::PlaneStoreView::narrow(handle.clone()).as_ref())
+    let kind_id = {
+        let h1 = process_one(handle.clone());
+        h1.host(|host| {
+            h1.reg
+                .transition(host, "t-work", TaskState::Completed, NOW + 10, "req-1")
+        })
         .unwrap();
+        h1.kind_id()
+    };
+    let (h2, out) = restart_and_restore(kind_id, handle.clone());
+    let reg2 = &h2.reg;
     assert_eq!(out.active, 1);
     assert_eq!(out.terminal, 1);
     assert_eq!(
@@ -580,16 +608,13 @@ fn a_terminal_task_is_counted_on_restore_and_deliberately_not_loaded() {
 fn an_unreadable_row_is_counted_rather_than_silently_dropped() {
     let store = durable();
     let handle: Arc<dyn busbar_api::Store> = store.clone();
-    drop(process_one(handle.clone()));
+    let kind_id = process_one(handle.clone()).kind_id();
     // A row written by a hypothetical newer engine carrying a state this binary does not know.
     let mut row = handle.get_task("t-work").unwrap().unwrap();
     row.state = "nearly-done".to_string();
     handle.put_task(&row).unwrap();
 
-    let reg2 = TaskRegistry::new();
-    let out = reg2
-        .restore_from_store(crate::plane::store::PlaneStoreView::narrow(handle.clone()).as_ref())
-        .unwrap();
+    let (_h2, out) = restart_and_restore(kind_id, handle.clone());
     assert_eq!(out.unreadable, 1, "the row is COUNTED");
     assert_eq!(out.active, 1, "and the readable one still came back");
 }
@@ -649,11 +674,11 @@ fn a_failed_durable_write_leaves_the_working_set_agreeing_with_the_store() {
 
     let store: Arc<dyn busbar_api::Store> =
         Arc::new(RefusingStore(busbar_store_memory::MemoryStore::new()));
-    let reg = TaskRegistry::new();
-    reg.set_sink(crate::plane::store::PlaneStoreView::narrow(store));
+    let h = TaskTestHarness::over(store);
+    let reg = &h.reg;
     let task = Task::submitted("t-1", "ctx", "key-1", Direction::Inbound, NOW).unwrap();
-    let err = reg
-        .submit(&task, "req-1")
+    let err = h
+        .host(|host| reg.submit(host, &task, "req-1"))
         .expect_err("a submit that cannot be persisted must not report success");
     assert!(err.to_string().contains("disk is full"), "{err}");
     assert_eq!(
@@ -670,11 +695,11 @@ fn a_failed_durable_write_leaves_the_working_set_agreeing_with_the_store() {
 fn the_artifact_cursor_never_moves_backwards() {
     let store = durable();
     let handle: Arc<dyn busbar_api::Store> = store.clone();
-    let reg = process_one(handle.clone());
+    let h = process_one(handle.clone());
     let before = handle.list_task_events("t-paused").unwrap().len();
 
-    let same = reg
-        .advance_cursor("t-paused", 3, NOW + 50, "req-2")
+    let same = h
+        .host(|host| h.reg.advance_cursor(host, "t-paused", 3, NOW + 50, "req-2"))
         .unwrap();
     assert_eq!(same.artifact_cursor, 7, "a rewind is refused, not applied");
     assert_eq!(
@@ -683,8 +708,8 @@ fn the_artifact_cursor_never_moves_backwards() {
         "and it emits no provenance event, because nothing happened"
     );
 
-    let forward = reg
-        .advance_cursor("t-paused", 9, NOW + 51, "req-2")
+    let forward = h
+        .host(|host| h.reg.advance_cursor(host, "t-paused", 9, NOW + 51, "req-2"))
         .unwrap();
     assert_eq!(forward.artifact_cursor, 9);
 }
@@ -695,20 +720,23 @@ fn the_artifact_cursor_never_moves_backwards() {
 fn a_push_callback_survives_the_restart_with_its_task() {
     let store = durable();
     let handle: Arc<dyn busbar_api::Store> = store.clone();
-    {
-        let reg1 = process_one(handle.clone());
-        reg1.set_push_callback(
-            "t-paused",
-            Some("https://caller.example/done".to_string()),
-            NOW + 6,
-        )
-        .unwrap();
-    }
-    let reg2 = TaskRegistry::new();
-    reg2.restore_from_store(crate::plane::store::PlaneStoreView::narrow(handle.clone()).as_ref())
-        .unwrap();
+    let kind_id = {
+        let h1 = process_one(handle.clone());
+        h1.reg
+            .set_push_callback(
+                "t-paused",
+                Some("https://caller.example/done".to_string()),
+                NOW + 6,
+            )
+            .unwrap();
+        h1.kind_id()
+    };
+    let (h2, _) = restart_and_restore(kind_id, handle.clone());
     assert_eq!(
-        reg2.get_scoped("key-2", "t-paused").unwrap().push_callback,
+        h2.reg
+            .get_scoped("key-2", "t-paused")
+            .unwrap()
+            .push_callback,
         Some("https://caller.example/done".to_string())
     );
 }
@@ -716,17 +744,20 @@ fn a_push_callback_survives_the_restart_with_its_task() {
 /// An unknown task id is refused loudly on every mutation rather than silently creating one.
 #[test]
 fn a_mutation_against_an_unknown_task_is_refused() {
-    let reg = TaskRegistry::new();
-    for e in [
-        reg.transition("nope", TaskState::Working, NOW, "r")
-            .map(|_| ()),
-        reg.record_dispatch("nope", "a", NOW, "r").map(|_| ()),
-        reg.advance_cursor("nope", 1, NOW, "r").map(|_| ()),
-        reg.set_push_callback("nope", None, NOW).map(|_| ()),
-    ] {
-        let err = e.expect_err("an unknown task id must be refused");
-        assert!(err.to_string().contains("no such task"), "{err}");
-    }
+    let h = TaskTestHarness::over(ram_default());
+    let reg = &h.reg;
+    h.host(|host| {
+        for e in [
+            reg.transition(host, "nope", TaskState::Working, NOW, "r")
+                .map(|_| ()),
+            reg.record_dispatch(host, "nope", "a", NOW, "r").map(|_| ()),
+            reg.advance_cursor(host, "nope", 1, NOW, "r").map(|_| ()),
+            reg.set_push_callback("nope", None, NOW).map(|_| ()),
+        ] {
+            let err = e.expect_err("an unknown task id must be refused");
+            assert!(err.to_string().contains("no such task"), "{err}");
+        }
+    });
     assert_eq!(reg.len(), 0, "and nothing was created");
 }
 
@@ -736,14 +767,20 @@ fn a_mutation_against_an_unknown_task_is_refused() {
 fn an_illegal_transition_writes_neither_a_row_nor_an_event() {
     let store = durable();
     let handle: Arc<dyn busbar_api::Store> = store.clone();
-    let reg = process_one(handle.clone());
-    reg.transition("t-work", TaskState::Completed, NOW + 10, "r")
-        .unwrap();
+    let h = process_one(handle.clone());
+    h.host(|host| {
+        h.reg
+            .transition(host, "t-work", TaskState::Completed, NOW + 10, "r")
+    })
+    .unwrap();
     let events_before = handle.list_task_events("t-work").unwrap();
     let row_before = handle.get_task("t-work").unwrap().unwrap();
 
-    let err = reg
-        .transition("t-work", TaskState::Working, NOW + 11, "r")
+    let err = h
+        .host(|host| {
+            h.reg
+                .transition(host, "t-work", TaskState::Working, NOW + 11, "r")
+        })
         .expect_err("terminal is terminal");
     assert!(err.to_string().contains("illegal task transition"), "{err}");
     assert_eq!(handle.list_task_events("t-work").unwrap(), events_before);
@@ -761,7 +798,8 @@ fn red_demo_the_store_accepts_a_url_the_guard_refuses() {
 
     let store = durable();
     let handle: Arc<dyn busbar_api::Store> = store.clone();
-    let reg = process_one(handle);
+    let h = process_one(handle);
+    let reg = &h.reg;
     let task = reg
         .set_push_callback("t-paused", Some(hostile.to_string()), NOW + 6)
         .expect("stored");

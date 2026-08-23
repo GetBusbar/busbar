@@ -31,7 +31,9 @@ use serde_json::json;
 fn own(principal: &str, task_id: &str) {
     let task = Task::submitted(task_id, "ctx-idmap", principal, Direction::Inbound, 1_000)
         .expect("a task with these fields is constructible");
-    TASKS.submit(&task, task_id).expect("the row records");
+    crate::plane::taskstore::with_global_task_host(|host| {
+        TASKS.submit(host, &task, task_id).expect("the row records");
+    });
 }
 
 /// A busbar id nothing has recorded is forwarded UNCHANGED — as the caller's own bytes, not as a
