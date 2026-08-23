@@ -47,7 +47,7 @@ fn minimal_app() -> Arc<App> {
         // absence straight off this map now (`crate::mcp::resource` / `crate::a2a::runtime`), neither
         // through a typed `App` field.
         plane_slots: Default::default(),
-        agent_defs: Default::default(),
+        agent_defs: std::sync::Arc::new(crate::a2a::config::AgentsCfg::default()),
         upstream_credentials: crate::auth::UpstreamCreds::Own,
         any_pool_upstream_creds_override: false,
         probe_schedule: Arc::new(crate::health::ProbeSchedule::new(0)),

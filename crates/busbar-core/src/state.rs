@@ -486,18 +486,17 @@ pub struct App {
     /// `GET /api/v1/admin/agents[/{name}]`. Operator INTENT only: everything that accumulates about
     /// a registered agent (observed cards, the drift queue, anomaly counters, task rows) is store
     /// state and is deliberately not reachable from a config snapshot.
-    // Neutral raw capture when the A2A plane is compiled out (`plane-a2a` off): the resolved registry
-    // type is `crate::a2a`'s and does not exist then. The admin CRUD serves an empty `agents:` view,
-    // and an `agents:` section was already refused at resolve — so nothing lowers into this.
-    // This raw-capture variant exists ONLY in the `plane-a2a`-off build, where the A2A admin CRUD
-    // that would read it is itself compiled out — so it is carried (to keep the `agents:` refusal and
-    // empty-view behaviour) but never read. The allow is therefore scoped to exactly this config by
-    // the `cfg` above it.
-    #[cfg(not(feature = "plane-a2a"))]
-    #[allow(dead_code)]
-    pub(crate) agent_defs: crate::plane::config::RawPlaneSection,
-    #[cfg(feature = "plane-a2a")]
-    pub(crate) agent_defs: crate::a2a::config::AgentsCfg,
+    // TYPE-ERASED so `App` names no `crate::a2a` config type — the same opaque-plane-state shape the
+    // MCP registry rides (`crate::mcp::runtime`'s slot). It carries the resolved `AgentsCfg` when the
+    // A2A plane is compiled in and the neutral `RawPlaneSection` raw capture when it is not; either
+    // way the type here is `Arc<dyn Any>`, so this field survives the A2A extraction unchanged. The
+    // A2A plane downcasts it back inside its own module (`crate::a2a::agent_cfg`), and no core reader
+    // outside `crate::a2a` reads it. Erasing rather than reparsing keeps the exact resolved object, so
+    // the admin view and gate resolution are byte-identical to the typed field this replaced.
+    // With `plane-a2a` off the whole A2A module (its only reader) is compiled out, so the field is set
+    // at build and never read — allow it dead in exactly that config.
+    #[cfg_attr(not(feature = "plane-a2a"), allow(dead_code))]
+    pub(crate) agent_defs: Arc<dyn std::any::Any + Send + Sync>,
     // THE RUNNING A2A PLANE — the registry `agent_defs` lowers to, plus everything accumulated against
     // it — has NO typed `App` field. Like its MCP sibling it lives ONLY in the type-erased
     // `plane_slots` map, and `crate::a2a::runtime(app)`/`runtime_arc(app)` downcast that slot back to

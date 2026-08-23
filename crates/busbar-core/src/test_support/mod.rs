@@ -1312,7 +1312,7 @@ impl TestApp {
             // the production default and is what keeps every existing test's route table unchanged
             // by this plane's arrival.
             oauth_as: self.oauth_as.clone(),
-            agent_defs: self.agent_defs,
+            agent_defs: std::sync::Arc::new(self.agent_defs),
             tslots,
             probe_schedule: std::sync::Arc::new(crate::health::ProbeSchedule::new(lanes.len())),
             lanes,

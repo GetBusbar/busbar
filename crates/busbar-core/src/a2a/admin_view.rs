@@ -43,7 +43,7 @@ fn agent_def_view(name: &str, cfg: &crate::a2a::config::AgentDefCfg) -> NamedDef
 /// Every registered agent, as the shared named-definition view. The read half of
 /// `GET /api/v1/admin/agents`.
 pub(crate) fn list(app: &crate::state::App) -> Vec<NamedDefView> {
-    app.agent_defs
+    crate::a2a::agent_cfg(app)
         .agents
         .iter()
         .map(|(name, cfg)| agent_def_view(name, cfg))
@@ -52,7 +52,7 @@ pub(crate) fn list(app: &crate::state::App) -> Vec<NamedDefView> {
 
 /// One registered agent, or `None`. The read half of `GET /api/v1/admin/agents/{name}`.
 pub(crate) fn get(app: &crate::state::App, name: &str) -> Option<NamedDefView> {
-    app.agent_defs
+    crate::a2a::agent_cfg(app)
         .agents
         .get(name)
         .map(|cfg| agent_def_view(name, cfg))
@@ -85,7 +85,7 @@ pub(crate) fn openapi_schemas(
 /// Is `name` a live registered agent on this snapshot — the membership check the admin write path
 /// consults through the plane's `registry_contains` seam, so core names no `crate::a2a` registry type.
 pub(crate) fn contains(app: &crate::state::App, name: &str) -> bool {
-    app.agent_defs.agents.contains_key(name)
+    crate::a2a::agent_cfg(app).agents.contains_key(name)
 }
 
 /// RE-RESOLVE THE A2A PLANE'S PER-AGENT HOOK GATES against the next snapshot — the A2A half of the
@@ -93,7 +93,7 @@ pub(crate) fn contains(app: &crate::state::App, name: &str) -> bool {
 /// `crate::a2a` registry type. Reads this plane's own registry off the snapshot and writes its own
 /// gate field back.
 pub(crate) fn reresolve_gates(next: &mut crate::state::App) {
-    let agents = next.agent_defs.clone();
+    let agents = crate::a2a::agent_cfg(next).clone();
     next.a2a_agent_gates = crate::hooks::resolve_container_gates(
         agents
             .agents

@@ -1410,7 +1410,10 @@ pub fn build_app_from_config(
                 .map(|r| Arc::new(r) as Arc<dyn std::any::Any + Send + Sync>),
             #[cfg(not(feature = "plane-mcp"))]
             mcp_slot: None,
-            agent_defs: &cfg.agent_defs,
+            // Type-erased at the composition root so `BuildCtx` names no `crate::a2a` type; the A2A
+            // `build` closure downcasts it back. `&cfg.agent_defs` is `AgentsCfg` with the plane in,
+            // the neutral raw capture with it out — both coerce to `&dyn Any` here.
+            agent_defs: &cfg.agent_defs as &(dyn std::any::Any + Send + Sync),
             public_url: cfg.public_url.as_deref(),
         };
         crate::plane::registry::plane_decls()
@@ -1552,7 +1555,10 @@ pub fn build_app_from_config(
         // resolved config (the EFFECTIVE base+overlay shape).
         identity_providers: cfg.identity_providers.clone(),
         export_defs: cfg.export_defs.clone(),
-        agent_defs: cfg.agent_defs.clone(),
+        // TYPE-ERASED into `App` so it names no `crate::a2a` config type — the SAME resolved object
+        // (a clone, not a reparse), so the admin view and gates are byte-identical. The A2A plane
+        // downcasts it back in `crate::a2a::agent_cfg`.
+        agent_defs: Arc::new(cfg.agent_defs.clone()) as Arc<dyn std::any::Any + Send + Sync>,
         // THE A2A PLANE, built only when `agents:` defines one, is NOT mirrored into a typed `App`
         // field any more: it lives solely in `plane_slots["a2a"]` (built once by `PlaneDecl::build`),
         // and every reader reaches it through `crate::a2a::runtime(app)`/`runtime_arc(app)`, which

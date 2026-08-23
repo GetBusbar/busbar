@@ -121,7 +121,14 @@ pub(crate) const PLANE_DECL: crate::plane::registry::PlaneDecl =
         // condition as `admission().is_none()` (a delegation-only plane has a slot but claims/admits
         // nothing).
         build: |ctx| {
-            crate::a2a::plane::A2aPlane::from_config(ctx.agent_defs, ctx.public_url)
+            // The registry crosses `BuildCtx` type-erased; downcast it back HERE, inside the plane.
+            let agent_defs = ctx
+                .agent_defs
+                .downcast_ref::<crate::a2a::config::AgentsCfg>()
+                .expect(
+                    "BuildCtx::agent_defs carries an AgentsCfg when the A2A plane is compiled in",
+                );
+            crate::a2a::plane::A2aPlane::from_config(agent_defs, ctx.public_url)
                 .map(|p| p as std::sync::Arc<dyn std::any::Any + Send + Sync>)
         },
         mount: Some(crate::a2a::receive::mount),
@@ -155,6 +162,18 @@ fn a2a_config_validate(name: &str, def: &serde_json::Value) -> Result<(), String
     let cfg: crate::a2a::config::AgentDefCfg = serde_json::from_value(def.clone())
         .map_err(|e| format!("invalid `agents.{name}` definition: {e}"))?;
     crate::a2a::config::validate_agent(name, &cfg)
+}
+
+/// THE RESOLVED `agents:` REGISTRY for this generation, downcast back HERE from the opaque
+/// [`crate::state::App::agent_defs`] handle — so core outside this module names no
+/// `crate::a2a::config` type and the A2A plane reads the SAME resolved `AgentsCfg` the composition
+/// root erased (a clone, never a reparse). The downcast never fails under `plane-a2a`: `App::agent_defs`
+/// always carries an `AgentsCfg` in that build (`appbuild` erases exactly `RootCfg::agent_defs`, which
+/// is `AgentsCfg` with the plane compiled in).
+pub(crate) fn agent_cfg(app: &crate::state::App) -> &crate::a2a::config::AgentsCfg {
+    app.agent_defs
+        .downcast_ref::<crate::a2a::config::AgentsCfg>()
+        .expect("App::agent_defs carries an AgentsCfg when the A2A plane is compiled in")
 }
 
 /// THE A2A RUNTIME OBJECT for this config generation, read through the TYPE-ERASED `plane_slots`
@@ -286,7 +305,7 @@ pub(crate) fn a2a_start(ctx: &crate::plane::registry::BootCtx) -> Result<(), Str
         // booting past it would produce a deployment that re-verifies nothing for that agent while
         // reading, in config and in the admin API, as though mutual TLS were configured.
         let a2a_identities = crate::a2a::transport::resolve_client_identities(
-            &handle.load().agent_defs,
+            crate::a2a::agent_cfg(&handle.load()),
             &handle.load().secret_resolver,
         )
         .map_err(|e| format!("a2a: outbound client identity: {e}"))?;
