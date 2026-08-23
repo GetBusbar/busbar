@@ -32,6 +32,8 @@
 //! primitive for exactly this and is reused rather than re-hand-rolled, so the cap, the truncation
 //! signal and the transport-error signal are the same three the rest of the engine reports.
 
+use crate::egress::seam::{self, HopSpec};
+
 use super::jsonrpc::OutboundRequest;
 use super::wire::{McpWire, TransportError, TransportResponse, WireLeg};
 
@@ -82,73 +84,82 @@ impl HttpTransport {
         leg: &WireLeg<'_>,
         req: &OutboundRequest,
     ) -> Result<TransportResponse, TransportError> {
-        let (client, _target) = leg
+        // THE PLANE POOL GUARD, PLANE-SIDE AND UNCHANGED: resolve-then-pin (the SSRF check + typed
+        // `SsrfRefusal`) before any hop, so the destination cannot be one the check never saw. The
+        // returned client is not used to run the hop any more — the hostless egress seam builds its
+        // own client host-side to the SAME `build_pinned_client` posture — but the pool still owns the
+        // guard, the pin and the pinned `target` this send connects to.
+        let (_client, target) = leg
             .pool
             .client_for(&req.url, leg.policy)
             .await
             .map_err(TransportError::Refused)?;
-        // THE LEG'S DEADLINE, ON THE REQUEST. The pooled client is cached per destination and a
-        // client-level timeout is baked in at construction, so the FIRST caller's deadline would
-        // silently become every later caller's — the refresh path's 30-second budget overriding
-        // the `timeout:` the operator wrote on the registration, or vice versa, decided by which
-        // path touched the destination first. A request-level timeout overrides the client's for
-        // exactly this send, so every leg gets the deadline it asked for.
-        let mut builder = client.post(&req.url).timeout(leg.timeout);
-        for (name, value) in &req.headers {
-            builder = builder.header(name.as_str(), value.as_str());
-        }
-        let resp = builder
-            .body(req.body.clone())
-            .send()
-            .await
-            // `without_url()`: a reqwest error's Display carries the URL, and an operator may have
-            // embedded userinfo in it. Same treatment the OAuth minter gives its errors.
-            //
-            // AND THE CAUSE CHAIN, because the top-level Display alone is `error sending request`
-            // for a whole family of distinct failures — connection refused, connection reset by
-            // the peer, a timed-out connect — and a log line that cannot tell those apart is a log
-            // line that cannot be acted on (three separate rounds of conformance triage were spent
-            // re-deriving which one it was). The chain carries no URL: it is the transport layer's
-            // own words about the socket.
-            .map_err(|e| {
-                // A CONNECT-phase failure (refused, DNS, TLS handshake) means the request was
-                // never transmitted: nothing left busbar, so the failover seam may reroute it
-                // within a pool without duplicating anything. reqwest's own classifier is the
-                // source of truth for "the connection was never established"; every other error
-                // here (a timeout after connect, a reset mid-body) stays `Io`, because the peer
-                // may have received the request.
-                let pre_first_byte = e.is_connect();
-                let e = e.without_url();
-                let mut msg = e.to_string();
-                let mut source = std::error::Error::source(&e);
-                while let Some(cause) = source {
-                    msg.push_str(": ");
-                    msg.push_str(&cause.to_string());
-                    source = cause.source();
+
+        let cap = crate::proxy::max_upstream_buffered_bytes();
+        // OWNED inputs for the blocking hop — the seam's `HopSpec` borrows these, and `leg` (with its
+        // pool triggers and the `UPSTREAM_PROGRESS` task-local) must NOT cross into `spawn_blocking`,
+        // so the SSE frame handling stays async-side below where `leg` is live.
+        let url = req.url.clone();
+        let headers = req.headers.clone();
+        let body = req.body.clone();
+        // THE LEG'S DEADLINE, on the desc. The seam applies `timeout_ms` to the request itself (and its
+        // connect-head wait), so — exactly as the request-level timeout did before — the leg's own
+        // budget binds THIS send rather than whatever deadline first built the cached client.
+        let timeout = leg.timeout;
+        // mcp URLs are IP-literals so `resolved_addr_kind = 0` re-resolution would be the identity, but
+        // hand the pinned address over anyway (belt-and-suspenders: the host connects HERE and looks up
+        // nothing), keeping SNI/cert-name on the URL host.
+        let resolved = target.socket_addr().ip();
+
+        // THE HOP ONLY, on the blocking pool. `spawn_blocking` keeps the seam's per-open thread+runtime
+        // off the dispatch reactor worker; the guard above and the SSE handling below stay on the async
+        // side. Wire bytes are the same `build_pinned_client` reqwest codec (h2/ALPN/TLS unchanged).
+        let hop = tokio::task::spawn_blocking(move || {
+            let spec = HopSpec {
+                verb: "POST",
+                url: &url,
+                headers: &headers,
+                body: &body,
+                // The SSRF pool guard already judged this hop plane-side; the host re-judges nothing
+                // when a pinned address is supplied, so these stances are moot here.
+                allow_private: true,
+                allow_plaintext: true,
+                client_identity_ref: 0,
+                trust_anchor_ref: 0,
+                timeout,
+                resolved_addr: Some(resolved),
+            };
+            seam::with_hostless(|scope| seam::buffered(scope, &spec, cap))
+        })
+        .await
+        .map_err(|e| TransportError::Io(format!("the upstream hop task failed to run: {e}")))?;
+
+        let buffered = hop.map_err(|f| {
+            // A CONNECT-phase failure (refused, DNS, TLS handshake) means the request was never
+            // transmitted, so the failover seam may reroute it without duplicating anything;
+            // everything else (a timeout after connect) stays `Io`. The seam mirrors reqwest's own
+            // `is_connect()` classifier into `EgressFailClass::Connect`, and its `cause` is the SAME
+            // url-free flattened chain this transport built by hand — `without_url()` then the source
+            // chain — so the operator line is byte-identical.
+            match f.class {
+                busbar_plugin::hot::EgressFailClass::Connect => {
+                    TransportError::Unreachable(f.cause)
                 }
-                if pre_first_byte {
-                    TransportError::Unreachable(msg)
-                } else {
-                    TransportError::Io(msg)
-                }
-            })?;
-        let status = resp.status().as_u16();
-        let location = resp
-            .headers()
-            .get("location")
-            .and_then(|v| v.to_str().ok())
-            .map(str::to_string);
+                _ => TransportError::Io(f.cause),
+            }
+        })?;
+
+        let status = buffered.status;
+        let location = buffered.location;
         super::ssrf::refuse_redirect(status, location.as_deref())
             .map_err(TransportError::Refused)?;
-        let is_sse = resp
-            .headers()
-            .get(reqwest::header::CONTENT_TYPE)
-            .and_then(|v| v.to_str().ok())
+        let is_sse = buffered
+            .content_type
+            .as_deref()
             .map(|ct| ct.starts_with("text/event-stream"))
             .unwrap_or(false);
-        let cap = crate::proxy::max_upstream_buffered_bytes();
-        let (raw, read_end) = crate::proxy::read_capped(resp, cap).await;
-        match read_end {
+        let raw = buffered.body;
+        match buffered.end {
             crate::proxy::ReadEnd::Complete => {}
             crate::proxy::ReadEnd::Truncated => {
                 return Err(TransportError::Io(format!(
@@ -171,7 +182,7 @@ impl HttpTransport {
             read_server_frames(leg, &raw);
             last_sse_data(&raw)
         } else {
-            raw.to_vec()
+            raw
         };
         Ok(TransportResponse { status, body })
     }
