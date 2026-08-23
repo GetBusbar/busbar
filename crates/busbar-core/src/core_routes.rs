@@ -93,7 +93,7 @@ impl CoreRouteTable {
 /// Nothing else may mount a core route. `route()` is the single act that both wires the handler and
 /// records its bar, so "the router serves a path the table does not describe" is not a state this
 /// type can produce.
-pub(crate) struct CoreRouter {
+pub struct CoreRouter {
     router: Router<Arc<AppHandle>>,
     table: CoreRouteTable,
 }
@@ -112,7 +112,7 @@ impl CoreRouter {
     /// Calling this twice for one path with different methods MERGES into that path's single
     /// `MethodRouter` (axum's documented behaviour), so a wrong-method hit still yields the native
     /// 405 rather than the catch-all.
-    pub(crate) fn route<H, T>(
+    pub fn route<H, T>(
         mut self,
         path: impl Into<String>,
         method: RouteMethod,
@@ -134,7 +134,7 @@ impl CoreRouter {
     /// the admin-transport nest, the catch-all fallback. Each is either separately declared (plugin
     /// routes keep their own table; the admin surface is gated by its `/api` prefix rule) or is not
     /// a route at all (a fallback claims no path).
-    pub(crate) fn map_router(
+    pub fn map_router(
         mut self,
         f: impl FnOnce(Router<Arc<AppHandle>>) -> Router<Arc<AppHandle>>,
     ) -> Self {
