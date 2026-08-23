@@ -127,7 +127,7 @@ pub(crate) enum CoreRefusal<'a> {
 /// Implemented on a UNIT type per protocol, never on a resource: a refusal's wording is a fact
 /// about the dialect, not about this deployment's configuration of it, and a `Words` that could
 /// read the config would be a place for the wording to vary between two requests.
-pub(crate) trait Words {
+pub trait Words {
     /// This protocol's own sentence for a refusal core decided.
     ///
     /// There is no default and there is no `_` arm anybody can write that the compiler will not
@@ -326,7 +326,7 @@ pub(crate) struct Metadata<'a> {
 /// not a function pointer because [`metadata_handler`] is mounted as `metadata_handler::<W>` — a
 /// concrete fn item, which is what axum needs, and which is what makes the SAME handler serve two
 /// planes without either of them owning a `metadata` function.
-pub(crate) trait ResourceMetadata: Words + Default {
+pub trait ResourceMetadata: Words + Default {
     /// This deployment's document facts, or `None` when this deployment does not carry the plane —
     /// which is [`CoreRefusal::MetadataUnavailable`], answered in this protocol's own words.
     fn document(app: &crate::state::App) -> Option<Metadata<'_>>;
@@ -337,7 +337,7 @@ pub(crate) trait ResourceMetadata: Words + Default {
 /// The path is registered CONCRETELY at mount time from the operator's canonical URI, never matched
 /// as a prefix: a prefix exemption under `/.well-known/` would hand a free pass to every path
 /// beneath it, and the RFC's path-insertion rule makes the exact string knowable at boot anyway.
-pub(crate) async fn metadata_handler<W: ResourceMetadata>(
+pub async fn metadata_handler<W: ResourceMetadata>(
     crate::state::CurrentApp(app): crate::state::CurrentApp,
 ) -> Response {
     match W::document(&app) {

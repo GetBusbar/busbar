@@ -926,7 +926,7 @@ impl AppHandle {
 /// post-apply configuration: a handler takes `CurrentApp(app): CurrentApp` instead of
 /// `State(app): State<Arc<App>>`, and the rest of its body is unchanged (`app` is still `Arc<App>`).
 /// A local newtype is required because the orphan rule forbids `impl FromRef<_> for Arc<App>`.
-pub(crate) struct CurrentApp(pub(crate) Arc<App>);
+pub struct CurrentApp(pub(crate) Arc<App>);
 
 impl<S> axum::extract::FromRequestParts<S> for CurrentApp
 where
