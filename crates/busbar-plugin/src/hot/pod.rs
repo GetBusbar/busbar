@@ -258,18 +258,45 @@ pub enum GateDecision {
 }
 
 /// The decision of a STATELESS verify-freshness check (`verify_decide` over a [`VerifyQuery`]): may
-/// the plane reuse its recorded observation, or must it re-verify? Returned BY VALUE (kept out of the
-/// hot PODs so it stays a bare `#[repr(u8)]`, like [`GateDecision`]). `Stale` is the FAIL-CLOSED
-/// answer — a null query or a caught panic answers `Stale`, so an undecidable freshness re-verifies
-/// rather than serving unchecked. Append-only.
+/// the plane reuse its recorded observation, or must it re-verify — and, when it must, WHY? Returned
+/// BY VALUE (kept out of the hot PODs so it stays a bare `#[repr(u8)]`, like [`GateDecision`]).
+/// [`Fresh`](Self::Fresh) (= 0) is the pass; every other value is a "must re-verify" carrying the
+/// specific REASON, so the plane reconstructs the rich `reverify::Due` it audits rather than a lossy
+/// bool. [`Stale`](Self::Stale) is the GENERIC due — the FAIL-CLOSED default a null query or a caught
+/// panic answers, so an undecidable freshness re-verifies rather than serving unchecked; a real query
+/// resolves to one of the specific reasons below. Append-only: new reasons go at the tail with a fresh
+/// discriminant, and a reader that predates a reason treats any "not `Fresh`" as due (re-verify).
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VerifyDecision {
-    /// The recorded observation is still within `ttl_ms`; reuse the snapshot (no re-fetch).
+    /// The recorded observation is still within `ttl_ms`; reuse the snapshot (no re-fetch). Maps the
+    /// plane's `reverify::Due::No`.
     Fresh = 0,
-    /// The subject is DUE for re-verification — never-checked, ttl-elapsed (reaching the ttl is due),
-    /// or the clock went backwards; the plane must re-fetch. Also the fail-closed default.
+    /// GENERIC due — must re-verify, reason unspecified. The fail-closed default (null query / caught
+    /// panic); a real query resolves to one of the specific reasons below rather than this.
     Stale = 1,
+    /// The subject was approved from a declarative pin and never actually contacted. Maps
+    /// `reverify::Due::NeverChecked`.
+    NeverChecked = 2,
+    /// The operator's freshness window elapsed (reaching the ttl is due). Maps `reverify::Due::TtlExpired`.
+    TtlExpired = 3,
+    /// An operator asked explicitly — outranks the timer. Maps `reverify::Due::OperatorSync`. (The
+    /// stateless slot keeps `operator_sync` its false default, so this reason is decided plane-side;
+    /// it is carried here for completeness of the neutral reason mapping.)
+    OperatorSync = 4,
+    /// The clock moved BACKWARDS since the last check, so freshness cannot be trusted — treated as due
+    /// rather than as permanent freshness. Maps `reverify::Due::ClockWentBackwards`.
+    ClockWentBackwards = 5,
+}
+
+impl VerifyDecision {
+    /// Whether the plane must re-verify: TRUE for every reason except [`Fresh`](Self::Fresh). The
+    /// by-value mirror of `reverify::Due::should_check`, so a caller that only needs the bool decision
+    /// (not the reason) reads it off the neutral decision the same way.
+    #[must_use]
+    pub fn should_check(self) -> bool {
+        self != VerifyDecision::Fresh
+    }
 }
 
 /// WHY a URL-shaped tool ARGUMENT was refused by the host's structural URL guard (`guard_url`) — the

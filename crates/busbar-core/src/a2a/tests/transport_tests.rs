@@ -670,15 +670,21 @@ fn the_reverification_pass_runs_on_the_real_pieces_and_the_guard_still_refuses_l
         fingerprint: None,
     };
 
-    let pass = crate::a2a::verify::reverify_once(
-        &mut registration,
-        &pin_cfg,
-        live.resolver(),
-        live.transport(),
-        live.policy(),
-        1_000,
-        true,
-    );
+    // A live host over a bare test app: `reverify_once` reaches the `verify_decide_q` slot (which
+    // touches no app state), so any live host serves.
+    let host_app = crate::test_support::TestApp::new().build();
+    let pass = crate::plane_host::with_dispatch_scope(&host_app, |host, _vt| {
+        crate::a2a::verify::reverify_once(
+            host,
+            &mut registration,
+            &pin_cfg,
+            live.resolver(),
+            live.transport(),
+            live.policy(),
+            1_000,
+            true,
+        )
+    });
 
     let refusal = pass
         .refusal

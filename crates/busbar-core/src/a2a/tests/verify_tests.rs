@@ -130,6 +130,14 @@ fn a_registration() -> AgentRegistration {
     r
 }
 
+/// Drive `f` with a live `HostCtx` over a bare test app. `reverify_once`/`reverify_agent` reach the
+/// `verify_decide_q` host slot (a stateless freshness decision that touches NO app state), so any live
+/// host serves — the host is threaded only to prove the wired seam is reached.
+fn with_test_host<R>(f: impl FnOnce(busbar_plugin::hot::host::HostCtx) -> R) -> R {
+    let app = crate::test_support::TestApp::new().build();
+    crate::plane_host::with_dispatch_scope(&app, |host, _vt| f(host))
+}
+
 fn pass(
     reg: &mut AgentRegistration,
     pin_cfg: &AgentPinCfg,
@@ -137,15 +145,18 @@ fn pass(
     now_ms: u64,
     sync: bool,
 ) -> Pass {
-    reverify_once(
-        reg,
-        pin_cfg,
-        &FixedResolver,
-        endpoint,
-        &FetchPolicy::default(),
-        now_ms,
-        sync,
-    )
+    with_test_host(|host| {
+        reverify_once(
+            host,
+            reg,
+            pin_cfg,
+            &FixedResolver,
+            endpoint,
+            &FetchPolicy::default(),
+            now_ms,
+            sync,
+        )
+    })
 }
 
 // ══ THE TRUST ROOT, ON THE WIRE ══════════════════════════════════════════════════════════════════
@@ -675,15 +686,18 @@ fn the_legacy_well_known_path_is_tried_only_when_the_canonical_one_served_nothin
         body: serde_json::to_vec(&signed_by(&k, a_card("decompose a goal"))).expect("serialize"),
     };
     let mut reg = a_registration();
-    let p = reverify_once(
-        &mut reg,
-        &signed_pin(&k),
-        &FixedResolver,
-        &legacy,
-        &FetchPolicy::default(),
-        1_000,
-        false,
-    );
+    let p = with_test_host(|host| {
+        reverify_once(
+            host,
+            &mut reg,
+            &signed_pin(&k),
+            &FixedResolver,
+            &legacy,
+            &FetchPolicy::default(),
+            1_000,
+            false,
+        )
+    });
     assert!(
         p.refusal.is_none(),
         "the legacy path must be tolerated: {p:?}"
@@ -722,15 +736,18 @@ fn the_legacy_well_known_path_is_tried_only_when_the_canonical_one_served_nothin
             .expect("serialize"),
     };
     let mut reg = a_registration();
-    let p = reverify_once(
-        &mut reg,
-        &signed_pin(&k),
-        &FixedResolver,
-        &split,
-        &FetchPolicy::default(),
-        1_000,
-        false,
-    );
+    let p = with_test_host(|host| {
+        reverify_once(
+            host,
+            &mut reg,
+            &signed_pin(&k),
+            &FixedResolver,
+            &split,
+            &FetchPolicy::default(),
+            1_000,
+            false,
+        )
+    });
     assert_eq!(
         p.refusal,
         Some(VerifyRefusal::Jws(
@@ -865,15 +882,18 @@ fn approved_plane(
     plane.with_registrations_mut(|regs| {
         // Observe the honest card once and lift the registration to APPROVED, the way connect/approve
         // does. `now = 0` stamps the freshness clock, so a later call past the ttl re-verifies.
-        reverify_once(
-            &mut regs[0],
-            &signed_pin(k),
-            &FixedResolver,
-            endpoint,
-            &FetchPolicy::default(),
-            0,
-            false,
-        );
+        with_test_host(|host| {
+            reverify_once(
+                host,
+                &mut regs[0],
+                &signed_pin(k),
+                &FixedResolver,
+                endpoint,
+                &FetchPolicy::default(),
+                0,
+                false,
+            )
+        });
         let sighting = regs[0].sighting.clone();
         crate::a2a::pin::approve_registration(&mut regs[0].approval, &sighting, None)
             .expect("approve the seen card");
@@ -900,9 +920,16 @@ fn a_drifted_agent_is_demoted_on_the_call_path_and_never_on_a_tick() {
 
     // VERIFY-ON-CALL: the plane method the delegation path runs, at a clock past the `verify_ttl`. No
     // background job exists to have noticed this; the CALL is what looks.
-    let pass = plane
-        .reverify_agent("planner", &FixedResolver, &OneForAll(&endpoint), 1_000_000)
-        .expect("the agent has a live registration and a declared pin");
+    let pass = with_test_host(|host| {
+        plane.reverify_agent(
+            host,
+            "planner",
+            &FixedResolver,
+            &OneForAll(&endpoint),
+            1_000_000,
+        )
+    })
+    .expect("the agent has a live registration and a declared pin");
     assert!(
         pass.settled.as_ref().is_some_and(|s| s.drift_observed),
         "the drifted card is observed as drift: {pass:?}"
@@ -922,9 +949,16 @@ fn an_unreachable_card_at_verify_fails_closed_on_the_call_path() {
 
     // THE VENDOR GOES DARK between the approval and the next delegation.
     endpoint.go_dark();
-    let pass = plane
-        .reverify_agent("planner", &FixedResolver, &OneForAll(&endpoint), 1_000_000)
-        .expect("the agent has a live registration and a declared pin");
+    let pass = with_test_host(|host| {
+        plane.reverify_agent(
+            host,
+            "planner",
+            &FixedResolver,
+            &OneForAll(&endpoint),
+            1_000_000,
+        )
+    })
+    .expect("the agent has a live registration and a declared pin");
     assert!(
         pass.refusal.is_some(),
         "an unreachable card is a failed contact, recorded rather than skipped: {pass:?}"
@@ -999,7 +1033,15 @@ fn a_blocking_card_host_does_not_hold_the_registry_lock_against_another_agents_r
     std::thread::scope(|scope| {
         // The reverifying thread enters the blocking fetch and stays there until released.
         scope.spawn(|| {
-            plane.reverify_agent("planner", &FixedResolver, &OneForAll(&transport), 1_000_000);
+            with_test_host(|host| {
+                plane.reverify_agent(
+                    host,
+                    "planner",
+                    &FixedResolver,
+                    &OneForAll(&transport),
+                    1_000_000,
+                )
+            });
         });
         entered_rx
             .recv_timeout(Duration::from_secs(5))

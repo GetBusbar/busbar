@@ -310,12 +310,16 @@ pub(crate) fn verify_decide_due(
     crate::trust::reverify::due(&ledger, &policy, now_ms, operator_sync)
 }
 
-/// WIRED `verify_decide` → [`verify_decide`]: the STATELESS freshness DECISION over a [`VerifyQuery`]
-/// (the plane's own `last_checked_ms` + present flag, `ttl_ms`, `now_ms`). No host state is touched —
-/// the plane's `VerifyGate` keeps its ledger, coalescing and await; only the `reverify::due`
-/// arithmetic crosses here. Returns [`VerifyDecision::Stale`] when the subject is DUE (must re-fetch)
-/// and [`VerifyDecision::Fresh`] when the recorded observation may be reused. A null query or a caught
-/// panic answers `Stale` — fail-closed (re-verify rather than serve unchecked).
+/// WIRED `verify_decide` → [`verify_decide_due`]: the STATELESS freshness DECISION over a
+/// [`VerifyQuery`] (the plane's own `last_checked_ms` + present flag, `ttl_ms`, `now_ms`). No host
+/// state is touched — the plane's `VerifyGate` keeps its ledger, coalescing and await; only the
+/// `reverify::due` arithmetic crosses here. Marshals the FULL [`crate::trust::reverify::Due`] REASON
+/// onto its neutral [`VerifyDecision`] mirror (`Fresh` for reuse; a specific reason —
+/// `NeverChecked`/`TtlExpired`/`ClockWentBackwards` — when the subject is DUE), so the plane can
+/// reconstruct the rich reason it audits rather than a lossy bool. `operator_sync` stays the slot's
+/// FALSE default (the only forced-sync caller keeps the compiled-in veneer), so the slot never answers
+/// `OperatorSync`. A null query or a caught panic answers the GENERIC
+/// [`VerifyDecision::Stale`] — fail-closed (re-verify rather than serve unchecked).
 pub(crate) extern "C-unwind" fn verify_decide_q(
     _host: HostCtx,
     query: *const VerifyQuery,
@@ -328,13 +332,53 @@ pub(crate) extern "C-unwind" fn verify_decide_q(
         let q = unsafe { &*query };
         // `Option<u64>` reconstructed from the marshalled (present flag, value): absent = never checked.
         let last_checked_ms = (q.last_checked_present != 0).then_some(q.last_checked_ms);
-        if verify_decide(last_checked_ms, q.ttl_ms, q.now_ms) {
-            VerifyDecision::Stale
-        } else {
-            VerifyDecision::Fresh
-        }
+        // The full reason, marshalled onto its neutral mirror — `operator_sync = false` (the slot's
+        // fixed default: a forced sync is decided plane-side, never over this query).
+        verify_decide_due(last_checked_ms, q.ttl_ms, q.now_ms, false).to_verify_decision()
     }))
     .unwrap_or(VerifyDecision::Stale) // caught panic → fail-closed.
+}
+
+/// Drive the WIRED [`verify_decide_q`] slot over a [`HostCtx`] the caller ALREADY holds, returning the
+/// reconstructed [`crate::trust::reverify::Due`] — the a2a re-verify job's inversion of the compiled-in
+/// [`verify_decide_due`] veneer onto the host seam (the [`super::clock_now_secs_via`] pattern applied to
+/// verify-freshness). It marshals the freshness inputs into a [`VerifyQuery`], calls the slot against
+/// the caller's live host, and maps the returned [`VerifyDecision`] back to the rich reason via
+/// [`Due::from_verify_decision`](crate::trust::reverify::Due::from_verify_decision) — BYTE-IDENTICAL to
+/// the veneer for every genuine input.
+///
+/// `operator_sync` is NOT marshalled (the slot keeps its false default): a forced sync OUTRANKS
+/// the timer and is decided HERE (unconditionally [`crate::trust::reverify::Due::OperatorSync`], exactly
+/// as `reverify::due` promises) rather than crossing the seam. A SAFE wrapper — building the vtable and
+/// driving the slot's safe fn-pointer needs no `unsafe` (busbar-core denies it elsewhere).
+#[cfg(feature = "plane-a2a")]
+pub(crate) fn verify_decide_due_via(
+    host: HostCtx,
+    last_checked_ms: Option<u64>,
+    ttl_ms: u64,
+    now_ms: u64,
+    operator_sync: bool,
+) -> crate::trust::reverify::Due {
+    // A forced sync is unconditionally due, and the slot does not carry `operator_sync`; decide it here.
+    if operator_sync {
+        return crate::trust::reverify::Due::OperatorSync;
+    }
+    let vtable = super::build_plane_host_vtable();
+    let q = VerifyQuery {
+        size: core::mem::size_of::<VerifyQuery>() as u32,
+        version: POD_VERSION,
+        _reserved: 0,
+        last_checked_present: u32::from(last_checked_ms.is_some()),
+        _reserved2: 0,
+        ttl_ms,
+        now_ms,
+        last_checked_ms: last_checked_ms.unwrap_or(0),
+    };
+    let decision = (vtable.verify_decide.expect("verify_decide is a wired slot"))(
+        host,
+        &q as *const VerifyQuery,
+    );
+    crate::trust::reverify::Due::from_verify_decision(decision)
 }
 
 /// WIRED `approval_redeem_q` → [`crate::plane::approvals::PlaneApprovals::spend`], over a richer
@@ -819,22 +863,38 @@ mod tests {
         }
     }
 
-    /// THE EXTERN-C SLOT funnels to the SAME body: `Stale` iff due, `Fresh` otherwise, over the
-    /// marshalled `last_checked_present`/value — so the dynamic-load veneer and the compiled-in one
-    /// cannot diverge.
+    /// THE EXTERN-C SLOT marshals the FULL `reverify::Due` REASON onto its neutral `VerifyDecision`
+    /// mirror (`Fresh` for reuse; the specific `NeverChecked`/`TtlExpired`/`ClockWentBackwards` reason
+    /// when due), funneling to the SAME `verify_decide_due` body — so the dynamic-load veneer and the
+    /// compiled-in one cannot diverge, and the plane reconstructs the reason it audits, not a bool.
     #[test]
-    fn verify_decide_q_maps_due_onto_fresh_or_stale() {
+    fn verify_decide_q_marshals_the_full_due_reason() {
+        use crate::trust::reverify::due;
+        use crate::trust::reverify::{Ledger, Policy};
         with_test_state(|host, vt, _scope| {
-            for &(last, ttl_ms, now, want_due) in DUE_CASES {
+            for &(last, ttl_ms, now, _want_due) in DUE_CASES {
                 let got = with_vquery(last, ttl_ms, now, |q| (vt.verify_decide.unwrap())(host, q));
-                let want = if want_due {
-                    VerifyDecision::Stale
-                } else {
-                    VerifyDecision::Fresh
+                // The reason the plane's own `reverify::due` (operator_sync = false) yields, marshalled.
+                let ledger = Ledger {
+                    last_checked_ms: last,
+                    ..Ledger::default()
                 };
+                let policy = Policy {
+                    ttl_ms,
+                    recovery_backoff_ms: 0,
+                };
+                let want = due(&ledger, &policy, now, false).to_verify_decision();
                 assert_eq!(
                     got, want,
-                    "verify_decide_q for last={last:?} ttl={ttl_ms} now={now}"
+                    "verify_decide_q reason for last={last:?} ttl={ttl_ms} now={now}"
+                );
+                // And it round-trips back to the SAME rich `Due` the a2a plane audits (the reconstruction
+                // is the a2a-gated inbound half of the mapping).
+                #[cfg(feature = "plane-a2a")]
+                assert_eq!(
+                    crate::trust::reverify::Due::from_verify_decision(got),
+                    due(&ledger, &policy, now, false),
+                    "reconstructed Due for last={last:?} ttl={ttl_ms} now={now}"
                 );
             }
         });
