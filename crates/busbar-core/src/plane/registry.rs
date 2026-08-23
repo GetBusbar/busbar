@@ -64,7 +64,7 @@ use super::Plane;
 /// borrow would not compile at that call site. Holds only what today's two planes with a slot (MCP,
 /// A2A) actually read; a future plane needing another section adds a field here rather than gaining
 /// its own parameter list, so `build`'s signature never has to change per plane.
-pub(crate) struct BuildCtx<'a> {
+pub struct BuildCtx<'a> {
     /// The MCP plane's runtime object for THIS generation, ALREADY built and TYPE-ERASED at config
     /// resolution (`McpResource::from_cfg` ran at `RootCfg` construction) and handed across this seam
     /// as an OPAQUE slot — so the seam names no `crate::mcp` type. The MCP plane's `build` clones this
@@ -72,18 +72,18 @@ pub(crate) struct BuildCtx<'a> {
     /// `mcp:` is absent, matching `App::mcp`'s own absence. Erasing at the composition root instead of
     /// in the plane's `build` is what removes the one concrete-type name this struct used to carry
     /// into the eventual MCP extraction — the neutral analogue of how the LLM dialects left core.
-    pub(crate) mcp_slot: Option<std::sync::Arc<dyn std::any::Any + Send + Sync>>,
+    pub mcp_slot: Option<std::sync::Arc<dyn std::any::Any + Send + Sync>>,
     // The A2A registry the A2A plane's `build` lowers, TYPE-ERASED so this seam names no `crate::a2a`
     // config type — the resolved `AgentsCfg` when the plane is compiled in, the neutral raw capture
     // when it is not. The A2A `build` closure downcasts it back inside its own module; no other plane
     // reads it, and with `plane-a2a` off no `agents:` section survived resolve so nothing lowers it.
-    pub(crate) agent_defs: &'a (dyn std::any::Any + Send + Sync),
-    pub(crate) public_url: Option<&'a str>,
+    pub agent_defs: &'a (dyn std::any::Any + Send + Sync),
+    pub public_url: Option<&'a str>,
 }
 
 /// A PLANE BOOT HOOK — [`PlaneDecl::hydrate`] or [`PlaneDecl::start`]. Handed the [`BootCtx`] for its
 /// phase; an `Err` REFUSES BOOT (the fold propagates it with `?`).
-pub(crate) type BootHook = fn(&BootCtx) -> Result<(), String>;
+pub type BootHook = fn(&BootCtx) -> Result<(), String>;
 
 /// BUSBAR'S PUBLISHED CARD-ISSUER KEY, computed core-side and handed to the A2A [`PlaneDecl::start`]
 /// hook as PUBLIC values ONLY — the `kid` and the base64 Ed25519 SPKI an operator hands a counterparty
@@ -92,9 +92,9 @@ pub(crate) type BootHook = fn(&BootCtx) -> Result<(), String>;
 /// the plan's "sign-only" preference taken to its limit — there is nothing to sign at boot, so the
 /// seam carries strictly the public key rather than even a closure over the secret.
 #[derive(Clone)]
-pub(crate) struct CardIssuer {
-    pub(crate) kid: String,
-    pub(crate) issuer_spki_base64: String,
+pub struct CardIssuer {
+    pub kid: String,
+    pub issuer_spki_base64: String,
 }
 
 /// THE CARD-SIGNING MATERIAL a plane derives from busbar's token signer, in the ONE shape that lets
@@ -126,22 +126,22 @@ pub struct BootCtx<'a> {
     /// The PLANE-NARROWED durable store — task / mcp-call / demotion / spent methods only, never the
     /// audit-carrying `Store`. `Some` in the hydrate phase whenever governance configured a store;
     /// `None` in the start phase (a start hook restores nothing).
-    pub(crate) store: Option<std::sync::Arc<dyn crate::plane::store::PlaneStore>>,
+    pub store: Option<std::sync::Arc<dyn crate::plane::store::PlaneStore>>,
 
     /// HYDRATE phase — the freshly-built `App`, off which a hydrate hook attaches its own
     /// write-through sinks (`plane_approvals`, `mcp_demotions`) and restores them. `None` in the start
     /// phase, where the app has been moved into the router builder and only the handle remains.
-    pub(crate) app: Option<&'a std::sync::Arc<crate::state::App>>,
+    pub app: Option<&'a std::sync::Arc<crate::state::App>>,
 
     /// START phase — the live app handle a start hook reads THIS config generation off. `None` in the
     /// hydrate phase (no listener yet). There is no `shutdown` broadcast on this seam any more: the
     /// built-in start hooks spawn no background loop now that verify-on-call replaced the sweep, so a
     /// hook has nothing to exit on a shutdown of.
-    pub(crate) handle: Option<&'a std::sync::Arc<crate::state::AppHandle>>,
+    pub handle: Option<&'a std::sync::Arc<crate::state::AppHandle>>,
 
     /// The deployment's PUBLIC card-issuer key (see [`CardIssuer`]). `Some` in the start phase when
     /// this deployment mints one; `None` in the hydrate phase and when no card is signed.
-    pub(crate) card_issuer: Option<CardIssuer>,
+    pub card_issuer: Option<CardIssuer>,
 }
 
 impl<'a> BootCtx<'a> {
@@ -194,32 +194,33 @@ impl<'a> BootCtx<'a> {
 /// sharing an audit kind is how one plane's records start answering another plane's question.
 ///
 /// The TYPE is `pub` — the composition root names it in [`install_planes`]' signature, and a private
-/// type cannot appear in a public one. Every FIELD stays `pub(crate)`: nothing outside this crate
-/// constructs or reads a `PlaneDecl` yet (the binary installs an empty extra slice), so no field is
-/// widened until a loaded plane crate actually needs to build one.
+/// type cannot appear in a public one. The vocabulary/seam FIELDS are `pub` too: a plane crate built
+/// outside core constructs its own `PlaneDecl` and hands it to [`install_planes`], so each field it
+/// populates is reachable. The seam types those fields name ([`BuildCtx`], [`BootCtx`], [`BootHook`],
+/// [`CardIssuer`], the router/view/admission types) are public for the same reason.
 pub struct PlaneDecl {
     /// The registry key, the metrics label, the log label and the audit resource prefix.
     /// **OPERATOR-VISIBLE.** Replaces `Plane::key`'s match.
-    pub(crate) key: &'static str,
+    pub key: &'static str,
 
     /// The top-level `config.yaml` section whose mere EXISTENCE declares this plane. Replaces
     /// `Plane::config_section`'s match, and it is this field that
     /// [`super::config::config_sections_from`] folds — so a plane registered from outside core gets
     /// its section into the hook-reference grammar with nothing written for it in core.
-    pub(crate) config_section: &'static str,
+    pub config_section: &'static str,
 
     /// The `ScopeRef` kinds that grant access ON this plane. A slice because a plane may grant at
     /// more than one granularity (MCP grants a whole server or a single tool). Replaces
     /// `Plane::scope_kinds`' match.
-    pub(crate) scope_kinds: &'static [&'static str],
+    pub scope_kinds: &'static [&'static str],
 
     /// What ONE registration on this plane is called, in the words an operator reads back in a
     /// `404`. Replaces `Plane::subject_noun`'s match.
-    pub(crate) subject_noun: &'static str,
+    pub subject_noun: &'static str,
 
     /// The audit RESOURCE KIND for a registration on this plane, and the prefix of every audit
     /// action word the plane's verbs record. Replaces `Plane::audit_kind`'s match.
-    pub(crate) audit_kind: &'static str,
+    pub audit_kind: &'static str,
 
     /// The distinct WIRE FORMATS this plane translates between, named. A FUNCTION rather than a
     /// slice for exactly one reason, and it is the reason the field is worth its indirection: the
@@ -229,7 +230,7 @@ pub struct PlaneDecl {
     ///
     /// `Plane::wire_formats` and `Plane::has_superset_ir` stay DERIVED from this list's length, so
     /// the superset-IR rule remains a rule rather than a fact about today's planes.
-    pub(crate) wire_format_names: fn() -> &'static [&'static str],
+    pub wire_format_names: fn() -> &'static [&'static str],
 
     /// THE PATHS THIS PLANE ANSWERS ON, and the wire format each is spoken in, computed from the
     /// plane's own RUNTIME OBJECT (its app slot, type-erased as `&dyn Any`). Every `(path, wire)`
@@ -243,14 +244,14 @@ pub struct PlaneDecl {
     ///
     /// Returns the empty vec when the plane mounts nothing (a delegation-only A2A deployment, or a
     /// plane the operator did not configure — its slot is then absent and this is not called).
-    pub(crate) claims: fn(&dyn std::any::Any) -> Vec<(String, &'static str)>,
+    pub claims: fn(&dyn std::any::Any) -> Vec<(String, &'static str)>,
 
     /// THE ADMISSION FACTS this plane binds — the audience a token presented at its door must carry,
     /// and where a refused caller is sent to get one — computed from the same runtime object. `None`
     /// when the plane has no RECEIVING side to admit anyone to (A2A without a `public_url`); a plane
     /// that [`Self::claims`] a path but returns `None` here is refused at boot by
     /// [`build_dispatch`] rather than left serving an unauthenticated resource (ratchet R2).
-    pub(crate) admission: fn(&dyn std::any::Any) -> Option<super::PlaneAdmission>,
+    pub admission: fn(&dyn std::any::Any) -> Option<super::PlaneAdmission>,
 
     /// BUILD THE PLANE'S RUNTIME OBJECT for one config generation, type-erased as
     /// `Arc<dyn Any + Send + Sync>` — the app-state SLOT that [`Self::claims`] and [`Self::admission`]
@@ -262,7 +263,7 @@ pub struct PlaneDecl {
     /// fields the LLM data plane already reads directly, not one object) returns `None`
     /// unconditionally — it contributes no slot, exactly as [`Self::claims`] already returns nothing
     /// for it.
-    pub(crate) build: fn(&BuildCtx) -> Option<std::sync::Arc<dyn std::any::Any + Send + Sync>>,
+    pub build: fn(&BuildCtx) -> Option<std::sync::Arc<dyn std::any::Any + Send + Sync>>,
 
     /// MOUNT THE PLANE'S DATA-PLANE ROUTES onto the shared data router, from the plane's own runtime
     /// object (its app slot, type-erased as `&dyn Any`). `None` for a plane that answers on no data
@@ -274,7 +275,7 @@ pub struct PlaneDecl {
     /// `Store`, a `GovCtx`, or an `audit::Chain`. A plane that needs one of those to decide its routes
     /// is not cleanly separable through this seam.
     #[allow(clippy::type_complexity)]
-    pub(crate) mount: Option<
+    pub mount: Option<
         fn(crate::core_routes::CoreRouter, &dyn std::any::Any) -> crate::core_routes::CoreRouter,
     >,
 
@@ -288,7 +289,7 @@ pub struct PlaneDecl {
     /// As with [`Self::mount`], the signature grants a plane's admin contribution ONLY the router —
     /// never a `Store`, a `GovCtx`, or an `audit::Chain`.
     #[allow(clippy::type_complexity)]
-    pub(crate) admin_routes: Option<
+    pub admin_routes: Option<
         fn(
             axum::Router<std::sync::Arc<crate::state::AppHandle>>,
         ) -> axum::Router<std::sync::Arc<crate::state::AppHandle>>,
@@ -302,7 +303,7 @@ pub struct PlaneDecl {
     // Read only by the OpenAPI generator (feature `openapi-schema`) and the non-vacuity floor test; a
     // default `--no-default-features` build has neither, so the field is genuinely unread there.
     #[cfg_attr(not(any(test, feature = "openapi-schema")), allow(dead_code))]
-    pub(crate) openapi: Option<fn() -> serde_json::Value>,
+    pub openapi: Option<fn() -> serde_json::Value>,
 
     /// RESTORE THIS PLANE'S DURABLE STATE, in order, BEFORE a listener is bound — the plane half of
     /// [`crate::boot::hydrate_all`]. Handed a [`BootCtx`] whose store surface is [`PlaneStore`] and
@@ -310,7 +311,7 @@ pub struct PlaneDecl {
     /// sinks and read them back but can never touch the append-only chain (invariant (a)). `None` for
     /// a plane with no durable state to restore (the LLM plane). A hook returning `Err` REFUSES BOOT:
     /// [`crate::boot::hydrate_all`] propagates it with `?`, so a plane cannot half-restore and serve.
-    pub(crate) hydrate: Option<BootHook>,
+    pub hydrate: Option<BootHook>,
 
     /// START THIS PLANE'S BOOT-TIME WORK, AFTER the listeners are built — the plane half of
     /// [`crate::boot::start_planes`]. Handed the same [`BootCtx`], now carrying the live app handle,
@@ -320,7 +321,7 @@ pub struct PlaneDecl {
     /// resolves and publishes its per-agent card transports. `None` for a plane that starts nothing. A
     /// hook returning `Err` REFUSES BOOT — an outbound identity that does not resolve is a startup
     /// failure, never a warning — so [`crate::boot::start_planes`] propagates it with `?`.
-    pub(crate) start: Option<BootHook>,
+    pub start: Option<BootHook>,
 
     /// VALIDATE ONE RAW NAMED-DEFINITION DOCUMENT for this plane's config section — the write-path
     /// grammar the admin API enforces so a definition the API accepts is exactly one `config.yaml`
@@ -343,8 +344,7 @@ pub struct PlaneDecl {
         allow(dead_code)
     )]
     #[allow(clippy::type_complexity)]
-    pub(crate) config_validate:
-        Option<fn(name: &str, def: &serde_json::Value) -> Result<(), String>>,
+    pub config_validate: Option<fn(name: &str, def: &serde_json::Value) -> Result<(), String>>,
 
     /// DERIVE THIS PLANE'S CARD-SIGNING MATERIAL from busbar's token signer — the seam that lets
     /// governance hand out a card signer WITHOUT naming the plane's signer type. Given the core
@@ -372,7 +372,7 @@ pub struct PlaneDecl {
         allow(dead_code)
     )]
     #[allow(clippy::type_complexity)]
-    pub(crate) named_def_list:
+    pub named_def_list:
         Option<fn(&crate::state::App) -> Vec<crate::admin::v1::contract::NamedDefView>>,
 
     /// PROJECT ONE NAMED-DEFINITION REGISTRATION by name onto the shared read view — the single-entry
@@ -384,7 +384,7 @@ pub struct PlaneDecl {
         allow(dead_code)
     )]
     #[allow(clippy::type_complexity)]
-    pub(crate) named_def_get:
+    pub named_def_get:
         Option<fn(&crate::state::App, &str) -> Option<crate::admin::v1::contract::NamedDefView>>,
 
     /// IS `name` A LIVE REGISTRATION on this plane's effective snapshot — the read-side membership
@@ -395,7 +395,7 @@ pub struct PlaneDecl {
         allow(dead_code)
     )]
     #[allow(clippy::type_complexity)]
-    pub(crate) registry_contains: Option<fn(&crate::state::App, &str) -> bool>,
+    pub registry_contains: Option<fn(&crate::state::App, &str) -> bool>,
 
     /// RE-RESOLVE THIS PLANE'S PER-REGISTRATION HOOK GATES against the next snapshot — the plane half
     /// of the config-swap gate rebuild. Reads the plane's own registry off the `&mut App` and writes
@@ -405,7 +405,7 @@ pub struct PlaneDecl {
         not(any(feature = "plane-mcp", feature = "plane-a2a")),
         allow(dead_code)
     )]
-    pub(crate) reresolve_gates: Option<fn(&mut crate::state::App)>,
+    pub reresolve_gates: Option<fn(&mut crate::state::App)>,
 
     /// ATTACH THIS PLANE'S ADMIN TRUST-VERB SCHEMAS to the OpenAPI document — the plane half of the
     /// schema pass in [`crate::admin::v1::json::handlers::openapi_doc`]. Handed the SHARED response
@@ -418,7 +418,7 @@ pub struct PlaneDecl {
     /// that feature generates no document, so the field is genuinely absent rather than unused.
     #[cfg(feature = "openapi-schema")]
     #[allow(clippy::type_complexity)]
-    pub(crate) openapi_schemas: Option<
+    pub openapi_schemas: Option<
         fn(
             &mut schemars::SchemaGenerator,
             &mut schemars::SchemaGenerator,
@@ -438,7 +438,7 @@ pub struct PlaneDecl {
     /// The erased pair is the plane's own runtime state to read and reconcile — never a `Store`, a
     /// `GovCtx`, or an `audit::Chain`. A plane whose swap-time work needs one of those is not cleanly
     /// separable through this seam.
-    pub(crate) on_swap: Option<fn(prior: &dyn std::any::Any, next: &dyn std::any::Any)>,
+    pub on_swap: Option<fn(prior: &dyn std::any::Any, next: &dyn std::any::Any)>,
 }
 
 /// THE BUILT-INS — one line per plane, and every line is DATA.
