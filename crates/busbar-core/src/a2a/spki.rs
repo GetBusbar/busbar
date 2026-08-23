@@ -23,9 +23,11 @@
 //! connection somebody else already verified, never a substitute for verifying one.
 
 // The walk, the error taxonomy and the pin rendering all live in the neutral host module now; a2a
-// re-exports them under their historical names so this plane (and its tests) keep one spelling. Only
-// `spki_pin` is reached by non-test code (the transport's `peer_spki_of`); the walk and its error
-// taxonomy are exercised only by the tests, so they are re-exported under `cfg(test)`.
+// re-exports them under their historical names so this plane's tests keep one spelling. Since the
+// transport's hop moved onto the egress seam, the HOST computes the observed pin (from the same
+// [`crate::plane_host::spki::pin`] this name aliases), so no non-test code reaches `spki_pin` any
+// more — the walk, its error taxonomy and the pin rendering are all exercised only by the tests.
+#[cfg(test)]
 pub(crate) use crate::plane_host::spki::pin as spki_pin;
 #[cfg(test)]
 pub(crate) use crate::plane_host::spki::{subject_public_key_info, SpkiError};

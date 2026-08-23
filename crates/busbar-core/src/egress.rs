@@ -223,10 +223,15 @@ pub(crate) fn build_pinned_client(
 /// anchor stays a property of the owner and never has to enter this key: all clients in one pool
 /// share the owner's fixed posture, and only the destination varies.
 ///
-/// Gated to `any(plane-mcp, plane-a2a)`: pooling is a plane property (the A2A card-fetch/relay
-/// transport and the MCP dispatch pool). The plugin egress vtable holds a single streamed connection
-/// per open, so it builds directly with [`build_pinned_client`] and needs no pool.
+/// Gated to `any(plane-mcp, plane-a2a)`: the type is available wherever a plane (or the egress
+/// backend's own unit tests) can consume it. Its one PRODUCTION consumer is now the MCP dispatch pool
+/// — the A2A card-fetch/relay transport moved its hop onto the hostless egress seam (which builds and
+/// owns its per-open client host-side), so under a `plane-a2a`-only *non-test* build the pool has no
+/// constructor and is `allow(dead_code)`; the egress unit tests still exercise it under either plane.
+/// The plugin egress vtable holds a single streamed connection per open, so it builds directly with
+/// [`build_pinned_client`] and needs no pool.
 #[cfg(any(feature = "plane-mcp", feature = "plane-a2a"))]
+#[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
 pub(crate) struct PinnedClientPool {
     clients: Mutex<HashMap<(String, SocketAddr), reqwest::Client>>,
     max: usize,
@@ -247,6 +252,7 @@ impl std::fmt::Debug for PinnedClientPool {
 /// keeps its live upstreams warm, bounded so a DNS round-robin cannot grow the map without end. A
 /// pool that wants a different cap builds with [`PinnedClientPool::with_capacity`].
 #[cfg(any(feature = "plane-mcp", feature = "plane-a2a"))]
+#[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
 const DEFAULT_MAX_PINNED_CLIENTS: usize = 64;
 
 #[cfg(any(feature = "plane-mcp", feature = "plane-a2a"))]
@@ -257,6 +263,7 @@ impl Default for PinnedClientPool {
 }
 
 #[cfg(any(feature = "plane-mcp", feature = "plane-a2a"))]
+#[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
 impl PinnedClientPool {
     /// A pool that holds at most `max` distinct pinned clients. A bound rather than an unbounded map
     /// because the key contains a RESOLVED ADDRESS, and an upstream whose DNS round-robins across a

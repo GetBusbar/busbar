@@ -69,11 +69,11 @@
 #![cfg_attr(not(test), allow(dead_code))]
 
 use std::collections::BTreeMap;
-use std::net::{IpAddr, SocketAddr};
+use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::diagnostics::{diag_warn, A2A_CARD_CERT_NO_SPKI};
+use crate::egress::seam::{self, HopSpec};
 
 use super::fetch::{FetchPolicy, HttpResponse, Resolver, Transport};
 use super::relay::{ChunkFlow, RelayTransport, StreamHead};
@@ -155,31 +155,15 @@ impl Resolver for TokioResolver {
     }
 }
 
-/// THE PEER'S TRANSPORT-LAYER IDENTITY, off a response whose handshake already verified.
-///
-/// `None` on a plaintext hop and `None` where the certificate cannot be read. Neither is softened
-/// into a pass anywhere downstream: [`super::verify`] refuses a transport-pinned registration whose
-/// fetch produced no observed pin, because "we could not look" and "it matched" are the two answers
-/// a pin exists to keep apart.
-///
-/// A certificate that does not parse is logged and reported as absent rather than propagated as a
-/// hard transport error. The distinction matters and it is deliberate: a signed-card registration
-/// does not care about the certificate at all and must not lose its card because a peer's DER was
-/// odd, while a transport-pinned one refuses on `None` two layers up anyway. Fail-closed lands in
-/// the module that knows whether the answer was needed.
-fn peer_spki_of(resp: &reqwest::Response) -> Option<String> {
-    let der = resp
-        .extensions()
-        .get::<reqwest::tls::TlsInfo>()?
-        .peer_certificate()?;
-    match super::spki::spki_pin(der) {
-        Ok(pin) => Some(pin),
-        Err(e) => {
-            diag_warn!(A2A_CARD_CERT_NO_SPKI, error = %e, "a2a: the card endpoint's certificate yielded no SPKI pin");
-            None
-        }
-    }
-}
+// THE PEER'S TRANSPORT-LAYER IDENTITY is now observed HOST-SIDE, on the egress seam.
+//
+// The hop no longer runs behind a `reqwest::Response` this plane holds — the host owns the socket and
+// the verified handshake, and hands back the `sha256/…` pin on the seam's `seam::Buffered`, decoded
+// from the SAME bytes `crate::plane_host::spki::pin` produces (which `super::spki::spki_pin`
+// re-exports), so the pin string is byte-identical to the one this file used to compute. `None` on a
+// plaintext hop and `None` where the certificate cannot be read, unchanged: `super::verify` refuses
+// a transport-pinned registration whose fetch produced no observed pin, because "we could not look"
+// and "it matched" are the two answers a pin exists to keep apart.
 
 /// THE CLIENT CERTIFICATES THIS DEPLOYMENT PRESENTS, by agent id.
 ///
@@ -242,35 +226,33 @@ pub(crate) fn resolve_client_identities(
 /// backend ([`crate::egress`]) — pooled by the pinned address, so a repeated hop to an
 /// already-judged target reuses the connection, and the client still refuses a second lookup.
 pub(crate) struct ReqwestTransport {
-    /// The resolver the CLIENT is given. Production installs [`crate::egress::RefuseSecondLookup`];
-    /// the tests install a counting one, which is the only way to assert that the client did not
-    /// perform a lookup.
+    /// The resolver a plane-supplied client would have been given. VESTIGIAL under the seam (Design A):
+    /// the hop now runs host-side, where the host installs its own [`crate::egress::RefuseSecondLookup`]
+    /// and — because every hop carries the already-judged pinned address — performs NO lookup at all. It
+    /// is kept only so the test constructor that asserts "the client did not perform a second lookup"
+    /// still stands one up; the assertion holds precisely because nothing consults it.
+    #[allow(dead_code)]
     dns: Arc<dyn reqwest::dns::Resolve>,
     /// Body ceiling, mirrored from the policy so the read stops at the cap rather than buffering an
     /// upstream-chosen number of bytes and measuring afterwards.
     max_body_bytes: usize,
     timeout: Duration,
-    /// Additional trust anchors. EMPTY in production — the platform's roots are the roots. Present
-    /// so a test can stand up a real TLS server and assert what the handshake did, which is the
-    /// only way the SNI and certificate-verification claims above are checkable at all.
+    /// Additional trust anchors, accumulated by [`Self::trusting_root`] (test-only) so the full set can
+    /// be re-registered as one host-side [`crate::plane_host::trust_anchor`] ref. EMPTY in production —
+    /// the platform's roots are the roots.
     extra_roots: Vec<reqwest::Certificate>,
-    /// THE CLIENT CERTIFICATE THIS TRANSPORT PRESENTS, for the ONE agent it was built for. `None`
-    /// where the operator named none, which is the honest outcome against an mTLS peer: the peer
-    /// closes the handshake with `CertificateRequired` and the fetch reports that. There is no
-    /// fallback identity and no plane-wide one — a transport carrying an identity belonging to
-    /// another registration would present busbar as somebody it was not asked to be.
-    identity: Option<reqwest::Identity>,
-    /// THE PINNED-CLIENT POOL for this transport's hops, keyed by the judged `(host, address)`. One
-    /// per transport, so every client it caches shares this transport's fixed posture (its resolver,
-    /// its one identity, its trust anchors) and only the destination varies — a per-agent identity
-    /// never has to enter the pool key.
-    pool: crate::egress::PinnedClientPool,
+    /// THE OPAQUE host-side trust-anchor ref (`0` = platform roots only). Registered ONCE, when the
+    /// transport is built, and carried on every per-hop [`EgressDesc`](busbar_plugin::hot::EgressDesc);
+    /// the host resolves it to the parsed roots — the certificate bytes never cross the seam.
+    trust_anchor_ref: u64,
+    /// THE OPAQUE host-side client-identity ref (`0` = present none), for the ONE agent this transport
+    /// was built for. Registered ONCE, at boot, from the identity [`Self::presenting`] was handed, and
+    /// carried on every per-hop desc; the host resolves it and offers the certificate when the peer's
+    /// `CertificateRequest` asks. `0` where the operator named none — the honest mTLS outcome, the peer
+    /// closes the handshake itself rather than busbar forging an identity. The private key never crosses
+    /// the seam. There is no fallback identity and no plane-wide one.
+    client_identity_ref: u64,
 }
-
-/// The cap on distinct pinned clients ONE transport holds at once. A card-fetch/relay transport
-/// talks to a single registration's endpoint, so a handful covers a DNS round-robin; the bound stops
-/// a hostile upstream that answers a fresh address per lookup from growing the map without end.
-const MAX_PINNED_CLIENTS: usize = 16;
 
 impl ReqwestTransport {
     pub(crate) fn new(policy: &FetchPolicy) -> Self {
@@ -286,8 +268,8 @@ impl ReqwestTransport {
             max_body_bytes: policy.max_body_bytes,
             timeout: CARD_FETCH_TIMEOUT,
             extra_roots: Vec::new(),
-            identity: None,
-            pool: crate::egress::PinnedClientPool::with_capacity(MAX_PINNED_CLIENTS),
+            trust_anchor_ref: 0,
+            client_identity_ref: 0,
         }
     }
 
@@ -296,9 +278,10 @@ impl ReqwestTransport {
     /// Consuming, and per TRANSPORT rather than per client, because the whole point of the change
     /// that introduced it is that one transport can no longer stand for the whole plane: an identity
     /// that could be attached after the fact is an identity that could be attached to the transport
-    /// a different agent is being fetched with.
+    /// a different agent is being fetched with. The parsed key is handed to the host registry ONCE
+    /// here (at boot), not per hop — this transport keeps only the opaque ref.
     pub(crate) fn presenting(mut self, identity: reqwest::Identity) -> Self {
-        self.identity = Some(identity);
+        self.client_identity_ref = crate::plane_host::identity::register(identity);
         self
     }
 
@@ -306,6 +289,9 @@ impl ReqwestTransport {
     pub(crate) fn trusting_root(mut self, pem: &[u8]) -> Self {
         self.extra_roots
             .push(reqwest::Certificate::from_pem(pem).expect("a PEM certificate"));
+        // Re-register the FULL accumulated set (a fresh ref each time), so the desc's one ref resolves
+        // to every root this transport was told to trust — the host owns the parsed certificates.
+        self.trust_anchor_ref = crate::plane_host::trust_anchor::register(self.extra_roots.clone());
         self
     }
 }
@@ -326,58 +312,37 @@ struct Hop<'a> {
     body: Option<Vec<u8>>,
 }
 
-/// The connection facts a hop needs, derived from the URL and the pinned address once.
-struct Wire {
-    host: String,
-    pinned: SocketAddr,
-    url: reqwest::Url,
-}
-
 impl ReqwestTransport {
-    /// Normalise the host and pair it with the pinned socket. Shared by the buffered and streaming
-    /// paths so a future edit cannot pin one and not the other.
-    fn wire_for(url: &reqwest::Url, addr: IpAddr) -> Result<Wire, String> {
-        let Some(raw_host) = url.host_str() else {
-            return Err(format!("`{url}` has no host to connect to"));
-        };
-        // `host_str` brackets an IPv6 literal; the client keys its host override on the unbracketed
-        // form, so the two spellings are normalized to one here rather than silently missing.
-        let host = raw_host.strip_prefix('[').unwrap_or(raw_host);
-        let host = host.strip_suffix(']').unwrap_or(host).to_string();
-        let Some(port) = url.port_or_known_default() else {
-            return Err(format!("`{url}` has no port and its scheme implies none"));
-        };
-        Ok(Wire {
-            host,
-            pinned: SocketAddr::new(addr, port),
-            url: url.clone(),
-        })
-    }
-
-    /// The client for a hop to `wire`, POOLED by the pinned `(host, address)`.
-    ///
-    /// Built once to the unified core posture ([`crate::egress::build_pinned_client`]: the pin, the
-    /// refusing resolver, the no-redirect policy, the readable peer certificate and the canonical
-    /// connection knobs) and reused for a repeated destination — still pinned, so reuse only ever
-    /// reaches the already-judged target. The per-request DEADLINE is applied by the caller rather
-    /// than baked into the client, because one pooled client serves hops with different ceilings (a
-    /// card fetch, a unary relay, a stream); a client-level total would silently make the first
-    /// caller's deadline every later caller's.
-    fn client_for(&self, wire: &Wire) -> Result<reqwest::Client, reqwest::Error> {
-        self.pool.client_for(&wire.host, wire.pinned, || {
-            crate::egress::build_pinned_client(
-                &wire.host,
-                wire.pinned,
-                Arc::clone(&self.dns),
-                self.identity.clone(),
-                &self.extra_roots,
-            )
-        })
+    /// The neutral [`HopSpec`] for one hop, carrying the plane's ALREADY-JUDGED pinned address as
+    /// `resolved_addr` (Design A: the host connects there and resolves nothing, so this plane's "no
+    /// second lookup" guarantee holds) and this transport's opaque identity/trust-anchor refs.
+    fn hop_spec<'a>(
+        &'a self,
+        url: &'a str,
+        addr: IpAddr,
+        headers: &'a [(String, String)],
+        body: &'a [u8],
+        timeout: Duration,
+    ) -> HopSpec<'a> {
+        HopSpec {
+            verb: "",
+            url,
+            headers,
+            body,
+            // The a2a fetch guard runs PLANE-SIDE (`guard_hop`) and has already judged this hop; the
+            // host re-judges nothing when a pinned address is supplied, so these stances are moot here.
+            allow_private: true,
+            allow_plaintext: true,
+            client_identity_ref: self.client_identity_ref,
+            trust_anchor_ref: self.trust_anchor_ref,
+            timeout,
+            resolved_addr: Some(addr),
+        }
     }
 
     fn execute(
         &self,
-        what: &'static str,
+        _what: &'static str,
         method: reqwest::Method,
         hop: Hop<'_>,
         timeout: Duration,
@@ -389,69 +354,36 @@ impl ReqwestTransport {
             body,
         } = hop;
         let cap = self.max_body_bytes.saturating_add(1);
-        // BUSBAR'S END OF THE HANDSHAKE, recorded on the response beside the peer's. This transport
-        // was built for ONE registration and carries that registration's identity or none, so the
-        // answer is a fact about the hop rather than a lookup: `client_for` below hands the
-        // identity to the TLS stack, which offers it when the peer's `CertificateRequest` asks.
-        let client_identity_offered = self.identity.is_some();
-        let wire = Self::wire_for(url, addr)?;
-        let headers = headers.to_vec();
-        let url = wire.url.clone();
-        let client = self.client_for(&wire).map_err(|e| {
-            format!(
-                "could not build the {what} client: {}",
-                crate::egress::with_cause(&e)
-            )
-        })?;
+        let body = body.unwrap_or_default();
+        let mut spec = self.hop_spec(url.as_str(), addr, headers, &body, timeout);
+        spec.verb = method.as_str();
 
-        on_a_dedicated_runtime(what, move |rt| {
-            rt.block_on(async move {
-                // THE DEADLINE, ON THE REQUEST. The pooled client carries no total timeout — it is
-                // shared across hops with different ceilings — so each hop applies its own here.
-                let mut req = client.request(method, url.clone()).timeout(timeout);
-                for (name, value) in &headers {
-                    req = req.header(name, value);
-                }
-                if let Some(body) = body {
-                    req = req.body(body);
-                }
-                let resp = req
-                    .send()
-                    .await
-                    .map_err(|e| crate::egress::with_cause(&e))?;
-                let status = resp.status().as_u16();
-                // READ BEFORE THE BODY, because reading the body consumes the response. The
-                // certificate belongs to THIS connection: taking it later, from a fresh one, would
-                // be asking the host a second time what certificate it serves, which is a second
-                // question an attacker gets to answer differently.
-                let peer_spki = peer_spki_of(&resp);
-                let location = resp
-                    .headers()
-                    .get(reqwest::header::LOCATION)
-                    .and_then(|v| v.to_str().ok())
-                    .map(str::to_string);
+        // THE HOP, over the HOSTLESS egress seam. The host owns the socket, the pinned client (its own
+        // refusing resolver), the verified handshake and the capped read; it hands back the status, the
+        // `Location`, the peer SPKI pin (decoded from the same bytes `super::spki::spki_pin` produces)
+        // and whether busbar's own client identity was carried into the handshake. The deadline rides
+        // the desc (`timeout_ms`), the identity/trust anchors ride their opaque refs.
+        let buffered =
+            seam::with_hostless(|scope| seam::buffered(scope, &spec, cap)).map_err(|f| f.cause)?;
 
-                // Read to the cap PLUS ONE. Stopping exactly at the cap would make an
-                // exactly-at-the-limit body indistinguishable from an oversized one; one byte over
-                // is what lets the driver's own ceiling check make that call.
-                let (bytes, end) = crate::proxy::read_capped(resp, cap).await;
-                match end {
-                    crate::proxy::ReadEnd::TransportError => {
-                        Err(format!("`{url}`: the connection failed mid-body"))
-                    }
-                    // Complete or Truncated both hand the bytes back: an over-cap body arrives one
-                    // byte past the ceiling and the driver refuses it there, so the size decision
-                    // stays in the one module that owns the policy.
-                    _ => Ok(HttpResponse {
-                        status,
-                        location,
-                        body: bytes.to_vec(),
-                        peer_spki,
-                        client_identity_offered,
-                    }),
-                }
-            })
-        })
+        match buffered.end {
+            // A mid-body transport failure is reported with the SAME fixed line the plane's own read
+            // produced — built HERE from the url the plane still holds (the seam kept the cause and the
+            // url separate).
+            crate::proxy::ReadEnd::TransportError => {
+                Err(format!("`{url}`: the connection failed mid-body"))
+            }
+            // Complete or Truncated both hand the bytes back: an over-cap body arrives one byte past
+            // the ceiling and the driver refuses it there, so the size decision stays in the one
+            // module that owns the policy.
+            _ => Ok(HttpResponse {
+                status: buffered.status,
+                location: buffered.location,
+                body: buffered.body,
+                peer_spki: buffered.peer_spki,
+                client_identity_offered: buffered.client_identity_offered,
+            }),
+        }
     }
 }
 
@@ -521,75 +453,29 @@ impl RelayTransport for ReqwestTransport {
         body: &[u8],
         on_chunk: &mut (dyn FnMut(&[u8]) -> ChunkFlow + Send),
     ) -> Result<StreamHead, String> {
-        let wire = Self::wire_for(url, addr)?;
-        let headers = headers.to_vec();
-        let body = body.to_vec();
-        let url = wire.url.clone();
         let cap = self.max_body_bytes.saturating_add(1);
-        let client = self.client_for(&wire).map_err(|e| {
-            format!(
-                "could not build the a2a stream relay client: {}",
-                crate::egress::with_cause(&e)
-            )
-        })?;
+        let mut spec = self.hop_spec(url.as_str(), addr, headers, body, RELAY_STREAM_TIMEOUT);
+        spec.verb = "POST";
 
-        on_a_dedicated_runtime("a2a task stream relay", move |rt| {
-            rt.block_on(async move {
-                // The streaming deadline rides the request; the pooled client carries none.
-                let mut req = client
-                    .post(url.clone())
-                    .timeout(RELAY_STREAM_TIMEOUT)
-                    .body(body);
-                for (name, value) in &headers {
-                    req = req.header(name, value);
-                }
-                let mut resp = req
-                    .send()
-                    .await
-                    .map_err(|e| crate::egress::with_cause(&e))?;
-                let status = resp.status().as_u16();
-                let content_type = resp
-                    .headers()
-                    .get(reqwest::header::CONTENT_TYPE)
-                    .and_then(|v| v.to_str().ok())
-                    .unwrap_or_default()
-                    .to_ascii_lowercase();
-
-                // A NON-2xx OR A NON-STREAM is read whole, to the cap. Neither is a stream, and
-                // pretending either was one would hand the caller SSE framing over a document the
-                // backend sent as a document.
-                if !(200..300).contains(&status) || !content_type.starts_with("text/event-stream") {
-                    let (bytes, end) = crate::proxy::read_capped(resp, cap).await;
-                    if matches!(end, crate::proxy::ReadEnd::TransportError) {
-                        return Err(format!("`{url}`: the connection failed mid-body"));
-                    }
-                    return Ok(StreamHead {
-                        status,
-                        content_type,
-                        body: bytes.to_vec(),
-                    });
-                }
-
-                loop {
-                    match resp.chunk().await {
-                        Ok(Some(chunk)) => {
-                            if on_chunk(&chunk) == ChunkFlow::Stop {
-                                break;
-                            }
-                        }
-                        Ok(None) => break,
-                        // A stream that dies mid-body is reported as a transport failure. The
-                        // driver has already written what arrived, so this is what turns "the
-                        // caller's stream just stopped" into a line an operator can read.
-                        Err(e) => return Err(crate::egress::with_cause(&e)),
+        // ONE hostless scope spans the head AND the pump, so the streaming egress stays open between
+        // `stream_head` and `pump` (the arena closer fires only when the closure returns). The head's
+        // buffer-or-stream decision, the SSE content-type test and the non-stream cap read are all the
+        // seam's — the same rules this file used to own, now on the one host code path.
+        seam::with_hostless(|scope| {
+            match seam::stream_head(scope, &spec, cap).map_err(|f| f.cause)? {
+                // A non-2xx or non-`text/event-stream` reply is not a stream: its head carries the body
+                // read whole to the cap, handed back for the driver to report with the backend's words.
+                seam::StreamOutcome::Buffered(head) => Ok(head),
+                // A live event-stream: pump the body to the sink, then return the head. A mid-body
+                // failure carries the FLATTENED cause the host stashed (`with_cause(&e)`), so the relay
+                // reports the SAME operator line its own path did.
+                seam::StreamOutcome::Streaming { head, id } => {
+                    match seam::pump(scope, id, on_chunk) {
+                        seam::PumpEnd::Done => Ok(head),
+                        seam::PumpEnd::Failed(f) => Err(f.cause),
                     }
                 }
-                Ok(StreamHead {
-                    status,
-                    content_type,
-                    body: Vec::new(),
-                })
-            })
+            }
         })
     }
 }
