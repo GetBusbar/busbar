@@ -147,26 +147,29 @@ impl HttpEgress {
     ///
     /// # Safety
     /// `buf`/`cap` must describe a live writable range for the call (ABI discipline).
-    unsafe fn poll(&self, buf: *mut u8, cap: usize) -> (StatusClass, usize) {
+    /// The third element is the flattened mid-body CAUSE, present ONLY on the [`StatusClass::Fault`]
+    /// arm — so the poll driver can stash it and the plane read the real reason back through
+    /// [`egress_fault`], rather than a synthesized "connection failed" line. `None` on every other arm.
+    unsafe fn poll(&self, buf: *mut u8, cap: usize) -> (StatusClass, usize, Option<String>) {
         if buf.is_null() || cap == 0 {
-            return (StatusClass::Refused, 0);
+            return (StatusClass::Refused, 0, None);
         }
         // Serve any buffered remainder first — never block while bytes are already in hand.
         {
             let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
             if !pending.is_empty() {
-                return (StatusClass::Ok, drain_into(&mut pending, buf, cap));
+                return (StatusClass::Ok, drain_into(&mut pending, buf, cap), None);
             }
         }
         if *self.ended.lock().unwrap_or_else(|e| e.into_inner()) {
-            return (StatusClass::Ok, 0); // EOF: clean end of stream.
+            return (StatusClass::Ok, 0, None); // EOF: clean end of stream.
         }
         // Block for the next network chunk. The receiver is taken under the lock only long enough to
         // recv on it, so close (which takes the `Option`) races cleanly to `Gone`.
         let msg = {
             let guard = self.chunks.lock().unwrap_or_else(|e| e.into_inner());
             let Some(rx) = guard.as_ref() else {
-                return (StatusClass::Gone, 0); // closed / reclaimed underneath us.
+                return (StatusClass::Gone, 0, None); // closed / reclaimed underneath us.
             };
             rx.recv()
         };
@@ -174,16 +177,16 @@ impl HttpEgress {
             Ok(ChunkMsg::Data(bytes)) => {
                 let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
                 pending.extend(bytes);
-                (StatusClass::Ok, drain_into(&mut pending, buf, cap))
+                (StatusClass::Ok, drain_into(&mut pending, buf, cap), None)
             }
             Ok(ChunkMsg::End) | Err(_) => {
                 *self.ended.lock().unwrap_or_else(|e| e.into_inner()) = true;
-                (StatusClass::Ok, 0)
+                (StatusClass::Ok, 0, None)
             }
             Ok(ChunkMsg::Err(reason)) => {
                 tracing::debug!(target: "busbar::plane_host::egress", %reason, "egress stream failed mid-body");
                 *self.ended.lock().unwrap_or_else(|e| e.into_inner()) = true;
-                (StatusClass::Fault, 0)
+                (StatusClass::Fault, 0, Some(reason))
             }
         }
     }
@@ -850,7 +853,11 @@ fn run_http_stream(
                         break;
                     }
                     Err(e) => {
-                        let _ = chunk_tx.send(ChunkMsg::Err(e.to_string()));
+                        // Carry the FLATTENED cause chain, not the bare `Display` — a2a's live
+                        // `post_stream` reports a mid-body failure with `with_cause(&e)` (its
+                        // `reqwest::Error` Display alone drops the reset/timeout/certificate reason in
+                        // the source chain). Byte-identical to what the plane's own path produced.
+                        let _ = chunk_tx.send(ChunkMsg::Err(crate::egress::with_cause(&e)));
                         break;
                     }
                 }
@@ -946,7 +953,7 @@ pub(crate) fn egress_poll(
 ) -> StatusClass {
     catch_unwind(AssertUnwindSafe(|| {
         // SAFETY: recovery invariant (see `super::recover`).
-        let _state: &HostState = unsafe { recover(host) };
+        let state: &HostState = unsafe { recover(host) };
         if out_written.is_null() {
             return StatusClass::Refused;
         }
@@ -954,12 +961,25 @@ pub(crate) fn egress_poll(
             return StatusClass::Gone; // unknown / already closed / reclaimed.
         };
         // SAFETY: caller's `buf`/`buf_cap` describe a live writable range (ABI discipline).
-        let (class, written) = unsafe { handle.poll(buf, buf_cap) };
+        let (class, written, cause) = unsafe { handle.poll(buf, buf_cap) };
         if class == StatusClass::Ok {
             // SAFETY: `out_written` is non-null (checked) and writable for one `usize`.
             unsafe {
                 *out_written = written;
             }
+        } else if class == StatusClass::Fault {
+            // A mid-body transport failure: STASH the real flattened cause so the plane reads it back
+            // through the EXISTING `egress_fault` cause-buffer path (the same read-back an open fault
+            // uses), reproducing the plane's own `with_cause(&e)` line byte-for-byte instead of a
+            // synthesized "connection failed". `Io` because bytes were exchanged before the failure;
+            // the url is carried EMPTY (the plane's mid-body message names no url — a2a's `post_stream`
+            // reports the bare cause), and a plane that wants one composes it from the target it holds.
+            state.scope.stash_egress_fault(EgressFaultDetail {
+                class: EgressFailClass::Io,
+                status: 0,
+                cause: cause.unwrap_or_default(),
+                url: String::new(),
+            });
         }
         class
     }))
