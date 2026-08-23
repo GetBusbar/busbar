@@ -4974,3 +4974,52 @@ fn proof_one_session_mints_a_personal_key_plus_n_independent_app_tokens() {
         );
     }
 }
+
+// ── PHASE-11 PROOF: TIME-BOUND EXPIRY IS ENFORCED LOCALLY (#1) ────────────────────────────────────
+//
+// A minted token names its own expiry (`exp`) and busbar enforces it PURELY LOCALLY inside
+// `verify_token` (→ `TokenVerifier::verify`): no store round-trip for the time check, no IdP call.
+// Verify at a clock BEFORE `exp` accepts; advance the clock PAST `exp` and the SAME token is dead.
+// The pre-expiry `Some` is the precondition (without it the post-expiry `None` proves nothing); the
+// post-expiry `None` is the claim — without the local expiry check a minted token would live forever.
+#[test]
+fn proof_time_bound_expiry_is_enforced_locally() {
+    let store = Arc::new(MemoryStore::new());
+    // No IdP wired (`None` admin token is unrelated; there is simply no identity provider in a
+    // GovState) — the expiry decision is this node's alone.
+    let gov = GovState::new_with_signer(store, None, Some(self_serve_signer())).unwrap();
+    let now = 1_700_000_000u64;
+    let exp = now + 30 * 86_400; // exp = now + 30d
+
+    let spec = NewKeySpec {
+        name: "expiry-probe".to_string(),
+        allowed_pools: None,
+        group: None,
+        labels: Default::default(),
+        ..Default::default()
+    };
+    let (_binding, token) = gov.mint_signed(spec, exp, now).unwrap();
+
+    // PRECONDITION (GREEN): at a clock strictly before `exp`, the token verifies. Purely local —
+    // no network — so the accept can only be the local signature+expiry check passing.
+    assert!(
+        gov.verify_token(&token, now, None).is_some(),
+        "precondition: the token MUST verify at mint time, or the post-expiry None proves nothing"
+    );
+    assert!(
+        gov.verify_token(&token, exp - 1, None).is_some(),
+        "precondition: the token MUST still verify one second before its expiry"
+    );
+
+    // CLAIM: advance the clock to exp+1 and the SAME token is dead — expiry is enforced by busbar
+    // itself, locally, on every verify.
+    assert!(
+        gov.verify_token(&token, exp + 1, None).is_none(),
+        "past exp the token MUST NOT verify — time-bound expiry is enforced locally"
+    );
+    // And exactly AT `exp` it is already expired (`exp` is exclusive: verify rejects when exp <= now).
+    assert!(
+        gov.verify_token(&token, exp, None).is_none(),
+        "exp is exclusive: at exactly exp the token is already expired"
+    );
+}
