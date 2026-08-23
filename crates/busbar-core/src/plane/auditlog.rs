@@ -33,8 +33,9 @@
 //! record after the fact; it does not stop one. With no durable store configured (`store: memory`) the
 //! seam keeps chain positions in RAM and persists nothing, exactly as the legacy ring did.
 
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use crate::admin::audit::{AuditEntry, MAX_AUDIT_ENTRIES};
 use crate::audit::journal::NeutralBody;
@@ -264,7 +265,23 @@ pub(crate) struct PlaneAuditLog {
     /// [`KIND_ID_AUDIT`]; a TEST constructs a log over a FRESH id so parallel tests never share one
     /// process-global chain.
     kind_id: u32,
+    /// THE READ MODEL. A bounded ring of the most-recent [`MAX_AUDIT_ENTRIES`] records, held newest-
+    /// LAST (seq-ascending) so [`list_filtered`](PlaneAuditLog::list_filtered)'s `rev()` reads newest-
+    /// first — the same shape and bound as the legacy [`crate::admin::audit::AuditLog`] ring it will
+    /// replace as the `GET /audit` read source. Guarded by its OWN `Mutex` (independent of the seam's
+    /// mint serialization point) and inserted BY SEQ, so the newest-first order holds even when a
+    /// mint's release-to-push window interleaves with another recorder's.
+    ring: Mutex<VecDeque<AuditEntry>>,
 }
+
+/// THE PROCESS-WIDE admin audit READ MODEL on the seam. Process state, not config-derived state, so it
+/// lives as a global rather than on the swappable `App` snapshot — exactly like
+/// [`crate::admin::audit::AUDIT`] and [`crate::plane::calllog::CALLS`], and for the same reason: a
+/// config apply must not fork the chain by opening a SECOND ring at seq 1 under a chain that already
+/// has one.
+#[allow(dead_code)] // fed by the record_by seam emitter (A7.2b); read once GET /audit cuts over (A7.3c)
+pub(crate) static AUDIT_LOG: std::sync::LazyLock<PlaneAuditLog> =
+    std::sync::LazyLock::new(PlaneAuditLog::new);
 
 impl Default for PlaneAuditLog {
     fn default() -> Self {
@@ -276,6 +293,7 @@ impl PlaneAuditLog {
     pub(crate) fn new() -> Self {
         Self {
             kind_id: KIND_ID_AUDIT,
+            ring: Mutex::new(VecDeque::new()),
         }
     }
 
@@ -283,7 +301,49 @@ impl PlaneAuditLog {
     /// process-global chain.
     #[cfg(test)]
     pub(crate) fn with_kind_id(kind_id: u32) -> Self {
-        Self { kind_id }
+        Self {
+            kind_id,
+            ring: Mutex::new(VecDeque::new()),
+        }
+    }
+
+    /// Insert one entry into the read-model ring in SEQ ORDER, pruning the oldest past
+    /// [`MAX_AUDIT_ENTRIES`]. Sorted insert (O(n) at the 1000-entry bound) closes the seam's
+    /// release-to-push window: the seam mints seq under the journal `positions` mutex, but the push
+    /// here happens after that lock is released, so two records can arrive out of mint order — a
+    /// by-seq insert restores order so [`list_filtered`](PlaneAuditLog::list_filtered)'s `rev()`
+    /// newest-first holds.
+    #[allow(dead_code)] // fed by the record_by seam emitter (A7.2b) / boot restore (A7.3b)
+    pub(crate) fn push_entry(&self, entry: AuditEntry) {
+        let mut q = self.ring.lock().unwrap_or_else(|e| e.into_inner());
+        let pos = q.iter().position(|e| e.seq > entry.seq).unwrap_or(q.len());
+        q.insert(pos, entry);
+        while q.len() > MAX_AUDIT_ENTRIES {
+            q.pop_front();
+        }
+    }
+
+    /// A page of entries newest-first, optionally filtered by exact `action` and/or `resource`:
+    /// skip `offset`, then take `limit`. `None` filters match everything. Copied VERBATIM from
+    /// [`crate::admin::audit::AuditLog::list_filtered`] — the read surface `GET /audit` is cut over to
+    /// once the ring is seeded and fed, byte-identical to the legacy ring it replaces.
+    #[allow(dead_code)] // no production caller until the audit read path is cut over to the seam
+    pub(crate) fn list_filtered(
+        &self,
+        offset: usize,
+        limit: usize,
+        action: Option<&str>,
+        resource: Option<&str>,
+    ) -> Vec<AuditEntry> {
+        let q = self.ring.lock().unwrap_or_else(|e| e.into_inner());
+        q.iter()
+            .rev()
+            .filter(|e| action.is_none_or(|a| e.action == a))
+            .filter(|e| resource.is_none_or(|r| e.resource == r))
+            .skip(offset)
+            .take(limit)
+            .cloned()
+            .collect()
     }
 
     /// BOOT MIGRATION BRIDGE. The admin audit rows live in a SEPARATE durable table
