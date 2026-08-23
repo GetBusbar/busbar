@@ -248,6 +248,36 @@ pub(crate) fn demotion_record(row: &McpDemotionRow) -> StoreResult<PlaneRecord> 
 /// exists only under `cfg(test)`. A test double that keeps its own typed map provides INHERENT
 /// methods of the same names, which win method resolution over this blanket impl (so a double reads
 /// its own storage), while a bare `dyn Store` resolves here.
+/// TEST-ONLY read-back DECODE BRIDGE for a `task_event` body: reconstruct a [`TaskEventRow`] from the
+/// NEW neutral `{seq,prev_hash,hash,content}` body the durable seam persists (P5-C9), OR an OLD
+/// `serde(TaskEventRow)` body a store held before the cleave. Digest-faithful: the rebuilt fields feed
+/// `TaskEventRow::digest_fields` the SAME bytes the stored `hash` was sealed over (the neutral
+/// `content` is the pre-framed suffix `|ts|kind|context_id|principal|agent_id|state`), so a chain read
+/// back through it `verify_chain`-passes byte-identically. `request_id` is never in the digest and is
+/// absent from the neutral body, so it comes back empty.
+#[cfg(test)]
+pub(crate) fn task_event_row_from_body(task_id: &str, body: &[u8]) -> StoreResult<TaskEventRow> {
+    use crate::audit::journal::NeutralBody;
+    if let Ok(nb) = decode::<NeutralBody>(body) {
+        let suffix = String::from_utf8_lossy(&nb.content);
+        let f: Vec<&str> = suffix.trim_start_matches('|').splitn(6, '|').collect();
+        return Ok(TaskEventRow {
+            task_id: task_id.to_string(),
+            seq: nb.seq,
+            ts: f.first().and_then(|v| v.parse().ok()).unwrap_or(0),
+            kind: f.get(1).copied().unwrap_or_default().to_string(),
+            context_id: f.get(2).copied().unwrap_or_default().to_string(),
+            principal: f.get(3).copied().unwrap_or_default().to_string(),
+            agent_id: f.get(4).copied().unwrap_or_default().to_string(),
+            state: f.get(5).copied().unwrap_or_default().to_string(),
+            request_id: String::new(),
+            prev_hash: nb.prev_hash,
+            hash: nb.hash,
+        });
+    }
+    decode::<TaskEventRow>(body)
+}
+
 #[cfg(test)]
 #[allow(dead_code)] // a complete named-vocabulary surface; not every method is exercised by every suite
 pub(crate) trait StoreNamedTestExt: Store {
@@ -274,7 +304,7 @@ pub(crate) trait StoreNamedTestExt: Store {
     fn list_task_events(&self, task_id: &str) -> StoreResult<Vec<TaskEventRow>> {
         self.list_plane_records(KIND_TASK_EVENT, &PlaneSelector::Parent(task_id.to_string()))?
             .iter()
-            .map(|b| decode(b))
+            .map(|b| task_event_row_from_body(task_id, b))
             .collect()
     }
     fn append_mcp_call(&self, record: &McpCallRecord) -> StoreResult<()> {

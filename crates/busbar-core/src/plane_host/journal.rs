@@ -79,6 +79,46 @@ pub(crate) struct PlaneJournalInput {
     digests_scope: bool,
 }
 
+impl PlaneJournalInput {
+    /// Build an append input from a plane's pre-framed content suffix + the stream's framing facts.
+    /// The one constructor a WITHIN-CORE plane seam user (e.g. `plane::taskstore`) reaches, so the
+    /// record's fields stay private to this module while the neutral append path is drivable directly
+    /// (no FFI `HostCtx`), exactly as the vtable `journal_append_scoped` drives it over the border.
+    pub(crate) fn new(content: Vec<u8>, framing: Framing, digests_scope: bool) -> Self {
+        PlaneJournalInput {
+            content,
+            framing,
+            digests_scope,
+        }
+    }
+}
+
+impl PlaneJournalRecord {
+    /// Assemble a record from reframed parts — the constructor a plane-side reframe (the `call_reframe`
+    /// FFI bridge, OR an in-core seam user's own decode bridge like `plane::taskstore`) uses to turn a
+    /// stored body + its scope back into a chain record. `scope` is the store parent, never read from
+    /// the body; `content` is the plane's opaque pre-framed suffix carried verbatim.
+    pub(crate) fn from_parts(
+        scope: String,
+        seq: u64,
+        prev_hash: String,
+        hash: String,
+        content: Vec<u8>,
+        framing: Framing,
+        digests_scope: bool,
+    ) -> Self {
+        PlaneJournalRecord {
+            scope,
+            seq,
+            prev_hash,
+            hash,
+            content,
+            framing,
+            digests_scope,
+        }
+    }
+}
+
 impl ChainedRecord for PlaneJournalRecord {
     type Input = PlaneJournalInput;
 

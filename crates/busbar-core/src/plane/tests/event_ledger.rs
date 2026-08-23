@@ -28,10 +28,12 @@ use busbar_api::{StoreResult, TaskEventRow, TaskRow};
 #[derive(Default)]
 pub(crate) struct EventLedger {
     tasks: Mutex<BTreeMap<String, TaskRow>>,
-    /// Keyed by `(task_id, seq)`, so a read-back comes out in chain order without the test having to
-    /// sort — and so a second write at the same sequence overwrites rather than duplicating, which
-    /// is what a real backend's primary key does.
-    events: Mutex<BTreeMap<(String, u64), TaskEventRow>>,
+    /// The chained events, keyed by `(task_id, seq)` so a read-back comes out in chain order and a
+    /// re-write at the same sequence overwrites (a real backend's primary key). The value is the
+    /// OPAQUE stored BODY — the neutral `{seq,prev_hash,hash,content}` the durable seam persists
+    /// (P5-C9) — kept verbatim, exactly as a durable backend holds it; a typed view is reconstructed on
+    /// read via [`crate::plane::store::task_event_row_from_body`], which also reads legacy serde bodies.
+    events: Mutex<BTreeMap<(String, u64), Vec<u8>>>,
 }
 
 impl EventLedger {
@@ -39,14 +41,17 @@ impl EventLedger {
         Self::default()
     }
 
-    /// Every event this ledger holds for one task, oldest first.
+    /// Every event this ledger holds for one task, oldest first — reconstructed from the stored bodies.
     pub(crate) fn events_for(&self, task_id: &str) -> Vec<TaskEventRow> {
         self.events
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .iter()
             .filter(|((id, _), _)| id == task_id)
-            .map(|(_, row)| row.clone())
+            .map(|((id, _), body)| {
+                crate::plane::store::task_event_row_from_body(id, body)
+                    .expect("a stored task_event body decodes as neutral or legacy")
+            })
             .collect()
     }
 }
@@ -119,9 +124,7 @@ impl busbar_api::Store for EventLedger {
     }
     fn append_plane_record(&self, record: &busbar_api::PlaneRecord) -> StoreResult<()> {
         match record.kind.as_str() {
-            crate::plane::store::KIND_TASK_EVENT => {
-                self.append_task_event(&crate::plane::store::decode(&record.body)?)
-            }
+            crate::plane::store::KIND_TASK_EVENT => self.append_event_body(record),
             _ => Ok(()),
         }
     }
@@ -136,11 +139,18 @@ impl busbar_api::Store for EventLedger {
                 .iter()
                 .map(crate::plane::store::encode)
                 .collect(),
-            (crate::plane::store::KIND_TASK_EVENT, busbar_api::PlaneSelector::Parent(p)) => self
-                .list_task_events(p)?
-                .iter()
-                .map(crate::plane::store::encode)
-                .collect(),
+            (crate::plane::store::KIND_TASK_EVENT, busbar_api::PlaneSelector::Parent(p)) => {
+                // The stored BODIES verbatim, in `(task_id, seq)` order — exactly what a durable
+                // backend returns; the caller (registry or test ext) decodes/reframes them.
+                Ok(self
+                    .events
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .iter()
+                    .filter(|((id, _), _)| id == p)
+                    .map(|(_, body)| body.clone())
+                    .collect())
+            }
             _ => Ok(Vec::new()),
         }
     }
@@ -174,15 +184,18 @@ impl EventLedger {
             .collect())
     }
 
-    fn append_task_event(&self, event: &TaskEventRow) -> StoreResult<()> {
+    /// Persist ONE task-event body VERBATIM, keyed by its `(task_id, seq)` — the durable seam hands the
+    /// scope on `parent` and the minted sequence on `seq`, so the double keeps the opaque body a real
+    /// backend would, no decode on the write path.
+    fn append_event_body(&self, record: &busbar_api::PlaneRecord) -> StoreResult<()> {
+        let task_id = record
+            .parent
+            .clone()
+            .unwrap_or_else(|| record.id.clone());
         self.events
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .insert((event.task_id.clone(), event.seq), event.clone());
+            .insert((task_id, record.seq), record.body.clone());
         Ok(())
-    }
-
-    fn list_task_events(&self, task_id: &str) -> StoreResult<Vec<TaskEventRow>> {
-        Ok(self.events_for(task_id))
     }
 }

@@ -1032,7 +1032,10 @@ async fn a_list_with_no_open_task_of_this_callers_makes_no_hop() {
 /// task ids, and they cannot enter this test's assertions.
 struct ChainSink {
     inner: busbar_store_memory::MemoryStore,
-    events: std::sync::Mutex<Vec<busbar_api::TaskEventRow>>,
+    /// `(task_id, body)` — the OPAQUE stored task-event bodies a durable backend holds (the neutral
+    /// `{seq,prev_hash,hash,content}` the P5-C9 seam persists), kept verbatim and reconstructed to a
+    /// typed view on read via [`crate::plane::store::task_event_row_from_body`].
+    events: std::sync::Mutex<Vec<(String, Vec<u8>)>>,
 }
 
 impl ChainSink {
@@ -1082,7 +1085,12 @@ impl busbar_api::Store for ChainSink {
     fn append_plane_record(&self, record: &busbar_api::PlaneRecord) -> busbar_api::StoreResult<()> {
         match record.kind.as_str() {
             crate::plane::store::KIND_TASK_EVENT => {
-                self.append_task_event(&crate::plane::store::decode(&record.body)?)
+                let task_id = record.parent.clone().unwrap_or_else(|| record.id.clone());
+                self.events
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push((task_id, record.body.clone()));
+                Ok(())
             }
             _ => Ok(()),
         }
@@ -1093,37 +1101,31 @@ impl busbar_api::Store for ChainSink {
         selector: &busbar_api::PlaneSelector,
     ) -> busbar_api::StoreResult<Vec<Vec<u8>>> {
         match (kind, selector) {
-            (crate::plane::store::KIND_TASK_EVENT, busbar_api::PlaneSelector::Parent(p)) => self
-                .list_task_events(p)?
+            (crate::plane::store::KIND_TASK_EVENT, busbar_api::PlaneSelector::Parent(p)) => Ok(self
+                .events
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
                 .iter()
-                .map(crate::plane::store::encode)
-                .collect(),
+                .filter(|(id, _)| id == p)
+                .map(|(_, body)| body.clone())
+                .collect()),
             _ => Ok(Vec::new()),
         }
     }
 }
 
 impl ChainSink {
-    fn append_task_event(&self, event: &busbar_api::TaskEventRow) -> busbar_api::StoreResult<()> {
-        self.events
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .push(event.clone());
-        Ok(())
-    }
-
     fn list_task_events(
         &self,
         task_id: &str,
     ) -> busbar_api::StoreResult<Vec<busbar_api::TaskEventRow>> {
-        Ok(self
-            .events
+        self.events
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .iter()
-            .filter(|e| e.task_id == task_id)
-            .cloned()
-            .collect())
+            .filter(|(id, _)| id == task_id)
+            .map(|(id, body)| crate::plane::store::task_event_row_from_body(id, body))
+            .collect()
     }
 }
 

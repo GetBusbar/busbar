@@ -43,13 +43,76 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use crate::audit::journal::{Journal, JournalError};
-use crate::audit::ChainBreak;
+use crate::audit::journal::{Journal, JournalError, NeutralBody};
+use crate::audit::{ChainBreak, Framing};
 
 use super::provenance::{self, EventInput};
 use crate::a2a::task::{Task, TaskError, TaskState};
 use crate::plane::store::{decode, task_record, PlaneStore, KIND_TASK, KIND_TASK_EVENT};
+use crate::plane_host::journal::{PlaneJournalInput, PlaneJournalRecord};
 use busbar_api::{PlaneSelector, StoreError, StoreResult, TaskEventRow, TaskRow};
+
+/// The A2A `task_event` stream's framing facts, held PLANE-SIDE (this file moves to `busbar-a2a` in
+/// commit 10). Core's chain mechanism carries NONE of them — they ride each record/input across the
+/// neutral seam. `PipeSeparated`, and the scope (the task id) participates in the digest.
+const TASK_EVENT_FRAMING: Framing = Framing::PipeSeparated;
+const TASK_EVENT_DIGESTS_SCOPE: bool = true;
+
+/// The A2A event's pre-framed content SUFFIX (Option A leading `|`): `|ts|kind|context_id|principal|
+/// agent_id|state`. `frame_prelude(prev_hash, task_id, seq) ⧺ suffix` reproduces the legacy
+/// [`TaskEventRow`] digest byte stream EXACTLY, so a chain appended through the seam verifies
+/// byte-identically against events written before the cleave. `request_id` is excluded, matching the
+/// digest (a join key that is absent on the boot/sweep paths must not be able to break an intact chain).
+fn task_event_suffix(
+    ts: u64,
+    kind: &str,
+    context_id: &str,
+    principal: &str,
+    agent_id: &str,
+    state: &str,
+) -> Vec<u8> {
+    format!("|{ts}|{kind}|{context_id}|{principal}|{agent_id}|{state}").into_bytes()
+}
+
+/// THE DECODE BRIDGE (plane-side reframe): turn one stored `task_event` body back into a chain record.
+///
+/// Handles BOTH the NEW neutral `{seq, prev_hash, hash, content}` body the seam persists AND an OLD
+/// `serde(TaskEventRow)` body a store held before the cleave — so a deployed store spanning the upgrade
+/// both VERIFIES and READS BACK, not merely verifies. The neutral body is tried first (the shape every
+/// post-cleave append writes); a legacy row is missing `content` and falls through to the typed decode,
+/// whose fields rebuild the identical suffix. `scope` is the task id (the store parent), supplied by the
+/// caller and never read from the body.
+fn reframe_task_event(scope: &str, body: &[u8]) -> StoreResult<PlaneJournalRecord> {
+    if let Ok(nb) = decode::<NeutralBody>(body) {
+        return Ok(PlaneJournalRecord::from_parts(
+            scope.to_string(),
+            nb.seq,
+            nb.prev_hash,
+            nb.hash,
+            nb.content,
+            TASK_EVENT_FRAMING,
+            TASK_EVENT_DIGESTS_SCOPE,
+        ));
+    }
+    let row: TaskEventRow = decode(body)?;
+    let content = task_event_suffix(
+        row.ts,
+        &row.kind,
+        &row.context_id,
+        &row.principal,
+        &row.agent_id,
+        &row.state,
+    );
+    Ok(PlaneJournalRecord::from_parts(
+        scope.to_string(),
+        row.seq,
+        row.prev_hash,
+        row.hash,
+        content,
+        TASK_EVENT_FRAMING,
+        TASK_EVENT_DIGESTS_SCOPE,
+    ))
+}
 
 /// One task in the working set. Its provenance chain POSITION is no longer held here — that moved to
 /// the generic [`Journal`], keyed by task id — and the events themselves were never in RAM: the store
@@ -98,7 +161,11 @@ pub(crate) struct Rehydrated {
 /// position is ever evicted out from under a mutation.
 pub(crate) struct TaskRegistry {
     tasks: Mutex<HashMap<String, Entry>>,
-    journal: Journal<TaskEventRow>,
+    /// The per-task provenance chain, now the NEUTRAL store-backed journal — the same seq-authority,
+    /// position cache and write-ordering the shipped streams use, over the record shape the plane-side
+    /// [`reframe_task_event`] bridge supplies. Core's durable path names no A2A type; the `task_event`
+    /// framing/suffix live here (plane-side), moving out with this file in commit 10.
+    journal: Journal<PlaneJournalRecord>,
 }
 
 impl Default for TaskRegistry {
@@ -233,13 +300,13 @@ impl TaskRegistry {
             // whole-store enumeration, so terminal tasks' chains are never cached). A break is
             // reported and the chain continues from the broken tail: refusing to continue would mean
             // anybody who can corrupt one event can silently stop all further provenance for that task.
-            let events: Vec<TaskEventRow> = store
+            let events: Vec<PlaneJournalRecord> = store
                 .list_plane_records(
                     KIND_TASK_EVENT,
                     &PlaneSelector::Parent(task.task_id.clone()),
                 )?
                 .iter()
-                .map(|body| decode(body))
+                .map(|body| reframe_task_event(&task.task_id, body))
                 .collect::<StoreResult<_>>()?;
             if let Some(brk) = self.journal.seed_position(&task.task_id, &events) {
                 crate::diagnostics::diag_error!(
@@ -271,20 +338,18 @@ impl TaskRegistry {
                 .upsert_plane_record(&task_record(&task.to_row()).map_err(TaskStoreError::Store)?)
                 .map_err(TaskStoreError::Store)?;
         }
-        self.journal
-            .record(
-                &task.task_id,
-                EventInput {
-                    kind: provenance::EV_SUBMITTED,
-                    context_id: task.context_id.clone(),
-                    principal: task.principal.clone(),
-                    agent_id: task.agent_id.clone(),
-                    state: task.state.as_str().to_string(),
-                    request_id: request_id.to_string(),
-                    ts: task.created_at,
-                },
-            )
-            .map_err(|JournalError::Store(e)| TaskStoreError::Store(e))?;
+        self.append_event(
+            &task.task_id,
+            EventInput {
+                kind: provenance::EV_SUBMITTED,
+                context_id: task.context_id.clone(),
+                principal: task.principal.clone(),
+                agent_id: task.agent_id.clone(),
+                state: task.state.as_str().to_string(),
+                request_id: request_id.to_string(),
+                ts: task.created_at,
+            },
+        )?;
         self.tasks()
             .insert(task.task_id.clone(), Entry { task: task.clone() });
         Ok(task.clone())
@@ -341,8 +406,31 @@ impl TaskRegistry {
                 .upsert_plane_record(&task_record(&task.to_row()).map_err(TaskStoreError::Store)?)
                 .map_err(TaskStoreError::Store)?;
         }
+        self.append_event(&task.task_id, event)?;
+        Ok(())
+    }
+
+    /// APPEND one provenance event to a task's chain through the DURABLE JOURNAL SEAM: build the plane's
+    /// pre-framed content suffix, hand the neutral journal the scope (the task id, a durable `String`
+    /// key) plus the framing input, and let the ONE core chain mint the seq/prev_hash/hash and persist
+    /// the neutral `{seq, prev_hash, hash, content}` body under its write-ordering invariant. The
+    /// reframe bridge is consulted only on a cache-miss resume — which never happens here, since the
+    /// task journal opts out of position eviction (`usize::MAX`) — but the seam requires it, so the
+    /// same [`reframe_task_event`] that boot rehydrate uses is threaded through.
+    fn append_event(&self, scope: &str, event: EventInput) -> Result<(), TaskStoreError> {
+        let content = task_event_suffix(
+            event.ts,
+            event.kind,
+            &event.context_id,
+            &event.principal,
+            &event.agent_id,
+            &event.state,
+        );
+        let input = PlaneJournalInput::new(content, TASK_EVENT_FRAMING, TASK_EVENT_DIGESTS_SCOPE);
         self.journal
-            .record(&task.task_id, event)
+            .append_scoped(KIND_TASK_EVENT, scope, input, &|s: &str, b: &[u8]| {
+                reframe_task_event(s, b)
+            })
             .map_err(|JournalError::Store(e)| TaskStoreError::Store(e))?;
         Ok(())
     }
@@ -418,9 +506,7 @@ impl TaskRegistry {
             request_id: request_id.to_string(),
             ts: now,
         };
-        self.journal
-            .record(task_id, event)
-            .map_err(|JournalError::Store(e)| TaskStoreError::Store(e))?;
+        self.append_event(task_id, event)?;
         Ok(())
     }
 
@@ -612,11 +698,12 @@ impl TaskRegistry {
         store: &dyn PlaneStore,
         task_id: &str,
     ) -> StoreResult<Result<usize, ChainBreak>> {
-        let events: Vec<TaskEventRow> = store
-            .list_plane_records(KIND_TASK_EVENT, &PlaneSelector::Parent(task_id.to_string()))?
-            .iter()
-            .map(|body| decode(body))
-            .collect::<StoreResult<_>>()?;
+        let events = self.journal.read_scoped(
+            KIND_TASK_EVENT,
+            task_id,
+            store,
+            &|s: &str, b: &[u8]| reframe_task_event(s, b),
+        )?;
         match crate::audit::verify_chain(&events) {
             Ok(()) => Ok(Ok(events.len())),
             Err(brk) => Ok(Err(brk)),

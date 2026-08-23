@@ -36,7 +36,11 @@ const NOW: u64 = 1_770_000_000;
 struct DurableTaskStore {
     inner: busbar_store_memory::MemoryStore,
     tasks: std::sync::Mutex<BTreeMap<String, TaskRow>>,
-    events: std::sync::Mutex<BTreeMap<(String, u64), TaskEventRow>>,
+    /// The chained events as the OPAQUE stored BODIES a durable backend holds — the neutral
+    /// `{seq,prev_hash,hash,content}` the P5-C9 seam persists — keyed by `(task_id, seq)`. A typed view
+    /// is reconstructed on read via [`crate::plane::store::task_event_row_from_body`] (which also reads
+    /// legacy serde bodies), so "durable" here is byte-for-byte what a real store keeps.
+    events: std::sync::Mutex<BTreeMap<(String, u64), Vec<u8>>>,
 }
 
 impl DurableTaskStore {
@@ -50,12 +54,32 @@ impl DurableTaskStore {
     /// Reach past the engine and mutate a persisted event directly — an operator with database
     /// access, or an attacker who got there. The only way to stage the tamper the chain exists to
     /// detect.
+    ///
+    /// The stored body is opaque (the neutral seam envelope), so the edit is staged by reconstructing
+    /// the typed row, applying the caller's mutation, and re-persisting the body with its `hash` LEFT
+    /// STALE — a rewritten payload under an unchanged digest, which is exactly the tamper `verify_chain`
+    /// recomputes and catches.
     fn tamper_event(&self, task_id: &str, seq: u64, edit: impl Fn(&mut TaskEventRow)) {
         let mut events = self.events.lock().unwrap_or_else(|e| e.into_inner());
-        let row = events
+        let body = events
             .get_mut(&(task_id.to_string(), seq))
             .expect("the event to tamper with must exist");
-        edit(row);
+        let mut row = crate::plane::store::task_event_row_from_body(task_id, body)
+            .expect("the event to tamper with decodes");
+        edit(&mut row);
+        // Rebuild the neutral body from the edited fields, KEEPING the original (now stale) `hash`.
+        let content = format!(
+            "|{}|{}|{}|{}|{}|{}",
+            row.ts, row.kind, row.context_id, row.principal, row.agent_id, row.state
+        )
+        .into_bytes();
+        let tampered = crate::audit::journal::NeutralBody {
+            seq: row.seq,
+            prev_hash: row.prev_hash,
+            hash: row.hash,
+            content,
+        };
+        *body = crate::plane::store::encode(&tampered).expect("neutral body re-encodes");
     }
 }
 
@@ -113,9 +137,7 @@ impl busbar_api::Store for DurableTaskStore {
     }
     fn append_plane_record(&self, record: &busbar_api::PlaneRecord) -> busbar_api::StoreResult<()> {
         match record.kind.as_str() {
-            crate::plane::store::KIND_TASK_EVENT => {
-                self.append_task_event(&crate::plane::store::decode(&record.body)?)
-            }
+            crate::plane::store::KIND_TASK_EVENT => self.append_event_body(record),
             _ => Ok(()),
         }
     }
@@ -130,11 +152,14 @@ impl busbar_api::Store for DurableTaskStore {
                 .iter()
                 .map(crate::plane::store::encode)
                 .collect(),
-            (crate::plane::store::KIND_TASK_EVENT, busbar_api::PlaneSelector::Parent(p)) => self
-                .list_task_events(p)?
+            (crate::plane::store::KIND_TASK_EVENT, busbar_api::PlaneSelector::Parent(p)) => Ok(self
+                .events
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
                 .iter()
-                .map(crate::plane::store::encode)
-                .collect(),
+                .filter(|((id, _), _)| id == p)
+                .map(|(_, body)| body.clone())
+                .collect()),
             _ => Ok(Vec::new()),
         }
     }
@@ -189,23 +214,15 @@ impl DurableTaskStore {
         Ok((before_count - tasks.len()) as u64)
     }
 
-    fn append_task_event(&self, event: &TaskEventRow) -> busbar_api::StoreResult<()> {
+    /// Persist ONE task-event body VERBATIM, keyed by `(task_id, seq)` from the record's `parent`/`seq`
+    /// — the opaque neutral envelope a real backend keeps, no decode on the write path.
+    fn append_event_body(&self, record: &busbar_api::PlaneRecord) -> busbar_api::StoreResult<()> {
+        let task_id = record.parent.clone().unwrap_or_else(|| record.id.clone());
         self.events
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .insert((event.task_id.clone(), event.seq), event.clone());
+            .insert((task_id, record.seq), record.body.clone());
         Ok(())
-    }
-
-    fn list_task_events(&self, task_id: &str) -> busbar_api::StoreResult<Vec<TaskEventRow>> {
-        Ok(self
-            .events
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .iter()
-            .filter(|((t, _), _)| t == task_id)
-            .map(|(_, v)| v.clone())
-            .collect())
     }
 }
 
