@@ -520,11 +520,13 @@ pub struct App {
     /// persists: the client certificates are resolved from secrets at boot (a resolution failure is a
     /// boot refusal), and an agent added by a later apply is verified on the boot-time transport —
     /// which is the same reach the removed sweep had, since it too held its transports from boot.
-    // Present only when the A2A plane is compiled in: `LiveCardFetch` is a `crate::a2a` type, and only
-    // the A2A verify-on-call path (and the start hook that publishes it) reads it. Absent with
-    // `plane-a2a` off.
+    // TYPE-ERASED inside the `OnceLock` so `App` names no `crate::a2a` transport type — the same
+    // opaque-handle shape `mcp_runtime` above rides. The A2A start hook sets the concrete
+    // `Arc<LiveCardFetch>` (unsized to `Arc<dyn Any>`) and the verify-on-call path downcasts it back,
+    // both inside the plane's own module. Kept `plane-a2a`-gated because with the plane off nothing
+    // publishes or reads it and the field would sit permanently `None`.
     #[cfg(feature = "plane-a2a")]
-    pub(crate) a2a_cards: Arc<std::sync::OnceLock<Arc<crate::a2a::transport::LiveCardFetch>>>,
+    pub(crate) a2a_cards: Arc<std::sync::OnceLock<Arc<dyn std::any::Any + Send + Sync>>>,
     /// Per-principal ADMIN MUTATION rate limiter. Arc-shared across apply snapshots so the
     /// windows survive every swap.
     pub(crate) mutation_limiter: Arc<crate::admin::rate::MutationLimiter>,

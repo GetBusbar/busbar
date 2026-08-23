@@ -1740,7 +1740,13 @@ fn fold_reverify_join(
 }
 
 async fn verify_agent_on_call(app: &Arc<App>, plane: &Arc<super::plane::A2aPlane>, agent_id: &str) {
-    let Some(cards) = app.a2a_cards.get().cloned() else {
+    // Downcast the opaque handle back to this plane's transport bundle — `App` carries it type-erased.
+    let Some(cards) = app
+        .a2a_cards
+        .get()
+        .cloned()
+        .and_then(|c| c.downcast::<super::transport::LiveCardFetch>().ok())
+    else {
         return;
     };
     let Some((_, policy)) = plane.verify_state_of(agent_id) else {
