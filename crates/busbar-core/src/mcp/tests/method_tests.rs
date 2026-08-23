@@ -638,16 +638,20 @@ async fn a_tool_call_is_charged_metered_and_audited_on_the_ordinary_budget_plane
     // lookup scoped only to `action`/`seq` would `.rev().find` this decoy first and assert on the
     // wrong row; scoping the find to OUR resource+principal skips it. Without that scoping this test
     // is red here.
-    crate::admin::audit::AUDIT.record_by(
+    crate::plane::auditlog::emit_admin_hostless_now(
         "mcp_tool.call",
         "mcp_tool:fs_read",
-        crate::admin::audit::OUTCOME_REJECTED,
+        crate::audit::vocab::OUTCOME_REJECTED,
         "test-principal",
     );
-    let entries = crate::admin::audit::AUDIT.export();
+    let entries = crate::plane::auditlog::AUDIT_LOG.list_filtered(
+        0,
+        crate::admin::audit::MAX_AUDIT_ENTRIES,
+        None,
+        None,
+    );
     let row = entries
         .iter()
-        .rev()
         .find(|e| {
             e.action == "mcp_tool.call"
                 && e.seq > before
