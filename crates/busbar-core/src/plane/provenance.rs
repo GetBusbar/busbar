@@ -12,11 +12,13 @@
 //! auditing wise should be mcp a2a or llm specific. thats how audits break."* Three chains give
 //! three answers to "what happened", and an auditor reads whichever was wired last.
 //!
-//! So the mechanism moved to [`crate::audit`] and what stays here is the RECORD: which fields a
-//! task event carries, and which of them the digest covers. That is the whole legitimate difference
-//! between the three streams, and it survives as [`ChainedRecord::digest_fields`]. A2A supplies a
-//! record; it does not supply a second chain — the same shape as `a2a/pin.rs`, which supplies an
-//! artifact and not a second trust state machine.
+//! So the mechanism moved to [`crate::audit`] and what stays here is the RECORD SHAPE: the event
+//! kinds and the transition→kind mapping. The durable write path itself flows through the neutral
+//! journal seam (`crate::plane_host::journal`): a task event crosses the store boundary as a
+//! `PlaneJournalRecord` whose `content` is the pre-framed digest suffix built plane-side in
+//! [`crate::plane::taskstore`], so core's seq-authority never carries a scrap of A2A vocabulary.
+//! A2A supplies a record shape; it does not supply a second chain — the same shape as `a2a/pin.rs`,
+//! which supplies an artifact and not a second trust state machine.
 //!
 //! ## Per TASK, not one global chain — and that is still true
 //!
@@ -41,18 +43,11 @@
 // existing chains can absorb.
 #![cfg_attr(not(test), allow(dead_code))]
 
-use busbar_api::TaskEventRow;
-
 // The transition→event-kind mapping below is the ONLY A2A-type-dependent thing in this record-shape
-// module; the rest (the record + its digest) stays in core ungated. So the `TaskState` import — and
-// the mapping that needs it — are gated to `plane-a2a`, matching `plane::taskstore` (its only caller).
+// module; the rest (the record shape) stays in core ungated. So the `TaskState` import — and the
+// mapping that needs it — are gated to `plane-a2a`, matching `plane::taskstore` (its only caller).
 #[cfg(feature = "plane-a2a")]
 use crate::a2a::task::TaskState;
-use crate::audit::{ChainLabels, ChainedRecord, Digest, Framing};
-
-/// This plane's chain: one per task. A type alias over the core mechanism — there is no second
-/// implementation behind it.
-pub(crate) type TaskChain = crate::audit::Chain<TaskEventRow>;
 
 /// Event kinds. Small, stable, greppable — tooling branches on these strings, so they are constants
 /// rather than formatted at each call site.
@@ -63,6 +58,11 @@ pub(crate) const EV_RESUMED: &str = "task.resumed";
 pub(crate) const EV_DELEGATED: &str = "task.delegated";
 pub(crate) const EV_ARTIFACT: &str = "task.artifact";
 pub(crate) const EV_TERMINAL: &str = "task.terminal";
+// A DECLARED-BUT-UNMOUNTED kind: the boot rehydrate does not yet append its own event, but the kind
+// is declared because the digest covers the kind's value — adding one later is a chained-record field
+// change no deployment with existing chains can absorb. The `not(test)` blanket above allows the other
+// unmounted kinds; this one carries its own allow because it has no reference in a test build either.
+#[allow(dead_code)]
 pub(crate) const EV_REHYDRATED: &str = "task.rehydrated";
 
 // ── THE PUSH-NOTIFICATION DELIVERY EVENTS ───────────────────────────────────────────────────────
@@ -133,91 +133,3 @@ pub(crate) struct EventInput {
     pub(crate) request_id: String,
     pub(crate) ts: u64,
 }
-
-impl ChainedRecord for TaskEventRow {
-    type Input = EventInput;
-
-    const LABELS: &'static ChainLabels = &ChainLabels {
-        chain: "the A2A task provenance chain",
-        scope: "task",
-    };
-    /// PIPE-SEPARATED because that is how the events already on disk were written, and
-    /// `busbar_api::TaskEventRow`'s own doc publishes the formula. It is safe for these fields in
-    /// particular — `task_id`, `context_id`, `principal` and `agent_id` are busbar-issued ids, and
-    /// the kinds and states come from closed sets, none of which may contain `|` — but that is a
-    /// property of today's fields rather than of the code, which is why a NEW record type must take
-    /// [`Framing::LengthPrefixed`] instead.
-    const FRAMING: Framing = Framing::PipeSeparated;
-
-    fn scope_of(&self) -> &str {
-        &self.task_id
-    }
-
-    fn seq(&self) -> u64 {
-        self.seq
-    }
-
-    fn prev_hash(&self) -> &str {
-        &self.prev_hash
-    }
-
-    fn hash(&self) -> &str {
-        &self.hash
-    }
-
-    fn link(scope: &str, seq: u64, prev_hash: String, input: EventInput) -> Self {
-        TaskEventRow {
-            task_id: scope.to_string(),
-            seq,
-            ts: input.ts,
-            kind: input.kind.to_string(),
-            context_id: input.context_id,
-            principal: input.principal,
-            agent_id: input.agent_id,
-            state: input.state,
-            request_id: input.request_id,
-            prev_hash,
-            hash: String::new(),
-        }
-    }
-
-    fn set_hash(&mut self, hash: String) {
-        self.hash = hash;
-    }
-
-    /// `hash = sha256(prev_hash | task_id | seq | ts | kind | context_id | principal | agent_id |
-    /// state)` — the formula `busbar_api::TaskEventRow` publishes, fed field by field instead of
-    /// being formatted here.
-    ///
-    /// `request_id` is deliberately EXCLUDED. It is a join key handed in by the request spine, it is
-    /// absent on the paths that have no inbound request (the boot rehydrate, the retention sweep),
-    /// and a field that is sometimes absent must not be able to make an otherwise-intact chain
-    /// unverifiable. Everything that carries meaning about WHAT HAPPENED is inside.
-    fn digest_fields(&self, d: &mut Digest) {
-        d.text(&self.prev_hash)
-            .text(&self.task_id)
-            .num(self.seq)
-            .num(self.ts)
-            .text(&self.kind)
-            .text(&self.context_id)
-            .text(&self.principal)
-            .text(&self.agent_id)
-            .text(&self.state);
-    }
-}
-
-/// The A2A task event's contribution to the generic [`crate::audit::journal::Journal`]: its neutral
-/// store kind and the envelope it crosses the store seam in. This is the whole of what the durable
-/// seq-authority machine needs from the plane — the per-task position cache, write-ordering and
-/// store-resume are all core's. Ungated (its deps are core), though its only instantiation is the
-/// `plane-a2a`-gated task store.
-impl crate::audit::journal::JournalRecord for TaskEventRow {
-    const KIND: &'static str = crate::plane::store::KIND_TASK_EVENT;
-    fn to_plane_record(&self) -> busbar_api::StoreResult<busbar_api::PlaneRecord> {
-        crate::plane::store::task_event_record(self)
-    }
-}
-
-#[cfg(test)]
-#[path = "tests/provenance_tests.rs"]
-mod provenance_tests;

@@ -25,11 +25,7 @@
 
 use super::*;
 
-use busbar_api::{McpCallRecord, TaskEventRow};
-
 use crate::admin::audit::{AuditEntry, AuditInput};
-use crate::plane::calllog::CallInput;
-use crate::plane::provenance::EventInput;
 
 // ══ THE FOURTH STREAM ════════════════════════════════════════════════════════════════════════════
 //
@@ -389,85 +385,102 @@ fn a_window_still_catches_a_tamper_after_its_first_record() {
 fn the_default_chain_is_the_new_chain_because_a_derived_default_starts_at_zero() {
     assert_eq!(Chain::<Nonsense>::default(), Chain::<Nonsense>::new());
     assert_eq!(Chain::<Nonsense>::default().next_seq(), 1);
-    // And the claim holds for the real streams too, on the same one implementation.
-    assert_eq!(Chain::<McpCallRecord>::default().next_seq(), 1);
-    assert_eq!(Chain::<TaskEventRow>::default().next_seq(), 1);
 }
 
 // ══ THE THREE REAL DIGESTS DID NOT MOVE ═════════════════════════════════════════════════════════
 
 /// The MCP per-call digest is byte-for-byte what `mcp/calllog.rs` computed before the unification:
-/// length-prefixed, in this field order. Recomputed here the OLD way and required to agree.
+/// length-prefixed, in this field order. Minted through the NEUTRAL journal seam — a genesis
+/// `PlaneJournalRecord` over the plane's pre-framed `call_suffix` content, which is the exact shape
+/// production persists — and required to agree with the legacy single-buffer formula, recomputed
+/// here the OLD way. (The typed `Chain<McpCallRecord>` is gone; the seam is what production hashes.)
 #[test]
 fn the_mcp_call_digest_is_unchanged_by_the_unification() {
-    let mut chain: Chain<McpCallRecord> = Chain::new();
-    let rec = chain.append(
-        "vk_alice",
-        CallInput {
-            ts: 1_700_000_000,
-            server: "srv".to_string(),
-            tool: "srv_tool".to_string(),
-            outcome: crate::audit::vocab::OUTCOME_DISPATCHED,
-            reason: String::new(),
-            tool_digest: "abc123".to_string(),
-            pin_generation: 7,
-            request_id: "req-1".to_string(),
-        },
+    let (prev_hash, principal, seq) = (String::new(), "vk_alice", 1u64);
+    let (ts, server, tool, outcome, reason, tool_digest, pin_generation) = (
+        1_700_000_000u64,
+        "srv",
+        "srv_tool",
+        crate::audit::vocab::OUTCOME_DISPATCHED,
+        "",
+        "abc123",
+        7u64,
+    );
+
+    let lp = |out: &mut Vec<u8>, bytes: &[u8]| {
+        out.extend_from_slice(&(bytes.len() as u64).to_be_bytes());
+        out.extend_from_slice(bytes);
+    };
+    // The plane's LengthPrefixed content suffix (the tail after the prelude), as `calllog::call_suffix`
+    // builds it: ts, server, tool, outcome, reason, tool_digest, pin_generation.
+    let mut content: Vec<u8> = Vec::new();
+    lp(&mut content, &ts.to_be_bytes());
+    lp(&mut content, server.as_bytes());
+    lp(&mut content, tool.as_bytes());
+    lp(&mut content, outcome.as_bytes());
+    lp(&mut content, reason.as_bytes());
+    lp(&mut content, tool_digest.as_bytes());
+    lp(&mut content, &pin_generation.to_be_bytes());
+    let rec = crate::plane_host::journal::PlaneJournalRecord::from_parts(
+        principal.to_string(),
+        seq,
+        prev_hash.clone(),
+        String::new(),
+        content,
+        Framing::LengthPrefixed,
+        true,
     );
 
     let mut buf: Vec<u8> = Vec::new();
-    let mut field = |bytes: &[u8]| {
-        buf.extend_from_slice(&(bytes.len() as u64).to_be_bytes());
-        buf.extend_from_slice(bytes);
-    };
-    field(rec.prev_hash.as_bytes());
-    field(rec.principal.as_bytes());
-    field(&rec.seq.to_be_bytes());
-    field(&rec.ts.to_be_bytes());
-    field(rec.server.as_bytes());
-    field(rec.tool.as_bytes());
-    field(rec.outcome.as_bytes());
-    field(rec.reason.as_bytes());
-    field(rec.tool_digest.as_bytes());
-    field(&rec.pin_generation.to_be_bytes());
+    lp(&mut buf, prev_hash.as_bytes());
+    lp(&mut buf, principal.as_bytes());
+    lp(&mut buf, &seq.to_be_bytes());
+    lp(&mut buf, &ts.to_be_bytes());
+    lp(&mut buf, server.as_bytes());
+    lp(&mut buf, tool.as_bytes());
+    lp(&mut buf, outcome.as_bytes());
+    lp(&mut buf, reason.as_bytes());
+    lp(&mut buf, tool_digest.as_bytes());
+    lp(&mut buf, &pin_generation.to_be_bytes());
     assert_eq!(
-        rec.hash,
+        digest(&rec),
         busbar_api::sha256_hex(&buf),
         "an MCP call digest that moved would report every deployment's persisted chain as tampered"
     );
 }
 
 /// The A2A task provenance digest is byte-for-byte what `a2a/provenance.rs` computed before the
-/// unification, and byte-for-byte the formula `busbar_api::TaskEventRow` publishes.
+/// unification, and byte-for-byte the formula `busbar_api::TaskEventRow` publishes. Minted through the
+/// NEUTRAL journal seam over the plane's pre-framed `task_event_suffix` content (PipeSeparated), which
+/// is the exact shape production persists, and required to agree with the legacy canonical string.
 #[test]
 fn the_a2a_task_event_digest_is_unchanged_by_the_unification() {
-    let mut chain: Chain<TaskEventRow> = Chain::new();
-    let row = chain.append(
-        "task-1",
-        EventInput {
-            kind: crate::plane::provenance::EV_SUBMITTED,
-            context_id: "ctx-1".to_string(),
-            principal: "vk_alice".to_string(),
-            agent_id: "planner".to_string(),
-            state: "submitted".to_string(),
-            request_id: "req-1".to_string(),
-            ts: 1_700_000_000,
-        },
+    let (prev_hash, task_id, seq) = (String::new(), "task-1", 1u64);
+    let (ts, kind, context_id, principal, agent_id, state) = (
+        1_700_000_000u64,
+        crate::plane::provenance::EV_SUBMITTED,
+        "ctx-1",
+        "vk_alice",
+        "planner",
+        "submitted",
+    );
+    // The plane's PipeSeparated content suffix (leading `|`), as `taskstore::task_event_suffix` builds
+    // it: `|ts|kind|context_id|principal|agent_id|state`.
+    let content = format!("|{ts}|{kind}|{context_id}|{principal}|{agent_id}|{state}").into_bytes();
+    let rec = crate::plane_host::journal::PlaneJournalRecord::from_parts(
+        task_id.to_string(),
+        seq,
+        prev_hash.clone(),
+        String::new(),
+        content,
+        Framing::PipeSeparated,
+        true,
     );
     let canonical = format!(
-        "{}|{}|{}|{}|{}|{}|{}|{}|{}",
-        row.prev_hash,
-        row.task_id,
-        row.seq,
-        row.ts,
-        row.kind,
-        row.context_id,
-        row.principal,
-        row.agent_id,
-        row.state
+        "{prev_hash}|{task_id}|{seq}|{ts}|{kind}|{context_id}|{principal}|{agent_id}|{state}"
     );
     assert_eq!(
-        row.hash,
+        digest(&rec),
         busbar_api::sha256_hex(canonical.as_bytes()),
         "an A2A provenance digest that moved would report every persisted chain as tampered"
     );

@@ -672,7 +672,8 @@ fn kinds_of(
     task_id: &str,
 ) -> Vec<String> {
     let events = ledger.events_for(task_id);
-    crate::audit::verify_chain(&events).expect("the per-task chain verifies after a delivery");
+    crate::plane::taskstore::verify_task_event_rows(&events)
+        .expect("the per-task chain verifies after a delivery");
     events.into_iter().map(|e| e.kind).collect()
 }
 

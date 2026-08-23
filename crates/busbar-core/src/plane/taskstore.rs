@@ -202,6 +202,41 @@ fn reframe_task_event(scope: &str, body: &[u8]) -> StoreResult<PlaneJournalRecor
     ))
 }
 
+/// TEST ONLY: verify a chain presented as TYPED [`TaskEventRow`]s by reframing each into the neutral
+/// journal record the seam persists and running the ONE verifier. The typed `ChainedRecord` impl is
+/// gone (the row moves to `busbar-a2a`), so a test that holds typed rows — read back through a store
+/// test-ext — verifies them through the SAME reframe/digest production reads a persisted chain with.
+/// The scope, and the digest's inclusion of it, come from each row's own `task_id`, exactly as the
+/// deleted `TaskEventRow::scope_of`/`digest_fields` did.
+#[cfg(test)]
+pub(crate) fn verify_task_event_rows(
+    rows: &[TaskEventRow],
+) -> Result<(), crate::audit::ChainBreak> {
+    let records: Vec<PlaneJournalRecord> = rows
+        .iter()
+        .map(|r| {
+            let content = task_event_suffix(
+                r.ts,
+                &r.kind,
+                &r.context_id,
+                &r.principal,
+                &r.agent_id,
+                &r.state,
+            );
+            PlaneJournalRecord::from_parts(
+                r.task_id.clone(),
+                r.seq,
+                r.prev_hash.clone(),
+                r.hash.clone(),
+                content,
+                TASK_EVENT_FRAMING,
+                TASK_EVENT_DIGESTS_SCOPE,
+            )
+        })
+        .collect();
+    verify_chain(&records)
+}
+
 /// One task in the working set. Its provenance chain POSITION is no longer held here — that moved to
 /// the generic [`Journal`], keyed by task id — and the events themselves were never in RAM: the store
 /// owns them, and holding every event of every long-running task would defeat a durable store.

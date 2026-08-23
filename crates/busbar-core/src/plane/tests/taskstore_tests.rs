@@ -410,7 +410,7 @@ fn an_interrupt_resumes_after_a_restart_and_its_chain_continues() {
         "resuming from an interrupt is its own event kind, not a plain `working`"
     );
     assert_eq!(
-        crate::audit::verify_chain(&events),
+        crate::plane::taskstore::verify_task_event_rows(&events),
         Ok(()),
         "the chain verifies across the restart boundary"
     );
@@ -461,6 +461,89 @@ fn the_verifier_detects_a_tampered_link_in_the_persisted_chain() {
         brk.kind
     );
     assert!(brk.to_string().contains("EDITED"), "{brk}");
+}
+
+/// EVERY content field of the task event is inside the digest, and `request_id` is NOT — asserted as
+/// a SET, seam-side: each field is perturbed on a PERSISTED row (the tamper re-frames the neutral body
+/// with a STALE hash) and the engine-side `verify_task_chain` is the arbiter. A chained field breaks
+/// the chain; the join key reframes to the same digest bytes and still verifies. The `TaskEventRow`
+/// destructuring below fails to compile if a field is added, forcing a decision on which side it lands.
+///
+/// The SCOPE (`task_id`), `seq` and `prev_hash` participate in the digest too, but they are the PRELUDE
+/// the host frames from the store position rather than content bytes, so their coverage is the
+/// chain-level break kinds (foreign-scope / sequence / link) proven generically in `audit::chain_tests`
+/// and seam-side above, not this content-field set.
+#[test]
+fn the_task_event_digest_covers_every_content_field_and_excludes_the_join_key() {
+    // Exhaustive by construction: a field added to `TaskEventRow` fails to compile here until somebody
+    // decides whether it belongs in the digest.
+    {
+        let store = durable();
+        let handle: Arc<dyn busbar_api::Store> = store.clone();
+        process_one(handle);
+        store.tamper_event("t-paused", 2, |e| {
+            let TaskEventRow {
+                task_id: _,
+                seq: _,
+                ts: _,
+                kind: _,
+                context_id: _,
+                principal: _,
+                agent_id: _,
+                state: _,
+                request_id: _,
+                prev_hash: _,
+                hash: _,
+            } = e;
+        });
+    }
+
+    fn perturbation_breaks(edit: fn(&mut TaskEventRow)) -> bool {
+        let store = durable();
+        let handle: Arc<dyn busbar_api::Store> = store.clone();
+        let h = process_one(handle.clone());
+        store.tamper_event("t-paused", 2, edit);
+        h.reg
+            .verify_task_chain(
+                crate::plane::store::PlaneStoreView::narrow(handle).as_ref(),
+                "t-paused",
+            )
+            .expect("verify reads")
+            .is_err()
+    }
+
+    let mut chained = std::collections::BTreeSet::new();
+    let mut ignored = std::collections::BTreeSet::new();
+    let mut mutate = |name: &'static str, edit: fn(&mut TaskEventRow)| {
+        if perturbation_breaks(edit) {
+            chained.insert(name);
+        } else {
+            ignored.insert(name);
+        }
+    };
+    mutate("ts", |e| e.ts += 1);
+    mutate("kind", |e| e.kind.push('x'));
+    mutate("context_id", |e| e.context_id.push('x'));
+    mutate("principal", |e| e.principal.push('x'));
+    mutate("agent_id", |e| e.agent_id.push('x'));
+    mutate("state", |e| e.state.push('x'));
+    mutate("request_id", |e| e.request_id = "req-other".to_string());
+
+    assert_eq!(
+        chained,
+        ["ts", "kind", "context_id", "principal", "agent_id", "state"]
+            .into_iter()
+            .collect::<std::collections::BTreeSet<&str>>(),
+        "exactly these content fields are inside the digest"
+    );
+    assert_eq!(
+        ignored,
+        ["request_id"]
+            .into_iter()
+            .collect::<std::collections::BTreeSet<&str>>(),
+        "request_id is the ONLY content field outside the digest — a join key absent on paths with no \
+         inbound request must not be able to make an intact chain unverifiable"
+    );
 }
 
 /// A tampered chain found at BOOT is reported as tamper evidence, and the task is still restored.

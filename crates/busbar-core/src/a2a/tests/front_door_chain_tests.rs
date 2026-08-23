@@ -79,7 +79,8 @@ async fn an_inbound_task_leaves_a_verifying_chain_in_the_store_the_front_door_wr
          chains nothing."
     );
 
-    crate::audit::verify_chain(&events).expect("the per-task chain must recompute from the store");
+    crate::plane::taskstore::verify_task_event_rows(&events)
+        .expect("the per-task chain must recompute from the store");
 
     let kinds: Vec<&str> = events.iter().map(|e| e.kind.as_str()).collect();
     assert_eq!(
@@ -133,12 +134,13 @@ async fn editing_a_persisted_event_breaks_the_chain_the_front_door_wrote() {
         !events.is_empty(),
         "no events were persisted, so there is nothing to tamper with — see the sibling test"
     );
-    crate::audit::verify_chain(&events).expect("the untampered rows verify first");
+    crate::plane::taskstore::verify_task_event_rows(&events)
+        .expect("the untampered rows verify first");
 
     // The agent a task was delegated to is the fact a delegation record exists to carry, and
     // therefore the one worth rewriting after the fact.
     events[0].agent_id = format!("{}-rewritten", events[0].agent_id);
-    let brk = crate::audit::verify_chain(&events)
+    let brk = crate::plane::taskstore::verify_task_event_rows(&events)
         .expect_err("an edited event must not still verify against its own chain");
     assert_eq!(
         brk.scope, task_id,

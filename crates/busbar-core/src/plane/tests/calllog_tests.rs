@@ -18,12 +18,12 @@
 //!    proven nothing at all.
 
 use super::super::calllog::{
-    CallChain, CallInput, CallTestHarness, PlaneCallLog, OUTCOME_DISPATCHED, OUTCOME_REFUSED,
+    CallInput, CallTestHarness, PlaneCallLog, OUTCOME_DISPATCHED, OUTCOME_REFUSED,
 };
 use crate::plane::store::StoreNamedTestExt;
 // The chain, the verifier and the break vocabulary are CORE's — this plane supplies only the record
 // type — so the tests reach for them where they live rather than through a plane re-export.
-use crate::audit::{verify_chain, ChainBreakKind};
+use crate::audit::ChainBreakKind;
 use busbar_api::{McpCallRecord, Store};
 use std::sync::Arc;
 
@@ -658,22 +658,37 @@ fn rewriting_only_a_persisted_rows_link_is_reported_as_a_link_mismatch() {
         let rows = store.list_mcp_calls(P).expect("read");
         rows[2].clone()
     };
-    // Repair the self-digest THROUGH the store, using the engine's own chain arithmetic rather than
-    // a hand-built hash: a chain re-derived from the tampered link.
-    let mut repair = CallChain::from_persisted_unverified(&[written[0].clone()]);
-    let rebuilt = repair.append(
-        P,
-        CallInput {
-            ts: relinked.ts,
-            server: relinked.server.clone(),
-            tool: relinked.tool.clone(),
-            outcome: OUTCOME_DISPATCHED,
-            reason: relinked.reason.clone(),
-            tool_digest: relinked.tool_digest.clone(),
-            pin_generation: relinked.pin_generation,
-            request_id: relinked.request_id.clone(),
-        },
-    );
+    // Repair the self-digest THROUGH THE SEAM, using the engine's own chain arithmetic rather than a
+    // hand-built hash: mint the SAME record at seq 2 on a fresh chain seeded with `written[0]`, so its
+    // `prev_hash` is exactly `written[0].hash` — the link we re-pointed row 3 at. A fresh harness over
+    // its own store keeps this isolated from the chain under test.
+    let rebuilt = {
+        let repair_backing = Arc::new(DurableCallStore::new());
+        let repair_store: Arc<dyn Store> = repair_backing.clone();
+        let repair = CallTestHarness::over(repair_store);
+        let first = repair
+            .record(P, dispatched(1000, "fs_read", "sha256:aaa", 7))
+            .expect("the seed record matches written[0]");
+        assert_eq!(
+            first.hash, written[0].hash,
+            "the fresh chain's genesis is byte-identical to written[0]"
+        );
+        repair
+            .record(
+                P,
+                CallInput {
+                    ts: relinked.ts,
+                    server: relinked.server.clone(),
+                    tool: relinked.tool.clone(),
+                    outcome: OUTCOME_DISPATCHED,
+                    reason: relinked.reason.clone(),
+                    tool_digest: relinked.tool_digest.clone(),
+                    pin_generation: relinked.pin_generation,
+                    request_id: relinked.request_id.clone(),
+                },
+            )
+            .expect("the relinked record re-derives its own digest")
+    };
     backing.tamper(P, 3, |row| {
         row.hash = rebuilt.hash.clone();
     });
@@ -713,7 +728,8 @@ fn a_foreign_principals_record_in_a_chain_is_its_own_break_kind() {
 
     let chain = store.list_mcp_calls(P).expect("read");
     assert_eq!(chain.len(), 3, "all three rows are still returned for {P}");
-    let brk = verify_chain(&chain).expect_err("the foreign row is detected");
+    let brk =
+        crate::plane::calllog::verify_call_rows(&chain).expect_err("the foreign row is detected");
     assert_eq!(
         brk.kind,
         ChainBreakKind::ForeignScope {
@@ -890,8 +906,11 @@ impl NamesOnePrincipalWithNoRows {
 #[test]
 fn the_digest_covers_every_chained_field_and_deliberately_excludes_the_request_id() {
     let base = {
-        let mut chain = CallChain::new();
-        chain.append(P, dispatched(1000, "fs_read", "sha256:aaa", 7))
+        let backing = Arc::new(DurableCallStore::new());
+        let store: Arc<dyn Store> = backing.clone();
+        let log = CallTestHarness::over(store.clone());
+        log.record(P, dispatched(1000, "fs_read", "sha256:aaa", 7))
+            .expect("the base record mints through the seam")
     };
     // Exhaustive by construction: this bind fails to compile if a field is added.
     let McpCallRecord {
@@ -909,15 +928,29 @@ fn the_digest_covers_every_chained_field_and_deliberately_excludes_the_request_i
         hash: _,
     } = &base;
 
-    // Each mutation is applied to a copy of the SAME record, then the chain is asked to re-derive
-    // that record's digest by re-appending it. `verify_chain` is the arbiter, so this tests the
-    // digest through the same door production uses.
+    // Each mutation is staged against a PERSISTED ROW (the tamper writes it back with a STALE hash),
+    // then the engine-side `verify_principal_chain` — the same door production reads a chain through —
+    // is the arbiter. A chained field breaks the chain; a field outside the digest reframes to the
+    // same bytes and still verifies.
+    fn perturbation_breaks(edit: impl FnOnce(&mut McpCallRecord)) -> bool {
+        let backing = Arc::new(DurableCallStore::new());
+        let store: Arc<dyn Store> = backing.clone();
+        let log = CallTestHarness::over(store.clone());
+        log.record(P, dispatched(1000, "fs_read", "sha256:aaa", 7))
+            .expect("records");
+        backing.tamper(P, 1, edit);
+        PlaneCallLog::new()
+            .verify_principal_chain(
+                crate::plane::store::PlaneStoreView::narrow(store.clone()).as_ref(),
+                P,
+            )
+            .expect("verify reads")
+            .is_err()
+    }
     let mut chained_fields = 0;
     let mut ignored_fields = 0;
     let mut mutate = |name: &str, edit: fn(&mut McpCallRecord)| {
-        let mut candidate = base.clone();
-        edit(&mut candidate);
-        let broken = verify_chain(std::slice::from_ref(&candidate)).is_err();
+        let broken = perturbation_breaks(edit);
         if broken {
             chained_fields += 1;
         } else {
@@ -990,37 +1023,33 @@ fn the_digest_covers_every_chained_field_and_deliberately_excludes_the_request_i
 /// that hashes the same. Two records that differ only in where a boundary falls must differ.
 #[test]
 fn field_boundaries_cannot_be_forged_by_moving_text_across_them() {
-    let mut left = CallChain::new();
-    let a = left.append(
-        P,
-        CallInput {
-            ts: 1,
-            server: "fs".to_string(),
-            tool: "read".to_string(),
-            outcome: OUTCOME_DISPATCHED,
-            reason: String::new(),
-            tool_digest: String::new(),
-            pin_generation: 1,
-            request_id: String::new(),
-        },
-    );
-    let mut right = CallChain::new();
-    let b = right.append(
-        P,
-        CallInput {
-            ts: 1,
-            // The same concatenated bytes, split one character further along.
-            server: "f".to_string(),
-            tool: "sread".to_string(),
-            outcome: OUTCOME_DISPATCHED,
-            reason: String::new(),
-            tool_digest: String::new(),
-            pin_generation: 1,
-            request_id: String::new(),
-        },
-    );
+    // Two genesis records for the SAME principal (so only the field split differs — same scope, same
+    // seq), each minted through its own seam-backed store.
+    let mint = |server: &str, tool: &str| {
+        let backing = Arc::new(DurableCallStore::new());
+        let store: Arc<dyn Store> = backing.clone();
+        let log = CallTestHarness::over(store);
+        log.record(
+            P,
+            CallInput {
+                ts: 1,
+                server: server.to_string(),
+                tool: tool.to_string(),
+                outcome: OUTCOME_DISPATCHED,
+                reason: String::new(),
+                tool_digest: String::new(),
+                pin_generation: 1,
+                request_id: String::new(),
+            },
+        )
+        .expect("records")
+        .hash
+    };
+    let a = mint("fs", "read");
+    // The same concatenated bytes, split one character further along.
+    let b = mint("f", "sread");
     assert_ne!(
-        a.hash, b.hash,
+        a, b,
         "`fs`+`read` and `f`+`sread` must not collide — that is what the length prefixes buy"
     );
 }
@@ -1085,7 +1114,7 @@ fn retention_purges_rows_without_rewinding_the_chain() {
 /// closed by `list_mcp_call_principals` naming the principal, which is why the restore counts it.
 #[test]
 fn an_empty_chain_verifies_because_the_records_alone_cannot_say_otherwise() {
-    assert!(verify_chain::<McpCallRecord>(&[]).is_ok());
+    assert!(crate::plane::calllog::verify_call_rows(&[]).is_ok());
 }
 
 /// THE PROCESS-GLOBAL is the seam a call site actually uses, so it is exercised here rather than
@@ -1270,19 +1299,7 @@ fn an_evicted_principal_whose_readback_fails_is_surfaced_not_forked() {
     );
 }
 
-/// `CallChain::default()` MUST equal `CallChain::new()`. A derived `Default` gives `next_seq: 0`,
-/// and a chain that hands out `seq` 0 is invalid at its very first record — every verifier in this
-/// file reports it as a sequence break, and every restore then reports a healthy log as tampered.
-///
-/// This is a REGRESSION GUARD with a real regression behind it: replacing
-/// `or_insert_with(CallChain::new)` with `or_default()` (a clippy suggestion) introduced exactly
-/// that, and the module's own focused test run did not distinguish the two constructors.
-#[test]
-fn the_default_chain_is_the_new_chain_because_a_derived_default_starts_at_zero() {
-    assert_eq!(CallChain::default(), CallChain::new());
-    assert_eq!(
-        CallChain::default().next_seq(),
-        1,
-        "the first record of a chain is seq 1, never 0"
-    );
-}
+// The `Chain::default() == Chain::new()` regression guard (a derived `Default` would hand out seq 0
+// and make every healthy chain read as tampered) lives with the ONE `Chain` impl it protects, in
+// `audit::tests::chain_tests` — there is a single `Default` for every stream, so the generic guard
+// covers this one too. It was a typed-`CallChain`-only duplicate here.

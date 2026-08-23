@@ -42,7 +42,7 @@
 use super::upstream_support::{
     call_as, exchanging_server, gov_with_scopes, mcp_cfg, Behaviour, Peer,
 };
-use crate::audit::verify_chain;
+use crate::plane::calllog::verify_call_rows;
 use crate::plane::calllog::{OUTCOME_DISPATCHED, OUTCOME_REFUSED, REASON_UPSTREAM_FAILED};
 use crate::plane::store::StoreNamedTestExt;
 use crate::test_support::TestApp;
@@ -324,7 +324,7 @@ async fn a_dispatched_tools_call_lands_a_durable_record_through_a_real_dlopened_
         OUTCOME_DISPATCHED,
         true,
     );
-    verify_chain(&records).expect("the persisted chain must verify against its own hashes");
+    verify_call_rows(&records).expect("the persisted chain must verify against its own hashes");
 
     // The BYTES the plugin actually kept, printed so a release report can quote evidence rather
     // than quote an assertion that passed.
@@ -400,7 +400,7 @@ async fn a_refused_tools_call_lands_a_durable_record_carrying_the_refusal_reason
         "the refusal must carry a stable, greppable reason token: {:?}",
         records[0]
     );
-    verify_chain(&records).expect("the persisted chain must verify");
+    verify_call_rows(&records).expect("the persisted chain must verify");
 }
 
 /// THE PERMANENT NEGATIVE. With NO sink attached — which is what `store: memory` is from the
@@ -577,7 +577,7 @@ async fn the_client_legs_own_outcome_is_what_the_chain_records_success_and_failu
 
     // ── AND IT IS A CHAIN, not a list. The two legs are linked, so neither row can be edited,
     // reordered or dropped without the verifier saying so.
-    verify_chain(&records)
+    verify_call_rows(&records)
         .expect("the persisted client-leg chain must verify against its own hashes");
     assert_eq!(records[0].seq, 1);
     assert_eq!(records[1].seq, 2);

@@ -1212,7 +1212,7 @@ async fn the_delegation_hop_lands_in_the_per_task_chain_naming_the_agent_it_was_
     );
 
     // ── AND IT IS A CHAIN. The core verifier, over the rows the sink actually kept. ─────────────
-    crate::audit::verify_chain(&events)
+    crate::plane::taskstore::verify_task_event_rows(&events)
         .expect("the a2a-client leg's persisted chain must verify against its own hashes");
     assert!(
         events
@@ -1303,7 +1303,7 @@ async fn a_failed_hop_is_chained_too_and_the_chain_carries_its_terminal_outcome(
             .map(|e| (&e.kind, &e.state))
             .collect::<Vec<_>>()
     );
-    crate::audit::verify_chain(&events)
+    crate::plane::taskstore::verify_task_event_rows(&events)
         .expect("the failed leg's persisted chain must verify against its own hashes");
 
     crate::plane::taskstore::aim_global_task_sink(None);

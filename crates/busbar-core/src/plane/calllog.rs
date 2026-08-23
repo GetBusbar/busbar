@@ -13,9 +13,9 @@
 //! "what happened", and an auditor reads whichever was wired last.
 //!
 //! So the mechanism is [`crate::audit`]'s: one append, one digest, one verifier. What stays here is
-//! the RECORD (which fields a call carries and which of them the digest covers — see
-//! `impl ChainedRecord for McpCallRecord`) and the SINK (attaching the store, rehydrating at boot,
-//! writing through). MCP supplies a record; it does not supply a second chain.
+//! the RECORD (which fields a call carries and which of them the digest covers — the `call_suffix`
+//! pre-framing built plane-side) and the SINK (attaching the store, rehydrating at boot, writing
+//! through the neutral journal seam). MCP supplies a record shape; it does not supply a second chain.
 //!
 //! ## Why this is not the admin audit log
 //!
@@ -110,11 +110,11 @@
 
 use std::sync::Arc;
 
-use crate::plane::store::{call_record, decode, PlaneStore, KIND_CALL};
-use busbar_api::{McpCallRecord, PlaneRecord, PlaneSelector, StoreError, StoreResult};
+use crate::plane::store::{decode, PlaneStore, KIND_CALL};
+use busbar_api::{McpCallRecord, PlaneSelector, StoreError, StoreResult};
 
-use crate::audit::journal::{JournalRecord, NeutralBody};
-use crate::audit::{verify_chain, ChainBreak, ChainLabels, ChainedRecord, Digest, Framing};
+use crate::audit::journal::NeutralBody;
+use crate::audit::{verify_chain, ChainBreak, Framing};
 use crate::plane_host::journal::PlaneJournalRecord;
 use busbar_plugin::hot::host::HostCtx;
 use busbar_plugin::hot::{
@@ -217,10 +217,6 @@ pub(crate) use crate::audit::vocab::{
     REASON_TASK_CREATED, REASON_UPSTREAM_FAILED,
 };
 
-/// This stream's chain: one per PRINCIPAL. A type alias over the core mechanism — there is no second
-/// implementation behind it.
-pub(crate) type CallChain = crate::audit::Chain<McpCallRecord>;
-
 /// The reason token for a call an operator's HOOK GATE refused (`tools.hooks:` /
 /// `tools.<server>.hooks:`).
 ///
@@ -246,97 +242,14 @@ pub(crate) struct CallInput {
     pub(crate) request_id: String,
 }
 
-impl ChainedRecord for McpCallRecord {
-    type Input = CallInput;
-
-    const LABELS: &'static ChainLabels = &ChainLabels {
-        chain: "the MCP per-call chain",
-        scope: "principal",
-    };
-    /// LENGTH-PREFIXED, and this is the framing a NEW record type must copy. `tool` carries a
-    /// caller-supplied name and `reason`/`server` are engine-controlled tokens, but relying on that
-    /// split is the classic digest-collision-by-framing bug: a caller who can choose one field's
-    /// bytes can otherwise forge the same byte stream under a different split. Length prefixes make
-    /// the split unforgeable regardless of what any field contains, so this stays correct if a
-    /// future field becomes caller-influenced.
-    const FRAMING: Framing = Framing::LengthPrefixed;
-
-    fn scope_of(&self) -> &str {
-        &self.principal
-    }
-
-    fn seq(&self) -> u64 {
-        self.seq
-    }
-
-    fn prev_hash(&self) -> &str {
-        &self.prev_hash
-    }
-
-    fn hash(&self) -> &str {
-        &self.hash
-    }
-
-    fn link(scope: &str, seq: u64, prev_hash: String, input: CallInput) -> Self {
-        McpCallRecord {
-            principal: scope.to_string(),
-            seq,
-            ts: input.ts,
-            server: input.server,
-            tool: input.tool,
-            outcome: input.outcome.to_string(),
-            reason: input.reason,
-            tool_digest: input.tool_digest,
-            pin_generation: input.pin_generation,
-            request_id: input.request_id,
-            prev_hash,
-            hash: String::new(),
-        }
-    }
-
-    fn set_hash(&mut self, hash: String) {
-        self.hash = hash;
-    }
-
-    /// The chained fields, in the order the records already on disk were written with.
-    ///
-    /// `request_id` is deliberately EXCLUDED. It is a join key handed in by the request spine, it is
-    /// absent on any path with no inbound request, and a field that is sometimes absent must not be
-    /// able to make an otherwise-intact chain unverifiable.
-    fn digest_fields(&self, d: &mut Digest) {
-        d.text(&self.prev_hash)
-            .text(&self.principal)
-            .num(self.seq)
-            .num(self.ts)
-            .text(&self.server)
-            .text(&self.tool)
-            .text(&self.outcome)
-            .text(&self.reason)
-            .text(&self.tool_digest)
-            .num(self.pin_generation);
-    }
-}
-
-/// The MCP call record's contribution to the generic [`Journal`]: its neutral store kind and the
-/// envelope it crosses the store seam in. This is the whole of what the durable seq-authority machine
-/// needs from the plane — the position cache, LRU, write-ordering and store-resume are all core's.
-impl JournalRecord for McpCallRecord {
-    const KIND: &'static str = KIND_CALL;
-    fn to_plane_record(&self) -> StoreResult<PlaneRecord> {
-        call_record(self)
-    }
-}
-
 // ── THE DURABLE JOURNAL SEAM — the MCP call chain's framing, held PLANE-SIDE ─────────────────────
 //
-// The per-principal chain is now the NEUTRAL store-backed journal (`Journal<PlaneJournalRecord>`) —
-// the SAME seq-authority, position cache, LRU, write-ordering and store-resume the shipped streams
-// use, over a record shape that names no MCP type. Core's durable path carries NONE of the MCP call
-// stream's framing facts; they ride each record/input across the seam. This file keeps them (they
-// move out with the mcp/ relocation), exactly as `plane::taskstore` keeps the A2A event framing.
-//
-// The typed `impl ChainedRecord for McpCallRecord` above is RETAINED (the alias, the JournalRecord
-// impl and the typed tests still need it); its deletion is deferred to that relocation.
+// The per-principal chain is the NEUTRAL store-backed journal (`Journal<PlaneJournalRecord>`) — the
+// SAME seq-authority, position cache, LRU, write-ordering and store-resume the shipped streams use,
+// over a record shape that names no MCP type. Core's durable path carries NONE of the MCP call
+// stream's framing facts; they ride each record/input across the seam via the pre-framed content
+// suffix built here. This file keeps that framing (it moves out with the mcp/ relocation), exactly as
+// `plane::taskstore` keeps the A2A event framing.
 
 /// The MCP per-call stream's framing (see [`McpCallRecord::FRAMING`]): every field self-delimits, so
 /// the prelude and the plane's suffix byte-concatenate with no separator.
@@ -508,6 +421,40 @@ pub(crate) fn mcp_call_record_from_body(
         });
     }
     decode::<McpCallRecord>(body)
+}
+
+/// TEST ONLY: verify a chain presented as TYPED [`McpCallRecord`]s by reframing each into the neutral
+/// journal record the seam persists and running the ONE verifier. The typed `ChainedRecord` impl is
+/// gone (the row moves to `busbar-mcp`), so a test that holds typed rows — read back through a store
+/// test-ext — verifies them through the SAME reframe/digest production reads a persisted chain with.
+/// The scope, and the digest's inclusion of it, come from each row's own `principal`, exactly as the
+/// deleted `McpCallRecord::scope_of`/`digest_fields` did.
+#[cfg(test)]
+pub(crate) fn verify_call_rows(rows: &[McpCallRecord]) -> Result<(), ChainBreak> {
+    let records: Vec<PlaneJournalRecord> = rows
+        .iter()
+        .map(|r| {
+            let content = call_suffix(
+                r.ts,
+                &r.server,
+                &r.tool,
+                &r.outcome,
+                &r.reason,
+                &r.tool_digest,
+                r.pin_generation,
+            );
+            PlaneJournalRecord::from_parts(
+                r.principal.clone(),
+                r.seq,
+                r.prev_hash.clone(),
+                r.hash.clone(),
+                content,
+                CALL_FRAMING,
+                CALL_DIGESTS_SCOPE,
+            )
+        })
+        .collect();
+    verify_chain(&records)
 }
 
 /// What a boot rehydrate actually found. Every number is reported rather than summed into one
