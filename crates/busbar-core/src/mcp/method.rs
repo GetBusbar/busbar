@@ -409,10 +409,10 @@ fn tasks_cancel(
         task_principal(ctx),
         crate::plane_host::clock_now_ms_over(ctx.app),
     );
-    crate::admin::audit::AUDIT.record_by(
+    crate::plane::auditlog::emit_admin_hostless_now(
         "mcp_task.cancel",
         &format!("mcp_task:{}", task.id),
-        crate::admin::audit::OUTCOME_APPLIED,
+        crate::audit::vocab::OUTCOME_APPLIED,
         ctx.actor,
     );
     result(id, serde_json::json!({}))
@@ -737,10 +737,10 @@ fn prompts_get(
                     Some(serde_json::json!({ "reason": "budget_exhausted" })),
                 );
             }
-            crate::admin::audit::AUDIT.record_by(
+            crate::plane::auditlog::emit_admin_hostless_now(
                 "mcp.caller_ask",
                 &format!("mcp_prompt:{}", prompt.namespaced),
-                crate::admin::audit::OUTCOME_APPLIED,
+                crate::audit::vocab::OUTCOME_APPLIED,
                 ctx.actor,
             );
             return input_required_result(id, &asks, &request_state);
@@ -1304,10 +1304,10 @@ async fn tools_call(
     if matches!(selected.task_support, super::config::TaskSupport::Required)
         && !super::tasks::client_declares_tasks(ctx.capabilities)
     {
-        crate::admin::audit::AUDIT.record_by(
+        crate::plane::auditlog::emit_admin_hostless_now(
             "mcp_tool.call",
             &format!("mcp_tool:{}", selected.namespaced),
-            crate::admin::audit::OUTCOME_REJECTED,
+            crate::audit::vocab::OUTCOME_REJECTED,
             ctx.actor,
         );
         return log.refused("tasks_capability_undeclared", missing_tasks_capability(id));
@@ -1382,10 +1382,10 @@ async fn tools_call(
                     refuse_catalogue(ctx, name, &refusal, id),
                 );
             }
-            crate::admin::audit::AUDIT.record_by(
+            crate::plane::auditlog::emit_admin_hostless_now(
                 "mcp.caller_ask",
                 &format!("mcp_tool:{}", selected.namespaced),
-                crate::admin::audit::OUTCOME_APPLIED,
+                crate::audit::vocab::OUTCOME_APPLIED,
                 ctx.actor,
             );
             return log.refused(
@@ -1521,10 +1521,10 @@ async fn tools_call(
             hook,
         } = verdict
         {
-            crate::admin::audit::AUDIT.record_by(
+            crate::plane::auditlog::emit_admin_hostless_now(
                 "mcp_tool.call",
                 &format!("mcp_tool:{}", selected.namespaced),
-                crate::admin::audit::OUTCOME_REJECTED,
+                crate::audit::vocab::OUTCOME_REJECTED,
                 ctx.actor,
             );
             tracing::info!(
@@ -1715,10 +1715,10 @@ async fn tools_call(
                     "an upstream's input-required result reached the terminal check: the ask \
                      recogniser did not catch it"
                 );
-                crate::admin::audit::AUDIT.record_by(
+                crate::plane::auditlog::emit_admin_hostless_now(
                     "mcp_tool.call",
                     &resource,
-                    crate::admin::audit::OUTCOME_REJECTED,
+                    crate::audit::vocab::OUTCOME_REJECTED,
                     ctx.actor,
                 );
                 return log.refused(
@@ -1760,10 +1760,10 @@ async fn tools_call(
                             why = %why,
                             "mcp upstream returned structuredContent violating the published outputSchema"
                         );
-                        crate::admin::audit::AUDIT.record_by(
+                        crate::plane::auditlog::emit_admin_hostless_now(
                             "mcp_tool.call",
                             &resource,
-                            crate::admin::audit::OUTCOME_REJECTED,
+                            crate::audit::vocab::OUTCOME_REJECTED,
                             ctx.actor,
                         );
                         return log.dispatched_with_reason(
@@ -1785,10 +1785,10 @@ async fn tools_call(
                     }
                 }
             }
-            crate::admin::audit::AUDIT.record_by(
+            crate::plane::auditlog::emit_admin_hostless_now(
                 "mcp_tool.call",
                 &resource,
-                crate::admin::audit::OUTCOME_APPLIED,
+                crate::audit::vocab::OUTCOME_APPLIED,
                 ctx.actor,
             );
             // Tool OUTPUT is markup-normalised before it re-enters model context: an upstream's
@@ -1797,10 +1797,10 @@ async fn tools_call(
             log.dispatched(result(id, sanitize::normalise_json(&value)))
         }
         Outcome::Refused(refusal) => {
-            crate::admin::audit::AUDIT.record_by(
+            crate::plane::auditlog::emit_admin_hostless_now(
                 "mcp_tool.call",
                 &resource,
-                crate::admin::audit::OUTCOME_REJECTED,
+                crate::audit::vocab::OUTCOME_REJECTED,
                 ctx.actor,
             );
             crate::diagnostics::diag_debug!(
@@ -1848,10 +1848,10 @@ async fn tools_call(
         // The AUDIT row is still `OUTCOME_REJECTED`: the admin audit records whether the ACTION
         // succeeded, and this one did not.
         Outcome::UpstreamFailed(reason) => {
-            crate::admin::audit::AUDIT.record_by(
+            crate::plane::auditlog::emit_admin_hostless_now(
                 "mcp_tool.call",
                 &resource,
-                crate::admin::audit::OUTCOME_REJECTED,
+                crate::audit::vocab::OUTCOME_REJECTED,
                 ctx.actor,
             );
             crate::diagnostics::diag_debug!(
@@ -2014,10 +2014,10 @@ async fn create_task(
             task_asks: super::tasks::task_ask_rounds(selected, ctx.capabilities),
         },
     );
-    crate::admin::audit::AUDIT.record_by(
+    crate::plane::auditlog::emit_admin_hostless_now(
         "mcp_tool.call",
         &format!("mcp_tool:{}", selected.namespaced),
-        crate::admin::audit::OUTCOME_APPLIED,
+        crate::audit::vocab::OUTCOME_APPLIED,
         ctx.actor,
     );
     // RECORDED AS `refused`/`task_created`, and the module header for `calllog` says why: at the
@@ -2226,10 +2226,10 @@ fn refuse_setup(
     denied: &super::upstream::SetupRefusal,
     id: Option<serde_json::Value>,
 ) -> Response {
-    crate::admin::audit::AUDIT.record_by(
+    crate::plane::auditlog::emit_admin_hostless_now(
         "mcp_tool.call",
         &format!("mcp_tool:{namespaced}"),
-        crate::admin::audit::OUTCOME_REJECTED,
+        crate::audit::vocab::OUTCOME_REJECTED,
         ctx.actor,
     );
     crate::diagnostics::diag_debug!(
@@ -2262,10 +2262,10 @@ fn refuse_catalogue(
     id: Option<serde_json::Value>,
 ) -> Response {
     use crate::ingress::protocol::Words as _;
-    crate::admin::audit::AUDIT.record_by(
+    crate::plane::auditlog::emit_admin_hostless_now(
         "mcp_tool.call",
         &format!("mcp_tool:{name}"),
-        crate::admin::audit::OUTCOME_REJECTED,
+        crate::audit::vocab::OUTCOME_REJECTED,
         ctx.actor,
     );
     // A caller that may not see a tool and a caller naming one that does not exist get the SAME
@@ -2545,10 +2545,10 @@ fn refuse_ask(
     refusal: &callerask::Refusal,
     id: Option<serde_json::Value>,
 ) -> Response {
-    crate::admin::audit::AUDIT.record_by(
+    crate::plane::auditlog::emit_admin_hostless_now(
         "mcp.caller_ask",
         resource,
-        crate::admin::audit::OUTCOME_REJECTED,
+        crate::audit::vocab::OUTCOME_REJECTED,
         ctx.actor,
     );
     crate::diagnostics::diag_debug!(

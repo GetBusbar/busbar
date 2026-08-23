@@ -951,10 +951,10 @@ async fn admitted(
             hook,
         } = verdict
         {
-            crate::admin::audit::AUDIT.record_by(
+            crate::plane::auditlog::emit_admin_hostless_now(
                 AUDIT_ACTION,
                 &resource,
-                crate::admin::audit::OUTCOME_REJECTED,
+                crate::audit::vocab::OUTCOME_REJECTED,
                 &actor,
             );
             tracing::info!(
@@ -1012,10 +1012,10 @@ async fn admitted(
         (vt.govern_admit.unwrap())(hctx, &*facts as *const busbar_plugin::hot::Facts)
     });
     if admitted_budget == busbar_plugin::hot::Decision::Deny {
-        crate::admin::audit::AUDIT.record_by(
+        crate::plane::auditlog::emit_admin_hostless_now(
             AUDIT_ACTION,
             &resource,
-            crate::admin::audit::OUTCOME_REJECTED,
+            crate::audit::vocab::OUTCOME_REJECTED,
             &actor,
         );
         return (
@@ -1125,10 +1125,10 @@ async fn admitted(
             }
             // AUDITED LIKE ANY OTHER ADMITTED CALL, under the same action and resource spelling, so
             // a locally-answered verb is not invisible in the record just because no socket opened.
-            crate::admin::audit::AUDIT.record_by(
+            crate::plane::auditlog::emit_admin_hostless_now(
                 AUDIT_ACTION,
                 &resource,
-                crate::admin::audit::OUTCOME_APPLIED,
+                crate::audit::vocab::OUTCOME_APPLIED,
                 &actor,
             );
             return response;
@@ -1150,10 +1150,10 @@ async fn admitted(
     let grant = match super::creds::authorise_egress(key, &admitted.dispatch.agent_id, now) {
         Ok(g) => g,
         Err(e) => {
-            crate::admin::audit::AUDIT.record_by(
+            crate::plane::auditlog::emit_admin_hostless_now(
                 AUDIT_ACTION,
                 &resource,
-                crate::admin::audit::OUTCOME_REJECTED,
+                crate::audit::vocab::OUTCOME_REJECTED,
                 &actor,
             );
             return (
@@ -1491,10 +1491,10 @@ async fn admitted(
     });
 
     // 6. AUDIT. One record per admitted call, under this plane's own action and resource spelling.
-    crate::admin::audit::AUDIT.record_by(
+    crate::plane::auditlog::emit_admin_hostless_now(
         AUDIT_ACTION,
         &resource,
-        crate::admin::audit::OUTCOME_APPLIED,
+        crate::audit::vocab::OUTCOME_APPLIED,
         &actor,
     );
 

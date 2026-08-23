@@ -301,10 +301,10 @@ pub(super) fn hop_facts<'a>(
     match super::creds::authorise_egress(key, target, now) {
         Ok(g) => Ok((url, cred, g)),
         Err(e) => {
-            crate::admin::audit::AUDIT.record_by(
+            crate::plane::auditlog::emit_admin_hostless_now(
                 super::receive::AUDIT_ACTION,
                 resource,
-                crate::admin::audit::OUTCOME_REJECTED,
+                crate::audit::vocab::OUTCOME_REJECTED,
                 actor,
             );
             Err(Some(Box::new(
