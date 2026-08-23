@@ -108,6 +108,10 @@ fn http_desc(url: &[u8]) -> EgressDesc {
         stderr_inherit: 0,
         _reserved3: [0; 7],
         trust_anchor_ref: 0,
+        timeout_ms: 0,
+        resolved_addr: [0; 16],
+        resolved_addr_kind: 0,
+        _reserved4: [0; 7],
     }
 }
 

@@ -157,7 +157,11 @@ fn compute_layout() -> String {
             cwd_len,
             stderr_inherit,
             _reserved3,
-            trust_anchor_ref
+            trust_anchor_ref,
+            timeout_ms,
+            resolved_addr,
+            resolved_addr_kind,
+            _reserved4
         ]
     );
     record!(

@@ -944,6 +944,27 @@ pub struct EgressDesc {
     /// proves it was written (the sized-struct guard), otherwise it falls back to no extra roots — a
     /// MINOR airlock bump, never a MAJOR.
     pub trust_anchor_ref: u64,
+    /// (minor-16) The per-hop end-to-end DEADLINE in milliseconds (`0` ⇒ the host's default ceiling).
+    /// The host applies it to the request AND the connect-head wait, so a plane whose registration
+    /// carries an operator `timeout:` (or a distinct card/relay/stream ceiling) gets exactly that
+    /// deadline rather than the host's fixed fallback. A sender that predates this field advertises the
+    /// shorter `size`; the host reads it only when `size` proves it was written (the sized-struct
+    /// guard), otherwise it falls back to the default — a MINOR airlock bump, never a MAJOR.
+    pub timeout_ms: u64,
+    /// (minor-16) The plane's ALREADY-JUDGED pinned address for this hop (Design A). When
+    /// [`resolved_addr_kind`](Self::resolved_addr_kind) is non-zero the host connects to THIS address
+    /// and does NOT resolve the URL host itself — preserving a plane that resolves-then-pins plane-side
+    /// and hands the host the surviving address (the a2a card-fetch/relay posture) byte-for-byte. The
+    /// URL host is still used for SNI / certificate-name / mTLS. A v4 address occupies the first 4
+    /// bytes; a v6 address occupies all 16. NEVER a name — the host performs no lookup on this path.
+    pub resolved_addr: [u8; 16],
+    /// (minor-16) How to read [`resolved_addr`](Self::resolved_addr): `0` = none (the host resolves the
+    /// URL host itself, the pre-enrichment behaviour), `4` = an IPv4 address (first 4 bytes), `6` = an
+    /// IPv6 address (all 16 bytes). Any other value is read as `0`. A reader that predates this field
+    /// sees the shorter `size` and reads `0`.
+    pub resolved_addr_kind: u8,
+    /// (minor-16) Preamble/alignment padding after the resolved-address kind byte.
+    pub _reserved4: [u8; 7],
 }
 
 /// What the host observed at connect time (post-connect, pre-body), handed back with an [`EgressOpen`].

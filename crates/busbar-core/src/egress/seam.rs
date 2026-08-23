@@ -34,13 +34,24 @@
 
 #![cfg_attr(not(test), allow(dead_code))]
 
-use busbar_plugin::hot::host::HostCtx;
 use busbar_plugin::hot::{EgressDesc, EgressKind, StatusClass, POD_VERSION};
 
 use crate::plane_host::egress::{
     drive_close, drive_open, drive_poll, scope_bits, EgressFaultInfo, OpenOutcome, OpenedHead,
 };
+use crate::plane_host::scope::DispatchScope;
 use crate::proxy::ReadEnd;
+
+/// Mint a throw-away dispatch scope and run `f` over it — the HOSTLESS entry the extracted in-core
+/// planes drive this seam through (they hold no `HostCtx`). The scope lives for the whole closure, so a
+/// STREAMING caller runs its `stream_head` + `pump` (+ fault read-back) under ONE scope — the arena
+/// closer registered at open fires only when `f` returns, not between the two calls. Mirrors
+/// [`crate::plane_host::journal::journal_append_scoped_full_hostless`]: an in-core twin of the FFI
+/// path, funnelling into the exact same governed-hop bodies, for a site that has no host to open.
+pub(crate) fn with_hostless<R>(f: impl FnOnce(&DispatchScope) -> R) -> R {
+    let scope = DispatchScope::new();
+    f(&scope)
+}
 
 /// The one hop the adapter opens, as neutral data. The plane composes protocol on top; this carries
 /// only what an outbound request IS — verb, url, headers, body — plus the host's allowlist stance and
@@ -58,6 +69,13 @@ pub(crate) struct HopSpec<'a> {
     /// The opaque host-side trust-anchor ref (`0` = no extra roots — trust only the platform roots).
     /// Never certificate bytes. Carries a private-CA registration (the a2a `trusting_root` fixture).
     pub trust_anchor_ref: u64,
+    /// The per-hop end-to-end deadline. [`Duration::ZERO`] ⇒ the host's default ceiling.
+    pub timeout: std::time::Duration,
+    /// The plane's ALREADY-JUDGED pinned address for this hop (Design A). `Some` ⇒ the host connects
+    /// to THIS address and does NOT resolve the URL host (the plane resolved-then-pinned plane-side and
+    /// hands the survivor over); `None` ⇒ the host resolves the URL host itself. The URL host is still
+    /// used for SNI / cert-name / mTLS in either case.
+    pub resolved_addr: Option<std::net::IpAddr>,
 }
 
 /// One buffered outbound round trip, reduced to what a caller reads back — the NEUTRAL projection both
@@ -110,6 +128,18 @@ fn build_desc<'a>(spec: &'a HopSpec<'a>, packed_headers: &'a [u8]) -> EgressDesc
     } else {
         (spec.body.as_ptr(), spec.body.len())
     };
+    // Encode the plane's already-judged pinned address (Design A) into the 16-byte slot + kind: a v4
+    // address fills the first 4 bytes (kind 4), a v6 address fills all 16 (kind 6). `None` ⇒ kind 0,
+    // the host resolves the URL host itself (the pre-enrichment behaviour).
+    let (resolved_addr, resolved_addr_kind) = match spec.resolved_addr {
+        Some(std::net::IpAddr::V4(v4)) => {
+            let mut bytes = [0u8; 16];
+            bytes[..4].copy_from_slice(&v4.octets());
+            (bytes, 4u8)
+        }
+        Some(std::net::IpAddr::V6(v6)) => (v6.octets(), 6u8),
+        None => ([0u8; 16], 0u8),
+    };
     EgressDesc {
         size: std::mem::size_of::<EgressDesc>() as u32,
         version: POD_VERSION,
@@ -138,6 +168,10 @@ fn build_desc<'a>(spec: &'a HopSpec<'a>, packed_headers: &'a [u8]) -> EgressDesc
         stderr_inherit: 0,
         _reserved3: [0; 7],
         trust_anchor_ref: spec.trust_anchor_ref,
+        timeout_ms: spec.timeout.as_millis().min(u64::MAX as u128) as u64,
+        resolved_addr,
+        resolved_addr_kind,
+        _reserved4: [0; 7],
     }
 }
 
@@ -151,7 +185,7 @@ const READ_CHUNK: usize = 64 * 1024;
 /// (`Truncated`). A mid-body [`StatusClass::Fault`] is [`ReadEnd::TransportError`]. The returned buffer
 /// holds at most `cap` bytes, byte-identical to `read_capped`'s prefix.
 fn read_capped_over(
-    host: HostCtx,
+    scope: &DispatchScope,
     id: busbar_plugin::hot::EgressId,
     cap: usize,
 ) -> (Vec<u8>, ReadEnd) {
@@ -162,7 +196,7 @@ fn read_capped_over(
         if remaining == 0 {
             // Cap reached: one probe byte decides Truncated (more existed) vs Complete (clean EOF).
             let mut one = [0u8; 1];
-            let (class, n) = drive_poll(host, id, &mut one);
+            let (class, n) = drive_poll(scope, id, &mut one);
             return match class {
                 StatusClass::Ok if n == 0 => (body, ReadEnd::Complete),
                 StatusClass::Ok => (body, ReadEnd::Truncated),
@@ -170,7 +204,7 @@ fn read_capped_over(
             };
         }
         let take = remaining.min(scratch.len());
-        let (class, n) = drive_poll(host, id, &mut scratch[..take]);
+        let (class, n) = drive_poll(scope, id, &mut scratch[..take]);
         match class {
             StatusClass::Ok if n == 0 => return (body, ReadEnd::Complete),
             StatusClass::Ok => body.extend_from_slice(&scratch[..n]),
@@ -184,13 +218,13 @@ fn read_capped_over(
 /// over. On an open refusal/fault, `Err` carries the neutral [`EgressFaultInfo`] the plane composes
 /// its operator string over (the cause and url are kept SEPARATE). The egress is closed before return.
 pub(crate) fn buffered(
-    host: HostCtx,
+    scope: &DispatchScope,
     spec: &HopSpec<'_>,
     cap: usize,
 ) -> Result<Buffered, EgressFaultInfo> {
     let packed = pack_headers(spec.headers);
     let desc = build_desc(spec, &packed);
-    let head = match drive_open(host, &desc) {
+    let head = match drive_open(scope, &desc) {
         OpenOutcome::Opened(h) => h,
         OpenOutcome::Fault(f) => return Err(f),
     };
@@ -202,8 +236,8 @@ pub(crate) fn buffered(
         content_type,
         client_identity_offered,
     } = head;
-    let (body, end) = read_capped_over(host, id, cap);
-    drive_close(host, id);
+    let (body, end) = read_capped_over(scope, id, cap);
+    drive_close(id);
     Ok(Buffered {
         status,
         location,
@@ -244,13 +278,13 @@ pub(crate) enum StreamOutcome {
 /// A2A relay does. On an open refusal/fault, `Err` carries the neutral fault.
 #[cfg(feature = "plane-a2a")]
 pub(crate) fn stream_head(
-    host: HostCtx,
+    scope: &DispatchScope,
     spec: &HopSpec<'_>,
     cap: usize,
 ) -> Result<StreamOutcome, EgressFaultInfo> {
     let packed = pack_headers(spec.headers);
     let desc = build_desc(spec, &packed);
-    let head = match drive_open(host, &desc) {
+    let head = match drive_open(scope, &desc) {
         OpenOutcome::Opened(h) => h,
         OpenOutcome::Fault(f) => return Err(f),
     };
@@ -270,8 +304,8 @@ pub(crate) fn stream_head(
     } else {
         // A non-stream reply is read whole to the cap; a mid-body transport failure is surfaced to the
         // caller as the SAME neutral fault an open failure is, so the relay composes one message.
-        let (body, end) = read_capped_over(host, head.id, cap);
-        drive_close(host, head.id);
+        let (body, end) = read_capped_over(scope, head.id, cap);
+        drive_close(head.id);
         if matches!(end, ReadEnd::TransportError) {
             return Err(EgressFaultInfo {
                 class: busbar_plugin::hot::EgressFailClass::Io,
@@ -293,8 +327,10 @@ pub(crate) fn stream_head(
 pub(crate) enum PumpEnd {
     /// The stream ended cleanly (EOF) or the sink asked to stop.
     Done,
-    /// The stream failed mid-body.
-    Failed,
+    /// The stream failed mid-body; carries the neutral fault (the FLATTENED cause the host stashed on
+    /// the poll — `with_cause(&e)` — so the relay reports the SAME operator line its own path did).
+    // Read by the a2a `post_stream` converter (sub-commit 3c-ii); unread until that lands.
+    Failed(#[allow(dead_code)] EgressFaultInfo),
 }
 
 /// Drive a live event-stream body to `on_chunk`, one host read per call, until EOF, the sink's
@@ -307,13 +343,13 @@ pub(crate) enum PumpEnd {
 /// so a whole upstream chunk usually arrives at once.
 #[cfg(feature = "plane-a2a")]
 pub(crate) fn pump(
-    host: HostCtx,
+    scope: &DispatchScope,
     id: busbar_plugin::hot::EgressId,
     on_chunk: &mut (dyn FnMut(&[u8]) -> super::ChunkFlow + Send),
 ) -> PumpEnd {
     let mut scratch = vec![0u8; READ_CHUNK];
     let end = loop {
-        let (class, n) = drive_poll(host, id, &mut scratch);
+        let (class, n) = drive_poll(scope, id, &mut scratch);
         match class {
             StatusClass::Ok if n == 0 => break PumpEnd::Done,
             StatusClass::Ok => {
@@ -321,10 +357,12 @@ pub(crate) fn pump(
                     break PumpEnd::Done;
                 }
             }
-            _ => break PumpEnd::Failed,
+            // A mid-body Fault stashed the real cause on `scope`; read it back so the relay reports the
+            // SAME `with_cause(&e)` line it did directly. `Gone` yields the neutral fallback fault.
+            _ => break PumpEnd::Failed(crate::plane_host::egress::drive_fault(scope)),
         }
     };
-    drive_close(host, id);
+    drive_close(id);
     end
 }
 
