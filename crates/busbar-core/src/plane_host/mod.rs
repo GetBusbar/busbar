@@ -31,6 +31,7 @@ mod creds;
 pub mod dispatch;
 pub mod egress;
 mod govern;
+pub mod guard;
 pub(crate) mod identity;
 pub mod journal;
 pub mod pipe;
@@ -39,6 +40,7 @@ pub(crate) mod spki;
 pub mod trust;
 pub mod vtable;
 
+pub use guard::{guard_url_over, GuardOutcome};
 pub use scope::{DispatchScope, DurableScope, SessionScope};
 pub use vtable::build_plane_host_vtable;
 

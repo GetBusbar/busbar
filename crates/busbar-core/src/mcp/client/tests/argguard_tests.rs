@@ -585,6 +585,95 @@ fn dispatch_walks_the_pinned_schema_and_refuses_a_metadata_argument() {
     assert_eq!(scan.declared_judged, 1);
 }
 
+/// VERDICT PARITY: the host-owned `guard_url` slot returns bit-identical allow/deny AND the same
+/// refusal class + offending-host bytes as this module's inline structural judge, for every input.
+/// The slot is where the SSRF/URL guard moves to (the host owns the `net_guard` chokepoint a plane
+/// cannot name); this pins the two implementations together so neither can drift from the other.
+#[test]
+fn guard_url_slot_matches_the_inline_arg_guard_for_every_input() {
+    use crate::plane_host::{guard_url_over, GuardOutcome};
+    use busbar_plugin::hot::GuardClass;
+
+    let app = crate::test_support::TestApp::new().build();
+
+    // The inline judge's verdict for one absolute URL, reduced to the slot's neutral (class, host)
+    // shape by routing it through a declared-`uri` field (the AbsoluteUrl path the slot reproduces).
+    fn inline(url: &str, policy: SsrfPolicy) -> Result<(), (GuardClass, String)> {
+        match guard(&nested_uri_schema(), &nested_uri_args(url), policy) {
+            Ok(_) => Ok(()),
+            Err(ArgRefusal { why, .. }) => Err(match why {
+                ArgWhy::Scheme(v) => (GuardClass::Scheme, v),
+                ArgWhy::NoHost(v) => (GuardClass::NoHost, v),
+                ArgWhy::CloudMetadata(h) => (GuardClass::CloudMetadata, h),
+                ArgWhy::ObfuscatedHost(h) => (GuardClass::ObfuscatedHost, h),
+                ArgWhy::InternalHost(h) => (GuardClass::InternalHost, h),
+                ArgWhy::DepthExceeded => unreachable!("a single URL argument does not nest"),
+            }),
+        }
+    }
+
+    // The full corpus the inline guard's own tests exercise: metadata (by address, alternate
+    // encoding and DNS name), obfuscated loopback, the internal range, banned schemes, and the
+    // public/private-opt-in controls.
+    let corpus: &[&str] = &[
+        "http://169.254.169.254/latest/meta-data/",
+        "http://2852039166/",
+        "http://0xa9fea9fe/",
+        "http://0251.0376.0251.0376/",
+        "http://169%2E254%2E169%2E254/",
+        "http://169.254.169.254./",
+        "http://[::ffff:169.254.169.254]/",
+        "http://169.254.170.2/",
+        "http://100.100.100.200/",
+        "http://[fd00:ec2::254]/",
+        "http://metadata.google.internal/computeMetadata/v1/",
+        "http://instance-data.ec2.internal/latest/",
+        "http://2130706433/",
+        "http://0x7f000001/",
+        "http://017700000001/",
+        "http://127.1/",
+        "http://localhost:8080/x",
+        "http://LOCALHOST/x",
+        "http://tool.localhost/x",
+        "http://127.0.0.1/x",
+        "http://[::1]/x",
+        "http://[::ffff:127.0.0.1]/x",
+        "http://0.0.0.0/x",
+        "http://10.0.0.5/x",
+        "http://172.16.0.1/x",
+        "http://192.168.1.1/x",
+        "http://100.64.0.1/x",
+        "http://[fc00::1]/x",
+        "http://[fe80::1]/x",
+        "file:///etc/passwd",
+        "gopher://169.254.169.254/",
+        "smb://host/share",
+        "ftp://host/",
+        "data:text/plain;base64,aGk=",
+        "ws://host/",
+        "jar:file:///x!/y",
+        "https://api.example.com/v1/x",
+        "https://93.184.216.34/x",
+        "https://hooks.example.com/services/T000/B000/xyz",
+        "http://mcp.internal:8080/x",
+    ];
+
+    for &url in corpus {
+        for allow_private in [false, true] {
+            let policy = SsrfPolicy { allow_private };
+            let expected = inline(url, policy);
+            let actual = match guard_url_over(&app, url, allow_private) {
+                GuardOutcome::Allow => Ok(()),
+                GuardOutcome::Deny { class, reason } => Err((class, reason)),
+            };
+            assert_eq!(
+                actual, expected,
+                "verdict parity for `{url}` (allow_private={allow_private})"
+            );
+        }
+    }
+}
+
 /// The schema is RE-PINNED at the walk: a resolution carrying a digest the catalogue no longer
 /// serves is drift, and the walk does not run against a document the operator never approved.
 #[test]

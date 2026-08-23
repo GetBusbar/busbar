@@ -95,7 +95,34 @@ pub fn build_plane_host_vtable() -> PlaneHostVtable {
         card_sign: Some(card_sign),
         #[cfg(not(feature = "plane-a2a"))]
         card_sign: None,
+        // ── WIRED `guard_url` (minor-12) → the host-owned structural URL guard in `super::guard`: the
+        //    SSRF/URL-guard chokepoint for a URL-shaped tool argument. Always wired (the host owns the
+        //    net_guard internals whatever the plane); no plane feature gates it. ─────────────────────────
+        guard_url: Some(guard_url),
     }
+}
+
+/// The `extern "C-unwind"` ABI shim for the URL-GUARD slot: the recovery, the `catch_unwind`, the
+/// fail-closed mapping and the structural judgement all live in [`super::guard`]; this is the ABI
+/// boundary that forwards into it (the same shape the egress shims use).
+extern "C-unwind" fn guard_url(
+    host: HostCtx,
+    url_ptr: *const u8,
+    url_len: usize,
+    allow_private: u8,
+    out: *mut MaybeUninit<busbar_plugin::hot::GuardVerdict>,
+    reason_buf: *mut u8,
+    reason_cap: usize,
+) -> StatusClass {
+    super::guard::guard_url(
+        host,
+        url_ptr,
+        url_len,
+        allow_private,
+        out,
+        reason_buf,
+        reason_cap,
+    )
 }
 
 /// WIRED `card_sign` → the REAL host-side card signer over `crate::governance` (see

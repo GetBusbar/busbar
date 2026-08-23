@@ -24,10 +24,10 @@
 use super::pod::{
     AdmissionId, AdmitRefusal, ApprovalQuery, AuthQuery, AuthResolved, CallerRef, ChainBreakHdr,
     ContentChunk, CounterpartyRef, Decision, EgressDesc, EgressFault, EgressId, EgressOpen, Facts,
-    FramingDesc, GateDecision, GovRefusal, JournalQuery, JournalStreamDesc, Key, MeterOutcome,
-    MetricSample, OpDesc, OpResult, PipeId, ReframeOut, RestoredHdr, Seq, Signal, StatusClass,
-    TargetRef, TrustVerdict, Usage, VerifyChainHdr, VerifyDecision, VerifyLease, VerifyQuery,
-    VerifyVerdict, WorkHandleDesc, WorkHandleId,
+    FramingDesc, GateDecision, GovRefusal, GuardVerdict, JournalQuery, JournalStreamDesc, Key,
+    MeterOutcome, MetricSample, OpDesc, OpResult, PipeId, ReframeOut, RestoredHdr, Seq, Signal,
+    StatusClass, TargetRef, TrustVerdict, Usage, VerifyChainHdr, VerifyDecision, VerifyLease,
+    VerifyQuery, VerifyVerdict, WorkHandleDesc, WorkHandleId,
 };
 use crate::AbiPreamble;
 use core::mem::MaybeUninit;
@@ -333,6 +333,25 @@ pub type CardSignFn = extern "C-unwind" fn(
     input_len: usize,
     out: *mut u8,
 ) -> StatusClass;
+/// Judge a URL-shaped tool ARGUMENT through the HOST-OWNED structural URL guard — the SSRF/URL-guard
+/// chokepoint the host owns, so a plane never names the host's `net_guard` internals. The plane passes
+/// the URL bytes `(url_ptr, url_len)` and whether private addressing is opted in for the target
+/// (`allow_private`: `1` = yes, `0` = no); the host judges it STRUCTURALLY — the `http(s)` scheme
+/// allowlist, the normalized host, and the cloud-metadata / obfuscated-encoding / internal-address
+/// checks — and RESOLVES NO NAME (adding a lookup would change the answer). The host writes the
+/// [`GuardVerdict`] (allow/deny + the refusal [`GuardClass`] + reason length) into `out` on
+/// [`StatusClass::Ok`] and copies the offending host/url bytes into `reason_buf` (up to `reason_cap`,
+/// the [`EgressFault`] cause-buffer pattern). [`StatusClass::Refused`] on a null URL pointer (`out`
+/// untouched); [`StatusClass::Fault`] on a caught panic (`out` untouched).
+pub type GuardUrlFn = extern "C-unwind" fn(
+    host: HostCtx,
+    url_ptr: *const u8,
+    url_len: usize,
+    allow_private: u8,
+    out: *mut MaybeUninit<GuardVerdict>,
+    reason_buf: *mut u8,
+    reason_cap: usize,
+) -> StatusClass;
 
 /// The `#[repr(C)]` inbound-capability vtable a plane calls back into. Leads with the FROZEN
 /// [`AbiPreamble`] (a receiver `check_preamble`s it before using any slot) and a `size`/`version`
@@ -455,6 +474,14 @@ pub struct PlaneHostVtable {
     //    sized/versioned discipline (the minor-10 bump). ─────────────────────────────────────────────
     /// Sign a card signing-input with the host-owned card subkey (writes 64 signature bytes).
     pub card_sign: Option<CardSignFn>,
+    // ── APPENDED (minor-12, the URL-GUARD seam): the host-owned structural SSRF/URL guard for a
+    //    URL-shaped tool argument. The host owns the scheme allowlist + host normalization + the
+    //    cloud-metadata / obfuscated-encoding / internal-address checks (its `net_guard` internals a
+    //    plane cannot name), judges STRUCTURALLY with no name resolution, and writes an allow/deny
+    //    verdict + refusal class + the offending bytes back. Trailing slot, append-only, same
+    //    sized/versioned discipline (the minor-12 bump). ──────────────────────────────────────────────
+    /// Judge a URL-shaped tool argument through the host-owned structural URL guard (writes a verdict).
+    pub guard_url: Option<GuardUrlFn>,
     // ── EXTENSION POINT (reserved) ──────────────────────────────────────────────────────────────
     // Metering reserve/settle (a `CostHold`) is DELIBERATELY NOT a slot here. When a high-rate
     // carrier needs it, add `cost_reserve`/`cost_settle` as trailing `Option` slots below this line
@@ -515,6 +542,7 @@ impl PlaneHostVtable {
         journal_compact: None,
         journal_verify_scoped: None,
         card_sign: None,
+        guard_url: None,
     };
 
     /// A fully-populated STUB vtable: every slot points at an `unimplemented!()` stub. It exists to
@@ -564,6 +592,7 @@ impl PlaneHostVtable {
         journal_compact: Some(stub::journal_compact),
         journal_verify_scoped: Some(stub::journal_verify_scoped),
         card_sign: Some(stub::card_sign),
+        guard_url: Some(stub::guard_url),
     };
 }
 
@@ -885,6 +914,18 @@ pub mod stub {
     ) -> StatusClass {
         unimplemented!("PlaneHost::card_sign — stub")
     }
+    /// Stub: see module docs.
+    pub extern "C-unwind" fn guard_url(
+        _host: HostCtx,
+        _url_ptr: *const u8,
+        _url_len: usize,
+        _allow_private: u8,
+        _out: *mut MaybeUninit<GuardVerdict>,
+        _reason_buf: *mut u8,
+        _reason_cap: usize,
+    ) -> StatusClass {
+        unimplemented!("PlaneHost::guard_url — stub")
+    }
 }
 
 #[cfg(test)]
@@ -938,6 +979,7 @@ mod tests {
         assert!(vt.journal_compact.is_some());
         assert!(vt.journal_verify_scoped.is_some());
         assert!(vt.card_sign.is_some());
+        assert!(vt.guard_url.is_some());
         assert_eq!(vt.size as usize, core::mem::size_of::<PlaneHostVtable>());
     }
 

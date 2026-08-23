@@ -272,6 +272,34 @@ pub enum VerifyDecision {
     Stale = 1,
 }
 
+/// WHY a URL-shaped tool ARGUMENT was refused by the host's structural URL guard (`guard_url`) — the
+/// neutral class carried in a [`GuardVerdict`], so the plane reproduces its own operator wording for a
+/// refusal instead of the host formatting one. The host judges the URL STRUCTURALLY (scheme + host +
+/// the cloud-metadata / obfuscated-encoding / internal-address checks) and resolves NO name; the class
+/// is the shape of the refusal, and the offending host/url bytes ride the paired reason buffer.
+/// [`Allowed`](Self::Allowed) (= 0) is the pass; every other value is a refusal. Append-only: new
+/// classes go at the tail with a fresh discriminant.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GuardClass {
+    /// The URL is admissible — no structural refusal applies.
+    Allowed = 0,
+    /// An absolute-URL field carrying something that is not `http(s)`.
+    Scheme = 1,
+    /// The value has no host component to judge.
+    NoHost = 2,
+    /// The host is a cloud-metadata endpoint (by address, an alternate encoding of one, or a metadata
+    /// DNS name). Refused unconditionally, whatever the private-address policy.
+    CloudMetadata = 3,
+    /// The host is an alternate IPv4 encoding a resolver expands but a canonical IP-literal check
+    /// misses. Refused unconditionally.
+    ObfuscatedHost = 4,
+    /// The host is internal (loopback / RFC-1918 / link-local / CGNAT / unique-local / the `localhost`
+    /// family / an IPv4-mapped IPv6 spelling of any of them). Refused unless private addressing is
+    /// opted into for the target.
+    InternalHost = 5,
+}
+
 /// The FINE, dialect-normalized health class a plane reports for a FAILED guarded operation — the
 /// refinement of the coarse [`StatusClass`] that lets the host reproduce the breaker's exact
 /// disposition (transient cooldown vs. sticky hard-down vs. relay-verbatim) instead of a lossy
@@ -760,6 +788,33 @@ pub struct GovRefusal {
     /// The number of rendered-reason bytes the host copied into the caller's `reason_buf` (`0` on an
     /// [`Decision::Admit`], or when no buffer was supplied). Read `reason_buf[..reason_len]`.
     pub reason_len: usize,
+}
+
+/// The out-param the host's structural URL guard (`guard_url`) writes on [`StatusClass::Ok`]: whether
+/// the judged URL is admissible, the refusal CLASS when it is not, and the LENGTH of the offending
+/// host/url bytes the host copied into the caller's paired reason buffer — so a refused URL keeps its
+/// specific meaning (which endpoint, which shape) across the host boundary and the plane composes its
+/// own operator string. The judgement is STRUCTURAL and resolves no name; the host formats no operator
+/// string. The reason bytes ride the same variable-length pattern as [`EgressFault`]'s cause buffer:
+/// the host writes at most the caller's capacity and reports the length here.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct GuardVerdict {
+    /// `size_of::<GuardVerdict>()` when the host writes it.
+    pub size: u32,
+    /// POD schema version.
+    pub version: u16,
+    /// Preamble tail padding.
+    pub _reserved: u16,
+    /// The disposition: `0` = allow, `1` = deny. Read `class`/`reason_len` on a deny.
+    pub verdict: u8,
+    /// The refusal class (see [`GuardClass`]); [`GuardClass::Allowed`] on an allow.
+    pub class: u8,
+    /// Alignment padding before the length.
+    pub _reserved2: u16,
+    /// The number of offending host/url bytes the host copied into the caller's reason buffer (`0` on
+    /// an allow, or when no buffer was supplied). Read `reason_buf[..reason_len]`.
+    pub reason_len: u32,
 }
 
 /// The descriptor for opening a governed egress. Carries a credential-REF (which pool/hop/exchange),
@@ -1496,6 +1551,7 @@ mod tests {
         assert_preamble!(Signal);
         assert_preamble!(AdmitRefusal);
         assert_preamble!(GovRefusal);
+        assert_preamble!(GuardVerdict);
         assert_preamble!(EgressDesc);
         assert_preamble!(EgressHead);
         assert_preamble!(EgressOpen);

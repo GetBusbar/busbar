@@ -124,6 +124,11 @@ fn compute_layout() -> String {
     );
     record!(
         s,
+        GuardVerdict,
+        [size, version, _reserved, verdict, class, _reserved2, reason_len]
+    );
+    record!(
+        s,
         EgressDesc,
         [
             size,
