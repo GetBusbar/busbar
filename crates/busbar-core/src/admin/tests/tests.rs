@@ -5313,6 +5313,112 @@ async fn proof_max_ttl_ceiling_refuses_overask_and_clamps_default() {
     );
 }
 
+/// The per-role POOL/TTL mint ceiling (`auth.policy.mint_ceilings.<role>`) bounds a DELEGATED
+/// app-admin END-TO-END through the mint handler with a REAL `Principal.roles` — distinct from the
+/// binding-MODE ceiling proved above. The `app-admin` role's ceiling restricts BOTH the pools it may
+/// mint against AND the max TTL: an out-of-ceiling pool is refused, an over-ceiling TTL is refused,
+/// and an in-ceiling mint (allowed pool, within-ceiling TTL) succeeds. All three ride the SAME
+/// handler under the SAME role ceiling, so the ceiling — not another guard — admits or refuses.
+#[tokio::test]
+async fn proof_role_mint_ceiling_bounds_a_delegated_admin() {
+    crate::metrics::init();
+    const ROLE_TTL: u64 = 3600; // the app-admin role may mint at most 1h
+
+    // A delegated app-admin identity holding the role the ceiling keys off.
+    let principal = crate::auth::Principal {
+        id: "delegated-admin".to_string(),
+        name: None,
+        roles: vec!["app-admin".to_string()],
+        ttl_secs: None,
+    };
+
+    // Mint through the real handler under an `app-admin` ceiling of {pools: [pool-ok], max_ttl: 1h};
+    // return (HTTP status, count of live key rows after the attempt).
+    async fn mint_under(
+        principal: &crate::auth::Principal,
+        body: serde_json::Value,
+    ) -> (u16, usize) {
+        let store = Arc::new(MemoryStore::new());
+        let gov = gov_with_signer(store, Some("admintok".to_string()));
+        let mut ceilings = std::collections::BTreeMap::new();
+        ceilings.insert(
+            "app-admin".to_string(),
+            crate::admin::RoleCeiling {
+                max_ttl_secs: Some(ROLE_TTL),
+                allowed_pools: Some(vec!["pool-ok".to_string()]),
+                binding_modes: None,
+            },
+        );
+        let policy = crate::admin::MintPolicy {
+            self_mint: None,
+            block_max_ttl_secs: None,
+            block_binding_modes: None,
+            ceilings,
+        };
+        let app = TestApp::new()
+            .governance(gov.clone())
+            .mint_policy(policy)
+            .build();
+        let handle = Arc::new(crate::state::AppHandle::new(app));
+        let resp = super::create_key(
+            axum::extract::State(handle),
+            axum::Extension(crate::auth::AuthPrincipal(Some(principal.clone()))),
+            axum::http::HeaderMap::new(),
+            axum::body::Bytes::from(body.to_string()),
+        )
+        .await;
+        let live = gov
+            .all_keys()
+            .unwrap()
+            .into_iter()
+            .filter(|k| k.enabled && k.deleted_at.is_none())
+            .count();
+        (resp.status().as_u16(), live)
+    }
+
+    // OUT-OF-CEILING POOL: minting against a pool the role's ceiling excludes is refused, no row.
+    let (bad_pool, bad_pool_rows) = mint_under(
+        &principal,
+        serde_json::json!({ "name": "svc", "allowed_pools": ["pool-forbidden"], "expires_in": "10m" }),
+    )
+    .await;
+    assert_eq!(
+        bad_pool, 400,
+        "a pool outside the role mint ceiling MUST be refused"
+    );
+    assert_eq!(
+        bad_pool_rows, 0,
+        "the refused out-of-ceiling-pool mint writes NO key row"
+    );
+
+    // OVER-CEILING TTL: an explicit TTL beyond the role's max_ttl is refused (in-ceiling pool), no row.
+    let (over_ttl, over_ttl_rows) = mint_under(
+        &principal,
+        serde_json::json!({ "name": "svc", "allowed_pools": ["pool-ok"], "expires_in": "24h" }),
+    )
+    .await;
+    assert_eq!(
+        over_ttl, 400,
+        "a TTL over the role mint ceiling MUST be refused"
+    );
+    assert_eq!(
+        over_ttl_rows, 0,
+        "the refused over-ceiling-TTL mint writes NO key row"
+    );
+
+    // IN-CEILING: an allowed pool AND a within-ceiling TTL mints — exactly one row.
+    let (ok, ok_rows) = mint_under(
+        &principal,
+        serde_json::json!({ "name": "svc", "allowed_pools": ["pool-ok"], "expires_in": "10m" }),
+    )
+    .await;
+    assert_eq!(
+        ok, 201,
+        "an in-ceiling mint (allowed pool, within-ceiling TTL) succeeds"
+    );
+    assert_eq!(ok_rows, 1, "the allowed mint writes exactly one key row");
+}
+
 #[tokio::test]
 async fn test_delete_existing_key_returns_200() {
     crate::metrics::init();
