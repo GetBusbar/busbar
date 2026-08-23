@@ -193,6 +193,41 @@ fn append_and_list_plane_records_task_event_roundtrips_through_both_surfaces() {
     );
 }
 
+/// REGRESSION (R2-fix): a NEUTRAL `{seq,prev_hash,hash,content}` task-event body — the shape the
+/// engine has written since the seam cleave — round-trips through this store VERBATIM. Before this fix
+/// the `task_event` write path decoded the body as a typed `TaskEventRow`, which HARD-FAILS on a
+/// neutral body (it has none of those fields), so A2A task submit/transition/dispatch errored whenever
+/// this reference plugin was the store. The `call` kind was fixed for this in R1; this pins the twin,
+/// so no test hid it again.
+#[test]
+fn a_neutral_task_event_body_round_trips_verbatim_and_is_not_a_typed_row() {
+    let s = store();
+    // The engine's neutral envelope: no `TaskEventRow` fields, an opaque pre-framed `content` suffix.
+    let neutral = serde_json::json!({
+        "seq": 1u64,
+        "prev_hash": "",
+        "hash": "1b293d0202f52529b9ae75292c5638675a4ed2ab59e57db5b0f26016a7ef22e1",
+        "content": b"|1700000000|task.submitted|ctx-1|key-1|agent-1|submitted".to_vec(),
+    });
+    let body = serde_json::to_vec(&neutral).unwrap();
+    // Proof this exercises the bug: the OLD write path's `decode::<TaskEventRow>` fails on this body.
+    assert!(
+        serde_json::from_slice::<TaskEventRow>(&body).is_err(),
+        "the fixture body must be genuinely neutral, or this test would not reach the bug"
+    );
+
+    s.append_plane_record(&rec("task_event", "", Some("task-1"), 1, body.clone()))
+        .expect("a neutral task-event body must PERSIST — the bug was a StoreError here");
+    let read = s
+        .list_plane_records("task_event", &PlaneSelector::Parent("task-1".into()))
+        .unwrap();
+    assert_eq!(
+        read,
+        vec![body],
+        "the neutral body reads back verbatim, byte-for-byte — the engine reframes it, not the store"
+    );
+}
+
 #[test]
 fn append_and_list_plane_records_call_roundtrips_and_enumerates_parents() {
     let s = store();

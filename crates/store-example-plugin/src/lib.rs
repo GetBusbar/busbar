@@ -25,8 +25,12 @@
 use busbar_api::{McpCallRecord, McpDemotionRow};
 use busbar_api::{
     MeteringDelta, MeteringRow, PlaneRecord, PlaneSelector, Store, StoreError, StoreResult,
-    TaskEventRow, TaskRow, UsageLedger, VirtualKey,
+    TaskRow, UsageLedger, VirtualKey,
 };
+// The task-event chain is stored OPAQUELY now (the neutral seam body, reframed engine-side), so the
+// typed row is named only by this fixture's own round-trip tests.
+#[cfg(test)]
+use busbar_api::TaskEventRow;
 use busbar_store_memory::MemoryStore;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -60,7 +64,14 @@ fn open(cfg: &str) -> Result<Box<dyn Store>, String> {
 #[derive(Default, serde::Serialize, serde::Deserialize)]
 struct Durable {
     tasks: Vec<TaskRow>,
-    task_events: Vec<TaskEventRow>,
+    /// The A2A per-task chain, kept as the OPAQUE stored BODIES a durable backend holds — the neutral
+    /// `{seq,prev_hash,hash,content}` the seam persists — keyed by `(task_id, seq)`. The engine
+    /// reframes them on read; this fixture no longer decodes the body on the write path, so a body
+    /// written through the neutral seam (which names no plane type) persists and reads back verbatim.
+    /// `#[serde(default)]` so a file this fixture wrote before the cleave still opens (its old typed
+    /// `task_events` field is simply dropped — a test fixture keeps no cross-format migration).
+    #[serde(default)]
+    task_event_bodies: Vec<TaskEventBody>,
     /// The MCP per-call chain, kept as the OPAQUE stored BODIES a durable backend holds — the neutral
     /// `{seq,prev_hash,hash,content}` the P5 seam persists — keyed by `(principal, seq)`. The engine
     /// reframes them on read; this fixture no longer decodes the body on the write path, so a body
@@ -84,6 +95,18 @@ struct Durable {
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct CallBody {
     principal: String,
+    seq: u64,
+    body: Vec<u8>,
+}
+
+/// One persisted A2A task event: its `(task_id, seq)` primary key plus the OPAQUE body the seam wrote.
+/// The body is carried verbatim — this fixture does not interpret it — so both the neutral
+/// `{seq,prev_hash,hash,content}` shape the engine now writes and a legacy `serde(TaskEventRow)` body a
+/// prior build wrote round-trip through the same table (the engine's reframe reads either on the way
+/// out). The `call` kind's `CallBody`, mirrored for `task_event`.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct TaskEventBody {
+    task_id: String,
     seq: u64,
     body: Vec<u8>,
 }
@@ -299,30 +322,62 @@ impl FileStore {
             (before_len - d.tasks.len()) as u64
         })
     }
-    fn append_task_event(&self, event: &TaskEventRow) -> StoreResult<()> {
+    // ── the durable ones: the A2A task-event chain, stored OPAQUELY (mirrors the MCP call log) ────
+    //
+    // The body is OPAQUE (the engine writes the neutral seam envelope and reframes on read), so the
+    // write path stores it verbatim keyed by `(task_id, seq)` — no decode. Decoding a neutral body as a
+    // typed `TaskEventRow` would hard-fail (the neutral shape has no `TaskEventRow` fields), which is
+    // the exact bug this fixture carried for `task_event` after the `call` kind was already fixed.
+    fn append_task_event_body(&self, record: &PlaneRecord) -> StoreResult<()> {
+        // Byte-identical on an existing `(task_id, seq)` is the retry and is `Ok(())`; a DIFFERENT body
+        // is a forked or tampered log and is an error — the same settlement `append_call_body` makes.
+        let task_id = record.parent.clone().unwrap_or_else(|| record.id.clone());
+        let seq = record.seq;
+        let body = record.body.clone();
         self.mutate(|d| {
             match d
-                .task_events
-                .iter_mut()
-                .find(|e| e.task_id == event.task_id && e.seq == event.seq)
+                .task_event_bodies
+                .iter()
+                .find(|e| e.task_id == task_id && e.seq == seq)
             {
-                // Upsert on `(task_id, seq)` so a replay is idempotent, per the trait's contract.
-                Some(existing) => *existing = event.clone(),
-                None => d.task_events.push(event.clone()),
+                Some(prev) if prev.body == body => Ok(()),
+                Some(_) => Err(StoreError(format!(
+                    "a2a task-event log fork at ({task_id}, {seq})"
+                ))),
+                None => {
+                    d.task_event_bodies.push(TaskEventBody {
+                        task_id: task_id.clone(),
+                        seq,
+                        body: body.clone(),
+                    });
+                    Ok(())
+                }
             }
-        })
+        })?
     }
-    fn list_task_events(&self, task_id: &str) -> StoreResult<Vec<TaskEventRow>> {
+    fn list_task_event_bodies(&self, task_id: &str) -> StoreResult<Vec<Vec<u8>>> {
         self.read(|d| {
-            let mut out: Vec<TaskEventRow> = d
-                .task_events
+            let mut out: Vec<(u64, Vec<u8>)> = d
+                .task_event_bodies
                 .iter()
                 .filter(|e| e.task_id == task_id)
-                .cloned()
+                .map(|e| (e.seq, e.body.clone()))
                 .collect();
-            out.sort_by_key(|e| e.seq);
-            out
+            out.sort_by_key(|(seq, _)| *seq);
+            out.into_iter().map(|(_, b)| b).collect()
         })
+    }
+    #[cfg(test)] // typed read used only by this fixture's own round-trip tests; the engine reads
+                 // through `list_plane_records` (opaque bodies) and reframes them itself.
+    fn list_task_events(&self, task_id: &str) -> StoreResult<Vec<TaskEventRow>> {
+        // This fixture's typed tests write typed bodies; a body the engine wrote through the neutral
+        // seam does not decode as a typed row and is skipped here (the opaque round-trip test asserts
+        // that neutral shape reads back verbatim through `list_plane_records`).
+        Ok(self
+            .list_task_event_bodies(task_id)?
+            .iter()
+            .filter_map(|b| decode::<TaskEventRow>(b).ok())
+            .collect())
     }
 
     // ── the durable ones: the MCP call log ───────────────────────────────────────────────────
@@ -497,7 +552,7 @@ impl Store for FileStore {
 
     fn append_plane_record(&self, record: &PlaneRecord) -> StoreResult<()> {
         match record.kind.as_str() {
-            "task_event" => self.append_task_event(&decode(&record.body)?),
+            "task_event" => self.append_task_event_body(record),
             "call" => self.append_call_body(record),
             _ => Ok(()),
         }
@@ -513,11 +568,10 @@ impl Store for FileStore {
             ("demotion", PlaneSelector::All) => {
                 self.list_mcp_demotions()?.iter().map(encode).collect()
             }
-            ("task_event", PlaneSelector::Parent(p)) => {
-                self.list_task_events(p)?.iter().map(encode).collect()
-            }
             // Bodies verbatim, in seq order — exactly what a durable backend returns; the engine
-            // reframes them itself (the plane knows the call framing; this fixture does not).
+            // reframes them itself (the plane knows the framing; this fixture does not). Both chain
+            // kinds are stored and served opaquely now.
+            ("task_event", PlaneSelector::Parent(p)) => self.list_task_event_bodies(p),
             ("call", PlaneSelector::Parent(p)) => self.list_call_bodies(p),
             _ => Ok(Vec::new()),
         }
