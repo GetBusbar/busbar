@@ -5023,3 +5023,119 @@ fn proof_time_bound_expiry_is_enforced_locally() {
         "exp is exclusive: at exactly exp the token is already expired"
     );
 }
+
+// ── PHASE-11 PROOF: A MINTED KEY VERIFIES LOCALLY AND NEVER CALLS THE IdP (#8, anti-C1) ───────────
+//
+// The honesty proof behind "disable in Okta does NOTHING to a minted key": `verify_token` is 100%
+// LOCAL. It reads only this node's signing material and store — signature, exp, denylist,
+// generation, `enabled`, audience — and there is NO code path from it to an identity provider. We
+// build a GovState with NO IdP wired (only a signer), mint, verify (Some), then flip EACH local
+// gate INDEPENDENTLY (a fresh binding per gate so no mutation leaks) and assert `None` per gate.
+// Every accept and every refusal here is a local decision; an operator disabling the IdP subject
+// upstream cannot reach any of these gates, which is exactly why a minted `vk_` key survives it.
+#[test]
+fn proof_minted_key_verifies_locally_and_never_calls_the_idp() {
+    let now = 1_700_000_000u64;
+    let exp = now + 30 * 86_400;
+    let spec = |name: &str| NewKeySpec {
+        name: name.to_string(),
+        allowed_pools: None,
+        group: None,
+        labels: Default::default(),
+        ..Default::default()
+    };
+    // A node with a signer but NO IdP configured: `verify_token` has no IdP to call even if it
+    // wanted to — the whole decision is local to this store + signing key.
+    let new_gov = || {
+        GovState::new_with_signer(Arc::new(MemoryStore::new()), None, Some(self_serve_signer()))
+            .unwrap()
+    };
+
+    // GREEN precondition: a freshly minted key verifies locally.
+    let gov = new_gov();
+    let (_b, token) = gov.mint_signed(spec("baseline"), exp, now).unwrap();
+    assert!(
+        gov.verify_token(&token, now, None).is_some(),
+        "precondition: a freshly minted key MUST verify locally with no IdP configured"
+    );
+
+    // GATE 1 — BAD SIGNATURE: tamper a payload byte; the local ed25519 check rejects it.
+    {
+        let gov = new_gov();
+        let (_b, token) = gov.mint_signed(spec("sig"), exp, now).unwrap();
+        assert!(gov.verify_token(&token, now, None).is_some());
+        // Char 10 sits inside the base64url payload segment (past the `bbk_` prefix); flipping it
+        // changes the signed bytes, so the signature over the ORIGINAL payload no longer matches.
+        let mut chars: Vec<char> = token.chars().collect();
+        chars[10] = if chars[10] == 'x' { 'y' } else { 'x' };
+        let tampered: String = chars.into_iter().collect();
+        assert_ne!(tampered, token, "the tamper actually changed the token");
+        assert!(
+            gov.verify_token(&tampered, now, None).is_none(),
+            "signature gate: a tampered token fails the local ed25519 verify"
+        );
+    }
+
+    // GATE 2 — EXPIRE: advance past exp. Local exp check.
+    assert!(
+        gov.verify_token(&token, exp + 1, None).is_none(),
+        "expire gate: past exp the token is dead (local time check, no network)"
+    );
+
+    // GATE 3 — REVOKE (denylist): revoke the subject; the same token fails the local denylist read.
+    {
+        let gov = new_gov();
+        let (b, token) = gov.mint_signed(spec("revoke"), exp, now).unwrap();
+        assert!(gov.verify_token(&token, now, None).is_some());
+        gov.revoke(&b.id, "offboarded").unwrap();
+        assert!(
+            gov.verify_token(&token, now, None).is_none(),
+            "revoke gate: a denylisted subject fails the local denylist read"
+        );
+    }
+
+    // GATE 4 — ROTATE (generation bump): rotating the binding invalidates the pre-rotation token
+    // via the local generation match.
+    {
+        let gov = new_gov();
+        let (b, token) = gov.mint_signed(spec("rotate"), exp, now).unwrap();
+        assert!(gov.verify_token(&token, now, None).is_some());
+        gov.rotate_key(&b.id, exp)
+            .unwrap()
+            .expect("rotate mints a new credential over the live binding");
+        assert!(
+            gov.verify_token(&token, now, None).is_none(),
+            "rotate gate: the pre-rotation token fails the local generation match"
+        );
+    }
+
+    // GATE 5 — DISABLE (enabled=false): the administrative kill switch, read locally after lookup.
+    {
+        let gov = new_gov();
+        let (b, token) = gov.mint_signed(spec("disable"), exp, now).unwrap();
+        assert!(gov.verify_token(&token, now, None).is_some());
+        gov.update_key(&b.id, Some(false), None)
+            .unwrap()
+            .expect("disable updates the binding in place");
+        assert!(
+            gov.verify_token(&token, now, None).is_none(),
+            "disable gate: an `enabled=false` binding fails the local admit check"
+        );
+    }
+
+    // GATE 6 — WRONG EXPECTED AUD: a plain data-plane token presented on an audience-checked
+    // ingress fails the local plane-boundary check — no IdP is consulted to make that call.
+    {
+        let gov = new_gov();
+        let (_b, token) = gov.mint_signed(spec("aud"), exp, now).unwrap();
+        assert!(
+            gov.verify_token(&token, now, None).is_some(),
+            "the plain token verifies on the plain data plane (expected_aud = None)"
+        );
+        assert!(
+            gov.verify_token(&token, now, Some("mcp://example/canonical"))
+                .is_none(),
+            "audience gate: a plain token is refused where a specific audience is required (local)"
+        );
+    }
+}
