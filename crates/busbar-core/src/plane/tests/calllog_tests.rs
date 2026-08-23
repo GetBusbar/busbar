@@ -42,9 +42,15 @@ use std::sync::Arc;
 /// errors.
 struct DurableCallStore {
     inner: busbar_store_memory::MemoryStore,
-    calls: std::sync::Mutex<std::collections::BTreeMap<(String, u64), McpCallRecord>>,
-    /// When set, `append_mcp_call` fails with this message instead of persisting. The write-failure
-    /// axis: an evidence record that cannot be written must not burn a sequence number.
+    /// The chained calls as the OPAQUE stored BODIES a durable backend holds — the neutral
+    /// `{seq,prev_hash,hash,content}` the P5 seam persists — keyed by `(principal, seq)` so a read-back
+    /// comes out in chain order and a re-write at the same position overwrites (a real backend's
+    /// primary key). A typed view is reconstructed on read via
+    /// [`crate::plane::calllog::mcp_call_record_from_body`] (which also reads legacy serde bodies), so
+    /// "durable" here is byte-for-byte what a real store keeps.
+    calls: std::sync::Mutex<std::collections::BTreeMap<(String, u64), Vec<u8>>>,
+    /// When set, an append fails with this message instead of persisting. The write-failure axis: an
+    /// evidence record that cannot be written must not burn a sequence number.
     fail_appends: std::sync::Mutex<Option<String>>,
 }
 
@@ -64,12 +70,23 @@ impl DurableCallStore {
     /// Mutate a PERSISTED row in place — the only way tampering is simulated in this file. The
     /// closure receives the backend's own stored record, exactly as an operator with write access to
     /// the backing table would have it.
+    ///
+    /// The stored body is opaque (the neutral seam envelope), so the edit is staged by reconstructing
+    /// the typed row, applying the caller's mutation, and RE-PERSISTING it as a LEGACY
+    /// `serde(McpCallRecord)` body with its `hash` LEFT STALE. Legacy (not neutral) because the tamper
+    /// battery edits `principal` too — the chain SCOPE, which the neutral body does not carry — and an
+    /// operator editing the backing table would edit a full row; the legacy shape preserves every
+    /// field under the seam's own old-store read-compat path, so the read-back reflects the tamper and
+    /// the stale digest is exactly what `verify_chain` recomputes and catches.
     fn tamper(&self, principal: &str, seq: u64, edit: impl FnOnce(&mut McpCallRecord)) {
         let mut calls = self.calls.lock().unwrap();
-        let row = calls
+        let body = calls
             .get_mut(&(principal.to_string(), seq))
             .expect("tampering with a row the store actually holds");
-        edit(row);
+        let mut row = crate::plane::calllog::mcp_call_record_from_body(principal, body)
+            .expect("the row to tamper with decodes");
+        edit(&mut row);
+        *body = crate::plane::store::encode(&row).expect("the tampered row re-encodes");
     }
 
     /// Remove a PERSISTED row — the splice-out tamper.
@@ -122,12 +139,10 @@ impl Store for DurableCallStore {
         self.inner.list_metering(bucket)
     }
 
-    // ── The neutral kind-tagged verbs, delegating to the named call-log methods above ────────────
+    // ── The neutral kind-tagged verbs — the durable half this double actually keeps ──────────────
     fn append_plane_record(&self, record: &busbar_api::PlaneRecord) -> busbar_api::StoreResult<()> {
         match record.kind.as_str() {
-            crate::plane::store::KIND_CALL => {
-                self.append_mcp_call(&crate::plane::store::decode(&record.body)?)
-            }
+            crate::plane::store::KIND_CALL => self.append_event_body(record),
             _ => Ok(()),
         }
     }
@@ -137,75 +152,123 @@ impl Store for DurableCallStore {
         selector: &busbar_api::PlaneSelector,
     ) -> busbar_api::StoreResult<Vec<Vec<u8>>> {
         match (kind, selector) {
-            (crate::plane::store::KIND_CALL, busbar_api::PlaneSelector::Parent(p)) => self
-                .list_mcp_calls(p)?
-                .iter()
-                .map(crate::plane::store::encode)
-                .collect(),
+            (crate::plane::store::KIND_CALL, busbar_api::PlaneSelector::Parent(p)) => {
+                // The stored BODIES verbatim, in `(principal, seq)` order — exactly what a durable
+                // backend returns; the caller (log or test ext) reframes/decodes them.
+                Ok(self
+                    .calls
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|((principal, _), _)| principal == p)
+                    .map(|(_, body)| body.clone())
+                    .collect())
+            }
             _ => Ok(Vec::new()),
         }
     }
     fn list_plane_record_parents(&self, kind: &str) -> busbar_api::StoreResult<Vec<String>> {
         match kind {
-            crate::plane::store::KIND_CALL => self.list_mcp_call_principals(),
+            crate::plane::store::KIND_CALL => {
+                let calls = self.calls.lock().unwrap();
+                let mut out: Vec<String> = calls.keys().map(|(p, _)| p.clone()).collect();
+                out.dedup();
+                Ok(out)
+            }
             _ => Ok(Vec::new()),
         }
     }
     fn purge_plane_records_before(&self, kind: &str, before: u64) -> busbar_api::StoreResult<u64> {
         match kind {
-            crate::plane::store::KIND_CALL => self.purge_mcp_calls_before(before),
+            crate::plane::store::KIND_CALL => {
+                let mut calls = self.calls.lock().unwrap();
+                let before_len = calls.len();
+                // The stored body is opaque, so the retention axis (`ts`) is read by reconstructing
+                // the typed row — the neutral append leaves the envelope's `ts` sidecar at 0.
+                calls.retain(|(principal, _), body| {
+                    let ts = crate::plane::calllog::mcp_call_record_from_body(principal, body)
+                        .map(|r| r.ts)
+                        .unwrap_or(0);
+                    ts >= before
+                });
+                Ok((before_len - calls.len()) as u64)
+            }
             _ => Ok(0),
         }
     }
 }
 
 impl DurableCallStore {
-    fn append_mcp_call(&self, record: &McpCallRecord) -> busbar_api::StoreResult<()> {
+    /// Persist ONE call body VERBATIM, keyed by its `(principal, seq)` from the record's `parent`/`seq`
+    /// — the durable seam hands the scope on `parent` and the minted sequence on `seq`, so the double
+    /// keeps the opaque body a real backend would, no decode on the write path.
+    ///
+    /// It still enforces the append contract the trait doc states, because a double that quietly
+    /// overwrote would make the engine's ordering guarantees untestable. Identity is compared by the
+    /// RECONSTRUCTED chained record (ignoring `request_id`, the join key the neutral body drops), so a
+    /// legitimate retry — the same call, whether it arrives as a neutral or a legacy body — succeeds,
+    /// and a DIFFERENT record on an occupied `(principal, seq)` is a forked log and errors.
+    fn append_event_body(&self, record: &busbar_api::PlaneRecord) -> busbar_api::StoreResult<()> {
         if let Some(why) = self.fail_appends.lock().unwrap().as_ref() {
             return Err(busbar_api::StoreError(why.clone()));
         }
+        let principal = record.parent.clone().unwrap_or_else(|| record.id.clone());
+        let slot = (principal.clone(), record.seq);
+        let incoming = crate::plane::calllog::mcp_call_record_from_body(&principal, &record.body)?;
         let mut calls = self.calls.lock().unwrap();
-        let slot = (record.principal.clone(), record.seq);
         match calls.get(&slot) {
-            // The retry. Byte-identical, so nothing is lost by succeeding.
-            Some(existing) if existing == record => Ok(()),
-            // Two DIFFERENT records claiming one chain position: a forked or tampered log, and the
-            // single most important thing this store can tell an operator.
-            Some(_) => Err(busbar_api::StoreError(format!(
-                "MCP call log fork: a DIFFERENT record already occupies ({}, {})",
-                record.principal, record.seq
-            ))),
+            Some(existing_body) => {
+                let existing =
+                    crate::plane::calllog::mcp_call_record_from_body(&principal, existing_body)?;
+                if same_call_ignoring_request_id(&existing, &incoming) {
+                    // The retry: the same call re-presented, so nothing is lost by succeeding.
+                    Ok(())
+                } else {
+                    // Two DIFFERENT records claiming one chain position: a forked or tampered log,
+                    // and the single most important thing this store can tell an operator.
+                    Err(busbar_api::StoreError(format!(
+                        "MCP call log fork: a DIFFERENT record already occupies ({}, {})",
+                        principal, record.seq
+                    )))
+                }
+            }
             None => {
-                calls.insert(slot, record.clone());
+                calls.insert(slot, record.body.clone());
                 Ok(())
             }
         }
     }
+}
 
-    fn list_mcp_calls(&self, principal: &str) -> busbar_api::StoreResult<Vec<McpCallRecord>> {
-        Ok(self
-            .calls
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|((p, _), _)| p == principal)
-            .map(|(_, r)| r.clone())
-            .collect())
-    }
-
-    fn list_mcp_call_principals(&self) -> busbar_api::StoreResult<Vec<String>> {
-        let calls = self.calls.lock().unwrap();
-        let mut out: Vec<String> = calls.keys().map(|(p, _)| p.clone()).collect();
-        out.dedup();
-        Ok(out)
-    }
-
-    fn purge_mcp_calls_before(&self, before: u64) -> busbar_api::StoreResult<u64> {
-        let mut calls = self.calls.lock().unwrap();
-        let before_len = calls.len();
-        calls.retain(|_, r| r.ts >= before);
-        Ok((before_len - calls.len()) as u64)
-    }
+/// Two calls are the SAME chain record when every chained field plus the link matches — `request_id`
+/// is excluded because it is a join key the neutral seam does not persist, so a record read back from
+/// a neutral body and the same record re-presented as a legacy body differ only there.
+fn same_call_ignoring_request_id(a: &McpCallRecord, b: &McpCallRecord) -> bool {
+    let McpCallRecord {
+        principal,
+        seq,
+        ts,
+        server,
+        tool,
+        outcome,
+        reason,
+        tool_digest,
+        pin_generation,
+        request_id: _,
+        prev_hash,
+        hash,
+    } = a;
+    principal == &b.principal
+        && seq == &b.seq
+        && ts == &b.ts
+        && server == &b.server
+        && tool == &b.tool
+        && outcome == &b.outcome
+        && reason == &b.reason
+        && tool_digest == &b.tool_digest
+        && pin_generation == &b.pin_generation
+        && prev_hash == &b.prev_hash
+        && hash == &b.hash
 }
 
 /// THE RAM DEFAULT, verbatim: a store that overrides NONE of the call-log methods, so every one of
@@ -335,7 +398,15 @@ fn assert_same_record(got: &McpCallRecord, want: &McpCallRecord, at: &str) {
     assert_eq!(reason, &want.reason, "{at}: reason");
     assert_eq!(tool_digest, &want.tool_digest, "{at}: tool_digest");
     assert_eq!(pin_generation, &want.pin_generation, "{at}: pin_generation");
-    assert_eq!(request_id, &want.request_id, "{at}: request_id");
+    // `request_id` is a JOIN KEY, excluded from the digest and therefore NOT carried in the neutral
+    // `{seq,prev_hash,hash,content}` body the durable seam persists — so a read-back reconstructs it
+    // EMPTY. The write returned it (from the caller's input); durability does not preserve it.
+    assert!(
+        request_id.is_empty(),
+        "{at}: request_id is not persisted through the neutral seam, so it reads back empty \
+         (got {request_id:?}); the written record still carried {:?}",
+        want.request_id
+    );
     assert_eq!(prev_hash, &want.prev_hash, "{at}: prev_hash");
     assert_eq!(hash, &want.hash, "{at}: hash");
 }

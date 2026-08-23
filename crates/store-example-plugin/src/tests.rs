@@ -352,7 +352,16 @@ fn two_handles_do_not_lose_updates_under_contention() {
     for (handle, base) in [(h1.clone(), 0u64), (h2.clone(), PER_THREAD)] {
         threads.push(std::thread::spawn(move || {
             for i in 0..PER_THREAD {
-                handle.append_mcp_call(&call("p1", base + i, 10)).unwrap();
+                let c = call("p1", base + i, 10);
+                handle
+                    .append_plane_record(&rec(
+                        "call",
+                        "",
+                        Some(&c.principal),
+                        c.seq,
+                        serde_json::to_vec(&c).unwrap(),
+                    ))
+                    .unwrap();
             }
         }));
     }

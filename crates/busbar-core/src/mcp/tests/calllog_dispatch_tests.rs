@@ -232,9 +232,13 @@ fn assert_record(
         !tool_digest.is_empty(),
         "the record must tie the call to the digest the operator approved"
     );
+    // `request_id` is a JOIN KEY, excluded from the digest and therefore NOT carried in the neutral
+    // `{seq,prev_hash,hash,content}` body the durable seam persists — so a record READ BACK from the
+    // store reconstructs it EMPTY. The join key still rides the success/refusal LOG LINE at emit time
+    // (that is where a request is tied to its record); durability does not preserve it.
     assert!(
-        !request_id.is_empty(),
-        "the request-spine join key is what makes a record findable from a log line"
+        request_id.is_empty(),
+        "request_id is not persisted through the neutral seam, so it reads back empty; got {request_id:?}"
     );
     assert!(hash.len() == 64, "a sha256 hex digest, got {hash:?}");
     if seq == 1 {

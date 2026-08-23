@@ -61,7 +61,13 @@ fn open(cfg: &str) -> Result<Box<dyn Store>, String> {
 struct Durable {
     tasks: Vec<TaskRow>,
     task_events: Vec<TaskEventRow>,
-    mcp_calls: Vec<McpCallRecord>,
+    /// The MCP per-call chain, kept as the OPAQUE stored BODIES a durable backend holds — the neutral
+    /// `{seq,prev_hash,hash,content}` the P5 seam persists — keyed by `(principal, seq)`. The engine
+    /// reframes them on read; this fixture no longer decodes the body on the write path, so a body
+    /// written through the neutral seam (which names no plane type) persists and reads back verbatim.
+    /// `#[serde(default)]` so a file this fixture wrote before the cleave still opens.
+    #[serde(default)]
+    call_bodies: Vec<CallBody>,
     /// Recorded upstream demotions, keyed by `server`. `#[serde(default)]` so a file written by an
     /// earlier build of this fixture still opens.
     #[serde(default)]
@@ -69,6 +75,17 @@ struct Durable {
     /// The spent-approval ledger: nonce -> the instant past which the entry is meaningless.
     #[serde(default)]
     spent_ask_states: Vec<(String, u64)>,
+}
+
+/// One persisted MCP call: its `(principal, seq)` primary key plus the OPAQUE body the seam wrote.
+/// The body is carried verbatim — this fixture does not interpret it — so both the neutral
+/// `{seq,prev_hash,hash,content}` shape the engine now writes and a legacy `serde(McpCallRecord)` body
+/// a prior build wrote round-trip through the same table.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct CallBody {
+    principal: String,
+    seq: u64,
+    body: Vec<u8>,
 }
 
 /// A JSON-file-backed store. The A2A task and MCP call-log methods are REAL — they read and write
@@ -309,54 +326,82 @@ impl FileStore {
     }
 
     // ── the durable ones: the MCP call log ───────────────────────────────────────────────────
-    fn append_mcp_call(&self, record: &McpCallRecord) -> StoreResult<()> {
-        // Byte-identical on an existing `(principal, seq)` is the retry and is `Ok(())`; DIFFERENT
-        // is a forked or tampered log and is an error, exactly as `append_audit` settles it.
+    //
+    // The body is OPAQUE now (the engine writes the neutral seam envelope, and reframes on read), so
+    // the write path stores it verbatim keyed by `(principal, seq)` — no decode. The typed reads below
+    // decode the body for this fixture's OWN tests, which write typed `McpCallRecord` bodies; the
+    // engine never calls them (it reads through `list_plane_records` and reframes itself).
+    fn append_call_body(&self, record: &PlaneRecord) -> StoreResult<()> {
+        // Byte-identical on an existing `(principal, seq)` is the retry and is `Ok(())`; a DIFFERENT
+        // body is a forked or tampered log and is an error, exactly as `append_audit` settles it.
         // ONE read-modify-write, not a `read` then a `mutate`: the fork check and the append have to
         // see the same state, and between two calls another handle on the same file can land a row.
+        let principal = record.parent.clone().unwrap_or_else(|| record.id.clone());
+        let seq = record.seq;
+        let body = record.body.clone();
         self.mutate(|d| {
             match d
-                .mcp_calls
+                .call_bodies
                 .iter()
-                .find(|r| r.principal == record.principal && r.seq == record.seq)
+                .find(|c| c.principal == principal && c.seq == seq)
             {
-                Some(prev) if prev == record => Ok(()),
+                Some(prev) if prev.body == body => Ok(()),
                 Some(_) => Err(StoreError(format!(
-                    "mcp call log fork at ({}, {})",
-                    record.principal, record.seq
+                    "mcp call log fork at ({principal}, {seq})"
                 ))),
                 None => {
-                    d.mcp_calls.push(record.clone());
+                    d.call_bodies.push(CallBody {
+                        principal: principal.clone(),
+                        seq,
+                        body: body.clone(),
+                    });
                     Ok(())
                 }
             }
         })?
     }
-    fn list_mcp_calls(&self, principal: &str) -> StoreResult<Vec<McpCallRecord>> {
+    fn list_call_bodies(&self, principal: &str) -> StoreResult<Vec<Vec<u8>>> {
         self.read(|d| {
-            let mut out: Vec<McpCallRecord> = d
-                .mcp_calls
+            let mut out: Vec<(u64, Vec<u8>)> = d
+                .call_bodies
                 .iter()
-                .filter(|r| r.principal == principal)
-                .cloned()
+                .filter(|c| c.principal == principal)
+                .map(|c| (c.seq, c.body.clone()))
                 .collect();
-            out.sort_by_key(|r| r.seq);
-            out
+            out.sort_by_key(|(seq, _)| *seq);
+            out.into_iter().map(|(_, b)| b).collect()
         })
+    }
+    #[cfg(test)] // typed read used only by this fixture's own round-trip tests; the engine reads
+                 // through `list_plane_records` (opaque bodies) and reframes them itself.
+    fn list_mcp_calls(&self, principal: &str) -> StoreResult<Vec<McpCallRecord>> {
+        // This fixture's tests write typed bodies; a body the engine wrote through the neutral seam
+        // does not decode as a typed row and is skipped here.
+        Ok(self
+            .list_call_bodies(principal)?
+            .iter()
+            .filter_map(|b| decode::<McpCallRecord>(b).ok())
+            .collect())
     }
     fn list_mcp_call_principals(&self) -> StoreResult<Vec<String>> {
         self.read(|d| {
-            let mut out: Vec<String> = d.mcp_calls.iter().map(|r| r.principal.clone()).collect();
+            let mut out: Vec<String> = d.call_bodies.iter().map(|c| c.principal.clone()).collect();
             out.sort();
             out.dedup();
             out
         })
     }
-    fn purge_mcp_calls_before(&self, before: u64) -> StoreResult<u64> {
+    fn purge_call_bodies_before(&self, before: u64) -> StoreResult<u64> {
         self.mutate(|d| {
-            let was = d.mcp_calls.len();
-            d.mcp_calls.retain(|r| r.ts >= before);
-            (was - d.mcp_calls.len()) as u64
+            let was = d.call_bodies.len();
+            // The neutral seam leaves the envelope `ts` at 0, so the retention axis is read from the
+            // body when it decodes as a typed row; an opaque neutral body carries no `ts` here and is
+            // kept (retention-by-age of neutral call bodies is not a claim this fixture makes).
+            d.call_bodies.retain(|c| {
+                let ts = decode::<McpCallRecord>(&c.body).map(|r| r.ts).unwrap_or(0);
+                ts >= before
+            });
+            (was - d.call_bodies.len()) as u64
         })
     }
 
@@ -453,7 +498,7 @@ impl Store for FileStore {
     fn append_plane_record(&self, record: &PlaneRecord) -> StoreResult<()> {
         match record.kind.as_str() {
             "task_event" => self.append_task_event(&decode(&record.body)?),
-            "call" => self.append_mcp_call(&decode(&record.body)?),
+            "call" => self.append_call_body(record),
             _ => Ok(()),
         }
     }
@@ -471,9 +516,9 @@ impl Store for FileStore {
             ("task_event", PlaneSelector::Parent(p)) => {
                 self.list_task_events(p)?.iter().map(encode).collect()
             }
-            ("call", PlaneSelector::Parent(p)) => {
-                self.list_mcp_calls(p)?.iter().map(encode).collect()
-            }
+            // Bodies verbatim, in seq order — exactly what a durable backend returns; the engine
+            // reframes them itself (the plane knows the call framing; this fixture does not).
+            ("call", PlaneSelector::Parent(p)) => self.list_call_bodies(p),
             _ => Ok(Vec::new()),
         }
     }
@@ -488,7 +533,7 @@ impl Store for FileStore {
     fn purge_plane_records_before(&self, kind: &str, before: u64) -> StoreResult<u64> {
         match kind {
             "task" => self.purge_tasks_before(before),
-            "call" => self.purge_mcp_calls_before(before),
+            "call" => self.purge_call_bodies_before(before),
             _ => Ok(0),
         }
     }

@@ -365,6 +365,12 @@ impl<R: ChainedRecord> Journal<R> {
     /// returning how many durable rows went. The policy (the window) lives at the call site; this owns
     /// only the mechanism. Positions are NOT reset — reopening a scope at seq 1 after a purge would
     /// collide with a sequence the store may still hold, the one thing the append contract forbids.
+    ///
+    /// RETAINED but no longer reached: the shipped chain streams route retention through the neutral
+    /// [`Journal::compact_scoped`] now (their record shape is `PlaneJournalRecord`, which is a
+    /// `NeutralRecord`, not a `JournalRecord`), so this typed twin has no caller until a typed stream
+    /// wants it. Kept as the typed mirror of `compact_scoped`, alongside the other typed-path methods.
+    #[allow(dead_code)]
     pub(crate) fn compact(&self, before: u64) -> StoreResult<u64>
     where
         R: JournalRecord,

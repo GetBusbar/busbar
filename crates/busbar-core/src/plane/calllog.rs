@@ -111,10 +111,11 @@
 use std::sync::Arc;
 
 use crate::plane::store::{call_record, decode, PlaneStore, KIND_CALL};
-use busbar_api::{McpCallRecord, PlaneRecord, PlaneSelector, StoreResult};
+use busbar_api::{McpCallRecord, PlaneRecord, PlaneSelector, StoreError, StoreResult};
 
-use crate::audit::journal::{Journal, JournalError, JournalRecord};
+use crate::audit::journal::{Journal, JournalError, JournalRecord, NeutralBody};
 use crate::audit::{verify_chain, ChainBreak, ChainLabels, ChainedRecord, Digest, Framing};
+use crate::plane_host::journal::{PlaneJournalInput, PlaneJournalRecord};
 
 /// The outcome and reason tokens THIS stream uses, re-exported from the ONE audit vocabulary in
 /// [`crate::audit::vocab`]. They are core's, not MCP's: the ruling promoted the richer set of words
@@ -240,6 +241,189 @@ impl JournalRecord for McpCallRecord {
     }
 }
 
+// ── THE DURABLE JOURNAL SEAM — the MCP call chain's framing, held PLANE-SIDE ─────────────────────
+//
+// The per-principal chain is now the NEUTRAL store-backed journal (`Journal<PlaneJournalRecord>`) —
+// the SAME seq-authority, position cache, LRU, write-ordering and store-resume the shipped streams
+// use, over a record shape that names no MCP type. Core's durable path carries NONE of the MCP call
+// stream's framing facts; they ride each record/input across the seam. This file keeps them (they
+// move out with the mcp/ relocation), exactly as `plane::taskstore` keeps the A2A event framing.
+//
+// The typed `impl ChainedRecord for McpCallRecord` above is RETAINED (the alias, the JournalRecord
+// impl and the typed tests still need it); its deletion is deferred to that relocation.
+
+/// The MCP per-call stream's framing (see [`McpCallRecord::FRAMING`]): every field self-delimits, so
+/// the prelude and the plane's suffix byte-concatenate with no separator.
+const CALL_FRAMING: Framing = Framing::LengthPrefixed;
+/// The principal (the chain SCOPE) participates in the digest — [`McpCallRecord::digest_fields`] feeds
+/// it right after `prev_hash`, exactly the prelude `frame_prelude(prev_hash, Some(scope), seq)` emits
+/// when `digests_scope` is set.
+const CALL_DIGESTS_SCOPE: bool = true;
+
+/// The MCP call's pre-framed content SUFFIX: the chained fields AFTER the prelude
+/// (`prev_hash`/`principal`/`seq`), framed LengthPrefixed EXACTLY as [`crate::audit::Digest`] frames
+/// them, so `frame_prelude(prev_hash, principal, seq) ⧺ suffix` reproduces the legacy
+/// [`McpCallRecord`] digest byte stream byte-for-byte. Every field is `len:u64-be ⧺ bytes`; a `num`
+/// is its eight big-endian bytes carried as one such length-prefixed field (matching `Digest::push`
+/// under LengthPrefixed). The field ORDER is the tail of [`McpCallRecord::digest_fields`]: ts, server,
+/// tool, outcome, reason, tool_digest, pin_generation. `request_id` is EXCLUDED, matching the digest
+/// (a join key absent on paths with no inbound request must not be able to break an intact chain).
+#[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
+fn call_suffix(
+    ts: u64,
+    server: &str,
+    tool: &str,
+    outcome: &str,
+    reason: &str,
+    tool_digest: &str,
+    pin_generation: u64,
+) -> Vec<u8> {
+    fn lp_text(out: &mut Vec<u8>, s: &str) {
+        out.extend_from_slice(&(s.len() as u64).to_be_bytes());
+        out.extend_from_slice(s.as_bytes());
+    }
+    fn lp_num(out: &mut Vec<u8>, v: u64) {
+        let b = v.to_be_bytes();
+        out.extend_from_slice(&(b.len() as u64).to_be_bytes());
+        out.extend_from_slice(&b);
+    }
+    let mut out = Vec::new();
+    lp_num(&mut out, ts);
+    lp_text(&mut out, server);
+    lp_text(&mut out, tool);
+    lp_text(&mut out, outcome);
+    lp_text(&mut out, reason);
+    lp_text(&mut out, tool_digest);
+    lp_num(&mut out, pin_generation);
+    out
+}
+
+/// Parse a LengthPrefixed call SUFFIX back into its typed fields — the exact inverse of
+/// [`call_suffix`], for reconstructing a typed [`McpCallRecord`] from a stored neutral body. Fails
+/// closed on a truncated/oversized field rather than reading past the buffer.
+#[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
+fn parse_call_suffix(
+    content: &[u8],
+) -> StoreResult<(u64, String, String, String, String, String, u64)> {
+    fn take<'a>(content: &'a [u8], off: &mut usize) -> StoreResult<&'a [u8]> {
+        if *off + 8 > content.len() {
+            return Err(StoreError(
+                "truncated call suffix length prefix".to_string(),
+            ));
+        }
+        let len = u64::from_be_bytes(content[*off..*off + 8].try_into().unwrap()) as usize;
+        *off += 8;
+        if *off + len > content.len() {
+            return Err(StoreError("truncated call suffix field".to_string()));
+        }
+        let s = &content[*off..*off + len];
+        *off += len;
+        Ok(s)
+    }
+    fn take_num(content: &[u8], off: &mut usize) -> StoreResult<u64> {
+        let b = take(content, off)?;
+        let arr: [u8; 8] = b
+            .try_into()
+            .map_err(|_| StoreError("call suffix num field is not 8 bytes".to_string()))?;
+        Ok(u64::from_be_bytes(arr))
+    }
+    fn take_text(content: &[u8], off: &mut usize) -> StoreResult<String> {
+        Ok(String::from_utf8_lossy(take(content, off)?).into_owned())
+    }
+    let mut off = 0usize;
+    let ts = take_num(content, &mut off)?;
+    let server = take_text(content, &mut off)?;
+    let tool = take_text(content, &mut off)?;
+    let outcome = take_text(content, &mut off)?;
+    let reason = take_text(content, &mut off)?;
+    let tool_digest = take_text(content, &mut off)?;
+    let pin_generation = take_num(content, &mut off)?;
+    Ok((
+        ts,
+        server,
+        tool,
+        outcome,
+        reason,
+        tool_digest,
+        pin_generation,
+    ))
+}
+
+/// THE DECODE BRIDGE (plane-side reframe): turn one stored `call` body back into a chain record.
+///
+/// Handles BOTH the NEW neutral `{seq, prev_hash, hash, content}` body the seam persists AND an OLD
+/// `serde(McpCallRecord)` body a store held before the cleave — so a deployed store spanning the
+/// upgrade both VERIFIES and READS BACK. The neutral body is tried first (the shape every post-cleave
+/// append writes); a legacy row lacks the required `content` field and falls through to the typed
+/// decode, whose fields rebuild the identical suffix. `scope` is the principal (the store parent),
+/// supplied by the caller and never read from the body.
+#[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
+fn reframe_call(scope: &str, body: &[u8]) -> StoreResult<PlaneJournalRecord> {
+    if let Ok(nb) = decode::<NeutralBody>(body) {
+        return Ok(PlaneJournalRecord::from_parts(
+            scope.to_string(),
+            nb.seq,
+            nb.prev_hash,
+            nb.hash,
+            nb.content,
+            CALL_FRAMING,
+            CALL_DIGESTS_SCOPE,
+        ));
+    }
+    let row: McpCallRecord = decode(body)?;
+    let content = call_suffix(
+        row.ts,
+        &row.server,
+        &row.tool,
+        &row.outcome,
+        &row.reason,
+        &row.tool_digest,
+        row.pin_generation,
+    );
+    Ok(PlaneJournalRecord::from_parts(
+        scope.to_string(),
+        row.seq,
+        row.prev_hash,
+        row.hash,
+        content,
+        CALL_FRAMING,
+        CALL_DIGESTS_SCOPE,
+    ))
+}
+
+/// READ-BACK DECODE BRIDGE to a TYPED record: reconstruct an [`McpCallRecord`] from the NEW neutral
+/// body OR an OLD `serde(McpCallRecord)` body. Digest-faithful — the rebuilt fields feed
+/// [`McpCallRecord::digest_fields`] the SAME bytes the stored `hash` was sealed over, so a chain read
+/// back through it `verify_chain`-passes byte-identically. From a NEUTRAL body `request_id` comes back
+/// EMPTY: it is a join key, never in the digest and so never in the neutral content; a legacy body
+/// still carries it. `principal` is the chain scope, supplied by the caller (the store parent), never
+/// read from a neutral body.
+#[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
+pub(crate) fn mcp_call_record_from_body(
+    principal: &str,
+    body: &[u8],
+) -> StoreResult<McpCallRecord> {
+    if let Ok(nb) = decode::<NeutralBody>(body) {
+        let (ts, server, tool, outcome, reason, tool_digest, pin_generation) =
+            parse_call_suffix(&nb.content)?;
+        return Ok(McpCallRecord {
+            principal: principal.to_string(),
+            seq: nb.seq,
+            ts,
+            server,
+            tool,
+            outcome,
+            reason,
+            tool_digest,
+            pin_generation,
+            request_id: String::new(),
+            prev_hash: nb.prev_hash,
+            hash: nb.hash,
+        });
+    }
+    decode::<McpCallRecord>(body)
+}
+
 /// What a boot rehydrate actually found. Every number is reported rather than summed into one
 /// "restored" count: they mean different things to an operator, and a single number hides the two
 /// that are bad news.
@@ -299,9 +483,11 @@ const MAX_TRACKED_PRINCIPALS: usize = 16_384;
 /// `Debug` (a backend must not be obliged to render itself, where a credential could surface in a log).
 pub(crate) struct PlaneCallLog {
     /// The generic durable journal, keyed by PRINCIPAL and bounded at [`MAX_TRACKED_PRINCIPALS`]
-    /// positions. Every chain mechanic (append, LRU, resume, write-ordering) is inherited from it; MCP
-    /// supplies only the record shape via [`McpCallRecord`]'s [`JournalRecord`] impl.
-    journal: Journal<McpCallRecord>,
+    /// positions. Now the NEUTRAL store-backed journal — the same seq-authority, position cache, LRU,
+    /// resume and write-ordering the shipped streams use, over the record shape the plane-side
+    /// [`reframe_call`] bridge supplies. Core's durable path names no MCP type; the `call` stream's
+    /// framing/suffix live here (plane-side), moving out with the mcp/ relocation.
+    journal: Journal<PlaneJournalRecord>,
 }
 
 impl Default for PlaneCallLog {
@@ -346,7 +532,9 @@ impl PlaneCallLog {
     /// default accepts and keeps nothing), so the engine finds out what its backend actually kept by
     /// reading it back.
     pub(crate) fn restore_from_store(&self, store: &dyn PlaneStore) -> StoreResult<Restored> {
-        let report = self.journal.restore_from_store(store)?;
+        let report = self
+            .journal
+            .restore_scoped(KIND_CALL, store, &|s: &str, b: &[u8]| reframe_call(s, b))?;
         for principal in &report.empty_scopes {
             // The store named this principal and then produced nothing for it. Reported, never
             // silently skipped: it is exactly what one caller's evidence being deleted wholesale
@@ -391,9 +579,43 @@ impl PlaneCallLog {
         principal: &str,
         input: CallInput,
     ) -> Result<McpCallRecord, CallLogError> {
-        self.journal
-            .record(principal, input)
-            .map_err(|JournalError::Store(e)| CallLogError::Store(e))
+        // Build the plane's pre-framed content suffix and hand the neutral journal the scope (the
+        // principal) plus the framing input; the ONE core chain mints the seq/prev_hash/hash and
+        // persists the neutral `{seq, prev_hash, hash, content}` body under its write-ordering
+        // invariant. The reframe bridge is consulted on a cache-miss resume (an LRU-evicted
+        // principal), so the same [`reframe_call`] the boot rehydrate uses is threaded through.
+        let content = call_suffix(
+            input.ts,
+            &input.server,
+            &input.tool,
+            input.outcome,
+            &input.reason,
+            &input.tool_digest,
+            input.pin_generation,
+        );
+        let journal_input = PlaneJournalInput::new(content, CALL_FRAMING, CALL_DIGESTS_SCOPE);
+        let record = self
+            .journal
+            .append_scoped(KIND_CALL, principal, journal_input, &|s: &str, b: &[u8]| {
+                reframe_call(s, b)
+            })
+            .map_err(|JournalError::Store(e)| CallLogError::Store(e))?;
+        // Return the TYPED record for the caller: the chain's minted seq/prev_hash/hash plus the
+        // caller's own fields (including `request_id`, which the neutral body deliberately drops).
+        Ok(McpCallRecord {
+            principal: principal.to_string(),
+            seq: record.seq(),
+            ts: input.ts,
+            server: input.server,
+            tool: input.tool,
+            outcome: input.outcome.to_string(),
+            reason: input.reason,
+            tool_digest: input.tool_digest,
+            pin_generation: input.pin_generation,
+            request_id: input.request_id,
+            prev_hash: record.prev_hash().to_string(),
+            hash: record.hash().to_string(),
+        })
     }
 
     /// The sequence the next record for `principal` will carry. 1 for a principal with no chain.
@@ -429,7 +651,7 @@ impl PlaneCallLog {
         store
             .list_plane_records(KIND_CALL, &PlaneSelector::Parent(principal.to_string()))?
             .iter()
-            .map(|body| decode(body))
+            .map(|body| mcp_call_record_from_body(principal, body))
             .collect()
     }
 
@@ -448,11 +670,11 @@ impl PlaneCallLog {
         store: &dyn PlaneStore,
         principal: &str,
     ) -> StoreResult<Result<usize, ChainBreak>> {
-        let records: Vec<McpCallRecord> = store
-            .list_plane_records(KIND_CALL, &PlaneSelector::Parent(principal.to_string()))?
-            .iter()
-            .map(|body| decode(body))
-            .collect::<StoreResult<_>>()?;
+        let records =
+            self.journal
+                .read_scoped(KIND_CALL, principal, store, &|s: &str, b: &[u8]| {
+                    reframe_call(s, b)
+                })?;
         match verify_chain(&records) {
             Ok(()) => Ok(Ok(records.len())),
             Err(brk) => Ok(Err(brk)),
@@ -472,7 +694,7 @@ impl PlaneCallLog {
     /// deployment's call log grows without bound until an operator prunes it themselves.
     #[allow(dead_code)]
     pub(crate) fn compact(&self, before: u64) -> StoreResult<u64> {
-        self.journal.compact(before)
+        self.journal.compact_scoped(KIND_CALL, before)
     }
 }
 
