@@ -263,7 +263,7 @@ pub(crate) async fn legacy_verb() -> Response {
 /// reaching this function is an admitted caller.
 pub(crate) async fn rpc(
     axum::extract::State(handle): axum::extract::State<std::sync::Arc<crate::state::AppHandle>>,
-    axum::extract::Extension(gov): axum::extract::Extension<crate::governance::GovCtx>,
+    axum::extract::Extension(gov): axum::extract::Extension<crate::governance::PlaneRequestCtx>,
     axum::extract::Extension(principal): axum::extract::Extension<crate::auth::AuthPrincipal>,
     headers: HeaderMap,
     body: Bytes,
@@ -332,7 +332,7 @@ pub(crate) async fn rpc(
 pub(in crate::mcp) async fn rpc_dispatch(
     app: &Arc<crate::state::App>,
     handle: &std::sync::Arc<crate::state::AppHandle>,
-    gov: &crate::governance::GovCtx,
+    gov: &crate::governance::PlaneRequestCtx,
     principal: &crate::auth::AuthPrincipal,
     headers: &HeaderMap,
     value: serde_json::Value,

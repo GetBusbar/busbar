@@ -406,7 +406,7 @@ async fn a_wildcard_principal_is_down_scoped_to_the_single_tool_it_called() {
     crate::metrics::init();
     let peer = Peer::start(Behaviour::Result, ISSUED).await;
     let app = app_for(&peer);
-    let wildcard = crate::governance::GovCtx {
+    let wildcard = crate::governance::PlaneRequestCtx {
         key: Some(Arc::new(wildcard_key("wildcard-key"))),
     };
 
@@ -448,7 +448,7 @@ async fn an_ungoverned_deployment_still_down_scopes_to_the_tool_it_called() {
 
     let (status, body) = call(
         &app,
-        &crate::governance::GovCtx::default(),
+        &crate::governance::PlaneRequestCtx::default(),
         "tools/call",
         params("fs_read"),
     )
@@ -513,7 +513,7 @@ async fn the_dispatch_gate_and_the_egress_gate_agree_on_every_grant_shape() {
                 &crate::mcp::client::identity::ToolKey::parse(tool).unwrap(),
             )
             .is_ok();
-            let gov = crate::governance::GovCtx {
+            let gov = crate::governance::PlaneRequestCtx {
                 key: Some(Arc::new(key)),
             };
             let (status, body) = call(&app, &gov, "tools/call", params(tool)).await;

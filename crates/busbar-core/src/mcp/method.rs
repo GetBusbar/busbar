@@ -148,7 +148,7 @@ pub(crate) struct Ctx<'a> {
     /// re-read rather than a comparison of a value against itself.
     pub(crate) handle: &'a std::sync::Arc<crate::state::AppHandle>,
     /// The caller's resolved governance key. `None` when governance is disabled.
-    pub(crate) gov: &'a crate::governance::GovCtx,
+    pub(crate) gov: &'a crate::governance::PlaneRequestCtx,
     /// The attributed principal, for the audit row.
     pub(crate) actor: &'a str,
     /// The CALLER'S DECLARED CAPABILITIES, exactly as they arrived in
@@ -210,7 +210,7 @@ impl Ctx<'_> {
     /// out loud, at its own call site.
     fn caller(&self) -> crate::catalogue::Caller<'_> {
         crate::catalogue::Caller {
-            key: self.gov.key.as_deref(),
+            key: self.gov.key(),
             now: crate::store::now(),
             generation: crate::trust::validate::Generations::at_admission(
                 super::runtime(self.app).catalogue.generation(),
@@ -1233,7 +1233,7 @@ async fn tools_call(
     let admitted_sightings = super::runtime(ctx.app).sightings.load();
     // (1) ADMISSION on the snapshot this request arrived on.
     let selected = match super::runtime(ctx.app).catalogue.resolve(
-        ctx.gov.key.as_deref(),
+        ctx.gov.key(),
         LiveSightings::of(&admitted_sightings),
         name,
         crate::trust::validate::Generations::at_admission(selected_gen),
@@ -1258,7 +1258,7 @@ async fn tools_call(
     // would leave a window exactly as wide as the check it replaced.
     let live_sightings = super::runtime(&live).sightings.load();
     if let Err(refusal) = super::runtime(&live).catalogue.revalidate(
-        ctx.gov.key.as_deref(),
+        ctx.gov.key(),
         LiveSightings::of(&live_sightings),
         &selected,
         selected_gen,
@@ -1482,7 +1482,7 @@ async fn tools_call(
                 // The SAME id the per-call record carries, re-read rather than re-minted: a second
                 // `next_request_id()` would hand the hook a number that joins to nothing.
                 request_id: log.request_id.parse().unwrap_or_default(),
-                key: ctx.gov.key.as_deref(),
+                key: ctx.gov.key(),
                 // Incremental scan (session substrate): screen only pieces this session has not
                 // already had cleared for each hook. The session identity is the caller's
                 // `x-session-id` — a neutral per-session convention, hashed by the core (store) hash,
@@ -1560,16 +1560,16 @@ async fn tools_call(
     // Refusing here rather than inside the loop is what makes "an unauthorised caller cannot even
     // cause a token-exchange round trip" true rather than merely likely: `authorise` is synchronous
     // and reaches nothing.
-    let authorised =
-        match super::upstream::authorise(&server, &selected, &arguments, ctx.gov.key.as_deref()) {
-            Ok(a) => a,
-            Err(denied) => {
-                return log.refused(
-                    denied.audit_reason(),
-                    refuse_setup(ctx, &selected.namespaced, &denied, id),
-                )
-            }
-        };
+    let authorised = match super::upstream::authorise(&server, &selected, &arguments, ctx.gov.key())
+    {
+        Ok(a) => a,
+        Err(denied) => {
+            return log.refused(
+                denied.audit_reason(),
+                refuse_setup(ctx, &selected.namespaced, &denied, id),
+            )
+        }
+    };
 
     // (3b) THE BREAKER, THROUGH THE ONE SELECTION LOOP — `failover::walk` over this server's
     // candidate set, consulted BEFORE the loop and before any socket, exactly where the LLM walk
@@ -1582,13 +1582,8 @@ async fn tools_call(
     // outcome of each leg is recorded inside `upstream::call`, against the dispatched member's own
     // cell; the probe hold lives in the route and is released owner-checked when it drops.
     let breakers = std::sync::Arc::clone(&ctx.app.plane_breakers);
-    let route = super::reroute::PoolRoute::build(
-        &live,
-        ctx.gov.key.as_deref(),
-        &selected,
-        authorised,
-        &arguments,
-    );
+    let route =
+        super::reroute::PoolRoute::build(&live, ctx.gov.key(), &selected, authorised, &arguments);
     if let Err(refused) = route.admit(ctx.app, &breakers, ctx.scope) {
         return log.refused(
             route_refusal_reason(&refused),
@@ -1899,16 +1894,15 @@ async fn create_task(
     // The SAME egress gate the synchronous path runs, in the same position relative to the network:
     // synchronous, reaching nothing, before anything is spent. A task must not be a way to get past
     // a check by being answered later.
-    let authorised =
-        match super::upstream::authorise(server, selected, &arguments, ctx.gov.key.as_deref()) {
-            Ok(a) => a,
-            Err(denied) => {
-                return log.refused(
-                    denied.audit_reason(),
-                    refuse_setup(ctx, &selected.namespaced, &denied, id),
-                )
-            }
-        };
+    let authorised = match super::upstream::authorise(server, selected, &arguments, ctx.gov.key()) {
+        Ok(a) => a,
+        Err(denied) => {
+            return log.refused(
+                denied.audit_reason(),
+                refuse_setup(ctx, &selected.namespaced, &denied, id),
+            )
+        }
+    };
 
     // THE BREAKER, at the same pre-network position the synchronous path consults it — through the
     // SAME walk, so a pooled tool's task is admitted to whichever verified twin is serving — and
@@ -1921,7 +1915,7 @@ async fn create_task(
     let live_app = ctx.handle.load();
     let route = super::reroute::PoolRoute::build(
         &live_app,
-        ctx.gov.key.as_deref(),
+        ctx.gov.key(),
         selected,
         authorised,
         &arguments,

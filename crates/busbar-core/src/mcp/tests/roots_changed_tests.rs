@@ -84,7 +84,13 @@ fn asking_server(peer: &Peer, ask_method: &str) -> crate::mcp::config::McpServer
     cfg
 }
 
-async fn deployment(ask_method: &str) -> (Peer, Arc<crate::state::App>, crate::governance::GovCtx) {
+async fn deployment(
+    ask_method: &str,
+) -> (
+    Peer,
+    Arc<crate::state::App>,
+    crate::governance::PlaneRequestCtx,
+) {
     crate::metrics::init();
     let peer = Peer::start(vec![wire_tool(TOOL, DESCRIPTION, schema())]).await;
     let app = TestApp::new()
@@ -97,7 +103,10 @@ async fn deployment(ask_method: &str) -> (Peer, Arc<crate::state::App>, crate::g
 }
 
 /// Ask the operator's question and hand back the sealed continuation state.
-async fn obtain_state(app: &Arc<crate::state::App>, gov: &crate::governance::GovCtx) -> String {
+async fn obtain_state(
+    app: &Arc<crate::state::App>,
+    gov: &crate::governance::PlaneRequestCtx,
+) -> String {
     let (status, body) = call(
         app,
         gov,
@@ -131,7 +140,10 @@ fn redemption(state: &str) -> serde_json::Value {
 /// mounts — as the principal `gov` authenticates. The bump is asserted only through its observable
 /// consequences in the cases below; here the assertion is the transport's own contract: `202`,
 /// empty body, even for a plane fact the notification moved.
-async fn announce_roots_changed(app: &Arc<crate::state::App>, gov: &crate::governance::GovCtx) {
+async fn announce_roots_changed(
+    app: &Arc<crate::state::App>,
+    gov: &crate::governance::PlaneRequestCtx,
+) {
     let handle = Arc::new(crate::state::AppHandle::new(app.clone()));
     let body = serde_json::json!({
         "jsonrpc": "2.0",

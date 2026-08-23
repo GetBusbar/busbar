@@ -305,7 +305,7 @@ fn select(
 /// Identical to [`agent_rpc`] in everything except how the agent is named. See [`select`].
 pub(crate) async fn plane_rpc(
     CurrentApp(app): CurrentApp,
-    axum::extract::Extension(gov): axum::extract::Extension<crate::governance::GovCtx>,
+    axum::extract::Extension(gov): axum::extract::Extension<crate::governance::PlaneRequestCtx>,
     axum::extract::Extension(principal): axum::extract::Extension<crate::auth::AuthPrincipal>,
     wire: Wire,
     body: axum::body::Bytes,
@@ -534,7 +534,7 @@ impl Wire {
 /// agent exists, and only a caller that could reach it gets the 404.
 pub(crate) async fn card(
     CurrentApp(app): CurrentApp,
-    axum::extract::Extension(gov): axum::extract::Extension<crate::governance::GovCtx>,
+    axum::extract::Extension(gov): axum::extract::Extension<crate::governance::PlaneRequestCtx>,
     axum::extract::Path(agent_id): axum::extract::Path<String>,
 ) -> Response {
     let Some(plane) = crate::a2a::runtime(&app) else {
@@ -643,7 +643,7 @@ pub(super) fn no_receiving_side() -> Response {
 /// The handler deliberately does NOT extract a `HeaderMap`. See step 7 below.
 pub(crate) async fn agent_rpc(
     CurrentApp(app): CurrentApp,
-    axum::extract::Extension(gov): axum::extract::Extension<crate::governance::GovCtx>,
+    axum::extract::Extension(gov): axum::extract::Extension<crate::governance::PlaneRequestCtx>,
     axum::extract::Extension(principal): axum::extract::Extension<crate::auth::AuthPrincipal>,
     axum::extract::Path(agent_id): axum::extract::Path<String>,
     wire: Wire,
@@ -690,7 +690,7 @@ use Target::{FromCatalogue, Named};
 /// only from a conformance suite's stdout.
 pub(super) async fn invoke(
     app: Arc<App>,
-    gov: crate::governance::GovCtx,
+    gov: crate::governance::PlaneRequestCtx,
     principal: crate::auth::AuthPrincipal,
     target: Target,
     wire: Wire,
@@ -726,7 +726,7 @@ pub(super) async fn invoke(
 /// will one day be missing from the thirteenth.
 async fn invoke_inner(
     app: Arc<App>,
-    gov: crate::governance::GovCtx,
+    gov: crate::governance::PlaneRequestCtx,
     principal: crate::auth::AuthPrincipal,
     target: Target,
     wire: Wire,
@@ -751,7 +751,7 @@ async fn invoke_inner(
     // GOVERNANCE IS FOLDED IN AHEAD OF IT, keeping the order this plane has always had: without
     // governance there is no key, and this plane's whole admission story is an audience on a
     // busbar-minted token plus that key's `agent` scopes.
-    let wire_refusal = if gov.key.is_none() {
+    let wire_refusal = if !gov.is_governed() {
         Some(governance_required())
     } else {
         wire.refuse()
@@ -820,7 +820,7 @@ async fn invoke_inner(
 #[allow(clippy::too_many_arguments)]
 async fn admitted(
     app: Arc<App>,
-    gov: crate::governance::GovCtx,
+    gov: crate::governance::PlaneRequestCtx,
     principal: crate::auth::AuthPrincipal,
     target: Target,
     a2a_version: &'static str,
@@ -2700,7 +2700,7 @@ fn uuid_like(body: &[u8], now: u64) -> String {
 /// NOTHING is mounted — no route in the table, nothing for the auth middleware to consult, and "is
 /// this deployment an A2A server?" stays a question the mounted surface answers rather than a flag
 /// somebody has to trust. The slot is granted as `&dyn Any` and downcast to the plane's own type;
-/// no `Store`/`GovCtx`/`audit::Chain` reaches this seam.
+/// no `Store`/`PlaneRequestCtx`/`audit::Chain` reaches this seam.
 pub(crate) fn mount(
     router: crate::core_routes::CoreRouter,
     slot: &dyn std::any::Any,

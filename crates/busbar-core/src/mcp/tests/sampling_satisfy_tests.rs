@@ -98,7 +98,7 @@ async fn app_with_provider(
 /// The caller's grant, INCLUDING the pool: the completion is admitted as the caller, so the
 /// caller's key must reach the declared model exactly as if it had asked for the completion
 /// itself.
-fn gov_with_pool() -> crate::governance::GovCtx {
+fn gov_with_pool() -> crate::governance::PlaneRequestCtx {
     gov_with_scopes(&[
         ("mcp_server", "fs"),
         ("mcp_tool", "fs_read"),

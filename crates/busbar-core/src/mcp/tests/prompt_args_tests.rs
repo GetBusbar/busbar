@@ -109,7 +109,7 @@ async fn prompt_text(arguments: serde_json::Value) -> String {
     crate::metrics::init();
     let app = app();
     let handle = Arc::new(AppHandle::new(app.clone()));
-    let gov = crate::governance::GovCtx { key: None };
+    let gov = crate::governance::PlaneRequestCtx { key: None };
     let ctx = crate::mcp::method::Ctx {
         app: &app,
         handle: &handle,
@@ -183,7 +183,7 @@ async fn completion_complete_answers_an_empty_completion_rather_than_method_not_
     crate::metrics::init();
     let app = app();
     let handle = Arc::new(AppHandle::new(app.clone()));
-    let gov = crate::governance::GovCtx { key: None };
+    let gov = crate::governance::PlaneRequestCtx { key: None };
     let ctx = crate::mcp::method::Ctx {
         app: &app,
         handle: &handle,

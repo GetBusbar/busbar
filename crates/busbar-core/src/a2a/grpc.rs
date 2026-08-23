@@ -122,7 +122,7 @@ const A2A_VERSION_METADATA: &str = "a2a-version";
 /// other reason this shape is the right one.
 pub(crate) async fn serve(
     crate::state::CurrentApp(app): crate::state::CurrentApp,
-    axum::extract::Extension(gov): axum::extract::Extension<crate::governance::GovCtx>,
+    axum::extract::Extension(gov): axum::extract::Extension<crate::governance::PlaneRequestCtx>,
     axum::extract::Extension(principal): axum::extract::Extension<crate::auth::AuthPrincipal>,
     req: axum::extract::Request,
 ) -> Response {
@@ -159,7 +159,7 @@ pub(crate) async fn serve(
 /// "this call was admitted" a fact the type carries rather than one a handler has to re-derive.
 struct Busbar {
     app: Arc<crate::state::App>,
-    gov: crate::governance::GovCtx,
+    gov: crate::governance::PlaneRequestCtx,
     principal: crate::auth::AuthPrincipal,
 }
 

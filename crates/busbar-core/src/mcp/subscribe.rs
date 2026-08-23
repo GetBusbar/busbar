@@ -69,7 +69,7 @@
 //! PRINCIPAL is RE-RESOLVED from the live registry by id through [`crate::trust::validate::Standing`].
 //!
 //! Holding the resolved key instead would have been the natural shape and it is the defect this
-//! guards: a `GovCtx` cloned into the stream carries an `Arc<VirtualKey>` resolved at ingress, so an
+//! guards: a `PlaneRequestCtx` cloned into the stream carries an `Arc<VirtualKey>` resolved at ingress, so an
 //! approval revoked underneath the stream would bite in one poll while the KEY being deleted,
 //! disabled or re-scoped would not bite at all. The stream now holds the ID and looks the principal
 //! up on every poll — an in-memory index read, which is what makes it affordable four times a
@@ -580,7 +580,7 @@ pub(crate) fn listen(
         // for the deadline below so the cap on what a poll cannot re-check and the cap on the stream
         // are provably the same number rather than two that agree today.
         standing: crate::trust::validate::Standing::opened(
-            ctx.gov.key.as_deref(),
+            ctx.gov.key(),
             // WATCHING, not pinned: a generation move is what this response exists to report, and
             // every frame it writes is re-derived from the live snapshot. Pinning it would make the
             // subscription end on the first change it was opened to hear about.

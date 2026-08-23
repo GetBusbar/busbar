@@ -686,7 +686,7 @@ async fn run(task: Arc<McpTask>, runner: Runner) {
             let entry = super::runtime(&live).catalogue.server(&server_id);
             let roots = entry.map(|s| s.roots.clone()).unwrap_or_default();
             let sampling = entry.and_then(|s| s.sampling.clone());
-            let gov = crate::governance::GovCtx {
+            let gov = crate::governance::PlaneRequestCtx {
                 key: Some(Arc::new(runner.authorised.caller.clone())),
             };
             let server = server_id.clone();

@@ -104,7 +104,7 @@ fn pooled_app(
         .build()
 }
 
-fn gov() -> crate::governance::GovCtx {
+fn gov() -> crate::governance::PlaneRequestCtx {
     gov_with_scopes(&[
         ("mcp_server", "fs-a"),
         ("mcp_tool", "fs-a_read"),

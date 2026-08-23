@@ -55,7 +55,7 @@ fn poisoned_schema() -> serde_json::Value {
     })
 }
 
-fn granted() -> crate::governance::GovCtx {
+fn granted() -> crate::governance::PlaneRequestCtx {
     gov_with_scopes(&[("mcp_server", "fs"), ("mcp_tool", "fs_read")])
 }
 

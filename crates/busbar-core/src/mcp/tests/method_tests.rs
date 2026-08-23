@@ -128,9 +128,9 @@ fn two_server_app() -> Arc<App> {
         .build()
 }
 
-/// A `GovCtx` holding a key whose `allowed_scopes` is exactly `pairs` — the shape the store persists
+/// A `PlaneRequestCtx` holding a key whose `allowed_scopes` is exactly `pairs` — the shape the store persists
 /// as `allowed_mcp_servers` / `allowed_mcp_tools`.
-fn gov_with_scopes(pairs: &[(&str, &str)]) -> crate::governance::GovCtx {
+fn gov_with_scopes(pairs: &[(&str, &str)]) -> crate::governance::PlaneRequestCtx {
     let key = busbar_api::VirtualKey {
         id: "k-test".to_string(),
         name: "test".to_string(),
@@ -153,7 +153,7 @@ fn gov_with_scopes(pairs: &[(&str, &str)]) -> crate::governance::GovCtx {
         revision: 0,
         ..Default::default()
     };
-    crate::governance::GovCtx {
+    crate::governance::PlaneRequestCtx {
         key: Some(Arc::new(key)),
     }
 }
@@ -161,7 +161,7 @@ fn gov_with_scopes(pairs: &[(&str, &str)]) -> crate::governance::GovCtx {
 /// Call one method and return `(status, body)`.
 async fn call(
     app: &Arc<App>,
-    gov: &crate::governance::GovCtx,
+    gov: &crate::governance::PlaneRequestCtx,
     method: &str,
     params: serde_json::Value,
 ) -> (u16, serde_json::Value) {
@@ -436,7 +436,7 @@ async fn a_deployment_without_governance_serves_its_whole_catalogue() {
     let app = two_server_app();
     let (_, body) = call(
         &app,
-        &crate::governance::GovCtx::default(),
+        &crate::governance::PlaneRequestCtx::default(),
         "tools/list",
         serde_json::json!({}),
     )
@@ -561,7 +561,7 @@ async fn a_tool_call_is_charged_metered_and_audited_on_the_ordinary_budget_plane
         .mcp_server("meter", poisoned_server("meter", "probe"))
         .governance(gov_state.clone())
         .build();
-    let gov = crate::governance::GovCtx {
+    let gov = crate::governance::PlaneRequestCtx {
         key: Some(Arc::new(key.clone())),
     };
 

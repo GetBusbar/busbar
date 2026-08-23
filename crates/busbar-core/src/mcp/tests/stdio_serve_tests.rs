@@ -75,13 +75,16 @@ struct Client {
 
 impl Client {
     /// Boot a session over duplex pipes, as the given identity.
-    fn open(app: Arc<crate::state::App>, gov: crate::governance::GovCtx) -> Self {
+    fn open(app: Arc<crate::state::App>, gov: crate::governance::PlaneRequestCtx) -> Self {
         let handle = Arc::new(crate::state::AppHandle::new(app));
         Self::open_on(handle, gov)
     }
 
     /// The same, on a caller-held handle — for the tests that swap a second `App` mid-session.
-    fn open_on(handle: Arc<crate::state::AppHandle>, gov: crate::governance::GovCtx) -> Self {
+    fn open_on(
+        handle: Arc<crate::state::AppHandle>,
+        gov: crate::governance::PlaneRequestCtx,
+    ) -> Self {
         let (stdin_client, stdin_server) = tokio::io::duplex(1 << 16);
         let (stdout_server, stdout_client) = tokio::io::duplex(1 << 16);
         let identity = SessionIdentity {
@@ -180,7 +183,7 @@ async fn plain_deployment() -> (Peer, Arc<crate::state::App>) {
 #[tokio::test]
 async fn the_http_method_table_serves_the_stdio_channel_unchanged() {
     let (peer, app) = plain_deployment().await;
-    let mut client = Client::open(app, crate::governance::GovCtx::default());
+    let mut client = Client::open(app, crate::governance::PlaneRequestCtx::default());
 
     client
         .send(&frame(1, "server/discover", serde_json::json!({})))
@@ -253,7 +256,7 @@ async fn the_http_method_table_serves_the_stdio_channel_unchanged() {
 #[tokio::test]
 async fn initialize_negotiates_the_one_revision_and_eof_ends_the_session() {
     let (_peer, app) = plain_deployment().await;
-    let mut client = Client::open(app, crate::governance::GovCtx::default());
+    let mut client = Client::open(app, crate::governance::PlaneRequestCtx::default());
 
     // A LEGACY-era opening: no `_meta` at all, exactly what an installed stdio client sends first.
     client
@@ -294,7 +297,7 @@ async fn initialize_negotiates_the_one_revision_and_eof_ends_the_session() {
 #[tokio::test]
 async fn logging_set_level_makes_the_sessions_records_ride_the_channel() {
     let (_peer, app) = plain_deployment().await;
-    let mut client = Client::open(app, crate::governance::GovCtx::default());
+    let mut client = Client::open(app, crate::governance::PlaneRequestCtx::default());
 
     // BEFORE: no level anywhere, a single response line and nothing else.
     client
@@ -569,7 +572,7 @@ async fn a_budgeted_key_is_refused_over_budget_through_the_stdio_binding() {
         .governance(gov_state)
         .groups_tree(groups)
         .build();
-    let gov = crate::governance::GovCtx {
+    let gov = crate::governance::PlaneRequestCtx {
         key: Some(Arc::new(key)),
     };
     let mut client = Client::open(app, gov);
@@ -625,7 +628,10 @@ async fn a_budgeted_key_is_refused_over_budget_through_the_stdio_binding() {
 async fn subscriptions_and_resource_watches_ride_the_channel() {
     let (_peer, app) = plain_deployment().await;
     let handle = Arc::new(crate::state::AppHandle::new(app));
-    let mut client = Client::open_on(handle.clone(), crate::governance::GovCtx::default());
+    let mut client = Client::open_on(
+        handle.clone(),
+        crate::governance::PlaneRequestCtx::default(),
+    );
 
     client
         .send(&frame(
@@ -875,7 +881,10 @@ async fn an_out_of_band_elicitation_response_redeems_the_pending_ask() {
 async fn unsubscribe_stops_the_resource_updates() {
     let (_peer, app) = plain_deployment().await;
     let handle = Arc::new(crate::state::AppHandle::new(app));
-    let mut client = Client::open_on(handle.clone(), crate::governance::GovCtx::default());
+    let mut client = Client::open_on(
+        handle.clone(),
+        crate::governance::PlaneRequestCtx::default(),
+    );
     let uri = format!("ws_{RESOURCE_URI}");
     client
         .send(&frame(
@@ -969,7 +978,7 @@ async fn an_early_closed_subscription_is_announced_with_cancelled() {
         .governance(gov_state.clone())
         .build();
     let sub_key = Arc::new(key);
-    let gov = crate::governance::GovCtx {
+    let gov = crate::governance::PlaneRequestCtx {
         key: Some(sub_key.clone()),
     };
     let mut client = Client::open(app, gov);
@@ -1019,7 +1028,7 @@ async fn a_tasks_transition_is_pushed_over_the_channel() {
     // principal, watched off a real task-result envelope, transitioned through the registry's own
     // verb. The tasks METHODS' behaviour is `tasks_tests.rs`' subject, not re-proven here.
     let (_peer, app) = plain_deployment().await;
-    let mut client = Client::open(app, crate::governance::GovCtx::default());
+    let mut client = Client::open(app, crate::governance::PlaneRequestCtx::default());
     // The session's actor is `anonymous` (ungoverned fixture); create its task in the registry.
     let task = crate::mcp::tasks::TASKS.create("anonymous");
     // Attach the watcher exactly as `deliver` does when it hands the caller a task result.
@@ -1052,7 +1061,7 @@ async fn a_tasks_transition_is_pushed_over_the_channel() {
 #[tokio::test]
 async fn an_idle_subscriptions_keepalive_becomes_a_server_ping() {
     let (_peer, app) = plain_deployment().await;
-    let mut client = Client::open(app, crate::governance::GovCtx::default());
+    let mut client = Client::open(app, crate::governance::PlaneRequestCtx::default());
     let body = "event: message\ndata: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/subscriptions/acknowledged\",\"params\":{\"_meta\":{}}}\n\n: keepalive\n\n";
     let response = axum::response::Response::builder()
         .status(axum::http::StatusCode::OK)

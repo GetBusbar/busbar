@@ -173,7 +173,7 @@ fn json_scalar(raw: &str) -> Value {
 /// the answer.
 async fn compose_and_invoke(
     app: std::sync::Arc<crate::state::App>,
-    gov: crate::governance::GovCtx,
+    gov: crate::governance::PlaneRequestCtx,
     principal: crate::auth::AuthPrincipal,
     wire: Wire,
     method: &str,
@@ -318,7 +318,7 @@ fn reframe_frames(buf: &[u8]) -> Vec<u8> {
 /// `POST /message:send` — the body IS the `params`.
 async fn message_send(
     CurrentApp(app): CurrentApp,
-    axum::extract::Extension(gov): axum::extract::Extension<crate::governance::GovCtx>,
+    axum::extract::Extension(gov): axum::extract::Extension<crate::governance::PlaneRequestCtx>,
     axum::extract::Extension(principal): axum::extract::Extension<crate::auth::AuthPrincipal>,
     wire: Wire,
     body: axum::body::Bytes,
@@ -330,7 +330,7 @@ async fn message_send(
 /// `POST /message:stream` — the same body, the streaming method, an SSE answer.
 async fn message_stream(
     CurrentApp(app): CurrentApp,
-    axum::extract::Extension(gov): axum::extract::Extension<crate::governance::GovCtx>,
+    axum::extract::Extension(gov): axum::extract::Extension<crate::governance::PlaneRequestCtx>,
     axum::extract::Extension(principal): axum::extract::Extension<crate::auth::AuthPrincipal>,
     wire: Wire,
     body: axum::body::Bytes,
@@ -350,7 +350,7 @@ async fn message_stream(
 /// `GET /tasks/{id}` — the task id from the path, `historyLength` from the query.
 async fn task_get(
     CurrentApp(app): CurrentApp,
-    axum::extract::Extension(gov): axum::extract::Extension<crate::governance::GovCtx>,
+    axum::extract::Extension(gov): axum::extract::Extension<crate::governance::PlaneRequestCtx>,
     axum::extract::Extension(principal): axum::extract::Extension<crate::auth::AuthPrincipal>,
     axum::extract::Path(id): axum::extract::Path<String>,
     axum::extract::Query(query): axum::extract::Query<std::collections::HashMap<String, String>>,
@@ -367,7 +367,7 @@ async fn task_get(
 /// suffix INSIDE the captured segment. See [`VERB_CANCEL`].
 async fn task_verb(
     CurrentApp(app): CurrentApp,
-    axum::extract::Extension(gov): axum::extract::Extension<crate::governance::GovCtx>,
+    axum::extract::Extension(gov): axum::extract::Extension<crate::governance::PlaneRequestCtx>,
     axum::extract::Extension(principal): axum::extract::Extension<crate::auth::AuthPrincipal>,
     axum::extract::Path(addressed): axum::extract::Path<String>,
     wire: Wire,
@@ -407,7 +407,7 @@ fn not_a_verb(addressed: &str) -> Response {
 /// `GET /tasks` — the filters ride the query string.
 async fn tasks_list(
     CurrentApp(app): CurrentApp,
-    axum::extract::Extension(gov): axum::extract::Extension<crate::governance::GovCtx>,
+    axum::extract::Extension(gov): axum::extract::Extension<crate::governance::PlaneRequestCtx>,
     axum::extract::Extension(principal): axum::extract::Extension<crate::auth::AuthPrincipal>,
     axum::extract::Query(query): axum::extract::Query<std::collections::HashMap<String, String>>,
     wire: Wire,
@@ -427,7 +427,7 @@ async fn tasks_list(
 /// `POST /tasks/{id}/pushNotificationConfigs` — the body IS the config, the task id is the path's.
 async fn push_config_create(
     CurrentApp(app): CurrentApp,
-    axum::extract::Extension(gov): axum::extract::Extension<crate::governance::GovCtx>,
+    axum::extract::Extension(gov): axum::extract::Extension<crate::governance::PlaneRequestCtx>,
     axum::extract::Extension(principal): axum::extract::Extension<crate::auth::AuthPrincipal>,
     axum::extract::Path(id): axum::extract::Path<String>,
     wire: Wire,
@@ -455,7 +455,7 @@ async fn push_config_create(
 /// `GET /tasks/{id}/pushNotificationConfigs`.
 async fn push_config_list(
     CurrentApp(app): CurrentApp,
-    axum::extract::Extension(gov): axum::extract::Extension<crate::governance::GovCtx>,
+    axum::extract::Extension(gov): axum::extract::Extension<crate::governance::PlaneRequestCtx>,
     axum::extract::Extension(principal): axum::extract::Extension<crate::auth::AuthPrincipal>,
     axum::extract::Path(id): axum::extract::Path<String>,
     axum::extract::Query(query): axum::extract::Query<std::collections::HashMap<String, String>>,
@@ -472,7 +472,7 @@ async fn push_config_list(
 /// `GET /tasks/{id}/pushNotificationConfigs/{configId}`.
 async fn push_config_get(
     CurrentApp(app): CurrentApp,
-    axum::extract::Extension(gov): axum::extract::Extension<crate::governance::GovCtx>,
+    axum::extract::Extension(gov): axum::extract::Extension<crate::governance::PlaneRequestCtx>,
     axum::extract::Extension(principal): axum::extract::Extension<crate::auth::AuthPrincipal>,
     axum::extract::Path((id, config_id)): axum::extract::Path<(String, String)>,
     wire: Wire,
@@ -487,7 +487,7 @@ async fn push_config_get(
 /// `DELETE /tasks/{id}/pushNotificationConfigs/{configId}`.
 async fn push_config_delete(
     CurrentApp(app): CurrentApp,
-    axum::extract::Extension(gov): axum::extract::Extension<crate::governance::GovCtx>,
+    axum::extract::Extension(gov): axum::extract::Extension<crate::governance::PlaneRequestCtx>,
     axum::extract::Extension(principal): axum::extract::Extension<crate::auth::AuthPrincipal>,
     axum::extract::Path((id, config_id)): axum::extract::Path<(String, String)>,
     wire: Wire,
@@ -517,7 +517,7 @@ async fn push_config_delete(
 /// the shared sequence, and both bindings gain it together.
 async fn extended_agent_card(
     CurrentApp(app): CurrentApp,
-    axum::extract::Extension(gov): axum::extract::Extension<crate::governance::GovCtx>,
+    axum::extract::Extension(gov): axum::extract::Extension<crate::governance::PlaneRequestCtx>,
     axum::extract::Extension(principal): axum::extract::Extension<crate::auth::AuthPrincipal>,
     wire: Wire,
 ) -> Response {

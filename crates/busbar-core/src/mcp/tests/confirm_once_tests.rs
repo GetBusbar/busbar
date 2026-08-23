@@ -108,7 +108,11 @@ fn confirming_server(peer: &Peer) -> crate::mcp::config::McpServerDefCfg {
 }
 
 /// The deployment under test, plus the peer that is the witness.
-async fn deployment() -> (Peer, Arc<crate::state::App>, crate::governance::GovCtx) {
+async fn deployment() -> (
+    Peer,
+    Arc<crate::state::App>,
+    crate::governance::PlaneRequestCtx,
+) {
     crate::metrics::init();
     let peer = Peer::start(vec![wire_tool(TOOL, DESCRIPTION, schema())]).await;
     let app = TestApp::new()
@@ -123,7 +127,7 @@ async fn deployment() -> (Peer, Arc<crate::state::App>, crate::governance::GovCt
 /// Ask the operator's question, and hand back the continuation state the caller was issued.
 async fn obtain_approval(
     app: &Arc<crate::state::App>,
-    gov: &crate::governance::GovCtx,
+    gov: &crate::governance::PlaneRequestCtx,
     arguments: &serde_json::Value,
 ) -> (String, serde_json::Value) {
     let (status, body) = call(

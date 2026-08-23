@@ -36,7 +36,7 @@
 //!    ([`crate::auth::AuthMiddleware::run_chain_on_request_path`]), then the one verdict resolution
 //!    ([`crate::auth::resolve_data_plane_identity`]) the HTTP middleware itself calls. A credential
 //!    that the HTTP door would refuse is refused here; one it would admit binds this session to the
-//!    same principal, the same `GovCtx`, the same budgets, audit attribution and hooks.
+//!    same principal, the same `PlaneRequestCtx`, the same budgets, audit attribution and hooks.
 //! 2. **The postures line up with the doctrine "busbar requires authentication to apply budget".**
 //!    A CONFIGURED chain with no credential, or a refused one, is a REFUSAL TO SERVE (nonzero
 //!    exit, sentence on stderr): fail-closed, exactly as the HTTP door answers `401`. There is no
@@ -125,7 +125,7 @@ const WATCH_INTERVAL: Duration = Duration::from_millis(250);
 /// middleware inserts as request extensions.
 pub(crate) struct SessionIdentity {
     pub(crate) principal: crate::auth::AuthPrincipal,
-    pub(crate) gov: crate::governance::GovCtx,
+    pub(crate) gov: crate::governance::PlaneRequestCtx,
 }
 
 /// Resolve the session identity from the boot credential — the SAME admission the HTTP door runs,
@@ -177,7 +177,7 @@ pub(crate) async fn session_identity(
     // (3) THE ONE VERDICT RESOLUTION, shared with the middleware. Only the WORDING here is stdio's.
     match crate::auth::resolve_data_plane_identity(&app, verdict) {
         Ok((principal, gov)) => {
-            if gov.key.is_none() {
+            if !gov.is_governed() {
                 // The open-relay banner has already fired at boot for the empty chain; this line
                 // adds the session-shaped consequence so an operator reading the child's stderr
                 // sees what "ungoverned" means HERE: no budget, no attribution, no grant scoping.
@@ -221,7 +221,7 @@ pub async fn serve_stdio(handle: Arc<AppHandle>) -> i32 {
     };
     tracing::info!(
         actor = identity.principal.actor_id(),
-        governed = identity.gov.key.is_some(),
+        governed = identity.gov.is_governed(),
         "mcp stdio serve: session bound; serving on stdin/stdout"
     );
     serve_io(handle, identity, tokio::io::stdin(), tokio::io::stdout()).await;
@@ -374,7 +374,7 @@ fn id_key(id: &Value) -> String {
 struct Session<W> {
     handle: Arc<AppHandle>,
     principal: crate::auth::AuthPrincipal,
-    gov: crate::governance::GovCtx,
+    gov: crate::governance::PlaneRequestCtx,
     /// ONE writer, one lock: two concurrent responses interleaving inside a line would be a frame
     /// no reader could parse, which is the transport's one absolute rule.
     out: tokio::sync::Mutex<W>,
@@ -1042,7 +1042,7 @@ impl<W: AsyncWrite + Unpin + Send + 'static> Session<W> {
     /// when the caller's catalogue does not carry it.
     fn visible_resource_fingerprint(&self, app: &Arc<crate::state::App>, uri: &str) -> Option<u64> {
         let caller = crate::catalogue::Caller {
-            key: self.gov.key.as_deref(),
+            key: self.gov.key(),
             now: crate::store::now(),
             generation: crate::trust::validate::Generations::at_admission(
                 super::runtime(app).catalogue.generation(),

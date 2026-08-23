@@ -549,9 +549,9 @@ pub(super) fn exchanging_server(
     }
 }
 
-/// A `GovCtx` holding a key whose `allowed_scopes` is exactly `pairs`.
-pub(super) fn gov_with_scopes(pairs: &[(&str, &str)]) -> crate::governance::GovCtx {
-    crate::governance::GovCtx {
+/// A `PlaneRequestCtx` holding a key whose `allowed_scopes` is exactly `pairs`.
+pub(super) fn gov_with_scopes(pairs: &[(&str, &str)]) -> crate::governance::PlaneRequestCtx {
+    crate::governance::PlaneRequestCtx {
         key: Some(std::sync::Arc::new(key_with_scopes("k-test", pairs))),
     }
 }
@@ -594,7 +594,7 @@ pub(super) fn wildcard_key(id: &str) -> busbar_api::VirtualKey {
 /// Drive one method at the handler, returning `(status, body)`.
 pub(super) async fn call(
     app: &std::sync::Arc<crate::state::App>,
-    gov: &crate::governance::GovCtx,
+    gov: &crate::governance::PlaneRequestCtx,
     method: &str,
     params: serde_json::Value,
 ) -> (u16, serde_json::Value) {
@@ -610,7 +610,7 @@ pub(super) async fn call(
 /// A test that needs a virgin chain asks for its own principal.
 pub(super) async fn call_as(
     app: &std::sync::Arc<crate::state::App>,
-    gov: &crate::governance::GovCtx,
+    gov: &crate::governance::PlaneRequestCtx,
     actor: &str,
     method: &str,
     params: serde_json::Value,
@@ -623,7 +623,7 @@ pub(super) async fn call_as(
 /// header — and the (status, body) helpers above deliberately drop the header map.
 pub(super) async fn call_response(
     app: &std::sync::Arc<crate::state::App>,
-    gov: &crate::governance::GovCtx,
+    gov: &crate::governance::PlaneRequestCtx,
     actor: &str,
     method: &str,
     params: serde_json::Value,
@@ -637,7 +637,7 @@ pub(super) async fn call_response(
 /// about tasks, so the task-path filter keeps its own tests meaningful).
 pub(super) async fn call_response_caps(
     app: &std::sync::Arc<crate::state::App>,
-    gov: &crate::governance::GovCtx,
+    gov: &crate::governance::PlaneRequestCtx,
     actor: &str,
     method: &str,
     params: serde_json::Value,
