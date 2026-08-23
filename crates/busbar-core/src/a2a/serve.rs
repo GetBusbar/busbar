@@ -370,7 +370,7 @@ pub(crate) fn rewrite_card(
     backend_url: &str,
     public_url: &str,
     agent_id: &str,
-    signer: Option<&super::sign::CardSigner>,
+    signer: Option<&super::sign::CardSigner<'_>>,
 ) -> Result<Value, ServeError> {
     let obj = backend_card
         .as_object()
@@ -629,7 +629,7 @@ fn inbound_security_requirement() -> Value {
 /// is: it gives an external caller something to pin busbar by.
 pub(crate) fn self_card(
     public_url: &str,
-    signer: Option<&super::sign::CardSigner>,
+    signer: Option<&super::sign::CardSigner<'_>>,
 ) -> Result<Value, ServeError> {
     let card = self_card_document(public_url, Vec::new())?;
     match signer {
@@ -787,7 +787,7 @@ pub(crate) struct EntitledAgent<'a> {
 pub(crate) fn extended_card(
     public_url: &str,
     entitled: &[EntitledAgent<'_>],
-    signer: Option<&super::sign::CardSigner>,
+    signer: Option<&super::sign::CardSigner<'_>>,
 ) -> Result<Value, ServeError> {
     let mut skills = Vec::new();
     for agent in entitled {

@@ -120,6 +120,28 @@ pub fn with_borrowed_host<R>(
     out
 }
 
+/// Sign a plane-framed agent-card signing input through the host [`card_sign`](vtable) seam,
+/// returning the 64-byte Ed25519 signature. The card subkey is derived and held HOST-side (see
+/// [`GovState::card_sign`](crate::governance::GovState::card_sign)); the caller passes only the bytes
+/// to sign and receives only the signature — no signing material crosses to the plane. A SAFE wrapper
+/// that keeps the raw fn-pointer + out-buffer read inside this audited module (busbar-core denies
+/// `unsafe` elsewhere). `None` when this deployment holds no card-signing key (the `Refused` status).
+#[cfg(feature = "plane-a2a")]
+#[must_use]
+pub fn card_sign_over(app: &App, signing_input: &[u8]) -> Option<[u8; 64]> {
+    let scope = DispatchScope::new();
+    with_borrowed_host(app, &scope, |host, vt| {
+        let mut out = [0u8; 64];
+        let status = (vt.card_sign.expect("card_sign is a wired slot"))(
+            host,
+            signing_input.as_ptr(),
+            signing_input.len(),
+            out.as_mut_ptr(),
+        );
+        (status == busbar_plugin::hot::StatusClass::Ok).then_some(out)
+    })
+}
+
 /// The outcome of a refusal-fidelity admit driven over the host `govern_admit_reason` seam.
 pub enum GovAdmit {
     /// Admitted — the RAII grant is registered in the arena the caller passed.

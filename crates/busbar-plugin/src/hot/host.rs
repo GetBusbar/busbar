@@ -320,6 +320,19 @@ pub type VerifyDecideFn =
 /// of [`ApprovalRedeemFn`].
 pub type ApprovalRedeemQFn =
     extern "C-unwind" fn(host: HostCtx, query: *const ApprovalQuery) -> StatusClass;
+/// Sign a detached-JWS signing input with the HOST-OWNED card subkey. The plane builds the RFC 7515
+/// signing input (`<protected>.<payload>`) and passes its bytes as `(input_ptr, input_len)`; the host
+/// derives its domain-separated card subkey, signs, and writes the 64-byte Ed25519 signature into
+/// `out` (a caller-provided 64-byte buffer) on [`StatusClass::Ok`]. The card SECRET is derived and
+/// held host-side and NEVER crosses to the plane. [`StatusClass::Refused`] when the host holds no
+/// card-signing key (nothing to sign with); [`StatusClass::Fault`] on a caught panic — `out` is left
+/// untouched on any non-`Ok` return.
+pub type CardSignFn = extern "C-unwind" fn(
+    host: HostCtx,
+    input_ptr: *const u8,
+    input_len: usize,
+    out: *mut u8,
+) -> StatusClass;
 
 /// The `#[repr(C)]` inbound-capability vtable a plane calls back into. Leads with the FROZEN
 /// [`AbiPreamble`] (a receiver `check_preamble`s it before using any slot) and a `size`/`version`
@@ -435,6 +448,13 @@ pub struct PlaneHostVtable {
     pub journal_compact: Option<JournalCompactFn>,
     /// Verify one scope's persisted chain (writes a verify report).
     pub journal_verify_scoped: Option<JournalVerifyScopedFn>,
+    // ── APPENDED (minor-10, the CARD-SIGN seam): the host-owned agent-card signer. The plane frames
+    //    the RFC 7515 signing input and passes the bytes; the host derives the domain-separated card
+    //    subkey, signs, and returns the 64-byte Ed25519 signature — so the card SECRET is derived and
+    //    held host-side and never crosses to the plane. Trailing slot, append-only, same
+    //    sized/versioned discipline (the minor-10 bump). ─────────────────────────────────────────────
+    /// Sign a card signing-input with the host-owned card subkey (writes 64 signature bytes).
+    pub card_sign: Option<CardSignFn>,
     // ── EXTENSION POINT (reserved) ──────────────────────────────────────────────────────────────
     // Metering reserve/settle (a `CostHold`) is DELIBERATELY NOT a slot here. When a high-rate
     // carrier needs it, add `cost_reserve`/`cost_settle` as trailing `Option` slots below this line
@@ -494,6 +514,7 @@ impl PlaneHostVtable {
         journal_forget: None,
         journal_compact: None,
         journal_verify_scoped: None,
+        card_sign: None,
     };
 
     /// A fully-populated STUB vtable: every slot points at an `unimplemented!()` stub. It exists to
@@ -542,6 +563,7 @@ impl PlaneHostVtable {
         journal_forget: Some(stub::journal_forget),
         journal_compact: Some(stub::journal_compact),
         journal_verify_scoped: Some(stub::journal_verify_scoped),
+        card_sign: Some(stub::card_sign),
     };
 }
 
@@ -854,6 +876,15 @@ pub mod stub {
     ) -> StatusClass {
         unimplemented!("PlaneHost::journal_verify_scoped — stub")
     }
+    /// Stub: see module docs.
+    pub extern "C-unwind" fn card_sign(
+        _host: HostCtx,
+        _input_ptr: *const u8,
+        _input_len: usize,
+        _out: *mut u8,
+    ) -> StatusClass {
+        unimplemented!("PlaneHost::card_sign — stub")
+    }
 }
 
 #[cfg(test)]
@@ -906,6 +937,7 @@ mod tests {
         assert!(vt.journal_forget.is_some());
         assert!(vt.journal_compact.is_some());
         assert!(vt.journal_verify_scoped.is_some());
+        assert!(vt.card_sign.is_some());
         assert_eq!(vt.size as usize, core::mem::size_of::<PlaneHostVtable>());
     }
 

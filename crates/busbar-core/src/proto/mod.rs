@@ -962,7 +962,8 @@ pub(crate) const PLANE_DECL: crate::plane::registry::PlaneDecl =
         // keeps its own richer validation elsewhere, so there is no per-entry document for the admin
         // write path to validate through this seam.
         config_validate: None,
-        card_signer: None,
+        card_signing_domain: None,
+        card_kid_prefix: None,
         named_def_list: None,
         named_def_get: None,
         registry_contains: None,

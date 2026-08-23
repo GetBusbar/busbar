@@ -88,7 +88,53 @@ pub fn build_plane_host_vtable() -> PlaneHostVtable {
         journal_forget: Some(super::journal::journal_forget),
         journal_compact: Some(super::journal::journal_compact),
         journal_verify_scoped: Some(super::journal::journal_verify_scoped),
+        // ── The CARD-SIGN seam (minor-10): the host derives the deployment's domain-separated card
+        //    subkey and signs a plane-framed input, so the card SECRET never crosses to the plane.
+        //    Wired only when a plane declares a card-signing domain (`plane-a2a`); absent otherwise. ──
+        #[cfg(feature = "plane-a2a")]
+        card_sign: Some(card_sign),
+        #[cfg(not(feature = "plane-a2a"))]
+        card_sign: None,
     }
+}
+
+/// WIRED `card_sign` → the REAL host-side card signer over `crate::governance` (see
+/// [`crate::governance::GovState::card_sign`]): derive the deployment's domain-separated agent-card
+/// subkey and sign the plane-framed signing input, writing the 64-byte Ed25519 signature into `out`
+/// on the `Ok` path. The subkey secret is derived and used entirely host-side; only the signature
+/// bytes cross back. `Refused` on a null in/out pointer or a deployment with no card-signing key;
+/// `Fault` on any panic (`out` untouched).
+#[cfg(feature = "plane-a2a")]
+extern "C-unwind" fn card_sign(
+    host: HostCtx,
+    input_ptr: *const u8,
+    input_len: usize,
+    out: *mut u8,
+) -> StatusClass {
+    catch_unwind(AssertUnwindSafe(|| {
+        // SAFETY: recovery invariant (see `recover`).
+        let state: &HostState = unsafe { recover(host) };
+        if input_ptr.is_null() || out.is_null() {
+            return StatusClass::Refused;
+        }
+        // SAFETY: `(input_ptr, input_len)` is a live borrowed range for the call (ABI discipline).
+        let input = unsafe { std::slice::from_raw_parts(input_ptr, input_len) };
+        match state
+            .app
+            .governance
+            .as_ref()
+            .and_then(|g| g.card_sign(input))
+        {
+            Some(sig) => {
+                // SAFETY: `out` is a caller-provided writable range of at least 64 bytes (ABI); `sig`
+                // is a live 64-byte array. Written only on the Ok path (init-only-on-Ok).
+                unsafe { std::ptr::copy_nonoverlapping(sig.as_ptr(), out, 64) };
+                StatusClass::Ok
+            }
+            None => StatusClass::Refused, // no card-signing key → out-buffer left untouched.
+        }
+    }))
+    .unwrap_or(StatusClass::Fault) // caught panic → the distinct fault class, never `Ok`.
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────

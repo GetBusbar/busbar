@@ -33,6 +33,23 @@ fn token_signer(seed: u8) -> TokenSigner {
     TokenSigner::from_secret_bytes(&[seed; 32], DEFAULT_KID)
 }
 
+/// A live app whose governance holds `token_signer(seed)` — the seam a `CardSigner` reaches its
+/// host card-signing capability through. The card subkey is derived and used ENTIRELY host-side
+/// (`GovState::card_sign`); the plane holds only the public issuer key, exactly as it will once the
+/// A2A plane is a separate crate. Every signature below is therefore produced over the same
+/// `token_signer(seed)` the pre-re-seam `CardSigner::derived_from` used, so the bytes are identical.
+fn app_signed_by(seed: u8) -> std::sync::Arc<crate::state::App> {
+    let gov = std::sync::Arc::new(
+        crate::governance::GovState::new_with_signer(
+            std::sync::Arc::new(crate::governance::MemoryStore::new()),
+            None,
+            Some(token_signer(seed)),
+        )
+        .expect("a memory-store GovState with a signing key constructs"),
+    );
+    crate::test_support::TestApp::new().governance(gov).build()
+}
+
 fn backend_card() -> Value {
     json!({
         "protocolVersion": "0.3.0",
@@ -58,11 +75,11 @@ fn backend_card() -> Value {
     })
 }
 
-fn served_by(signer: &crate::a2a::sign::CardSigner) -> Value {
+fn served_by(signer: &crate::a2a::sign::CardSigner<'_>) -> Value {
     rewrite_card(&backend_card(), BACKEND, PUBLIC, "planner", Some(signer)).expect("rewrite")
 }
 
-fn busbars_issuer_key(signer: &crate::a2a::sign::CardSigner) -> IssuerKey {
+fn busbars_issuer_key(signer: &crate::a2a::sign::CardSigner<'_>) -> IssuerKey {
     IssuerKey::from_spki_base64(&signer.issuer_spki_base64())
         .expect("busbar's published key must parse under the verifier that consumes it")
 }
@@ -71,7 +88,8 @@ fn busbars_issuer_key(signer: &crate::a2a::sign::CardSigner) -> IssuerKey {
 
 #[test]
 fn a_served_card_carries_a_signature_that_verifies_against_busbars_published_key() {
-    let signer = CardSigner::derived_from(&token_signer(7));
+    let app = app_signed_by(7);
+    let signer = card_signer(&app).expect("a deployment with a signing key has a card signer");
     let served = served_by(&signer);
 
     let verified = jws::verify_card(&served, &busbars_issuer_key(&signer))
@@ -92,7 +110,8 @@ fn a_served_card_carries_a_signature_that_verifies_against_busbars_published_key
 
 #[test]
 fn the_served_card_carries_busbars_signature_and_only_busbars() {
-    let signer = CardSigner::derived_from(&token_signer(7));
+    let app = app_signed_by(7);
+    let signer = card_signer(&app).expect("a signing key means a card signer");
     let served = served_by(&signer);
     let signatures = served
         .get("signatures")
@@ -116,7 +135,8 @@ fn the_served_card_carries_busbars_signature_and_only_busbars() {
 
 #[test]
 fn tampering_with_one_byte_of_the_served_document_breaks_verification() {
-    let signer = CardSigner::derived_from(&token_signer(7));
+    let app = app_signed_by(7);
+    let signer = card_signer(&app).expect("a signing key means a card signer");
     let key = busbars_issuer_key(&signer);
     let served = served_by(&signer);
     jws::verify_card(&served, &key).expect("the untampered card verifies — the control");
@@ -168,8 +188,10 @@ fn tampering_with_one_byte_of_the_served_document_breaks_verification() {
 fn a_card_signed_by_a_different_busbar_deployment_does_not_verify_here() {
     // Two deployments, two token secrets, two derived card keys. A caller that pinned one must not
     // accept the other, or the pin identifies "some busbar" rather than "this busbar".
-    let ours = CardSigner::derived_from(&token_signer(7));
-    let theirs = CardSigner::derived_from(&token_signer(9));
+    let ours_app = app_signed_by(7);
+    let theirs_app = app_signed_by(9);
+    let ours = card_signer(&ours_app).expect("a signing key means a card signer");
+    let theirs = card_signer(&theirs_app).expect("a signing key means a card signer");
     assert_eq!(
         jws::verify_card(&served_by(&theirs), &busbars_issuer_key(&ours)),
         Err(JwsError::NoSignatureVerified)
@@ -185,7 +207,8 @@ fn the_signature_covers_exactly_the_inbound_paths_signing_payload() {
     // checked against it with a bare ed25519 verify. If the signer had canonicalised differently,
     // this fails while `verify_card` might not, because `verify_card` would be using the signer's
     // idea of canonical too.
-    let signer = CardSigner::derived_from(&token_signer(7));
+    let app = app_signed_by(7);
+    let signer = card_signer(&app).expect("a signing key means a card signer");
     let served = served_by(&signer);
 
     let protected_b64 = served["signatures"][0]["protected"]
@@ -281,7 +304,8 @@ fn there_is_exactly_one_canonicalizer_and_one_signing_payload_on_this_plane() {
 #[test]
 fn the_card_key_is_not_the_token_key_and_cannot_be_walked_back_to_it() {
     let token = token_signer(7);
-    let card = CardSigner::derived_from(&token);
+    let app = app_signed_by(7);
+    let card = card_signer(&app).expect("a signing key means a card signer");
 
     let card_spki = base64::engine::general_purpose::STANDARD
         .decode(card.issuer_spki_base64())
@@ -303,9 +327,10 @@ fn the_card_key_is_not_the_token_key_and_cannot_be_walked_back_to_it() {
 #[test]
 fn the_derivation_is_deterministic_and_domain_separated() {
     let token = token_signer(7);
+    let app = app_signed_by(7);
     assert_eq!(
-        CardSigner::derived_from(&token).issuer_spki_base64(),
-        CardSigner::derived_from(&token).issuer_spki_base64(),
+        card_signer(&app).unwrap().issuer_spki_base64(),
+        card_signer(&app).unwrap().issuer_spki_base64(),
         "a restart must serve cards under the same key, or every caller's pin breaks on a bounce"
     );
     assert_ne!(
@@ -326,8 +351,10 @@ fn rotating_the_token_key_rotates_the_card_key_with_it() {
     // Stated as a property rather than left to be discovered: an operator rotating the signing key
     // is also rotating what external callers pinned, and they will see it as a kid whose signature
     // no longer verifies — which is the signal `approve-pin` exists to absorb.
-    let before = CardSigner::derived_from(&token_signer(7));
-    let after = CardSigner::derived_from(&token_signer(8));
+    let before_app = app_signed_by(7);
+    let after_app = app_signed_by(8);
+    let before = card_signer(&before_app).expect("a signing key means a card signer");
+    let after = card_signer(&after_app).expect("a signing key means a card signer");
     assert_ne!(before.issuer_spki_base64(), after.issuer_spki_base64());
     assert_eq!(
         jws::verify_card(&served_by(&after), &busbars_issuer_key(&before)),
@@ -358,7 +385,8 @@ fn the_signature_is_taken_over_the_document_that_is_actually_served() {
     // Signing before the rewrite would sign a document nobody sees. The check is that the SERVED
     // bytes — busbar's endpoints, busbar's security scheme, the backend nowhere in them — are the
     // ones under the signature.
-    let signer = CardSigner::derived_from(&token_signer(7));
+    let app = app_signed_by(7);
+    let signer = card_signer(&app).expect("a signing key means a card signer");
     let served = served_by(&signer);
     let flattened = serde_json::to_string(&served).expect("serialize");
     assert!(

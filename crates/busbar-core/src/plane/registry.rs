@@ -97,21 +97,6 @@ pub struct CardIssuer {
     pub issuer_spki_base64: String,
 }
 
-/// THE CARD-SIGNING MATERIAL a plane derives from busbar's token signer, in the ONE shape that lets
-/// core hold it without naming the plane's signer type. Built by [`PlaneDecl::card_signer`] entirely
-/// plane-side: the plane derives its own signer from the core [`TokenSigner`](crate::governance::signing::TokenSigner)
-/// (the seed is derived, never handed across raw), reduces it to the PUBLIC [`CardIssuer`] AND
-/// type-erases the private signer into an opaque `Arc<dyn Any>` — so governance can hand the public
-/// half to a boot hook and the opaque half to the plane's own card path while naming no
-/// `crate::a2a` type itself.
-pub(crate) struct CardSignerHandle {
-    /// The PUBLIC card-issuer key (`kid` + SPKI), the only half a boot hook or an operator ever sees.
-    pub(crate) issuer: CardIssuer,
-    /// The plane's card SIGNER, type-erased. Downcast back to its concrete type only inside the plane
-    /// that built it (`crate::a2a::sign`), never in core.
-    pub(crate) signer: std::sync::Arc<dyn std::any::Any + Send + Sync>,
-}
-
 /// EVERYTHING A PLANE'S BOOT HOOKS ([`PlaneDecl::hydrate`], [`PlaneDecl::start`]) MAY READ, and
 /// DELIBERATELY nothing that carries the audit chain, the governance context or the signing seed
 /// (invariant (a)). Its surface names [`PlaneStore`](crate::plane::store::PlaneStore) — never
@@ -346,19 +331,23 @@ pub struct PlaneDecl {
     #[allow(clippy::type_complexity)]
     pub config_validate: Option<fn(name: &str, def: &serde_json::Value) -> Result<(), String>>,
 
-    /// DERIVE THIS PLANE'S CARD-SIGNING MATERIAL from busbar's token signer — the seam that lets
-    /// governance hand out a card signer WITHOUT naming the plane's signer type. Given the core
-    /// [`TokenSigner`](crate::governance::signing::TokenSigner), the plane derives its own signer (a
-    /// derived subkey, never the token seed itself) and returns the PUBLIC [`CardIssuer`] plus that
-    /// private signer TYPE-ERASED in a [`CardSignerHandle`]. Only the A2A plane signs cards; `None`
-    /// for every other plane, so `GovState::a2a_card_signer`/`a2a_card_issuer` return `None` with the
-    /// plane compiled out and `governance/state.rs` names no `crate::a2a` type.
-    // Read only through the A2A card path (`plane-a2a`); with that plane compiled out nothing derives
-    // a card signer, so the field is genuinely unread there rather than dead.
+    /// THE DOMAIN this plane derives its agent-card signing subkey under — a versioned `&'static str`
+    /// constant, NOT a fn over a signer. It is the ONLY thing the host needs to reproduce the plane's
+    /// card key: `GovState::card_sign` reads it off this decl, derives the subkey from the core token
+    /// signer (`TokenSigner::sign_with_card_subkey`) and signs HOST-side, so no signing material ever
+    /// reaches the plane (invariant (a)). `None` for every plane that does not sign cards, so
+    /// `GovState::a2a_card_issuer`/`card_sign` return `None` with the A2A plane compiled out and
+    /// `governance/state.rs` names no `crate::a2a` type.
     #[cfg_attr(not(feature = "plane-a2a"), allow(dead_code))]
-    #[allow(clippy::type_complexity)]
-    pub(crate) card_signer:
-        Option<fn(&crate::governance::signing::TokenSigner) -> CardSignerHandle>,
+    pub card_signing_domain: Option<&'static str>,
+
+    /// THE `kid` PREFIX this plane stamps on its card signatures, prepended to the token signer's own
+    /// `kid` so a caller can SEE that the card key is not the token key. A `&'static str` constant for
+    /// the same reason [`Self::card_signing_domain`] is: the host builds the published issuer `kid`
+    /// (`GovState::a2a_card_issuer`) from this and the token `kid` without naming the plane. `None` for
+    /// a plane that signs no cards.
+    #[cfg_attr(not(feature = "plane-a2a"), allow(dead_code))]
+    pub card_kid_prefix: Option<&'static str>,
 
     /// PROJECT THIS PLANE'S NAMED-DEFINITION REGISTRATIONS onto the shared read view — the plane half
     /// of the generic `GET /api/v1/admin/<section>` list, so `admin::v1::service` reads a plane's

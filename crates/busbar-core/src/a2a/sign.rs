@@ -53,37 +53,45 @@
 //! number, a supplementary-plane character, or a member busbar does not model.
 
 use base64::Engine as _;
-use ed25519_dalek::{Signer, SigningKey};
 use serde_json::{json, Map, Value};
 
 use super::canonical::canonicalize;
 use super::card::{signing_payload, CardError};
-use super::jws::{B64URL, ED25519_SPKI_PREFIX};
+use super::jws::B64URL;
 
 /// The domain string the card-signing subkey is derived under. Versioned, so a future change to the
 /// derivation is a NEW key rather than a silently different one under the same name.
 pub(crate) const CARD_SIGNING_DOMAIN: &str = "a2a/agent-card-signing/v1";
 
-/// The `kid` busbar stamps into every card signature, derived from the token signer's own kid.
+/// The `kid` PREFIX busbar stamps into every card signature, prepended to the token signer's own kid.
 ///
 /// Prefixed rather than reused bare, because a `kid` that read `k1` on both a token and a card
 /// would tell an operator that one key signs both — which is exactly the thing the derivation
-/// exists to make untrue.
-pub(crate) fn card_kid(token_kid: &str) -> String {
-    format!("busbar-a2a-card-{token_kid}")
-}
+/// exists to make untrue. Declared on this plane's `PlaneDecl` (`card_kid_prefix`) so the host builds
+/// the published issuer `kid` (`GovState::a2a_card_issuer`) from it without naming this plane.
+pub(crate) const CARD_KID_PREFIX: &str = "busbar-a2a-card-";
 
 /// Why a card could not be signed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum SignError {
     /// The document cannot be canonicalized, so there is no payload to sign.
     Card(CardError),
+    /// The host card-signing capability yielded no signature — the deployment holds no card-signing
+    /// key. `card_signer` screens this out before a `CardSigner` is built, so it is an
+    /// invariant-violation guard rather than a path a served card reaches.
+    HostUnavailable,
 }
 
 impl std::fmt::Display for SignError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             SignError::Card(e) => write!(f, "cannot sign the agent card: {e}"),
+            SignError::HostUnavailable => {
+                write!(
+                    f,
+                    "cannot sign the agent card: the host holds no card-signing key"
+                )
+            }
         }
     }
 }
@@ -94,84 +102,58 @@ impl From<CardError> for SignError {
     }
 }
 
-/// BUSBAR'S AGENT-CARD ISSUER KEY: the domain-separated subkey, plus the `kid` it publishes under.
+/// BUSBAR'S AGENT-CARD SIGNER for one served card: the PUBLIC issuer key (`kid` + SPKI) this
+/// deployment publishes, plus the live [`App`](crate::state::App) that is the seam to the host's
+/// `card_sign` capability.
 ///
-/// Its `Debug` never prints key bytes, for the same reason
-/// [`crate::governance::signing::TokenSigner`]'s does not.
-pub(crate) struct CardSigner {
-    key: SigningKey,
-    kid: String,
+/// The plane holds NO card-signing key. The subkey is derived and held host-side
+/// ([`crate::governance::state::GovState::card_sign`], reached through
+/// [`crate::plane_host::card_sign_over`]); this type carries only PUBLIC material and a `&App`, and
+/// `sign_card` hands the framed signing input to the host and receives the 64 signature bytes back.
+/// That is the shape the R7 relocation needs: the extracted A2A crate names no signing-secret type.
+pub(crate) struct CardSigner<'a> {
+    /// The live app snapshot — the seam through which [`Self::sign_card`] reaches the host card signer.
+    app: &'a crate::state::App,
+    /// The PUBLIC card-issuer key (`kid` + SPKI base64), computed host-side.
+    issuer: crate::plane::registry::CardIssuer,
 }
 
-impl std::fmt::Debug for CardSigner {
+impl std::fmt::Debug for CardSigner<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CardSigner")
-            .field("kid", &self.kid)
-            .field("key", &"<redacted ed25519 signing key>")
-            .finish()
+            .field("kid", &self.issuer.kid)
+            .finish_non_exhaustive()
     }
 }
 
-/// DERIVE BUSBAR'S CARD-SIGNING MATERIAL for the plane seam — the A2A plane's half of
-/// [`crate::plane::registry::PlaneDecl::card_signer`]. Derives the [`CardSigner`] from the core token
-/// signer (a domain-separated subkey, never the token seed itself), reduces it to the PUBLIC
-/// [`crate::plane::registry::CardIssuer`], and TYPE-ERASES the private signer so governance can hold
-/// and hand it out without naming this type. Naming `CardSigner` HERE is correct: this is the A2A
-/// plane's own module, and it is what lets `governance/state.rs` derive a card signer without doing
-/// so.
-pub(crate) fn derive_card_signer(
-    signer: &crate::governance::signing::TokenSigner,
-) -> crate::plane::registry::CardSignerHandle {
-    let card = CardSigner::derived_from(signer);
-    crate::plane::registry::CardSignerHandle {
-        issuer: crate::plane::registry::CardIssuer {
-            kid: card.kid().to_string(),
-            issuer_spki_base64: card.issuer_spki_base64(),
-        },
-        signer: std::sync::Arc::new(card),
-    }
+/// THE A2A PLANE'S CARD SIGNER for this deployment: the PUBLIC issuer key
+/// ([`crate::governance::state::GovState::a2a_card_issuer`]) bound to the live app, so `sign_card`
+/// can reach the host card-signing capability. `None` when no signing key is configured (the
+/// governance-off path), matching the old typed accessor's own absence — the caller then serves an
+/// unsigned card.
+pub(crate) fn card_signer(app: &crate::state::App) -> Option<CardSigner<'_>> {
+    let issuer = app.governance.as_ref()?.a2a_card_issuer()?;
+    Some(CardSigner { app, issuer })
 }
 
-/// THE A2A PLANE'S CARD SIGNER for this deployment, downcast back HERE from the opaque handle
-/// `GovState::a2a_card_signer` holds — so the plane's card path reaches its signer while
-/// `governance/state.rs` names no `crate::a2a` type. `None` when no signing key is configured (the
-/// governance-off path), matching the old typed accessor's own absence.
-pub(crate) fn card_signer(app: &crate::state::App) -> Option<std::sync::Arc<CardSigner>> {
-    app.governance
-        .as_ref()
-        .and_then(|g| g.a2a_card_signer())
-        .and_then(|erased| erased.downcast::<CardSigner>().ok())
-}
-
-impl CardSigner {
-    /// Derive the card-signing key from busbar's token signing key.
-    ///
-    /// The ONLY constructor that production uses, and it takes the signer rather than raw bytes so
-    /// there is no call site at which the token secret itself could be handed in as a card key by
-    /// mistake.
-    pub(crate) fn derived_from(signer: &crate::governance::signing::TokenSigner) -> Self {
-        Self {
-            key: SigningKey::from_bytes(&signer.derived_subkey_seed(CARD_SIGNING_DOMAIN)),
-            kid: card_kid(signer.kid()),
-        }
-    }
-
-    /// The `kid` this signer stamps, and the one a caller reads off the served card.
+impl CardSigner<'_> {
+    /// The `kid` this signer stamps, and the one a caller reads off the served card. The published
+    /// value lives on the [`CardIssuer`](crate::plane::registry::CardIssuer) this wraps; this is the
+    /// plane-side accessor the card-signing test suite reads it back through.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn kid(&self) -> &str {
-        &self.kid
+        &self.issuer.kid
     }
 
     /// BUSBAR'S PUBLISHED ISSUER KEY, in the exact form the verifier accepts.
     ///
     /// Base64 of an Ed25519 SubjectPublicKeyInfo — the string an operator hands their counterparty
-    /// out of band, and the string that counterparty pastes into their own `pin.key:`. Rendered
-    /// through the same SPKI prefix [`super::jws::IssuerKey::from_spki_base64`] requires, so a value
-    /// this method emits and a value that method accepts cannot drift into two spellings.
+    /// out of band, and the string that counterparty pastes into their own `pin.key:`. Computed
+    /// host-side under the same SPKI prefix [`super::jws::IssuerKey::from_spki_base64`] requires, so a
+    /// value this method emits and a value that method accepts cannot drift into two spellings.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn issuer_spki_base64(&self) -> String {
-        let mut der = Vec::with_capacity(ED25519_SPKI_PREFIX.len() + 32);
-        der.extend_from_slice(&ED25519_SPKI_PREFIX);
-        der.extend_from_slice(self.key.verifying_key().as_bytes());
-        base64::engine::general_purpose::STANDARD.encode(der)
+        self.issuer.issuer_spki_base64.clone()
     }
 
     /// SIGN a card, returning it with busbar's signature attached under `signatures`.
@@ -187,13 +169,19 @@ impl CardSigner {
 
         // THE PROTECTED HEADER, through the SAME canonicalizer the payload uses. A second
         // serializer here would be a second set of bytes this plane calls canonical.
-        let protected = canonicalize(&json!({ "alg": "EdDSA", "kid": self.kid }))
+        let protected = canonicalize(&json!({ "alg": "EdDSA", "kid": self.issuer.kid }))
             .map_err(|e| SignError::Card(CardError::Canonical(e)))?;
         let protected_b64 = B64URL.encode(protected.as_bytes());
 
         // RFC 7515's signing input, spelled exactly as the verifier spells it.
         let signing_input = format!("{protected_b64}.{payload_b64}");
-        let signature = self.key.sign(signing_input.as_bytes());
+        // THE HOST DOES THE CRYPTO. The plane frames the signing input and hands the bytes to the
+        // host `card_sign` seam; the domain-derived card subkey is expanded and used entirely
+        // host-side (`GovState::card_sign`) and only the 64 signature bytes come back — so no signing
+        // material is ever held on this plane. `None` only if the deployment holds no card-signing
+        // key, which `card_signer` already screened out before constructing a `CardSigner`.
+        let signature = crate::plane_host::card_sign_over(self.app, signing_input.as_bytes())
+            .ok_or(SignError::HostUnavailable)?;
 
         let mut out: Map<String, Value> = card
             .as_object()
@@ -203,7 +191,7 @@ impl CardSigner {
             "signatures".to_string(),
             json!([{
                 "protected": protected_b64,
-                "signature": B64URL.encode(signature.to_bytes()),
+                "signature": B64URL.encode(signature),
             }]),
         );
         Ok(Value::Object(out))

@@ -391,22 +391,28 @@ impl GovState {
     /// `set_signing_key` swapping the material underneath a stale card signer is exactly the
     /// mint-under-one-key-verify-under-another failure the material is held together to prevent.
     pub(crate) fn a2a_card_issuer(&self) -> Option<crate::plane::registry::CardIssuer> {
-        let derive =
-            crate::plane::registry::builtin_plane_decl_for_config_section("agents")?.card_signer?;
-        self.signing_material().map(|m| derive(&m.signer).issuer)
+        let decl = crate::plane::registry::builtin_plane_decl_for_config_section("agents")?;
+        let domain = decl.card_signing_domain?;
+        let prefix = decl.card_kid_prefix?;
+        let m = self.signing_material()?;
+        Some(crate::plane::registry::CardIssuer {
+            kid: format!("{prefix}{}", m.signer.kid()),
+            issuer_spki_base64: m.signer.card_subkey_spki_base64(domain),
+        })
     }
 
-    /// BUSBAR'S AGENT-CARD SIGNER, TYPE-ERASED — derived from the token signing key through the same
-    /// plane seam and handed back opaque, so this file names no `crate::a2a` type. The A2A plane
-    /// downcasts it in `crate::a2a::sign::card_signer`. `None` when no signing key is configured; its
-    /// sole consumer is that plane-side helper, so it is gated with the plane.
+    /// SIGN a plane-framed card signing-input with the deployment's DOMAIN-DERIVED card subkey — the
+    /// host side of the plane `card_sign` seam. Resolves the card-signing domain from the built-in
+    /// plane declaration for the `agents` section (so this file names no `crate::a2a` type), derives
+    /// the subkey and signs. The subkey secret is derived and used entirely here; the caller receives
+    /// only the 64 signature bytes. `None` when no signing key is configured or no plane declares a
+    /// card-signing domain.
     #[cfg(feature = "plane-a2a")]
-    pub(crate) fn a2a_card_signer(
-        &self,
-    ) -> Option<std::sync::Arc<dyn std::any::Any + Send + Sync>> {
-        let derive =
-            crate::plane::registry::builtin_plane_decl_for_config_section("agents")?.card_signer?;
-        self.signing_material().map(|m| derive(&m.signer).signer)
+    pub(crate) fn card_sign(&self, signing_input: &[u8]) -> Option<[u8; 64]> {
+        let domain = crate::plane::registry::builtin_plane_decl_for_config_section("agents")?
+            .card_signing_domain?;
+        let m = self.signing_material()?;
+        Some(m.signer.sign_with_card_subkey(domain, signing_input))
     }
 
     /// The RAW SIGNING SECRET, for callers that need to DERIVE a key from it rather than sign with

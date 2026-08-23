@@ -91,7 +91,7 @@ pub(crate) async fn well_known_card(CurrentApp(app): CurrentApp) -> Response {
     // Signed by the same key that signs the fronted cards, read from the same place, so what an
     // external caller pins busbar by is one key rather than one per path.
     let signer = crate::a2a::sign::card_signer(&app);
-    match super::serve::self_card(public_url, signer.as_deref()) {
+    match super::serve::self_card(public_url, signer.as_ref()) {
         Ok(doc) => (
             [
                 (axum::http::header::CACHE_CONTROL, "public, max-age=3600"),
@@ -584,7 +584,7 @@ pub(crate) async fn card(
         &admitted.dispatch.backend_url,
         public_url,
         &admitted.dispatch.agent_id,
-        signer.as_deref(),
+        signer.as_ref(),
     ) {
         Ok(card) => (axum::http::StatusCode::OK, axum::Json(card)).into_response(),
         Err(e) => {

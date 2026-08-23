@@ -410,7 +410,7 @@ pub(super) fn extended_agent_card(
         Some(super::serve::extended_card(
             public_url,
             &entitled,
-            signer.as_deref(),
+            signer.as_ref(),
         ))
     });
 
