@@ -162,6 +162,28 @@ A principal's persisted MCP per-call records were read at boot but do NOT verify
 
 **What to do:** Treat the durable governance store as compromised until explained: capture it for forensic review before it is overwritten, then restore from a trusted backup once the cause is understood.
 
+<a id="plane-auditlog-chain-verify-failed"></a>
+### BUSBAR-2043 — Admin audit records failed hash-chain verification on restore (tamper evidence)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `plane-auditlog-chain-verify-failed`
+
+The persisted admin audit records were read at boot through the durable journal seam but do NOT verify against their own hash chain, which is tamper evidence. They are still restored and the chain resumes from the broken tail, because refusing here would convert a detection control into a deletion primitive — anyone able to write to the store could delete audit history by corrupting one record.
+
+**What to do:** Treat the durable governance store as compromised until explained: capture it for forensic review before it is overwritten, then restore from a trusted backup once the cause is understood.
+
+<a id="plane-auditlog-write-failed"></a>
+### BUSBAR-2044 — Admin audit record could not be written through the durable journal seam (evidence lost)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `plane-auditlog-write-failed`
+
+The admin audit record could NOT be written through the durable journal seam, so this mutation is being served but its evidence is being lost on that path. The chain position is unchanged, so the chain stays contiguous — what is missing is this one record, not the ones after it. This can recur per mutation during a store outage, so it warns on the transition into the failing state and holds subsequent occurrences at debug.
+
+**What to do:** Restore the durable governance store's write path. Once writes succeed again the latch resets and a future outage re-warns.
+
 ## 3xxx — Config
 
 <a id="config-overlay-not-writable"></a>

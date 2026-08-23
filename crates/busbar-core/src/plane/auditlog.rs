@@ -446,6 +446,24 @@ pub(crate) fn register_and_migrate(app: &Arc<crate::state::App>, store: &dyn bus
     });
 }
 
+/// MIRROR one admin-audit record onto the durable journal seam beside its legacy-ring write. Mints the
+/// timestamp plane-side (the same clock the ring uses at the same logical point) and appends the
+/// scopeless suffix under the constant `admin` scope, opening a fresh dispatch scope to reach the
+/// host-side chain. Fire-and-forget (see [`emit`]): it NEVER fails the mutation it records. The one call
+/// a plane-side audit site adds while the ring stays authoritative for reads (the dual-write window).
+#[allow(dead_code)] // called from the plane-gated audit sites; no caller with every plane compiled out
+pub(crate) fn mirror(
+    app: &crate::state::App,
+    action: &str,
+    resource: &str,
+    outcome: &str,
+    principal: &str,
+) {
+    let ts = crate::plane_host::clock_now_secs_over(app);
+    let suffix = audit_suffix(ts, action, resource, outcome, principal);
+    crate::plane_host::with_dispatch_scope(app, |host, _| emit(host, ADMIN_LOG, suffix));
+}
+
 // ── TEST HARNESS — the chain position is host-side now, so a test drives it over a host ────────────
 
 /// TEST ONLY: a fresh, process-unique `audit` stream id, well above the production ids (1/2/3) and the
@@ -486,6 +504,22 @@ impl AuditTestHarness {
 
     pub(crate) fn restore_from_store(&self, store: &dyn PlaneStore) -> StoreResult<AuditRestored> {
         self.host(|host| self.log.restore_from_store(host, store))
+    }
+
+    /// Append one record through the SEAM over THIS harness's isolated stream id and return the MINTED
+    /// `(seq, prev_hash, hash)`. The production [`emit`] pins [`KIND_ID_AUDIT`] (which a parallel test
+    /// must not share) and surfaces only fire-and-forget; a test drives the same chain-mint path over
+    /// its own id and reads back the link the append sealed.
+    pub(crate) fn emit_full(&self, scope: &str, suffix: Vec<u8>) -> (u64, String, String) {
+        self.host(|host| {
+            crate::plane_host::journal::journal_append_scoped_full(
+                host,
+                self.log.kind_id,
+                scope,
+                &suffix,
+            )
+            .expect("seam append")
+        })
     }
 }
 
@@ -552,5 +586,46 @@ mod auditlog_tests {
             "applied",
             "admin",
         );
+    }
+
+    /// THE CONVERSION GATE: a converted site's record, appended through the SEAM, carries the SAME hash
+    /// the legacy admin ring computes for the same fields at the same chain position — genesis AND the
+    /// inter-record link. Feeds a fixed `ts` on both sides (the seam suffix built directly, the legacy
+    /// `AuditEntry` filled directly) so the comparison isolates the digest, not the clock.
+    #[test]
+    fn a_converted_sites_seam_record_matches_the_legacy_ring_hash() {
+        let h =
+            AuditTestHarness::over(std::sync::Arc::new(busbar_store_memory::MemoryStore::new()));
+        let (ts, act, res, out, pr) = (
+            1_700_000_123u64,
+            "hook.register",
+            "hook:x",
+            "applied",
+            "admin",
+        );
+
+        // Append through the seam (the converted-site path) and read the link each append sealed.
+        let (seq1, prev1, hash1) = h.emit_full(ADMIN_LOG, audit_suffix(ts, act, res, out, pr));
+        let (seq2, prev2, hash2) = h.emit_full(
+            ADMIN_LOG,
+            audit_suffix(ts + 60, "hook.delete", res, out, pr),
+        );
+
+        // The legacy ring's records for the SAME fields at the SAME chain positions.
+        let mk = |seq, ts, action: &str, prev: String| AuditEntry {
+            seq,
+            ts,
+            action: action.to_string(),
+            resource: res.to_string(),
+            outcome: out.to_string(),
+            principal: pr.to_string(),
+            prev_hash: prev,
+            hash: String::new(),
+            recorded_here: true,
+        };
+        assert_eq!((seq1, prev1.as_str()), (1, ""), "genesis position");
+        assert_eq!(hash1, digest(&mk(1, ts, act, String::new())));
+        assert_eq!((seq2, prev2), (2, hash1.clone()), "record 2 links record 1");
+        assert_eq!(hash2, digest(&mk(2, ts + 60, "hook.delete", hash1)));
     }
 }

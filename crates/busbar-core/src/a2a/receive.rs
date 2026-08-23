@@ -957,6 +957,13 @@ async fn admitted(
                 crate::admin::audit::OUTCOME_REJECTED,
                 &actor,
             );
+            crate::plane::auditlog::mirror(
+                &app,
+                AUDIT_ACTION,
+                &resource,
+                crate::admin::audit::OUTCOME_REJECTED,
+                &actor,
+            );
             tracing::info!(
                 agent = %admitted.dispatch.agent_id,
                 hook,
@@ -1013,6 +1020,13 @@ async fn admitted(
     });
     if admitted_budget == busbar_plugin::hot::Decision::Deny {
         crate::admin::audit::AUDIT.record_by(
+            AUDIT_ACTION,
+            &resource,
+            crate::admin::audit::OUTCOME_REJECTED,
+            &actor,
+        );
+        crate::plane::auditlog::mirror(
+            &app,
             AUDIT_ACTION,
             &resource,
             crate::admin::audit::OUTCOME_REJECTED,
@@ -1131,6 +1145,13 @@ async fn admitted(
                 crate::admin::audit::OUTCOME_APPLIED,
                 &actor,
             );
+            crate::plane::auditlog::mirror(
+                &app,
+                AUDIT_ACTION,
+                &resource,
+                crate::admin::audit::OUTCOME_APPLIED,
+                &actor,
+            );
             return response;
         }
     }
@@ -1151,6 +1172,13 @@ async fn admitted(
         Ok(g) => g,
         Err(e) => {
             crate::admin::audit::AUDIT.record_by(
+                AUDIT_ACTION,
+                &resource,
+                crate::admin::audit::OUTCOME_REJECTED,
+                &actor,
+            );
+            crate::plane::auditlog::mirror(
+                &app,
                 AUDIT_ACTION,
                 &resource,
                 crate::admin::audit::OUTCOME_REJECTED,
@@ -1497,6 +1525,13 @@ async fn admitted(
         crate::admin::audit::OUTCOME_APPLIED,
         &actor,
     );
+    crate::plane::auditlog::mirror(
+        &app,
+        AUDIT_ACTION,
+        &resource,
+        crate::admin::audit::OUTCOME_APPLIED,
+        &actor,
+    );
 
     // 7. RELAY. Everything above this line DECIDED; this is the line that reaches the backend.
     //
@@ -1518,6 +1553,7 @@ async fn admitted(
     // grant re-derived FOR THAT MEMBER when the hop was re-targeted; see `route::hop_facts` for
     // why busbar's credential is never leased for a backend the caller's grant does not cover.
     let (target_backend_url, target_cred, grant) = match super::route::hop_facts(
+        &app,
         &plane,
         key,
         &admitted,

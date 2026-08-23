@@ -271,6 +271,7 @@ fn member_facts(
 /// audited `rejected` here so a second caller cannot forget to.
 #[allow(clippy::too_many_arguments)] // the hop's own facts, no more.
 pub(super) fn hop_facts<'a>(
+    app: &crate::state::App,
     plane: &super::plane::A2aPlane,
     key: &busbar_api::VirtualKey,
     admitted: &'a super::receive::Admitted,
@@ -302,6 +303,13 @@ pub(super) fn hop_facts<'a>(
         Ok(g) => Ok((url, cred, g)),
         Err(e) => {
             crate::admin::audit::AUDIT.record_by(
+                super::receive::AUDIT_ACTION,
+                resource,
+                crate::admin::audit::OUTCOME_REJECTED,
+                actor,
+            );
+            crate::plane::auditlog::mirror(
+                app,
                 super::receive::AUDIT_ACTION,
                 resource,
                 crate::admin::audit::OUTCOME_REJECTED,

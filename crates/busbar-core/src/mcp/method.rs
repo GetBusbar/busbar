@@ -415,6 +415,13 @@ fn tasks_cancel(
         crate::admin::audit::OUTCOME_APPLIED,
         ctx.actor,
     );
+    crate::plane::auditlog::mirror(
+        ctx.app,
+        "mcp_task.cancel",
+        &format!("mcp_task:{}", task.id),
+        crate::admin::audit::OUTCOME_APPLIED,
+        ctx.actor,
+    );
     result(id, serde_json::json!({}))
 }
 
@@ -738,6 +745,13 @@ fn prompts_get(
                 );
             }
             crate::admin::audit::AUDIT.record_by(
+                "mcp.caller_ask",
+                &format!("mcp_prompt:{}", prompt.namespaced),
+                crate::admin::audit::OUTCOME_APPLIED,
+                ctx.actor,
+            );
+            crate::plane::auditlog::mirror(
+                ctx.app,
                 "mcp.caller_ask",
                 &format!("mcp_prompt:{}", prompt.namespaced),
                 crate::admin::audit::OUTCOME_APPLIED,
@@ -1310,6 +1324,13 @@ async fn tools_call(
             crate::admin::audit::OUTCOME_REJECTED,
             ctx.actor,
         );
+        crate::plane::auditlog::mirror(
+            ctx.app,
+            "mcp_tool.call",
+            &format!("mcp_tool:{}", selected.namespaced),
+            crate::admin::audit::OUTCOME_REJECTED,
+            ctx.actor,
+        );
         return log.refused("tasks_capability_undeclared", missing_tasks_capability(id));
     }
 
@@ -1383,6 +1404,13 @@ async fn tools_call(
                 );
             }
             crate::admin::audit::AUDIT.record_by(
+                "mcp.caller_ask",
+                &format!("mcp_tool:{}", selected.namespaced),
+                crate::admin::audit::OUTCOME_APPLIED,
+                ctx.actor,
+            );
+            crate::plane::auditlog::mirror(
+                ctx.app,
                 "mcp.caller_ask",
                 &format!("mcp_tool:{}", selected.namespaced),
                 crate::admin::audit::OUTCOME_APPLIED,
@@ -1522,6 +1550,13 @@ async fn tools_call(
         } = verdict
         {
             crate::admin::audit::AUDIT.record_by(
+                "mcp_tool.call",
+                &format!("mcp_tool:{}", selected.namespaced),
+                crate::admin::audit::OUTCOME_REJECTED,
+                ctx.actor,
+            );
+            crate::plane::auditlog::mirror(
+                ctx.app,
                 "mcp_tool.call",
                 &format!("mcp_tool:{}", selected.namespaced),
                 crate::admin::audit::OUTCOME_REJECTED,
@@ -1721,6 +1756,13 @@ async fn tools_call(
                     crate::admin::audit::OUTCOME_REJECTED,
                     ctx.actor,
                 );
+                crate::plane::auditlog::mirror(
+                    ctx.app,
+                    "mcp_tool.call",
+                    &resource,
+                    crate::admin::audit::OUTCOME_REJECTED,
+                    ctx.actor,
+                );
                 return log.refused(
                     "ask_not_proxied",
                     error(
@@ -1766,6 +1808,13 @@ async fn tools_call(
                             crate::admin::audit::OUTCOME_REJECTED,
                             ctx.actor,
                         );
+                        crate::plane::auditlog::mirror(
+                            ctx.app,
+                            "mcp_tool.call",
+                            &resource,
+                            crate::admin::audit::OUTCOME_REJECTED,
+                            ctx.actor,
+                        );
                         return log.dispatched_with_reason(
                             crate::plane::calllog::REASON_UPSTREAM_FAILED,
                             result(
@@ -1791,6 +1840,13 @@ async fn tools_call(
                 crate::admin::audit::OUTCOME_APPLIED,
                 ctx.actor,
             );
+            crate::plane::auditlog::mirror(
+                ctx.app,
+                "mcp_tool.call",
+                &resource,
+                crate::admin::audit::OUTCOME_APPLIED,
+                ctx.actor,
+            );
             // Tool OUTPUT is markup-normalised before it re-enters model context: an upstream's
             // RESULT is exactly as injectable as its description, and it arrives later, when the
             // operator has already approved the tool.
@@ -1798,6 +1854,13 @@ async fn tools_call(
         }
         Outcome::Refused(refusal) => {
             crate::admin::audit::AUDIT.record_by(
+                "mcp_tool.call",
+                &resource,
+                crate::admin::audit::OUTCOME_REJECTED,
+                ctx.actor,
+            );
+            crate::plane::auditlog::mirror(
+                ctx.app,
                 "mcp_tool.call",
                 &resource,
                 crate::admin::audit::OUTCOME_REJECTED,
@@ -1849,6 +1912,13 @@ async fn tools_call(
         // succeeded, and this one did not.
         Outcome::UpstreamFailed(reason) => {
             crate::admin::audit::AUDIT.record_by(
+                "mcp_tool.call",
+                &resource,
+                crate::admin::audit::OUTCOME_REJECTED,
+                ctx.actor,
+            );
+            crate::plane::auditlog::mirror(
+                ctx.app,
                 "mcp_tool.call",
                 &resource,
                 crate::admin::audit::OUTCOME_REJECTED,
@@ -2015,6 +2085,13 @@ async fn create_task(
         },
     );
     crate::admin::audit::AUDIT.record_by(
+        "mcp_tool.call",
+        &format!("mcp_tool:{}", selected.namespaced),
+        crate::admin::audit::OUTCOME_APPLIED,
+        ctx.actor,
+    );
+    crate::plane::auditlog::mirror(
+        ctx.app,
         "mcp_tool.call",
         &format!("mcp_tool:{}", selected.namespaced),
         crate::admin::audit::OUTCOME_APPLIED,
@@ -2232,6 +2309,13 @@ fn refuse_setup(
         crate::admin::audit::OUTCOME_REJECTED,
         ctx.actor,
     );
+    crate::plane::auditlog::mirror(
+        ctx.app,
+        "mcp_tool.call",
+        &format!("mcp_tool:{namespaced}"),
+        crate::admin::audit::OUTCOME_REJECTED,
+        ctx.actor,
+    );
     crate::diagnostics::diag_debug!(
         crate::diagnostics::MCP_TOOLCALL_REFUSED_PRE_UPSTREAM,
         tool = %namespaced,
@@ -2263,6 +2347,13 @@ fn refuse_catalogue(
 ) -> Response {
     use crate::ingress::protocol::Words as _;
     crate::admin::audit::AUDIT.record_by(
+        "mcp_tool.call",
+        &format!("mcp_tool:{name}"),
+        crate::admin::audit::OUTCOME_REJECTED,
+        ctx.actor,
+    );
+    crate::plane::auditlog::mirror(
+        ctx.app,
         "mcp_tool.call",
         &format!("mcp_tool:{name}"),
         crate::admin::audit::OUTCOME_REJECTED,
@@ -2546,6 +2637,13 @@ fn refuse_ask(
     id: Option<serde_json::Value>,
 ) -> Response {
     crate::admin::audit::AUDIT.record_by(
+        "mcp.caller_ask",
+        resource,
+        crate::admin::audit::OUTCOME_REJECTED,
+        ctx.actor,
+    );
+    crate::plane::auditlog::mirror(
+        ctx.app,
         "mcp.caller_ask",
         resource,
         crate::admin::audit::OUTCOME_REJECTED,
