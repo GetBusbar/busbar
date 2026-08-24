@@ -7,6 +7,7 @@ members = [
     "crates/busbar-llm",
     "crates/busbar-mcp",
     "crates/busbar-a2a",
+    "crates/busbar-substrate",
     "crates/api",
     "crates/busbar-plugin",
     "crates/plugin-sdk",

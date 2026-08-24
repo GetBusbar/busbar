@@ -1,0 +1,14 @@
+[package]
+name = "busbar-substrate"
+version = "1.6.0"
+publish = false            # internal workspace crate; never goes to crates.io
+edition = "2021"
+rust-version = "1.97"
+description = "The neutral shared substrate the extracted plane crates (busbar-mcp, busbar-a2a) name instead of reaching into busbar-core: trust/egress/failover value families and transport-neutral helpers, all depending only on the plugin contracts (busbar-api) and the plugin ABI (busbar-plugin)."
+license = "Apache-2.0"
+
+# Skeleton only for Phase-B B0-a: an empty lib.rs needs no dependencies. Later Phase-B steps
+# (B0-b/B1) relocate the Tier-0/1/2 leaves here and add the deps each leaf needs (busbar-api,
+# busbar-plugin, serde_json, axum, reqwest, bytes, tracing). Kept dependency-free until then so
+# the crate compiles clean with no unused-dependency drift.
+[dependencies]
