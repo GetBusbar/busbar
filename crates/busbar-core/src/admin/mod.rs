@@ -365,7 +365,7 @@ impl MintPolicy {
 
 /// Parse a duration string (`<n><unit>`, unit in s|m|h|d) to seconds. Bounded so an absurd value
 /// cannot overflow the `exp` computation.
-pub(crate) fn parse_duration_secs(s: &str) -> Result<u64, String> {
+pub fn parse_duration_secs(s: &str) -> Result<u64, String> {
     let s = s.trim();
     let (num, unit) = s.split_at(
         s.find(|c: char| !c.is_ascii_digit())

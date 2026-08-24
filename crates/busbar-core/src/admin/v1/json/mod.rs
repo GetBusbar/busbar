@@ -256,7 +256,7 @@ fn service(handle: &Arc<AppHandle>) -> AdminService {
 // without it — allow it there. `pub(crate)` so a plane can compute the absolute path of its own verb
 // when attaching that verb's typed schema through the `openapi_schemas` seam.
 #[cfg_attr(not(feature = "openapi-schema"), allow(dead_code))]
-pub(crate) fn ap(rel: &str) -> String {
+pub fn ap(rel: &str) -> String {
     format!("{}{rel}", crate::admin::v1::contract::ADMIN_PREFIX)
 }
 
@@ -277,7 +277,7 @@ pub(crate) mod named_map;
 /// Serialize a successful view to the JSON body with the given status. `view` is any `contract` view
 /// (`#[derive(Serialize)]`); the JSON projection is the derive, so a field added to a view appears
 /// automatically (additive-only holds by construction).
-pub(crate) fn ok_json<T: Serialize>(status: StatusCode, view: &T) -> Response {
+pub fn ok_json<T: Serialize>(status: StatusCode, view: &T) -> Response {
     (
         status,
         [(CONTENT_TYPE, crate::proxy::APPLICATION_JSON)],
@@ -289,7 +289,7 @@ pub(crate) fn ok_json<T: Serialize>(status: StatusCode, view: &T) -> Response {
 /// Project an `AdminError` onto the stable v1 JSON error envelope
 /// `{"error":{"code":<stable>,"message":<human>}}` with the error's HTTP status. Tooling branches on
 /// `code`; `message` is human-only.
-pub(crate) fn err_json(e: &AdminError) -> Response {
+pub fn err_json(e: &AdminError) -> Response {
     err_json_tagged(e, None)
 }
 

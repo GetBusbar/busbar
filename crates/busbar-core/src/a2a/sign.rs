@@ -126,13 +126,15 @@ impl std::fmt::Debug for CardSigner<'_> {
     }
 }
 
-/// THE A2A PLANE'S CARD SIGNER for this deployment: the PUBLIC issuer key
-/// ([`crate::governance::state::GovState::a2a_card_issuer`]) bound to the live app, so `sign_card`
-/// can reach the host card-signing capability. `None` when no signing key is configured (the
-/// governance-off path), matching the old typed accessor's own absence — the caller then serves an
-/// unsigned card.
+/// THE A2A PLANE'S CARD SIGNER for this deployment: the PUBLIC issuer key bound to the live app, so
+/// `sign_card` can reach the host card-signing capability. The issuer is read off the plane's OWN
+/// runtime slot ([`super::runtime`]'s [`crate::a2a::plane::A2aPlane::card_issuer`]), where the plane's
+/// `start` hook stashed the host-computed [`crate::plane::registry::BootCtx::card_issuer`] — so this
+/// plane names no `GovState`. `None` when no signing key is configured (the governance-off path) or
+/// before the start hook has run, matching the old typed accessor's own absence — the caller then
+/// serves an unsigned card.
 pub(crate) fn card_signer(app: &crate::state::App) -> Option<CardSigner<'_>> {
-    let issuer = app.governance.as_ref()?.a2a_card_issuer()?;
+    let issuer = super::runtime(app)?.card_issuer()?.clone();
     Some(CardSigner { app, issuer })
 }
 

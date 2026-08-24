@@ -47,7 +47,17 @@ fn app_signed_by(seed: u8) -> std::sync::Arc<crate::state::App> {
         )
         .expect("a memory-store GovState with a signing key constructs"),
     );
-    crate::test_support::TestApp::new().governance(gov).build()
+    // An a2a plane must exist for `card_signer` to reach the public issuer key off the plane's own
+    // slot (where `TestApp::build` stashes it from governance, mirroring the `a2a_start` hook). One
+    // unpinned registration is the minimal `agents:` that lowers a plane — the card-signing bytes are
+    // over the served card, independent of which agents are registered.
+    let def: crate::a2a::config::AgentDefCfg =
+        serde_yaml::from_str("url: https://agent.example/a2a\npin: { mechanism: unpinned }\n")
+            .expect("a minimal unpinned agent def parses");
+    crate::test_support::TestApp::new()
+        .governance(gov)
+        .agent_def("planner", def)
+        .build()
 }
 
 fn backend_card() -> Value {

@@ -1765,7 +1765,7 @@ pub(crate) async fn auth_middleware(
 /// and the stdio serve mode a boot-time stderr sentence and a nonzero exit — which is the same
 /// decision/vocabulary split `crate::ingress::protocol::CoreRefusal` documents for the ingress.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum IdentityRefusal {
+pub enum IdentityRefusal {
     /// The chain denied the credential: a `Reject`, an all-`Pass` on a configured chain, or a
     /// signed key that stopped verifying.
     Denied,

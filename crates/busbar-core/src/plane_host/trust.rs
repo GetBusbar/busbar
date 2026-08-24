@@ -469,7 +469,7 @@ pub(crate) fn quarantine_drift(
 /// miss, not a refusal. Opens its own [`DispatchScope`] — the drift settle registers no host handle,
 /// so which arena reclaims is immaterial.
 #[cfg(feature = "plane-mcp")]
-pub(crate) fn quarantine_settle_over(
+pub fn quarantine_settle_over(
     app: &crate::state::App,
     subject: &str,
     state: crate::trust::TrustState,

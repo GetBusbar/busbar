@@ -97,7 +97,7 @@ use crate::operation::Operation;
 /// The channels busbar's framed operations ride. Closed set — adding one is a compile error at
 /// every exhaustive match and at every site that builds a framed cell.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) enum Transport {
+pub enum Transport {
     /// ONE HTTP request in, ONE HTTP response out — the exchange every cell in the tree uses
     /// today: the six LLM protocols' POSTs and `handlers/mcp.rs`'s streamable-HTTP `/mcp`. The
     /// response may be buffered, SSE-framed or binary event-stream framed; that choice belongs to
@@ -151,7 +151,7 @@ pub(crate) enum Transport {
 // is no client wire to select, so it is gated exactly as [`Transport::upstream_wire`] is.
 #[cfg(feature = "plane-mcp")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum UpstreamWireKind {
+pub enum UpstreamWireKind {
     /// The streamable-HTTP POST wire (`mcp/client/transport.rs`'s `HttpTransport`).
     StreamableHttp,
     /// The child-process stdin/stdout wire (`mcp/client/stdio.rs`'s `StdioWire`).

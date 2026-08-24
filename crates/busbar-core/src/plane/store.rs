@@ -99,7 +99,7 @@ pub struct PlaneStoreView(Arc<dyn Store>);
 impl PlaneStoreView {
     /// Narrow a real store handle to a plane-facing one. The ONLY place an `Arc<dyn Store>` becomes
     /// an `Arc<dyn PlaneStore>`; called once per configured store at boot.
-    pub(crate) fn narrow(store: Arc<dyn Store>) -> Arc<dyn PlaneStore> {
+    pub fn narrow(store: Arc<dyn Store>) -> Arc<dyn PlaneStore> {
         Arc::new(Self(store))
     }
 }
@@ -232,7 +232,7 @@ pub fn call_record(record: &McpCallRecord) -> StoreResult<PlaneRecord> {
 /// Build the neutral upsert envelope for an MCP demotion record (kind `demotion`), keyed by its
 /// server. Demotions are never purged by age (they clear on an agreeing observation, not a cutoff),
 /// so the disposition is immaterial and left `Active`.
-pub(crate) fn demotion_record(row: &McpDemotionRow) -> StoreResult<PlaneRecord> {
+pub fn demotion_record(row: &McpDemotionRow) -> StoreResult<PlaneRecord> {
     Ok(PlaneRecord {
         kind: KIND_DEMOTION.to_string(),
         id: row.server.clone(),
@@ -260,7 +260,7 @@ pub(crate) fn demotion_record(row: &McpDemotionRow) -> StoreResult<PlaneRecord> 
 /// back through it `verify_chain`-passes byte-identically. `request_id` is never in the digest and is
 /// absent from the neutral body, so it comes back empty.
 #[cfg(test)]
-pub(crate) fn task_event_row_from_body(task_id: &str, body: &[u8]) -> StoreResult<TaskEventRow> {
+pub fn task_event_row_from_body(task_id: &str, body: &[u8]) -> StoreResult<TaskEventRow> {
     use crate::audit::journal::NeutralBody;
     if let Ok(nb) = decode::<NeutralBody>(body) {
         let suffix = String::from_utf8_lossy(&nb.content);

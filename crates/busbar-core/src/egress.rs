@@ -177,7 +177,7 @@ pub(crate) fn with_cause(err: &dyn std::error::Error) -> String {
 /// There is deliberately NO total-request timeout on the client: it is applied per REQUEST, because a
 /// pooled client serves callers with different deadlines. Turning certificate verification off
 /// appears nowhere — a pin obtained that way would be strictly worse than no pin.
-pub(crate) fn build_pinned_client(
+pub fn build_pinned_client(
     host: &str,
     addr: SocketAddr,
     dns: Arc<dyn reqwest::dns::Resolve>,
@@ -232,7 +232,7 @@ pub(crate) fn build_pinned_client(
 /// [`build_pinned_client`] and needs no pool.
 #[cfg(any(feature = "plane-mcp", feature = "plane-a2a"))]
 #[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
-pub(crate) struct PinnedClientPool {
+pub struct PinnedClientPool {
     clients: Mutex<HashMap<(String, SocketAddr), reqwest::Client>>,
     max: usize,
 }

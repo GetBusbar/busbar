@@ -56,7 +56,7 @@ pub(crate) fn with_hostless<R>(f: impl FnOnce(&DispatchScope) -> R) -> R {
 /// The one hop the adapter opens, as neutral data. The plane composes protocol on top; this carries
 /// only what an outbound request IS — verb, url, headers, body — plus the host's allowlist stance and
 /// the opaque mTLS client-identity ref (never a key).
-pub(crate) struct HopSpec<'a> {
+pub struct HopSpec<'a> {
     pub verb: &'a str,
     pub url: &'a str,
     pub headers: &'a [(String, String)],

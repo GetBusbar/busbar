@@ -28,7 +28,7 @@ use super::{DeployCfg, ExportDefCfg, IdentityProviderCfg};
 
 /// One 1.5.3 named-DEFINITION map section. The variant set is the ONLY thing a new section adds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) enum NamedMapSection {
+pub enum NamedMapSection {
     /// `identity-providers:` — provider NAME → `{module, settings, max_admin_scope, token,
     /// browser_login}`, referenced by bare name from `auth.chain:` / `auth.admin_auth:` /
     /// `auth.role_bindings:`.

@@ -303,6 +303,11 @@ pub(crate) fn a2a_start(ctx: &crate::plane::registry::BootCtx) -> Result<(), Str
         // `BootCtx::card_issuer`). Logged beside the plane's start rather than at key resolution,
         // because this value only means anything where an A2A plane is actually serving cards.
         if let Some(issuer) = ctx.card_issuer.as_ref() {
+            // STASH the public issuer key on the plane's OWN slot, so `sign::card_signer` reads it
+            // here rather than off `app.governance` — the route-through that lets the extracted plane
+            // name no `GovState`. Public material only; the signing seed stays host-side and is reached
+            // through `plane_host::card_sign_over`.
+            plane.set_card_issuer(issuer.clone());
             tracing::info!(
                 kid = %issuer.kid,
                 issuer_key = %issuer.issuer_spki_base64,

@@ -100,7 +100,7 @@ impl SettleAdmission for BreakerAdmission {
     not(any(feature = "plane-mcp", feature = "plane-a2a")),
     allow(dead_code)
 )]
-pub(crate) fn breaker_admit_over(
+pub fn breaker_admit_over(
     app: &crate::state::App,
     scope: &super::DispatchScope,
     pool: &[u8],

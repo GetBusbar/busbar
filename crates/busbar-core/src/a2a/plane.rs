@@ -35,7 +35,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, OnceLock, RwLock};
 
 use super::config::{AgentPinCfg, AgentsCfg, DEFAULT_RECOVERY_BACKOFF_MS};
 use super::fetch::FetchPolicy;
@@ -83,6 +83,13 @@ pub(crate) struct A2aPlane {
     /// through is the object this deployment was built with, and so a test can drive the real
     /// ingress against a recording seam without the ingress growing a test-shaped argument.
     relay: RwLock<Arc<dyn super::relay::RelaySeam>>,
+    /// BUSBAR'S PUBLIC AGENT-CARD ISSUER KEY (`kid` + SPKI), stashed by the plane's `start` hook from
+    /// the host-computed [`crate::plane::registry::BootCtx::card_issuer`]. PUBLIC material only — the
+    /// signing seed stays host-side and is reached through [`crate::plane_host::card_sign_over`]. Held
+    /// here so [`super::sign::card_signer`] reads the issuer off the plane's OWN slot rather than off
+    /// `app.governance`, which is what lets the extracted plane name no `GovState`. `None` until the
+    /// start hook runs, or when the deployment holds no card-signing key (the governance-off path).
+    card_issuer: OnceLock<crate::plane::registry::CardIssuer>,
 }
 
 /// THE LIVE TRUST DECISION, read off THE PLANE'S OWN REGISTRY at the moment it is asked.
@@ -195,7 +202,21 @@ impl A2aPlane {
             pins,
             registrations: RwLock::new(registrations),
             generation: AtomicU64::new(crate::trust::validate::next_generation()),
+            card_issuer: OnceLock::new(),
         }))
+    }
+
+    /// STASH BUSBAR'S PUBLIC CARD-ISSUER KEY, once, from the plane's `start` hook. Idempotent: a second
+    /// call (a config re-apply reaching the same plane object) is a no-op, matching the `OnceLock`
+    /// contract. Public material only.
+    pub(crate) fn set_card_issuer(&self, issuer: crate::plane::registry::CardIssuer) {
+        let _ = self.card_issuer.set(issuer);
+    }
+
+    /// BUSBAR'S PUBLIC CARD-ISSUER KEY for this deployment, as the card-signing path reads it. `None`
+    /// before the start hook has run or when no card-signing key is configured.
+    pub(crate) fn card_issuer(&self) -> Option<&crate::plane::registry::CardIssuer> {
+        self.card_issuer.get()
     }
 
     /// THE RELAY SEAM this deployment submits relayed tasks through. The LIVE one, always, in a

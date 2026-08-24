@@ -174,6 +174,47 @@ pub fn by_code(code: u16) -> Option<&'static Diagnostic> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
+// CROSS-CRATE EMIT MACROS. busbar-core keeps its own `pub(crate)` `macro_rules!` twins for its 16
+// in-tree call sites (a `pub(crate)` macro cannot cross a crate boundary), and these `#[macro_export]`
+// versions are the ones a PLUGIN crate reaches: a plane extracted from core into its own crate can no
+// longer name `crate::diagnostics::diag_warn`, so it emits coded diagnostics with the identical banner
+// form through `busbar_substrate::diagnostics::{diag_warn, SOME_DIAG}`. The expansion is byte-identical
+// to core's (`::tracing::warn!(diag = %DIAG.banner(), …)`); the expanding crate supplies `tracing`.
+//
+// `#[macro_export]` hoists the macro to the substrate CRATE ROOT, so a plugin reaches it as
+// `busbar_substrate::diag_warn!` (imported `use busbar_substrate::{diag_warn, diag_error, diag_debug};`
+// alongside the `Diagnostic` const it names). Deliberately NOT re-exported under this `diagnostics`
+// module: core does `pub use busbar_substrate::diagnostics::*`, and a public macro re-export here would
+// be glob-imported into core where core's own `pub(crate)` `diag_warn` shadows it — the exact
+// crate-root pollution core's diagnostics header calls out. A crate-root-only export sidesteps that and
+// still gives a future plugin the macro.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+/// `warn!` carrying the `diag = "BUSBAR-NNNN"` field. First arg is the [`Diagnostic`] const. The
+/// cross-crate twin of busbar-core's local `diag_warn!`.
+#[macro_export]
+macro_rules! diag_warn {
+    ($diag:expr, $($rest:tt)*) => {
+        ::tracing::warn!(diag = %$diag.banner(), $($rest)*)
+    };
+}
+/// `error!` carrying the `diag = "BUSBAR-NNNN"` field. The cross-crate twin of core's `diag_error!`.
+#[macro_export]
+macro_rules! diag_error {
+    ($diag:expr, $($rest:tt)*) => {
+        ::tracing::error!(diag = %$diag.banner(), $($rest)*)
+    };
+}
+/// `debug!` carrying the `diag = "BUSBAR-NNNN"` field (the benign-recurring / latched-quiet arm). The
+/// cross-crate twin of core's `diag_debug!`.
+#[macro_export]
+macro_rules! diag_debug {
+    ($diag:expr, $($rest:tt)*) => {
+        ::tracing::debug!(diag = %$diag.banner(), $($rest)*)
+    };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
 // THE CATALOG. Add a const here (codes ascending within a class), then add it to REGISTRY below,
 // then regenerate the docs: `UPDATE_DIAGNOSTICS=1 cargo test -p busbar-core diagnostics`.
 // ─────────────────────────────────────────────────────────────────────────────────────────────

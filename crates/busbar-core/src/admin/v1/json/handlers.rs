@@ -3672,7 +3672,7 @@ pub(crate) const V1_GET_PATHS: &[(&str, &str)] = &[
 /// attaches its verb's typed success body through the SAME logic (byte-identical output). Creates the
 /// status response entry if the op did not already document it.
 #[cfg(feature = "openapi-schema")]
-pub(crate) fn set_response_schema(
+pub fn set_response_schema(
     paths: &mut serde_json::Map<String, serde_json::Value>,
     abs_path: &str,
     method: &str,

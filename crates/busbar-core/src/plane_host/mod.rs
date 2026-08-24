@@ -218,7 +218,7 @@ pub fn govern_admit_reason_over(
 // Only the MCP stdio inbound path consumes this seam today; under a build without `plane-mcp` it has
 // no caller (the a2a HTTP door resolves identity on its own axum extractor path).
 #[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
-pub(crate) async fn identity_admit_over(
+pub async fn identity_admit_over(
     app: Arc<App>,
     token: Option<String>,
     audience: String,
@@ -329,7 +329,7 @@ pub fn clock_now_secs_via(host: HostCtx) -> u64 {
     not(any(feature = "plane-mcp", feature = "plane-a2a")),
     allow(dead_code)
 )]
-pub(crate) enum GateOutcome {
+pub enum GateOutcome {
     /// No gate objected (or none is attached) — the request proceeds.
     Proceed,
     /// A gate refused the request. Reconstructed from the [`GateVerdictOut`](busbar_plugin::hot::GateVerdictOut)
@@ -370,7 +370,7 @@ pub(crate) enum GateOutcome {
 )]
 #[allow(clippy::too_many_arguments)]
 #[must_use]
-pub(crate) fn gate_decide_over(
+pub fn gate_decide_over(
     app: &App,
     plane_key: u8,
     container: &str,

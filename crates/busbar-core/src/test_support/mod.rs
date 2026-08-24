@@ -1283,6 +1283,15 @@ impl TestApp {
         // configures and the dispatch table that mounts it must come from one reading.
         let a2a_plane =
             crate::a2a::plane::A2aPlane::from_config(&self.agent_defs, self.public_url.as_deref());
+        // MIRROR PRODUCTION'S `a2a_start` HOOK: stash busbar's PUBLIC card-issuer key on the plane's
+        // own slot, computed from governance exactly as `boot::start_planes` computes `BootCtx`'s. This
+        // is what `a2a::sign::card_signer` reads the issuer off, so a fixture that configures both an
+        // a2a plane and a card-signing governance key serves signed cards without running the boot fold.
+        if let (Some(plane), Some(gov)) = (a2a_plane.as_ref(), self.governance.as_ref()) {
+            if let Some(issuer) = gov.a2a_card_issuer() {
+                plane.set_card_issuer(issuer);
+            }
+        }
         // Lowered ONCE for the same reason: `mcp:`'s typed field and the type-erased slot map below
         // must read the identical `Arc`, never two `Arc::new(self.mcp.clone())` calls.
         let mcp_arc = self.mcp.clone().map(std::sync::Arc::new);
