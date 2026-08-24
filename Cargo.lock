@@ -361,6 +361,7 @@ name = "busbar-api"
 version = "1.5.0"
 dependencies = [
  "async-trait",
+ "busbar-secret-ref",
  "hex",
  "serde",
  "serde_json",
@@ -623,6 +624,10 @@ dependencies = [
  "busbar-api",
  "busbar-plugin-testkit",
 ]
+
+[[package]]
+name = "busbar-substrate"
+version = "1.6.0"
 
 [[package]]
 name = "busbar-timing"

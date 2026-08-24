@@ -1449,6 +1449,34 @@ pub trait Store: Send + Sync + 'static {
     }
 }
 
+/// The per-request context a plane handler receives: the resolved caller identity attached to each
+/// request by the auth middleware, in a form a plane (llm / a2a / mcp) can name without reaching for
+/// a core-private governance type. `key` is `None` when governance is disabled (so downstream
+/// enforcement is a no-op). This is a request-scoped, in-process value — not a plugin-ABI type — so
+/// it is `pub` purely so an out-of-tree plane can name it; the one field it carries is the
+/// already-public [`VirtualKey`].
+#[derive(Clone, Debug, Default)]
+pub struct PlaneRequestCtx {
+    /// The resolved virtual key (or synthesized principal key), shared via `Arc`: attaching it to the
+    /// request and threading it through governance/routing is then a refcount bump, never a clone of
+    /// the key's `String` fields. `None` when governance is disabled (enforcement is a no-op).
+    pub key: Option<std::sync::Arc<VirtualKey>>,
+}
+
+impl PlaneRequestCtx {
+    /// The resolved caller key, or `None` when governance is disabled. Borrows through the `Arc` so a
+    /// plane reads the key without naming `Arc` or touching the field directly.
+    pub fn key(&self) -> Option<&VirtualKey> {
+        self.key.as_deref()
+    }
+
+    /// Whether this request carries a resolved key (governance enabled). `false` is the no-op posture:
+    /// there is no key, no budget, and nothing to enforce.
+    pub fn is_governed(&self) -> bool {
+        self.key.is_some()
+    }
+}
+
 #[cfg(test)]
 #[path = "tests/store_tests.rs"]
 mod tests;

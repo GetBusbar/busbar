@@ -40,6 +40,24 @@ impl Principal {
     }
 }
 
+/// Request-extension carrier for the authenticated [`Principal`]. ALWAYS inserted by the auth
+/// middleware on admitted requests (`None` = the empty-chain anonymous front door), so downstream
+/// consumers (audit attribution, the hook `send_user` projection, admin scopes) can extract it
+/// without an is-it-there dance. Never carries the credential.
+#[derive(Debug, Clone)]
+pub struct AuthPrincipal(pub Option<Principal>);
+
+impl AuthPrincipal {
+    /// The attribution handle for audit records: the principal id, or `anonymous` for the
+    /// explicit open-front-door postures.
+    pub fn actor_id(&self) -> &str {
+        self.0
+            .as_ref()
+            .map(|p| p.id.as_str())
+            .unwrap_or("anonymous")
+    }
+}
+
 /// The verdict of one auth module. The PAM-style trichotomy the 1.3 auth-plugin layer is built on:
 /// `Identify` = this module authenticated the caller and this is WHO —
 /// carries the [`Principal`]; `Reject` = a credential was presented but is invalid (fail-closed,

@@ -870,23 +870,12 @@ fn extract_admin_header_token(req: &Request<Body>) -> Option<String> {
         .map(String::from)
 }
 
-/// Request-extension carrier for the authenticated [`Principal`]. ALWAYS inserted by the auth
-/// middleware on admitted requests (`None` = the empty-chain anonymous front door), so downstream
-/// consumers (audit attribution, the hook `send_user` projection, admin scopes) can extract it
-/// without an is-it-there dance. Never carries the credential.
-#[derive(Debug, Clone)]
-pub struct AuthPrincipal(pub(crate) Option<Principal>);
-
-impl AuthPrincipal {
-    /// The attribution handle for audit records: the principal id, or `anonymous` for the
-    /// explicit open-front-door postures.
-    pub(crate) fn actor_id(&self) -> &str {
-        self.0
-            .as_ref()
-            .map(|p| p.id.as_str())
-            .unwrap_or("anonymous")
-    }
-}
+/// Request-extension carrier for the authenticated [`Principal`]. Relocated to `busbar-api` in
+/// Phase-B B0-a (beside [`Principal`]) so an extracted plane crate names it without a path back to
+/// core; re-exported here so every in-core call site (`crate::auth::AuthPrincipal`) is unchanged.
+/// Its `actor_id()` accessor and tuple field were promoted from `pub(crate)` to `pub` in the move —
+/// the type is now cross-crate, but it still never carries the credential.
+pub use busbar_api::AuthPrincipal;
 
 /// TEST-ONLY data-plane module (see the `test-groups-module` chain arm): credential `grp:<g>`
 /// identifies as `test:<g>` carrying exactly that group; anything else defers (`Pass`).
