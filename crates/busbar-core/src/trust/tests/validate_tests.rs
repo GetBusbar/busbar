@@ -17,12 +17,12 @@
 //! _be_read` see the counter at 1; deleting the generation comparison makes
 //! `the_generation_is_the_last_step_and_it_exists` return `Ok`.
 
-use super::*;
 use crate::trust::validate::{
     next_generation, reason, validate_request, Ask, Fingerprint, Generations, Grant, Lapsed,
     Observed, Refusal, Snapshot, Standing,
 };
 use crate::trust::Observation;
+use crate::trust::{Approval, PinnedArtifact, Sighting, TrustState};
 use busbar_api::{ScopeRef, VirtualKey};
 use std::cell::Cell;
 use std::collections::BTreeMap;

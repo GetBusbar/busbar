@@ -54,18 +54,18 @@ use super::PinnedArtifact;
 /// Facts, never decisions. Both planes spell this object `{mechanism, key?}` with A2A adding
 /// `fingerprint?`; a plane that binds no fingerprint passes `None` and its [`Declares`] impl never
 /// looks at the field.
-pub(crate) struct Declaration<'a, M> {
+pub struct Declaration<'a, M> {
     /// Which root the operator named, in this plane's own spelling.
-    pub(crate) mechanism: M,
+    pub mechanism: M,
     /// The out-of-band material, exactly as written. Core tests only whether it is THERE.
-    pub(crate) key: Option<&'a str>,
+    pub key: Option<&'a str>,
     /// The artifact fingerprint the operator has already approved, where their plane has one.
-    pub(crate) fingerprint: Option<&'a str>,
+    pub fingerprint: Option<&'a str>,
 }
 
 /// WHAT CORE CONCLUDED about one [`Declaration`]. A closed set, and deliberately not
 /// `#[non_exhaustive]`: adding a variant must BREAK every plane until each has given it an artifact.
-pub(crate) enum Reading<'a, M> {
+pub enum Reading<'a, M> {
     /// The operator named NO authenticity root. Whether that is an artifact at all is the plane's
     /// ruling: A2A names it out loud ([`crate::a2a::pin::CardPin::Unpinned`]) so a registration list
     /// shows which entries have no root, and MCP spells it `None` so an unrooted registration cannot
@@ -90,7 +90,7 @@ pub(crate) enum Reading<'a, M> {
 }
 
 /// WHAT A PLANE SUPPLIES TO HAVE ITS DECLARED PIN READ: one impl, two answers, no sequence.
-pub(crate) trait Declares: PinnedArtifact + Sized {
+pub trait Declares: PinnedArtifact + Sized {
     /// This plane's spelling of WHICH root. Its own closed enum, so [`Declares::artifact`] is a
     /// total match over it and a mechanism added later is a compile error until it has an artifact.
     type Mechanism: Copy;
@@ -118,7 +118,7 @@ pub(crate) trait Declares: PinnedArtifact + Sized {
 /// reader's answer for a mechanism that needs none depend on a field that means nothing to it.
 /// Blankness is second and is core's, because "a pin with nothing to verify with is not a pin" is
 /// a statement about pinning rather than about either dialect.
-pub(crate) fn declared_pin<A: Declares>(declaration: Declaration<'_, A::Mechanism>) -> Option<A> {
+pub fn declared_pin<A: Declares>(declaration: Declaration<'_, A::Mechanism>) -> Option<A> {
     let Declaration {
         mechanism,
         key,

@@ -28,7 +28,7 @@ use std::collections::BTreeMap;
 
 use busbar_api::{ScopeRef, VirtualKey};
 
-use crate::trust::validate::{Generations, Refusal};
+use crate::trust::validate::{Generations, Grant, Refusal};
 
 // ══ THE THIRD PLANE ══════════════════════════════════════════════════════════════════════════════
 //

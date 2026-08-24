@@ -181,10 +181,19 @@ impl std::fmt::Display for AgentEgressDenied {
 /// take one by reference. A future delegating call site that forgot the grant check does not compile.
 pub(crate) type EgressGrant<'a> = crate::egress_auth::gate::EgressGrant<AgentEgress<'a>>;
 
-impl EgressGrant<'_> {
+/// The agent this grant is for, read off core's witness. An EXTENSION TRAIT rather than an inherent
+/// `impl` because [`EgressGrant`] became `busbar-substrate`'s type in Phase-B B1, and an inherent
+/// `impl` may be written only in the crate that defines the type. Same access (`self.subject()`, the
+/// witness's own accessor) and same `pub(crate)` reach; the mint still reads the id OFF the grant
+/// rather than taking it as a second parameter.
+pub(crate) trait EgressGrantExt {
     /// The agent this grant is for. Read by the mint rather than passed beside it; see the module
     /// note on why a second parameter would defeat the gate.
-    pub(crate) fn agent_id(&self) -> &str {
+    fn agent_id(&self) -> &str;
+}
+
+impl EgressGrantExt for EgressGrant<'_> {
+    fn agent_id(&self) -> &str {
         self.subject().agent_id
     }
 }

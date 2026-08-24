@@ -24,6 +24,22 @@ pub mod audit {
 }
 pub mod ingress {
     pub mod jsonrpc;
+    // B1: the transport-neutral JSON-RPC ingress SEQUENCE (`serve`), the core-refusal vocabulary and
+    // the RFC 9728 metadata render. The `App`/`CurrentApp`-facing half (`ResourceMetadata`,
+    // `metadata_handler`) stays in core and re-exports these.
+    pub mod protocol;
 }
 pub mod plane;
 pub mod proxy;
+
+// ── Phase-B B1: the trust value families + decision engines, the egress gate, the catalogue and the
+// failover walk types + the lane-availability taxonomy. Each depends only on `busbar-api`
+// (`VirtualKey`) and `busbar-plugin` (`hot::VerifyDecision`) — both leaves — plus this crate's own
+// audit vocabulary. Core re-exports each relocated item so the in-core call sites do not change.
+pub mod trust;
+pub mod egress_auth {
+    pub mod gate;
+}
+pub mod catalogue;
+pub mod failover;
+pub mod store;

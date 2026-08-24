@@ -111,7 +111,12 @@ hooks-ranking = ["dep:busbar-hooks-ranking"]
 # the `tools:`/`mcp:` config sections are captured raw and refused if used, so core still routes the
 # LLM and A2A planes with the MCP plane absent (the plane-split deletion test). The binary's
 # `plane-mcp` forwards to this via `busbar-core/plane-mcp`.
-plane-mcp = []
+#
+# Phase-B B1 FORWARDS to substrate: the relocated trust/egress/failover families carry the
+# plane-gated dead-code allowances, so enabling `plane-mcp` here must enable substrate's matching
+# marker (was an empty marker; now a forward) to keep the moved `#[cfg(feature = "plane-mcp")]` sites
+# correct.
+plane-mcp = ["busbar-substrate/plane-mcp"]
 # THE A2A PLANE, in-core today (`src/a2a`), behind the SAME switch the binary already uses for the
 # A2A crate (`busbar-a2a`): one plane-kind name for A2A-the-protocol and A2A-the-plane, never two.
 # Default-on — the shipped engine speaks A2A. With it OFF, `src/a2a` (and its plane-side helper
@@ -119,7 +124,11 @@ plane-mcp = []
 # used, so core still routes the LLM and MCP planes with the A2A plane absent (the plane-split
 # deletion test). The binary's `plane-a2a` forwards to this via `busbar-core/plane-a2a`. The exact
 # analogue of `plane-mcp` above.
-plane-a2a = []
+#
+# Phase-B B1 FORWARDS to substrate, exactly as `plane-mcp` does — `Due::from_verify_decision` and the
+# other relocated `#[cfg(feature = "plane-a2a")]` sites now live in substrate, so this must turn the
+# substrate marker on with it.
+plane-a2a = ["busbar-substrate/plane-a2a"]
 openapi-schema = ["dep:schemars"]
 loom-model = ["dep:loom"]
 txn-fence-red = []

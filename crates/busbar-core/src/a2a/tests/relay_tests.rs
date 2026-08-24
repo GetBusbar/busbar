@@ -33,6 +33,7 @@ use std::net::{IpAddr, Ipv4Addr};
 use std::sync::atomic::Ordering;
 
 use super::relay_harness::*;
+use crate::a2a::creds::EgressGrantExt;
 use crate::a2a::fetch::{FetchPolicy, HttpResponse, Resolver};
 use crate::a2a::relay::{ChunkFlow, StreamHead};
 

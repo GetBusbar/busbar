@@ -165,98 +165,13 @@ pub(crate) enum BreakerState {
     HalfOpen,
 }
 
-// ── Lane availability taxonomy ──────────────────────────────────────────────────────────────────
-//
-// The advisory recovery FLOORS below are consumed ONLY by `Unavailable::recovery_hint_ms`, the single
-// definition of "when could this lane plausibly be usable again". They are floors — honest lower
-// bounds — not fabricated exact times.
-
-/// Advisory recovery floor for a lost single-flight probe race: the peer's probe resolves the cell
-/// within roughly one request, so "come back very shortly". Advisory only (not yet wired to the
-/// production `Retry-After`, which is repointed at `recovery_hint_ms` in a later phase).
-const PROBE_RETRY_FLOOR_MS: u64 = 250;
-
-/// Advisory recovery floor for an inbound-shed request (`limits.max_inbound_concurrent`). Advisory
-/// only until the observability phase renders it.
-///
-/// `pub(crate)` so the inbound-admission `Retry-After` DERIVES its whole-second value from this one
-/// source rather than hardcoding a bare `"1"` beside it — the same coupling
-/// [`AT_CAPACITY_RECOVERY_FLOOR_MS`] gives the proxy's at-capacity `Retry-After`. The store must not
-/// depend on `limits`, so the derivation lives at the consumer (`limits::admission`), reading this
-/// const, never the reverse.
-pub(crate) const SHED_RETRY_FLOOR_MS: u64 = 1000;
-
-/// At-capacity recovery FLOOR in milliseconds. A busy concurrency slot has no scheduled recovery
-/// the way a breaker `until` does, so absent a per-lane drain estimate this floor is the honest "back
-/// off ~2s" answer (never the deceptive `1`). This is the NEUTRAL store-side source of truth for the
-/// 2s floor: the store must not depend on `proxy`, so the proxy `Retry-After` path
-/// (`proxy::…::AT_CAPACITY_RETRY_AFTER_SECS`) DERIVES its whole-second floor from THIS const rather
-/// than the reverse.
-pub(crate) const AT_CAPACITY_RECOVERY_FLOOR_MS: u64 = 2_000;
-
-/// Why a lane cannot accept a request right now — the ONE taxonomy every consumer speaks: selection
-/// (exclude), least_bad (rank), `Retry-After` (hint), `/stats` + `/metrics` (render), queue (wait).
-/// Add a future reason (e.g. `RateLimited { until }`) in ONE place and every consumer inherits it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Unavailable {
-    /// Administratively down. Does not self-recover (until config change).
-    Dead,
-    /// Lifetime request budget (`max_requests`) spent. Does not self-recover.
-    BudgetExhausted,
-    /// Circuit breaker Open (or a Closed cell still inside a pending soft cooldown). `until` is EXACT
-    /// (epoch secs) — recovery time is known, not estimated.
-    BreakerOpen { until: u64 },
-    /// Lost the HalfOpen single-flight probe race to a peer. Transient; the peer's probe resolves the
-    /// cell within one request. Recovery is "next tick", carried as [`PROBE_RETRY_FLOOR_MS`].
-    ProbeInFlight,
-    /// All concurrency permits held. `drain_hint_ms` is an ESTIMATE, NOT exact —
-    /// capacity has no scheduled recovery the way a breaker does. `None` when there is no basis to
-    /// estimate, in which case `recovery_hint_ms` falls back to [`AT_CAPACITY_RECOVERY_FLOOR_MS`].
-    AtCapacity { drain_hint_ms: Option<u64> },
-    /// Inbound backpressure shed this request before lane selection (`limits.max_inbound_concurrent`).
-    //
-    // Constructed only by the observability/shed wiring landed in a later phase; the variant is part
-    // of the taxonomy vocabulary now (and exercised by the unit tests). `#[cfg(test)]`-scoped
-    // construction means the release build has no constructor yet, so silence the lint there only.
-    #[cfg_attr(not(test), allow(dead_code))]
-    Shedding,
-}
-
-impl Unavailable {
-    /// Single definition of "when could this lane plausibly be usable again", in ms from `now`. This
-    /// is what `Retry-After`, least_bad ranking, and queue budgeting ALL consume — one function, so
-    /// those consumers can never disagree about recovery timing. It is ALSO the source of the
-    /// `/stats` `recovery_hint_ms` field and the `busbar_lane_recovery_hint_ms` gauge.
-    pub(crate) fn recovery_hint_ms(&self, now: u64) -> Option<u64> {
-        match self {
-            Unavailable::Dead | Unavailable::BudgetExhausted => None, // no self-recovery
-            Unavailable::BreakerOpen { until } => {
-                Some(until.saturating_sub(now).saturating_mul(1000))
-            }
-            Unavailable::ProbeInFlight => Some(PROBE_RETRY_FLOOR_MS), // ~one request
-            // Honest floor when there is no drain estimate — never regress this below 2s.
-            Unavailable::AtCapacity { drain_hint_ms } => {
-                Some(drain_hint_ms.unwrap_or(AT_CAPACITY_RECOVERY_FLOOR_MS))
-            }
-            Unavailable::Shedding => Some(SHED_RETRY_FLOOR_MS),
-        }
-    }
-
-    /// The stable, snake_case name of this variant — the SINGLE rendering used by both `/stats`
-    /// (`availability` field) and any operator-facing surface, so the string an operator reads is
-    /// derived from the same taxonomy routing dispatches on. The `Ok` side of a
-    /// classification renders as the sentinel `"available"`, owned by the caller.
-    pub(crate) fn variant_name(&self) -> &'static str {
-        match self {
-            Unavailable::Dead => "dead",
-            Unavailable::BudgetExhausted => "budget_exhausted",
-            Unavailable::BreakerOpen { .. } => "breaker_open",
-            Unavailable::ProbeInFlight => "probe_in_flight",
-            Unavailable::AtCapacity { .. } => "at_capacity",
-            Unavailable::Shedding => "shedding",
-        }
-    }
-}
+// ── Lane availability taxonomy ── relocated to `busbar-substrate` in Phase-B B1 (it travels with
+// `failover::walk_with`, the neutral walk that carries it). Core re-exports the taxonomy and the two
+// consumer-facing recovery floors so every `crate::store::…` name resolves unchanged;
+// `PROBE_RETRY_FLOOR_MS` moved with its only reader (`recovery_hint_ms`) and stays substrate-private.
+pub(crate) use busbar_substrate::store::{
+    Unavailable, AT_CAPACITY_RECOVERY_FLOOR_MS, SHED_RETRY_FLOOR_MS,
+};
 
 /// The held resources a successful [`LaneRuntime::try_admit`] transfers to the caller: the concurrency
 /// permit (held for the request's lifetime) and the single-flight probe owner token (`probe_epoch`),

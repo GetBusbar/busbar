@@ -14,6 +14,12 @@ license = "Apache-2.0"
 # `tracing` edge here yet; the trust/egress/failover families and their `busbar-api`/`busbar-plugin`
 # deps arrive with B1.
 [dependencies]
+# Phase-B B1: the trust/egress/failover/catalogue value families name the plugin CONTRACTS
+# (`busbar-api`'s `VirtualKey`) and the plugin ABI (`busbar-plugin`'s `hot::VerifyDecision`). Both are
+# leaves — `busbar-api` depends only on `busbar-secret-ref`, `busbar-plugin` only on `busbar-api` — so
+# there is no path back to core and no cycle: core -> substrate -> {api, plugin}.
+busbar-api = { path = "../api" }
+busbar-plugin = { path = "../busbar-plugin" }
 axum = { workspace = true }
 serde_json = { workspace = true }
 reqwest = { workspace = true }
