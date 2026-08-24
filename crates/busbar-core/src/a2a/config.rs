@@ -297,7 +297,7 @@ impl<'de> Deserialize<'de> for AgentsCfg {
         // the passthrough refusal below.
         let section = crate::plane::config::split_section::<D, AgentDefCfg>(
             deserializer,
-            crate::plane::Plane::A2a,
+            "a2a",
             validate_agent,
         )?;
 

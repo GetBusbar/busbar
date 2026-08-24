@@ -18,7 +18,6 @@ use std::time::Duration;
 
 use super::super::reverify::{Ledger, Policy};
 use super::VerifyGate;
-use crate::plane::Plane;
 
 /// A fake ledger reader over a shared `last_checked_ms` cell. `0` means "never checked" (due
 /// immediately), matching what a plane's store yields for a registration nothing has ever observed.
@@ -42,22 +41,22 @@ async fn a_clean_outcome_resets_the_latch_so_a_later_drift_reannounces() {
     let subject = "recoverysubject";
 
     // First drift latches.
-    gate.report(Plane::A2a, subject, true, false);
+    gate.report("a2a", subject, true, false);
     assert!(gate.is_latched(subject), "the first drift must latch");
 
     // A repeat while latched is a no-op — still latched, and (the production point) not re-logged.
-    gate.report(Plane::A2a, subject, true, false);
+    gate.report("a2a", subject, true, false);
     assert!(gate.is_latched(subject));
 
     // A CLEAN, serving outcome resets the latch: the upstream recovered and was re-approved.
-    gate.report(Plane::A2a, subject, false, false);
+    gate.report("a2a", subject, false, false);
     assert!(
         !gate.is_latched(subject),
         "a clean serving outcome must reset the latch so the next drift is announced again"
     );
 
     // A SECOND drift after the recovery latches once more — the re-announce the reset exists for.
-    gate.report(Plane::A2a, subject, true, false);
+    gate.report("a2a", subject, true, false);
     assert!(
         gate.is_latched(subject),
         "a post-recovery drift must re-latch rather than stay suppressed by the first latch"
@@ -71,12 +70,12 @@ async fn an_outage_stays_latched_across_repeated_unreachable_and_clears_only_on_
     let gate = VerifyGate::new();
     let subject = "outagesubject";
 
-    gate.report(Plane::A2a, subject, false, true);
+    gate.report("a2a", subject, false, true);
     assert!(gate.is_latched(subject), "the first outage must latch");
 
     // Every subsequent unreachable report leaves it latched — this is what suppresses the storm.
     for _ in 0..5 {
-        gate.report(Plane::A2a, subject, false, true);
+        gate.report("a2a", subject, false, true);
         assert!(
             gate.is_latched(subject),
             "a repeated outage report must stay latched, not re-announce"
@@ -84,7 +83,7 @@ async fn an_outage_stays_latched_across_repeated_unreachable_and_clears_only_on_
     }
 
     // Only a clean, serving outcome clears it.
-    gate.report(Plane::A2a, subject, false, false);
+    gate.report("a2a", subject, false, false);
     assert!(
         !gate.is_latched(subject),
         "the latch clears only when the upstream is reachable and serving again"
@@ -104,7 +103,7 @@ async fn a_clean_outcome_on_a_never_seen_subject_leaves_no_latch_entry() {
     assert!(!gate.tracks_subject(subject));
 
     // A clean serving outcome must not create one.
-    gate.report(Plane::A2a, subject, false, false);
+    gate.report("a2a", subject, false, false);
     assert!(
         !gate.tracks_subject(subject),
         "a clean call on a never-seen subject must not leak a latch entry"

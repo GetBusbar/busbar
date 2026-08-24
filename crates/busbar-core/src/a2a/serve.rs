@@ -177,8 +177,8 @@ impl std::fmt::Display for ServeError {
 ///
 /// A card busbar serves points every interface at BUSBAR'S OWN ADDRESS, so the `protocolBinding` on
 /// that interface is a claim about what BUSBAR speaks, not about what the backend speaks. The set of
-/// protocols busbar speaks on this plane is already stated once, in [`crate::plane::Plane`]'s wire
-/// formats — the same list that decides whether the plane has earned a superset IR and what its
+/// protocols busbar speaks on this plane is already stated once, in the A2A plane's registry
+/// [`crate::plane::wire_format_names`] — the same list that decides whether the plane has earned a superset IR and what its
 /// ingress metric label may say. Reading it here rather than restating it is what makes this
 /// function a RULE: when the HTTP+JSON and gRPC bindings land on the A2A plane, that list grows and
 /// these cards start advertising them, with nobody having to remember this function exists. Written
@@ -190,8 +190,7 @@ impl std::fmt::Display for ServeError {
 /// `JSONRPC`, `http+json` → `HTTP+JSON`, `grpc` → `GRPC`), so the servability checks compare
 /// case-insensitively and exactly, never by prefix.
 pub(crate) fn servable_bindings() -> Vec<String> {
-    crate::plane::Plane::A2a
-        .wire_format_names()
+    crate::plane::wire_format_names("a2a")
         .iter()
         .map(|f| f.to_uppercase())
         .collect()

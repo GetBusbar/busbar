@@ -583,7 +583,7 @@ fn finish_inner(
     let elapsed = started.elapsed();
     crate::telemetry::request_finished(
         app,
-        crate::plane::Plane::Llm.key(),
+        crate::plane::RESIDUAL_KEY,
         ingress_protocol,
         pool,
         outcome,

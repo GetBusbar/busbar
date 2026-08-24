@@ -15,23 +15,23 @@ struct OtherEntry(u32);
 
 fn sections() -> PlaneSections<Entry> {
     let mut s = PlaneSections::default();
-    s.insert(Plane::Llm, "fast", Entry("a pool"));
-    s.insert(Plane::Mcp, "filesystem", Entry("an mcp server"));
-    s.insert(Plane::A2a, "planner", Entry("an agent"));
+    s.insert("llm", "fast", Entry("a pool"));
+    s.insert("mcp", "filesystem", Entry("an mcp server"));
+    s.insert("a2a", "planner", Entry("an agent"));
     s
 }
 
-/// EVERY plane behaves identically. Looping over `Plane::ALL` rather than writing three copies is
-/// what stops one plane quietly acquiring a special case.
+/// EVERY plane behaves identically. Looping over the plane registry keys rather than writing three
+/// copies is what stops one plane quietly acquiring a special case.
 #[test]
 fn every_plane_stores_and_reads_back_the_same_way() {
     let mut s: PlaneSections<OtherEntry> = PlaneSections::default();
-    for (i, plane) in Plane::ALL.iter().enumerate() {
-        s.insert(*plane, "shared-name", OtherEntry(i as u32));
+    for (i, plane) in crate::plane::plane_keys().enumerate() {
+        s.insert(plane, "shared-name", OtherEntry(i as u32));
     }
-    for (i, plane) in Plane::ALL.iter().enumerate() {
+    for (i, plane) in crate::plane::plane_keys().enumerate() {
         assert_eq!(
-            s.get(*plane, "shared-name"),
+            s.get(plane, "shared-name"),
             Some(&OtherEntry(i as u32)),
             "{plane:?} must read back its own entry"
         );
@@ -44,12 +44,12 @@ fn every_plane_stores_and_reads_back_the_same_way() {
 #[test]
 fn one_name_may_exist_independently_in_every_plane() {
     let mut s = PlaneSections::default();
-    s.insert(Plane::Llm, "shared", Entry("llm"));
-    s.insert(Plane::Mcp, "shared", Entry("mcp"));
-    s.insert(Plane::A2a, "shared", Entry("a2a"));
-    assert_eq!(s.resolve(Plane::Llm, "shared"), Ok(&Entry("llm")));
-    assert_eq!(s.resolve(Plane::Mcp, "shared"), Ok(&Entry("mcp")));
-    assert_eq!(s.resolve(Plane::A2a, "shared"), Ok(&Entry("a2a")));
+    s.insert("llm", "shared", Entry("llm"));
+    s.insert("mcp", "shared", Entry("mcp"));
+    s.insert("a2a", "shared", Entry("a2a"));
+    assert_eq!(s.resolve("llm", "shared"), Ok(&Entry("llm")));
+    assert_eq!(s.resolve("mcp", "shared"), Ok(&Entry("mcp")));
+    assert_eq!(s.resolve("a2a", "shared"), Ok(&Entry("a2a")));
 }
 
 /// THE NO-CROSS-REFERENCE RULE, and the reason this container exists: a name defined on one plane is
@@ -58,12 +58,12 @@ fn one_name_may_exist_independently_in_every_plane() {
 fn a_name_from_another_plane_never_resolves() {
     let s = sections();
     for (from, name) in [
-        (Plane::Mcp, "fast"),
-        (Plane::A2a, "fast"),
-        (Plane::Llm, "filesystem"),
-        (Plane::A2a, "filesystem"),
-        (Plane::Llm, "planner"),
-        (Plane::Mcp, "planner"),
+        ("mcp", "fast"),
+        ("a2a", "fast"),
+        ("llm", "filesystem"),
+        ("a2a", "filesystem"),
+        ("llm", "planner"),
+        ("mcp", "planner"),
     ] {
         assert!(
             s.resolve(from, name).is_err(),
@@ -84,11 +84,11 @@ fn a_name_from_another_plane_never_resolves() {
 fn a_cross_plane_reference_names_the_plane_the_entry_lives_on() {
     let s = sections();
     assert_eq!(
-        s.resolve(Plane::Mcp, "planner"),
+        s.resolve("mcp", "planner"),
         Err(RefError::CrossPlane {
             name: "planner".to_string(),
-            referenced_from: Plane::Mcp,
-            defined_in: Plane::A2a,
+            referenced_from: "mcp",
+            defined_in: "a2a",
         })
     );
 }
@@ -99,10 +99,10 @@ fn a_cross_plane_reference_names_the_plane_the_entry_lives_on() {
 fn an_unknown_name_is_not_a_cross_plane_reference() {
     let s = sections();
     assert_eq!(
-        s.resolve(Plane::Mcp, "nowhere"),
+        s.resolve("mcp", "nowhere"),
         Err(RefError::Unknown {
             name: "nowhere".to_string(),
-            plane: Plane::Mcp,
+            plane: "mcp",
         })
     );
 }
@@ -112,7 +112,7 @@ fn an_unknown_name_is_not_a_cross_plane_reference() {
 #[test]
 fn the_refusal_message_is_actionable() {
     let s = sections();
-    let msg = s.resolve(Plane::Mcp, "planner").unwrap_err().to_string();
+    let msg = s.resolve("mcp", "planner").unwrap_err().to_string();
     assert!(msg.contains("planner"), "names the entry: {msg}");
     assert!(
         msg.contains("tools"),
@@ -120,7 +120,7 @@ fn the_refusal_message_is_actionable() {
     );
     assert!(msg.contains("agents"), "names the defining section: {msg}");
 
-    let unknown = s.resolve(Plane::Mcp, "nowhere").unwrap_err().to_string();
+    let unknown = s.resolve("mcp", "nowhere").unwrap_err().to_string();
     assert!(unknown.contains("nowhere"));
     assert!(unknown.contains("tools"));
     assert!(
@@ -134,33 +134,35 @@ fn the_refusal_message_is_actionable() {
 #[test]
 fn a_section_read_is_scoped_to_its_own_plane() {
     let s = sections();
-    assert_eq!(s.section(Plane::Llm).len(), 1);
-    assert!(s.section(Plane::Llm).contains_key("fast"));
-    assert!(!s.section(Plane::Llm).contains_key("filesystem"));
-    assert!(!s.section(Plane::Llm).contains_key("planner"));
+    let llm = s.section("llm").expect("the llm section holds an entry");
+    assert_eq!(llm.len(), 1);
+    assert!(llm.contains_key("fast"));
+    assert!(!llm.contains_key("filesystem"));
+    assert!(!llm.contains_key("planner"));
 }
 
-/// Iteration covers every plane in `Plane::ALL` and reports each entry against the plane it belongs
-/// to. The config validator walks this, so a plane missing here is a plane that is never validated.
+/// Iteration covers every plane in registry-key (LAYERING) order and reports each entry against the
+/// plane it belongs to. The config validator walks this, so a plane missing here is a plane that is
+/// never validated.
 #[test]
 fn iteration_covers_every_plane_and_attributes_each_entry() {
     let s = sections();
-    let mut seen: Vec<(Plane, &str)> = s.iter().map(|(p, n, _)| (p, n)).collect();
+    let mut seen: Vec<(&'static str, &str)> = s.iter().map(|(p, n, _)| (p, n)).collect();
     seen.sort();
     assert_eq!(
         seen,
-        vec![
-            (Plane::Llm, "fast"),
-            (Plane::Mcp, "filesystem"),
-            (Plane::A2a, "planner"),
-        ]
-        .into_iter()
-        .collect::<std::collections::BTreeSet<_>>()
-        .into_iter()
-        .collect::<Vec<_>>()
+        vec![("llm", "fast"), ("mcp", "filesystem"), ("a2a", "planner"),]
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>()
     );
-    let planes: std::collections::BTreeSet<Plane> = s.iter().map(|(p, _, _)| p).collect();
-    assert_eq!(planes.len(), Plane::ALL.len(), "every plane is represented");
+    let planes: std::collections::BTreeSet<&'static str> = s.iter().map(|(p, _, _)| p).collect();
+    assert_eq!(
+        planes.len(),
+        crate::plane::plane_keys().count(),
+        "every plane is represented"
+    );
 }
 
 /// An EMPTY container refuses everything, and refuses it as unknown rather than cross-plane. The
@@ -168,31 +170,31 @@ fn iteration_covers_every_plane_and_attributes_each_entry() {
 #[test]
 fn an_empty_container_resolves_nothing() {
     let s: PlaneSections<Entry> = PlaneSections::default();
-    for plane in Plane::ALL {
+    for plane in crate::plane::plane_keys() {
         assert!(matches!(
-            s.resolve(*plane, "anything"),
+            s.resolve(plane, "anything"),
             Err(RefError::Unknown { .. })
         ));
-        assert!(s.section(*plane).is_empty());
+        assert!(s.section(plane).is_none_or(|m| m.is_empty()));
     }
     assert_eq!(s.iter().count(), 0);
 }
 
-/// The cross-plane check reports the FIRST plane in `Plane::ALL` order that defines the name, and
+/// The cross-plane check reports the FIRST plane in registry-key (LAYERING) order that defines the name, and
 /// does so deterministically when several do. A nondeterministic diagnostic is worse than none: it
 /// makes a boot failure unreproducible.
 #[test]
 fn a_name_defined_on_several_other_planes_diagnoses_deterministically() {
     let mut s = PlaneSections::default();
-    s.insert(Plane::Llm, "shared", Entry("llm"));
-    s.insert(Plane::A2a, "shared", Entry("a2a"));
+    s.insert("llm", "shared", Entry("llm"));
+    s.insert("a2a", "shared", Entry("a2a"));
     for _ in 0..8 {
         assert_eq!(
-            s.resolve(Plane::Mcp, "shared"),
+            s.resolve("mcp", "shared"),
             Err(RefError::CrossPlane {
                 name: "shared".to_string(),
-                referenced_from: Plane::Mcp,
-                defined_in: Plane::Llm,
+                referenced_from: "mcp",
+                defined_in: "llm",
             }),
             "the diagnosis must be stable across repeated resolution"
         );

@@ -22,7 +22,7 @@
 //! record against the answer, the envelope — belongs to this file and a plane cannot restate it.
 //!
 //! The plane's IDENTITY STRINGS are not restated either: the `404` noun and the audit resource kind
-//! come from [`Plane::subject_noun`] and [`Plane::audit_kind`], beside the config section and the
+//! come from the plane decl's `subject_noun` and `audit_kind`, beside the config section and the
 //! scope kinds that already live on the spine. There is no `match` on the plane in this file, and
 //! adding one would mean the parameterisation had failed.
 //!
@@ -54,7 +54,6 @@ use axum::http::StatusCode;
 use axum::response::Response;
 
 use crate::admin::v1::contract::AdminError;
-use crate::plane::Plane;
 use crate::state::AppHandle;
 
 /// ONE PLANE'S REGISTERED-UPSTREAM SURFACE: which plane, how to find one registration, and how to
@@ -65,8 +64,9 @@ use crate::state::AppHandle;
 /// makes the plane a TYPE parameter at the mount, so the router names which plane it is wiring and
 /// the handler cannot be mounted without one.
 pub trait PlaneTrust: Send + Sync + 'static {
-    /// Which plane this surface belongs to. Supplies the `404` noun and the audit resource kind.
-    const PLANE: Plane;
+    /// Which plane this surface belongs to, by registry key. Supplies the `404` noun and the audit
+    /// resource kind.
+    const PLANE: &'static str;
 
     /// Everything the look needs, cloned out of the live snapshot. Cloned rather than borrowed
     /// because the look may hop threads and must not hold a lock or a snapshot borrow across it.
@@ -100,11 +100,16 @@ pub trait PlaneTrust: Send + Sync + 'static {
 /// halves are never distinguished in the answer, because a refusal that distinguishes them is an
 /// existence oracle.
 pub fn registered<T>(
-    plane: Plane,
+    plane: &'static str,
     name: &str,
     lookup: impl FnOnce() -> Option<T>,
 ) -> Result<T, AdminError> {
-    lookup().ok_or_else(|| AdminError::not_found(format!("{} `{name}`", plane.subject_noun())))
+    lookup().ok_or_else(|| {
+        AdminError::not_found(format!(
+            "{} `{name}`",
+            crate::plane::builtin_decl(plane).subject_noun
+        ))
+    })
 }
 
 /// RECORD ONE PLANE TRUST VERB in the audit trail.
@@ -113,15 +118,16 @@ pub fn registered<T>(
 /// per plane, so a new verb cannot invent a spelling and a new plane cannot invent a naming scheme.
 /// The shape is the established one: `<kind>.<verb>` acting on `<kind>:<name>`.
 pub(crate) fn audit(
-    plane: Plane,
+    plane: &'static str,
     verb: &str,
     name: &str,
     outcome: &'static str,
     principal: &crate::auth::AuthPrincipal,
 ) {
+    let audit_kind = crate::plane::builtin_decl(plane).audit_kind;
     crate::admin::audit::AUDIT.record_by(
-        &format!("{}.{verb}", plane.audit_kind()),
-        &format!("{}:{name}", plane.audit_kind()),
+        &format!("{audit_kind}.{verb}"),
+        &format!("{audit_kind}:{name}"),
         outcome,
         principal.actor_id(),
     );

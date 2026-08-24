@@ -1834,7 +1834,7 @@ impl<'de> Deserialize<'de> for PoolsCfg {
         // config, where they can see the cross-section references a single entry cannot.
         let section = crate::plane::config::split_section::<D, PoolCfg>(
             deserializer,
-            crate::plane::Plane::Llm,
+            crate::plane::RESIDUAL_KEY,
             |_, _| Ok(()),
         )?;
         Ok(PoolsCfg {
@@ -4652,23 +4652,23 @@ pub fn resolve(
         crate::failover::CandidatePoolCfg,
     > = std::collections::BTreeMap::new();
     {
-        let member_kind = |name: &str| -> Option<crate::plane::Plane> {
+        let member_kind = |name: &str| -> Option<&'static str> {
             // Global-unique noun names make this a name-only lookup — the router never asks "which
             // kind of `x`?". A name defined in two nouns is a collision the validator rejects.
             if deploy.models.contains_key(name) {
-                return Some(crate::plane::Plane::Llm);
+                return Some(crate::plane::RESIDUAL_KEY);
             }
             // The MCP `tools:` noun exists only when the plane is compiled in; with `plane-mcp` off
             // no name resolves to an MCP server (a `tools:` section is refused earlier).
             #[cfg(feature = "plane-mcp")]
             if deploy.tools.servers.contains_key(name) {
-                return Some(crate::plane::Plane::Mcp);
+                return Some("mcp");
             }
             // The A2A `agents:` noun exists only when the plane is compiled in; with `plane-a2a` off
             // no name resolves to an agent (an `agents:` section is refused earlier).
             #[cfg(feature = "plane-a2a")]
             if deploy.agents.agents.contains_key(name) {
-                return Some(crate::plane::Plane::A2a);
+                return Some("a2a");
             }
             None
         };
@@ -4676,7 +4676,7 @@ pub fn resolve(
         for (pool_name, pool) in pools.iter() {
             // The pool's kind = its members' shared kind. Determine it from the FIRST resolvable
             // member, then require every other member to agree (homogeneity).
-            let mut kind: Option<crate::plane::Plane> = None;
+            let mut kind: Option<&'static str> = None;
             let mut homogeneous = true;
             for m in &pool.members {
                 match member_kind(m.name()) {
@@ -4706,7 +4706,7 @@ pub fn resolve(
                 continue;
             }
             match kind {
-                Some(crate::plane::Plane::Mcp) => {
+                Some("mcp") => {
                     tool_pools_derived.insert(
                         pool_name.clone(),
                         crate::failover::CandidatePoolCfg {
@@ -4716,7 +4716,7 @@ pub fn resolve(
                     );
                     non_llm.push(pool_name.clone());
                 }
-                Some(crate::plane::Plane::A2a) => {
+                Some("a2a") => {
                     agent_pools_derived.insert(
                         pool_name.clone(),
                         crate::failover::CandidatePoolCfg {

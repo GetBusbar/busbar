@@ -137,7 +137,7 @@ pub(crate) async fn observe(
     }
     crate::telemetry::request_finished(
         &app,
-        plane.key(),
+        plane,
         wire,
         // The plane's routing TARGET is not resolved at the door. On the model plane that
         // resolution happens in the handler, and the sentinel is exactly the value the model plane

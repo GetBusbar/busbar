@@ -53,7 +53,6 @@ use super::reverify::{Ledger, Policy};
 use crate::diagnostics::{
     diag_debug, diag_warn, TRUST_VERIFY_REFUSED_ON_DRIFT, TRUST_VERIFY_UNREACHABLE,
 };
-use crate::plane::Plane;
 
 /// One subject's coalescing state: an async lock the single fetcher holds, and the epoch every waiter
 /// reads to learn whether a sibling already fetched. Kept behind an `Arc` so a waiter can drop the map
@@ -148,7 +147,13 @@ impl VerifyGate {
     /// (fail-closed refusal). Latched per subject so persistent drift or a persistent outage logs
     /// once, not per call; a clean, serving outcome resets the latch so the NEXT drift is announced
     /// again. `plane` is a LABEL, never a branch — the same code runs for MCP and A2A.
-    pub(crate) fn report(&self, plane: Plane, subject: &str, drifted: bool, unreachable: bool) {
+    pub(crate) fn report(
+        &self,
+        plane: &'static str,
+        subject: &str,
+        drifted: bool,
+        unreachable: bool,
+    ) {
         if !drifted && !unreachable {
             self.reset_latch(subject);
             return;
@@ -163,7 +168,7 @@ impl VerifyGate {
         if unreachable {
             diag_warn!(
                 TRUST_VERIFY_UNREACHABLE,
-                plane = plane.key(),
+                plane = plane,
                 subject = %subject,
                 "verify-on-call could not reach this upstream to re-verify its advertised surface \
                  within `verify_ttl`; the call is REFUSED fail-closed rather than served against a \
@@ -172,7 +177,7 @@ impl VerifyGate {
         } else {
             diag_debug!(
                 TRUST_VERIFY_REFUSED_ON_DRIFT,
-                plane = plane.key(),
+                plane = plane,
                 subject = %subject,
                 "verify-on-call found the upstream's advertised surface DRIFTED from the approved \
                  fingerprint; the call is refused before dispatch until an operator re-approves"

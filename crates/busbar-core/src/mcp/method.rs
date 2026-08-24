@@ -1181,12 +1181,12 @@ async fn verify_on_call(ctx: &Ctx<'_>, name: &str) {
                         if report.failure.is_some() {
                             // UNREACHABLE at verify → the gate below refuses fail-closed; latch the
                             // diagnostic so a persistent outage logs once.
-                            gate.report(crate::plane::Plane::Mcp, &server.id, false, true);
+                            gate.report("mcp", &server.id, false, true);
                         } else if report.drift.is_empty() {
                             // A clean re-verification re-arms the latch so the NEXT drift is announced.
-                            gate.report(crate::plane::Plane::Mcp, &server.id, false, false);
+                            gate.report("mcp", &server.id, false, false);
                         } else {
-                            gate.report(crate::plane::Plane::Mcp, &server.id, true, false);
+                            gate.report("mcp", &server.id, true, false);
                         }
                     }
                     // NEVER ATTEMPTED (an unroutable id, or a `passthrough` credential the verify path
@@ -2209,7 +2209,7 @@ fn charge_round(
             busbar_plugin::hot::AdmissionId::NONE,
             key.id.as_bytes(),
             namespaced.as_bytes(),
-            crate::plane::Plane::Mcp.key().as_bytes(),
+            "mcp".as_bytes(),
         );
         (vt.meter_charge.unwrap())(hctx, &*usage as *const busbar_plugin::hot::Usage)
     });

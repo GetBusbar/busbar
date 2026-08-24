@@ -52,8 +52,6 @@
 //! transfers to the plane axis — the vocabulary half, joined by the slot half, the surface half and
 //! the boot half — and the honest measure of how much of the plane problem is covered.
 
-use super::Plane;
-
 /// EVERYTHING A PLANE'S [`PlaneDecl::build`] NEEDS to construct its runtime object for one config
 /// generation — threaded from `appbuild::build_app_from_config` so a plane builds its object from
 /// the SAME resolved config the composition root read, never a second parse of it.
@@ -523,10 +521,19 @@ pub(crate) fn plane_decl_for(key: &str) -> Option<&'static PlaneDecl> {
     plane_decls().iter().copied().find(|d| d.key == key)
 }
 
+/// RESOLVE A BUILT-IN PLANE DECLARATION BY KEY, against [`builtin_plane_decls`] rather than the
+/// process list — the successor to `Plane::decl`. The former enum variants ARE the built-ins, and
+/// resolving them through the process list would make a plane's vocabulary lookup depend on the
+/// composition root having run, which every unit test in this crate would then have to arrange. A
+/// registered fourth plane has no built-in declaration and is reached by [`plane_decl_for`].
+pub(crate) fn builtin_plane_decl_for(key: &str) -> Option<&'static PlaneDecl> {
+    builtin_plane_decls().iter().copied().find(|d| d.key == key)
+}
+
 /// RESOLVE A BUILT-IN PLANE DECLARATION BY ITS CONFIG SECTION — the neutral bridge the
 /// named-definition write path crosses to reach a plane's [`PlaneDecl::config_validate`] without
 /// naming the plane. Resolves against [`builtin_plane_decls`] rather than the process list for the
-/// same reason [`Plane::decl`] does: the `tools:`/`agents:` sections are the two BUILT-IN plane
+/// same reason [`builtin_plane_decl_for`] does: the `tools:`/`agents:` sections are the two BUILT-IN plane
 /// sections, so their validator is a built-in fact that must not depend on the composition root
 /// having run (every config unit test would otherwise have to install planes first).
 #[cfg_attr(
@@ -589,29 +596,6 @@ pub(crate) fn build_dispatch(
         }
     }
     Ok(dispatch)
-}
-
-impl Plane {
-    /// THE ONE PLACE the enum meets its declaration. Every `Plane` accessor reads this, so the enum
-    /// is a NAME for a built-in plane rather than a second statement of its facts.
-    ///
-    /// It resolves against [`builtin_plane_decls`] rather than [`plane_decls`] deliberately: the
-    /// three enum variants ARE the built-ins, and resolving them through the process list would
-    /// make a `Plane::A2a.key()` call depend on the composition root having run — which every unit
-    /// test in this crate would then have to arrange. A registered fourth plane has no enum variant
-    /// and is reached by decl, never by `Plane`.
-    pub(crate) fn decl(self) -> &'static PlaneDecl {
-        let key = match self {
-            Plane::Llm => "llm",
-            Plane::Mcp => "mcp",
-            Plane::A2a => "a2a",
-        };
-        builtin_plane_decls()
-            .iter()
-            .copied()
-            .find(|d| d.key == key)
-            .expect("every Plane variant has a built-in declaration")
-    }
 }
 
 #[cfg(test)]

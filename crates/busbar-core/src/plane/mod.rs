@@ -33,8 +33,8 @@
 //! second thing to keep lossless and a second place for a translation bug in a product whose
 //! headline claim is lossless translation.
 //!
-//! So [`Plane::has_superset_ir`] is derived from [`Plane::wire_formats`] rather than written as
-//! `matches!(self, Plane::Llm)`. That makes it a RULE rather than a fact about today's planes: the
+//! So [`has_superset_ir`] is derived from [`wire_formats`] rather than written as
+//! `matches!(key, RESIDUAL_KEY)`. That makes it a RULE rather than a fact about today's planes: the
 //! day a second dialect lands on some plane, that plane earns an IR and the test says so. And the
 //! LLM count is read off the real protocol registry, so a seventh dialect does not depend on
 //! anyone remembering to bump a literal here.
@@ -108,14 +108,14 @@ pub(crate) mod store;
 pub(crate) mod taskstore;
 
 /// THE WIRE FORMAT both mounted planes speak: JSON-RPC 2.0. Named once, here, because it is read
-/// twice as a [`Plane::wire_format_names`] entry and once more by the error-shaping boundary, which
+/// twice as a [`wire_format_names`] entry and once more by the error-shaping boundary, which
 /// decides that a refusal on a mounted plane is a JSON-RPC error object rather than a vendor
 /// envelope. A literal spelled per site is how those two answers start to differ.
 pub(crate) const WIRE_JSONRPC: &str = "jsonrpc";
 
 /// THE SECOND WIRE FORMAT THE A2A PLANE SPEAKS: A2A's HTTP+JSON binding, where the REQUEST LINE
 /// names the operation rather than a body member. Named once, here, because it is read three ways
-/// and all three must agree — as a [`Plane::wire_format_names`] entry, as the
+/// and all three must agree — as a [`wire_format_names`] entry, as the
 /// [`crate::transport::Transport::HttpJson`] label, and (upper-cased by
 /// `a2a::serve::servable_bindings`) as the `protocolBinding` a served agent card advertises. The
 /// card spelling is `HTTP+JSON`, so this is that string lower-cased and nothing else.
@@ -127,143 +127,92 @@ pub(crate) const WIRE_HTTP_JSON: &str = "http+json";
 /// reads this list rather than writing one of its own.
 pub(crate) const WIRE_GRPC: &str = "grpc";
 
-/// One governance plane. The variant set is the only thing a new plane adds here.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) enum Plane {
-    /// Model traffic. The residual ingress, and the only plane with a superset IR.
-    Llm,
-    /// Tool traffic.
-    Mcp,
-    /// Agent traffic.
-    A2a,
+/// The residual in-core LLM plane's registry key — the key `proto::PLANE_DECL` declares. Named
+/// once so the residual guard and the model-plane telemetry branch compare against one string.
+pub(crate) const RESIDUAL_KEY: &str = "llm";
+
+/// Every built-in plane's registry key, in layering order. Iterated by dispatch, the config
+/// validator and the candidate projection, so a plane absent from here is a plane that silently
+/// does not exist.
+///
+/// Driven off [`registry::builtin_plane_decls`], which is itself cfg-gated: the MCP key is present
+/// only when the MCP plane is compiled in (`plane-mcp`) and the A2A key only under `plane-a2a`,
+/// because with the plane off it has no built-in declaration, so it must not be iterated here —
+/// every [`builtin_decl`] on it would fault. This is the successor to the old `Plane::ALL`, and
+/// the source of the LAYERING iteration order `[llm, mcp, a2a]` every map walk must borrow rather
+/// than reinvent from a map's own key order.
+pub(crate) fn plane_keys() -> impl Iterator<Item = &'static str> {
+    registry::builtin_plane_decls().iter().map(|d| d.key)
 }
 
-impl Plane {
-    /// Every plane, in layering order. Iterated by dispatch, the config validator and the candidate
-    /// projection, so a plane absent from here is a plane that silently does not exist.
-    ///
-    /// `Plane::Mcp` is present only when the MCP plane is compiled in (`plane-mcp`): with it off the
-    /// plane has no built-in declaration, so it must not be iterated here — every `.decl()` on it
-    /// would fault. The `Plane::Mcp` enum variant still exists (a `Copy` key some match arms name),
-    /// but it is not a plane this build serves.
-    ///
-    /// `Plane::A2a` is present only when the A2A plane is compiled in (`plane-a2a`), for the same
-    /// reason `Plane::Mcp` is gated: with it off the plane has no built-in declaration, so it must
-    /// not be iterated here — every `.decl()` on it would fault. The `Plane::A2a` enum variant still
-    /// exists (a `Copy` key some match arms name), but it is not a plane this build serves.
-    pub(crate) const ALL: &'static [Plane] = &[
-        Plane::Llm,
-        #[cfg(feature = "plane-mcp")]
-        Plane::Mcp,
-        #[cfg(feature = "plane-a2a")]
-        Plane::A2a,
-    ];
+/// The built-in plane declaration for `key`, or panic — the by-key indirection the former `Plane`
+/// accessors now read through. Callers wanting a decl FIELD (`config_section`, `subject_noun`,
+/// `audit_kind`, `scope_kinds`) read it straight off this; the free fns below are the accessors
+/// that COMPUTED something rather than reading a field.
+pub(crate) fn builtin_decl(key: &str) -> &'static registry::PlaneDecl {
+    registry::builtin_plane_decl_for(key)
+        .unwrap_or_else(|| panic!("no built-in plane declared for key `{key}`"))
+}
 
-    /// The plane's short stable name, for logs, metrics labels and audit resources.
-    pub(crate) fn key(self) -> &'static str {
-        self.decl().key
-    }
+/// The distinct WIRE FORMATS this plane translates between, named. Not transports.
+///
+/// These strings are the `ingress_protocol` metric-label vocabulary: a label that means "which
+/// dialect spoke to us" has to be spelled the same way on every plane or a dashboard cannot
+/// compare them, and two planes agreeing by coincidence is how the LLM plane's `openai` and some
+/// other plane's `openai` end up in one series meaning two things.
+pub(crate) fn wire_format_names(key: &str) -> &'static [&'static str] {
+    (builtin_decl(key).wire_format_names)()
+}
 
-    /// The top-level `config.yaml` section whose mere EXISTENCE declares this plane. The three are
-    /// siblings of one shape, never cross-referencing sections.
-    pub(crate) fn config_section(self) -> &'static str {
-        self.decl().config_section
-    }
+/// The plane's ONE wire format, when it has exactly one — otherwise `None`.
+///
+/// COMPUTED, like [`has_superset_ir`], and for the same reason. A plane with a single dialect can
+/// be labelled with it at the ingress BOUNDARY, before any handler has read a byte of the body,
+/// because there is nothing to decide. A plane with several cannot: which dialect spoke is a fact
+/// only its reader knows, so that plane labels its own requests from inside (the LLM plane does
+/// exactly this, in `ingress::finish_inner`). Derived from the format list it is a RULE, and the
+/// day MCP speaks a second dialect the boundary stops labelling it and the rule says so rather
+/// than a stale literal quietly lying.
+pub(crate) fn sole_wire_format(key: &str) -> Option<&'static str> {
+    sole_of(wire_format_names(key))
+}
 
-    /// The `ScopeRef` kinds that grant access ON this plane, gated through `scope_allowed`.
-    ///
-    /// A slice rather than one string because a plane may grant at more than one granularity: MCP
-    /// grants a whole server or a single tool. Cross-kind matching is fail-closed in the store, so
-    /// these sets are what keep one plane's grant from admitting another plane's traffic.
-    pub(crate) fn scope_kinds(self) -> &'static [&'static str] {
-        self.decl().scope_kinds
-    }
+/// How many distinct WIRE FORMATS this plane translates between. DERIVED from
+/// [`wire_format_names`] rather than written as a second literal, so a plane cannot gain a dialect
+/// in one place and keep its old count in the other — which would silently keep [`has_superset_ir`]
+/// answering the pre-change question.
+pub(crate) fn wire_formats(key: &str) -> usize {
+    wire_format_names(key).len()
+}
 
-    /// WHAT ONE REGISTRATION ON THIS PLANE IS CALLED, in the words an operator reads back in a
-    /// `404`. The vocabularies genuinely differ — a `tools:` entry is a server, an `agents:` entry
-    /// is a fronted agent — and stating them here is what lets ONE not-found rule serve both admin
-    /// surfaces instead of one hand-written refusal per plane that can drift apart in wording.
-    ///
-    /// The residual LLM plane has no registered upstream of its own; a pool is named by its own
-    /// section and is not looked up through this rule.
-    pub(crate) fn subject_noun(self) -> &'static str {
-        self.decl().subject_noun
-    }
+/// Whether this plane has EARNED a superset intermediate representation. See the module header:
+/// the threshold is two wire formats, and nothing else.
+pub(crate) fn has_superset_ir(key: &str) -> bool {
+    superset_of(wire_formats(key))
+}
 
-    /// THE AUDIT RESOURCE KIND for a registration on this plane — the `kind` half of a
-    /// `kind:name` audit resource, and the prefix of every audit ACTION word the plane's verbs
-    /// record (`mcp_server.connect`, `a2a_agent.approve`).
-    ///
-    /// Named once, per plane, for the same reason the scope kinds are: these strings are read back
-    /// by audit queries and compliance exports, and two of them agreeing by coincidence is how one
-    /// plane's records start answering another plane's question.
-    pub(crate) fn audit_kind(self) -> &'static str {
-        self.decl().audit_kind
+/// The `sole_wire_format` DERIVATION, split from the registry read so the ZERO-dialect case is
+/// a case a test can drive. The LLM plane's list is `known_protocols()`, and the core split
+/// (step 3.7) is what makes an EMPTY registry reachable — from step 4 a protocol is a
+/// dependency edge, and a build with every LLM edge removed is a legal build the deletion gate
+/// constructs on purpose. Before this arm existed, empty fell into the same `_ => None` as
+/// "several", so the plane silently stopped being labelled at the ingress boundary with no
+/// statement that anyone had decided that. The answer is STILL `None` — a plane with no
+/// dialect has nothing to label a request with — but it is now a signed decision with a test
+/// (`plane/tests/`), not a match arm's accident. Same for `has_superset_ir` above: zero wire
+/// formats have earned nothing, so `superset_of(0)` is `false` BY DECISION.
+pub(crate) fn sole_of(names: &'static [&'static str]) -> Option<&'static str> {
+    match names {
+        // ZERO dialects: nothing can be labelled, deliberately — see the doc comment.
+        [] => None,
+        [only] => Some(only),
+        _ => None,
     }
+}
 
-    /// The distinct WIRE FORMATS this plane translates between, named. Not transports.
-    ///
-    /// These strings are the `ingress_protocol` metric-label vocabulary, which is why they are
-    /// stated here beside [`Plane::key`] rather than per plane: a label that means "which dialect
-    /// spoke to us" has to be spelled the same way on every plane or a dashboard cannot compare
-    /// them, and two planes agreeing by coincidence is how the LLM plane's `openai` and some other
-    /// plane's `openai` end up in one series meaning two things.
-    pub(crate) fn wire_format_names(self) -> &'static [&'static str] {
-        (self.decl().wire_format_names)()
-    }
-
-    /// How many distinct WIRE FORMATS this plane translates between. DERIVED from
-    /// [`Plane::wire_format_names`] rather than written as a second literal, so a plane cannot gain
-    /// a dialect in one place and keep its old count in the other — which would silently keep
-    /// [`Plane::has_superset_ir`] answering the pre-change question.
-    pub(crate) fn wire_formats(self) -> usize {
-        self.wire_format_names().len()
-    }
-
-    /// The plane's ONE wire format, when it has exactly one — otherwise `None`.
-    ///
-    /// COMPUTED, like [`Plane::has_superset_ir`], and for the same reason. A plane with a single
-    /// dialect can be labelled with it at the ingress BOUNDARY, before any handler has read a byte
-    /// of the body, because there is nothing to decide. A plane with several cannot: which dialect
-    /// spoke is a fact only its reader knows, so that plane labels its own requests from inside
-    /// (the LLM plane does exactly this, in `ingress::finish_inner`). Writing this as
-    /// `matches!(self, Plane::Mcp | Plane::A2a)` would make it a fact about today's planes; derived
-    /// from the format list it is a RULE, and the day MCP speaks a second dialect the boundary
-    /// stops labelling it and the rule says so rather than a stale literal quietly lying.
-    pub(crate) fn sole_wire_format(self) -> Option<&'static str> {
-        Self::sole_of(self.wire_format_names())
-    }
-
-    /// The `sole_wire_format` DERIVATION, split from the registry read so the ZERO-dialect case is
-    /// a case a test can drive. The LLM plane's list is `known_protocols()`, and the core split
-    /// (step 3.7) is what makes an EMPTY registry reachable — from step 4 a protocol is a
-    /// dependency edge, and a build with every LLM edge removed is a legal build the deletion gate
-    /// constructs on purpose. Before this arm existed, empty fell into the same `_ => None` as
-    /// "several", so the plane silently stopped being labelled at the ingress boundary with no
-    /// statement that anyone had decided that. The answer is STILL `None` — a plane with no
-    /// dialect has nothing to label a request with — but it is now a signed decision with a test
-    /// (`plane/tests/`), not a match arm's accident. Same for `has_superset_ir` below: zero wire
-    /// formats have earned nothing, so `superset_of(0)` is `false` BY DECISION.
-    pub(crate) fn sole_of(names: &'static [&'static str]) -> Option<&'static str> {
-        match names {
-            // ZERO dialects: nothing can be labelled, deliberately — see the doc comment.
-            [] => None,
-            [only] => Some(only),
-            _ => None,
-        }
-    }
-
-    /// Whether this plane has EARNED a superset intermediate representation. See the module header:
-    /// the threshold is two wire formats, and nothing else.
-    pub(crate) fn has_superset_ir(self) -> bool {
-        Self::superset_of(self.wire_formats())
-    }
-
-    /// The `has_superset_ir` derivation, split out for the same zero-dialect reason as
-    /// [`Plane::sole_of`].
-    pub(crate) fn superset_of(wire_formats: usize) -> bool {
-        wire_formats >= 2
-    }
+/// The `has_superset_ir` derivation, split out for the same zero-dialect reason as [`sole_of`].
+pub(crate) fn superset_of(wire_formats: usize) -> bool {
+    wire_formats >= 2
 }
 
 /// PLANE DISPATCH: which plane an inbound request belongs to.
@@ -303,7 +252,7 @@ impl Plane {
 /// what. The claims and admission a plane contributes are now DATA, folded in from each plane's
 /// [`registry::PlaneDecl`] against that plane's own runtime object, so a plane extracted to a crate
 /// registers its door the same way it registers its vocabulary. The map is keyed by the plane's
-/// [`Plane::key`] — the one stable string every other plane surface is already keyed by — so a
+/// its registry key — the one stable string every other plane surface is already keyed by — so a
 /// registered plane with no enum variant still has exactly one row here and exactly one audience.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PlaneDispatch {
@@ -320,9 +269,9 @@ pub struct PlaneDispatch {
 /// ONE PATH A PLANE ANSWERS ON, and the WIRE FORMAT it is spoken in there.
 ///
 /// The wire format is recorded WITH the path rather than derived from the plane, and that is what
-/// keeps the ingress boundary able to label a plane that speaks more than one. [`Plane::wire_formats`]
+/// keeps the ingress boundary able to label a plane that speaks more than one. [`wire_formats`]
 /// answers "how many dialects does this plane translate between" — a fact about the plane, and the
-/// threshold [`Plane::has_superset_ir`] reads. It cannot answer "which one is being spoken right
+/// threshold [`has_superset_ir`] reads. It cannot answer "which one is being spoken right
 /// now", because that is a fact about the DOOR the request came through. A plane whose bindings each
 /// have their own door can answer it at the door; one whose bindings share a door cannot, and says so
 /// by declaring its CANONICAL format on that claim.
@@ -336,7 +285,7 @@ pub struct PlaneDispatch {
 struct Claim {
     /// The normalised mount path, matched at a segment boundary.
     path: String,
-    /// The [`Plane::wire_format_names`] entry spoken here. Not a free string: a claim naming a
+    /// The [`wire_format_names`] entry spoken here. Not a free string: a claim naming a
     /// format its plane does not list would put a label in the `ingress_protocol` series that no
     /// plane admits to speaking, which is exactly the kind of coincidence that vocabulary exists to
     /// prevent. `a_claim_only_names_a_wire_format_its_plane_speaks` holds it.
@@ -380,13 +329,13 @@ impl PlaneDispatch {
     /// busbar key carries no audience at all, and the verifier rejects any token that does
     /// (`governance::signing`, the 1.6.0 plane boundary). Handing the residual an audience here
     /// would quietly make every unclaimed path an OAuth resource server.
-    pub(crate) fn admit(self, plane: Plane, admission: PlaneAdmission) -> Self {
+    pub(crate) fn admit(self, key: &'static str, admission: PlaneAdmission) -> Self {
         // The residual takes none — see the doc: an audience on an unmounted plane is inert, and one
         // on the LLM plane would quietly make every unclaimed path an OAuth resource server.
-        if plane == Plane::Llm {
+        if key == RESIDUAL_KEY {
             return self;
         }
-        self.admit_key(plane.key(), admission)
+        self.admit_key(key, admission)
     }
 
     /// [`Self::admit`], keyed by plane key rather than by [`Plane`]. The seam the registry-driven
@@ -408,9 +357,9 @@ impl PlaneDispatch {
     pub(crate) fn admission_for(&self, path: &str) -> Option<&PlaneAdmission> {
         // Resolve the plane by MOUNT first — the residual is never mounted, so it never claims a
         // path and never reaches the admission map — then read that plane's bound audience by key.
-        self.admissions.get(self.mounted_plane_of(path)?.key())
+        self.admissions.get(self.mounted_plane_of(path)?)
     }
-    /// Mount `plane` at `path`. Mounting [`Plane::Llm`] is a no-op: it is the residual.
+    /// Mount `plane` at `path`. Mounting the residual LLM plane ([`RESIDUAL_KEY`]) is a no-op.
     ///
     /// The path is NORMALISED to a leading slash with no trailing slash, so `/mcp`, `/mcp/`, `mcp`
     /// and `mcp/` all dispatch identically. The alternative is a deployment whose plane silently
@@ -422,13 +371,13 @@ impl PlaneDispatch {
     /// canonical, so the order of these calls decides which path the plane calls its own. A repeated
     /// path is not claimed twice: mounting is idempotent, so a config apply that re-runs the same
     /// sequence cannot grow the table.
-    pub(crate) fn mount(self, plane: Plane, path: &str, wire: &'static str) -> Self {
+    pub(crate) fn mount(self, key: &'static str, path: &str, wire: &'static str) -> Self {
         // Mounting the residual is a no-op: it IS the catch-all, so a second door to it is a
         // precedence question with no good answer.
-        if plane == Plane::Llm {
+        if key == RESIDUAL_KEY {
             return self;
         }
-        self.mount_key(plane.key(), path, wire)
+        self.mount_key(key, path, wire)
     }
 
     /// [`Self::mount`], keyed by plane key rather than by [`Plane`]. The seam
@@ -458,8 +407,8 @@ impl PlaneDispatch {
     /// the audience a token must be minted for, the base its card publishes — is one string, and
     /// deriving it from whichever binding a request happened to arrive on would give one deployment
     /// two audiences and two published endpoints.
-    pub(crate) fn mount_of(&self, plane: Plane) -> Option<&str> {
-        self.claims_of(plane).first().map(|c| c.path.as_str())
+    pub(crate) fn mount_of(&self, key: &str) -> Option<&str> {
+        self.claims_of(key).first().map(|c| c.path.as_str())
     }
 
     /// THE WIRE FORMAT SPOKEN AT `path`, or `None` when no plane claims it.
@@ -470,8 +419,8 @@ impl PlaneDispatch {
     /// dialect landed — which would have silently stopped counting every A2A request on the day the
     /// gRPC binding armed, and a metric that stops is indistinguishable from traffic that stopped.
     pub(crate) fn wire_format_of(&self, path: &str) -> Option<&'static str> {
-        Plane::ALL.iter().copied().find_map(|plane| {
-            self.claims_of(plane)
+        self.claims.keys().copied().find_map(|key| {
+            self.claims_of(key)
                 .iter()
                 .find(|c| path_is_under(path, &c.path))
                 .map(|c| c.wire)
@@ -481,10 +430,10 @@ impl PlaneDispatch {
     /// Every path `plane` claims, canonical first. Private: outside this type the distinction that
     /// matters is "which plane claims this path" ([`Self::mounted_plane_of`]) and "what is this
     /// plane's own path" ([`Self::mount_of`]), and handing out the list would invite a third reading.
-    fn claims_of(&self, plane: Plane) -> &[Claim] {
+    fn claims_of(&self, key: &str) -> &[Claim] {
         // The residual is never mounted, so its key is never present and this is the empty slice —
         // the same answer the old per-plane `Plane::Llm => &[]` arm gave, now by construction.
-        self.claims.get(plane.key()).map_or(&[], Vec::as_slice)
+        self.claims.get(key).map_or(&[], Vec::as_slice)
     }
 
     /// Every plane key that has MOUNTED at least one path in this table, in key order. Read by the
@@ -528,7 +477,7 @@ impl PlaneDispatch {
     /// Nothing here lets a plane claim a path by URL shape.
     pub(crate) fn ingress_of(&self, path: &str) -> Ingress {
         match self.mounted_plane_of(path) {
-            Some(plane) => Ingress::Mounted(plane),
+            Some(key) => Ingress::Mounted(key),
             // THE RESIDUAL ARM, and the only place a path SHAPE decides anything. It answers
             // `None` for a path that names no dialect — an honest answer the old classifier could
             // not give, because it spent that case on `openai`.
@@ -547,12 +496,12 @@ impl PlaneDispatch {
     /// that would be a plane branch standing in for a property the mount table already knows — and
     /// it would be wrong the day a fourth plane is added as a residual sibling.
     ///
-    /// The walk covers `Plane::ALL` rather than a hand-listed `[Mcp, A2a]`: the residual has no
+    /// The walk covers every claimed key rather than a hand-listed `[Mcp, A2a]`: the residual has no
     /// mount, so it is skipped by construction rather than by being left off a list a new plane
     /// would have to remember to join.
-    pub(crate) fn mounted_plane_of(&self, path: &str) -> Option<Plane> {
-        Plane::ALL.iter().copied().find(|plane| {
-            self.claims_of(*plane)
+    pub(crate) fn mounted_plane_of(&self, path: &str) -> Option<&'static str> {
+        self.claims.keys().copied().find(|key| {
+            self.claims_of(key)
                 .iter()
                 .any(|claim| path_is_under(path, &claim.path))
         })
@@ -568,8 +517,8 @@ impl PlaneDispatch {
 /// dialect is not legible, which is what `Residual(None)` says.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Ingress {
-    /// A path a plane CLAIMS BY MOUNT, at a segment boundary.
-    Mounted(Plane),
+    /// A path a plane CLAIMS BY MOUNT, at a segment boundary, named by its registry key.
+    Mounted(&'static str),
     /// The residual LLM plane. `Some(dialect)` when the path shape names one of the registered LLM
     /// dialects; `None` when it names none — a bare `/`, a typo, a probe. `None` is a real answer
     /// and not a failure: what to SAY to a caller whose dialect is unknown is a decision for the
@@ -581,14 +530,14 @@ pub(crate) enum Ingress {
 impl Ingress {
     /// The WIRE FORMAT spoken on this path, or `None` when the path names none.
     ///
-    /// This is the `ingress_protocol` metric-label vocabulary (see [`Plane::wire_format_names`]),
+    /// This is the `ingress_protocol` metric-label vocabulary (see [`wire_format_names`]),
     /// so a mounted plane labels as its own dialect rather than as whichever LLM dialect its path
     /// happens to resemble.
     pub(crate) fn wire_format(self) -> Option<&'static str> {
         match self {
             // A plane with several dialects cannot be labelled from the boundary — which dialect
             // spoke is a fact only its reader knows. `sole_wire_format` is that rule, computed.
-            Ingress::Mounted(plane) => plane.sole_wire_format(),
+            Ingress::Mounted(key) => sole_wire_format(key),
             Ingress::Residual(dialect) => dialect,
         }
     }
@@ -616,7 +565,7 @@ impl Ingress {
     /// the one the card names first.
     pub(crate) fn shaping_wire_format(self) -> Option<&'static str> {
         match self {
-            Ingress::Mounted(plane) => plane.wire_format_names().first().copied(),
+            Ingress::Mounted(key) => wire_format_names(key).first().copied(),
             Ingress::Residual(dialect) => dialect,
         }
     }
@@ -659,9 +608,12 @@ fn path_is_under(path: &str, mount: &str) -> bool {
 /// for a typo that is not there, which is why an unknown name is a genuinely different error.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PlaneSections<T> {
-    llm: std::collections::BTreeMap<String, T>,
-    mcp: std::collections::BTreeMap<String, T>,
-    a2a: std::collections::BTreeMap<String, T>,
+    /// One section per plane, keyed by plane registry key. An absent key is an EMPTY section, read
+    /// as such by every accessor — the same answer the old three hard fields gave for a plane that
+    /// happened to hold nothing. Iteration order is never taken from this map's own key order:
+    /// every walk drives from [`plane_keys`] (LAYERING order) so the validator's diagnostics stay
+    /// deterministic and in the order the module header describes.
+    sections: std::collections::BTreeMap<&'static str, std::collections::BTreeMap<String, T>>,
 }
 
 /// Why a name did not resolve. The two arms are kept distinct because only one of them is
@@ -671,11 +623,11 @@ pub(crate) enum RefError {
     /// The name exists, but on ANOTHER plane. A plane boundary violation.
     CrossPlane {
         name: String,
-        referenced_from: Plane,
-        defined_in: Plane,
+        referenced_from: &'static str,
+        defined_in: &'static str,
     },
     /// The name exists nowhere.
-    Unknown { name: String, plane: Plane },
+    Unknown { name: String, plane: &'static str },
 }
 
 impl std::fmt::Display for RefError {
@@ -690,14 +642,14 @@ impl std::fmt::Display for RefError {
                 "`{}` references `{name}`, which is defined in `{}`. The plane sections are \
                  siblings and never reference each other: define `{name}` in `{}`, or move the \
                  reference.",
-                referenced_from.config_section(),
-                defined_in.config_section(),
-                referenced_from.config_section()
+                builtin_decl(referenced_from).config_section,
+                builtin_decl(defined_in).config_section,
+                builtin_decl(referenced_from).config_section
             ),
             RefError::Unknown { name, plane } => write!(
                 f,
                 "`{}` references `{name}`, which is not defined.",
-                plane.config_section()
+                builtin_decl(plane).config_section
             ),
         }
     }
@@ -709,62 +661,58 @@ impl std::fmt::Display for RefError {
 impl<T> Default for PlaneSections<T> {
     fn default() -> Self {
         Self {
-            llm: std::collections::BTreeMap::new(),
-            mcp: std::collections::BTreeMap::new(),
-            a2a: std::collections::BTreeMap::new(),
+            sections: std::collections::BTreeMap::new(),
         }
     }
 }
 
 impl<T> PlaneSections<T> {
-    fn map(&self, plane: Plane) -> &std::collections::BTreeMap<String, T> {
-        match plane {
-            Plane::Llm => &self.llm,
-            Plane::Mcp => &self.mcp,
-            Plane::A2a => &self.a2a,
-        }
+    /// This plane's section, or `None` when the plane holds nothing — read as an EMPTY section.
+    fn map(&self, plane: &str) -> Option<&std::collections::BTreeMap<String, T>> {
+        self.sections.get(plane)
     }
 
-    fn map_mut(&mut self, plane: Plane) -> &mut std::collections::BTreeMap<String, T> {
-        match plane {
-            Plane::Llm => &mut self.llm,
-            Plane::Mcp => &mut self.mcp,
-            Plane::A2a => &mut self.a2a,
-        }
+    /// This plane's section, created empty on first write.
+    fn map_mut(&mut self, plane: &'static str) -> &mut std::collections::BTreeMap<String, T> {
+        self.sections.entry(plane).or_default()
     }
 
     /// Declare `name` on `plane`.
-    pub(crate) fn insert(&mut self, plane: Plane, name: &str, entry: T) -> Option<T> {
+    pub(crate) fn insert(&mut self, plane: &'static str, name: &str, entry: T) -> Option<T> {
         self.map_mut(plane).insert(name.to_string(), entry)
     }
 
     /// This plane's entry for `name`, or `None`. Scoped to the plane: it never reads a sibling
     /// section, so a caller cannot accidentally cross the boundary by using the cheap read.
-    pub(crate) fn get(&self, plane: Plane, name: &str) -> Option<&T> {
-        self.map(plane).get(name)
+    pub(crate) fn get(&self, plane: &str, name: &str) -> Option<&T> {
+        self.sections.get(plane).and_then(|m| m.get(name))
     }
 
-    /// One plane's whole section.
-    pub(crate) fn section(&self, plane: Plane) -> &std::collections::BTreeMap<String, T> {
+    /// One plane's whole section, or `None` when the plane holds nothing.
+    pub(crate) fn section(&self, plane: &str) -> Option<&std::collections::BTreeMap<String, T>> {
         self.map(plane)
     }
 
     /// THE VALIDATOR ENTRY POINT: resolve `name` as referenced FROM `plane`, refusing a cross-plane
     /// reference with a diagnosis.
     ///
-    /// The sibling scan runs in `Plane::ALL` order so a name defined on several other planes always
-    /// diagnoses the same one. A nondeterministic diagnostic is worse than none: it makes a boot
-    /// failure unreproducible.
-    pub(crate) fn resolve(&self, plane: Plane, name: &str) -> Result<&T, RefError> {
-        if let Some(entry) = self.map(plane).get(name) {
+    /// The sibling scan runs in [`plane_keys`] (LAYERING) order so a name defined on several other
+    /// planes always diagnoses the same one. A nondeterministic diagnostic is worse than none: it
+    /// makes a boot failure unreproducible.
+    pub(crate) fn resolve(&self, plane: &'static str, name: &str) -> Result<&T, RefError> {
+        if let Some(entry) = self.sections.get(plane).and_then(|m| m.get(name)) {
             return Ok(entry);
         }
-        for other in Plane::ALL {
-            if *other != plane && self.map(*other).contains_key(name) {
+        for other in plane_keys().filter(|k| *k != plane) {
+            if self
+                .sections
+                .get(other)
+                .is_some_and(|m| m.contains_key(name))
+            {
                 return Err(RefError::CrossPlane {
                     name: name.to_string(),
                     referenced_from: plane,
-                    defined_in: *other,
+                    defined_in: other,
                 });
             }
         }
@@ -775,12 +723,15 @@ impl<T> PlaneSections<T> {
     }
 
     /// Every entry across every plane, attributed to the plane it belongs to. Walked by the config
-    /// validator, so a plane absent here is a plane that is never validated.
-    pub(crate) fn iter(&self) -> impl Iterator<Item = (Plane, &str, &T)> {
-        Plane::ALL.iter().flat_map(move |p| {
-            self.map(*p)
-                .iter()
-                .map(move |(name, entry)| (*p, name.as_str(), entry))
+    /// validator, so a plane absent here is a plane that is never validated. Driven from
+    /// [`plane_keys`] so the walk is in LAYERING order regardless of the map's own key order.
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (&'static str, &str, &T)> {
+        plane_keys().flat_map(move |k| {
+            self.sections
+                .get(k)
+                .into_iter()
+                .flatten()
+                .map(move |(n, e)| (k, n.as_str(), e))
         })
     }
 }

@@ -63,7 +63,7 @@ fn no_agents_configured_means_no_route_in_the_table_at_all() {
         paths(&table)
     );
     assert!(
-        app.planes.mount_of(crate::plane::Plane::A2a).is_none(),
+        app.planes.mount_of("a2a").is_none(),
         "with no plane there is nothing to claim a path"
     );
 }
@@ -267,7 +267,7 @@ fn the_credential_kind_is_conferred_by_an_audience_bound_mount() {
     assert!(
         bound
             .planes
-            .mount_of(crate::plane::Plane::A2a)
+            .mount_of("a2a")
             .and_then(|m| bound.planes.admission_for(m))
             .is_some(),
         "a mounted receiving plane must be audience-bound"
@@ -281,7 +281,7 @@ fn the_credential_kind_is_conferred_by_an_audience_bound_mount() {
     assert!(
         unbound
             .planes
-            .mount_of(crate::plane::Plane::A2a)
+            .mount_of("a2a")
             .and_then(|m| unbound.planes.admission_for(m))
             .is_none(),
         "an unbound plane must confer no credential kind"

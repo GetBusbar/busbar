@@ -31,7 +31,7 @@ fn names_are_stable_and_distinct() {
 /// no longer describe the same leg.
 #[test]
 fn the_a2a_legs_are_named_by_the_planes_wire_formats() {
-    let wires = crate::plane::Plane::A2a.wire_format_names();
+    let wires = crate::plane::wire_format_names("a2a");
     let legs: Vec<&str> = [Transport::JsonRpc, Transport::HttpJson, Transport::Grpc]
         .iter()
         .map(|t| t.name())

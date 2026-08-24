@@ -1495,7 +1495,7 @@ pub fn build_app_from_config(
             &lanes,
             &pools,
             &by_model,
-            crate::plane::Plane::Llm,
+            crate::plane::RESIDUAL_KEY,
         )),
         probe_schedule,
         lanes,

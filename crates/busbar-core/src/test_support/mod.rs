@@ -1266,7 +1266,7 @@ impl TestApp {
             &lanes,
             &self.pools,
             &by_model,
-            crate::plane::Plane::Llm,
+            crate::plane::RESIDUAL_KEY,
         ));
         let store = std::sync::Arc::new(crate::store::HealthState::new(lane_data));
         let requested_signals = crate::hooks::requested_signals(&self.hook_registry);
@@ -1396,17 +1396,13 @@ impl TestApp {
                 let mut dispatch = crate::plane::PlaneDispatch::default();
                 if let Some(r) = self.mcp.as_ref() {
                     dispatch = dispatch
-                        .mount(
-                            crate::plane::Plane::Mcp,
-                            r.mount_path(),
-                            crate::plane::WIRE_JSONRPC,
-                        )
-                        .admit(crate::plane::Plane::Mcp, r.admission());
+                        .mount("mcp", r.mount_path(), crate::plane::WIRE_JSONRPC)
+                        .admit("mcp", r.admission());
                 }
                 if let Some(admission) = a2a_plane.as_ref().and_then(|p| p.admission()) {
                     dispatch = dispatch
                         .mount(
-                            crate::plane::Plane::A2a,
+                            "a2a",
                             crate::a2a::serve::MOUNT_PATH,
                             crate::plane::WIRE_JSONRPC,
                         )
@@ -1416,11 +1412,11 @@ impl TestApp {
                         // 8707 audience — so leaving it out would not merely mislabel the leg, it would
                         // admit a token minted for some other resource on it.
                         .mount(
-                            crate::plane::Plane::A2a,
+                            "a2a",
                             crate::a2a::serve::GRPC_MOUNT_PATH,
                             crate::plane::WIRE_GRPC,
                         )
-                        .admit(crate::plane::Plane::A2a, admission);
+                        .admit("a2a", admission);
                 }
 
                 dispatch

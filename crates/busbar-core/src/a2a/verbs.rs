@@ -73,7 +73,6 @@ use crate::admin::planeverbs::{self, PlaneTrust};
 use crate::admin::v1::contract::taxonomy::Cond;
 use crate::admin::v1::contract::AdminError;
 use crate::diagnostics::{diag_error, A2A_CARD_FETCH_PANICKED};
-use crate::plane::Plane;
 use crate::state::AppHandle;
 use crate::trust::{Approval, Drift, Observation, Sighting, TrustState};
 
@@ -450,12 +449,12 @@ pub(crate) struct A2aSubject {
 pub(crate) struct A2aAgents;
 
 impl PlaneTrust for A2aAgents {
-    const PLANE: Plane = Plane::A2a;
+    const PLANE: &'static str = "a2a";
     type Subject = A2aSubject;
     type View = A2aTrustView;
 
     fn resolve(app: &Arc<crate::state::App>, name: &str) -> Result<A2aSubject, AdminError> {
-        planeverbs::registered(Plane::A2a, name, || {
+        planeverbs::registered("a2a", name, || {
             let plane = crate::a2a::runtime_arc(app)?;
             let registration = plane
                 .with_registrations(|regs| regs.iter().find(|r| r.agent_id == name).cloned())?;
@@ -559,7 +558,7 @@ pub(crate) async fn approve(
     };
     if let Err(refusal) = agrees(&preview, req.fingerprint.trim()) {
         planeverbs::audit(
-            Plane::A2a,
+            "a2a",
             VERB,
             &name,
             crate::admin::audit::OUTCOME_REJECTED,
@@ -579,7 +578,7 @@ pub(crate) async fn approve(
         let Some(reg) = regs.iter_mut().find(|r| r.agent_id == name) else {
             return Err(AdminError::not_found(format!(
                 "{} `{name}`",
-                Plane::A2a.subject_noun()
+                crate::plane::builtin_decl("a2a").subject_noun
             )));
         };
         super::pin::approve_registration(&mut reg.approval, &preview.sighting, None)
@@ -606,7 +605,7 @@ pub(crate) async fn approve(
         Ok(r) => r,
         Err(e) => {
             planeverbs::audit(
-                Plane::A2a,
+                "a2a",
                 VERB,
                 &name,
                 crate::admin::audit::OUTCOME_REJECTED,
@@ -616,7 +615,7 @@ pub(crate) async fn approve(
         }
     };
     planeverbs::audit(
-        Plane::A2a,
+        "a2a",
         VERB,
         &name,
         crate::admin::audit::OUTCOME_APPLIED,

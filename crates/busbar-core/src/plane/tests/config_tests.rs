@@ -21,7 +21,7 @@ use crate::plane::config::{
     config_sections, judge_hook_ref, refuse_cross_plane_reference, validate_section_hooks,
     HookRefError,
 };
-use crate::plane::{Plane, PlaneSections, RefError};
+use crate::plane::{PlaneSections, RefError};
 
 // ══ 1. THE SECTION LIST EXISTS ONCE, AND IS DERIVED ══════════════════════════════════════════════
 
@@ -32,9 +32,8 @@ use crate::plane::{Plane, PlaneSections, RefError};
 #[test]
 fn the_section_list_is_derived_from_the_config_grammar_rather_than_written() {
     let mut expected: Vec<&'static str> = Vec::new();
-    for s in Plane::ALL
-        .iter()
-        .map(|p| p.config_section())
+    for s in crate::plane::plane_keys()
+        .map(|k| crate::plane::builtin_decl(k).config_section)
         .chain(NamedMapSection::ALL.iter().map(|s| s.key()))
     {
         if !expected.contains(&s) {
@@ -165,10 +164,10 @@ fn the_parse_time_refusal_fires_on_a_name_nothing_defines() {
     // `Unknown`, because there is nothing there to have crossed a boundary.
     let empty: PlaneSections<u8> = PlaneSections::default();
     assert_eq!(
-        empty.resolve(Plane::Mcp, "agents.planner"),
+        empty.resolve("mcp", "agents.planner"),
         Err(RefError::Unknown {
             name: "agents.planner".to_string(),
-            plane: Plane::Mcp
+            plane: "mcp"
         }),
         "the resolve-time rule cannot see a shape violation; only the parse-time rule can"
     );
@@ -182,21 +181,21 @@ fn the_parse_time_refusal_fires_on_a_name_nothing_defines() {
 #[test]
 fn the_resolve_time_refusal_fires_on_a_bare_name_that_binds_across_the_boundary() {
     let mut sections: PlaneSections<u8> = PlaneSections::default();
-    sections.insert(Plane::A2a, "planner", 1);
+    sections.insert("a2a", "planner", 1);
 
     // The parse-time rule has NO objection to this name.
     refuse_cross_plane_reference("`tools.search`", "planner", &config_sections())
         .expect("a bare name is legal in shape; the boundary it crosses is a binding, not a shape");
 
     let err = sections
-        .resolve(Plane::Mcp, "planner")
+        .resolve("mcp", "planner")
         .expect_err("a name defined on a sibling plane is a boundary violation");
     assert_eq!(
         err,
         RefError::CrossPlane {
             name: "planner".to_string(),
-            referenced_from: Plane::Mcp,
-            defined_in: Plane::A2a,
+            referenced_from: "mcp",
+            defined_in: "a2a",
         }
     );
     assert!(

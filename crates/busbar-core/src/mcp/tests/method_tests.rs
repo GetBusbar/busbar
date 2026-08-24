@@ -623,8 +623,7 @@ async fn a_tool_call_is_charged_metered_and_audited_on_the_ordinary_budget_plane
          groups MCP traffic without knowing what MCP is"
     );
     assert_eq!(
-        row.provider,
-        crate::plane::Plane::Mcp.key(),
+        row.provider, "mcp",
         "and to the PLANE, so tool spend is separable from model spend"
     );
     assert_eq!(row.requests, 1);

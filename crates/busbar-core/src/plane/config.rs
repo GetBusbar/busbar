@@ -13,7 +13,7 @@
 //! no compiler links. Nothing made them agree; they agreed because one was copied from the other.
 //!
 //! That list is the part that rots. It is a fact about the top-level config grammar, and the config
-//! grammar is declared in two tables that already exist: [`Plane::ALL`] names the plane sections and
+//! grammar is declared in two tables that already exist: the plane registry keys name the plane sections and
 //! [`NamedMapSection::ALL`] names the 1.5.3 named-definition maps. A plane or a section added to
 //! either table used to leave both copies of the literal behind, and a section missing from the
 //! literal is not a loud failure — it is `agents.planner` being accepted as a bare hook name,
@@ -78,8 +78,6 @@
 use serde::Deserialize;
 
 use crate::config::named_map::NamedMapSection;
-
-use super::Plane;
 
 /// A PLANE'S CONFIG SECTION, ASKED FOR ITS OWN SECRETS — so core enumerates a plane's credential
 /// references without naming that plane's credential-bearing types.
@@ -345,7 +343,7 @@ pub(crate) struct Section<T> {
 /// THE SECTION-MAP SPLIT, and the only copy of it: read one plane's top-level section into its two
 /// reserved knobs and its registrations, in the one order all three planes are read in.
 ///
-/// `plane` supplies the WORDS (`Plane::config_section` and [`Plane::subject_noun`]) so no caller
+/// `plane_key` supplies the WORDS (its decl's `config_section` and `subject_noun`) so no caller
 /// carries a second vocabulary for its own section; `validate` is the plane's VALUE RULES, run on
 /// each entry as it is parsed, so the file and the admin write path refuse the same definitions —
 /// the ONE GRAMMAR, TWO PATHS rule. A plane with no value rules passes `|_, _| Ok(())`.
@@ -356,7 +354,7 @@ pub(crate) struct Section<T> {
 /// the confusing one costs an operator an afternoon.
 pub(crate) fn split_section<'de, D, T>(
     deserializer: D,
-    plane: Plane,
+    plane_key: &'static str,
     validate: impl Fn(&str, &T) -> Result<(), String>,
 ) -> Result<Section<T>, D::Error>
 where
@@ -365,8 +363,9 @@ where
 {
     use serde::de::Error as _;
 
-    let section = plane.config_section();
-    let noun = plane.subject_noun();
+    let d = super::builtin_decl(plane_key);
+    let section = d.config_section;
+    let noun = d.subject_noun;
 
     let mut raw: indexmap::IndexMap<String, serde_yaml::Value> =
         indexmap::IndexMap::deserialize(deserializer)?;

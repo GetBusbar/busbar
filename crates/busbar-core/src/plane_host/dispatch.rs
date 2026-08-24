@@ -463,8 +463,8 @@ pub(crate) extern "C-unwind" fn gate_decide(
         // The `ingress_protocol` label is DERIVED from the plane key host-side (not carried), spelled
         // exactly as the in-process site spells it.
         let ingress = match s.plane_key {
-            0 => crate::plane::Plane::Mcp.key(),
-            1 => crate::plane::Plane::A2a.key(),
+            0 => "mcp",
+            1 => "a2a",
             _ => "",
         };
         // Rebuild the caller's arguments `Value`. Byte-safe because `serde_json`'s `preserve_order` is

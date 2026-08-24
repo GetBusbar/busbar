@@ -70,7 +70,7 @@
 //! * the route has a `CoreRouteTable` entry, declared in the act that mounts it, like every other;
 //! * the service reads its identity from ordinary Rust state rather than fishing extensions out of
 //!   a request, so there is no way to construct one that has not been through the auth middleware;
-//! * `PlaneDispatch` claims `/lf.a2a.v1.A2AService` for [`crate::plane::Plane::A2a`], so the RFC
+//! * `PlaneDispatch` claims `/lf.a2a.v1.A2AService` for the A2A plane (registry key `a2a`), so the RFC
 //!   8707 audience check that guards `/a2a` guards this path too. That is not tidiness: the audience
 //!   is resolved THROUGH the mount table, so an unclaimed path is one where no token's `aud` is
 //!   checked, and this binding would have admitted a token minted for any other resource.

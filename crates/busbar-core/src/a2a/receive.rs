@@ -62,7 +62,7 @@ pub(super) const AUDIT_ACTION: &str = "agent.call";
 fn credential_kind_of(app: &App) -> &'static str {
     let bound = app
         .planes
-        .mount_of(crate::plane::Plane::A2a)
+        .mount_of("a2a")
         .and_then(|mount| app.planes.admission_for(mount))
         .is_some();
     if bound {
@@ -708,7 +708,7 @@ pub(super) async fn invoke(
     let mut answered = invoke_inner(app, gov, principal, target, wire, body).await;
     crate::telemetry::request_finished(
         &observed,
-        crate::plane::Plane::A2a.key(),
+        "a2a",
         transport.name(),
         // The same sentinel `plane::observe` stamps, and for the same reason it states there: the
         // routing target is client-supplied and an unbounded label value is a memory-exhaustion DoS
@@ -1500,7 +1500,7 @@ async fn admitted(
             busbar_plugin::hot::AdmissionId::NONE,
             hop.billed_key_id.as_bytes(),
             resource.as_bytes(),
-            crate::plane::Plane::A2a.key().as_bytes(),
+            "a2a".as_bytes(),
         );
         (vt.meter_charge.unwrap())(hctx, &*usage as *const busbar_plugin::hot::Usage)
     });
@@ -1762,7 +1762,7 @@ fn fold_reverify_join(
     match joined {
         Ok(pass) => pass,
         Err(join_err) => {
-            gate.report(crate::plane::Plane::A2a, subject, false, true);
+            gate.report("a2a", subject, false, true);
             std::panic::resume_unwind(join_err.into_panic());
         }
     }
@@ -1823,7 +1823,7 @@ async fn verify_agent_on_call(app: &Arc<App>, plane: &Arc<super::plane::A2aPlane
                 if let Some(pass) = pass {
                     let unreachable = pass.refusal.is_some();
                     let drifted = pass.settled.as_ref().is_some_and(|s| s.drift_observed);
-                    gate.report(crate::plane::Plane::A2a, &report_id, drifted, unreachable);
+                    gate.report("a2a", &report_id, drifted, unreachable);
                 }
             },
         )

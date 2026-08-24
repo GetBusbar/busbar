@@ -1558,9 +1558,7 @@ fn removing_the_agents_block_still_prunes_carried_a2a_verify_entries() {
     let prior = build_once(cfg(), None).expect("boot");
     // The carried gate accumulated per-subject coordination for an agent this deployment fronted
     // (a latched drift diagnostic tracks the subject just as an in-flight verify would).
-    prior
-        .a2a_verify
-        .report(crate::plane::Plane::A2a, "retired-agent", true, false);
+    prior.a2a_verify.report("a2a", "retired-agent", true, false);
     assert!(
         prior.a2a_verify.tracks_subject("retired-agent"),
         "seed: the carried a2a VerifyGate must track the subject before the apply"

@@ -1005,7 +1005,7 @@ impl<'de> Deserialize<'de> for ToolsCfg {
         // the file rejects.
         let section = crate::plane::config::split_section::<D, McpServerDefCfg>(
             deserializer,
-            crate::plane::Plane::Mcp,
+            "mcp",
             validate_server,
         )?;
 

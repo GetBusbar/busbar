@@ -284,7 +284,7 @@ async fn retain_drops_retired_subjects_and_keeps_the_live_ones() {
         let last = Arc::new(AtomicU64::new(0));
         gate.ensure_fresh(subject, &policy, 1, ledger_of(&last), || async {})
             .await;
-        gate.report(crate::plane::Plane::A2a, subject, true, false);
+        gate.report("a2a", subject, true, false);
     }
     assert!(gate.tracks_subject("retired") && gate.is_latched("retired"));
     assert!(gate.tracks_subject("surviving") && gate.is_latched("surviving"));

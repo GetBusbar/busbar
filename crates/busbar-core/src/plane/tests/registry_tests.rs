@@ -12,9 +12,9 @@
 
 use crate::plane::config::{config_sections, config_sections_from, refuse_cross_plane_reference};
 use crate::plane::registry::{
-    build_dispatch, builtin_plane_decls, install_planes, merged_boot_plane_decls, PlaneDecl,
+    build_dispatch, builtin_plane_decls, install_planes, merged_boot_plane_decls, plane_decl_for,
+    PlaneDecl,
 };
-use crate::plane::Plane;
 use std::any::Any;
 use std::collections::BTreeMap;
 
@@ -176,27 +176,32 @@ fn a_same_key_registration_is_skipped_and_the_first_copy_wins() {
     );
 }
 
-/// ONE SOURCE PER FACT. The enum's accessors now READ their declaration, so a fact cannot be stated
-/// twice and drift. This pins the direction: every `Plane` variant resolves to a built-in decl, and
-/// what it answers is exactly what that decl says.
+/// ONE SOURCE PER FACT. Every built-in plane KEY resolves to a decl, and what the plane surface
+/// answers for that key is exactly what the decl says. This pins the direction after the enum was
+/// dissolved: the by-key indirection reads its declaration rather than restating any fact.
 #[test]
-fn every_plane_variant_answers_from_its_declaration() {
-    for plane in Plane::ALL {
-        let decl = plane.decl();
-        assert_eq!(plane.key(), decl.key);
-        assert_eq!(plane.config_section(), decl.config_section);
-        assert_eq!(plane.scope_kinds(), decl.scope_kinds);
-        assert_eq!(plane.subject_noun(), decl.subject_noun);
-        assert_eq!(plane.audit_kind(), decl.audit_kind);
-        assert_eq!(plane.wire_format_names(), (decl.wire_format_names)());
+fn every_plane_key_answers_from_its_declaration() {
+    for decl in builtin_plane_decls() {
+        let resolved = plane_decl_for(decl.key).expect("every built-in key resolves to a decl");
+        assert!(std::ptr::eq(resolved, *decl));
+        assert_eq!(
+            crate::plane::wire_format_names(decl.key),
+            (decl.wire_format_names)()
+        );
     }
     // The values themselves are unchanged by the rewiring — the operator-visible strings that
     // metrics, audit records and grants are keyed by.
-    assert_eq!(Plane::Llm.key(), "llm");
-    assert_eq!(Plane::Mcp.audit_kind(), "mcp_server");
-    assert_eq!(Plane::A2a.audit_kind(), "a2a_agent");
-    assert_eq!(Plane::A2a.subject_noun(), "fronted agent");
-    assert_eq!(Plane::Mcp.scope_kinds(), &["mcp_server", "mcp_tool"]);
+    assert_eq!(crate::plane::RESIDUAL_KEY, "llm");
+    assert_eq!(crate::plane::builtin_decl("mcp").audit_kind, "mcp_server");
+    assert_eq!(crate::plane::builtin_decl("a2a").audit_kind, "a2a_agent");
+    assert_eq!(
+        crate::plane::builtin_decl("a2a").subject_noun,
+        "fronted agent"
+    );
+    assert_eq!(
+        crate::plane::builtin_decl("mcp").scope_kinds,
+        &["mcp_server", "mcp_tool"]
+    );
 }
 
 /// THE LLM PLANE'S WIRE-FORMAT LIST IS STILL READ OFF THE LIVE PROTOCOL REGISTRY, through the decl's
@@ -205,12 +210,12 @@ fn every_plane_variant_answers_from_its_declaration() {
 #[test]
 fn the_llm_decl_reads_the_protocol_registry() {
     assert_eq!(
-        Plane::Llm.wire_format_names(),
+        crate::plane::wire_format_names(crate::plane::RESIDUAL_KEY),
         crate::proto::known_protocols(),
         "the LLM plane's dialects are the registered protocols, not a literal"
     );
     assert!(
-        Plane::Llm.wire_formats() > 1,
+        crate::plane::wire_formats(crate::plane::RESIDUAL_KEY) > 1,
         "and the superset-IR threshold is computed from that list"
     );
 }
@@ -656,19 +661,19 @@ fn build_dispatch_matches_the_hand_mounted_table() {
     let built = build_dispatch(builtin_plane_decls(), &slots).expect("dispatch builds");
 
     let hand = crate::plane::PlaneDispatch::default()
-        .mount(Plane::Mcp, mcp.mount_path(), crate::plane::WIRE_JSONRPC)
-        .admit(Plane::Mcp, mcp.admission())
+        .mount("mcp", mcp.mount_path(), crate::plane::WIRE_JSONRPC)
+        .admit("mcp", mcp.admission())
         .mount(
-            Plane::A2a,
+            "a2a",
             crate::a2a::serve::MOUNT_PATH,
             crate::plane::WIRE_JSONRPC,
         )
         .mount(
-            Plane::A2a,
+            "a2a",
             crate::a2a::serve::GRPC_MOUNT_PATH,
             crate::plane::WIRE_GRPC,
         )
-        .admit(Plane::A2a, a2a.admission().expect("receiving side"));
+        .admit("a2a", a2a.admission().expect("receiving side"));
 
     assert_eq!(
         built, hand,

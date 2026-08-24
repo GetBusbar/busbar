@@ -626,7 +626,7 @@ impl AppSlots {
         lanes: &[Lane],
         pools: &HashMap<String, Vec<WeightedLane>>,
         by_model: &HashMap<String, usize>,
-        plane: crate::plane::Plane,
+        plane: &'static str,
     ) -> AppSlots {
         use crate::metrics::{
             BREAKER_TRIPS_TOTAL, FAILOVERS_TOTAL, REQUESTS_TOTAL, REQUEST_DURATION_SECONDS,
@@ -637,7 +637,7 @@ impl AppSlots {
         // routing tables, and the caller is the only place that knows whose. Assuming it would make
         // this function silently wrong the day a second plane grows a bounded routing table worth
         // banking, which is exactly the direction the plane spine is going.
-        let banked_plane = plane.key();
+        let banked_plane = plane;
 
         // Ingress pool labels: configured pools, model-routed labels, and the pre-routing sentinel.
         let mut ingress_labels: Vec<&str> = pools.keys().map(String::as_str).collect();
@@ -778,7 +778,7 @@ pub(crate) fn request_finished(
     // model-plane families label-identical to v1.5.4. The bank holds only the model plane's label
     // space, so a mounted-plane request would miss it anyway; routing here is explicit rather than
     // relying on that miss, and it targets the correct (plane-labelled) family.
-    if plane != crate::plane::Plane::Llm.key() {
+    if plane != crate::plane::RESIDUAL_KEY {
         crate::metrics::incr_plane_requests_total(plane, ingress_protocol, pool, outcome);
         crate::metrics::record_plane_request_duration(plane, ingress_protocol, pool, seconds);
         return;

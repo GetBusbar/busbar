@@ -33,7 +33,6 @@ use axum::response::Response;
 
 use crate::admin::planeverbs::{self, PlaneTrust};
 use crate::admin::v1::contract::{AdminError, NamedDefView};
-use crate::plane::Plane;
 use crate::state::AppHandle;
 
 /// Project one `tools:` entry — one registered MCP server — onto the shared named-definition view.
@@ -322,12 +321,12 @@ pub(crate) struct McpSubject {
 pub(crate) struct McpServers;
 
 impl PlaneTrust for McpServers {
-    const PLANE: Plane = Plane::Mcp;
+    const PLANE: &'static str = "mcp";
     type Subject = McpSubject;
     type View = McpTrustView;
 
     fn resolve(app: &Arc<crate::state::App>, name: &str) -> Result<McpSubject, AdminError> {
-        planeverbs::registered(Plane::Mcp, name, || {
+        planeverbs::registered("mcp", name, || {
             match (
                 super::runtime(app).catalogue.server(name),
                 super::runtime(app).servers.servers.get(name),

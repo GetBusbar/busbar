@@ -69,7 +69,7 @@ fn the_plane_is_a_parameter_and_never_a_branch() {
 /// third plane gets the same refusal for free.
 #[test]
 fn the_not_found_names_the_plane_s_own_subject() {
-    let refused = registered(Plane::Mcp, "billing", || None::<()>)
+    let refused = registered("mcp", "billing", || None::<()>)
         .expect_err("a lookup that resolved nothing must refuse");
     let rendered = format!("{refused:?}");
     assert!(
@@ -77,7 +77,7 @@ fn the_not_found_names_the_plane_s_own_subject() {
         "the refusal must name the plane's own subject noun: {rendered}"
     );
 
-    let refused = registered(Plane::A2a, "planner", || None::<()>)
+    let refused = registered("a2a", "planner", || None::<()>)
         .expect_err("a lookup that resolved nothing must refuse");
     let rendered = format!("{refused:?}");
     assert!(
@@ -90,7 +90,7 @@ fn the_not_found_names_the_plane_s_own_subject() {
 /// nothing else; it never inspects, rewrites or re-validates what the plane found.
 #[test]
 fn a_resolved_lookup_is_returned_untouched() {
-    let found = registered(Plane::Mcp, "billing", || Some(("entry", "cfg")))
+    let found = registered("mcp", "billing", || Some(("entry", "cfg")))
         .expect("a lookup that resolved must not be refused");
     assert_eq!(found, ("entry", "cfg"));
 }
@@ -100,19 +100,31 @@ fn a_resolved_lookup_is_returned_untouched() {
 /// pinned here rather than left to whatever `format!` happens to produce.
 #[test]
 fn the_audit_naming_is_derived_from_the_plane() {
-    assert_eq!(Plane::Mcp.audit_kind(), "mcp_server");
-    assert_eq!(Plane::A2a.audit_kind(), "a2a_agent");
+    assert_eq!(crate::plane::builtin_decl("mcp").audit_kind, "mcp_server");
+    assert_eq!(crate::plane::builtin_decl("a2a").audit_kind, "a2a_agent");
     assert_eq!(
-        format!("{}.{}", Plane::Mcp.audit_kind(), "connect"),
+        format!(
+            "{}.{}",
+            crate::plane::builtin_decl("mcp").audit_kind,
+            "connect"
+        ),
         "mcp_server.connect",
         "the MCP connect action word is a published audit string and may not change shape"
     );
     assert_eq!(
-        format!("{}.{}", Plane::A2a.audit_kind(), "connect"),
+        format!(
+            "{}.{}",
+            crate::plane::builtin_decl("a2a").audit_kind,
+            "connect"
+        ),
         "a2a_agent.connect"
     );
     assert_eq!(
-        format!("{}.{}", Plane::A2a.audit_kind(), "approve"),
+        format!(
+            "{}.{}",
+            crate::plane::builtin_decl("a2a").audit_kind,
+            "approve"
+        ),
         "a2a_agent.approve"
     );
 }
