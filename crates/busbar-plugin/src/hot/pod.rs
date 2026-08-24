@@ -1492,6 +1492,98 @@ pub struct IdentityAdmitted {
     pub identity: IdentityId,
 }
 
+/// A REQUEST-ADMISSION gate subject — the input to the `gate_decide` slot, passed BY POINTER. It carries
+/// the neutral projection of ONE request the operator's hook gate ([`crate::hot::host::GateDecideFn`])
+/// screens: which plane it arrived on, which container it is addressed to, the invoked tool + its
+/// arguments (as the caller's JSON bytes), the caller's resolved key identity, and the session id — no
+/// busbar secret, no gate policy (the host owns the resolved gate set and re-selects it by
+/// `(plane_key, container)`). The host reconstructs the same `InvokeReq`-shaped facts the in-process
+/// firing site builds and runs the SAME gate decision, so a plane admits a request through its hook gates
+/// without ever naming `crate::hooks::gate::decide`.
+///
+/// `plane_key` selects both the gate map and the ingress-protocol label host-side: `0` = the MCP plane
+/// (`mcp_server_gates` + `Plane::Mcp`), `1` = the A2A plane (`a2a_agent_gates` + `Plane::A2a`). The
+/// session substrate is SUBSUMED: the host reads its own `session_store` + clock, so `session_id` (with
+/// `incremental != 0`) is all the plane supplies for an incremental scan.
+///
+/// # Safety / discipline
+/// Each `(ptr, len)`, when non-null/non-zero, MUST describe a live, initialized byte range for the call.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct GateSubjectRef {
+    /// `size_of::<GateSubjectRef>()` at construction.
+    pub size: u32,
+    /// POD schema version.
+    pub version: u16,
+    /// The plane this request arrived on: `0` = MCP (`mcp_server_gates` / `Plane::Mcp`), `1` = A2A
+    /// (`a2a_agent_gates` / `Plane::A2a`). The host derives both the gate map and the `ingress_protocol`
+    /// label from it; any other value selects no gates and an empty label.
+    pub plane_key: u8,
+    /// Whether the caller's resolved key identity is present (`1`) — read `key_id`/`key_name` only then.
+    pub key_present: u8,
+    /// Whether an incremental session scan is requested (`1`). The host still gates it on its own
+    /// `incremental_scan` opt-in and a non-empty `session_id`, exactly as the in-process site does.
+    pub incremental: u8,
+    /// Preamble/alignment padding before the 8-byte-aligned scalars.
+    pub _reserved: [u8; 3],
+    /// The request-spine correlation id the gate joins its decision to (the caller mints/reads it).
+    pub request_id: u64,
+    /// Borrowed pointer to the CONTAINER name (MCP server / A2A agent) the request is addressed to.
+    pub container_ptr: *const u8,
+    /// Length of the borrowed container range.
+    pub container_len: usize,
+    /// Borrowed pointer to the invoked TOOL/method name (the `InvokeReq::tool`).
+    pub tool_ptr: *const u8,
+    /// Length of the borrowed tool range.
+    pub tool_len: usize,
+    /// Borrowed pointer to the ARGUMENTS as the caller's JSON bytes (`serde_json::to_vec` of the
+    /// arguments `Value`); the host parses them back into the `InvokeReq::arguments` `Value`.
+    pub args_ptr: *const u8,
+    /// Length of the borrowed arguments range.
+    pub args_len: usize,
+    /// Borrowed pointer to the caller's resolved key id (read only when `key_present != 0`).
+    pub key_id_ptr: *const u8,
+    /// Length of the borrowed key-id range.
+    pub key_id_len: usize,
+    /// Borrowed pointer to the caller's resolved key name (read only when `key_present != 0`).
+    pub key_name_ptr: *const u8,
+    /// Length of the borrowed key-name range.
+    pub key_name_len: usize,
+    /// Borrowed pointer to the SESSION id (the MCP `x-session-id` / the A2A `contextId`), for the
+    /// incremental scan's cleared-set. Null/empty ⇒ no session (a full re-scan).
+    pub session_id_ptr: *const u8,
+    /// Length of the borrowed session-id range.
+    pub session_id_len: usize,
+}
+
+/// The out-param header the `gate_decide` slot writes: the request gate's verdict — PROCEED, or a
+/// REJECT carrying the hook's clamped 4xx status and the LENGTHS of the rendered `message`/`hook`
+/// strings the host copied into the caller's paired buffers (the `govern_admit_reason` copy-out pattern,
+/// twice). The host ALWAYS initializes it up front to a FAIL-CLOSED reject (`proceed == 0`, `status ==
+/// 403`, both lengths `0`), so a null subject, a gate that could not run, or a caught panic all read as a
+/// refusal — the gate's own fail-closed posture. The caller reads `message`/`hook` from its buffers
+/// exactly when `proceed == 0`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct GateVerdictOut {
+    /// `size_of::<GateVerdictOut>()` when the host writes it.
+    pub size: u32,
+    /// POD schema version.
+    pub version: u16,
+    /// `1` = the request PROCEEDS (no gate objected); `0` = a REJECT (read `status`/`message`/`hook`).
+    pub proceed: u8,
+    /// Preamble tail padding.
+    pub _reserved: u8,
+    /// The hook's refusal HTTP status, already clamped to the 4xx band (`400..=499`) by the gate.
+    pub status: u16,
+    /// The number of rendered-message bytes the host copied into the caller's `msg_buf` (`0` on a
+    /// proceed, or when no buffer was supplied). Read `msg_buf[..message_len]`.
+    pub message_len: u32,
+    /// The number of hook-name bytes the host copied into the caller's `hook_buf` (`0` on a proceed).
+    /// Read `hook_buf[..hook_len]`.
+    pub hook_len: u32,
+}
+
 /// A metric sample a plane emits (label passthrough; the host interprets no label).
 ///
 /// # Safety / discipline
@@ -1733,6 +1825,8 @@ mod tests {
         assert_preamble!(AuthResolved);
         assert_preamble!(IdentityQuery);
         assert_preamble!(IdentityAdmitted);
+        assert_preamble!(GateSubjectRef);
+        assert_preamble!(GateVerdictOut);
         assert_preamble!(MetricSample);
         assert_preamble!(CounterpartyRef);
         assert_preamble!(CallerRef);

@@ -324,6 +324,117 @@ pub fn clock_now_secs_via(host: HostCtx) -> u64 {
     (vtable.clock_now.expect("clock_now is a wired slot"))(host) / 1_000_000_000
 }
 
+/// The verdict of a request-admission gate fired over the host [`gate_decide`](vtable) seam.
+#[cfg_attr(
+    not(any(feature = "plane-mcp", feature = "plane-a2a")),
+    allow(dead_code)
+)]
+pub(crate) enum GateOutcome {
+    /// No gate objected (or none is attached) — the request proceeds.
+    Proceed,
+    /// A gate refused the request. Reconstructed from the [`GateVerdictOut`](busbar_plugin::hot::GateVerdictOut)
+    /// header + the copied-out buffers, byte-identical to the in-process `GateVerdict::Reject`.
+    Reject {
+        /// The hook's refusal status, already clamped to the 4xx band by the gate.
+        status: u16,
+        /// The hook's own refusal message (empty on a fail-closed refusal).
+        message: String,
+        /// The transport/policy name, for the audit row and the log line (empty on a fail-closed refusal).
+        hook: String,
+    },
+}
+
+/// Fire the operator's REQUEST-ADMISSION hook gates over the wired [`gate_decide`](vtable) seam and
+/// reconstruct the [`GateOutcome`] — so an MCP/A2A plane body admits a request through its
+/// `tools.hooks:` / `agents.hooks:` gates without ever naming `crate::hooks::gate::decide` or holding the
+/// resolved `ResolvedPolicy` set (the host owns and re-selects it by `(plane_key, container)`). A SAFE
+/// wrapper that keeps the `#[repr(C)]` [`GateVerdictOut`](busbar_plugin::hot::GateVerdictOut) out-param
+/// read + the two copy-out buffers inside this audited module (busbar-core denies `unsafe` elsewhere).
+///
+/// Byte-identical to the in-process firing site: the host reconstructs the same `InvokeReq`-shaped facts
+/// (`tool` + the caller's `arguments` JSON, which round-trips losslessly because `serde_json`'s
+/// `preserve_order` is OFF), the same key identity (`id`/`name`), and the same incremental-scan session
+/// substrate, and runs the SAME gate decision.
+///
+/// The slot drives the ASYNC gate on a fresh current-thread runtime, so it MUST be invoked from a
+/// BLOCKING thread (`spawn_blocking`) — calling `block_on` on a runtime worker would panic. Fail-closed:
+/// the host ALWAYS initializes the out-param to a 403 reject, so a null subject or a caught panic
+/// reconstructs a `Reject` (an empty message/hook), exactly as a gate that could not run refuses.
+///
+/// `plane_key`: `0` = MCP (`mcp_server_gates` / `Plane::Mcp`), `1` = A2A (`a2a_agent_gates` /
+/// `Plane::A2a`). `key` is the caller's resolved `(id, name)`; `session_id` is the caller's session (the
+/// MCP `x-session-id` / the A2A `contextId`), `Some` only when non-empty.
+#[cfg_attr(
+    not(any(feature = "plane-mcp", feature = "plane-a2a")),
+    allow(dead_code)
+)]
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+pub(crate) fn gate_decide_over(
+    app: &App,
+    plane_key: u8,
+    container: &str,
+    request_id: u64,
+    tool: &str,
+    args_json: &[u8],
+    key: Option<(&str, &str)>,
+    session_id: Option<&str>,
+) -> GateOutcome {
+    let mut msg_buf = [0u8; 512];
+    let mut hook_buf = [0u8; 512];
+    let mut out = core::mem::MaybeUninit::<busbar_plugin::hot::GateVerdictOut>::uninit();
+    let (key_id, key_name) = key.unwrap_or(("", ""));
+    let sid = session_id.unwrap_or("");
+    let scope = DispatchScope::new();
+    let status = with_borrowed_host(app, &scope, |hctx, vt| {
+        let subject = busbar_plugin::hot::GateSubjectRef {
+            size: core::mem::size_of::<busbar_plugin::hot::GateSubjectRef>() as u32,
+            version: busbar_plugin::hot::POD_VERSION,
+            plane_key,
+            key_present: u8::from(key.is_some()),
+            incremental: u8::from(session_id.is_some()),
+            _reserved: [0; 3],
+            request_id,
+            container_ptr: container.as_ptr(),
+            container_len: container.len(),
+            tool_ptr: tool.as_ptr(),
+            tool_len: tool.len(),
+            args_ptr: args_json.as_ptr(),
+            args_len: args_json.len(),
+            key_id_ptr: key_id.as_ptr(),
+            key_id_len: key_id.len(),
+            key_name_ptr: key_name.as_ptr(),
+            key_name_len: key_name.len(),
+            session_id_ptr: sid.as_ptr(),
+            session_id_len: sid.len(),
+        };
+        (vt.gate_decide.expect("gate_decide is a wired slot"))(
+            hctx,
+            &subject as *const busbar_plugin::hot::GateSubjectRef,
+            msg_buf.as_mut_ptr(),
+            msg_buf.len(),
+            hook_buf.as_mut_ptr(),
+            hook_buf.len(),
+            std::ptr::from_mut(&mut out),
+        )
+    });
+    // SAFETY: the host ALWAYS initializes `out` up front (see `dispatch::gate_decide`), so it is a live
+    // `GateVerdictOut` on every return.
+    let v = unsafe { out.assume_init() };
+    if status == busbar_plugin::hot::StatusClass::Ok && v.proceed != 0 {
+        return GateOutcome::Proceed;
+    }
+    // A REJECT (Ok + proceed=0) OR a fail-closed refusal (Refused/Fault leaves the eager 403 header):
+    // both reconstruct a `Reject`, so a gate that could not run refuses.
+    let m = (v.message_len as usize).min(msg_buf.len());
+    let h = (v.hook_len as usize).min(hook_buf.len());
+    GateOutcome::Reject {
+        status: v.status,
+        message: String::from_utf8_lossy(&msg_buf[..m]).into_owned(),
+        hook: String::from_utf8_lossy(&hook_buf[..h]).into_owned(),
+    }
+}
+
 /// The ASYNC-CAPABLE dispatch guard: an OWNED RAII handle a core `async` dispatch fn creates at the top
 /// of its body and holds as a LOCAL across every `.await`, so the [`DispatchScope`] arena lives for the
 /// whole future and reclaims on ANY exit — normal return, client-disconnect cancel, or panic. This is

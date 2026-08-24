@@ -1474,52 +1474,60 @@ async fn tools_call(
     // decided by its grants and by nothing else; a hook decides what a caller may DO.
     //
     // ZERO COST when nothing is attached: one hash lookup that misses.
-    if let Some(gates) = ctx.app.mcp_server_gates.get(&selected.server) {
-        // The IR this plane produces for an invocation, which is the ONLY thing the seam learns
-        // about the request. The `arguments` clone is paid strictly behind an attached hook.
-        let facts = crate::ir::invoke::InvokeReq {
-            tool: selected.namespaced.clone(),
-            arguments: arguments.clone(),
-            extra: Default::default(),
-        };
-        let verdict = crate::hooks::gate::decide(
-            gates,
-            &crate::hooks::gate::GateSubject {
-                facts: &facts,
-                container: &selected.server,
-                ingress_protocol: crate::plane::Plane::Mcp.key(),
-                // The SAME id the per-call record carries, re-read rather than re-minted: a second
-                // `next_request_id()` would hand the hook a number that joins to nothing.
-                request_id: log.request_id.parse().unwrap_or_default(),
-                key: ctx.gov.key(),
-                // Incremental scan (session substrate): screen only pieces this session has not
-                // already had cleared for each hook. The session identity is the caller's
-                // `x-session-id` — a neutral per-session convention, hashed by the core (store) hash,
-                // never the LLM plane's affinity resolver. GATED: only when the operator opted in AND
-                // a non-empty id is present; an ABSENT id must stay `None` (full re-scan), never a
-                // constant key that would fold every sessionless caller into one shared cleared-set.
-                incremental: {
-                    let sid = ctx
-                        .headers
-                        .get("x-session-id")
-                        .and_then(|v| v.to_str().ok())
-                        .unwrap_or("");
-                    (ctx.app.incremental_scan && !sid.is_empty()).then(|| {
-                        crate::hooks::gate::IncrementalScan {
-                            store: &ctx.app.session_store,
-                            session: crate::session::SessionKey(crate::store::fnv1a_u64(sid)),
-                            now_ms: crate::plane_host::clock_now_ms_over(ctx.app),
-                        }
-                    })
-                },
-            },
-        )
-        .await;
-        if let crate::hooks::gate::GateVerdict::Reject {
+    if ctx.app.mcp_server_gates.contains_key(&selected.server) {
+        // FIRE THE GATE THROUGH THE HOST SEAM (`plane_host::gate_decide_over`), so this plane body no
+        // longer names `crate::hooks::gate::decide` or holds the resolved `ResolvedPolicy` set (the
+        // Seam-B inversion) — the host re-selects the gate set by `(plane_key, container)` and runs the
+        // same decision. The presence check above keeps the whole block ZERO-COST when nothing is
+        // attached: no arguments clone, no serialize, no blocking hop.
+        //
+        // The arguments are serialized ONCE for the seam. Byte-safe because serde_json's
+        // `preserve_order` is OFF (a `Value` object is a sorted-stable `BTreeMap`), so
+        // `to_vec`→`from_slice` round-trips to the identical `Value` and the gate's `value.to_string()`
+        // projection is unchanged.
+        let args_json = serde_json::to_vec(&arguments).unwrap_or_default();
+        // The SAME id the per-call record carries, re-read rather than re-minted: a second
+        // `next_request_id()` would hand the hook a number that joins to nothing.
+        let request_id = log.request_id.parse().unwrap_or_default();
+        // The session identity is the caller's `x-session-id` — a neutral per-session convention hashed
+        // host-side. `Some` only when non-empty; an ABSENT id stays a full re-scan host-side, never a
+        // constant key folding every sessionless caller into one shared cleared-set.
+        let sid = ctx
+            .headers
+            .get("x-session-id")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        let server = selected.server.clone();
+        let tool = selected.namespaced.clone();
+        // The caller's resolved key identity — the gate reads only `id`/`name`.
+        let key = ctx.gov.key().map(|k| (k.id.clone(), k.name.clone()));
+        let app = std::sync::Arc::clone(ctx.app);
+        // The host seam drives the ASYNC gate on a fresh runtime, so it MUST run on a BLOCKING thread
+        // (`block_on` on a runtime worker panics). One hop per request that has an attached gate.
+        let outcome = tokio::task::spawn_blocking(move || {
+            crate::plane_host::gate_decide_over(
+                &app,
+                0,
+                &server,
+                request_id,
+                &tool,
+                &args_json,
+                key.as_ref().map(|(id, name)| (id.as_str(), name.as_str())),
+                (!sid.is_empty()).then_some(sid.as_str()),
+            )
+        })
+        .await
+        .unwrap_or(crate::plane_host::GateOutcome::Reject {
+            status: 403,
+            message: String::new(),
+            hook: String::new(),
+        });
+        if let crate::plane_host::GateOutcome::Reject {
             status,
             message,
             hook,
-        } = verdict
+        } = outcome
         {
             crate::plane::auditlog::emit_admin_hostless_now(
                 "mcp_tool.call",
@@ -1529,7 +1537,7 @@ async fn tools_call(
             );
             tracing::info!(
                 tool = %selected.namespaced,
-                hook,
+                hook = %hook,
                 status,
                 "mcp tools/call refused by a hook gate"
             );

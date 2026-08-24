@@ -29,8 +29,8 @@
 use super::{recover, HostState};
 use busbar_plugin::hot::host::HostCtx;
 use busbar_plugin::hot::{
-    CallerRef, ContentChunk, GateDecision, OpDesc, OpResult, StatusClass, TargetRef,
-    WorkHandleDesc, WorkHandleId,
+    CallerRef, ContentChunk, GateDecision, GateSubjectRef, GateVerdictOut, OpDesc, OpResult,
+    StatusClass, TargetRef, WorkHandleDesc, WorkHandleId, POD_VERSION,
 };
 use core::mem::MaybeUninit;
 use std::collections::HashMap;
@@ -360,6 +360,185 @@ fn run_content_gate(
             hook: "plane_host::gate_scan",
         },
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// gate_decide — fire the operator's request-admission hook gates (fail-closed to a 403 reject).
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+/// Copy up to `cap` of `bytes` into the caller's `buf` (tolerating a null/zero-cap slot), returning the
+/// number of bytes written — the `govern_admit_reason` variable-length copy-out, used for the gate's
+/// `message` and `hook` strings alike.
+///
+/// # Safety
+/// `buf`, when non-null, is a writable range of at least `cap` bytes for the call.
+unsafe fn write_reason(buf: *mut u8, cap: usize, bytes: &[u8]) -> usize {
+    if buf.is_null() || cap == 0 {
+        return 0;
+    }
+    let n = bytes.len().min(cap);
+    // SAFETY: `bytes[..n]` is initialized and `buf[..n]` is a writable range (n ≤ cap, caller ABI).
+    unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), buf, n) };
+    n
+}
+
+/// Write the [`GateVerdictOut`] out-param (tolerating a null slot): the verdict + clamped status + the
+/// rendered `message`/`hook` lengths.
+///
+/// # Safety
+/// `out`, when non-null, is a writable, aligned `MaybeUninit<GateVerdictOut>` for the call.
+unsafe fn write_gate_verdict(
+    out: *mut MaybeUninit<GateVerdictOut>,
+    proceed: u8,
+    status: u16,
+    message_len: u32,
+    hook_len: u32,
+) {
+    let verdict = GateVerdictOut {
+        size: core::mem::size_of::<GateVerdictOut>() as u32,
+        version: POD_VERSION,
+        proceed,
+        _reserved: 0,
+        status,
+        message_len,
+        hook_len,
+    };
+    // SAFETY: `out` is a writable, aligned MaybeUninit slot (or null, which `write_out` tolerates).
+    unsafe { busbar_plugin::write_out(out, verdict) };
+}
+
+/// WIRED `gate_decide` → fire the operator's REQUEST-ADMISSION hook gates over the REAL
+/// [`crate::hooks::gate::decide`]. The host re-selects the resolved gate set by `(plane_key, container)`
+/// — it owns the `ResolvedPolicy` set the plane never holds — reconstructs the SAME `InvokeReq`-shaped
+/// facts the in-process firing site builds (`tool` + the caller's `arguments` JSON), threads the caller
+/// key identity and the incremental-scan session substrate (subsumed host-side: the host reads its own
+/// `session_store` + clock), and runs the async gate on a fresh current-thread runtime — the same
+/// async→sync bridge [`gate_scan`]'s `run_content_gate` uses.
+///
+/// `out` is initialized UP FRONT to a fail-closed reject (`proceed = 0`, `status = 403`, zero lengths),
+/// so a null subject ([`StatusClass::Refused`]), a runtime that will not start or a caught panic
+/// ([`StatusClass::Fault`]) all leave a refusal — the gate's own fail-closed posture (a load-bearing gate
+/// that cannot run refuses). A REJECT writes the clamped 4xx status and copies the hook's
+/// `message`/`hook` bytes into the caller's buffers.
+///
+/// Driven from a BLOCKING thread (`spawn_blocking`, see [`super::gate_decide_over`]): the fresh runtime's
+/// `block_on` would panic on a runtime worker.
+#[allow(clippy::too_many_arguments)]
+pub(crate) extern "C-unwind" fn gate_decide(
+    host: HostCtx,
+    subject: *const GateSubjectRef,
+    msg_buf: *mut u8,
+    msg_cap: usize,
+    hook_buf: *mut u8,
+    hook_cap: usize,
+    out: *mut MaybeUninit<GateVerdictOut>,
+) -> StatusClass {
+    catch_unwind(AssertUnwindSafe(|| {
+        // Initialize `out` up front so NO path (refuse, fault, or a caught panic below) leaves it
+        // uninitialized: the fail-closed reject a `Proceed`/`Reject` overwrites on the Ok path.
+        // SAFETY: ABI out-param discipline (writable/aligned or null; see `write_gate_verdict`).
+        unsafe { write_gate_verdict(out, 0, 403, 0, 0) };
+        // SAFETY: recovery invariant (see `recover`).
+        let state: &HostState = unsafe { recover(host) };
+        if subject.is_null() {
+            return StatusClass::Refused; // no subject to judge → `out` stays the fail-closed reject.
+        }
+        // SAFETY: a non-null `subject` is a live, initialized `GateSubjectRef` for the call (ABI).
+        let s = unsafe { &*subject };
+        let app = state.app;
+        // SAFETY: each borrowed `(ptr, len)` is a live range for the call (ABI discipline).
+        let container = unsafe { borrow_str(s.container_ptr, s.container_len) }.unwrap_or("");
+        let tool = unsafe { borrow_str(s.tool_ptr, s.tool_len) }.unwrap_or("");
+        // SAFETY: as above.
+        let args = unsafe { borrow_bytes(s.args_ptr, s.args_len) };
+        // The host OWNS the resolved gate set; the plane passes only `(plane_key, container)`. An unknown
+        // plane key or an unattached container selects the empty set (`decide`'s zero-cost `Proceed`).
+        let gates: &[(u16, crate::hooks::ResolvedPolicy)] = match s.plane_key {
+            0 => app.mcp_server_gates.get(container),
+            1 => app.a2a_agent_gates.get(container),
+            _ => None,
+        }
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+        // The `ingress_protocol` label is DERIVED from the plane key host-side (not carried), spelled
+        // exactly as the in-process site spells it.
+        let ingress = match s.plane_key {
+            0 => crate::plane::Plane::Mcp.key(),
+            1 => crate::plane::Plane::A2a.key(),
+            _ => "",
+        };
+        // Rebuild the caller's arguments `Value`. Byte-safe because `serde_json`'s `preserve_order` is
+        // OFF (a `Value` object is a sorted-stable `BTreeMap`), so `to_vec`→`from_slice` round-trips to
+        // the identical `Value` and the gate's `value.to_string()` projection is unchanged.
+        let arguments: serde_json::Value =
+            serde_json::from_slice(args).unwrap_or(serde_json::Value::Null);
+        let facts = crate::ir::invoke::InvokeReq {
+            tool: tool.to_string(),
+            arguments,
+            extra: Default::default(),
+        };
+        // The caller's key identity — the gate reads ONLY `id`/`name`, so a reconstruction from those two
+        // is byte-identical to the resolved key the in-process site passes.
+        let key = (s.key_present != 0).then(|| busbar_api::VirtualKey {
+            // SAFETY: borrowed ranges live for the call (ABI).
+            id: unsafe { borrow_str(s.key_id_ptr, s.key_id_len) }
+                .unwrap_or("")
+                .to_string(),
+            name: unsafe { borrow_str(s.key_name_ptr, s.key_name_len) }
+                .unwrap_or("")
+                .to_string(),
+            ..Default::default()
+        });
+        // SAFETY: borrowed range lives for the call (ABI).
+        let sid = unsafe { borrow_str(s.session_id_ptr, s.session_id_len) }.unwrap_or("");
+        // The session substrate is SUBSUMED: the host reads its own `session_store` + clock. Gated on the
+        // operator opt-in AND a non-empty session id, exactly as the in-process site gates it.
+        let incremental =
+            (s.incremental != 0 && app.incremental_scan && !sid.is_empty()).then(|| {
+                crate::hooks::gate::IncrementalScan {
+                    store: &app.session_store,
+                    session: crate::session::SessionKey(crate::store::fnv1a_u64(sid)),
+                    now_ms: crate::store::now_ms(),
+                }
+            });
+        let subject = crate::hooks::gate::GateSubject {
+            facts: &facts,
+            container,
+            ingress_protocol: ingress,
+            request_id: s.request_id,
+            key: key.as_ref(),
+            incremental,
+        };
+        // Drive the ASYNC gate on a fresh current-thread runtime (the `run_content_gate` precedent). A
+        // runtime that will not start is fail-closed (`out` already holds the reject).
+        let verdict = match tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        {
+            Ok(rt) => rt.block_on(crate::hooks::gate::decide(gates, &subject)),
+            Err(_) => return StatusClass::Fault,
+        };
+        match verdict {
+            crate::hooks::gate::GateVerdict::Proceed => {
+                // SAFETY: ABI out-param discipline.
+                unsafe { write_gate_verdict(out, 1, 0, 0, 0) };
+            }
+            crate::hooks::gate::GateVerdict::Reject {
+                status,
+                message,
+                hook,
+            } => {
+                // SAFETY: the buffers are writable ranges (or null) per the ABI.
+                let m = unsafe { write_reason(msg_buf, msg_cap, message.as_bytes()) };
+                // SAFETY: as above.
+                let h = unsafe { write_reason(hook_buf, hook_cap, hook.as_bytes()) };
+                // SAFETY: ABI out-param discipline.
+                unsafe { write_gate_verdict(out, 0, status, m as u32, h as u32) };
+            }
+        }
+        StatusClass::Ok
+    }))
+    .unwrap_or(StatusClass::Fault) // caught panic → Fault; `out` already holds the fail-closed reject.
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────

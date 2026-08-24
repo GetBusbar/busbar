@@ -341,6 +341,44 @@ fn compute_layout() -> String {
     );
     record!(
         s,
+        GateSubjectRef,
+        [
+            size,
+            version,
+            plane_key,
+            key_present,
+            incremental,
+            _reserved,
+            request_id,
+            container_ptr,
+            container_len,
+            tool_ptr,
+            tool_len,
+            args_ptr,
+            args_len,
+            key_id_ptr,
+            key_id_len,
+            key_name_ptr,
+            key_name_len,
+            session_id_ptr,
+            session_id_len
+        ]
+    );
+    record!(
+        s,
+        GateVerdictOut,
+        [
+            size,
+            version,
+            proceed,
+            _reserved,
+            status,
+            message_len,
+            hook_len
+        ]
+    );
+    record!(
+        s,
         MetricSample,
         [
             size, version, _reserved, _reserved2, value_bits, name_ptr, name_len, labels_ptr,

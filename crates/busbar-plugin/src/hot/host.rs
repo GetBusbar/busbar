@@ -24,11 +24,11 @@
 use super::pod::{
     AdmissionId, AdmitRefusal, ApprovalQuery, AuthQuery, AuthResolved, CallerRef, ChainBreakHdr,
     ContentChunk, CounterpartyRef, Decision, EgressDesc, EgressFault, EgressId, EgressOpen, Facts,
-    FramingDesc, GateDecision, GovRefusal, GuardVerdict, IdentityAdmitted, IdentityQuery,
-    JournalQuery, JournalStreamDesc, Key, MeterOutcome, MetricSample, OpDesc, OpResult, PipeId,
-    ReframeOut, RestoredHdr, Seq, Signal, StatusClass, TargetRef, TrustVerdict, Usage,
-    VerifyChainHdr, VerifyDecision, VerifyLease, VerifyQuery, VerifyVerdict, WorkHandleDesc,
-    WorkHandleId,
+    FramingDesc, GateDecision, GateSubjectRef, GateVerdictOut, GovRefusal, GuardVerdict,
+    IdentityAdmitted, IdentityQuery, JournalQuery, JournalStreamDesc, Key, MeterOutcome,
+    MetricSample, OpDesc, OpResult, PipeId, ReframeOut, RestoredHdr, Seq, Signal, StatusClass,
+    TargetRef, TrustVerdict, Usage, VerifyChainHdr, VerifyDecision, VerifyLease, VerifyQuery,
+    VerifyVerdict, WorkHandleDesc, WorkHandleId,
 };
 use crate::AbiPreamble;
 use core::mem::MaybeUninit;
@@ -366,6 +366,26 @@ pub type IdentityAdmitFn = extern "C-unwind" fn(
     query: *const IdentityQuery,
     out: *mut MaybeUninit<IdentityAdmitted>,
 ) -> StatusClass;
+/// Fire the operator's REQUEST-ADMISSION hook gates over a neutral [`GateSubjectRef`] and return the
+/// gate's verdict. The host re-selects the resolved gate set by `(plane_key, container)` (it owns the
+/// `ResolvedPolicy` set the plane never holds), reconstructs the same `InvokeReq`-shaped facts the
+/// in-process firing site builds, and runs the SAME async gate decision on a fresh runtime — so a plane
+/// admits a request through its hook gates without naming `crate::hooks::gate::decide`. On a REJECT the
+/// host writes the clamped 4xx status into [`GateVerdictOut`] and copies the hook's `message`/`hook`
+/// strings into the caller's `msg_buf`/`hook_buf` (the `govern_admit_reason` copy-out, twice). `out` is
+/// ALWAYS initialized up front to a fail-closed reject, so a null subject ([`StatusClass::Refused`]) or a
+/// caught panic ([`StatusClass::Fault`]) both leave a refusal the plane reads as "the gate stopped it".
+/// The async gate is driven on a fresh current-thread runtime, so this slot is invoked from a BLOCKING
+/// thread (`spawn_blocking`) — calling it from a runtime worker would panic.
+pub type GateDecideFn = extern "C-unwind" fn(
+    host: HostCtx,
+    subject: *const GateSubjectRef,
+    msg_buf: *mut u8,
+    msg_cap: usize,
+    hook_buf: *mut u8,
+    hook_cap: usize,
+    out: *mut MaybeUninit<GateVerdictOut>,
+) -> StatusClass;
 
 /// The `#[repr(C)]` inbound-capability vtable a plane calls back into. Leads with the FROZEN
 /// [`AbiPreamble`] (a receiver `check_preamble`s it before using any slot) and a `size`/`version`
@@ -503,6 +523,13 @@ pub struct PlaneHostVtable {
     //    append-only, same sized/versioned discipline (the minor-17 bump). ─────────────────────────────
     /// Resolve inbound data-plane identity from the caller's own credential (writes an admitted handle).
     pub identity_admit: Option<IdentityAdmitFn>,
+    // ── APPENDED (minor-18, the REQUEST-GATE seam): the host fires the operator's request-admission
+    //    hook gates ([`crate::hooks::gate::decide`] in core) over a neutral subject and hands back the
+    //    verdict — so an MCP/A2A plane body admits a request through its `tools.hooks:` / `agents.hooks:`
+    //    gates without naming the gate engine and without holding the resolved `ResolvedPolicy` set.
+    //    Trailing slot, append-only, same sized/versioned discipline (the minor-18 bump). ────────────────
+    /// Fire the operator's request-admission hook gates over a neutral subject (writes a verdict).
+    pub gate_decide: Option<GateDecideFn>,
     // ── EXTENSION POINT (reserved) ──────────────────────────────────────────────────────────────
     // Metering reserve/settle (a `CostHold`) is DELIBERATELY NOT a slot here. When a high-rate
     // carrier needs it, add `cost_reserve`/`cost_settle` as trailing `Option` slots below this line
@@ -565,6 +592,7 @@ impl PlaneHostVtable {
         card_sign: None,
         guard_url: None,
         identity_admit: None,
+        gate_decide: None,
     };
 
     /// A fully-populated STUB vtable: every slot points at an `unimplemented!()` stub. It exists to
@@ -616,6 +644,7 @@ impl PlaneHostVtable {
         card_sign: Some(stub::card_sign),
         guard_url: Some(stub::guard_url),
         identity_admit: Some(stub::identity_admit),
+        gate_decide: Some(stub::gate_decide),
     };
 }
 
@@ -957,6 +986,19 @@ pub mod stub {
     ) -> StatusClass {
         unimplemented!("PlaneHost::identity_admit — stub")
     }
+    /// Stub: see module docs.
+    #[allow(clippy::too_many_arguments)]
+    pub extern "C-unwind" fn gate_decide(
+        _host: HostCtx,
+        _subject: *const GateSubjectRef,
+        _msg_buf: *mut u8,
+        _msg_cap: usize,
+        _hook_buf: *mut u8,
+        _hook_cap: usize,
+        _out: *mut MaybeUninit<GateVerdictOut>,
+    ) -> StatusClass {
+        unimplemented!("PlaneHost::gate_decide — stub")
+    }
 }
 
 #[cfg(test)]
@@ -1012,6 +1054,7 @@ mod tests {
         assert!(vt.card_sign.is_some());
         assert!(vt.guard_url.is_some());
         assert!(vt.identity_admit.is_some());
+        assert!(vt.gate_decide.is_some());
         assert_eq!(vt.size as usize, core::mem::size_of::<PlaneHostVtable>());
     }
 

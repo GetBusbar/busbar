@@ -909,47 +909,62 @@ async fn admitted(
     // EVERY VERB, not only `message/send`. A gate an operator attached to an agent is a statement
     // about that agent, and a plane that fired it for submissions but not for the task verbs would
     // be a plane where the control's scope depends on which method a caller happened to use.
-    if let Some(gates) = app.a2a_agent_gates.get(&admitted.dispatch.agent_id) {
-        // THE A2A SUBMISSION AS THE INVOKE IR: a caller names a target and hands it arguments,
-        // which is what `ir::invoke` says it carries (`it carries A2A message/send alongside MCP
-        // tools/call`). The target is the METHOD and the arguments are `params` — which is where a
-        // message's `parts` live, so the prose a screening gate exists to read is inside the
-        // projection rather than summarised beside it.
-        let facts = crate::ir::invoke::InvokeReq {
-            tool: super::local::method_of(&envelope).to_string(),
-            arguments: envelope
-                .get("params")
-                .cloned()
-                .unwrap_or(serde_json::Value::Null),
-            extra: Default::default(),
-        };
-        let verdict = crate::hooks::gate::decide(
-            gates,
-            &crate::hooks::gate::GateSubject {
-                facts: &facts,
-                container: &admitted.dispatch.agent_id,
-                ingress_protocol: crate::plane::Plane::A2a.key(),
-                request_id: app.next_request_id(),
-                key: Some(key.as_ref()),
-                // Incremental scan: the A2A session is the `contextId` (this plane extracts no
-                // `HeaderMap`, so the context IS the session), core-hashed. Gated on operator opt-in
-                // AND a non-empty `contextId` — an empty one stays `None` (full re-scan), never a
-                // cleared-set shared across contexts.
-                incremental: (app.incremental_scan && !context_id.is_empty()).then(|| {
-                    crate::hooks::gate::IncrementalScan {
-                        store: &app.session_store,
-                        session: crate::session::SessionKey(crate::store::fnv1a_u64(context_id)),
-                        now_ms: crate::plane_host::clock_now_ms_over(&app),
-                    }
-                }),
-            },
-        )
-        .await;
-        if let crate::hooks::gate::GateVerdict::Reject {
+    if app
+        .a2a_agent_gates
+        .contains_key(&admitted.dispatch.agent_id)
+    {
+        // FIRE THE GATE THROUGH THE HOST SEAM (`plane_host::gate_decide_over`) — the twin of the MCP
+        // dispatch gate, now inverted so this plane body no longer names `crate::hooks::gate::decide` or
+        // holds the resolved `ResolvedPolicy` set (the Seam-B inversion); the host re-selects the gate
+        // set by `(plane_key, container)` and runs the same decision. The presence check keeps the whole
+        // block zero-cost when nothing is attached.
+        //
+        // THE A2A SUBMISSION AS THE INVOKE IR: the target is the METHOD and the arguments are `params` —
+        // which is where a message's `parts` live, so the prose a screening gate reads is inside the
+        // projection. Serialized ONCE for the seam; byte-safe because serde_json's `preserve_order` is
+        // OFF (a `Value` object is a sorted-stable `BTreeMap`), so the round-trip preserves the gate's
+        // `value.to_string()` projection.
+        let params = envelope
+            .get("params")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
+        let args_json = serde_json::to_vec(&params).unwrap_or_default();
+        let tool = super::local::method_of(&envelope).to_string();
+        // The request id is minted AT THE SITE (not in the host fn), as before.
+        let request_id = app.next_request_id();
+        let agent = admitted.dispatch.agent_id.clone();
+        // The caller's resolved key identity — the gate reads only `id`/`name`.
+        let key_pair = (key.id.clone(), key.name.clone());
+        // The A2A session is the `contextId` (this plane extracts no `HeaderMap`), core-hashed host-side.
+        // `Some` only when non-empty — an empty one stays a full re-scan, never a cleared-set shared
+        // across contexts.
+        let sid = context_id.to_string();
+        let app2 = Arc::clone(&app);
+        // The host seam drives the ASYNC gate on a fresh runtime, so it MUST run on a BLOCKING thread
+        // (`block_on` on a runtime worker panics). One hop per request that has an attached gate.
+        let outcome = tokio::task::spawn_blocking(move || {
+            crate::plane_host::gate_decide_over(
+                &app2,
+                1,
+                &agent,
+                request_id,
+                &tool,
+                &args_json,
+                Some((key_pair.0.as_str(), key_pair.1.as_str())),
+                (!sid.is_empty()).then_some(sid.as_str()),
+            )
+        })
+        .await
+        .unwrap_or(crate::plane_host::GateOutcome::Reject {
+            status: 403,
+            message: String::new(),
+            hook: String::new(),
+        });
+        if let crate::plane_host::GateOutcome::Reject {
             status,
             message,
             hook,
-        } = verdict
+        } = outcome
         {
             crate::plane::auditlog::emit_admin_hostless_now(
                 AUDIT_ACTION,
@@ -959,7 +974,7 @@ async fn admitted(
             );
             tracing::info!(
                 agent = %admitted.dispatch.agent_id,
-                hook,
+                hook = %hook,
                 status,
                 "a2a submission refused by a hook gate"
             );
