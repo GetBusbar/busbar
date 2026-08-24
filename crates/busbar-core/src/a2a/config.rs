@@ -377,6 +377,65 @@ impl crate::plane::config::PlaneCfg for AgentsCfg {
         }
         refs
     }
+
+    fn contains_def(&self, name: &str) -> bool {
+        self.agents.contains_key(name)
+    }
+
+    fn def_names(&self) -> Vec<&str> {
+        self.agents.keys().map(|s| s.as_str()).collect()
+    }
+
+    fn entry_document(&self, name: &str) -> Option<serde_json::Value> {
+        self.agents
+            .get(name)
+            .and_then(|cfg| serde_json::to_value(cfg).ok())
+    }
+
+    fn insert_def(&mut self, name: &str, def: &serde_json::Value) -> Result<(), String> {
+        // THE SAME typed parse the file runs, through the SAME error wording. The value rules already
+        // ran through the plane's `config_validate` seam at the write path's `parse_def`; this parse
+        // is the fail-closed backstop and cannot fail on a definition that reached install.
+        let cfg: AgentDefCfg = serde_json::from_value(def.clone())
+            .map_err(|e| format!("invalid `agents.{name}` definition: {e}"))?;
+        self.agents.insert(name.to_string(), cfg);
+        Ok(())
+    }
+
+    fn container_gates(&self) -> crate::plane::config::ContainerGateInputs {
+        crate::plane::config::ContainerGateInputs {
+            section_hooks: self.all_agent_hooks.clone(),
+            containers: self
+                .agents
+                .iter()
+                .map(|(name, def)| (name.clone(), def.hooks.clone()))
+                .collect(),
+        }
+    }
+
+    fn validate_registry(&self) -> Result<(), String> {
+        // The A2A plane has no cross-registration section rule (the MCP published-name uniqueness is
+        // the one plane that does); every A2A registry rule is per-entry, run at parse.
+        Ok(())
+    }
+
+    fn is_present(&self) -> bool {
+        !self.agents.is_empty()
+            || !self.all_agent_hooks.is_empty()
+            || self.all_agent_upstream_credentials.is_some()
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn clone_box(&self) -> Box<dyn crate::plane::config::PlaneCfg> {
+        Box::new(self.clone())
+    }
+
+    fn clone_arc_any(&self) -> std::sync::Arc<dyn std::any::Any + Send + Sync> {
+        std::sync::Arc::new(self.clone())
+    }
 }
 
 /// THE VALUE-LEVEL RULES for one `agents:` entry.

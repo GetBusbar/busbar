@@ -9,9 +9,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-#[allow(unused_imports)]
-#[cfg(feature = "plane-a2a")]
-use crate::a2a;
 use crate::auth::AuthMiddleware;
 use crate::diagnostics::{
     diag_error, diag_warn, DURABLE_KEYS_INERT, GOVERNANCE_STORE_EPHEMERAL,
@@ -19,9 +16,6 @@ use crate::diagnostics::{
     PROVIDER_API_KEY_UNRESOLVED, SAFE_MODE_OVERLAY_QUARANTINED, STATEFUL_PLANE_EPHEMERAL_STORE,
     STORE_SECRET_REF_UNRESOLVED,
 };
-#[allow(unused_imports)]
-#[cfg(feature = "plane-mcp")]
-use crate::mcp;
 use crate::preflight::{
     build_secret_resolver, plugin_fetch_downloader, plugins_preflight, resolve_admin_token,
     resolve_signing_key, validate_secret_refs,
@@ -1121,11 +1115,11 @@ pub fn build_app_from_config(
         // as a pooled one, so both are checked. Computed here so the sharper warn below can fire only
         // for a stateful deployment — never for an LLM-only (stateless) one.
         #[cfg(feature = "plane-mcp")]
-        let mcp_stateful = !cfg.tool_defs.servers.is_empty() || !cfg.tool_pools.is_empty();
+        let mcp_stateful = !cfg.tool_defs.def_names().is_empty() || !cfg.tool_pools.is_empty();
         #[cfg(not(feature = "plane-mcp"))]
         let mcp_stateful = !cfg.tool_pools.is_empty();
         #[cfg(feature = "plane-a2a")]
-        let a2a_stateful = !cfg.agent_defs.agents.is_empty() || !cfg.agent_pools.is_empty();
+        let a2a_stateful = !cfg.agent_defs.def_names().is_empty() || !cfg.agent_pools.is_empty();
         #[cfg(not(feature = "plane-a2a"))]
         let a2a_stateful = !cfg.agent_pools.is_empty();
         let store: Arc<dyn governance::Store> = if g.module
@@ -1283,16 +1277,18 @@ pub fn build_app_from_config(
     // The MCP `tools:` per-server gates read the typed `tools:` registry, which exists only when
     // the plane is compiled in. With `plane-mcp` off there is no registry, so the map is empty.
     #[cfg(feature = "plane-mcp")]
-    let mcp_server_gates = hooks::resolve_container_gates(
-        cfg.tool_defs
-            .servers
-            .iter()
-            .map(|(name, def)| (name.as_str(), def.hooks.as_slice())),
-        &cfg.tool_defs.all_server_hooks,
-        &cfg.hooks,
-        &hook_env,
-        app_config_version,
-    );
+    let mcp_server_gates = {
+        let g = cfg.tool_defs.container_gates();
+        hooks::resolve_container_gates(
+            g.containers
+                .iter()
+                .map(|(name, hooks)| (name.as_str(), hooks.as_slice())),
+            &g.section_hooks,
+            &cfg.hooks,
+            &hook_env,
+            app_config_version,
+        )
+    };
     #[cfg(not(feature = "plane-mcp"))]
     let mcp_server_gates: std::collections::HashMap<
         String,
@@ -1302,16 +1298,18 @@ pub fn build_app_from_config(
     // compiled in. With `plane-a2a` off there is no registry, so the map is empty (the neutral twin
     // of `mcp_server_gates` above).
     #[cfg(feature = "plane-a2a")]
-    let a2a_agent_gates = hooks::resolve_container_gates(
-        cfg.agent_defs
-            .agents
-            .iter()
-            .map(|(name, def)| (name.as_str(), def.hooks.as_slice())),
-        &cfg.agent_defs.all_agent_hooks,
-        &cfg.hooks,
-        &hook_env,
-        app_config_version,
-    );
+    let a2a_agent_gates = {
+        let g = cfg.agent_defs.container_gates();
+        hooks::resolve_container_gates(
+            g.containers
+                .iter()
+                .map(|(name, hooks)| (name.as_str(), hooks.as_slice())),
+            &g.section_hooks,
+            &cfg.hooks,
+            &hook_env,
+            app_config_version,
+        )
+    };
     #[cfg(not(feature = "plane-a2a"))]
     let a2a_agent_gates: std::collections::HashMap<
         String,
@@ -1400,20 +1398,14 @@ pub fn build_app_from_config(
             // `crate::mcp` type. It is the SAME `Arc` the plane clones into `plane_slots` and the
             // typed `App::mcp` field downcasts back out below, so the "one lowering, one Arc, two
             // readers" invariant is unchanged.
-            // The MCP resource type only exists when the plane is compiled in; with `plane-mcp` off
-            // there is no resource to erase into a slot, and the plane contributes none.
-            #[cfg(feature = "plane-mcp")]
-            mcp_slot: cfg
-                .mcp
-                .as_ref()
-                .cloned()
-                .map(|r| Arc::new(r) as Arc<dyn std::any::Any + Send + Sync>),
-            #[cfg(not(feature = "plane-mcp"))]
-            mcp_slot: None,
-            // Type-erased at the composition root so `BuildCtx` names no `crate::a2a` type; the A2A
-            // `build` closure downcasts it back. `&cfg.agent_defs` is `AgentsCfg` with the plane in,
-            // the neutral raw capture with it out — both coerce to `&dyn Any` here.
-            agent_defs: &cfg.agent_defs as &(dyn std::any::Any + Send + Sync),
+            // `cfg.mcp` is ALREADY the validated resource, erased as `Option<Arc<dyn Any>>` by
+            // config resolution — so the slot is a CLONE of that one opaque `Arc`, not a re-erasure,
+            // and names no `crate::mcp` type. `None` when `mcp:` is absent or the MCP plane is
+            // compiled out (resolve produced no resource then).
+            mcp_slot: cfg.mcp.clone(),
+            // The neutral registry section, erased as `&dyn Any` via `PlaneCfg::as_any` so `BuildCtx`
+            // names no `crate::a2a` type; the A2A `build` closure downcasts it back to `AgentsCfg`.
+            agent_defs: cfg.agent_defs.as_any(),
             public_url: cfg.public_url.as_deref(),
         };
         crate::plane::registry::plane_decls()
@@ -1450,18 +1442,21 @@ pub fn build_app_from_config(
                         .map_err(|e| format!("oauth_as.signing_key: {e}"))?,
                 ),
             };
-            // busbar's OWN protected resource is its MCP endpoint's canonical URI — which exists only
-            // when the MCP plane is compiled in. With `plane-mcp` off there is no such resource, so
-            // the allowed-resources list is empty (the deployment protects no MCP audience).
-            #[cfg(feature = "plane-mcp")]
+            // busbar's OWN protected resource is its MCP endpoint's canonical URI, read back through
+            // the mcp plane's `admission` seam — a `PlaneAdmission::audience` IS that canonical URI —
+            // so appbuild names no `crate::mcp` resource type. Empty when `mcp:` is absent or the MCP
+            // plane is compiled out (no built-in decl, hence no admission, so the deployment protects
+            // no MCP audience).
             let protected_resources: Vec<String> = cfg
                 .mcp
                 .as_ref()
-                .map(|r| r.canonical_uri().to_string())
+                .and_then(|slot| {
+                    crate::plane::registry::builtin_plane_decl_for("mcp")
+                        .and_then(|d| (d.admission)(slot.as_ref()))
+                })
+                .map(|adm| adm.audience)
                 .into_iter()
                 .collect();
-            #[cfg(not(feature = "plane-mcp"))]
-            let protected_resources: Vec<String> = Vec::new();
             let plane = crate::oauth_as::plane::AsPlane::build(
                 identity.clone(),
                 key_material.as_deref(),
@@ -1558,7 +1553,7 @@ pub fn build_app_from_config(
         // TYPE-ERASED into `App` so it names no `crate::a2a` config type — the SAME resolved object
         // (a clone, not a reparse), so the admin view and gates are byte-identical. The A2A plane
         // downcasts it back in `crate::a2a::agent_cfg`.
-        agent_defs: Arc::new(cfg.agent_defs.clone()) as Arc<dyn std::any::Any + Send + Sync>,
+        agent_defs: cfg.agent_defs.clone_arc_any(),
         // THE A2A PLANE, built only when `agents:` defines one, is NOT mirrored into a typed `App`
         // field any more: it lives solely in `plane_slots["a2a"]` (built once by `PlaneDecl::build`),
         // and every reader reaches it through `crate::a2a::runtime(app)`/`runtime_arc(app)`, which
@@ -1644,16 +1639,14 @@ pub fn build_app_from_config(
         // not intent — see `McpRuntime::build`). Building it beside the `App` keeps the swap atomic:
         // the whole `Arc<App>` is replaced under one lock, so the catalogue and the config that
         // produced it never disagree.
-        // Built through the plane's own type-erasing constructor when compiled in; with `plane-mcp`
-        // off the field carries a neutral empty placeholder (nothing downcasts it — no MCP accessor
-        // exists in that build).
-        #[cfg(feature = "plane-mcp")]
-        mcp_runtime: crate::mcp::build_runtime(&cfg.tool_defs, prior),
-        #[cfg(not(feature = "plane-mcp"))]
-        mcp_runtime: {
-            let _ = prior;
-            Arc::new(()) as Arc<dyn std::any::Any + Send + Sync>
-        },
+        // Built through the plane's own type-erasing `build_runtime` seam (from the neutral
+        // `tool_defs` section, erased via `PlaneCfg::as_any`) so this composition names no
+        // `crate::mcp` runtime type. With `plane-mcp` off there is no built-in decl, so the field
+        // carries a neutral empty placeholder (nothing downcasts it — no MCP accessor exists then).
+        mcp_runtime: crate::plane::registry::builtin_plane_decl_for("mcp")
+            .and_then(|d| d.build_runtime)
+            .map(|f| f(cfg.tool_defs.as_any(), prior))
+            .unwrap_or_else(|| Arc::new(()) as Arc<dyn std::any::Any + Send + Sync>),
         // CARRIED ACROSS THE APPLY beside the sightings it freshens: the verify-on-call coalescing
         // epochs are accumulated coordination state, not intent, and rebuilding them on every apply
         // would let a burst of callers each fetch during the window an unrelated edit reset.
@@ -1741,29 +1734,15 @@ pub fn build_app_from_config(
     // they leak one dead entry per server/agent an operator ever removed. Done here, on the same
     // carry path, with the live registration set of each plane: a pruned subject is one no delegation
     // can name, so dropping its coalescing state and latch cannot race a verify (fail-closed intact).
-    #[cfg(feature = "plane-a2a")]
-    {
-        // UNCONDITIONAL, like the MCP arm below: when the operator REMOVES the `agents:` block
-        // (`crate::a2a::runtime(&app)` is None) the live subject set is EMPTY, so retain drops every
-        // carried a2a VerifyGate flight/drift-latch instead of leaking one per removed agent forever.
-        // Gating this on the plane's presence (as it once was) skipped the prune exactly when it was
-        // needed most —
-        // the whole plane going away. Fail-closed intact: a pruned subject is one no delegation can
-        // name, so dropping its coalescing state cannot race a verify.
-        let live: std::collections::HashSet<String> =
-            crate::a2a::runtime(&app).map_or_else(std::collections::HashSet::new, |plane| {
-                plane.with_registrations(|regs| regs.iter().map(|r| r.agent_id.clone()).collect())
-            });
-        app.a2a_verify.retain(&live);
-    }
-    #[cfg(feature = "plane-mcp")]
-    {
-        let live: std::collections::HashSet<String> = crate::mcp::runtime(&app)
-            .catalogue
-            .servers()
-            .map(|s| s.id.clone())
-            .collect();
-        app.mcp_verify.retain(&live);
+    // Each plane prunes its OWN verify-on-call gate through its `retain_verify_gates` seam, so this
+    // composition names no `crate::mcp`/`crate::a2a` runtime type. UNCONDITIONAL per the hooks' own
+    // contract: when the operator REMOVES a plane's block the live subject set is EMPTY, so retain
+    // drops every carried flight/latch instead of leaking one per removed subject. The two hooks touch
+    // disjoint fields (`mcp_verify` / `a2a_verify`), so the registry iteration order is not observable.
+    for decl in crate::plane::registry::plane_decls() {
+        if let Some(retain) = decl.retain_verify_gates {
+            retain(&app);
+        }
     }
     // The build reached its end without a single fallible step refusing: KEEP the limits installed
     // at the top. Every earlier `return Err` / `?` drops the guard instead and rolls them back.

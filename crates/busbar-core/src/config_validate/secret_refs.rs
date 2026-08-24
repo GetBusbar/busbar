@@ -266,10 +266,7 @@ pub(crate) fn secret_refs(cfg: &RootCfg) -> Vec<(String, &crate::config::SecretR
     // list is not observed: every consumer (`validate`, `validate_secret_refs`,
     // `validate_builtin_secrets_resolve`) is a per-reference check, and the coverage test compares by
     // SET.
-    for plane_cfg in [
-        tool_defs as &dyn crate::plane::config::PlaneCfg,
-        agent_defs as &dyn crate::plane::config::PlaneCfg,
-    ] {
+    for plane_cfg in [tool_defs.as_ref(), agent_defs.as_ref()] {
         refs.extend(plane_cfg.secret_refs());
     }
 

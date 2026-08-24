@@ -7,12 +7,6 @@
 use axum::Router;
 
 #[allow(unused_imports)]
-#[cfg(feature = "plane-a2a")]
-use crate::a2a;
-#[allow(unused_imports)]
-#[cfg(feature = "plane-mcp")]
-use crate::mcp;
-#[allow(unused_imports)]
 use crate::{
     admin, audit, auth, auth_cache, billing, breaker, catalogue, config, config_validate,
     core_routes, cost, durable, egress_auth, endpoints, eventstream, export, failover, governance,

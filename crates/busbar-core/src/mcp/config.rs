@@ -1100,6 +1100,64 @@ impl crate::plane::config::PlaneCfg for ToolsCfg {
         }
         refs
     }
+
+    fn contains_def(&self, name: &str) -> bool {
+        self.servers.contains_key(name)
+    }
+
+    fn def_names(&self) -> Vec<&str> {
+        self.servers.keys().map(|s| s.as_str()).collect()
+    }
+
+    fn entry_document(&self, name: &str) -> Option<serde_json::Value> {
+        self.servers
+            .get(name)
+            .and_then(|cfg| serde_json::to_value(cfg).ok())
+    }
+
+    fn insert_def(&mut self, name: &str, def: &serde_json::Value) -> Result<(), String> {
+        // THE SAME typed parse the file runs, through the SAME error wording — `deny_unknown_fields`
+        // rejects a typo'd key HERE exactly as `config.yaml` would. The value rules already ran
+        // through the plane's `config_validate` seam at the write path's `parse_def`, so this parse
+        // cannot fail on a definition that reached install; the `?` is the fail-closed backstop.
+        let cfg: McpServerDefCfg = serde_json::from_value(def.clone())
+            .map_err(|e| format!("invalid `tools.{name}` definition: {e}"))?;
+        self.servers.insert(name.to_string(), cfg);
+        Ok(())
+    }
+
+    fn container_gates(&self) -> crate::plane::config::ContainerGateInputs {
+        crate::plane::config::ContainerGateInputs {
+            section_hooks: self.all_server_hooks.clone(),
+            containers: self
+                .servers
+                .iter()
+                .map(|(name, def)| (name.clone(), def.hooks.clone()))
+                .collect(),
+        }
+    }
+
+    fn validate_registry(&self) -> Result<(), String> {
+        validate_published_names(self)
+    }
+
+    fn is_present(&self) -> bool {
+        !self.servers.is_empty()
+            || !self.all_server_hooks.is_empty()
+            || self.all_server_upstream_credentials.is_some()
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn clone_box(&self) -> Box<dyn crate::plane::config::PlaneCfg> {
+        Box::new(self.clone())
+    }
+
+    fn clone_arc_any(&self) -> std::sync::Arc<dyn std::any::Any + Send + Sync> {
+        std::sync::Arc::new(self.clone())
+    }
 }
 
 /// THE VALUE-LEVEL RULES for one `tools:` entry.

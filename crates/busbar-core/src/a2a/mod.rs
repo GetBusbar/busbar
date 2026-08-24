@@ -145,6 +145,12 @@ pub(crate) const PLANE_DECL: crate::plane::registry::PlaneDecl =
         openapi_schemas: Some(crate::a2a::admin_view::openapi_schemas),
         hydrate: Some(a2a_hydrate),
         start: Some(a2a_start),
+        parse_section: Some(a2a_parse_section),
+        parse_endpoint: None,
+        lower_endpoint: None,
+        build_runtime: None,
+        retain_verify_gates: Some(a2a_retain_verify_gates),
+        default_section: Some(a2a_default_section),
         // NOTHING TO CARRY ACROSS A SWAP. The A2A plane's runtime object (`A2aPlane`) is rebuilt from
         // `agents:`/`public_url` on every apply, and its durable task table is restored at boot
         // through `hydrate`, not reconciled here — so there is no engine-owned live object that
@@ -163,6 +169,37 @@ fn a2a_config_validate(name: &str, def: &serde_json::Value) -> Result<(), String
     let cfg: crate::a2a::config::AgentDefCfg = serde_json::from_value(def.clone())
         .map_err(|e| format!("invalid `agents.{name}` definition: {e}"))?;
     crate::a2a::config::validate_agent(name, &cfg)
+}
+
+/// PARSE THE `agents:` SECTION through the A2A plane's own `Deserialize` — the
+/// [`crate::plane::registry::PlaneDecl::parse_section`] hook, so `DeployCfg` deserializes its
+/// `agents:` field without naming [`crate::a2a::config::AgentsCfg`]. The `serde_yaml::Value`
+/// intermediate carries no source position, so the plane's own `split_section` / passthrough refusals
+/// reach the operator by their SENTENCE, the `at line`/`column` suffix aside.
+fn a2a_parse_section(
+    v: &serde_yaml::Value,
+) -> Result<Box<dyn crate::plane::config::PlaneCfg>, String> {
+    serde_yaml::from_value::<crate::a2a::config::AgentsCfg>(v.clone())
+        .map(|c| Box::new(c) as Box<dyn crate::plane::config::PlaneCfg>)
+        .map_err(|e| e.to_string())
+}
+
+/// [`crate::plane::registry::PlaneDecl::default_section`] hook — the empty `agents:` registry, so an
+/// ABSENT section defaults to `AgentsCfg::default()` byte-identically to the pre-seam typed field.
+fn a2a_default_section() -> Box<dyn crate::plane::config::PlaneCfg> {
+    Box::<crate::a2a::config::AgentsCfg>::default()
+}
+
+/// PRUNE THE A2A VERIFY-ON-CALL GATES to the agents THIS generation fronts — the
+/// [`crate::plane::registry::PlaneDecl::retain_verify_gates`] hook. UNCONDITIONAL: when the operator
+/// removes the `agents:` block the live set is EMPTY, so retain drops every carried flight/latch
+/// instead of leaking one per removed agent. Byte-identical to the old inline `appbuild` arm.
+fn a2a_retain_verify_gates(app: &crate::state::App) {
+    let live: std::collections::HashSet<String> = crate::a2a::runtime(app)
+        .map_or_else(std::collections::HashSet::new, |plane| {
+            plane.with_registrations(|regs| regs.iter().map(|r| r.agent_id.clone()).collect())
+        });
+    app.a2a_verify.retain(&live);
 }
 
 /// THE RESOLVED `agents:` REGISTRY for this generation, downcast back HERE from the opaque

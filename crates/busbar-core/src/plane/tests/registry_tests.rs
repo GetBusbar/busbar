@@ -46,6 +46,12 @@ static WIDGET_PLANE: PlaneDecl = PlaneDecl {
     #[cfg(feature = "openapi-schema")]
     openapi_schemas: None,
     on_swap: None,
+    parse_section: None,
+    parse_endpoint: None,
+    lower_endpoint: None,
+    build_runtime: None,
+    retain_verify_gates: None,
+    default_section: None,
 };
 
 fn installed() -> Vec<&'static PlaneDecl> {
@@ -154,6 +160,12 @@ fn a_same_key_registration_is_skipped_and_the_first_copy_wins() {
         #[cfg(feature = "openapi-schema")]
         openapi_schemas: None,
         on_swap: None,
+        parse_section: None,
+        parse_endpoint: None,
+        lower_endpoint: None,
+        build_runtime: None,
+        retain_verify_gates: None,
+        default_section: None,
     };
 
     let folded = merged_boot_plane_decls(&[&A2A_FROM_THE_CRATE], builtin_plane_decls());
@@ -428,6 +440,12 @@ fn r2_a_mounted_plane_with_no_admission_refuses_boot() {
         #[cfg(feature = "openapi-schema")]
         openapi_schemas: None,
         on_swap: None,
+        parse_section: None,
+        parse_endpoint: None,
+        lower_endpoint: None,
+        build_runtime: None,
+        retain_verify_gates: None,
+        default_section: None,
     };
     let unit = ();
     let mut slots: BTreeMap<&'static str, &dyn Any> = BTreeMap::new();
@@ -470,6 +488,12 @@ fn r2_a_mounted_plane_with_no_admission_refuses_boot() {
         #[cfg(feature = "openapi-schema")]
         openapi_schemas: None,
         on_swap: None,
+        parse_section: None,
+        parse_endpoint: None,
+        lower_endpoint: None,
+        build_runtime: None,
+        retain_verify_gates: None,
+        default_section: None,
     };
     let dispatch = build_dispatch(&[&MOUNTS_NOTHING], &slots)
         .expect("a plane that claims no path needs no admission");
@@ -515,6 +539,12 @@ fn r2_boot_a_plane_whose_start_errs_refuses_boot() {
         #[cfg(feature = "openapi-schema")]
         openapi_schemas: None,
         on_swap: None,
+        parse_section: None,
+        parse_endpoint: None,
+        lower_endpoint: None,
+        build_runtime: None,
+        retain_verify_gates: None,
+        default_section: None,
     };
     let ctx = crate::plane::registry::BootCtx::stub();
 
@@ -552,6 +582,12 @@ fn r2_boot_a_plane_whose_start_errs_refuses_boot() {
         #[cfg(feature = "openapi-schema")]
         openapi_schemas: None,
         on_swap: None,
+        parse_section: None,
+        parse_endpoint: None,
+        lower_endpoint: None,
+        build_runtime: None,
+        retain_verify_gates: None,
+        default_section: None,
     };
     crate::boot::run_start_hooks(&[&STARTS_CLEAN, &WIDGET_PLANE], &ctx)
         .expect("an Ok start and a None-start plane do not refuse boot");
@@ -587,6 +623,12 @@ fn r2_boot_a_plane_whose_hydrate_errs_refuses_boot() {
         #[cfg(feature = "openapi-schema")]
         openapi_schemas: None,
         on_swap: None,
+        parse_section: None,
+        parse_endpoint: None,
+        lower_endpoint: None,
+        build_runtime: None,
+        retain_verify_gates: None,
+        default_section: None,
     };
     let ctx = crate::plane::registry::BootCtx::stub();
 

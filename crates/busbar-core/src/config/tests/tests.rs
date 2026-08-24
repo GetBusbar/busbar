@@ -45,7 +45,7 @@ pub(crate) fn base_deploy() -> DeployCfg {
         agents: Default::default(),
         listen: DEFAULT_LISTEN_ADDR.into(),
         // Not an MCP server.
-        mcp: None,
+        mcp: Default::default(),
         oauth_as: None,
         public_url: None,
         tls: None,
@@ -3664,7 +3664,7 @@ other:
     .expect("both servers are individually valid");
 
     let mut deploy = base_deploy();
-    deploy.tools = tools;
+    deploy.tools = crate::plane::config::ToolsSection(Box::new(tools));
     let errors = resolve(&deploy, &HashMap::new())
         .expect_err("resolve must refuse a config whose published names are not unique");
     assert!(
@@ -3687,7 +3687,7 @@ other:
     )
     .unwrap();
     let mut deploy = base_deploy();
-    deploy.tools = ok;
+    deploy.tools = crate::plane::config::ToolsSection(Box::new(ok));
     resolve(&deploy, &HashMap::new()).expect("distinct published names must resolve");
 }
 
@@ -3718,11 +3718,13 @@ fn failover_pools_are_absent_by_default() {
 #[test]
 fn a_tool_pool_member_that_names_no_server_is_refused() {
     let mut deploy = base_deploy();
-    deploy.tools.servers.insert(
+    let mut tools = crate::mcp::config::ToolsCfg::default();
+    tools.servers.insert(
         "search-eu".to_string(),
         serde_yaml::from_str("{url: 'https://eu.example/mcp', pin: {mechanism: unpinned}}")
             .expect("a minimal server"),
     );
+    deploy.tools = crate::plane::config::ToolsSection(Box::new(tools));
     deploy.pools.pools.insert(
         "search".to_string(),
         serde_yaml::from_str::<crate::config::PoolCfg>("{members: [search-eu, search-us]}")
@@ -3741,16 +3743,20 @@ fn a_tool_pool_member_that_names_no_server_is_refused() {
 #[test]
 fn a_pool_may_not_straddle_two_planes() {
     let mut deploy = base_deploy();
-    deploy.agents.agents.insert(
+    let mut agents = crate::a2a::config::AgentsCfg::default();
+    agents.agents.insert(
         "planner".to_string(),
         serde_yaml::from_str("{url: 'https://a.example/card', pin: {mechanism: unpinned}}")
             .expect("a minimal agent"),
     );
-    deploy.tools.servers.insert(
+    deploy.agents = crate::plane::config::AgentsSection(Box::new(agents));
+    let mut tools = crate::mcp::config::ToolsCfg::default();
+    tools.servers.insert(
         "search-eu".to_string(),
         serde_yaml::from_str("{url: 'https://eu.example/mcp', pin: {mechanism: unpinned}}")
             .expect("a minimal server"),
     );
+    deploy.tools = crate::plane::config::ToolsSection(Box::new(tools));
     deploy.pools.pools.insert(
         "mixed".to_string(),
         serde_yaml::from_str::<crate::config::PoolCfg>("{members: [planner, search-eu]}")
@@ -3769,11 +3775,13 @@ fn a_pool_may_not_straddle_two_planes() {
 #[test]
 fn a_failover_pool_needs_two_members() {
     let mut deploy = base_deploy();
-    deploy.agents.agents.insert(
+    let mut agents = crate::a2a::config::AgentsCfg::default();
+    agents.agents.insert(
         "only-one".to_string(),
         serde_yaml::from_str("{url: 'https://a.example/card', pin: {mechanism: unpinned}}")
             .expect("a minimal agent"),
     );
+    deploy.agents = crate::plane::config::AgentsSection(Box::new(agents));
     deploy.pools.pools.insert(
         "planner".to_string(),
         serde_yaml::from_str::<crate::config::PoolCfg>("{members: [only-one]}")

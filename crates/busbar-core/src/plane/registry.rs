@@ -72,10 +72,11 @@ pub struct BuildCtx<'a> {
     /// into the eventual MCP extraction — the neutral analogue of how the LLM dialects left core.
     pub mcp_slot: Option<std::sync::Arc<dyn std::any::Any + Send + Sync>>,
     // The A2A registry the A2A plane's `build` lowers, TYPE-ERASED so this seam names no `crate::a2a`
-    // config type — the resolved `AgentsCfg` when the plane is compiled in, the neutral raw capture
-    // when it is not. The A2A `build` closure downcasts it back inside its own module; no other plane
-    // reads it, and with `plane-a2a` off no `agents:` section survived resolve so nothing lowers it.
-    pub agent_defs: &'a (dyn std::any::Any + Send + Sync),
+    // config type — reached through `RootCfg::agent_defs`'s neutral `PlaneCfg::as_any` (`AgentsCfg`
+    // with the plane compiled in, the raw capture without it). The A2A `build` closure downcasts it
+    // back inside its own module; no other plane reads it, and it is built and consumed synchronously
+    // here, so the erased `&dyn Any` needs no `Send + Sync` bound.
+    pub agent_defs: &'a dyn std::any::Any,
     pub public_url: Option<&'a str>,
 }
 
@@ -426,6 +427,72 @@ pub struct PlaneDecl {
     /// `GovCtx`, or an `audit::Chain`. A plane whose swap-time work needs one of those is not cleanly
     /// separable through this seam.
     pub on_swap: Option<fn(prior: &dyn std::any::Any, next: &dyn std::any::Any)>,
+
+    /// PARSE THIS PLANE'S TOP-LEVEL REGISTRY SECTION from a positionless `serde_yaml::Value` into its
+    /// own typed config, boxed as the neutral [`crate::plane::config::PlaneCfg`] — the seam
+    /// `DeployCfg`'s `tools:`/`agents:` field deserializes through, so core names no plane config type.
+    /// `None` for a plane with no registry section (the LLM / `proto` planes). `pub(crate)` because the
+    /// boxed trait is crate-private; the value lives beside the plane's own `Deserialize`.
+    #[cfg_attr(
+        not(any(feature = "plane-mcp", feature = "plane-a2a")),
+        allow(dead_code)
+    )]
+    #[allow(clippy::type_complexity)]
+    pub(crate) parse_section:
+        Option<fn(&serde_yaml::Value) -> Result<Box<dyn crate::plane::config::PlaneCfg>, String>>,
+
+    /// PARSE THIS PLANE'S TOP-LEVEL ENDPOINT block (the MCP plane's `mcp:` door) from a positionless
+    /// `serde_yaml::Value`, boxed as the neutral [`crate::plane::config::PlaneEndpointCfg`] — the seam
+    /// `DeployCfg`'s `mcp:` field deserializes through. `None` for a plane with no endpoint block
+    /// (every plane but MCP).
+    #[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
+    #[allow(clippy::type_complexity)]
+    pub(crate) parse_endpoint: Option<
+        fn(&serde_yaml::Value) -> Result<Box<dyn crate::plane::config::PlaneEndpointCfg>, String>,
+    >,
+
+    /// LOWER THIS PLANE'S ENDPOINT block into its validated runtime resource, type-erased as
+    /// `Arc<dyn Any>` — the seam `config::resolve` derives `RootCfg::mcp` through, so core derives the
+    /// validated resource without naming the plane's resource type. An `Err` is collected into the
+    /// resolve error list verbatim. `None` for a plane with no endpoint block.
+    #[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
+    #[allow(clippy::type_complexity)]
+    pub(crate) lower_endpoint: Option<
+        fn(
+            &dyn crate::plane::config::PlaneEndpointCfg,
+        ) -> Result<std::sync::Arc<dyn std::any::Any + Send + Sync>, String>,
+    >,
+
+    /// BUILD THIS PLANE'S PER-GENERATION RUNTIME OBJECT from its type-erased registry section — the
+    /// seam `appbuild` composes `App::mcp_runtime` through, so core names no plane runtime type. The
+    /// first argument is the plane's own section, erased as `&dyn Any` (its `PlaneCfg::as_any`);
+    /// `prior` is the previous generation's `App` for carry-over. `None` for a plane whose runtime is
+    /// not a single flat `App` field (A2A's lives in `plane_slots`; the LLM plane's is the many `App`
+    /// fields it already reads).
+    #[allow(clippy::type_complexity)]
+    pub(crate) build_runtime: Option<
+        fn(
+            &dyn std::any::Any,
+            prior: Option<&crate::state::App>,
+        ) -> std::sync::Arc<dyn std::any::Any + Send + Sync>,
+    >,
+
+    /// PRUNE THIS PLANE'S VERIFY-ON-CALL COALESCING STATE to the subjects the freshly-built generation
+    /// still fronts — the seam `appbuild` runs after building the `App`, so the carried per-subject
+    /// flights/latches do not leak one dead entry per removed registration. `None` for a plane with no
+    /// verify-on-call gate (the LLM / `proto` planes).
+    pub(crate) retain_verify_gates: Option<fn(&crate::state::App)>,
+
+    /// THIS PLANE'S EMPTY REGISTRY SECTION, boxed as the neutral [`crate::plane::config::PlaneCfg`] —
+    /// the value `DeployCfg`'s `#[serde(default)]` `tools:`/`agents:` field takes when the section is
+    /// ABSENT, so the default is the plane's own `Default` (byte-identical to the pre-seam
+    /// `ToolsCfg::default()`) rather than a re-parse of an empty document. `None` for a plane with no
+    /// registry section (the LLM / `proto` planes).
+    #[cfg_attr(
+        not(any(feature = "plane-mcp", feature = "plane-a2a")),
+        allow(dead_code)
+    )]
+    pub(crate) default_section: Option<fn() -> Box<dyn crate::plane::config::PlaneCfg>>,
 }
 
 /// THE BUILT-INS — one line per plane, and every line is DATA.

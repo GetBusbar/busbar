@@ -1539,13 +1539,13 @@ fn validate_unified_pool_names(cfg: &RootCfg, errors: &mut Vec<String>) {
     // The MCP `tools:` noun exists only when the plane is compiled in; with `plane-mcp` off no name
     // resolves to a `tools:` server (a `tools:` section is refused at resolve).
     #[cfg(feature = "plane-mcp")]
-    let tools: BTreeSet<&str> = cfg.tool_defs.servers.keys().map(|s| s.as_str()).collect();
+    let tools: BTreeSet<&str> = cfg.tool_defs.def_names().into_iter().collect();
     #[cfg(not(feature = "plane-mcp"))]
     let tools: BTreeSet<&str> = BTreeSet::new();
     // The A2A `agents:` noun exists only when the plane is compiled in; with `plane-a2a` off no name
     // resolves to an agent (an `agents:` section is refused at resolve).
     #[cfg(feature = "plane-a2a")]
-    let agents: BTreeSet<&str> = cfg.agent_defs.agents.keys().map(|s| s.as_str()).collect();
+    let agents: BTreeSet<&str> = cfg.agent_defs.def_names().into_iter().collect();
     #[cfg(not(feature = "plane-a2a"))]
     let agents: BTreeSet<&str> = BTreeSet::new();
 

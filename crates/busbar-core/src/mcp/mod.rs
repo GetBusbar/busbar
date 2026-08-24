@@ -168,6 +168,12 @@ pub(crate) const PLANE_DECL: crate::plane::registry::PlaneDecl =
         // gone; its removal is the whole of this plane's boot change.
         start: None,
         on_swap: Some(mcp_on_swap),
+        parse_section: Some(mcp_parse_section),
+        parse_endpoint: Some(mcp_parse_endpoint),
+        lower_endpoint: Some(mcp_lower_endpoint),
+        build_runtime: Some(mcp_build_runtime),
+        retain_verify_gates: Some(mcp_retain_verify_gates),
+        default_section: Some(mcp_default_section),
     };
 
 /// VALIDATE ONE `tools:` NAMED-DEFINITION DOCUMENT — the MCP plane's half of
@@ -277,6 +283,90 @@ pub(crate) fn build_runtime(
     prior: Option<&crate::state::App>,
 ) -> std::sync::Arc<dyn std::any::Any + Send + Sync> {
     std::sync::Arc::new(McpRuntime::build(tool_defs, prior.map(runtime)))
+}
+
+/// PARSE THE `tools:` SECTION through the MCP plane's own `Deserialize` — the
+/// [`crate::plane::registry::PlaneDecl::parse_section`] hook, so `DeployCfg` deserializes its `tools:`
+/// field without naming [`config::ToolsCfg`]. The `serde_yaml::Value` intermediate carries no source
+/// position, so the plane's own `split_section` refusals reach the operator by their SENTENCE (the
+/// content core pins), the `at line`/`column` suffix aside.
+fn mcp_parse_section(
+    v: &serde_yaml::Value,
+) -> Result<Box<dyn crate::plane::config::PlaneCfg>, String> {
+    serde_yaml::from_value::<config::ToolsCfg>(v.clone())
+        .map(|c| Box::new(c) as Box<dyn crate::plane::config::PlaneCfg>)
+        .map_err(|e| e.to_string())
+}
+
+/// [`crate::plane::registry::PlaneDecl::default_section`] hook — the empty `tools:` registry, so an
+/// ABSENT section defaults to `ToolsCfg::default()` byte-identically to the pre-seam typed field.
+fn mcp_default_section() -> Box<dyn crate::plane::config::PlaneCfg> {
+    Box::<config::ToolsCfg>::default()
+}
+
+/// PARSE THE `mcp:` ENDPOINT block through the MCP plane's own `Deserialize` — the
+/// [`crate::plane::registry::PlaneDecl::parse_endpoint`] hook, so `DeployCfg` deserializes its `mcp:`
+/// field without naming [`McpCfg`].
+fn mcp_parse_endpoint(
+    v: &serde_yaml::Value,
+) -> Result<Box<dyn crate::plane::config::PlaneEndpointCfg>, String> {
+    serde_yaml::from_value::<McpCfg>(v.clone())
+        .map(|c| Box::new(c) as Box<dyn crate::plane::config::PlaneEndpointCfg>)
+        .map_err(|e| e.to_string())
+}
+
+/// LOWER THE `mcp:` ENDPOINT into the validated [`McpResource`], type-erased — the
+/// [`crate::plane::registry::PlaneDecl::lower_endpoint`] hook, so `config::resolve` derives
+/// `RootCfg::mcp` (`Option<Arc<dyn Any>>`) without naming [`McpResource`] or its constructor. The
+/// error string is `McpCfgError`'s `Display`, verbatim, so the boot refusal is byte-identical.
+fn mcp_lower_endpoint(
+    endpoint: &dyn crate::plane::config::PlaneEndpointCfg,
+) -> Result<std::sync::Arc<dyn std::any::Any + Send + Sync>, String> {
+    let cfg = endpoint
+        .as_any()
+        .downcast_ref::<McpCfg>()
+        .expect("the mcp plane's endpoint is an McpCfg");
+    McpResource::from_cfg(cfg)
+        .map(|r| std::sync::Arc::new(r) as std::sync::Arc<dyn std::any::Any + Send + Sync>)
+        .map_err(|e| e.to_string())
+}
+
+/// BUILD THE MCP RUNTIME from the type-erased `tool_defs` slot — the
+/// [`crate::plane::registry::PlaneDecl::build_runtime`] hook, so `appbuild` composes `App::mcp_runtime`
+/// through the plane without naming [`config::ToolsCfg`]. Downcasts back to `ToolsCfg` HERE (inside the
+/// plane) and delegates to [`build_runtime`].
+fn mcp_build_runtime(
+    tool_defs: &dyn std::any::Any,
+    prior: Option<&crate::state::App>,
+) -> std::sync::Arc<dyn std::any::Any + Send + Sync> {
+    let tool_defs = tool_defs
+        .downcast_ref::<config::ToolsCfg>()
+        .expect("the mcp plane's build_runtime slot is a ToolsCfg");
+    build_runtime(tool_defs, prior)
+}
+
+/// PRUNE THE MCP VERIFY-ON-CALL GATES to the servers THIS generation fronts — the
+/// [`crate::plane::registry::PlaneDecl::retain_verify_gates`] hook, so `appbuild` prunes the carried
+/// coalescing state without naming the MCP runtime. Byte-identical to the old inline `appbuild` arm.
+fn mcp_retain_verify_gates(app: &crate::state::App) {
+    let live: std::collections::HashSet<String> = runtime(app)
+        .catalogue
+        .servers()
+        .map(|s| s.id.clone())
+        .collect();
+    app.mcp_verify.retain(&live);
+}
+
+/// The `mcp:` ENDPOINT block, as the neutral [`crate::plane::config::PlaneEndpointCfg`] seam — a
+/// present `McpCfg` (a fully-deserialized block) is always present; the deletion-gate `is_present`
+/// question is only ASKED of the raw carrier the compiled-out build captures.
+impl crate::plane::config::PlaneEndpointCfg for McpCfg {
+    fn is_present(&self) -> bool {
+        true
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 }
 
 /// CARRY THE MCP CONNECTION POOL ACROSS A CONFIG SWAP — retire every stdio child whose registration

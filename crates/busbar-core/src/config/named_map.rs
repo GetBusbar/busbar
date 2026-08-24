@@ -21,9 +21,6 @@
 //! own richer surface (health/schema/status probes, grant immutability, the configure-ack settings
 //! push), and `store:` is singular — there is no map to name into.
 
-#[cfg(feature = "plane-a2a")]
-use crate::a2a::config::AgentDefCfg;
-
 use super::{DeployCfg, ExportDefCfg, IdentityProviderCfg};
 
 /// One 1.5.3 named-DEFINITION map section. The variant set is the ONLY thing a new section adds.
@@ -144,7 +141,7 @@ impl NamedMapSection {
             NamedMapSection::Tools => {
                 #[cfg(feature = "plane-mcp")]
                 {
-                    deploy.tools.servers.contains_key(name)
+                    deploy.tools.0.contains_def(name)
                 }
                 // With the MCP plane compiled out there is no `tools:` registry (a `tools:` section
                 // is refused at resolve), so no name is base-config-defined on it.
@@ -157,7 +154,7 @@ impl NamedMapSection {
             NamedMapSection::Agents => {
                 #[cfg(feature = "plane-a2a")]
                 {
-                    deploy.agents.agents.contains_key(name)
+                    deploy.agents.0.contains_def(name)
                 }
                 // With the A2A plane compiled out there is no `agents:` registry (an `agents:`
                 // section is refused at resolve), so no name is base-config-defined on it.
@@ -194,11 +191,7 @@ impl NamedMapSection {
             NamedMapSection::Tools => {
                 #[cfg(feature = "plane-mcp")]
                 {
-                    deploy
-                        .tools
-                        .servers
-                        .get(name)
-                        .and_then(|cfg| serde_json::to_value(cfg).ok())
+                    deploy.tools.0.entry_document(name)
                 }
                 #[cfg(not(feature = "plane-mcp"))]
                 {
@@ -209,11 +202,7 @@ impl NamedMapSection {
             NamedMapSection::Agents => {
                 #[cfg(feature = "plane-a2a")]
                 {
-                    deploy
-                        .agents
-                        .agents
-                        .get(name)
-                        .and_then(|cfg| serde_json::to_value(cfg).ok())
+                    deploy.agents.0.entry_document(name)
                 }
                 #[cfg(not(feature = "plane-a2a"))]
                 {
@@ -233,8 +222,7 @@ impl NamedMapSection {
         name: &str,
         def: &serde_json::Value,
     ) -> Result<(), String> {
-        self.parse_def(name, def)?.install(deploy, name);
-        Ok(())
+        self.parse_def(name, def)?.install(deploy, name)
     }
 
     /// THE ONE typed parse of a raw definition document — `deny_unknown_fields`, so a typo'd or
@@ -286,11 +274,15 @@ impl NamedMapSection {
                 // material, or a `stdio` transport nothing implements, would be persisted and then
                 // refused by boot. The typed parse below still builds the object the overlay
                 // installs; that config STRUCT leaves core with the plane at the physical relocation,
-                // not at this seam.
+                // not at this seam. The `config_validate` hook has already run the plane's OWN
+                // `deny_unknown_fields` parse (the identical `invalid `tools.<name>` definition`
+                // wording) and value rules, so the typed parse that builds the object is deferred to
+                // `install`'s `PlaneCfg::insert_def` and core names no `crate::mcp` entry type here.
                 plane_config_validate(self, name, def)?;
-                serde_json::from_value(def.clone())
-                    .map_err(|e| format!("invalid `tools.{name}` definition: {e}"))
-                    .map(|cfg: crate::mcp::config::McpServerDefCfg| NamedDef::Tool(Box::new(cfg)))
+                Ok(NamedDef::Plane {
+                    section: self,
+                    def: def.clone(),
+                })
             }
             // With the MCP plane compiled out, a `tools:` definition names a plane this build does
             // not carry — refuse it, exactly as `resolve` refuses a `tools:` section.
@@ -312,10 +304,15 @@ impl NamedMapSection {
                 // registration as protected when it is not. The typed parse below still builds the
                 // object the overlay installs; that config STRUCT leaves core with the plane at the
                 // physical relocation, not at this seam.
+                // The `config_validate` hook has already run the plane's OWN `deny_unknown_fields`
+                // parse (the identical `invalid `agents.<name>` definition` wording) and value rules,
+                // so the typed parse that builds the object is deferred to `install`'s
+                // `PlaneCfg::insert_def` and core names no `crate::a2a` entry type here.
                 plane_config_validate(self, name, def)?;
-                serde_json::from_value(def.clone())
-                    .map_err(|e| format!("invalid `agents.{name}` definition: {e}"))
-                    .map(NamedDef::Agent)
+                Ok(NamedDef::Plane {
+                    section: self,
+                    def: def.clone(),
+                })
             }
             // With the A2A plane compiled out, an `agents:` definition names a plane this build does
             // not carry — refuse it, exactly as `resolve` refuses an `agents:` section.
@@ -420,36 +417,43 @@ fn plane_config_validate(
 pub(crate) enum NamedDef {
     IdentityProvider(IdentityProviderCfg),
     Export(ExportDefCfg),
-    // BOXED because `McpServerDefCfg` carries three `IndexMap`s and is by far the largest variant;
-    // an unboxed one would make every `NamedDef` — including the two small ones on the hot admin
-    // write path — as wide as the widest. Absent when the MCP plane is compiled out (nothing parses
-    // a `tools:` definition then).
-    #[cfg(feature = "plane-mcp")]
-    Tool(Box<crate::mcp::config::McpServerDefCfg>),
-    // Absent when the A2A plane is compiled out (nothing parses an `agents:` definition then).
-    #[cfg(feature = "plane-a2a")]
-    Agent(AgentDefCfg),
+    // A PLANE SECTION'S entry, kept as the VALIDATED RAW document rather than the plane's typed config
+    // — so core names no `crate::mcp`/`crate::a2a` entry type. `parse_def` has already run the plane's
+    // `config_validate` value rules (and its `deny_unknown_fields` parse) on `def`; `install` hands it
+    // straight back to the section's `PlaneCfg::insert_def`, which does the typed parse and insert
+    // byte-identically. Absent when NEITHER plane is compiled in (nothing parses a `tools:`/`agents:`
+    // definition then — both arms refuse with a compiled-out message before constructing this).
+    #[cfg(any(feature = "plane-mcp", feature = "plane-a2a"))]
+    Plane {
+        section: NamedMapSection,
+        def: serde_json::Value,
+    },
 }
 
 impl NamedDef {
-    /// Install this parsed definition into `deploy` under `name`. Infallible: the fallible half was
-    /// the parse.
-    fn install(self, deploy: &mut DeployCfg, name: &str) {
+    /// Install this parsed definition into `deploy` under `name`. The two core sections are infallible
+    /// (the fallible half was their parse); a plane section hands its validated document to the
+    /// section's `PlaneCfg::insert_def`, which does the plane's typed parse — a fail-closed backstop
+    /// that cannot fire on a definition that already passed `parse_def`'s `config_validate`.
+    fn install(self, deploy: &mut DeployCfg, name: &str) -> Result<(), String> {
         match self {
             NamedDef::IdentityProvider(cfg) => {
                 deploy.identity_providers.insert(name.to_string(), cfg);
+                Ok(())
             }
             NamedDef::Export(cfg) => {
                 deploy.export.insert(name.to_string(), cfg);
+                Ok(())
             }
-            #[cfg(feature = "plane-mcp")]
-            NamedDef::Tool(cfg) => {
-                deploy.tools.servers.insert(name.to_string(), *cfg);
-            }
-            #[cfg(feature = "plane-a2a")]
-            NamedDef::Agent(cfg) => {
-                deploy.agents.agents.insert(name.to_string(), cfg);
-            }
+            #[cfg(any(feature = "plane-mcp", feature = "plane-a2a"))]
+            NamedDef::Plane { section, def } => match section {
+                NamedMapSection::Tools => deploy.tools.0.insert_def(name, &def),
+                NamedMapSection::Agents => deploy.agents.0.insert_def(name, &def),
+                // Only the `tools:`/`agents:` arms of `parse_def` construct `NamedDef::Plane`.
+                NamedMapSection::IdentityProviders | NamedMapSection::Export => {
+                    unreachable!("a core section never parses into NamedDef::Plane")
+                }
+            },
         }
     }
 }

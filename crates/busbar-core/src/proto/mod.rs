@@ -974,6 +974,15 @@ pub(crate) const PLANE_DECL: crate::plane::registry::PlaneDecl =
         // apply through this seam — its reliability/breaker state rides the `App` fields the data
         // plane reads directly, not reconciled here.
         on_swap: None,
+        // NO CONFIG SECTION TO PARSE OR LOWER, NO RUNTIME TO BUILD, NO VERIFY GATE TO PRUNE. `pools:`
+        // predates the neutral section seam and is read by `config::resolve` directly; the LLM plane
+        // has no endpoint block, no single runtime object, and no verify-on-call coalescing state.
+        parse_section: None,
+        parse_endpoint: None,
+        lower_endpoint: None,
+        build_runtime: None,
+        retain_verify_gates: None,
+        default_section: None,
     };
 
 /// Resolve a provider's configured protocol NAME to the registry's interned `&'static str` for the

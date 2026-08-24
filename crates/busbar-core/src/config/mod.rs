@@ -28,6 +28,7 @@ pub(crate) use crate::breaker::status_class_from_str;
 use crate::diagnostics::{
     diag_warn, CONFIG_ANTIDOWNGRADE_FLOOR_INVALID, CONFIG_FIRSTPARTY_FLOOR_INVALID,
 };
+use crate::plane::config::{AgentsSection, McpEndpointSection, ToolsSection};
 use crate::proto::PROTO_ANTHROPIC;
 
 /// Reject an env-var value that could break out of the surrounding YAML scalar when substituted
@@ -393,15 +394,12 @@ pub struct RootCfg {
     /// `/v1` suffix — clients append their own). Absent ⇒ no hosted-login/token links can be built.
     /// Validated (absolute https; loopback http allowed; no path/query, no cloud-metadata host).
     pub(crate) public_url: Option<String>,
-    /// The VALIDATED MCP resource (`mcp:`), or `None` when this deployment is not an MCP server.
-    /// Derived and refused at boot by [`crate::mcp::McpResource::from_cfg`], so nothing downstream
-    /// re-parses the canonical URI or re-derives the mount path.
-    // Neutral capture when the MCP plane is compiled out: the resolved resource type does not exist
-    // then, and a non-empty `mcp:` section is refused at `resolve`.
-    #[cfg(not(feature = "plane-mcp"))]
-    pub(crate) mcp: Option<crate::plane::config::RawPlaneSection>,
-    #[cfg(feature = "plane-mcp")]
-    pub(crate) mcp: Option<crate::mcp::McpResource>,
+    /// The VALIDATED MCP resource (`mcp:`), type-erased as `Arc<dyn Any>`, or `None` when this
+    /// deployment is not an MCP server. Lowered and refused at boot by the plane's `lower_endpoint`
+    /// seam hook (the MCP plane's `McpResource::from_cfg`), so core names no plane resource type and
+    /// nothing downstream re-parses the canonical URI or re-derives the mount path. The plane's own
+    /// module downcasts it back to its concrete resource.
+    pub(crate) mcp: Option<std::sync::Arc<dyn std::any::Any + Send + Sync>>,
     /// The VALIDATED authorization server (`oauth_as:`), or `None` when this deployment is not one.
     /// Derived and refused at boot by `crate::oauth_as::config::AsIdentity::from_cfg`, so nothing
     /// downstream re-parses the issuer or re-derives an endpoint path.
@@ -413,10 +411,7 @@ pub struct RootCfg {
     /// generation. Lowering it here would give the registry two representations that could disagree
     /// about what the operator approved — precisely the disagreement the trust lifecycle removes by
     /// DERIVING state from intent-versus-observation instead of storing it.
-    #[cfg(not(feature = "plane-mcp"))]
-    pub(crate) tool_defs: crate::plane::config::RawPlaneSection,
-    #[cfg(feature = "plane-mcp")]
-    pub(crate) tool_defs: crate::mcp::config::ToolsCfg,
+    pub(crate) tool_defs: Box<dyn crate::plane::config::PlaneCfg>,
     /// Optional native inbound TLS. `None` ⇒ plain HTTP (today's path, byte-for-byte).
     pub tls: Option<TlsCfg>,
     /// Separate admin listen address — the admin API is served ONLY here, never on the data
@@ -499,10 +494,7 @@ pub struct RootCfg {
     // Neutral capture when the A2A plane is compiled out: the resolved registry type does not exist
     // then, and a non-empty `agents:` section is refused at `resolve` (the raw capture is carried
     // through unchanged, as `RootCfg` for `mcp:`/`tools:` is when `plane-mcp` is off).
-    #[cfg(not(feature = "plane-a2a"))]
-    pub(crate) agent_defs: crate::plane::config::RawPlaneSection,
-    #[cfg(feature = "plane-a2a")]
-    pub(crate) agent_defs: crate::a2a::config::AgentsCfg,
+    pub(crate) agent_defs: Box<dyn crate::plane::config::PlaneCfg>,
     /// The `tool_pools:` MCP failover pools, carried through `resolve` VERBATIM — operator intent,
     /// like `tool_defs` beside it, projected onto `state::App::tool_pools` at build. Empty ⇒ no
     /// MCP failover.
@@ -2962,15 +2954,12 @@ pub struct DeployCfg {
     /// server. Its PRESENCE is what mounts the MCP plane — absent, the deployment carries no MCP
     /// ingress and no `.well-known` document, and nothing joins the route table. See
     /// [`crate::mcp::McpCfg`].
-    // Captured RAW when the MCP plane is compiled out (`plane-mcp` off); the typed field below is
-    // what `scripts/config-schema.py` fingerprints (it is declared LAST, and the extractor records
-    // the last same-named field), so this capture leaves the `mcp:` schema unchanged.
-    #[cfg(not(feature = "plane-mcp"))]
+    // Type-erased through the neutral `McpEndpointSection` seam: the `mcp:` block deserializes into
+    // the MCP plane's own endpoint config behind `dyn PlaneEndpointCfg`, so `DeployCfg` names no
+    // `crate::mcp` endpoint type. The plane compiled out captures it raw and refuses a present block
+    // at `resolve` (the deletion-gate leg).
     #[serde(default)]
-    pub(crate) mcp: Option<crate::plane::config::RawPlaneSection>,
-    #[cfg(feature = "plane-mcp")]
-    #[serde(default)]
-    pub(crate) mcp: Option<crate::mcp::McpCfg>,
+    pub(crate) mcp: McpEndpointSection,
     /// `oauth_as:` — busbar AS an OAuth 2.1 authorization server, for the deployment that has no
     /// identity provider (or has one that will not do dynamic registration). ABSENT BY DEFAULT, and
     /// absent means nothing is built: see `crate::oauth_as`.
@@ -2986,15 +2975,12 @@ pub struct DeployCfg {
     /// Distinct from `mcp:` above and the pair is not redundant: `mcp:` is busbar's OWN endpoint as
     /// a resource server (the door), `tools:` is the set of upstreams whose capabilities that door
     /// exposes (the rooms). A deployment may configure either without the other.
-    // Captured RAW when the MCP plane is compiled out (`plane-mcp` off); the typed field below is
-    // what `scripts/config-schema.py` fingerprints (declared LAST), so this leaves the `tools:`
-    // schema unchanged.
-    #[cfg(not(feature = "plane-mcp"))]
+    // Type-erased through the neutral `ToolsSection` seam: the `tools:` registry deserializes into
+    // the MCP plane's own `ToolsCfg` behind `dyn PlaneCfg`, so `DeployCfg` names no `crate::mcp`
+    // registry type. The plane compiled out captures it raw and refuses a present section at
+    // `resolve`.
     #[serde(default)]
-    pub(crate) tools: crate::plane::config::RawPlaneSection,
-    #[cfg(feature = "plane-mcp")]
-    #[serde(default)]
-    pub(crate) tools: crate::mcp::config::ToolsCfg,
+    pub(crate) tools: ToolsSection,
     /// TLS/mTLS for the admin listener (only meaningful with `admin_listen`). Its own cert + optional
     /// `client_ca_file`, so admin can require client certificates without forcing them on data-plane
     /// clients. A network-exposed `admin_listen` REQUIRES `client_ca_file` here unless
@@ -3069,15 +3055,12 @@ pub struct DeployCfg {
     /// [`crate::a2a::config::AgentDefCfg`]. THE A2A plane. Sibling in shape to `pools:` and
     /// `tools:`, carrying the same two reserved section words, and no entry on it may reference an
     /// entry on another plane. Absent ⇒ no agent is registered and nothing can be delegated to.
-    // Captured RAW when the A2A plane is compiled out (`plane-a2a` off); the typed field below is
-    // what `scripts/config-schema.py` fingerprints (it is declared LAST, and the extractor records
-    // the last same-named field), so this capture leaves the `agents:` schema unchanged.
-    #[cfg(not(feature = "plane-a2a"))]
+    // Type-erased through the neutral `AgentsSection` seam: the `agents:` registry deserializes into
+    // the A2A plane's own `AgentsCfg` behind `dyn PlaneCfg`, so `DeployCfg` names no `crate::a2a`
+    // registry type. The plane compiled out captures it raw and refuses a present section at
+    // `resolve`.
     #[serde(default)]
-    pub(crate) agents: crate::plane::config::RawPlaneSection,
-    #[cfg(feature = "plane-a2a")]
-    #[serde(default)]
-    pub(crate) agents: crate::a2a::config::AgentsCfg,
+    pub(crate) agents: AgentsSection,
     // 1.6.0 UNIFIED POOLS: the separate `tool_pools:` and `agent_pools:` sections are GONE. There is
     // ONE neutral top-level `pools:` (above); a pool's kind is INFERRED from its members and MCP/A2A
     // pools are projected to their plane carriers in `resolve`. A 1.5.4/1.6.0-dev config still
@@ -4661,13 +4644,13 @@ pub fn resolve(
             // The MCP `tools:` noun exists only when the plane is compiled in; with `plane-mcp` off
             // no name resolves to an MCP server (a `tools:` section is refused earlier).
             #[cfg(feature = "plane-mcp")]
-            if deploy.tools.servers.contains_key(name) {
+            if deploy.tools.0.contains_def(name) {
                 return Some("mcp");
             }
             // The A2A `agents:` noun exists only when the plane is compiled in; with `plane-a2a` off
             // no name resolves to an agent (an `agents:` section is refused earlier).
             #[cfg(feature = "plane-a2a")]
-            if deploy.agents.agents.contains_key(name) {
+            if deploy.agents.0.contains_def(name) {
                 return Some("a2a");
             }
             None
@@ -4768,24 +4751,27 @@ pub fn resolve(
     // The whole block reads the typed `agents:` registry; it exists only when the A2A plane is
     // compiled in. With `plane-a2a` off there is no `agents:` content to validate (an `agents:`
     // section is refused earlier as naming an absent plane), so it is compiled out entirely.
-    #[cfg(feature = "plane-a2a")]
-    if let Err(e) = crate::plane::config::validate_section_hooks(
-        "`agents.hooks`",
-        &deploy.agents.all_agent_hooks,
-        &crate::plane::config::config_sections(),
-    ) {
-        errors.push(e);
-    }
     // A hook an `agents:` entry names must EXIST in the one top-level `hooks:` map. A dangling
     // reference is an operator believing a control is attached that is not, so it is an error and
-    // not a warning, exactly as it is for `auth.chain`.
+    // not a warning, exactly as it is for `auth.chain`. Both the section-level attach and each
+    // agent's own list are read through the neutral `container_gates` seam, in registry order.
     #[cfg(feature = "plane-a2a")]
-    for (agent, def) in &deploy.agents.agents {
-        for hook in deploy.agents.all_agent_hooks.iter().chain(def.hooks.iter()) {
-            if !deploy.hooks.contains_key(hook) {
-                errors.push(format!(
-                    "agents.{agent}: `hooks:` names `{hook}`, which is not defined in the                      top-level `hooks:` map. Define it there, or remove the reference."
-                ));
+    {
+        let g = deploy.agents.0.container_gates();
+        if let Err(e) = crate::plane::config::validate_section_hooks(
+            "`agents.hooks`",
+            &g.section_hooks,
+            &crate::plane::config::config_sections(),
+        ) {
+            errors.push(e);
+        }
+        for (agent, hooks) in &g.containers {
+            for hook in g.section_hooks.iter().chain(hooks.iter()) {
+                if !deploy.hooks.contains_key(hook) {
+                    errors.push(format!(
+                        "agents.{agent}: `hooks:` names `{hook}`, which is not defined in the                      top-level `hooks:` map. Define it there, or remove the reference."
+                    ));
+                }
             }
         }
     }
@@ -4803,7 +4789,7 @@ pub fn resolve(
     let is_tool_member = |m: &str| -> bool {
         #[cfg(feature = "plane-mcp")]
         {
-            deploy.tools.servers.contains_key(m)
+            deploy.tools.0.contains_def(m)
         }
         #[cfg(not(feature = "plane-mcp"))]
         {
@@ -4817,7 +4803,7 @@ pub fn resolve(
     let is_agent_member = |m: &str| -> bool {
         #[cfg(feature = "plane-a2a")]
         {
-            deploy.agents.agents.contains_key(m)
+            deploy.agents.0.contains_def(m)
         }
         #[cfg(not(feature = "plane-a2a"))]
         {
@@ -4903,21 +4889,23 @@ pub fn resolve(
     // compiled in. With `plane-mcp` off there is no `tools:` content to validate (a `tools:` section
     // is refused earlier as naming an absent plane), so it is compiled out entirely.
     #[cfg(feature = "plane-mcp")]
-    if let Err(e) = crate::plane::config::validate_section_hooks(
-        "`tools.hooks`",
-        &deploy.tools.all_server_hooks,
-        &crate::plane::config::config_sections(),
-    ) {
-        errors.push(e);
-    }
-    #[cfg(feature = "plane-mcp")]
-    for (server, def) in &deploy.tools.servers {
-        for hook in deploy.tools.all_server_hooks.iter().chain(def.hooks.iter()) {
-            if !deploy.hooks.contains_key(hook) {
-                errors.push(format!(
-                    "tools.{server}: `hooks:` names `{hook}`, which is not defined in the top-level \
-                     `hooks:` map. Define it there, or remove the reference."
-                ));
+    {
+        let g = deploy.tools.0.container_gates();
+        if let Err(e) = crate::plane::config::validate_section_hooks(
+            "`tools.hooks`",
+            &g.section_hooks,
+            &crate::plane::config::config_sections(),
+        ) {
+            errors.push(e);
+        }
+        for (server, hooks) in &g.containers {
+            for hook in g.section_hooks.iter().chain(hooks.iter()) {
+                if !deploy.hooks.contains_key(hook) {
+                    errors.push(format!(
+                        "tools.{server}: `hooks:` names `{hook}`, which is not defined in the top-level \
+                         `hooks:` map. Define it there, or remove the reference."
+                    ));
+                }
             }
         }
     }
@@ -4930,13 +4918,13 @@ pub fn resolve(
     // `--validate`, the admin config-apply rebuild and the admin dry-run validate endpoint all pass
     // through, so a config that boots is exactly the config that validates.
     #[cfg(feature = "plane-mcp")]
-    if let Err(e) = crate::mcp::config::validate_published_names(&deploy.tools) {
+    if let Err(e) = deploy.tools.0.validate_registry() {
         errors.push(e);
     }
     // With the MCP plane compiled out, a `tools:` section names MCP servers this build cannot reach:
     // refuse it (the config deletion-gate leg) rather than silently ignore an operator's registry.
     #[cfg(not(feature = "plane-mcp"))]
-    if deploy.tools.is_present() {
+    if deploy.tools.0.is_present() {
         errors.push(
             "tools: is configured, but this build was compiled without the MCP plane (feature \
              `plane-mcp` is off), so busbar cannot reach any MCP server. Rebuild with the MCP plane \
@@ -4948,7 +4936,7 @@ pub fn resolve(
     // or delegate to: refuse it (the config deletion-gate leg), naming the compiled-out plane,
     // exactly as `tools:`/`mcp:` are refused with the MCP plane off.
     #[cfg(not(feature = "plane-a2a"))]
-    if deploy.agents.is_present() {
+    if deploy.agents.0.is_present() {
         errors.push(
             "agents: is configured, but this build was compiled without the A2A plane (feature \
              `plane-a2a` is off), so busbar cannot register or delegate to any agent. Rebuild with \
@@ -5002,29 +4990,37 @@ pub fn resolve(
     // expect another in its verifier, and every correctly-behaved client in the world would obtain a
     // token this server then refuses. A boot refusal names the field and what to type; a runtime one
     // is discovered by an agent that cannot connect and cannot say why.
-    #[cfg(feature = "plane-mcp")]
-    let mcp = match deploy.mcp.as_ref().map(crate::mcp::McpResource::from_cfg) {
+    // The `mcp:` endpoint is LOWERED through the plane seam into its validated resource, type-erased
+    // as `Option<Arc<dyn Any>>` — so `RootCfg` names no `crate::mcp` resource type. The plane's
+    // `lower_endpoint` hook returns the SAME `McpCfgError` `Display` string boot produced, collected
+    // verbatim. With the MCP plane compiled out there is no hook: a PRESENT `mcp:` block names a plane
+    // this build does not carry, so it is refused (the config deletion-gate leg) with the same wording.
+    let mcp: Option<std::sync::Arc<dyn std::any::Any + Send + Sync>> = match deploy.mcp.0.as_ref() {
         None => None,
-        Some(Ok(resource)) => Some(resource),
-        Some(Err(e)) => {
-            errors.push(e.to_string());
-            None
+        Some(ep) => {
+            match crate::plane::registry::builtin_plane_decl_for("mcp")
+                .and_then(|d| d.lower_endpoint)
+            {
+                Some(lower) => match lower(&**ep) {
+                    Ok(resource) => Some(resource),
+                    Err(e) => {
+                        errors.push(e);
+                        None
+                    }
+                },
+                None => {
+                    if ep.is_present() {
+                        errors.push(
+                            "mcp: is configured, but this build was compiled without the MCP plane (feature \
+                             `plane-mcp` is off), so busbar cannot serve an MCP endpoint. Rebuild with the MCP \
+                             plane enabled, or remove the `mcp:` block."
+                                .to_string(),
+                        );
+                    }
+                    None
+                }
+            }
         }
-    };
-    // With the MCP plane compiled out there is no resource to derive: an `mcp:` block names a plane
-    // this build does not carry, so it is refused (the config deletion-gate leg), and the raw
-    // capture is carried through unchanged for `RootCfg`.
-    #[cfg(not(feature = "plane-mcp"))]
-    let mcp = {
-        if deploy.mcp.as_ref().is_some_and(|s| s.is_present()) {
-            errors.push(
-                "mcp: is configured, but this build was compiled without the MCP plane (feature \
-                 `plane-mcp` is off), so busbar cannot serve an MCP endpoint. Rebuild with the MCP \
-                 plane enabled, or remove the `mcp:` block."
-                    .to_string(),
-            );
-        }
-        deploy.mcp.clone()
     };
 
     // The `oauth_as:` block, validated HERE for the same reason `mcp:` is: an authorization server
@@ -5050,7 +5046,7 @@ pub fn resolve(
             public_url: deploy.public_url.clone(),
             mcp,
             oauth_as,
-            tool_defs: deploy.tools.clone(),
+            tool_defs: deploy.tools.0.clone_box(),
             tool_pools: tool_pools_derived,
             agent_pools: agent_pools_derived,
             tls: deploy.tls.clone(),
@@ -5103,7 +5099,7 @@ pub fn resolve(
             export,
             identity_providers: deploy.identity_providers.clone(),
             export_defs: deploy.export.clone(),
-            agent_defs: deploy.agents.clone(),
+            agent_defs: deploy.agents.0.clone_box(),
         })
     } else {
         Err(errors)

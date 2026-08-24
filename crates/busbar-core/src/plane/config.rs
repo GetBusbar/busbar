@@ -92,12 +92,86 @@ use crate::config::named_map::NamedMapSection;
 /// anti-omission force that used to live in `config_validate::secret_refs` — adding a credential
 /// field to a plane fails to compile until someone decides, in the impl, whether it is a secret —
 /// travels with the plane instead of staying behind in core.
-pub(crate) trait PlaneCfg: std::any::Any + Send + Sync {
+pub(crate) trait PlaneCfg: std::any::Any + Send + Sync + std::fmt::Debug {
     /// EVERY secret reference this plane's config section carries, as `(config-path, &SecretRef)`,
     /// where the path is the operator-facing dotted location `--validate` prints in an error. The
     /// path is fully qualified from the top-level section down (`tools.<name>.env.<var>`), so a
     /// caller can concatenate the planes' answers with no per-plane prefixing of its own.
     fn secret_refs(&self) -> Vec<(String, &crate::config::SecretRef)>;
+
+    /// Is `name` a REGISTRATION in this section (a `tools:` server / an `agents:` agent)? The
+    /// membership check the config resolver and the admin write path consult without naming the
+    /// plane's registry type.
+    fn contains_def(&self, name: &str) -> bool;
+
+    /// Every registration NAME in this section, in registry order — the enumeration the unified
+    /// pool-name validator folds into its global-uniqueness sets without naming the plane's registry
+    /// type. Borrowed from the section, so a caller collects them into a `&str` set for free.
+    fn def_names(&self) -> Vec<&str>;
+
+    /// This section's CURRENT entry for `name`, projected back to a raw definition document, or
+    /// `None` when there is no such entry — the base half of the overlay's per-entry merge, so the
+    /// generic named-map path round-trips an entry without naming the plane's entry type.
+    fn entry_document(&self, name: &str) -> Option<serde_json::Value>;
+
+    /// Parse a raw definition document into this section's typed entry and insert it under `name`,
+    /// returning the SAME error string boot produces on a malformed entry — so the admin write path
+    /// installs a `tools:`/`agents:` entry without core naming the entry type.
+    fn insert_def(&mut self, name: &str, def: &serde_json::Value) -> Result<(), String>;
+
+    /// This section's HOOK-GATE INPUTS — the reserved section-level attach list and each
+    /// registration's own hook list, in registry order — so `appbuild` resolves the per-registration
+    /// gates without naming the plane's registry type. See [`ContainerGateInputs`].
+    fn container_gates(&self) -> ContainerGateInputs;
+
+    /// The plane's own SECTION-WIDE registry rules, run at resolve — today the MCP plane's
+    /// published-name uniqueness, which is the one rule that is not about a single registration. A
+    /// section with no cross-registration rule returns `Ok(())`.
+    fn validate_registry(&self) -> Result<(), String>;
+
+    /// True when the operator actually wrote CONTENT for this section (a non-empty registry). Read by
+    /// the config deletion-gate leg to refuse a present section that names a compiled-out plane — so it
+    /// is called ONLY in a build where at least one plane is off; with both planes compiled in every
+    /// section names a plane this build serves and no leg reads it.
+    #[cfg_attr(all(feature = "plane-mcp", feature = "plane-a2a"), allow(dead_code))]
+    fn is_present(&self) -> bool;
+
+    /// This section as `&dyn Any`, so a plane's own module can downcast it back to its concrete
+    /// config type across the type-erased seam.
+    fn as_any(&self) -> &dyn std::any::Any;
+
+    /// A boxed clone — the trait-object `Clone` `RootCfg`/`DeployCfg` need since `Box<dyn PlaneCfg>`
+    /// is not `Clone` on its own.
+    fn clone_box(&self) -> Box<dyn PlaneCfg>;
+
+    /// A clone erased into `Arc<dyn Any>` around the CONCRETE section type — the carrier `App`'s
+    /// type-erased config slot holds, so a plane's own module downcasts it back to its concrete type.
+    fn clone_arc_any(&self) -> std::sync::Arc<dyn std::any::Any + Send + Sync>;
+}
+
+/// A PLANE SECTION'S HOOK-GATE INPUTS, in the neutral shape `appbuild::resolve_container_gates`
+/// reads — the reserved section-level `hooks:` attach list, and each registration's `(name, hooks)`
+/// in registry order. Core-owned so a plane hands its gate inputs across the seam without core naming
+/// the plane's registry type.
+pub(crate) struct ContainerGateInputs {
+    /// The reserved `<section>.hooks:` all-section attach list (`ToolsCfg::all_server_hooks` /
+    /// `AgentsCfg::all_agent_hooks`).
+    pub(crate) section_hooks: Vec<String>,
+    /// Each registration and its OWN `hooks:` list, in registry (insertion) order — the order the
+    /// gate resolution and every operator-facing listing already read.
+    pub(crate) containers: Vec<(String, Vec<String>)>,
+}
+
+/// A PLANE'S TOP-LEVEL ENDPOINT SECTION (the MCP plane's `mcp:` block — busbar's own resource-server
+/// door), captured through the neutral seam so `DeployCfg` names no `crate::mcp` endpoint type. The
+/// twin of [`PlaneCfg`] for the one plane section that is an ENDPOINT rather than a registry.
+pub(crate) trait PlaneEndpointCfg: std::any::Any + Send + Sync + std::fmt::Debug {
+    /// True when the operator wrote CONTENT for this endpoint block — read by the config
+    /// deletion-gate leg to refuse a present `mcp:` block that names a compiled-out plane.
+    fn is_present(&self) -> bool;
+    /// This endpoint as `&dyn Any`, so the plane's own module downcasts it back to its concrete
+    /// endpoint config to LOWER it into the validated resource.
+    fn as_any(&self) -> &dyn std::any::Any;
 }
 
 /// A PLANE'S TOP-LEVEL CONFIG SECTION, CAPTURED RAW — the neutral carrier `DeployCfg`/`RootCfg` use
@@ -117,16 +191,15 @@ pub(crate) trait PlaneCfg: std::any::Any + Send + Sync {
 /// `RawPlaneSection` type declared under `config/` would add a new fingerprinted type and drift the
 /// committed snapshot; declared here it never enters the config surface.
 ///
-/// Compiled whenever EITHER plane is off (both the MCP and the A2A extraction lean on it), so it is
-/// gated on `any(not(plane-mcp), not(plane-a2a))` — a single shared carrier, never a per-plane twin.
-#[cfg(any(not(feature = "plane-mcp"), not(feature = "plane-a2a")))]
+/// Compiled UNCONDITIONALLY: besides the compiled-out-plane capture, it is the empty-section fallback
+/// the neutral `*Section` newtypes take when a plane hook is absent, so it must exist in every feature
+/// combination (including both planes on, where it is simply never constructed).
 #[derive(Debug, Clone, Default)]
 pub(crate) struct RawPlaneSection {
     /// The captured value, or `None` when the section was absent or explicitly null.
     raw: Option<serde_yaml::Value>,
 }
 
-#[cfg(any(not(feature = "plane-mcp"), not(feature = "plane-a2a")))]
 impl<'de> serde::Deserialize<'de> for RawPlaneSection {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -142,14 +215,62 @@ impl<'de> serde::Deserialize<'de> for RawPlaneSection {
 // refused at resolve, so it never reaches a running deployment. Implementing the seam with an empty
 // answer lets `config_validate::secret_refs` loop the trait over the section bindings uniformly, the
 // same way it does for the typed plane configs, without naming the compiled-out plane's types.
-#[cfg(any(not(feature = "plane-mcp"), not(feature = "plane-a2a")))]
 impl PlaneCfg for RawPlaneSection {
     fn secret_refs(&self) -> Vec<(String, &crate::config::SecretRef)> {
         Vec::new()
     }
+    // A raw-captured section holds no PARSED registry: it names a compiled-out plane and is refused at
+    // resolve, so every registry query answers empty. These are reached only for the neutral carrier's
+    // uniform loop; the deletion-gate refusal is what actually fires for a present raw section.
+    fn contains_def(&self, _name: &str) -> bool {
+        false
+    }
+    fn def_names(&self) -> Vec<&str> {
+        Vec::new()
+    }
+    fn entry_document(&self, _name: &str) -> Option<serde_json::Value> {
+        None
+    }
+    fn insert_def(&mut self, _name: &str, _def: &serde_json::Value) -> Result<(), String> {
+        // Unreachable in practice: the named-map write path refuses a compiled-out plane's section
+        // BEFORE install (see `NamedMapSection::parse_def`). Fail closed if a caller ever reaches it.
+        Err("this build was compiled without the plane that owns this section".to_string())
+    }
+    fn container_gates(&self) -> ContainerGateInputs {
+        ContainerGateInputs {
+            section_hooks: Vec::new(),
+            containers: Vec::new(),
+        }
+    }
+    fn validate_registry(&self) -> Result<(), String> {
+        Ok(())
+    }
+    fn is_present(&self) -> bool {
+        RawPlaneSection::is_present(self)
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    fn clone_box(&self) -> Box<dyn PlaneCfg> {
+        Box::new(self.clone())
+    }
+    fn clone_arc_any(&self) -> std::sync::Arc<dyn std::any::Any + Send + Sync> {
+        std::sync::Arc::new(self.clone())
+    }
 }
 
-#[cfg(any(not(feature = "plane-mcp"), not(feature = "plane-a2a")))]
+// The `mcp:` ENDPOINT carrier when the MCP plane is compiled out: a present `mcp:` block names a
+// plane this build cannot serve, refused at resolve (the deletion-gate leg) exactly as a present
+// `tools:` section is.
+impl PlaneEndpointCfg for RawPlaneSection {
+    fn is_present(&self) -> bool {
+        RawPlaneSection::is_present(self)
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
 impl RawPlaneSection {
     /// True when the operator actually wrote CONTENT for this section (a non-empty mapping or any
     /// non-null scalar/sequence). An absent, null, or empty-mapping section is not "present": it
@@ -160,6 +281,113 @@ impl RawPlaneSection {
             Some(serde_yaml::Value::Mapping(m)) => !m.is_empty(),
             Some(_) => true,
         }
+    }
+}
+
+/// This plane's EMPTY registry section, via its `default_section` seam hook — the value a neutral
+/// `*Section` newtype takes when its `#[serde(default)]` field is ABSENT. A plane compiled out has no
+/// hook and falls back to an empty raw capture (never present, never refused). Byte-identical to the
+/// pre-seam typed field's `Default`.
+fn default_plane_section(key: &str) -> Box<dyn PlaneCfg> {
+    match crate::plane::registry::builtin_plane_decl_for(key).and_then(|d| d.default_section) {
+        Some(f) => f(),
+        None => Box::new(RawPlaneSection::default()),
+    }
+}
+
+/// Deserialize this plane's top-level registry section through its `parse_section` seam hook, so the
+/// neutral carrier names no plane registry type. A plane compiled out has no hook and captures the
+/// section RAW (refused at `resolve` if present). The hook's `Err(String)` is surfaced through
+/// `de::Error::custom`, so it rides the SAME `from_str::<DeployCfg>` channel a typed field's parse
+/// error rode — the operator sees the plane's own sentence, byte-identical bar any `at line` suffix.
+fn deserialize_plane_section<'de, D>(
+    key: &str,
+    deserializer: D,
+) -> Result<Box<dyn PlaneCfg>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_yaml::Value::deserialize(deserializer)?;
+    match crate::plane::registry::builtin_plane_decl_for(key).and_then(|d| d.parse_section) {
+        Some(parse) => parse(&value).map_err(serde::de::Error::custom),
+        None => {
+            let raw = if value.is_null() { None } else { Some(value) };
+            Ok(Box::new(RawPlaneSection { raw }))
+        }
+    }
+}
+
+/// Deserialize this plane's top-level ENDPOINT block (the MCP plane's `mcp:` door) through its
+/// `parse_endpoint` seam hook — the twin of [`deserialize_plane_section`] for the one plane section
+/// that is an endpoint rather than a registry. Compiled out ⇒ raw capture, refused at `resolve`.
+fn deserialize_plane_endpoint<'de, D>(
+    key: &str,
+    deserializer: D,
+) -> Result<Option<Box<dyn PlaneEndpointCfg>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_yaml::Value::deserialize(deserializer)?;
+    if value.is_null() {
+        return Ok(None);
+    }
+    match crate::plane::registry::builtin_plane_decl_for(key).and_then(|d| d.parse_endpoint) {
+        Some(parse) => parse(&value).map(Some).map_err(serde::de::Error::custom),
+        None => Ok(Some(Box::new(RawPlaneSection { raw: Some(value) }))),
+    }
+}
+
+/// THE `tools:` MCP SERVER REGISTRY as it lands in `DeployCfg`, type-erased behind [`PlaneCfg`] — the
+/// neutral seam the MCP plane's `ToolsCfg` deserializes through, so `DeployCfg` names no `crate::mcp`
+/// type. Absent ⇒ the plane's `Default` (an empty registry).
+#[derive(Debug)]
+pub(crate) struct ToolsSection(pub(crate) Box<dyn PlaneCfg>);
+
+impl Default for ToolsSection {
+    fn default() -> Self {
+        ToolsSection(default_plane_section("mcp"))
+    }
+}
+impl<'de> serde::Deserialize<'de> for ToolsSection {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserialize_plane_section("mcp", deserializer).map(ToolsSection)
+    }
+}
+
+/// THE `agents:` A2A REGISTRY as it lands in `DeployCfg`, type-erased behind [`PlaneCfg`] — the
+/// neutral seam the A2A plane's `AgentsCfg` deserializes through. Absent ⇒ an empty registry.
+#[derive(Debug)]
+pub(crate) struct AgentsSection(pub(crate) Box<dyn PlaneCfg>);
+
+impl Default for AgentsSection {
+    fn default() -> Self {
+        AgentsSection(default_plane_section("a2a"))
+    }
+}
+impl<'de> serde::Deserialize<'de> for AgentsSection {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserialize_plane_section("a2a", deserializer).map(AgentsSection)
+    }
+}
+
+/// THE `mcp:` ENDPOINT BLOCK as it lands in `DeployCfg`, type-erased behind [`PlaneEndpointCfg`] — the
+/// neutral seam the MCP plane's `McpCfg` deserializes through. Absent/null ⇒ `None` (not an MCP
+/// server), byte-identical to the pre-seam `Option<McpCfg>::default()`.
+#[derive(Debug, Default)]
+pub(crate) struct McpEndpointSection(pub(crate) Option<Box<dyn PlaneEndpointCfg>>);
+
+impl<'de> serde::Deserialize<'de> for McpEndpointSection {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserialize_plane_endpoint("mcp", deserializer).map(McpEndpointSection)
     }
 }
 

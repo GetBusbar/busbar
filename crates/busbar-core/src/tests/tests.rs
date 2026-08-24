@@ -1228,11 +1228,11 @@ fn cfg_with_provider_api_key(api_key: crate::config::SecretRef) -> crate::config
     let mut providers = std::collections::HashMap::new();
     providers.insert("acme".to_string(), provider);
     crate::config::RootCfg {
-        tool_defs: Default::default(),
+        tool_defs: crate::plane::config::ToolsSection::default().0,
         // Not an MCP server.
         mcp: None,
         oauth_as: None,
-        agent_defs: Default::default(),
+        agent_defs: crate::plane::config::AgentsSection::default().0,
         tool_pools: Default::default(),
         agent_pools: Default::default(),
         upstream_credentials: crate::auth::UpstreamCreds::Own,
@@ -2747,11 +2747,11 @@ fn plane_slot_mirrors_the_typed_mcp_and_a2a_fields_when_configured() {
     let mut cfg = cfg_with_provider_api_key(crate::config::SecretRef::env(
         "BUSBAR_TEST_NO_SUCH_KEY_PLANE_SLOT_PRESENT",
     ));
-    cfg.mcp = Some(
+    cfg.mcp = Some(std::sync::Arc::new(
         crate::mcp::McpResource::from_cfg(&mcp_cfg_at("https://gw.example.com/mcp"))
             .expect("valid mcp cfg"),
-    );
-    cfg.agent_defs = agents_cfg_with_one_receiving_agent();
+    ) as std::sync::Arc<dyn std::any::Any + Send + Sync>);
+    cfg.agent_defs = Box::new(agents_cfg_with_one_receiving_agent());
     cfg.public_url = Some("https://busbar.example".to_string());
     // `mcp:` refuses to validate with an open (empty) data-plane `auth.chain` — close it with the
     // test-only stand-in module, which needs no signing key.
@@ -2825,7 +2825,7 @@ fn plane_slot_is_none_when_the_plane_is_not_configured() {
     ));
     assert!(cfg.mcp.is_none(), "fixture control: not an mcp: deployment");
     assert!(
-        cfg.agent_defs.agents.is_empty(),
+        cfg.agent_defs.def_names().is_empty(),
         "fixture control: no agents: entries"
     );
 
