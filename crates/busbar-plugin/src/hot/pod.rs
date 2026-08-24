@@ -70,6 +70,13 @@ handle_newtype!(
     /// A monotonic journal sequence number returned by an append.
     Seq
 );
+handle_newtype!(
+    /// A resolved inbound-identity handle: the host stashes the neutral principal + the (sensitive)
+    /// governance context behind this opaque `u64` and the plane consumes it once to recover the
+    /// admitted identity, so the gov key material never crosses as bytes (the `creds`/durable-scope
+    /// opaque-handle pattern, applied to inbound admission). Reserved `0` = no identity (a refusal).
+    IdentityId
+);
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 // Small `#[repr(u8)]` outcome/kind enums returned BY VALUE or embedded in POD structs.
@@ -390,6 +397,29 @@ pub enum Unavailability {
     /// A selection over a set found NOTHING admissible (every interchangeable member refused) — the
     /// set-level refusal a single-cell reason cannot express.
     NoneAdmissible = 7,
+}
+
+/// The outcome of an inbound-identity admission (`identity_admit`) — the neutral mirror of the host's
+/// one verdict resolution (`Admitted` with a resolved principal + gov context, or a specific refusal),
+/// carried BY the [`IdentityAdmitted`] out-param. `Admitted` (= 0) is the pass and names an
+/// [`IdentityId`] handle; every other value is a refusal naming [`IdentityId::NONE`] and carrying the
+/// SPECIFIC reason so the plane reconstructs its exact refusal wording (never a lossy bool). Append-only:
+/// new reasons at the tail with a fresh discriminant, and a reader that predates a reason treats any
+/// "not `Admitted`" as a refusal.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IdentityOutcome {
+    /// The credential resolved to an admitted identity; read the [`IdentityId`] handle. Covers both the
+    /// governed principal and the explicit open/ungoverned front door (an anonymous principal + an empty
+    /// gov context) — the two shapes the host's `Ok` verdict carries.
+    Admitted = 0,
+    /// The chain DENIED the credential (a reject, an all-pass on a configured chain, or a signed key that
+    /// stopped verifying). The plane renders its unauthenticated/refused sentence.
+    Denied = 1,
+    /// The principal authenticated but earned NO enforcement key under a module that HAS a role-bindings
+    /// table — admitting it ungoverned would widen its access, so it is refused. The plane renders its
+    /// insufficient-scope sentence.
+    NoGrant = 2,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -1400,6 +1430,68 @@ pub struct AuthResolved {
     pub expires_unix: u64,
 }
 
+/// An inbound-identity resolution query — the input to the `identity_admit` slot. It carries ONLY the
+/// caller's OWN wire credential (the token it presented), the expected AUDIENCE, and the RESOURCE
+/// canonical-uri: no busbar secret crosses, exactly the inputs the in-process data-plane admission reads.
+/// The host runs the configured auth chain + the one verdict resolution over the live governance state
+/// and hands back an [`IdentityAdmitted`]; the plane never names the auth chain itself.
+///
+/// # Safety / discipline
+/// Each `(ptr, len)`, when non-null/non-zero, MUST describe a live, initialized byte range for the call.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct IdentityQuery {
+    /// `size_of::<IdentityQuery>()` at construction.
+    pub size: u32,
+    /// POD schema version.
+    pub version: u16,
+    /// Preamble tail padding.
+    pub _reserved: u16,
+    /// Whether the caller presented a credential (`1`), or none (`0` — an unauthenticated session). The
+    /// marshalled form of `Option<&str>`: `0` ⇒ the chain sees `None`, distinct from a present-but-empty
+    /// token.
+    pub token_present: u32,
+    /// Preamble/alignment padding before the borrowed ranges.
+    pub _reserved2: u32,
+    /// Borrowed pointer to the caller's OWN wire-credential bytes (read only when `token_present != 0`;
+    /// NOT owned). NEVER a busbar secret — the caller's presented token.
+    pub token_ptr: *const u8,
+    /// Length of the borrowed token range.
+    pub token_len: usize,
+    /// Borrowed pointer to the expected-AUDIENCE bytes (the resource canonical-uri the chain binds
+    /// against; NOT owned). Null/`0` ⇒ no audience expectation.
+    pub audience_ptr: *const u8,
+    /// Length of the borrowed audience range.
+    pub audience_len: usize,
+    /// Borrowed pointer to the RESOURCE canonical-uri bytes (NOT owned). Carried for the admission's
+    /// resource identity; null/`0` ⇒ none.
+    pub resource_ptr: *const u8,
+    /// Length of the borrowed resource range.
+    pub resource_len: usize,
+}
+
+/// The out-param an `identity_admit` writes on [`StatusClass::Ok`]: the neutral [`IdentityOutcome`] and,
+/// on [`IdentityOutcome::Admitted`], the opaque [`IdentityId`] the plane consumes ONCE to recover the
+/// resolved (neutral principal, gov context). On a refusal the outcome names the specific reason and the
+/// handle is [`IdentityId::NONE`]. The (sensitive) gov key never crosses as bytes — only the opaque
+/// handle does (the `creds`/durable-scope opaque-handle discipline, applied to inbound admission).
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct IdentityAdmitted {
+    /// `size_of::<IdentityAdmitted>()` when the host writes it.
+    pub size: u32,
+    /// POD schema version.
+    pub version: u16,
+    /// The resolution outcome (admitted / denied / no-grant).
+    pub outcome: IdentityOutcome,
+    /// Preamble tail padding.
+    pub _reserved: u8,
+    /// Preamble/alignment padding before the 8-byte-aligned handle.
+    pub _reserved2: u32,
+    /// The opaque resolved-identity handle ([`IdentityId::NONE`] on a refusal). Consumed exactly once.
+    pub identity: IdentityId,
+}
+
 /// A metric sample a plane emits (label passthrough; the host interprets no label).
 ///
 /// # Safety / discipline
@@ -1639,6 +1731,8 @@ mod tests {
         assert_preamble!(VerifyVerdict);
         assert_preamble!(AuthQuery);
         assert_preamble!(AuthResolved);
+        assert_preamble!(IdentityQuery);
+        assert_preamble!(IdentityAdmitted);
         assert_preamble!(MetricSample);
         assert_preamble!(CounterpartyRef);
         assert_preamble!(CallerRef);

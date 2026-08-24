@@ -32,11 +32,12 @@
 //!
 //! 1. **It is the same admission, made once.** [`ENV_CREDENTIAL`] carries the SAME credential the
 //!    HTTP plane accepts, and it is judged by the SAME sequence: the RFC 8707 audience pre-filter
-//!    against `mcp.canonical_uri` ([`crate::auth::audience`]), then the configured auth chain
-//!    ([`crate::auth::AuthMiddleware::run_chain_on_request_path`]), then the one verdict resolution
-//!    ([`crate::auth::resolve_data_plane_identity`]) the HTTP middleware itself calls. A credential
-//!    that the HTTP door would refuse is refused here; one it would admit binds this session to the
-//!    same principal, the same `PlaneRequestCtx`, the same budgets, audit attribution and hooks.
+//!    against `mcp.canonical_uri` ([`crate::auth::audience`]), then the configured auth chain and the
+//!    one verdict resolution the HTTP middleware itself runs — routed host-side through the
+//!    [`identity_admit`](crate::plane_host::identity_admit_over) seam (Seam-B), so this transport
+//!    admits an inbound session without naming the auth chain. A credential that the HTTP door would
+//!    refuse is refused here; one it would admit binds this session to the same principal, the same
+//!    `PlaneRequestCtx`, the same budgets, audit attribution and hooks.
 //! 2. **The postures line up with the doctrine "busbar requires authentication to apply budget".**
 //!    A CONFIGURED chain with no credential, or a refused one, is a REFUSAL TO SERVE (nonzero
 //!    exit, sentence on stderr): fail-closed, exactly as the HTTP door answers `401`. There is no
@@ -165,17 +166,22 @@ pub(crate) async fn session_identity(
             }
         }
     }
-    // (2) THE CHAIN — the one the HTTP door runs, with the same audience expectation.
-    let verdict = crate::auth::AuthMiddleware::run_chain_on_request_path(
-        &app.auth,
-        &app.credential_cache,
+    // (2)+(3) THE CHAIN + THE ONE VERDICT RESOLUTION, routed through the host `identity_admit` seam
+    // (Seam-B): the host runs the SAME chain the HTTP door runs (same audience expectation) and the SAME
+    // verdict resolution the middleware runs, over the live governance state, and hands back the resolved
+    // `(AuthPrincipal, PlaneRequestCtx)` — or the specific refusal. The plane no longer names
+    // `crate::auth::run_chain_on_request_path` / `resolve_data_plane_identity`; only the WORDING of a
+    // refusal remains stdio's. Byte-identical: the principal and gov context are the exact objects the
+    // resolution produced, and the refusal keeps its variant.
+    let canonical = resource.canonical_uri().to_string();
+    let admitted = crate::plane_host::identity_admit_over(
+        std::sync::Arc::clone(&app),
         credential.map(str::to_string),
-        app.governance.clone(),
-        Some(resource.canonical_uri().to_string()),
+        canonical.clone(),
+        canonical,
     )
     .await;
-    // (3) THE ONE VERDICT RESOLUTION, shared with the middleware. Only the WORDING here is stdio's.
-    match crate::auth::resolve_data_plane_identity(&app, verdict) {
+    match admitted {
         Ok((principal, gov)) => {
             if !gov.is_governed() {
                 // The open-relay banner has already fired at boot for the empty chain; this line

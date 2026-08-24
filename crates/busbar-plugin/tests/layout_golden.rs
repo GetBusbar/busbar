@@ -319,6 +319,28 @@ fn compute_layout() -> String {
     );
     record!(
         s,
+        IdentityQuery,
+        [
+            size,
+            version,
+            _reserved,
+            token_present,
+            _reserved2,
+            token_ptr,
+            token_len,
+            audience_ptr,
+            audience_len,
+            resource_ptr,
+            resource_len
+        ]
+    );
+    record!(
+        s,
+        IdentityAdmitted,
+        [size, version, outcome, _reserved, _reserved2, identity]
+    );
+    record!(
+        s,
         MetricSample,
         [
             size, version, _reserved, _reserved2, value_bits, name_ptr, name_len, labels_ptr,

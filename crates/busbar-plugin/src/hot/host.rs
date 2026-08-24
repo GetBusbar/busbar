@@ -24,10 +24,11 @@
 use super::pod::{
     AdmissionId, AdmitRefusal, ApprovalQuery, AuthQuery, AuthResolved, CallerRef, ChainBreakHdr,
     ContentChunk, CounterpartyRef, Decision, EgressDesc, EgressFault, EgressId, EgressOpen, Facts,
-    FramingDesc, GateDecision, GovRefusal, GuardVerdict, JournalQuery, JournalStreamDesc, Key,
-    MeterOutcome, MetricSample, OpDesc, OpResult, PipeId, ReframeOut, RestoredHdr, Seq, Signal,
-    StatusClass, TargetRef, TrustVerdict, Usage, VerifyChainHdr, VerifyDecision, VerifyLease,
-    VerifyQuery, VerifyVerdict, WorkHandleDesc, WorkHandleId,
+    FramingDesc, GateDecision, GovRefusal, GuardVerdict, IdentityAdmitted, IdentityQuery,
+    JournalQuery, JournalStreamDesc, Key, MeterOutcome, MetricSample, OpDesc, OpResult, PipeId,
+    ReframeOut, RestoredHdr, Seq, Signal, StatusClass, TargetRef, TrustVerdict, Usage,
+    VerifyChainHdr, VerifyDecision, VerifyLease, VerifyQuery, VerifyVerdict, WorkHandleDesc,
+    WorkHandleId,
 };
 use crate::AbiPreamble;
 use core::mem::MaybeUninit;
@@ -352,6 +353,19 @@ pub type GuardUrlFn = extern "C-unwind" fn(
     reason_buf: *mut u8,
     reason_cap: usize,
 ) -> StatusClass;
+/// Resolve INBOUND data-plane identity: run the configured auth chain + the one verdict resolution over
+/// the caller's OWN wire credential (the [`IdentityQuery`]) and the live governance state, writing an
+/// [`IdentityAdmitted`] on [`StatusClass::Ok`]. On an admit the out-param names an [`IdentityId`] handle
+/// the plane consumes ONCE to recover the resolved (neutral principal, gov context); on a refusal the
+/// [`IdentityOutcome`](super::pod::IdentityOutcome) names the specific reason and the handle is
+/// [`IdentityId::NONE`]. The (sensitive) gov key never crosses as bytes — only the opaque handle does.
+/// [`StatusClass::Refused`] on a null query (`out` untouched); [`StatusClass::Fault`] on a caught panic
+/// (`out` untouched) — the plane fails closed (refuse to admit) on either.
+pub type IdentityAdmitFn = extern "C-unwind" fn(
+    host: HostCtx,
+    query: *const IdentityQuery,
+    out: *mut MaybeUninit<IdentityAdmitted>,
+) -> StatusClass;
 
 /// The `#[repr(C)]` inbound-capability vtable a plane calls back into. Leads with the FROZEN
 /// [`AbiPreamble`] (a receiver `check_preamble`s it before using any slot) and a `size`/`version`
@@ -482,6 +496,13 @@ pub struct PlaneHostVtable {
     //    sized/versioned discipline (the minor-12 bump). ──────────────────────────────────────────────
     /// Judge a URL-shaped tool argument through the host-owned structural URL guard (writes a verdict).
     pub guard_url: Option<GuardUrlFn>,
+    // ── APPENDED (minor-17, the INBOUND-IDENTITY seam): the host runs the configured auth chain + the
+    //    one verdict resolution over the caller's OWN wire credential and the live governance state, and
+    //    hands back an opaque resolved-identity handle — so a plane admits an inbound session without
+    //    naming `crate::auth` and the gov key material never crosses as bytes. Trailing slot,
+    //    append-only, same sized/versioned discipline (the minor-17 bump). ─────────────────────────────
+    /// Resolve inbound data-plane identity from the caller's own credential (writes an admitted handle).
+    pub identity_admit: Option<IdentityAdmitFn>,
     // ── EXTENSION POINT (reserved) ──────────────────────────────────────────────────────────────
     // Metering reserve/settle (a `CostHold`) is DELIBERATELY NOT a slot here. When a high-rate
     // carrier needs it, add `cost_reserve`/`cost_settle` as trailing `Option` slots below this line
@@ -543,6 +564,7 @@ impl PlaneHostVtable {
         journal_verify_scoped: None,
         card_sign: None,
         guard_url: None,
+        identity_admit: None,
     };
 
     /// A fully-populated STUB vtable: every slot points at an `unimplemented!()` stub. It exists to
@@ -593,6 +615,7 @@ impl PlaneHostVtable {
         journal_verify_scoped: Some(stub::journal_verify_scoped),
         card_sign: Some(stub::card_sign),
         guard_url: Some(stub::guard_url),
+        identity_admit: Some(stub::identity_admit),
     };
 }
 
@@ -926,6 +949,14 @@ pub mod stub {
     ) -> StatusClass {
         unimplemented!("PlaneHost::guard_url — stub")
     }
+    /// Stub: see module docs.
+    pub extern "C-unwind" fn identity_admit(
+        _host: HostCtx,
+        _query: *const IdentityQuery,
+        _out: *mut MaybeUninit<IdentityAdmitted>,
+    ) -> StatusClass {
+        unimplemented!("PlaneHost::identity_admit — stub")
+    }
 }
 
 #[cfg(test)]
@@ -980,6 +1011,7 @@ mod tests {
         assert!(vt.journal_verify_scoped.is_some());
         assert!(vt.card_sign.is_some());
         assert!(vt.guard_url.is_some());
+        assert!(vt.identity_admit.is_some());
         assert_eq!(vt.size as usize, core::mem::size_of::<PlaneHostVtable>());
     }
 

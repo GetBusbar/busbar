@@ -69,7 +69,7 @@ pub const ABI_MAJOR: u32 = 1;
 /// The MINOR airlock version. Bumped for every APPEND-ONLY addition (a new trailing struct field, a
 /// new reserved `#[repr(u8)]` variant, a new trailing vtable slot). A newer minor is compatible with
 /// an older one BY the sized-struct discipline: the older peer never reads the newer trailing bytes.
-pub const ABI_MINOR: u32 = 16;
+pub const ABI_MINOR: u32 = 17;
 
 /// The FROZEN-FOR-ALL-TIME ABI header. This exact layout — `magic` at offset 0, `abi_major` at 8,
 /// `abi_minor` at 12 — is a permanent contract: it may NEVER be reordered, resized, extended, or

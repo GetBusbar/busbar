@@ -33,6 +33,7 @@ pub mod egress;
 mod govern;
 pub mod guard;
 pub(crate) mod identity;
+pub(crate) mod identity_admit;
 pub mod journal;
 pub mod pipe;
 pub mod scope;
@@ -198,6 +199,85 @@ pub fn govern_admit_reason_over(
         reason: String::from_utf8_lossy(&reason_buf[..n]).into_owned(),
         retry_after_secs: refusal.retry_after_secs,
     }
+}
+
+/// Resolve INBOUND data-plane identity over the wired [`identity_admit`](vtable) seam: run the
+/// configured auth chain + the ONE verdict resolution over the caller's OWN wire credential and the live
+/// governance state, and reconstruct the resolved `(AuthPrincipal, PlaneRequestCtx)` — or the specific
+/// [`IdentityRefusal`](crate::auth::IdentityRefusal) — from the host's answer. A SAFE wrapper that keeps
+/// the `#[repr(C)]` [`IdentityAdmitted`](busbar_plugin::hot::IdentityAdmitted) out-param read and the
+/// opaque-handle recovery inside this audited module, so a plane admits an inbound session without ever
+/// naming `crate::auth`. Byte-identical to the in-process resolution: the resolved principal and gov
+/// context are the EXACT objects the host produced (recovered through the opaque handle), and a refusal
+/// keeps its exact variant.
+///
+/// The slot drives the ASYNC auth chain on a fresh current-thread runtime, so it is invoked from a
+/// BLOCKING thread (`spawn_blocking`) — calling `block_on` on a runtime worker would panic. The bridge
+/// is fail-closed: a join panic maps to [`IdentityRefusal::Denied`](crate::auth::IdentityRefusal),
+/// exactly as a chain that could not run denies.
+// Only the MCP stdio inbound path consumes this seam today; under a build without `plane-mcp` it has
+// no caller (the a2a HTTP door resolves identity on its own axum extractor path).
+#[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
+pub(crate) async fn identity_admit_over(
+    app: Arc<App>,
+    token: Option<String>,
+    audience: String,
+    resource: String,
+) -> Result<
+    (
+        crate::auth::AuthPrincipal,
+        crate::governance::PlaneRequestCtx,
+    ),
+    crate::auth::IdentityRefusal,
+> {
+    let guard = SendHostDispatch::new(app);
+    tokio::task::spawn_blocking(move || {
+        guard.with_host(|hctx, vt| {
+            let token_bytes: &[u8] = token.as_deref().map(str::as_bytes).unwrap_or(&[]);
+            let query = busbar_plugin::hot::IdentityQuery {
+                size: core::mem::size_of::<busbar_plugin::hot::IdentityQuery>() as u32,
+                version: busbar_plugin::hot::POD_VERSION,
+                _reserved: 0,
+                token_present: u32::from(token.is_some()),
+                _reserved2: 0,
+                token_ptr: token_bytes.as_ptr(),
+                token_len: token_bytes.len(),
+                audience_ptr: audience.as_ptr(),
+                audience_len: audience.len(),
+                resource_ptr: resource.as_ptr(),
+                resource_len: resource.len(),
+            };
+            let mut out = core::mem::MaybeUninit::<busbar_plugin::hot::IdentityAdmitted>::uninit();
+            let status = (vt.identity_admit.expect("identity_admit is a wired slot"))(
+                hctx,
+                &query as *const busbar_plugin::hot::IdentityQuery,
+                std::ptr::from_mut(&mut out),
+            );
+            if status != busbar_plugin::hot::StatusClass::Ok {
+                // A null query is impossible here (we pass a live POD); a runtime that will not start /
+                // a caught panic fails closed to a refusal, never an admit.
+                return Err(crate::auth::IdentityRefusal::Denied);
+            }
+            // SAFETY: the `Ok` status published the out-param (init-only-on-Ok).
+            let admitted = unsafe { out.assume_init() };
+            match admitted.outcome {
+                busbar_plugin::hot::IdentityOutcome::Admitted => {
+                    // Consume the opaque handle to recover the EXACT resolved (principal, gov). A handle
+                    // that vanished (double-consume / eviction) fails closed to a refusal.
+                    identity_admit::take(admitted.identity)
+                        .ok_or(crate::auth::IdentityRefusal::Denied)
+                }
+                busbar_plugin::hot::IdentityOutcome::Denied => {
+                    Err(crate::auth::IdentityRefusal::Denied)
+                }
+                busbar_plugin::hot::IdentityOutcome::NoGrant => {
+                    Err(crate::auth::IdentityRefusal::NoGrant)
+                }
+            }
+        })
+    })
+    .await
+    .unwrap_or(Err(crate::auth::IdentityRefusal::Denied))
 }
 
 /// Read the host wall clock in whole SECONDS through the wired [`clock_now`](vtable) seam — the
