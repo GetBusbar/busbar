@@ -128,15 +128,15 @@ use serde_json::Value;
 // MCP-only: only the MCP server role emits a parse-error envelope; the A2A receiving role does not
 // reach for this code, so with `plane-mcp` off (and A2A on) it is unused.
 #[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
-pub(crate) const PARSE_ERROR: i64 = -32700;
-pub(crate) const INVALID_REQUEST: i64 = -32600;
+pub const PARSE_ERROR: i64 = -32700;
+pub const INVALID_REQUEST: i64 = -32600;
 
 /// What an inbound message IS, once the envelope has been read.
 ///
 /// Two variants, and there is deliberately no third for "a request with a bad id": an envelope that
 /// does not name a caller-correlatable request is not a request, so it never becomes one of these.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Envelope {
+pub enum Envelope {
     /// A REQUEST. `id` is a JSON string or number — never `null`, never absent, never a bool, array
     /// or object. That is a type-level guarantee: the only constructor is [`read`], and every other
     /// shape leaves through [`Invalid`]. A handler that holds one of these may echo `id` into its
@@ -152,15 +152,15 @@ pub(crate) enum Envelope {
 /// easy to get subtly wrong: echo the request's id when one could be established, `Null` when it
 /// could not. Deciding that once, next to the code that established it, is the point.
 #[derive(Debug, Clone)]
-pub(crate) struct Invalid {
+pub struct Invalid {
     // MCP-only field: the MCP plane reads the numeric code back off an `Invalid`; the A2A plane
     // renders its refusal from the message alone, so with `plane-mcp` off (and A2A on) `code` is
     // written but never read.
     #[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
-    pub(crate) code: i64,
-    pub(crate) message: &'static str,
+    pub code: i64,
+    pub message: &'static str,
     /// section 5: *"If there was an error in detecting the id in the Request object … it MUST be Null."*
-    pub(crate) id: Value,
+    pub id: Value,
 }
 
 /// Read a parsed JSON body as a JSON-RPC 2.0 envelope.
@@ -174,7 +174,7 @@ pub(crate) struct Invalid {
 ///
 /// Only once the message IS a JSON-RPC message does the absence of `id` mean *notification*, at
 /// which point section 4.1's MUST NOT applies with no exception for "but the rest of it was wrong".
-pub(crate) fn read(value: &Value) -> Result<Envelope, Invalid> {
+pub fn read(value: &Value) -> Result<Envelope, Invalid> {
     // A top-level array is a BATCH. Neither plane's revision carries batches, and refusing
     // explicitly beats reading `method` off an array as absent — which would answer the wrong
     // question with the wrong message.
@@ -256,7 +256,7 @@ fn is_legible_id(id: &Value) -> bool {
 /// sent is not that request's answer, so it never becomes one of these. Holding one of these IS the
 /// proof that correlation succeeded.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) enum Reply {
+pub enum Reply {
     /// The `result` member, verbatim. Present-but-`null` is a legal result and stays one; it is the
     /// MEMBER's presence that decides, never its truthiness.
     Result(Value),
@@ -278,7 +278,7 @@ pub(crate) enum Reply {
 /// had to grep the message for the word "id" would be parsing a sentence to recover a decision this
 /// module already made.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum NotAnAnswerKind {
+pub enum NotAnAnswerKind {
     /// The body is not a JSON-RPC 2.0 response at all, or carries both / neither of `result` and
     /// `error`.
     NotAResponse,
@@ -291,9 +291,9 @@ pub(crate) enum NotAnAnswerKind {
 /// because every caller does the same thing with the prose — puts it in front of an operator — and
 /// the specific reason is the whole value of the log line.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct NotAnAnswer {
-    pub(crate) kind: NotAnAnswerKind,
-    pub(crate) reason: String,
+pub struct NotAnAnswer {
+    pub kind: NotAnAnswerKind,
+    pub reason: String,
 }
 
 impl std::fmt::Display for NotAnAnswer {
@@ -324,7 +324,7 @@ impl std::fmt::Display for NotAnAnswer {
 /// - **a mismatched `id`** — the answer to a DIFFERENT request. This is the arm that matters: it is
 ///   the difference between serving a caller their own answer and serving them somebody else's.
 /// - **both / neither of `result` and `error`** — section 5 forbids both and requires one.
-pub(crate) fn read_response(value: &Value, sent_id: &Value) -> Result<Reply, NotAnAnswer> {
+pub fn read_response(value: &Value, sent_id: &Value) -> Result<Reply, NotAnAnswer> {
     let refuse = |reason: String| {
         Err(NotAnAnswer {
             kind: NotAnAnswerKind::NotAResponse,
@@ -429,7 +429,7 @@ fn same_id(got: &Value, sent: &Value) -> bool {
 /// contract and a second builder is a second place for them to disagree. `id` is a `Value` and not
 /// an `Option`, deliberately: section 5 makes the member REQUIRED on a Response, so there is no shape this
 /// function could be asked for in which omitting it is right.
-pub(crate) fn error_body(id: Value, code: i64, message: &str, data: Option<Value>) -> Value {
+pub fn error_body(id: Value, code: i64, message: &str, data: Option<Value>) -> Value {
     let mut error = serde_json::Map::new();
     error.insert("code".into(), Value::from(code));
     error.insert("message".into(), Value::from(message));
@@ -451,7 +451,7 @@ pub(crate) fn error_body(id: Value, code: i64, message: &str, data: Option<Value
 // MCP-only: the MCP server answers a malformed envelope with this `400`; the A2A receiving role
 // takes a different refusal path, so with `plane-mcp` off (and A2A on) it has no caller.
 #[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
-pub(crate) fn refused(invalid: &Invalid) -> Response {
+pub fn refused(invalid: &Invalid) -> Response {
     (
         StatusCode::BAD_REQUEST,
         axum::Json(error_body(
@@ -470,7 +470,7 @@ pub(crate) fn refused(invalid: &Invalid) -> Response {
 /// Streamable HTTP binding names for it ("Notifications get `202 Accepted`"). A `204` would say the
 /// same thing about the body and a wrong thing about the outcome: `202` means received and not yet
 /// judged, which is exactly what a receiver can honestly claim about a message it may not answer.
-pub(crate) fn accepted() -> Response {
+pub fn accepted() -> Response {
     StatusCode::ACCEPTED.into_response()
 }
 
@@ -488,7 +488,7 @@ pub(crate) fn accepted() -> Response {
 /// * **The STATUS is the caller's**, not `400`. The transport's own refusal (`413`, `404`, `405`)
 ///   is a fact about the HTTP hop that every proxy and dashboard between the peers reads, and
 ///   flattening it to `400` would discard it. Only the BODY is JSON-RPC's.
-pub(crate) fn transport_refusal(status: StatusCode, message: &str) -> Response {
+pub fn transport_refusal(status: StatusCode, message: &str) -> Response {
     (
         status,
         axum::Json(error_body(Value::Null, INVALID_REQUEST, message, None)),
@@ -500,7 +500,7 @@ pub(crate) fn transport_refusal(status: StatusCode, message: &str) -> Response {
 // MCP-only: emitted only by the MCP server role (it reaches `PARSE_ERROR` above), so with
 // `plane-mcp` off (and A2A on) it has no caller.
 #[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
-pub(crate) fn parse_error() -> Response {
+pub fn parse_error() -> Response {
     refused(&Invalid {
         code: PARSE_ERROR,
         message: "Request body is not valid JSON.",

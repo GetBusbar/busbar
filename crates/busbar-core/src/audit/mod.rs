@@ -58,7 +58,9 @@
 //! about it is oversold.
 
 pub(crate) mod journal;
-pub(crate) mod vocab;
+pub(crate) mod vocab {
+    pub(crate) use busbar_substrate::audit::vocab::*;
+}
 
 use std::marker::PhantomData;
 

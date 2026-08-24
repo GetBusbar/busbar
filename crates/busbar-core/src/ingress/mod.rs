@@ -847,7 +847,9 @@ async fn ingress_path_model(
 // plane. It lives under `ingress/` because that is the shared owner `structure-lint`'s plane
 // ledger already names for the ingress concern: "one plane-neutral admission in ingress/, with the
 // plane supplying its wire reader". This is the envelope half of that.
-pub(crate) mod jsonrpc;
+pub(crate) mod jsonrpc {
+    pub(crate) use busbar_substrate::ingress::jsonrpc::*;
+}
 
 /// THE ONE JSON-RPC INGRESS SEQUENCE. Read its header: it carries the thirteen-step measurement
 /// that says which four steps are a protocol's and which nine are core's.

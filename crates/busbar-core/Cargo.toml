@@ -26,6 +26,11 @@ path = "src/lib.rs"
 
 [dependencies]
 busbar-api = { path = "../api" }
+# The NEUTRAL SUBSTRATE. Phase-B B0-b relocated the Tier-0 leaves (net-guard primitives, the
+# diagnostics catalog, the audit vocabulary, the JSON-RPC envelope reader, the wire-format names,
+# and the capped upstream-body read) DOWN into this crate; core re-exports each unchanged so the
+# in-core call sites keep naming `crate::…`. Substrate never depends back on core.
+busbar-substrate = { path = "../busbar-substrate" }
 # Debug-only per-method micro-timing. DEFAULT OFF: with `busbar-timing`'s `timing` feature disabled
 # (the shipped default) every `timeit!` call site below compiles to `()` — zero cost. Turn it on for
 # a profiling build with `--features busbar-timing/timing`. Method timers nest inside `profile.rs`.

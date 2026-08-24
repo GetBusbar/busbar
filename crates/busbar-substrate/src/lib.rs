@@ -11,7 +11,19 @@
 //! the plugin ABI (`busbar-plugin`), both leaves, so a plane crate can depend on it with no path
 //! back to core and no dependency cycle.
 //!
-//! This is the B0-a skeleton: the crate exists, is a workspace member, and compiles. The subsequent
-//! Phase-B steps (B0-b relocates the Tier-0 leaves, B1 the trust/egress/failover families) fill it
-//! in; core re-exports each relocated item during the transition so the in-core call sites do not
-//! change in the same commit.
+//! B0-b relocates the Tier-0 leaves here (the guarded-fetch network primitives, the diagnostics
+//! catalog, the audit vocabulary, the transport-neutral JSON-RPC envelope reader, the wire-format
+//! names, and the capped upstream-body read); B1 the trust/egress/failover families. Core
+//! re-exports each relocated item during the transition so the in-core call sites do not change in
+//! the same commit.
+
+pub mod diagnostics;
+pub mod net_guard;
+pub mod audit {
+    pub mod vocab;
+}
+pub mod ingress {
+    pub mod jsonrpc;
+}
+pub mod plane;
+pub mod proxy;

@@ -7,8 +7,25 @@ rust-version = "1.97"
 description = "The neutral shared substrate the extracted plane crates (busbar-mcp, busbar-a2a) name instead of reaching into busbar-core: trust/egress/failover value families and transport-neutral helpers, all depending only on the plugin contracts (busbar-api) and the plugin ABI (busbar-plugin)."
 license = "Apache-2.0"
 
-# Skeleton only for Phase-B B0-a: an empty lib.rs needs no dependencies. Later Phase-B steps
-# (B0-b/B1) relocate the Tier-0/1/2 leaves here and add the deps each leaf needs (busbar-api,
-# busbar-plugin, serde_json, axum, reqwest, bytes, tracing). Kept dependency-free until then so
-# the crate compiles clean with no unused-dependency drift.
+# Phase-B B0-b: the relocated Tier-0 leaves need exactly these — `axum`/`serde_json` for the
+# JSON-RPC envelope reader (`ingress::jsonrpc`), and `reqwest`/`bytes` for the capped upstream-body
+# read (`proxy::read_capped`). The diagnostics catalog, audit vocabulary, net-guard primitives and
+# wire-format names are pure `std`. The emit macros (which touch `tracing`) stay in core, so no
+# `tracing` edge here yet; the trust/egress/failover families and their `busbar-api`/`busbar-plugin`
+# deps arrive with B1.
 [dependencies]
+axum = { workspace = true }
+serde_json = { workspace = true }
+reqwest = { workspace = true }
+bytes = { workspace = true }
+# `net_guard::resolve_and_pin_async` does the ONE DNS resolution via `tokio::net::lookup_host`, so
+# the relocated guard needs tokio's `net` API (and nothing else — no runtime, macros, or timers).
+tokio = { workspace = true, features = ["net"] }
+
+# The relocated leaves carry `#[cfg_attr(not(feature = "plane-mcp"/"plane-a2a"), allow(dead_code))]`
+# verbatim from core — the items are `pub` here so the allowance is now inert, but the cfg names
+# must still be DECLARED or `unexpected_cfgs` fires under `-D warnings`. Empty, gate nothing, and are
+# never enabled: they exist only so the moved source stays byte-for-byte the code it was in core.
+[features]
+plane-mcp = []
+plane-a2a = []

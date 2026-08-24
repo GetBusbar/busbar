@@ -405,6 +405,7 @@ dependencies = [
  "busbar-secret-ref",
  "busbar-store-example-plugin",
  "busbar-store-memory",
+ "busbar-substrate",
  "busbar-timing",
  "bytes",
  "crc32fast",
@@ -628,6 +629,13 @@ dependencies = [
 [[package]]
 name = "busbar-substrate"
 version = "1.6.0"
+dependencies = [
+ "axum",
+ "bytes",
+ "reqwest 0.12.28",
+ "serde_json",
+ "tokio",
+]
 
 [[package]]
 name = "busbar-timing"

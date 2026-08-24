@@ -32,45 +32,45 @@
 // ── OUTCOMES: what happened, in one word per stream's terms ─────────────────────────────────────
 
 /// Admin stream: the mutation COMMITTED.
-pub(crate) const OUTCOME_APPLIED: &str = "applied";
+pub const OUTCOME_APPLIED: &str = "applied";
 /// Admin stream: validation or conflict, and NOTHING changed.
-pub(crate) const OUTCOME_REJECTED: &str = "rejected";
+pub const OUTCOME_REJECTED: &str = "rejected";
 /// Cross-protocol egress: the request STILL FORWARDED, but a caller control with no native target
 /// representation was dropped (audit-and-allow). Recorded as a first-class event, not just a log warn.
-pub(crate) const OUTCOME_DEGRADED: &str = "degraded";
+pub const OUTCOME_DEGRADED: &str = "degraded";
 /// Call stream: THE CALL WENT OUT. It may still carry a `reason` — see [`REASON_UPSTREAM_FAILED`].
-pub(crate) const OUTCOME_DISPATCHED: &str = "dispatched";
+pub const OUTCOME_DISPATCHED: &str = "dispatched";
 /// Call stream: the call did NOT go out.
-pub(crate) const OUTCOME_REFUSED: &str = "refused";
+pub const OUTCOME_REFUSED: &str = "refused";
 
 // ── REASONS: which of the distinguishable refusals it was ───────────────────────────────────────
 
 /// The caller holds no grant for this capability. Lands at ADMISSION, before any upstream is
 /// contacted — so a `not_granted` record is proof the upstream never saw the request.
-pub(crate) const REASON_NOT_GRANTED: &str = "not_granted";
+pub const REASON_NOT_GRANTED: &str = "not_granted";
 
 /// The caller was entitled and the EGRESS CREDENTIAL gate refused: no registration, no lease, or a
 /// credential a caller may not borrow. A different incident from [`REASON_NOT_GRANTED`] with a
 /// different owner, which is exactly why it is a different word.
-pub(crate) const REASON_EGRESS_DENIED: &str = "egress_denied";
+pub const REASON_EGRESS_DENIED: &str = "egress_denied";
 
 /// The call WENT OUT and the upstream then failed. It rides [`OUTCOME_DISPATCHED`], not
 /// [`OUTCOME_REFUSED`], and the distinction is the point: `refused` means the call did not go out,
 /// and this one did. The word itself is unchanged from when it rode `refused` so that tooling
 /// already grepping for it keeps finding the same event.
-pub(crate) const REASON_UPSTREAM_FAILED: &str = "upstream_failed";
+pub const REASON_UPSTREAM_FAILED: &str = "upstream_failed";
 
 /// The request was answered with an unsatisfied caller-ask round. `refused`, not a third outcome:
 /// `dispatched` means the call went out and this one did not. The caller's retry is a fresh inbound
 /// request and gets its own record, so the exchange is reconstructable from the chain without a
 /// token that means "neither".
-pub(crate) const REASON_CALLER_ASK_PENDING: &str = "caller_ask_pending";
+pub const REASON_CALLER_ASK_PENDING: &str = "caller_ask_pending";
 
 /// The request was answered with a TASK rather than a result. Also `refused`, for the same reason:
 /// at the moment the request is answered nothing has gone out. What happens next belongs to the
 /// task's own provenance chain, and this record's job is to say that the request existed, who made
 /// it, what it named, and that it became task work.
-pub(crate) const REASON_TASK_CREATED: &str = "task_created";
+pub const REASON_TASK_CREATED: &str = "task_created";
 
 /// A GOVERNANCE BUCKET REFUSED THE REQUEST: a rate, concurrency or budget limit the presenting key
 /// is bound to was already at its ceiling, so nothing was dispatched.
@@ -81,12 +81,12 @@ pub(crate) const REASON_TASK_CREATED: &str = "task_created";
 /// allowance — the remedy is a quota, or waiting for the window to roll. Flattening them would make
 /// an operator audit the grant matrix for a decision the grant matrix did not take, which is the
 /// exact failure this vocabulary exists to prevent.
-pub(crate) const REASON_LIMIT_EXCEEDED: &str = "limit_exceeded";
+pub const REASON_LIMIT_EXCEEDED: &str = "limit_exceeded";
 
 /// The request's parameters were missing or malformed. RECORDED rather than dropped: the caller is
 /// already AUTHENTICATED at this point, and a chain that silently omits every malformed request from
 /// a principal is a chain with a hole an attacker can choose.
-pub(crate) const REASON_MALFORMED: &str = "malformed_params";
+pub const REASON_MALFORMED: &str = "malformed_params";
 
 // ── THE FAILOVER SEAM'S REASONS ─────────────────────────────────────────────────────────────────
 //
@@ -106,7 +106,7 @@ pub(crate) const REASON_MALFORMED: &str = "malformed_params";
 // the word is defined HERE regardless, because the audit vocabulary is core's and a plane arriving
 // later must find it rather than spell a fourth synonym.
 #[cfg_attr(not(test), allow(dead_code))]
-pub(crate) const REASON_NO_UPSTREAM_LEFT: &str = "no_upstream_left";
+pub const REASON_NO_UPSTREAM_LEFT: &str = "no_upstream_left";
 
 /// A FAILOVER HOP WAS REFUSED BECAUSE THE PINS DISAGREE. The operator declared two registrations to
 /// be the same deployment, busbar compared the fingerprints it already had, and they are not equal —
@@ -120,7 +120,7 @@ pub(crate) const REASON_NO_UPSTREAM_LEFT: &str = "no_upstream_left";
 // the word is defined HERE regardless, because the audit vocabulary is core's and a plane arriving
 // later must find it rather than spell a fourth synonym.
 #[cfg_attr(not(test), allow(dead_code))]
-pub(crate) const REASON_NOT_INTERCHANGEABLE: &str = "not_interchangeable";
+pub const REASON_NOT_INTERCHANGEABLE: &str = "not_interchangeable";
 
 /// THE SAFETY RULE FIRED. The call already went out, it is not declared repeatable, and busbar
 /// therefore did NOT send it to a second member of the pool.
@@ -133,7 +133,7 @@ pub(crate) const REASON_NOT_INTERCHANGEABLE: &str = "not_interchangeable";
 // the word is defined HERE regardless, because the audit vocabulary is core's and a plane arriving
 // later must find it rather than spell a fourth synonym.
 #[cfg_attr(not(test), allow(dead_code))]
-pub(crate) const REASON_NOT_REPEATABLE: &str = "not_repeatable";
+pub const REASON_NOT_REPEATABLE: &str = "not_repeatable";
 
 // ── THE ORDERED REQUEST VALIDATOR'S REASONS ─────────────────────────────────────────────────────
 //
@@ -152,7 +152,7 @@ pub(crate) const REASON_NOT_REPEATABLE: &str = "not_repeatable";
 /// re-issued, a key that is merely unscoped is granted — and distinct from an authentication
 /// failure at the edge because this principal DID authenticate and then went stale underneath a
 /// request that was already in flight.
-pub(crate) const REASON_IDENTITY_NOT_LIVE: &str = "identity_not_live";
+pub const REASON_IDENTITY_NOT_LIVE: &str = "identity_not_live";
 
 /// The REGISTRATION serves nothing: pending, quarantined, suspended or in error. A statement about
 /// the upstream rather than about the caller, which is why it is not a grant word — the caller may
@@ -161,13 +161,13 @@ pub(crate) const REASON_IDENTITY_NOT_LIVE: &str = "identity_not_live";
 /// A plane may render this more finely (`not_pinned`, `not_approved`, `quarantined` are three
 /// operator actions behind this one decision) and doing so is the opposite of flattening: the gate
 /// decides, and the plane says which of its shapes the decision took.
-pub(crate) const REASON_NOT_SERVING: &str = "not_serving";
+pub const REASON_NOT_SERVING: &str = "not_serving";
 
 /// THE RUG-PULL. The registration serves, and the capability being asked for is offered at a
 /// fingerprint nobody approved — a tool's schema changed under the cache, a card was re-signed.
 /// Its own word because it is the one refusal that indicts the UPSTREAM rather than the operator's
 /// configuration or the caller's grant.
-pub(crate) const REASON_ARTIFACT_DRIFTED: &str = "artifact_drifted";
+pub const REASON_ARTIFACT_DRIFTED: &str = "artifact_drifted";
 
 /// THE LIFECYCLE RACE. The registry moved between admission and dispatch, so the request is refused
 /// rather than sent against a snapshot the operator has already replaced.
@@ -176,4 +176,4 @@ pub(crate) const REASON_ARTIFACT_DRIFTED: &str = "artifact_drifted";
 /// moved, retry" is a worse message than any of the others and an operator handed it goes looking
 /// for an apply they may not have made. Nothing is admitted by asking it last: a request that would
 /// fail an earlier step fails that step instead.
-pub(crate) const REASON_GENERATION_MOVED: &str = "generation_moved";
+pub const REASON_GENERATION_MOVED: &str = "generation_moved";

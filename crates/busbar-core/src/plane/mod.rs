@@ -107,25 +107,24 @@ pub(crate) mod store;
 #[cfg(feature = "plane-a2a")]
 pub(crate) mod taskstore;
 
-/// THE WIRE FORMAT both mounted planes speak: JSON-RPC 2.0. Named once, here, because it is read
-/// twice as a [`wire_format_names`] entry and once more by the error-shaping boundary, which
-/// decides that a refusal on a mounted plane is a JSON-RPC error object rather than a vendor
-/// envelope. A literal spelled per site is how those two answers start to differ.
-pub(crate) const WIRE_JSONRPC: &str = "jsonrpc";
-
-/// THE SECOND WIRE FORMAT THE A2A PLANE SPEAKS: A2A's HTTP+JSON binding, where the REQUEST LINE
-/// names the operation rather than a body member. Named once, here, because it is read three ways
-/// and all three must agree — as a [`wire_format_names`] entry, as the
-/// [`crate::transport::Transport::HttpJson`] label, and (upper-cased by
-/// `a2a::serve::servable_bindings`) as the `protocolBinding` a served agent card advertises. The
-/// card spelling is `HTTP+JSON`, so this is that string lower-cased and nothing else.
-pub(crate) const WIRE_HTTP_JSON: &str = "http+json";
-
-/// The A2A specification's gRPC binding, as a wire-format name. Lower-case here and upper-cased
-/// once, by [`crate::a2a::serve::servable_bindings`], into the `GRPC` an agent card advertises — so
-/// the card cannot claim a binding the plane does not list, which is the whole reason that function
-/// reads this list rather than writing one of its own.
-pub(crate) const WIRE_GRPC: &str = "grpc";
+// THE WIRE FORMAT NAMES the mounted planes speak moved DOWN into the neutral `busbar-substrate`
+// crate in Phase-B B0-b, so a plane crate can name them without reaching into core. They are the
+// same three canonical spellings, re-exported here unchanged so every `crate::plane::WIRE_*` call
+// site is untouched:
+//
+//   WIRE_JSONRPC   — JSON-RPC 2.0, the wire format both mounted planes speak. Read twice as a
+//                    `wire_format_names` entry and once by the error-shaping boundary, which decides
+//                    a refusal on a mounted plane is a JSON-RPC error object rather than a vendor
+//                    envelope. A literal spelled per site is how those two answers start to differ.
+//   WIRE_HTTP_JSON — the A2A HTTP+JSON binding, where the REQUEST LINE names the operation rather
+//                    than a body member. Read three ways that must agree: a `wire_format_names`
+//                    entry, the `crate::transport::Transport::HttpJson` label, and (upper-cased by
+//                    `a2a::serve::servable_bindings`) the `protocolBinding` a served agent card
+//                    advertises. The card spelling is `HTTP+JSON`; this is that lower-cased.
+//   WIRE_GRPC      — the A2A gRPC binding as a wire-format name. Lower-case here and upper-cased
+//                    once, by `crate::a2a::serve::servable_bindings`, into the `GRPC` an agent card
+//                    advertises — so the card cannot claim a binding the plane does not list.
+pub(crate) use busbar_substrate::plane::{WIRE_GRPC, WIRE_HTTP_JSON, WIRE_JSONRPC};
 
 /// The residual in-core LLM plane's registry key — the key `proto::PLANE_DECL` declares. Named
 /// once so the residual guard and the model-plane telemetry branch compare against one string.
