@@ -4,8 +4,11 @@
 
 <h1 align="center">Busbar</h1>
 
-<p align="center"><strong>Your AI control plane, in one static Rust binary.</strong><br>
-Point any SDK at one URL, reach any provider, and keep serving when a provider does not.</p>
+<p align="center">
+  <strong>The self-hosted execution boundary for AI systems.</strong><br>
+  Control where AI can go, what it may use, what authority it receives,
+  what it may cost, and what evidence is retained—before it acts.
+</p>
 
 <p align="center">
 <a href="https://github.com/GetBusbar/busbar/actions/workflows/ci.yml"><img src="https://github.com/GetBusbar/busbar/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
@@ -14,20 +17,50 @@ Point any SDK at one URL, reach any provider, and keep serving when a provider d
 <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License: Apache 2.0"></a>
 </p>
 
+Busbar sits between AI applications and the destinations they can reach:
+
+```text
+Applications and agents → Busbar → Models, MCP tools, and A2A agents
+```
+
+For traffic routed through Busbar, operators can verify, govern, route,
+and record model calls, tool use, and agent delegation before they reach
+approved destinations.
+
+Busbar is a self-hosted, customer-operated static Rust binary. It keeps
+provider credentials at the boundary, preserves supported native SDK
+workflows, and puts policy, budgets, routing, resilience, and execution
+evidence in one enforcement point.
+
+> **What this README demonstrates today:** Busbar's model execution
+> plane—native provider protocols, credential boundary, routing,
+> budgets, resilience, and audit evidence. MCP tool governance and A2A
+> agent trust use the same execution-boundary model.
+
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/readme/matrix-dark.svg">
   <img src="assets/readme/matrix-light.svg" alt="Six by six matrix of ingress protocol against upstream protocol. All 36 pairs served. The same-protocol diagonal is forwarded byte for byte.">
 </picture>
 
-Six wire protocols, first class on both sides: OpenAI, OpenAI Responses, Anthropic, Gemini, Cohere and Bedrock Converse.
+Six model wire protocols, first class on both sides: OpenAI, OpenAI
+Responses, Anthropic, Gemini, Cohere, and Bedrock Converse.
 
-Same-protocol routes are byte-for-byte identical to calling the provider directly, because Busbar forwards your original bytes rather than re-serializing them. Cross-protocol, every modelled field arrives in the target's native shape.
+Same-protocol routes are byte-for-byte identical to calling the provider
+directly, because Busbar forwards the original request bytes rather than
+re-serializing them. Cross-protocol routes translate modelled fields into
+the target provider's native shape.
 
-Self-hosted, always. No hosted service, no signup, nothing phones home. Your provider keys stay in your config on your machine.
+Self-hosted, always. No hosted service, no signup, and nothing phones
+home. Provider credentials stay in your infrastructure, at the
+enforcement boundary.
 
 ---
 
-## The numbers
+## Built for the governed hot path
+
+An enforcement boundary only works if teams can deploy it on every
+governed request path. Busbar is designed to make the decision in the
+path without becoming the bottleneck.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/readme/perf-dark.svg">
@@ -43,7 +76,7 @@ Self-hosted, always. No hosted service, no signup, nothing phones home. Your pro
 
 ---
 
-## Why not LiteLLM, Kong or Portkey
+## A boundary, not just a proxy
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/readme/field-dark.svg">
@@ -61,10 +94,15 @@ Self-hosted, always. No hosted service, no signup, nothing phones home. Your pro
 
 | | Container image | Install |
 |---|---|---|
-| Busbar | **5.74 MiB**, 3 layers | one **12.39 MiB** static binary |
+| Busbar | **5.74 MiB**, 3 layers | one **12.39 MiB** binary, no runtime |
 | LiteLLM | 360.77 MiB, 21 layers | **558 MiB** across 107 packages |
 
 Measured 2026-08-03 on an m7g.4xlarge pinned to 4 cores. Image sizes are compressed registry layers for `getbusbar/busbar:latest` and `ghcr.io/berriai/litellm:main-latest`, linux/amd64.
+
+Busbar overlaps with AI gateways on protocol support, routing, and
+resilience. Its direction is broader: it is the customer-operated
+enforcement point for AI execution, beginning with model traffic and
+extending to governed tool and agent access.
 
 Three things we will say against ourselves:
 
@@ -76,9 +114,11 @@ Every cell is published with its own verdict and reason at [onthebench.ai](https
 
 ---
 
-## Two lines
+## Put the boundary in the path
 
-Your app already speaks one of those six protocols. Change the base URL and the key, and the model name becomes a config value instead of a code dependency.
+Your application already speaks one of these protocols. Change the base
+URL and key; Busbar becomes the point where model destinations,
+credentials, routing, budgets, and execution evidence are controlled.
 
 ```diff
 - client = OpenAI(api_key=OPENAI_KEY)
@@ -127,9 +167,12 @@ Every one of these was run against Busbar 1.5.3 while writing this file. Full ro
 
 ---
 
-## Pools, weights and failover
+## Model routing and resilience
 
-This is the part you cannot easily build yourself. A pool is a weighted group of lanes that share a circuit breaker; a lane that fails before the first byte is replaced mid-request, and the breaker attributes the fault so a bad key benches one lane instead of tripping a healthy one.
+Model routing is one execution-plane capability. A pool is a weighted
+group of lanes that share a circuit breaker; a lane that fails before
+the first byte is replaced mid-request, and the breaker attributes the
+fault so a bad key benches one lane instead of tripping a healthy one.
 
 ```yaml
 providers:
@@ -156,7 +199,7 @@ pools:
       max_hops: 2
 ```
 
-Your client never sees the hop, even mid-stream. The state machine, the fault classes and the recovery probe are in [Reliability](https://getbusbar.com/docs/reliability/).
+Your client never sees the hop, because the hop happens before the first byte reaches it, even on a streaming request. Once that first byte is out Busbar does not switch providers under your client: it records the fault against that lane and ends the stream with an error event, and the client retries. The state machine, the fault classes and the recovery probe are in [Reliability](https://getbusbar.com/docs/reliability/).
 
 ---
 
@@ -197,7 +240,7 @@ docker run --rm -p 8080:8080 -e ANTHROPIC_KEY -e BUSBAR_ADMIN_TOKEN getbusbar/bu
 
 ## Kubernetes
 
-One container, no sidecar, nothing to run beside it. The image is 5.74 MB compressed and the process idles at 7.3 MiB, both stamped in the comparison below, so it fits a 32Mi request and a 128Mi limit with room to spare.
+One container, no sidecar, nothing to run beside it. The image is 5.74 MiB compressed and the process idles at 7.3 MiB, both stamped in the comparison below, so it fits a 32Mi request and a 128Mi limit with room to spare.
 
 ```bash
 helm repo add busbar https://getbusbar.github.io/helm-charts
@@ -275,10 +318,29 @@ spec:
 
 ---
 
-## What else is in the box
+## What Busbar governs
 
-Fault-attributed circuit breaking and in-flight failover, weighted pools with session affinity and per-lane concurrency caps, five built-in routing policies plus your own hook or an out-of-process sidecar, native TLS and mTLS with no reverse proxy in front, virtual keys with group budgets and spend tracking, a verified provider catalogue plus any provider on the six protocols in a few lines of YAML, and observability over open standards: Prometheus, OTLP and a per-request audit webhook.
+Busbar's model execution plane includes native protocol support,
+provider credentials at the boundary, virtual keys, group budgets and
+spend tracking, weighted routing, per-lane concurrency caps,
+fault-attributed circuit breaking, in-flight failover, native TLS and
+mTLS, Prometheus and OTLP telemetry, and per-request audit webhooks.
 
-The SemVer-protected contract is the runtime: the data-plane HTTP surface and the six wire-protocol contracts do not break inside a major version. `config.yaml` is an operator artifact, outside that freeze, and changes always ship with `busbar --migrate-config` and a loud fail-closed boot rather than a silent behaviour change.
+The broader execution-boundary model spans three planes:
 
-Single Rust binary, MSRV 1.97, Apache-2.0. Docs at [getbusbar.com](https://getbusbar.com), contributor docs in [`docs/`](docs/).
+- **Model control:** Native model traffic, routing, budgets, provider
+  credentials, resilience, and execution evidence.
+- **Tool governance:** Caller grants, approved schemas, budget
+  enforcement, and drift quarantine for MCP tools.
+- **Agent trust:** Verification, pinning, re-verification, egress
+  control, and target-bound credentials for A2A agents.
+
+The SemVer-protected contract is the runtime: the data-plane HTTP
+surface and supported wire-protocol contracts do not break inside a
+major version. `config.yaml` is an operator artifact outside that
+freeze; changes ship with `busbar --migrate-config` and a loud
+fail-closed boot rather than silent behavior changes.
+
+Single Rust binary, MSRV 1.97, Apache-2.0. Docs at
+[getbusbar.com](https://getbusbar.com), contributor documentation in
+[`docs/`](docs/).
