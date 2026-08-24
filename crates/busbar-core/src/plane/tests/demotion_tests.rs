@@ -22,13 +22,13 @@
 //! `busbar_plugin_loader::load_store`, i.e. across the same C ABI a customer's postgres or sqlite
 //! plugin is reached over.
 
-use crate::plane::quarantine::PlaneQuarantine;
+use crate::plane::quarantine::DemotionRecord;
 use crate::plane::store::StoreNamedTestExt;
 use crate::test_support::plugin_store::{durable_cfg, open_plugin};
 
-/// A `PlaneQuarantine` with a freshly `dlopen`ed handle on `cfg`.
-fn node(cfg: &str) -> PlaneQuarantine {
-    let d = PlaneQuarantine::new();
+/// A `DemotionRecord` with a freshly `dlopen`ed handle on `cfg`.
+fn node(cfg: &str) -> DemotionRecord {
+    let d = DemotionRecord::new();
     d.set_sink(crate::plane::store::PlaneStoreView::narrow(open_plugin(
         cfg,
     )));
@@ -192,11 +192,11 @@ fn only_a_drift_demotion_writes_and_only_an_agreeing_observation_clears() {
 #[test]
 fn with_no_durable_sink_a_demotion_is_recorded_nowhere() {
     let (_file, cfg) = durable_cfg("demotion-nosink");
-    let sinkless = PlaneQuarantine::new();
+    let sinkless = DemotionRecord::new();
     sinkless.record("fs", "quarantined", 100);
     assert!(
         sinkless.list().is_empty(),
-        "a `PlaneQuarantine` with no store must report nothing, because it has nothing"
+        "a `DemotionRecord` with no store must report nothing, because it has nothing"
     );
     assert!(
         open_plugin(&cfg)
@@ -214,7 +214,7 @@ fn with_no_durable_sink_a_demotion_is_recorded_nowhere() {
 /// plugin that predates these three methods.
 #[test]
 fn the_memory_store_keeps_no_demotions_which_is_the_documented_contract() {
-    let d = PlaneQuarantine::new();
+    let d = DemotionRecord::new();
     d.set_sink(crate::plane::store::PlaneStoreView::narrow(
         std::sync::Arc::new(busbar_store_memory::MemoryStore::new()),
     ));

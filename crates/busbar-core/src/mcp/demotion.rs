@@ -23,7 +23,7 @@
 ///
 /// Returns how many were replayed, for the boot line.
 pub(crate) fn hydrate(app: &crate::state::App) -> usize {
-    let rows = app.mcp_demotions.list();
+    let rows = app.demotion_record.list();
     if rows.is_empty() {
         return 0;
     }

@@ -383,8 +383,8 @@ pub(crate) fn mcp_hydrate(ctx: &crate::plane::registry::BootCtx) -> Result<(), S
     // AND across a fleet (two nodes share the signing key, so they share the seal, and without a shared
     // ledger one approval was redeemable once per node — on a money-moving tool that is the defect the
     // gate exists to stop). Both take the plane-narrowed store off the one wrapper.
-    app.plane_approvals.set_sink(plane_store.clone());
-    app.mcp_demotions.set_sink(plane_store);
+    app.spent_token_ledger.set_sink(plane_store.clone());
+    app.demotion_record.set_sink(plane_store);
     match crate::mcp::demotion::hydrate(app) {
         0 => {}
         n => crate::diagnostics::diag_warn!(

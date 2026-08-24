@@ -604,9 +604,9 @@ pub struct App {
     /// mutation limiter are: this is ACCUMULATED evidence rather than intent, and rebuilding it on
     /// every apply would re-open every outstanding approval the instant an operator touched an
     /// unrelated section of config — which is the moment a caller holding a spent approval would
-    /// like it rebuilt. See [`crate::plane::approvals::PlaneApprovals`] for what a RESTART does to it
+    /// like it rebuilt. See [`crate::plane::approvals::SpentTokenLedger`] for what a RESTART does to it
     /// and why that trade was taken.
-    pub plane_approvals: Arc<crate::plane::approvals::PlaneApprovals>,
+    pub spent_token_ledger: Arc<crate::plane::approvals::SpentTokenLedger>,
     /// DEMOTIONS THAT OUTLIVE THE PROCESS THAT TOOK THEM — the write side of the durable quarantine
     /// record, and the reason a restart no longer hands a demoted upstream its approval back.
     ///
@@ -614,7 +614,7 @@ pub struct App {
     /// extra: the durable sink is attached to it ONCE at boot, so an instance rebuilt on an apply
     /// would be an instance with no sink — a quarantine that stopped being written down because
     /// somebody edited an unrelated section of config. See [`crate::plane::quarantine`].
-    pub mcp_demotions: Arc<crate::plane::quarantine::PlaneQuarantine>,
+    pub demotion_record: Arc<crate::plane::quarantine::DemotionRecord>,
     /// PLANE DISPATCH for this config generation: which plane an inbound path belongs to, and — for
     /// an audience-bound plane — what a token presented there must carry and where a refused caller
     /// is told to go. Consulted by the auth middleware on every request, which is why it is a

@@ -56,11 +56,11 @@ use std::sync::{Arc, Mutex};
 /// a backend must not be obliged to render itself, and one that did would be a place a credential
 /// could surface in a log.
 #[derive(Default)]
-pub struct PlaneQuarantine {
+pub struct DemotionRecord {
     sink: Mutex<Option<Arc<dyn PlaneStore>>>,
 }
 
-impl PlaneQuarantine {
+impl DemotionRecord {
     pub(crate) fn new() -> Self {
         Self::default()
     }
@@ -173,7 +173,7 @@ impl PlaneQuarantine {
 /// And ONLY `Approved` clears. Every other state leaves the row exactly as it is — an upstream that
 /// has stopped answering has not stopped drifting, and clearing on it would let a demoted upstream
 /// buy its approval back by going dark.
-pub(crate) fn settle(demotions: &PlaneQuarantine, server: &str, state: crate::trust::TrustState) {
+pub(crate) fn settle(demotions: &DemotionRecord, server: &str, state: crate::trust::TrustState) {
     match state {
         // The WALL clock, not the sweep's monotonic tick: this timestamp is read by an operator
         // after a restart, and a tick would be meaningless to them.

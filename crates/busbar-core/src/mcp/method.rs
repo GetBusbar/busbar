@@ -1135,7 +1135,7 @@ async fn verify_on_call(ctx: &Ctx<'_>, name: &str) {
     let gate = ctx.app.mcp_verify.clone();
     // The durable demotion settle now runs through the host `drift_quarantine` slot, which pulls the
     // demotion store host-side, so the fetch closure carries the live `App` rather than a bare
-    // `&PlaneQuarantine` an extracted plane could not hold.
+    // `&DemotionRecord` an extracted plane could not hold.
     let app = std::sync::Arc::clone(ctx.app);
     // A peer's `list_changed` may only mark the snapshot STALE (never read its body): if this server
     // was signalled, clear its freshness clock so this call re-verifies even inside `verify_ttl`.

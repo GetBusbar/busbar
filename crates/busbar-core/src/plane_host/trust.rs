@@ -381,7 +381,7 @@ pub(crate) fn verify_decide_due_via(
     crate::trust::reverify::Due::from_verify_decision(decision)
 }
 
-/// WIRED `approval_redeem_q` → [`crate::plane::approvals::PlaneApprovals::spend`], over a richer
+/// WIRED `approval_redeem_q` → [`crate::plane::approvals::SpentTokenLedger::spend`], over a richer
 /// [`ApprovalQuery`]. Identical to [`approval_redeem`] except it spends against the seal's OWN
 /// `expires_at` and the caller's `now` (marshalled in the query) rather than recomputing a default
 /// TTL — the behavior-identity the `mcp::callerask` call site requires. `Ok` iff this is the FIRST
@@ -403,7 +403,7 @@ pub(crate) extern "C-unwind" fn approval_redeem_q(
         let Some(nonce) = (unsafe { subject(q.key_ptr, q.key_len) }) else {
             return StatusClass::Refused;
         };
-        if redeem_approval(&state.app.plane_approvals, &nonce, q.expires_at, q.now) {
+        if redeem_approval(&state.app.spent_token_ledger, &nonce, q.expires_at, q.now) {
             StatusClass::Ok // first redemption, against the seal's own expiry.
         } else {
             StatusClass::Refused // already spent, or the ledger could not answer (fail-closed).
@@ -438,7 +438,7 @@ pub(crate) extern "C-unwind" fn drift_quarantine(host: HostCtx, key: *const Key)
         // sender (or an unknown value) falls back to the demote-only `Quarantined`.
         let settle_state = trust_state_from_u8(read_sized_field!(k, Key, drift_state).unwrap_or(0));
         // THE ONE settle rule, written once: `Quarantined` records the demotion, `Approved` clears it.
-        quarantine_drift(&state.app.mcp_demotions, &subject, settle_state);
+        quarantine_drift(&state.app.demotion_record, &subject, settle_state);
         StatusClass::Ok
     }))
     .unwrap_or(StatusClass::Fault)
@@ -452,7 +452,7 @@ pub(crate) extern "C-unwind" fn drift_quarantine(host: HostCtx, key: *const Key)
 /// is fire-and-forget at the primitive (the demotion is already in force in-process; a store hiccup
 /// costs durability, not the refusal). NEITHER the extern-C slot nor the plane reimplements the rule.
 pub(crate) fn quarantine_drift(
-    demotions: &crate::plane::quarantine::PlaneQuarantine,
+    demotions: &crate::plane::quarantine::DemotionRecord,
     subject: &str,
     state: crate::trust::TrustState,
 ) {
@@ -461,7 +461,7 @@ pub(crate) fn quarantine_drift(
 
 /// Settle a drift disposition for `subject` through the host `drift_quarantine` vtable slot — the SAFE
 /// wrapper a core plane call site uses to reach the slot without naming the core-private
-/// [`PlaneQuarantine`](crate::plane::quarantine::PlaneQuarantine) an extracted plane could not hold
+/// [`DemotionRecord`](crate::plane::quarantine::DemotionRecord) an extracted plane could not hold
 /// (the [`card_sign_over`](crate::plane_host::card_sign_over) pattern applied to drift). It marshals
 /// `state` into [`Key::drift_state`] and lets the slot pull the demotion store host-side, so the
 /// caller passes only the subject bytes and its disposition. Returns whether the slot answered `Ok`;
@@ -496,13 +496,13 @@ pub fn quarantine_settle_over(
 /// analogue of CLUSTER-1's [`crate::plane_host::scope::DispatchScope::settle_admission`]. Redeem a
 /// one-time approval against the shared spent-approval ledger, spending against the seal's OWN
 /// `expires_at` and the caller's `now`. `true` iff this is the FIRST redemption; `false` when already
-/// spent OR the durable ledger could not answer — [`spend`](crate::plane::approvals::PlaneApprovals::spend)
+/// spent OR the durable ledger could not answer — [`spend`](crate::plane::approvals::SpentTokenLedger::spend)
 /// fails closed on a store error (a ledger that cannot say "already spent" must not be read as "not
 /// spent"). The extern-C [`approval_redeem`]/[`approval_redeem_q`] slots map this bool onto the ABI
 /// [`StatusClass`]; the in-process plane (`mcp::callerask`) calls it directly — NEITHER reimplements
 /// the check-and-record, so the atomic redemption is written once.
 pub(crate) fn redeem_approval(
-    approvals: &crate::plane::approvals::PlaneApprovals,
+    approvals: &crate::plane::approvals::SpentTokenLedger,
     nonce: &str,
     expires_at: u64,
     now: u64,
@@ -510,7 +510,7 @@ pub(crate) fn redeem_approval(
     approvals.spend(nonce, expires_at, now)
 }
 
-/// WIRED `approval_redeem` → [`crate::plane::approvals::PlaneApprovals::spend`]: redeem a one-time
+/// WIRED `approval_redeem` → [`crate::plane::approvals::SpentTokenLedger::spend`]: redeem a one-time
 /// approval (the [`Key`] bytes are the sealed state's nonce) against the shared spent-approval
 /// ledger. `Ok` iff this is the FIRST redemption; `Refused` when it was already spent OR the durable
 /// ledger could not answer — `spend` fails closed on a store error (a ledger that cannot say "already
@@ -531,7 +531,7 @@ pub(crate) extern "C-unwind" fn approval_redeem(host: HostCtx, key: *const Key) 
         };
         let now = crate::store::now();
         let expires_at = now.saturating_add(crate::plane::approvals::DEFAULT_TTL_SECS);
-        if redeem_approval(&state.app.plane_approvals, &nonce, expires_at, now) {
+        if redeem_approval(&state.app.spent_token_ledger, &nonce, expires_at, now) {
             StatusClass::Ok // first redemption.
         } else {
             StatusClass::Refused // already spent, or the ledger could not answer (fail-closed).
@@ -594,7 +594,7 @@ fn legacy_drift_verdict(state: &HostState, cp: &CounterpartyRef) -> TrustVerdict
     };
     let quarantined = state
         .app
-        .mcp_demotions
+        .demotion_record
         .list()
         .iter()
         .any(|row| row.server == subject);

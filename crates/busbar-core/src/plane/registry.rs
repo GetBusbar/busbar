@@ -112,7 +112,7 @@ pub struct BootCtx<'a> {
     pub store: Option<std::sync::Arc<dyn crate::plane::store::PlaneStore>>,
 
     /// HYDRATE phase — the freshly-built `App`, off which a hydrate hook attaches its own
-    /// write-through sinks (`plane_approvals`, `mcp_demotions`) and restores them. `None` in the start
+    /// write-through sinks (`spent_token_ledger`, `demotion_record`) and restores them. `None` in the start
     /// phase, where the app has been moved into the router builder and only the handle remains.
     pub app: Option<&'a std::sync::Arc<crate::state::App>>,
 

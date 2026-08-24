@@ -1664,16 +1664,16 @@ pub fn build_app_from_config(
         // CARRIED ACROSS THE APPLY for the same reason, and it is the same class of mistake: an
         // approval already spent is evidence, not intent, and a config apply that forgot it would
         // hand every outstanding confirmation back to whoever still holds it.
-        plane_approvals: prior.map_or_else(
-            || Arc::new(crate::plane::approvals::PlaneApprovals::new()),
-            |p| p.plane_approvals.clone(),
+        spent_token_ledger: prior.map_or_else(
+            || Arc::new(crate::plane::approvals::SpentTokenLedger::new()),
+            |p| p.spent_token_ledger.clone(),
         ),
         // CARRIED ACROSS THE APPLY, and here the reason is sharper than for the two above: the
         // durable sink is attached to this instance once at boot, so rebuilding it on an apply would
         // silently detach it and every later quarantine would stop being written down.
-        mcp_demotions: prior.map_or_else(
-            || Arc::new(crate::plane::quarantine::PlaneQuarantine::new()),
-            |p| p.mcp_demotions.clone(),
+        demotion_record: prior.map_or_else(
+            || Arc::new(crate::plane::quarantine::DemotionRecord::new()),
+            |p| p.demotion_record.clone(),
         ),
         credential_cache: prior.map_or_else(
             || Arc::new(auth_cache::CredentialCache::new()),

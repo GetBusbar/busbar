@@ -23,7 +23,7 @@
 //! ## Judged through the real decision, and through the real plugin
 //!
 //! Every case below drives `callerask::decide` — the gate itself, the one production call site's
-//! only decision function — rather than calling `PlaneApprovals::spend`. A test against `spend`
+//! only decision function — rather than calling `SpentTokenLedger::spend`. A test against `spend`
 //! would prove the ledger and say nothing about whether the gate consults it, which is exactly the
 //! shape of "a complete subsystem with no production caller" this tree has already paid for once.
 //!
@@ -84,7 +84,7 @@ fn all_capabilities() -> serde_json::Value {
 }
 
 /// ONE NODE of a deployment: a real in-core App with its own in-process spent-approval ledger
-/// (`App::plane_approvals`, which the redemption edge now reaches host-side), and its own `dlopen` of
+/// (`App::spent_token_ledger`, which the redemption edge now reaches host-side), and its own `dlopen` of
 /// the shared store when there is one. `None` is a node that configures no durable store.
 fn node(cfg: Option<&str>) -> std::sync::Arc<crate::state::App> {
     let mut app = crate::test_support::TestApp::new();

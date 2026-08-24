@@ -1469,8 +1469,8 @@ impl TestApp {
             mcp_verify: Default::default(),
             a2a_verify: Default::default(),
             a2a_cards: Default::default(),
-            plane_approvals: Default::default(),
-            mcp_demotions: Default::default(),
+            spent_token_ledger: Default::default(),
+            demotion_record: Default::default(),
             credential_cache: std::sync::Arc::new(crate::auth_cache::CredentialCache::new()),
             auth_scope_caps: std::collections::HashMap::new(),
             role_bindings: self.role_bindings.unwrap_or_default(),
@@ -1536,8 +1536,8 @@ impl TestApp {
         if let Some(durable) = mcp_durable_store {
             // Narrowed to the plane surface exactly as boot does — these are plane sinks.
             let plane_store = crate::plane::store::PlaneStoreView::narrow(durable);
-            app.plane_approvals.set_sink(plane_store.clone());
-            app.mcp_demotions.set_sink(plane_store);
+            app.spent_token_ledger.set_sink(plane_store.clone());
+            app.demotion_record.set_sink(plane_store);
             crate::mcp::demotion::hydrate(&app);
         }
         // Register the process-wide admin `audit` seam stream ONCE (no-sink), the way the call/task

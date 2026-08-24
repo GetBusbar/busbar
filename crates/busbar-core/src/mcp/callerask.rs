@@ -304,7 +304,7 @@ pub(crate) struct Bind<'a> {
 /// spent-approval ledger exists to close, and a call site that could pass the first without the
 /// second is a call site that can reintroduce it. The ledger is not named here any longer: the
 /// completion arm redeems through the host `approval_redeem_q` slot, which pulls the shared ledger
-/// host-side, so this carries the host handle rather than a `&PlaneApprovals` an extracted plane
+/// host-side, so this carries the host handle rather than a `&SpentTokenLedger` an extracted plane
 /// could not hold.
 #[derive(Clone, Copy)]
 pub(crate) struct Approvals<'a> {
@@ -427,7 +427,7 @@ pub(crate) fn decide(
         };
         // THE REDEMPTION runs through the host `approval_redeem_q` slot, which spends against the
         // shared spent-approval ledger it pulls host-side — the atomic check-and-record stays behind
-        // the seam, so this arm names no `PlaneApprovals` an extracted plane could not hold. Only
+        // the seam, so this arm names no `SpentTokenLedger` an extracted plane could not hold. Only
         // `StatusClass::Ok` (the FIRST redemption) allows; already-spent, a ledger that could not
         // answer, and a caught fault all come back non-`Ok` and land on the same fail-closed refusal.
         let query = busbar_plugin::hot::ApprovalQuery {
