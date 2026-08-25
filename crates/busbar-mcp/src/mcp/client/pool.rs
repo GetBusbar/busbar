@@ -48,10 +48,10 @@ use std::sync::{Arc, Mutex};
 #[derive(Default)]
 pub(crate) struct McpConnectionPool {
     /// The pinned-client pool, keyed by the judged `(host, address)` — now the shared core backend
-    /// ([`busbar_core::egress::PinnedClientPool`]), so mcp's dispatch hops are built to the same posture
+    /// ([`busbar_substrate::egress::PinnedClientPool`]), so mcp's dispatch hops are built to the same posture
     /// every plane shares (the refusing resolver, `tls_info` so the peer SPKI is observable, and the
     /// canonical connection knobs).
-    clients: busbar_core::egress::PinnedClientPool,
+    clients: busbar_substrate::egress::PinnedClientPool,
     /// The supervised child processes. Empty on every deployment that registers no stdio server,
     /// and it costs a `BTreeMap` to be so.
     pub(crate) children: super::stdio::StdioPool,
@@ -261,7 +261,7 @@ impl McpConnectionPool {
     ///
     /// The check runs BEFORE the cache is consulted for a NEW address and the cache is keyed on the
     /// result, so there is no ordering in which an unchecked address gets a client. The client is
-    /// built by the shared core backend ([`busbar_core::egress::build_pinned_client`]): pinned to the
+    /// built by the shared core backend ([`busbar_substrate::egress::build_pinned_client`]): pinned to the
     /// judged address, refusing a second lookup, `tls_info` on so the peer SPKI is observable, and
     /// the canonical connection knobs. No total deadline is baked into the pooled client — every send
     /// site applies its own on the request (see [`super::transport::HttpTransport::send`] and
@@ -272,16 +272,16 @@ impl McpConnectionPool {
         policy: SsrfPolicy,
     ) -> Result<(reqwest::Client, PinnedTarget), SsrfRefusal> {
         let target = super::ssrf::pin_upstream(url, policy).await?;
-        // THE KEY CONTAINS THE PINNED ADDRESS (`busbar_core::egress::PinnedClientPool` keys on it): keying
+        // THE KEY CONTAINS THE PINNED ADDRESS (`busbar_substrate::egress::PinnedClientPool` keys on it): keying
         // by host alone would let a pooled client re-resolve on its next new connection — the TOCTOU
         // the pin closes, reintroduced by the cache in front of it.
         let client = self
             .clients
             .client_for(target.host(), target.socket_addr(), || {
-                busbar_core::egress::build_pinned_client(
+                busbar_substrate::egress::build_pinned_client(
                     target.host(),
                     target.socket_addr(),
-                    Arc::new(busbar_core::egress::RefuseSecondLookup),
+                    Arc::new(busbar_substrate::egress::RefuseSecondLookup),
                     None,
                     &[],
                 )

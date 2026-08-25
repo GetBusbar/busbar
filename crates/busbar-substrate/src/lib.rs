@@ -30,6 +30,7 @@ pub mod ingress {
     pub mod protocol;
 }
 pub mod breaker;
+pub mod egress;
 pub mod plane;
 pub mod proxy;
 
