@@ -227,7 +227,7 @@ pub(crate) async fn send(
         busbar_core::telemetry::upstream_failure_on(
             leg.server,
             transport.name(),
-            busbar_core::proxy::DISPOSITION_TRANSIENT,
+            busbar_substrate::proxy::DISPOSITION_TRANSIENT,
         );
     }
     out
@@ -250,7 +250,7 @@ pub(crate) async fn notify(
         busbar_core::telemetry::upstream_failure_on(
             leg.server,
             transport.name(),
-            busbar_core::proxy::DISPOSITION_TRANSIENT,
+            busbar_substrate::proxy::DISPOSITION_TRANSIENT,
         );
     }
     out

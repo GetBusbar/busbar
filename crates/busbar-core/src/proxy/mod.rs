@@ -61,10 +61,13 @@ pub(crate) fn route_policy_headers_enabled() -> bool {
 /// surfaces. Hoisted to one const so the literal isn't repeated across egress/health/observability.
 pub const APPLICATION_JSON: &str = "application/json";
 
-/// Streaming MIME type for SSE (Server-Sent Events) responses — the `Content-Type` value that
-/// signals an open event-stream to the client. Placed next to `APPLICATION_JSON` so all
-/// protocol-boundary content-types are declared in one spot.
-pub const TEXT_EVENT_STREAM: &str = "text/event-stream";
+// TEXT_EVENT_STREAM, DISPOSITION_TRANSIENT, POOL_LABEL_UNRESOLVED and
+// PROVIDER_CODE_CONTEXT_LENGTH now live in the neutral substrate (busbar_substrate::proxy) so the
+// plane crates name them without reaching into busbar-core; re-exported below for core's own
+// `crate::proxy::*` call sites.
+pub use busbar_substrate::proxy::{
+    DISPOSITION_TRANSIENT, POOL_LABEL_UNRESOLVED, PROVIDER_CODE_CONTEXT_LENGTH, TEXT_EVENT_STREAM,
+};
 
 /// Canonical error-KIND tokens: produced by `cross_protocol_error_kind` / passed to
 /// `ingress_error` as the `kind` argument. Each string is the protocol-agnostic discriminant that
@@ -97,22 +100,10 @@ const ERR_NET_TRANSPORT: &str = "transport";
 /// `err_type` recorded when a HalfOpen probe's degraded forward returns a non-2xx (bumps cooldown).
 const ERR_DEGRADED_NON2XX: &str = "degraded-non2xx";
 
-/// Metric-label values for the `disposition` dimension on `UPSTREAM_FAILURES_TOTAL` and the
-/// `reason` dimension on `FAILOVERS_TOTAL`.
-pub const DISPOSITION_TRANSIENT: &str = "transient_upstream";
 /// A single attempt's budget-clamped transport timeout fired (retryable within the request).
 pub(crate) const DISPOSITION_ATTEMPT_TIMEOUT: &str = "attempt_timeout";
 pub(crate) const DISPOSITION_HARD_DOWN: &str = "hard_down";
 pub(crate) const DISPOSITION_CONTEXT_LENGTH: &str = "context_length";
-
-/// Bounded `pool` metric-label sentinel used for every pre-routing failure (malformed body,
-/// unresolved model, governance rejection) so the label space stays finite (metrics.rs).
-pub(crate) const POOL_LABEL_UNRESOLVED: &str = "unresolved";
-
-/// Provider error-code token emitted when a request exceeds the model's context-window limit.
-/// Returned by `client_fault_kind` for `StatusClass::ContextLength` and drives the per-protocol
-/// writer to emit the native context-length error category.
-pub const PROVIDER_CODE_CONTEXT_LENGTH: &str = "context_length_exceeded";
 
 tokio::task_local! {
     /// Per-request slot the `server_timing` middleware reads to compute Busbar's INTERNAL

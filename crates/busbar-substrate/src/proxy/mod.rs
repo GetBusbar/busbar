@@ -76,3 +76,22 @@ pub async fn read_capped(r: reqwest::Response, cap: usize) -> (Bytes, ReadEnd) {
     }
     (Bytes::from(buf), end)
 }
+
+/// Streaming MIME type for SSE (Server-Sent Events) responses — the `Content-Type` value that
+/// signals an open event-stream to the client. Neutral protocol-boundary content-type named by
+/// core's proxy engine and by the plane crates; lives here so a plane names it without reaching
+/// into `busbar-core`.
+pub const TEXT_EVENT_STREAM: &str = "text/event-stream";
+
+/// Metric-label values for the `disposition` dimension on `UPSTREAM_FAILURES_TOTAL` and the
+/// `reason` dimension on `FAILOVERS_TOTAL`.
+pub const DISPOSITION_TRANSIENT: &str = "transient_upstream";
+
+/// Bounded `pool` metric-label sentinel used for every pre-routing failure (malformed body,
+/// unresolved model, governance rejection) so the label space stays finite (metrics.rs).
+pub const POOL_LABEL_UNRESOLVED: &str = "unresolved";
+
+/// Provider error-code token emitted when a request exceeds the model's context-window limit.
+/// Returned by `client_fault_kind` for `StatusClass::ContextLength` and drives the per-protocol
+/// writer to emit the native context-length error category.
+pub const PROVIDER_CODE_CONTEXT_LENGTH: &str = "context_length_exceeded";
