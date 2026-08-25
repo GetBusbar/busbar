@@ -13,7 +13,7 @@
 //!   directions, plus the operation-capability surface the engine reads. It never routes, fails
 //!   over, checks auth, bills, or knows another protocol exists.
 //! - [`OpDispatch`] — the thin `(operation, transport, OperationHandler)` handle the streaming
-//!   engine threads: the framed cell, built by [`crate::transport::Transport::frame`] and by
+//!   engine threads: the framed cell, built by [`crate::handlers::frame`] and by
 //!   nothing else. It mostly delegates to the `RequestHandler` vtable; its one bit of logic is
 //!   honoring a per-lane `path` override in `upstream_path` before falling back to the protocol
 //!   default. [`request_handler`] is the registry the catch-all dispatch resolves through.
@@ -622,7 +622,7 @@ use crate::state::Lane;
 /// without ever naming an operation, and now carries the transport the request arrived on without
 /// ever naming one of those either.
 ///
-/// BUILT THROUGH [`crate::transport::Transport::frame`] — the framing constructor, and the only
+/// BUILT THROUGH [`crate::handlers::frame`] — the framing constructor, and the only
 /// thing that builds one in this tree. The three axes meet here and nowhere else: routing picks the
 /// protocol, the `RequestHandler` picks the operation (and with it the codec), and the ARRIVAL
 /// picks the transport. What the compiler enforces is the part that matters — no site can hold a
@@ -640,6 +640,23 @@ pub struct OpDispatch {
 
 /// The engine's operation handle. (Kept as `Op` so the engine's signatures read unchanged.)
 pub(crate) type Op = OpDispatch;
+
+/// Build one framed dispatch cell. This is the free-function form of what was `Transport::frame`;
+/// it moved here (core) when `Transport` itself moved to the neutral substrate, because framing
+/// names `OpDispatch`/`OperationHandler` — the engine dispatch types, which stay in core. The
+/// transport is handed in whole and is not consulted, wrapped or re-implemented: a transport decides
+/// how a codec's bytes reach and leave a peer, never what those bytes say.
+pub(crate) const fn frame(
+    transport: crate::transport::Transport,
+    operation: Operation,
+    op_handler: &'static dyn OperationHandler,
+) -> OpDispatch {
+    OpDispatch {
+        operation,
+        transport,
+        op_handler,
+    }
+}
 
 impl OpDispatch {
     /// Stable identifier — a bounded metric label / tracing span field. VALUE use only; the engine
@@ -723,7 +740,8 @@ impl OpDispatch {
 /// binary. Prefer [`chat`] on the request path so the RequestHandler actually decides the handler.
 #[cfg(any(test, feature = "test-support"))]
 #[allow(dead_code)] // exercised by the dialect test crates; unused in the netted-core target
-pub(crate) const CHAT: Op = crate::transport::Transport::Http.frame(
+pub(crate) const CHAT: Op = frame(
+    crate::transport::Transport::Http,
     Operation::CHAT,
     &crate::proto::chat_handle::ChatOperation("openai"),
 );
@@ -774,7 +792,7 @@ pub(crate) fn op_for(
     }
     decl.handler
         .and_then(|rh| rh.operation_handler(operation))
-        .map(|op_handler| transport.frame(operation, op_handler))
+        .map(|op_handler| frame(transport, operation, op_handler))
 }
 
 /// ONE HTTP LLM PROTOCOL'S ERROR ENVELOPE, SHARED BY EVERY OPERATION IT SERVES.

@@ -277,7 +277,7 @@ async fn complete(
         axum::http::header::CONTENT_TYPE,
         axum::http::HeaderValue::from_static("application/json"),
     );
-    let op = busbar_core::handlers::chat("openai", busbar_core::transport::Transport::Http);
+    let op = busbar_core::handlers::chat("openai", busbar_substrate::transport::Transport::Http);
     let response = busbar_core::ingress::operation_resolved(
         app,
         gov,

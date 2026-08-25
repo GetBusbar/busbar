@@ -822,7 +822,7 @@ fn now_ms() -> u64 {
     start.elapsed().as_millis() as u64
 }
 
-/// THE STDIO WIRE — the dispatch arm [`busbar_core::transport::Transport::Stdio`] hands work to.
+/// THE STDIO WIRE — the dispatch arm [`busbar_substrate::transport::Transport::Stdio`] hands work to.
 ///
 /// Zero-sized: the children live in the pool that rides on [`WireLeg`], so this is the supervision
 /// POLICY applied to one call and nothing else.

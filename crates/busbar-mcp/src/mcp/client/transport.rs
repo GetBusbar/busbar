@@ -42,7 +42,7 @@ use super::wire::{McpWire, TransportError, TransportResponse, WireLeg};
 #[derive(Debug, Default)]
 pub(crate) struct HttpTransport;
 
-/// The vtable arm [`busbar_core::transport::Transport::Http`] hands an MCP leg to. It unpacks the parts of
+/// The vtable arm [`busbar_substrate::transport::Transport::Http`] hands an MCP leg to. It unpacks the parts of
 /// the leg an HTTP send needs and forwards to the inherent [`HttpTransport::send`], which the
 /// refresh path in `mcp::connect` reaches through the same vtable.
 ///

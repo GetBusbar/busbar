@@ -97,10 +97,10 @@ pub(crate) struct Authorised {
     /// address; the wire that needs it is the wire that has one.
     pub(crate) url: String,
     /// THE CHANNEL this dispatch rides, resolved once here and turned into a vtable by
-    /// [`busbar_core::transport::Transport::upstream_wire`] at the send site. Nothing between the two asks it
+    /// [`busbar_substrate::transport::Transport::upstream_wire`] at the send site. Nothing between the two asks it
     /// which one it is — that is the axis rule, and it is what keeps a second transport from
     /// becoming a second dispatch path.
-    pub(crate) transport: busbar_core::transport::Transport,
+    pub(crate) transport: busbar_substrate::transport::Transport,
     /// The spawn recipe for a child-process upstream, carried verbatim from the snapshot. `None` on
     /// every registration that is reached over a network.
     pub(crate) stdio: Option<super::client::stdio::StdioCommand>,
@@ -548,8 +548,8 @@ pub(crate) async fn call(
         // (401/403 → Auth → hard down; 5xx → transient; true 4xx → ClientFault, never a penalty).
         // Classifying does NOT change what the caller is answered: the parse below renders exactly
         // what it always rendered. The SETTLE of this fact is the caller's (CLUSTER-1).
-        *outcome = LegOutcome::Failure(busbar_core::breaker::normalize_raw_error(
-            &busbar_core::breaker::RawUpstreamError::from_status(response.status),
+        *outcome = LegOutcome::Failure(busbar_substrate::breaker::normalize_raw_error(
+            &busbar_substrate::breaker::RawUpstreamError::from_status(response.status),
             &std::collections::HashMap::new(),
         ));
     } else {
@@ -616,8 +616,8 @@ pub(crate) async fn call(
 ///   `BeforeFirstByte` for the same reason.
 fn classify_wire_failure(err: &TransportError) -> (busbar_substrate::failover::Stage, LegOutcome) {
     let network = || {
-        LegOutcome::Failure(busbar_core::breaker::CanonicalSignal {
-            class: busbar_core::breaker::StatusClass::Network,
+        LegOutcome::Failure(busbar_substrate::breaker::CanonicalSignal {
+            class: busbar_substrate::breaker::StatusClass::Network,
             provider_signal: None,
             retry_after: None,
         })
@@ -648,7 +648,7 @@ pub(crate) enum LegOutcome {
     /// The wire worked (2xx): close the half-open probe / dilute the error window (`record_success`).
     Success,
     /// A wire or status failure to fold, carried as the plane's own canonical signal (`record_signal`).
-    Failure(busbar_core::breaker::CanonicalSignal),
+    Failure(busbar_substrate::breaker::CanonicalSignal),
     /// Not an upstream health signal — a busbar-side refusal or a leg that never left busbar. Records
     /// nothing; a settled probe is released without a record, an unadmitted one is untouched.
     Nothing,

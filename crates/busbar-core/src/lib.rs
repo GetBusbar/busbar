@@ -121,7 +121,11 @@ pub mod telemetry;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 pub mod tls;
-pub mod transport;
+pub use busbar_substrate::transport;
+
+#[cfg(test)]
+#[path = "tests/transport_tests.rs"]
+mod transport_tests;
 pub mod trust;
 
 // ── THE CRATE-ROOT SURFACE ───────────────────────────────────────────────────────────────────────

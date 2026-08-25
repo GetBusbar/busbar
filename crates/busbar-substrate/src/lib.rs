@@ -39,6 +39,7 @@ pub mod proxy;
 // failover walk types + the lane-availability taxonomy. Each depends only on `busbar-api`
 // (`VirtualKey`) and `busbar-plugin` (`hot::VerifyDecision`) — both leaves — plus this crate's own
 // audit vocabulary. Core re-exports each relocated item so the in-core call sites do not change.
+pub mod transport;
 pub mod trust;
 pub mod egress_auth {
     pub mod gate;

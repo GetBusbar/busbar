@@ -869,7 +869,7 @@ pub(crate) enum Transport {
     /// Spelled and REFUSED for two releases, because there was no supervisor to reach — the one that
     /// existed was deleted rather than left unreachable. It is implemented now: `command:` names the
     /// binary, `mcp/client/stdio.rs` spawns and supervises it, and
-    /// [`busbar_core::transport::Transport::upstream_wire`] is the arm a `tools/call` takes to get there.
+    /// [`busbar_substrate::transport::Transport::upstream_wire`] is the arm a `tools/call` takes to get there.
     ///
     /// This registration is reached by SPAWNING, so the keys it takes are disjoint from the network
     /// ones: `command:`, `args:`, `env:` and `cwd:` instead of `url:`, and no credential keys at all
@@ -895,12 +895,12 @@ impl Transport {
     /// The ENGINE axis this config value names.
     ///
     /// Two types, deliberately: this one is the operator's GRAMMAR, frozen and additive-only, and
-    /// [`busbar_core::transport::Transport`] is the engine's dispatch axis. Collapsing them would tie a
+    /// [`busbar_substrate::transport::Transport`] is the engine's dispatch axis. Collapsing them would tie a
     /// wire word an operator has already written to an enum the engine is free to reshape.
-    pub(crate) fn axis(self) -> busbar_core::transport::Transport {
+    pub(crate) fn axis(self) -> busbar_substrate::transport::Transport {
         match self {
-            Transport::StreamableHttp => busbar_core::transport::Transport::Http,
-            Transport::Stdio => busbar_core::transport::Transport::Stdio,
+            Transport::StreamableHttp => busbar_substrate::transport::Transport::Http,
+            Transport::Stdio => busbar_substrate::transport::Transport::Stdio,
         }
     }
 }

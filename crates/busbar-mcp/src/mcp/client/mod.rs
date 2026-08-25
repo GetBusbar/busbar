@@ -60,7 +60,7 @@
 //!
 //! **stdio IS A TRANSPORT THIS BUILD HAS, OUTBOUND.** A `tools:` entry carrying `transport: stdio`
 //! and a `command:` spawns a supervised child and dispatches `tools/call` down its stdin; the arm is
-//! [`busbar_core::transport::Transport::upstream_wire`] and the supervisor is [`stdio`]. It was DELETED once,
+//! [`busbar_substrate::transport::Transport::upstream_wire`] and the supervisor is [`stdio`]. It was DELETED once,
 //! as unreachable security-relevant code that read as shipped, and it is back with a caller rather
 //! than with an `#![allow(dead_code)]` — which is the only difference that ever mattered. The
 //! INBOUND direction (busbar itself launched as a child by an agent, serving MCP on its own stdin)

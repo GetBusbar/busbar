@@ -91,9 +91,6 @@
 //! it from the claim before any handler runs — which is what still counts a refusal that reaches no
 //! handler at all.
 
-use crate::handlers::{OpDispatch, OperationHandler};
-use crate::operation::Operation;
-
 /// The channels busbar's framed operations ride. Closed set — adding one is a compile error at
 /// every exhaustive match and at every site that builds a framed cell.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -169,7 +166,7 @@ impl Transport {
     /// variant with a duplicate or off-vocabulary name is a failing test rather than a metric label
     /// nobody notices is wrong.
     #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) const ALL: &'static [Transport] = &[
+    pub const ALL: &'static [Transport] = &[
         Transport::Http,
         Transport::JsonRpc,
         Transport::HttpJson,
@@ -225,29 +222,4 @@ impl Transport {
             Transport::JsonRpc | Transport::HttpJson | Transport::Grpc => None,
         }
     }
-
-    /// `framing = transport.frame(codec)` — the framed cell of the matrix, and the only thing that
-    /// builds one. The codec is handed in whole and is not consulted, wrapped or re-implemented: a
-    /// transport decides how the codec's bytes reach and leave a peer, never what those bytes say.
-    ///
-    /// For [`Transport::Http`] the framing is IDENTITY — an HTTP request body IS the codec's request
-    /// wire and an HTTP response body IS the codec's response wire — and that is the honest half of
-    /// this step. A one-variant axis whose one variant does nothing is exactly what it should be:
-    /// the seam is proven to exist and to cost nothing before anything depends on it, the same
-    /// posture `OperationHandler::extract_error` took with chat delegating to the reader vtable.
-    pub(crate) const fn frame(
-        self,
-        operation: Operation,
-        codec: &'static dyn OperationHandler,
-    ) -> OpDispatch {
-        OpDispatch {
-            operation,
-            transport: self,
-            op_handler: codec,
-        }
-    }
 }
-
-#[cfg(test)]
-#[path = "tests/transport_tests.rs"]
-mod tests;
