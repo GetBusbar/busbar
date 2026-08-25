@@ -969,7 +969,7 @@ impl ToolsCfg {
     // path would be a second reader of the operator's intent. It is written and pinned here because
     // the OVERRIDE-scalar combine is a rule of the config grammar itself, and a grammar rule
     // discovered at the moment its first caller lands is a grammar rule decided by that caller.
-    #![cfg_attr(any(not(test), feature = "extracted"), allow(dead_code))]
+    #![cfg_attr(any(not(test), busbar_mcp_native), allow(dead_code))]
 
     /// The effective hook set for one server: `tools.hooks ∪ tools.<server>.hooks`, deduped, in
     /// declaration order (`hooks` is a LIST, and a LIST combines ADDITIVELY).
@@ -1851,6 +1851,6 @@ pub(crate) fn template_parameter_names(template: &str) -> Vec<String> {
     out
 }
 
-#[cfg(all(test, not(feature = "extracted")))]
+#[cfg(all(test, not(busbar_mcp_native)))]
 #[path = "tests/tools_config_tests.rs"]
 mod tools_config_tests;

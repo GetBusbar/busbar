@@ -952,7 +952,7 @@ fn normalise_path(path: &str) -> String {
     format!("/{trimmed}")
 }
 
-#[cfg(all(test, not(feature = "extracted")))]
+#[cfg(all(test, not(busbar_mcp_native)))]
 #[path = "tests/config_tests.rs"]
 mod config_tests;
 
@@ -960,6 +960,6 @@ mod config_tests;
 // be STARTED for one to be taken at all, and the demoted upstream that must stop being ADVERTISED
 // and not merely stop being dispatchable. Hung here rather than under `connect` or `method` because
 // it spans both and the boot path besides.
-#[cfg(all(test, not(feature = "extracted")))]
+#[cfg(all(test, not(busbar_mcp_native)))]
 #[path = "tests/quarantine_boot_tests.rs"]
 mod quarantine_boot_tests;

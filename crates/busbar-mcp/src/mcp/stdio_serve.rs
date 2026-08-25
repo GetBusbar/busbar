@@ -1156,6 +1156,6 @@ fn synthesized_headers(value: &Value) -> HeaderMap {
     headers
 }
 
-#[cfg(all(test, not(feature = "extracted")))]
+#[cfg(all(test, not(busbar_mcp_native)))]
 #[path = "tests/stdio_serve_tests.rs"]
 mod stdio_serve_tests;

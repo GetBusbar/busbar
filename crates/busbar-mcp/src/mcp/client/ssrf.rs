@@ -262,7 +262,7 @@ pub(crate) async fn pin_upstream(
 // metadata endpoint and the mixed-answer case through it, and what those tests prove that core's own
 // suite cannot is that THIS PLANE still renders them in THIS PLANE's words. Deleting it would trade
 // a wording regression for a dead-code warning.
-#[cfg_attr(any(not(test), feature = "extracted"), allow(dead_code))]
+#[cfg_attr(any(not(test), busbar_mcp_native), allow(dead_code))]
 pub(crate) fn check_addresses(
     host: &str,
     addrs: &[SocketAddr],
@@ -282,6 +282,6 @@ pub(crate) fn refuse_redirect(status: u16, location: Option<&str>) -> Result<(),
     Ok(net_guard::refuse_redirect(status, location)?)
 }
 
-#[cfg(all(test, not(feature = "extracted")))]
+#[cfg(all(test, not(busbar_mcp_native)))]
 #[path = "tests/ssrf_tests.rs"]
 mod ssrf_tests;

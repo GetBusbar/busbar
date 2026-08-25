@@ -331,6 +331,6 @@ where
     }
 }
 
-#[cfg(all(test, not(feature = "extracted")))]
+#[cfg(all(test, not(busbar_mcp_native)))]
 #[path = "tests/inputreq_tests.rs"]
 mod inputreq_tests;

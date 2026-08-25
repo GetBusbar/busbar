@@ -533,24 +533,24 @@ pub(crate) fn stamp(cache: &CatalogueCache, id: &str, now_ms: u64, drifted: bool
 
 // Shared fixtures for the connect batteries: a REAL fake MCP peer whose tool list can CHANGE under
 // a live cache, which is the one thing a rug-pull proof cannot do without.
-#[cfg(all(test, not(feature = "extracted")))]
+#[cfg(all(test, not(busbar_mcp_native)))]
 #[path = "tests/connect_support.rs"]
 pub(super) mod connect_support;
 
-#[cfg(all(test, not(feature = "extracted")))]
+#[cfg(all(test, not(busbar_mcp_native)))]
 #[path = "tests/connect_tests.rs"]
 mod connect_tests;
 
 // VERIFY-ON-CALL ON THE HOT PATH: a real fake upstream that counts what it was asked, proving the
 // `tools/call` gate re-verifies before dispatch, single-flights the fetch, bounds reuse to
 // `verify_ttl`, and fails closed — with no background tick anywhere.
-#[cfg(all(test, not(feature = "extracted")))]
+#[cfg(all(test, not(busbar_mcp_native)))]
 #[path = "tests/verify_on_call_tests.rs"]
 mod verify_on_call_tests;
 
 // THE RUG-PULL PROOF ON THE HOT PATH: a schema changed under a LIVE cache, and the dispatch that is
 // refused because of it — with the unchanged control beside it, because a guard with no control is
 // just a closed door.
-#[cfg(all(test, not(feature = "extracted")))]
+#[cfg(all(test, not(busbar_mcp_native)))]
 #[path = "tests/drift_dispatch_tests.rs"]
 mod drift_dispatch_tests;

@@ -2,7 +2,7 @@
   "components": {
     "schemas": {
       "A2aTrustView": {
-        "description": "THE TRUST VIEW of one registered agent — what both verbs answer with.\n\nThe sibling of [`crate::mcp::admin_view::McpTrustView`] and shaped like it on purpose: an\noperator console rendering both planes should be rendering one component. It is NOT the same\ntype, because the two planes' capability vocabularies differ (a `tools:` entry has an approved\ndigest per tool; an `agents:` entry has a skill set on a card) and merging them would mean one\nof the planes filling in fields that mean nothing to it.",
+        "description": "THE TRUST VIEW of one registered agent — what both verbs answer with.\n\nThe sibling of `crate::mcp::admin_view::McpTrustView` and shaped like it on purpose: an\noperator console rendering both planes should be rendering one component. It is NOT the same\ntype, because the two planes' capability vocabularies differ (a `tools:` entry has an approved\ndigest per tool; an `agents:` entry has a skill set on a card) and merging them would mean one\nof the planes filling in fields that mean nothing to it.",
         "properties": {
           "added": {
             "description": "Offered now, never ruled on.",

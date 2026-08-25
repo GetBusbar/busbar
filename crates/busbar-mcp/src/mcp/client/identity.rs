@@ -192,6 +192,6 @@ pub(crate) struct BoundIdentity {
     pub(crate) digest: String,
 }
 
-#[cfg(all(test, not(feature = "extracted")))]
+#[cfg(all(test, not(busbar_mcp_native)))]
 #[path = "tests/identity_tests.rs"]
 mod identity_tests;

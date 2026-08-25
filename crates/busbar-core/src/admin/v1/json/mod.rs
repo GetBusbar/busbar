@@ -425,6 +425,12 @@ fn with_config_etag(mut resp: Response, version: u64) -> Response {
 
 mod handlers;
 pub(crate) use handlers::*;
+// The extracted MCP plane (`busbar-mcp`) contributes its trust verbs' typed response schemas through
+// this exact helper (`admin_view::openapi_schemas`), so it must be reachable CROSS-CRATE — the
+// `pub(crate)` glob above caps it at crate-private, which was enough only while the plane lived in
+// this crate. `pub` (not `pub(crate)`) for that one name, gated the same as the helper itself.
+#[cfg(feature = "openapi-schema")]
+pub use handlers::set_response_schema;
 
 #[cfg(test)]
 #[path = "tests/tests.rs"]

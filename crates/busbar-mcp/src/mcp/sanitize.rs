@@ -143,6 +143,6 @@ fn utf8_len(b: u8) -> usize {
     }
 }
 
-#[cfg(all(test, not(feature = "extracted")))]
+#[cfg(all(test, not(busbar_mcp_native)))]
 #[path = "tests/sanitize_tests.rs"]
 mod sanitize_tests;

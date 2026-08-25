@@ -621,6 +621,6 @@ pub(crate) fn listen(
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
 
-#[cfg(all(test, not(feature = "extracted")))]
+#[cfg(all(test, not(busbar_mcp_native)))]
 #[path = "tests/subscribe_tests.rs"]
 mod subscribe_tests;

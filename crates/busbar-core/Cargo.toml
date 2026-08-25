@@ -104,12 +104,6 @@ rustls-pki-types = { workspace = true }
 # protocol-extraction step's job; this split is what makes it possible. Do not "fix" it here.
 default = ["auth-admin-tokens", "hooks-ranking", "plane-mcp", "plane-a2a"]
 auth-admin-tokens = ["dep:busbar-auth-admin-tokens"]
-# NOT A REAL BUILD KNOB — declared only so `#[cfg(feature = "extracted")]` is a KNOWN condition when
-# core dual-compiles `busbar-mcp/src/mcp` back in for its own tests (see `mod mcp` in lib.rs). Those
-# shared sources gate their plane tests `not(feature = "extracted")`; `extracted` is default-ON in the
-# `busbar-mcp` crate and left OFF (never enabled) here, so the plane tests run in THIS crate's test
-# binary. Enabling it would do nothing but silence those tests — do not.
-extracted = []
 hooks-ranking = ["dep:busbar-hooks-ranking"]
 # THE MCP PLANE, in-core today (`src/mcp`), behind the SAME switch the binary already uses for MCP
 # the protocol codec (`busbar-mcp`): one plane-kind name for MCP-the-protocol and MCP-the-plane,
@@ -147,6 +141,15 @@ test-support = []
 # `()` is a no-op the `dropping_copy_types` lint rightly rejects). Enabling it forwards to
 # `busbar-timing/timing`, making those guards real `Timer`s whose `Drop` records the elapsed span.
 timing = ["busbar-timing/timing"]
+
+# `busbar_mcp_native` is a cfg that `busbar-mcp`'s build script sets for that crate's OWN builds and
+# NOT for the `#[path]` dual-compile of `busbar-mcp/src/mcp` into this crate's test binary (a build
+# script runs for a compiled crate, not for path-included source). The dual-compiled plane sources
+# gate their tests `not(busbar_mcp_native)` so they run HERE and skip in `busbar-mcp`. This crate
+# never sets the cfg, but the sources reference it, so declare it KNOWN — otherwise `unexpected_cfgs`
+# fires under `-D warnings`. (This replaced a dummy `extracted` feature that served the same role.)
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(busbar_mcp_native)'] }
 
 [dev-dependencies]
 busbar-store-example-plugin = { path = "../store-example-plugin" }

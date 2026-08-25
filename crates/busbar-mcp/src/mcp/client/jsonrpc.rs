@@ -594,10 +594,10 @@ impl InputRequiredLoop {
     }
 }
 
-#[cfg(all(test, not(feature = "extracted")))]
+#[cfg(all(test, not(busbar_mcp_native)))]
 #[path = "tests/wire_tests.rs"]
 mod wire_tests;
 
-#[cfg(all(test, not(feature = "extracted")))]
+#[cfg(all(test, not(busbar_mcp_native)))]
 #[path = "tests/ask_tests.rs"]
 mod ask_tests;

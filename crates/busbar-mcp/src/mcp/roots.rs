@@ -181,7 +181,7 @@ pub(crate) fn satisfy_upstream_ask(
     Ok(serde_json::Value::Object(continuation))
 }
 
-#[cfg(all(test, not(feature = "extracted")))]
+#[cfg(all(test, not(busbar_mcp_native)))]
 #[path = "tests/roots_changed_tests.rs"]
 mod roots_changed_tests;
 

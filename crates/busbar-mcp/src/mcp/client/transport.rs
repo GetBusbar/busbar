@@ -328,7 +328,7 @@ fn sse_frames(raw: &[u8]) -> Vec<serde_json::Value> {
 /// Expressed over the SHARED classifier rather than over a method-name test of its own, so "which
 /// frames may reach busbar's caller" is decided in exactly one place — `super::peer`'s effect table
 /// — and this function cannot come to disagree with the transport about it.
-#[cfg_attr(any(not(test), feature = "extracted"), allow(dead_code))]
+#[cfg_attr(any(not(test), busbar_mcp_native), allow(dead_code))]
 pub(crate) fn progress_frames(raw: &[u8]) -> Vec<serde_json::Value> {
     use super::peer::{NotificationEffect, ServerMessage};
     sse_frames(raw)
@@ -373,7 +373,7 @@ fn last_sse_data(raw: &[u8]) -> Vec<u8> {
         .unwrap_or_default()
 }
 
-#[cfg(all(test, not(feature = "extracted")))]
+#[cfg(all(test, not(busbar_mcp_native)))]
 #[path = "tests/transport_tests.rs"]
 mod transport_tests;
 
@@ -381,6 +381,6 @@ mod transport_tests;
 // about it. It hangs off the transport rather than off `super::peer` because the CLASSIFIER is
 // proven there, shared with stdio — what is proven here is the CARRIER: that the frames are found on
 // an SSE body, that the effects land, and that the answer to the POST survives them all intact.
-#[cfg(all(test, not(feature = "extracted")))]
+#[cfg(all(test, not(busbar_mcp_native)))]
 #[path = "tests/http_peer_tests.rs"]
 mod http_peer_tests;

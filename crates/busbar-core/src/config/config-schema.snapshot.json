@@ -1021,7 +1021,7 @@
         },
         "upstream_credentials": {
           "optional": true,
-          "type": "crate::auth::UpstreamCreds"
+          "type": "busbar_core::auth::UpstreamCreds"
         },
         "url": {
           "optional": true,
@@ -2080,7 +2080,7 @@
       "fields": {
         "subject_token": {
           "optional": false,
-          "type": "crate::config::SecretRef"
+          "type": "busbar_core::config::SecretRef"
         },
         "subject_token_type": {
           "optional": true,

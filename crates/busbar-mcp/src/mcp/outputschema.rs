@@ -214,6 +214,6 @@ fn actual_type(v: &Value) -> &'static str {
     }
 }
 
-#[cfg(all(test, not(feature = "extracted")))]
+#[cfg(all(test, not(busbar_mcp_native)))]
 #[path = "tests/outputschema_tests.rs"]
 mod outputschema_tests;

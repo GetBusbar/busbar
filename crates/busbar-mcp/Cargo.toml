@@ -61,26 +61,34 @@ bytes = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
 getrandom = { workspace = true }
+# THE OPENAPI SCHEMA DERIVE, optional and mirroring busbar-core exactly. The plane's admin-view types
+# (`src/mcp/admin_view.rs`) derive `schemars::JsonSchema` under `openapi-schema`; when these sources
+# dual-compile into busbar-core they take core's `schemars`, and when they compile HERE — which they
+# now do once the binary forwards `openapi-schema` down to this crate — they need their own. Same
+# optional dep, same feature edge, so the derive resolves whichever crate is compiling.
+schemars = { workspace = true, optional = true }
 
 [features]
-# ON in every build OF THIS CRATE, and — this is the whole point — ABSENT when `busbar-core`
-# dual-compiles `src/mcp` back in for its own test binary (a `#[cfg(feature = ...)]` always resolves
-# against the crate being compiled, and core declares no such feature). The MCP PLANE's tests build a
-# `TestApp` and read the plane's runtime object back out of the app by DOWNCAST; that object's type is
-# `<compiling-crate>::mcp::McpRuntime`, so the fixtures (which live in `busbar-core::test_support`)
-# only ever produce a type the tests can downcast when BOTH are the same crate — i.e. inside
-# busbar-core's dual-compile binary. So the plane tests run THERE, gated `not(feature = "extracted")`,
-# exactly as the extracted LLM dialects' tests run in core's binary. This crate's own `cargo test`
-# still builds and runs the CODEC tests (the protocol half, which needs no app), just not the plane
-# half. Default-on so a plain `cargo test -p busbar-mcp` skips the plane tests without extra flags.
-default = ["extracted"]
-extracted = []
+# THE PLANE TESTS SKIP IN THIS CRATE'S OWN BINARY and run only when `busbar-core` dual-compiles
+# `src/mcp` back into ITS test binary. They build a `TestApp` and read the plane's runtime back out by
+# DOWNCAST; that runtime's type is `<compiling-crate>::mcp::McpRuntime`, so the fixtures (which live in
+# `busbar-core`, `pub(crate)`) only ever produce a value the tests can reach and downcast when BOTH are
+# the same crate — i.e. inside busbar-core's binary, exactly as the extracted LLM dialects' tests run
+# in core's. This crate's own `cargo test` still builds and runs the CODEC tests (the protocol half,
+# which needs no app), just not the plane half.
+#
+# The skip is keyed on the `busbar_mcp_native` cfg that `build.rs` sets unconditionally for THIS
+# crate's compilations and never for core's `#[path]` dual-compile (see `build.rs`), NOT on a feature:
+# a default-on `extracted` feature used to carry it, but `--no-default-features` switched it off and
+# wrongly un-skipped every plane test into this binary, where they cannot compile. A build-script cfg
+# cannot be switched off, so the skip is robust.
+#
 # The plane's sources carry `#[cfg(feature = "…")]` gates on two of busbar-core's features (the
 # `PlaneDecl` OpenAPI-schema field, and one admin-tokens path). Declared here as FORWARDS so the same
 # `#[cfg]` resolves identically whether these sources compile in this crate or dual-compile into
 # busbar-core — enabling ours enables core's, keeping the `PlaneDecl` shape and its initialiser in
 # lock-step. Off by default, exactly as in core.
-openapi-schema = ["busbar-core/openapi-schema"]
+openapi-schema = ["busbar-core/openapi-schema", "dep:schemars"]
 auth-admin-tokens = ["busbar-core/auth-admin-tokens"]
 # Pass-through so a dependent can ask for this crate's test fixtures without naming busbar-core
 # directly, the same shape `busbar-core` itself exposes to its own dependents.

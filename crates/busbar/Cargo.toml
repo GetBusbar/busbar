@@ -76,7 +76,7 @@ plane-mcp = ["dep:busbar-mcp", "busbar-core/plane-mcp"]
 plane-a2a = ["dep:busbar-a2a", "busbar-core/plane-a2a"]
 auth-admin-tokens = ["busbar-core/auth-admin-tokens"]
 hooks-ranking = ["busbar-core/hooks-ranking"]
-openapi-schema = ["busbar-core/openapi-schema"]
+openapi-schema = ["busbar-core/openapi-schema", "busbar-mcp?/openapi-schema"]
 loom-model = ["busbar-core/loom-model"]
 txn-fence-red = ["busbar-core/txn-fence-red"]
 

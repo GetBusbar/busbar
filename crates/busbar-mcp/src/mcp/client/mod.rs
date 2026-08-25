@@ -236,22 +236,22 @@ impl McpClientEngine {
 // Shared fixtures. Declared here rather than duplicated per test file so a test that varies one
 // thing varies one thing; `pub(super)` on its items makes them reachable from every test module
 // nested under `client`.
-#[cfg(all(test, not(feature = "extracted")))]
+#[cfg(all(test, not(busbar_mcp_native)))]
 #[path = "tests/support.rs"]
 mod support;
 
-#[cfg(all(test, not(feature = "extracted")))]
+#[cfg(all(test, not(busbar_mcp_native)))]
 #[path = "tests/engine_tests.rs"]
 mod engine_tests;
 
 // The accessors the not-yet-written refresh job will need, exercised while it does not exist.
-#[cfg(all(test, not(feature = "extracted")))]
+#[cfg(all(test, not(busbar_mcp_native)))]
 #[path = "tests/surface_tests.rs"]
 mod surface_tests;
 
 // The adversarial no-passthrough battery spans `egress` (which plans the credential) and `jsonrpc`
 // (which serializes the request), so it hangs off the module that owns both rather than off either
 // one.
-#[cfg(all(test, not(feature = "extracted")))]
+#[cfg(all(test, not(busbar_mcp_native)))]
 #[path = "tests/no_key_passthrough_tests.rs"]
 mod no_key_passthrough_tests;
