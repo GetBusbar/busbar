@@ -152,7 +152,7 @@ impl PoolRoute {
 
         let sightings = super::runtime(app).sightings.load();
         let live = super::client::catalogue::LiveSightings::of(&sightings);
-        let generation = busbar_core::trust::validate::Generations::at_admission(
+        let generation = busbar_substrate::trust::validate::Generations::at_admission(
             super::runtime(app).catalogue.generation(),
         );
         let now = busbar_core::plane_host::clock_now_secs_over(app);

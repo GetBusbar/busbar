@@ -14,7 +14,7 @@
 //! it contributes the immutable value that rides in it, plus the monotonic generation that makes a
 //! swap DETECTABLE from inside a request.
 //!
-//! The generation source is [`busbar_core::trust::validate::next_generation`] — process-global, monotonic,
+//! The generation source is [`busbar_substrate::trust::validate::next_generation`] — process-global, monotonic,
 //! and shared with every other snapshot in the process rather than a counter per plane. It is a
 //! counter rather than a field derived from config content, and that is deliberate: a content hash
 //! would compare equal after a change-and-revert, and
@@ -42,7 +42,7 @@
 //! types, so `tools/list`, `prompts/list`, `resources/list`, `resources/templates/list`,
 //! `prompts/get`, `resources/read` and `tools/call` cannot drift apart about who may see what.
 //!
-//! WHAT THIS PLANE'S CATALOGUE ASKS FOR is identity and grant — [`busbar_core::trust::validate::validate_visibility`]
+//! WHAT THIS PLANE'S CATALOGUE ASKS FOR is identity and grant — [`busbar_substrate::trust::validate::validate_visibility`]
 //! — and deliberately not the artifact step, because the MCP catalogue LISTS what it will not
 //! dispatch: a tool with no approved hash and a server with no locked pin both appear, so an
 //! operator can see the approval queue. `tools/call` asks the FULL ordered gate, in
@@ -80,8 +80,8 @@
 
 use std::collections::BTreeMap;
 
-use busbar_core::trust::validate::Grant;
 use busbar_substrate::catalogue::{Caller, CatalogueItem};
+use busbar_substrate::trust::validate::Grant;
 
 use super::client::catalogue::{LiveDigest, LiveSightings, TransportPin};
 use super::config::{McpServerDefCfg, PromptMessageCfg, ToolsCfg, NAMESPACE_SEP};
@@ -357,7 +357,7 @@ impl Default for Catalogue {
     /// and not a return to some timeless zero state.
     fn default() -> Self {
         Self {
-            generation: busbar_core::trust::validate::next_generation(),
+            generation: busbar_substrate::trust::validate::next_generation(),
             servers: BTreeMap::new(),
             tools: BTreeMap::new(),
             prompts: BTreeMap::new(),
@@ -552,7 +552,7 @@ impl Catalogue {
             }
         }
         Self {
-            generation: busbar_core::trust::validate::next_generation(),
+            generation: busbar_substrate::trust::validate::next_generation(),
             servers,
             tools,
             prompts,
@@ -772,7 +772,7 @@ impl Catalogue {
         principal: Option<&busbar_api::VirtualKey>,
         live: LiveSightings<'_>,
         namespaced_name: &str,
-        generation: busbar_core::trust::validate::Generations,
+        generation: busbar_substrate::trust::validate::Generations,
         now: u64,
     ) -> Result<&ToolEntry, DispatchRefusal> {
         let Some(entry) = self.tools.get(namespaced_name) else {
@@ -795,37 +795,41 @@ impl Catalogue {
         // and cannot, by construction, notice an upstream changing its schema underneath.
         let observe = || match live.digest_for(&entry.server, &entry.tool, &server.approval) {
             LiveDigest::Unsighted => {
-                busbar_core::trust::validate::Observed::At(entry.dispatch_digest().to_string())
+                busbar_substrate::trust::validate::Observed::At(entry.dispatch_digest().to_string())
             }
-            LiveDigest::At(digest) => busbar_core::trust::validate::Observed::At(digest),
-            LiveDigest::Quarantined(why) => busbar_core::trust::validate::Observed::Drifted(why),
+            LiveDigest::At(digest) => busbar_substrate::trust::validate::Observed::At(digest),
+            LiveDigest::Quarantined(why) => {
+                busbar_substrate::trust::validate::Observed::Drifted(why)
+            }
         };
         // THE ONE ORDERED GATE, in core, reached identically by every plane. `Approval::serves` is
         // still the comparison it makes — the same one the operator's changes queue is rendered
         // from — but the ORDER around it is no longer this file's to decide.
-        busbar_core::trust::validate::validate_request(&busbar_core::trust::validate::Ask {
-            principal,
-            now,
-            // GRANT BEFORE DIGEST is now a property of the validator rather than of the order these
-            // lines happen to be written in.
-            grants: &[
-                busbar_core::trust::validate::Grant::Scope {
-                    kind: SCOPE_KIND_SERVER,
-                    name: &entry.server,
-                },
-                busbar_core::trust::validate::Grant::Scope {
-                    kind: SCOPE_KIND_TOOL,
-                    name: &entry.namespaced,
-                },
-            ],
-            approval: &server.approval,
-            sighting: &sighting,
-            capability: Some(busbar_core::trust::validate::Fingerprint {
-                capability: &entry.tool,
-                observe: &observe,
-            }),
-            generation,
-        })
+        busbar_substrate::trust::validate::validate_request(
+            &busbar_substrate::trust::validate::Ask {
+                principal,
+                now,
+                // GRANT BEFORE DIGEST is now a property of the validator rather than of the order these
+                // lines happen to be written in.
+                grants: &[
+                    busbar_substrate::trust::validate::Grant::Scope {
+                        kind: SCOPE_KIND_SERVER,
+                        name: &entry.server,
+                    },
+                    busbar_substrate::trust::validate::Grant::Scope {
+                        kind: SCOPE_KIND_TOOL,
+                        name: &entry.namespaced,
+                    },
+                ],
+                approval: &server.approval,
+                sighting: &sighting,
+                capability: Some(busbar_substrate::trust::validate::Fingerprint {
+                    capability: &entry.tool,
+                    observe: &observe,
+                }),
+                generation,
+            },
+        )
         .map_err(|refusal| as_dispatch_refusal(refusal, server, entry, &sighting))?;
         Ok(entry)
     }
@@ -890,7 +894,10 @@ impl Catalogue {
             principal,
             sightings,
             &selected.namespaced,
-            busbar_core::trust::validate::Generations::since(selected_generation, self.generation),
+            busbar_substrate::trust::validate::Generations::since(
+                selected_generation,
+                self.generation,
+            ),
             now,
         )?;
         if live.schema_hash != selected.schema_hash {
@@ -918,7 +925,7 @@ impl Catalogue {
             principal,
             live,
             namespaced_name,
-            busbar_core::trust::validate::Generations::at_admission(self.generation),
+            busbar_substrate::trust::validate::Generations::at_admission(self.generation),
             0,
         )
     }
@@ -1018,12 +1025,12 @@ fn refusal_reason(server: &ServerEntry, entry: &ToolEntry) -> DispatchRefusal {
 /// `not_pinned`, `not_approved`, `quarantined` and `generation_moved` are five different things for
 /// an operator to go and do.
 fn as_dispatch_refusal(
-    refusal: busbar_core::trust::validate::Refusal,
+    refusal: busbar_substrate::trust::validate::Refusal,
     server: &ServerEntry,
     entry: &ToolEntry,
     sighting: &busbar_substrate::trust::Sighting<TransportPin>,
 ) -> DispatchRefusal {
-    use busbar_core::trust::validate::Refusal;
+    use busbar_substrate::trust::validate::Refusal;
     match refusal {
         // THE CATALOGUE HIDES WHAT A CALLER MAY NOT SEE, so this renders identically to
         // `UnknownTool` on the wire; the audit word is what keeps the two apart for an operator.
@@ -1196,7 +1203,7 @@ fn mcp_grants<'g>(out: &mut Vec<Grant<'g>>, server: &'g str, namespaced_name: &'
 /// an operator can see the approval queue, and `tools/call` asks the full ordered gate in
 /// [`Catalogue::resolve`]. That is a statement about what a listing MEANS on this wire, made at one
 /// call site in this file, rather than a step some shared function decided to skip — see
-/// [`busbar_core::trust::validate::validate_visibility`], which says the same thing from the other side.
+/// [`busbar_substrate::trust::validate::validate_visibility`], which says the same thing from the other side.
 ///
 /// Every refusal renders as `NotGranted`/`IdentityNotLive`, which are the two arms whose WIRE text
 /// is identical to `UnknownTool`'s: a caller learns only that there is nothing there for it, and the
@@ -1206,17 +1213,19 @@ fn admit_listing(
     grants: &[Grant<'_>],
     name: &str,
 ) -> Result<(), DispatchRefusal> {
-    busbar_core::trust::validate::validate_visibility(caller.key, caller.now, grants).map_err(|r| {
-        match r {
-            busbar_core::trust::validate::Refusal::IdentityNotLive { .. } => {
-                DispatchRefusal::IdentityNotLive(name.to_string())
+    busbar_substrate::trust::validate::validate_visibility(caller.key, caller.now, grants).map_err(
+        |r| {
+            match r {
+                busbar_substrate::trust::validate::Refusal::IdentityNotLive { .. } => {
+                    DispatchRefusal::IdentityNotLive(name.to_string())
+                }
+                // No egress list is consulted on a listing, and the artifact and generation steps are
+                // not asked at all. Answered rather than unwrapped because this is a request path and
+                // "unreachable" is a claim about today's arguments.
+                _ => DispatchRefusal::NotGranted(name.to_string()),
             }
-            // No egress list is consulted on a listing, and the artifact and generation steps are
-            // not asked at all. Answered rather than unwrapped because this is a request path and
-            // "unreachable" is a claim about today's arguments.
-            _ => DispatchRefusal::NotGranted(name.to_string()),
-        }
-    })
+        },
+    )
 }
 
 impl CatalogueItem for ToolEntry {

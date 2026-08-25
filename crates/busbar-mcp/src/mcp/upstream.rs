@@ -154,7 +154,7 @@ pub(crate) enum SetupRefusal {
     /// Reached only by [`authorise_verb`]. A `tools/call` meets the same validator one layer up, in
     /// the catalogue's `resolve`, and renders its refusal in that path's own vocabulary.
     #[cfg_attr(any(not(test), busbar_mcp_native), allow(dead_code))]
-    Trust(busbar_core::trust::validate::Refusal),
+    Trust(busbar_substrate::trust::validate::Refusal),
 }
 
 impl std::fmt::Display for SetupRefusal {
@@ -257,7 +257,7 @@ pub(crate) fn authorise(
 ///
 /// ## It is the ORDERED VALIDATOR, not a fourth sequence
 ///
-/// A `tools/call` meets `busbar_core::trust::validate::validate_request` one layer up, inside the
+/// A `tools/call` meets `busbar_substrate::trust::validate::validate_request` one layer up, inside the
 /// catalogue's `resolve`, which owns the tool half of the question. A server-scoped verb never
 /// touches the catalogue's tool index, so it asks the validator DIRECTLY — identity, then the
 /// `mcp_server` grant, then whether the registration is serving at all, then whether the snapshot
@@ -278,7 +278,7 @@ pub(crate) fn authorise_verb(
     server: &ServerEntry,
     sighting: &busbar_substrate::trust::Sighting<super::client::catalogue::TransportPin>,
     caller: Option<&VirtualKey>,
-    generation: busbar_core::trust::validate::Generations,
+    generation: busbar_substrate::trust::validate::Generations,
     now: u64,
 ) -> Result<Authorised, SetupRefusal> {
     let server_id =
@@ -287,10 +287,10 @@ pub(crate) fn authorise_verb(
         Some(k) => k.clone(),
         None => ungoverned_principal(),
     };
-    busbar_core::trust::validate::validate_request(&busbar_core::trust::validate::Ask {
+    busbar_substrate::trust::validate::validate_request(&busbar_substrate::trust::validate::Ask {
         principal: Some(&caller),
         now,
-        grants: &[busbar_core::trust::validate::Grant::Scope {
+        grants: &[busbar_substrate::trust::validate::Grant::Scope {
             kind: "mcp_server",
             name: &server.id,
         }],

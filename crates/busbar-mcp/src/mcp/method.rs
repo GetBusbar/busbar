@@ -208,13 +208,13 @@ impl Ctx<'_> {
     /// carries the `Option` rather than restating the rule.
     ///
     /// `at_admission`, because a listing IS its own admission: there is no earlier snapshot for it
-    /// to have outlived. `tools/call` says [`busbar_core::trust::validate::Generations::since`] instead,
+    /// to have outlived. `tools/call` says [`busbar_substrate::trust::validate::Generations::since`] instead,
     /// out loud, at its own call site.
     fn caller(&self) -> busbar_substrate::catalogue::Caller<'_> {
         busbar_substrate::catalogue::Caller {
             key: self.gov.key(),
             now: busbar_core::plane_host::clock_now_secs_over(self.app),
-            generation: busbar_core::trust::validate::Generations::at_admission(
+            generation: busbar_substrate::trust::validate::Generations::at_admission(
                 super::runtime(self.app).catalogue.generation(),
             ),
         }
@@ -1249,7 +1249,7 @@ async fn tools_call(
         ctx.gov.key(),
         LiveSightings::of(&admitted_sightings),
         name,
-        busbar_core::trust::validate::Generations::at_admission(selected_gen),
+        busbar_substrate::trust::validate::Generations::at_admission(selected_gen),
         busbar_core::plane_host::clock_now_secs_over(ctx.app),
     ) {
         Ok(entry) => entry.clone(),

@@ -1054,7 +1054,7 @@ impl<W: AsyncWrite + Unpin + Send + 'static> Session<W> {
         let caller = busbar_substrate::catalogue::Caller {
             key: self.gov.key(),
             now: busbar_core::plane_host::clock_now_secs_over(app),
-            generation: busbar_core::trust::validate::Generations::at_admission(
+            generation: busbar_substrate::trust::validate::Generations::at_admission(
                 super::runtime(app).catalogue.generation(),
             ),
         };

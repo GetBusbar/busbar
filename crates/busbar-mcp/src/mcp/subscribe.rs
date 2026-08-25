@@ -348,7 +348,7 @@ fn caller_of<'a>(
         // the generation the frame is being computed against, so the catalogue read cannot be judged
         // against a snapshot other than the one it is reading. The stream's own relationship to the
         // generation is `Snapshot::Watching`, held by `Standing` and re-asked above.
-        generation: busbar_core::trust::validate::Generations::at_admission(generation),
+        generation: busbar_substrate::trust::validate::Generations::at_admission(generation),
     }
 }
 
