@@ -2080,7 +2080,7 @@
       "fields": {
         "subject_token": {
           "optional": false,
-          "type": "busbar_core::config::SecretRef"
+          "type": "busbar_api::SecretRef"
         },
         "subject_token_type": {
           "optional": true,

@@ -33,7 +33,7 @@
 //! this upstream at all" and `mcp_tool` is "may it reach this capability", and a key scoped to one
 //! tool on a server must not acquire the rest by having been let through the door.
 //!
-//! THE WALK THAT APPLIES THEM IS CORE'S, NOT THIS MODULE'S. [`busbar_core::catalogue`] owns the mechanism
+//! THE WALK THAT APPLIES THEM IS CORE'S, NOT THIS MODULE'S. [`busbar_substrate::catalogue`] owns the mechanism
 //! — walk the inventory, collect what each item requires, hand it to the ordered gate, keep the
 //! entitled subset, render it — and this plane supplies only the ITEM: which grants each entry
 //! requires ([`CatalogueItem::required_grants`]), WHICH QUESTION this plane's catalogue asks
@@ -52,9 +52,9 @@
 //!
 //! ## "May this artifact serve?" has ONE owner, and it is not this module
 //!
-//! The admission gate in [`Catalogue::resolve`] is [`busbar_core::trust::Approval::serves`] — the shared
+//! The admission gate in [`Catalogue::resolve`] is [`busbar_substrate::trust::Approval::serves`] — the shared
 //! trust lifecycle's own comparison — and there is no second implementation of it here. A
-//! registration becomes an [`busbar_core::trust::Approval`] at BUILD time: the mechanism and key the
+//! registration becomes an [`busbar_substrate::trust::Approval`] at BUILD time: the mechanism and key the
 //! operator declared become the locked pin, and each capability's approved hash becomes that
 //! capability's approved digest. Dispatch then asks the lifecycle, not the raw fields.
 //!
@@ -67,7 +67,7 @@
 //! answer to the question.
 //!
 //! A registration with no authenticity root (`unpinned`) has no artifact to lock, so it cannot be
-//! anything but [`busbar_core::trust::Approval::registered`]: pending, inspectable, and serving nothing.
+//! anything but [`busbar_substrate::trust::Approval::registered`]: pending, inspectable, and serving nothing.
 //! That is enforced by what is CONSTRUCTIBLE — `Approval::declared` takes a pin by value — rather
 //! than by a check here that a later edit could relax.
 //!
@@ -80,12 +80,12 @@
 
 use std::collections::BTreeMap;
 
-use busbar_core::catalogue::{Caller, CatalogueItem};
 use busbar_core::trust::validate::Grant;
+use busbar_substrate::catalogue::{Caller, CatalogueItem};
 
 use super::client::catalogue::{LiveDigest, LiveSightings, TransportPin};
 use super::config::{McpServerDefCfg, PromptMessageCfg, ToolsCfg, NAMESPACE_SEP};
-use busbar_core::trust::Approval;
+use busbar_substrate::trust::Approval;
 
 /// THE TWO SCOPE KINDS AN MCP CAPABILITY IS REACHED THROUGH.
 ///
@@ -258,19 +258,19 @@ pub(crate) struct ServerEntry {
     /// `None` otherwise, and the wire refuses rather than guesses if the two ever disagree.
     pub(crate) stdio: Option<super::client::stdio::StdioCommand>,
     /// The mechanism NAME. Operator-facing and audit-facing only; never interpreted, exactly as
-    /// [`busbar_core::trust::PinnedArtifact::mechanism`] is never interpreted.
+    /// [`busbar_substrate::trust::PinnedArtifact::mechanism`] is never interpreted.
     pub(crate) pin_mechanism: &'static str,
     /// THE OPERATOR'S STANDING DECISION about this registration — the locked identity pin and the
     /// per-capability approved digests — held in the shared lifecycle type rather than re-expressed
     /// as local booleans.
     ///
     /// This is the whole point: `may this artifact serve?` has ONE owner
-    /// ([`busbar_core::trust::Approval::serves`]), so the gate a call passes through and the state an
+    /// ([`busbar_substrate::trust::Approval::serves`]), so the gate a call passes through and the state an
     /// operator reads are the SAME comparison. A second local answer would agree with it right up
     /// until it did not, and the divergence would be silent and fail OPEN — a de-approval the
     /// operator believes they made, honoured by the surface and not by the gate.
     ///
-    /// A registration with no authenticity root is [`busbar_core::trust::Approval::registered`]: no pin,
+    /// A registration with no authenticity root is [`busbar_substrate::trust::Approval::registered`]: no pin,
     /// nothing approved, serves nothing. It is `pending`, which is exactly the state that may be
     /// inspected but may not carry traffic.
     pub(crate) approval: Approval<TransportPin>,
@@ -297,7 +297,7 @@ pub(crate) struct ServerEntry {
     /// same reason every other field here does: the snapshot is what the engine holds, and a re-read
     /// that reached back into the config document to find the bound would be a second reader of the
     /// operator's intent that could disagree with the first.
-    pub(crate) verify_policy: busbar_core::trust::reverify::Policy,
+    pub(crate) verify_policy: busbar_substrate::trust::reverify::Policy,
     /// THE OUTBOUND CREDENTIAL POSTURE, carried as the operator wrote it rather than as a resolved
     /// secret.
     ///
@@ -439,7 +439,7 @@ impl DispatchRefusal {
     /// The AUDIT outcome word. Every arm is a rejection; the constant is named once so a new arm
     /// cannot quietly become an `applied` row.
     ///
-    /// THE SHARED WORDS ARE CORE'S, from [`busbar_core::audit::vocab`]: the refusal vocabulary is shared
+    /// THE SHARED WORDS ARE CORE'S, from [`busbar_substrate::audit::vocab`]: the refusal vocabulary is shared
     /// across every stream of evidence, so a second stream cannot spell the same refusal
     /// differently.
     ///
@@ -448,7 +448,7 @@ impl DispatchRefusal {
     /// the opposite of flattening: core decides, and the plane says which of its shapes the decision
     /// took.
     pub(crate) fn audit_reason(&self) -> &'static str {
-        use busbar_core::audit::vocab;
+        use busbar_substrate::audit::vocab;
         match self {
             DispatchRefusal::GenerationMoved { .. } => vocab::REASON_GENERATION_MOVED,
             DispatchRefusal::UnknownTool(_) => "unknown_tool",
@@ -610,23 +610,23 @@ impl Catalogue {
 
     /// THE GRANT-SCOPED TOOL CATALOGUE for one caller.
     ///
-    /// The WALK is [`busbar_core::catalogue::visible`] — core's, shared with every other plane — and the
+    /// The WALK is [`busbar_substrate::catalogue::visible`] — core's, shared with every other plane — and the
     /// entitlement decision inside it is [`busbar_core::trust::validate`]'s, so what a caller may see is
     /// decided by one mechanism asking one gate. The two-grant rule this plane contributes is in
     /// `<ToolEntry as CatalogueItem>::required_grants`, once, for all four entry types.
     pub(crate) fn tools_for(&self, caller: &Caller<'_>) -> Vec<&ToolEntry> {
-        busbar_core::catalogue::visible(self.tools.values(), caller, &())
+        busbar_substrate::catalogue::visible(self.tools.values(), caller, &())
     }
 
     /// The grant-scoped prompt catalogue. Scoped by the SAME two grants as tools: a prompt is a
     /// capability of a server, and a caller with no reach to the server has no reach to its prompts.
     pub(crate) fn prompts_for(&self, caller: &Caller<'_>) -> Vec<&PromptEntry> {
-        busbar_core::catalogue::visible(self.prompts.values(), caller, &())
+        busbar_substrate::catalogue::visible(self.prompts.values(), caller, &())
     }
 
     /// The grant-scoped resource catalogue.
     pub(crate) fn resources_for(&self, caller: &Caller<'_>) -> Vec<&ResourceEntry> {
-        busbar_core::catalogue::visible(self.resources.values(), caller, &())
+        busbar_substrate::catalogue::visible(self.resources.values(), caller, &())
     }
 
     /// `prompts/list`'s answer for one caller: the SAME walk, rendered.
@@ -635,12 +635,12 @@ impl Catalogue {
     /// intervening edit at the call site — an item is rendered only once core has decided this
     /// caller may see it.
     pub(crate) fn prompts_rendered(&self, caller: &Caller<'_>) -> Vec<serde_json::Value> {
-        busbar_core::catalogue::rendered(self.prompts.values(), caller, &())
+        busbar_substrate::catalogue::rendered(self.prompts.values(), caller, &())
     }
 
     /// `resources/list`'s answer for one caller.
     pub(crate) fn resources_rendered(&self, caller: &Caller<'_>) -> Vec<serde_json::Value> {
-        busbar_core::catalogue::rendered(self.resources.values(), caller, &())
+        busbar_substrate::catalogue::rendered(self.resources.values(), caller, &())
     }
 
     /// `resources/templates/list`'s answer for one caller.
@@ -648,7 +648,7 @@ impl Catalogue {
         &self,
         caller: &Caller<'_>,
     ) -> Vec<serde_json::Value> {
-        busbar_core::catalogue::rendered(self.resource_templates.values(), caller, &())
+        busbar_substrate::catalogue::rendered(self.resource_templates.values(), caller, &())
     }
 
     /// Look one prompt up under the caller's grant. `None` covers both "no such prompt" and "not
@@ -660,7 +660,7 @@ impl Catalogue {
         namespaced_name: &str,
     ) -> Option<&PromptEntry> {
         let entry = self.prompts.get(namespaced_name)?;
-        busbar_core::catalogue::judge(entry, caller, &())
+        busbar_substrate::catalogue::judge(entry, caller, &())
             .ok()
             .map(|e| e.item)
     }
@@ -670,7 +670,7 @@ impl Catalogue {
         &self,
         caller: &Caller<'_>,
     ) -> Vec<&ResourceTemplateEntry> {
-        busbar_core::catalogue::visible(self.resource_templates.values(), caller, &())
+        busbar_substrate::catalogue::visible(self.resource_templates.values(), caller, &())
     }
 
     /// MATCH a caller's EXPANDED uri against the grant-scoped templates.
@@ -1021,7 +1021,7 @@ fn as_dispatch_refusal(
     refusal: busbar_core::trust::validate::Refusal,
     server: &ServerEntry,
     entry: &ToolEntry,
-    sighting: &busbar_core::trust::Sighting<TransportPin>,
+    sighting: &busbar_substrate::trust::Sighting<TransportPin>,
 ) -> DispatchRefusal {
     use busbar_core::trust::validate::Refusal;
     match refusal {
@@ -1039,7 +1039,7 @@ fn as_dispatch_refusal(
         // `Pending` IS "no locked identity pin" — the state's own definition — so this is a
         // rendering of the state rather than a second test of the approval's fields.
         Refusal::NotServing {
-            state: busbar_core::trust::TrustState::Pending,
+            state: busbar_substrate::trust::TrustState::Pending,
             ..
         } => DispatchRefusal::NotPinned(server.id.clone()),
         Refusal::NotServing { state, .. } => DispatchRefusal::Quarantined {
@@ -1067,23 +1067,22 @@ fn server_entry(id: &str, def: &McpServerDefCfg) -> ServerEntry {
     // band, and the digest they approved for each capability. A capability they allowed without
     // approving a digest is absent from the map, which is `pending` — allowed is not approved.
     //
-    // THE READER IS `busbar_core::trust::declared`'s, for every plane. What this plane supplies is the
+    // THE READER IS `busbar_substrate::trust::declared`'s, for every plane. What this plane supplies is the
     // `Declares` impl beside `TransportPin` — which mechanisms are roots, and the artifact for each
     // reading. It supplies no sequence and no blank-key rule, so an operator's `key: "  "` is
     // refused here by the same line that refuses it on the sibling plane.
-    let approval =
-        match busbar_core::trust::declared::declared_pin::<TransportPin>(def.pin.declaration()) {
-            Some(pin) => Approval::declared(
-                pin,
-                def.tools_allow
-                    .iter()
-                    .filter_map(|(tool, allow)| {
-                        allow.schema_hash.clone().map(|h| (tool.clone(), h))
-                    })
-                    .collect(),
-            ),
-            None => Approval::registered(),
-        };
+    let approval = match busbar_substrate::trust::declared::declared_pin::<TransportPin>(
+        def.pin.declaration(),
+    ) {
+        Some(pin) => Approval::declared(
+            pin,
+            def.tools_allow
+                .iter()
+                .filter_map(|(tool, allow)| allow.schema_hash.clone().map(|h| (tool.clone(), h)))
+                .collect(),
+        ),
+        None => Approval::registered(),
+    };
     // `validate_endpoint` has already refused every mixture of the two halves, so this is a lift and
     // not a second decision: a registration that spawns carries a command and no url, and one that
     // does not carries a url and no command.
@@ -1119,7 +1118,7 @@ fn server_entry(id: &str, def: &McpServerDefCfg) -> ServerEntry {
         // bound is the fail-CLOSED answer: a server that ends up with a huge staleness bound is a
         // server whose drift a call would not re-verify.
         verify_policy: super::config::verify_policy_for(def).unwrap_or(
-            busbar_core::trust::reverify::Policy {
+            busbar_substrate::trust::reverify::Policy {
                 ttl_ms: busbar_core::admin::parse_duration_secs(
                     super::config::DEFAULT_MCP_VERIFY_TTL,
                 )
@@ -1156,7 +1155,7 @@ mod trust_gate_tests;
 
 // ══ THE PLANE'S HALF OF THE CATALOGUE SEAM ═══════════════════════════════════════════════════════
 //
-// Core ([`busbar_core::catalogue`]) owns the walk, the fail-closed floor, the order in which entitlement
+// Core ([`busbar_substrate::catalogue`]) owns the walk, the fail-closed floor, the order in which entitlement
 // and fitness are applied and the rule that nothing is rendered before it is entitled. The ordered
 // gate ([`busbar_core::trust::validate`]) owns the entitlement decision itself. Everything below is what
 // THIS PLANE contributes, and it is deliberately nothing but declarations: which grants an entry

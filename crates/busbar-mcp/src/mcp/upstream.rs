@@ -174,9 +174,9 @@ impl SetupRefusal {
     pub(crate) fn audit_reason(&self) -> &'static str {
         match self {
             SetupRefusal::Malformed(_) => "malformed_identity",
-            // Core's word — see `busbar_core::audit::vocab::REASON_EGRESS_DENIED` for why an
+            // Core's word — see `busbar_substrate::audit::vocab::REASON_EGRESS_DENIED` for why an
             // egress refusal is deliberately distinguishable from a grant refusal.
-            SetupRefusal::Egress(_) => busbar_core::audit::vocab::REASON_EGRESS_DENIED,
+            SetupRefusal::Egress(_) => busbar_substrate::audit::vocab::REASON_EGRESS_DENIED,
             SetupRefusal::Credential(_) => "credential_unavailable",
             SetupRefusal::Argument(_) => "tool_argument_refused",
             // The validator's OWN word, not a fifth one invented here. It is already an
@@ -276,7 +276,7 @@ pub(crate) fn authorise(
 #[cfg_attr(any(not(test), busbar_mcp_native), allow(dead_code))]
 pub(crate) fn authorise_verb(
     server: &ServerEntry,
-    sighting: &busbar_core::trust::Sighting<super::client::catalogue::TransportPin>,
+    sighting: &busbar_substrate::trust::Sighting<super::client::catalogue::TransportPin>,
     caller: Option<&VirtualKey>,
     generation: busbar_core::trust::validate::Generations,
     now: u64,
@@ -411,17 +411,17 @@ impl BreakerCell {
 #[derive(Debug)]
 pub(crate) struct LegFailure {
     pub(crate) message: String,
-    /// [`busbar_core::failover::Stage::BeforeFirstByte`] iff the wire itself says nothing was
+    /// [`busbar_substrate::failover::Stage::BeforeFirstByte`] iff the wire itself says nothing was
     /// transmitted (a connect-class failure, or busbar's own pre-wire refusal). Everything
     /// ambiguous is `AfterDispatch`.
-    pub(crate) stage: busbar_core::failover::Stage,
+    pub(crate) stage: busbar_substrate::failover::Stage,
 }
 
 impl LegFailure {
     fn dispatched(message: String) -> Self {
         LegFailure {
             message,
-            stage: busbar_core::failover::Stage::AfterDispatch,
+            stage: busbar_substrate::failover::Stage::AfterDispatch,
         }
     }
 }
@@ -462,7 +462,7 @@ pub(crate) async fn call(
             message: "a `tools/call` needs the tool's bound identity and this leg was authorised \
                       for a server-scoped verb, which names none"
                 .to_string(),
-            stage: busbar_core::failover::Stage::BeforeFirstByte,
+            stage: busbar_substrate::failover::Stage::BeforeFirstByte,
         }
     })?;
     let plan =
@@ -470,7 +470,7 @@ pub(crate) async fn call(
             // The grant/credential plan refused BEFORE any socket: nothing left busbar.
             LegFailure {
                 message: e.to_string(),
-                stage: busbar_core::failover::Stage::BeforeFirstByte,
+                stage: busbar_substrate::failover::Stage::BeforeFirstByte,
             }
         })?;
     let bearer = match plan {
@@ -485,7 +485,7 @@ pub(crate) async fn call(
                 // server's cell for its AS being down.
                 .map_err(|message| LegFailure {
                     message,
-                    stage: busbar_core::failover::Stage::BeforeFirstByte,
+                    stage: busbar_substrate::failover::Stage::BeforeFirstByte,
                 })?,
         ),
     };
@@ -594,7 +594,7 @@ pub(crate) async fn call(
 }
 
 /// The TRANSPORT half of this plane's Stage-1 normalizer: how one failed wire leg is CLASSIFIED (the
-/// caller settles it, CLUSTER-1), and (for the reroute loop) the [`busbar_core::failover::Stage`] the
+/// caller settles it, CLUSTER-1), and (for the reroute loop) the [`busbar_substrate::failover::Stage`] the
 /// failure leaves the request at.
 ///
 /// - `Unreachable` — a connect-class failure: the destination never received a byte. Classified as
@@ -614,7 +614,7 @@ pub(crate) async fn call(
 /// - `Refused` — busbar's OWN dispatch-time refusal (SSRF, a malformed target): nothing left
 ///   busbar and the upstream answered nothing, so nothing is recorded against it.
 ///   `BeforeFirstByte` for the same reason.
-fn classify_wire_failure(err: &TransportError) -> (busbar_core::failover::Stage, LegOutcome) {
+fn classify_wire_failure(err: &TransportError) -> (busbar_substrate::failover::Stage, LegOutcome) {
     let network = || {
         LegOutcome::Failure(busbar_core::breaker::CanonicalSignal {
             class: busbar_core::breaker::StatusClass::Network,
@@ -623,14 +623,15 @@ fn classify_wire_failure(err: &TransportError) -> (busbar_core::failover::Stage,
         })
     };
     match err {
-        TransportError::Unreachable(_) => {
-            (busbar_core::failover::Stage::BeforeFirstByte, network())
-        }
-        TransportError::Io(_) => (busbar_core::failover::Stage::AfterDispatch, network()),
+        TransportError::Unreachable(_) => (
+            busbar_substrate::failover::Stage::BeforeFirstByte,
+            network(),
+        ),
+        TransportError::Io(_) => (busbar_substrate::failover::Stage::AfterDispatch, network()),
         // Nothing left busbar (supervisor backoff / busbar's own dispatch refusal): `Nothing`, so no
         // fact is recorded against the target's cell. See the doc above for the double-accounting rule.
         TransportError::Supervision(_) | TransportError::Refused(_) => (
-            busbar_core::failover::Stage::BeforeFirstByte,
+            busbar_substrate::failover::Stage::BeforeFirstByte,
             LegOutcome::Nothing,
         ),
     }

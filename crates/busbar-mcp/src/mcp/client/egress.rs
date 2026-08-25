@@ -23,7 +23,7 @@
 //! property is the one that only exists in the pair: the bundle creates the deputy, so the bundle
 //! has to close it.
 //!
-//! The gate is [`busbar_core::egress_auth::gate::authorise`], reached here through
+//! The gate is [`busbar_substrate::egress_auth::gate::authorise`], reached here through
 //! [`authorise_tool_egress`], and it runs at the CREDENTIAL SELECTION SITE rather than at the
 //! catalogue. That placement is the point: a catalogue filter answers "what may this caller SEE",
 //! and the confused deputy is about what busbar's own credentials may be spent on, which is a
@@ -47,7 +47,7 @@
 
 use super::identity::{ServerId, ToolKey};
 use busbar_api::{Redacted, VirtualKey};
-use busbar_core::egress_auth::gate::{EgressRefusal, EgressSubject, Requirement};
+use busbar_substrate::egress_auth::gate::{EgressRefusal, EgressSubject, Requirement};
 
 /// How ONE upstream server is authenticated to. Per server, never a plane-wide default: every MCP
 /// server authenticates independently, so there is no all-plane auth scalar an operator could set
@@ -239,7 +239,7 @@ impl std::fmt::Display for EgressDenied {
     }
 }
 
-/// THE EGRESS GATE FOR THIS PLANE: [`busbar_core::egress_auth::gate::authorise`] with MCP's grant kind and
+/// THE EGRESS GATE FOR THIS PLANE: [`busbar_substrate::egress_auth::gate::authorise`] with MCP's grant kind and
 /// MCP's wording, and nothing else.
 ///
 /// The witness is discarded because this plane's credential planner reads the tool key it already
@@ -252,7 +252,7 @@ pub(crate) fn authorise_tool_egress(
     // `now` is unused on this plane: `REQUIRE_LIVE_KEY` is false, so no expiry is consulted. Passing
     // 0 rather than plumbing a clock says that plainly — a clock argument this plane never reads
     // would be a parameter a future edit could believe was doing something.
-    busbar_core::egress_auth::gate::authorise(caller, key, 0)
+    busbar_substrate::egress_auth::gate::authorise(caller, key, 0)
         .map(|_witness| ())
         .map_err(EgressDenied::from)
 }
@@ -274,7 +274,7 @@ pub(crate) fn authorise_tool_egress(
 /// `prompts/list` is precisely reaching that upstream.
 ///
 /// This is NOT a second gate. It is a second SUBJECT for the one gate in
-/// [`busbar_core::egress_auth::gate`] — the same extension point the A2A plane uses for its own — so the
+/// [`busbar_substrate::egress_auth::gate`] — the same extension point the A2A plane uses for its own — so the
 /// decision, the ordering and the refusal type are all core's.
 #[derive(Clone, Debug)]
 pub(crate) struct ServerVerb<'a> {
@@ -306,7 +306,7 @@ pub(crate) fn authorise_server_egress(
     caller: &VirtualKey,
     subject: &ServerVerb<'_>,
 ) -> Result<(), EgressDenied> {
-    busbar_core::egress_auth::gate::authorise(caller, subject, 0)
+    busbar_substrate::egress_auth::gate::authorise(caller, subject, 0)
         .map(|_witness| ())
         .map_err(|refusal| {
             let denied = EgressDenied::from(refusal);

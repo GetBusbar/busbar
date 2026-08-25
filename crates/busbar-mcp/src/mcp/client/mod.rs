@@ -41,7 +41,7 @@
 //!
 //! ## The trust lifecycle is REUSED, not rebuilt
 //!
-//! `busbar_core::trust` already landed the plane-neutral `Approval` / `Sighting` / `TrustState` /
+//! `busbar_substrate::trust` already landed the plane-neutral `Approval` / `Sighting` / `TrustState` /
 //! `Drift` machine, generic over its pinned artifact, with the state DERIVED rather than stored.
 //! This plane supplies one adapter, [`catalogue::TransportPin`], and gets the whole lifecycle:
 //! register, connect, approve, per-capability approve/reject, `approve_pin`, suspend, unpin,

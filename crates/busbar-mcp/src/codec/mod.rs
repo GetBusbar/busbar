@@ -81,7 +81,7 @@ pub(crate) const METHOD_NOTIFY_RESOURCES_UPDATED: &str = ResourceUpdatedNotifica
 /// MCP'S DECLARATION — and the asymmetry in it is the point. MCP declares a HANDLER and NO CODEC:
 /// its IR is its own, there is no cross-dialect translation into or out of it, and it point-reads no
 /// top-level body key on the pre-materialized path (its method lives in the JSON-RPC envelope, which
-/// `busbar_core::ingress::jsonrpc` parses). A registry that could only hold six-of-a-kind would have
+/// `busbar_substrate::ingress::jsonrpc` parses). A registry that could only hold six-of-a-kind would have
 /// had to grow a special case for it; this one holds a declaration that says `None` four times.
 ///
 /// Handed to `install_protocols` by the composition root (the `busbar` binary); in `busbar-core`'s
@@ -191,7 +191,7 @@ impl McpNotification {
     }
 
     /// Read a notification that has ALREADY been established as a JSON-RPC notification envelope by
-    /// `busbar_core::ingress::jsonrpc`. `None` means "a notification this protocol does not carry",
+    /// `busbar_substrate::ingress::jsonrpc`. `None` means "a notification this protocol does not carry",
     /// which is the correct answer to give and the correct thing to do nothing about: section 4.1
     /// forbids replying, so an unknown notification is dropped rather than refused.
     pub fn read(method: &str, params: Option<&serde_json::Value>) -> Option<Self> {

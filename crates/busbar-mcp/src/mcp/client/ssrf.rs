@@ -7,7 +7,7 @@
 //! ## THE GUARD IS NOT HERE. This module is its dispatch-time CALLER and its VOCABULARY.
 //!
 //! Resolve-then-pin, the address judgement, the redirect refusal and the strict URL recogniser all
-//! live in [`busbar_core::net_guard`], because they were written twice — once here and once for the A2A
+//! live in [`busbar_substrate::net_guard`], because they were written twice — once here and once for the A2A
 //! card fetch — and a security control with two implementations is a security control with one
 //! copy that gets hardened and one that does not. That is not hypothetical: this module once kept
 //! its own composite address predicate built from imported atoms, and the composite unwrapped IPv6
@@ -18,7 +18,7 @@
 //! What stays here is what is genuinely THIS caller's: its knobs, and its WORDING. An operator
 //! diagnosing a refusal needs to read "MCP upstream URL", not "a fetch was refused", and the remedy
 //! sentence names `allow_private` on a SERVER registration. [`SsrfRefusal`] is therefore a
-//! rendering of [`busbar_core::net_guard::GuardRefusal`] rather than a second decision about it.
+//! rendering of [`busbar_substrate::net_guard::GuardRefusal`] rather than a second decision about it.
 //!
 //! ## Why the existing startup guards are not enough, stated precisely
 //!
@@ -48,7 +48,7 @@
 //! targets sub-100µs, while dispatch is milliseconds-class and does DNS. This runs on dispatch, and
 //! the separation is what lets it do a blocking-class lookup without breaking the selection number.
 
-use busbar_core::net_guard::{self, GuardPolicy, GuardRefusal, PinnedTarget};
+use busbar_substrate::net_guard::{self, GuardPolicy, GuardRefusal, PinnedTarget};
 use std::net::{IpAddr, SocketAddr};
 
 /// The operator's addressing posture for ONE upstream. Per server rather than global, because the
@@ -72,7 +72,7 @@ impl SsrfPolicy {
     /// is a decision and a default would hide it. `allow_plaintext: false` — plaintext follows
     /// `allow_private` on this path and has no separate opt-in, so a public `http://` upstream is
     /// refused whatever else is set. `max_redirects: 0` — a 3xx is never followed on a dispatch
-    /// that already sent a credential. The body ceiling is `busbar_core::proxy`'s streaming cap, applied
+    /// that already sent a credential. The body ceiling is `busbar_substrate::proxy`'s streaming cap, applied
     /// by the transport as it reads rather than by a length check afterwards, so the value here is
     /// the same number and not a second opinion about it.
     pub(crate) fn guard(self) -> GuardPolicy {
@@ -125,7 +125,7 @@ pub(crate) enum SsrfRefusal {
     Redirect { status: u16, location: String },
     /// A SHARED BOUND THIS PATH DOES NOT SET: the redirect-chain limit and the body ceiling belong
     /// to a fetch that FOLLOWS redirects and reads a whole document, and dispatch does neither —
-    /// it refuses the first 3xx outright and streams its body under `busbar_core::proxy`'s cap.
+    /// it refuses the first 3xx outright and streams its body under `busbar_substrate::proxy`'s cap.
     ///
     /// Carried rather than flattened into one of the arms above so that if the guard ever hands
     /// this path a bound it does not set, an operator reads the actual reason instead of a nearby
@@ -241,7 +241,7 @@ pub(crate) fn precheck(
 ///
 /// Async because it does DNS, and a dispatch path — after selection, before the outbound
 /// `tools/call` — is the one place a per-request DNS lookup belongs. The judgement and the pin are
-/// [`busbar_core::net_guard`]'s; what is here is the URL this path starts from and the wording it reports
+/// [`busbar_substrate::net_guard`]'s; what is here is the URL this path starts from and the wording it reports
 /// in.
 pub(crate) async fn pin_upstream(
     url: &str,
@@ -257,7 +257,7 @@ pub(crate) async fn pin_upstream(
 /// `SocketAddr`s (it has a port to connect to) while the judgement is about the ADDRESS. The
 /// ordering that makes `allow_private` safe — metadata before the knob — is core's and is not
 /// restated here.
-// NO PRODUCTION CALLER: the pin path judges through `busbar_core::net_guard` directly, which is the whole
+// NO PRODUCTION CALLER: the pin path judges through `busbar_substrate::net_guard` directly, which is the whole
 // point of the unification. This stays because the MCP refusal SUITE drives every range, every
 // metadata endpoint and the mixed-answer case through it, and what those tests prove that core's own
 // suite cannot is that THIS PLANE still renders them in THIS PLANE's words. Deleting it would trade

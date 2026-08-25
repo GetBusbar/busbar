@@ -7,7 +7,7 @@
 //! ## ONE PATHWAY — the equality doctrine, applied to a second transport
 //!
 //! Every line read from stdin is fed to THE SAME serve sequence the HTTP endpoint runs —
-//! [`busbar_core::ingress::protocol::serve`], with the same [`super::envelope::McpWords`], the same
+//! [`busbar_substrate::ingress::protocol::serve`], with the same [`super::envelope::McpWords`], the same
 //! notification observer, and the same [`super::envelope::rpc_dispatch`] behind it. There is no
 //! stdio method table, no stdio refusal shaper and no stdio `_meta` reader: a request that the HTTP
 //! plane would refuse is refused here with the same code and the same sentence, because it runs the
@@ -125,8 +125,8 @@ const WATCH_INTERVAL: Duration = Duration::from_millis(250);
 /// THE SESSION IDENTITY, resolved once at boot and frozen. Field-for-field what the HTTP auth
 /// middleware inserts as request extensions.
 pub(crate) struct SessionIdentity {
-    pub(crate) principal: busbar_core::auth::AuthPrincipal,
-    pub(crate) gov: busbar_core::governance::PlaneRequestCtx,
+    pub(crate) principal: busbar_api::AuthPrincipal,
+    pub(crate) gov: busbar_api::PlaneRequestCtx,
 }
 
 /// Resolve the session identity from the boot credential — the SAME admission the HTTP door runs,
@@ -290,7 +290,7 @@ where
             Ok(0) => break,
             Ok(_) => {}
             Err(e) => {
-                busbar_substrate::diag_debug!(busbar_core::diagnostics::MCP_STDIO_READ_ERROR, error = %e, "mcp stdio serve: read error on stdin; shutting down");
+                busbar_substrate::diag_debug!(busbar_substrate::diagnostics::MCP_STDIO_READ_ERROR, error = %e, "mcp stdio serve: read error on stdin; shutting down");
                 break;
             }
         }
@@ -379,8 +379,8 @@ fn id_key(id: &Value) -> String {
 
 struct Session<W> {
     handle: Arc<AppHandle>,
-    principal: busbar_core::auth::AuthPrincipal,
-    gov: busbar_core::governance::PlaneRequestCtx,
+    principal: busbar_api::AuthPrincipal,
+    gov: busbar_api::PlaneRequestCtx,
     /// ONE writer, one lock: two concurrent responses interleaving inside a line would be a frame
     /// no reader could parse, which is the transport's one absolute rule.
     out: tokio::sync::Mutex<W>,
@@ -435,9 +435,9 @@ impl<W: AsyncWrite + Unpin + Send + 'static> Session<W> {
             // complaint, and answers it in the shared vocabulary.
             return false;
         };
-        let outcome = match busbar_core::ingress::jsonrpc::read_response(&value, id) {
-            Ok(busbar_core::ingress::jsonrpc::Reply::Result(result)) => Ok(result),
-            Ok(busbar_core::ingress::jsonrpc::Reply::Error { code, message }) => Err(format!(
+        let outcome = match busbar_substrate::ingress::jsonrpc::read_response(&value, id) {
+            Ok(busbar_substrate::ingress::jsonrpc::Reply::Result(result)) => Ok(result),
+            Ok(busbar_substrate::ingress::jsonrpc::Reply::Error { code, message }) => Err(format!(
                 "the client answered with an error ({code:?}): {message}"
             )),
             Err(not_answer) => Err(not_answer.to_string()),
@@ -517,9 +517,9 @@ impl<W: AsyncWrite + Unpin + Send + 'static> Session<W> {
             .key
             .as_ref()
             .map_or_else(|| "<ungoverned>".to_string(), |k| k.id.clone());
-        busbar_core::ingress::protocol::serve(
+        busbar_substrate::ingress::protocol::serve(
             &McpWords,
-            busbar_core::ingress::protocol::Request {
+            busbar_substrate::ingress::protocol::Request {
                 present: super::resource(&app).is_some(),
                 // A pipe has no Origin: there is no browser and no rebinding surface. `None` takes
                 // the same arm an agent's headerless HTTP request takes.
@@ -1051,7 +1051,7 @@ impl<W: AsyncWrite + Unpin + Send + 'static> Session<W> {
         app: &Arc<busbar_core::state::App>,
         uri: &str,
     ) -> Option<u64> {
-        let caller = busbar_core::catalogue::Caller {
+        let caller = busbar_substrate::catalogue::Caller {
             key: self.gov.key(),
             now: busbar_core::plane_host::clock_now_secs_over(app),
             generation: busbar_core::trust::validate::Generations::at_admission(

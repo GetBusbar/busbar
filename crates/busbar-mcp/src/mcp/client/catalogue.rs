@@ -16,7 +16,7 @@
 //! and input schema — approved once by the operator and re-compared on every refresh. A digest that
 //! moved is DRIFT, drift DEMOTES the server, and a demoted server serves nothing until an operator
 //! works the change. Crucially the demotion is not a flag anybody has to remember to set: it is
-//! `busbar_core::trust::Approval::state` disagreeing with the last observation, which is the shared trust
+//! `busbar_substrate::trust::Approval::state` disagreeing with the last observation, which is the shared trust
 //! lifecycle this module reuses rather than reimplements.
 //!
 //! ## Why the digest is over a CANONICAL rendering
@@ -59,7 +59,7 @@
 // blanket-allowed, so anything else losing its caller still breaks the build.
 
 use super::identity::{BoundIdentity, ServerId, ToolKey};
-use busbar_core::trust::{Approval, Observation, PinnedArtifact, Sighting, TrustState};
+use busbar_substrate::trust::{Approval, Observation, PinnedArtifact, Sighting, TrustState};
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
@@ -149,7 +149,7 @@ fn write_canonical(value: &serde_json::Value, out: &mut String) {
 ///
 /// The `mechanism` is carried rather than hard-coded so `cert_spki`, `mtls` and a future
 /// `pinned_pubkey` are the same type with different operator-facing labels; the machine never reads
-/// it (`busbar_core::trust` explicitly does not interpret `mechanism()`), so a per-mechanism special case
+/// it (`busbar_substrate::trust` explicitly does not interpret `mechanism()`), so a per-mechanism special case
 /// cannot be acquired by accident.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct TransportPin {
@@ -211,14 +211,14 @@ impl PinnedArtifact for TransportPin {
 
 /// READING AN OPERATOR'S `tools.<server>.pin:` INTO THIS PLANE'S ARTIFACT — the whole of what MCP
 /// writes for it. The sequence, and the refusal of a present-but-blank key, are
-/// [`busbar_core::trust::declared`]'s.
+/// [`busbar_substrate::trust::declared`]'s.
 ///
 /// Construction, not authorization. It answers only "is there a root to lock", and the answer feeds
 /// the lifecycle rather than a dispatch decision: with no artifact there is nothing to hand
 /// [`Approval::declared`], so the registration can only be [`Approval::registered`] — pending, and
 /// serving nothing. That is a fact about what is CONSTRUCTIBLE, which is why `unpinned` cannot be
 /// talked into serving by a later edit here.
-impl busbar_core::trust::declared::Declares for TransportPin {
+impl busbar_substrate::trust::declared::Declares for TransportPin {
     type Mechanism = crate::mcp::config::McpPinMechanism;
 
     fn is_a_root(mechanism: Self::Mechanism) -> bool {
@@ -226,9 +226,9 @@ impl busbar_core::trust::declared::Declares for TransportPin {
     }
 
     fn artifact(
-        reading: busbar_core::trust::declared::Reading<'_, Self::Mechanism>,
+        reading: busbar_substrate::trust::declared::Reading<'_, Self::Mechanism>,
     ) -> Option<Self> {
-        use busbar_core::trust::declared::Reading;
+        use busbar_substrate::trust::declared::Reading;
         match reading {
             // NO ARTIFACT AT ALL for an unrooted registration, which is this plane's ruling and not
             // core's: `Approval::declared` takes the pin BY VALUE, so "unpinned can never be
@@ -267,7 +267,7 @@ pub(crate) struct ServerCatalogue {
     ///
     /// Read by verify-on-call ([`crate::mcp::connect::ledger_of`]) as this plane's `fetched_at`
     /// source, and stamped by [`crate::mcp::connect::stamp`] when it looks.
-    pub(crate) ledger: busbar_core::trust::reverify::Ledger,
+    pub(crate) ledger: busbar_substrate::trust::reverify::Ledger,
 }
 
 impl ServerCatalogue {
@@ -279,7 +279,7 @@ impl ServerCatalogue {
             approval: Approval::registered(),
             sighting: Sighting::Never,
             observed: BTreeMap::new(),
-            ledger: busbar_core::trust::reverify::Ledger::default(),
+            ledger: busbar_substrate::trust::reverify::Ledger::default(),
         }
     }
 
@@ -297,7 +297,7 @@ impl ServerCatalogue {
             approval,
             sighting: Sighting::Never,
             observed: BTreeMap::new(),
-            ledger: busbar_core::trust::reverify::Ledger::default(),
+            ledger: busbar_substrate::trust::reverify::Ledger::default(),
         }
     }
 
@@ -335,7 +335,7 @@ impl ServerCatalogue {
     // entry's sighting (see `crate::mcp::connect::changes`), not from the cached copy of the intent
     // — so this convenience reader has no production caller and deliberately keeps none.
     #[allow(dead_code)]
-    pub(crate) fn drift(&self) -> busbar_core::trust::Drift {
+    pub(crate) fn drift(&self) -> busbar_substrate::trust::Drift {
         self.approval.drift(&self.sighting)
     }
 

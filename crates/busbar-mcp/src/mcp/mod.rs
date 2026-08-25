@@ -126,7 +126,7 @@ pub const PLANE_DECL: busbar_core::plane::registry::PlaneDecl =
         scope_kinds: &["mcp_server", "mcp_tool"],
         subject_noun: "MCP server",
         audit_kind: "mcp_server",
-        wire_format_names: || &[busbar_core::plane::WIRE_JSONRPC],
+        wire_format_names: || &[busbar_substrate::plane::WIRE_JSONRPC],
         // THE MCP DOOR, from the validated resource. One claim — the ingress mount — spoken in
         // JSON-RPC, and the audience is that resource's canonical URI. Whenever `mcp:` is configured
         // the plane both mounts and admits, so the ratchet's "mounted ⇒ admitted" holds by
@@ -135,7 +135,10 @@ pub const PLANE_DECL: busbar_core::plane::registry::PlaneDecl =
             let r = slot
                 .downcast_ref::<McpResource>()
                 .expect("the mcp plane's dispatch slot is an McpResource");
-            vec![(r.mount_path().to_string(), busbar_core::plane::WIRE_JSONRPC)]
+            vec![(
+                r.mount_path().to_string(),
+                busbar_substrate::plane::WIRE_JSONRPC,
+            )]
         },
         admission: |slot| {
             let r = slot
@@ -443,7 +446,7 @@ pub(crate) fn mcp_hydrate(ctx: &busbar_core::plane::registry::BootCtx) -> Result
             // rather than summed into `principals`.
             if r.empty_chains > 0 {
                 busbar_substrate::diag_warn!(
-                    busbar_core::diagnostics::MCP_CALLLOG_EMPTY_CHAINS,
+                    busbar_substrate::diagnostics::MCP_CALLLOG_EMPTY_CHAINS,
                     principals = r.empty_chains,
                     "the durable MCP call log enumerates these principals but holds NO records \
                      for them; their chains reopen at seq 1"
@@ -451,14 +454,14 @@ pub(crate) fn mcp_hydrate(ctx: &busbar_core::plane::registry::BootCtx) -> Result
             }
             for brk in &r.chain_breaks {
                 busbar_substrate::diag_error!(
-                    busbar_core::diagnostics::MCP_CALLLOG_CHAIN_VERIFY_FAILED,
+                    busbar_substrate::diagnostics::MCP_CALLLOG_CHAIN_VERIFY_FAILED,
                     break_detail = %brk,
                     "MCP per-call CHAIN VERIFICATION FAILED on restore — TAMPER EVIDENCE"
                 );
             }
         }
         Err(e) => busbar_substrate::diag_warn!(
-            busbar_core::diagnostics::MCP_CALLLOG_UNREAD,
+            busbar_substrate::diagnostics::MCP_CALLLOG_UNREAD,
             error = %e,
             "could not read the durable MCP per-call log; chains start at their persisted \
              tail being unknown, which means a principal with rows in the store may reopen at \
@@ -478,7 +481,7 @@ pub(crate) fn mcp_hydrate(ctx: &busbar_core::plane::registry::BootCtx) -> Result
     match crate::mcp::demotion::hydrate(app) {
         0 => {}
         n => busbar_substrate::diag_warn!(
-            busbar_core::diagnostics::MCP_DEMOTIONS_RESTORED,
+            busbar_substrate::diagnostics::MCP_DEMOTIONS_RESTORED,
             servers = n,
             "MCP upstream demotions restored from the durable governance store: these servers \
              were quarantined before the last restart and are refused until an operator works \
@@ -658,7 +661,7 @@ pub(crate) mod config;
 pub(crate) mod connect;
 
 /// THIS REVISION'S ENVELOPE RULES. Not `ingress` any more, and the rename is the statement: the
-/// ingress SEQUENCE is `busbar_core::ingress::protocol`, once, for every JSON-RPC plane. Every rule left
+/// ingress SEQUENCE is `busbar_substrate::ingress::protocol`, once, for every JSON-RPC plane. Every rule left
 /// in here is a statement about the ENVELOPE — `params._meta`, the mirrored routing headers, the
 /// protocol version — which is what its own header said it was all along.
 pub(crate) mod envelope;
@@ -897,10 +900,10 @@ impl McpResource {
     /// THE OPERATOR'S BROWSER-ORIGIN ALLOWLIST, as data.
     ///
     /// This used to be `origin_allowed(&self, origin) -> bool` — the DECISION. The decision is now
-    /// `busbar_core::ingress::protocol::origin_admitted`, made once for every JSON-RPC plane, because
+    /// `busbar_substrate::ingress::protocol::origin_admitted`, made once for every JSON-RPC plane, because
     /// DNS-rebinding is not a fact about MCP: A2A had no `Origin` check at all for as long as this
     /// one was a method here. The plane keeps the DATA and core keeps the verdict, which is
-    /// `busbar_core::net_guard`'s rule stated for a second concern — a caller keeps its refusal
+    /// `busbar_substrate::net_guard`'s rule stated for a second concern — a caller keeps its refusal
     /// VOCABULARY, not its DECISION.
     ///
     /// The empty allowlist admits no browser origin, which is the documented default; loopback is

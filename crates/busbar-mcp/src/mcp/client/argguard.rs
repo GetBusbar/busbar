@@ -69,7 +69,7 @@ use super::ssrf::SsrfPolicy;
 use busbar_core::config_validate::{
     extract_normalized_host, host_is_private_or_loopback, scheme_is, ssrf_blocked_host,
 };
-use busbar_core::net_guard::is_alternate_ipv4_encoding;
+use busbar_substrate::net_guard::is_alternate_ipv4_encoding;
 use serde_json::Value;
 
 /// How deep into the ARGUMENT value the walk goes before refusing. Arguments arrive as already
@@ -365,7 +365,7 @@ fn judge_absolute(url: &str, policy: SsrfPolicy) -> Result<(), ArgWhy> {
 ///
 /// Order is load-bearing. Metadata first and unconditionally, so an `allow_private` server cannot
 /// reach the one endpoint whose whole value to an attacker is that it hands out credentials.
-/// Obfuscated encodings next and also unconditionally, matching `busbar_core::net_guard::judge_host_name`
+/// Obfuscated encodings next and also unconditionally, matching `busbar_substrate::net_guard::judge_host_name`
 /// as `super::ssrf::precheck` does: a value
 /// spelled so the check cannot read it is refused rather than guessed at. Internal addressing last,
 /// because that is the one an operator can legitimately opt into.

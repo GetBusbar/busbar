@@ -106,7 +106,7 @@ impl SamplingSpend {
 /// over less than the upstream sent is an answer to a question nobody asked.
 pub(crate) async fn satisfy_upstream_ask(
     app: &std::sync::Arc<busbar_core::state::App>,
-    gov: &busbar_core::governance::PlaneRequestCtx,
+    gov: &busbar_api::PlaneRequestCtx,
     ask: &super::inputreq::Ask,
     server: &str,
     cfg: Option<&super::config::SamplingCfg>,
@@ -263,7 +263,7 @@ fn chat_body(
 /// `CreateMessageResult`.
 async fn complete(
     app: &std::sync::Arc<busbar_core::state::App>,
-    gov: &busbar_core::governance::PlaneRequestCtx,
+    gov: &busbar_api::PlaneRequestCtx,
     cfg: &super::config::SamplingCfg,
     body: serde_json::Value,
 ) -> Result<serde_json::Value, String> {

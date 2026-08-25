@@ -51,7 +51,7 @@
 use axum::http::StatusCode;
 use axum::response::Response;
 
-use busbar_core::catalogue::CatalogueItem;
+use busbar_substrate::catalogue::CatalogueItem;
 
 use super::callerask::{self, AskDecision, Bind, Retry};
 use super::catalogue::{DispatchRefusal, ToolEntry};
@@ -148,7 +148,7 @@ pub(crate) struct Ctx<'a> {
     /// re-read rather than a comparison of a value against itself.
     pub(crate) handle: &'a std::sync::Arc<busbar_core::state::AppHandle>,
     /// The caller's resolved governance key. `None` when governance is disabled.
-    pub(crate) gov: &'a busbar_core::governance::PlaneRequestCtx,
+    pub(crate) gov: &'a busbar_api::PlaneRequestCtx,
     /// The attributed principal, for the audit row.
     pub(crate) actor: &'a str,
     /// The CALLER'S DECLARED CAPABILITIES, exactly as they arrived in
@@ -210,8 +210,8 @@ impl Ctx<'_> {
     /// `at_admission`, because a listing IS its own admission: there is no earlier snapshot for it
     /// to have outlived. `tools/call` says [`busbar_core::trust::validate::Generations::since`] instead,
     /// out loud, at its own call site.
-    fn caller(&self) -> busbar_core::catalogue::Caller<'_> {
-        busbar_core::catalogue::Caller {
+    fn caller(&self) -> busbar_substrate::catalogue::Caller<'_> {
+        busbar_substrate::catalogue::Caller {
             key: self.gov.key(),
             now: busbar_core::plane_host::clock_now_secs_over(self.app),
             generation: busbar_core::trust::validate::Generations::at_admission(
@@ -414,7 +414,7 @@ fn tasks_cancel(
     busbar_core::plane::auditlog::emit_admin_hostless_now(
         "mcp_task.cancel",
         &format!("mcp_task:{}", task.id),
-        busbar_core::audit::vocab::OUTCOME_APPLIED,
+        busbar_substrate::audit::vocab::OUTCOME_APPLIED,
         ctx.actor,
     );
     result(id, serde_json::json!({}))
@@ -742,7 +742,7 @@ fn prompts_get(
             busbar_core::plane::auditlog::emit_admin_hostless_now(
                 "mcp.caller_ask",
                 &format!("mcp_prompt:{}", prompt.namespaced),
-                busbar_core::audit::vocab::OUTCOME_APPLIED,
+                busbar_substrate::audit::vocab::OUTCOME_APPLIED,
                 ctx.actor,
             );
             return input_required_result(id, &asks, &request_state);
@@ -1311,7 +1311,7 @@ async fn tools_call(
         busbar_core::plane::auditlog::emit_admin_hostless_now(
             "mcp_tool.call",
             &format!("mcp_tool:{}", selected.namespaced),
-            busbar_core::audit::vocab::OUTCOME_REJECTED,
+            busbar_substrate::audit::vocab::OUTCOME_REJECTED,
             ctx.actor,
         );
         return log.refused("tasks_capability_undeclared", missing_tasks_capability(id));
@@ -1389,7 +1389,7 @@ async fn tools_call(
             busbar_core::plane::auditlog::emit_admin_hostless_now(
                 "mcp.caller_ask",
                 &format!("mcp_tool:{}", selected.namespaced),
-                busbar_core::audit::vocab::OUTCOME_APPLIED,
+                busbar_substrate::audit::vocab::OUTCOME_APPLIED,
                 ctx.actor,
             );
             return log.refused(
@@ -1536,7 +1536,7 @@ async fn tools_call(
             busbar_core::plane::auditlog::emit_admin_hostless_now(
                 "mcp_tool.call",
                 &format!("mcp_tool:{}", selected.namespaced),
-                busbar_core::audit::vocab::OUTCOME_REJECTED,
+                busbar_substrate::audit::vocab::OUTCOME_REJECTED,
                 ctx.actor,
             );
             tracing::info!(
@@ -1721,7 +1721,7 @@ async fn tools_call(
             // silently-truncated one would be answering a question nobody asked.
             if let Some(field) = upstream_ask_field(&value) {
                 busbar_substrate::diag_error!(
-                    busbar_core::diagnostics::MCP_ASK_RECOGNISER_MISSED,
+                    busbar_substrate::diagnostics::MCP_ASK_RECOGNISER_MISSED,
                     tool = %selected.namespaced,
                     field,
                     "an upstream's input-required result reached the terminal check: the ask \
@@ -1730,7 +1730,7 @@ async fn tools_call(
                 busbar_core::plane::auditlog::emit_admin_hostless_now(
                     "mcp_tool.call",
                     &resource,
-                    busbar_core::audit::vocab::OUTCOME_REJECTED,
+                    busbar_substrate::audit::vocab::OUTCOME_REJECTED,
                     ctx.actor,
                 );
                 return log.refused(
@@ -1767,7 +1767,7 @@ async fn tools_call(
                 if let Some(structured) = value.get("structuredContent") {
                     if let Err(why) = super::outputschema::check(structured, schema) {
                         busbar_substrate::diag_debug!(
-                            busbar_core::diagnostics::MCP_OUTPUT_SCHEMA_VIOLATION,
+                            busbar_substrate::diagnostics::MCP_OUTPUT_SCHEMA_VIOLATION,
                             tool = %selected.namespaced,
                             why = %why,
                             "mcp upstream returned structuredContent violating the published outputSchema"
@@ -1775,7 +1775,7 @@ async fn tools_call(
                         busbar_core::plane::auditlog::emit_admin_hostless_now(
                             "mcp_tool.call",
                             &resource,
-                            busbar_core::audit::vocab::OUTCOME_REJECTED,
+                            busbar_substrate::audit::vocab::OUTCOME_REJECTED,
                             ctx.actor,
                         );
                         return log.dispatched_with_reason(
@@ -1800,7 +1800,7 @@ async fn tools_call(
             busbar_core::plane::auditlog::emit_admin_hostless_now(
                 "mcp_tool.call",
                 &resource,
-                busbar_core::audit::vocab::OUTCOME_APPLIED,
+                busbar_substrate::audit::vocab::OUTCOME_APPLIED,
                 ctx.actor,
             );
             // Tool OUTPUT is markup-normalised before it re-enters model context: an upstream's
@@ -1812,11 +1812,11 @@ async fn tools_call(
             busbar_core::plane::auditlog::emit_admin_hostless_now(
                 "mcp_tool.call",
                 &resource,
-                busbar_core::audit::vocab::OUTCOME_REJECTED,
+                busbar_substrate::audit::vocab::OUTCOME_REJECTED,
                 ctx.actor,
             );
             busbar_substrate::diag_debug!(
-                busbar_core::diagnostics::MCP_TOOLCALL_REFUSED,
+                busbar_substrate::diagnostics::MCP_TOOLCALL_REFUSED,
                 tool = %selected.namespaced,
                 reason = refusal.audit_reason(),
                 "mcp tools/call refused"
@@ -1863,11 +1863,11 @@ async fn tools_call(
             busbar_core::plane::auditlog::emit_admin_hostless_now(
                 "mcp_tool.call",
                 &resource,
-                busbar_core::audit::vocab::OUTCOME_REJECTED,
+                busbar_substrate::audit::vocab::OUTCOME_REJECTED,
                 ctx.actor,
             );
             busbar_substrate::diag_debug!(
-                busbar_core::diagnostics::MCP_TOOLCALL_UPSTREAM_FAILED,
+                busbar_substrate::diagnostics::MCP_TOOLCALL_UPSTREAM_FAILED,
                 tool = %selected.namespaced,
                 reason = %reason,
                 "mcp tools/call upstream failed"
@@ -2029,7 +2029,7 @@ async fn create_task(
     busbar_core::plane::auditlog::emit_admin_hostless_now(
         "mcp_tool.call",
         &format!("mcp_tool:{}", selected.namespaced),
-        busbar_core::audit::vocab::OUTCOME_APPLIED,
+        busbar_substrate::audit::vocab::OUTCOME_APPLIED,
         ctx.actor,
     );
     // RECORDED AS `refused`/`task_created`, and the module header for `calllog` says why: at the
@@ -2241,11 +2241,11 @@ fn refuse_setup(
     busbar_core::plane::auditlog::emit_admin_hostless_now(
         "mcp_tool.call",
         &format!("mcp_tool:{namespaced}"),
-        busbar_core::audit::vocab::OUTCOME_REJECTED,
+        busbar_substrate::audit::vocab::OUTCOME_REJECTED,
         ctx.actor,
     );
     busbar_substrate::diag_debug!(
-        busbar_core::diagnostics::MCP_TOOLCALL_REFUSED_PRE_UPSTREAM,
+        busbar_substrate::diagnostics::MCP_TOOLCALL_REFUSED_PRE_UPSTREAM,
         tool = %namespaced,
         reason = denied.audit_reason(),
         "mcp tools/call refused before the upstream"
@@ -2273,11 +2273,11 @@ fn refuse_catalogue(
     refusal: &DispatchRefusal,
     id: Option<serde_json::Value>,
 ) -> Response {
-    use busbar_core::ingress::protocol::Words as _;
+    use busbar_substrate::ingress::protocol::Words as _;
     busbar_core::plane::auditlog::emit_admin_hostless_now(
         "mcp_tool.call",
         &format!("mcp_tool:{name}"),
-        busbar_core::audit::vocab::OUTCOME_REJECTED,
+        busbar_substrate::audit::vocab::OUTCOME_REJECTED,
         ctx.actor,
     );
     // A caller that may not see a tool and a caller naming one that does not exist get the SAME
@@ -2297,12 +2297,14 @@ fn refuse_catalogue(
         | DispatchRefusal::NotPinned(_)
         | DispatchRefusal::Quarantined { .. } => StatusCode::FORBIDDEN,
     };
-    super::envelope::McpWords.refuse(busbar_core::ingress::protocol::CoreRefusal::Admission {
-        id: id.unwrap_or(serde_json::Value::Null),
-        status,
-        message: refusal.to_string(),
-        reason: Some(refusal.audit_reason()),
-    })
+    super::envelope::McpWords.refuse(
+        busbar_substrate::ingress::protocol::CoreRefusal::Admission {
+            id: id.unwrap_or(serde_json::Value::Null),
+            status,
+            message: refusal.to_string(),
+            reason: Some(refusal.audit_reason()),
+        },
+    )
 }
 
 /// The JSON-RPC code busbar answers a governance refusal with.
@@ -2374,7 +2376,7 @@ fn refuse_upstream_unavailable(
 /// un-pooled path's records are byte-identical to the breaker unit's).
 fn route_refusal_reason(refused: &super::reroute::RouteRefused) -> &'static str {
     match &refused.refusal {
-        busbar_core::failover::Refusal::NotInterchangeable { .. } => refused.refusal.reason(),
+        busbar_substrate::failover::Refusal::NotInterchangeable { .. } => refused.refusal.reason(),
         _ => REASON_UPSTREAM_UNAVAILABLE,
     }
 }
@@ -2384,7 +2386,7 @@ fn refuse_route(
     route: &super::reroute::PoolRoute,
     refused: &super::reroute::RouteRefused,
 ) -> Response {
-    if let busbar_core::failover::Refusal::NotInterchangeable { .. } = &refused.refusal {
+    if let busbar_substrate::failover::Refusal::NotInterchangeable { .. } = &refused.refusal {
         return error(
             StatusCode::SERVICE_UNAVAILABLE,
             id,
@@ -2560,11 +2562,11 @@ fn refuse_ask(
     busbar_core::plane::auditlog::emit_admin_hostless_now(
         "mcp.caller_ask",
         resource,
-        busbar_core::audit::vocab::OUTCOME_REJECTED,
+        busbar_substrate::audit::vocab::OUTCOME_REJECTED,
         ctx.actor,
     );
     busbar_substrate::diag_debug!(
-        busbar_core::diagnostics::MCP_CALLER_ASK_REFUSED,
+        busbar_substrate::diagnostics::MCP_CALLER_ASK_REFUSED,
         capability = %resource,
         reason = refusal.audit_reason(),
         "mcp caller-ask refused"

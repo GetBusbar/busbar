@@ -49,7 +49,7 @@ use base64::Engine as _;
 use std::sync::Arc;
 
 use super::sse;
-use busbar_core::ingress::protocol::CoreRefusal;
+use busbar_substrate::ingress::protocol::CoreRefusal;
 
 /// The single MCP protocol revision busbar implements.
 ///
@@ -117,7 +117,7 @@ pub(crate) const H_PROTOCOL_VERSION: &str = "mcp-protocol-version";
 pub(super) mod code {
     // `-32700` (parse error) and `-32600` (invalid request) ARE NOT HERE ANY MORE. They are the base
     // protocol's own codes, they are emitted by two planes, and both are now owned and emitted by
-    // `busbar_core::ingress::jsonrpc` — the one reader that decides what an invalid envelope is. Copying
+    // `busbar_substrate::ingress::jsonrpc` — the one reader that decides what an invalid envelope is. Copying
     // them back here would recreate the second opinion this module was just moved off.
 
     /// JSON-RPC standard: the method is not implemented. MCP pairs it with `404`, not `200`.
@@ -150,7 +150,7 @@ pub(super) mod code {
 #[derive(Default)]
 pub(crate) struct McpWords;
 
-impl busbar_core::ingress::protocol::Words for McpWords {
+impl busbar_substrate::ingress::protocol::Words for McpWords {
     fn refuse(&self, refusal: CoreRefusal<'_>) -> Response {
         match refusal {
             // Unreachable while the mount and the config are created in one act; still answered
@@ -164,13 +164,13 @@ impl busbar_core::ingress::protocol::Words for McpWords {
             ),
             // The RFC 9728 endpoint is NOT a JSON-RPC endpoint, so its refusal is not a JSON-RPC
             // envelope. Separate arm, separate sentence — see `CoreRefusal::MetadataUnavailable`.
-            CoreRefusal::MetadataUnavailable => busbar_core::ingress::protocol::json_refusal(
+            CoreRefusal::MetadataUnavailable => busbar_substrate::ingress::protocol::json_refusal(
                 StatusCode::NOT_FOUND,
                 serde_json::json!({ "error": "not_found" }),
             ),
             // `403`, which `HTTP.ORIGIN-VALIDATION` names for exactly this: "If the `Origin`
             // header is present and invalid, servers MUST respond with HTTP 403 Forbidden."
-            CoreRefusal::ForbiddenOrigin => busbar_core::ingress::protocol::json_refusal(
+            CoreRefusal::ForbiddenOrigin => busbar_substrate::ingress::protocol::json_refusal(
                 StatusCode::FORBIDDEN,
                 serde_json::json!({
                     "error": "invalid_origin",
@@ -181,9 +181,9 @@ impl busbar_core::ingress::protocol::Words for McpWords {
             // Both of these are the BASE PROTOCOL's own codes, so both are rendered by the base
             // protocol's own reader rather than restated here — that is the arrangement `code`
             // above records, and it is why `-32700` and `-32600` are not in it.
-            CoreRefusal::NotJson => busbar_core::ingress::jsonrpc::parse_error(),
+            CoreRefusal::NotJson => busbar_substrate::ingress::jsonrpc::parse_error(),
             CoreRefusal::InvalidEnvelope(invalid) => {
-                busbar_core::ingress::jsonrpc::refused(invalid)
+                busbar_substrate::ingress::jsonrpc::refused(invalid)
             }
             // `404` + `-32601`: what this revision requires of a server that does not implement a
             // method, and the answer that stays correct for every method still unimplemented.
@@ -215,7 +215,7 @@ impl busbar_core::ingress::protocol::Words for McpWords {
 }
 
 /// THE RFC 9728 FACTS THIS PLANE PUBLISHES. The document itself — its member order, its two
-/// headers and its `bearer_methods_supported` rule — is `busbar_core::ingress::protocol`'s, once. This
+/// headers and its `bearer_methods_supported` rule — is `busbar_substrate::ingress::protocol`'s, once. This
 /// states only what differs between deployments.
 ///
 /// `resource` is the audience a client must ask its authorization server to mint for, and it is
@@ -224,9 +224,9 @@ impl busbar_core::ingress::protocol::Words for McpWords {
 impl busbar_core::ingress::protocol::ResourceMetadata for McpWords {
     fn document(
         app: &busbar_core::state::App,
-    ) -> Option<busbar_core::ingress::protocol::Metadata<'_>> {
+    ) -> Option<busbar_substrate::ingress::protocol::Metadata<'_>> {
         let resource = super::resource(app)?;
-        Some(busbar_core::ingress::protocol::Metadata {
+        Some(busbar_substrate::ingress::protocol::Metadata {
             resource: std::borrow::Cow::Borrowed(resource.canonical_uri()),
             authorization_servers: resource.authorization_servers(),
             scopes_supported: resource.scopes_supported(),
@@ -269,10 +269,8 @@ pub(crate) async fn rpc(
     axum::extract::State(handle): axum::extract::State<
         std::sync::Arc<busbar_core::state::AppHandle>,
     >,
-    axum::extract::Extension(gov): axum::extract::Extension<
-        busbar_core::governance::PlaneRequestCtx,
-    >,
-    axum::extract::Extension(principal): axum::extract::Extension<busbar_core::auth::AuthPrincipal>,
+    axum::extract::Extension(gov): axum::extract::Extension<busbar_api::PlaneRequestCtx>,
+    axum::extract::Extension(principal): axum::extract::Extension<busbar_api::AuthPrincipal>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
@@ -290,10 +288,10 @@ pub(crate) async fn rpc(
     // STEPS 1, 2, 4, 5, 6, 7, 8 AND 13 ARE CORE'S, and this plane no longer states any of them.
     // What follows the call is steps 9 to 12: `params._meta`, the mirrored routing headers, the
     // method vocabulary and the verb dispatch — the four the measurement in
-    // `busbar_core::ingress::protocol` found are genuinely this protocol's.
-    busbar_core::ingress::protocol::serve(
+    // `busbar_substrate::ingress::protocol` found are genuinely this protocol's.
+    busbar_substrate::ingress::protocol::serve(
         &McpWords,
-        busbar_core::ingress::protocol::Request {
+        busbar_substrate::ingress::protocol::Request {
             present: resource.is_some(),
             origin: header_str(headers, "origin"),
             allowed_origins: resource.as_ref().map_or(&[][..], |r| r.allowed_origins()),
@@ -332,7 +330,7 @@ pub(crate) async fn rpc(
 /// STEPS 9 TO 12 — everything after the envelope, and everything this protocol genuinely owns.
 ///
 /// `None` means step 13: the method vocabulary does not carry this method, which is
-/// `busbar_core::ingress::protocol`'s to answer with `404` + `-32601`. That was always the correct answer
+/// `busbar_substrate::ingress::protocol`'s to answer with `404` + `-32601`. That was always the correct answer
 /// for an unimplemented method and did not have to change when the table gained entries.
 /// `pub(in crate::mcp)` because the STDIO SERVE MODE (`super::stdio_serve`) runs THIS function —
 /// the equality doctrine's teeth: a second transport binds the same dispatch, never a parallel one.
@@ -340,8 +338,8 @@ pub(crate) async fn rpc(
 pub(in crate::mcp) async fn rpc_dispatch(
     app: &Arc<busbar_core::state::App>,
     handle: &std::sync::Arc<busbar_core::state::AppHandle>,
-    gov: &busbar_core::governance::PlaneRequestCtx,
-    principal: &busbar_core::auth::AuthPrincipal,
+    gov: &busbar_api::PlaneRequestCtx,
+    principal: &busbar_api::AuthPrincipal,
     headers: &HeaderMap,
     value: serde_json::Value,
     id: serde_json::Value,
@@ -756,7 +754,7 @@ pub(in crate::mcp) fn error_response(
     let id = id.unwrap_or(serde_json::Value::Null);
     (
         status,
-        axum::Json(busbar_core::ingress::jsonrpc::error_body(
+        axum::Json(busbar_substrate::ingress::jsonrpc::error_body(
             id, code, message, data,
         )),
     )

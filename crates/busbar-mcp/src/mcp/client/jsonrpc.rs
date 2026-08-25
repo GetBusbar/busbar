@@ -377,10 +377,10 @@ impl ServerAsk {
 /// re-adding the thing the revision removed.
 ///
 /// The envelope rules themselves — the `jsonrpc` member, the `id` cases, exactly-one-of
-/// `result`/`error` — are [`busbar_core::ingress::jsonrpc::read_response`]'s, shared with the A2A relay,
+/// `result`/`error` — are [`busbar_substrate::ingress::jsonrpc::read_response`]'s, shared with the A2A relay,
 /// for the reason the request side already established: one concern, one reader.
 pub(crate) fn parse_response(body: &[u8], sent_id: u64) -> RpcOutcome {
-    use busbar_core::ingress::jsonrpc::{read_response, NotAnAnswerKind, Reply};
+    use busbar_substrate::ingress::jsonrpc::{read_response, NotAnAnswerKind, Reply};
 
     let Ok(value) = serde_json::from_slice::<serde_json::Value>(body) else {
         return RpcOutcome::Malformed("upstream response is not valid JSON".to_string());

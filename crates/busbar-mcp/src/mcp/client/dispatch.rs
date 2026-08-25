@@ -57,7 +57,7 @@ use super::egress::EgressDenied;
 use super::identity::{BoundIdentity, NameError, ToolKey};
 use super::ssrf::{SsrfPolicy, SsrfRefusal};
 use busbar_api::VirtualKey;
-use busbar_core::trust::TrustState;
+use busbar_substrate::trust::TrustState;
 
 /// A resolved candidate, stamped with the generation it was resolved under.
 ///

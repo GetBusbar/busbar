@@ -158,7 +158,7 @@ pub(crate) fn reresolve_gates(next: &mut busbar_core::state::App) {
 //
 // Every value below is DERIVED on read from the operator's standing approval and the last sighting.
 // Nothing here stores a state, and nothing here takes a transition — the transitions are
-// `busbar_core::trust`'s and this is the window onto them.
+// `busbar_substrate::trust`'s and this is the window onto them.
 
 /// ONE CAPABILITY'S STANDING STATUS, the three-way answer a trust view has to render.
 ///
@@ -249,7 +249,7 @@ pub(crate) fn health_view(report: &crate::mcp::connect::ConnectReport) -> McpHea
     McpHealthView {
         name: report.server.clone(),
         state: report.state_word(),
-        serving: report.state == busbar_core::trust::TrustState::Approved,
+        serving: report.state == busbar_substrate::trust::TrustState::Approved,
         contacted: report.observed > 0 || report.failure.is_some(),
         failure: report.failure.clone(),
         observed_tools: report.observed,
@@ -265,7 +265,7 @@ fn capability_views(
     server: &crate::mcp::catalogue::ServerEntry,
     cfg: &crate::mcp::config::McpServerDefCfg,
 ) -> Vec<McpCapabilityView> {
-    use busbar_core::trust::CapabilityApproval;
+    use busbar_substrate::trust::CapabilityApproval;
     let mut out: std::collections::BTreeMap<String, McpCapabilityView> =
         std::collections::BTreeMap::new();
     for (tool, capability) in server.approval.capabilities() {

@@ -128,7 +128,7 @@ impl McpPinMechanism {
     /// is meaningless with it, which is the rule the object form exists to make expressible.
     ///
     /// ONE predicate answers both questions on purpose. It is the boot-time rule below AND the one
-    /// question [`busbar_core::trust::declared`] asks of a mechanism, so the reader that builds the
+    /// question [`busbar_substrate::trust::declared`] asks of a mechanism, so the reader that builds the
     /// artifact and the refusal that fires at boot cannot come to disagree about what "rooted"
     /// means.
     pub(crate) fn is_a_root(self) -> bool {
@@ -161,8 +161,8 @@ pub(crate) struct ServerPinCfg {
 
 impl ServerPinCfg {
     /// This `pin:` object as the plane-neutral reader takes it. A projection, not a decision: every
-    /// question asked of it is [`busbar_core::trust::declared`]'s, and this plane's answers are its
-    /// [`busbar_core::trust::declared::Declares`] impl in [`super::client::catalogue`].
+    /// question asked of it is [`busbar_substrate::trust::declared`]'s, and this plane's answers are its
+    /// [`busbar_substrate::trust::declared::Declares`] impl in [`super::client::catalogue`].
     ///
     /// `fingerprint` is `None` and there is no field for it. An MCP server offers ONE opaque
     /// transport-layer value and no manifest fingerprint an operator could have approved out of
@@ -170,8 +170,8 @@ impl ServerPinCfg {
     /// artifact a type parameter in the first place.
     pub(crate) fn declaration(
         &self,
-    ) -> busbar_core::trust::declared::Declaration<'_, McpPinMechanism> {
-        busbar_core::trust::declared::Declaration {
+    ) -> busbar_substrate::trust::declared::Declaration<'_, McpPinMechanism> {
+        busbar_substrate::trust::declared::Declaration {
             mechanism: self.mechanism,
             key: self.key.as_deref(),
             fingerprint: None,
@@ -841,14 +841,14 @@ pub(crate) struct TokenExchangeCfg {
     /// BUSBAR'S OWN token — the SUBJECT of the exchange, never the caller's. A `SecretRef` rather
     /// than an inline string so the value follows the same resolution path (`env` / `file` / a
     /// trusted secret plugin) every other credential on this engine does.
-    pub(crate) subject_token: busbar_core::config::SecretRef,
+    pub(crate) subject_token: busbar_api::SecretRef,
     /// RFC 8693 §2.1 `subject_token_type`. Defaulted to an access token, which is what busbar's own
     /// ambient credential is.
     #[serde(default = "default_subject_token_type")]
     pub(crate) subject_token_type: String,
 }
 
-/// `Eq` is asserted rather than derived because [`busbar_core::config::SecretRef`] derives only
+/// `Eq` is asserted rather than derived because [`busbar_api::SecretRef`] derives only
 /// `PartialEq`. The relation is still a true equivalence — every field compares structurally and
 /// none of them is a float — and the snapshot types this is embedded in (`ToolsCfg`, `ServerEntry`,
 /// `Catalogue`) require `Eq` so a config apply can be compared for a no-op.
@@ -934,10 +934,10 @@ pub(crate) enum ChildEnvValue {
     /// reason: a spawn happens on the dispatch path, which holds no plugin host handle. A
     /// `kind: secret` PLUGIN module here fails the spawn with a named refusal rather than silently
     /// handing the child an empty variable.
-    Secret(busbar_core::config::SecretRef),
+    Secret(busbar_api::SecretRef),
 }
 
-/// `Eq` is asserted rather than derived because [`busbar_core::config::SecretRef`] derives only
+/// `Eq` is asserted rather than derived because [`busbar_api::SecretRef`] derives only
 /// `PartialEq`. The relation is still a true equivalence — a `String` and a module name plus opaque
 /// JSON settings, none of them a float — and the snapshot types this rides in must be comparable so
 /// a config apply can be recognised as a no-op.
@@ -1025,11 +1025,11 @@ impl busbar_core::plane::config::PlaneCfg for ToolsCfg {
     /// `tools.<name>.env.<var>` a stdio child is handed. Moved here VERBATIM from the core
     /// `config_validate::secret_refs` walk so the exhaustive destructure that forces a
     /// secret/not-secret decision on every new field lives beside the fields it guards.
-    fn secret_refs(&self) -> Vec<(String, &busbar_core::config::SecretRef)> {
+    fn secret_refs(&self) -> Vec<(String, &busbar_api::SecretRef)> {
         // EXHAUSTIVE, no `..`: adding a field to `McpServerDefCfg` / `TokenExchangeCfg` fails to build
         // with `E0027 pattern does not mention field` until somebody decides, here, whether it carries
         // a secret. That force used to live in `config_validate::secret_refs`; it moved with the sweep.
-        let mut refs: Vec<(String, &busbar_core::config::SecretRef)> = Vec::new();
+        let mut refs: Vec<(String, &busbar_api::SecretRef)> = Vec::new();
         for (name, server) in &self.servers {
             let McpServerDefCfg {
                 token_exchange,
@@ -1170,7 +1170,7 @@ impl busbar_core::plane::config::PlaneCfg for ToolsCfg {
 /// [`busbar_core::config::named_map::NamedMapSection::parse_def`], so the two paths cannot drift into
 /// different grammars — the ONE GRAMMAR, TWO PATHS rule.
 /// THE OPERATOR'S MAX VERIFICATION STALENESS for one registration, lifted into the plane-neutral
-/// [`busbar_core::trust::reverify::Policy`] the verify-on-call gate consumes.
+/// [`busbar_substrate::trust::reverify::Policy`] the verify-on-call gate consumes.
 ///
 /// Config in, policy out, no clock and no I/O — so the bound an operator wrote and the bound the
 /// decision uses are provably the same value rather than two parallel readings of it. Deliberately
@@ -1186,10 +1186,10 @@ impl busbar_core::plane::config::PlaneCfg for ToolsCfg {
 /// BEFORE the call, and demotion is the half that is never held on either plane.
 pub(crate) fn verify_policy_for(
     def: &McpServerDefCfg,
-) -> Result<busbar_core::trust::reverify::Policy, String> {
+) -> Result<busbar_substrate::trust::reverify::Policy, String> {
     let ttl = def.verify_ttl.as_deref().unwrap_or(DEFAULT_MCP_VERIFY_TTL);
     let ttl_ms = busbar_core::admin::parse_duration_secs(ttl)?.saturating_mul(1_000);
-    Ok(busbar_core::trust::reverify::Policy {
+    Ok(busbar_substrate::trust::reverify::Policy {
         ttl_ms,
         recovery_backoff_ms: 0,
     })

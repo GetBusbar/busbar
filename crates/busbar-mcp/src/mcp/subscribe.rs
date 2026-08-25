@@ -222,7 +222,7 @@ fn change_key(mut parts: Vec<&str>) -> u64 {
 /// snapshot answers all three.
 fn change_keys(
     catalogue: &super::catalogue::Catalogue,
-    caller: &busbar_core::catalogue::Caller<'_>,
+    caller: &busbar_substrate::catalogue::Caller<'_>,
 ) -> [u64; 3] {
     let tools = catalogue.tools_for(caller);
     // The SCHEMA HASH rides in the tool change key and the name alone does not. A tool whose
@@ -340,8 +340,8 @@ fn caller_of<'a>(
     app: &busbar_core::state::App,
     key: Option<&'a std::sync::Arc<busbar_api::VirtualKey>>,
     generation: u64,
-) -> busbar_core::catalogue::Caller<'a> {
-    busbar_core::catalogue::Caller {
+) -> busbar_substrate::catalogue::Caller<'a> {
+    busbar_substrate::catalogue::Caller {
         key: key.map(|k| &**k),
         now: busbar_core::plane_host::clock_now_secs_over(app),
         // AT ADMISSION for the FRAME, not for the stream. This value is re-built on every poll from
@@ -384,7 +384,7 @@ impl Listen {
                 "error": {
                     // The base protocol's own "invalid request", owned by the one envelope reader
                     // for both planes rather than re-spelled here.
-                    "code": busbar_core::ingress::jsonrpc::INVALID_REQUEST,
+                    "code": busbar_substrate::ingress::jsonrpc::INVALID_REQUEST,
                     "message": refusal.to_string(),
                     "data": { "reason": refusal.reason() },
                 },

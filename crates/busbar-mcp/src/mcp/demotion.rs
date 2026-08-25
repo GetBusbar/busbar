@@ -46,7 +46,7 @@ pub(crate) fn hydrate(app: &busbar_core::state::App) -> usize {
             let sc = servers.entry(id.as_str().to_string()).or_insert_with(|| {
                 crate::mcp::client::catalogue::ServerCatalogue::seeded(id.clone(), approval)
             });
-            sc.sighting = busbar_core::trust::Sighting::Demoted(reason);
+            sc.sighting = busbar_substrate::trust::Sighting::Demoted(reason);
         });
         replayed += 1;
     }

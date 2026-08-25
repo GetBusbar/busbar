@@ -28,7 +28,7 @@
 //!
 //! ## The response body is CAPPED
 //!
-//! An upstream MCP server is not trusted. `busbar_core::proxy::read_capped` is the engine's existing
+//! An upstream MCP server is not trusted. `busbar_substrate::proxy::read_capped` is the engine's existing
 //! primitive for exactly this and is reused rather than re-hand-rolled, so the cap, the truncation
 //! signal and the transport-error signal are the same three the rest of the engine reports.
 
@@ -160,14 +160,14 @@ impl HttpTransport {
             .unwrap_or(false);
         let raw = buffered.body;
         match buffered.end {
-            busbar_core::proxy::ReadEnd::Complete => {}
-            busbar_core::proxy::ReadEnd::Truncated => {
+            busbar_substrate::proxy::ReadEnd::Complete => {}
+            busbar_substrate::proxy::ReadEnd::Truncated => {
                 return Err(TransportError::Io(format!(
                     "upstream response exceeded the {cap}-byte cap; a truncated JSON-RPC response \
                      is not parsed"
                 )))
             }
-            busbar_core::proxy::ReadEnd::TransportError => {
+            busbar_substrate::proxy::ReadEnd::TransportError => {
                 return Err(TransportError::Io(
                     "upstream connection failed mid-response; a partial JSON-RPC response is not \
                      parsed"

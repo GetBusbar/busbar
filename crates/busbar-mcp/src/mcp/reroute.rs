@@ -2,16 +2,16 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE FAILOVER SEAM, MOUNTED ON THIS PLANE — `tool_pools:` becomes a candidate set, the set goes
-//! through the ONE selection loop ([`busbar_core::failover::walk`]), and the admitted member is
+//! through the ONE selection loop ([`busbar_substrate::failover::walk`]), and the admitted member is
 //! dispatched by the same `upstream::call` every un-pooled server has always been.
 //!
 //! ## What this module owns and what it inherits
 //!
-//! Owned here: the [`busbar_core::failover::Candidate`] impl for a tool-pool member (name, lane, pin),
+//! Owned here: the [`busbar_substrate::failover::Candidate`] impl for a tool-pool member (name, lane, pin),
 //! the route construction (which members exist, which are authorised for THIS caller, which cell
 //! each records into), and the reroute loop's bookkeeping. Inherited, deliberately and completely:
 //! the selection ORDER, the pin check, the retry-safety rule and the breaker admission are all
-//! [`busbar_core::failover::walk`]'s — this file contains no `if` about any of them.
+//! [`busbar_substrate::failover::walk`]'s — this file contains no `if` about any of them.
 //!
 //! ## The three movements, and which calls make them
 //!
@@ -20,7 +20,7 @@
 //!    milliseconds, exactly like the degenerate cell (it IS the degenerate cell when no pool is
 //!    configured: one member, lane 0, same walk).
 //! 2. **Reroute** (inside [`PoolRoute::dispatch`]) — a leg that fails with
-//!    [`busbar_core::failover::Stage::BeforeFirstByte`] (the wire says nothing was transmitted) records
+//!    [`busbar_substrate::failover::Stage::BeforeFirstByte`] (the wire says nothing was transmitted) records
 //!    against the failed member's cell and RE-ENTERS the walk with that member in `tried`. The
 //!    caller gets the twin's answer and never learns. A leg that fails AFTER dispatch re-enters
 //!    the walk too — and the walk's own safety rule refuses the hop unless the operator listed the
@@ -31,10 +31,10 @@
 //!    that never issued it.
 
 use super::upstream::{Authorised, BreakerCell, LegFailure, LegOutcome};
-use busbar_core::failover::{Attempt, Candidate, Refusal, Repeatable, Stage};
 use busbar_core::plane_host::DispatchScope;
 use busbar_core::store::PlaneBreakers;
 use busbar_plugin::hot::AdmissionId;
+use busbar_substrate::failover::{Attempt, Candidate, Refusal, Repeatable, Stage};
 use std::sync::{Arc, Mutex};
 
 /// One pool member as the walk sees it. `auth` is `None` when THIS CALLER cannot dispatch to the
@@ -282,9 +282,9 @@ impl PoolRoute {
             repeatable: self.repeatable,
             operation: &self.operation,
         };
-        let mut order = busbar_core::failover::InOrder::new(&s.tried, self.members.len());
+        let mut order = busbar_substrate::failover::InOrder::new(&s.tried, self.members.len());
         let mut passed_over = Vec::new();
-        let admitted = busbar_core::failover::walk_with(
+        let admitted = busbar_substrate::failover::walk_with(
             &self.pool_key,
             &self.members,
             &attempt,
