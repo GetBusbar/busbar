@@ -4,6 +4,8 @@
 
 <h1 align="center">Busbar</h1>
 
+<p align="center"><a href="http://www.GetBusbar.com?utm_source=github.com">GetBusbar.com</a></p>
+
 <p align="center">
   <strong>The self-hosted execution boundary for AI systems.</strong><br>
   Control where AI can go, what it may use, what authority it receives,
