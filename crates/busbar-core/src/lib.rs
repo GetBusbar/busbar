@@ -50,7 +50,7 @@ pub mod billing;
 /// THE BOOT SEAM: one entry point per boot action, so the internals each action composes stay
 /// crate-private. See the module header.
 pub mod boot;
-pub mod breaker;
+pub use busbar_substrate::breaker;
 pub mod catalogue;
 pub mod config;
 pub mod config_validate;

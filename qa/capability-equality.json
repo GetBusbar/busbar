@@ -272,7 +272,7 @@
       "capability": "disposition",
       "plane": "llm",
       "state": "proven",
-      "test": "crates/busbar-core/src/tests/breaker_tests.rs::test_structured_type_drives_error_map"
+      "test": "crates/busbar-substrate/src/tests/breaker_tests.rs::test_structured_type_drives_error_map"
     },
     {
       "capability": "disposition",

@@ -29,6 +29,7 @@ pub mod ingress {
     // `metadata_handler`) stays in core and re-exports these.
     pub mod protocol;
 }
+pub mod breaker;
 pub mod plane;
 pub mod proxy;
 

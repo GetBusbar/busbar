@@ -27,6 +27,12 @@ bytes = { workspace = true }
 # `net_guard::resolve_and_pin_async` does the ONE DNS resolution via `tokio::net::lookup_host`, so
 # the relocated guard needs tokio's `net` API (and nothing else — no runtime, macros, or timers).
 tokio = { workspace = true, features = ["net"] }
+# S2c: the relocated breaker classifier logs one deduped warning on an unrecognized error_map value
+# via `tracing::warn!` directly (not through the diag macros, which the expanding crate feeds). The
+# classifier is otherwise pure std + axum, so this is the family's only new edge.
+tracing = { workspace = true }
+# S2c: the breaker classifier's `parse_retry_after` parses an HTTP-date `Retry-After` via httpdate.
+httpdate = { workspace = true }
 
 # The relocated leaves carry `#[cfg_attr(not(feature = "plane-mcp"/"plane-a2a"), allow(dead_code))]`
 # verbatim from core — the items are `pub` here so the allowance is now inert, but the cfg names
