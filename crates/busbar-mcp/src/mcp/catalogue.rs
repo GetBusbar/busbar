@@ -1119,7 +1119,7 @@ fn server_entry(id: &str, def: &McpServerDefCfg) -> ServerEntry {
         // server whose drift a call would not re-verify.
         verify_policy: super::config::verify_policy_for(def).unwrap_or(
             busbar_substrate::trust::reverify::Policy {
-                ttl_ms: busbar_core::admin::parse_duration_secs(
+                ttl_ms: busbar_substrate::duration::parse_duration_secs(
                     super::config::DEFAULT_MCP_VERIFY_TTL,
                 )
                 .unwrap_or(5)
@@ -1139,7 +1139,7 @@ fn server_entry(id: &str, def: &McpServerDefCfg) -> ServerEntry {
             timeout: def
                 .timeout
                 .as_deref()
-                .and_then(|t| busbar_core::admin::parse_duration_secs(t).ok())
+                .and_then(|t| busbar_substrate::duration::parse_duration_secs(t).ok())
                 .map(std::time::Duration::from_secs),
         },
     }

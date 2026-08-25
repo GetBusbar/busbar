@@ -636,7 +636,7 @@ pub(crate) const DEFAULT_MAX_CALLER_ASK_ROUNDS: u32 = 3;
 
 /// THE DEPLOYMENT-WIDE MAX VERIFICATION STALENESS a registration gets when it spells no `verify_ttl:`.
 ///
-/// Deliberately the same `5s` as the sibling plane's [`busbar_core::a2a::config::DEFAULT_VERIFY_TTL`],
+/// Deliberately the same `5s` as the sibling A2A plane's `DEFAULT_REVERIFY_TTL` (a2a/config.rs),
 /// because the two are the same decision about the same risk — how long a hash-pinned upstream may
 /// have drifted before the CALL that dispatches to it re-verifies — and an operator who learns the
 /// number on one plane should not find a different one on the other. If a reason ever emerges for
@@ -1188,7 +1188,7 @@ pub(crate) fn verify_policy_for(
     def: &McpServerDefCfg,
 ) -> Result<busbar_substrate::trust::reverify::Policy, String> {
     let ttl = def.verify_ttl.as_deref().unwrap_or(DEFAULT_MCP_VERIFY_TTL);
-    let ttl_ms = busbar_core::admin::parse_duration_secs(ttl)?.saturating_mul(1_000);
+    let ttl_ms = busbar_substrate::duration::parse_duration_secs(ttl)?.saturating_mul(1_000);
     Ok(busbar_substrate::trust::reverify::Policy {
         ttl_ms,
         recovery_backoff_ms: 0,
@@ -1387,7 +1387,7 @@ pub(crate) fn validate_server(name: &str, def: &McpServerDefCfg) -> Result<(), S
     // rather than silently falling back to a default later — a defence that quietly uses a bound the
     // operator did not write is a defence whose behaviour nobody can predict.
     if let Some(ttl) = def.verify_ttl.as_deref() {
-        busbar_core::admin::parse_duration_secs(ttl)
+        busbar_substrate::duration::parse_duration_secs(ttl)
             .map_err(|e| format!("{at}: `verify_ttl:` {e}"))?;
     }
 
@@ -1397,7 +1397,7 @@ pub(crate) fn validate_server(name: &str, def: &McpServerDefCfg) -> Result<(), S
     // wrote. There is deliberately no spelling for "unlimited" — a leg with no deadline holds a
     // concurrency slot for as long as the upstream chooses.
     if let Some(t) = def.timeout.as_deref() {
-        let secs = busbar_core::admin::parse_duration_secs(t)
+        let secs = busbar_substrate::duration::parse_duration_secs(t)
             .map_err(|e| format!("{at}: `timeout:` {e}"))?;
         if secs == 0 {
             return Err(format!(

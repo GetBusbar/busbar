@@ -363,28 +363,10 @@ impl MintPolicy {
     }
 }
 
-/// Parse a duration string (`<n><unit>`, unit in s|m|h|d) to seconds. Bounded so an absurd value
-/// cannot overflow the `exp` computation.
-pub fn parse_duration_secs(s: &str) -> Result<u64, String> {
-    let s = s.trim();
-    let (num, unit) = s.split_at(
-        s.find(|c: char| !c.is_ascii_digit())
-            .ok_or_else(|| "duration needs a unit (s|m|h|d), e.g. 7d".to_string())?,
-    );
-    let n: u64 = num
-        .parse()
-        .map_err(|_| format!("invalid duration '{s}': expected <number><s|m|h|d>"))?;
-    let mult = match unit {
-        "s" => 1,
-        "m" => 60,
-        "h" => 3600,
-        "d" => 86_400,
-        other => return Err(format!("invalid duration unit '{other}': use s|m|h|d")),
-    };
-    n.checked_mul(mult)
-        .filter(|v| *v <= 10 * 365 * 86_400)
-        .ok_or_else(|| "duration is too large (max 10 years)".to_string())
-}
+/// The `<n><unit>` duration parser now lives in the neutral substrate (`busbar_substrate::duration`)
+/// so the plane crates name it without reaching into busbar-core; re-exported here so every
+/// `crate::admin::parse_duration_secs` / `busbar_core::admin::parse_duration_secs` caller is unchanged.
+pub use busbar_substrate::duration::parse_duration_secs;
 
 #[cfg(test)]
 #[path = "tests/parse_duration_secs_tests.rs"]
