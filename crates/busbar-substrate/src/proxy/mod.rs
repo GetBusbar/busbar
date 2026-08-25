@@ -10,6 +10,8 @@
 //! plane crate names it without reaching into `busbar-core`. Core's `proxy::wire` re-exports it
 //! unchanged.
 
+pub mod sse;
+
 use bytes::Bytes;
 
 /// Read an upstream response body, buffering at most `cap` bytes. Streams chunks with a running byte
