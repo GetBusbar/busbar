@@ -134,7 +134,7 @@ use crate::store::LaneRuntime;
 // serde config type (`CandidatePoolCfg`) and the LLM-shaped disposition halves (`walk`,
 // `record_outcome`, `record_success`) stay here, over `crate::store::LaneRuntime` and
 // `crate::breaker`. Glob, so the re-export is never an unused import when a plane consumer is out.
-pub(crate) use busbar_substrate::failover::*;
+pub use busbar_substrate::failover::*;
 
 /// ONE POOL OF INTERCHANGEABLE UPSTREAMS, as the operator writes it — the ENTIRE config vocabulary
 /// this feature adds, and it is CORE's rather than a plane's.
@@ -174,7 +174,7 @@ pub(crate) use busbar_substrate::failover::*;
 /// to the tools they thought about, which is a different act from flipping a switch. See [`Stage`].
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)] // a typo'd key must fail boot, not silently un-declare a safety rule.
-pub(crate) struct CandidatePoolCfg {
+pub struct CandidatePoolCfg {
     /// The interchangeable registrations, by bare name, resolved against the section's own plane
     /// registry (`tools:` for `tool_pools:`, `agents:` for `agent_pools:`). ORDERED: the first is the
     /// PRIMARY, and its approved fingerprint is the one every other member must match.
@@ -183,7 +183,7 @@ pub(crate) struct CandidatePoolCfg {
     /// already computed and refuses the pool at dispatch if they disagree. The operator is asserting
     /// *"these names are the same deployment"*, a claim busbar can and does verify.
     #[serde(default)]
-    pub(crate) members: Vec<String>,
+    pub members: Vec<String>,
     /// The operations that may be performed TWICE — reads, searches, queries. An operation not named
     /// here is never repeated after a dispatch has gone out.
     ///
@@ -199,7 +199,7 @@ impl CandidatePoolCfg {
     // MCP-only reader: the MCP dispatch path consults `repeatable:`; the A2A relay does not, so with
     // `plane-mcp` off (and A2A on) this has no caller.
     #[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
-    pub(crate) fn repeatability(&self, operation: &str) -> Repeatable {
+    pub fn repeatability(&self, operation: &str) -> Repeatable {
         if self.repeatable.iter().any(|o| o == operation) {
             Repeatable::Yes
         } else {

@@ -2456,7 +2456,7 @@ fn reresolve_plane_gates(next: &mut crate::state::App) {
 /// seam — resolved by config section, so the admin read path names no plane view type. Empty for a
 /// section whose plane is compiled out (no decl) or is not a named-definition map.
 fn plane_named_def_list(section: NamedMapSection, app: &crate::state::App) -> Vec<NamedDefView> {
-    crate::plane::registry::builtin_plane_decl_for_config_section(section.key())
+    crate::plane::registry::plane_decl_for_config_section(section.key())
         .and_then(|d| d.named_def_list)
         .map_or_else(Vec::new, |f| f(app))
 }
@@ -2468,7 +2468,7 @@ fn plane_named_def_get(
     app: &crate::state::App,
     name: &str,
 ) -> Option<NamedDefView> {
-    crate::plane::registry::builtin_plane_decl_for_config_section(section.key())
+    crate::plane::registry::plane_decl_for_config_section(section.key())
         .and_then(|d| d.named_def_get)
         .and_then(|f| f(app, name))
 }

@@ -387,7 +387,12 @@ pub(crate) fn verify_decide_due_via(
 /// TTL — the behavior-identity the `mcp::callerask` call site requires. `Ok` iff this is the FIRST
 /// redemption; `Refused` when already spent OR the ledger could not answer (fail-closed). A null query
 /// is `Refused`; a caught panic is `Fault`.
-pub(crate) extern "C-unwind" fn approval_redeem_q(
+// The MCP plane's `callerask` completion arm calls this ABI slot directly, so it is `pub`. It takes
+// the raw `*const ApprovalQuery` the plane ABI dictates and derefs it under the audited recovery
+// invariant; it cannot be marked `unsafe` without changing the extern fn-pointer type the slot is
+// registered as, so the deref lint is allowed here exactly as at every other host-call slot.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C-unwind" fn approval_redeem_q(
     host: HostCtx,
     query: *const ApprovalQuery,
 ) -> StatusClass {

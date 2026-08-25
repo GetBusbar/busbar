@@ -25,6 +25,11 @@
 //! `busbar_core::proto::registry::install_protocols` at boot.
 
 pub mod codec;
+pub mod mcp;
+
+/// MCP'S PLANE DECLARATION — the `&'static PlaneDecl` the composition root installs at boot so the
+/// `busbar` binary names one stable path (`busbar_mcp::PLANE_DECL`). See [`mcp`] for the declaration.
+pub use mcp::PLANE_DECL;
 
 /// MCP'S PROTOCOL DECLARATION — the `&'static ProtocolDecl` the composition root installs. Re-exported
 /// at the crate root so the `busbar` binary names one stable path (`busbar_mcp::PROTO_DECL`) and does

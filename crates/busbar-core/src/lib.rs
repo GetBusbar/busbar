@@ -81,7 +81,17 @@ pub mod json;
 pub mod limits;
 pub mod lineage;
 pub mod lossless;
-#[cfg(feature = "plane-mcp")]
+/// THE EXTRACTED MCP PLANE, compiled back in for TEST BUILDS ONLY. The sources live in
+/// `crates/busbar-mcp/src/mcp` (the ONE MCP plugin crate; the `busbar` binary registers its
+/// `PLANE_DECL` through `plane::registry::install_planes`), and core's PRODUCTION build knows nothing
+/// of them — this module exists so the pre-extraction fixture surface (the `TestApp::mcp*` builders
+/// and `tools:`/`mcp:` configs across the core suite) keeps exercising the real plane from inside this
+/// crate's test binary, where an externally-linked copy could not reach the registry (its `PlaneDecl`
+/// would be a different crate's type). The plane's sources are written against `busbar_core::` paths,
+/// which the `extern crate self as busbar_core` alias in this file resolves here — mirroring exactly
+/// how `proto::anthropic` dual-compiles the extracted LLM codec.
+#[cfg(any(test, feature = "test-support"))]
+#[path = "../../busbar-mcp/src/mcp/mod.rs"]
 pub mod mcp;
 pub mod media;
 pub mod metrics;

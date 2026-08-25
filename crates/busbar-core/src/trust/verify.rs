@@ -67,7 +67,7 @@ struct Flight {
 /// THE VERIFY-ON-CALL GATE, one per plane, riding the `App`. It owns no cadence and no timer: it holds
 /// only the per-subject coalescing state, created on first sight of a subject and reused thereafter.
 #[derive(Debug, Default)]
-pub(crate) struct VerifyGate {
+pub struct VerifyGate {
     flights: Mutex<HashMap<String, Arc<Flight>>>,
     /// Per-subject latch for the fail-closed diagnostics, so a persistently unreachable or drifted
     /// upstream logs ONCE rather than on every call. `true` once latched; reset on a clean, serving
@@ -100,7 +100,7 @@ impl VerifyGate {
     ///
     /// Returns whether a fetch was performed on THIS call — the counter the single-flight and
     /// ttl-bound batteries assert against.
-    pub(crate) async fn ensure_fresh<L, F, Fut>(
+    pub async fn ensure_fresh<L, F, Fut>(
         &self,
         subject: &str,
         policy: &Policy,
@@ -147,13 +147,7 @@ impl VerifyGate {
     /// (fail-closed refusal). Latched per subject so persistent drift or a persistent outage logs
     /// once, not per call; a clean, serving outcome resets the latch so the NEXT drift is announced
     /// again. `plane` is a LABEL, never a branch — the same code runs for MCP and A2A.
-    pub(crate) fn report(
-        &self,
-        plane: &'static str,
-        subject: &str,
-        drifted: bool,
-        unreachable: bool,
-    ) {
+    pub fn report(&self, plane: &'static str, subject: &str, drifted: bool, unreachable: bool) {
         if !drifted && !unreachable {
             self.reset_latch(subject);
             return;
@@ -199,7 +193,7 @@ impl VerifyGate {
     /// removed subject's flight and latch is safe — a subject no longer in the registration set is
     /// never fetched, so its coalescing state cannot race an in-flight verify — and it is fail-closed:
     /// a surviving subject keeps its latch, and a later re-add simply gets a fresh flight on next sight.
-    pub(crate) fn retain(&self, live_subjects: &std::collections::HashSet<String>) {
+    pub fn retain(&self, live_subjects: &std::collections::HashSet<String>) {
         self.flights
             .lock()
             .unwrap_or_else(|p| p.into_inner())

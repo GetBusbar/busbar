@@ -90,10 +90,10 @@
 // sites, is what states whether a member of this module is reachable.
 #![cfg_attr(not(test), allow(dead_code))]
 
-pub(crate) mod approvals;
-pub(crate) mod auditlog;
-pub(crate) mod calllog;
-pub(crate) mod config;
+pub mod approvals;
+pub mod auditlog;
+pub mod calllog;
+pub mod config;
 pub mod cost;
 pub mod host;
 pub(crate) mod observe;
@@ -124,7 +124,7 @@ pub(crate) mod taskstore;
 //   WIRE_GRPC      — the A2A gRPC binding as a wire-format name. Lower-case here and upper-cased
 //                    once, by `crate::a2a::serve::servable_bindings`, into the `GRPC` an agent card
 //                    advertises — so the card cannot claim a binding the plane does not list.
-pub(crate) use busbar_substrate::plane::{WIRE_GRPC, WIRE_HTTP_JSON, WIRE_JSONRPC};
+pub use busbar_substrate::plane::{WIRE_GRPC, WIRE_HTTP_JSON, WIRE_JSONRPC};
 
 /// The residual in-core LLM plane's registry key — the key `proto::PLANE_DECL` declares. Named
 /// once so the residual guard and the model-plane telemetry branch compare against one string.
@@ -137,19 +137,19 @@ pub(crate) const RESIDUAL_KEY: &str = "llm";
 /// Driven off [`registry::builtin_plane_decls`], which is itself cfg-gated: the MCP key is present
 /// only when the MCP plane is compiled in (`plane-mcp`) and the A2A key only under `plane-a2a`,
 /// because with the plane off it has no built-in declaration, so it must not be iterated here —
-/// every [`builtin_decl`] on it would fault. This is the successor to the old `Plane::ALL`, and
+/// every [`plane_decl`] on it would fault. This is the successor to the old `Plane::ALL`, and
 /// the source of the LAYERING iteration order `[llm, mcp, a2a]` every map walk must borrow rather
 /// than reinvent from a map's own key order.
 pub(crate) fn plane_keys() -> impl Iterator<Item = &'static str> {
-    registry::builtin_plane_decls().iter().map(|d| d.key)
+    registry::plane_decls().iter().map(|d| d.key)
 }
 
 /// The built-in plane declaration for `key`, or panic — the by-key indirection the former `Plane`
 /// accessors now read through. Callers wanting a decl FIELD (`config_section`, `subject_noun`,
 /// `audit_kind`, `scope_kinds`) read it straight off this; the free fns below are the accessors
 /// that COMPUTED something rather than reading a field.
-pub(crate) fn builtin_decl(key: &str) -> &'static registry::PlaneDecl {
-    registry::builtin_plane_decl_for(key)
+pub(crate) fn plane_decl(key: &str) -> &'static registry::PlaneDecl {
+    registry::plane_decl_for(key)
         .unwrap_or_else(|| panic!("no built-in plane declared for key `{key}`"))
 }
 
@@ -160,7 +160,7 @@ pub(crate) fn builtin_decl(key: &str) -> &'static registry::PlaneDecl {
 /// compare them, and two planes agreeing by coincidence is how the LLM plane's `openai` and some
 /// other plane's `openai` end up in one series meaning two things.
 pub(crate) fn wire_format_names(key: &str) -> &'static [&'static str] {
-    (builtin_decl(key).wire_format_names)()
+    (plane_decl(key).wire_format_names)()
 }
 
 /// The plane's ONE wire format, when it has exactly one — otherwise `None`.
@@ -641,14 +641,14 @@ impl std::fmt::Display for RefError {
                 "`{}` references `{name}`, which is defined in `{}`. The plane sections are \
                  siblings and never reference each other: define `{name}` in `{}`, or move the \
                  reference.",
-                builtin_decl(referenced_from).config_section,
-                builtin_decl(defined_in).config_section,
-                builtin_decl(referenced_from).config_section
+                plane_decl(referenced_from).config_section,
+                plane_decl(defined_in).config_section,
+                plane_decl(referenced_from).config_section
             ),
             RefError::Unknown { name, plane } => write!(
                 f,
                 "`{}` references `{name}`, which is not defined.",
-                builtin_decl(plane).config_section
+                plane_decl(plane).config_section
             ),
         }
     }

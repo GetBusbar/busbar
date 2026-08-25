@@ -61,7 +61,7 @@ use serde::{Deserialize, Serialize};
 
 /// The default MAX VERIFICATION STALENESS for a registration that names none: five seconds.
 ///
-/// The same `5s` as the sibling plane's [`crate::mcp::config::DEFAULT_MCP_VERIFY_TTL`], because the
+/// The same `5s` as the sibling plane's `crate::mcp::config::DEFAULT_MCP_VERIFY_TTL`, because the
 /// two are one decision about one risk — how long a signed card may have drifted before the DELEGATION
 /// that submits to it re-verifies. Under verify-on-call this is a bound on reuse on the request path,
 /// not a background cadence: the intrinsic verify→submit race is already ms–s, so sub-second precision
@@ -232,7 +232,7 @@ pub(crate) struct AgentDefCfg {
     /// MAY THIS AGENT LIVE ON A PRIVATE OR LOOPBACK ADDRESS, AND BE REACHED OVER PLAINTEXT.
     ///
     /// The SAME spelling, the same semantics and the same fail-closed default as
-    /// [`crate::mcp::config::McpServerDefCfg::allow_private`], deliberately, because the two are one
+    /// `crate::mcp::config::McpServerDefCfg::allow_private`, deliberately, because the two are one
     /// operator concept and an operator who has learned it on `tools:` must not have to learn it
     /// again here. What it permits, exactly as on the sibling plane:
     ///

@@ -15,7 +15,7 @@ use busbar_api::VirtualKey;
 
 // Glob, so a name only a plane consumer or a test uses (e.g. `reason`, `Ask`) never reads as an
 // unused import when that consumer is compiled out.
-pub(crate) use busbar_substrate::trust::validate::*;
+pub use busbar_substrate::trust::validate::*;
 
 /// A DECISION MADE AT OPEN AND TRUSTED WHILE OPEN — the standing-permission primitive.
 ///
@@ -33,7 +33,7 @@ pub(crate) use busbar_substrate::trust::validate::*;
 /// class of thing this guards finite: whatever cannot be re-checked cannot outlive it. Callers pass
 /// their own hard cap so the two numbers are provably the same one.
 #[derive(Clone, Debug)]
-pub(crate) struct Standing {
+pub struct Standing {
     /// The principal ID, NOT the principal. `None` only where governance is disabled.
     principal: Option<String>,
     snapshot: Snapshot,
@@ -44,7 +44,7 @@ pub(crate) struct Standing {
 /// WHAT A LONG-LIVED RESPONSE'S RELATIONSHIP TO THE SNAPSHOT IS, and it is not the same for all of
 /// them — which is why it is a type rather than a number that some caller passes `0` for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Snapshot {
+pub enum Snapshot {
     /// PINNED. The response was admitted under one snapshot and must not outlive it: everything it
     /// will do was decided against that snapshot, so a move is a lapse.
     PinnedTo(u64),
@@ -58,7 +58,7 @@ pub(crate) enum Snapshot {
 
 /// A `Standing` permission that no longer stands.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum Lapsed {
+pub enum Lapsed {
     /// The principal is gone, disabled or expired — re-resolved, not remembered.
     Identity(Refusal),
     /// The snapshot the request was admitted under has been replaced.
@@ -70,11 +70,7 @@ pub(crate) enum Lapsed {
 
 impl Standing {
     /// OPEN. Takes the principal only to read its ID off — the value is deliberately not stored.
-    pub(crate) fn opened(
-        principal: Option<&VirtualKey>,
-        snapshot: Snapshot,
-        lifetime: Duration,
-    ) -> Self {
+    pub fn opened(principal: Option<&VirtualKey>, snapshot: Snapshot, lifetime: Duration) -> Self {
         Self {
             principal: principal.map(|p| p.id.clone()),
             snapshot,
@@ -87,7 +83,7 @@ impl Standing {
     ///
     /// The returned key is what the frame's grant must be read from. Returning it rather than a bare
     /// `Ok(())` is what stops a caller re-checking here and then reading a stale copy anyway.
-    pub(crate) fn still_permitted(
+    pub fn still_permitted(
         &self,
         governance: Option<&crate::governance::GovState>,
         live: u64,

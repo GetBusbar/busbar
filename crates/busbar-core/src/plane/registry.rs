@@ -22,11 +22,12 @@
 //!
 //! ## The invariants, and they are deliberately the control's
 //!
-//! * **INSTALLED FOLD AHEAD OF BUILT-INS.** The plane list is operator-visible in the same way the
-//!   protocol list is — it is the order [`super::config::config_sections`] reports, which is the
-//!   order a cross-plane refusal names sections in. Prepending keeps an extracted plane in the
-//!   position it has always held rather than demoting it to the tail on the day it becomes a crate.
-//!   See [`merged_boot_plane_decls`].
+//! * **CANONICAL LAYERING ORDER, INSTALL-SOURCE-INDEPENDENT.** The plane list is operator-visible in
+//!   the same way the protocol list is — it is the order [`super::config::config_sections`] reports,
+//!   which is the order a cross-plane refusal names sections in. The fold normalises to
+//!   [`CANONICAL_PLANE_ORDER`] regardless of whether a plane arrived as a built-in or as an installed
+//!   crate, so an extracted plane keeps the position it has always held rather than shifting to the
+//!   head or tail on the day it becomes a crate. See [`merged_boot_plane_decls`].
 //! * **SAME KEY REGISTERED TWICE IS SKIPPED, AUDIBLY.** Same reason as the protocol registry: under
 //!   `cargo test`'s feature unification a `test-support` build compiles an extracted plane back in
 //!   as a built-in while the composition root still installs the crate's own copy. Refusing the
@@ -438,7 +439,7 @@ pub struct PlaneDecl {
         allow(dead_code)
     )]
     #[allow(clippy::type_complexity)]
-    pub(crate) parse_section:
+    pub parse_section:
         Option<fn(&serde_yaml::Value) -> Result<Box<dyn crate::plane::config::PlaneCfg>, String>>,
 
     /// PARSE THIS PLANE'S TOP-LEVEL ENDPOINT block (the MCP plane's `mcp:` door) from a positionless
@@ -447,7 +448,7 @@ pub struct PlaneDecl {
     /// (every plane but MCP).
     #[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
     #[allow(clippy::type_complexity)]
-    pub(crate) parse_endpoint: Option<
+    pub parse_endpoint: Option<
         fn(&serde_yaml::Value) -> Result<Box<dyn crate::plane::config::PlaneEndpointCfg>, String>,
     >,
 
@@ -457,7 +458,7 @@ pub struct PlaneDecl {
     /// resolve error list verbatim. `None` for a plane with no endpoint block.
     #[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
     #[allow(clippy::type_complexity)]
-    pub(crate) lower_endpoint: Option<
+    pub lower_endpoint: Option<
         fn(
             &dyn crate::plane::config::PlaneEndpointCfg,
         ) -> Result<std::sync::Arc<dyn std::any::Any + Send + Sync>, String>,
@@ -470,7 +471,7 @@ pub struct PlaneDecl {
     /// not a single flat `App` field (A2A's lives in `plane_slots`; the LLM plane's is the many `App`
     /// fields it already reads).
     #[allow(clippy::type_complexity)]
-    pub(crate) build_runtime: Option<
+    pub build_runtime: Option<
         fn(
             &dyn std::any::Any,
             prior: Option<&crate::state::App>,
@@ -481,7 +482,7 @@ pub struct PlaneDecl {
     /// still fronts — the seam `appbuild` runs after building the `App`, so the carried per-subject
     /// flights/latches do not leak one dead entry per removed registration. `None` for a plane with no
     /// verify-on-call gate (the LLM / `proto` planes).
-    pub(crate) retain_verify_gates: Option<fn(&crate::state::App)>,
+    pub retain_verify_gates: Option<fn(&crate::state::App)>,
 
     /// THIS PLANE'S EMPTY REGISTRY SECTION, boxed as the neutral [`crate::plane::config::PlaneCfg`] —
     /// the value `DeployCfg`'s `#[serde(default)]` `tools:`/`agents:` field takes when the section is
@@ -492,7 +493,7 @@ pub struct PlaneDecl {
         not(any(feature = "plane-mcp", feature = "plane-a2a")),
         allow(dead_code)
     )]
-    pub(crate) default_section: Option<fn() -> Box<dyn crate::plane::config::PlaneCfg>>,
+    pub default_section: Option<fn() -> Box<dyn crate::plane::config::PlaneCfg>>,
 }
 
 /// THE BUILT-INS — one line per plane, and every line is DATA.
@@ -504,7 +505,11 @@ pub struct PlaneDecl {
 /// Order is the operator-visible LAYERING order, unchanged from `Plane::ALL`.
 static BUILTIN_PLANE_DECLS: &[&PlaneDecl] = &[
     &crate::proto::PLANE_DECL,
-    #[cfg(feature = "plane-mcp")]
+    // The MCP plane's sources live in `busbar-mcp`; core dual-compiles them (see `crate::mcp`) for
+    // test/`test-support` builds ONLY, so the fixture registry the tests see matches a shipped
+    // binary's — where the composition root installs `busbar_mcp::PLANE_DECL` instead. Production core
+    // carries no MCP row; `merged_boot_plane_decls` folds the installed copy into its canonical slot.
+    #[cfg(any(test, feature = "test-support"))]
     &crate::mcp::PLANE_DECL,
     #[cfg(feature = "plane-a2a")]
     &crate::a2a::PLANE_DECL,
@@ -565,7 +570,27 @@ pub(crate) fn merged_boot_plane_decls(
         }
         decls.push(d);
     }
+    // NORMALISE TO CANONICAL LAYERING ORDER. The dedup above still runs installed-first, so the
+    // composition-root copy still wins a same-key collision; this only reorders the SURVIVORS so an
+    // extracted plane (installed) lands in the same slot its built-in copy held — a stable sort, so
+    // any plane outside the canonical list keeps its relative fold position at the tail.
+    decls.sort_by_key(|d| canonical_rank(d.key));
     decls
+}
+
+/// THE OPERATOR-VISIBLE LAYERING ORDER of the planes, by key — the order `config_sections` reports
+/// and a cross-plane refusal names sections in. `merged_boot_plane_decls` normalises to this so the
+/// order is a property of the plane, not of whether it shipped as a built-in or an installed crate.
+const CANONICAL_PLANE_ORDER: &[&str] = &["llm", "mcp", "a2a"];
+
+/// The canonical layering rank of a plane key: its index in [`CANONICAL_PLANE_ORDER`], or the list's
+/// length (the tail) for a key not named there — so an unknown/registered-later plane sorts stably
+/// after the canonical three rather than jumping the queue.
+fn canonical_rank(key: &str) -> usize {
+    CANONICAL_PLANE_ORDER
+        .iter()
+        .position(|k| *k == key)
+        .unwrap_or(CANONICAL_PLANE_ORDER.len())
 }
 
 /// The process plane list, in fold order. One acquire-load once initialised.
@@ -583,32 +608,17 @@ pub(crate) fn plane_decls() -> &'static [&'static PlaneDecl] {
 /// resolution in busbar, and a second one is a second answer to which protocols exist". That rule
 /// is right and is not weakened to make room for this: plane resolution is a different axis and
 /// says so in its name, so the census keeps meaning what it means.
-#[allow(dead_code)] // the by-key resolver a registered plane's admin/router surface will read
 pub(crate) fn plane_decl_for(key: &str) -> Option<&'static PlaneDecl> {
     plane_decls().iter().copied().find(|d| d.key == key)
 }
 
-/// RESOLVE A BUILT-IN PLANE DECLARATION BY KEY, against [`builtin_plane_decls`] rather than the
-/// process list — the successor to `Plane::decl`. The former enum variants ARE the built-ins, and
-/// resolving them through the process list would make a plane's vocabulary lookup depend on the
-/// composition root having run, which every unit test in this crate would then have to arrange. A
-/// registered fourth plane has no built-in declaration and is reached by [`plane_decl_for`].
-pub(crate) fn builtin_plane_decl_for(key: &str) -> Option<&'static PlaneDecl> {
-    builtin_plane_decls().iter().copied().find(|d| d.key == key)
-}
-
-/// RESOLVE A BUILT-IN PLANE DECLARATION BY ITS CONFIG SECTION — the neutral bridge the
-/// named-definition write path crosses to reach a plane's [`PlaneDecl::config_validate`] without
-/// naming the plane. Resolves against [`builtin_plane_decls`] rather than the process list for the
-/// same reason [`builtin_plane_decl_for`] does: the `tools:`/`agents:` sections are the two BUILT-IN plane
-/// sections, so their validator is a built-in fact that must not depend on the composition root
-/// having run (every config unit test would otherwise have to install planes first).
-#[cfg_attr(
-    not(any(feature = "plane-mcp", feature = "plane-a2a")),
-    allow(dead_code)
-)]
-pub(crate) fn builtin_plane_decl_for_config_section(section: &str) -> Option<&'static PlaneDecl> {
-    builtin_plane_decls()
+/// RESOLVE A PLANE DECLARATION BY ITS CONFIG SECTION, against the PROCESS list — the neutral bridge
+/// the named-definition write path and the config parse/lower path cross to reach a plane's hooks
+/// without naming the plane. Resolves through [`plane_decls`] (installed + built-ins, canonically
+/// ordered) rather than the built-ins alone, so an EXTRACTED plane the composition root installed
+/// (the MCP plane after B2) is found on the same footing as a still-built-in one.
+pub(crate) fn plane_decl_for_config_section(section: &str) -> Option<&'static PlaneDecl> {
+    plane_decls()
         .iter()
         .copied()
         .find(|d| d.config_section == section)

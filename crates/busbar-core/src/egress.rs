@@ -115,7 +115,7 @@ pub(crate) const EGRESS_POOL_IDLE_TIMEOUT: Duration = Duration::from_secs(4);
 /// dropped, the hop fails LOUDLY with this message rather than quietly resolving the name a second
 /// time — which is the lookup a DNS-rebinding attacker needs and must not exist. The message names
 /// the invariant ("exactly once") and the name it was asked about, so a log line is actionable.
-pub(crate) struct RefuseSecondLookup;
+pub struct RefuseSecondLookup;
 
 impl reqwest::dns::Resolve for RefuseSecondLookup {
     fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
@@ -278,14 +278,15 @@ impl PinnedClientPool {
 
     /// The number of live pinned clients. Read by tests: "the pool reuses a client for a repeated
     /// destination" is a claim about this number, and asserting it is how the claim stops being an
-    /// assertion about intent.
-    pub(crate) fn len(&self) -> usize {
+    /// assertion about intent. A count read, never an emptiness check — no `is_empty` twin is owed.
+    #[allow(clippy::len_without_is_empty)]
+    pub fn len(&self) -> usize {
         self.clients.lock().map(|m| m.len()).unwrap_or(0)
     }
 
     /// Return a client pinned to `(host, addr)`, building one with `build` on a miss. The build runs
     /// only for a NEW destination; a repeated one returns the cached clone.
-    pub(crate) fn client_for<E>(
+    pub fn client_for<E>(
         &self,
         host: &str,
         addr: SocketAddr,
@@ -318,7 +319,7 @@ impl PinnedClientPool {
 /// `reqwest::Response`. Gated to `any(plane-mcp, plane-a2a)` — its only consumers are the plane
 /// transports (A2A card-fetch/relay, MCP dispatch).
 #[cfg(any(feature = "plane-mcp", feature = "plane-a2a"))]
-pub(crate) mod seam;
+pub mod seam;
 
 // The backend's own tests exercise the pinned-client pool, which exists only where a plane consumes
 // it — so they are gated to the same planes. `build_pinned_client` and the refusing resolver keep

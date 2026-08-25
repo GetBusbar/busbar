@@ -665,7 +665,7 @@ fn section_contains(app: &App, section: NamedMapSection, name: &str) -> bool {
         // Both plane sections answer membership through the plane's `registry_contains` seam, so this
         // read names no plane registry type; a plane compiled out has no decl and answers `false`.
         NamedMapSection::Tools | NamedMapSection::Agents => {
-            crate::plane::registry::builtin_plane_decl_for_config_section(section.key())
+            crate::plane::registry::plane_decl_for_config_section(section.key())
                 .and_then(|d| d.registry_contains)
                 .is_some_and(|f| f(app, name))
         }

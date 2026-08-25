@@ -388,7 +388,7 @@ pub(crate) fn operator_resume(approval: &mut Approval<CardPin>) {
 
 /// THE TRUST VIEW of one registered agent — what both verbs answer with.
 ///
-/// The sibling of [`crate::mcp::admin_view::McpTrustView`] and shaped like it on purpose: an
+/// The sibling of `crate::mcp::admin_view::McpTrustView` and shaped like it on purpose: an
 /// operator console rendering both planes should be rendering one component. It is NOT the same
 /// type, because the two planes' capability vocabularies differ (a `tools:` entry has an approved
 /// digest per tool; an `agents:` entry has a skill set on a card) and merging them would mean one
@@ -578,7 +578,7 @@ pub(crate) async fn approve(
         let Some(reg) = regs.iter_mut().find(|r| r.agent_id == name) else {
             return Err(AdminError::not_found(format!(
                 "{} `{name}`",
-                crate::plane::builtin_decl("a2a").subject_noun
+                crate::plane::plane_decl("a2a").subject_noun
             )));
         };
         super::pin::approve_registration(&mut reg.approval, &preview.sighting, None)

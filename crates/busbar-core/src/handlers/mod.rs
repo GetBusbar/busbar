@@ -629,13 +629,13 @@ use crate::state::Lane;
 /// codec without having said which channel it is speaking over, which is the shape whose absence
 /// let a stdio `tools:` entry sit in config with no dispatch arm to reach it.
 #[derive(Clone, Copy)]
-pub(crate) struct OpDispatch {
-    pub(crate) operation: Operation,
+pub struct OpDispatch {
+    pub operation: Operation,
     /// The channel this exchange rides. A VALUE, like `operation`: the engine labels with it and
     /// hands it on, and never compares or matches it (that would be a transport-identity branch,
     /// which `scripts/structure-lint.sh` refuses outside a `proto/` arm, its handler and its codec).
     pub(crate) transport: crate::transport::Transport,
-    pub(crate) op_handler: &'static dyn OperationHandler,
+    pub op_handler: &'static dyn OperationHandler,
 }
 
 /// The engine's operation handle. (Kept as `Op` so the engine's signatures read unchanged.)
@@ -743,7 +743,7 @@ pub(crate) const CHAT: Op = crate::transport::Transport::Http.frame(
 /// The TRANSPORT is the caller's to state, not this resolver's: which channel an exchange arrived on
 /// is a fact about the arrival, and a protocol has no opinion about it (that is what A2A's three
 /// bindings of one agent mean). So it is a parameter, and every caller decides.
-pub(crate) fn chat(protocol: &str, transport: crate::transport::Transport) -> Op {
+pub fn chat(protocol: &str, transport: crate::transport::Transport) -> Op {
     op_for(protocol, Operation::CHAT, transport)
         .expect("a chat-serving protocol is registered (the busbar-llm plugin registers openai)")
 }

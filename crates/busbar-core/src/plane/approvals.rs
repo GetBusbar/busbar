@@ -80,46 +80,46 @@ const MAC_DOMAIN: &[u8] = b"busbar/mcp/askstate/v1\0";
 /// The DEFAULT life of a sealed state. Short, per `mrtr.mdx:236`: a caller answering an elicitation
 /// is a human at a prompt, not a batch job, and every second of validity is a second of replay
 /// window.
-pub(crate) const DEFAULT_TTL_SECS: u64 = 300;
+pub const DEFAULT_TTL_SECS: u64 = 300;
 
 /// The sealed payload. Field names are short because this rides in a JSON body on every retry, and
 /// the wire form is an implementation detail no client may parse (`mrtr.mdx:130`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct AskState {
+pub struct AskState {
     /// The AUTHENTICATED PRINCIPAL — the inbound key's stable id. `mrtr.mdx:235`.
     #[serde(rename = "p")]
-    pub(crate) principal: String,
+    pub principal: String,
     /// The JSON-RPC method the ask was issued on: `tools/call` or `prompts/get`.
     #[serde(rename = "m")]
-    pub(crate) method: String,
+    pub method: String,
     /// The NAMESPACED capability — `{server}_{tool}`, or the namespaced prompt name.
     #[serde(rename = "c")]
-    pub(crate) capability: String,
+    pub capability: String,
     /// A digest of the request's salient parameters. `mrtr.mdx:237`.
     #[serde(rename = "d")]
-    pub(crate) args_digest: String,
+    pub args_digest: String,
     /// The catalogue generation the ask was minted under.
     #[serde(rename = "g")]
-    pub(crate) generation: u64,
+    pub generation: u64,
     /// Which round of the caller-facing loop this state ENDS. The retry that presents it is round
     /// `round + 1`, and that is what the per-server cap is compared against.
     #[serde(rename = "r")]
-    pub(crate) round: u32,
+    pub round: u32,
     /// Fresh randomness, so two mints of an otherwise identical payload differ.
     #[serde(rename = "n")]
-    pub(crate) nonce: String,
+    pub nonce: String,
     /// Unix seconds at mint.
     #[serde(rename = "i")]
-    pub(crate) issued_at: u64,
+    pub issued_at: u64,
     /// Seconds of validity from `issued_at`.
     #[serde(rename = "t")]
-    pub(crate) ttl_secs: u64,
+    pub ttl_secs: u64,
     /// The principal's ROOTS EPOCH at mint — present exactly when the exchange this state
     /// continues includes a `roots/list` ask, absent otherwise so unrelated confirmations cannot
-    /// be invalidated by a roots announcement. See [`crate::mcp::roots`] for the mechanism and
+    /// be invalidated by a roots announcement. See `crate::mcp::roots` for the mechanism and
     /// [`Rejected::StaleRoots`] for the refusal a mismatch produces.
     #[serde(rename = "e", default, skip_serializing_if = "Option::is_none")]
-    pub(crate) roots_epoch: Option<u64>,
+    pub roots_epoch: Option<u64>,
 }
 
 /// Why a presented `requestState` was refused. Every arm is a REFUSAL — there is no arm that means
@@ -127,7 +127,7 @@ pub(crate) struct AskState {
 /// `tampered-state` comment agree on that: a complete result OR a fresh ask in answer to tampered
 /// state both mean the server did not reject it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Rejected {
+pub enum Rejected {
     /// Not two base64url segments, or the payload is not the JSON this module writes.
     Malformed,
     /// The MAC did not verify. THE TAMPER ARM.
@@ -145,13 +145,13 @@ pub(crate) enum Rejected {
     AlreadySpent,
     /// SEALED UNDER A ROOTS EPOCH THE CALLER ITSELF HAS SINCE MOVED. The state carried a roots
     /// answer, and the caller sent `notifications/roots/list_changed` after it was minted — so
-    /// redeeming it would dispatch on roots the caller just disavowed. See [`crate::mcp::roots`].
+    /// redeeming it would dispatch on roots the caller just disavowed. See `crate::mcp::roots`.
     StaleRoots,
 }
 
 impl Rejected {
     /// The stable audit reason word. Named here so a new arm cannot land without one.
-    pub(crate) fn audit_reason(self) -> &'static str {
+    pub fn audit_reason(self) -> &'static str {
         match self {
             Rejected::Malformed => "state_malformed",
             Rejected::BadSignature => "state_bad_signature",
@@ -197,7 +197,7 @@ impl std::fmt::Display for Rejected {
 
 /// THE SEAL. Holds a key derived from the deployment's signing key; its `Debug` never prints it.
 #[derive(Clone)]
-pub(crate) struct Sealer {
+pub struct Sealer {
     key: [u8; 32],
 }
 
@@ -207,6 +207,16 @@ impl std::fmt::Debug for Sealer {
             .field("key", &"<redacted ask-state key>")
             .finish()
     }
+}
+
+/// SEAM: derive this deployment's ask-state [`Sealer`] from governance's fleet-shared signing
+/// secret, WITHOUT the raw secret ever leaving core. The MCP plane holds no governance key material
+/// — it asks core for a sealer, and core derives it here from the `pub(crate)` signing seed
+/// ([`crate::governance::GovState::signing_secret`], which stays crate-private). `None` when
+/// governance is disabled (no key), matching the pre-split behaviour where the plane derived the
+/// sealer itself and refused rather than asking with unprotected state.
+pub fn ask_state_sealer(gov: &crate::governance::GovState) -> Option<Sealer> {
+    gov.signing_secret().map(|s| Sealer::derive(&s))
 }
 
 impl Sealer {
@@ -226,7 +236,7 @@ impl Sealer {
 
     /// MINT a sealed state for `state`. The returned string is what goes on the wire as
     /// `requestState`, and it is opaque to every party but this one.
-    pub(crate) fn mint(&self, state: &AskState) -> String {
+    pub fn mint(&self, state: &AskState) -> String {
         let payload = serde_json::to_vec(state).expect("AskState serialises");
         let encoded = URL_SAFE_NO_PAD.encode(&payload);
         let tag = self.tag(encoded.as_bytes());
@@ -236,7 +246,7 @@ impl Sealer {
     /// OPEN a presented state: decode, verify the MAC, check the expiry. Nothing here consults the
     /// request — that is [`AskState::matches`], kept separate so the crypto has no way to be made
     /// context-dependent by a later edit.
-    pub(crate) fn open(&self, blob: &str, now: u64) -> Result<AskState, Rejected> {
+    pub fn open(&self, blob: &str, now: u64) -> Result<AskState, Rejected> {
         let (encoded, sig) = blob.split_once('.').ok_or(Rejected::Malformed)?;
         // STRICT decode. `-` and `_` are base64url characters, so the conformance suite's
         // `+ "-TAMPERED"` decodes rather than erroring — and lands on a tag of the wrong length and
@@ -286,7 +296,7 @@ impl AskState {
     /// proves busbar minted it FOR THIS. A seal that only proved the first would let any caller
     /// replay its own valid state onto a different tool, a different argument set, or a catalogue
     /// generation under which the approval has since been withdrawn.
-    pub(crate) fn matches(
+    pub fn matches(
         &self,
         principal: &str,
         method: &str,
@@ -316,7 +326,7 @@ impl AskState {
 /// thing the ask was issued about, and any field of `arguments` can change what is being asked for.
 /// `serde_json::Value`'s object representation is a `BTreeMap`, so the serialisation is key-ordered
 /// and two equal values digest equally regardless of the order the caller sent them in.
-pub(crate) fn digest_arguments(arguments: &serde_json::Value) -> String {
+pub fn digest_arguments(arguments: &serde_json::Value) -> String {
     let mut h = Sha256::new();
     h.update(serde_json::to_vec(arguments).unwrap_or_default());
     hex::encode(h.finalize())
@@ -408,7 +418,7 @@ impl SpentTokenLedger {
 
     /// Attach the configured governance store as the SHARED ledger. Called once at boot, on the
     /// instance carried across every later config apply.
-    pub(crate) fn set_sink(&self, store: std::sync::Arc<dyn crate::plane::store::PlaneStore>) {
+    pub fn set_sink(&self, store: std::sync::Arc<dyn crate::plane::store::PlaneStore>) {
         *self.sink.lock().unwrap_or_else(|e| e.into_inner()) = Some(store);
     }
 
@@ -469,7 +479,7 @@ impl SpentTokenLedger {
 /// A fresh nonce. `getrandom` is the same fail-closed entropy source key secrets use; a failure is
 /// not survivable here, because a predictable nonce is a `multi-round` scenario that passes by
 /// accident and a replay window that is wider than it looks.
-pub(crate) fn nonce() -> Result<String, getrandom::Error> {
+pub fn nonce() -> Result<String, getrandom::Error> {
     let mut b = [0u8; 16];
     getrandom::fill(&mut b)?;
     Ok(hex::encode(b))

@@ -847,13 +847,13 @@ async fn ingress_path_model(
 // plane. It lives under `ingress/` because that is the shared owner `structure-lint`'s plane
 // ledger already names for the ingress concern: "one plane-neutral admission in ingress/, with the
 // plane supplying its wire reader". This is the envelope half of that.
-pub(crate) mod jsonrpc {
-    pub(crate) use busbar_substrate::ingress::jsonrpc::*;
+pub mod jsonrpc {
+    pub use busbar_substrate::ingress::jsonrpc::*;
 }
 
 /// THE ONE JSON-RPC INGRESS SEQUENCE. Read its header: it carries the thirteen-step measurement
 /// that says which four steps are a protocol's and which nine are core's.
-pub(crate) mod protocol;
+pub mod protocol;
 
 // The error-shaping boundary: the ONE place a resolved ingress becomes a native error envelope.
 pub(crate) mod native;
@@ -862,7 +862,11 @@ pub(crate) mod native;
 /// path-model protocol's declared ingress receives, and a declaration in `proto/` has to be able
 /// to name it.
 pub mod dispatch;
-pub(crate) use dispatch::{operation_resolved, protocol_dispatch};
+// `operation_resolved` is public surface (the MCP plane's ingress reaches it); `protocol_dispatch` is
+// the axum catch-all fallback the core router mounts and nothing outside core names, so it stays
+// crate-private — keeping the confidential `CallerToken` it takes off the public seam.
+pub use dispatch::operation_resolved;
+pub(crate) use dispatch::protocol_dispatch;
 // The universal ingress entry — live callers sit inside `dispatch` itself; tests drive it directly.
 #[cfg(test)]
 pub(crate) use dispatch::operation_ingress;

@@ -95,13 +95,15 @@ fn an_installed_plane_reaches_the_cross_plane_refusal() {
     );
 }
 
-/// INSTALLED FOLD AHEAD OF BUILT-INS, and the built-ins' own operator-visible order is
-/// BYTE-IDENTICAL either side of the fold — the hard property the protocol control earned, restated
-/// on the plane axis. A plane becoming a crate must not renumber the sections an operator reads.
+/// CANONICAL LAYERING ORDER, INSTALL-SOURCE-INDEPENDENT, and the built-ins' own operator-visible
+/// order is BYTE-IDENTICAL either side of the fold — the hard property the protocol control earned,
+/// restated on the plane axis. The fold normalises to [`CANONICAL_PLANE_ORDER`], so the three
+/// canonical planes keep their layering order regardless of whether a plane arrived built-in or
+/// installed; a plane outside that list (`widget`) sorts stably to the tail rather than jumping ahead.
 #[test]
 fn installed_planes_fold_ahead_and_the_builtin_order_is_unchanged() {
     let keys: Vec<&str> = installed().iter().map(|d| d.key).collect();
-    assert_eq!(keys, vec!["widget", "llm", "mcp", "a2a"]);
+    assert_eq!(keys, vec!["llm", "mcp", "a2a", "widget"]);
 
     let builtin_keys: Vec<&str> = builtin_plane_decls().iter().map(|d| d.key).collect();
     assert_eq!(
@@ -110,22 +112,28 @@ fn installed_planes_fold_ahead_and_the_builtin_order_is_unchanged() {
         "the layering order Plane::ALL has always reported"
     );
     assert_eq!(
-        &keys[1..],
+        &keys[..3],
         builtin_keys.as_slice(),
-        "an installed plane prepends; it must not reorder the built-ins behind it"
+        "the canonical three keep their order at the head; an unknown installed plane goes to the tail"
     );
 
     // The same property where it is actually operator-visible: the config-section list.
     let sections = config_sections_from(&installed());
-    assert_eq!(sections[0], "widgets");
     assert_eq!(
-        &sections[1..4],
+        &sections[..3],
         &["pools", "tools", "agents"],
-        "the plane sections keep their layering order behind the installed one"
+        "the plane sections keep their canonical layering order at the head"
     );
     assert_eq!(
+        sections[3], "widgets",
+        "an unknown installed plane's section sorts into its canonical (tail) plane slot, \
+         after the three built-in planes and before the non-plane sections"
+    );
+    let mut without_widgets = sections.clone();
+    without_widgets.retain(|s| *s != "widgets");
+    assert_eq!(
         config_sections_from(builtin_plane_decls()),
-        sections[1..].to_vec(),
+        without_widgets,
         "removing the installed plane leaves the built-in grammar byte-identical"
     );
 }
@@ -172,11 +180,18 @@ fn a_same_key_registration_is_skipped_and_the_first_copy_wins() {
     let keys: Vec<&str> = folded.iter().map(|d| d.key).collect();
     assert_eq!(
         keys,
-        vec!["a2a", "llm", "mcp"],
-        "one entry per key: the built-in a2a row is skipped, not duplicated"
+        vec!["llm", "mcp", "a2a"],
+        "one entry per key: the built-in a2a row is skipped, not duplicated — and the survivors are \
+         normalised to canonical layering order"
     );
+    // The a2a entry lands in its CANONICAL slot (not the head), and it is the INSTALLED copy that
+    // survived the dedup, not the built-in one.
+    let a2a_entry = folded
+        .iter()
+        .find(|d| d.key == "a2a")
+        .expect("the folded set has an a2a entry");
     assert!(
-        std::ptr::eq(folded[0], &A2A_FROM_THE_CRATE),
+        std::ptr::eq(*a2a_entry, &A2A_FROM_THE_CRATE),
         "the installed copy is the one that survives"
     );
     // And the grammar does not gain a duplicate section from the doubled registration.
@@ -204,14 +219,14 @@ fn every_plane_key_answers_from_its_declaration() {
     // The values themselves are unchanged by the rewiring — the operator-visible strings that
     // metrics, audit records and grants are keyed by.
     assert_eq!(crate::plane::RESIDUAL_KEY, "llm");
-    assert_eq!(crate::plane::builtin_decl("mcp").audit_kind, "mcp_server");
-    assert_eq!(crate::plane::builtin_decl("a2a").audit_kind, "a2a_agent");
+    assert_eq!(crate::plane::plane_decl("mcp").audit_kind, "mcp_server");
+    assert_eq!(crate::plane::plane_decl("a2a").audit_kind, "a2a_agent");
     assert_eq!(
-        crate::plane::builtin_decl("a2a").subject_noun,
+        crate::plane::plane_decl("a2a").subject_noun,
         "fronted agent"
     );
     assert_eq!(
-        crate::plane::builtin_decl("mcp").scope_kinds,
+        crate::plane::plane_decl("mcp").scope_kinds,
         &["mcp_server", "mcp_tool"]
     );
 }

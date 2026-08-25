@@ -12,7 +12,7 @@
     allow(unused_imports)
 )]
 
-pub(crate) use busbar_substrate::egress_auth::gate::*;
+pub use busbar_substrate::egress_auth::gate::*;
 
 #[cfg(test)]
 #[path = "tests/gate_tests.rs"]

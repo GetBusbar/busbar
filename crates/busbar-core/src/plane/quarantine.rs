@@ -9,7 +9,7 @@
 //! operator's standing approval against the last observation, and a state nobody stores is a state
 //! nothing can leave stale. That is the right design and it has one consequence — the observation is
 //! in process memory, so a restarted process has none, and a server with no observation answers
-//! [`crate::mcp::client::catalogue::LiveDigest::Unsighted`], which dispatches against the digest the
+//! `crate::mcp::client::catalogue::LiveDigest::Unsighted`, which dispatches against the digest the
 //! operator WROTE IN CONFIG.
 //!
 //! That fallback is correct and must stay: a deployment that never runs a refresh has only the
@@ -27,7 +27,7 @@
 //! [`crate::trust::Sighting::Demoted`], the derivation runs unchanged on top of it, and the
 //! quarantine falls out of the same comparison it always did. Nothing acquires a stored trust state.
 //!
-//! The boot replay itself — [`crate::mcp::demotion::hydrate`] — stays in the MCP plane for now,
+//! The boot replay itself — `crate::mcp::demotion::hydrate` — stays in the MCP plane for now,
 //! because it reaches into `crate::mcp::client` to seed the live sightings cache. This module holds
 //! only the pure core state: the row store and the one settle rule.
 //!
@@ -68,7 +68,7 @@ impl DemotionRecord {
     /// Attach the configured governance store. Called once at boot, on the instance that is carried
     /// across every later config apply — a demotion is evidence, not intent, so an unrelated config
     /// edit must not be able to detach the thing that remembers it.
-    pub(crate) fn set_sink(&self, store: Arc<dyn PlaneStore>) {
+    pub fn set_sink(&self, store: Arc<dyn PlaneStore>) {
         *self.sink.lock().unwrap_or_else(|e| e.into_inner()) = Some(store);
     }
 
@@ -133,7 +133,7 @@ impl DemotionRecord {
     /// EVERY recorded demotion. Empty when no store is attached, when the backend keeps none, and
     /// when there genuinely are none — three situations that are indistinguishable from here and
     /// have the same correct outcome, which is that nothing is replayed.
-    pub(crate) fn list(&self) -> Vec<McpDemotionRow> {
+    pub fn list(&self) -> Vec<McpDemotionRow> {
         let Some(store) = self.sink() else {
             return Vec::new();
         };

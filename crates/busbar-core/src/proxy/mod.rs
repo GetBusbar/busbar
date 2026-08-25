@@ -99,7 +99,7 @@ const ERR_DEGRADED_NON2XX: &str = "degraded-non2xx";
 
 /// Metric-label values for the `disposition` dimension on `UPSTREAM_FAILURES_TOTAL` and the
 /// `reason` dimension on `FAILOVERS_TOTAL`.
-pub(crate) const DISPOSITION_TRANSIENT: &str = "transient_upstream";
+pub const DISPOSITION_TRANSIENT: &str = "transient_upstream";
 /// A single attempt's budget-clamped transport timeout fired (retryable within the request).
 pub(crate) const DISPOSITION_ATTEMPT_TIMEOUT: &str = "attempt_timeout";
 pub(crate) const DISPOSITION_HARD_DOWN: &str = "hard_down";
@@ -139,11 +139,11 @@ mod wire;
 pub use egress::*;
 pub(crate) use engine::*;
 pub(crate) use hooks::*;
-pub(crate) use lazy_body::*;
+pub use lazy_body::*;
 pub(crate) use response_body::*;
 pub(crate) use select::*;
 pub(crate) use usage::*;
-pub(crate) use wire::*;
+pub use wire::*;
 
 // THE PLANE'S AUDIT CHAIN, DRIVEN THROUGH THE REAL ROUTER. Mounted from the plane rather than from
 // `reqlog.rs` (which has its own record-level battery) for the reason the file's header gives: the

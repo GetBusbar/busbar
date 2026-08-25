@@ -26,9 +26,7 @@ fn all_is_complete_and_has_no_duplicates() {
 /// another plane's traffic, which is the whole thing the plane boundary exists to prevent.
 #[test]
 fn plane_identity_strings_never_collide_across_planes() {
-    let mut sections: Vec<&str> = plane_keys()
-        .map(|k| builtin_decl(k).config_section)
-        .collect();
+    let mut sections: Vec<&str> = plane_keys().map(|k| plane_decl(k).config_section).collect();
     sections.sort_unstable();
     let before = sections.len();
     sections.dedup();
@@ -39,7 +37,7 @@ fn plane_identity_strings_never_collide_across_planes() {
     );
 
     let mut kinds: Vec<&str> = plane_keys()
-        .flat_map(|k| builtin_decl(k).scope_kinds)
+        .flat_map(|k| plane_decl(k).scope_kinds)
         .copied()
         .collect();
     kinds.sort_unstable();
@@ -51,7 +49,7 @@ fn plane_identity_strings_never_collide_across_planes() {
     // half of every `kind:name` audit resource the plane's admin verbs record, and the prefix of
     // every action word. Two planes sharing one would make an audit query for one plane's history
     // answer with the other's.
-    let mut audit: Vec<&str> = plane_keys().map(|k| builtin_decl(k).audit_kind).collect();
+    let mut audit: Vec<&str> = plane_keys().map(|k| plane_decl(k).audit_kind).collect();
     audit.sort_unstable();
     let before = audit.len();
     audit.dedup();
@@ -63,7 +61,7 @@ fn plane_identity_strings_never_collide_across_planes() {
 
     // The operator-facing noun a `404` reads back. One rule serves every plane's not-found, so two
     // planes sharing a noun would produce a refusal that names the wrong registration.
-    let mut nouns: Vec<&str> = plane_keys().map(|k| builtin_decl(k).subject_noun).collect();
+    let mut nouns: Vec<&str> = plane_keys().map(|k| plane_decl(k).subject_noun).collect();
     nouns.sort_unstable();
     let before = nouns.len();
     nouns.dedup();

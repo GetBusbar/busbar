@@ -589,12 +589,7 @@ pub(crate) fn emit_admin_hostless(
 /// Fire-and-forget, loudly, exactly like [`emit_admin_hostless`]: a store write failure NEVER fails the
 /// mutation it records.
 #[allow(dead_code)] // called from the plane-gated audit sites; no caller with every plane compiled out
-pub(crate) fn emit_admin_hostless_now(
-    action: &str,
-    resource: &str,
-    outcome: &str,
-    principal: &str,
-) {
+pub fn emit_admin_hostless_now(action: &str, resource: &str, outcome: &str, principal: &str) {
     let ts = crate::store::now();
     emit_admin_hostless(ts, action, resource, outcome, principal);
 }

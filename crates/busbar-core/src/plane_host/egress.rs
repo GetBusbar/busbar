@@ -1263,7 +1263,7 @@ pub(crate) struct OpenedHead {
 #[cfg(any(feature = "plane-mcp", feature = "plane-a2a"))]
 #[allow(dead_code)]
 #[derive(Debug)]
-pub(crate) struct EgressFaultInfo {
+pub struct EgressFaultInfo {
     pub class: EgressFailClass,
     pub status: u16,
     pub cause: String,

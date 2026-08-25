@@ -100,12 +100,12 @@ fn a_resolved_lookup_is_returned_untouched() {
 /// pinned here rather than left to whatever `format!` happens to produce.
 #[test]
 fn the_audit_naming_is_derived_from_the_plane() {
-    assert_eq!(crate::plane::builtin_decl("mcp").audit_kind, "mcp_server");
-    assert_eq!(crate::plane::builtin_decl("a2a").audit_kind, "a2a_agent");
+    assert_eq!(crate::plane::plane_decl("mcp").audit_kind, "mcp_server");
+    assert_eq!(crate::plane::plane_decl("a2a").audit_kind, "a2a_agent");
     assert_eq!(
         format!(
             "{}.{}",
-            crate::plane::builtin_decl("mcp").audit_kind,
+            crate::plane::plane_decl("mcp").audit_kind,
             "connect"
         ),
         "mcp_server.connect",
@@ -114,7 +114,7 @@ fn the_audit_naming_is_derived_from_the_plane() {
     assert_eq!(
         format!(
             "{}.{}",
-            crate::plane::builtin_decl("a2a").audit_kind,
+            crate::plane::plane_decl("a2a").audit_kind,
             "connect"
         ),
         "a2a_agent.connect"
@@ -122,7 +122,7 @@ fn the_audit_naming_is_derived_from_the_plane() {
     assert_eq!(
         format!(
             "{}.{}",
-            crate::plane::builtin_decl("a2a").audit_kind,
+            crate::plane::plane_decl("a2a").audit_kind,
             "approve"
         ),
         "a2a_agent.approve"

@@ -26,7 +26,7 @@
 /// `SecretResolver`/`resolve_settings`/the built-in
 /// `env`/`file` resolution, which are genuinely engine-specific (I/O, plugin dispatch) rather than
 /// part of the reference SHAPE.
-pub(crate) use busbar_secret_ref::{SecretRef, SECRET_MODULE_ENV, SECRET_MODULE_FILE};
+pub use busbar_secret_ref::{SecretRef, SECRET_MODULE_ENV, SECRET_MODULE_FILE};
 
 /// The reserved wrapper key that OPTS A PLUGIN SETTING OUT of secret-reference interpretation:
 /// `{ literal: <value> }` delivers `<value>` to the plugin verbatim. The escape hatch for the
@@ -314,7 +314,7 @@ fn self_file_path_checked(secret: &SecretRef) -> Result<Option<String>, String> 
 
 /// Resolve a secret reference to a UTF-8 STRING (trailing newline trimmed - the universal
 /// file-delivered-secret convention). Fail-closed on non-UTF-8.
-pub(crate) fn resolve_builtin_string(secret: &SecretRef) -> Result<String, String> {
+pub fn resolve_builtin_string(secret: &SecretRef) -> Result<String, String> {
     let bytes = resolve_builtin(secret)?;
     let s = String::from_utf8(bytes).map_err(|_| {
         format!(

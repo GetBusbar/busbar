@@ -177,7 +177,7 @@ pub(crate) async fn operation_ingress(
 /// governance → candidates → affinity → the one engine. `gemini_api_version` shapes the gemini
 /// dialect's model-not-found echo; everything else is operation- and protocol-blind.
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn operation_resolved(
+pub async fn operation_resolved(
     app: &Arc<App>,
     gov: &crate::governance::GovCtx,
     proto: &'static str,

@@ -107,7 +107,7 @@ pub fn registered<T>(
     lookup().ok_or_else(|| {
         AdminError::not_found(format!(
             "{} `{name}`",
-            crate::plane::builtin_decl(plane).subject_noun
+            crate::plane::plane_decl(plane).subject_noun
         ))
     })
 }
@@ -124,7 +124,7 @@ pub(crate) fn audit(
     outcome: &'static str,
     principal: &crate::auth::AuthPrincipal,
 ) {
-    let audit_kind = crate::plane::builtin_decl(plane).audit_kind;
+    let audit_kind = crate::plane::plane_decl(plane).audit_kind;
     crate::admin::audit::AUDIT.record_by(
         &format!("{audit_kind}.{verb}"),
         &format!("{audit_kind}:{name}"),

@@ -403,7 +403,7 @@ fn plane_config_validate(
     name: &str,
     def: &serde_json::Value,
 ) -> Result<(), String> {
-    match crate::plane::registry::builtin_plane_decl_for_config_section(section.key())
+    match crate::plane::registry::plane_decl_for_config_section(section.key())
         .and_then(|d| d.config_validate)
     {
         Some(f) => f(name, def),

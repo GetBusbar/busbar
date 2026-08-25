@@ -185,7 +185,7 @@ impl Transport {
     /// `Plane::A2a.wire_format_names()` is built from, rather than from strings spelled again here.
     /// That is what makes the metric label, the plane's dialect list and the `protocolBinding` a
     /// served card advertises one vocabulary instead of three that agree today.
-    pub(crate) fn name(self) -> &'static str {
+    pub fn name(self) -> &'static str {
         match self {
             Transport::Http => "http",
             Transport::JsonRpc => crate::plane::WIRE_JSONRPC,
@@ -218,7 +218,7 @@ impl Transport {
     // Read only by the MCP client leg (`mcp/client/wire.rs`), which exists only when the MCP plane is
     // compiled in; with `plane-mcp` off it is dead, so it is gated exactly as its one caller is.
     #[cfg(feature = "plane-mcp")]
-    pub(crate) fn upstream_wire(self) -> Option<UpstreamWireKind> {
+    pub fn upstream_wire(self) -> Option<UpstreamWireKind> {
         match self {
             Transport::Http => Some(UpstreamWireKind::StreamableHttp),
             Transport::Stdio => Some(UpstreamWireKind::Stdio),

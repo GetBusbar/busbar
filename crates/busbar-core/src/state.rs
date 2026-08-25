@@ -305,7 +305,7 @@ pub struct App {
     /// clone-derived snapshot and REUSED across `build_app_from_config` applies exactly like
     /// `store`: learned reliability must survive a snapshot swap, or every apply un-trips every
     /// dead upstream. See [`crate::store::PlaneBreakers`] for why it is not the LLM store itself.
-    pub(crate) plane_breakers: Arc<crate::store::PlaneBreakers>,
+    pub plane_breakers: Arc<crate::store::PlaneBreakers>,
     /// THE NEUTRAL PER-SESSION SUBSTRATE ([`crate::session::SessionStore`]) — PROCESS-LIFETIME, reused
     /// across `build_app_from_config` applies exactly like `plane_breakers`, because a session's state
     /// (today the gate's cleared-scan set; tomorrow any tenant) must survive a config swap or every
@@ -330,7 +330,7 @@ pub struct App {
     // MCP-only: read by the MCP dispatch route builder (`mcp::reroute`); with `plane-mcp` off (and
     // A2A on) it is carried on the snapshot but never read.
     #[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
-    pub(crate) tool_pools: std::collections::BTreeMap<String, crate::failover::CandidatePoolCfg>,
+    pub tool_pools: std::collections::BTreeMap<String, crate::failover::CandidatePoolCfg>,
     /// The `agent_pools:` twin for the A2A relay. Same carriage, same reasoning.
     // A2A-only: the A2A relay's reroute twin; with `plane-a2a` off (and MCP on) it is never read.
     #[cfg_attr(not(feature = "plane-a2a"), allow(dead_code))]
@@ -402,7 +402,7 @@ pub struct App {
     // MCP-only: consulted by the MCP submission gate firing site; with `plane-mcp` off (and A2A on)
     // it is resolved onto the snapshot but never read.
     #[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
-    pub(crate) mcp_server_gates: HashMap<String, Vec<(u16, crate::hooks::ResolvedPolicy)>>,
+    pub mcp_server_gates: HashMap<String, Vec<(u16, crate::hooks::ResolvedPolicy)>>,
     /// THE A2A SUBMISSION GATES, per registered agent: `agents.hooks:` ∪ `agents.<agent>.hooks:`.
     /// The exact twin of [`App::mcp_server_gates`], same combine rule, same keying, same zero-cost
     /// absence — because it is one operator concept spelled on two planes, and an operator who
@@ -420,7 +420,7 @@ pub struct App {
     /// Prometheus scrape so they open a hook's `kind: hook` plugin the same way the request path's
     /// resolved transports did. Cheap to clone (Arc-backed). Replaces the retired webhook client the
     /// out-of-process transport needed.
-    pub(crate) hook_env: crate::hooks::HookEnv,
+    pub hook_env: crate::hooks::HookEnv,
     pub hook_registry: HashMap<String, crate::config::HookCfg>,
     /// The "decision observability" signal catalog's config-generation
     /// `RequestedSignals` bitmask — the UNION of every hook's declared `signals:` — built ONCE
@@ -574,19 +574,19 @@ pub struct App {
     /// THE MCP PLANE'S PER-GENERATION CLIENT-DIRECTION RUNTIME — the catalogue snapshot, the `tools:`
     /// registry, the upstream connection pool, the live tool-list sightings, the per-principal roots
     /// epochs and the per-upstream sampling spend, bundled into ONE mcp-owned object
-    /// ([`crate::mcp::McpRuntime`]) and held here TYPE-ERASED so this `App` names no `crate::mcp` type
-    /// for any of them. The mcp plane reads it through [`crate::mcp::runtime`], which downcasts inside
+    /// (`crate::mcp::McpRuntime`) and held here TYPE-ERASED so this `App` names no `crate::mcp` type
+    /// for any of them. The mcp plane reads it through `crate::mcp::runtime`, which downcasts inside
     /// the plane; nothing outside the mcp module reaches these objects.
     ///
     /// Always present (an empty catalogue and a live pool exist even with no `tools:`/`mcp:` block),
     /// which is why it is a plain field and not a `plane_slots` entry — a `plane_slots` slot is
-    /// config-conditional, and the server-side dispatch object ([`crate::mcp::McpResource`]) lives
+    /// config-conditional, and the server-side dispatch object (`crate::mcp::McpResource`) lives
     /// there instead. Each bundled object's cross-apply lifecycle (fresh catalogue/servers/pool, but
     /// carried sightings/roots-epochs/sampling-spend) is unchanged — see `McpRuntime::build`.
     // MCP-only: read only by the MCP plane through `crate::mcp::runtime`; with `plane-mcp` off (and
     // A2A on) it is held type-erased but never downcast, so it reads dead there.
     #[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
-    pub(crate) mcp_runtime: Arc<dyn std::any::Any + Send + Sync>,
+    pub mcp_runtime: Arc<dyn std::any::Any + Send + Sync>,
     /// THE MCP VERIFY-ON-CALL GATE — the per-server single-flight coalescer that re-verifies an
     /// upstream's advertised tool surface on the `tools/call` path when its recorded observation is
     /// older than `verify_ttl` (see [`crate::trust::verify`]).
@@ -596,7 +596,7 @@ pub struct App {
     /// them on every apply would let a burst of callers each fetch during the window an unrelated
     /// config edit reset. It replaces the background sweep daemon: there is no timer, and a server
     /// nobody calls is never fetched.
-    pub(crate) mcp_verify: Arc<crate::trust::verify::VerifyGate>,
+    pub mcp_verify: Arc<crate::trust::verify::VerifyGate>,
     /// APPROVALS ALREADY SPENT — the record that makes an operator-configured confirmation
     /// single-use.
     ///
@@ -661,7 +661,7 @@ pub struct App {
     /// the next snapshot with `config_version + 1`). Exposed on `GET /api/v1/admin/info` so drift-detection
     /// tooling can tell whether the running config changed since a prior read. Process-local (resets on
     /// restart); durable version history + rollback is a follow-up.
-    pub(crate) config_version: u64,
+    pub config_version: u64,
     /// Anti-sprawl cap on keys BOUND TO ONE GROUP.
     /// Because a `user:<sub>` leaf IS the principal, this is effectively "max keys per principal".
     /// `0` = unlimited (default). Enforced at `POST /keys`; carried on the snapshot so a config apply
@@ -798,7 +798,7 @@ impl App {
     /// syscall. Called ONCE per inbound request, at the earliest point `RequestCtx` is built
     /// (`forward_with_pool_parsed`) — every failover hop of that request reuses the SAME id (it
     /// rides `RequestCtx::request_id`, not re-derived here per hop).
-    pub(crate) fn next_request_id(&self) -> u64 {
+    pub fn next_request_id(&self) -> u64 {
         self.request_id_counter
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     }

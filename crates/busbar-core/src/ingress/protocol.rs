@@ -20,7 +20,7 @@
 use axum::response::Response;
 
 // Glob, so the re-export is never an unused import when a plane consumer is compiled out.
-pub(crate) use busbar_substrate::ingress::protocol::*;
+pub use busbar_substrate::ingress::protocol::*;
 
 /// THE THREE FACTS a protocol supplies so that ONE handler can serve its RFC 9728 document.
 ///

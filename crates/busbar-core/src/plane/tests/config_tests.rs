@@ -33,7 +33,7 @@ use crate::plane::{PlaneSections, RefError};
 fn the_section_list_is_derived_from_the_config_grammar_rather_than_written() {
     let mut expected: Vec<&'static str> = Vec::new();
     for s in crate::plane::plane_keys()
-        .map(|k| crate::plane::builtin_decl(k).config_section)
+        .map(|k| crate::plane::plane_decl(k).config_section)
         .chain(NamedMapSection::ALL.iter().map(|s| s.key()))
     {
         if !expected.contains(&s) {

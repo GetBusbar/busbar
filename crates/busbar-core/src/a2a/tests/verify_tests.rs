@@ -591,8 +591,10 @@ fn the_cadence_grammar_has_no_knob_that_slows_detection_or_delays_demotion() {
     // background sweep — is the one place a per-subject cooldown or a "skip if it failed recently"
     // fast path could now be introduced for BOTH planes at once, which makes it the single most
     // important file on this list.
-    let mcp_config_src = read("src/mcp/config.rs");
-    let mcp_fetch_src = read("src/mcp/connect.rs");
+    // The MCP plane's sources moved to the `busbar-mcp` crate (Phase-B B2); the ratchet MOVED WITH
+    // THEM rather than dropping the path — the sibling-crate spelling reaches the same two files.
+    let mcp_config_src = read("../busbar-mcp/src/mcp/config.rs");
+    let mcp_fetch_src = read("../busbar-mcp/src/mcp/connect.rs");
     let shared_verify_src = read("src/trust/verify.rs");
 
     let code = |s: &str| -> String {

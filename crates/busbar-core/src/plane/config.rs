@@ -83,7 +83,7 @@ use crate::config::named_map::NamedMapSection;
 /// references without naming that plane's credential-bearing types.
 ///
 /// Implemented by the type a plane's top-level config section deserializes into (`tools:` →
-/// [`crate::mcp::config::ToolsCfg`], `agents:` → [`crate::a2a::config::AgentsCfg`]). The composition
+/// `crate::mcp::config::ToolsCfg`, `agents:` → [`crate::a2a::config::AgentsCfg`]). The composition
 /// walk in `config_validate::secret_refs` gathers every plane's references by LOOPING this trait over
 /// the configured plane sections, rather than destructuring each plane's own config types itself: the
 /// section that owns a credential is the section that knows it is one.
@@ -92,7 +92,7 @@ use crate::config::named_map::NamedMapSection;
 /// anti-omission force that used to live in `config_validate::secret_refs` — adding a credential
 /// field to a plane fails to compile until someone decides, in the impl, whether it is a secret —
 /// travels with the plane instead of staying behind in core.
-pub(crate) trait PlaneCfg: std::any::Any + Send + Sync + std::fmt::Debug {
+pub trait PlaneCfg: std::any::Any + Send + Sync + std::fmt::Debug {
     /// EVERY secret reference this plane's config section carries, as `(config-path, &SecretRef)`,
     /// where the path is the operator-facing dotted location `--validate` prints in an error. The
     /// path is fully qualified from the top-level section down (`tools.<name>.env.<var>`), so a
@@ -153,19 +153,19 @@ pub(crate) trait PlaneCfg: std::any::Any + Send + Sync + std::fmt::Debug {
 /// reads — the reserved section-level `hooks:` attach list, and each registration's `(name, hooks)`
 /// in registry order. Core-owned so a plane hands its gate inputs across the seam without core naming
 /// the plane's registry type.
-pub(crate) struct ContainerGateInputs {
+pub struct ContainerGateInputs {
     /// The reserved `<section>.hooks:` all-section attach list (`ToolsCfg::all_server_hooks` /
     /// `AgentsCfg::all_agent_hooks`).
-    pub(crate) section_hooks: Vec<String>,
+    pub section_hooks: Vec<String>,
     /// Each registration and its OWN `hooks:` list, in registry (insertion) order — the order the
     /// gate resolution and every operator-facing listing already read.
-    pub(crate) containers: Vec<(String, Vec<String>)>,
+    pub containers: Vec<(String, Vec<String>)>,
 }
 
 /// A PLANE'S TOP-LEVEL ENDPOINT SECTION (the MCP plane's `mcp:` block — busbar's own resource-server
 /// door), captured through the neutral seam so `DeployCfg` names no `crate::mcp` endpoint type. The
 /// twin of [`PlaneCfg`] for the one plane section that is an ENDPOINT rather than a registry.
-pub(crate) trait PlaneEndpointCfg: std::any::Any + Send + Sync + std::fmt::Debug {
+pub trait PlaneEndpointCfg: std::any::Any + Send + Sync + std::fmt::Debug {
     /// True when the operator wrote CONTENT for this endpoint block — read by the config
     /// deletion-gate leg to refuse a present `mcp:` block that names a compiled-out plane.
     fn is_present(&self) -> bool;
@@ -289,7 +289,7 @@ impl RawPlaneSection {
 /// hook and falls back to an empty raw capture (never present, never refused). Byte-identical to the
 /// pre-seam typed field's `Default`.
 fn default_plane_section(key: &str) -> Box<dyn PlaneCfg> {
-    match crate::plane::registry::builtin_plane_decl_for(key).and_then(|d| d.default_section) {
+    match crate::plane::registry::plane_decl_for(key).and_then(|d| d.default_section) {
         Some(f) => f(),
         None => Box::new(RawPlaneSection::default()),
     }
@@ -308,7 +308,7 @@ where
     D: serde::Deserializer<'de>,
 {
     let value = serde_yaml::Value::deserialize(deserializer)?;
-    match crate::plane::registry::builtin_plane_decl_for(key).and_then(|d| d.parse_section) {
+    match crate::plane::registry::plane_decl_for(key).and_then(|d| d.parse_section) {
         Some(parse) => parse(&value).map_err(serde::de::Error::custom),
         None => {
             let raw = if value.is_null() { None } else { Some(value) };
@@ -331,7 +331,7 @@ where
     if value.is_null() {
         return Ok(None);
     }
-    match crate::plane::registry::builtin_plane_decl_for(key).and_then(|d| d.parse_endpoint) {
+    match crate::plane::registry::plane_decl_for(key).and_then(|d| d.parse_endpoint) {
         Some(parse) => parse(&value).map(Some).map_err(serde::de::Error::custom),
         None => Ok(Some(Box::new(RawPlaneSection { raw: Some(value) }))),
     }
@@ -411,7 +411,7 @@ pub(crate) use crate::config::RESERVED_POOLS_SECTION_KEYS as RESERVED_SECTION_KE
 /// Order is deterministic (plane tables first, in layering order) so a refusal naming a section
 /// names the same one on every run. A nondeterministic diagnostic makes a boot failure
 /// unreproducible.
-pub(crate) fn config_sections() -> Vec<&'static str> {
+pub fn config_sections() -> Vec<&'static str> {
     config_sections_from(super::registry::plane_decls())
 }
 
@@ -531,7 +531,7 @@ pub(crate) fn judge_hook_ref(hook: &str, sections: &[&'static str]) -> Result<()
 /// operator believing a control is attached that is not, which is worse than the typo.
 ///
 /// `at` is the CALLER'S vocabulary for the site; the verdict and the sentence are core's.
-pub(crate) fn refuse_cross_plane_reference(
+pub fn refuse_cross_plane_reference(
     at: &str,
     hook: &str,
     sections: &[&'static str],
@@ -559,13 +559,13 @@ pub(crate) fn validate_section_hooks(
 /// Insertion-ordered, because catalogue construction and every operator-facing listing read it and a
 /// hash-ordered listing is a listing that changes between runs for no reason. A plane that wants
 /// another container converts once, at the end, where the conversion is visible.
-pub(crate) struct Section<T> {
+pub struct Section<T> {
     /// The reserved `<section>.hooks:` all-plane attach list. LIST ⇒ ADDITIVE.
-    pub(crate) hooks: Vec<String>,
+    pub hooks: Vec<String>,
     /// The reserved `<section>.upstream_credentials:` all-plane default. SCALAR ⇒ OVERRIDE.
-    pub(crate) upstream_credentials: Option<crate::auth::UpstreamCreds>,
+    pub upstream_credentials: Option<crate::auth::UpstreamCreds>,
     /// The registrations — every key that is not one of [`RESERVED_SECTION_KEYS`].
-    pub(crate) entries: indexmap::IndexMap<String, T>,
+    pub entries: indexmap::IndexMap<String, T>,
 }
 
 /// THE SECTION-MAP SPLIT, and the only copy of it: read one plane's top-level section into its two
@@ -580,7 +580,7 @@ pub(crate) struct Section<T> {
 /// to define a registration by that name, and it is refused BEFORE the typed lifts so the operator
 /// reads "that name is reserved" rather than "expected a sequence" — the diagnosis is different, and
 /// the confusing one costs an operator an afternoon.
-pub(crate) fn split_section<'de, D, T>(
+pub fn split_section<'de, D, T>(
     deserializer: D,
     plane_key: &'static str,
     validate: impl Fn(&str, &T) -> Result<(), String>,
@@ -591,7 +591,7 @@ where
 {
     use serde::de::Error as _;
 
-    let d = super::builtin_decl(plane_key);
+    let d = super::plane_decl(plane_key);
     let section = d.config_section;
     let noun = d.subject_noun;
 

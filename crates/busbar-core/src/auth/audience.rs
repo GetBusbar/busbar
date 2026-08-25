@@ -51,7 +51,7 @@ use base64::Engine as _;
 
 /// What could be established about a presented bearer's audience binding.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Binding {
+pub enum Binding {
     /// A busbar-signed token. The real audience check happens in the verifier, which has the
     /// signature and the claims; this module must not pre-judge it, because a busbar token is not a
     /// JWT and reading it as one would refuse every valid one.
@@ -74,7 +74,7 @@ pub(crate) enum Binding {
 /// matched as a prefix, a suffix, or case-insensitively. A resource indicator is an opaque
 /// identifier; treating it as a namespace is how `https://gw.example.com/mcp` begins admitting
 /// tokens minted for `https://gw.example.com/mcp-staging`.
-pub(crate) fn inspect_bearer(token: &str, expected_aud: &str) -> Binding {
+pub fn inspect_bearer(token: &str, expected_aud: &str) -> Binding {
     if token.starts_with(crate::governance::signing::TOKEN_PREFIX) {
         return Binding::Deferred;
     }

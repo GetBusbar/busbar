@@ -592,11 +592,11 @@ pub(crate) mod audit;
     not(any(feature = "plane-mcp", feature = "plane-a2a")),
     allow(dead_code)
 )]
-pub(crate) mod planeverbs;
+pub mod planeverbs;
 pub(crate) mod rate;
 pub mod restart;
 pub(crate) mod transport;
-pub(crate) mod v1;
+pub mod v1;
 pub(crate) mod versions;
 
 pub(crate) use v1::json::JsonV1;

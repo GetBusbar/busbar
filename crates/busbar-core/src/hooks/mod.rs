@@ -150,7 +150,7 @@ pub(crate) fn any_content_hook(
 /// parse the reply through the engine's own fail-closed `wire` normalizers. Cheap to clone (both are
 /// `Arc`-backed); replaces the old `&reqwest::Client` the retired webhook transport needed.
 #[derive(Clone)]
-pub(crate) struct HookEnv {
+pub struct HookEnv {
     pub(crate) registry: std::sync::Arc<busbar_plugin_loader::PluginRegistry>,
     pub(crate) projectors: std::sync::Arc<busbar_plugin_loader::hook::HookProjectors>,
     /// The secret resolver used to turn any SecretRef-typed hook setting (e.g. a `licenseKey`) into
@@ -283,7 +283,7 @@ impl HookEnv {
 /// (`route: weighted` / absent): no policy object, no projection, the inline SWRR hot path. Stored
 /// on `App` keyed by pool name; the hot path is `if let Some(p) = app.pool_policies.get(pool) { … }`.
 #[derive(Clone)]
-pub(crate) enum ResolvedPolicy {
+pub enum ResolvedPolicy {
     /// A constructed policy object (a dlopen hook plugin / native non-weighted) plus its fallback config.
     /// The default SWRR / weighted path is represented as `None` by `resolve_policy` (it constructs no
     /// policy object), so there is no `Weighted` variant — a weighted pool simply has no resolved
@@ -317,7 +317,7 @@ pub(crate) enum ResolvedPolicy {
 /// the per-hook config the firing site needs (its own deadline, ITS grants — a fallback never
 /// sees a projection its own grants don't allow — and its own `on_empty`).
 #[derive(Clone)]
-pub(crate) struct FallbackHook {
+pub struct FallbackHook {
     pub(crate) policy: Arc<dyn RoutingPolicy>,
     pub(crate) timeout: std::time::Duration,
     pub(crate) send_prompt: bool,
@@ -1537,7 +1537,7 @@ pub(crate) fn resolve_gate_hooks(
     not(any(feature = "plane-mcp", feature = "plane-a2a")),
     allow(dead_code)
 )]
-pub(crate) fn attach_list(section: &[String], own: &[String]) -> Vec<String> {
+pub fn attach_list(section: &[String], own: &[String]) -> Vec<String> {
     let mut out: Vec<String> = Vec::with_capacity(section.len() + own.len());
     for h in section.iter().chain(own) {
         if !out.iter().any(|e| e == h) {
@@ -1565,7 +1565,7 @@ pub(crate) fn attach_list(section: &[String], own: &[String]) -> Vec<String> {
     not(any(feature = "plane-mcp", feature = "plane-a2a")),
     allow(dead_code)
 )]
-pub(crate) fn resolve_container_gates<'a>(
+pub fn resolve_container_gates<'a>(
     containers: impl Iterator<Item = (&'a str, &'a [String])>,
     section: &[String],
     hooks: &std::collections::HashMap<String, crate::config::HookCfg>,

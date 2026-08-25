@@ -816,7 +816,7 @@ pub(crate) fn request_finished(
 /// binding word off a closed axis. Neither is caller-supplied, which is the rule
 /// `crate::proxy::POOL_LABEL_UNRESOLVED` exists to keep — a client-supplied value here would mint a
 /// time series per distinct string.
-pub(crate) fn upstream_attempt_on(pool_label: &str, lane_label: &str) {
+pub fn upstream_attempt_on(pool_label: &str, lane_label: &str) {
     metrics::counter!(
         crate::metrics::UPSTREAM_ATTEMPTS_TOTAL,
         "pool" => pool_label.to_owned(),
@@ -831,7 +831,7 @@ pub(crate) fn upstream_attempt_on(pool_label: &str, lane_label: &str) {
 /// `&App` and why both labels are bounded. `disposition` is the model plane's own vocabulary
 /// ([`DISPOSITIONS`], i.e. `crate::proxy::DISPOSITION_*`) and no plane gets one of its own: a
 /// disposition value invented per plane is the second vocabulary this whole file exists to refuse.
-pub(crate) fn upstream_failure_on(pool_label: &str, lane_label: &str, disposition: &'static str) {
+pub fn upstream_failure_on(pool_label: &str, lane_label: &str, disposition: &'static str) {
     metrics::counter!(
         crate::metrics::UPSTREAM_FAILURES_TOTAL,
         "pool" => pool_label.to_owned(),

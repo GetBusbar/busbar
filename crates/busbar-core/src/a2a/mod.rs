@@ -220,7 +220,7 @@ pub(crate) fn agent_cfg(app: &crate::state::App) -> &crate::a2a::config::AgentsC
 /// `Arc<dyn Any>` slot and names no `crate::a2a` type. `None` exactly when `agents:` is not
 /// configured this generation (the plane contributed no slot — the same absence the deleted
 /// `App::a2a: None` used to encode). The downcast never fails: the a2a slot is always an `A2aPlane`
-/// (`PLANE_DECL::build`). The exact byte-analog of [`crate::mcp::resource`]; A2A carries ONE object,
+/// (`PLANE_DECL::build`). The exact byte-analog of `crate::mcp::resource`; A2A carries ONE object,
 /// so this single accessor is its whole runtime seam.
 pub(crate) fn runtime(app: &crate::state::App) -> Option<&crate::a2a::plane::A2aPlane> {
     app.plane_slot(PLANE_DECL.key).map(|slot| {
@@ -233,7 +233,7 @@ pub(crate) fn runtime(app: &crate::state::App) -> Option<&crate::a2a::plane::A2a
 /// snapshot borrow it was read from (a moved snapshot guard, or a value carried past the borrow).
 /// Clones the SAME `Arc` `plane_slots` holds (a refcount bump, not a second construction). `None`
 /// and the never-fail downcast have the same meaning as [`runtime`]. The byte-analog of
-/// [`crate::mcp::resource_arc`].
+/// `crate::mcp::resource_arc`.
 pub(crate) fn runtime_arc(
     app: &crate::state::App,
 ) -> Option<std::sync::Arc<crate::a2a::plane::A2aPlane>> {

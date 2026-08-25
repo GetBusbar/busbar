@@ -111,7 +111,7 @@ pub enum OpShape {
     ///
     /// **ONE SHAPE IS NOT YET ONE STORE, and the gap is stated rather than glossed.** The two planes
     /// are backed by two substrates today: [`crate::plane::taskstore`] writes every state change
-    /// through to the configured governance store and rehydrates at boot, while [`crate::mcp::tasks`]
+    /// through to the configured governance store and rehydrates at boot, while `crate::mcp::tasks`
     /// is an IN-PROCESS registry that disclaims durability in its own header. That is a property of
     /// the SUBSTRATE, not of this axis.
     Task,

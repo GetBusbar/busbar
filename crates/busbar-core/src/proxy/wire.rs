@@ -663,7 +663,7 @@ pub(crate) fn translate_request_cross_protocol(
 /// Operator-tunable via `limits.upstream_error_body_max_bytes` (defaults to 256 KiB). A function (not
 /// a `const`) so the process-wide installed value is read at each use site; falls back to the
 /// historical default when the limits aren't installed (e.g. unit tests).
-pub(crate) fn max_upstream_buffered_bytes() -> usize {
+pub fn max_upstream_buffered_bytes() -> usize {
     crate::limits::upstream_error_body_max_bytes()
 }
 
@@ -687,7 +687,7 @@ pub(crate) fn max_translated_body_bytes() -> usize {
 // and a plane crate names them without reaching into core). Re-exported here so every
 // `crate::proxy::{read_capped, ReadEnd}` call site — via `proxy/mod.rs`'s `pub(crate) use wire::*`
 // — resolves unchanged.
-pub(crate) use busbar_substrate::proxy::{read_capped, ReadEnd};
+pub use busbar_substrate::proxy::{read_capped, ReadEnd};
 
 /// Read an upstream ERROR / verbatim-relay body under the tight [`max_upstream_buffered_bytes()`] cap.
 /// A truncated error body still classifies/relays correctly (error envelopes are well under the cap,

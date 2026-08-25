@@ -1451,7 +1451,7 @@ pub fn build_app_from_config(
                 .mcp
                 .as_ref()
                 .and_then(|slot| {
-                    crate::plane::registry::builtin_plane_decl_for("mcp")
+                    crate::plane::registry::plane_decl_for("mcp")
                         .and_then(|d| (d.admission)(slot.as_ref()))
                 })
                 .map(|adm| adm.audience)
@@ -1643,7 +1643,7 @@ pub fn build_app_from_config(
         // `tool_defs` section, erased via `PlaneCfg::as_any`) so this composition names no
         // `crate::mcp` runtime type. With `plane-mcp` off there is no built-in decl, so the field
         // carries a neutral empty placeholder (nothing downcasts it — no MCP accessor exists then).
-        mcp_runtime: crate::plane::registry::builtin_plane_decl_for("mcp")
+        mcp_runtime: crate::plane::registry::plane_decl_for("mcp")
             .and_then(|d| d.build_runtime)
             .map(|f| f(cfg.tool_defs.as_any(), prior))
             .unwrap_or_else(|| Arc::new(()) as Arc<dyn std::any::Any + Send + Sync>),

@@ -54,9 +54,8 @@ const MIGRATED_FILES: &[&str] = &[
     "src/a2a/pushdeliver.rs",
     "src/a2a/originate.rs",
     "src/a2a/plane.rs",
-    "src/mcp/mod.rs",
-    "src/mcp/stdio_serve.rs",
-    "src/mcp/method.rs",
+    // The MCP plane's sources moved to the `busbar-mcp` crate (Phase-B B2); their uncoded-diagnostic
+    // floor is enforced by that crate's own suite now, so core no longer scans them here.
     "src/export/webhook.rs",
     "src/export/file.rs",
     "src/ir/mod.rs",

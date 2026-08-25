@@ -48,7 +48,7 @@ use crate::proxy::ReadEnd;
 /// closer registered at open fires only when `f` returns, not between the two calls. Mirrors
 /// [`crate::plane_host::journal::journal_append_scoped_full_hostless`]: an in-core twin of the FFI
 /// path, funnelling into the exact same governed-hop bodies, for a site that has no host to open.
-pub(crate) fn with_hostless<R>(f: impl FnOnce(&DispatchScope) -> R) -> R {
+pub fn with_hostless<R>(f: impl FnOnce(&DispatchScope) -> R) -> R {
     let scope = DispatchScope::new();
     f(&scope)
 }
@@ -82,7 +82,7 @@ pub struct HopSpec<'a> {
 /// planes map from (the A2A [`Response`](super::Response) carries a subset; the MCP dispatch reads
 /// status/body/content-type for its own `is_sse` / redirect refusal). `content_type` is surfaced
 /// VERBATIM (the host lower-cases nothing); a caller applies its own casing.
-pub(crate) struct Buffered {
+pub struct Buffered {
     pub status: u16,
     pub location: Option<String>,
     /// Read by the MCP dispatch converter (sub-commit 4) for its `is_sse` decision; unread until then.
@@ -217,7 +217,7 @@ fn read_capped_over(
 /// buffered round trip the A2A card fetch/relay and the MCP dispatch both build their own return type
 /// over. On an open refusal/fault, `Err` carries the neutral [`EgressFaultInfo`] the plane composes
 /// its operator string over (the cause and url are kept SEPARATE). The egress is closed before return.
-pub(crate) fn buffered(
+pub fn buffered(
     scope: &DispatchScope,
     spec: &HopSpec<'_>,
     cap: usize,

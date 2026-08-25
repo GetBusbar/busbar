@@ -104,6 +104,12 @@ rustls-pki-types = { workspace = true }
 # protocol-extraction step's job; this split is what makes it possible. Do not "fix" it here.
 default = ["auth-admin-tokens", "hooks-ranking", "plane-mcp", "plane-a2a"]
 auth-admin-tokens = ["dep:busbar-auth-admin-tokens"]
+# NOT A REAL BUILD KNOB — declared only so `#[cfg(feature = "extracted")]` is a KNOWN condition when
+# core dual-compiles `busbar-mcp/src/mcp` back in for its own tests (see `mod mcp` in lib.rs). Those
+# shared sources gate their plane tests `not(feature = "extracted")`; `extracted` is default-ON in the
+# `busbar-mcp` crate and left OFF (never enabled) here, so the plane tests run in THIS crate's test
+# binary. Enabling it would do nothing but silence those tests — do not.
+extracted = []
 hooks-ranking = ["dep:busbar-hooks-ranking"]
 # THE MCP PLANE, in-core today (`src/mcp`), behind the SAME switch the binary already uses for MCP
 # the protocol codec (`busbar-mcp`): one plane-kind name for MCP-the-protocol and MCP-the-plane,
@@ -169,3 +175,4 @@ tikv-jemalloc-ctl = { workspace = true }
 [[bench]]
 name = "pool_upstream_creds"
 harness = false
+

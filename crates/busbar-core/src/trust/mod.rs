@@ -22,12 +22,12 @@
 // `TrustState`, `Drift`, `TrustError`, `Approval` — relocated to substrate; this glob keeps every
 // `crate::trust::X` path resolving. Glob (not an explicit list) so the re-export never reads as an
 // unused import when a plane consumer is compiled out.
-pub(crate) use busbar_substrate::trust::*;
+pub use busbar_substrate::trust::*;
 
 // THE ORDERED REQUEST VALIDATOR — its neutral half is in substrate and re-exported here; the core
 // half (`Standing`/`Snapshot`/`Lapsed`, which read `crate::governance::GovState`) lives in this
 // module. An explicit `mod validate` shadows the glob-imported substrate `validate` above.
-pub(crate) mod validate;
+pub mod validate;
 
 // VERIFY-ON-CALL — stays in core: it drives `crate::plane_host::trust::verify_decide` and the
 // `crate::diagnostics` emit macros, neither of which is neutral. It imports the MOVED
@@ -38,4 +38,4 @@ pub(crate) mod verify;
 /// reverify.rs`, rather than a bare `use`) so `crate::trust::reverify::*` resolves unchanged AND the
 /// core-only re-verification tests, which name `crate::a2a::pin`, keep their home in core. An
 /// explicit `mod reverify` shadows the glob-imported substrate `reverify` above.
-pub(crate) mod reverify;
+pub mod reverify;

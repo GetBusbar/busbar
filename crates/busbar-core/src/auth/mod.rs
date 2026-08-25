@@ -2077,7 +2077,7 @@ impl AuthMiddleware {
 /// RFC 8707 audience binding for credentials busbar did not mint — the confused-deputy defence for
 /// the operator-IdP deployment shape, where an auth plugin verifies the signature and core still has
 /// to decide whether the token was minted for THIS resource.
-pub(crate) mod audience;
+pub mod audience;
 
 /// The RFC 6750 `WWW-Authenticate` challenge, for ingresses that are OAuth 2.1 resource servers.
 pub(crate) mod challenge;

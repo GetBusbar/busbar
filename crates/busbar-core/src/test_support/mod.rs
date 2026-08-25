@@ -1145,7 +1145,7 @@ impl TestApp {
     /// Make the built App an MCP server, from the same `mcp:` config shape an operator writes.
     ///
     /// Takes the CONFIG and runs the real validation rather than accepting a pre-built
-    /// [`crate::mcp::McpResource`]: a test that hand-assembled the resource could mount a
+    /// `crate::mcp::McpResource`: a test that hand-assembled the resource could mount a
     /// combination the validator refuses, and would then be asserting against a deployment that
     /// cannot exist.
     pub(crate) fn mcp(mut self, cfg: &crate::mcp::McpCfg) -> Self {

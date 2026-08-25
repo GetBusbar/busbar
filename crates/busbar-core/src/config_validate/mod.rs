@@ -1695,7 +1695,7 @@ pub(crate) fn validate_public_url(url: &str, blocked: &[String], errors: &mut Ve
     }
 }
 
-pub(crate) fn scheme_is(url: &str, scheme: &str) -> bool {
+pub fn scheme_is(url: &str, scheme: &str) -> bool {
     url.split_once("://")
         .is_some_and(|(s, _)| s.eq_ignore_ascii_case(scheme))
 }
@@ -1706,7 +1706,7 @@ fn strip_scheme(url: &str) -> Option<&str> {
     (scheme.eq_ignore_ascii_case("https") || scheme.eq_ignore_ascii_case("http")).then_some(rest)
 }
 
-pub(crate) fn extract_normalized_host(url: &str) -> Option<String> {
+pub fn extract_normalized_host(url: &str) -> Option<String> {
     // Strip ALL ASCII tab (0x09), LF (0x0A), and CR (0x0D) characters from anywhere in the string,
     // FIRST — before any other normalization, mirroring the WHATWG URL spec's basic parser, which
     // removes these three bytes from the whole input as its very first step, before scheme/authority
@@ -1784,7 +1784,7 @@ pub(crate) fn extract_normalized_host(url: &str) -> Option<String> {
 /// off-box wiretap), while a PUBLIC host must use `https://` (cleartext would leak the API key on the
 /// wire). This is NOT the SSRF decision — under the metadata-denylist model these hosts are ALLOWED
 /// as upstreams; this predicate only governs whether plaintext is acceptable for the hop.
-pub(crate) fn host_is_private_or_loopback(host: &str) -> bool {
+pub fn host_is_private_or_loopback(host: &str) -> bool {
     use std::net::IpAddr;
 
     let host_lc = host.to_ascii_lowercase();
@@ -1938,7 +1938,7 @@ fn host_matches_any(host: &str, entries: &[String]) -> bool {
 ///   decimal-int, IPv4-mapped/compatible IPv6, trailing-dot — mirroring how a block entry blocks
 ///   all spellings; a hostname entry matches case-insensitively, trailing dot stripped). Allow
 ///   always wins: a host on the denylist that ALSO appears in `allow_overrides` is permitted.
-pub(crate) fn ssrf_blocked_host(
+pub fn ssrf_blocked_host(
     url: &str,
     allow_overrides: &[String],
     allow_all: bool,

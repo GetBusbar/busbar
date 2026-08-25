@@ -16,7 +16,7 @@
     allow(unused_imports)
 )]
 
-pub(crate) use busbar_substrate::catalogue::*;
+pub use busbar_substrate::catalogue::*;
 
 #[cfg(test)]
 #[path = "tests/catalogue_tests.rs"]

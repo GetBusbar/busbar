@@ -4,7 +4,7 @@
 //! THE A2A PLANE'S ADMIN READ VIEWS — the `agents:` half of the generic named-definition admin
 //! surface, projected HERE so core admin (`admin::v1::service`, `admin::v1::named_def_views`) reads a
 //! registered agent through the plane's view seam and names no `crate::a2a` config type. The MCP-plane
-//! counterpart is [`crate::mcp::admin_view`]; the seam that reaches both is
+//! counterpart is `crate::mcp::admin_view`; the seam that reaches both is
 //! [`crate::plane::registry::PlaneDecl::named_def_list`] / `named_def_get`.
 
 use crate::admin::v1::contract::NamedDefView;

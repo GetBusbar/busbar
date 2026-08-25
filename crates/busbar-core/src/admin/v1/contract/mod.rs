@@ -71,7 +71,7 @@ pub(crate) const VERSIONS_LIMIT_DEFAULT: usize = 100;
 ///
 /// The variant set is the FROZEN authorization contract.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Scope {
+pub enum Scope {
     /// Every read (`GET`) across config, keys, hooks, versions, audit, usage, info — plus the two
     /// stateless dry-run POSTs (`config/validate`, `plugins/inspect`).
     ReadOnly,

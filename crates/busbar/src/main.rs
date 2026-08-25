@@ -567,12 +567,22 @@ fn register_protocols() {
 
 /// REGISTER THE LINKED PLANE CRATES — the composition root's one write into the plane axis
 /// (`busbar_core::plane::registry::install_planes`), exactly `register_protocols`' shape on the
-/// plane axis. No plane has been extracted to a crate yet, so the extra slice is empty and every
-/// plane still reaches the process list through core's own built-in table
-/// (`busbar_core::plane::registry::BUILTIN_PLANE_DECLS`); this call exists so a plane that DOES
-/// become a crate joins by adding one line here, exactly as a protocol crate does above.
+/// plane axis. The MCP plane is now a crate (`busbar-mcp`), so it contributes its `&PLANE_DECL` here
+/// under the `plane-mcp` feature; core's PRODUCTION build carries no MCP built-in row (it dual-compiles
+/// the plane back in for its own test builds only), and `merged_boot_plane_decls` folds this installed
+/// copy into its canonical slot. The A2A plane is still built into core until its own extraction, so it
+/// is not pushed here yet. Leaked so the installed set is `'static`, exactly as `register_protocols`
+/// does — this runs once at startup and lives for the process.
+// `Vec::new()` then a FEATURE-GATED push (not `vec![]`): the one element is present only under
+// `plane-mcp`, and with every plane compiled out (`--no-default-features`) nothing pushes — the same
+// shape `register_protocols` has, minus its unconditional `extend`.
+#[allow(clippy::vec_init_then_push)]
 fn register_planes() {
-    busbar_core::plane::registry::install_planes(&[]);
+    #[allow(unused_mut)]
+    let mut installed: Vec<&'static busbar_core::plane::registry::PlaneDecl> = Vec::new();
+    #[cfg(feature = "plane-mcp")]
+    installed.push(&busbar_mcp::PLANE_DECL);
+    busbar_core::plane::registry::install_planes(installed.leak());
 }
 
 fn main() {
@@ -1008,7 +1018,7 @@ async fn run() {
     // build without MCP falls through to its listener path.
     #[cfg(feature = "plane-mcp")]
     if mcp_stdio_requested(std::env::args()) {
-        let code = busbar_core::mcp::stdio_serve::serve_stdio(app_handle.clone()).await;
+        let code = busbar_mcp::mcp::stdio_serve::serve_stdio(app_handle.clone()).await;
         if let Some(gov) = app_handle.load().governance.clone() {
             let n = gov.flush_budgets();
             tracing::info!(flushed = n, "budget counters flushed on shutdown");

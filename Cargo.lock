@@ -502,13 +502,26 @@ dependencies = [
 name = "busbar-mcp"
 version = "1.6.0"
 dependencies = [
+ "async-trait",
  "axum",
+ "base64 0.23.1",
  "busbar-api",
  "busbar-core",
+ "busbar-plugin",
+ "busbar-plugin-loader",
+ "busbar-substrate",
  "bytes",
+ "futures",
  "getrandom 0.3.4",
+ "hex",
+ "indexmap",
+ "reqwest 0.12.28",
  "rmcp",
+ "serde",
  "serde_json",
+ "serde_yaml_ng",
+ "sha2 0.11.0",
+ "tokio",
  "tracing",
  "tracing-subscriber",
 ]

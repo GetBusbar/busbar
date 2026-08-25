@@ -21,7 +21,7 @@ pub(crate) mod patch;
 pub mod secret;
 
 pub(crate) use groups::{GroupCfg, LimitCfg};
-pub(crate) use secret::SecretRef;
+pub use secret::SecretRef;
 
 // Re-export status_class_from_str for config validation
 pub(crate) use crate::breaker::status_class_from_str;
@@ -2048,7 +2048,7 @@ pub(crate) const CORE_HOOK_PHASES: &[HookStage] = &[
 /// directly.
 #[derive(Debug, Deserialize, Serialize, Clone, Default, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum PolicyOnError {
+pub enum PolicyOnError {
     #[default]
     Weighted,
     Reject,
@@ -2953,7 +2953,7 @@ pub struct DeployCfg {
     /// The top-level `mcp:` block (1.6.0): busbar's own MCP endpoint, as an OAuth 2.1 resource
     /// server. Its PRESENCE is what mounts the MCP plane — absent, the deployment carries no MCP
     /// ingress and no `.well-known` document, and nothing joins the route table. See
-    /// [`crate::mcp::McpCfg`].
+    /// `crate::mcp::McpCfg`.
     // Type-erased through the neutral `McpEndpointSection` seam: the `mcp:` block deserializes into
     // the MCP plane's own endpoint config behind `dyn PlaneEndpointCfg`, so `DeployCfg` names no
     // `crate::mcp` endpoint type. The plane compiled out captures it raw and refuses a present block
@@ -4998,9 +4998,7 @@ pub fn resolve(
     let mcp: Option<std::sync::Arc<dyn std::any::Any + Send + Sync>> = match deploy.mcp.0.as_ref() {
         None => None,
         Some(ep) => {
-            match crate::plane::registry::builtin_plane_decl_for("mcp")
-                .and_then(|d| d.lower_endpoint)
-            {
+            match crate::plane::registry::plane_decl_for("mcp").and_then(|d| d.lower_endpoint) {
                 Some(lower) => match lower(&**ep) {
                     Ok(resource) => Some(resource),
                     Err(e) => {

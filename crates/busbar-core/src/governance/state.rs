@@ -391,7 +391,7 @@ impl GovState {
     /// `set_signing_key` swapping the material underneath a stale card signer is exactly the
     /// mint-under-one-key-verify-under-another failure the material is held together to prevent.
     pub(crate) fn a2a_card_issuer(&self) -> Option<crate::plane::registry::CardIssuer> {
-        let decl = crate::plane::registry::builtin_plane_decl_for_config_section("agents")?;
+        let decl = crate::plane::registry::plane_decl_for_config_section("agents")?;
         let domain = decl.card_signing_domain?;
         let prefix = decl.card_kid_prefix?;
         let m = self.signing_material()?;
@@ -409,8 +409,8 @@ impl GovState {
     /// card-signing domain.
     #[cfg(feature = "plane-a2a")]
     pub(crate) fn card_sign(&self, signing_input: &[u8]) -> Option<[u8; 64]> {
-        let domain = crate::plane::registry::builtin_plane_decl_for_config_section("agents")?
-            .card_signing_domain?;
+        let domain =
+            crate::plane::registry::plane_decl_for_config_section("agents")?.card_signing_domain?;
         let m = self.signing_material()?;
         Some(m.signer.sign_with_card_subkey(domain, signing_input))
     }

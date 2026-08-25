@@ -29,13 +29,33 @@ path = "src/lib.rs"
 [dependencies]
 # The engine's public surface — the ONLY busbar crate this plugin may name today. `default-features
 # = false` for the same reason the binary does it: the feature decisions are the composition root's.
-busbar-core = { path = "../busbar-core", default-features = false }
+busbar-core = { path = "../busbar-core", default-features = false, features = ["plane-mcp"] }
+# The substrate crate: the shared diagnostics vocabulary (the `diag_*` macros) and the read-only
+# helpers core itself re-exports from here. Named directly so the plugin reaches the `#[macro_export]`
+# diagnostics macros at their defining crate root, exactly as the binary and core do.
+busbar-substrate = { path = "../busbar-substrate" }
 # The plugin contracts crate, named ahead of use per owner ruling R-E (see header).
 busbar-api = { path = "../api" }
 # The specification authors' own crate, pinned narrow (see busbar-core/Cargo.toml's rationale): the
 # codec takes the protocol VOCABULARY — MCP method names and parameter shapes — from it and nothing
 # else, so a name the SDK retires stops compiling here instead of being served.
 rmcp = { workspace = true }
+# The plane's own runtime surface — the same workspace pins core takes, for the plane code that moved
+# here whole: the client pool and transports (tokio, reqwest, futures), the config codecs (serde,
+# serde_yaml, indexmap), the seal/digest crypto (sha2, hex, base64) and the plugin ABI (busbar-plugin,
+# async-trait) the plane's host calls reach.
+busbar-plugin = { path = "../busbar-plugin" }
+busbar-plugin-loader = { path = "../plugin-loader" }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "io-util", "io-std", "process"] }
+reqwest = { workspace = true, features = ["http2"] }
+serde = { workspace = true }
+serde_yaml = { workspace = true }
+indexmap = { workspace = true }
+futures = { workspace = true }
+base64 = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+async-trait = { workspace = true }
 axum = { workspace = true }
 bytes = { workspace = true }
 serde_json = { workspace = true }
@@ -43,6 +63,25 @@ tracing = { workspace = true }
 getrandom = { workspace = true }
 
 [features]
+# ON in every build OF THIS CRATE, and — this is the whole point — ABSENT when `busbar-core`
+# dual-compiles `src/mcp` back in for its own test binary (a `#[cfg(feature = ...)]` always resolves
+# against the crate being compiled, and core declares no such feature). The MCP PLANE's tests build a
+# `TestApp` and read the plane's runtime object back out of the app by DOWNCAST; that object's type is
+# `<compiling-crate>::mcp::McpRuntime`, so the fixtures (which live in `busbar-core::test_support`)
+# only ever produce a type the tests can downcast when BOTH are the same crate — i.e. inside
+# busbar-core's dual-compile binary. So the plane tests run THERE, gated `not(feature = "extracted")`,
+# exactly as the extracted LLM dialects' tests run in core's binary. This crate's own `cargo test`
+# still builds and runs the CODEC tests (the protocol half, which needs no app), just not the plane
+# half. Default-on so a plain `cargo test -p busbar-mcp` skips the plane tests without extra flags.
+default = ["extracted"]
+extracted = []
+# The plane's sources carry `#[cfg(feature = "…")]` gates on two of busbar-core's features (the
+# `PlaneDecl` OpenAPI-schema field, and one admin-tokens path). Declared here as FORWARDS so the same
+# `#[cfg]` resolves identically whether these sources compile in this crate or dual-compile into
+# busbar-core — enabling ours enables core's, keeping the `PlaneDecl` shape and its initialiser in
+# lock-step. Off by default, exactly as in core.
+openapi-schema = ["busbar-core/openapi-schema"]
+auth-admin-tokens = ["busbar-core/auth-admin-tokens"]
 # Pass-through so a dependent can ask for this crate's test fixtures without naming busbar-core
 # directly, the same shape `busbar-core` itself exposes to its own dependents.
 test-support = ["busbar-core/test-support"]

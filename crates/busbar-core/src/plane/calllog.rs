@@ -162,7 +162,7 @@ extern "C-unwind" fn reframe_call_ffi(
 /// carries no LRU cap, and this crate must not touch the hot ABI); the host attaches the durable sink
 /// from `app.governance` at register time.
 #[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
-pub(crate) fn register_call_stream(app: &Arc<crate::state::App>) {
+pub fn register_call_stream(app: &Arc<crate::state::App>) {
     register_call_stream_as(KIND_ID_CALL, app);
 }
 
@@ -212,7 +212,7 @@ fn pack_bodies(bodies: &[Vec<u8>]) -> Vec<u8> {
 // MCP-only re-export: these tokens name the MCP call stream's outcomes; the A2A relay uses its own
 // subset, so with `plane-mcp` off (and A2A on) this path re-exports them with no local user.
 #[cfg_attr(not(feature = "plane-mcp"), allow(unused_imports))]
-pub(crate) use crate::audit::vocab::{
+pub use crate::audit::vocab::{
     OUTCOME_DISPATCHED, OUTCOME_REFUSED, REASON_CALLER_ASK_PENDING, REASON_MALFORMED,
     REASON_TASK_CREATED, REASON_UPSTREAM_FAILED,
 };
@@ -225,21 +225,21 @@ pub(crate) use crate::audit::vocab::{
 /// the remedy is a scope; this means the tool was reachable and a policy the operator attached said
 /// no, and the remedy is that policy. A single word for both would make an operator debug the
 /// grant matrix for a decision the grant matrix did not take.
-pub(crate) const REASON_HOOK_REJECTED: &str = "hook_rejected";
+pub const REASON_HOOK_REJECTED: &str = "hook_rejected";
 
 /// The fields a caller supplies for one call record. `seq`, `prev_hash` and `hash` are NOT here:
 /// they are the chain's own business and are supplied by [`crate::audit::Chain::append`], so no call
 /// site can supply a sequence number or a link of its own choosing.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct CallInput {
-    pub(crate) ts: u64,
-    pub(crate) server: String,
-    pub(crate) tool: String,
-    pub(crate) outcome: &'static str,
-    pub(crate) reason: String,
-    pub(crate) tool_digest: String,
-    pub(crate) pin_generation: u64,
-    pub(crate) request_id: String,
+pub struct CallInput {
+    pub ts: u64,
+    pub server: String,
+    pub tool: String,
+    pub outcome: &'static str,
+    pub reason: String,
+    pub tool_digest: String,
+    pub pin_generation: u64,
+    pub request_id: String,
 }
 
 // ── THE DURABLE JOURNAL SEAM — the MCP call chain's framing, held PLANE-SIDE ─────────────────────
@@ -461,21 +461,21 @@ pub(crate) fn verify_call_rows(rows: &[McpCallRecord]) -> Result<(), ChainBreak>
 /// "restored" count: they mean different things to an operator, and a single number hides the two
 /// that are bad news.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct Restored {
+pub struct Restored {
     /// Principals whose chain position was resumed.
-    pub(crate) principals: usize,
+    pub principals: usize,
     /// Records read back across every principal. THE DURABILITY SIGNAL: zero here on a deployment
     /// that has been serving calls means the configured backend is keeping none of them.
-    pub(crate) records: usize,
+    pub records: usize,
     /// Principals the store ENUMERATED but returned no records for. Counted rather than ignored: an
     /// enumerated-but-empty chain is the one shape the verifier cannot judge on its own (see
     /// [`verify_chain`]), and it is what a wholesale deletion of one caller's evidence looks like.
-    pub(crate) empty_chains: usize,
+    pub empty_chains: usize,
     /// Chains that FAILED to verify. Tamper evidence. The records are still restored and the chain
     /// still resumes — refusing would let anyone who can write to the store erase a caller's history
     /// by corrupting one byte — but the break is reported and the chain continues from the broken
     /// tail rather than being silently re-based onto it.
-    pub(crate) chain_breaks: Vec<ChainBreak>,
+    pub chain_breaks: Vec<ChainBreak>,
 }
 
 /// Why a call record could not be written durably.
@@ -514,7 +514,7 @@ const MAX_TRACKED_PRINCIPALS: usize = 16_384;
 /// MCP RECORD (`McpCallRecord`), the MCP operator vocabulary (the diagnostics its restore emits), and
 /// the read surface. No `Debug`: the journal holds a `dyn PlaneStore`, which is deliberately not
 /// `Debug` (a backend must not be obliged to render itself, where a credential could surface in a log).
-pub(crate) struct PlaneCallLog {
+pub struct PlaneCallLog {
     /// The host-side durable stream this log's per-principal chain is addressed by. Production is
     /// always [`KIND_ID_CALL`] (one process, one MCP call stream); a TEST constructs a log over a
     /// FRESH id (see [`PlaneCallLog::with_kind_id`]) so parallel tests never share one process-global
@@ -535,8 +535,7 @@ impl Default for PlaneCallLog {
 /// for the same reason: a config apply must not reset the chain positions, because doing so would
 /// open a SECOND chain at seq 1 under a principal that already has one, and two chains that each
 /// verify and together describe nothing is strictly worse than no chain at all.
-pub(crate) static CALLS: std::sync::LazyLock<PlaneCallLog> =
-    std::sync::LazyLock::new(PlaneCallLog::new);
+pub static CALLS: std::sync::LazyLock<PlaneCallLog> = std::sync::LazyLock::new(PlaneCallLog::new);
 
 impl PlaneCallLog {
     pub(crate) fn new() -> Self {
@@ -565,7 +564,7 @@ impl PlaneCallLog {
     /// This is the ONLY place durability is learned. A write's `Ok(())` proves nothing (the trait
     /// default accepts and keeps nothing), so the engine finds out what its backend actually kept by
     /// reading it back.
-    pub(crate) fn restore_from_store(
+    pub fn restore_from_store(
         &self,
         host: HostCtx,
         store: &dyn PlaneStore,
@@ -832,7 +831,7 @@ impl PlaneCallLog {
 /// It is emitted on the success line too, at `debug!`, because a join key that appears in exactly
 /// one place joins nothing. That line is what lets an operator holding a request id find the durable
 /// record, and holding a durable record find the request.
-pub(crate) fn emit(host: HostCtx, principal: &str, input: CallInput) {
+pub fn emit(host: HostCtx, principal: &str, input: CallInput) {
     let (server, tool, outcome, request_id) = (
         input.server.clone(),
         input.tool.clone(),
@@ -895,7 +894,7 @@ pub(crate) fn emit(host: HostCtx, principal: &str, input: CallInput) {
 /// swallows a durable-write failure the same way [`emit`] does (evidence, not admission), so the
 /// deferred path's behaviour matches the production emitter but for the host it never had.
 #[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
-pub(crate) fn emit_hostless(principal: &str, input: CallInput) {
+pub fn emit_hostless(principal: &str, input: CallInput) {
     let (server, tool, outcome, request_id) = (
         input.server.clone(),
         input.tool.clone(),

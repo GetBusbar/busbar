@@ -16,8 +16,8 @@
 //!
 //! The transport PORT (`super::transport::AdminTransport`) is shared across versions and transports.
 
-pub(crate) mod contract;
-pub(crate) mod json;
+pub mod contract;
+pub mod json;
 mod named_def_views;
 pub(crate) mod service;
 

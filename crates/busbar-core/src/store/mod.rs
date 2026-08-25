@@ -110,7 +110,7 @@ pub fn now() -> u64 {
     not(any(feature = "plane-mcp", feature = "plane-a2a")),
     allow(dead_code)
 )]
-pub(crate) fn now_ms() -> u64 {
+pub fn now_ms() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -646,7 +646,7 @@ mod in_memory;
 pub(crate) use in_memory::*;
 
 mod planes;
-pub(crate) use planes::{PlaneBreakers, MAX_POOL_MEMBERS};
+pub use planes::{PlaneBreakers, MAX_POOL_MEMBERS};
 // `PlaneAdmission` is the RAII admission token the plane dispatch paths hand around; with BOTH
 // planes compiled out nothing names it, so this re-export is unused in that config alone.
 #[cfg_attr(

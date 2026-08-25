@@ -691,7 +691,7 @@ fn a_rescoped_key_is_handed_back_narrowed_rather_than_as_it_was_at_open() {
 /// the remaining code is judged, the same treatment the lifecycle's own plane-noun scan gets.
 #[test]
 fn the_long_lived_response_holds_no_principal_it_resolved_at_open() {
-    let source = include_str!("../../mcp/subscribe.rs");
+    let source = include_str!("../../../../busbar-mcp/src/mcp/subscribe.rs");
     let code: String = source
         .lines()
         .filter(|l| !l.trim_start().starts_with("//"))
@@ -726,7 +726,7 @@ fn the_long_lived_response_holds_no_principal_it_resolved_at_open() {
 /// RED: delete the `TASK_TTL_MS` reference from the field's doc and this fails.
 #[test]
 fn the_detached_runner_discloses_its_frozen_principal_and_the_bound_it_trades_on() {
-    let source = include_str!("../../mcp/tasks.rs");
+    let source = include_str!("../../../../busbar-mcp/src/mcp/tasks.rs");
     let field = source
         .split("pub(crate) struct Runner {")
         .nth(1)

@@ -61,7 +61,7 @@ use std::sync::Arc;
 ///
 /// Held on [`crate::state::App`] and carried across a config apply the way the LLM store is —
 /// learned reliability must survive a snapshot swap, or every apply un-trips every dead upstream.
-pub(crate) struct PlaneBreakers {
+pub struct PlaneBreakers {
     /// [`MAX_POOL_MEMBERS`] identical lanes — one per possible member position — never dead, never
     /// budgeted, permits never consulted (`try_admit_breaker` is the queue-shaped admission:
     /// breaker only, no permit acquisition). All per-target state lives in the per-pool cells keyed
@@ -82,7 +82,7 @@ pub(crate) struct PlaneBreakers {
 /// exactly the state loss the process-lifetime rule exists to prevent. Eight is generous for the
 /// canonical case (one deployment, registered a handful of times); raising it is a one-line change
 /// plus the validation message.
-pub(crate) const MAX_POOL_MEMBERS: usize = 8;
+pub const MAX_POOL_MEMBERS: usize = 8;
 
 impl PlaneBreakers {
     pub(crate) fn new() -> Self {
@@ -138,7 +138,7 @@ impl PlaneBreakers {
     /// keyspace rule; the id is the operator's registration id, which is what every refusal names.
     // MCP-only: keyed by the MCP plane alone, so with `plane-mcp` off (and A2A on) it has no caller.
     #[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
-    pub(crate) fn tool_key(server: &str) -> String {
+    pub fn tool_key(server: &str) -> String {
         format!("tool:{server}")
     }
 
@@ -194,7 +194,7 @@ impl PlaneBreakers {
 
     /// The wire answered and busbar could serve it. Closes a half-open probe, dilutes the
     /// error-rate window — the success half of the one disposition pipeline.
-    pub(crate) fn record_success(&self, key: &str, lane: usize) {
+    pub fn record_success(&self, key: &str, lane: usize) {
         self.health.record_success_in(key, lane);
     }
 
@@ -203,7 +203,7 @@ impl PlaneBreakers {
     /// the same disposition split `failover::record_outcome` makes, minus the all-cells hard-down
     /// (see the module header: on a shared degenerate lane, "all cells" would be every other
     /// target). Returns the disposition so a caller can log it without re-deciding.
-    pub(crate) fn record_signal(
+    pub fn record_signal(
         &self,
         key: &str,
         lane: usize,
@@ -267,7 +267,7 @@ impl PlaneBreakers {
     /// populated from the cell's own `until` rather than guessed (the shape budget already uses
     /// with `429` + `Retry-After`). The floor covers `ProbeInFlight`, whose honest answer is "next
     /// tick" and whose remaining cooldown reads 0.
-    pub(crate) fn retry_after_secs(&self, key: &str, lane: usize) -> u64 {
+    pub fn retry_after_secs(&self, key: &str, lane: usize) -> u64 {
         self.health
             .cooldown_remaining_in(key, lane, HealthState::now_secs())
             .max(1)

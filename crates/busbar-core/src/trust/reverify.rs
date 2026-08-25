@@ -5,7 +5,7 @@
 //! this module re-exports it (glob) so every `crate::trust::reverify::…` name resolves unchanged and
 //! hosts the core-only re-verification tests, which name `crate::a2a::pin`.
 
-pub(crate) use busbar_substrate::trust::reverify::*;
+pub use busbar_substrate::trust::reverify::*;
 
 #[cfg(test)]
 #[path = "tests/reverify_tests.rs"]

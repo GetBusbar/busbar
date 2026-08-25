@@ -62,7 +62,7 @@
       "capability": "breaker-trip",
       "plane": "mcp-client",
       "state": "proven",
-      "test": "crates/busbar-core/src/mcp/tests/breaker_fastfail_tests.rs::a_hard_down_http_server_trips_and_the_second_call_fast_fails_without_touching_it"
+      "test": "crates/busbar-mcp/src/mcp/tests/breaker_fastfail_tests.rs::a_hard_down_http_server_trips_and_the_second_call_fast_fails_without_touching_it"
     },
     {
       "capability": "breaker-trip",
@@ -92,7 +92,7 @@
       "capability": "breaker-fastfail",
       "plane": "mcp-client",
       "state": "proven",
-      "test": "crates/busbar-core/src/mcp/tests/breaker_fastfail_tests.rs::a_dead_stdio_child_trips_the_same_core_cell_and_the_second_call_fast_fails"
+      "test": "crates/busbar-mcp/src/mcp/tests/breaker_fastfail_tests.rs::a_dead_stdio_child_trips_the_same_core_cell_and_the_second_call_fast_fails"
     },
     {
       "capability": "breaker-fastfail",
@@ -122,7 +122,7 @@
       "capability": "failover-reroute",
       "plane": "mcp-client",
       "state": "proven",
-      "test": "crates/busbar-core/src/mcp/tests/reroute_pool_tests.rs::a_tripped_pool_primary_reroutes_the_next_tools_call_to_its_twin_and_stays_untouched"
+      "test": "crates/busbar-mcp/src/mcp/tests/reroute_pool_tests.rs::a_tripped_pool_primary_reroutes_the_next_tools_call_to_its_twin_and_stays_untouched"
     },
     {
       "capability": "failover-reroute",
@@ -182,14 +182,14 @@
       "capability": "hooks-gate",
       "plane": "mcp-client",
       "state": "proven",
-      "test": "crates/busbar-core/src/mcp/tests/hook_gate_tests.rs::tools_hooks_reject_all_rejects_a_tools_call",
+      "test": "crates/busbar-mcp/src/mcp/tests/hook_gate_tests.rs::tools_hooks_reject_all_rejects_a_tools_call",
       "note": "the gate sits at the method layer (mcp/method.rs) BEFORE the upstream leg; there is no ungated production entry to the client leg, so one battery covers both directions."
     },
     {
       "capability": "hooks-gate",
       "plane": "mcp-server",
       "state": "proven",
-      "test": "crates/busbar-core/src/mcp/tests/hook_gate_tests.rs::tools_hooks_reject_all_rejects_a_tools_call"
+      "test": "crates/busbar-mcp/src/mcp/tests/hook_gate_tests.rs::tools_hooks_reject_all_rejects_a_tools_call"
     },
     {
       "capability": "hooks-gate",
@@ -214,14 +214,14 @@
       "capability": "audit-chain",
       "plane": "mcp-client",
       "state": "proven",
-      "test": "crates/busbar-core/src/mcp/tests/calllog_dispatch_tests.rs::the_client_legs_own_outcome_is_what_the_chain_records_success_and_failure_apart",
+      "test": "crates/busbar-mcp/src/mcp/tests/calllog_dispatch_tests.rs::the_client_legs_own_outcome_is_what_the_chain_records_success_and_failure_apart",
       "note": "the outcome of the leg BUSBAR issues is what the chain carries: a leg that went out and came back badly is chained as `dispatched` + `upstream_failed`, a leg that worked as `dispatched` with an empty reason. Both are driven through one principal, one server and one tool differing only in the upstream's answer, so the pin cannot be satisfied by a constant. Watched red: deleting the reason token at method.rs's Outcome::UpstreamFailed arm fails it and leaves the two front-door tests green."
     },
     {
       "capability": "audit-chain",
       "plane": "mcp-server",
       "state": "proven",
-      "test": "crates/busbar-core/src/mcp/tests/calllog_dispatch_tests.rs::a_dispatched_tools_call_lands_a_durable_record_through_a_real_dlopened_store_plugin"
+      "test": "crates/busbar-mcp/src/mcp/tests/calllog_dispatch_tests.rs::a_dispatched_tools_call_lands_a_durable_record_through_a_real_dlopened_store_plugin"
     },
     {
       "capability": "audit-chain",
@@ -247,14 +247,14 @@
       "capability": "governance-budget",
       "plane": "mcp-client",
       "state": "proven",
-      "test": "crates/busbar-core/src/mcp/tests/sampling_satisfy_tests.rs::the_per_upstream_budget_refuses_the_completion_past_the_cap_before_it_runs",
+      "test": "crates/busbar-mcp/src/mcp/tests/sampling_satisfy_tests.rs::the_per_upstream_budget_refuses_the_completion_past_the_cap_before_it_runs",
       "note": "the per-upstream sampling budget, charged BEFORE the model leg in mcp::sampling::satisfy_upstream_ask when busbar itself originates the completion. Red-proven by deleting the try_spend call from the production path: this test failed and the other five sampling_satisfy tests plus all three sampling_spend unit tests stayed green."
     },
     {
       "capability": "governance-budget",
       "plane": "mcp-server",
       "state": "proven",
-      "test": "crates/busbar-core/src/mcp/tests/method_tests.rs::a_tool_call_is_charged_metered_and_audited_on_the_ordinary_budget_plane"
+      "test": "crates/busbar-mcp/src/mcp/tests/method_tests.rs::a_tool_call_is_charged_metered_and_audited_on_the_ordinary_budget_plane"
     },
     {
       "capability": "governance-budget",
@@ -278,7 +278,7 @@
       "capability": "disposition",
       "plane": "mcp-client",
       "state": "proven",
-      "test": "crates/busbar-core/src/mcp/tests/reroute_pool_tests.rs::a_client_fault_answer_never_penalizes_the_member"
+      "test": "crates/busbar-mcp/src/mcp/tests/reroute_pool_tests.rs::a_client_fault_answer_never_penalizes_the_member"
     },
     {
       "capability": "disposition",
@@ -309,7 +309,7 @@
       "capability": "metrics",
       "plane": "mcp-client",
       "state": "proven",
-      "test": "crates/busbar-core/src/mcp/tests/client_leg_metrics_tests.rs::a_tool_call_counts_an_upstream_attempt_naming_the_registration_it_was_issued_to",
+      "test": "crates/busbar-mcp/src/mcp/tests/client_leg_metrics_tests.rs::a_tool_call_counts_an_upstream_attempt_naming_the_registration_it_was_issued_to",
       "note": "the MODEL PLANE'S OWN client-leg families -- busbar_upstream_attempts_total / busbar_upstream_failures_total, same label keys, same disposition vocabulary -- emitted from the one counted wire seam (mcp::client::wire::send), so the plane label is no longer front-door-only. Its twin an_upstream_that_cannot_be_reached_is_counted_as_a_transient_failure_beside_its_attempt covers the failure half."
     },
     {
@@ -341,13 +341,13 @@
       "capability": "trust-pinning",
       "plane": "mcp-client",
       "state": "proven",
-      "test": "crates/busbar-core/src/mcp/client/tests/rugpull_tests.rs::a_changed_schema_under_a_live_cache_is_detected_demoted_and_refused"
+      "test": "crates/busbar-mcp/src/mcp/client/tests/rugpull_tests.rs::a_changed_schema_under_a_live_cache_is_detected_demoted_and_refused"
     },
     {
       "capability": "trust-pinning",
       "plane": "mcp-server",
       "state": "proven",
-      "test": "crates/busbar-core/src/mcp/tests/trust_gate_tests.rs::the_routed_gate_answers_exactly_what_the_deleted_inline_decision_answered"
+      "test": "crates/busbar-mcp/src/mcp/tests/trust_gate_tests.rs::the_routed_gate_answers_exactly_what_the_deleted_inline_decision_answered"
     },
     {
       "capability": "trust-pinning",
@@ -371,7 +371,7 @@
       "capability": "net-guard",
       "plane": "mcp-client",
       "state": "proven",
-      "test": "crates/busbar-core/src/mcp/client/tests/ssrf_tests.rs::plaintext_http_to_a_public_host_is_refused_because_the_credential_rides_the_request"
+      "test": "crates/busbar-mcp/src/mcp/client/tests/ssrf_tests.rs::plaintext_http_to_a_public_host_is_refused_because_the_credential_rides_the_request"
     },
     {
       "capability": "net-guard",
@@ -402,7 +402,7 @@
       "capability": "egress-auth",
       "plane": "mcp-client",
       "state": "proven",
-      "test": "crates/busbar-core/src/mcp/client/tests/egress_tests.rs::each_upstream_gets_a_token_bound_to_its_own_resource"
+      "test": "crates/busbar-mcp/src/mcp/client/tests/egress_tests.rs::each_upstream_gets_a_token_bound_to_its_own_resource"
     },
     {
       "capability": "egress-auth",
@@ -432,13 +432,13 @@
       "capability": "catalogue",
       "plane": "mcp-client",
       "state": "proven",
-      "test": "crates/busbar-core/src/mcp/client/tests/catalogue_tests.rs::a_registered_server_serves_nothing_until_it_is_approved"
+      "test": "crates/busbar-mcp/src/mcp/client/tests/catalogue_tests.rs::a_registered_server_serves_nothing_until_it_is_approved"
     },
     {
       "capability": "catalogue",
       "plane": "mcp-server",
       "state": "proven",
-      "test": "crates/busbar-core/src/mcp/tests/catalogue_tests.rs::two_grants_see_two_different_catalogues_and_a_third_sees_none"
+      "test": "crates/busbar-mcp/src/mcp/tests/catalogue_tests.rs::two_grants_see_two_different_catalogues_and_a_third_sees_none"
     },
     {
       "capability": "catalogue",

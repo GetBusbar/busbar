@@ -58,8 +58,8 @@
 //! about it is oversold.
 
 pub(crate) mod journal;
-pub(crate) mod vocab {
-    pub(crate) use busbar_substrate::audit::vocab::*;
+pub mod vocab {
+    pub use busbar_substrate::audit::vocab::*;
 }
 
 use std::marker::PhantomData;
@@ -393,7 +393,7 @@ pub(crate) enum ChainBreakKind {
 
 /// A verification failure: WHERE it is and WHAT it is.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ChainBreak {
+pub struct ChainBreak {
     /// The 1-based index INTO THE SLICE at which the break was found. Distinct from `seq`, which is
     /// itself untrustworthy on a `SequenceBreak` — reporting only `seq` would report the tampered
     /// value as if it were a position.

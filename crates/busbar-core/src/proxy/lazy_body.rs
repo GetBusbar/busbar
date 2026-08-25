@@ -146,7 +146,7 @@ enum Body {
 /// The request body as the forward engine carries it: validated pristine bytes + the head
 /// projection, with the full DOM materialized ONLY on the paths that need it, and the parsed IR
 /// materialized ONLY when a hook is granted the request's content. See the module docs.
-pub(crate) struct LazyBody {
+pub struct LazyBody {
     body: Body,
     /// The request facts, projected from the DOM by the ingress operation's reader (through the
     /// neutral [`crate::handlers::TranslateCodec::read_facts_value`] entrypoint) and memoized here so
@@ -163,7 +163,7 @@ impl LazyBody {
     /// through `crate::json::parse` so the depth security floor and the malformed-body reject set
     /// are IDENTICAL to the old eager `parse::<Value>` (same guard, same parser, full-body scan).
     /// `Err` ⇒ the caller takes its existing malformed-body 400 path, exactly as before.
-    pub(crate) fn parse(bytes: &Bytes) -> Result<Self, sonic_rs::Error> {
+    pub fn parse(bytes: &Bytes) -> Result<Self, sonic_rs::Error> {
         let head: Head = crate::json::parse(bytes)?;
         Ok(LazyBody {
             body: Body::Head {
