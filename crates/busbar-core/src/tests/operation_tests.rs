@@ -3,7 +3,7 @@
 
 //! Tests for `crates/busbar-core/src/operation.rs`.
 
-use super::*;
+use crate::operation::*;
 
 /// Every verb, listed once, with the SHAPE it collapsed onto and the operator-visible name it
 /// publishes. Written out rather than derived: a verb added without a line here is a verb no test

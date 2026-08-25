@@ -43,8 +43,8 @@
 //! vocabulary is in `lib.rs` so that the channel, when it is mounted, frames the same bytes these
 //! cells already read — not so that the surface can be claimed before it exists.
 
+use busbar_api::operation::Operation;
 use busbar_core::handlers::{Cell, OperationHandler, RequestHandler};
-use busbar_core::operation::Operation;
 
 use super::invoke::InvokeOperation;
 use super::subscribe::SubscribeOperation;

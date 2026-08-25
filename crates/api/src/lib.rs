@@ -23,6 +23,7 @@
 mod auth;
 pub mod durable;
 mod hooks;
+pub mod operation;
 mod redacted;
 mod secret;
 mod signal;

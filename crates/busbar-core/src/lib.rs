@@ -98,7 +98,11 @@ pub mod metrics;
 pub mod net_guard;
 pub mod oauth_as;
 pub mod observability;
-pub mod operation;
+pub use busbar_api::operation;
+
+#[cfg(test)]
+#[path = "tests/operation_tests.rs"]
+mod operation_tests;
 pub mod plane;
 // The ONLY module permitted `unsafe`: it recovers `&HostState` from the opaque `HostCtx` the
 // `#[repr(C)]` plane ABI threads through every host call — a raw-pointer deref that cannot be

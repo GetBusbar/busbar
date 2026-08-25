@@ -110,7 +110,7 @@ pub enum OpShape {
     /// spelled as an enum, and every exhaustive match in the tree would decide the same thing twice.
     ///
     /// **ONE SHAPE IS NOT YET ONE STORE, and the gap is stated rather than glossed.** The two planes
-    /// are backed by two substrates today: [`crate::plane::taskstore`] writes every state change
+    /// are backed by two substrates today: `crate::plane::taskstore` writes every state change
     /// through to the configured governance store and rehydrates at boot, while `crate::mcp::tasks`
     /// is an IN-PROCESS registry that disclaims durability in its own header. That is a property of
     /// the SUBSTRATE, not of this axis.
@@ -128,7 +128,7 @@ impl OpShape {
     /// Every shape, so a site that must cover all of them cannot silently cover some. The same role
     /// `Transport::ALL` and `Plane::ALL` play for their axes.
     #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) const ALL: &'static [OpShape] = &[
+    pub const ALL: &'static [OpShape] = &[
         OpShape::Invoke,
         OpShape::Catalogue,
         OpShape::Fetch,
@@ -138,8 +138,8 @@ impl OpShape {
     ];
 
     /// MAY AN EXCHANGE OF THIS SHAPE BE ANSWERED INCREMENTALLY? The core's floor under
-    /// [`crate::handlers::OpDispatch::wants_stream`] and
-    /// [`crate::handlers::OpDispatch::streaming`], and the one place the shape is a decision rather
+    /// `crate::handlers::OpDispatch::wants_stream` and
+    /// `crate::handlers::OpDispatch::streaming`, and the one place the shape is a decision rather
     /// than a label.
     ///
     /// It is a FLOOR, not a replacement: a cell that answers `false` still answers `false` (MCP's
@@ -151,7 +151,7 @@ impl OpShape {
     ///
     /// Enumerated, never `_`: a shape added without an answer here is a compile error, which is the
     /// whole mechanism.
-    pub(crate) const fn may_stream(self) -> bool {
+    pub const fn may_stream(self) -> bool {
         match self {
             // Something ran and the answer can arrive in pieces.
             OpShape::Invoke => true,
@@ -171,7 +171,7 @@ impl OpShape {
     /// when the protocol has not named it something else. Also the shape's label in a test failure.
     ///
     /// Enumerated, never `_`, for the same reason [`Self::may_stream`] is.
-    pub(crate) const fn as_str(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             OpShape::Invoke => "invoke",
             OpShape::Catalogue => "catalogue",
@@ -237,7 +237,7 @@ impl Operation {
     /// metric-label surface the header promises is `ALL ∪ declared_verbs()`: both halves are
     /// `&'static` consts fixed at load, and nothing constructs an `Operation` from the wire.
     #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) const ALL: &'static [Operation] = &[
+    pub const ALL: &'static [Operation] = &[
         Operation::INVOKE,
         Operation::CATALOGUE,
         Operation::FETCH,
@@ -266,7 +266,7 @@ impl Operation {
     }
 
     /// The shape the core decides on.
-    pub(crate) const fn shape(self) -> OpShape {
+    pub const fn shape(self) -> OpShape {
         match self {
             Operation::Verb { op, .. } => op,
         }
@@ -289,7 +289,3 @@ impl Operation {
         }
     }
 }
-
-#[cfg(test)]
-#[path = "tests/operation_tests.rs"]
-mod tests;

@@ -92,8 +92,8 @@ pub const DECL: busbar_core::proto::ProtocolDecl = busbar_core::proto::ProtocolD
     codec: None,
     handler: Some(&handler::McpRequestHandler),
     verbs: &[
-        busbar_core::operation::Operation::INVOKE,
-        busbar_core::operation::Operation::SUBSCRIBE,
+        busbar_api::operation::Operation::INVOKE,
+        busbar_api::operation::Operation::SUBSCRIBE,
     ],
     head_keys: &[],
     streaming_content_type: None,
