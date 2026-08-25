@@ -110,6 +110,11 @@ A2A = plane_dir("a2a")
 SOURCES = [
     f"{CORE}/config",
     "crates/secret-ref/src/lib.rs",
+    # `UpstreamCreds` — the `upstream_credentials:` key's value grammar — moved to `busbar-api` (the
+    # neutral contracts crate the plane crates name) in 1.6.0's plane extraction, exactly as
+    # `SecretRef` did to `secret-ref`. Track it at its new home so its `Own`/`Passthrough` grammar
+    # stays fingerprinted rather than degrading to an opaque string the moment it left core.
+    "crates/api/src/auth.rs",
     f"{CORE}/auth/mod.rs",
     f"{A2A}/config.rs",
     # `oauth_as:` — the authorization server's grammar. Added WITH the block rather than after it,

@@ -29,7 +29,10 @@ mod secret;
 mod signal;
 mod store;
 
-pub use auth::{constant_time_eq, sha256_hex, AuthModule, AuthOutcome, AuthPrincipal, Principal};
+pub use auth::{
+    constant_time_eq, sha256_hex, AuthModule, AuthOutcome, AuthPrincipal, IdentityRefusal,
+    Principal, UpstreamCreds,
+};
 pub use auth::{
     AuthPlugin, BeginLogin, CompleteLogin, FieldKind, LoginField, LoginForm, LoginHop,
     LoginHttpResponse, LoginKind, LoginModule, LoginOutcome,

@@ -814,7 +814,7 @@ pub(crate) struct McpServerDefCfg {
     /// uniform across planes regardless, so the key is reserved at the section level and an
     /// entry-level value overrides it (SCALAR ⇒ OVERRIDE).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) upstream_credentials: Option<busbar_core::auth::UpstreamCreds>,
+    pub(crate) upstream_credentials: Option<busbar_api::UpstreamCreds>,
     /// Hooks attached to THIS server, by bare name from the top-level `hooks:` map. ADDS to the
     /// section-level `tools.hooks:` list (LIST ⇒ ADDITIVE).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -950,7 +950,7 @@ pub(crate) struct ToolsCfg {
     /// The ALL-MCP attach list (the reserved `tools.hooks:` key). LIST ⇒ ADDITIVE.
     pub(crate) all_server_hooks: Vec<String>,
     /// The ALL-MCP `upstream_credentials:` default. SCALAR ⇒ OVERRIDE.
-    pub(crate) all_server_upstream_credentials: Option<busbar_core::auth::UpstreamCreds>,
+    pub(crate) all_server_upstream_credentials: Option<busbar_api::UpstreamCreds>,
     /// The registrations. Insertion-ordered, so catalogue construction and every operator-facing
     /// listing are deterministic rather than hash-ordered.
     pub(crate) servers: indexmap::IndexMap<String, McpServerDefCfg>,
@@ -987,7 +987,7 @@ impl ToolsCfg {
     pub(crate) fn effective_upstream_credentials(
         &self,
         server: &str,
-    ) -> Option<busbar_core::auth::UpstreamCreds> {
+    ) -> Option<busbar_api::UpstreamCreds> {
         self.servers
             .get(server)
             .and_then(|d| d.upstream_credentials)
@@ -1565,7 +1565,7 @@ pub(crate) fn validate_server(name: &str, def: &McpServerDefCfg) -> Result<(), S
         // question, and silently preferring either is how a deputy is created.
         if matches!(
             def.upstream_credentials,
-            Some(busbar_core::auth::UpstreamCreds::Passthrough)
+            Some(busbar_api::UpstreamCreds::Passthrough)
         ) {
             return Err(format!(
                 "{at}: `token_exchange:` mints BUSBAR's own down-scoped credential, and \

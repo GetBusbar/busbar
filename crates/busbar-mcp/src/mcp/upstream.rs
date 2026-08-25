@@ -353,7 +353,7 @@ fn ungoverned_principal() -> VirtualKey {
 pub(super) fn credential_mode(server: &ServerEntry) -> Result<UpstreamCredential, String> {
     if matches!(
         server.upstream.credentials,
-        Some(busbar_core::auth::UpstreamCreds::Passthrough)
+        Some(busbar_api::UpstreamCreds::Passthrough)
     ) {
         // Honest and fail-closed: this revision's ingress defines no carrier for a credential the
         // caller holds FOR THE UPSTREAM (the inbound `Authorization` is the caller's BUSBAR key, and

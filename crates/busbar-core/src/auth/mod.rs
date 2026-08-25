@@ -48,23 +48,10 @@ const ADMIN_PATH_PREFIX: &str = "/api/";
 /// `crate::auth::DUMMY_SECRET` rather than maintaining a separate copy.
 pub(crate) const DUMMY_SECRET: &str = "AWS4-DUMMY-SECRET-FOR-CONSTANT-TIME-REJECT-PATH";
 
-/// The UPSTREAM-credential mode (`upstream_credentials:`) — whose credential reaches the provider.
-/// DISTINCT from authentication (which auth module, if any, ran at the front door — that's the
-/// `auth.chain`): `Own` (default) signs the upstream call with busbar's configured lane key;
-/// `Passthrough` forwards the CALLER's credential upstream. A proto writer uses THIS to resolve an
-/// otherwise-ambiguous credential scheme to the single native header the caller's real client
-/// produces. (Split out of the old `AuthMode`, now its own config key — `AuthMode` is gone.)
-// `Serialize` is additive and is what lets a config section carrying this field be projected back
-// to a raw definition document — the base half of the config overlay's per-entry MERGE
-// (`NamedMapSection::entry_as_document`). A section whose entry cannot round-trip to a document
-// cannot be patched per field, only replaced wholesale.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Deserialize, serde::Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum UpstreamCreds {
-    #[default]
-    Own,
-    Passthrough,
-}
+// The UPSTREAM-credential mode (`upstream_credentials:`) now lives in the neutral contracts crate
+// so a plane names it without reaching into busbar-core; re-exported here so every
+// crate::auth::UpstreamCreds caller is unchanged.
+pub use busbar_api::UpstreamCreds;
 
 /// The caller's bearer token, threaded into request extensions by `auth_middleware` so handlers can
 /// forward it upstream in passthrough mode. `None` when no usable bearer token was presented.
@@ -1760,20 +1747,10 @@ pub(crate) async fn auth_middleware(
     Ok(next.run(req).await)
 }
 
-/// WHY a chain verdict did not resolve to an admitted identity. The DECISION is closed here; the
-/// WORDS are the caller's — the HTTP middleware renders an RFC 6750 challenge or a native envelope,
-/// and the stdio serve mode a boot-time stderr sentence and a nonzero exit — which is the same
-/// decision/vocabulary split `crate::ingress::protocol::CoreRefusal` documents for the ingress.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum IdentityRefusal {
-    /// The chain denied the credential: a `Reject`, an all-`Pass` on a configured chain, or a
-    /// signed key that stopped verifying.
-    Denied,
-    /// The principal authenticated but its roles earned NO enforcement key while this module has a
-    /// `role_bindings` table. Admitting it `key: None` would hand it UNRESTRICTED access, so it is
-    /// refused — the same fail-closed rule stated at length below.
-    NoGrant,
-}
+// IdentityRefusal (WHY a chain verdict did not resolve to an admitted identity) now lives in the
+// neutral contracts crate so a plane names it without reaching into busbar-core; re-exported here so
+// every crate::auth::IdentityRefusal caller is unchanged.
+pub use busbar_api::IdentityRefusal;
 
 /// WHO A CHAIN VERDICT MAKES YOU on the data plane — the one resolution of verdict →
 /// (principal, governance context), shared by the HTTP auth middleware and the stdio serve mode's

@@ -1021,7 +1021,7 @@
         },
         "upstream_credentials": {
           "optional": true,
-          "type": "busbar_core::auth::UpstreamCreds"
+          "type": "busbar_api::UpstreamCreds"
         },
         "url": {
           "optional": true,

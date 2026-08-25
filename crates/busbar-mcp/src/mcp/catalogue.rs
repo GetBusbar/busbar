@@ -315,7 +315,7 @@ pub(crate) struct UpstreamPosture {
     /// Whether this upstream may live on a private / loopback address. Fail-closed default.
     pub(crate) allow_private: bool,
     /// `own` (busbar's own credential) or `passthrough` (the caller's). Absent ⇒ `own`.
-    pub(crate) credentials: Option<busbar_core::auth::UpstreamCreds>,
+    pub(crate) credentials: Option<busbar_api::UpstreamCreds>,
     /// The RFC 8693 exchange, if the operator configured one. Absent ⇒ no credential is sent.
     pub(crate) token_exchange: Option<super::config::TokenExchangeCfg>,
     /// The RFC 8707 resource indicator — `tools.<server>.aud`. The exchanged token is bound to it.

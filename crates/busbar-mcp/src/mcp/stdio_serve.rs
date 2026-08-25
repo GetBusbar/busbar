@@ -195,7 +195,7 @@ pub(crate) async fn session_identity(
             }
             Ok(SessionIdentity { principal, gov })
         }
-        Err(busbar_core::auth::IdentityRefusal::Denied) => Err(if credential.is_none() {
+        Err(busbar_api::IdentityRefusal::Denied) => Err(if credential.is_none() {
             format!(
                 "this deployment's `auth.chain` is configured, so an unauthenticated stdio \
                  session is refused exactly as an unauthenticated POST is. Set {ENV_CREDENTIAL} \
@@ -204,7 +204,7 @@ pub(crate) async fn session_identity(
         } else {
             format!("the credential in {ENV_CREDENTIAL} was refused by the auth chain.")
         }),
-        Err(busbar_core::auth::IdentityRefusal::NoGrant) => Err(format!(
+        Err(busbar_api::IdentityRefusal::NoGrant) => Err(format!(
             "the credential in {ENV_CREDENTIAL} authenticated, but its roles earned no \
              enforcement key under `role_bindings`, and an ungoverned admission would widen its \
              access. The same request over HTTP answers `insufficient_scope`."
