@@ -78,45 +78,12 @@ fn write_recover<T>(m: &std::sync::RwLock<T>) -> std::sync::RwLockWriteGuard<'_,
     m.write().unwrap_or_else(|e| e.into_inner())
 }
 
-/// Get current time in seconds since epoch.
-pub fn now() -> u64 {
-    let _t = busbar_timing::timeit!("store_now");
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-}
-
-/// The same wall clock in MILLISECONDS.
-///
-/// Beside [`now`] rather than in either plane, because two planes needed it and each had grown its
-/// own: `trust::verify` for verify-on-call's freshness clock on every plane, `mcp::tasks` for task
-/// timestamps and TTL.
-/// They agreed on the clock and disagreed on the SIGNEDNESS — one `u64`, one `i64` — which is the
-/// shape of defect that reads correctly in review and produces a wrong comparison or a silent wrap
-/// at whichever boundary the two eventually meet at. One function, one type, no boundary.
-///
-/// `u64`, matching [`now`]: this clock is a duration since the epoch and a negative one is not a
-/// time this process can observe. A caller doing signed arithmetic against it casts once, at the
-/// point where it knows what a backwards step would mean, rather than the clock guessing for it.
-///
-/// SECONDS remains the ledger's unit and is unchanged. Milliseconds exist for the two places that
-/// genuinely need sub-second arithmetic — a TTL an operator writes as `30s`, and a task poll
-/// interval — where a second-granularity clock would answer "some time in that second".
-// The two sub-second callers (an operator TTL and the A2A task poll) both live behind the planes;
-// with BOTH compiled out neither is present, so this clock reads dead in that config alone.
-#[cfg_attr(
-    not(any(feature = "plane-mcp", feature = "plane-a2a")),
-    allow(dead_code)
-)]
-pub fn now_ms() -> u64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
-}
+// The production wall clock (`now`, `now_ms`) moved to the neutral substrate so the plane crates
+// name it without reaching into busbar-core; re-exported here so every crate::store::{now, now_ms}
+// caller is unchanged. The #[cfg(test)] test-clock below (TEST_NOW / now_for_test) stays in core —
+// it owns the thread-local injection the in-core breaker/store tests drive, and now_for_test falls
+// back to this re-exported now().
+pub use busbar_substrate::store::{now, now_ms};
 
 // Test-clock storage, THREAD-LOCAL.
 //

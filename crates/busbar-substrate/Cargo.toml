@@ -33,6 +33,10 @@ tokio = { workspace = true, features = ["net"] }
 tracing = { workspace = true }
 # S2c: the breaker classifier's `parse_retry_after` parses an HTTP-date `Retry-After` via httpdate.
 httpdate = { workspace = true }
+# S2e: the shared store clock `now()` is instrumented with `busbar_timing::timeit!`. Timing is
+# default-OFF and zero-dependency in that configuration (the macro expands to `()`), so this edge
+# adds nothing to the shipped build.
+busbar-timing = { path = "../busbar-timing" }
 
 # The relocated leaves carry `#[cfg_attr(not(feature = "plane-mcp"/"plane-a2a"), allow(dead_code))]`
 # verbatim from core — the items are `pub` here so the allowance is now inert, but the cfg names

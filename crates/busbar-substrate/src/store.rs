@@ -103,3 +103,28 @@ impl Unavailable {
         }
     }
 }
+
+/// Get current time in seconds since epoch. The shared wall clock both core and the plane crates
+/// read (the plane via the `clock_now` host seam long-term; this is the single implementation).
+pub fn now() -> u64 {
+    let _t = busbar_timing::timeit!("store_now");
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+/// The same wall clock in MILLISECONDS — for the two sub-second callers (an operator TTL and the
+/// A2A task poll). `u64`, matching [`now`]: a duration since the epoch, never negative.
+#[cfg_attr(
+    not(any(feature = "plane-mcp", feature = "plane-a2a")),
+    allow(dead_code)
+)]
+pub fn now_ms() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}

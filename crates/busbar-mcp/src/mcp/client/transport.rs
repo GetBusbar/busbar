@@ -234,7 +234,7 @@ pub(crate) fn read_server_frames(leg: &WireLeg<'_>, raw: &[u8]) -> Vec<super::pe
                     let accepted = leg
                         .pool
                         .triggers
-                        .signal(leg.server, busbar_core::store::now_ms());
+                        .signal(leg.server, busbar_substrate::store::now_ms());
                     tracing::debug!(
                         server = %leg.server,
                         notification = ?n,
@@ -249,7 +249,7 @@ pub(crate) fn read_server_frames(leg: &WireLeg<'_>, raw: &[u8]) -> Vec<super::pe
                     let accepted = leg
                         .pool
                         .triggers
-                        .signal(leg.server, busbar_core::store::now_ms());
+                        .signal(leg.server, busbar_substrate::store::now_ms());
                     if let Some(uri) = frame.pointer("/params/uri").and_then(|u| u.as_str()) {
                         leg.pool.updates.record(leg.server, uri);
                     }

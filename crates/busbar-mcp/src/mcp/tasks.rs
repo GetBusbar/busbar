@@ -148,7 +148,7 @@ impl Status {
 /// The mutable half of a task. Behind its own lock so a poll never waits on the runner.
 struct State {
     status: Status,
-    /// Unix milliseconds, from the engine's one millisecond clock ([`busbar_core::store::now_ms`]).
+    /// Unix milliseconds, from the engine's one millisecond clock ([`busbar_substrate::store::now_ms`]).
     /// Rendered ISO-8601 on the wire; kept numeric here so the retention sweep does not parse
     /// strings back.
     created_ms: u64,

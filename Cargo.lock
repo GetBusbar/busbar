@@ -647,6 +647,7 @@ dependencies = [
  "axum",
  "busbar-api",
  "busbar-plugin",
+ "busbar-timing",
  "bytes",
  "httpdate",
  "reqwest 0.12.28",

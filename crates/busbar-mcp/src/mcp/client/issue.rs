@@ -107,7 +107,7 @@ pub(crate) async fn issue(
         busbar_core::plane::calllog::emit_hostless(
             &principal,
             CallInput {
-                ts: busbar_core::store::now(),
+                ts: busbar_substrate::store::now(),
                 server: server.as_str().to_string(),
                 // See the module header for why this is `verb:`-prefixed and why that prefix cannot
                 // collide with any `mcp_tool` grant an operator can write.
