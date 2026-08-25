@@ -33,6 +33,10 @@ pub mod breaker;
 pub mod duration;
 pub mod egress;
 pub mod plane;
+// S4a: the NEUTRAL ROUTE-MOUNT SEAM — the `PlaneRouteSpec` / `PlaneReqCtx` vocabulary a plane uses to
+// declare its data routes without naming `CoreRouter` / `Arc<AppHandle>`, so `PlaneDecl`'s route
+// field can be typed `fn(&dyn Any) -> Vec<PlaneRouteSpec>` and eventually travel to this crate.
+pub mod plane_routes;
 pub mod proxy;
 
 // ── Phase-B B1: the trust value families + decision engines, the egress gate, the catalogue and the

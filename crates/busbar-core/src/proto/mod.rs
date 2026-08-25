@@ -951,6 +951,7 @@ pub(crate) const PLANE_DECL: crate::plane::registry::PlaneDecl =
         // in `base_data_router` directly, not through this seam), it adds no admin trust verb on top
         // of the generic `pools` CRUD, and it documents no admin path of its own.
         mount: None,
+        routes: None,
         admin_routes: None,
         openapi: None,
         // NO DURABLE STATE, NO BACKGROUND WORK. The LLM plane's state is the many `App` fields the

@@ -138,6 +138,30 @@ fn redemption(state: &str) -> serde_json::Value {
     })
 }
 
+/// Build the neutral [`busbar_substrate::plane_routes::PlaneReqCtx`] the core route adapter would
+/// hand `envelope::rpc` (S4a Option A), from the pieces a test has: the live handle (erased as the
+/// engine handle), the resolved `gov`, an anonymous principal and the request body. `slot` is unused
+/// by `rpc` (it reads its resource off the live app), so a unit stands in; `caller_principal` mirrors
+/// what the adapter derives from `gov`.
+fn rpc_ctx(
+    handle: Arc<busbar_core::state::AppHandle>,
+    gov: &busbar_core::governance::PlaneRequestCtx,
+    body: axum::body::Bytes,
+) -> busbar_substrate::plane_routes::PlaneReqCtx {
+    busbar_substrate::plane_routes::PlaneReqCtx {
+        path: String::new(),
+        method: busbar_plugin_loader::RouteMethod::Post,
+        headers: axum::http::HeaderMap::new(),
+        body,
+        path_params: Vec::new(),
+        caller_principal: gov.key.as_ref().map(|k| k.id.clone()),
+        gov: Some(gov.clone()),
+        principal: Some(busbar_core::auth::AuthPrincipal(None)),
+        engine: handle,
+        slot: Arc::new(()),
+    }
+}
+
 /// SEND the notification through the REAL ingress — `envelope::rpc`, the same function the router
 /// mounts — as the principal `gov` authenticates. The bump is asserted only through its observable
 /// consequences in the cases below; here the assertion is the transport's own contract: `202`,
@@ -151,13 +175,11 @@ async fn announce_roots_changed(
         "jsonrpc": "2.0",
         "method": "notifications/roots/list_changed",
     });
-    let response = crate::mcp::envelope::rpc(
-        axum::extract::State(handle),
-        axum::extract::Extension(gov.clone()),
-        axum::extract::Extension(busbar_core::auth::AuthPrincipal(None)),
-        axum::http::HeaderMap::new(),
+    let response = crate::mcp::envelope::rpc(rpc_ctx(
+        handle,
+        gov,
         axum::body::Bytes::from(serde_json::to_vec(&body).expect("the notification serialises")),
-    )
+    ))
     .await;
     assert_eq!(
         response.status().as_u16(),
@@ -273,13 +295,11 @@ async fn the_same_name_with_an_id_is_a_request_and_moves_nothing() {
         "id": 9,
         "method": "notifications/roots/list_changed",
     });
-    let response = crate::mcp::envelope::rpc(
-        axum::extract::State(handle),
-        axum::extract::Extension(gov.clone()),
-        axum::extract::Extension(busbar_core::auth::AuthPrincipal(None)),
-        axum::http::HeaderMap::new(),
+    let response = crate::mcp::envelope::rpc(rpc_ctx(
+        handle,
+        &gov,
         axum::body::Bytes::from(serde_json::to_vec(&body).expect("serialises")),
-    )
+    ))
     .await;
     assert_ne!(
         response.status().as_u16(),

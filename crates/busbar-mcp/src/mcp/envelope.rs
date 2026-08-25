@@ -42,7 +42,6 @@
 //! server that does not implement a method, and it is the answer that stays correct, unchanged, for
 //! every method still unimplemented after the CATALOGUE and DISPATCH units land.
 
-use axum::body::Bytes;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use base64::Engine as _;
@@ -234,6 +233,29 @@ impl busbar_core::ingress::protocol::ResourceMetadata for McpWords {
     }
 }
 
+/// `GET /.well-known/oauth-protected-resource<mount-path>` for the MCP plane — the neutral-seam
+/// (S4a Option A) handler that replaces the core `metadata_handler::<McpWords>` axum fn on this
+/// plane's `routes`. It renders the SAME RFC 9728 document, byte-for-byte: this is exactly
+/// `metadata_handler`'s body specialised to [`McpWords`], reading the live `App` off the seam's
+/// type-erased engine handle rather than a `CurrentApp` extractor. Declared `RouteAuth::None`, so the
+/// auth middleware bypasses the chain and hands this handler no resolved identity — matching the old
+/// open handler, which took only `CurrentApp`.
+pub(crate) async fn metadata_route(ctx: busbar_substrate::plane_routes::PlaneReqCtx) -> Response {
+    use busbar_core::ingress::protocol::ResourceMetadata as _;
+    let handle: std::sync::Arc<busbar_core::state::AppHandle> = ctx
+        .engine
+        .downcast::<busbar_core::state::AppHandle>()
+        .expect("the mcp route engine handle is an AppHandle");
+    let app = handle.load();
+    match McpWords::document(&app) {
+        Some(doc) => busbar_substrate::ingress::protocol::metadata(&doc),
+        None => busbar_substrate::ingress::protocol::Words::refuse(
+            &McpWords,
+            CoreRefusal::MetadataUnavailable,
+        ),
+    }
+}
+
 /// `GET` and `DELETE` on the MCP endpoint.
 ///
 /// Under earlier revisions `GET` opened the server-to-client SSE stream and `DELETE` terminated a
@@ -247,7 +269,7 @@ impl busbar_core::ingress::protocol::ResourceMetadata for McpWords {
 /// never reaches here. That ordering is deliberate: the `405` is a statement about our protocol
 /// surface, and a protected resource should not answer questions about its surface before it knows
 /// who is asking.
-pub(crate) async fn legacy_verb() -> Response {
+pub(crate) async fn legacy_verb(_ctx: busbar_substrate::plane_routes::PlaneReqCtx) -> Response {
     (
         StatusCode::METHOD_NOT_ALLOWED,
         [("allow", "POST")],
@@ -265,15 +287,26 @@ pub(crate) async fn legacy_verb() -> Response {
 /// Auth has already happened — the route declares `RouteAuth::Key`, and the plane's admission facts
 /// made the middleware verify the token's audience against this deployment's canonical URI. Anything
 /// reaching this function is an admitted caller.
-pub(crate) async fn rpc(
-    axum::extract::State(handle): axum::extract::State<
-        std::sync::Arc<busbar_core::state::AppHandle>,
-    >,
-    axum::extract::Extension(gov): axum::extract::Extension<busbar_api::PlaneRequestCtx>,
-    axum::extract::Extension(principal): axum::extract::Extension<busbar_api::AuthPrincipal>,
-    headers: HeaderMap,
-    body: Bytes,
-) -> Response {
+pub(crate) async fn rpc(ctx: busbar_substrate::plane_routes::PlaneReqCtx) -> Response {
+    // S4a Option A: this handler no longer extracts `axum::State<Arc<AppHandle>>` /
+    // `Extension<..>`. The core route adapter (`busbar_core::router::mount_plane_route`) took them
+    // off the request and handed them across the NEUTRAL `PlaneReqCtx` seam, so this plane names no
+    // router state type. The engine handle rides the seam type-erased (the per-subsystem App-sever
+    // that removes this downcast is a later step); `gov`/`principal` are the SAME values the auth
+    // middleware resolved and attached BEFORE this `RouteAuth::Key` handler ran — surfaced here, so
+    // nothing below re-runs the identity chain (which would double-run it).
+    let handle: std::sync::Arc<busbar_core::state::AppHandle> = ctx
+        .engine
+        .downcast::<busbar_core::state::AppHandle>()
+        .expect("the mcp route engine handle is an AppHandle");
+    let gov = ctx.gov.expect(
+        "the mcp rpc route is RouteAuth::Key, so the middleware attached a PlaneRequestCtx",
+    );
+    let principal = ctx
+        .principal
+        .expect("the mcp rpc route is RouteAuth::Key, so the middleware attached an AuthPrincipal");
+    let headers = ctx.headers;
+    let body = ctx.body;
     // The snapshot this request runs on, taken ONCE. `method::Ctx` also carries the handle, because
     // dispatch re-reads the LIVE snapshot to compare pin generations — a comparison against this
     // same value could never fail.

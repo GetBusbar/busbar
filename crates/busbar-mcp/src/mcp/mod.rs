@@ -152,7 +152,11 @@ pub const PLANE_DECL: busbar_core::plane::registry::PlaneDecl =
         // ONE opaque `Arc` — not a second construction and not a re-erasure. `None` exactly when
         // `cfg.mcp` is `None`, matching `App::mcp`'s own absence.
         build: |ctx| ctx.mcp_slot.clone(),
-        mount: Some(mcp_mount),
+        // S4a Option A: the MCP plane's data routes are contributed NEUTRALLY through `routes`, so
+        // its handlers no longer extract `axum::State<Arc<AppHandle>>`. The legacy core-typed
+        // `mount` is `None` here (A2A still uses it until its handlers are neutralised).
+        mount: None,
+        routes: Some(mcp_routes),
         admin_routes: Some(mcp_admin_routes),
         openapi: Some(mcp_openapi_fragment),
         config_validate: Some(mcp_config_validate),
@@ -498,39 +502,55 @@ pub(crate) fn mcp_hydrate(ctx: &busbar_core::plane::registry::BootCtx) -> Result
 /// itself takes the normal key chain, where the plane's admission facts make the verifier require
 /// this deployment's canonical URI as the token audience. GET and DELETE answer 405 (no GET stream,
 /// no sessions this revision) behind the same key bar.
-pub(crate) fn mcp_mount(
-    router: busbar_core::core_routes::CoreRouter,
+pub(crate) fn mcp_routes(
     slot: &dyn std::any::Any,
-) -> busbar_core::core_routes::CoreRouter {
+) -> Vec<busbar_substrate::plane_routes::PlaneRouteSpec> {
     use busbar_plugin_loader::{RouteAuth, RouteMethod};
+    use busbar_substrate::plane_routes::{PlaneReqCtx, PlaneRouteFuture, PlaneRouteSpec};
     let resource = slot
         .downcast_ref::<McpResource>()
-        .expect("the mcp plane's mount slot is an McpResource");
-    router
-        .route(
-            resource.metadata_path().to_string(),
-            RouteMethod::Get,
-            RouteAuth::None,
-            busbar_core::ingress::protocol::metadata_handler::<crate::mcp::envelope::McpWords>,
-        )
-        .route(
-            resource.mount_path().to_string(),
-            RouteMethod::Post,
-            RouteAuth::Key,
-            crate::mcp::envelope::rpc,
-        )
-        .route(
-            resource.mount_path().to_string(),
-            RouteMethod::Get,
-            RouteAuth::Key,
-            crate::mcp::envelope::legacy_verb,
-        )
-        .route(
-            resource.mount_path().to_string(),
-            RouteMethod::Delete,
-            RouteAuth::Key,
-            crate::mcp::envelope::legacy_verb,
-        )
+        .expect("the mcp plane's routes slot is an McpResource");
+    // The two CONCRETE paths, derived from the operator's canonical URI at mount time exactly as
+    // before — no prefix matching, so the auth middleware's exact-match discipline survives.
+    let metadata_path = resource.metadata_path().to_string();
+    let mount_path = resource.mount_path().to_string();
+    // Each spec's `(path, method, auth)` is handed VERBATIM to `CoreRouter::route` by the core
+    // adapter, so the `CoreRouteTable` rows are byte-identical to the ones `mcp_mount` recorded. The
+    // handlers are the neutral async fns over `PlaneReqCtx` — no `axum::State<Arc<AppHandle>>`.
+    vec![
+        PlaneRouteSpec {
+            path: metadata_path,
+            method: RouteMethod::Get,
+            auth: RouteAuth::None,
+            handler: std::sync::Arc::new(|ctx: PlaneReqCtx| -> PlaneRouteFuture {
+                Box::pin(crate::mcp::envelope::metadata_route(ctx))
+            }),
+        },
+        PlaneRouteSpec {
+            path: mount_path.clone(),
+            method: RouteMethod::Post,
+            auth: RouteAuth::Key,
+            handler: std::sync::Arc::new(|ctx: PlaneReqCtx| -> PlaneRouteFuture {
+                Box::pin(crate::mcp::envelope::rpc(ctx))
+            }),
+        },
+        PlaneRouteSpec {
+            path: mount_path.clone(),
+            method: RouteMethod::Get,
+            auth: RouteAuth::Key,
+            handler: std::sync::Arc::new(|ctx: PlaneReqCtx| -> PlaneRouteFuture {
+                Box::pin(crate::mcp::envelope::legacy_verb(ctx))
+            }),
+        },
+        PlaneRouteSpec {
+            path: mount_path,
+            method: RouteMethod::Delete,
+            auth: RouteAuth::Key,
+            handler: std::sync::Arc::new(|ctx: PlaneReqCtx| -> PlaneRouteFuture {
+                Box::pin(crate::mcp::envelope::legacy_verb(ctx))
+            }),
+        },
+    ]
 }
 
 /// CONTRIBUTE THE MCP TRUST VERBS to the Admin API v1 router: the operator's standing decision about

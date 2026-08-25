@@ -424,11 +424,20 @@ pub(crate) fn base_data_router(
     // handle. Declaration order (MCP before A2A) is preserved, so the route order is stable.
     let mut router = router;
     for decl in crate::plane::registry::plane_decls() {
-        let Some(mount) = decl.mount else { continue };
         let Some(slot) = plane_slots.get(decl.key) else {
             continue;
         };
-        router = mount(router, slot.as_ref());
+        // A plane contributes its data routes through EITHER the neutral `routes` seam (S4a Option A:
+        // a flat list of `PlaneRouteSpec`, mounted by the core adapter below so the plane names no
+        // `CoreRouter`) OR the legacy core-typed `mount` fn (still used by A2A, whose handlers are
+        // not yet neutralised). Never both; `routes` is preferred where present.
+        if let Some(routes) = decl.routes {
+            for spec in routes(slot.as_ref()) {
+                router = mount_plane_route(router, slot.clone(), spec);
+            }
+        } else if let Some(mount) = decl.mount {
+            router = mount(router, slot.as_ref());
+        }
     }
     // THE AUTHORIZATION SERVER'S ROUTES, or none of them. Same posture as the two planes above: a
     // deployment that is not an authorization server carries no `/authorize`, no `/token`, no
@@ -459,6 +468,78 @@ pub(crate) fn base_data_router(
                 .method_not_allowed_fallback(method_not_allowed_handler)
         })
         .into_parts()
+}
+
+/// Mount ONE neutral [`busbar_substrate::plane_routes::PlaneRouteSpec`] onto the core router (S4a
+/// Option A). This is the SINGLE place a plane's neutral route touches core router vocabulary: it
+/// calls the SAME [`crate::core_routes::CoreRouter::route`] the legacy `mount` fns called, with the
+/// spec's own `(path, method, auth)`, so the `CoreRouteTable` row is byte-identical — the security
+/// invariant this seam preserves. The handler it wires is a CORE-owned axum closure that extracts
+/// exactly the request pieces the old typed plane handlers took: the swappable `AppHandle` state, the
+/// middleware-resolved governance/principal extensions (absent — hence `Option` — on a
+/// `RouteAuth::None` route, which the auth middleware bypasses before attaching them), the path
+/// captures, the headers and the buffered body. It assembles a neutral
+/// [`busbar_substrate::plane_routes::PlaneReqCtx`] and awaits the plane's own handler. The plane
+/// names none of these core/axum types; this adapter names them all.
+fn mount_plane_route(
+    router: crate::core_routes::CoreRouter,
+    slot: std::sync::Arc<dyn std::any::Any + Send + Sync>,
+    spec: busbar_substrate::plane_routes::PlaneRouteSpec,
+) -> crate::core_routes::CoreRouter {
+    let busbar_substrate::plane_routes::PlaneRouteSpec {
+        path,
+        method,
+        auth,
+        handler,
+    } = spec;
+    // The spec's path is CONSUMED as the mount pattern (and recorded in the `CoreRouteTable`); a
+    // copy rides into every `PlaneReqCtx` this route builds so the handler can read the path it was
+    // matched at.
+    let ctx_path = path.clone();
+    router.route(
+        path,
+        method,
+        auth,
+        move |axum::extract::State(handle): axum::extract::State<
+            std::sync::Arc<state::AppHandle>,
+        >,
+              raw_params: axum::extract::RawPathParams,
+              gov: Option<axum::extract::Extension<busbar_api::PlaneRequestCtx>>,
+              principal: Option<axum::extract::Extension<busbar_api::AuthPrincipal>>,
+              headers: axum::http::HeaderMap,
+              body: axum::body::Bytes| {
+            let handler = handler.clone();
+            let slot = slot.clone();
+            let ctx_path = ctx_path.clone();
+            let path_params: Vec<(String, String)> = raw_params
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect();
+            async move {
+                let gov = gov.map(|axum::extract::Extension(g)| g);
+                // The one identity fact a `Key`-auth handler binds request-scoped state to — the
+                // resolved key id — lifted from the middleware-attached `gov` so the handler never
+                // re-runs the identity chain (which would double-run it and change behaviour).
+                let caller_principal = gov
+                    .as_ref()
+                    .and_then(|g| g.key.as_ref().map(|k| k.id.clone()));
+                let engine: std::sync::Arc<dyn std::any::Any + Send + Sync> = handle;
+                let ctx = busbar_substrate::plane_routes::PlaneReqCtx {
+                    path: ctx_path,
+                    method,
+                    headers,
+                    body,
+                    path_params,
+                    caller_principal,
+                    gov,
+                    principal: principal.map(|axum::extract::Extension(p)| p),
+                    engine,
+                    slot,
+                };
+                handler(ctx).await
+            }
+        },
+    )
 }
 
 /// Apply the shared middleware stack — auth chain, request-body cap, 413 reshaping, server-timing —

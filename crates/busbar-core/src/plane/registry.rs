@@ -264,6 +264,24 @@ pub struct PlaneDecl {
         fn(crate::core_routes::CoreRouter, &dyn std::any::Any) -> crate::core_routes::CoreRouter,
     >,
 
+    /// THE PLANE'S DATA ROUTES, described NEUTRALLY (S4a Option A) — the replacement for
+    /// [`Self::mount`] that names no core router type. From the plane's own runtime slot
+    /// (type-erased `&dyn Any`), the plane returns a flat list of
+    /// [`busbar_substrate::plane_routes::PlaneRouteSpec`] — each a `(path, method, auth, handler)`
+    /// where the handler is a neutral async fn over a
+    /// [`busbar_substrate::plane_routes::PlaneReqCtx`], never an `axum` extractor or `Arc<AppHandle>`.
+    /// The CORE adapter ([`crate::router::mount_plane_routes`]) iterates the specs and, per spec,
+    /// calls the EXISTING [`crate::core_routes::CoreRouter::route`] with the same `(path, method,
+    /// auth)`, so the `CoreRouteTable` rows are byte-identical to the ones [`Self::mount`] recorded —
+    /// only the handler's shape moved behind the neutral seam.
+    ///
+    /// A plane sets EITHER [`Self::mount`] (the legacy, core-typed contribution — still used by the
+    /// A2A plane, whose handlers are not yet neutralised) OR this field, never both. `None` for a
+    /// plane that answers on no data path, or one still on the legacy `mount` seam.
+    #[allow(clippy::type_complexity)]
+    pub routes:
+        Option<fn(&dyn std::any::Any) -> Vec<busbar_substrate::plane_routes::PlaneRouteSpec>>,
+
     /// CONTRIBUTE THE PLANE'S ADMIN VERBS to the Admin API v1 router — the operator surface a plane
     /// adds ON TOP of the generic named-definition CRUD (MCP's `connect`/`changes`/`health`, A2A's
     /// `connect`/`approve`). `None` for a plane with no admin verbs. Unconditional (not slot-gated):
