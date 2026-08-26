@@ -1450,7 +1450,7 @@ async fn tools_call(
     // ZERO COST when nothing is attached: one hash lookup that misses.
     if ctx.app.mcp_server_gates.contains_key(&selected.server) {
         // FIRE THE GATE THROUGH THE HOST SEAM (`plane_host::gate_decide_over`), so this plane body no
-        // longer names `busbar_core::hooks::gate::decide` or holds the resolved `ResolvedPolicy` set (the
+        // longer names the core hooks gate decision (`gate::decide`) or holds the resolved `ResolvedPolicy` set (the
         // Seam-B inversion) — the host re-selects the gate set by `(plane_key, container)` and runs the
         // same decision. The presence check above keeps the whole block ZERO-COST when nothing is
         // attached: no arguments clone, no serialize, no blocking hop.

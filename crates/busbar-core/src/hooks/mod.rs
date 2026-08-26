@@ -1522,30 +1522,18 @@ pub(crate) fn resolve_gate_hooks(
     ranked
 }
 
-/// THE ADDITIVE-LIST COMBINE RULE, stated once for every plane that has one.
-///
-/// A section-level attach (`pools.hooks:` / `tools.hooks:` / `agents.hooks:`) and an entry's own
-/// `hooks:` are a LIST, and a LIST combines ADDITIVELY: section first, then the entry's own, deduped
-/// by name so a hook named in both fires ONCE, at its first (section) position.
-///
-/// Written here rather than once per plane because it is a rule of the CONFIG GRAMMAR, not of any
-/// plane — and because two copies of it is exactly how the section list and an entry list come to
-/// dedupe differently on one plane and not the other.
-// Called only from the MCP/A2A container-gate resolution; with BOTH planes compiled out
-// [`resolve_container_gates`] has no caller and neither does this, so it reads dead in that config.
+/// THE ADDITIVE-LIST COMBINE RULE — relocated to the neutral seam (`busbar_substrate::plane::config`)
+/// beside the [`ContainerGateInputs`](busbar_substrate::plane::config::ContainerGateInputs) it folds,
+/// so an extracted plane crate reaches it without naming `busbar_core::hooks`. Re-exported here so
+/// `crate::hooks::attach_list` (this module's [`resolve_container_gates`], and the A2A twin) is
+/// unchanged.
+// Referenced only from the MCP/A2A container-gate resolution; with BOTH planes compiled out
+// [`resolve_container_gates`] has no caller, so the re-export reads unused in that config.
 #[cfg_attr(
     not(any(feature = "plane-mcp", feature = "plane-a2a")),
-    allow(dead_code)
+    allow(unused_imports)
 )]
-pub fn attach_list(section: &[String], own: &[String]) -> Vec<String> {
-    let mut out: Vec<String> = Vec::with_capacity(section.len() + own.len());
-    for h in section.iter().chain(own) {
-        if !out.iter().any(|e| e == h) {
-            out.push(h.clone());
-        }
-    }
-    out
-}
+pub use busbar_substrate::plane::config::attach_list;
 
 /// Resolve the per-CONTAINER gate chains for one plane's registry: for each `(container name, that
 /// container's own hook list)`, the effective attach ([`attach_list`]) resolved through

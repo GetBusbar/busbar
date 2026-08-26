@@ -138,15 +138,15 @@ pub(crate) fn contains(app: &busbar_core::state::App, name: &str) -> bool {
 /// gate field back.
 pub(crate) fn reresolve_gates(next: &mut busbar_core::state::App) {
     let servers = std::sync::Arc::clone(&super::runtime(next).servers);
-    next.mcp_server_gates = busbar_core::hooks::resolve_container_gates(
+    // Resolve host-side (`App::resolve_container_gates`), so this plane hands its neutral
+    // `(server, own-hooks)` inputs + the section attach list across without naming the core hooks
+    // container-gate resolver.
+    next.mcp_server_gates = next.resolve_container_gates(
         servers
             .servers
             .iter()
             .map(|(n, d)| (n.as_str(), d.hooks.as_slice())),
         &servers.all_server_hooks,
-        &next.hook_registry,
-        &next.hook_env,
-        next.config_version,
     );
 }
 

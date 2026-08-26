@@ -476,6 +476,16 @@ impl busbar_substrate::plane_host::EngineHost for EngineHostImpl {
         crate::plane::calllog::emit_hostless(principal, input);
     }
 
+    fn identity_audience_binding(
+        &self,
+        token: &str,
+        expected_aud: &str,
+    ) -> busbar_substrate::plane_host::AudienceBinding {
+        // A pure judgement — no `HostCtx`, no engine state. `inspect_bearer` returns the enum this
+        // trait method's type re-exports, so this is a direct forward to the UNCHANGED core seam.
+        crate::auth::audience::inspect_bearer(token, expected_aud)
+    }
+
     async fn identity_admit(
         &self,
         token: Option<String>,

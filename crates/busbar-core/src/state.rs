@@ -808,6 +808,32 @@ impl App {
     pub fn plane_slot(&self, key: &str) -> Option<&Arc<dyn std::any::Any + Send + Sync>> {
         self.plane_slots.get(key)
     }
+
+    /// Resolve a container plane's per-registration hook gates against THIS snapshot's hook registry,
+    /// env and config version — the core-side of a container plane's config-swap gate rebuild. An
+    /// extracted plane hands its neutral `(container, own-hooks)` inputs + the reserved section attach
+    /// list across, and gets back the keyed gate map to store in its own gate field, so the plane
+    /// names no `crate::hooks::resolve_container_gates`. Same resolution as `appbuild`'s build-time
+    /// pass and the in-core A2A twin.
+    // Called only from a container plane's gate rebuild (MCP/A2A); with BOTH planes compiled out it
+    // has no caller, exactly like the `crate::hooks::resolve_container_gates` it wraps.
+    #[cfg_attr(
+        not(any(feature = "plane-mcp", feature = "plane-a2a")),
+        allow(dead_code)
+    )]
+    pub fn resolve_container_gates<'a>(
+        &self,
+        containers: impl Iterator<Item = (&'a str, &'a [String])>,
+        section_hooks: &[String],
+    ) -> HashMap<String, Vec<(u16, crate::hooks::ResolvedPolicy)>> {
+        crate::hooks::resolve_container_gates(
+            containers,
+            section_hooks,
+            &self.hook_registry,
+            &self.hook_env,
+            self.config_version,
+        )
+    }
 }
 
 /// Boot-time seed for [`App::request_id_counter`]: one draw of OS randomness so per-request ids

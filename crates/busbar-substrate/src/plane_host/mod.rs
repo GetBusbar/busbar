@@ -73,6 +73,27 @@ pub enum GateOutcome {
     },
 }
 
+/// What could be established about a presented bearer's RFC 8707 audience binding — the outcome of
+/// the host `identity_audience_binding` pre-filter, for credentials busbar did not mint.
+///
+/// Relocated here from `busbar_core::auth::audience` so a plane reads the pre-filter verdict without
+/// naming the core auth module; the binding JUDGEMENT (which reaches core's governance token prefix)
+/// stays core behind [`EngineHost::identity_audience_binding`]. Core re-exports this at
+/// `crate::auth::audience::Binding`, so its own callers and the enum's variants are unchanged.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AudienceBinding {
+    /// A busbar-signed token. The real audience check happens in the verifier, which has the
+    /// signature and the claims; the pre-filter must not pre-judge it.
+    Deferred,
+    /// A JWT whose `aud` includes the expected value. Not an admission — the chain still verifies it.
+    Bound,
+    /// A JWT whose `aud` does not include the expected value, or which carries no `aud` at all. Both
+    /// are refused for the same reason: minted for someone else, or for nobody in particular.
+    Mismatch,
+    /// Not a JWT and not a busbar token: nothing to read. Refused.
+    Opaque,
+}
+
 /// The neutral HOST seam a plane calls to reach the engine's host-owned capabilities.
 ///
 /// A plane holds an `Arc<dyn EngineHost>` (minted core-side over the live engine) and calls these
@@ -209,6 +230,12 @@ pub trait EngineHost: Send + Sync {
     /// HOSTLESS call-log path, for a client-leg site that has no `HostCtx` to open. Identical to
     /// `busbar_core::plane::calllog::emit_hostless`.
     fn call_log_emit_hostless(&self, principal: &str, input: CallInput);
+
+    /// Establish what can be established about a presented bearer's RFC 8707 audience binding against
+    /// `expected_aud` — the fail-closed pre-filter a plane runs BEFORE the auth chain, for credentials
+    /// busbar did not mint. A pure judgement (it reaches only core's governance token prefix, no live
+    /// engine state), so it needs no `HostCtx`. Identical to `busbar_core::auth::audience::inspect_bearer`.
+    fn identity_audience_binding(&self, token: &str, expected_aud: &str) -> AudienceBinding;
 
     /// Resolve INBOUND data-plane identity: run the configured auth chain + the ONE verdict resolution
     /// over the caller's OWN wire credential and the live governance state, returning the resolved

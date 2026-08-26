@@ -217,3 +217,24 @@ pub fn refuse_cross_plane_reference(
 ) -> Result<(), String> {
     judge_hook_ref(hook, sections).map_err(|err| Refusal { at, err }.into())
 }
+
+/// THE ADDITIVE-LIST COMBINE RULE, stated once for every plane that has one.
+///
+/// A section-level attach (`pools.hooks:` / `tools.hooks:` / `agents.hooks:`) and an entry's own
+/// `hooks:` are a LIST, and a LIST combines ADDITIVELY: section first, then the entry's own, deduped
+/// by name so a hook named in both fires ONCE, at its first (section) position.
+///
+/// Lives on the neutral seam beside [`ContainerGateInputs`] (whose inputs it folds) rather than once
+/// per plane because it is a rule of the CONFIG GRAMMAR, not of any plane — and because two copies of
+/// it is exactly how the section list and an entry list come to dedupe differently on one plane and
+/// not the other. Core re-exports it at `crate::hooks::attach_list`; the extracted plane crates reach
+/// it here without naming `busbar_core::hooks`.
+pub fn attach_list(section: &[String], own: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::with_capacity(section.len() + own.len());
+    for h in section.iter().chain(own) {
+        if !out.iter().any(|e| e == h) {
+            out.push(h.clone());
+        }
+    }
+    out
+}

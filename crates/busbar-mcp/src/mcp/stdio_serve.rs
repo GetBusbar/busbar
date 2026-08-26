@@ -32,7 +32,9 @@
 //!
 //! 1. **It is the same admission, made once.** [`ENV_CREDENTIAL`] carries the SAME credential the
 //!    HTTP plane accepts, and it is judged by the SAME sequence: the RFC 8707 audience pre-filter
-//!    against `mcp.canonical_uri` ([`busbar_core::auth::audience`]), then the configured auth chain and the
+//!    against `mcp.canonical_uri` (routed host-side through
+//!    [`identity_audience_binding`](busbar_substrate::plane_host::EngineHost::identity_audience_binding)),
+//!    then the configured auth chain and the
 //!    one verdict resolution the HTTP middleware itself runs — routed host-side through the
 //!    [`identity_admit`](busbar_substrate::plane_host::EngineHost::identity_admit) seam (Seam-B), so this transport
 //!    admits an inbound session without naming the auth chain. A credential that the HTTP door would
@@ -160,8 +162,11 @@ pub(crate) async fn session_identity(
     // HTTP middleware runs before the chain, because a token minted for another resource is not
     // made admissible by arriving on a pipe instead of a socket.
     if let Some(token) = credential {
-        use busbar_core::auth::audience::{self, Binding};
-        match audience::inspect_bearer(token, resource.canonical_uri()) {
+        use busbar_substrate::plane_host::AudienceBinding as Binding;
+        // The binding JUDGEMENT is routed host-side through `identity_audience_binding` (Seam-B), so
+        // this transport runs the SAME RFC 8707 pre-filter as the HTTP door without naming the core
+        // auth module — only the WORDING of a refusal remains stdio's.
+        match host_factory(&app).identity_audience_binding(token, resource.canonical_uri()) {
             Binding::Deferred | Binding::Bound => {}
             Binding::Mismatch => {
                 return Err(format!(
@@ -182,8 +187,8 @@ pub(crate) async fn session_identity(
     // (2)+(3) THE CHAIN + THE ONE VERDICT RESOLUTION, routed through the host `identity_admit` seam
     // (Seam-B): the host runs the SAME chain the HTTP door runs (same audience expectation) and the SAME
     // verdict resolution the middleware runs, over the live governance state, and hands back the resolved
-    // `(AuthPrincipal, PlaneRequestCtx)` — or the specific refusal. The plane no longer names
-    // `busbar_core::auth::run_chain_on_request_path` / `resolve_data_plane_identity`; only the WORDING of a
+    // `(AuthPrincipal, PlaneRequestCtx)` — or the specific refusal. The plane no longer names the core
+    // auth-chain entrypoint (`run_chain_on_request_path`) / `resolve_data_plane_identity`; only the WORDING of a
     // refusal remains stdio's. Byte-identical: the principal and gov context are the exact objects the
     // resolution produced, and the refusal keeps its variant.
     let canonical = resource.canonical_uri().to_string();

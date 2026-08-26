@@ -974,10 +974,11 @@ impl ToolsCfg {
     /// The effective hook set for one server: `tools.hooks ∪ tools.<server>.hooks`, deduped, in
     /// declaration order (`hooks` is a LIST, and a LIST combines ADDITIVELY).
     pub(crate) fn effective_hooks(&self, server: &str) -> Vec<String> {
-        // The rule itself lives in `hooks::attach_list`, which is where the sibling plane reads it
-        // too: the combine is a property of the config GRAMMAR, and a second copy here is how the
-        // two planes come to dedupe differently.
-        busbar_core::hooks::attach_list(
+        // The rule itself lives on the neutral seam (`plane::config::attach_list`), which is where
+        // the sibling plane reads it too (core re-exports it at `hooks::attach_list`): the combine is
+        // a property of the config GRAMMAR, and a second copy here is how the two planes come to
+        // dedupe differently.
+        busbar_substrate::plane::config::attach_list(
             &self.all_server_hooks,
             self.servers.get(server).map_or(&[], |d| d.hooks.as_slice()),
         )
