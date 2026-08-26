@@ -100,3 +100,91 @@ pub trait SecretModule: Send + Sync + 'static {
         settings: &serde_json::Map<String, serde_json::Value>,
     ) -> SecretResult<Vec<u8>>;
 }
+
+use busbar_secret_ref::{SecretRef, SECRET_MODULE_ENV, SECRET_MODULE_FILE};
+
+/// BUILT-IN resolution of a secret reference to its raw bytes: `env` reads the
+/// environment variable; `file` reads the file. Any other module name is FAIL-CLOSED here - the
+/// full secret-plugin resolver (third-party `kind: secret` modules through the plugin trust
+/// pipeline) is layered on top of this by the engine's `SecretResolver`, which falls back to these
+/// built-ins by these exact names.
+pub fn resolve_builtin(secret: &SecretRef) -> Result<Vec<u8>, String> {
+    if let Some(var) = self_env_var_checked(secret)? {
+        return match std::env::var(&var) {
+            Ok(v) if !v.is_empty() => Ok(v.into_bytes()),
+            Ok(_) => Err(format!(
+                "secret env:{var} resolved to an EMPTY value; a secret must be non-empty \
+                 (fail-closed)"
+            )),
+            Err(_) => Err(format!(
+                "secret env:{var} cannot resolve: environment variable '{var}' is unset"
+            )),
+        };
+    }
+    if let Some(path) = self_file_path_checked(secret)? {
+        return match std::fs::read(&path) {
+            Ok(bytes) if !bytes.is_empty() => Ok(bytes),
+            Ok(_) => Err(format!(
+                "secret file:{path} resolved to an EMPTY file; a secret must be non-empty \
+                 (fail-closed)"
+            )),
+            Err(e) => Err(format!("secret file:{path} cannot resolve: {e}")),
+        };
+    }
+    Err(format!(
+        "secret module '{}' is not a built-in (`env` / `file`) and no secret plugin provides it; \
+         a secret that cannot resolve is a hard error (fail-closed)",
+        secret.module
+    ))
+}
+
+/// The `env` module's variable name, validating the settings shape (a malformed built-in ref must
+/// fail loudly, not fall through to "unknown module").
+fn self_env_var_checked(secret: &SecretRef) -> Result<Option<String>, String> {
+    if secret.module != SECRET_MODULE_ENV {
+        return Ok(None);
+    }
+    match secret.env_var() {
+        Some(v) if !v.trim().is_empty() => Ok(Some(v.to_string())),
+        _ => Err(
+            "secret module 'env' requires settings.key naming the environment variable \
+             (e.g. `{ env: MY_VAR }` or `{ module: env, settings: { key: MY_VAR } }`)"
+                .to_string(),
+        ),
+    }
+}
+
+/// The `file` module's path, validating the settings shape.
+fn self_file_path_checked(secret: &SecretRef) -> Result<Option<String>, String> {
+    if secret.module != SECRET_MODULE_FILE {
+        return Ok(None);
+    }
+    match secret.file_path() {
+        Some(p) if !p.trim().is_empty() => Ok(Some(p.to_string())),
+        _ => Err(
+            "secret module 'file' requires settings.path naming the file \
+             (e.g. `{ file: /run/secrets/x }` or `{ module: file, settings: { path: /run/secrets/x } }`)"
+                .to_string(),
+        ),
+    }
+}
+
+/// Resolve a secret reference to a UTF-8 STRING (trailing newline trimmed - the universal
+/// file-delivered-secret convention). Fail-closed on non-UTF-8.
+pub fn resolve_builtin_string(secret: &SecretRef) -> Result<String, String> {
+    let bytes = resolve_builtin(secret)?;
+    let s = String::from_utf8(bytes).map_err(|_| {
+        format!(
+            "secret {} resolved to non-UTF-8 bytes where a text secret is required",
+            secret.describe()
+        )
+    })?;
+    let trimmed = s.trim_end_matches(['\r', '\n']);
+    if trimmed.is_empty() {
+        return Err(format!(
+            "secret {} resolved to an empty value after trimming trailing newlines (fail-closed)",
+            secret.describe()
+        ));
+    }
+    Ok(trimmed.to_string())
+}

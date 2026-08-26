@@ -43,7 +43,10 @@ pub use hooks::{
     TransformOutcome,
 };
 pub use redacted::Redacted;
-pub use secret::{SecretError, SecretErrorKind, SecretModule, SecretResult};
+pub use secret::{
+    resolve_builtin, resolve_builtin_string, SecretError, SecretErrorKind, SecretModule,
+    SecretResult,
+};
 // The config secret-reference type, re-exported from its own leaf crate so a plane crate names
 // `busbar_api::SecretRef` without a separate path dep.
 pub use busbar_secret_ref::SecretRef;

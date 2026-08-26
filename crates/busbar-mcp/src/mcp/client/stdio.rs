@@ -377,7 +377,7 @@ impl StdioChild {
             let resolved = match value {
                 super::super::config::ChildEnvValue::Plain(s) => s.clone(),
                 super::super::config::ChildEnvValue::Secret(r) => {
-                    busbar_core::config::secret::resolve_builtin_string(r).map_err(|e| {
+                    busbar_api::resolve_builtin_string(r).map_err(|e| {
                         format!("stdio MCP server's `env.{name}` could not be resolved: {e}")
                     })?
                 }

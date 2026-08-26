@@ -372,7 +372,7 @@ pub(super) fn credential_mode(server: &ServerEntry) -> Result<UpstreamCredential
          issued token is spendable at any backend the authorization server serves"
             .to_string()
     })?;
-    let subject_token = busbar_core::config::secret::resolve_builtin_string(&tx.subject_token)
+    let subject_token = busbar_api::resolve_builtin_string(&tx.subject_token)
         .map_err(|e| format!("busbar's own subject token for this upstream cannot resolve: {e}"))?;
     Ok(UpstreamCredential::Exchange(ExchangeCfg {
         token_url: tx.token_url.clone(),
