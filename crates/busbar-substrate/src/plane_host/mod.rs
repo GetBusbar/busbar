@@ -108,6 +108,13 @@ pub enum AudienceBinding {
 /// `#[async_trait]` because ONE method — [`identity_admit`](EngineHost::identity_admit) — is `async`
 /// (it awaits a `spawn_blocking` join over the host auth chain). Every other method is a plain sync
 /// fn the attribute leaves untouched; only the async one is desugared to a boxed `Send` future.
+/// The `plane_slots` companion key under which the MCP plane's always-present per-generation runtime
+/// object is carried, distinct from the plane's config-conditional decl key (`"mcp"`). Named by both
+/// core's `appbuild` (which composes the slot) and the MCP plane (which reads it back through
+/// [`EngineHost::plane_slot`]), so it lives in the neutral substrate rather than either crate. Core
+/// re-exports it as `busbar_core::state::MCP_RUNTIME_SLOT` so in-core names are unchanged.
+pub const MCP_RUNTIME_SLOT: &str = "mcp:runtime";
+
 #[async_trait::async_trait]
 pub trait EngineHost: Send + Sync {
     /// Read the host wall clock in whole SECONDS through the `clock_now` seam — the host-driven form
@@ -268,4 +275,31 @@ pub trait EngineHost: Send + Sync {
     /// `busbar_core::plane::approvals::ask_state_sealer(app.governance)` — the derivation stays core
     /// behind this seam.
     fn ask_state_sealer(&self) -> Option<Sealer>;
+
+    /// The plane's type-erased runtime object off the BOUND snapshot (the one this host was minted
+    /// over), owned (an `Arc` clone) so it outlives the call. `None` when the plane contributed no
+    /// slot under `key` this generation. Identical to `busbar_core::state::App::plane_slot(key)`
+    /// cloned — a pure `plane_slots` map read, no `HostCtx` (mirrors [`next_request_id`]).
+    ///
+    /// [`next_request_id`]: EngineHost::next_request_id
+    fn plane_slot(&self, key: &str) -> Option<Arc<dyn std::any::Any + Send + Sync>>;
+
+    /// The plane's slot off the CURRENT snapshot — re-reads the LIVE handle so a config swap AFTER
+    /// this host was minted is seen (the dispatch-time re-validation / per-round revocation / watch
+    /// loops depend on this). Falls back to the bound snapshot for a snapshot-only mint (one built
+    /// without a live handle). A pure map read, no `HostCtx`.
+    fn plane_slot_live(&self, key: &str) -> Option<Arc<dyn std::any::Any + Send + Sync>>;
+
+    /// Every durably-recorded upstream demotion, the boot-replay source. Identical to
+    /// `App::demotion_record.list()`; the row type is the neutral `busbar_api::McpDemotionRow`.
+    fn demotion_rows(&self) -> Vec<busbar_api::McpDemotionRow>;
+
+    /// The `(pool_name, members)` of the `tool_pools:` failover pool `server` belongs to, off the
+    /// BOUND snapshot; `None` when `server` is un-pooled. Identical to scanning `App::tool_pools`.
+    fn tool_pool_members(&self, server: &str) -> Option<(String, Vec<String>)>;
+
+    /// Cheap presence pre-filter: is any request-admission hook gate attached to `container` on this
+    /// plane (`plane_key` `0` = MCP)? Lets a plane skip the blocking `gate_decide` hop when nothing is
+    /// attached. Identical to `App::mcp_server_gates.contains_key(container)` for the MCP plane.
+    fn gate_attached(&self, plane_key: u8, container: &str) -> bool;
 }

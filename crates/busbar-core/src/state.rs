@@ -294,7 +294,7 @@ impl Drop for QueueDepthGuard {
 /// key keeps both presences byte-identical to when they were two separate `App` fields. Composed into
 /// `plane_slots` by `appbuild` through the plane's neutral `build_runtime` seam, and read back by the
 /// plane through `crate::mcp::runtime`, so this crate names no `crate::mcp` runtime type.
-pub const MCP_RUNTIME_SLOT: &str = "mcp:runtime";
+pub use busbar_substrate::plane_host::MCP_RUNTIME_SLOT;
 
 /// `Clone` is the config-apply enabler: cloning an `App` shares the live-state `Arc`s (store, auth,
 /// governance, client — the things that must SURVIVE a config change) and deep-copies the

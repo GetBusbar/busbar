@@ -312,15 +312,32 @@ pub fn clock_now_ms_over(app: &App) -> u64 {
 /// [`with_borrowed_host`] over a fresh per-call [`DispatchScope`]), drives the slot SYNCHRONOUSLY,
 /// and returns an owned value — the raw host pointer never escapes the call.
 pub struct EngineHostImpl {
-    /// The live engine snapshot the host reaches run against.
+    /// The BOUND engine snapshot the host reaches run against — loaded once at mint. Serves
+    /// `plane_slot` and every existing method, byte-identically to the pre-`handle` host.
     app: Arc<App>,
+    /// The LIVE handle, retained so `plane_slot_live` re-reads the CURRENT snapshot after a config
+    /// swap. `None` for a snapshot-only mint (the `Fn(&Arc<App>)` factory / [`new`](Self::new)), where
+    /// the bound snapshot is the only snapshot the host was ever handed.
+    handle: Option<Arc<crate::state::AppHandle>>,
 }
 
 impl EngineHostImpl {
-    /// Build the host implementation over the live `app`.
+    /// Build the host implementation over the live `app` — a SNAPSHOT-ONLY mint (no live handle, so
+    /// `plane_slot_live` degrades to the bound snapshot).
     #[must_use]
     pub fn new(app: Arc<App>) -> Self {
-        EngineHostImpl { app }
+        EngineHostImpl { app, handle: None }
+    }
+
+    /// Build the host over a live [`AppHandle`](crate::state::AppHandle): the bound snapshot is the
+    /// handle's CURRENT load (keeping frozen-snapshot semantics byte-identical to `new(handle.load())`),
+    /// and the handle is retained so `plane_slot_live` sees a later config swap.
+    #[must_use]
+    pub fn from_handle(handle: Arc<crate::state::AppHandle>) -> Self {
+        EngineHostImpl {
+            app: handle.load(),
+            handle: Some(handle),
+        }
     }
 }
 
@@ -451,6 +468,40 @@ impl busbar_substrate::plane_host::EngineHost for EngineHostImpl {
         self.app.governance.is_some()
     }
 
+    fn plane_slot(&self, key: &str) -> Option<Arc<dyn std::any::Any + Send + Sync>> {
+        // Pure map read + Arc clone, mirroring next_request_id: no HostCtx, no vtable slot.
+        self.app.plane_slot(key).cloned()
+    }
+
+    fn plane_slot_live(&self, key: &str) -> Option<Arc<dyn std::any::Any + Send + Sync>> {
+        match &self.handle {
+            // Re-read the CURRENT snapshot so a swap after mint is seen.
+            Some(h) => h.load().plane_slot(key).cloned(),
+            // Snapshot-only mint: the bound snapshot is the only snapshot this host was handed.
+            None => self.app.plane_slot(key).cloned(),
+        }
+    }
+
+    fn demotion_rows(&self) -> Vec<busbar_api::McpDemotionRow> {
+        self.app.demotion_record.list()
+    }
+
+    fn tool_pool_members(&self, server: &str) -> Option<(String, Vec<String>)> {
+        self.app
+            .tool_pools
+            .iter()
+            .find(|(_, cfg)| cfg.members.iter().any(|m| m == server))
+            .map(|(name, cfg)| (name.clone(), cfg.members.clone()))
+    }
+
+    fn gate_attached(&self, plane_key: u8, container: &str) -> bool {
+        match plane_key {
+            0 => self.app.mcp_server_gates.contains_key(container),
+            // The A2A twin (`a2a_server_gates`) is wired when plane-a2a lands.
+            _ => false,
+        }
+    }
+
     fn audit_emit(&self, action: &str, resource: &str, outcome: &str, principal: &str) {
         // Hostless: the admin-audit engine reads `store::now` + the global ring and needs no `HostCtx`.
         // A plain forward to the UNCHANGED core engine.
@@ -542,7 +593,10 @@ pub fn engine_host(app: &Arc<App>) -> Arc<dyn busbar_substrate::plane_host::Engi
 pub fn engine_host_from_handle(
     handle: &Arc<crate::state::AppHandle>,
 ) -> Arc<dyn busbar_substrate::plane_host::EngineHost> {
-    engine_host(&handle.load())
+    // `from_handle` (not `engine_host(&handle.load())`): retains the live handle so `plane_slot_live`
+    // re-reads the CURRENT snapshot on the route/detached-runner/stdio paths, which must see a config
+    // swap that lands after admission. The bound snapshot stays `handle.load()` — byte-identical.
+    Arc::new(EngineHostImpl::from_handle(Arc::clone(handle)))
 }
 
 /// A neutral, reusable HOST FACTORY: an owned closure that mints an `Arc<dyn EngineHost>` over any live
