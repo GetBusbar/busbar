@@ -542,6 +542,21 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.98.0
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+      # The method-inventory derivation reads the rmcp SDK's `model.rs` from the EXTRACTED registry
+      # source (`registry/src/*/rmcp-<ver>/src/model.rs`) and REFUSES rather than skip when it is
+      # absent — an inventory of nothing is worse than no inventory. A bare checkout never extracts a
+      # dependency's source (only a compile does), so this job used to pass ONLY when the runner
+      # happened to have rmcp cached, and drew a red the first time it didn't. Extract it
+      # deterministically: `cargo fetch` downloads the `.crate`, `cargo check -p rmcp` unpacks its
+      # source into `registry/src/` (and rust-cache keeps it warm for later runs).
+      - name: Extract rmcp source (the method-inventory derivation reads it)
+        run: |
+          cargo fetch --locked
+          cargo check -p rmcp --locked
       - name: field-inventory self-test (derivation cannot be lied to)
         run: python3 scripts/field-inventory.py --selftest
       - name: field-inventory drift (committed == fresh derivation)

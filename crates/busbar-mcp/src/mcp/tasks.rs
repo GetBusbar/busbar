@@ -698,7 +698,7 @@ async fn run(task: Arc<McpTask>, runner: Runner) {
             }
         },
         {
-            // THE GRANT, RE-READ LIVE ON EVERY ROUND through the host funnel (K2): `engine` is a
+            // THE GRANT, RE-READ LIVE ON EVERY ROUND through the host funnel: `engine` is a
             // `from_handle` host, so `runtime_live` re-loads the CURRENT snapshot and a revocation
             // between rounds bites on the next one.
             let engine = host.clone();

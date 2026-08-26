@@ -411,7 +411,7 @@ impl Listen {
         if matches!(self.phase, Phase::Ended) {
             return None;
         }
-        // The LIVE runtime, re-read ONCE per poll off the host's retained handle (K2), then reused for
+        // The LIVE runtime, re-read ONCE per poll off the host's retained handle, then reused for
         // both the catalogue reads and the resource-update pool read below so all observe the SAME
         // re-loaded snapshot — byte-identical to the former single `self.handle.load()`. This is what
         // makes `a_revoked_key_stops_being_served_on_the_next_poll` bite on the next poll.

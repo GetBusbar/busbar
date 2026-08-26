@@ -584,7 +584,11 @@ fn tools_list(ctx: &Ctx<'_>, id: Option<serde_json::Value>) -> Response {
         .catalogue
         .tools_for(&caller)
         .into_iter()
-        .filter(|t| !super::runtime_of(&ctx.host).catalogue.is_quarantined(live, t))
+        .filter(|t| {
+            !super::runtime_of(&ctx.host)
+                .catalogue
+                .is_quarantined(live, t)
+        })
         .map(CatalogueItem::render)
         .collect();
     result(id, cache_hints(serde_json::json!({ "tools": tools })))
@@ -593,8 +597,9 @@ fn tools_list(ctx: &Ctx<'_>, id: Option<serde_json::Value>) -> Response {
 /// `prompts/list`, with every description markup-normalised on the way out.
 fn prompts_list(ctx: &Ctx<'_>, id: Option<serde_json::Value>) -> Response {
     let caller = ctx.caller();
-    let prompts: Vec<serde_json::Value> =
-        super::runtime_of(&ctx.host).catalogue.prompts_rendered(&caller);
+    let prompts: Vec<serde_json::Value> = super::runtime_of(&ctx.host)
+        .catalogue
+        .prompts_rendered(&caller);
     result(id, cache_hints(serde_json::json!({ "prompts": prompts })))
 }
 
@@ -1256,11 +1261,7 @@ async fn tools_call(
             refuse_catalogue(ctx, name, &refusal, id),
         );
     }
-    let Some(server) = live_rt
-        .catalogue
-        .server(&selected.server)
-        .cloned()
-    else {
+    let Some(server) = live_rt.catalogue.server(&selected.server).cloned() else {
         let refusal = DispatchRefusal::UnknownTool(name.to_string());
         return log.refused(
             refusal.audit_reason(),
@@ -1604,7 +1605,7 @@ async fn tools_call(
     // guards is still running.
     let server_id = selected.server.clone();
     // BOUND runtime, held for the whole dispatch loop so `pool` (a borrow into it) outlives the
-    // `inputreq::drive` future below. This is the request's OWN snapshot pool (K1); the live re-read
+    // `inputreq::drive` future below. This is the request's OWN snapshot pool; the live re-read
     // for the dispatch loop already happened at the re-validation site above.
     let bound_rt = super::runtime_of(&ctx.host);
     let pool = bound_rt.pool.as_ref();

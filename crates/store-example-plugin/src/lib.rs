@@ -218,6 +218,10 @@ impl FileStore {
 /// and never renamed or removed, so a lock on it is stable across the whole RMW. It shares the
 /// data file's holding directory but has a name that cannot collide with `durable::write`'s temps
 /// (`.<name>.<pid>-<seq>.tmp`).
+// Only the `#[cfg(unix)]` advisory-lock path calls this; on Windows the whole function is unused, and
+// `-D warnings` turns that dead code into a hard error. It computes the lock file's path, which is a
+// unix-only concept here, so gate the function to match its sole caller.
+#[cfg(unix)]
 fn lock_path_for(path: &std::path::Path) -> PathBuf {
     let name = path
         .file_name()

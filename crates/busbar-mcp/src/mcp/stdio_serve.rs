@@ -244,13 +244,7 @@ pub async fn serve_stdio(handle: Arc<AppHandle>, host_factory: EngineHostFactory
         governed = identity.gov.is_governed(),
         "mcp stdio serve: session bound; serving on stdin/stdout"
     );
-    serve_io(
-        handle,
-        identity,
-        tokio::io::stdin(),
-        tokio::io::stdout(),
-    )
-    .await;
+    serve_io(handle, identity, tokio::io::stdin(), tokio::io::stdout()).await;
     0
 }
 
@@ -273,11 +267,7 @@ pub(crate) async fn serve_io<R, W>(
 /// Construct one live session (and start its watchers). Split from [`run_session`] so the
 /// in-process battery can hold the session while driving the loop — nothing but tests and
 /// [`serve_io`] call either.
-fn new_session<W>(
-    handle: Arc<AppHandle>,
-    identity: SessionIdentity,
-    writer: W,
-) -> Arc<Session<W>>
+fn new_session<W>(handle: Arc<AppHandle>, identity: SessionIdentity, writer: W) -> Arc<Session<W>>
 where
     W: AsyncWrite + Unpin + Send + 'static,
 {
@@ -1030,19 +1020,17 @@ impl<W: AsyncWrite + Unpin + Send + 'static> Session<W> {
     fn spawn_resource_watch(self: &Arc<Self>) {
         let session = self.clone();
         let handle = tokio::spawn(async move {
-            let mut generation =
-                super::runtime_of(&busbar_core::plane_host::engine_host_from_handle(
-                    &session.handle,
-                ))
-                .catalogue
-                .generation();
+            let mut generation = super::runtime_of(
+                &busbar_core::plane_host::engine_host_from_handle(&session.handle),
+            )
+            .catalogue
+            .generation();
             loop {
                 tokio::time::sleep(WATCH_INTERVAL).await;
-                // MINT A LIVE-CAPABLE HOST for THIS tick (one `handle.load()`, K2), and read both the
+                // MINT A LIVE-CAPABLE HOST for THIS tick (one `handle.load()`, a live re-read), and read both the
                 // generation gate and every fingerprint below off its BOUND snapshot — so all observe
                 // the SAME tick snapshot, byte-identical to the former single `handle.load()` per tick.
-                let tick_host =
-                    busbar_core::plane_host::engine_host_from_handle(&session.handle);
+                let tick_host = busbar_core::plane_host::engine_host_from_handle(&session.handle);
                 let live = super::runtime_of(&tick_host).catalogue.generation();
                 // The generation compare is the cheap gate on the WALK, exactly as it is for
                 // `subscriptions/listen`; the baselines were written at subscribe time, so an
@@ -1095,7 +1083,7 @@ impl<W: AsyncWrite + Unpin + Send + 'static> Session<W> {
         host: &Arc<dyn busbar_substrate::plane_host::EngineHost>,
         uri: &str,
     ) -> Option<u64> {
-        // BOUND reads (K1) off the caller's host — for the frame path the frame snapshot, for the
+        // BOUND reads off the caller's host — for the frame path the frame snapshot, for the
         // watch tick the tick snapshot; either way the SAME snapshot its caller already loaded.
         let rt = super::runtime_of(host);
         let caller = busbar_substrate::catalogue::Caller {

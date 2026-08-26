@@ -146,60 +146,55 @@ impl PoolRoute {
             };
         };
 
-        // BOUND runtime (K1): this route is built under one admitted request's snapshot; the live
+        // BOUND runtime: this route is built under one admitted request's snapshot; the live
         // re-read for the dispatch loop already happened at the `method.rs` re-validation site. Bound
         // once and reused for every read below.
         let rt = super::runtime_of(host);
         let sightings = rt.sightings.load();
         let live = super::client::catalogue::LiveSightings::of(&sightings);
-        let generation = busbar_substrate::trust::validate::Generations::at_admission(
-            rt.catalogue.generation(),
-        );
+        let generation =
+            busbar_substrate::trust::validate::Generations::at_admission(rt.catalogue.generation());
         let now = host.clock_now_secs();
         let mut selected_auth = Some(selected_auth);
         let mut tried = Vec::new();
-        let members: Vec<RouteMember> =
-            members
-                .iter()
-                .enumerate()
-                .map(|(lane, member)| {
-                    if member == &selected.server {
-                        return RouteMember {
-                            name: member.clone(),
-                            lane,
-                            pin: selected.schema_hash.clone(),
-                            auth: selected_auth.take(),
-                        };
-                    }
-                    // THE TWIN'S OWN ADMISSION, in full: the caller's grant on the twin's published
-                    // name, the twin's live trust state, the twin's credential plan and the argument
-                    // guard against the twin's approved schema. A twin this caller may not reach is
-                    // skipped — busbar never widens a grant because an operator declared a pool.
-                    let entry = rt
-                        .catalogue
-                        .tool_on(member, &selected.tool)
-                        .and_then(|e| {
-                            rt.catalogue
-                                .resolve(principal, live, &e.namespaced, generation, now)
-                                .ok()
-                        });
-                    let pin = entry.and_then(|e| e.schema_hash.clone());
-                    let auth = entry.and_then(|e| {
-                        rt.catalogue.server(member).and_then(|s| {
-                            super::upstream::authorise(s, e, arguments, principal).ok()
-                        })
-                    });
-                    if auth.is_none() {
-                        tried.push(lane);
-                    }
-                    RouteMember {
+        let members: Vec<RouteMember> = members
+            .iter()
+            .enumerate()
+            .map(|(lane, member)| {
+                if member == &selected.server {
+                    return RouteMember {
                         name: member.clone(),
                         lane,
-                        pin,
-                        auth,
-                    }
-                })
-                .collect();
+                        pin: selected.schema_hash.clone(),
+                        auth: selected_auth.take(),
+                    };
+                }
+                // THE TWIN'S OWN ADMISSION, in full: the caller's grant on the twin's published
+                // name, the twin's live trust state, the twin's credential plan and the argument
+                // guard against the twin's approved schema. A twin this caller may not reach is
+                // skipped — busbar never widens a grant because an operator declared a pool.
+                let entry = rt.catalogue.tool_on(member, &selected.tool).and_then(|e| {
+                    rt.catalogue
+                        .resolve(principal, live, &e.namespaced, generation, now)
+                        .ok()
+                });
+                let pin = entry.and_then(|e| e.schema_hash.clone());
+                let auth = entry.and_then(|e| {
+                    rt.catalogue
+                        .server(member)
+                        .and_then(|s| super::upstream::authorise(s, e, arguments, principal).ok())
+                });
+                if auth.is_none() {
+                    tried.push(lane);
+                }
+                RouteMember {
+                    name: member.clone(),
+                    lane,
+                    pin,
+                    auth,
+                }
+            })
+            .collect();
 
         PoolRoute {
             pool_key: busbar_substrate::store::tool_key(&pool_name),

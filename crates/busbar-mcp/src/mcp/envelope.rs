@@ -240,7 +240,7 @@ impl busbar_core::ingress::protocol::ResourceMetadata for McpWords {
 /// auth middleware bypasses the chain and hands this handler no resolved identity — matching the old
 /// open handler, which took only `CurrentApp`.
 pub(crate) async fn metadata_route(ctx: busbar_substrate::plane_routes::PlaneReqCtx) -> Response {
-    // The RFC 9728 facts, read off the neutral host seam (K1, BOUND) rather than a `handle.load()`.
+    // The RFC 9728 facts, read off the neutral host seam (BOUND) rather than a `handle.load()`.
     // Inlined here rather than through `McpWords::document(&App)` because that method is the
     // core-owned `ResourceMetadata` trait's, still `&App`-typed (a documented carry-over pending the
     // ingress batch); this two-line body is exactly what it renders.
@@ -318,7 +318,7 @@ pub(crate) async fn rpc(ctx: busbar_substrate::plane_routes::PlaneReqCtx) -> Res
     let headers = ctx.headers;
     let body = ctx.body;
     // The resource is present whenever this route is mounted — the mount is what creates it. Read off
-    // the neutral host seam (K1, BOUND), owned so it outlives the `serve` borrow. The `Option`
+    // the neutral host seam (BOUND), owned so it outlives the `serve` borrow. The `Option`
     // survives only so a future refactor that mounts the route without the config produces a clean
     // refusal instead of a panic on a request path; `serve` answers it as `PlaneAbsent`.
     let resource = super::resource_of(&host);
@@ -361,10 +361,7 @@ pub(crate) async fn rpc(ctx: busbar_substrate::plane_routes::PlaneReqCtx) -> Res
             }
         },
         |value, id, method| async move {
-            rpc_dispatch(
-                &handle, &host, &gov, &principal, headers, value, id, method,
-            )
-            .await
+            rpc_dispatch(&handle, &host, &gov, &principal, headers, value, id, method).await
         },
     )
     .await
