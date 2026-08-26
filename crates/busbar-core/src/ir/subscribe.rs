@@ -33,33 +33,11 @@
 //! carries an OPTIONAL record rather than pretending every peer returns one, so a cell never has to
 //! invent a body its own wire does not have.
 
-use serde_json::Value;
-
-/// WHICH WAY THE REGISTRATION MOVES. Not a boolean: `subscribe: false` reads as "this is not a
-/// subscription" at every call site, which is the opposite of what it would mean.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SubscribeIntent {
-    /// Start being told about the named target.
-    Register,
-    /// Stop being told about it.
-    Deregister,
-}
-
-/// A REQUEST TO START OR STOP FOLLOWING ONE NAMED TARGET. The request half of the `Subscribe`
-/// operation.
-#[derive(Debug, Clone, PartialEq)]
-pub struct SubscribeReq {
-    /// Whether this registers or deregisters.
-    pub intent: SubscribeIntent,
-    /// THE THING BEING FOLLOWED, in the caller's vocabulary. A resource URI on MCP. Carried as an
-    /// opaque string and never parsed here: deciding whether a caller may follow this target is an
-    /// admission question answered against the catalogue, and a codec that started interpreting the
-    /// name would be a second place that opinion lives.
-    pub target: String,
-    /// Unmodelled request members, kept keyed so a cross-protocol hop cannot leak a source-only key
-    /// into a foreign dialect. Same discipline as every other operation's `extra`.
-    pub extra: crate::lossless::SourceScopedExtra,
-}
+// THE PURE DATA (`SubscribeIntent`/`SubscribeReq`/`SubscribeResp`) RELOCATED to `busbar-substrate`
+// (the neutral cross-plane IR leaf a plane crate names directly). Core re-exports them from this
+// historical path and keeps the family-blind `IrFacts` projection below — the seam the shared
+// pipeline reads a request through, which names core-owned engine types and so stays here.
+pub use busbar_substrate::ir::subscribe::{SubscribeIntent, SubscribeReq, SubscribeResp};
 
 /// THE SUBSCRIBE FAMILY'S WALK — this IR's answer to [`crate::ir::facts::IrFacts`]. The one
 /// caller-authored thing on the operation is the `target` name (a resource URI on MCP), forwarded
@@ -99,17 +77,6 @@ impl crate::ir::facts::IrFacts for SubscribeReq {
             text: std::borrow::Cow::Borrowed(self.target.as_str()),
         }]
     }
-}
-
-/// WHAT A SUBSCRIPTION REQUEST PRODUCED. The response half.
-#[derive(Debug, Clone, PartialEq)]
-pub struct SubscribeResp {
-    /// The registration record the peer returned, when its wire returns one. `None` is the honest
-    /// answer for a protocol whose acknowledgement is empty, and it is deliberately distinct from
-    /// `Some({})`: one says the peer returns no record, the other says it returned an empty one.
-    pub registration: Option<Value>,
-    /// Unmodelled response members, source-keyed for the same reason as the request's.
-    pub extra: crate::lossless::SourceScopedExtra,
 }
 
 #[cfg(test)]

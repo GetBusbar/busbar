@@ -31,8 +31,13 @@ pub mod ingress {
 }
 pub mod breaker;
 pub mod duration;
+// The neutral cross-plane IR leaves (`Invoke`/`Subscribe` request/response data) and the wire/egress
+// value types (`WireBody`/`EgressCtx`). Pure value families a plane crate names directly; core keeps
+// the `IrFacts` projection + the `IrHandle` wrappers and re-exports these types from their old paths.
 pub mod egress;
+pub mod ir;
 pub mod plane;
+pub mod wire;
 // D1: the NEUTRAL HOST SEAM — the `EngineHost` trait a plane calls to reach engine host capabilities
 // without naming a core type, plus the relocated lifecycle-scope arena (`DispatchScope` et al.) those
 // capabilities register handles into. Core implements `EngineHost` over its live `App` and re-exports

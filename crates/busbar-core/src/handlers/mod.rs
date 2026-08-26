@@ -126,32 +126,10 @@ pub fn path_of(paths: &'static [(Operation, &'static str)], op: Operation) -> Op
         .map(|(_, path)| *path)
 }
 
-/// A serialized wire body plus the content-type the OperationHandler chose for it. The engine relays both without
-/// interpreting either — `application/json` for JSON ops, `audio/mpeg` etc. for a binary op like speech.
-pub struct WireBody {
-    pub bytes: Bytes,
-    pub content_type: axum::http::HeaderValue,
-}
-
-impl WireBody {
-    /// JSON body — the common case.
-    pub fn json(bytes: Bytes) -> Self {
-        Self {
-            bytes,
-            content_type: axum::http::HeaderValue::from_static(crate::proxy::APPLICATION_JSON),
-        }
-    }
-    /// A body with an explicit content-type (e.g. audio speech). Falls back to octet-stream if the
-    /// content-type string is not a valid header value.
-    pub fn typed(bytes: Bytes, content_type: &str) -> Self {
-        let content_type = axum::http::HeaderValue::from_str(content_type)
-            .unwrap_or_else(|_| axum::http::HeaderValue::from_static("application/octet-stream"));
-        Self {
-            bytes,
-            content_type,
-        }
-    }
-}
+// `WireBody` (a serialized wire body + its content-type) RELOCATED to `busbar-substrate` as a
+// neutral wire value type a plane crate names directly; re-exported here so core's call sites and the
+// `busbar-llm` handlers that name `busbar_core::handlers::WireBody` are unchanged.
+pub use busbar_substrate::wire::WireBody;
 
 /// A request that could not be parsed into this operation's IR — rendered as a caller-dialect 4xx
 /// (via the existing `proxy::ingress_error`). `UnsupportedSubOp` is the second 404 site
@@ -168,25 +146,11 @@ pub enum CodecError {
     Malformed(String),
 }
 
-/// What routing hands a `RequestHandler` so it can render the upstream URL path. RESOLVED PRIMITIVES
-/// ONLY — never the `Lane` or a config handle: a codec/handler touching routing state is exactly the
-/// coupling this fixes. Grows a field (region, api-version, …) when a protocol needs more; the trait
-/// signature does not. Routing populates it from the lane and applies any `lane.path` override itself.
-pub struct EgressCtx<'a> {
-    /// Which operation's endpoint to render — the template selector.
-    pub operation: Operation,
-    /// The resolved wire model id (routing calls `Lane::wire_model()`), for URL-model protocols
-    /// (Gemini `models/{model}:…`, Bedrock `model/{model}/invoke`).
-    pub model: &'a str,
-    /// Whether the caller asked to stream (chat/audio path variants); `false` for the JSON ops.
-    pub stream: bool,
-    /// Optional per-provider path-BASE override (the lane's `path_base`). For URL-model protocols
-    /// (Gemini) it replaces the protocol's hardcoded base segment (e.g. `/v1beta/models`) so a
-    /// provider can be pointed at a different layout — e.g. Vertex AI's
-    /// `/v1/projects/{p}/locations/{l}/publishers/google/models`. `None` uses the protocol default.
-    /// Distinct from the full-path `path` override, which is static and ignores the per-request model.
-    pub path_base: Option<&'a str>,
-}
+// `EgressCtx` (the resolved-primitives egress context routing hands a `RequestHandler`) RELOCATED to
+// `busbar-substrate` as a neutral egress value type a plane crate names directly; re-exported here so
+// core's call sites and the `busbar-llm` handlers that name `busbar_core::handlers::EgressCtx` are
+// unchanged.
+pub use busbar_substrate::wire::EgressCtx;
 
 /// A pure per-(protocol × operation) codec. Feed it wire, assert the IR; feed it IR, assert the wire.
 /// That is the entire contract — the load-bearing discipline that makes the matrix scale. It knows

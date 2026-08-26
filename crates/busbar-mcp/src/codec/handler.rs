@@ -94,7 +94,7 @@ impl RequestHandler for McpRequestHandler {
         busbar_core::handlers::cell_of(CELLS, op)
     }
 
-    fn upstream_path(&self, _ctx: &busbar_core::handlers::EgressCtx) -> String {
+    fn upstream_path(&self, _ctx: &busbar_substrate::wire::EgressCtx) -> String {
         PATH_MCP.into()
     }
 
