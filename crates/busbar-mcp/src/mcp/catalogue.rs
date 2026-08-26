@@ -611,7 +611,7 @@ impl Catalogue {
     /// THE GRANT-SCOPED TOOL CATALOGUE for one caller.
     ///
     /// The WALK is [`busbar_substrate::catalogue::visible`] — core's, shared with every other plane — and the
-    /// entitlement decision inside it is [`busbar_core::trust::validate`]'s, so what a caller may see is
+    /// entitlement decision inside it is [`busbar_substrate::trust::validate`]'s, so what a caller may see is
     /// decided by one mechanism asking one gate. The two-grant rule this plane contributes is in
     /// `<ToolEntry as CatalogueItem>::required_grants`, once, for all four entry types.
     pub(crate) fn tools_for(&self, caller: &Caller<'_>) -> Vec<&ToolEntry> {
@@ -1164,7 +1164,7 @@ mod trust_gate_tests;
 //
 // Core ([`busbar_substrate::catalogue`]) owns the walk, the fail-closed floor, the order in which entitlement
 // and fitness are applied and the rule that nothing is rendered before it is entitled. The ordered
-// gate ([`busbar_core::trust::validate`]) owns the entitlement decision itself. Everything below is what
+// gate ([`busbar_substrate::trust::validate`]) owns the entitlement decision itself. Everything below is what
 // THIS PLANE contributes, and it is deliberately nothing but declarations: which grants an entry
 // requires, which question this catalogue is asking, what a refusal is called here, and how an entry
 // is written onto the MCP wire.

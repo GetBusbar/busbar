@@ -148,7 +148,7 @@ pub(crate) enum SetupRefusal {
     Argument(String),
     /// THE ORDERED VALIDATOR REFUSED. Carried whole rather than flattened to a string, because its
     /// arms are four different operator remedies and its `reason()` is already an audit word — see
-    /// `busbar_core::trust::validate`, whose header is explicit that collapsing them is the cheap
+    /// `busbar_substrate::trust::validate`, whose header is explicit that collapsing them is the cheap
     /// unification and the wrong one.
     ///
     /// Reached only by [`authorise_verb`]. A `tools/call` meets the same validator one layer up, in

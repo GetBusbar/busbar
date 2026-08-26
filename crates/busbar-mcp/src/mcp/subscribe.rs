@@ -66,7 +66,7 @@
 //!
 //! A subscription is a decision made at open and trusted while open, so the question that matters is
 //! what is re-asked per poll. All of it: the CATALOGUE is re-read from the live handle, and the
-//! PRINCIPAL is RE-RESOLVED from the live registry by id through [`busbar_core::trust::validate::Standing`].
+//! PRINCIPAL is RE-RESOLVED from the live registry by id through [`busbar_substrate::trust::validate::Standing`].
 //!
 //! Holding the resolved key instead would have been the natural shape and it is the defect this
 //! guards: a `PlaneRequestCtx` cloned into the stream carries an `Arc<VirtualKey>` resolved at ingress, so an
@@ -309,7 +309,7 @@ struct Listen {
     host: std::sync::Arc<dyn busbar_substrate::plane_host::EngineHost>,
     /// THE PRINCIPAL'S ID AND THE BOUND, never the principal. See the module header: a resolved key
     /// carried into a `'static` stream is an identity believed for five minutes.
-    standing: busbar_core::trust::validate::Standing,
+    standing: busbar_substrate::trust::validate::Standing,
     accepted: SubscriptionFilter,
     meta: serde_json::Value,
     id: serde_json::Value,
@@ -332,7 +332,7 @@ struct Listen {
 /// [`busbar_api::VirtualKey::scope_allowed`] — which reads `allowed_scopes` alone and looks at
 /// neither. It would have changed nothing: those fields lived on the SAME frozen snapshot, so they
 /// reported "live" for the whole life of the stream however long ago the store row said otherwise.
-/// Only re-reading the key closes it, which is what [`busbar_core::trust::validate::Standing`] does and
+/// Only re-reading the key closes it, which is what [`busbar_substrate::trust::validate::Standing`] does and
 /// why the fix is a core primitive rather than an extra `&&` on this line.
 ///
 /// A free function rather than a method, because the caller holds `&mut` on the phase while it holds
@@ -364,8 +364,8 @@ impl Listen {
     /// One function rather than a frame written at each exit, because a stream that ends by simply
     /// closing the socket is one a client cannot tell from a dropped connection — which is the whole
     /// reason anything is written at all.
-    fn closing_frame(&self, lapsed: &busbar_core::trust::validate::Lapsed) -> String {
-        use busbar_core::trust::validate::Lapsed;
+    fn closing_frame(&self, lapsed: &busbar_substrate::trust::validate::Lapsed) -> String {
+        use busbar_substrate::trust::validate::Lapsed;
         match lapsed {
             // The revision's own "this subscription ended gracefully" answer, correlated to the
             // request that opened the stream.
@@ -591,12 +591,12 @@ pub(crate) fn listen(
         // THE ID AND THE BOUND. `MAX_LIFETIME` is handed to the standing permission as well as used
         // for the deadline below so the cap on what a poll cannot re-check and the cap on the stream
         // are provably the same number rather than two that agree today.
-        standing: busbar_core::trust::validate::Standing::opened(
+        standing: busbar_substrate::trust::validate::Standing::opened(
             ctx.gov.key(),
             // WATCHING, not pinned: a generation move is what this response exists to report, and
             // every frame it writes is re-derived from the live snapshot. Pinning it would make the
             // subscription end on the first change it was opened to hear about.
-            busbar_core::trust::validate::Snapshot::Watching,
+            busbar_substrate::trust::validate::Snapshot::Watching,
             MAX_LIFETIME,
         ),
         accepted,

@@ -468,6 +468,17 @@ pub mod declared;
 /// in core and re-exports these; see `busbar-core`'s `trust::validate`.
 pub mod validate;
 
+/// VERIFY-ON-CALL — the lazy single-flight freshness gate every plane runs on the request path.
+/// Relocated here from `busbar-core` so an extracted plane crate (busbar-mcp) can NAME it without
+/// reaching back into core; it depends only on the (already-neutral) [`reverify`] arithmetic and the
+/// substrate diagnostics. Core re-exports it so `crate::trust::verify::VerifyGate` resolves unchanged
+/// for the A2A plane.
+pub mod verify;
+
+/// The verify-on-call gate type, surfaced at the `trust` root so `busbar_substrate::trust::VerifyGate`
+/// (and, through core's glob re-export, `busbar_core::trust::VerifyGate`) both name it.
+pub use verify::VerifyGate;
+
 #[cfg(test)]
 #[path = "tests/lifecycle_tests.rs"]
 mod lifecycle_tests;

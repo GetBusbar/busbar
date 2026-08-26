@@ -549,7 +549,7 @@ pub(crate) struct Runner {
     /// it is re-read from THIS COPY, so the key being deleted, disabled or re-scoped underneath a
     /// running task is not seen at all. The sibling surface with the same shape,
     /// `subscriptions/listen`, does not have this hole: it holds a
-    /// [`busbar_core::trust::validate::Standing`] and re-resolves the principal from the live registry on
+    /// [`busbar_substrate::trust::validate::Standing`] and re-resolves the principal from the live registry on
     /// every poll.
     ///
     /// WHY THIS ONE IS BOUNDED INSTEAD, stated rather than left to be discovered: the task path's

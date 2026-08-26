@@ -711,7 +711,7 @@ pub(crate) struct McpServerDefCfg {
     /// per-server "skip if it failed last time" — every one of those would be a window an upstream
     /// could open for itself by misbehaving, and choosing when to misbehave is entirely within its
     /// gift. A LARGER value is an explicit security downgrade (a wider drift-serving window), which is
-    /// why the default is seconds rather than the old daemon's hours. See [`busbar_core::trust::verify`],
+    /// why the default is seconds rather than the old daemon's hours. See [`busbar_substrate::trust::verify`],
     /// the one gate both planes run on the call path.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) verify_ttl: Option<String>,

@@ -25,8 +25,10 @@ serde_json = { workspace = true }
 reqwest = { workspace = true }
 bytes = { workspace = true }
 # `net_guard::resolve_and_pin_async` does the ONE DNS resolution via `tokio::net::lookup_host`, so
-# the relocated guard needs tokio's `net` API (and nothing else — no runtime, macros, or timers).
-tokio = { workspace = true, features = ["net"] }
+# the relocated guard needs tokio's `net` API; the relocated verify-on-call gate (`trust::verify`)
+# single-flights its refresh through a `tokio::sync::Mutex`, so it needs `sync` too. Still no runtime,
+# macros or timers in the shipped surface.
+tokio = { workspace = true, features = ["net", "sync"] }
 # S2c: the relocated breaker classifier logs one deduped warning on an unrecognized error_map value
 # via `tracing::warn!` directly (not through the diag macros, which the expanding crate feeds). The
 # classifier is otherwise pure std + axum, so this is the family's only new edge.

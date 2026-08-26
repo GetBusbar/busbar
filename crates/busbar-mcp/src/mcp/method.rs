@@ -190,7 +190,7 @@ impl Ctx<'_> {
     /// snapshot. It replaced a grant CLOSURE, which could only carry the grant: the identity and
     /// expiry steps had nowhere to arrive, so a listing served a deleted key.
     ///
-    /// A `None` key means governance is DISABLED for this deployment. `busbar_core::trust::validate`
+    /// A `None` key means governance is DISABLED for this deployment. `busbar_substrate::trust::validate`
     /// states that posture once for the whole tree — with no key there is no grant to narrow, and
     /// refusing everything would make an ungoverned deployment unable to serve at all — so this
     /// carries the `Option` rather than restating the rule.
@@ -1090,7 +1090,7 @@ impl<'a> CallLog<'a> {
 /// VERIFY-ON-CALL for one `tools/call`: freshen the named tool's server within `verify_ttl`,
 /// single-flight, fail-closed. See the call site in [`tools_call`] for the ordering rationale.
 ///
-/// The single-flight, the freshness bound and the fail-closed ordering are [`busbar_core::trust::verify`]'s,
+/// The single-flight, the freshness bound and the fail-closed ordering are [`busbar_substrate::trust::verify`]'s,
 /// once, for every plane; what is here is this plane's FETCH — an async `tools/list` re-hash through
 /// [`crate::mcp::connect::refresh`], stamped so the freshness clock records when it looked — and this
 /// plane's ledger reader. A tool name no registration exposes is a no-op, and so is a fresh snapshot:

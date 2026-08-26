@@ -170,7 +170,7 @@ pub const PLANE_DECL: busbar_core::plane::registry::PlaneDecl =
         openapi_schemas: Some(admin_view::openapi_schemas),
         hydrate: Some(mcp_hydrate),
         // NO START HOOK. Verify-on-call is LAZY — it re-verifies on the `tools/call` path against a
-        // ≤`verify_ttl` single-flight snapshot (see `busbar_core::trust::verify`), so there is no background
+        // ≤`verify_ttl` single-flight snapshot (see `busbar_substrate::trust::verify`), so there is no background
         // sweep to spawn at boot. A server nobody calls is never fetched. The daemon this replaced is
         // gone; its removal is the whole of this plane's boot change.
         start: None,
@@ -248,12 +248,12 @@ pub(crate) struct McpRuntime {
     pub(crate) sampling_spend: std::sync::Arc<sampling::SamplingSpend>,
     /// THE MCP VERIFY-ON-CALL GATE — the per-server single-flight coalescer that re-verifies an
     /// upstream's advertised tool surface on the `tools/call` path when its recorded observation is
-    /// older than `verify_ttl` (see [`busbar_core::trust::verify`]). It is the plane's OWN coalescing
+    /// older than `verify_ttl` (see [`busbar_substrate::trust::verify`]). It is the plane's OWN coalescing
     /// state, so it lives ON the plane's runtime object (reached via `ctx.slot`) rather than as a flat
     /// `App` field. Arc-shared ACROSS config applies, like the `sightings` cache it freshens, and for
     /// the same reason: the coalescing epochs are ACCUMULATED coordination state, not intent, so
     /// [`McpRuntime::build`] carries it from `prior` rather than rebuilding it.
-    pub(crate) verify: std::sync::Arc<busbar_core::trust::VerifyGate>,
+    pub(crate) verify: std::sync::Arc<busbar_substrate::trust::VerifyGate>,
 }
 
 impl McpRuntime {
@@ -285,7 +285,7 @@ impl McpRuntime {
             // edit reset. Pruned to the live server set by [`mcp_retain_verify_gates`] after the
             // build, exactly as it was when this was the flat `App::mcp_verify` field.
             verify: prior.map_or_else(
-                std::sync::Arc::<busbar_core::trust::VerifyGate>::default,
+                std::sync::Arc::<busbar_substrate::trust::VerifyGate>::default,
                 |p| p.verify.clone(),
             ),
         }
@@ -703,7 +703,7 @@ tokio::task_local! {
 pub(crate) mod config;
 /// THE CONNECT / REFRESH PATH: fetch an upstream's LIVE tool list, re-hash it, and feed the
 /// trust lifecycle — the missing right-hand side of the rug-pull comparison. On-demand now, driven by
-/// verify-on-call ([`busbar_core::trust::verify`]) rather than a boot-time sweep.
+/// verify-on-call ([`busbar_substrate::trust::verify`]) rather than a boot-time sweep.
 pub(crate) mod connect;
 
 /// THIS REVISION'S ENVELOPE RULES. Not `ingress` any more, and the rename is the statement: the

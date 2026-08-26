@@ -26,7 +26,7 @@
 //! ## The refresh is OUR trigger
 //!
 //! An operator asks for it, or verify-on-call does when a `tools/call` finds the snapshot older than
-//! `verify_ttl` (see [`busbar_core::trust::verify`]). An upstream's own `notifications/tools/list_changed`
+//! `verify_ttl` (see [`busbar_substrate::trust::verify`]). An upstream's own `notifications/tools/list_changed`
 //! can only ever bring one forward through `client::catalogue::RefreshGate`, and its contents are
 //! never read — an attacker-controlled trigger may not choose the moment freely and may not choose
 //! the content at all.

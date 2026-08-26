@@ -7,9 +7,10 @@
 //! `crate::trust::…` unchanged through the re-exports below.
 //!
 //! What stays in core is the part that names a core type: the `GovState`-facing standing-permission
-//! primitive ([`validate::Standing`]) and the verify-on-call gate ([`verify::VerifyGate`], which
-//! drives `plane_host` and `diagnostics`). The dependency is one-directional — substrate never names
-//! either of those.
+//! primitive ([`validate::Standing`]). The verify-on-call gate ([`verify::VerifyGate`]) has since
+//! moved DOWN into substrate too — it depends only on the neutral `reverify` arithmetic and the
+//! substrate diagnostics — and is re-exported below so its in-core (A2A) call sites are unchanged. The
+//! dependency is one-directional: substrate never names a core type.
 
 // NO PRODUCTION CALLER for some of these yet (the standing-permission `Snapshot::PinnedTo` is
 // exercised only by tests until a poll-loop caller lands), landed ahead of one deliberately — the
@@ -29,16 +30,17 @@ pub use busbar_substrate::trust::*;
 // module. An explicit `mod validate` shadows the glob-imported substrate `validate` above.
 pub mod validate;
 
-// VERIFY-ON-CALL — stays in core: it drives `crate::plane_host::trust::verify_decide` and the
-// `crate::diagnostics` emit macros, neither of which is neutral. It imports the MOVED
-// `reverify::{Ledger, Policy}` through the re-export below.
-pub(crate) mod verify;
+// VERIFY-ON-CALL — relocated to substrate (it names only the neutral `reverify` arithmetic and the
+// substrate diagnostics). A thin core shim (`trust/verify.rs`) re-exports the gate so
+// `crate::trust::verify::VerifyGate` resolves unchanged for the A2A plane, and keeps the gate's own
+// plane-neutral batteries at home in core. `pub` (like the sibling `validate`/`reverify` shims) so it
+// matches the visibility of the substrate `verify` module the glob above re-exports.
+pub mod verify;
 
-/// The verify-on-call gate type, re-exported so an EXTRACTED plane crate (busbar-mcp) can NAME it —
-/// each plane now OWNS its coalescer on its own per-generation runtime object (the MCP plane folds it
-/// into `crate::mcp::McpRuntime`, reached via `ctx.slot`) rather than reading it off a flat `App`
-/// field. The module itself stays `pub(crate)` (its `Flight`/coalescing internals are not surface);
-/// only the gate type and its already-`pub` `ensure_fresh` are reachable, and `Default` builds one.
+/// The verify-on-call gate type, re-exported so an EXTRACTED plane crate (busbar-mcp) names
+/// `busbar_substrate::trust::VerifyGate` while the in-core A2A plane keeps `crate::trust::verify::
+/// VerifyGate`. Each plane OWNS its own coalescer on its per-generation runtime object (MCP folds it
+/// into `crate::mcp::McpRuntime`, reached via `ctx.slot`; A2A rides it on the `App`).
 pub use verify::VerifyGate;
 
 /// THE RE-VERIFICATION CADENCE — relocated to substrate in Phase-B B1. A thin core module (`trust/

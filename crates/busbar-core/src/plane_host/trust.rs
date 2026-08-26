@@ -268,24 +268,10 @@ unsafe fn cache_key_raw(scope: u32, ptr: *const u8, len: usize) -> Option<CacheK
     Some((scope, bytes.to_vec()))
 }
 
-/// THE ONE verify-freshness DECISION body — the compiled-in veneer the plane's
-/// [`crate::trust::verify::VerifyGate`] calls in-process AND the extern-C [`verify_decide_q`] slot
-/// funnels through, the verify analogue of [`redeem_approval`] and CLUSTER-1's
-/// [`crate::plane_host::scope::DispatchScope::settle_admission`]. Returns whether `subject` is DUE to
-/// re-verify, reproducing `crate::trust::reverify::due(.., operator_sync = false).should_check()`
-/// EXACTLY — by CALLING `reverify::due` itself, so the veneer can never drift from the arithmetic.
-/// Due (`true`) covers never-checked, ttl-elapsed (reaching the ttl is due), and clock-went-backwards
-/// (treated as due, never as permanent freshness); `false` means fresh — reuse the snapshot.
-///
-/// The host owns NO freshness cache and NO single-flight. The plane keeps its OWN ledger, its
-/// coalescing (the epoch/leadership), and its async await entirely plane-side — only this pure
-/// arithmetic crosses the seam, over the plane's authoritative `last_checked_ms`.
-pub(crate) fn verify_decide(last_checked_ms: Option<u64>, ttl_ms: u64, now_ms: u64) -> bool {
-    verify_decide_due(last_checked_ms, ttl_ms, now_ms, false).should_check()
-}
-
-/// THE reverify-`due` REACH, wrapped once — the richer sibling of [`verify_decide`] that returns the
-/// full [`crate::trust::reverify::Due`] REASON rather than collapsing it to a bool. The plane's a2a
+/// THE reverify-`due` REACH, wrapped once — returns the full [`crate::trust::reverify::Due`] REASON
+/// (never a lossy bool). The compiled-in bool veneer that once collapsed it for the MCP plane is gone
+/// with that plane's `VerifyGate`, which now lives in the neutral substrate and names
+/// `reverify::due` directly; what remains funnels through here. The plane's a2a
 /// re-verify job (`crate::a2a::verify::reverify_once`) and the operator `sync` verb
 /// (`crate::a2a::verbs::sync`) funnel through here, so the a2a plane never reaches
 /// `crate::trust::reverify::due` itself post-extraction — only this host veneer does. `operator_sync`
@@ -843,35 +829,6 @@ mod tests {
         (Some(5_000), 1_000, 9_000, true),  // ttl elapsed → due
         (Some(5_000), 1_000, 4_000, true),  // clock went backwards → due
     ];
-
-    /// THE VERIFY FAITHFULNESS PROOF: the compiled-in [`verify_decide`] body reproduces the plane's
-    /// `reverify::due(..).should_check()` EXACTLY across every boundary case — by construction (it
-    /// CALLS `reverify::due`), pinned here so a future refactor that inlines the arithmetic cannot
-    /// drift from it. The trust-verify analogue of the breaker's `classify_reproduces_normalize_raw_error`.
-    #[test]
-    fn verify_decide_reproduces_reverify_due() {
-        use crate::trust::reverify::{due, Ledger, Policy};
-        for &(last, ttl_ms, now, want) in DUE_CASES {
-            let ledger = Ledger {
-                last_checked_ms: last,
-                ..Ledger::default()
-            };
-            let policy = Policy {
-                ttl_ms,
-                recovery_backoff_ms: 0,
-            };
-            assert_eq!(
-                verify_decide(last, ttl_ms, now),
-                due(&ledger, &policy, now, false).should_check(),
-                "verify_decide must equal reverify::due for last={last:?} now={now}"
-            );
-            assert_eq!(
-                verify_decide(last, ttl_ms, now),
-                want,
-                "verify_decide expected {want} for last={last:?} ttl={ttl_ms} now={now}"
-            );
-        }
-    }
 
     /// THE EXTERN-C SLOT marshals the FULL `reverify::Due` REASON onto its neutral `VerifyDecision`
     /// mirror (`Fresh` for reuse; the specific `NeverChecked`/`TtlExpired`/`ClockWentBackwards` reason

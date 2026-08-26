@@ -70,8 +70,9 @@ pub fn build_plane_host_vtable() -> PlaneHostVtable {
         entitlement_check: Some(super::dispatch::entitlement_check),
         gate_scan: Some(super::dispatch::gate_scan),
         // ── The stateless verify-freshness DECISION + expiry-carrying approval redemption (verify/
-        //    approval faithfulness). `verify_decide` funnels to the SAME `trust::verify_decide` body
-        //    the plane's `VerifyGate` calls in-process, so the two veneers cannot diverge. ──────────
+        //    approval faithfulness). The `verify_decide` slot funnels to `trust::verify_decide_q`,
+        //    which shares the `trust::verify_decide_due` body with the a2a plane; the MCP plane's own
+        //    `VerifyGate` now lives in the neutral substrate and names `reverify::due` directly. ─────
         verify_decide: Some(trust::verify_decide_q),
         approval_redeem_q: Some(trust::approval_redeem_q),
         // ── The byte-duplex PIPE tier (CLUSTER-3 egress): raw-connection / subprocess byte channels,
