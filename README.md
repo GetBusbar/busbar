@@ -12,6 +12,7 @@
 
 <p align="center">
 <a href="https://github.com/GetBusbar/busbar/actions/workflows/ci.yml"><img src="https://github.com/GetBusbar/busbar/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+<a href="https://codecov.io/gh/GetBusbar/busbar"><img src="https://codecov.io/gh/GetBusbar/busbar/branch/main/graph/badge.svg" alt="Coverage"></a>
 <a href="https://github.com/GetBusbar/busbar/releases"><img src="https://img.shields.io/github/v/release/GetBusbar/busbar?include_prereleases" alt="Release"></a>
 <a href="https://hub.docker.com/r/getbusbar/busbar"><img src="https://img.shields.io/docker/image-size/getbusbar/busbar?sort=semver&label=image" alt="Image size"></a>
 <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License: Apache 2.0"></a>
