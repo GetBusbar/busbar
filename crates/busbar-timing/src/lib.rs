@@ -425,66 +425,8 @@ mod imp {
     }
 
     #[cfg(test)]
-    mod tests {
-        use super::*;
-
-        #[test]
-        fn bucket_monotonic_and_percentiles_separate_scales() {
-            let mut s = MethodStat::default();
-            // 1000 samples near 500ns, 1 sample near 25us.
-            for _ in 0..1000 {
-                s.record(500);
-            }
-            s.record(25_000);
-            assert_eq!(s.count, 1001);
-            // p50 sits in the ~500ns band (bucket floor 256), p99 also (only 1/1001 is the outlier),
-            // and max captures the 25us outlier exactly.
-            assert!(s.percentile(0.50) <= 512, "p50 {}", s.percentile(0.50));
-            assert_eq!(s.max_ns, 25_000);
-            assert_eq!(s.min_ns, 500);
-        }
-
-        #[test]
-        fn bucket_of_is_log2() {
-            assert_eq!(bucket_of(0), 0);
-            assert_eq!(bucket_of(1), 1);
-            assert_eq!(bucket_of(2), 2);
-            assert_eq!(bucket_of(3), 2);
-            assert_eq!(bucket_of(4), 3);
-            assert_eq!(bucket_of(1023), 10);
-            assert_eq!(bucket_of(1024), 11);
-        }
-
-        #[test]
-        fn merge_sums_counts_and_extents() {
-            let mut a = MethodStat::default();
-            a.record(100);
-            a.record(300);
-            let mut b = MethodStat::default();
-            b.record(50);
-            b.record(9000);
-            a.merge(&b);
-            assert_eq!(a.count, 4);
-            assert_eq!(a.total_ns, 100 + 300 + 50 + 9000);
-            assert_eq!(a.min_ns, 50);
-            assert_eq!(a.max_ns, 9000);
-        }
-
-        #[test]
-        fn scoped_record_and_reset_are_thread_local() {
-            set_enabled(true);
-            reset();
-            record("m_a", 1234);
-            record("m_a", 2345);
-            record("m_b", 10);
-            let snap = LOCAL.with(|a| a.lock().unwrap().clone());
-            assert_eq!(snap.get("m_a").unwrap().count, 2);
-            assert_eq!(snap.get("m_b").unwrap().count, 1);
-            reset();
-            let snap2 = LOCAL.with(|a| a.lock().unwrap().clone());
-            assert!(snap2.is_empty());
-        }
-    }
+    #[path = "tests/imp_tests.rs"]
+    mod tests;
 }
 
 /// Feature-ON test/embedding hook to force the runtime gate. Absent (and unreferenced) when the
@@ -496,66 +438,5 @@ pub use imp::set_enabled;
 // ZERO-COST-WHEN-OFF PROOF (always compiled — this is the default build).
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 #[cfg(all(test, not(feature = "timing")))]
-mod zero_cost_when_off {
-    //! Method: this test crate is built in the DEFAULT (feature-off) configuration. The proof has
-    //! two legs, both machine-checked here:
-    //!   1. `Timer` is a ZERO-SIZED TYPE: `size_of::<Timer>() == 0`. A ZST guard with an empty
-    //!      `Drop` occupies no stack and its drop lowers to nothing.
-    //!   2. The `timeit!` macro expands to `()`. `instrumented()` and `bare()` below are identical
-    //!      byte-for-byte except for the `timeit!` line; because that line IS `()`, the two functions
-    //!      have the same value and (being `#[inline(never)]`) the same emitted body. The
-    //!      `assert_eq!` fixes the observable-equivalence half; the codegen-equivalence half is the
-    //!      documented `cargo asm` check in the crate report.
-    use super::*;
-
-    #[inline(never)]
-    fn instrumented(x: u64) -> u64 {
-        let _t = timeit!("zc_probe");
-        x.wrapping_mul(2654435761).rotate_left(13)
-    }
-
-    #[inline(never)]
-    fn bare(x: u64) -> u64 {
-        x.wrapping_mul(2654435761).rotate_left(13)
-    }
-
-    #[test]
-    fn timer_off_is_zero_sized() {
-        assert_eq!(
-            core::mem::size_of::<Timer>(),
-            0,
-            "feature-off Timer must be a ZST"
-        );
-    }
-
-    #[test]
-    fn timeit_off_expands_to_unit() {
-        // Binding `timeit!(..)` yields `()` — the macro produced a unit value, not a guard.
-        let t: () = timeit!("expands_to_unit");
-        assert_eq!(t, ());
-    }
-
-    #[test]
-    fn instrumented_matches_bare() {
-        for x in [0u64, 1, 42, u64::MAX, 1 << 40] {
-            assert_eq!(
-                instrumented(x),
-                bare(x),
-                "instrumentation changed the result"
-            );
-        }
-    }
-
-    #[test]
-    fn off_entry_points_are_noops() {
-        // These compile and do nothing; the point is they exist with the same signatures as the
-        // feature-on build so call sites are source-identical across the feature.
-        record("noop", 123);
-        let v = scope("noop", || 7);
-        assert_eq!(v, 7);
-        dump();
-        dump_scoped();
-        reset();
-        assert!(!enabled());
-    }
-}
+#[path = "tests/zero_cost_when_off_tests.rs"]
+mod zero_cost_when_off;
