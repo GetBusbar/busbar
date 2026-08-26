@@ -854,3 +854,44 @@ jobs:
             -H "Content-Type: application/json" -d '{"model":"test-model","messages":[{"role":"user","content":"hi"}]}')
           echo "$CHAT" | grep -q "ci-tokenx-marker" || { echo "chat via issued key failed: $CHAT" >&2; exit 1; }
           echo "OK: ${{ inputs.plugin_crate }} — POST /auth/token issued a working self-scoped key that drove a real chat-completion"
+
+  # ── Coverage (NON-GATING): upload this plugin's llvm-cov to Codecov. A SEPARATE job with
+  # `continue-on-error: true` so a coverage/build hiccup can NEVER affect the gating
+  # `build-test-signoff` job or any required check — it can only ever leave THIS job amber. Runs on
+  # push only (not every PR) to bound cost. Uses the org-level CODECOV_TOKEN, which the caller hands
+  # over via `secrets: inherit`; the slug is the calling plugin repo (`github.repository`). Mirrors
+  # busbar core's own coverage job (--ignore-run-fail: this REPORTS coverage, the matrix job is the
+  # real test gate).
+  coverage:
+    name: coverage (llvm-cov · codecov)
+    if: github.event_name == 'push'
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout the plugin
+        uses: actions/checkout@v7
+        with:
+          path: plugin
+      - name: Checkout busbar (sibling path dependency)
+        uses: actions/checkout@v7
+        with:
+          repository: GetBusbar/busbar
+          ref: ${{ inputs.busbar_ref }}
+          path: busbarAI
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: plugin
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      - name: Collect coverage (report only, not a re-gate)
+        working-directory: plugin
+        run: cargo llvm-cov --workspace --ignore-run-fail --lcov --output-path lcov.info
+      - name: Upload to Codecov (never fails the build)
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: plugin/lcov.info
+          slug: ${{ github.repository }}
+          fail_ci_if_error: false
