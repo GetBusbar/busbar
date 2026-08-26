@@ -66,10 +66,10 @@
 //!   argument, so the rule does not transfer and is not applied.
 
 use super::ssrf::SsrfPolicy;
-use busbar_core::config_validate::{
-    extract_normalized_host, host_is_private_or_loopback, scheme_is, ssrf_blocked_host,
+use busbar_substrate::net_guard::{
+    extract_normalized_host, host_is_private_or_loopback, is_alternate_ipv4_encoding, scheme_is,
+    ssrf_blocked_host,
 };
-use busbar_substrate::net_guard::is_alternate_ipv4_encoding;
 use serde_json::Value;
 
 /// How deep into the ARGUMENT value the walk goes before refusing. Arguments arrive as already

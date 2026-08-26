@@ -64,18 +64,11 @@ pub(crate) type PathIngress = fn(
     Box<dyn std::future::Future<Output = axum::response::Response> + Send>,
 >;
 
-/// WHICH INBOUND AUTH SCHEME a protocol's clients present. DECLARED metadata, never a branch: the
-/// verification itself stays in the auth layer, which has the governance key lookup and the shared
-/// signing helpers. This replaces `ProtocolReader::uses_sigv4_ingress_auth()`, which was the same
-/// fact answered through a vtable — and answering it through a vtable meant allocating a reader to
-/// ask a `&'static` question.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum IngressAuth {
-    /// A bearer token / API key in a header (every protocol but Bedrock).
-    Bearer,
-    /// An AWS SigV4 request signature (Bedrock's ingress shape).
-    SigV4,
-}
+// WHICH INBOUND AUTH SCHEME a protocol's clients present. DECLARED metadata, never a branch: the
+// verification itself stays in the auth layer. Relocated to the neutral `busbar_substrate::proto`
+// leaf (Batch A) so `busbar-mcp` names it without depending on `busbar-core`; re-exported here so
+// `registry::IngressAuth`, the `ProtocolDecl` field, and every plugin caller are unchanged.
+pub use busbar_substrate::proto::IngressAuth;
 
 /// EVERYTHING CORE KNOWS ABOUT A PROTOCOL, declared once by the protocol itself.
 ///

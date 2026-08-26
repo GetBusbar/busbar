@@ -818,6 +818,460 @@ pub fn refuse_oversized_body(
     Ok(())
 }
 
+// ── SSRF host guards relocated from `busbar_core::config_validate` (Batch A). These pure-std
+//    string/address predicates are the config-side siblings of the IP predicates above; they were
+//    moved DOWN into this neutral leaf so `busbar-mcp` reaches them without depending on
+//    `busbar-core`. `busbar_core::config_validate` re-exports them so every in-core caller is
+//    unchanged. Behavior is byte-identical to the pre-move definitions.
+
+pub fn scheme_is(url: &str, scheme: &str) -> bool {
+    url.split_once("://")
+        .is_some_and(|(s, _)| s.eq_ignore_ascii_case(scheme))
+}
+
+/// Strip an `http`/`https` scheme case-insensitively, returning the authority+path remainder.
+fn strip_scheme(url: &str) -> Option<&str> {
+    let (scheme, rest) = url.split_once("://")?;
+    (scheme.eq_ignore_ascii_case("https") || scheme.eq_ignore_ascii_case("http")).then_some(rest)
+}
+
+/// Return `Some(host)` if the given `https://` URL points at an SSRF-sensitive target (loopback,
+/// link-local, RFC-1918 private, unique-local IPv6, or a known cloud metadata hostname), else
+/// `None`. The host is extracted by string slicing (no URL crate): strip the scheme, take up to the
+/// first `/`, `?`, or `#`, drop any `user@` prefix, then separate an IPv6 `[...]` literal or an
+/// `host:port` from its port. IP literals are parsed with `IpAddr` and checked against the blocked
+/// ranges; non-IP hostnames are matched case-insensitively against the metadata hostname list.
+/// Percent-decode a host string (`%XX` → byte), mirroring the RFC 3986 decoding the `url` crate
+/// applies to host components at request time. Invalid escapes (`%` not followed by two hex digits)
+/// are left verbatim so a malformed host stays malformed (it will still fail every IP/hostname check
+/// and be allowed, but it can never be SMUGGLED PAST a check by hiding a blocked literal behind an
+/// escape). Only ASCII results are surfaced as decoded bytes; non-UTF-8 decoded output falls back to
+/// the original so we never fabricate a misleading host. No new dependency — a small manual scan.
+fn percent_decode_host(host: &str) -> String {
+    let bytes = host.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hi = (bytes[i + 1] as char).to_digit(16);
+            let lo = (bytes[i + 2] as char).to_digit(16);
+            if let (Some(hi), Some(lo)) = (hi, lo) {
+                out.push((hi * 16 + lo) as u8);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    match String::from_utf8(out) {
+        Ok(s) => s,
+        // Decoded bytes are not valid UTF-8: keep the original literal rather than a lossy host.
+        Err(_) => host.to_string(),
+    }
+}
+
+pub fn extract_normalized_host(url: &str) -> Option<String> {
+    // Strip ALL ASCII tab (0x09), LF (0x0A), and CR (0x0D) characters from anywhere in the string,
+    // FIRST — before any other normalization, mirroring the WHATWG URL spec's basic parser, which
+    // removes these three bytes from the whole input as its very first step, before scheme/authority
+    // parsing even begins. reqwest's `url` crate implements this removal, so it is not merely a
+    // leading/trailing trim: a tab EMBEDDED mid-host is deleted too. Without mirroring it, a
+    // `base_url` like `"https://169.254.169\t.254/"` (a tab is a legal byte inside a YAML
+    // double-quoted scalar) is seen by this guard as the non-IP, non-metadata-matching host
+    // `169.254.169\t.254` (passes every check) while the actual connecting stack deletes the tab and
+    // connects to `169.254.169.254` — the real IMDS address. Doing this before the backslash→`/`
+    // fold matters too: a stripped tab could otherwise sit between characters that only become a
+    // delimiter after this removal (WHATWG strips tab/newline before it looks for `\`/`/` at all).
+    let url = url.replace(['\t', '\n', '\r'], "");
+    let url = url.as_str();
+    // Strip the scheme (case-insensitively — see `scheme_is`). The host extraction is
+    // scheme-agnostic; accept either prefix so an `http://` upstream is still metadata-checked.
+    let rest = strip_scheme(url)?;
+    // Normalize backslashes to forward slashes BEFORE splitting the authority. `https` is a WHATWG
+    // "special" scheme, so reqwest's `url` crate converts every `\` to `/` while parsing — meaning a
+    // `base_url` like `https://10.0.0.1\x.allowed.com` is parsed by reqwest with authority `10.0.0.1`
+    // (the `\` terminates the authority exactly as `/` would) and then CONNECTS to `10.0.0.1` /
+    // `169.254.169.254`, even though a hand-parser that split only on `['/', '?', '#']` would see the
+    // whole `10.0.0.1\x.allowed.com` as the host — an SSRF credential-relay bypass. Mirroring
+    // reqwest's `\`→`/` rewrite here makes the guard see the SAME authority boundary the connecting
+    // stack will, closing the bypass.
+    let rest = rest.replace('\\', "/");
+    // Authority is everything before the first path/query/fragment delimiter.
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or(rest.as_str());
+    // Drop any "userinfo@" prefix.
+    let host_port = authority.rsplit('@').next().unwrap_or(authority);
+
+    // Separate host from port, handling bracketed IPv6 literals (`[::1]:443`).
+    let host: &str = if let Some(after_bracket) = host_port.strip_prefix('[') {
+        // `[<ipv6>]` optionally followed by `:port`.
+        match after_bracket.split_once(']') {
+            Some((inner, _)) => inner,
+            None => after_bracket, // malformed; treat the remainder as the host
+        }
+    } else {
+        // `host` or `host:port` — split on the last colon only when the left side has no colon
+        // (a bare IPv6 without brackets would contain multiple colons; rsplit_once on a single
+        // `:` host:port is the common case).
+        match host_port.rsplit_once(':') {
+            // If the left part still contains a colon it's a bare IPv6 literal; keep the whole.
+            Some((left, _)) if !left.contains(':') => left,
+            _ => host_port,
+        }
+    };
+
+    if host.is_empty() {
+        return None;
+    }
+
+    // Percent-decode the host BEFORE returning. The guard operates on the literal config string, but
+    // the `url` crate reqwest uses percent-decodes host components per RFC 3986 at request time — so
+    // a `base_url` like `https://169%2E254%2E169%2E254/` would pass every check (not a parseable
+    // `IpAddr`, and the `%` defeats `is_alternate_ipv4_encoding`) yet resolve to the IMDS target
+    // downstream. Decoding here makes the safety property independent of URL-library details.
+    let host_decoded = percent_decode_host(host);
+
+    // Normalize a single trailing FQDN-root dot. glibc getaddrinfo treats a trailing dot as a rooted
+    // FQDN and still resolves the literal it precedes — so `169.254.169.254.` connects to exactly the
+    // IMDS target the bare form does. Without stripping, an IP-literal+dot does NOT parse as
+    // `IpAddr`, defeating every range check.
+    let host = host_decoded
+        .strip_suffix('.')
+        .unwrap_or(host_decoded.as_str());
+
+    Some(host.to_string())
+}
+
+/// True when `host` (already normalized by [`extract_normalized_host`]) is a private, loopback, or
+/// link-local target — the legitimate LOCAL-MODEL destinations (Ollama / vLLM / LM Studio on
+/// `localhost`, `127.0.0.1`, RFC-1918, or a Tailscale CGNAT address). Used to KEY THE SCHEME RULE:
+/// plaintext `http://` is permitted to these (a local model rarely terminates TLS and there is no
+/// off-box wiretap), while a PUBLIC host must use `https://` (cleartext would leak the API key on the
+/// wire). This is NOT the SSRF decision — under the metadata-denylist model these hosts are ALLOWED
+/// as upstreams; this predicate only governs whether plaintext is acceptable for the hop.
+pub fn host_is_private_or_loopback(host: &str) -> bool {
+    use std::net::IpAddr;
+
+    let host_lc = host.to_ascii_lowercase();
+    // `localhost` and the `*.localhost` TLD (RFC 6761) resolve to loopback.
+    if host_lc == "localhost"
+        || host_lc
+            .rsplit_once('.')
+            .is_some_and(|(_, tld)| tld == "localhost")
+    {
+        return true;
+    }
+    // Obfuscated IPv4 encodings that resolve to an internal address (decimal int, hex, octal, short
+    // dotted) — treat as private so they at least don't get the public-host plaintext rejection on a
+    // technicality. (They are an unusual way to spell a local model, but a connecting stack maps them
+    // to an IPv4 target all the same.)
+    if is_alternate_ipv4_encoding(host) {
+        return true;
+    }
+    match host.parse::<IpAddr>() {
+        Ok(IpAddr::V4(v4)) => {
+            v4.is_loopback()        // 127.0.0.0/8
+                || v4.is_private()  // 10/8, 172.16/12, 192.168/16
+                || v4.is_link_local() // 169.254.0.0/16
+                || v4.is_unspecified() // 0.0.0.0
+                || is_cgnat_shared_v4(&v4) // 100.64.0.0/10 (RFC 6598 CGNAT, Tailscale)
+        }
+        Ok(IpAddr::V6(v6)) => {
+            let embedded = v6.to_ipv4();
+            v6.is_loopback()        // ::1
+                || v6.is_unspecified() // ::
+                || is_unique_local_v6(&v6) // fc00::/7
+                || is_link_local_v6(&v6)   // fe80::/10
+                || embedded.is_some_and(|m| {
+                    m.is_loopback()
+                        || m.is_private()
+                        || m.is_link_local()
+                        || m.is_unspecified()
+                        || is_cgnat_shared_v4(&m)
+                })
+        }
+        Err(_) => false,
+    }
+}
+
+/// True when the already-normalized `host` (as produced by [`extract_normalized_host`]) matches any
+/// entry in `entries`, using the EXACT canonicalization the denylist block check uses for operator-
+/// supplied `blocked_metadata_hosts`. This is shared by the allow-override path so an allow entry
+/// unblocks every spelling of an IP the same way a block entry blocks every spelling:
+/// * a hostname entry matches case-insensitively, trailing dot stripped;
+/// * an IP-literal entry matches the parsed connect-host AND its IPv4-mapped/compatible-IPv6 and
+///   alternate-encoding (decimal-int / hex / octal / short-dotted) spellings.
+///
+/// Empty / whitespace-only entries never match.
+fn host_matches_any(host: &str, entries: &[String]) -> bool {
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+
+    if entries.is_empty() {
+        return false;
+    }
+
+    // Hostname / verbatim match (case-insensitive, trailing dot stripped on the entry).
+    for entry in entries {
+        let entry_norm = entry.trim().trim_end_matches('.');
+        if !entry_norm.is_empty() && entry_norm.eq_ignore_ascii_case(host) {
+            return true;
+        }
+    }
+
+    // IP-literal entries: parse each once so an entry like `169.254.169.254` also matches this host's
+    // mapped-IPv6 and alternate-encoding spellings, mirroring the block path's `extra_v4`/`extra_v6`.
+    let entry_v4: Vec<Ipv4Addr> = entries
+        .iter()
+        .filter_map(|e| e.trim().trim_end_matches('.').parse::<Ipv4Addr>().ok())
+        .collect();
+    let entry_v6: Vec<Ipv6Addr> = entries
+        .iter()
+        .filter_map(|e| e.trim().trim_end_matches('.').parse::<Ipv6Addr>().ok())
+        .collect();
+    if entry_v4.is_empty() && entry_v6.is_empty() {
+        return false;
+    }
+
+    // Alternate / obfuscated encodings of THIS host expand to a canonical v4 and re-check.
+    if let Some(expanded) = expand_alternate_ipv4(host) {
+        if entry_v4.contains(&expanded) {
+            return true;
+        }
+    }
+
+    match host.parse::<IpAddr>() {
+        Ok(IpAddr::V4(v4)) => entry_v4.contains(&v4),
+        Ok(IpAddr::V6(v6)) => {
+            let embedded = v6.to_ipv4();
+            entry_v6.contains(&v6) || embedded.is_some_and(|m| entry_v4.contains(&m))
+        }
+        Err(_) => false,
+    }
+}
+
+/// Expand an alternate (non-dotted-quad) IPv4 encoding to its canonical [`std::net::Ipv4Addr`], the
+/// way glibc getaddrinfo (reqwest's default resolver) would. Returns `None` for a canonical
+/// dotted-quad (handled by `IpAddr::parse`), a DNS name, or an out-of-range value. Used by the SSRF
+/// guard to re-check an obfuscated literal (e.g. decimal `2852039166` → `169.254.169.254`) against
+/// the metadata denylist rather than blocking ALL obfuscated forms indiscriminately.
+///
+/// Handles: a whole-host `0x`/`0X` hex or bare decimal/octal integer (interpreted as a 32-bit
+/// address); and the inet_aton "parts" forms — 1, 2, 3, or 4 dotted components where the LAST part
+/// absorbs the remaining low bytes (`a` = 32-bit; `a.b` = a<<24 | b(24-bit); `a.b.c` = a<<24 |
+/// b<<16 | c(16-bit); `a.b.c.d` = the usual quad). Each component may itself be decimal, `0x` hex, or
+/// leading-zero octal.
+pub fn expand_alternate_ipv4(host: &str) -> Option<std::net::Ipv4Addr> {
+    if host.is_empty() {
+        return None;
+    }
+
+    // Parse a single inet_aton component: `0x..`/`0X..` hex, leading-zero octal, or decimal.
+    fn parse_component(p: &str) -> Option<u64> {
+        if p.is_empty() {
+            return None;
+        }
+        if let Some(hex) = p.strip_prefix("0x").or_else(|| p.strip_prefix("0X")) {
+            if hex.is_empty() || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+                return None;
+            }
+            u64::from_str_radix(hex, 16).ok()
+        } else if p.len() > 1 && p.starts_with('0') {
+            // Leading-zero octal (e.g. `0177`). All digits must be 0-7.
+            if !p.bytes().all(|b| (b'0'..=b'7').contains(&b)) {
+                return None;
+            }
+            u64::from_str_radix(p, 8).ok()
+        } else {
+            if !p.bytes().all(|b| b.is_ascii_digit()) {
+                return None;
+            }
+            p.parse::<u64>().ok()
+        }
+    }
+
+    let parts: Vec<&str> = host.split('.').collect();
+    let vals: Vec<u64> = parts
+        .iter()
+        .map(|p| parse_component(p))
+        .collect::<Option<Vec<u64>>>()?;
+
+    // A canonical dotted-quad (4 parts, each a plain 0..=255 decimal with no hex/octal prefix) is
+    // left to `IpAddr::parse`. A component is "alternate" if it is out of u8 range OR uses a hex/octal
+    // prefix; the quad is canonical iff NO component is alternate.
+    let is_alternate_octet = |p: &&str, v: &u64| {
+        *v > 255
+            || p.starts_with("0x")
+            || p.starts_with("0X")
+            || (p.len() > 1 && p.starts_with('0'))
+    };
+    let is_canonical_quad = parts.len() == 4
+        && !parts
+            .iter()
+            .zip(&vals)
+            .any(|(p, v)| is_alternate_octet(p, v));
+    if is_canonical_quad {
+        return None;
+    }
+
+    let addr: u32 = match vals.as_slice() {
+        // `a` — the whole 32-bit address.
+        [a] => u32::try_from(*a).ok()?,
+        // `a.b` — a is the top octet, b the low 24 bits.
+        [a, b] => {
+            if *a > 0xff || *b > 0x00ff_ffff {
+                return None;
+            }
+            ((*a as u32) << 24) | (*b as u32)
+        }
+        // `a.b.c` — a, b top two octets, c the low 16 bits.
+        [a, b, c] => {
+            if *a > 0xff || *b > 0xff || *c > 0x0000_ffff {
+                return None;
+            }
+            ((*a as u32) << 24) | ((*b as u32) << 16) | (*c as u32)
+        }
+        // `a.b.c.d` — the usual quad (reached only for the alternate-encoding case, e.g. per-octet
+        // hex/octal, since a canonical quad returned above).
+        [a, b, c, d] => {
+            if *a > 0xff || *b > 0xff || *c > 0xff || *d > 0xff {
+                return None;
+            }
+            ((*a as u32) << 24) | ((*b as u32) << 16) | ((*c as u32) << 8) | (*d as u32)
+        }
+        _ => return None,
+    };
+    Some(std::net::Ipv4Addr::from(addr))
+}
+
+/// Return `Some(host)` if the given URL targets a CLOUD-METADATA endpoint that must be blocked, else
+/// `None`. This is the SSRF guard under the metadata-denylist model.
+///
+/// Threat model: a client can NEVER influence a provider `base_url` — it picks a model NAME, which
+/// maps through an operator pool to an operator-configured URL. So there is no client-driven SSRF.
+/// The ONLY real risk is an operator typo / templated-config accidentally pointing a key-bearing lane
+/// at a credential-leaking metadata service. Therefore: block a comprehensive metadata DENYLIST and
+/// ALLOW EVERYTHING ELSE — loopback, RFC-1918, CGNAT, and public are all legitimate upstreams (local
+/// Ollama/vLLM "just works" with no flag).
+///
+/// The hardcoded denylist:
+/// * link-local `169.254.0.0/16` — catches IMDS `169.254.169.254`, AWS ECS task-creds
+///   `169.254.170.2`, Tencent `169.254.0.23`, and any other link-local metadata in one range
+///   (nothing legitimate runs on link-local);
+/// * `100.100.100.200` (Alibaba Cloud ECS, inside the otherwise-allowed CGNAT /10);
+/// * `168.63.129.16` (Azure WireServer / platform);
+/// * `192.0.0.192` (Oracle Cloud / OCI IMDS — globally-routable-shaped, so it needs an explicit literal);
+/// * the EC2 IMDSv6 `fd00:ec2::254`;
+/// * the metadata hostnames in `METADATA_HOSTS`.
+///
+/// All IP entries are matched through the SAME obfuscation defenses (IPv4-mapped/compatible IPv6,
+/// decimal-int / hex / octal encoding, percent-encoded dots, trailing-dot FQDN), not just IMDS.
+///
+/// `extra_blocked` is `security.blocked_metadata_hosts` — operator additions APPENDED to the
+/// hardcoded list (the answer to an unknown cloud's metadata IP/hostname).
+///
+/// Precedence (the LOCKED one-rule matrix): a host is blocked IFF
+/// `!allow_all` AND on-denylist(hardcoded ∪ `extra_blocked`) AND NOT in `allow_overrides`.
+///
+/// * `allow_all` is `security.allow_all_metadata` — the nuclear override; when `true` the guard is
+///   fully disabled and the function always returns `None`.
+/// * `allow_overrides` is the UNION of the provider's `allow_metadata_hosts` and the global
+///   `security.allow_metadata_hosts` — a surgical carve-out. An entry is matched with the SAME
+///   canonicalization as the block check (an IP entry unblocks all its obfuscated spellings —
+///   decimal-int, IPv4-mapped/compatible IPv6, trailing-dot — mirroring how a block entry blocks
+///   all spellings; a hostname entry matches case-insensitively, trailing dot stripped). Allow
+///   always wins: a host on the denylist that ALSO appears in `allow_overrides` is permitted.
+pub fn ssrf_blocked_host(
+    url: &str,
+    allow_overrides: &[String],
+    allow_all: bool,
+    extra_blocked: &[String],
+) -> Option<String> {
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+
+    // Nuclear override: the metadata guard is disabled wholesale.
+    if allow_all {
+        return None;
+    }
+
+    let host = extract_normalized_host(url)?;
+    let host = host.as_str();
+
+    // Surgical allow-override: if THIS host matches any allow entry (with the same canonicalization
+    // the block check uses), it is permitted regardless of the denylist. Computed up front so allow
+    // unconditionally wins over every block arm below.
+    if host_matches_any(host, allow_overrides) {
+        return None;
+    }
+
+    // Cloud-metadata / IMDS hostnames (case-insensitive). The IPv4 / IPv6 metadata literals are
+    // caught in the IP arms below; these are the DNS names a connecting stack would resolve.
+    const METADATA_HOSTS: &[&str] = &[
+        "metadata.google.internal",
+        "metadata.internal",
+        "metadata.tencentyun.com",
+        "metadata.platformequinix.com",
+        "instance-data",
+        "instance-data.ec2.internal",
+    ];
+    let host_lc = host.to_ascii_lowercase();
+    if METADATA_HOSTS.contains(&host_lc.as_str()) {
+        return Some(host.to_string());
+    }
+
+    // Operator-supplied extensions to the denylist (`security.blocked_metadata_hosts`). Matched with
+    // the SAME canonicalization the allow-override path uses (hostname case-insensitive; IP literal
+    // matched against the parsed connect-host and its mapped-IPv6 / alternate-encoding spellings), so
+    // an operator who writes `10.99.99.99` also blocks `[::ffff:10.99.99.99]` and the decimal-int
+    // form. `host_matches_any` is the single shared canonicalizer for both allow and block.
+    if host_matches_any(host, extra_blocked) {
+        return Some(host.to_string());
+    }
+
+    // The hardcoded metadata IP literals.
+    // * link-local `169.254.0.0/16` (IMDS `169.254.169.254`, ECS `169.254.170.2`, Tencent
+    // `169.254.0.23`, …);
+    // * Alibaba `100.100.100.200`; Azure `168.63.129.16`; Oracle Cloud (OCI) `192.0.0.192`;
+    // EC2 IMDSv6 `fd00:ec2::254`.
+    let imds_v6 = Ipv6Addr::new(0xfd00, 0x0ec2, 0, 0, 0, 0, 0, 0x254);
+    let alibaba_v4 = Ipv4Addr::new(100, 100, 100, 200);
+    let azure_v4 = Ipv4Addr::new(168, 63, 129, 16);
+    // OCI's IMDS lives at the globally-routable-shaped `192.0.0.192` — NOT caught by link-local /
+    // private / CGNAT / unspecified, so it needs an explicit literal like Alibaba/Azure.
+    let oci_v4 = Ipv4Addr::new(192, 0, 0, 192);
+    // Predicate: is this PARSED v4 address a hardcoded metadata target? (link-local /16 + the
+    // non-link-local literals.)
+    let is_metadata_v4 = |v4: &Ipv4Addr| -> bool {
+        v4.is_link_local() || *v4 == alibaba_v4 || *v4 == azure_v4 || *v4 == oci_v4
+    };
+
+    // Alternate / non-canonical IPv4 encodings (decimal int `2852039166` = 169.254.169.254, hex,
+    // octal, short dotted) that `IpAddr::from_str` rejects but the OS resolver still maps to an IPv4
+    // target. Expand them to a canonical address and re-check against the metadata predicate, so an
+    // obfuscated metadata literal is caught while a non-metadata obfuscated form (e.g. a decimal
+    // loopback) is simply allowed (it is not a metadata target).
+    if let Some(expanded) = expand_alternate_ipv4(host) {
+        if is_metadata_v4(&expanded) {
+            return Some(host.to_string());
+        }
+    }
+
+    // Canonical IP-literal checks. A hostname that does not parse as an IP and is not in the lists
+    // above is ALLOWED — private/loopback/CGNAT/public upstreams are all legitimate.
+    let is_blocked = match host.parse::<IpAddr>() {
+        Ok(IpAddr::V4(v4)) => is_metadata_v4(&v4),
+        Ok(IpAddr::V6(v6)) => {
+            // An IPv6 literal embedding an IPv4 address reaches the same v4 target as the bare form,
+            // so apply the IDENTICAL metadata predicate to the embedded v4 (covers `[::ffff:a.b.c.d]`
+            // mapped AND `[::a.b.c.d]` compatible via `to_ipv4()`).
+            let embedded = v6.to_ipv4();
+            v6 == imds_v6 || embedded.is_some_and(|m| is_metadata_v4(&m))
+        }
+        Err(_) => false,
+    };
+
+    is_blocked.then(|| host.to_string())
+}
+
 #[cfg(test)]
 #[path = "tests/net_guard_tests.rs"]
 mod tests;

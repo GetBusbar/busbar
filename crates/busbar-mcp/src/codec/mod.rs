@@ -99,7 +99,7 @@ pub const DECL: busbar_core::proto::ProtocolDecl = busbar_core::proto::ProtocolD
     streaming_content_type: None,
     array_stream_shim_key: None,
     native_tool_id_prefix: None,
-    ingress_auth: busbar_core::proto::IngressAuth::Bearer,
+    ingress_auth: busbar_substrate::proto::IngressAuth::Bearer,
     // The shared bearer/api-key/SigV4 schemes stay in `egress_auth::resolve`: MCP presents no
     // dialect-specific egress credential shaping of its own, so it declares no builder — unlike
     // Anthropic, whose api-key/Bearer disambiguation retired its arm in core.
@@ -127,7 +127,7 @@ pub const DECL: busbar_core::proto::ProtocolDecl = busbar_core::proto::ProtocolD
     has_model_in_url: false,
     auth_failure_status_and_kind: (
         axum::http::StatusCode::UNAUTHORIZED,
-        busbar_core::proto::openai_family::ERR_TYPE_AUTHENTICATION,
+        busbar_substrate::proto::ERR_TYPE_AUTHENTICATION,
     ),
     ingress_relays_amzn_headers: false,
     ingress_relayed_response_header_names: &[],

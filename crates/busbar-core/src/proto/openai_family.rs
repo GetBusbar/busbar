@@ -40,8 +40,10 @@ pub const OPENAI_FAMILY_MAX_OPEN_TOOLS: usize = 128;
 // DELIBERATELY different values and stay defined at their own sites.)
 /// OpenAI error `type` for a malformed / bad-argument request.
 pub const ERR_TYPE_INVALID_REQUEST: &str = "invalid_request_error";
-/// OpenAI error `type` for a missing or invalid API key.
-pub const ERR_TYPE_AUTHENTICATION: &str = "authentication_error";
+/// OpenAI error `type` for a missing or invalid API key. Relocated to the neutral
+/// `busbar_substrate::proto` leaf (Batch A) so `busbar-mcp` names it without depending on
+/// `busbar-core`; re-exported here so every existing caller is unchanged.
+pub use busbar_substrate::proto::ERR_TYPE_AUTHENTICATION;
 /// OpenAI error `type` for a permission / access-control denial.
 pub const ERR_TYPE_PERMISSION: &str = "permission_error";
 /// OpenAI error `type` for a resource that does not exist.
