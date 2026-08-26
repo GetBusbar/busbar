@@ -292,32 +292,15 @@ struct Claim {
 }
 
 /// What a bearer token presented on a mounted plane must be BOUND to, and where a refused caller is
-/// told to go and get one that is.
+/// told to go and get one that is — [`PlaneAdmission`].
 ///
 /// Both fields are RFC values, not busbar inventions, and neither names a plane — which is the
 /// point. An audience-bound ingress is a general shape (OAuth 2.1 resource servers all have one);
 /// MCP is merely the first plane to mount one, and A2A will mount a second with different strings
-/// and no new code here.
-///
-/// ## Why the audience lives beside the mount rather than in the handler
-///
-/// The confused-deputy defence (RFC 8707) is "a token minted for someone else must not be spendable
-/// here". If that check sat in a handler, a route added to this plane later would be admitted by the
-/// middleware before anyone thought about it. Keeping it beside the MOUNT means the check is a
-/// property of the door, so every path behind that door inherits it and a new handler cannot forget.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PlaneAdmission {
-    /// RFC 8707 resource indicator: the exact `aud` an admitted token must carry. Compared for
-    /// EQUALITY, never prefix or suffix — a resource indicator is an opaque identifier, and treating
-    /// it as a namespace is how `https://gw.example.com/mcp` starts admitting tokens minted for
-    /// `https://gw.example.com/mcp-staging`.
-    pub audience: String,
-    /// The absolute URL of this resource's RFC 9728 protected-resource metadata document, quoted
-    /// verbatim in the `resource_metadata` parameter of the `WWW-Authenticate` challenge. This is
-    /// the whole of an MCP client's discovery story: it arrives with no credential, reads this URL
-    /// out of the `401`, and follows it to the operator's authorization server.
-    pub resource_metadata: String,
-}
+/// and no new code here. Phase-C config-seam relocated this POD to the neutral
+/// [`busbar_substrate::plane::PlaneAdmission`] so a plane crate contributes its admission across the
+/// mount seam without naming a core type; core re-exports it here so its own call sites are unchanged.
+pub use busbar_substrate::plane::PlaneAdmission;
 
 impl PlaneDispatch {
     /// Declare the admission facts for `plane`. Independent of [`Self::mount`] so the two can be set

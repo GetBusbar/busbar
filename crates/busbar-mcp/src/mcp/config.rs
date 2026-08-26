@@ -1019,7 +1019,7 @@ impl<'de> Deserialize<'de> for ToolsCfg {
     }
 }
 
-impl busbar_core::plane::config::PlaneCfg for ToolsCfg {
+impl busbar_substrate::plane::config::PlaneCfg for ToolsCfg {
     /// The MCP plane's secret references: `tools.<name>.token_exchange.subject_token` (busbar's OWN
     /// token, the SUBJECT of an RFC 8693 exchange, never the caller's) and each reference-valued
     /// `tools.<name>.env.<var>` a stdio child is handed. Moved here VERBATIM from the core
@@ -1128,8 +1128,8 @@ impl busbar_core::plane::config::PlaneCfg for ToolsCfg {
         Ok(())
     }
 
-    fn container_gates(&self) -> busbar_core::plane::config::ContainerGateInputs {
-        busbar_core::plane::config::ContainerGateInputs {
+    fn container_gates(&self) -> busbar_substrate::plane::config::ContainerGateInputs {
+        busbar_substrate::plane::config::ContainerGateInputs {
             section_hooks: self.all_server_hooks.clone(),
             containers: self
                 .servers
@@ -1153,7 +1153,7 @@ impl busbar_core::plane::config::PlaneCfg for ToolsCfg {
         self
     }
 
-    fn clone_box(&self) -> Box<dyn busbar_core::plane::config::PlaneCfg> {
+    fn clone_box(&self) -> Box<dyn busbar_substrate::plane::config::PlaneCfg> {
         Box::new(self.clone())
     }
 
@@ -1599,7 +1599,7 @@ pub(crate) fn validate_server(name: &str, def: &McpServerDefCfg) -> Result<(), S
     // function rather than two copies that agreed only because one was pasted from the other.
     let sections = busbar_core::plane::config::config_sections();
     for hook in &def.hooks {
-        busbar_core::plane::config::refuse_cross_plane_reference(&at, hook, &sections)?;
+        busbar_substrate::plane::config::refuse_cross_plane_reference(&at, hook, &sections)?;
     }
     Ok(())
 }

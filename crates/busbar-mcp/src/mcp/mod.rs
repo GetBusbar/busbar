@@ -38,7 +38,7 @@
 //! carries no audience at all.
 //!
 //! The check lives in the VERIFIER, reached through the plane's mount
-//! (`busbar_core::plane::PlaneAdmission`), not in a handler — so a route added to this plane tomorrow
+//! (`busbar_substrate::plane::PlaneAdmission`), not in a handler — so a route added to this plane tomorrow
 //! inherits it and cannot forget it.
 //!
 //! ## The revision this targets, and what that means
@@ -326,15 +326,15 @@ pub(crate) fn build_runtime(
 /// content core pins), the `at line`/`column` suffix aside.
 fn mcp_parse_section(
     v: &serde_yaml::Value,
-) -> Result<Box<dyn busbar_core::plane::config::PlaneCfg>, String> {
+) -> Result<Box<dyn busbar_substrate::plane::config::PlaneCfg>, String> {
     serde_yaml::from_value::<config::ToolsCfg>(v.clone())
-        .map(|c| Box::new(c) as Box<dyn busbar_core::plane::config::PlaneCfg>)
+        .map(|c| Box::new(c) as Box<dyn busbar_substrate::plane::config::PlaneCfg>)
         .map_err(|e| e.to_string())
 }
 
 /// [`busbar_core::plane::registry::PlaneDecl::default_section`] hook — the empty `tools:` registry, so an
 /// ABSENT section defaults to `ToolsCfg::default()` byte-identically to the pre-seam typed field.
-fn mcp_default_section() -> Box<dyn busbar_core::plane::config::PlaneCfg> {
+fn mcp_default_section() -> Box<dyn busbar_substrate::plane::config::PlaneCfg> {
     Box::<config::ToolsCfg>::default()
 }
 
@@ -343,9 +343,9 @@ fn mcp_default_section() -> Box<dyn busbar_core::plane::config::PlaneCfg> {
 /// field without naming [`McpCfg`].
 fn mcp_parse_endpoint(
     v: &serde_yaml::Value,
-) -> Result<Box<dyn busbar_core::plane::config::PlaneEndpointCfg>, String> {
+) -> Result<Box<dyn busbar_substrate::plane::config::PlaneEndpointCfg>, String> {
     serde_yaml::from_value::<McpCfg>(v.clone())
-        .map(|c| Box::new(c) as Box<dyn busbar_core::plane::config::PlaneEndpointCfg>)
+        .map(|c| Box::new(c) as Box<dyn busbar_substrate::plane::config::PlaneEndpointCfg>)
         .map_err(|e| e.to_string())
 }
 
@@ -354,7 +354,7 @@ fn mcp_parse_endpoint(
 /// `RootCfg::mcp` (`Option<Arc<dyn Any>>`) without naming [`McpResource`] or its constructor. The
 /// error string is `McpCfgError`'s `Display`, verbatim, so the boot refusal is byte-identical.
 fn mcp_lower_endpoint(
-    endpoint: &dyn busbar_core::plane::config::PlaneEndpointCfg,
+    endpoint: &dyn busbar_substrate::plane::config::PlaneEndpointCfg,
 ) -> Result<std::sync::Arc<dyn std::any::Any + Send + Sync>, String> {
     let cfg = endpoint
         .as_any()
@@ -392,10 +392,10 @@ fn mcp_retain_verify_gates(app: &busbar_core::state::App) {
     runtime(app).verify.retain(&live);
 }
 
-/// The `mcp:` ENDPOINT block, as the neutral [`busbar_core::plane::config::PlaneEndpointCfg`] seam — a
+/// The `mcp:` ENDPOINT block, as the neutral [`busbar_substrate::plane::config::PlaneEndpointCfg`] seam — a
 /// present `McpCfg` (a fully-deserialized block) is always present; the deletion-gate `is_present`
 /// question is only ASKED of the raw carrier the compiled-out build captures.
-impl busbar_core::plane::config::PlaneEndpointCfg for McpCfg {
+impl busbar_substrate::plane::config::PlaneEndpointCfg for McpCfg {
     fn is_present(&self) -> bool {
         true
     }
@@ -962,8 +962,8 @@ impl McpResource {
 
     /// The plane admission facts this resource contributes to the dispatch table: the audience a
     /// token must carry here, and where a refused caller is told to go.
-    pub(crate) fn admission(&self) -> busbar_core::plane::PlaneAdmission {
-        busbar_core::plane::PlaneAdmission {
+    pub(crate) fn admission(&self) -> busbar_substrate::plane::PlaneAdmission {
+        busbar_substrate::plane::PlaneAdmission {
             audience: self.canonical_uri().to_string(),
             resource_metadata: self.metadata_url().to_string(),
         }

@@ -244,8 +244,9 @@ fn secret_refs_source() -> String {
         "pub(crate) const SECRET_BEARING_TYPES",
     );
     // The MCP plane's `tools:` config moved to the `busbar-mcp` crate (Phase-B B2); its `secret_refs`
-    // impl names core's trait through the public path (`busbar_core::…`) from there, so the scan reads
-    // the sibling crate's source and matches on that spelling.
+    // impl names the `PlaneCfg` trait through its public path from there. The trait itself relocated
+    // to `busbar-substrate` (Phase-C config-seam), so the impl now spells `busbar_substrate::…` and
+    // the scan matches on that spelling.
     let mcp = extract_impl_block(
         &Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("..")
@@ -253,7 +254,7 @@ fn secret_refs_source() -> String {
             .join("src")
             .join("mcp")
             .join("config.rs"),
-        "impl busbar_core::plane::config::PlaneCfg for ToolsCfg",
+        "impl busbar_substrate::plane::config::PlaneCfg for ToolsCfg",
     );
     let a2a = extract_impl_block(
         &src.join("a2a").join("config.rs"),

@@ -14,6 +14,35 @@
 pub mod approvals;
 pub mod calllog;
 
+// Phase-C config-seam: the NEUTRAL config-seam CONTRACTS a plane's config section is read through
+// (`PlaneCfg`/`PlaneEndpointCfg`/`ContainerGateInputs`) and the parse-time bare-hook-reference rule
+// (`refuse_cross_plane_reference`). They name only `busbar_api::SecretRef` + `serde_json`/`std`, so
+// they live here; core re-exports them. The registry-coupled READER half (`split_section`,
+// `config_sections`, the reserved-key literal) stays core.
+pub mod config;
+
+/// A PLANE'S OAUTH RESOURCE-SERVER ADMISSION FACTS — the audience a token must carry to be spent on
+/// this plane's mount, and the RFC 9728 metadata URL a refused caller is pointed at. A neutral POD so
+/// a plane crate contributes its admission across the mount seam without naming a core type; core
+/// re-exports it, so `busbar_core::plane::PlaneAdmission` still resolves there.
+///
+/// The confused-deputy defence (RFC 8707) is "a token minted for someone else must not be spendable
+/// here". Keeping the audience beside the MOUNT (not in a handler) means the check is a property of
+/// the door, so every path behind that door inherits it and a new handler cannot forget.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlaneAdmission {
+    /// RFC 8707 resource indicator: the exact `aud` an admitted token must carry. Compared for
+    /// EQUALITY, never prefix or suffix — a resource indicator is an opaque identifier, and treating
+    /// it as a namespace is how `https://gw.example.com/mcp` starts admitting tokens minted for
+    /// `https://gw.example.com/mcp-staging`.
+    pub audience: String,
+    /// The absolute URL of this resource's RFC 9728 protected-resource metadata document, quoted
+    /// verbatim in the `resource_metadata` parameter of the `WWW-Authenticate` challenge. This is
+    /// the whole of an MCP client's discovery story: it arrives with no credential, reads this URL
+    /// out of the `401`, and follows it to the operator's authorization server.
+    pub resource_metadata: String,
+}
+
 /// THE WIRE FORMAT both mounted planes speak: JSON-RPC 2.0. Named once, here, because it is read
 /// twice as a `wire_format_names` entry and once more by the error-shaping boundary, which
 /// decides that a refusal on a mounted plane is a JSON-RPC error object rather than a vendor
