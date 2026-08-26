@@ -401,8 +401,7 @@ pub struct PlaneDecl {
         allow(dead_code)
     )]
     #[allow(clippy::type_complexity)]
-    pub registry_contains:
-        Option<fn(&dyn busbar_substrate::plane_host::PlaneSlots, &str) -> bool>,
+    pub registry_contains: Option<fn(&dyn busbar_substrate::plane_host::PlaneSlots, &str) -> bool>,
 
     /// RE-RESOLVE THIS PLANE'S PER-REGISTRATION HOOK GATES against the next snapshot — the plane half
     /// of the config-swap gate rebuild. Reads the plane's own registry off the `&mut App` and writes
@@ -412,8 +411,7 @@ pub struct PlaneDecl {
         not(any(feature = "plane-mcp", feature = "plane-a2a")),
         allow(dead_code)
     )]
-    pub reresolve_gates:
-        Option<fn(&mut dyn busbar_substrate::plane_host::ContainerGateSink)>,
+    pub reresolve_gates: Option<fn(&mut dyn busbar_substrate::plane_host::ContainerGateSink)>,
 
     /// ATTACH THIS PLANE'S ADMIN TRUST-VERB SCHEMAS to the OpenAPI document — the plane half of the
     /// schema pass in [`crate::admin::v1::json::handlers::openapi_doc`]. Handed the SHARED response

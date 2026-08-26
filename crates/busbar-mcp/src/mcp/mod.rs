@@ -311,9 +311,7 @@ pub(crate) fn runtime(app: &busbar_core::state::App) -> &McpRuntime {
 /// `PlaneDecl` callbacks the MCP plane fills (`on_swap`, `registry_contains`, `retain_verify_gates`)
 /// name no `busbar_core::state::App`. Same borrowed `&McpRuntime` and never-failing `.expect`s as
 /// [`runtime`]; the slot key is the always-present runtime companion in the neutral substrate.
-pub(crate) fn runtime_slots(
-    slots: &dyn busbar_substrate::plane_host::PlaneSlots,
-) -> &McpRuntime {
+pub(crate) fn runtime_slots(slots: &dyn busbar_substrate::plane_host::PlaneSlots) -> &McpRuntime {
     slots
         .plane_slot(busbar_substrate::plane_host::MCP_RUNTIME_SLOT)
         .expect("the mcp runtime slot is present on every generation the plane is compiled into")

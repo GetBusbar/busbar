@@ -128,20 +128,18 @@ pub(crate) fn openapi_schemas(
 /// Is `name` a live registered MCP server on this snapshot — the membership check the admin write
 /// path consults through the plane's `registry_contains` seam, so core names no `crate::mcp` runtime
 /// type.
-pub(crate) fn contains(
-    slots: &dyn busbar_substrate::plane_host::PlaneSlots,
-    name: &str,
-) -> bool {
-    super::runtime_slots(slots).servers.servers.contains_key(name)
+pub(crate) fn contains(slots: &dyn busbar_substrate::plane_host::PlaneSlots, name: &str) -> bool {
+    super::runtime_slots(slots)
+        .servers
+        .servers
+        .contains_key(name)
 }
 
 /// RE-RESOLVE THE MCP PLANE'S PER-SERVER HOOK GATES against the next snapshot — the MCP half of the
 /// config-swap gate rebuild, moved HERE so `admin::v1::service::reresolve_plane_gates` names no
 /// `crate::mcp` runtime type. Reads this plane's own registry off the snapshot and writes its own
 /// gate field back.
-pub(crate) fn reresolve_gates(
-    next: &mut dyn busbar_substrate::plane_host::ContainerGateSink,
-) {
+pub(crate) fn reresolve_gates(next: &mut dyn busbar_substrate::plane_host::ContainerGateSink) {
     // Read this plane's own registry off the neutral slot seam (owned `Arc` clone, so the immutable
     // borrow ends before the `&mut` store), then resolve-and-store host-side through the neutral sink
     // under the MCP gate key (`0`) — so this plane names neither `&mut App` nor the core container-gate

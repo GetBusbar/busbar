@@ -11,8 +11,8 @@ use bytes::Bytes;
 
 use busbar_core::handlers::{CodecError, IngressReject, OperationHandler};
 use busbar_substrate::ir::handle::IrHandle;
-use busbar_substrate::ir::neutral_handles::{InvokeReqHandle, InvokeRespHandle};
 use busbar_substrate::ir::invoke::{InvokeReq, InvokeResp};
+use busbar_substrate::ir::neutral_handles::{InvokeReqHandle, InvokeRespHandle};
 #[cfg(any(test, feature = "test-support"))]
 use busbar_substrate::wire::WireBody;
 

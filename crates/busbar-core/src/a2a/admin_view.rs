@@ -84,10 +84,7 @@ pub(crate) fn openapi_schemas(
 
 /// Is `name` a live registered agent on this snapshot — the membership check the admin write path
 /// consults through the plane's `registry_contains` seam, so core names no `crate::a2a` registry type.
-pub(crate) fn contains(
-    slots: &dyn busbar_substrate::plane_host::PlaneSlots,
-    name: &str,
-) -> bool {
+pub(crate) fn contains(slots: &dyn busbar_substrate::plane_host::PlaneSlots, name: &str) -> bool {
     // A2A stays in core: recover the concrete snapshot through the neutral seam's `as_any` hatch to
     // read `agent_defs` (not a `plane_slots` entry) — byte-identical to the old `&App` arm.
     let app = slots
@@ -101,9 +98,7 @@ pub(crate) fn contains(
 /// config-swap gate rebuild, moved HERE so `admin::v1::service::reresolve_plane_gates` names no
 /// `crate::a2a` registry type. Reads this plane's own registry off the snapshot and writes its own
 /// gate field back.
-pub(crate) fn reresolve_gates(
-    next: &mut dyn busbar_substrate::plane_host::ContainerGateSink,
-) {
+pub(crate) fn reresolve_gates(next: &mut dyn busbar_substrate::plane_host::ContainerGateSink) {
     // Recover the concrete snapshot to read `agent_defs` (owned clone, so the immutable borrow ends
     // before the `&mut` store), then resolve-and-store through the neutral sink under the A2A gate
     // key (`1`). Byte-identical to the old inline `next.a2a_agent_gates = resolve_container_gates(...)`.
