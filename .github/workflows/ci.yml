@@ -924,9 +924,13 @@ jobs:
         # fail this job and no coverage would ever upload. The report is still generated from every
         # test that ran. A real regression is caught by `check`, not here.
         run: cargo llvm-cov --workspace --locked --ignore-run-fail --lcov --output-path lcov.info
-      - name: Upload to Codecov (tokenless; never fails the build)
+      - name: Upload to Codecov (never fails the build)
         uses: codecov/codecov-action@v5
         with:
+          # Codecov rejects tokenless uploads on protected branches (dev/qa/main) with
+          # "Token required because branch is protected". This org-level secret authenticates
+          # the upload on every branch. Still never gates CI (fail_ci_if_error: false).
+          token: ${{ secrets.CODECOV_TOKEN }}
           files: lcov.info
           slug: GetBusbar/busbar
           fail_ci_if_error: false
