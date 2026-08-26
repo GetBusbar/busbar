@@ -157,6 +157,7 @@ fn rpc_ctx(
         caller_principal: gov.key.as_ref().map(|k| k.id.clone()),
         gov: Some(gov.clone()),
         principal: Some(busbar_core::auth::AuthPrincipal(None)),
+        host: busbar_core::plane_host::engine_host_from_handle(&handle),
         engine: handle,
         slot: Arc::new(()),
     }

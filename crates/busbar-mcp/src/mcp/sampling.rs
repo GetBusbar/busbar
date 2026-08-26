@@ -143,7 +143,9 @@ pub(crate) async fn satisfy_upstream_ask(
     // multi-entry ask fits the budget is a fact about the ask rather than about how long its
     // earlier entries took to complete — an upstream must not be able to buy a fresh window by
     // being slow across a minute boundary.
-    let now = busbar_core::plane_host::clock_now_secs_over(app);
+    // D1: read the ask's single judging instant through the neutral host seam rather than naming
+    // `busbar_core::plane_host::clock_now_secs_over`.
+    let now = busbar_core::plane_host::engine_host(app).clock_now_secs();
     let mut responses = serde_json::Map::new();
     for (entry, request) in requests {
         if request.get("method").and_then(|m| m.as_str()) != Some("sampling/createMessage") {
@@ -290,7 +292,8 @@ async fn complete(
         parsed,
         None,
         std::time::Instant::now(),
-        busbar_core::plane_host::clock_now_secs_over(app),
+        // D1: the admission clock through the neutral host seam.
+        busbar_core::plane_host::engine_host(app).clock_now_secs(),
         None,
     )
     .await;

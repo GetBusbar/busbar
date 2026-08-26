@@ -102,6 +102,12 @@ pub struct PlaneReqCtx {
     /// state here; a plane still coupled to the engine downcasts it (a transitional reach that the
     /// per-subsystem App-sever removes), but the SEAM names no core type.
     pub engine: Arc<dyn Any + Send + Sync>,
+    /// The NEUTRAL host seam — the `EngineHost` the core adapter minted over the request's live
+    /// engine snapshot, so the plane reaches host capabilities (the clock, and later gate/govern/…)
+    /// by calling typed methods on it rather than naming `busbar_core::plane_host::*_over`. Carried
+    /// alongside `engine` during the transition: `engine` is the residual downcast the per-subsystem
+    /// App-sever removes, `host` is the durable seam that replaces it.
+    pub host: Arc<dyn crate::plane_host::EngineHost>,
     /// The plane's own per-generation runtime slot (the same `Arc<dyn Any>` the plane's `build` fn
     /// produced), so the handler reads its plane state without a host round-trip.
     pub slot: Arc<dyn Any + Send + Sync>,

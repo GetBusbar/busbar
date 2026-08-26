@@ -523,6 +523,10 @@ fn mount_plane_route(
                 let caller_principal = gov
                     .as_ref()
                     .and_then(|g| g.key.as_ref().map(|k| k.id.clone()));
+                // D1: mint the NEUTRAL host seam over the request's live engine snapshot BEFORE
+                // erasing the handle, so the plane reaches host capabilities by calling typed methods
+                // on `ctx.host` rather than naming `busbar_core::plane_host::*_over`.
+                let host = crate::plane_host::engine_host_from_handle(&handle);
                 let engine: std::sync::Arc<dyn std::any::Any + Send + Sync> = handle;
                 let ctx = busbar_substrate::plane_routes::PlaneReqCtx {
                     path: ctx_path,
@@ -534,6 +538,7 @@ fn mount_plane_route(
                     gov,
                     principal: principal.map(|axum::extract::Extension(p)| p),
                     engine,
+                    host,
                     slot,
                 };
                 handler(ctx).await

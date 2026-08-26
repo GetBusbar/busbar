@@ -137,6 +137,7 @@ async fn call(
     let handle = Arc::new(AppHandle::new(app.clone()));
     let ctx = crate::mcp::method::Ctx {
         app,
+        host: busbar_core::plane_host::engine_host(app),
         handle: &handle,
         gov,
         actor: "test-principal",

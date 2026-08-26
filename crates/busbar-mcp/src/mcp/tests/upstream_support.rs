@@ -653,6 +653,7 @@ pub(super) async fn call_response_caps(
     let host = busbar_core::plane_host::HostDispatch::new(app);
     let ctx = crate::mcp::method::Ctx {
         app,
+        host: busbar_core::plane_host::engine_host(app),
         handle: &handle,
         gov,
         actor,

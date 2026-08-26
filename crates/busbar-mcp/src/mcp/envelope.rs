@@ -299,6 +299,10 @@ pub(crate) async fn rpc(ctx: busbar_substrate::plane_routes::PlaneReqCtx) -> Res
         .engine
         .downcast::<busbar_core::state::AppHandle>()
         .expect("the mcp route engine handle is an AppHandle");
+    // D1: the neutral host seam the core adapter minted over this request's engine snapshot. Threaded
+    // into `rpc_dispatch` (and onto `method::Ctx`) so the clock (and later host) reaches call typed
+    // methods on it rather than naming `busbar_core::plane_host::*_over`.
+    let host = ctx.host;
     let gov = ctx.gov.expect(
         "the mcp rpc route is RouteAuth::Key, so the middleware attached a PlaneRequestCtx",
     );
@@ -354,7 +358,10 @@ pub(crate) async fn rpc(ctx: busbar_substrate::plane_routes::PlaneReqCtx) -> Res
             }
         },
         |value, id, method| async move {
-            rpc_dispatch(&app, &handle, &gov, &principal, headers, value, id, method).await
+            rpc_dispatch(
+                &app, &handle, &host, &gov, &principal, headers, value, id, method,
+            )
+            .await
         },
     )
     .await
@@ -371,6 +378,7 @@ pub(crate) async fn rpc(ctx: busbar_substrate::plane_routes::PlaneReqCtx) -> Res
 pub(in crate::mcp) async fn rpc_dispatch(
     app: &Arc<busbar_core::state::App>,
     handle: &std::sync::Arc<busbar_core::state::AppHandle>,
+    engine_host: &std::sync::Arc<dyn busbar_substrate::plane_host::EngineHost>,
     gov: &busbar_api::PlaneRequestCtx,
     principal: &busbar_api::AuthPrincipal,
     headers: &HeaderMap,
@@ -523,6 +531,7 @@ pub(in crate::mcp) async fn rpc_dispatch(
     // and did not have to change when the table gained entries.
     let ctx = crate::mcp::method::Ctx {
         app,
+        host: engine_host.clone(),
         handle,
         gov,
         actor: principal.actor_id(),

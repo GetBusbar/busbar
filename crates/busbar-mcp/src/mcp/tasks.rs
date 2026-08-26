@@ -620,20 +620,20 @@ fn settle_task_leg(
 }
 
 async fn run(task: Arc<McpTask>, runner: Runner) {
+    // D1: the neutral host seam over the runner's live snapshot, minted once for the detached run. The
+    // `clock_now` seam it drives is engine-snapshot independent (it reads the host wall clock), so a
+    // single mint here is byte-identical to re-loading the handle per read, and the task's timestamps
+    // stop naming `busbar_core::plane_host::clock_now_ms_over`.
+    let host = busbar_core::plane_host::engine_host_from_handle(&runner.handle);
     // (1) THE IN-TASK ASK ROUNDS. Ordered, and each one waits for every key it asked.
     for round in &runner.task_asks {
-        task.park(
-            round.clone(),
-            busbar_core::plane_host::clock_now_ms_over(&runner.handle.load()),
-        );
+        task.park(round.clone(), host.clock_now_ms());
         task.await_answers().await;
         if task.lock().status.is_terminal() {
             return;
         }
     }
-    task.set_working(busbar_core::plane_host::clock_now_ms_over(
-        &runner.handle.load(),
-    ));
+    task.set_working(host.clock_now_ms());
 
     // (2) THE ANSWERS BECOME ARGUMENTS. An `ask_caller`/`task_ask_caller` entry keyed `user_name`
     // supplies the tool argument `user_name` — which is what an operator writing a confirmation
@@ -744,21 +744,18 @@ async fn run(task: Arc<McpTask>, runner: Runner) {
     // `protocol_error_job` fixture. So the two paths agree about the FACT and differ about the
     // SHAPE, because the shapes are what the two surfaces provide.
     match outcome {
-        Ok_(value) => task.complete(
-            super::sanitize::normalise_json(&value),
-            busbar_core::plane_host::clock_now_ms_over(&handle.load()),
-        ),
+        Ok_(value) => task.complete(super::sanitize::normalise_json(&value), host.clock_now_ms()),
         Err_(refusal) => task.fail(
             TASK_PROTOCOL_ERROR_CODE,
             refusal.to_string(),
-            busbar_core::plane_host::clock_now_ms_over(&handle.load()),
+            host.clock_now_ms(),
         ),
         // The message keeps its exact former wording, because the split is about ATTRIBUTION and a
         // task's inlined error text is already on the wire for a scenario that reads it.
         Upstream_(reason) => task.fail(
             TASK_PROTOCOL_ERROR_CODE,
             format!("the MCP upstream call failed: {reason}"),
-            busbar_core::plane_host::clock_now_ms_over(&handle.load()),
+            host.clock_now_ms(),
         ),
     }
 }

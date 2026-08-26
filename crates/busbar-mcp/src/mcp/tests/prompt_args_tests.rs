@@ -112,6 +112,7 @@ async fn prompt_text(arguments: serde_json::Value) -> String {
     let gov = busbar_core::governance::PlaneRequestCtx { key: None };
     let ctx = crate::mcp::method::Ctx {
         app: &app,
+        host: busbar_core::plane_host::engine_host(&app),
         handle: &handle,
         gov: &gov,
         actor: "test-principal",
@@ -186,6 +187,7 @@ async fn completion_complete_answers_an_empty_completion_rather_than_method_not_
     let gov = busbar_core::governance::PlaneRequestCtx { key: None };
     let ctx = crate::mcp::method::Ctx {
         app: &app,
+        host: busbar_core::plane_host::engine_host(&app),
         handle: &handle,
         gov: &gov,
         actor: "test-principal",

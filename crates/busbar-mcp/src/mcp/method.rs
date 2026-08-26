@@ -144,6 +144,12 @@ const CACHE_TTL_MS: i64 = 0;
 pub(crate) struct Ctx<'a> {
     /// The snapshot this REQUEST arrived on. Selection reads it.
     pub(crate) app: &'a std::sync::Arc<busbar_core::state::App>,
+    /// THE NEUTRAL HOST SEAM — the `EngineHost` this request runs against, so host reaches (the
+    /// clock, and later gate/govern/…) call typed methods here instead of naming
+    /// `busbar_core::plane_host::*_over(self.app, …)`. Carried ALONGSIDE `app` during the transition:
+    /// `app` still serves the pervasive field reaches (`super::runtime`, `next_request_id`, …) the
+    /// App-sever removes later; `host` is the durable seam for the host CALLS.
+    pub(crate) host: std::sync::Arc<dyn busbar_substrate::plane_host::EngineHost>,
     /// The LIVE handle. Dispatch re-reads it, which is what makes the generation check a real
     /// re-read rather than a comparison of a value against itself.
     pub(crate) handle: &'a std::sync::Arc<busbar_core::state::AppHandle>,
@@ -213,7 +219,7 @@ impl Ctx<'_> {
     fn caller(&self) -> busbar_substrate::catalogue::Caller<'_> {
         busbar_substrate::catalogue::Caller {
             key: self.gov.key(),
-            now: busbar_core::plane_host::clock_now_secs_over(self.app),
+            now: self.host.clock_now_secs(),
             generation: busbar_substrate::trust::validate::Generations::at_admission(
                 super::runtime(self.app).catalogue.generation(),
             ),
@@ -383,7 +389,7 @@ fn tasks_update(
         &task.id,
         task_principal(ctx),
         &responses,
-        busbar_core::plane_host::clock_now_ms_over(ctx.app),
+        ctx.host.clock_now_ms(),
     );
     result(id, serde_json::json!({}))
 }
@@ -406,11 +412,7 @@ fn tasks_cancel(
         Ok(task) => task,
         Err(refusal) => return *refusal,
     };
-    super::tasks::TASKS.cancel(
-        &task.id,
-        task_principal(ctx),
-        busbar_core::plane_host::clock_now_ms_over(ctx.app),
-    );
+    super::tasks::TASKS.cancel(&task.id, task_principal(ctx), ctx.host.clock_now_ms());
     busbar_core::plane::auditlog::emit_admin_hostless_now(
         "mcp_task.cancel",
         &format!("mcp_task:{}", task.id),
@@ -1030,6 +1032,10 @@ struct CallLog<'a> {
     /// The live engine snapshot the call was admitted on, carried so [`CallLog::write`] can open a
     /// host to reach the durable per-call chain seam.
     app: &'a busbar_core::state::App,
+    /// The NEUTRAL host seam this call's clock read rides — cloned from the request `Ctx` so the
+    /// record's timestamp comes through the same `clock_now` seam every other reach on this request
+    /// does, rather than naming `busbar_core::plane_host::clock_now_secs_over`.
+    host: std::sync::Arc<dyn busbar_substrate::plane_host::EngineHost>,
     /// The request-wide dispatch arena, when this call rides one (the sync tools/call path threads it
     /// on `Ctx::scope`). `None` on the task path and in tests, where `write` opens a fresh per-call
     /// scope instead — a chain append registers no host handle, so the arena choice is immaterial.
@@ -1046,6 +1052,7 @@ impl<'a> CallLog<'a> {
             tool_digest: String::new(),
             pin_generation: generation,
             app: ctx.app,
+            host: ctx.host.clone(),
             scope: ctx.scope,
         }
     }
@@ -1063,7 +1070,7 @@ impl<'a> CallLog<'a> {
 
     fn write(&self, outcome: &'static str, reason: &str) {
         let input = busbar_core::plane::calllog::CallInput {
-            ts: busbar_core::plane_host::clock_now_secs_over(self.app),
+            ts: self.host.clock_now_secs(),
             server: self.server.clone(),
             tool: self.tool.clone(),
             outcome,
@@ -1126,7 +1133,7 @@ async fn verify_on_call(ctx: &Ctx<'_>, name: &str) {
     let Some((server_id, server)) = super::runtime(ctx.app).catalogue.verify_target(name) else {
         return;
     };
-    let now_ms = busbar_core::plane_host::clock_now_ms_over(ctx.app);
+    let now_ms = ctx.host.clock_now_ms();
     let policy = server.verify_policy.clone();
     let server = server.clone();
     let subject = server_id.to_string();
@@ -1250,7 +1257,7 @@ async fn tools_call(
         LiveSightings::of(&admitted_sightings),
         name,
         busbar_substrate::trust::validate::Generations::at_admission(selected_gen),
-        busbar_core::plane_host::clock_now_secs_over(ctx.app),
+        ctx.host.clock_now_secs(),
     ) {
         Ok(entry) => entry.clone(),
         Err(refusal) => {
@@ -1275,7 +1282,7 @@ async fn tools_call(
         LiveSightings::of(&live_sightings),
         &selected,
         selected_gen,
-        busbar_core::plane_host::clock_now_secs_over(ctx.app),
+        ctx.host.clock_now_secs(),
     ) {
         return log.refused(
             refusal.audit_reason(),
@@ -1603,8 +1610,14 @@ async fn tools_call(
     // outcome of each leg is recorded inside `upstream::call`, against the dispatched member's own
     // cell; the probe hold lives in the route and is released owner-checked when it drops.
     let breakers = std::sync::Arc::clone(&ctx.app.plane_breakers);
-    let route =
-        super::reroute::PoolRoute::build(&live, ctx.gov.key(), &selected, authorised, &arguments);
+    let route = super::reroute::PoolRoute::build(
+        &live,
+        &ctx.host,
+        ctx.gov.key(),
+        &selected,
+        authorised,
+        &arguments,
+    );
     // The request-wide dispatch arena the breaker admission (and every concurrency hold below)
     // registers into: `ctx.scope` in production, a local fallback that drops at this fn's return for a
     // `None` scope (unit tests). Resolved BEFORE the admit so the won probe is born in it — the breaker
@@ -1939,6 +1952,7 @@ async fn create_task(
     let live_app = ctx.handle.load();
     let route = super::reroute::PoolRoute::build(
         &live_app,
+        &ctx.host,
         ctx.gov.key(),
         selected,
         authorised,
@@ -1997,10 +2011,7 @@ async fn create_task(
     // grant scope's reclaim releases the registered grant now — the old `drop(holds)`.
     drop(grant_scope);
 
-    let task = super::tasks::TASKS.create(
-        task_principal(ctx),
-        busbar_core::plane_host::clock_now_ms_over(ctx.app),
-    );
+    let task = super::tasks::TASKS.create(task_principal(ctx), ctx.host.clock_now_ms());
     let created = task.created();
     super::tasks::spawn(
         std::sync::Arc::clone(&task),
@@ -2685,7 +2696,7 @@ fn caller_ask_decision(
                     method,
                     capability,
                     generation,
-                    now: busbar_core::plane_host::clock_now_secs_over(ctx.app),
+                    now: ctx.host.clock_now_secs(),
                     // The live roots epoch for THIS principal — the value a received
                     // `notifications/roots/list_changed` moves, read under the same name the seal
                     // binds. See `crate::mcp::roots`.

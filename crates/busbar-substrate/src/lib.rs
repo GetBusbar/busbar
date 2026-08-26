@@ -33,6 +33,11 @@ pub mod breaker;
 pub mod duration;
 pub mod egress;
 pub mod plane;
+// D1: the NEUTRAL HOST SEAM — the `EngineHost` trait a plane calls to reach engine host capabilities
+// without naming a core type, plus the relocated lifecycle-scope arena (`DispatchScope` et al.) those
+// capabilities register handles into. Core implements `EngineHost` over its live `App` and re-exports
+// the scope types, so its own call sites are unchanged.
+pub mod plane_host;
 // S4a: the NEUTRAL ROUTE-MOUNT SEAM — the `PlaneRouteSpec` / `PlaneReqCtx` vocabulary a plane uses to
 // declare its data routes without naming `CoreRouter` / `Arc<AppHandle>`, so `PlaneDecl`'s route
 // field can be typed `fn(&dyn Any) -> Vec<PlaneRouteSpec>` and eventually travel to this crate.

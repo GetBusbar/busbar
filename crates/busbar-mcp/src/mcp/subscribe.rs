@@ -337,13 +337,13 @@ struct Listen {
 /// It builds a `Caller` rather than a grant closure so that the per-frame catalogue read asks the
 /// same ordered gate every other catalogue read asks, identity step included.
 fn caller_of<'a>(
-    app: &busbar_core::state::App,
+    host: &std::sync::Arc<dyn busbar_substrate::plane_host::EngineHost>,
     key: Option<&'a std::sync::Arc<busbar_api::VirtualKey>>,
     generation: u64,
 ) -> busbar_substrate::catalogue::Caller<'a> {
     busbar_substrate::catalogue::Caller {
         key: key.map(|k| &**k),
-        now: busbar_core::plane_host::clock_now_secs_over(app),
+        now: host.clock_now_secs(),
         // AT ADMISSION for the FRAME, not for the stream. This value is re-built on every poll from
         // the generation the frame is being computed against, so the catalogue read cannot be judged
         // against a snapshot other than the one it is reading. The stream's own relationship to the
@@ -407,13 +407,17 @@ impl Listen {
             return None;
         }
         let app = self.handle.load();
+        // D1: the neutral host seam over this poll's live snapshot — the stream's clock reads (the
+        // permission re-ask and the per-frame catalogue `Caller`) ride it rather than naming
+        // `busbar_core::plane_host::clock_now_secs_over`.
+        let host = busbar_core::plane_host::engine_host(&app);
         let catalogue = &super::runtime(&app).catalogue;
         // THE STANDING PERMISSION, RE-ASKED. A principal that has stopped resolving live ends the
         // stream on THIS frame rather than at the bound, which is the whole of the fix.
         let key = match self.standing.still_permitted(
             app.governance.as_deref(),
             catalogue.generation(),
-            busbar_core::plane_host::clock_now_secs_over(&app),
+            host.clock_now_secs(),
         ) {
             Ok(key) => key,
             Err(lapsed) => {
@@ -421,7 +425,7 @@ impl Listen {
                 return Some(self.closing_frame(&lapsed));
             }
         };
-        let caller = caller_of(&app, key.as_ref(), catalogue.generation());
+        let caller = caller_of(&host, key.as_ref(), catalogue.generation());
         let now = Instant::now();
         match &mut self.phase {
             Phase::Acknowledge => {
@@ -544,7 +548,7 @@ pub(crate) fn listen(
     // poll at delivery — this read only decides what the acknowledgement may NAME.
     let accepted = {
         let catalogue = &super::runtime(ctx.app).catalogue;
-        let caller = caller_of(ctx.app, ctx.gov.key.as_ref(), catalogue.generation());
+        let caller = caller_of(&ctx.host, ctx.gov.key.as_ref(), catalogue.generation());
         accept(&requested, |uri| {
             matches!(
                 catalogue.resource_by_uri(&caller, uri),

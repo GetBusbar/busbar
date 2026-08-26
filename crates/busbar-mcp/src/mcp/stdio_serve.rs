@@ -626,9 +626,14 @@ impl<W: AsyncWrite + Unpin + Send + 'static> Session<W> {
         }
         // ── THE ONE DISPATCH ──────────────────────────────────────────────────────────────────
         let headers = synthesized_headers(&value);
+        // D1: mint the neutral host seam over this session's live snapshot and thread it into the
+        // SAME `rpc_dispatch` the HTTP handler runs, so the two transports reach the clock (and later
+        // host) seams identically rather than either naming `busbar_core::plane_host::*_over`.
+        let host = busbar_core::plane_host::engine_host(app);
         envelope::rpc_dispatch(
             app,
             &self.handle,
+            &host,
             &self.gov,
             &self.principal,
             &headers,
@@ -1053,7 +1058,8 @@ impl<W: AsyncWrite + Unpin + Send + 'static> Session<W> {
     ) -> Option<u64> {
         let caller = busbar_substrate::catalogue::Caller {
             key: self.gov.key(),
-            now: busbar_core::plane_host::clock_now_secs_over(app),
+            // D1: the fingerprint's snapshot instant through the neutral host seam.
+            now: busbar_core::plane_host::engine_host(app).clock_now_secs(),
             generation: busbar_substrate::trust::validate::Generations::at_admission(
                 super::runtime(app).catalogue.generation(),
             ),

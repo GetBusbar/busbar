@@ -309,6 +309,61 @@ pub fn clock_now_ms_over(app: &App) -> u64 {
     }) / 1_000_000
 }
 
+/// Core's implementation of the neutral [`EngineHost`](busbar_substrate::plane_host::EngineHost)
+/// seam over the live [`App`]. A plane holds this behind an
+/// `Arc<dyn busbar_substrate::plane_host::EngineHost>` and calls typed, safe methods on it INSTEAD of
+/// naming `plane_host::*_over(&App, …)` — so a plane compiled apart from the host reaches the same
+/// host vtable slots without ever naming a core type.
+///
+/// Owns an `Arc<App>` (the config generation the reaches run against) so the handle is
+/// `Send + Sync + 'static` and safe to carry across `.await`. That is sound precisely because no
+/// method exposes the `!Send` [`HostCtx`]: each mints the transient `HostCtx` INTERNALLY (via
+/// [`with_borrowed_host`] over a fresh per-call [`DispatchScope`]), drives the slot SYNCHRONOUSLY,
+/// and returns an owned value — the raw host pointer never escapes the call.
+pub struct EngineHostImpl {
+    /// The live engine snapshot the host reaches run against.
+    app: Arc<App>,
+}
+
+impl EngineHostImpl {
+    /// Build the host implementation over the live `app`.
+    #[must_use]
+    pub fn new(app: Arc<App>) -> Self {
+        EngineHostImpl { app }
+    }
+}
+
+impl busbar_substrate::plane_host::EngineHost for EngineHostImpl {
+    fn clock_now_secs(&self) -> u64 {
+        // SAME dispatch as the veneer: a fresh per-call `DispatchScope`, the `clock_now` slot driven
+        // synchronously over a stack-pinned `HostState`, the `HostCtx` never escaping the call.
+        clock_now_secs_over(&self.app)
+    }
+
+    fn clock_now_ms(&self) -> u64 {
+        clock_now_ms_over(&self.app)
+    }
+}
+
+/// Mint an `Arc<dyn EngineHost>` over the live `app` — the constructor core hands a plane so the
+/// plane calls the neutral seam instead of naming `plane_host::*_over(&App, …)`. Cheap: one `Arc`
+/// clone; the transient `HostCtx` is minted per method call, never here.
+#[must_use]
+pub fn engine_host(app: &Arc<App>) -> Arc<dyn busbar_substrate::plane_host::EngineHost> {
+    Arc::new(EngineHostImpl::new(Arc::clone(app)))
+}
+
+/// Mint an `Arc<dyn EngineHost>` over the CURRENT snapshot of a live [`AppHandle`] — the form the
+/// route adapter and the detached-runner / stdio paths reach for, which hold a swappable handle
+/// rather than a pinned `Arc<App>`. Loads the handle once; the clock the seam reads is engine-snapshot
+/// independent (it drives the host wall clock), so a later config swap does not change the value.
+#[must_use]
+pub fn engine_host_from_handle(
+    handle: &Arc<crate::state::AppHandle>,
+) -> Arc<dyn busbar_substrate::plane_host::EngineHost> {
+    engine_host(&handle.load())
+}
+
 /// Read the host wall clock in whole SECONDS through the wired [`clock_now`](vtable) seam using a
 /// [`HostCtx`] the caller ALREADY holds — the form a plane leg that was handed a raw host (over
 /// [`with_borrowed_host`] / a [`HostDispatch`]) but has no `&App` in scope to mint a fresh

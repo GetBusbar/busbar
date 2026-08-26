@@ -373,7 +373,9 @@ impl PlaneTrust for McpServers {
         crate::mcp::connect::stamp(
             &subject.sightings,
             &subject.entry.id,
-            busbar_core::plane_host::clock_now_ms_over(&subject.app),
+            // D1: the ledger stamp's clock through the neutral host seam rather than naming
+            // `busbar_core::plane_host::clock_now_ms_over`.
+            busbar_core::plane_host::engine_host(&subject.app).clock_now_ms(),
             !report.drift.is_empty(),
         );
         Ok(trust_view(&report, &subject.entry, &subject.cfg))

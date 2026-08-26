@@ -117,6 +117,7 @@ impl PoolRoute {
     /// tool, not for a twin inventory.
     pub(crate) fn build(
         app: &busbar_core::state::App,
+        host: &std::sync::Arc<dyn busbar_substrate::plane_host::EngineHost>,
         principal: Option<&busbar_api::VirtualKey>,
         selected: &super::catalogue::ToolEntry,
         selected_auth: Authorised,
@@ -155,7 +156,7 @@ impl PoolRoute {
         let generation = busbar_substrate::trust::validate::Generations::at_admission(
             super::runtime(app).catalogue.generation(),
         );
-        let now = busbar_core::plane_host::clock_now_secs_over(app);
+        let now = host.clock_now_secs();
         let mut selected_auth = Some(selected_auth);
         let mut tried = Vec::new();
         let members: Vec<RouteMember> =
