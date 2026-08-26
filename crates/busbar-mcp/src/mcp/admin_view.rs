@@ -326,7 +326,7 @@ impl PlaneTrust for McpServers {
         host: &Arc<dyn busbar_substrate::plane_host::EngineHost>,
         name: &str,
     ) -> Result<McpSubject, AdminError> {
-        // The bound-snapshot runtime, read once off the neutral host seam (K1) — byte-identical to the
+        // The bound-snapshot runtime, read once off the neutral host seam — byte-identical to the
         // four `super::runtime(app)` reads it replaced, all off the one admitted snapshot.
         let rt = super::runtime_of(host);
         planeverbs::registered("mcp", name, || {
