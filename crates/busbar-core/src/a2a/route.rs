@@ -41,7 +41,7 @@ struct AgentCandidate {
     eligible: bool,
 }
 
-impl crate::failover::Candidate for AgentCandidate {
+impl busbar_substrate::failover::Candidate for AgentCandidate {
     fn name(&self) -> &str {
         &self.name
     }
@@ -167,10 +167,10 @@ pub(super) fn select_member(
                 .filter(|c| !c.eligible)
                 .map(|c| c.lane)
                 .collect();
-            let attempt = crate::failover::Attempt {
+            let attempt = busbar_substrate::failover::Attempt {
                 tried: &tried,
-                stage: crate::failover::Stage::BeforeFirstByte,
-                repeatable: crate::failover::Repeatable::No,
+                stage: busbar_substrate::failover::Stage::BeforeFirstByte,
+                repeatable: busbar_substrate::failover::Repeatable::No,
                 operation: method,
             };
             // THE WALK, INVERTED onto the host `breaker_admit` seam (CLUSTER-1, mirroring the MCP
@@ -180,9 +180,9 @@ pub(super) fn select_member(
             // pin/repeatability/order still select (probe-win-last preserved: `walk_with` runs the pin
             // check BEFORE the admit closure). The hop's recorded outcome settles through the same
             // arena over that id; an abandoned hop releases the probe when the scope drops.
-            let mut order = crate::failover::InOrder::new(&tried, candidates.len());
+            let mut order = busbar_substrate::failover::InOrder::new(&tried, candidates.len());
             let mut passed_over = Vec::new();
-            match crate::failover::walk_with(
+            match busbar_substrate::failover::walk_with(
                 &pool_key,
                 &candidates,
                 &attempt,
@@ -224,7 +224,7 @@ pub(super) fn select_member(
                     // id to poll; the refusal fires after the row exists, through the same
                     // rendering the degenerate breaker refusal uses.
                     match &refusal {
-                        crate::failover::Refusal::NotInterchangeable { .. } => {
+                        busbar_substrate::failover::Refusal::NotInterchangeable { .. } => {
                             selected.pin_mismatch = Some(refusal.to_string());
                         }
                         _ => {
@@ -304,7 +304,7 @@ pub(super) fn hop_facts<'a>(
             crate::plane::auditlog::emit_admin_hostless_now(
                 super::receive::AUDIT_ACTION,
                 resource,
-                crate::audit::vocab::OUTCOME_REJECTED,
+                busbar_substrate::audit::vocab::OUTCOME_REJECTED,
                 actor,
             );
             Err(Some(Box::new(
@@ -418,10 +418,12 @@ pub(super) fn extended_agent_card(
     // A caller entitled to none of several configured agents DOES get the empty card, and the
     // distinction is deliberate: that is a statement about that caller's grants, which is exactly
     // what the caller is entitled to be told.
-    let caller = crate::catalogue::Caller {
+    let caller = busbar_substrate::catalogue::Caller {
         key: Some(key),
         now: crate::plane_host::clock_now_secs_over(app),
-        generation: crate::trust::validate::Generations::at_admission(plane.generation()),
+        generation: busbar_substrate::trust::validate::Generations::at_admission(
+            plane.generation(),
+        ),
     };
     let anything = super::registry::Wanted::default();
     let card = plane.with_registrations(|regs| {

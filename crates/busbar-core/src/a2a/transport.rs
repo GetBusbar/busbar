@@ -256,7 +256,10 @@ pub(crate) struct ReqwestTransport {
 
 impl ReqwestTransport {
     pub(crate) fn new(policy: &FetchPolicy) -> Self {
-        Self::with_client_resolver(policy, Arc::new(crate::egress::RefuseSecondLookup))
+        Self::with_client_resolver(
+            policy,
+            Arc::new(busbar_substrate::egress::RefuseSecondLookup),
+        )
     }
 
     pub(crate) fn with_client_resolver(
@@ -370,7 +373,7 @@ impl ReqwestTransport {
             // A mid-body transport failure is reported with the SAME fixed line the plane's own read
             // produced — built HERE from the url the plane still holds (the seam kept the cause and the
             // url separate).
-            crate::proxy::ReadEnd::TransportError => {
+            busbar_substrate::proxy::ReadEnd::TransportError => {
                 Err(format!("`{url}`: the connection failed mid-body"))
             }
             // Complete or Truncated both hand the bytes back: an over-cap body arrives one byte past

@@ -92,7 +92,7 @@ use std::net::IpAddr;
 use super::creds::{Lease, LeaseError};
 use super::fetch::{FetchPolicy, FetchRefusal, HttpResponse, Resolver};
 use super::task::TaskState;
-use crate::net_guard::PinnedTarget;
+use busbar_substrate::net_guard::PinnedTarget;
 
 /// The HTTP round trip the relay makes, as a seam.
 ///
@@ -138,9 +138,9 @@ pub(crate) trait RelayTransport: Send + Sync {
 /// re-exported under this plane's historical name. A sink whose receiver has gone away asks the hop
 /// to STOP rather than being written to forever: a caller that disconnected mid-stream must not
 /// leave busbar holding a blocking thread against an upstream that is happy to keep talking.
-pub(crate) use crate::egress::ChunkFlow;
+pub(crate) use busbar_substrate::egress::ChunkFlow;
 
-pub(crate) use crate::egress::StreamHead;
+pub(crate) use busbar_substrate::egress::StreamHead;
 /// The head of a streaming reply: what the backend answered before any body arrived — the neutral
 /// host-owned [`crate::egress::StreamHead`], re-exported under this plane's historical name so the
 /// relay call sites read unchanged. It lives in [`crate::egress`] because the streaming round trip
@@ -183,7 +183,7 @@ pub(crate) trait DelegationGate: Send + Sync {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct NotDelegable {
     pub(crate) agent_id: String,
-    pub(crate) state: crate::trust::TrustState,
+    pub(crate) state: busbar_substrate::trust::TrustState,
     pub(crate) reason: Option<String>,
 }
 
@@ -631,7 +631,7 @@ pub(crate) trait OutboundFraming: Send + Sync {
 
     /// The axis label for this leg, for telemetry. A STATEMENT OF FACT at a known arrival, which is
     /// what `crate::transport`'s own note says naming a variant is for; nothing compares it.
-    fn leg(&self) -> crate::transport::Transport;
+    fn leg(&self) -> busbar_substrate::transport::Transport;
 
     /// Compose the wire request. `base` is the operator's guarded, pinned endpoint.
     fn compose(
@@ -727,8 +727,8 @@ impl OutboundFraming for JsonRpcFraming {
         BINDING_JSONRPC
     }
 
-    fn leg(&self) -> crate::transport::Transport {
-        crate::transport::Transport::JsonRpc
+    fn leg(&self) -> busbar_substrate::transport::Transport {
+        busbar_substrate::transport::Transport::JsonRpc
     }
 
     fn compose(
@@ -927,8 +927,8 @@ impl OutboundFraming for HttpJsonFraming {
         BINDING_HTTP_JSON
     }
 
-    fn leg(&self) -> crate::transport::Transport {
-        crate::transport::Transport::HttpJson
+    fn leg(&self) -> busbar_substrate::transport::Transport {
+        busbar_substrate::transport::Transport::HttpJson
     }
 
     fn compose(
@@ -1154,8 +1154,8 @@ impl OutboundFraming for GrpcFraming {
         BINDING_GRPC
     }
 
-    fn leg(&self) -> crate::transport::Transport {
-        crate::transport::Transport::Grpc
+    fn leg(&self) -> busbar_substrate::transport::Transport {
+        busbar_substrate::transport::Transport::Grpc
     }
 
     /// The rpc's own path under the service `a2a.proto` declares, and one length-prefixed message.
@@ -1488,7 +1488,7 @@ enum HopOutcome {
     /// well-formed backend A2A error — the WORK failing, not the wire).
     Success,
     /// A wire/answer failure to fold, carried as the plane's own canonical signal.
-    Failure(crate::breaker::CanonicalSignal),
+    Failure(busbar_substrate::breaker::CanonicalSignal),
     /// A busbar-side refusal that is not an upstream health signal — record nothing.
     Nothing,
 }
@@ -1500,15 +1500,15 @@ fn classify_hop(refusal: Option<&RelayRefusal>) -> HopOutcome {
     match refusal {
         None | Some(RelayRefusal::BackendError { .. }) => HopOutcome::Success,
         Some(RelayRefusal::Transport { .. }) => {
-            HopOutcome::Failure(crate::breaker::CanonicalSignal {
-                class: crate::breaker::StatusClass::Network,
+            HopOutcome::Failure(busbar_substrate::breaker::CanonicalSignal {
+                class: busbar_substrate::breaker::StatusClass::Network,
                 provider_signal: None,
                 retry_after: None,
             })
         }
         Some(RelayRefusal::Status { status, .. }) => {
-            HopOutcome::Failure(crate::breaker::normalize_raw_error(
-                &crate::breaker::RawUpstreamError::from_status(*status),
+            HopOutcome::Failure(busbar_substrate::breaker::normalize_raw_error(
+                &busbar_substrate::breaker::RawUpstreamError::from_status(*status),
                 &std::collections::HashMap::new(),
             ))
         }
@@ -1516,8 +1516,8 @@ fn classify_hop(refusal: Option<&RelayRefusal>) -> HopOutcome {
             RelayRefusal::BodyTooLarge { .. }
             | RelayRefusal::NotJson { .. }
             | RelayRefusal::Uncorrelated { .. },
-        ) => HopOutcome::Failure(crate::breaker::CanonicalSignal {
-            class: crate::breaker::StatusClass::ServerError,
+        ) => HopOutcome::Failure(busbar_substrate::breaker::CanonicalSignal {
+            class: busbar_substrate::breaker::StatusClass::ServerError,
             provider_signal: None,
             retry_after: None,
         }),
@@ -1647,7 +1647,7 @@ fn prepare<'a>(
     // refusal (the guard, the live trust decision, an unframable method, a lease that would not
     // build) and none of it reaches a backend, so counting an attempt for one of those would report
     // traffic at an agent busbar never contacted. See `count_leg_failure` for the other half.
-    crate::telemetry::upstream_attempt_on(call.agent_id, framed_leg(call.framing));
+    busbar_substrate::telemetry::upstream_attempt_on(call.agent_id, framed_leg(call.framing));
     Ok((framed_url, pin, request))
 }
 
@@ -1676,10 +1676,10 @@ fn prepare<'a>(
 /// healthy.
 fn count_leg_failure(call: &RelayCall<'_>, refusal: RelayRefusal) -> RelayRefusal {
     if matches!(refusal, RelayRefusal::Transport { .. }) {
-        crate::telemetry::upstream_failure_on(
+        busbar_substrate::telemetry::upstream_failure_on(
             call.agent_id,
             framed_leg(call.framing),
-            crate::proxy::DISPOSITION_TRANSIENT,
+            busbar_substrate::proxy::DISPOSITION_TRANSIENT,
         );
     }
     refusal
@@ -1789,7 +1789,7 @@ fn read_reply(
     url: &str,
     rpc_id: &serde_json::Value,
 ) -> Result<RelayReply, RelayRefusal> {
-    use crate::ingress::jsonrpc::{read_response, NotAnAnswerKind, Reply};
+    use busbar_substrate::ingress::jsonrpc::{read_response, NotAnAnswerKind, Reply};
 
     let envelope: serde_json::Value =
         serde_json::from_slice(body).map_err(|e| RelayRefusal::NotJson {
@@ -2057,7 +2057,7 @@ pub(crate) fn read_event(
     context_id: &str,
     matched_skill: Option<&str>,
 ) -> Result<RelayEvent, String> {
-    use crate::ingress::jsonrpc::{read_response, Reply};
+    use busbar_substrate::ingress::jsonrpc::{read_response, Reply};
 
     let verbatim = || {
         Ok(RelayEvent {

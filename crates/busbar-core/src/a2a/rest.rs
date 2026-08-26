@@ -53,7 +53,7 @@ use serde_json::{json, Map, Value};
 
 use super::receive::{invoke, Target, Wire};
 use crate::state::CurrentApp;
-use crate::transport::Transport;
+use busbar_substrate::transport::Transport;
 
 /// THE `id` EVERY RE-FRAMED ENVELOPE CARRIES.
 ///

@@ -223,7 +223,9 @@ pub(crate) fn servable_bindings() -> Vec<String> {
 /// with is the binding it reads, so this answers that transport's name and cannot drift from what
 /// that route actually does. When a per-agent REST mount lands, it lands beside its entry here.
 fn agent_address_bindings() -> Vec<String> {
-    vec![crate::transport::Transport::JsonRpc.name().to_uppercase()]
+    vec![busbar_substrate::transport::Transport::JsonRpc
+        .name()
+        .to_uppercase()]
 }
 
 /// Whether busbar can serve `binding` at ONE AGENT'S address. See [`agent_address_bindings`].

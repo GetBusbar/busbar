@@ -32,7 +32,7 @@
 
 use serde_json::Value;
 
-use crate::trust::{Observation, Sighting};
+use busbar_substrate::trust::{Observation, Sighting};
 
 use super::anomaly;
 use super::card::{self, CardError};

@@ -482,7 +482,7 @@ pub(crate) mod words;
 // call site in this plane changed — but there is now exactly ONE cadence in the tree and the MCP
 // refresh timer drives the same `due` this one does. See the standing rule: unify the duplicate
 // before a second copy can drift from the first.
-pub(crate) use crate::trust::reverify;
+pub(crate) use busbar_substrate::trust::reverify;
 pub(crate) mod serve;
 pub(crate) mod sign;
 pub(crate) mod spki;

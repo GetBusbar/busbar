@@ -45,7 +45,7 @@
 
 use busbar_api::VirtualKey;
 
-use crate::trust::TrustState;
+use busbar_substrate::trust::TrustState;
 
 use super::registry::AgentRegistration;
 
@@ -171,36 +171,39 @@ pub(crate) fn authorize(
     // ordered gate below is reached on EVERY path rather than short-circuited on one of them. It is
     // `Pending` and serves nothing, which is what the validator's artifact step then says — and this
     // function turns that into the 404 an unknown id has always answered.
-    let floor = crate::trust::Approval::registered();
-    let never = crate::trust::Sighting::Never;
+    let floor = busbar_substrate::trust::Approval::registered();
+    let never = busbar_substrate::trust::Sighting::Never;
 
     // AN UNKNOWN ID HAS NO SCOPE TO BE GRANTED ON, so the grant list for one is empty. That is not a
     // skipped step: the step runs and finds nothing to check, and the artifact step below refuses
     // the request a moment later. Keeping it empty is what preserves the 404-before-403 ordering
     // `InboundRefusal::status` reasons about — an operator debugging a scope grant must not be shown
     // "not in scope" for an agent that does not exist.
-    let agent_scope = [crate::trust::validate::Grant::Scope {
+    let agent_scope = [busbar_substrate::trust::validate::Grant::Scope {
         kind: SCOPE_KIND_AGENT,
         name: agent_id,
     }];
-    let grants: &[crate::trust::validate::Grant] = if found.is_some() { &agent_scope } else { &[] };
+    let grants: &[busbar_substrate::trust::validate::Grant] =
+        if found.is_some() { &agent_scope } else { &[] };
 
     // THE ONE ORDERED GATE. Identity, then grant, then the agent's own state — including the
     // suspension, because the breaker trips on how the agent BEHAVES and an agent behaving badly
     // behaves badly for whoever reached it.
-    if let Err(refusal) = crate::trust::validate::validate_request(&crate::trust::validate::Ask {
-        principal: Some(key),
-        now,
-        grants,
-        approval: found.map_or(&floor, |r| &r.approval),
-        sighting: found.map_or(&never, |r| &r.sighting),
-        // The wire names no skill at this layer; the catalogue is what matches a task shape against
-        // one. An ask addressed to the registration itself has no capability to fingerprint.
-        capability: None,
-        // ADMISSION. There is no earlier snapshot for this request to have outlived, because this is
-        // the one it is arriving on. The value is recorded and re-compared at the relay gate.
-        generation: crate::trust::validate::Generations::at_admission(generation),
-    }) {
+    if let Err(refusal) = busbar_substrate::trust::validate::validate_request(
+        &busbar_substrate::trust::validate::Ask {
+            principal: Some(key),
+            now,
+            grants,
+            approval: found.map_or(&floor, |r| &r.approval),
+            sighting: found.map_or(&never, |r| &r.sighting),
+            // The wire names no skill at this layer; the catalogue is what matches a task shape against
+            // one. An ask addressed to the registration itself has no capability to fingerprint.
+            capability: None,
+            // ADMISSION. There is no earlier snapshot for this request to have outlived, because this is
+            // the one it is arriving on. The value is recorded and re-compared at the relay gate.
+            generation: busbar_substrate::trust::validate::Generations::at_admission(generation),
+        },
+    ) {
         return Err(as_inbound_refusal(refusal, key, agent_id, found));
     }
 
@@ -218,12 +221,12 @@ pub(crate) fn authorize(
 /// arms below map rather than re-derive: a second derivation here could disagree with the gate at
 /// exactly the moment a request races a suspension.
 fn as_inbound_refusal(
-    refusal: crate::trust::validate::Refusal,
+    refusal: busbar_substrate::trust::validate::Refusal,
     key: &VirtualKey,
     agent_id: &str,
     found: Option<&AgentRegistration>,
 ) -> InboundRefusal {
-    use crate::trust::validate::Refusal;
+    use busbar_substrate::trust::validate::Refusal;
     match refusal {
         Refusal::IdentityNotLive { .. } => InboundRefusal::KeyNotLive {
             key_id: key.id.clone(),

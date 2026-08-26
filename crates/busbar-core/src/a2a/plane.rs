@@ -122,27 +122,33 @@ impl super::relay::DelegationGate for LiveGate {
                 // floor a fresh registration starts at rather than invented as something else.
                 return Err(super::relay::NotDelegable {
                     agent_id: agent_id.to_string(),
-                    state: crate::trust::TrustState::Pending,
+                    state: busbar_substrate::trust::TrustState::Pending,
                     reason: Some("the registration no longer exists on this plane".to_string()),
                 });
             };
             // THE ONE ORDERED GATE, reached from the third of this plane's paths. It can only ever
             // be more closed than admission was, never differently closed, because it is the same
             // function admission called.
-            crate::trust::validate::validate_request(&crate::trust::validate::Ask {
-                principal: None,
-                now: 0,
-                grants: &[],
-                approval: &reg.approval,
-                sighting: &reg.sighting,
-                capability: None,
-                generation: crate::trust::validate::Generations::since(admitted, live),
-            })
+            busbar_substrate::trust::validate::validate_request(
+                &busbar_substrate::trust::validate::Ask {
+                    principal: None,
+                    now: 0,
+                    grants: &[],
+                    approval: &reg.approval,
+                    sighting: &reg.sighting,
+                    capability: None,
+                    generation: busbar_substrate::trust::validate::Generations::since(
+                        admitted, live,
+                    ),
+                },
+            )
             .map_err(|refusal| super::relay::NotDelegable {
                 agent_id: agent_id.to_string(),
                 state: reg.trust_state(),
                 reason: match &refusal {
-                    crate::trust::validate::Refusal::NotServing { reason, .. } => reason.clone(),
+                    busbar_substrate::trust::validate::Refusal::NotServing { reason, .. } => {
+                        reason.clone()
+                    }
                     other => Some(other.to_string()),
                 },
             })
@@ -201,7 +207,7 @@ impl A2aPlane {
             fetch_policy,
             pins,
             registrations: RwLock::new(registrations),
-            generation: AtomicU64::new(crate::trust::validate::next_generation()),
+            generation: AtomicU64::new(busbar_substrate::trust::validate::next_generation()),
             card_issuer: OnceLock::new(),
         }))
     }
@@ -295,8 +301,10 @@ impl A2aPlane {
         // TAKEN WHILE THE WRITE LOCK IS STILL HELD, so no reader can observe the new registrations
         // under the old generation. A bump after the release would leave exactly the window this
         // number exists to close.
-        self.generation
-            .store(crate::trust::validate::next_generation(), Ordering::Relaxed);
+        self.generation.store(
+            busbar_substrate::trust::validate::next_generation(),
+            Ordering::Relaxed,
+        );
         out
     }
 
@@ -378,8 +386,8 @@ impl A2aPlane {
         &self,
         agent_id: &str,
     ) -> Option<(
-        crate::trust::reverify::Ledger,
-        crate::trust::reverify::Policy,
+        busbar_substrate::trust::reverify::Ledger,
+        busbar_substrate::trust::reverify::Policy,
     )> {
         self.with_registrations(|regs| {
             regs.iter()

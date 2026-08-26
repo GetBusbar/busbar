@@ -39,7 +39,7 @@
 #![cfg_attr(not(test), allow(dead_code))]
 
 use super::{card, jws};
-use crate::trust::{Approval, PinnedArtifact, Sighting, TrustError};
+use busbar_substrate::trust::{Approval, PinnedArtifact, Sighting, TrustError};
 
 /// The identity an A2A registration is pinned to. The mechanism is part of the value, not a
 /// separate field, so a registration cannot claim `jws_issuer_key` while carrying a transport pin.
@@ -132,16 +132,18 @@ impl PinnedArtifact for CardPin {
 /// `None` means "the operator supplied a root but not yet a fingerprint", which is the normal state
 /// of a fresh registration: the fingerprint is captured at `connect` and approved by a human. It is
 /// deliberately NOT an error, and it is deliberately not filled in with anything the upstream said.
-impl crate::trust::declared::Declares for CardPin {
+impl busbar_substrate::trust::declared::Declares for CardPin {
     type Mechanism = super::config::PinMechanism;
 
     fn is_a_root(mechanism: Self::Mechanism) -> bool {
         mechanism.is_a_root()
     }
 
-    fn artifact(reading: crate::trust::declared::Reading<'_, Self::Mechanism>) -> Option<Self> {
+    fn artifact(
+        reading: busbar_substrate::trust::declared::Reading<'_, Self::Mechanism>,
+    ) -> Option<Self> {
         use super::config::PinMechanism;
-        use crate::trust::declared::Reading;
+        use busbar_substrate::trust::declared::Reading;
         match reading {
             // NAMED OUT LOUD, which is this plane's ruling and not core's: an operator reading a
             // registration list must SEE which entries have no root rather than inferring it from

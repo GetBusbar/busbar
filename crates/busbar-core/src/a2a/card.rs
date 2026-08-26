@@ -34,7 +34,7 @@ use sha2::{Digest, Sha256};
 
 use super::canonical::{canonicalize, CanonicalError};
 use super::pin::CardPin;
-use crate::trust::Observation;
+use busbar_substrate::trust::Observation;
 
 const B64: base64::engine::general_purpose::GeneralPurpose =
     base64::engine::general_purpose::STANDARD;

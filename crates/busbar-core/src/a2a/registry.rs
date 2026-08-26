@@ -32,9 +32,9 @@
 
 use serde_json::Value;
 
-use crate::catalogue::{Caller, CatalogueItem};
-use crate::trust::validate::Grant;
-use crate::trust::{Approval, Sighting, TrustState};
+use busbar_substrate::catalogue::{Caller, CatalogueItem};
+use busbar_substrate::trust::validate::Grant;
+use busbar_substrate::trust::{Approval, Sighting, TrustState};
 
 use super::anomaly;
 use super::card::{AgentCard, CardError};
@@ -143,7 +143,7 @@ impl AgentRegistration {
     }
 
     /// The changes queue for the last sighting.
-    pub(crate) fn changes(&self) -> crate::trust::Drift {
+    pub(crate) fn changes(&self) -> busbar_substrate::trust::Drift {
         self.approval.drift(&self.sighting)
     }
 
@@ -311,7 +311,7 @@ pub(crate) enum Excluded {
 /// One catalogue row: the registration, and the skill it matched. Core's type, aliased rather than
 /// redeclared — a plane that keeps its own row type is a plane that can quietly add a field the
 /// mechanism does not know it is carrying.
-pub(crate) type Candidate<'a> = crate::catalogue::Entitled<'a, AgentRegistration>;
+pub(crate) type Candidate<'a> = busbar_substrate::catalogue::Entitled<'a, AgentRegistration>;
 
 impl CatalogueItem for AgentRegistration {
     type Excluded = Excluded;
@@ -344,23 +344,29 @@ impl CatalogueItem for AgentRegistration {
     /// THE FULL ORDERED GATE. Identity, grant, artifact and generation, in one call, and it is the
     /// same call the invocation check and the pre-socket relay gate make.
     fn admit(&self, caller: &Caller<'_>, grants: &[Grant<'_>]) -> Result<(), Excluded> {
-        crate::trust::validate::validate_request(&crate::trust::validate::Ask {
-            principal: caller.key,
-            now: caller.now,
-            grants,
-            approval: &self.approval,
-            sighting: &self.sighting,
-            // The card's SKILL is matched structurally in `fit`, against a declaration rather than
-            // against an approved digest: this plane approves a card, and the skill list is part of
-            // the document the fingerprint already covers.
-            capability: None,
-            generation: caller.generation,
-        })
+        busbar_substrate::trust::validate::validate_request(
+            &busbar_substrate::trust::validate::Ask {
+                principal: caller.key,
+                now: caller.now,
+                grants,
+                approval: &self.approval,
+                sighting: &self.sighting,
+                // The card's SKILL is matched structurally in `fit`, against a declaration rather than
+                // against an approved digest: this plane approves a card, and the skill list is part of
+                // the document the fingerprint already covers.
+                capability: None,
+                generation: caller.generation,
+            },
+        )
         .map_err(|refusal| match refusal {
-            crate::trust::validate::Refusal::NotGranted { .. } => Excluded::NotInScope,
-            crate::trust::validate::Refusal::EgressDenied { .. } => Excluded::NoEgressGrant,
-            crate::trust::validate::Refusal::IdentityNotLive { .. } => Excluded::CallerNotLive,
-            crate::trust::validate::Refusal::NotServing { state, .. } => {
+            busbar_substrate::trust::validate::Refusal::NotGranted { .. } => Excluded::NotInScope,
+            busbar_substrate::trust::validate::Refusal::EgressDenied { .. } => {
+                Excluded::NoEgressGrant
+            }
+            busbar_substrate::trust::validate::Refusal::IdentityNotLive { .. } => {
+                Excluded::CallerNotLive
+            }
+            busbar_substrate::trust::validate::Refusal::NotServing { state, .. } => {
                 Excluded::NotTrusted(state)
             }
             // The catalogue asks at admission with no capability, where neither can fire; answered
@@ -471,7 +477,7 @@ pub(crate) fn inbound_catalogue<'a>(
     registrations: &'a [AgentRegistration],
     wanted: &Wanted,
 ) -> Vec<Candidate<'a>> {
-    crate::catalogue::entitled(registrations, caller, wanted)
+    busbar_substrate::catalogue::entitled(registrations, caller, wanted)
 }
 
 /// DELEGATING: which registered agents THIS FRONTED AGENT may see as delegation targets.
@@ -483,7 +489,7 @@ pub(crate) fn delegation_catalogue<'a>(
     registrations: &'a [AgentRegistration],
     wanted: &Wanted,
 ) -> Vec<Candidate<'a>> {
-    crate::catalogue::entitled(registrations, caller, wanted)
+    busbar_substrate::catalogue::entitled(registrations, caller, wanted)
 }
 
 /// THE ENTITLED AGENTS, AS THE EXTENDED CARD CARRIES THEM — the same walk as [`inbound_catalogue`],
@@ -498,7 +504,7 @@ pub(crate) fn entitled_agents<'a>(
     registrations: &'a [AgentRegistration],
     wanted: &Wanted,
 ) -> Vec<super::serve::EntitledAgent<'a>> {
-    crate::catalogue::rendered(registrations, caller, wanted)
+    busbar_substrate::catalogue::rendered(registrations, caller, wanted)
 }
 
 /// WHY a named registration is not in a caller's catalogue. The same judgement, with the reason kept
@@ -508,7 +514,7 @@ pub(crate) fn explain(
     caller: &Caller<'_>,
     wanted: &Wanted,
 ) -> Result<(), Excluded> {
-    crate::catalogue::judge(registration, caller, wanted).map(|_| ())
+    busbar_substrate::catalogue::judge(registration, caller, wanted).map(|_| ())
 }
 
 #[cfg(test)]

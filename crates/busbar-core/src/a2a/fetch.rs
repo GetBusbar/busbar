@@ -52,7 +52,7 @@
 
 use std::net::IpAddr;
 
-use crate::net_guard::{self, GuardPolicy, GuardRefusal, PinnedTarget};
+use busbar_substrate::net_guard::{self, GuardPolicy, GuardRefusal, PinnedTarget};
 
 use super::card::{WELL_KNOWN_CARD_PATH, WELL_KNOWN_CARD_PATH_LEGACY};
 
@@ -61,7 +61,7 @@ use super::card::{WELL_KNOWN_CARD_PATH, WELL_KNOWN_CARD_PATH_LEGACY};
 /// Re-exported rather than redeclared: a second trait with the same shape would let a transport be
 /// written against one and a guard against the other, which is how two implementations of one
 /// control start.
-pub(crate) use crate::net_guard::Resolver;
+pub(crate) use busbar_substrate::net_guard::Resolver;
 
 /// The operator's fetch policy. Config, therefore intent.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -281,7 +281,7 @@ impl std::fmt::Display for FetchRefusal {
 /// `peer_spki` / `client_identity_offered` fields carry the exact per-hop observations this plane's
 /// verifier reads ([`super::verify`] refuses a `cert_spki`/`mtls` registration whose card did not
 /// arrive over the connection those fields describe).
-pub(crate) use crate::egress::Response as HttpResponse;
+pub(crate) use busbar_substrate::egress::Response as HttpResponse;
 
 /// The HTTP round trip, as a seam.
 ///

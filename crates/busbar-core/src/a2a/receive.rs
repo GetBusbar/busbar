@@ -159,10 +159,10 @@ fn admit(
     // READ ONCE, under the same acquisition as the registry itself, so the value carried forward is
     // the generation the decision below was actually taken on.
     let generation = plane.generation();
-    let caller = crate::catalogue::Caller {
+    let caller = busbar_substrate::catalogue::Caller {
         key: Some(key),
         now: now_secs,
-        generation: crate::trust::validate::Generations::at_admission(generation),
+        generation: busbar_substrate::trust::validate::Generations::at_admission(generation),
     };
     plane.with_registrations(|regs| {
         // 2. AUTHORISE. `Dispatch` is owned, so it escapes this closure; `Candidate` borrows the
@@ -262,10 +262,12 @@ fn select(
     let Some(plane) = crate::a2a::runtime(app) else {
         return Err(Box::new(plane_absent()));
     };
-    let caller = crate::catalogue::Caller {
+    let caller = busbar_substrate::catalogue::Caller {
         key: Some(key),
         now: crate::plane_host::clock_now_secs_over(app),
-        generation: crate::trust::validate::Generations::at_admission(plane.generation()),
+        generation: busbar_substrate::trust::validate::Generations::at_admission(
+            plane.generation(),
+        ),
     };
     let wanted = super::registry::Wanted {
         shape: shape.clone(),
@@ -316,7 +318,7 @@ pub(crate) async fn plane_rpc(
         principal,
         FromCatalogue,
         wire,
-        crate::transport::Transport::JsonRpc,
+        busbar_substrate::transport::Transport::JsonRpc,
         body,
     )
     .await
@@ -661,7 +663,7 @@ pub(crate) async fn agent_rpc(
         principal,
         Named(agent_id),
         wire,
-        crate::transport::Transport::JsonRpc,
+        busbar_substrate::transport::Transport::JsonRpc,
         body,
     )
     .await
@@ -700,7 +702,7 @@ pub(super) async fn invoke(
     principal: crate::auth::AuthPrincipal,
     target: Target,
     wire: Wire,
-    transport: crate::transport::Transport,
+    transport: busbar_substrate::transport::Transport,
     body: axum::body::Bytes,
 ) -> Response {
     let started = std::time::Instant::now();
@@ -713,7 +715,7 @@ pub(super) async fn invoke(
         // The same sentinel `plane::observe` stamps, and for the same reason it states there: the
         // routing target is client-supplied and an unbounded label value is a memory-exhaustion DoS
         // one valid credential can drive.
-        crate::proxy::POOL_LABEL_UNRESOLVED,
+        busbar_substrate::proxy::POOL_LABEL_UNRESOLVED,
         crate::telemetry::outcome_of(answered.status().as_u16()),
         started.elapsed().as_secs_f64(),
     );
@@ -775,9 +777,9 @@ async fn invoke_inner(
     // STEPS 1, 2, 4, 5, 6, 7, 8 AND 13 ARE CORE'S. This plane states none of them any more, and
     // step 2 — the `Origin` / DNS-rebinding refusal — is one it never stated at all: it arrived
     // here by being core's, which is the entire argument for the concern having one home.
-    crate::ingress::protocol::serve(
+    busbar_substrate::ingress::protocol::serve(
         &A2aWords,
-        crate::ingress::protocol::Request {
+        busbar_substrate::ingress::protocol::Request {
             present: crate::a2a::runtime(&app).is_some(),
             origin: origin.as_deref(),
             // NO OPERATOR ALLOWLIST ON THIS PLANE, so loopback and nothing else. A2A is an
@@ -969,7 +971,7 @@ async fn admitted(
             crate::plane::auditlog::emit_admin_hostless_now(
                 AUDIT_ACTION,
                 &resource,
-                crate::audit::vocab::OUTCOME_REJECTED,
+                busbar_substrate::audit::vocab::OUTCOME_REJECTED,
                 &actor,
             );
             tracing::info!(
@@ -1030,7 +1032,7 @@ async fn admitted(
         crate::plane::auditlog::emit_admin_hostless_now(
             AUDIT_ACTION,
             &resource,
-            crate::audit::vocab::OUTCOME_REJECTED,
+            busbar_substrate::audit::vocab::OUTCOME_REJECTED,
             &actor,
         );
         return (
@@ -1143,7 +1145,7 @@ async fn admitted(
             crate::plane::auditlog::emit_admin_hostless_now(
                 AUDIT_ACTION,
                 &resource,
-                crate::audit::vocab::OUTCOME_APPLIED,
+                busbar_substrate::audit::vocab::OUTCOME_APPLIED,
                 &actor,
             );
             return response;
@@ -1168,7 +1170,7 @@ async fn admitted(
             crate::plane::auditlog::emit_admin_hostless_now(
                 AUDIT_ACTION,
                 &resource,
-                crate::audit::vocab::OUTCOME_REJECTED,
+                busbar_substrate::audit::vocab::OUTCOME_REJECTED,
                 &actor,
             );
             return (
@@ -1509,7 +1511,7 @@ async fn admitted(
     crate::plane::auditlog::emit_admin_hostless_now(
         AUDIT_ACTION,
         &resource,
-        crate::audit::vocab::OUTCOME_APPLIED,
+        busbar_substrate::audit::vocab::OUTCOME_APPLIED,
         &actor,
     );
 
@@ -1756,7 +1758,7 @@ pub(super) fn plane_of(app: &App) -> Option<Arc<super::plane::A2aPlane>> {
 /// re-verification ever confirmed.
 fn fold_reverify_join(
     joined: Result<Option<super::verify::Pass>, tokio::task::JoinError>,
-    gate: &crate::trust::verify::VerifyGate,
+    gate: &busbar_substrate::trust::verify::VerifyGate,
     subject: &str,
 ) -> Option<super::verify::Pass> {
     match joined {

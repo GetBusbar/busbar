@@ -134,7 +134,7 @@ pub(crate) struct PinnedCallback {
 /// [`crate::net_guard::ipv4_is_internal`] first, so no guard lost coverage in the unification. That
 /// ordering is the whole discipline: widen the shared predicate to the union, then delete the copy.
 pub(crate) fn is_internal_addr(ip: &IpAddr) -> bool {
-    crate::net_guard::ip_is_internal(ip)
+    busbar_substrate::net_guard::ip_is_internal(ip)
 }
 
 /// Split a URL into `(scheme, host)` without pulling in a URL parser.
@@ -217,7 +217,7 @@ fn structural_check(url: &str) -> Result<Structural, PushNotifyError> {
     if scheme != "https" {
         return Err(PushNotifyError::Scheme(scheme));
     }
-    if crate::net_guard::is_alternate_ipv4_encoding(&host) {
+    if busbar_substrate::net_guard::is_alternate_ipv4_encoding(&host) {
         return Err(PushNotifyError::ObfuscatedHost(host));
     }
     // A canonical IP LITERAL is checked directly and is not subject to the resolver's answer at all

@@ -74,7 +74,7 @@ use crate::admin::v1::contract::taxonomy::Cond;
 use crate::admin::v1::contract::AdminError;
 use crate::diagnostics::{diag_error, A2A_CARD_FETCH_PANICKED};
 use crate::state::AppHandle;
-use crate::trust::{Approval, Drift, Observation, Sighting, TrustState};
+use busbar_substrate::trust::{Approval, Drift, Observation, Sighting, TrustState};
 
 /// A CARD, PLUS WHAT THE CONNECTION IT ARRIVED ON PROVED.
 ///
@@ -716,7 +716,7 @@ fn registration_view(name: &str, reg: &AgentRegistration) -> A2aTrustView {
 /// asking on this surface is what the endpoint proved, and echoing back the mechanism they
 /// configured would answer it with their own input.
 fn mechanism_of(sighting: &Sighting<CardPin>) -> &'static str {
-    use crate::trust::PinnedArtifact as _;
+    use busbar_substrate::trust::PinnedArtifact as _;
     sighting
         .observation()
         .and_then(|o| o.pin.as_ref())

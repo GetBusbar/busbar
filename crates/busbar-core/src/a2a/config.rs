@@ -580,8 +580,10 @@ impl AgentPinCfg {
     /// This `pin:` object as the plane-neutral reader takes it. A projection, not a decision: every
     /// question asked of it is [`crate::trust::declared`]'s, and this plane's answers are its
     /// [`crate::trust::declared::Declares`] impl in [`super::pin`].
-    pub(crate) fn declaration(&self) -> crate::trust::declared::Declaration<'_, PinMechanism> {
-        crate::trust::declared::Declaration {
+    pub(crate) fn declaration(
+        &self,
+    ) -> busbar_substrate::trust::declared::Declaration<'_, PinMechanism> {
+        busbar_substrate::trust::declared::Declaration {
             mechanism: self.mechanism,
             key: self.key.as_deref(),
             fingerprint: self.fingerprint.as_deref(),

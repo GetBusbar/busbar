@@ -131,7 +131,7 @@ pub(crate) async fn serve(
     // per-transport conformance number readable from busbar's own telemetry once a second transport
     // arms" — this is that second transport, and this is the only place on it that knows.
     tracing::debug!(
-        transport = crate::transport::Transport::Grpc.name(),
+        transport = busbar_substrate::transport::Transport::Grpc.name(),
         rpc = req.uri().path(),
         "a2a: a request arrived on the gRPC binding"
     );
@@ -189,7 +189,7 @@ impl Busbar {
             // the metric label it emits for every A2A request — and this is the only site that
             // knows a gRPC frame arrived, because everything below it has already been re-framed
             // as the JSON-RPC envelope above.
-            crate::transport::Transport::Grpc,
+            busbar_substrate::transport::Transport::Grpc,
             axum::body::Bytes::from(body.to_string().into_bytes()),
         )
         .await;
@@ -592,7 +592,7 @@ impl Busbar {
             // the metric label it emits for every A2A request — and this is the only site that
             // knows a gRPC frame arrived, because everything below it has already been re-framed
             // as the JSON-RPC envelope above.
-            crate::transport::Transport::Grpc,
+            busbar_substrate::transport::Transport::Grpc,
             axum::body::Bytes::from(body.to_string().into_bytes()),
         )
         .await;

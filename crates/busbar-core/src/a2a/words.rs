@@ -35,9 +35,9 @@ use crate::state::App;
 #[derive(Default)]
 pub(crate) struct A2aWords;
 
-impl crate::ingress::protocol::Words for A2aWords {
-    fn refuse(&self, refusal: crate::ingress::protocol::CoreRefusal<'_>) -> Response {
-        use crate::ingress::protocol::CoreRefusal;
+impl busbar_substrate::ingress::protocol::Words for A2aWords {
+    fn refuse(&self, refusal: busbar_substrate::ingress::protocol::CoreRefusal<'_>) -> Response {
+        use busbar_substrate::ingress::protocol::CoreRefusal;
         match refusal {
             // The mount and the config are created in one act, so this is unreachable; it is
             // answered rather than unwrapped because this is a request path.
@@ -133,16 +133,18 @@ impl crate::ingress::protocol::Words for A2aWords {
 /// with no JSON-RPC message in hand at all, and JSON-RPC 2.0 section 5 spells "no correlation"
 /// `null`.
 pub(super) fn refuse_admission(refusal: &InboundRefusal) -> Response {
-    use crate::ingress::protocol::Words as _;
-    A2aWords.refuse(crate::ingress::protocol::CoreRefusal::Admission {
-        id: serde_json::Value::Null,
-        status: axum::http::StatusCode::from_u16(refusal.status())
-            .unwrap_or(axum::http::StatusCode::FORBIDDEN),
-        message: refusal.to_string(),
-        // NONE, and the argument is on the variant: this plane's error body carries an
-        // `ErrorInfo.reason` from A2A's own fixed vocabulary or it carries none.
-        reason: None,
-    })
+    use busbar_substrate::ingress::protocol::Words as _;
+    A2aWords.refuse(
+        busbar_substrate::ingress::protocol::CoreRefusal::Admission {
+            id: serde_json::Value::Null,
+            status: axum::http::StatusCode::from_u16(refusal.status())
+                .unwrap_or(axum::http::StatusCode::FORBIDDEN),
+            message: refusal.to_string(),
+            // NONE, and the argument is on the variant: this plane's error body carries an
+            // `ErrorInfo.reason` from A2A's own fixed vocabulary or it carries none.
+            reason: None,
+        },
+    )
 }
 
 /// THE RFC 9728 FACTS THIS PLANE PUBLISHES.
@@ -163,9 +165,9 @@ pub(super) fn refuse_admission(refusal: &InboundRefusal) -> Response {
 /// it is compared byte-for-byte against the `aud` of every token presented under this mount. Both
 /// sides read it from `A2aPlane::admission`, so there is no second spelling of it anywhere.
 impl crate::ingress::protocol::ResourceMetadata for A2aWords {
-    fn document(app: &App) -> Option<crate::ingress::protocol::Metadata<'_>> {
+    fn document(app: &App) -> Option<busbar_substrate::ingress::protocol::Metadata<'_>> {
         let admission = crate::a2a::runtime(app).and_then(|p| p.admission())?;
-        Some(crate::ingress::protocol::Metadata {
+        Some(busbar_substrate::ingress::protocol::Metadata {
             resource: std::borrow::Cow::Owned(admission.audience),
             authorization_servers: &[],
             scopes_supported: &[],
@@ -180,6 +182,6 @@ impl crate::ingress::protocol::ResourceMetadata for A2aWords {
 /// this plane says to a refusal core decided, so "this deployment has no A2A plane" is written in
 /// exactly one place and cannot come to mean two things.
 pub(super) fn plane_absent() -> Response {
-    use crate::ingress::protocol::Words as _;
-    A2aWords.refuse(crate::ingress::protocol::CoreRefusal::PlaneAbsent)
+    use busbar_substrate::ingress::protocol::Words as _;
+    A2aWords.refuse(busbar_substrate::ingress::protocol::CoreRefusal::PlaneAbsent)
 }
