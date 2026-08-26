@@ -27,7 +27,7 @@ pub mod scope;
 use crate::breaker::CanonicalSignal;
 use crate::plane::approvals::Sealer;
 use crate::plane::calllog::CallInput;
-use crate::plane_host::scope::DispatchScope;
+pub use crate::plane_host::scope::{DispatchScope, DurableScope, SessionScope};
 use crate::store::Unavailable;
 use crate::trust::validate::{Lapsed, Standing};
 use crate::trust::TrustState;
@@ -132,6 +132,13 @@ pub trait EngineHost: Send + Sync {
     /// fire-and-forget, so a non-`Ok` is a durability miss, not a refusal. Identical to
     /// `busbar_core::plane_host::trust::quarantine_settle_over`.
     fn quarantine_settle(&self, subject: &str, state: TrustState) -> bool;
+
+    /// Record ONE metered, attributed event through the host `meter_charge` seam over `scope`'s arena.
+    /// `usage` carries the resolved `(key_id, model, provider)` attribution the host writes the cost row
+    /// from; the transient `HostCtx` is minted over `scope` and consumed SYNCHRONOUSLY inside the call.
+    /// Fire-and-forget: a store miss is not surfaced, exactly as the plane's in-place `record_metering`
+    /// was. Identical to driving the `meter_charge` vtable slot under a `with_borrowed_host` over `scope`.
+    fn meter_charge(&self, scope: &DispatchScope, usage: &busbar_plugin::hot::Usage);
 
     /// WIN ONE `(pool, lane)` breaker probe through the host `breaker_admit` seam, leaving the
     /// settle-capable admission REGISTERED in `scope`'s arena and returning the POD [`AdmissionId`] —

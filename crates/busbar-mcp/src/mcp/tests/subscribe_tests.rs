@@ -550,6 +550,7 @@ fn a_recorded_update_is_not_delivered_to_a_caller_whose_grant_does_not_reach_it(
         let id = serde_json::json!(7);
         crate::mcp::subscribe::Listen {
             handle: handle.clone(),
+            host: busbar_core::plane_host::engine_host_from_handle(&handle),
             standing: busbar_core::trust::validate::Standing::opened(
                 Some(key),
                 busbar_core::trust::validate::Snapshot::Watching,
@@ -746,6 +747,7 @@ fn a_revoked_key_stops_being_served_on_the_next_poll() {
     let id = serde_json::json!(7);
     let mut state = crate::mcp::subscribe::Listen {
         handle: handle.clone(),
+        host: busbar_core::plane_host::engine_host_from_handle(&handle),
         // THE ID AND THE BOUND, never the principal. `Snapshot::Watching` because a generation move
         // is what this response exists to REPORT — pinning it would end the stream on the first
         // change it was opened to hear about.

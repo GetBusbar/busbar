@@ -309,12 +309,6 @@ pub(crate) struct McpSubject {
     cfg: crate::mcp::config::McpServerDefCfg,
     pool: Arc<crate::mcp::client::pool::McpConnectionPool>,
     sightings: Arc<crate::mcp::client::catalogue::CatalogueCache>,
-    /// The live engine snapshot, carried on the subject so `look` can settle the durable demotion
-    /// through the host `drift_quarantine` slot (which pulls the demotion store host-side). Held here
-    /// because `connect` takes a LIVE observation, the only kind of event that may write one — and
-    /// because an operator who works a remedy through this verb and is told `approved` must not find
-    /// the upstream quarantined again at the next restart.
-    app: Arc<busbar_core::state::App>,
 }
 
 /// THE MCP PLANE'S TRUST SURFACE. Three items, and the surface owns everything else.
@@ -336,14 +330,17 @@ impl PlaneTrust for McpServers {
                     cfg: cfg.clone(),
                     pool: super::runtime(app).pool.clone(),
                     sightings: super::runtime(app).sightings.clone(),
-                    app: Arc::clone(app),
                 }),
                 _ => None,
             }
         })
     }
 
-    async fn look(subject: McpSubject, _name: String) -> Result<McpTrustView, AdminError> {
+    async fn look(
+        subject: McpSubject,
+        host: Arc<dyn busbar_substrate::plane_host::EngineHost>,
+        _name: String,
+    ) -> Result<McpTrustView, AdminError> {
         let report =
             crate::mcp::connect::refresh(&subject.pool, &subject.sightings, &subject.entry)
                 .await
@@ -360,11 +357,7 @@ impl PlaneTrust for McpServers {
         // observed state and pulls the demotion store host-side — the same one settle rule the
         // verify-on-call path reaches, so an operator's `approved` clears what the sweep demoted. The
         // settle is fire-and-forget, so the durability bool is not a refusal.
-        let _ = busbar_core::plane_host::trust::quarantine_settle_over(
-            &subject.app,
-            &subject.entry.id,
-            report.state,
-        );
+        let _ = host.quarantine_settle(&subject.entry.id, report.state);
         // AND THE SAME LEDGER STAMP, for the same one-observation-one-set-of-books reason. Without
         // it a registration the operator just looked at was still `NeverChecked` to the unattended
         // timer, which re-fetched it on its very next tick — a second contact the operator's look
@@ -373,9 +366,8 @@ impl PlaneTrust for McpServers {
         crate::mcp::connect::stamp(
             &subject.sightings,
             &subject.entry.id,
-            // D1: the ledger stamp's clock through the neutral host seam rather than naming
-            // `busbar_core::plane_host::clock_now_ms_over`.
-            busbar_core::plane_host::engine_host(&subject.app).clock_now_ms(),
+            // D1: the ledger stamp's clock through the neutral host seam handed in by the driver.
+            host.clock_now_ms(),
             !report.drift.is_empty(),
         );
         Ok(trust_view(&report, &subject.entry, &subject.cfg))

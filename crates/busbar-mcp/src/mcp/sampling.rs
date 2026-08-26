@@ -105,6 +105,7 @@ impl SamplingSpend {
 /// audio block in the ask is refused rather than silently dropped, because a completion computed
 /// over less than the upstream sent is an answer to a question nobody asked.
 pub(crate) async fn satisfy_upstream_ask(
+    host: &std::sync::Arc<dyn busbar_substrate::plane_host::EngineHost>,
     app: &std::sync::Arc<busbar_core::state::App>,
     gov: &busbar_api::PlaneRequestCtx,
     ask: &super::inputreq::Ask,
@@ -143,9 +144,9 @@ pub(crate) async fn satisfy_upstream_ask(
     // multi-entry ask fits the budget is a fact about the ask rather than about how long its
     // earlier entries took to complete — an upstream must not be able to buy a fresh window by
     // being slow across a minute boundary.
-    // D1: read the ask's single judging instant through the neutral host seam rather than naming
-    // `busbar_core::plane_host::clock_now_secs_over`.
-    let now = busbar_core::plane_host::engine_host(app).clock_now_secs();
+    // D1: read the ask's single judging instant through the neutral host seam (the `clock_now` seam),
+    // threaded in rather than minted here from the core factory.
+    let now = host.clock_now_secs();
     let mut responses = serde_json::Map::new();
     for (entry, request) in requests {
         if request.get("method").and_then(|m| m.as_str()) != Some("sampling/createMessage") {
@@ -161,7 +162,7 @@ pub(crate) async fn satisfy_upstream_ask(
             .sampling_spend
             .try_spend(server, cfg.max_requests_per_minute, now)?;
         let body = chat_body(request.get("params"), cfg)?;
-        let result = complete(app, gov, cfg, body).await?;
+        let result = complete(host, app, gov, cfg, body).await?;
         responses.insert(entry.clone(), result);
     }
     let mut continuation = serde_json::Map::new();
@@ -264,6 +265,7 @@ fn chat_body(
 /// DRIVE one completion through the governed pipeline and shape the answer as the protocol's
 /// `CreateMessageResult`.
 async fn complete(
+    host: &std::sync::Arc<dyn busbar_substrate::plane_host::EngineHost>,
     app: &std::sync::Arc<busbar_core::state::App>,
     gov: &busbar_api::PlaneRequestCtx,
     cfg: &super::config::SamplingCfg,
@@ -292,8 +294,8 @@ async fn complete(
         parsed,
         None,
         std::time::Instant::now(),
-        // D1: the admission clock through the neutral host seam.
-        busbar_core::plane_host::engine_host(app).clock_now_secs(),
+        // D1: the admission clock through the neutral host seam, threaded in.
+        host.clock_now_secs(),
         None,
     )
     .await;

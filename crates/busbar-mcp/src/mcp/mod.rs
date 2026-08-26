@@ -462,9 +462,7 @@ pub(crate) fn mcp_hydrate(ctx: &busbar_core::plane::registry::BootCtx) -> Result
     // through the seam, opening a dispatch scope so the caller-driven seed reaches the host over a live
     // `HostCtx`.
     busbar_core::plane::calllog::register_call_stream(app);
-    let restored = busbar_core::plane_host::with_dispatch_scope(app, |host, _| {
-        busbar_core::plane::calllog::CALLS.restore_from_store(host, plane_store.as_ref())
-    });
+    let restored = busbar_core::plane::calllog::restore_from_store_over(app, plane_store.as_ref());
     match restored {
         Ok(r) if r == busbar_core::plane::calllog::Restored::default() => {}
         Ok(r) => {

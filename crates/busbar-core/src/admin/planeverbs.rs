@@ -88,8 +88,13 @@ pub trait PlaneTrust: Send + Sync + 'static {
     /// upstream cannot currently be trusted, and a 5xx would say busbar failed when busbar did not.
     /// `Err` is reserved for what is genuinely busbar's own: an operator configuration that makes
     /// the look impossible, and an internal failure.
+    /// `host` is the NEUTRAL host seam minted over this same live snapshot by the driver, so a plane
+    /// whose look reaches a host capability (a durable settle, the clock) calls the typed method WITHOUT
+    /// naming `crate::plane_host` — a plane compiled apart from the host never sees the factory. A plane
+    /// whose look needs none simply ignores it.
     fn look(
         subject: Self::Subject,
+        host: Arc<dyn busbar_substrate::plane_host::EngineHost>,
         name: String,
     ) -> impl Future<Output = Result<Self::View, AdminError>> + Send;
 }
@@ -159,7 +164,11 @@ pub async fn connect<P: PlaneTrust>(
         Ok(v) => v,
         Err(e) => return crate::admin::v1::json::err_json(&e),
     };
-    match P::look(subject, name.clone()).await {
+    // The neutral host seam over this request's live snapshot, handed to the plane's `look` so it can
+    // reach a host capability (a durable settle, the clock) through a typed method without naming
+    // `crate::plane_host` itself.
+    let host = crate::plane_host::engine_host(&app);
+    match P::look(subject, host, name.clone()).await {
         Ok(view) => {
             audit(
                 P::PLANE,

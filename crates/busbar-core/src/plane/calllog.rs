@@ -166,6 +166,19 @@ pub fn register_call_stream(app: &Arc<crate::state::App>) {
     register_call_stream_as(KIND_ID_CALL, app);
 }
 
+/// BOOT-TIME rehydrate of the durable `call` chain, driven over a fresh dispatch scope so the
+/// caller-driven seed reaches the host over a live `HostCtx`. The `with_dispatch_scope` mint stays
+/// CORE-side here (the returned [`Restored`] and the [`PlaneStore`] the read walks are both core types
+/// a plane cannot name), so a plane's boot hook calls THIS instead of naming
+/// `crate::plane_host::with_dispatch_scope`. Byte-identical to the in-place restore it replaced.
+#[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
+pub fn restore_from_store_over(
+    app: &Arc<crate::state::App>,
+    store: &dyn PlaneStore,
+) -> StoreResult<Restored> {
+    crate::plane_host::with_dispatch_scope(app, |host, _| CALLS.restore_from_store(host, store))
+}
+
 /// Register the `call` stream under an ARBITRARY `kind_id` — production pins [`KIND_ID_CALL`], a TEST
 /// drives over a FRESH id so parallel tests never share one process-global chain.
 #[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]

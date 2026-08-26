@@ -467,7 +467,11 @@ impl PlaneTrust for A2aAgents {
         })
     }
 
-    async fn look(subject: A2aSubject, name: String) -> Result<A2aTrustView, AdminError> {
+    async fn look(
+        subject: A2aSubject,
+        _host: Arc<dyn busbar_substrate::plane_host::EngineHost>,
+        name: String,
+    ) -> Result<A2aTrustView, AdminError> {
         let preview = look(&subject).await?;
         debug_assert!(
             preview.grants_nothing(),

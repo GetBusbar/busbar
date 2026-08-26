@@ -639,8 +639,8 @@ fn classify_wire_failure(err: &TransportError) -> (busbar_substrate::failover::S
 
 /// The classified breaker outcome of ONE upstream leg — built in [`call`], where the raw
 /// transport/status structure still exists (Stage 1), and SETTLED by the CALLER through the host
-/// scope it owns (CLUSTER-1): the sync leg through its per-leg [`DispatchScope`](busbar_core::plane_host::DispatchScope)
-/// admission, the task leg through the runner's [`DurableScope`](busbar_core::plane_host::DurableScope).
+/// scope it owns (CLUSTER-1): the sync leg through its per-leg [`DispatchScope`](busbar_substrate::plane_host::DispatchScope)
+/// admission, the task leg through the runner's [`DurableScope`](busbar_substrate::plane_host::DurableScope).
 /// Classification stays put; only the settle moves — [`busbar_substrate::plane_host::breaker::failure_signal`]
 /// is the inverse of the host `classify`, so a settle folds through the SAME `record_signal`/`record_success`
 /// disposition the in-place call ran.

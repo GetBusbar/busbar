@@ -365,6 +365,18 @@ impl busbar_substrate::plane_host::EngineHost for EngineHostImpl {
         trust::quarantine_settle_over(&self.app, subject, state)
     }
 
+    fn meter_charge(&self, scope: &DispatchScope, usage: &busbar_plugin::hot::Usage) {
+        // SAME dispatch as the in-place `with_borrowed_host` meter the plane's round-charge drove: mint
+        // the transient `HostCtx` over the caller's arena, fire the `meter_charge` slot, and drop the
+        // host pointer without letting it escape. Fire-and-forget, exactly as the direct call was.
+        with_borrowed_host(&self.app, scope, |host, vt| {
+            let _ = (vt.meter_charge.expect("meter_charge is a wired slot"))(
+                host,
+                usage as *const busbar_plugin::hot::Usage,
+            );
+        });
+    }
+
     fn breaker_admit(
         &self,
         scope: &DispatchScope,
@@ -517,6 +529,20 @@ pub fn engine_host_from_handle(
     handle: &Arc<crate::state::AppHandle>,
 ) -> Arc<dyn busbar_substrate::plane_host::EngineHost> {
     engine_host(&handle.load())
+}
+
+/// A neutral, reusable HOST FACTORY: an owned closure that mints an `Arc<dyn EngineHost>` over any live
+/// `Arc<App>` handed to it. Threaded from a non-route transport's core BOOT boundary (e.g. the `busbar`
+/// binary's stdio start) into a plane that must re-mint the host over its per-frame LIVE snapshot, so the
+/// plane calls the neutral seam WITHOUT ever naming this `plane_host` factory. Each mint is one `Arc`
+/// clone; the transient `HostCtx` is minted per method call on the returned host, never here.
+pub type EngineHostFactory =
+    Arc<dyn Fn(&Arc<App>) -> Arc<dyn busbar_substrate::plane_host::EngineHost> + Send + Sync>;
+
+/// Mint the neutral [`EngineHostFactory`] — the closure a non-route transport boot threads into a plane.
+#[must_use]
+pub fn engine_host_factory() -> EngineHostFactory {
+    Arc::new(|app: &Arc<App>| engine_host(app))
 }
 
 /// Read the host wall clock in whole SECONDS through the wired [`clock_now`](vtable) seam using a

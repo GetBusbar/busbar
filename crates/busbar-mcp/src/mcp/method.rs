@@ -146,7 +146,7 @@ pub(crate) struct Ctx<'a> {
     pub(crate) app: &'a std::sync::Arc<busbar_core::state::App>,
     /// THE NEUTRAL HOST SEAM — the `EngineHost` this request runs against, so host reaches (the
     /// clock, and later gate/govern/…) call typed methods here instead of naming
-    /// `busbar_core::plane_host::*_over(self.app, …)`. Carried ALONGSIDE `app` during the transition:
+    /// `busbar_substrate::plane_host` reaches against `self.app`. Carried ALONGSIDE `app` during the transition:
     /// `app` still serves the pervasive field reaches (`super::runtime`, `next_request_id`, …) the
     /// App-sever removes later; `host` is the durable seam for the host CALLS.
     pub(crate) host: std::sync::Arc<dyn busbar_substrate::plane_host::EngineHost>,
@@ -174,12 +174,12 @@ pub(crate) struct Ctx<'a> {
     /// here, rather than ingress growing a grant-scoped lookup or this module growing a second
     /// header parser. Both halves still answer `-32020` / `400`.
     pub(crate) headers: &'a axum::http::HeaderMap,
-    /// THE SYNC LEG'S SHARED HOST [`DispatchScope`](busbar_core::plane_host::DispatchScope) — the arena the
+    /// THE SYNC LEG'S SHARED HOST [`DispatchScope`](busbar_substrate::plane_host::DispatchScope) — the arena the
     /// `tools/call` breaker admit registers into and the leg settle folds through (CLUSTER-1). Opened
     /// once at the top of `rpc_dispatch` and held for the whole future, so a host handle is reachable
     /// at every downstream breaker admit/settle site and reclaims on any exit. `None` for the task
     /// path (which re-homes its probe into a `DurableScope`) and for unit tests that admit directly.
-    pub(crate) scope: Option<&'a busbar_core::plane_host::DispatchScope>,
+    pub(crate) scope: Option<&'a busbar_substrate::plane_host::DispatchScope>,
 }
 
 impl Ctx<'_> {
@@ -700,7 +700,7 @@ fn prompts_get(
             // admission registers into) so it releases when the request future ends — the lifetime
             // the caller-held `Vec<AdmitGrant>` had. A `None` scope (unit tests) falls back to a local
             // arena that drops at this fn's return, the same drop point.
-            let fallback_scope = busbar_core::plane_host::DispatchScope::new();
+            let fallback_scope = busbar_substrate::plane_host::DispatchScope::new();
             let scope = ctx.scope.unwrap_or(&fallback_scope);
             if let Err(reason) = charge_round(
                 ctx,
@@ -1111,9 +1111,10 @@ async fn verify_on_call(ctx: &Ctx<'_>, name: &str) {
     let pool = super::runtime(ctx.app).pool.clone();
     let gate = super::runtime(ctx.app).verify.clone();
     // The durable demotion settle now runs through the host `drift_quarantine` slot, which pulls the
-    // demotion store host-side, so the fetch closure carries the live `App` rather than a bare
-    // `&DemotionRecord` an extracted plane could not hold.
-    let app = std::sync::Arc::clone(ctx.app);
+    // demotion store host-side, so the fetch closure carries the neutral `EngineHost` seam rather than a
+    // bare `&DemotionRecord` an extracted plane could not hold. Cloned from `ctx.host`: the settle reaches
+    // the process-shared demotion store, so the request snapshot the host pins is immaterial to it.
+    let host = ctx.host.clone();
     // A peer's `list_changed` may only mark the snapshot STALE (never read its body): if this server
     // was signalled, clear its freshness clock so this call re-verifies even inside `verify_ttl`.
     if super::runtime(ctx.app)
@@ -1150,8 +1151,7 @@ async fn verify_on_call(ctx: &Ctx<'_>, name: &str) {
                         // Routed through the host `drift_quarantine` vtable slot, which carries the
                         // observed state and pulls the demotion store host-side — one settle rule, one
                         // seam. The settle is fire-and-forget, so the durability bool is not a refusal.
-                        let _ = busbar_core::plane_host::engine_host(&app)
-                            .quarantine_settle(&server.id, report.state);
+                        let _ = host.quarantine_settle(&server.id, report.state);
                         if report.failure.is_some() {
                             // UNREACHABLE at verify → the gate below refuses fail-closed; latch the
                             // diagnostic so a persistent outage logs once.
@@ -1337,7 +1337,7 @@ async fn tools_call(
             // amplification the upstream cap exists to stop, pointed the other way.
             // The govern grant rides the request-wide arena (`ctx.scope`) — released at request end,
             // the `Vec<AdmitGrant>` lifetime; a `None` scope (tests) uses a local arena dropped here.
-            let fallback_scope = busbar_core::plane_host::DispatchScope::new();
+            let fallback_scope = busbar_substrate::plane_host::DispatchScope::new();
             let scope = ctx.scope.unwrap_or(&fallback_scope);
             if let Err(reason) = charge_round(
                 ctx,
@@ -1584,7 +1584,7 @@ async fn tools_call(
     // registers into: `ctx.scope` in production, a local fallback that drops at this fn's return for a
     // `None` scope (unit tests). Resolved BEFORE the admit so the won probe is born in it — the breaker
     // admit now always registers through a real arena, never a raw hold.
-    let fallback_scope = busbar_core::plane_host::DispatchScope::new();
+    let fallback_scope = busbar_substrate::plane_host::DispatchScope::new();
     let scope = ctx.scope.unwrap_or(&fallback_scope);
     if let Err(refused) = route.admit(&ctx.host, &breakers, scope) {
         return log.refused(
@@ -1651,9 +1651,13 @@ async fn tools_call(
             let roots = entry.map(|s| s.roots.clone()).unwrap_or_default();
             let sampling = entry.and_then(|s| s.sampling.clone());
             let gov = ctx.gov.clone();
+            // The neutral host seam for the sampling leg's judging-instant clock, moved into the leg
+            // future. Its clock is engine-snapshot independent, so `ctx.host` is byte-identical here.
+            let host = ctx.host.clone();
             async move {
                 if ask.kind == "sampling" {
                     super::sampling::satisfy_upstream_ask(
+                        &host,
                         &live,
                         &gov,
                         &ask,
@@ -1924,7 +1928,7 @@ async fn create_task(
     // settling-handoff), so its owner-checked release already reclaims at TASK end, not request-future
     // drop. The immutable borrow the admit takes on `durable.arena()` ends when `admit` returns, so
     // `durable` moves into the runner's `DurableHostDispatch` below.
-    let durable = busbar_core::plane_host::DurableScope::new();
+    let durable = busbar_substrate::plane_host::DurableScope::new();
     if let Err(refused) = route.admit(&ctx.host, &breakers, durable.arena()) {
         return log.refused(
             route_refusal_reason(&refused),
@@ -1947,7 +1951,7 @@ async fn create_task(
     // wire), so the govern grant rides a SHORT-LIVED `DurableScope` opened just for this charge and
     // reclaimed immediately below — NOT the runner's durable scope, which holds the probe for the
     // task's whole life. The host `govern_admit_reason` seam registers the grant in this arena.
-    let grant_scope = busbar_core::plane_host::DurableScope::new();
+    let grant_scope = busbar_substrate::plane_host::DurableScope::new();
     if let Err(reason) = charge_round(
         ctx,
         &selected.namespaced,
@@ -1979,14 +1983,15 @@ async fn create_task(
         super::tasks::Runner {
             pool: std::sync::Arc::clone(&super::runtime(ctx.app).pool),
             handle: std::sync::Arc::clone(ctx.handle),
-            // The detached runner's host route: owns the app + the durable probe-hold + its id, so a
-            // `breaker_settle` over `host.host_state()` reaches the durable admission, and the probe
-            // releases owner-checked when the runner (and this guard) drop at task end.
-            host: busbar_core::plane_host::DurableHostDispatch::new(
-                std::sync::Arc::clone(ctx.app),
-                durable,
-                admission_id,
-            ),
+            // The detached runner's durable arena OWNS the breaker probe-hold + its id: the durable
+            // `settle` over `durable` reaches the durable admission, and the probe releases owner-checked
+            // when the runner (and this arena) drop at task end. The neutral host seam for the runner's
+            // clock reads and in-place breaker records is `ctx.host` cloned — its clock is
+            // engine-snapshot independent and its `plane_breakers` is the process-shared instance, so the
+            // request snapshot it pins is byte-identical to re-loading the handle per read.
+            durable,
+            admission: admission_id,
+            engine: ctx.host.clone(),
             cell,
             authorised,
             arguments,
@@ -2142,7 +2147,7 @@ fn charge_round(
     ctx: &Ctx<'_>,
     namespaced: &str,
     rec: &RoundRecord,
-    scope: &busbar_core::plane_host::DispatchScope,
+    scope: &busbar_substrate::plane_host::DispatchScope,
 ) -> Result<(), String> {
     if !ctx.host.governance_enabled() {
         // Governance disabled: no key, no budget, nothing to charge. The same posture the LLM path
@@ -2179,18 +2184,16 @@ fn charge_round(
     // `record_metering(&key.id, namespaced, Plane::Mcp.key(), None, ..)`: `model` carries the
     // namespaced tool and `provider` the plane, so an existing cost dashboard groups MCP traffic
     // without knowing what MCP is. Fire-and-forget, exactly as the direct call was.
-    let _ = busbar_core::plane_host::with_borrowed_host(ctx.app, scope, |hctx, vt| {
-        let usage = busbar_plugin::hot::Usage::with_attribution(
-            busbar_plugin::hot::UsageComponent::Queries,
-            0,
-            0,
-            busbar_plugin::hot::AdmissionId::NONE,
-            key.id.as_bytes(),
-            namespaced.as_bytes(),
-            "mcp".as_bytes(),
-        );
-        (vt.meter_charge.unwrap())(hctx, &*usage as *const busbar_plugin::hot::Usage)
-    });
+    let usage = busbar_plugin::hot::Usage::with_attribution(
+        busbar_plugin::hot::UsageComponent::Queries,
+        0,
+        0,
+        busbar_plugin::hot::AdmissionId::NONE,
+        key.id.as_bytes(),
+        namespaced.as_bytes(),
+        "mcp".as_bytes(),
+    );
+    ctx.host.meter_charge(scope, &usage);
     tracing::debug!(
         capability = %namespaced,
         round = rec.round,

@@ -303,6 +303,10 @@ enum Phase {
 
 struct Listen {
     handle: std::sync::Arc<busbar_core::state::AppHandle>,
+    /// THE NEUTRAL HOST SEAM, held for the stream's life. Cloned from `ctx.host` at open: the only host
+    /// reaches a poll makes (`principal_standing`, `clock_now_secs`) are engine-snapshot independent, so
+    /// the request snapshot it pins does not change what a later poll resolves.
+    host: std::sync::Arc<dyn busbar_substrate::plane_host::EngineHost>,
     /// THE PRINCIPAL'S ID AND THE BOUND, never the principal. See the module header: a resolved key
     /// carried into a `'static` stream is an identity believed for five minutes.
     standing: busbar_core::trust::validate::Standing,
@@ -407,10 +411,12 @@ impl Listen {
             return None;
         }
         let app = self.handle.load();
-        // D1: the neutral host seam over this poll's live snapshot — the stream's clock reads (the
-        // permission re-ask and the per-frame catalogue `Caller`) ride it rather than naming
-        // `busbar_core::plane_host::clock_now_secs_over`.
-        let host = busbar_core::plane_host::engine_host(&app);
+        // D1: the neutral host seam the stream holds — the clock reads (the permission re-ask and the
+        // per-frame catalogue `Caller`) ride it. Threaded in at open (cloned from `ctx.host`) rather
+        // than minted per poll from the core factory: the `principal_standing` re-ask resolves against
+        // the process-shared LIVE governance registry (the `Arc` survives config swaps) and the clock is
+        // engine-snapshot independent, so a single held host is byte-identical to a per-poll re-mint.
+        let host = self.host.clone();
         let catalogue = &super::runtime(&app).catalogue;
         // THE STANDING PERMISSION, RE-ASKED. A principal that has stopped resolving live ends the
         // stream on THIS frame rather than at the bound, which is the whole of the fix.
@@ -581,6 +587,7 @@ pub(crate) fn listen(
     let now = Instant::now();
     let mut state = Listen {
         handle: ctx.handle.clone(),
+        host: ctx.host.clone(),
         // THE ID AND THE BOUND. `MAX_LIFETIME` is handed to the standing permission as well as used
         // for the deadline below so the cap on what a poll cannot re-check and the cap on the stream
         // are provably the same number rather than two that agree today.

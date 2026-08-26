@@ -31,10 +31,10 @@
 //!    that never issued it.
 
 use super::upstream::{Authorised, BreakerCell, LegFailure, LegOutcome};
-use busbar_core::plane_host::DispatchScope;
 use busbar_core::store::PlaneBreakers;
 use busbar_plugin::hot::AdmissionId;
 use busbar_substrate::failover::{Attempt, Candidate, Refusal, Repeatable, Stage};
+use busbar_substrate::plane_host::DispatchScope;
 use std::sync::{Arc, Mutex};
 
 /// One pool member as the walk sees it. `auth` is `None` when THIS CALLER cannot dispatch to the
@@ -243,7 +243,7 @@ impl PoolRoute {
     ///
     /// `scope` is the shared [`DispatchScope`] the won probe is REGISTERED in as a settle-capable
     /// admission — the sync request arena on the synchronous path, or the runner's durable arena
-    /// (via [`DurableScope::arena`](busbar_core::plane_host::DurableScope::arena)) on the task path, so the
+    /// (via [`DurableScope::arena`](busbar_substrate::plane_host::DurableScope::arena)) on the task path, so the
     /// task's probe is BORN in the durable scope. The plane holds only the POD [`AdmissionId`]; the
     /// arena owns the real probe and its outcome is later folded through the scope.
     pub(crate) fn admit(

@@ -301,7 +301,7 @@ pub(crate) async fn rpc(ctx: busbar_substrate::plane_routes::PlaneReqCtx) -> Res
         .expect("the mcp route engine handle is an AppHandle");
     // D1: the neutral host seam the core adapter minted over this request's engine snapshot. Threaded
     // into `rpc_dispatch` (and onto `method::Ctx`) so the clock (and later host) reaches call typed
-    // methods on it rather than naming `busbar_core::plane_host::*_over`.
+    // methods on it rather than naming a `busbar_substrate::plane_host` reach against the app.
     let host = ctx.host;
     let gov = ctx.gov.expect(
         "the mcp rpc route is RouteAuth::Key, so the middleware attached a PlaneRequestCtx",
@@ -388,14 +388,14 @@ pub(in crate::mcp) async fn rpc_dispatch(
 ) -> Option<Response> {
     // ── PHASE-1.5 HOST PLUMBING (ADDITIVE, not yet used by any capability inversion). ─────────────
     //
-    // Open the async-capable dispatch guard at the TOP of the async body and hold it as a local for
+    // Open the request-wide dispatch arena at the TOP of the async body and hold it as a local for
     // the whole future, so a host handle is REACHABLE at every downstream breaker admit/settle site
-    // (deep in `upstream::call`) and the per-dispatch arena reclaims on ANY exit of this future —
-    // normal return, client-disconnect cancel, or panic. It BORROWS `app` and stack-pins an empty
-    // arena (no per-dispatch heap), and the guard is `Send`, so this future stays `Send`. CLUSTER-1:
-    // the sync `tools/call` breaker admit registers into `host.scope()` (threaded via `Ctx::scope`)
-    // and each leg settles through it — the in-place record is gone on this path.
-    let host = busbar_core::plane_host::HostDispatch::new(app);
+    // (deep in `upstream::call`) and the arena reclaims every registered handle on ANY exit of this
+    // future — normal return, client-disconnect cancel, or panic (the `DispatchScope::Drop` runs
+    // `reclaim_all`). Stack-pinned and heap-free until a handle is registered, `Send`, so this future
+    // stays `Send`. CLUSTER-1: the sync `tools/call` breaker admit registers into this scope (threaded
+    // via `Ctx::scope`) and each leg settles through it — the in-place record is gone on this path.
+    let scope = busbar_substrate::plane_host::DispatchScope::new();
     // From here `id` is a string or a number. It is carried as `Option` only because the method
     // table's constructors take one; it is never `None` on this path, and never `Null` at all.
     let id = Some(id);
@@ -539,7 +539,7 @@ pub(in crate::mcp) async fn rpc_dispatch(
         headers,
         // The sync leg's shared host arena (CLUSTER-1): `tools/call` admits its breaker probe into
         // this scope and settles each leg through it, and it reclaims on any exit of this future.
-        scope: Some(host.scope()),
+        scope: Some(&scope),
     };
     let params = value.get("params");
     // The slot the outbound transport appends upstream progress to, scoped to exactly this request.

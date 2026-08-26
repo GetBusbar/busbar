@@ -199,7 +199,7 @@ impl McpTask {
     }
 
     /// Stamp `updated_ms` with the millisecond clock read the caller took over the host
-    /// [`clock_now`](busbar_core::plane_host) seam (`clock_now_ms_over`) and threaded in — the plane keeps
+    /// the host `clock_now` seam and threaded in — the plane keeps
     /// off the ambient clock, so this method reads none of its own.
     fn touch(state: &mut State, now_ms: u64) {
         state.updated_ms = now_ms;
@@ -431,7 +431,7 @@ impl Registry {
     /// even a runner that has not been scheduled yet cannot make the id unresolvable.
     ///
     /// `now` is the millisecond clock read the caller took over the host
-    /// [`clock_now`](busbar_core::plane_host) seam (`clock_now_ms_over`) — the plane reads no ambient
+    /// the host `clock_now` seam — the plane reads no ambient
     /// clock of its own — and it stamps both `created_ms` and `updated_ms` and drives the sweep.
     pub(crate) fn create(&self, principal: &str, now: u64) -> Arc<McpTask> {
         let task = Arc::new(McpTask {
@@ -516,21 +516,28 @@ impl Registry {
 pub(crate) struct Runner {
     pub(crate) pool: Arc<super::client::pool::McpConnectionPool>,
     pub(crate) handle: Arc<busbar_core::state::AppHandle>,
-    /// THE DETACHED RUNNER'S HOST ROUTE. Owns the runner's `Arc<App>`, the
-    /// [`DurableScope`](busbar_core::plane_host::DurableScope) holding the single-flight probe `create_task`
-    /// won, and the durable `AdmissionId` the detached leg settles by. `create_task` ran the task admit
-    /// through the host `breaker_admit` seam OVER this scope's arena, so the probe was BORN durable
-    /// (no per-request win + re-home) and releases owner-checked when THIS guard drops WITH the runner
-    /// — covering the runner being ABORTED by `tasks/cancel` as well as its normal end, the case an
-    /// explicit release call cannot reach — and a settle through the host `breaker_settle` seam over
-    /// `host.host_state()` makes that drop a no-op.
+    /// THE DETACHED RUNNER'S DURABLE ARENA, holding the single-flight probe `create_task` won.
+    /// [`DurableScope`](busbar_substrate::plane_host::DurableScope): `create_task` ran the task admit
+    /// through the host `breaker_admit` seam OVER this arena, so the probe was BORN durable (no
+    /// per-request win + re-home) and releases owner-checked when THIS scope drops WITH the runner —
+    /// covering the runner being ABORTED by `tasks/cancel` as well as its normal end, the case an
+    /// explicit release call cannot reach — and a `durable.settle(admission, signal)` makes that drop a
+    /// no-op.
     ///
-    /// CLUSTER-1: the detached leg SETTLES its classified outcome through this route
-    /// (`host.durable().settle(host.admission(), signal)`) — folding it through the SAME
+    /// CLUSTER-1: the detached leg SETTLES its classified outcome through this arena
+    /// (`durable.settle(admission, signal)`) — folding it through the SAME
     /// `record_signal`/`record_success` disposition the plane's own recorder runs — and the durable
     /// scope's drop (with the runner) releases only an UNSETTLED probe, covering a `tasks/cancel`
     /// abort as well as normal end.
-    pub(crate) host: busbar_core::plane_host::DurableHostDispatch,
+    pub(crate) durable: busbar_substrate::plane_host::DurableScope,
+    /// The durable admission's id — what the detached leg settles by. `AdmissionId::NONE` when no
+    /// settling admission was handed off (a degenerate route that won nothing to re-home).
+    pub(crate) admission: busbar_plugin::hot::AdmissionId,
+    /// THE NEUTRAL HOST SEAM for the runner's clock reads and its in-place breaker-record fallback.
+    /// Cloned from the request's `ctx.host`: its clock is engine-snapshot independent and its
+    /// `plane_breakers` is the process-shared instance, so a single mint is byte-identical to
+    /// re-loading the handle per read.
+    pub(crate) engine: std::sync::Arc<dyn busbar_substrate::plane_host::EngineHost>,
     /// The breaker cell the admitted member records into — `("tool:<pool>", lane)` for a pooled
     /// member, the degenerate `("tool:<server>", 0)` otherwise. Carried from `create_task`'s walk
     /// so the runner's legs record against exactly the cell the admission consulted.
@@ -587,20 +594,21 @@ pub(crate) fn spawn(task: Arc<McpTask>, runner: Runner) {
 /// per-round in-place records. A `Nothing` settles `Refused` (releases the probe, records nothing) or
 /// records nothing in place.
 fn settle_task_leg(
-    host: &busbar_core::plane_host::DurableHostDispatch,
+    durable: &busbar_substrate::plane_host::DurableScope,
+    admission: busbar_plugin::hot::AdmissionId,
     engine: &Arc<dyn busbar_substrate::plane_host::EngineHost>,
     cell: &super::upstream::BreakerCell,
     outcome: &super::upstream::LegOutcome,
 ) {
     use super::upstream::LegOutcome;
-    let id = host.admission();
+    let id = admission;
     if !id.is_none() {
         let sig = match outcome {
             LegOutcome::Success => busbar_substrate::plane_host::breaker::success_signal(),
             LegOutcome::Failure(cs) => busbar_substrate::plane_host::breaker::failure_signal(cs),
             LegOutcome::Nothing => busbar_substrate::plane_host::breaker::refused_signal(),
         };
-        if host.durable().settle(id, &sig).is_some() {
+        if durable.settle(id, &sig).is_some() {
             return;
         }
     }
@@ -619,11 +627,11 @@ fn settle_task_leg(
 }
 
 async fn run(task: Arc<McpTask>, runner: Runner) {
-    // D1: the neutral host seam over the runner's live snapshot, minted once for the detached run. The
-    // `clock_now` seam it drives is engine-snapshot independent (it reads the host wall clock), so a
-    // single mint here is byte-identical to re-loading the handle per read, and the task's timestamps
-    // stop naming `busbar_core::plane_host::clock_now_ms_over`.
-    let host = busbar_core::plane_host::engine_host_from_handle(&runner.handle);
+    // D1: the neutral host seam for the detached run — threaded in on the runner (cloned from the
+    // request's `ctx.host` at task creation) rather than minted here from the core factory. The
+    // `clock_now` seam it drives is engine-snapshot independent (it reads the host wall clock), so the
+    // request snapshot it pins is byte-identical to re-loading the handle per read.
+    let host = runner.engine.clone();
     // (1) THE IN-TASK ASK ROUNDS. Ordered, and each one waits for every key it asked.
     for round in &runner.task_asks {
         task.park(round.clone(), host.clock_now_ms());
@@ -674,7 +682,13 @@ async fn run(task: Arc<McpTask>, runner: Runner) {
                 // SETTLE this leg's classified outcome through the runner's durable host route
                 // (CLUSTER-1). The single durable probe is settled on the first round; later
                 // input-required rounds record in place against the same cell.
-                settle_task_leg(&runner.host, &engine, &runner.cell, &leg_outcome);
+                settle_task_leg(
+                    &runner.durable,
+                    runner.admission,
+                    &engine,
+                    &runner.cell,
+                    &leg_outcome,
+                );
                 result.map_err(|f| f.message)
             }
         },
@@ -705,9 +719,13 @@ async fn run(task: Arc<McpTask>, runner: Runner) {
                 key: Some(Arc::new(runner.authorised.caller.clone())),
             };
             let server = server_id.clone();
+            // The neutral host seam for the sampling leg's judging-instant clock, moved into the leg
+            // future. Snapshot-independent, so the runner's single mint is byte-identical.
+            let host = host.clone();
             async move {
                 if ask.kind == "sampling" {
                     super::sampling::satisfy_upstream_ask(
+                        &host,
                         &live,
                         &gov,
                         &ask,
@@ -729,8 +747,8 @@ async fn run(task: Arc<McpTask>, runner: Runner) {
         |_| Ok(()),
     )
     .await;
-    // The leg loop above SETTLED the durable admission through `runner.host` (CLUSTER-1). `runner.host`
-    // (the durable host route) still drops with the runner — on this function's normal end AND on an
+    // The leg loop above SETTLED the durable admission through `runner.durable` (CLUSTER-1).
+    // `runner.durable` still drops with the runner — on this function's normal end AND on an
     // abort — reclaiming an UNSETTLED admission owner-checked (e.g. a task cancelled before its first
     // leg); a settled probe makes that drop a no-op. This is the durable handoff: the probe's
     // lifetime was re-homed from the request future to the task's, so it is NOT released at request-drop.
