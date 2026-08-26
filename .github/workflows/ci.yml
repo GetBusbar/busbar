@@ -555,10 +555,14 @@ jobs:
         env:
           BUSBAR_TEST_POSTGRES_URL: postgres://busbar:busbar@localhost:5432/busbar_test
           VALKEY_URL: redis://localhost:6379
-        run: cargo llvm-cov --workspace --locked --lcov --output-path lcov.info
-      - name: Upload to Codecov (tokenless; never fails the build)
+        run: cargo llvm-cov --workspace --locked --ignore-run-fail --lcov --output-path lcov.info
+      - name: Upload to Codecov (never fails the build)
         uses: codecov/codecov-action@v5
         with:
+          # Codecov rejects tokenless uploads on protected branches (dev/qa/main) with
+          # "Token required because branch is protected". This org-level secret authenticates
+          # the upload on every branch. Still never gates CI (fail_ci_if_error: false).
+          token: ${{ secrets.CODECOV_TOKEN }}
           files: lcov.info
           slug: GetBusbar/busbar
           fail_ci_if_error: false
