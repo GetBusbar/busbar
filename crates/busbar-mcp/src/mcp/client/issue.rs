@@ -51,7 +51,7 @@ use super::jsonrpc::{parse_response, RpcOutcome};
 use super::verb::UpstreamVerb;
 use super::wire::WireLeg;
 use crate::mcp::upstream::Authorised;
-use busbar_core::plane::calllog::{OUTCOME_DISPATCHED, OUTCOME_REFUSED, REASON_UPSTREAM_FAILED};
+use busbar_substrate::audit::vocab::{OUTCOME_DISPATCHED, OUTCOME_REFUSED, REASON_UPSTREAM_FAILED};
 
 /// WHAT ONE ISSUED VERB PRODUCED.
 ///

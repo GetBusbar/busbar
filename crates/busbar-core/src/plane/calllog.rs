@@ -224,21 +224,15 @@ fn pack_bodies(bodies: &[Vec<u8>]) -> Vec<u8> {
 /// definitions, and the reasoning about each word, live in core.
 // MCP-only re-export: these tokens name the MCP call stream's outcomes; the A2A relay uses its own
 // subset, so with `plane-mcp` off (and A2A on) this path re-exports them with no local user.
+// MCP-only re-export of the hook-gate refusal reason (definition relocated to
+// `busbar_substrate::audit::vocab` alongside the rest of the audit vocabulary, so a plane names it
+// without reaching into `busbar_core::plane::calllog`); re-exported here so in-core call sites and
+// the legacy `busbar_core::plane::calllog::REASON_HOOK_REJECTED` path are unchanged.
 #[cfg_attr(not(feature = "plane-mcp"), allow(unused_imports))]
 pub use crate::audit::vocab::{
-    OUTCOME_DISPATCHED, OUTCOME_REFUSED, REASON_CALLER_ASK_PENDING, REASON_MALFORMED,
-    REASON_TASK_CREATED, REASON_UPSTREAM_FAILED,
+    OUTCOME_DISPATCHED, OUTCOME_REFUSED, REASON_CALLER_ASK_PENDING, REASON_HOOK_REJECTED,
+    REASON_MALFORMED, REASON_TASK_CREATED, REASON_UPSTREAM_FAILED,
 };
-
-/// The reason token for a call an operator's HOOK GATE refused (`tools.hooks:` /
-/// `tools.<server>.hooks:`).
-///
-/// `refused`, and a token of its OWN rather than folding into `not_granted`: those two send an
-/// operator to different places. `not_granted` means the caller's key does not reach this tool and
-/// the remedy is a scope; this means the tool was reachable and a policy the operator attached said
-/// no, and the remedy is that policy. A single word for both would make an operator debug the
-/// grant matrix for a decision the grant matrix did not take.
-pub const REASON_HOOK_REJECTED: &str = "hook_rejected";
 
 // D3 Phase-C: the neutral per-call record INPUT is now a substrate POD so a plane builds it without
 // naming `busbar_core::plane::calllog`; re-exported here so `CALLS.record`/[`emit`] and every in-core

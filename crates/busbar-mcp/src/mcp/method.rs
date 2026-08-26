@@ -1063,14 +1063,14 @@ impl<'a> CallLog<'a> {
     /// Record a refusal and hand the response back. Takes the response BY VALUE so the record and
     /// the answer are produced in one statement and a terminal cannot quietly skip the record.
     fn refused(&self, reason: &str, response: Response) -> Response {
-        self.write(busbar_core::plane::calllog::OUTCOME_REFUSED, reason);
+        self.write(busbar_substrate::audit::vocab::OUTCOME_REFUSED, reason);
         response
     }
 
     /// Record a call that WENT OUT and was answered. `reason` is empty on a dispatch, per the store
     /// contract — the field is a refusal token, not a description.
     fn dispatched(&self, response: Response) -> Response {
-        self.write(busbar_core::plane::calllog::OUTCOME_DISPATCHED, "");
+        self.write(busbar_substrate::audit::vocab::OUTCOME_DISPATCHED, "");
         response
     }
 
@@ -1082,7 +1082,7 @@ impl<'a> CallLog<'a> {
     /// as free on a dispatch rather than forbidden: what it forbids is a DESCRIPTION, and
     /// `upstream_failed` is a stable, greppable token exactly like the refusal ones beside it.
     fn dispatched_with_reason(&self, reason: &'static str, response: Response) -> Response {
-        self.write(busbar_core::plane::calllog::OUTCOME_DISPATCHED, reason);
+        self.write(busbar_substrate::audit::vocab::OUTCOME_DISPATCHED, reason);
         response
     }
 }
@@ -1187,7 +1187,7 @@ async fn tools_call(
         // what `McpCallRecord` documents as "a refusal that matched no registration".
         let log = CallLog::open(ctx, "", selected_gen);
         return log.refused(
-            busbar_core::plane::calllog::REASON_MALFORMED,
+            busbar_substrate::audit::vocab::REASON_MALFORMED,
             invalid_params(id, "`params.name` is required and must be a string."),
         );
     };
@@ -1363,7 +1363,7 @@ async fn tools_call(
                 ctx.actor,
             );
             return log.refused(
-                busbar_core::plane::calllog::REASON_CALLER_ASK_PENDING,
+                busbar_substrate::audit::vocab::REASON_CALLER_ASK_PENDING,
                 input_required_result(id, &asks, &request_state),
             );
         }
@@ -1515,13 +1515,13 @@ async fn tools_call(
                 "mcp tools/call refused by a hook gate"
             );
             return log.refused(
-                busbar_core::plane::calllog::REASON_HOOK_REJECTED,
+                busbar_substrate::audit::vocab::REASON_HOOK_REJECTED,
                 error(
                     StatusCode::from_u16(status).unwrap_or(StatusCode::FORBIDDEN),
                     id,
                     CODE_REFUSED,
                     &message,
-                    Some(serde_json::json!({ "reason": busbar_core::plane::calllog::REASON_HOOK_REJECTED, "hook": hook })),
+                    Some(serde_json::json!({ "reason": busbar_substrate::audit::vocab::REASON_HOOK_REJECTED, "hook": hook })),
                 ),
             );
         }
@@ -1756,7 +1756,7 @@ async fn tools_call(
                             ctx.actor,
                         );
                         return log.dispatched_with_reason(
-                            busbar_core::plane::calllog::REASON_UPSTREAM_FAILED,
+                            busbar_substrate::audit::vocab::REASON_UPSTREAM_FAILED,
                             result(
                                 id,
                                 upstream_failure_result(
@@ -1850,7 +1850,7 @@ async fn tools_call(
                 "mcp tools/call upstream failed"
             );
             log.dispatched_with_reason(
-                busbar_core::plane::calllog::REASON_UPSTREAM_FAILED,
+                busbar_substrate::audit::vocab::REASON_UPSTREAM_FAILED,
                 result(id, upstream_failure_result(&selected.server, &reason)),
             )
         }
@@ -2010,7 +2010,7 @@ async fn create_task(
     // moment this request is answered nothing has gone out. What the runner does next belongs to the
     // task's own provenance, not to a second per-call record under a request already answered.
     log.refused(
-        busbar_core::plane::calllog::REASON_TASK_CREATED,
+        busbar_substrate::audit::vocab::REASON_TASK_CREATED,
         task_result(id, created),
     )
 }

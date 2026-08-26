@@ -83,6 +83,16 @@ pub const REASON_TASK_CREATED: &str = "task_created";
 /// exact failure this vocabulary exists to prevent.
 pub const REASON_LIMIT_EXCEEDED: &str = "limit_exceeded";
 
+/// The reason token for a call an operator's HOOK GATE refused (`tools.hooks:` /
+/// `tools.<server>.hooks:`).
+///
+/// `refused`, and a token of its OWN rather than folding into [`REASON_NOT_GRANTED`]: those two send
+/// an operator to different places. `not_granted` means the caller's key does not reach this tool and
+/// the remedy is a scope; this means the tool was reachable and a policy the operator attached said
+/// no, and the remedy is that policy. A single word for both would make an operator debug the
+/// grant matrix for a decision the grant matrix did not take.
+pub const REASON_HOOK_REJECTED: &str = "hook_rejected";
+
 /// The request's parameters were missing or malformed. RECORDED rather than dropped: the caller is
 /// already AUTHENTICATED at this point, and a chain that silently omits every malformed request from
 /// a principal is a chain with a hole an attacker can choose.
