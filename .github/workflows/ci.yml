@@ -917,7 +917,13 @@ jobs:
         env:
           BUSBAR_TEST_POSTGRES_URL: postgres://busbar:busbar@localhost:5432/busbar_test
           VALKEY_URL: redis://localhost:6379
-        run: cargo llvm-cov --workspace --locked --lcov --output-path lcov.info
+        # `--ignore-run-fail`: this job REPORTS coverage, it does not RE-GATE tests — the `check`
+        # job is the real test gate and passes the full suite. A few subprocess/stdio integration
+        # tests (crates/busbar/tests/mcp_stdio_serve.rs) are timing/behaviour-sensitive and flake
+        # ONLY under llvm-cov's whole-workspace instrumentation; without this flag their flake would
+        # fail this job and no coverage would ever upload. The report is still generated from every
+        # test that ran. A real regression is caught by `check`, not here.
+        run: cargo llvm-cov --workspace --locked --ignore-run-fail --lcov --output-path lcov.info
       - name: Upload to Codecov (tokenless; never fails the build)
         uses: codecov/codecov-action@v5
         with:
