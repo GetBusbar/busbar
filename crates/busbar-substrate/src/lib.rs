@@ -56,3 +56,4 @@ pub mod egress_auth {
 pub mod catalogue;
 pub mod failover;
 pub mod store;
+pub mod telemetry;

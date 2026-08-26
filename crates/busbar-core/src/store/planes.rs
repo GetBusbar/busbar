@@ -139,7 +139,9 @@ impl PlaneBreakers {
     // MCP-only: keyed by the MCP plane alone, so with `plane-mcp` off (and A2A on) it has no caller.
     #[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
     pub fn tool_key(server: &str) -> String {
-        format!("tool:{server}")
+        // The prefix spelling MOVED DOWN to the neutral substrate so the MCP plane builds this key
+        // without reaching into core; delegate so the one `tool:` spelling stays single-sourced.
+        busbar_substrate::store::tool_key(server)
     }
 
     /// The A2A plane's key for one registered agent.

@@ -97,3 +97,11 @@ pub const POOL_LABEL_UNRESOLVED: &str = "unresolved";
 /// Returned by `client_fault_kind` for `StatusClass::ContextLength` and drives the per-protocol
 /// writer to emit the native context-length error category.
 pub const PROVIDER_CODE_CONTEXT_LENGTH: &str = "context_length_exceeded";
+
+/// Unknown/foreign egress protocol default `User-Agent`: a generic-but-present UA still beats
+/// sending none. Lives here (not `pub(crate)` in core) so a codec-less protocol declaration in a
+/// plane crate (`busbar-mcp`) can state it as its `ProtocolDecl::egress_user_agent` default — an MCP
+/// registration has no writer, so its promoted UA fact is this trait default, and the plane must be
+/// able to name it without reaching into `busbar-core`. Core's `proxy::egress` re-exports it for its
+/// own resolver fallback and the per-protocol writers.
+pub const EGRESS_UA_DEFAULT: &str = "okhttp/4.12.0";

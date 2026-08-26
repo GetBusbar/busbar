@@ -31,7 +31,6 @@
 //!    that never issued it.
 
 use super::upstream::{Authorised, BreakerCell, LegFailure, LegOutcome};
-use busbar_core::store::PlaneBreakers;
 use busbar_plugin::hot::AdmissionId;
 use busbar_substrate::failover::{Attempt, Candidate, Refusal, Repeatable, Stage};
 use busbar_substrate::plane_host::DispatchScope;
@@ -204,7 +203,7 @@ impl PoolRoute {
                 .collect();
 
         PoolRoute {
-            pool_key: PlaneBreakers::tool_key(pool_name),
+            pool_key: busbar_substrate::store::tool_key(pool_name),
             display: pool_name.clone(),
             pooled: true,
             members,
@@ -249,7 +248,6 @@ impl PoolRoute {
     pub(crate) fn admit(
         &self,
         host: &Arc<dyn busbar_substrate::plane_host::EngineHost>,
-        breakers: &Arc<PlaneBreakers>,
         scope: &DispatchScope,
     ) -> Result<(), Box<RouteRefused>> {
         let mut s = lock(&self.state);
@@ -257,7 +255,7 @@ impl PoolRoute {
             .map_err(|refusal| {
                 Box::new(RouteRefused {
                     refusal,
-                    retry_after_secs: self.soonest_retry(breakers),
+                    retry_after_secs: self.soonest_retry(host),
                 })
             })
     }
@@ -302,10 +300,10 @@ impl PoolRoute {
 
     /// The soonest any member's cooldown expires — the honest `Retry-After` for a pool where the
     /// members trip independently.
-    fn soonest_retry(&self, breakers: &PlaneBreakers) -> u64 {
+    fn soonest_retry(&self, host: &Arc<dyn busbar_substrate::plane_host::EngineHost>) -> u64 {
         self.members
             .iter()
-            .map(|m| breakers.retry_after_secs(&self.pool_key, m.lane))
+            .map(|m| host.breaker_retry_after_secs(&self.pool_key, m.lane))
             .min()
             .unwrap_or(1)
     }

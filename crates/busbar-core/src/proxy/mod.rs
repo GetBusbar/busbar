@@ -66,7 +66,8 @@ pub const APPLICATION_JSON: &str = "application/json";
 // plane crates name them without reaching into busbar-core; re-exported below for core's own
 // `crate::proxy::*` call sites.
 pub use busbar_substrate::proxy::{
-    DISPOSITION_TRANSIENT, POOL_LABEL_UNRESOLVED, PROVIDER_CODE_CONTEXT_LENGTH, TEXT_EVENT_STREAM,
+    DISPOSITION_TRANSIENT, EGRESS_UA_DEFAULT, POOL_LABEL_UNRESOLVED, PROVIDER_CODE_CONTEXT_LENGTH,
+    TEXT_EVENT_STREAM,
 };
 
 /// Canonical error-KIND tokens: produced by `cross_protocol_error_kind` / passed to

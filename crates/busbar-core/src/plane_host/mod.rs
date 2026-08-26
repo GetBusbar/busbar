@@ -417,6 +417,10 @@ impl busbar_substrate::plane_host::EngineHost for EngineHostImpl {
         self.app.plane_breakers.record_signal(pool, lane, sig);
     }
 
+    fn breaker_retry_after_secs(&self, pool: &str, lane: usize) -> u64 {
+        self.app.plane_breakers.retry_after_secs(pool, lane)
+    }
+
     fn approval_redeem(&self, nonce: &str, expires_at: u64, now: u64) -> bool {
         // A fresh per-call arena backs the borrow; the redemption registers no host handle, so which
         // arena reclaims is immaterial. The `ApprovalQuery` is built HERE so the plane passes only the

@@ -1571,7 +1571,6 @@ async fn tools_call(
     // tool result (that shape says the tool ran, and the model would reason from a lie). The
     // outcome of each leg is recorded inside `upstream::call`, against the dispatched member's own
     // cell; the probe hold lives in the route and is released owner-checked when it drops.
-    let breakers = std::sync::Arc::clone(&ctx.app.plane_breakers);
     let route = super::reroute::PoolRoute::build(
         &live,
         &ctx.host,
@@ -1586,7 +1585,7 @@ async fn tools_call(
     // admit now always registers through a real arena, never a raw hold.
     let fallback_scope = busbar_substrate::plane_host::DispatchScope::new();
     let scope = ctx.scope.unwrap_or(&fallback_scope);
-    if let Err(refused) = route.admit(&ctx.host, &breakers, scope) {
+    if let Err(refused) = route.admit(&ctx.host, scope) {
         return log.refused(
             route_refusal_reason(&refused),
             refuse_route(id, &route, &refused),
@@ -1913,7 +1912,6 @@ async fn create_task(
     // admitted member is FIXED for the task's whole life (`into_task_dispatch`): a task is one
     // conversation with one deployment, and its probe is BORN in the runner's `DurableScope`, which
     // releases it after the detached loop settles (a recorded outcome makes that a no-op).
-    let breakers = std::sync::Arc::clone(&ctx.app.plane_breakers);
     let live_app = ctx.handle.load();
     let route = super::reroute::PoolRoute::build(
         &live_app,
@@ -1929,7 +1927,7 @@ async fn create_task(
     // drop. The immutable borrow the admit takes on `durable.arena()` ends when `admit` returns, so
     // `durable` moves into the runner's `DurableHostDispatch` below.
     let durable = busbar_substrate::plane_host::DurableScope::new();
-    if let Err(refused) = route.admit(&ctx.host, &breakers, durable.arena()) {
+    if let Err(refused) = route.admit(&ctx.host, durable.arena()) {
         return log.refused(
             route_refusal_reason(&refused),
             refuse_route(id, &route, &refused),

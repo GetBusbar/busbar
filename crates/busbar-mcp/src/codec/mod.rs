@@ -123,7 +123,7 @@ pub const DECL: busbar_core::proto::ProtocolDecl = busbar_core::proto::ProtocolD
     ingress_is_eventstream: false,
     emits_sse_done_terminator: false,
     max_citations_per_delta: None,
-    egress_user_agent: busbar_core::proxy::EGRESS_UA_DEFAULT,
+    egress_user_agent: busbar_substrate::proxy::EGRESS_UA_DEFAULT,
     has_model_in_url: false,
     auth_failure_status_and_kind: (
         axum::http::StatusCode::UNAUTHORIZED,

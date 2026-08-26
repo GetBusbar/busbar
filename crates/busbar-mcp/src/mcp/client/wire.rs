@@ -221,10 +221,10 @@ pub(crate) async fn send(
     leg: &WireLeg<'_>,
     req: &OutboundRequest,
 ) -> Result<TransportResponse, TransportError> {
-    busbar_core::telemetry::upstream_attempt_on(leg.server, transport.name());
+    busbar_substrate::telemetry::upstream_attempt_on(leg.server, transport.name());
     let out = wire_for(transport).send(leg, req).await;
     if let Err(TransportError::Io(_) | TransportError::Unreachable(_)) = &out {
-        busbar_core::telemetry::upstream_failure_on(
+        busbar_substrate::telemetry::upstream_failure_on(
             leg.server,
             transport.name(),
             busbar_substrate::proxy::DISPOSITION_TRANSIENT,
@@ -244,10 +244,10 @@ pub(crate) async fn notify(
     leg: &WireLeg<'_>,
     req: &OutboundRequest,
 ) -> Result<(), TransportError> {
-    busbar_core::telemetry::upstream_attempt_on(leg.server, transport.name());
+    busbar_substrate::telemetry::upstream_attempt_on(leg.server, transport.name());
     let out = wire_for(transport).notify(leg, req).await;
     if let Err(TransportError::Io(_) | TransportError::Unreachable(_)) = &out {
-        busbar_core::telemetry::upstream_failure_on(
+        busbar_substrate::telemetry::upstream_failure_on(
             leg.server,
             transport.name(),
             busbar_substrate::proxy::DISPOSITION_TRANSIENT,

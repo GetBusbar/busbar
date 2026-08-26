@@ -796,50 +796,14 @@ pub(crate) fn request_finished(
     }
 }
 
-/// `busbar_upstream_attempts_total` for one dispatch attempt on `(pool label, lane label)`.
-///
-/// THE EMIT for this family, on EVERY plane. [`upstream_attempt`] is the model plane's caller and
-/// resolves its lane label out of `app.lanes`; a plane whose upstream registration IS the lane names
-/// it directly and lands here. One family, one label set, one emit — the same relationship
-/// [`request_finished`] has with the three ingress doors, so an operator's
-/// `sum by (pool) (rate(busbar_upstream_attempts_total[5m]))` panel covers every client leg busbar
-/// originates rather than only the model one.
-///
-/// NO `&App`, and that is not an omission. The slot bank holds exactly ONE plane's registered label
-/// space (`banked_plane` in [`AppSlots::build`]), so a non-model pool misses it by construction and
-/// takes the cached-handle path anyway — the same contract [`request_finished`] states for an
-/// unregistered pool. Taking an `App` here would buy nothing and would put a handle into the two
-/// synchronous client legs (`mcp::client::wire`, `a2a::relay`) that neither of them otherwise needs.
-///
-/// BOTH LABELS ARE OPERATOR-CONFIGURED and therefore bounded: the pool label is a registration name
-/// out of the operator's config and the lane label is a `crate::transport::Transport::name()` /
-/// binding word off a closed axis. Neither is caller-supplied, which is the rule
-/// `crate::proxy::POOL_LABEL_UNRESOLVED` exists to keep — a client-supplied value here would mint a
-/// time series per distinct string.
-pub fn upstream_attempt_on(pool_label: &str, lane_label: &str) {
-    metrics::counter!(
-        crate::metrics::UPSTREAM_ATTEMPTS_TOTAL,
-        "pool" => pool_label.to_owned(),
-        "lane" => lane_label.to_owned()
-    )
-    .increment(1);
-}
-
-/// `busbar_upstream_failures_total` for one classified failure on `(pool label, lane label)`.
-///
-/// THE EMIT for this family, on EVERY plane — see [`upstream_attempt_on`] for why there is no
-/// `&App` and why both labels are bounded. `disposition` is the model plane's own vocabulary
-/// ([`DISPOSITIONS`], i.e. `crate::proxy::DISPOSITION_*`) and no plane gets one of its own: a
-/// disposition value invented per plane is the second vocabulary this whole file exists to refuse.
-pub fn upstream_failure_on(pool_label: &str, lane_label: &str, disposition: &'static str) {
-    metrics::counter!(
-        crate::metrics::UPSTREAM_FAILURES_TOTAL,
-        "pool" => pool_label.to_owned(),
-        "lane" => lane_label.to_owned(),
-        "disposition" => disposition
-    )
-    .increment(1);
-}
+// `upstream_attempt_on` / `upstream_failure_on` — THE EMIT for this family, on EVERY plane — MOVED
+// DOWN to the neutral substrate (`busbar_substrate::telemetry`) so the synchronous client legs
+// (`mcp::client::wire`, `a2a::relay`) name them without reaching into core. They take NO `&App` and
+// never did (both labels are operator-configured and bounded, so the emit is a pure `metrics` write);
+// that is exactly what let them relocate. Re-exported here so core's own `App`-holding wrappers
+// ([`upstream_attempt`]/[`upstream_failure`], which resolve the lane label out of `app.lanes`) and
+// `crate::telemetry::*` call sites resolve unchanged.
+pub use busbar_substrate::telemetry::{upstream_attempt_on, upstream_failure_on};
 
 /// `busbar_upstream_attempts_total` for one dispatch attempt on `(pool label, lane)`.
 pub(crate) fn upstream_attempt(app: &App, pool_label: &str, lane_idx: usize) {

@@ -104,6 +104,17 @@ impl Unavailable {
     }
 }
 
+/// The MCP plane's breaker-cell key for one registered tool server: the `tool:` prefix is the
+/// plane-qualified keyspace rule (LLM pools keep bare names, so a `tool_pools:` can never collide
+/// with an LLM pool, and `tool:`/`agent:` cannot collide with each other), the id is the operator's
+/// registration id which is what every refusal names. Lives here (not only on core's `PlaneBreakers`)
+/// so the MCP plane builds the key without reaching into `busbar-core`; core's `PlaneBreakers::tool_key`
+/// delegates to it so the ONE spelling of the prefix stays single-sourced.
+#[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
+pub fn tool_key(server: &str) -> String {
+    format!("tool:{server}")
+}
+
 /// Get current time in seconds since epoch. The shared wall clock both core and the plane crates
 /// read (the plane via the `clock_now` host seam long-term; this is the single implementation).
 pub fn now() -> u64 {

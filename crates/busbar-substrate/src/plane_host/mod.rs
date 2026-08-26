@@ -172,6 +172,12 @@ pub trait EngineHost: Send + Sync {
     /// plane's own `PlaneBreakers::record_signal`.
     fn breaker_record_signal(&self, pool: &str, lane: usize, sig: &CanonicalSignal);
 
+    /// The seconds until the `(pool, lane)` breaker cell's cooldown expires — the honest `Retry-After`
+    /// for a refused pooled dispatch, read PER MEMBER so a pool whose members trip independently
+    /// answers with the soonest. Identical to the plane's own `PlaneBreakers::retry_after_secs`; a
+    /// pure read, so it needs no `HostCtx`.
+    fn breaker_retry_after_secs(&self, pool: &str, lane: usize) -> u64;
+
     /// Redeem a one-time approval against the shared spent-approval ledger the host pulls, spending
     /// against the seal's own `expires_at` and the caller's `now`. `true` iff this is the FIRST
     /// redemption; `false` when already spent OR the durable ledger could not answer (fail-closed).

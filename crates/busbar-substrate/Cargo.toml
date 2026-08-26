@@ -49,6 +49,10 @@ base64 = { workspace = true }
 hmac = { workspace = true }
 sha2 = { workspace = true }
 serde = { workspace = true }
+# The hostless upstream-count emits (`telemetry::upstream_attempt_on`/`upstream_failure_on`) are pure
+# `metrics::counter!` writes over bounded, operator-configured labels — no `App`, no engine reach — so
+# they relocate here for the plane crates to name directly. This is the family's only `metrics` edge.
+metrics = { workspace = true }
 
 # The relocated leaves carry `#[cfg_attr(not(feature = "plane-mcp"/"plane-a2a"), allow(dead_code))]`
 # verbatim from core — the items are `pub` here so the allowance is now inert, but the cfg names

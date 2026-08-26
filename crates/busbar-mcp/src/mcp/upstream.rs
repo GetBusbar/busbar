@@ -398,7 +398,7 @@ impl BreakerCell {
     /// breaker unit landed.
     pub(crate) fn degenerate(server: &str) -> Self {
         BreakerCell {
-            key: busbar_core::store::PlaneBreakers::tool_key(server),
+            key: busbar_substrate::store::tool_key(server),
             lane: 0,
         }
     }

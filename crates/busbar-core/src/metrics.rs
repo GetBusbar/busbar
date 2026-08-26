@@ -152,8 +152,10 @@ pub(crate) fn retaining_from(
 /// `ingress_protocol`, `from`, and `to` labels are likewise drawn from fixed enumerations, never
 /// from free-form client input.
 pub(crate) const REQUESTS_TOTAL: &str = "busbar_requests_total"; // labels: ingress_protocol, pool (bounded), outcome
-pub(crate) const UPSTREAM_ATTEMPTS_TOTAL: &str = "busbar_upstream_attempts_total"; // labels: pool (bounded), lane
-pub(crate) const UPSTREAM_FAILURES_TOTAL: &str = "busbar_upstream_failures_total"; // labels: pool (bounded), lane, disposition
+                                                                 // UPSTREAM_ATTEMPTS_TOTAL / UPSTREAM_FAILURES_TOTAL metric NAMES moved DOWN to the neutral substrate
+                                                                 // alongside their hostless emit fns (`busbar_substrate::telemetry`); re-exported here so this file's
+                                                                 // `describe_counter!` registrations and every `crate::metrics::UPSTREAM_*` call site resolve unchanged.
+pub(crate) use busbar_substrate::telemetry::{UPSTREAM_ATTEMPTS_TOTAL, UPSTREAM_FAILURES_TOTAL}; // labels: pool (bounded), lane[, disposition]
 pub(crate) const BREAKER_TRIPS_TOTAL: &str = "busbar_breaker_trips_total"; // labels: pool (bounded), lane
 pub(crate) const FAILOVERS_TOTAL: &str = "busbar_failovers_total"; // labels: pool (bounded), reason
 pub(crate) const REQUEST_DURATION_SECONDS: &str = "busbar_request_duration_seconds"; // histogram; labels: ingress_protocol, pool (bounded)
