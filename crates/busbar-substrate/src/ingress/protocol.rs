@@ -201,7 +201,9 @@ fn is_loopback_origin(origin: &str) -> bool {
 /// with step 3 taken from `req.wire_refusal` and steps 9–12 taken by `dispatch`.
 ///
 /// `dispatch` receives the three things the envelope reader ESTABLISHED — the parsed body, the
-/// caller-correlatable `id`, and the method name — by VALUE, so nothing on this path is cloned.
+/// caller-correlatable `id`, and the method name — by VALUE: the parsed body moves in whole, and
+/// `id`/`method` are cloned into the call so the originals survive for the step-13 `MethodNotFound`
+/// refusal on the `None` path (two small allocations the JSON parse already dwarfs).
 /// Returning `None` from it means "my vocabulary does not carry this method", which is step 13 and
 /// is core's to answer; returning `Some` means the protocol answered, and core does not touch what
 /// it said.

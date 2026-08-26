@@ -130,7 +130,8 @@ fn the_shared_internal_predicate_covers_every_range_any_plane_ever_checked() {
         );
         checked += 1;
     }
-    assert_eq!(checked, cases.len());
+    // `checked` equals `cases.len()` by construction (one increment per row, no early `continue`),
+    // so the anti-shrink guard is a FLOOR on that count, not an equality that could only restate it.
     assert!(
         checked >= 30,
         "the shared hostile table shrank; a deleted row is a range every plane silently stopped \
