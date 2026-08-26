@@ -171,120 +171,12 @@ fn reconstruct_unavailable(
     }
 }
 
-/// Build the ABI [`Signal`] a host settle carries FROM the plane's own [`CanonicalSignal`] — the
-/// INVERSE of [`classify`], so a settle folded through the host scope reproduces the EXACT
-/// disposition the plane's own `record_signal` would (proven by `settle_through_host_matches_direct_record_signal`).
-/// A failure rides its fine [`FaultClass`], the `Retry-After` floor (flagged in `fault_flags` bit 0
-/// so a `0`-second header is distinct from "no header"), and the borrowed provider error-code — the
-/// exact three inputs [`classify`] reads back. The coarse `class` is the neutral failure carrier
-/// [`StatusClass::Fault`]; the FINE `fault_class` is what the host reads.
-///
-/// The returned `Signal` BORROWS `cs.provider_signal`; it MUST NOT outlive `cs`.
-// Built only by the MCP and A2A plane settle paths, so it reads dead when both planes are compiled
-// out; live with either on.
-#[cfg_attr(
-    not(any(feature = "plane-mcp", feature = "plane-a2a")),
-    allow(dead_code)
-)]
-pub fn failure_signal(cs: &CanonicalSignal) -> Signal {
-    let (flags, secs) = match cs.retry_after {
-        Some(s) => (0x01u8, s),
-        None => (0, 0),
-    };
-    let (ptr, len) = match cs.provider_signal.as_deref() {
-        Some(code) => (code.as_ptr(), code.len()),
-        None => (core::ptr::null(), 0),
-    };
-    Signal {
-        size: core::mem::size_of::<Signal>() as u32,
-        version: busbar_plugin::hot::POD_VERSION,
-        class: StatusClass::Fault,
-        _reserved: 0,
-        latency_nanos: 0,
-        bytes: 0,
-        fault_class: fault_of(cs.class),
-        fault_flags: flags,
-        _reserved2: 0,
-        _reserved3: 0,
-        retry_after_secs: secs,
-        provider_signal_ptr: ptr,
-        provider_signal_len: len,
-    }
-}
-
-/// The ABI [`Signal`] a host settle carries for a SUCCESS — [`classify`] maps `Ok` straight to
-/// `record_success`, closing the half-open probe exactly as the plane's own success record does.
-// Built only by the MCP and A2A plane settle paths, so it reads dead when both planes are compiled
-// out; live with either on.
-#[cfg_attr(
-    not(any(feature = "plane-mcp", feature = "plane-a2a")),
-    allow(dead_code)
-)]
-pub fn success_signal() -> Signal {
-    Signal {
-        size: core::mem::size_of::<Signal>() as u32,
-        version: busbar_plugin::hot::POD_VERSION,
-        class: StatusClass::Ok,
-        _reserved: 0,
-        latency_nanos: 0,
-        bytes: 0,
-        fault_class: FaultClass::Unspecified,
-        fault_flags: 0,
-        _reserved2: 0,
-        _reserved3: 0,
-        retry_after_secs: 0,
-        provider_signal_ptr: core::ptr::null(),
-        provider_signal_len: 0,
-    }
-}
-
-/// The ABI [`Signal`] a host settle carries for an outcome that is NOT an upstream health signal —
-/// [`classify`] maps `Refused` to `RecordNothing`, so settling this RELEASES the half-open probe
-/// without recording, exactly as dropping the raw `PlaneAdmission` did (the "record nothing"
-/// disposition: a busbar-side refusal / a not-transmitted leg).
-// Built only by the MCP plane leg (`mcp::tasks`/`mcp::reroute`) — the A2A relay never carries the
-// "record nothing" outcome — so it reads dead whenever the MCP plane is compiled out.
-#[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
-pub fn refused_signal() -> Signal {
-    Signal {
-        size: core::mem::size_of::<Signal>() as u32,
-        version: busbar_plugin::hot::POD_VERSION,
-        class: StatusClass::Refused,
-        _reserved: 0,
-        latency_nanos: 0,
-        bytes: 0,
-        fault_class: FaultClass::Unspecified,
-        fault_flags: 0,
-        _reserved2: 0,
-        _reserved3: 0,
-        retry_after_secs: 0,
-        provider_signal_ptr: core::ptr::null(),
-        provider_signal_len: 0,
-    }
-}
-
-/// The inverse of [`classify`]'s fine [`FaultClass`] → [`BreakerClass`] table: the plane's own
-/// canonical class back to the ABI fine class the settle carries. Total — every [`BreakerClass`]
-/// maps to exactly one [`FaultClass`], so a settle built here round-trips through [`classify`].
-// Reached only through [`failure_signal`], so it shares that fn's liveness: dead when both planes are
-// compiled out, live with either on.
-#[cfg_attr(
-    not(any(feature = "plane-mcp", feature = "plane-a2a")),
-    allow(dead_code)
-)]
-fn fault_of(class: BreakerClass) -> FaultClass {
-    match class {
-        BreakerClass::RateLimit => FaultClass::RateLimit,
-        BreakerClass::Overloaded => FaultClass::Overloaded,
-        BreakerClass::ServerError => FaultClass::UpstreamError,
-        BreakerClass::Timeout => FaultClass::Timeout,
-        BreakerClass::Network => FaultClass::Network,
-        BreakerClass::Auth => FaultClass::Auth,
-        BreakerClass::Billing => FaultClass::Billing,
-        BreakerClass::ClientError => FaultClass::ClientError,
-        BreakerClass::ContextLength => FaultClass::ContextLength,
-    }
-}
+// The plane-side `Signal` constructors a settle leg builds (`success_signal`/`failure_signal`/
+// `refused_signal`) are pure `#[repr(C)]` PODs naming only `busbar_plugin::hot` + the neutral
+// `CanonicalSignal`, so they now live in `busbar_substrate::plane_host::breaker`; core re-exports
+// them so every in-core caller (the a2a relay/route settle legs) is unchanged. `fault_of` moved with
+// them (it was their only reader); this module keeps the INVERSE `classify` the host slot drives.
+pub use busbar_substrate::plane_host::breaker::{failure_signal, refused_signal, success_signal};
 
 /// What a reported ABI [`StatusClass`] means to the breaker's disposition pipeline.
 enum Outcome {

@@ -21,7 +21,52 @@
 //! This seam begins with the CLOCK reaches; later stages append one method per remaining host reach
 //! (gate-decide, govern-admit, breaker-admit, identity-admit, approval-redeem, …).
 
+pub mod breaker;
 pub mod scope;
+
+use crate::breaker::CanonicalSignal;
+use crate::plane_host::scope::DispatchScope;
+use crate::store::Unavailable;
+use crate::trust::TrustState;
+use busbar_plugin::hot::{AdmissionId, Signal, StatusClass};
+
+/// The outcome of a refusal-fidelity admit driven over the host `govern_admit_reason` seam.
+#[cfg_attr(
+    not(any(feature = "plane-mcp", feature = "plane-a2a")),
+    allow(dead_code)
+)]
+pub enum GovAdmit {
+    /// Admitted — the RAII grant is registered in the arena the caller passed.
+    Admitted,
+    /// A limit blocked — the RENDERED reason (byte-identical to the plane's own
+    /// `format!("{blocked:?}")`) and the block's recovery floor in whole seconds.
+    Blocked {
+        /// The rendered reason bytes the host copied out (the exact `{blocked:?}` the plane surfaces).
+        reason: String,
+        /// The recovery floor in whole seconds (`0` when the block does not self-recover / never rolls).
+        retry_after_secs: u64,
+    },
+}
+
+/// The verdict of a request-admission gate fired over the host `gate_decide` seam.
+#[cfg_attr(
+    not(any(feature = "plane-mcp", feature = "plane-a2a")),
+    allow(dead_code)
+)]
+pub enum GateOutcome {
+    /// No gate objected (or none is attached) — the request proceeds.
+    Proceed,
+    /// A gate refused the request. Reconstructed from the `GateVerdictOut` header + the copied-out
+    /// buffers, byte-identical to the in-process `GateVerdict::Reject`.
+    Reject {
+        /// The hook's refusal status, already clamped to the 4xx band by the gate.
+        status: u16,
+        /// The hook's own refusal message (empty on a fail-closed refusal).
+        message: String,
+        /// The transport/policy name, for the audit row and the log line (empty on a fail-closed refusal).
+        hook: String,
+    },
+}
 
 /// The neutral HOST seam a plane calls to reach the engine's host-owned capabilities.
 ///
@@ -41,4 +86,87 @@ pub trait EngineHost: Send + Sync {
     /// Read the host wall clock in MILLISECONDS through the `clock_now` seam — the host-driven form of
     /// a plane's in-place millis clock. Identical to `busbar_core::plane_host::clock_now_ms_over`.
     fn clock_now_ms(&self) -> u64;
+
+    /// Fire the operator's REQUEST-ADMISSION hook gates over the host `gate_decide` seam and
+    /// reconstruct the [`GateOutcome`]. Identical to `busbar_core::plane_host::gate_decide_over`:
+    /// same reconstructed facts, same key identity, same gate decision. Drives the ASYNC gate on a
+    /// fresh runtime, so it MUST be called from a BLOCKING thread (`spawn_blocking`).
+    ///
+    /// `plane_key`: `0` = MCP, `1` = A2A. `key` is the caller's resolved `(id, name)`; `session_id`
+    /// is the caller's session, `Some` only when non-empty.
+    #[allow(clippy::too_many_arguments)]
+    fn gate_decide(
+        &self,
+        plane_key: u8,
+        container: &str,
+        request_id: u64,
+        tool: &str,
+        args_json: &[u8],
+        key: Option<(&str, &str)>,
+        session_id: Option<&str>,
+    ) -> GateOutcome;
+
+    /// Admit one unit of work over the host `govern_admit_reason` seam, REGISTERING the RAII grant in
+    /// `scope`'s arena on success and returning the RENDERED refusal reason on a blocked limit.
+    /// Identical to `busbar_core::plane_host::govern_admit_reason_over`.
+    fn govern_admit_reason(
+        &self,
+        scope: &DispatchScope,
+        pool: &[u8],
+        identity_id: &[u8],
+        group: Option<&[u8]>,
+    ) -> GovAdmit;
+
+    /// Settle a drift disposition for `subject` through the host `drift_quarantine` seam, pulling the
+    /// demotion store host-side. Returns whether the slot answered `Ok`; the settle is
+    /// fire-and-forget, so a non-`Ok` is a durability miss, not a refusal. Identical to
+    /// `busbar_core::plane_host::trust::quarantine_settle_over`.
+    fn quarantine_settle(&self, subject: &str, state: TrustState) -> bool;
+
+    /// WIN ONE `(pool, lane)` breaker probe through the host `breaker_admit` seam, leaving the
+    /// settle-capable admission REGISTERED in `scope`'s arena and returning the POD [`AdmissionId`] —
+    /// or the store's own [`Unavailable`] refusal. Identical to
+    /// `busbar_core::plane_host::breaker::breaker_admit_over`.
+    fn breaker_admit(
+        &self,
+        scope: &DispatchScope,
+        pool: &[u8],
+        lane: u32,
+    ) -> Result<AdmissionId, Unavailable>;
+
+    /// Fold a leg's classified outcome through the host `breaker_settle` seam over `admission` (looked
+    /// up in `scope`'s arena). `Ok` means the live admission was found and settled; a `Gone` means it
+    /// was already settled — the caller falls back to an in-place record. Byte-identical disposition
+    /// to the plane's own `record_signal`/`record_success`.
+    fn breaker_settle(
+        &self,
+        scope: &DispatchScope,
+        admission: AdmissionId,
+        signal: &Signal,
+    ) -> StatusClass;
+
+    /// Record a SUCCESS against the `(pool, lane)` breaker cell in place — the fallback a settle leg
+    /// takes when no arena owns the probe (or a multi-round leg whose probe was already settled).
+    /// Identical to the plane's own `PlaneBreakers::record_success`.
+    fn breaker_record_success(&self, pool: &str, lane: usize);
+
+    /// Record a canonical failure signal against the `(pool, lane)` breaker cell in place — the
+    /// fallback twin of [`breaker_record_success`](Self::breaker_record_success). Identical to the
+    /// plane's own `PlaneBreakers::record_signal`.
+    fn breaker_record_signal(&self, pool: &str, lane: usize, sig: &CanonicalSignal);
+
+    /// Redeem a one-time approval against the shared spent-approval ledger the host pulls, spending
+    /// against the seal's own `expires_at` and the caller's `now`. `true` iff this is the FIRST
+    /// redemption; `false` when already spent OR the durable ledger could not answer (fail-closed).
+    /// Identical to `busbar_core::plane_host::trust::approval_redeem_q`.
+    fn approval_redeem(&self, nonce: &str, expires_at: u64, now: u64) -> bool;
+
+    /// Stamp the NEXT per-request correlation id — one relaxed `fetch_add` on the host-owned counter.
+    /// Identical to `busbar_core::state::App::next_request_id` (the counter is boot-seeded and carried
+    /// across config swaps, so the value is engine-snapshot independent).
+    fn next_request_id(&self) -> u64;
+
+    /// Whether governance is configured for this deployment. Identical to
+    /// `busbar_core::state::App::governance.is_some()`.
+    fn governance_enabled(&self) -> bool;
 }

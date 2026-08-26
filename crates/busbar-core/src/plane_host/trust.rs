@@ -473,7 +473,10 @@ pub(crate) fn quarantine_drift(
 /// the settle is fire-and-forget at the primitive, so the caller may treat a non-`Ok` as a durability
 /// miss, not a refusal. Opens its own [`DispatchScope`] — the drift settle registers no host handle,
 /// so which arena reclaims is immaterial.
-#[cfg(feature = "plane-mcp")]
+// Reached by the MCP plane's verify-on-call/admin settle sites via the `EngineHost::quarantine_settle`
+// method (the core impl is always compiled), so it is a plain fn with a dead-code allow rather than a
+// feature gate — it must exist for the trait impl even when no plane is compiled in.
+#[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
 pub fn quarantine_settle_over(
     app: &crate::state::App,
     subject: &str,
@@ -557,9 +560,11 @@ mod reg_state {
 }
 
 /// Marshal a [`crate::trust::TrustState`] into the neutral u8 mirror the drift path carries in
-/// [`Key::drift_state`] (the same numbering [`reg_state`] names). The inverse of
+/// [`Key::drift_state`] (the same numbering [`reg_state`] names). Always compiled (the
+/// `EngineHost::quarantine_settle` core impl reaches `quarantine_settle_over`, which needs it, under
+/// any feature set), so a dead-code allow replaces the former `plane-mcp` gate. The inverse of
 /// [`trust_state_from_u8`]; the drift call sites use it to hand the slot the CALLER's disposition.
-#[cfg(feature = "plane-mcp")]
+#[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
 pub(crate) fn trust_state_u8(state: crate::trust::TrustState) -> u8 {
     use crate::trust::TrustState;
     match state {

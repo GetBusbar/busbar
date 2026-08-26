@@ -75,9 +75,10 @@ const DIGEST: &str = "d";
 /// now spends through. Each call gets its own App, hence its own spent-approval ledger, which is all
 /// these behavioural cases want: single use across two presentations of ONE approval is proven in
 /// `spentledger_tests`, over one shared ledger.
-fn with_host<R>(f: impl FnOnce(busbar_plugin::hot::host::HostCtx) -> R) -> R {
+fn with_host<R>(f: impl FnOnce(&dyn busbar_substrate::plane_host::EngineHost) -> R) -> R {
     let app = busbar_core::test_support::TestApp::new().build();
-    busbar_core::plane_host::with_dispatch_scope(&app, |host, _| f(host))
+    let engine = busbar_core::plane_host::engine_host(&app);
+    f(engine.as_ref())
 }
 
 fn decide_with(rounds: &[AskRoundCfg], caps: &serde_json::Value, retry: Retry<'_>) -> AskDecision {

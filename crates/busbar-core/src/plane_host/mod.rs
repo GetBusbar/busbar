@@ -146,19 +146,10 @@ pub fn card_sign_over(app: &App, signing_input: &[u8]) -> Option<[u8; 64]> {
     })
 }
 
-/// The outcome of a refusal-fidelity admit driven over the host `govern_admit_reason` seam.
-pub enum GovAdmit {
-    /// Admitted — the RAII grant is registered in the arena the caller passed.
-    Admitted,
-    /// A limit blocked — the RENDERED reason (byte-identical to the plane's own
-    /// `format!("{blocked:?}")`) and the block's recovery floor in whole seconds.
-    Blocked {
-        /// The rendered reason bytes the host copied out (the exact `{blocked:?}` the plane surfaces).
-        reason: String,
-        /// The recovery floor in whole seconds (`0` when the block does not self-recover / never rolls).
-        retry_after_secs: u64,
-    },
-}
+// The refusal-fidelity admit outcome is a pure POD naming only `busbar_plugin::hot` + std, so it now
+// lives in the substrate beside the neutral `EngineHost` seam; core re-exports it so every in-core
+// caller (`govern_admit_reason_over`, a2a) is unchanged.
+pub use busbar_substrate::plane_host::GovAdmit;
 
 /// Admit one unit of work over the host [`govern_admit_reason`](vtable) seam, REGISTERING the RAII
 /// grant in `scope`'s arena on success and returning the RENDERED refusal reason on a blocked limit —
@@ -343,6 +334,105 @@ impl busbar_substrate::plane_host::EngineHost for EngineHostImpl {
     fn clock_now_ms(&self) -> u64 {
         clock_now_ms_over(&self.app)
     }
+
+    fn gate_decide(
+        &self,
+        plane_key: u8,
+        container: &str,
+        request_id: u64,
+        tool: &str,
+        args_json: &[u8],
+        key: Option<(&str, &str)>,
+        session_id: Option<&str>,
+    ) -> busbar_substrate::plane_host::GateOutcome {
+        gate_decide_over(
+            &self.app, plane_key, container, request_id, tool, args_json, key, session_id,
+        )
+    }
+
+    fn govern_admit_reason(
+        &self,
+        scope: &DispatchScope,
+        pool: &[u8],
+        identity_id: &[u8],
+        group: Option<&[u8]>,
+    ) -> busbar_substrate::plane_host::GovAdmit {
+        govern_admit_reason_over(&self.app, scope, pool, identity_id, group)
+    }
+
+    fn quarantine_settle(&self, subject: &str, state: crate::trust::TrustState) -> bool {
+        trust::quarantine_settle_over(&self.app, subject, state)
+    }
+
+    fn breaker_admit(
+        &self,
+        scope: &DispatchScope,
+        pool: &[u8],
+        lane: u32,
+    ) -> Result<busbar_plugin::hot::AdmissionId, crate::store::Unavailable> {
+        breaker::breaker_admit_over(&self.app, scope, pool, lane)
+    }
+
+    fn breaker_settle(
+        &self,
+        scope: &DispatchScope,
+        admission: busbar_plugin::hot::AdmissionId,
+        signal: &busbar_plugin::hot::Signal,
+    ) -> busbar_plugin::hot::StatusClass {
+        // SAME dispatch as the in-place `with_borrowed_host` settle the plane's sync leg drove: mint
+        // the transient `HostCtx` over the caller's arena, fold the leg through the `breaker_settle`
+        // slot, and return the class — the raw host pointer never escapes the call.
+        with_borrowed_host(&self.app, scope, |host, vt| {
+            (vt.breaker_settle.expect("breaker_settle is a wired slot"))(
+                host,
+                admission,
+                signal as *const busbar_plugin::hot::Signal,
+            )
+        })
+    }
+
+    fn breaker_record_success(&self, pool: &str, lane: usize) {
+        self.app.plane_breakers.record_success(pool, lane);
+    }
+
+    fn breaker_record_signal(
+        &self,
+        pool: &str,
+        lane: usize,
+        sig: &busbar_substrate::breaker::CanonicalSignal,
+    ) {
+        self.app.plane_breakers.record_signal(pool, lane, sig);
+    }
+
+    fn approval_redeem(&self, nonce: &str, expires_at: u64, now: u64) -> bool {
+        // A fresh per-call arena backs the borrow; the redemption registers no host handle, so which
+        // arena reclaims is immaterial. The `ApprovalQuery` is built HERE so the plane passes only the
+        // nonce/expiry/now — it never names the `#[repr(C)]` POD or the `SpentTokenLedger`.
+        let scope = DispatchScope::new();
+        with_borrowed_host(&self.app, &scope, |host, _vt| {
+            let query = busbar_plugin::hot::ApprovalQuery {
+                size: core::mem::size_of::<busbar_plugin::hot::ApprovalQuery>() as u32,
+                version: busbar_plugin::hot::POD_VERSION,
+                _reserved: 0,
+                scope: 0,
+                _reserved2: 0,
+                expires_at,
+                now,
+                key_ptr: nonce.as_ptr(),
+                key_len: nonce.len(),
+            };
+            trust::approval_redeem_q(host, &query as *const busbar_plugin::hot::ApprovalQuery)
+                == busbar_plugin::hot::StatusClass::Ok
+        })
+    }
+
+    fn next_request_id(&self) -> u64 {
+        self.app.next_request_id()
+    }
+
+    fn governance_enabled(&self) -> bool {
+        self.app.governance.is_some()
+    }
 }
 
 /// Mint an `Arc<dyn EngineHost>` over the live `app` — the constructor core hands a plane so the
@@ -379,25 +469,10 @@ pub fn clock_now_secs_via(host: HostCtx) -> u64 {
     (vtable.clock_now.expect("clock_now is a wired slot"))(host) / 1_000_000_000
 }
 
-/// The verdict of a request-admission gate fired over the host [`gate_decide`](vtable) seam.
-#[cfg_attr(
-    not(any(feature = "plane-mcp", feature = "plane-a2a")),
-    allow(dead_code)
-)]
-pub enum GateOutcome {
-    /// No gate objected (or none is attached) — the request proceeds.
-    Proceed,
-    /// A gate refused the request. Reconstructed from the [`GateVerdictOut`](busbar_plugin::hot::GateVerdictOut)
-    /// header + the copied-out buffers, byte-identical to the in-process `GateVerdict::Reject`.
-    Reject {
-        /// The hook's refusal status, already clamped to the 4xx band by the gate.
-        status: u16,
-        /// The hook's own refusal message (empty on a fail-closed refusal).
-        message: String,
-        /// The transport/policy name, for the audit row and the log line (empty on a fail-closed refusal).
-        hook: String,
-    },
-}
+// The request-admission gate verdict is a pure POD naming only `busbar_plugin::hot` + std, so it now
+// lives in the substrate beside the neutral `EngineHost` seam; core re-exports it so every in-core
+// caller (`gate_decide_over`, a2a) is unchanged.
+pub use busbar_substrate::plane_host::GateOutcome;
 
 /// Fire the operator's REQUEST-ADMISSION hook gates over the wired [`gate_decide`](vtable) seam and
 /// reconstruct the [`GateOutcome`] — so an MCP/A2A plane body admits a request through its

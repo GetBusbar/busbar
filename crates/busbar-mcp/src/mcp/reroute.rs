@@ -248,12 +248,12 @@ impl PoolRoute {
     /// arena owns the real probe and its outcome is later folded through the scope.
     pub(crate) fn admit(
         &self,
-        app: &busbar_core::state::App,
+        host: &Arc<dyn busbar_substrate::plane_host::EngineHost>,
         breakers: &Arc<PlaneBreakers>,
         scope: &DispatchScope,
     ) -> Result<(), Box<RouteRefused>> {
         let mut s = lock(&self.state);
-        self.select_locked(app, &mut s, Stage::BeforeFirstByte, scope)
+        self.select_locked(host, &mut s, Stage::BeforeFirstByte, scope)
             .map_err(|refusal| {
                 Box::new(RouteRefused {
                     refusal,
@@ -272,7 +272,7 @@ impl PoolRoute {
     /// id per leg.
     fn select_locked(
         &self,
-        app: &busbar_core::state::App,
+        host: &Arc<dyn busbar_substrate::plane_host::EngineHost>,
         s: &mut RouteState,
         stage: Stage,
         scope: &DispatchScope,
@@ -292,12 +292,7 @@ impl PoolRoute {
             &mut order,
             &mut passed_over,
             &mut |_position, member: &RouteMember| {
-                busbar_core::plane_host::breaker::breaker_admit_over(
-                    app,
-                    scope,
-                    self.pool_key.as_bytes(),
-                    member.lane() as u32,
-                )
+                host.breaker_admit(scope, self.pool_key.as_bytes(), member.lane() as u32)
             },
         )?;
         s.active = Some(admitted.position());
@@ -323,9 +318,8 @@ impl PoolRoute {
     #[allow(clippy::too_many_arguments)] // the routed dispatch's own facts, gathered where made.
     pub(crate) async fn dispatch(
         &self,
-        app: &busbar_core::state::App,
+        host: &Arc<dyn busbar_substrate::plane_host::EngineHost>,
         pool: &super::client::pool::McpConnectionPool,
-        breakers: &Arc<PlaneBreakers>,
         scope: &DispatchScope,
         arguments: &serde_json::Value,
         request_id: u64,
@@ -363,14 +357,7 @@ impl PoolRoute {
             // SETTLE this leg's classified outcome where the probe lives (CLUSTER-1): through the
             // shared scope over this leg's id, or — with no scope, or a multi-round leg whose probe
             // was already settled on an earlier round — in place against the member's own cell.
-            settle_leg(
-                app,
-                breakers,
-                &cell,
-                Some(scope),
-                admission_id,
-                &leg_outcome,
-            );
+            settle_leg(host, &cell, Some(scope), admission_id, &leg_outcome);
             let failure: LegFailure = match outcome {
                 Ok(round) => {
                     lock(&self.state).pinned = true;
@@ -395,7 +382,7 @@ impl PoolRoute {
                 // failure's stage and the operator's `repeatable:` allow another member; a refusal
                 // keeps the failure the caller was already owed.
                 if self
-                    .select_locked(app, &mut s, failure.stage, scope)
+                    .select_locked(host, &mut s, failure.stage, scope)
                     .is_err()
                 {
                     s.pinned = true;
@@ -450,8 +437,7 @@ impl PoolRoute {
 /// record in place against the member's own cell — leaving a `Nothing` unrecorded exactly as dropping
 /// the raw probe did.
 fn settle_leg(
-    app: &busbar_core::state::App,
-    breakers: &Arc<PlaneBreakers>,
+    host: &Arc<dyn busbar_substrate::plane_host::EngineHost>,
     cell: &BreakerCell,
     scope: Option<&DispatchScope>,
     admission_id: AdmissionId,
@@ -460,32 +446,28 @@ fn settle_leg(
     if let Some(scope) = scope {
         if !admission_id.is_none() {
             let sig = match outcome {
-                LegOutcome::Success => busbar_core::plane_host::breaker::success_signal(),
-                LegOutcome::Failure(cs) => busbar_core::plane_host::breaker::failure_signal(cs),
+                LegOutcome::Success => busbar_substrate::plane_host::breaker::success_signal(),
+                LegOutcome::Failure(cs) => {
+                    busbar_substrate::plane_host::breaker::failure_signal(cs)
+                }
                 // A settled `Refused` records nothing and RELEASES the probe — the raw-drop behaviour.
-                LegOutcome::Nothing => busbar_core::plane_host::breaker::refused_signal(),
+                LegOutcome::Nothing => busbar_substrate::plane_host::breaker::refused_signal(),
             };
             // Fold the outcome through the host `breaker_settle` seam over this leg's id. `Ok` means the
             // live admission was found and settled; `Gone` means the probe was already settled (a later
             // multi-round leg) → fall through to the in-place record, exactly as before.
-            let settled = busbar_core::plane_host::with_borrowed_host(app, scope, |host, vt| {
-                (vt.breaker_settle.expect("breaker_settle is a wired slot"))(
-                    host,
-                    admission_id,
-                    &sig as *const busbar_plugin::hot::Signal,
-                )
-            });
-            if settled == busbar_plugin::hot::StatusClass::Ok {
+            if host.breaker_settle(scope, admission_id, &sig) == busbar_plugin::hot::StatusClass::Ok
+            {
                 return;
             }
         }
     }
     match outcome {
         LegOutcome::Success => {
-            breakers.record_success(&cell.key, cell.lane);
+            host.breaker_record_success(&cell.key, cell.lane);
         }
         LegOutcome::Failure(cs) => {
-            breakers.record_signal(&cell.key, cell.lane, cs);
+            host.breaker_record_signal(&cell.key, cell.lane, cs);
         }
         // Not an upstream health signal: record nothing (a raw probe, if any, releases on drop).
         LegOutcome::Nothing => {}

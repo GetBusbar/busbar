@@ -96,22 +96,21 @@ fn node(cfg: Option<&str>) -> std::sync::Arc<crate::state::App> {
 
 /// Ask this node for an approval — the opening round, which mints the sealed state. Opens a host over
 /// the node's App so the decision reaches the same spent-approval ledger the redemption will.
-fn ask(app: &crate::state::App) -> String {
+fn ask(app: &std::sync::Arc<crate::state::App>) -> String {
     let rounds = confirm_round();
-    let decision = crate::plane_host::with_dispatch_scope(app, |host, _| {
-        decide(
-            &rounds,
-            3,
-            &all_capabilities(),
-            Retry::default(),
-            bind(),
-            DIGEST,
-            Approvals {
-                sealer: Some(&sealer()),
-                host,
-            },
-        )
-    });
+    let engine = crate::plane_host::engine_host(app);
+    let decision = decide(
+        &rounds,
+        3,
+        &all_capabilities(),
+        Retry::default(),
+        bind(),
+        DIGEST,
+        Approvals {
+            sealer: Some(&sealer()),
+            host: engine.as_ref(),
+        },
+    );
     match decision {
         AskDecision::Ask { request_state, .. } => request_state,
         other => panic!("the opening round must ask: {other:?}"),
@@ -120,26 +119,25 @@ fn ask(app: &crate::state::App) -> String {
 
 /// Present `state` to this node as the answered confirmation — the redemption, spent through the
 /// node's own host against the ledger that App carries.
-fn redeem(app: &crate::state::App, state: &str) -> AskDecision {
+fn redeem(app: &std::sync::Arc<crate::state::App>, state: &str) -> AskDecision {
     let rounds = confirm_round();
     let responses = serde_json::json!({ "confirm": { "action": "accept", "content": {} } });
-    crate::plane_host::with_dispatch_scope(app, |host, _| {
-        decide(
-            &rounds,
-            3,
-            &all_capabilities(),
-            Retry {
-                responses: Some(&responses),
-                state: Some(state),
-            },
-            bind(),
-            DIGEST,
-            Approvals {
-                sealer: Some(&sealer()),
-                host,
-            },
-        )
-    })
+    let engine = crate::plane_host::engine_host(app);
+    decide(
+        &rounds,
+        3,
+        &all_capabilities(),
+        Retry {
+            responses: Some(&responses),
+            state: Some(state),
+        },
+        bind(),
+        DIGEST,
+        Approvals {
+            sealer: Some(&sealer()),
+            host: engine.as_ref(),
+        },
+    )
 }
 
 /// `true` when the decision was the already-spent refusal specifically, not merely any refusal. A

@@ -516,10 +516,6 @@ impl Registry {
 pub(crate) struct Runner {
     pub(crate) pool: Arc<super::client::pool::McpConnectionPool>,
     pub(crate) handle: Arc<busbar_core::state::AppHandle>,
-    /// The plane breaker cells `upstream::call` records this task's legs into — the same handle
-    /// `create_task` consulted for admission, carried so the runner cannot record into a different
-    /// generation's cells than it was admitted against.
-    pub(crate) breakers: Arc<busbar_core::store::PlaneBreakers>,
     /// THE DETACHED RUNNER'S HOST ROUTE. Owns the runner's `Arc<App>`, the
     /// [`DurableScope`](busbar_core::plane_host::DurableScope) holding the single-flight probe `create_task`
     /// won, and the durable `AdmissionId` the detached leg settles by. `create_task` ran the task admit
@@ -592,7 +588,7 @@ pub(crate) fn spawn(task: Arc<McpTask>, runner: Runner) {
 /// records nothing in place.
 fn settle_task_leg(
     host: &busbar_core::plane_host::DurableHostDispatch,
-    breakers: &busbar_core::store::PlaneBreakers,
+    engine: &Arc<dyn busbar_substrate::plane_host::EngineHost>,
     cell: &super::upstream::BreakerCell,
     outcome: &super::upstream::LegOutcome,
 ) {
@@ -600,20 +596,23 @@ fn settle_task_leg(
     let id = host.admission();
     if !id.is_none() {
         let sig = match outcome {
-            LegOutcome::Success => busbar_core::plane_host::breaker::success_signal(),
-            LegOutcome::Failure(cs) => busbar_core::plane_host::breaker::failure_signal(cs),
-            LegOutcome::Nothing => busbar_core::plane_host::breaker::refused_signal(),
+            LegOutcome::Success => busbar_substrate::plane_host::breaker::success_signal(),
+            LegOutcome::Failure(cs) => busbar_substrate::plane_host::breaker::failure_signal(cs),
+            LegOutcome::Nothing => busbar_substrate::plane_host::breaker::refused_signal(),
         };
         if host.durable().settle(id, &sig).is_some() {
             return;
         }
     }
+    // The in-place fallback (no live durable admission — a later input-required round, or a `Nothing`)
+    // records against the SAME process-lifetime `plane_breakers` the runner captured, reached now
+    // through the neutral host seam rather than a bare `&PlaneBreakers`.
     match outcome {
         LegOutcome::Success => {
-            breakers.record_success(&cell.key, cell.lane);
+            engine.breaker_record_success(&cell.key, cell.lane);
         }
         LegOutcome::Failure(cs) => {
-            breakers.record_signal(&cell.key, cell.lane, cs);
+            engine.breaker_record_signal(&cell.key, cell.lane, cs);
         }
         LegOutcome::Nothing => {}
     }
@@ -655,6 +654,10 @@ async fn run(task: Arc<McpTask>, runner: Runner) {
             // copy), not the `Runner`, so the closure stays callable per round.
             let runner = &runner;
             let arguments = &arguments;
+            // The neutral host seam for this leg's in-place breaker record fallback. A cheap `Arc`
+            // clone per round moved into the leg future; its `plane_breakers` is the SAME
+            // process-lifetime instance `runner.breakers` held, so the record is byte-identical.
+            let engine = host.clone();
             // A task never reroutes mid-flight (the member was fixed at creation), so the leg's stage
             // is not consulted here: only the message survives into the loop's refusal.
             async move {
@@ -671,7 +674,7 @@ async fn run(task: Arc<McpTask>, runner: Runner) {
                 // SETTLE this leg's classified outcome through the runner's durable host route
                 // (CLUSTER-1). The single durable probe is settled on the first round; later
                 // input-required rounds record in place against the same cell.
-                settle_task_leg(&runner.host, &runner.breakers, &runner.cell, &leg_outcome);
+                settle_task_leg(&runner.host, &engine, &runner.cell, &leg_outcome);
                 result.map_err(|f| f.message)
             }
         },

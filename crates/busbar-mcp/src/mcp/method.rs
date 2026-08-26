@@ -1046,7 +1046,7 @@ impl<'a> CallLog<'a> {
     fn open(ctx: &'a Ctx<'_>, requested: &str, generation: u64) -> Self {
         CallLog {
             principal: ctx.actor,
-            request_id: ctx.app.next_request_id().to_string(),
+            request_id: ctx.host.next_request_id().to_string(),
             tool: requested.to_string(),
             server: String::new(),
             tool_digest: String::new(),
@@ -1184,11 +1184,8 @@ async fn verify_on_call(ctx: &Ctx<'_>, name: &str) {
                         // Routed through the host `drift_quarantine` vtable slot, which carries the
                         // observed state and pulls the demotion store host-side — one settle rule, one
                         // seam. The settle is fire-and-forget, so the durability bool is not a refusal.
-                        let _ = busbar_core::plane_host::trust::quarantine_settle_over(
-                            &app,
-                            &server.id,
-                            report.state,
-                        );
+                        let _ = busbar_core::plane_host::engine_host(&app)
+                            .quarantine_settle(&server.id, report.state);
                         if report.failure.is_some() {
                             // UNREACHABLE at verify → the gate below refuses fail-closed; latch the
                             // diagnostic so a persistent outage logs once.
@@ -1513,12 +1510,11 @@ async fn tools_call(
         let tool = selected.namespaced.clone();
         // The caller's resolved key identity — the gate reads only `id`/`name`.
         let key = ctx.gov.key().map(|k| (k.id.clone(), k.name.clone()));
-        let app = std::sync::Arc::clone(ctx.app);
+        let host = ctx.host.clone();
         // The host seam drives the ASYNC gate on a fresh runtime, so it MUST run on a BLOCKING thread
         // (`block_on` on a runtime worker panics). One hop per request that has an attached gate.
         let outcome = tokio::task::spawn_blocking(move || {
-            busbar_core::plane_host::gate_decide_over(
-                &app,
+            host.gate_decide(
                 0,
                 &server,
                 request_id,
@@ -1529,12 +1525,12 @@ async fn tools_call(
             )
         })
         .await
-        .unwrap_or(busbar_core::plane_host::GateOutcome::Reject {
+        .unwrap_or(busbar_substrate::plane_host::GateOutcome::Reject {
             status: 403,
             message: String::new(),
             hook: String::new(),
         });
-        if let busbar_core::plane_host::GateOutcome::Reject {
+        if let busbar_substrate::plane_host::GateOutcome::Reject {
             status,
             message,
             hook,
@@ -1624,7 +1620,7 @@ async fn tools_call(
     // admit now always registers through a real arena, never a raw hold.
     let fallback_scope = busbar_core::plane_host::DispatchScope::new();
     let scope = ctx.scope.unwrap_or(&fallback_scope);
-    if let Err(refused) = route.admit(ctx.app, &breakers, scope) {
+    if let Err(refused) = route.admit(&ctx.host, &breakers, scope) {
         return log.refused(
             route_refusal_reason(&refused),
             refuse_route(id, &route, &refused),
@@ -1649,9 +1645,8 @@ async fn tools_call(
         // value crossing a trust boundary for no reason.
         |round, satisfaction| {
             route_ref.dispatch(
-                ctx.app,
+                &ctx.host,
                 pool,
-                &breakers,
                 scope,
                 &arguments,
                 u64::from(round),
@@ -1964,7 +1959,7 @@ async fn create_task(
     // drop. The immutable borrow the admit takes on `durable.arena()` ends when `admit` returns, so
     // `durable` moves into the runner's `DurableHostDispatch` below.
     let durable = busbar_core::plane_host::DurableScope::new();
-    if let Err(refused) = route.admit(ctx.app, &breakers, durable.arena()) {
+    if let Err(refused) = route.admit(&ctx.host, &breakers, durable.arena()) {
         return log.refused(
             route_refusal_reason(&refused),
             refuse_route(id, &route, &refused),
@@ -2018,7 +2013,6 @@ async fn create_task(
         super::tasks::Runner {
             pool: std::sync::Arc::clone(&super::runtime(ctx.app).pool),
             handle: std::sync::Arc::clone(ctx.handle),
-            breakers,
             // The detached runner's host route: owns the app + the durable probe-hold + its id, so a
             // `breaker_settle` over `host.host_state()` reaches the durable admission, and the probe
             // releases owner-checked when the runner (and this guard) drop at task end.
@@ -2184,9 +2178,13 @@ fn charge_round(
     rec: &RoundRecord,
     scope: &busbar_core::plane_host::DispatchScope,
 ) -> Result<(), String> {
-    let (Some(_gov_state), Some(key)) = (ctx.app.governance.as_ref(), ctx.gov.key.as_ref()) else {
+    if !ctx.host.governance_enabled() {
         // Governance disabled: no key, no budget, nothing to charge. The same posture the LLM path
         // takes, and the reason a deployment without governance still serves.
+        return Ok(());
+    }
+    let Some(key) = ctx.gov.key.as_ref() else {
+        // No key on a governed deployment: nothing to charge against.
         return Ok(());
     };
     // ADMIT through the host `govern_admit_reason` seam (CLUSTER-4). The grant `try_admit` yields is
@@ -2198,9 +2196,8 @@ fn charge_round(
     // `budget_remaining` are 0 so the POD gate is a no-op and the chain is the sole decider. On a
     // BLOCKED limit the host renders the SAME `format!("{blocked:?}")` bytes the in-place
     // `Err(format!("{blocked:?}"))` returned, so the operator-facing refusal is byte-identical.
-    if let busbar_core::plane_host::GovAdmit::Blocked { reason, .. } =
-        busbar_core::plane_host::govern_admit_reason_over(
-            ctx.app,
+    if let busbar_substrate::plane_host::GovAdmit::Blocked { reason, .. } =
+        ctx.host.govern_admit_reason(
             scope,
             namespaced.as_bytes(),
             key.id.as_bytes(),
@@ -2663,53 +2660,49 @@ fn caller_ask_decision(
     // The SEALING KEY, derived per decision from the deployment's fleet-shared signing secret. No
     // key ⇒ no sealer ⇒ the decision refuses rather than asking with unprotected state.
     let sealer = ctx.gov_ask_sealer();
-    // The completion arm redeems the one-time approval through the host `approval_redeem_q` slot, so
-    // the decision needs a host handle. Reuse the request-wide arena when this call rides one
-    // (`Ctx::scope`), else open a fresh per-call scope — the redemption registers no host handle, so
-    // which arena reclaims is immaterial to the spend.
-    let fallback_scope = busbar_core::plane_host::DispatchScope::new();
-    let scope = ctx.scope.unwrap_or(&fallback_scope);
-    busbar_core::plane_host::with_borrowed_host(ctx.app, scope, |host, _| {
-        callerask::decide(
-            rounds,
-            cap,
-            ctx.capabilities,
-            Retry {
-                responses: params.and_then(|p| p.get("inputResponses")),
-                state: params
-                    .and_then(|p| p.get("requestState"))
-                    .and_then(|v| v.as_str()),
-            },
-            {
-                // The AUTHENTICATED PRINCIPAL (`mrtr.mdx:235`), which is the key's stable id and not
-                // the actor string: the actor is for reading, the key id is what a grant is bound to.
-                // With governance disabled there is no key, and the constant below is honest about
-                // that — such a deployment has one principal, so binding to it is a true statement
-                // rather than a fake distinction.
-                let principal = ctx
-                    .gov
-                    .key
-                    .as_ref()
-                    .map_or("<ungoverned>", |k| k.id.as_str());
-                Bind {
-                    principal,
-                    method,
-                    capability,
-                    generation,
-                    now: ctx.host.clock_now_secs(),
-                    // The live roots epoch for THIS principal — the value a received
-                    // `notifications/roots/list_changed` moves, read under the same name the seal
-                    // binds. See `crate::mcp::roots`.
-                    roots_epoch: super::runtime(ctx.app).roots_epochs.current(principal),
-                }
-            },
-            &busbar_core::plane::approvals::digest_arguments(arguments),
-            callerask::Approvals {
-                sealer: sealer.as_ref(),
-                host,
-            },
-        )
-    })
+    // The completion arm redeems the one-time approval through the neutral host seam's
+    // `approval_redeem` method, which mints its own transient host + arena internally — so the
+    // decision carries the `EngineHost` handle rather than a raw `HostCtx`, and this site opens no
+    // scope of its own.
+    callerask::decide(
+        rounds,
+        cap,
+        ctx.capabilities,
+        Retry {
+            responses: params.and_then(|p| p.get("inputResponses")),
+            state: params
+                .and_then(|p| p.get("requestState"))
+                .and_then(|v| v.as_str()),
+        },
+        {
+            // The AUTHENTICATED PRINCIPAL (`mrtr.mdx:235`), which is the key's stable id and not
+            // the actor string: the actor is for reading, the key id is what a grant is bound to.
+            // With governance disabled there is no key, and the constant below is honest about
+            // that — such a deployment has one principal, so binding to it is a true statement
+            // rather than a fake distinction.
+            let principal = ctx
+                .gov
+                .key
+                .as_ref()
+                .map_or("<ungoverned>", |k| k.id.as_str());
+            Bind {
+                principal,
+                method,
+                capability,
+                generation,
+                now: ctx.host.clock_now_secs(),
+                // The live roots epoch for THIS principal — the value a received
+                // `notifications/roots/list_changed` moves, read under the same name the seal
+                // binds. See `crate::mcp::roots`.
+                roots_epoch: super::runtime(ctx.app).roots_epochs.current(principal),
+            }
+        },
+        &busbar_core::plane::approvals::digest_arguments(arguments),
+        callerask::Approvals {
+            sealer: sealer.as_ref(),
+            host: ctx.host.as_ref(),
+        },
+    )
 }
 
 /// Delegates to the ingress envelope builder so the status and the code cannot drift apart between
