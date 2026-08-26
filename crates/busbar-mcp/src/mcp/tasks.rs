@@ -515,11 +515,14 @@ impl Registry {
 /// outlives the request that started it, so it cannot hold a reference into that request's frame.
 pub(crate) struct Runner {
     pub(crate) pool: Arc<super::client::pool::McpConnectionPool>,
-    /// THE LIVE HANDLE — retained on this batch ONLY for the DEFERRED sampling→ingress leg, whose
-    /// [`super::sampling::satisfy_upstream_ask`] still takes `&Arc<busbar_core::state::App>` (the
-    /// separate ingress batch). The runner's OTHER live re-read — the per-round grant re-read — now
-    /// goes through `runtime_live` off [`engine`](Self::engine) (a `from_handle` host, so it re-reads
-    /// genuinely). When the ingress batch lands this field goes with it.
+    /// THE LIVE HANDLE — retained on this batch for the CATALOGUE runtime read the deferred
+    /// sampling/roots leg needs (`super::runtime(&handle.load())`, resolving the server's
+    /// `roots`/`sampling` declarations), the ONE live re-read still typed on `&App`. The sampling
+    /// completion itself no longer names core: it rides the neutral host seam
+    /// [`super::sampling::satisfy_upstream_ask`] → `EngineHost::drive_openai_completion`. The runner's
+    /// OTHER live re-read — the per-round grant re-read — goes through `runtime_live` off
+    /// [`engine`](Self::engine) (a `from_handle` host, so it re-reads genuinely). When the runtime
+    /// read is neutralised this field goes with it.
     pub(crate) handle: Arc<busbar_core::state::AppHandle>,
     /// THE DETACHED RUNNER'S DURABLE ARENA, holding the single-flight probe `create_task` won.
     /// [`DurableScope`](busbar_substrate::plane_host::DurableScope): `create_task` ran the task admit
@@ -734,7 +737,6 @@ async fn run(task: Arc<McpTask>, runner: Runner) {
                 if ask.kind == "sampling" {
                     super::sampling::satisfy_upstream_ask(
                         &host,
-                        &live,
                         &gov,
                         &ask,
                         &server,

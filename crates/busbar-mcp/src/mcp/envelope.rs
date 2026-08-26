@@ -212,26 +212,6 @@ impl busbar_substrate::ingress::protocol::Words for McpWords {
     }
 }
 
-/// THE RFC 9728 FACTS THIS PLANE PUBLISHES. The document itself — its member order, its two
-/// headers and its `bearer_methods_supported` rule — is `busbar_substrate::ingress::protocol`'s, once. This
-/// states only what differs between deployments.
-///
-/// `resource` is the audience a client must ask its authorization server to mint for, and it is
-/// compared byte-for-byte against the `aud` of every token presented here. Both sides read it from
-/// the same validated config object, so there is no second spelling of it anywhere.
-impl busbar_core::ingress::protocol::ResourceMetadata for McpWords {
-    fn document(
-        app: &busbar_core::state::App,
-    ) -> Option<busbar_substrate::ingress::protocol::Metadata<'_>> {
-        let resource = super::resource(app)?;
-        Some(busbar_substrate::ingress::protocol::Metadata {
-            resource: std::borrow::Cow::Borrowed(resource.canonical_uri()),
-            authorization_servers: resource.authorization_servers(),
-            scopes_supported: resource.scopes_supported(),
-        })
-    }
-}
-
 /// `GET /.well-known/oauth-protected-resource<mount-path>` for the MCP plane — the neutral-seam
 /// (S4a Option A) handler that replaces the core `metadata_handler::<McpWords>` axum fn on this
 /// plane's `routes`. It renders the SAME RFC 9728 document, byte-for-byte: this is exactly
@@ -241,9 +221,9 @@ impl busbar_core::ingress::protocol::ResourceMetadata for McpWords {
 /// open handler, which took only `CurrentApp`.
 pub(crate) async fn metadata_route(ctx: busbar_substrate::plane_routes::PlaneReqCtx) -> Response {
     // The RFC 9728 facts, read off the neutral host seam (BOUND) rather than a `handle.load()`.
-    // Inlined here rather than through `McpWords::document(&App)` because that method is the
-    // core-owned `ResourceMetadata` trait's, still `&App`-typed (a documented carry-over pending the
-    // ingress batch); this two-line body is exactly what it renders.
+    // This two-line body is the whole handler: the three deployment-specific facts (canonical URI,
+    // authorization servers, scopes) read off the seam, framed into the once-defined
+    // `busbar_substrate::ingress::protocol` document.
     let Some(resource) = super::resource_of(&ctx.host) else {
         return busbar_substrate::ingress::protocol::Words::refuse(
             &McpWords,

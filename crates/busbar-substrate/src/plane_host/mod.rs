@@ -94,6 +94,19 @@ pub enum AudienceBinding {
     Opaque,
 }
 
+/// The raw wire outcome of a host-driven completion: the pipeline's HTTP status and body bytes,
+/// for the plane to shape into its protocol's own result. Neutral — no axum `Response`, no `App`.
+#[cfg_attr(
+    not(any(feature = "plane-mcp", feature = "plane-a2a")),
+    allow(dead_code)
+)]
+pub struct HostCompletion {
+    /// The pipeline's HTTP status.
+    pub status: u16,
+    /// The pipeline's response body bytes (bounded by the `max_body_bytes` the caller passed).
+    pub body: bytes::Bytes,
+}
+
 /// The neutral HOST seam a plane calls to reach the engine's host-owned capabilities.
 ///
 /// A plane holds an `Arc<dyn EngineHost>` (minted core-side over the live engine) and calls these
@@ -304,6 +317,23 @@ pub trait EngineHost: Send + Sync {
     /// plane (`plane_key` `0` = MCP)? Lets a plane skip the blocking `gate_decide` hop when nothing is
     /// attached. Identical to `App::mcp_server_gates.contains_key(container)` for the MCP plane.
     fn gate_attached(&self, plane_key: u8, container: &str) -> bool;
+
+    /// Drive ONE non-streaming `openai`-dialect completion through the ENTIRE resolved ingress
+    /// pipeline (governance → pools → breaker/failover → metering → request log) under `gov`, on the
+    /// operator's declared `model`, and return the raw wire outcome. Identical to calling
+    /// `busbar_core::ingress::operation_resolved` with the `openai` chat handler over the live App.
+    ///
+    /// The ONE async method beside [`identity_admit`](EngineHost::identity_admit) — but simpler:
+    /// `operation_resolved` is a NATIVE core async fn (no C-ABI slot, no `spawn_blocking`), so this
+    /// only `.await`s it. No `HostCtx` crosses the `.await`; the future is `Send`. `max_body_bytes`
+    /// bounds the response body read.
+    async fn drive_openai_completion(
+        &self,
+        gov: &busbar_api::PlaneRequestCtx,
+        model: &str,
+        body: bytes::Bytes,
+        max_body_bytes: usize,
+    ) -> Result<HostCompletion, String>;
 }
 
 /// THE NEUTRAL TYPE-ERASED SLOT-READ SEAM the core-owned `PlaneDecl` callbacks that today force a

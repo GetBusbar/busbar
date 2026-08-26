@@ -149,12 +149,14 @@ pub(crate) struct Ctx<'a> {
     /// ([`super::runtime_live`]) off the host's retained handle. Minted `from_handle` by the core
     /// route adapter, so the live re-read genuinely re-reads.
     pub(crate) host: std::sync::Arc<dyn busbar_substrate::plane_host::EngineHost>,
-    /// THE LIVE HANDLE — retained on this batch ONLY for the DEFERRED sampling→ingress leg, whose
-    /// [`super::sampling::satisfy_upstream_ask`] still takes `&Arc<busbar_core::state::App>` and feeds
-    /// it to `busbar_core::ingress::operation_resolved` (the separate ingress batch). Every other live
-    /// re-read (dispatch-time re-validation, per-round grant re-read) now goes through `runtime_live`
-    /// off `host`; when the ingress batch lands, this field goes with it. The live snapshot the
-    /// sampling leg reads is `handle.load()`, the SAME handle `host` was minted from.
+    /// THE LIVE HANDLE — retained on this batch for the CATALOGUE runtime read the deferred
+    /// sampling/roots leg needs (`super::runtime(&handle.load())`, resolving the dispatched member's
+    /// `roots`/`sampling` declarations), the ONE live re-read still typed on `&App`. The sampling
+    /// completion itself no longer names core: it rides the neutral host seam
+    /// [`super::sampling::satisfy_upstream_ask`] →
+    /// [`EngineHost::drive_openai_completion`](busbar_substrate::plane_host::EngineHost::drive_openai_completion).
+    /// Every other live re-read (dispatch-time re-validation, per-round grant re-read) goes through
+    /// `runtime_live` off `host`; when the runtime read is neutralised, this field goes with it.
     pub(crate) handle: &'a std::sync::Arc<busbar_core::state::AppHandle>,
     /// The caller's resolved governance key. `None` when governance is disabled.
     pub(crate) gov: &'a busbar_api::PlaneRequestCtx,
@@ -1665,7 +1667,6 @@ async fn tools_call(
                 if ask.kind == "sampling" {
                     super::sampling::satisfy_upstream_ask(
                         &host,
-                        &live,
                         &gov,
                         &ask,
                         &member,

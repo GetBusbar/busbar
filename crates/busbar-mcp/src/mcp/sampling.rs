@@ -17,8 +17,9 @@
 //! ## THE ONE PATHWAY, which is the sentence this module must keep true
 //!
 //! A sampling ask IS an LLM request, so it rides the LLM request's own pipeline —
-//! [`busbar_core::ingress::operation_resolved`], the same resolved core every arriving chat request
-//! enters after its model is known. That buys, without a second implementation of any of them: the
+//! [`EngineHost::drive_openai_completion`](busbar_substrate::plane_host::EngineHost::drive_openai_completion),
+//! the neutral host seam over the same resolved core every arriving chat request enters after its
+//! model is known. That buys, without a second implementation of any of them: the
 //! INBOUND caller's governance (the completion is admitted under the caller's key, charged on the
 //! caller's budget, refused by the caller's pool grant), the operator's hooks and gates, breaker
 //! and failover, token-accurate metering, and the request log. There is deliberately no thinner
@@ -100,13 +101,13 @@ impl SamplingSpend {
 ///
 /// The entry's params are translated to one non-streaming chat request in the `openai` ingress
 /// dialect — the tree's lingua-franca wire shape, which every registered provider protocol has a
-/// translation from — and dispatched through [`busbar_core::ingress::operation_resolved`] under `gov`,
-/// the INBOUND caller's own governance context. Text content only, in this release: an image or
+/// translation from — and dispatched through the resolved ingress pipeline behind
+/// [`EngineHost::drive_openai_completion`](busbar_substrate::plane_host::EngineHost::drive_openai_completion)
+/// under `gov`, the INBOUND caller's own governance context. Text content only, in this release: an image or
 /// audio block in the ask is refused rather than silently dropped, because a completion computed
 /// over less than the upstream sent is an answer to a question nobody asked.
 pub(crate) async fn satisfy_upstream_ask(
     host: &std::sync::Arc<dyn busbar_substrate::plane_host::EngineHost>,
-    app: &std::sync::Arc<busbar_core::state::App>,
     gov: &busbar_api::PlaneRequestCtx,
     ask: &super::inputreq::Ask,
     server: &str,
@@ -158,11 +159,13 @@ pub(crate) async fn satisfy_upstream_ask(
         // THE PER-UPSTREAM BUDGET, spent per completion and BEFORE the model leg. One map entry is
         // one completion, so a map with many entries spends many units — an upstream cannot buy
         // more model calls by packing one round.
-        super::runtime(app)
-            .sampling_spend
-            .try_spend(server, cfg.max_requests_per_minute, now)?;
+        super::runtime_of(host).sampling_spend.try_spend(
+            server,
+            cfg.max_requests_per_minute,
+            now,
+        )?;
         let body = chat_body(request.get("params"), cfg)?;
-        let result = complete(host, app, gov, cfg, body).await?;
+        let result = complete(host, gov, cfg, body).await?;
         responses.insert(entry.clone(), result);
     }
     let mut continuation = serde_json::Map::new();
@@ -266,43 +269,21 @@ fn chat_body(
 /// `CreateMessageResult`.
 async fn complete(
     host: &std::sync::Arc<dyn busbar_substrate::plane_host::EngineHost>,
-    app: &std::sync::Arc<busbar_core::state::App>,
     gov: &busbar_api::PlaneRequestCtx,
     cfg: &super::config::SamplingCfg,
     body: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let bytes = axum::body::Bytes::from(serde_json::to_vec(&body).map_err(|e| e.to_string())?);
-    let parsed = busbar_core::proxy::LazyBody::parse(&bytes).ok();
-    // FRESH headers, not the inbound request's: the caller's own headers carry affinity keys and
-    // per-request parameters addressed to the caller's request, and replaying them onto a leg the
-    // caller did not compose would let one exchange steer another.
-    let mut headers = axum::http::HeaderMap::new();
-    headers.insert(
-        axum::http::header::CONTENT_TYPE,
-        axum::http::HeaderValue::from_static("application/json"),
-    );
-    let op = busbar_core::handlers::chat("openai", busbar_substrate::transport::Transport::Http);
-    let response = busbar_core::ingress::operation_resolved(
-        app,
-        gov,
-        "openai",
-        op.operation,
-        op.op_handler,
-        &cfg.model,
-        &headers,
-        bytes,
-        parsed,
-        None,
-        std::time::Instant::now(),
-        // D1: the admission clock through the neutral host seam, threaded in.
-        host.clock_now_secs(),
-        None,
-    )
-    .await;
-    let status = response.status().as_u16();
-    let body = axum::body::to_bytes(response.into_body(), MAX_COMPLETION_BYTES)
-        .await
-        .map_err(|e| format!("the sampling completion's body could not be read: {e}"))?;
+    // THE ONE PATHWAY, reached through the neutral host seam: the completion rides the same resolved
+    // ingress pipeline (`operation_resolved` with the `openai` chat handler) every arriving chat
+    // request enters, under `gov`, on the operator's declared model — governance, breaker/failover,
+    // metering and the request log, byte-identically to the in-core dispatch. The raw wire outcome
+    // (status + body bytes) comes back; the MCP-protocol translation below stays plane-side.
+    let completion = host
+        .drive_openai_completion(gov, &cfg.model, bytes, MAX_COMPLETION_BYTES)
+        .await?;
+    let status = completion.status;
+    let body = completion.body;
     let value: serde_json::Value = serde_json::from_slice(&body).map_err(|_| {
         format!("the sampling completion answered HTTP {status} and a body that is not JSON")
     })?;

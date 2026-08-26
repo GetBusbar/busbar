@@ -300,6 +300,66 @@ pub fn clock_now_ms_over(app: &App) -> u64 {
     }) / 1_000_000
 }
 
+/// Drive ONE non-streaming `openai`-dialect completion through the ENTIRE resolved ingress pipeline
+/// over the live `app` and return the raw wire outcome — the core-resident veneer behind
+/// [`EngineHost::drive_openai_completion`](busbar_substrate::plane_host::EngineHost::drive_openai_completion).
+/// This is the ONLY place the `ingress::operation_resolved` + `handlers::chat` + `proxy::LazyBody`
+/// reaches now live: an extracted plane hands a NEUTRAL request (gov + model + body bytes) and gets a
+/// NEUTRAL [`HostCompletion`](busbar_substrate::plane_host::HostCompletion) (status + body bytes) back,
+/// never naming a core type.
+///
+/// A line-for-line lift of the former `mcp::sampling::complete`'s pre-response body: the argument
+/// tuple handed to `operation_resolved` is preserved BYTE-IDENTICALLY — `proto = "openai"`,
+/// [`Transport::Http`](crate::transport::Transport), the `handlers::chat("openai", Http)` op,
+/// `caller_token = None`, `gemini_api_version = None`, `charged_at = crate::store::now()` (whole
+/// SECONDS, the same source [`clock_now_secs_over`] scales to), and `LazyBody::parse` over the SAME
+/// bytes — so governance attribution and metering are unchanged. The async future stays `Send`: it
+/// only `.await`s the native core async fn; no `HostCtx` is minted here, and any minted inside
+/// `operation_resolved`'s own frames is consumed there, never crossing this `.await`.
+#[cfg_attr(
+    not(any(feature = "plane-mcp", feature = "plane-a2a")),
+    allow(dead_code)
+)]
+pub async fn drive_openai_completion_over(
+    app: Arc<App>,
+    gov: &crate::governance::PlaneRequestCtx,
+    model: &str,
+    body: bytes::Bytes,
+    max_body_bytes: usize,
+) -> Result<busbar_substrate::plane_host::HostCompletion, String> {
+    let parsed = crate::proxy::LazyBody::parse(&body).ok();
+    // FRESH headers, not the inbound request's: the caller's own headers carry affinity keys and
+    // per-request parameters addressed to the caller's request, and replaying them onto a leg the
+    // caller did not compose would let one exchange steer another.
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert(
+        axum::http::header::CONTENT_TYPE,
+        axum::http::HeaderValue::from_static("application/json"),
+    );
+    let op = crate::handlers::chat("openai", crate::transport::Transport::Http);
+    let response = crate::ingress::operation_resolved(
+        &app,
+        gov,
+        "openai",
+        op.operation,
+        op.op_handler,
+        model,
+        &headers,
+        body,
+        parsed,
+        None,
+        std::time::Instant::now(),
+        crate::store::now(),
+        None,
+    )
+    .await;
+    let status = response.status().as_u16();
+    let body = axum::body::to_bytes(response.into_body(), max_body_bytes)
+        .await
+        .map_err(|e| format!("the sampling completion's body could not be read: {e}"))?;
+    Ok(busbar_substrate::plane_host::HostCompletion { status, body })
+}
+
 /// Core's implementation of the neutral [`EngineHost`](busbar_substrate::plane_host::EngineHost)
 /// seam over the live [`App`]. A plane holds this behind an
 /// `Arc<dyn busbar_substrate::plane_host::EngineHost>` and calls typed, safe methods on it INSTEAD of
@@ -574,6 +634,19 @@ impl busbar_substrate::plane_host::EngineHost for EngineHostImpl {
             .governance
             .as_ref()
             .and_then(|g| crate::plane::approvals::ask_state_sealer(g))
+    }
+
+    async fn drive_openai_completion(
+        &self,
+        gov: &busbar_api::PlaneRequestCtx,
+        model: &str,
+        body: bytes::Bytes,
+        max_body_bytes: usize,
+    ) -> Result<busbar_substrate::plane_host::HostCompletion, String> {
+        // The veneer keeps the `ingress::operation_resolved` + `handlers::chat` + `proxy::LazyBody`
+        // reaches in core; it only `.await`s the native async fn, so no `HostCtx` crosses the
+        // `.await` and the future stays `Send`.
+        drive_openai_completion_over(Arc::clone(&self.app), gov, model, body, max_body_bytes).await
     }
 }
 
