@@ -318,5 +318,5 @@ impl PinnedClientPool {
 // it — so they are gated to the same planes. `build_pinned_client` and the refusing resolver keep
 // their coverage under a default build.
 #[cfg(all(test, any(feature = "plane-mcp", feature = "plane-a2a")))]
-#[path = "egress/tests.rs"]
+#[path = "tests.rs"]
 mod tests;
