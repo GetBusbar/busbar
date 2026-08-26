@@ -18,6 +18,8 @@
 <a href="https://github.com/GetBusbar/busbar/releases"><img src="https://img.shields.io/github/v/release/GetBusbar/busbar?include_prereleases" alt="Release"></a>
 <a href="https://hub.docker.com/r/getbusbar/busbar"><img src="https://img.shields.io/docker/image-size/getbusbar/busbar?sort=semver&label=image" alt="Image size"></a>
 <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License: Apache 2.0"></a>
+<a href="https://getbusbar.com"><img src="https://img.shields.io/badge/website-getbusbar.com-0A66C2" alt="Website"></a>
+<a href="https://discord.com/invite/nnK5evXERp"><img src="https://img.shields.io/discord/1521676666714460351?label=Discord&logo=discord&logoColor=white&color=5865F2" alt="Discord"></a>
 </p>
 
 Busbar sits between AI applications and the destinations they can reach:
