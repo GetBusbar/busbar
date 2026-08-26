@@ -26,8 +26,16 @@ impl SseReader {
         let mut out = Vec::new();
         while let Some((pos, len)) = frame_end(&self.buf) {
             let frame = self.buf.drain(..pos + len).collect::<Vec<u8>>();
-            if let Ok(s) = String::from_utf8(frame) {
-                out.push(s);
+            match String::from_utf8(frame) {
+                Ok(s) => out.push(s),
+                // The event-stream format is UTF-8 by definition, so a non-UTF-8 frame is a
+                // malformed backend. Dropping it (rather than lossily corrupting the payload) is
+                // correct, but doing so SILENTLY hid the malformed stream — surface it so the drop
+                // is diagnosable rather than a mystery missing event.
+                Err(e) => tracing::warn!(
+                    bytes = e.as_bytes().len(),
+                    "dropping a non-UTF-8 SSE frame (the event-stream format requires UTF-8)"
+                ),
             }
         }
         out
@@ -83,7 +91,14 @@ pub fn sse_data(frame: &str) -> Option<String> {
     let mut any = false;
     for line in frame.lines() {
         let line = line.strip_suffix('\r').unwrap_or(line);
-        let Some(rest) = line.strip_prefix("data:") else {
+        // A `data:`-prefixed line carries the value after the colon; a BARE `data` line (no colon)
+        // is a `data` field with an EMPTY value per the event-stream format — both contribute to the
+        // payload (the bare form as an empty continuation line), so recognise both.
+        let rest = if let Some(rest) = line.strip_prefix("data:") {
+            rest
+        } else if line == "data" {
+            ""
+        } else {
             continue;
         };
         if any {

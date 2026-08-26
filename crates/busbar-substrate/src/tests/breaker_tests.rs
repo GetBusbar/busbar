@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/busbar-core/src/breaker.rs`.
+//! Tests for `crates/busbar-substrate/src/breaker.rs`.
 
 use super::*;
 use std::collections::HashMap;
@@ -219,4 +219,38 @@ fn a_past_http_date_retry_after_floors_at_zero() {
 #[test]
 fn a_missing_retry_after_is_none() {
     assert_eq!(parse_retry_after(&axum::http::HeaderMap::new()), None);
+}
+
+#[test]
+fn status_class_from_str_maps_known_values_and_rejects_unknown() {
+    // Every recognised classification round-trips from its wire token; a token the operator's
+    // error_map lowered to something UNRECOGNISED yields `None`, which is how the classifier learns
+    // an error_map entry points at a class that no longer exists (it then leaves the signal unmapped
+    // rather than guessing). Nothing exercised this None arm before.
+    assert!(matches!(
+        status_class_from_str("rate_limit"),
+        Some(StatusClass::RateLimit)
+    ));
+    assert!(matches!(
+        status_class_from_str("overloaded"),
+        Some(StatusClass::Overloaded)
+    ));
+    assert!(matches!(
+        status_class_from_str("server_error"),
+        Some(StatusClass::ServerError)
+    ));
+    assert!(matches!(
+        status_class_from_str("timeout"),
+        Some(StatusClass::Timeout)
+    ));
+    assert!(matches!(
+        status_class_from_str("network"),
+        Some(StatusClass::Network)
+    ));
+    assert!(matches!(
+        status_class_from_str("auth"),
+        Some(StatusClass::Auth)
+    ));
+    assert!(status_class_from_str("not_a_class").is_none());
+    assert!(status_class_from_str("").is_none());
 }

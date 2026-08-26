@@ -216,7 +216,7 @@ macro_rules! diag_debug {
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 // THE CATALOG. Add a const here (codes ascending within a class), then add it to REGISTRY below,
-// then regenerate the docs: `UPDATE_DIAGNOSTICS=1 cargo test -p busbar-core diagnostics`.
+// then regenerate the docs: `UPDATE_DIAGNOSTICS=1 cargo test -p busbar-substrate diagnostics`.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
 /// The archetype: an audit entry whose seq is at/below the recovered durable floor.
@@ -4247,7 +4247,7 @@ pub static REGISTRY: &[&Diagnostic] = &[
 // Doc generation — `docs/diagnostics.md` (human) and `docs/diagnostics.json` (machine).
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
-/// Path of the committed markdown page, relative to the repo root (this crate is `crates/busbar-core`).
+/// Path of the committed markdown page, relative to the repo root (this crate is `crates/busbar-substrate`).
 pub const COMMITTED_DIAGNOSTICS_MD: &str =
     concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/diagnostics.md");
 /// Path of the committed machine-readable catalog.
