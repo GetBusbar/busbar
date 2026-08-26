@@ -12,10 +12,12 @@
 //! `SubscribeResp` carries an OPTIONAL registration record rather than pretending every peer returns
 //! one, so a cell never has to invent a body its own wire does not have.
 //!
-//! The family-blind `IrFacts` projection over `SubscribeReq` lives in `busbar-core`
-//! (`crate::ir::subscribe`), beside the engine seam it feeds; core re-exports these types.
+//! The family-blind `IrFacts` projection over `SubscribeReq` lives HERE (relocated beside its data at
+//! Batch C-2, keeping the orphan rule satisfied now that the `IrFacts` trait is substrate-resident);
+//! core re-exports both the type and the projection through `busbar_core::ir::subscribe`.
 
 use super::SourceScopedExtra;
+use busbar_api::operation::Operation;
 use serde_json::Value;
 
 /// WHICH WAY THE REGISTRATION MOVES. Not a boolean: `subscribe: false` reads as "this is not a
@@ -53,4 +55,44 @@ pub struct SubscribeResp {
     pub registration: Option<Value>,
     /// Unmodelled response members, source-keyed for the same reason as the request's.
     pub extra: SourceScopedExtra,
+}
+
+/// THE SUBSCRIBE FAMILY'S WALK — this IR's answer to [`crate::ir::facts::IrFacts`]. The one
+/// caller-authored thing on the operation is the `target` name (a resource URI on MCP), forwarded
+/// upstream verbatim, so it projects to [`crate::ir::facts::ContentItem::Text`] for a screening gate.
+/// `wants_stream` is `false`: registering is answered once with an acknowledgement — the events that
+/// follow are a separate channel, not an incremental rendering of this request.
+impl crate::ir::facts::IrFacts for SubscribeReq {
+    fn verb(&self) -> Operation {
+        Operation::SUBSCRIBE
+    }
+
+    fn wants_stream(&self) -> bool {
+        false
+    }
+
+    fn end_user(&self) -> Option<&str> {
+        None
+    }
+
+    fn shape(&self) -> crate::ir::facts::Shape {
+        let items = crate::ir::facts::IrFacts::content(self);
+        let (text_chars, system_chars) = crate::ir::facts::Shape::counts_over(&items);
+        crate::ir::facts::Shape {
+            turn_count: 1,
+            has_tools: false,
+            tool_count: 0,
+            text_chars,
+            system_chars,
+            max_tokens: None,
+        }
+    }
+
+    fn content(&self) -> Vec<crate::ir::facts::ContentItem<'_>> {
+        vec![crate::ir::facts::ContentItem::Text {
+            author: "user",
+            slot: crate::ir::facts::Slot::Turn(0),
+            text: std::borrow::Cow::Borrowed(self.target.as_str()),
+        }]
+    }
 }

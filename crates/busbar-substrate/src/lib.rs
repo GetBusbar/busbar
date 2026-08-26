@@ -29,6 +29,7 @@ pub mod ingress {
     // `metadata_handler`) stays in core and re-exports these.
     pub mod protocol;
 }
+pub mod billing;
 pub mod breaker;
 pub mod duration;
 // The neutral cross-plane IR leaves (`Invoke`/`Subscribe` request/response data) and the wire/egress

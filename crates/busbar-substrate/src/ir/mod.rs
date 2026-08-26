@@ -11,7 +11,16 @@
 //! `impl`s the projection for these very types. Core re-exports each type from its historical path
 //! (`busbar_core::ir::invoke::InvokeReq`, …) so the in-core call sites are unchanged.
 
+// The neutral resolved-primitives param bag a cross-protocol egress hop passes to a handle's
+// `prepare_for_egress` (all primitives — no concrete IR). Relocated from `busbar-core` at Batch C-1.
+pub mod egress_prep;
+// THE ONE PROJECTION — the family-blind seam the shared pipeline reads a request through, plus the
+// sealed neutral `IrHandle` the engine drives translation through and the four neutral operation
+// handles. Relocated from `busbar-core` at Batches C-2/C-4.
+pub mod facts;
+pub mod handle;
 pub mod invoke;
+pub mod neutral_handles;
 pub mod subscribe;
 
 use serde_json::{Map, Value};

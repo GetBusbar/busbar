@@ -34,50 +34,11 @@
 //! invent a body its own wire does not have.
 
 // THE PURE DATA (`SubscribeIntent`/`SubscribeReq`/`SubscribeResp`) RELOCATED to `busbar-substrate`
-// (the neutral cross-plane IR leaf a plane crate names directly). Core re-exports them from this
-// historical path and keeps the family-blind `IrFacts` projection below — the seam the shared
-// pipeline reads a request through, which names core-owned engine types and so stays here.
+// (the neutral cross-plane IR leaf a plane crate names directly), and at Batch C-2 the family-blind
+// `IrFacts` projection over `SubscribeReq` travelled with it (the trait is now substrate-resident, so
+// the impl sits beside the trait/type to satisfy the orphan rule). Core re-exports the data types from
+// this historical path; the projection reaches every in-core caller through the same re-export.
 pub use busbar_substrate::ir::subscribe::{SubscribeIntent, SubscribeReq, SubscribeResp};
-
-/// THE SUBSCRIBE FAMILY'S WALK — this IR's answer to [`crate::ir::facts::IrFacts`]. The one
-/// caller-authored thing on the operation is the `target` name (a resource URI on MCP), forwarded
-/// upstream verbatim, so it projects to [`crate::ir::facts::ContentItem::Text`] for a screening gate.
-/// `wants_stream` is `false` (FATAL-4): registering is answered once with an acknowledgement — the
-/// events that follow are a separate channel, not an incremental rendering of this request.
-impl crate::ir::facts::IrFacts for SubscribeReq {
-    fn verb(&self) -> crate::operation::Operation {
-        crate::operation::Operation::SUBSCRIBE
-    }
-
-    fn wants_stream(&self) -> bool {
-        false
-    }
-
-    fn end_user(&self) -> Option<&str> {
-        None
-    }
-
-    fn shape(&self) -> crate::ir::facts::Shape {
-        let items = crate::ir::facts::IrFacts::content(self);
-        let (text_chars, system_chars) = crate::ir::facts::Shape::counts_over(&items);
-        crate::ir::facts::Shape {
-            turn_count: 1,
-            has_tools: false,
-            tool_count: 0,
-            text_chars,
-            system_chars,
-            max_tokens: None,
-        }
-    }
-
-    fn content(&self) -> Vec<crate::ir::facts::ContentItem<'_>> {
-        vec![crate::ir::facts::ContentItem::Text {
-            author: "user",
-            slot: crate::ir::facts::Slot::Turn(0),
-            text: std::borrow::Cow::Borrowed(self.target.as_str()),
-        }]
-    }
-}
 
 #[cfg(test)]
 #[path = "tests/subscribe_tests.rs"]

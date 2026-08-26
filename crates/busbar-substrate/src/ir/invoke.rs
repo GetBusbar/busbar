@@ -13,10 +13,12 @@
 //! transport succeeded, the protocol succeeded, the tool did not. A call that could not be made at
 //! all is a refusal and never reaches this type.
 //!
-//! The family-blind `IrFacts` projection over `InvokeReq` lives in `busbar-core` (`crate::ir::invoke`),
-//! beside the engine seam it feeds; core re-exports these types from that path.
+//! The family-blind `IrFacts` projection over `InvokeReq` lives HERE (relocated beside its data at
+//! Batch C-2, keeping the orphan rule satisfied now that the `IrFacts` trait is substrate-resident);
+//! core re-exports both the type and the projection through `busbar_core::ir::invoke`.
 
 use super::SourceScopedExtra;
+use busbar_api::operation::Operation;
 use serde_json::Value;
 
 /// A CALL TO ONE NAMED TARGET. The request half of the `Invoke` operation.
@@ -54,4 +56,81 @@ pub struct InvokeResp {
     pub structured: Option<Value>,
     /// Unmodelled response members, source-keyed for the same reason as the request's.
     pub extra: SourceScopedExtra,
+}
+
+/// THE INVOCATION FAMILY'S WALK — this IR's answer to [`crate::ir::facts::IrFacts`], the
+/// family-blind seam the shared pipeline reads a request through.
+///
+/// It lives HERE, in the module that owns the IR, and not in `ir/facts.rs`: `facts.rs` carries the
+/// CHAT family's walk beside the trait, and a second family folded in there would be a superset
+/// across two families that never translate into one another. One IR, one walk, one file.
+///
+/// A tool call has no turns, no system prompt and no sampling controls. What it HAS is a target and
+/// arguments, and the arguments are the untrusted part: caller-authored, sent upstream verbatim,
+/// and the only thing on this operation a screening gate can act on. So the projection is ONE
+/// [`crate::ir::facts::ContentItem::Data`] carrying the arguments `Value` itself, and its `label` is
+/// the TARGET, which is how "which tool" reaches a consumer that never learns the protocol.
+///
+/// [`crate::ir::facts::Slot::ToolArgs`] and not [`crate::ir::facts::Slot::Turn`], deliberately: the
+/// slot is a statement about PROVENANCE, and a consumer that treats a tool call's arguments as
+/// ordinary conversation content is a consumer that trusts them like conversation content. There is
+/// one invocation per request, so the turn index it is attributed to is `0`.
+impl crate::ir::facts::IrFacts for InvokeReq {
+    fn verb(&self) -> Operation {
+        Operation::INVOKE
+    }
+
+    /// An invocation is one exchange. The streaming question belongs to the operations that can
+    /// answer it, and answering `false` here is a fact rather than a default.
+    fn wants_stream(&self) -> bool {
+        false
+    }
+
+    /// NO END-USER IDENTIFIER, and this is a statement about the protocol rather than an omission:
+    /// neither wire shape this IR is read from carries the provider-side abuse-tracking field the
+    /// chat dialects spell `user` / `metadata.user_id`.
+    fn end_user(&self) -> Option<&str> {
+        None
+    }
+
+    fn shape(&self) -> crate::ir::facts::Shape {
+        // Summed over the SAME items a content-granted hook is shown, for the reason
+        // `ContentItem::screenable_text` gives: a size signal and a content projection computed by
+        // two functions is a size signal that can drift from what was screened. `system_chars` is
+        // accumulated in THIS walk rather than by a second pass.
+        let mut text_chars = 0usize;
+        let mut system_chars = 0usize;
+        for item in crate::ir::facts::IrFacts::content(self) {
+            let n = item.screenable_text().chars().count();
+            text_chars += n;
+            if matches!(item.slot(), crate::ir::facts::Slot::System) {
+                system_chars += n;
+            }
+        }
+        crate::ir::facts::Shape {
+            // ONE unit of work. An invocation is not a conversation, and reporting `0` would tell a
+            // hook the request is empty.
+            turn_count: 1,
+            // The request IS a tool call: answering `false` for an invocation would be false.
+            has_tools: true,
+            // ONE tool is in play, named by `InvokeReq::tool`.
+            tool_count: 1,
+            text_chars,
+            // Always `0` today, and computed rather than written down so it STAYS true. An
+            // invocation projects one `Slot::ToolArgs` item and has no system slot at all.
+            system_chars,
+            // No output cap exists on this operation to normalise.
+            max_tokens: None,
+        }
+    }
+
+    fn content(&self) -> Vec<crate::ir::facts::ContentItem<'_>> {
+        vec![crate::ir::facts::ContentItem::Data {
+            // The invocation family's author label — its own word for "the caller", not an LLM role.
+            author: "user",
+            slot: crate::ir::facts::Slot::ToolArgs(0),
+            label: self.tool.as_str(),
+            value: &self.arguments,
+        }]
+    }
 }

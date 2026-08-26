@@ -89,7 +89,6 @@ mod registry_tests;
 use crate::diagnostics::{diag_debug, diag_warn, USAGE_TAP_DECODE_FAILED};
 use crate::ir::handle::IrHandle;
 use crate::operation::Operation;
-use bytes::Bytes;
 use serde_json::Value;
 
 /// ONE ROW OF A PROTOCOL'S SUPPORT MATRIX — a verb the protocol speaks and the codec that speaks it.
@@ -310,15 +309,11 @@ pub enum TranslateReqInput<'a> {
     },
 }
 
-/// The egress request wire a hop produced: a JSON `Value` still to be shim/model-shaped by the
-/// router before serialization, or a FINAL body (a non-JSON egress wire — multipart transcription /
-/// audio). Mirrors the pre-cutover `write_request_value` `Some(Value)` / `None`→`write_request` split.
-pub enum EgressWire {
-    /// A JSON egress body the router still post-shapes (shim-key strip, model rewrite, path-base).
-    Json(Value),
-    /// A final egress body a non-JSON wire already serialized.
-    Bytes(Bytes),
-}
+// `EgressWire` (a hop's egress request wire — JSON `Value` still to be shim/model-shaped, or a FINAL
+// serialized body) RELOCATED to `busbar-substrate` at Batch C-3 as a neutral value type a plane crate
+// names directly (it is a return type on the sealed neutral `IrHandle`); re-exported here so core's
+// call sites and the `busbar-llm` handlers that name `busbar_core::handlers::EgressWire` are unchanged.
+pub use busbar_substrate::wire::EgressWire;
 
 /// The neutral result of a cross-protocol request translation: the egress wire plus the caller
 /// controls the egress dialect dropped (surfaced for the seam's audit-and-allow event; empty on the
@@ -351,31 +346,11 @@ pub enum TranslateRespInput<'a> {
     Opaque(&'a [u8]),
 }
 
-/// The neutral outcome of a non-stream cross-protocol response translation. Mirrors every exit of the
-/// pre-cutover buffered-response arm: a delivered body (JSON / typed / synthesized native frames), or
-/// one of the two read-succeeded-but-undelivered terminals the caller still renders (404 / 500).
-pub enum TranslatedResponse {
-    /// A JSON ingress body (`application/json`) the caller still post-processes (native response-metrics
-    /// injection, gemini JSON-array wrap) before delivery.
-    Json(Value),
-    /// A final ingress body + its own content-type (a non-JSON ingress wire — speech audio — or the
-    /// opaque egress→ingress bridge).
-    Typed(WireBody),
-    /// Synthesized native stream frames (a wants-stream ingress answered by a BUFFERED upstream — e.g.
-    /// a Bedrock ConverseStream client served a non-SSE Converse body). Delivered under the ingress
-    /// stream content-type.
-    StreamFrames(Vec<u8>),
-    /// JSON path only: the ingress protocol does not serve this operation → the caller renders the 404
-    /// (`DETAIL_ENDPOINT_UNSUPPORTED_OPERATION`). The egress read succeeded, but NO completion reaches
-    /// the client, so the caller does NOT bill this and leaves its spend guard armed to refund — a
-    /// response the client never receives is not charged (mirrors the streaming refund-on-non-delivery).
-    IngressUnsupported,
-    /// Opaque path only: the egress read succeeded but the ingress handler is absent, so no client body
-    /// could be written → the caller falls through to its ingress-native untranslatable 500. NO
-    /// completion reaches the client, so the caller does NOT bill this and leaves its spend guard armed
-    /// to refund — same non-delivery posture as `IngressUnsupported`.
-    Untranslatable,
-}
+// `TranslatedResponse` (the neutral outcome of a non-stream cross-protocol response translation)
+// RELOCATED to `busbar-substrate` at Batch C-3 as a neutral value type a plane crate names directly
+// (a return type on the sealed neutral `IrHandle`); re-exported here so core's call sites and the
+// `busbar-llm` handlers that name `busbar_core::handlers::TranslatedResponse` are unchanged.
+pub use busbar_substrate::wire::TranslatedResponse;
 
 /// THE SINGLE NEUTRAL TRANSLATE ENTRYPOINT ON THE CODEC CELL (G6 step 4).
 ///
