@@ -498,6 +498,71 @@ jobs:
             exit 1
           fi
 
+  # COVERAGE — instrumented run of the same workspace suite `check` runs, uploaded to Codecov for
+  # the README badge and per-PR line-coverage context. Deliberately ADDITIVE and NON-GATING:
+  #
+  #   * It is NOT in the ci-umbrella `needs`/RESULTS below, so it is never a required check and can
+  #     never turn `dev`/`qa`/`main` red. Coverage reporting is an OBSERVATION, not a correctness
+  #     gate — the correctness gate is `check`, which this must never be able to mask or block.
+  #   * It is a SEPARATE job, not a step folded into `check`, on purpose: `cargo llvm-cov` compiles
+  #     with `-C instrument-coverage` and drops `*.profraw` files, which would trip `check`'s
+  #     "working tree clean" assertion. Isolating it keeps that assertion honest.
+  #   * The upload uses `fail_ci_if_error: false` so a Codecov outage or a tokenless-rate-limit is a
+  #     no-op here, not a red job — a reporting dependency must never be able to fail the build.
+  #   * FULL TIER ONLY, same `if:` as windows/openapi/etc., so a feature-branch push doesn't pay for
+  #     a full instrumented rebuild; it runs on every PR and on dev/qa/main/dispatch.
+  #
+  # Same digest-pinned postgres/valkey services + BUSBAR_TEST_POSTGRES_URL / VALKEY_URL as `check`,
+  # so the store-postgres / store-valkey roundtrip tests are covered here too rather than skipped.
+  coverage:
+    name: coverage (llvm-cov · codecov)
+    runs-on: ubuntu-latest
+    if: github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
+    services:
+      postgres:
+        image: postgres:16@sha256:95206741a5b214807675e14165369d05b93a9cf692223b616d07cca227e74b0b
+        env:
+          POSTGRES_USER: busbar
+          POSTGRES_PASSWORD: busbar
+          POSTGRES_DB: busbar_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U busbar"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      valkey:
+        image: valkey/valkey:8@sha256:495e4fecdc98ee48a20b207726caa5ab6451e0fac3642a9be10d9e70b3068df6
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "valkey-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+      - name: Collect coverage (workspace, live-DB tests wired)
+        env:
+          BUSBAR_TEST_POSTGRES_URL: postgres://busbar:busbar@localhost:5432/busbar_test
+          VALKEY_URL: redis://localhost:6379
+        run: cargo llvm-cov --workspace --locked --lcov --output-path lcov.info
+      - name: Upload to Codecov (tokenless; never fails the build)
+        uses: codecov/codecov-action@v5
+        with:
+          files: lcov.info
+          slug: GetBusbar/busbar
+          fail_ci_if_error: false
+
   # ── ci umbrella: the SINGLE required status for branch protection on `qa` and `main`.
   #
   # Branch protection should require ONE context per stage, not a growing list that silently drifts
