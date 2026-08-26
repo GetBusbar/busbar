@@ -504,6 +504,7 @@ fn mount_plane_route(
             std::sync::Arc<state::AppHandle>,
         >,
               raw_params: axum::extract::RawPathParams,
+              uri: axum::http::Uri,
               gov: Option<axum::extract::Extension<busbar_api::PlaneRequestCtx>>,
               principal: Option<axum::extract::Extension<busbar_api::AuthPrincipal>>,
               headers: axum::http::HeaderMap,
@@ -530,6 +531,7 @@ fn mount_plane_route(
                 let engine: std::sync::Arc<dyn std::any::Any + Send + Sync> = handle;
                 let ctx = busbar_substrate::plane_routes::PlaneReqCtx {
                     path: ctx_path,
+                    uri,
                     method,
                     headers,
                     body,

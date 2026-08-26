@@ -48,7 +48,7 @@ use crate::diagnostics::{
     A2A_RELAY_THREAD_INCOMPLETE, A2A_STREAM_EMPTY, A2A_STREAM_RELAY_INCOMPLETE,
 };
 use crate::plane::taskstore;
-use crate::state::{App, CurrentApp};
+use crate::state::App;
 
 /// The audit action every inbound call on this plane records under.
 pub(super) const AUDIT_ACTION: &str = "agent.call";
@@ -79,7 +79,48 @@ fn credential_kind_of(app: &App) -> &'static str {
 /// asks for first. See [`super::serve::self_card`] for why it is auth-exempt and, more importantly,
 /// for what is deliberately left out of it — this endpoint cannot ask who is calling, so it must
 /// not name the agents busbar fronts.
-pub(crate) async fn well_known_card(CurrentApp(app): CurrentApp) -> Response {
+/// Read ONE path-template capture by name off the neutral route-mount seam's `path_params`. The core route
+/// adapter collected the request's `RawPathParams` into this `(name, value)` list in match order;
+/// this replaces the `axum::extract::Path<String>` a single-capture handler used to take. The
+/// capture is present by construction — a route with `{agent_id}` in its pattern always matched one —
+/// so an absent name is a wiring bug and yields the empty string, exactly the value that would make
+/// the downstream registry lookup miss (never a wrong-agent match).
+pub(super) fn path_param(params: &[(String, String)], name: &str) -> String {
+    params
+        .iter()
+        .find(|(k, _)| k == name)
+        .map(|(_, v)| v.clone())
+        .unwrap_or_default()
+}
+
+/// `GET /.well-known/oauth-protected-resource<mount-path>` for the A2A plane — the neutral-seam
+/// handler that replaces the core `metadata_handler::<A2aWords>` axum fn on this plane's `routes`. It
+/// renders the SAME RFC 9728 document, byte-for-byte: this is exactly `metadata_handler`'s body
+/// specialised to [`A2aWords`], reading the live `App` off the seam's type-erased engine handle
+/// rather than a `CurrentApp` extractor. Declared `RouteAuth::None`, so the auth middleware bypasses
+/// the chain and hands this handler no resolved identity — matching the old open handler.
+pub(crate) async fn metadata_route(ctx: busbar_substrate::plane_routes::PlaneReqCtx) -> Response {
+    use crate::ingress::protocol::ResourceMetadata as _;
+    use crate::ingress::protocol::{CoreRefusal, Words as _};
+    let handle: Arc<crate::state::AppHandle> = ctx
+        .engine
+        .downcast::<crate::state::AppHandle>()
+        .expect("the a2a route engine handle is an AppHandle");
+    let app = handle.load();
+    match A2aWords::document(&app) {
+        Some(doc) => crate::ingress::protocol::metadata(&doc),
+        None => A2aWords.refuse(CoreRefusal::MetadataUnavailable),
+    }
+}
+
+pub(crate) async fn well_known_card(ctx: busbar_substrate::plane_routes::PlaneReqCtx) -> Response {
+    // S7 neutral seam: this `RouteAuth::None` handler took only `CurrentApp`; the app now rides the
+    // seam type-erased. Downcast in-body (the App-sever is later) and load the live snapshot.
+    let handle: Arc<crate::state::AppHandle> = ctx
+        .engine
+        .downcast::<crate::state::AppHandle>()
+        .expect("the a2a route engine handle is an AppHandle");
+    let app = handle.load();
     let Some(plane) = crate::a2a::runtime(&app) else {
         return plane_absent();
     };
@@ -305,13 +346,22 @@ fn select(
 /// THE PLANE'S OWN ENDPOINT — `POST /a2a`, the one busbar's Agent Card publishes.
 ///
 /// Identical to [`agent_rpc`] in everything except how the agent is named. See [`select`].
-pub(crate) async fn plane_rpc(
-    CurrentApp(app): CurrentApp,
-    axum::extract::Extension(gov): axum::extract::Extension<crate::governance::PlaneRequestCtx>,
-    axum::extract::Extension(principal): axum::extract::Extension<crate::auth::AuthPrincipal>,
-    wire: Wire,
-    body: axum::body::Bytes,
-) -> Response {
+pub(crate) async fn plane_rpc(ctx: busbar_substrate::plane_routes::PlaneReqCtx) -> Response {
+    // S7 neutral seam: `RouteAuth::Key`, so the auth middleware resolved and attached `gov`/
+    // `principal` BEFORE this handler ran — surfaced on `ctx`, never re-derived here. `Wire` is the
+    // same three headers the extractor read, off `ctx.headers`.
+    let handle: Arc<crate::state::AppHandle> = ctx
+        .engine
+        .downcast::<crate::state::AppHandle>()
+        .expect("the a2a route engine handle is an AppHandle");
+    let app = handle.load();
+    let gov = ctx
+        .gov
+        .expect("the a2a plane_rpc route is RouteAuth::Key, so the middleware attached a gov ctx");
+    let principal = ctx.principal.expect(
+        "the a2a plane_rpc route is RouteAuth::Key, so the middleware attached a principal",
+    );
+    let wire = Wire::from_headers(&ctx.headers);
     invoke(
         app,
         gov,
@@ -319,7 +369,7 @@ pub(crate) async fn plane_rpc(
         FromCatalogue,
         wire,
         busbar_substrate::transport::Transport::JsonRpc,
-        body,
+        ctx.body,
     )
     .await
 }
@@ -408,6 +458,29 @@ impl<S: Send + Sync> axum::extract::FromRequestParts<S> for Wire {
 }
 
 impl Wire {
+    /// THE SAME THREE FACTS, READ OFF A `HeaderMap` RATHER THAN OFF REQUEST PARTS.
+    ///
+    /// The neutral route-mount seam hands a plane handler the request's [`HeaderMap`] on
+    /// [`busbar_substrate::plane_routes::PlaneReqCtx`] rather than letting it run a
+    /// [`axum::extract::FromRequestParts`] extractor. This constructor is that extractor's body,
+    /// verbatim: the SAME three headers (`content-type`, `a2a-version`, `origin`), read with the SAME
+    /// non-UTF-8-reads-as-absent rule, so the `Wire` a neutralised handler builds is byte-identical to
+    /// the one the extractor built. The security property survives — this fn takes only a `&HeaderMap`
+    /// and yields a `Wire` that can hold only these three owned strings, forwarding no fourth header.
+    pub(crate) fn from_headers(headers: &axum::http::HeaderMap) -> Self {
+        let read = |name: &str| {
+            headers
+                .get(name)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string)
+        };
+        Wire {
+            content_type: read("content-type"),
+            version: read("a2a-version"),
+            origin: read("origin"),
+        }
+    }
+
     /// THE SAME TWO FACTS, AS THE gRPC BINDING SUPPLIES THEM.
     ///
     /// [`Wire`]'s fields are private because the extractor is the security property — an extractor
@@ -534,11 +607,19 @@ impl Wire {
 /// fronts, and which agents exist is exactly what a caller with no grant on them must not learn.
 /// The refusal taxonomy does the rest — a caller with no grant gets the same 403 whether or not the
 /// agent exists, and only a caller that could reach it gets the 404.
-pub(crate) async fn card(
-    CurrentApp(app): CurrentApp,
-    axum::extract::Extension(gov): axum::extract::Extension<crate::governance::PlaneRequestCtx>,
-    axum::extract::Path(agent_id): axum::extract::Path<String>,
-) -> Response {
+pub(crate) async fn card(ctx: busbar_substrate::plane_routes::PlaneReqCtx) -> Response {
+    // S7 neutral seam: `RouteAuth::Key`. `gov` is the middleware-resolved ctx off the seam; the
+    // `{agent_id}` capture, which an `axum::extract::Path` used to hand us, is read by name off
+    // `ctx.path_params` (the core adapter collected the raw path captures in match order).
+    let handle: Arc<crate::state::AppHandle> = ctx
+        .engine
+        .downcast::<crate::state::AppHandle>()
+        .expect("the a2a route engine handle is an AppHandle");
+    let app = handle.load();
+    let gov = ctx
+        .gov
+        .expect("the a2a card route is RouteAuth::Key, so the middleware attached a gov ctx");
+    let agent_id = path_param(&ctx.path_params, "agent_id");
     let Some(plane) = crate::a2a::runtime(&app) else {
         return plane_absent();
     };
@@ -649,14 +730,22 @@ pub(super) fn no_receiving_side() -> Response {
 /// answer or as a stream of them, or answers a busbar-attributed error and ends the task.
 ///
 /// The handler deliberately does NOT extract a `HeaderMap`. See step 7 below.
-pub(crate) async fn agent_rpc(
-    CurrentApp(app): CurrentApp,
-    axum::extract::Extension(gov): axum::extract::Extension<crate::governance::PlaneRequestCtx>,
-    axum::extract::Extension(principal): axum::extract::Extension<crate::auth::AuthPrincipal>,
-    axum::extract::Path(agent_id): axum::extract::Path<String>,
-    wire: Wire,
-    body: axum::body::Bytes,
-) -> Response {
+pub(crate) async fn agent_rpc(ctx: busbar_substrate::plane_routes::PlaneReqCtx) -> Response {
+    // S7 neutral seam: `RouteAuth::Key`. Same shape as `plane_rpc` plus the `{agent_id}` capture,
+    // read by name off `ctx.path_params`.
+    let handle: Arc<crate::state::AppHandle> = ctx
+        .engine
+        .downcast::<crate::state::AppHandle>()
+        .expect("the a2a route engine handle is an AppHandle");
+    let app = handle.load();
+    let gov = ctx
+        .gov
+        .expect("the a2a agent_rpc route is RouteAuth::Key, so the middleware attached a gov ctx");
+    let principal = ctx.principal.expect(
+        "the a2a agent_rpc route is RouteAuth::Key, so the middleware attached a principal",
+    );
+    let agent_id = path_param(&ctx.path_params, "agent_id");
+    let wire = Wire::from_headers(&ctx.headers);
     invoke(
         app,
         gov,
@@ -664,7 +753,7 @@ pub(crate) async fn agent_rpc(
         Named(agent_id),
         wire,
         busbar_substrate::transport::Transport::JsonRpc,
-        body,
+        ctx.body,
     )
     .await
 }
@@ -2731,107 +2820,132 @@ fn uuid_like(body: &[u8], now: u64) -> String {
 /// this deployment an A2A server?" stays a question the mounted surface answers rather than a flag
 /// somebody has to trust. The slot is granted as `&dyn Any` and downcast to the plane's own type;
 /// no `Store`/`PlaneRequestCtx`/`audit::Chain` reaches this seam.
-pub(crate) fn mount(
-    router: crate::core_routes::CoreRouter,
+pub(crate) fn a2a_routes(
     slot: &dyn std::any::Any,
-) -> crate::core_routes::CoreRouter {
+) -> Vec<busbar_substrate::plane_routes::PlaneRouteSpec> {
     use busbar_plugin_loader::{RouteAuth, RouteMethod};
+    use busbar_substrate::plane_routes::{PlaneReqCtx, PlaneRouteFuture, PlaneRouteSpec};
     let plane = slot
         .downcast_ref::<super::plane::A2aPlane>()
-        .expect("the a2a plane's mount slot is an A2aPlane");
+        .expect("the a2a plane's routes slot is an A2aPlane");
     if plane.admission().is_none() {
-        return router;
+        return vec![];
     }
     // AND THE SECOND BINDING, at the same mount and behind the same gate. `serve::self_card`
     // advertises HTTP+JSON because `Plane::A2a` names it as a wire format, and a card advertising
     // an interface nothing serves is the exact defect `serve` refuses one member down — so the card
     // entry and these routes arm together, or a deployment with no receiving side has neither.
-    let router = super::rest::mount(router);
-    router
-        .route(
-            super::serve::METADATA_PATH,
-            RouteMethod::Get,
-            RouteAuth::None,
-            crate::ingress::protocol::metadata_handler::<A2aWords>,
-        )
+    //
+    // S7 neutral seam: the REST family (specs 1-10) comes FIRST, in `a2a_rest_routes`' exact order,
+    // then the receive routes (11-18) below — the SAME 18 `(path, method, auth)` triples in the SAME
+    // order the old `mount` recorded, so the `CoreRouteTable` the auth middleware reads is
+    // byte-identical. Every `(path, method, auth)` here is the SAME constant/fn and the SAME
+    // `RouteAuth` the old `.route` calls carried; the three `RouteAuth::None` rows (11 metadata, 12
+    // well-known card, 17 push callback) stay `None` and stay exactly these paths.
+    let mut routes = super::rest::a2a_rest_routes();
+    routes.extend([
+        PlaneRouteSpec {
+            path: super::serve::METADATA_PATH.to_string(),
+            method: RouteMethod::Get,
+            auth: RouteAuth::None,
+            handler: std::sync::Arc::new(|ctx: PlaneReqCtx| -> PlaneRouteFuture {
+                Box::pin(metadata_route(ctx))
+            }),
+        },
         // THE DISCOVERY PATH THE SPECIFICATION MANDATES. Auth-exempt for the reason given on
         // `serve::self_card`: this document is what tells a caller which credential to present, so
         // demanding one to read it is circular. It is mounted alongside the RFC 9728 metadata path
         // because they are the same kind of thing — the two documents a client reads BEFORE it has
         // a token.
-        .route(
-            super::card::WELL_KNOWN_CARD_PATH,
-            RouteMethod::Get,
-            RouteAuth::None,
-            well_known_card,
-        )
-        .route(
-            format!("{}/agents/{{agent_id}}", super::serve::MOUNT_PATH),
-            RouteMethod::Get,
-            RouteAuth::Key,
-            card,
-        )
-        .route(
-            format!("{}/agents/{{agent_id}}", super::serve::MOUNT_PATH),
-            RouteMethod::Post,
-            RouteAuth::Key,
-            agent_rpc,
-        )
+        PlaneRouteSpec {
+            path: super::card::WELL_KNOWN_CARD_PATH.to_string(),
+            method: RouteMethod::Get,
+            auth: RouteAuth::None,
+            handler: std::sync::Arc::new(|ctx: PlaneReqCtx| -> PlaneRouteFuture {
+                Box::pin(well_known_card(ctx))
+            }),
+        },
+        PlaneRouteSpec {
+            path: format!("{}/agents/{{agent_id}}", super::serve::MOUNT_PATH),
+            method: RouteMethod::Get,
+            auth: RouteAuth::Key,
+            handler: std::sync::Arc::new(|ctx: PlaneReqCtx| -> PlaneRouteFuture {
+                Box::pin(card(ctx))
+            }),
+        },
+        PlaneRouteSpec {
+            path: format!("{}/agents/{{agent_id}}", super::serve::MOUNT_PATH),
+            method: RouteMethod::Post,
+            auth: RouteAuth::Key,
+            handler: std::sync::Arc::new(|ctx: PlaneReqCtx| -> PlaneRouteFuture {
+                Box::pin(agent_rpc(ctx))
+            }),
+        },
         // THE ENDPOINT BUSBAR'S OWN AGENT CARD PUBLISHES. `serve::self_card` advertises
         // `<public_url>/a2a` as this deployment's `JSONRPC` interface and nothing was mounted
         // there, so every conformant client that discovered busbar posted into a 404. See
         // [`select`] for how the agent is resolved and why it is the catalogue's answer.
-        .route(
-            super::serve::MOUNT_PATH.to_string(),
-            RouteMethod::Post,
-            RouteAuth::Key,
-            plane_rpc,
-        )
+        PlaneRouteSpec {
+            path: super::serve::MOUNT_PATH.to_string(),
+            method: RouteMethod::Post,
+            auth: RouteAuth::Key,
+            handler: std::sync::Arc::new(|ctx: PlaneReqCtx| -> PlaneRouteFuture {
+                Box::pin(plane_rpc(ctx))
+            }),
+        },
         // AND THE SAME PATH WITH A TRAILING SLASH. Not cosmetic, and not a guess: an HTTP client
         // given `http://host/a2a` as a BASE URL resolves a request for `/` against it and sends
         // `/a2a/` — that is what `httpx` does, which is what the official A2A TCK's JSON-RPC client
         // is built on, and it is what a great many SDKs do. Axum matches paths exactly, so
         // `/a2a` alone leaves the single most likely spelling of this endpoint answering 404.
-        .route(
-            format!("{}/", super::serve::MOUNT_PATH),
-            RouteMethod::Post,
-            RouteAuth::Key,
-            plane_rpc,
-        )
+        PlaneRouteSpec {
+            path: format!("{}/", super::serve::MOUNT_PATH),
+            method: RouteMethod::Post,
+            auth: RouteAuth::Key,
+            handler: std::sync::Arc::new(|ctx: PlaneReqCtx| -> PlaneRouteFuture {
+                Box::pin(plane_rpc(ctx))
+            }),
+        },
         // BUSBAR'S OWN CALLBACK — the address it hands a BACKEND, so the backend never learns the
         // caller's. `RouteAuth::None` because the party calling it is a fronted AGENT, which holds
         // no busbar key and must not be issued one for this; the handler authenticates the request
         // itself against the per-task token busbar minted, in constant time. See
         // `super::pushback`, which carries the whole argument.
-        .route(
-            format!(
+        PlaneRouteSpec {
+            path: format!(
                 "{}{}",
                 super::serve::MOUNT_PATH,
                 super::pushback::PUSH_PATH_SUFFIX
             ),
-            RouteMethod::Post,
-            RouteAuth::None,
-            super::pushback::push_notification,
-        )
+            method: RouteMethod::Post,
+            auth: RouteAuth::None,
+            handler: std::sync::Arc::new(|ctx: PlaneReqCtx| -> PlaneRouteFuture {
+                Box::pin(super::pushback::push_notification(ctx))
+            }),
+        },
         // THE gRPC BINDING, mounted the same way and therefore declaring the same bar.
         //
         // It is a `CoreRouter::route` and not a `route_service`, and that is the whole answer to
         // "how does a tonic service satisfy `CoreRouteTable`": it does not enter the tree as a
         // pre-built router at all. `super::grpc::serve` is an ordinary axum handler that builds the
         // generated `A2aServiceServer` per request, around this request's already-authenticated
-        // principal — so this line declares `RouteAuth::Key` in the act that wires it, exactly like
-        // the four above it, and there is no router in the tree that the table does not describe.
+        // principal — so this row declares `RouteAuth::Key` exactly like the four above it, and
+        // there is no router in the tree that the table does not describe.
         //
         // The PATH is the `.proto`'s, not busbar's: a gRPC client is handed an authority and derives
         // the path from the service descriptor, so this binding cannot be served under
         // `MOUNT_PATH`. `PlaneDispatch` claims it for this plane for the same reason every other
         // path here is claimed — that is where the RFC 8707 audience check finds its audience.
-        .route(
-            super::grpc::route_path(),
-            RouteMethod::Post,
-            RouteAuth::Key,
-            super::grpc::serve,
-        )
+        PlaneRouteSpec {
+            path: super::grpc::route_path(),
+            method: RouteMethod::Post,
+            auth: RouteAuth::Key,
+            handler: std::sync::Arc::new(|ctx: PlaneReqCtx| -> PlaneRouteFuture {
+                Box::pin(super::grpc::serve(ctx))
+            }),
+        },
+    ]);
+    routes
 }
 
 #[cfg(test)]

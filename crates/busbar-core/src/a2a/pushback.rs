@@ -261,10 +261,19 @@ pub(crate) fn mirrored_verb(verb: super::local::LocalVerb) -> Option<&'static st
 /// own task row (`pushdeliver::notification_body`), so a backend cannot use this endpoint to post
 /// arbitrary bytes at a URL it has never been told.
 pub(crate) async fn push_notification(
-    crate::state::CurrentApp(app): crate::state::CurrentApp,
-    headers: axum::http::HeaderMap,
-    body: axum::body::Bytes,
+    ctx: busbar_substrate::plane_routes::PlaneReqCtx,
 ) -> Response {
+    // S7 neutral seam: this `RouteAuth::None` handler took only `CurrentApp`, the headers and the
+    // body — the caller is a fronted AGENT holding no busbar key, so the middleware attached no
+    // identity and this handler authenticates the per-task push token itself, below. App off the
+    // type-erased engine handle; `headers`/`body` off `ctx`.
+    let handle: std::sync::Arc<crate::state::AppHandle> = ctx
+        .engine
+        .downcast::<crate::state::AppHandle>()
+        .expect("the a2a route engine handle is an AppHandle");
+    let app = handle.load();
+    let headers = ctx.headers;
+    let body = ctx.body;
     let Some(plane) = crate::a2a::runtime_arc(&app) else {
         return refused(
             axum::http::StatusCode::NOT_FOUND,

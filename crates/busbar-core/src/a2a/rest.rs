@@ -52,7 +52,7 @@ use axum::response::Response;
 use serde_json::{json, Map, Value};
 
 use super::receive::{invoke, Target, Wire};
-use crate::state::CurrentApp;
+use busbar_substrate::plane_routes::PlaneReqCtx;
 use busbar_substrate::transport::Transport;
 
 /// THE `id` EVERY RE-FRAMED ENVELOPE CARRIES.
@@ -315,27 +315,104 @@ fn reframe_frames(buf: &[u8]) -> Vec<u8> {
 
 // ── THE ROUTES. One handler per (method, path) the specification names. ─────────────────────────
 
+/// THE COMMON PREAMBLE FOR EVERY REST HANDLER (the neutral route-mount seam).
+///
+/// Each of the ten handlers is `RouteAuth::Key`, and each took `CurrentApp` plus the two auth
+/// extensions plus `Wire`. The neutral seam hands those as fields on [`PlaneReqCtx`]: the live app is
+/// downcast off the type-erased engine handle (App-sever is later), `gov`/`principal` are the values
+/// the auth middleware resolved BEFORE this `Key` route ran (surfaced, never re-derived), and `Wire`
+/// is the same three headers the extractor read, off `ctx.headers`. Consuming `engine`/`gov`/
+/// `principal` here leaves `ctx.body`/`ctx.path_params`/`ctx.uri` for the caller to read.
+fn rest_key_ctx(
+    engine: std::sync::Arc<dyn std::any::Any + Send + Sync>,
+    gov: Option<crate::governance::PlaneRequestCtx>,
+    principal: Option<crate::auth::AuthPrincipal>,
+    headers: &axum::http::HeaderMap,
+) -> (
+    std::sync::Arc<crate::state::App>,
+    crate::governance::PlaneRequestCtx,
+    crate::auth::AuthPrincipal,
+    Wire,
+) {
+    let handle: std::sync::Arc<crate::state::AppHandle> = engine
+        .downcast::<crate::state::AppHandle>()
+        .expect("the a2a route engine handle is an AppHandle");
+    let app = handle.load();
+    let gov =
+        gov.expect("the a2a REST routes are RouteAuth::Key, so the middleware attached a gov ctx");
+    let principal = principal
+        .expect("the a2a REST routes are RouteAuth::Key, so the middleware attached a principal");
+    (app, gov, principal, Wire::from_headers(headers))
+}
+
+/// THE QUERY STRING AS A `name → value` MAP, replacing the `axum::extract::Query<HashMap<..>>` the
+/// three query-bearing handlers took. Read off `ctx.uri.query()` on the neutral seam; decoded as
+/// `application/x-www-form-urlencoded` (the same media type axum's `Query` deserialises), so `+`
+/// becomes a space and `%XX` is a byte — exactly the value the extractor produced. A repeated key
+/// keeps the last value, as the extractor's `HashMap` deserialisation does; a malformed pair yields
+/// its own bytes rather than a request-wide rejection, which only widens what an odd query still
+/// answers on this `Key`-authed surface.
+fn query_map(uri: &axum::http::Uri) -> std::collections::HashMap<String, String> {
+    let mut map = std::collections::HashMap::new();
+    let Some(raw) = uri.query() else {
+        return map;
+    };
+    for pair in raw.split('&').filter(|p| !p.is_empty()) {
+        let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
+        map.insert(form_decode(k), form_decode(v));
+    }
+    map
+}
+
+/// Decode ONE `application/x-www-form-urlencoded` component: `+` → space, `%XX` → the byte, anything
+/// else verbatim, then interpret the bytes as UTF-8 lossily — the decoding `form_urlencoded` (and so
+/// axum's `Query`) applies to a query-string key or value.
+fn form_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            }
+            b'%' if i + 2 < bytes.len() => {
+                let hi = (bytes[i + 1] as char).to_digit(16);
+                let lo = (bytes[i + 2] as char).to_digit(16);
+                match (hi, lo) {
+                    (Some(h), Some(l)) => {
+                        out.push((h * 16 + l) as u8);
+                        i += 3;
+                    }
+                    _ => {
+                        out.push(bytes[i]);
+                        i += 1;
+                    }
+                }
+            }
+            b => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 /// `POST /message:send` — the body IS the `params`.
-async fn message_send(
-    CurrentApp(app): CurrentApp,
-    axum::extract::Extension(gov): axum::extract::Extension<crate::governance::PlaneRequestCtx>,
-    axum::extract::Extension(principal): axum::extract::Extension<crate::auth::AuthPrincipal>,
-    wire: Wire,
-    body: axum::body::Bytes,
-) -> Response {
-    let params = json_body(&body);
+async fn message_send(ctx: PlaneReqCtx) -> Response {
+    let (app, gov, principal, wire) =
+        rest_key_ctx(ctx.engine, ctx.gov, ctx.principal, &ctx.headers);
+    let params = json_body(&ctx.body);
     compose_and_invoke(app, gov, principal, wire, method::SEND_MESSAGE, params).await
 }
 
 /// `POST /message:stream` — the same body, the streaming method, an SSE answer.
-async fn message_stream(
-    CurrentApp(app): CurrentApp,
-    axum::extract::Extension(gov): axum::extract::Extension<crate::governance::PlaneRequestCtx>,
-    axum::extract::Extension(principal): axum::extract::Extension<crate::auth::AuthPrincipal>,
-    wire: Wire,
-    body: axum::body::Bytes,
-) -> Response {
-    let params = json_body(&body);
+async fn message_stream(ctx: PlaneReqCtx) -> Response {
+    let (app, gov, principal, wire) =
+        rest_key_ctx(ctx.engine, ctx.gov, ctx.principal, &ctx.headers);
+    let params = json_body(&ctx.body);
     compose_and_invoke(
         app,
         gov,
@@ -348,14 +425,11 @@ async fn message_stream(
 }
 
 /// `GET /tasks/{id}` — the task id from the path, `historyLength` from the query.
-async fn task_get(
-    CurrentApp(app): CurrentApp,
-    axum::extract::Extension(gov): axum::extract::Extension<crate::governance::PlaneRequestCtx>,
-    axum::extract::Extension(principal): axum::extract::Extension<crate::auth::AuthPrincipal>,
-    axum::extract::Path(id): axum::extract::Path<String>,
-    axum::extract::Query(query): axum::extract::Query<std::collections::HashMap<String, String>>,
-    wire: Wire,
-) -> Response {
+async fn task_get(ctx: PlaneReqCtx) -> Response {
+    let (app, gov, principal, wire) =
+        rest_key_ctx(ctx.engine, ctx.gov, ctx.principal, &ctx.headers);
+    let id = super::receive::path_param(&ctx.path_params, "id");
+    let query = query_map(&ctx.uri);
     let params = Params::new()
         .set("id", id)
         .maybe("historyLength", query.get("historyLength"))
@@ -365,13 +439,10 @@ async fn task_get(
 
 /// `POST /tasks/{id}:cancel` and `POST /tasks/{id}:subscribe` — one route, because the verb is a
 /// suffix INSIDE the captured segment. See [`VERB_CANCEL`].
-async fn task_verb(
-    CurrentApp(app): CurrentApp,
-    axum::extract::Extension(gov): axum::extract::Extension<crate::governance::PlaneRequestCtx>,
-    axum::extract::Extension(principal): axum::extract::Extension<crate::auth::AuthPrincipal>,
-    axum::extract::Path(addressed): axum::extract::Path<String>,
-    wire: Wire,
-) -> Response {
+async fn task_verb(ctx: PlaneReqCtx) -> Response {
+    let (app, gov, principal, wire) =
+        rest_key_ctx(ctx.engine, ctx.gov, ctx.principal, &ctx.headers);
+    let addressed = super::receive::path_param(&ctx.path_params, "id");
     let Some((id, verb)) = addressed.rsplit_once(':') else {
         return not_a_verb(&addressed);
     };
@@ -405,13 +476,10 @@ fn not_a_verb(addressed: &str) -> Response {
 }
 
 /// `GET /tasks` — the filters ride the query string.
-async fn tasks_list(
-    CurrentApp(app): CurrentApp,
-    axum::extract::Extension(gov): axum::extract::Extension<crate::governance::PlaneRequestCtx>,
-    axum::extract::Extension(principal): axum::extract::Extension<crate::auth::AuthPrincipal>,
-    axum::extract::Query(query): axum::extract::Query<std::collections::HashMap<String, String>>,
-    wire: Wire,
-) -> Response {
+async fn tasks_list(ctx: PlaneReqCtx) -> Response {
+    let (app, gov, principal, wire) =
+        rest_key_ctx(ctx.engine, ctx.gov, ctx.principal, &ctx.headers);
+    let query = query_map(&ctx.uri);
     let params = Params::new()
         .maybe("contextId", query.get("contextId"))
         .maybe("status", query.get("status"))
@@ -425,20 +493,16 @@ async fn tasks_list(
 }
 
 /// `POST /tasks/{id}/pushNotificationConfigs` — the body IS the config, the task id is the path's.
-async fn push_config_create(
-    CurrentApp(app): CurrentApp,
-    axum::extract::Extension(gov): axum::extract::Extension<crate::governance::PlaneRequestCtx>,
-    axum::extract::Extension(principal): axum::extract::Extension<crate::auth::AuthPrincipal>,
-    axum::extract::Path(id): axum::extract::Path<String>,
-    wire: Wire,
-    body: axum::body::Bytes,
-) -> Response {
+async fn push_config_create(ctx: PlaneReqCtx) -> Response {
+    let (app, gov, principal, wire) =
+        rest_key_ctx(ctx.engine, ctx.gov, ctx.principal, &ctx.headers);
+    let id = super::receive::path_param(&ctx.path_params, "id");
     // THE PATH WINS. `merge` first, `set` after: the task this config is for is the one the caller
     // ADDRESSED, and a `taskId` member in the posted document must not silently re-point it at
     // somebody else's task. The scoping in `local::addressed` would refuse another tenant's id
     // anyway; this makes the request unambiguous before it gets there.
     let params = Params::new()
-        .merge(&json_body(&body))
+        .merge(&json_body(&ctx.body))
         .set("taskId", id)
         .into_value();
     compose_and_invoke(
@@ -453,14 +517,11 @@ async fn push_config_create(
 }
 
 /// `GET /tasks/{id}/pushNotificationConfigs`.
-async fn push_config_list(
-    CurrentApp(app): CurrentApp,
-    axum::extract::Extension(gov): axum::extract::Extension<crate::governance::PlaneRequestCtx>,
-    axum::extract::Extension(principal): axum::extract::Extension<crate::auth::AuthPrincipal>,
-    axum::extract::Path(id): axum::extract::Path<String>,
-    axum::extract::Query(query): axum::extract::Query<std::collections::HashMap<String, String>>,
-    wire: Wire,
-) -> Response {
+async fn push_config_list(ctx: PlaneReqCtx) -> Response {
+    let (app, gov, principal, wire) =
+        rest_key_ctx(ctx.engine, ctx.gov, ctx.principal, &ctx.headers);
+    let id = super::receive::path_param(&ctx.path_params, "id");
+    let query = query_map(&ctx.uri);
     let params = Params::new()
         .set("taskId", id)
         .maybe("pageSize", query.get("pageSize"))
@@ -470,13 +531,11 @@ async fn push_config_list(
 }
 
 /// `GET /tasks/{id}/pushNotificationConfigs/{configId}`.
-async fn push_config_get(
-    CurrentApp(app): CurrentApp,
-    axum::extract::Extension(gov): axum::extract::Extension<crate::governance::PlaneRequestCtx>,
-    axum::extract::Extension(principal): axum::extract::Extension<crate::auth::AuthPrincipal>,
-    axum::extract::Path((id, config_id)): axum::extract::Path<(String, String)>,
-    wire: Wire,
-) -> Response {
+async fn push_config_get(ctx: PlaneReqCtx) -> Response {
+    let (app, gov, principal, wire) =
+        rest_key_ctx(ctx.engine, ctx.gov, ctx.principal, &ctx.headers);
+    let id = super::receive::path_param(&ctx.path_params, "id");
+    let config_id = super::receive::path_param(&ctx.path_params, "config_id");
     let params = Params::new()
         .set("taskId", id)
         .set("id", config_id)
@@ -485,13 +544,11 @@ async fn push_config_get(
 }
 
 /// `DELETE /tasks/{id}/pushNotificationConfigs/{configId}`.
-async fn push_config_delete(
-    CurrentApp(app): CurrentApp,
-    axum::extract::Extension(gov): axum::extract::Extension<crate::governance::PlaneRequestCtx>,
-    axum::extract::Extension(principal): axum::extract::Extension<crate::auth::AuthPrincipal>,
-    axum::extract::Path((id, config_id)): axum::extract::Path<(String, String)>,
-    wire: Wire,
-) -> Response {
+async fn push_config_delete(ctx: PlaneReqCtx) -> Response {
+    let (app, gov, principal, wire) =
+        rest_key_ctx(ctx.engine, ctx.gov, ctx.principal, &ctx.headers);
+    let id = super::receive::path_param(&ctx.path_params, "id");
+    let config_id = super::receive::path_param(&ctx.path_params, "config_id");
     let params = Params::new()
         .set("taskId", id)
         .set("id", config_id)
@@ -515,12 +572,9 @@ async fn push_config_delete(
 /// does not give would make the two legs disagree about one operation, which is precisely the
 /// divergence "re-framing, not translation" exists to prevent. When the verb lands it lands once, on
 /// the shared sequence, and both bindings gain it together.
-async fn extended_agent_card(
-    CurrentApp(app): CurrentApp,
-    axum::extract::Extension(gov): axum::extract::Extension<crate::governance::PlaneRequestCtx>,
-    axum::extract::Extension(principal): axum::extract::Extension<crate::auth::AuthPrincipal>,
-    wire: Wire,
-) -> Response {
+async fn extended_agent_card(ctx: PlaneReqCtx) -> Response {
+    let (app, gov, principal, wire) =
+        rest_key_ctx(ctx.engine, ctx.gov, ctx.principal, &ctx.headers);
     compose_and_invoke(
         app,
         gov,
@@ -558,73 +612,101 @@ use axum::response::IntoResponse;
 /// `RouteAuth::Key` on every one, exactly as the JSON-RPC leg carries. A binding is a way of
 /// SPELLING a request, never a way around the admission the plane applies to it, and an unauthed
 /// REST leg beside an authed JSON-RPC one would be precisely that.
-pub(super) fn mount(router: crate::core_routes::CoreRouter) -> crate::core_routes::CoreRouter {
+pub(super) fn a2a_rest_routes() -> Vec<busbar_substrate::plane_routes::PlaneRouteSpec> {
     use busbar_plugin_loader::{RouteAuth, RouteMethod};
+    use busbar_substrate::plane_routes::{PlaneReqCtx, PlaneRouteFuture, PlaneRouteSpec};
     let mount = super::serve::MOUNT_PATH;
-    router
-        .route(
-            format!("{mount}/message:send"),
-            RouteMethod::Post,
-            RouteAuth::Key,
-            message_send,
-        )
-        .route(
-            format!("{mount}/message:stream"),
-            RouteMethod::Post,
-            RouteAuth::Key,
-            message_stream,
-        )
-        .route(
-            format!("{mount}/tasks"),
-            RouteMethod::Get,
-            RouteAuth::Key,
-            tasks_list,
-        )
+    // Each spec's `(path, method, auth)` is handed VERBATIM to `CoreRouter::route` by the core
+    // adapter, so the `CoreRouteTable` rows are byte-identical to the ones the old `mount` recorded —
+    // SAME paths, SAME methods, SAME `RouteAuth::Key`, in THIS SAME ORDER. The handlers are the
+    // neutral async fns over `PlaneReqCtx`. The two `{id}` templates differing only by method are two
+    // rows here exactly as they were two `.route` calls before; the capture names `{id}`/`{config_id}`
+    // are spelled verbatim so the seam's `path_params` carry the names the handlers read.
+    vec![
+        PlaneRouteSpec {
+            path: format!("{mount}/message:send"),
+            method: RouteMethod::Post,
+            auth: RouteAuth::Key,
+            handler: std::sync::Arc::new(|ctx: PlaneReqCtx| -> PlaneRouteFuture {
+                Box::pin(message_send(ctx))
+            }),
+        },
+        PlaneRouteSpec {
+            path: format!("{mount}/message:stream"),
+            method: RouteMethod::Post,
+            auth: RouteAuth::Key,
+            handler: std::sync::Arc::new(|ctx: PlaneReqCtx| -> PlaneRouteFuture {
+                Box::pin(message_stream(ctx))
+            }),
+        },
+        PlaneRouteSpec {
+            path: format!("{mount}/tasks"),
+            method: RouteMethod::Get,
+            auth: RouteAuth::Key,
+            handler: std::sync::Arc::new(|ctx: PlaneReqCtx| -> PlaneRouteFuture {
+                Box::pin(tasks_list(ctx))
+            }),
+        },
         // ONE PATH TEMPLATE, TWO METHODS, and the capture is named `{id}` in both. The router merges
         // methods for one path; two templates differing only in the capture NAME would be one
         // pattern registered twice, which is a startup panic rather than a route.
-        .route(
-            format!("{mount}/tasks/{{id}}"),
-            RouteMethod::Get,
-            RouteAuth::Key,
-            task_get,
-        )
-        .route(
-            format!("{mount}/tasks/{{id}}"),
-            RouteMethod::Post,
-            RouteAuth::Key,
-            task_verb,
-        )
-        .route(
-            format!("{mount}/tasks/{{id}}/pushNotificationConfigs"),
-            RouteMethod::Post,
-            RouteAuth::Key,
-            push_config_create,
-        )
-        .route(
-            format!("{mount}/tasks/{{id}}/pushNotificationConfigs"),
-            RouteMethod::Get,
-            RouteAuth::Key,
-            push_config_list,
-        )
-        .route(
-            format!("{mount}/tasks/{{id}}/pushNotificationConfigs/{{config_id}}"),
-            RouteMethod::Get,
-            RouteAuth::Key,
-            push_config_get,
-        )
-        .route(
-            format!("{mount}/tasks/{{id}}/pushNotificationConfigs/{{config_id}}"),
-            RouteMethod::Delete,
-            RouteAuth::Key,
-            push_config_delete,
-        )
-        .route(
-            format!("{mount}/extendedAgentCard"),
-            RouteMethod::Get,
-            RouteAuth::Key,
-            extended_agent_card,
-        )
+        PlaneRouteSpec {
+            path: format!("{mount}/tasks/{{id}}"),
+            method: RouteMethod::Get,
+            auth: RouteAuth::Key,
+            handler: std::sync::Arc::new(|ctx: PlaneReqCtx| -> PlaneRouteFuture {
+                Box::pin(task_get(ctx))
+            }),
+        },
+        PlaneRouteSpec {
+            path: format!("{mount}/tasks/{{id}}"),
+            method: RouteMethod::Post,
+            auth: RouteAuth::Key,
+            handler: std::sync::Arc::new(|ctx: PlaneReqCtx| -> PlaneRouteFuture {
+                Box::pin(task_verb(ctx))
+            }),
+        },
+        PlaneRouteSpec {
+            path: format!("{mount}/tasks/{{id}}/pushNotificationConfigs"),
+            method: RouteMethod::Post,
+            auth: RouteAuth::Key,
+            handler: std::sync::Arc::new(|ctx: PlaneReqCtx| -> PlaneRouteFuture {
+                Box::pin(push_config_create(ctx))
+            }),
+        },
+        PlaneRouteSpec {
+            path: format!("{mount}/tasks/{{id}}/pushNotificationConfigs"),
+            method: RouteMethod::Get,
+            auth: RouteAuth::Key,
+            handler: std::sync::Arc::new(|ctx: PlaneReqCtx| -> PlaneRouteFuture {
+                Box::pin(push_config_list(ctx))
+            }),
+        },
+        PlaneRouteSpec {
+            path: format!("{mount}/tasks/{{id}}/pushNotificationConfigs/{{config_id}}"),
+            method: RouteMethod::Get,
+            auth: RouteAuth::Key,
+            handler: std::sync::Arc::new(|ctx: PlaneReqCtx| -> PlaneRouteFuture {
+                Box::pin(push_config_get(ctx))
+            }),
+        },
+        PlaneRouteSpec {
+            path: format!("{mount}/tasks/{{id}}/pushNotificationConfigs/{{config_id}}"),
+            method: RouteMethod::Delete,
+            auth: RouteAuth::Key,
+            handler: std::sync::Arc::new(|ctx: PlaneReqCtx| -> PlaneRouteFuture {
+                Box::pin(push_config_delete(ctx))
+            }),
+        },
+        PlaneRouteSpec {
+            path: format!("{mount}/extendedAgentCard"),
+            method: RouteMethod::Get,
+            auth: RouteAuth::Key,
+            handler: std::sync::Arc::new(|ctx: PlaneReqCtx| -> PlaneRouteFuture {
+                Box::pin(extended_agent_card(ctx))
+            }),
+        },
+    ]
 }
 
 #[cfg(test)]

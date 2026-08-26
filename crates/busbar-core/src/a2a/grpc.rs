@@ -115,17 +115,40 @@ const A2A_VERSION_METADATA: &str = "a2a-version";
 /// THE HANDLER, and the whole of this binding's mount. See the module note for why the tonic service
 /// is built here rather than mounted as a router.
 ///
-/// The three extractors are the same three `super::receive::plane_rpc` takes, in the same order, and
-/// they are what makes the constructed service busbar's rather than the SDK's: `gov` carries the key
-/// every meter and audit record is written against, and `principal` is who the auth middleware said
-/// is calling. Neither is reachable from inside a `tower::Service` mounted as a router, which is the
-/// other reason this shape is the right one.
-pub(crate) async fn serve(
-    crate::state::CurrentApp(app): crate::state::CurrentApp,
-    axum::extract::Extension(gov): axum::extract::Extension<crate::governance::PlaneRequestCtx>,
-    axum::extract::Extension(principal): axum::extract::Extension<crate::auth::AuthPrincipal>,
-    req: axum::extract::Request,
-) -> Response {
+/// The `gov` and `principal` the seam surfaces are the same the auth middleware resolved for the
+/// `RouteAuth::Key` bar this route declares — they are what makes the constructed service busbar's
+/// rather than the SDK's: `gov` carries the key every meter and audit record is written against, and
+/// `principal` is who the auth middleware said is calling. Neither is reachable from inside a
+/// `tower::Service` mounted as a router, which is the other reason this shape is the right one.
+pub(crate) async fn serve(ctx: busbar_substrate::plane_routes::PlaneReqCtx) -> Response {
+    // S7 neutral seam (D-2a): this handler took a whole `axum::extract::Request` plus `CurrentApp`
+    // and the two auth extensions. The seam hands the request's pieces on `ctx`, so we RECONSTRUCT
+    // the request the generated tonic service consumes from `ctx.{uri, headers, body}`. A2A gRPC
+    // requests are UNARY (only responses stream), so the body is already buffered on `ctx.body` and
+    // reassembling it costs nothing. The method is POST — the only method this route is mounted for.
+    // The rebuilt request is stamped HTTP/2: the real request arrived over h2(c) (gRPC needs it) and
+    // an `http::Request::builder` otherwise defaults to HTTP/1.1, which tonic rejects.
+    let handle: Arc<crate::state::AppHandle> = ctx
+        .engine
+        .downcast::<crate::state::AppHandle>()
+        .expect("the a2a route engine handle is an AppHandle");
+    let app = handle.load();
+    let gov = ctx
+        .gov
+        .expect("the a2a grpc route is RouteAuth::Key, so the middleware attached a gov ctx");
+    let principal = ctx
+        .principal
+        .expect("the a2a grpc route is RouteAuth::Key, so the middleware attached a principal");
+    let mut builder = axum::http::Request::builder()
+        .method(axum::http::Method::POST)
+        .uri(ctx.uri.clone())
+        .version(axum::http::Version::HTTP_2);
+    if let Some(dst) = builder.headers_mut() {
+        *dst = ctx.headers;
+    }
+    let req: axum::extract::Request = builder
+        .body(axum::body::Body::from(ctx.body))
+        .expect("a request rebuilt from a live request's own parts is well-formed");
     // THE LEG, NAMED, and named off the axis rather than off a literal. `Transport::name` is
     // documented as "the label that says WHICH LEG a request arrived on, which is what makes a
     // per-transport conformance number readable from busbar's own telemetry once a second transport

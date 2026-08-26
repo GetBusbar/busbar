@@ -77,6 +77,10 @@ pub struct PlaneRouteSpec {
 pub struct PlaneReqCtx {
     /// The request path this route was matched at.
     pub path: String,
+    /// The full request URI (path + query). Present so a plane route can read its query string
+    /// (`uri.query()`) without an `axum::extract::Query` extractor — the A2A REST task/list/push
+    /// handlers parse their query params off this. Additive; planes that need only the path ignore it.
+    pub uri: axum::http::Uri,
     /// The request method.
     pub method: RouteMethod,
     /// The request headers.

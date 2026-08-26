@@ -150,6 +150,7 @@ fn rpc_ctx(
 ) -> busbar_substrate::plane_routes::PlaneReqCtx {
     busbar_substrate::plane_routes::PlaneReqCtx {
         path: String::new(),
+        uri: axum::http::Uri::default(),
         method: busbar_plugin_loader::RouteMethod::Post,
         headers: axum::http::HeaderMap::new(),
         body,
