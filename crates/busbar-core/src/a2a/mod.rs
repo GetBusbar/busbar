@@ -131,11 +131,10 @@ pub(crate) const PLANE_DECL: crate::plane::registry::PlaneDecl =
             crate::a2a::plane::A2aPlane::from_config(agent_defs, ctx.public_url)
                 .map(|p| p as std::sync::Arc<dyn std::any::Any + Send + Sync>)
         },
-        // S7: A2A now contributes its data routes through the NEUTRAL `routes` seam (like MCP). Its
+        // S7: A2A contributes its data routes through the NEUTRAL `routes` seam (like MCP). Its
         // handlers ({well_known_card, card, agent_rpc, plane_rpc, push_notification, grpc::serve,
         // metadata_route} + the REST family) are neutral async fns over `PlaneReqCtx`, no longer
-        // extracting `axum::State<Arc<AppHandle>>`. The legacy core-typed `mount` is therefore `None`.
-        mount: None,
+        // extracting `axum::State<Arc<AppHandle>>`.
         routes: Some(crate::a2a::receive::a2a_routes),
         admin_routes: Some(admin_routes),
         openapi: Some(openapi_fragment),

@@ -43,7 +43,7 @@
 //!
 //! [`PlaneDecl`] carries the plane VOCABULARY — the facts core reads to name, section, scope and
 //! label a plane — plus, as of [`PlaneDecl::build`], the app-state SLOT seam (how a plane's runtime
-//! object for one config generation is constructed and type-erased) and, as of [`PlaneDecl::mount`]
+//! object for one config generation is constructed and type-erased) and, as of [`PlaneDecl::routes`]
 //! / [`PlaneDecl::admin_routes`] / [`PlaneDecl::openapi`], the SURFACE seam: how a plane contributes
 //! its data-plane routes, its admin verbs, and its OpenAPI fragment; and, as of
 //! [`PlaneDecl::hydrate`] / [`PlaneDecl::start`], the BOOT seam: how a plane restores its durable
@@ -250,34 +250,19 @@ pub struct PlaneDecl {
     /// for it.
     pub build: fn(&BuildCtx) -> Option<std::sync::Arc<dyn std::any::Any + Send + Sync>>,
 
-    /// MOUNT THE PLANE'S DATA-PLANE ROUTES onto the shared data router, from the plane's own runtime
-    /// object (its app slot, type-erased as `&dyn Any`). `None` for a plane that answers on no data
-    /// path (the LLM plane, whose endpoints are the protocol catch-all). Called once per config
-    /// generation, only when the plane has a slot to mount from — a plane the operator did not
-    /// configure is skipped before this runs, exactly as the old typed-`Option` guards skipped it.
-    ///
-    /// The signature grants a plane's mount ONLY the router and its own `&dyn Any` slot — never a
-    /// `Store`, a `GovCtx`, or an `audit::Chain`. A plane that needs one of those to decide its routes
-    /// is not cleanly separable through this seam.
-    #[allow(clippy::type_complexity)]
-    pub mount: Option<
-        fn(crate::core_routes::CoreRouter, &dyn std::any::Any) -> crate::core_routes::CoreRouter,
-    >,
-
-    /// THE PLANE'S DATA ROUTES, described NEUTRALLY (S4a Option A) — the replacement for
-    /// [`Self::mount`] that names no core router type. From the plane's own runtime slot
+    /// THE PLANE'S DATA ROUTES, described NEUTRALLY (S4a Option A) — the one seam a plane contributes
+    /// its data-plane routes through, naming no core router type. From the plane's own runtime slot
     /// (type-erased `&dyn Any`), the plane returns a flat list of
     /// [`busbar_substrate::plane_routes::PlaneRouteSpec`] — each a `(path, method, auth, handler)`
     /// where the handler is a neutral async fn over a
     /// [`busbar_substrate::plane_routes::PlaneReqCtx`], never an `axum` extractor or `Arc<AppHandle>`.
     /// The CORE adapter ([`crate::router::mount_plane_routes`]) iterates the specs and, per spec,
     /// calls the EXISTING [`crate::core_routes::CoreRouter::route`] with the same `(path, method,
-    /// auth)`, so the `CoreRouteTable` rows are byte-identical to the ones [`Self::mount`] recorded —
-    /// only the handler's shape moved behind the neutral seam.
+    /// auth)`, so the `CoreRouteTable` rows are byte-identical to the ones a core-typed handler would
+    /// record — only the handler's shape sits behind the neutral seam.
     ///
-    /// A plane sets EITHER [`Self::mount`] (the legacy, core-typed contribution — still used by the
-    /// A2A plane, whose handlers are not yet neutralised) OR this field, never both. `None` for a
-    /// plane that answers on no data path, or one still on the legacy `mount` seam.
+    /// `None` for a plane that answers on no data path (the LLM plane, whose endpoints are the
+    /// protocol catch-all, mounted in `base_data_router` directly rather than through this seam).
     #[allow(clippy::type_complexity)]
     pub routes:
         Option<fn(&dyn std::any::Any) -> Vec<busbar_substrate::plane_routes::PlaneRouteSpec>>,
@@ -289,7 +274,7 @@ pub struct PlaneDecl {
     /// this takes only the router. Merged in declaration order so the route order is stable and
     /// operator-visible.
     ///
-    /// As with [`Self::mount`], the signature grants a plane's admin contribution ONLY the router —
+    /// As with [`Self::routes`], the signature grants a plane's admin contribution ONLY the router —
     /// never a `Store`, a `GovCtx`, or an `audit::Chain`.
     #[allow(clippy::type_complexity)]
     pub admin_routes: Option<

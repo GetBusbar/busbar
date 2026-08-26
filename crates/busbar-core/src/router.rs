@@ -427,16 +427,13 @@ pub(crate) fn base_data_router(
         let Some(slot) = plane_slots.get(decl.key) else {
             continue;
         };
-        // A plane contributes its data routes through EITHER the neutral `routes` seam (S4a Option A:
-        // a flat list of `PlaneRouteSpec`, mounted by the core adapter below so the plane names no
-        // `CoreRouter`) OR the legacy core-typed `mount` fn (still used by A2A, whose handlers are
-        // not yet neutralised). Never both; `routes` is preferred where present.
+        // A plane contributes its data routes through the neutral `routes` seam (S4a Option A: a flat
+        // list of `PlaneRouteSpec`, mounted by the core adapter below so the plane names no
+        // `CoreRouter`). `None` for a plane that answers on no data path.
         if let Some(routes) = decl.routes {
             for spec in routes(slot.as_ref()) {
                 router = mount_plane_route(router, slot.clone(), spec);
             }
-        } else if let Some(mount) = decl.mount {
-            router = mount(router, slot.as_ref());
         }
     }
     // THE AUTHORIZATION SERVER'S ROUTES, or none of them. Same posture as the two planes above: a

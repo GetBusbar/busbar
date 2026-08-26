@@ -950,7 +950,6 @@ pub(crate) const PLANE_DECL: crate::plane::registry::PlaneDecl =
         // NO SURFACE CONTRIBUTION. The LLM plane's data routes ARE the protocol catch-all (mounted
         // in `base_data_router` directly, not through this seam), it adds no admin trust verb on top
         // of the generic `pools` CRUD, and it documents no admin path of its own.
-        mount: None,
         routes: None,
         admin_routes: None,
         openapi: None,

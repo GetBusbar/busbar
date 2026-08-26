@@ -153,9 +153,7 @@ pub const PLANE_DECL: busbar_core::plane::registry::PlaneDecl =
         // `cfg.mcp` is `None`, matching `App::mcp`'s own absence.
         build: |ctx| ctx.mcp_slot.clone(),
         // S4a Option A: the MCP plane's data routes are contributed NEUTRALLY through `routes`, so
-        // its handlers no longer extract `axum::State<Arc<AppHandle>>`. The legacy core-typed
-        // `mount` is `None` here (A2A still uses it until its handlers are neutralised).
-        mount: None,
+        // its handlers no longer extract `axum::State<Arc<AppHandle>>`.
         routes: Some(mcp_routes),
         admin_routes: Some(mcp_admin_routes),
         openapi: Some(mcp_openapi_fragment),
