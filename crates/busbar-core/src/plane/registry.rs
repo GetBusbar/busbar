@@ -483,11 +483,11 @@ pub struct PlaneDecl {
     >,
 
     /// BUILD THIS PLANE'S PER-GENERATION RUNTIME OBJECT from its type-erased registry section — the
-    /// seam `appbuild` composes `App::mcp_runtime` through, so core names no plane runtime type. The
-    /// first argument is the plane's own section, erased as `&dyn Any` (its `PlaneCfg::as_any`);
-    /// `prior` is the previous generation's `App` for carry-over. `None` for a plane whose runtime is
-    /// not a single flat `App` field (A2A's lives in `plane_slots`; the LLM plane's is the many `App`
-    /// fields it already reads).
+    /// seam `appbuild` composes the MCP runtime slot (`plane_slots[state::MCP_RUNTIME_SLOT]`) through,
+    /// so core names no plane runtime type. The first argument is the plane's own section, erased as
+    /// `&dyn Any` (its `PlaneCfg::as_any`); `prior` is the previous generation's `App` for carry-over.
+    /// `None` for a plane whose runtime is not carried through this seam (A2A's lives in `plane_slots`
+    /// under its decl key; the LLM plane's is the many `App` fields it already reads).
     #[allow(clippy::type_complexity)]
     pub build_runtime: Option<
         fn(

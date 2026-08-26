@@ -891,6 +891,7 @@ impl TestApp {
             sightings: self.mcp_sightings.clone().unwrap_or_default(),
             roots_epochs: Default::default(),
             sampling_spend: Default::default(),
+            verify: Default::default(),
         })
     }
 
@@ -1389,7 +1390,11 @@ impl TestApp {
         // Install the type-erased plane slots through the B1.7 seam, then MOVE the accumulated map into
         // the App slot below — `build()` never names the slot keys or the plane runtime types itself.
         self.install_plane_runtimes(mcp_arc, a2a_plane);
-        let plane_slots = std::mem::take(&mut self.installed_plane_runtimes);
+        let mut plane_slots = std::mem::take(&mut self.installed_plane_runtimes);
+        // The MCP plane's always-present per-generation runtime rides `plane_slots` under its companion
+        // key (`crate::state::MCP_RUNTIME_SLOT`), the same home production `appbuild` gives it — read
+        // back through `crate::mcp::runtime`, no flat `App::mcp_runtime`/`mcp_verify` field.
+        plane_slots.insert(crate::state::MCP_RUNTIME_SLOT, mcp_runtime_slot);
         let auth = self.auth.unwrap_or_else(|| {
             std::sync::Arc::new(crate::auth::AuthMiddleware::new_builtin(
                 &crate::config::AuthCfg::default_none(),
@@ -1527,11 +1532,6 @@ impl TestApp {
             // readers" property `build_app_from_config` gives production. `build()` MOVES the seam map
             // in without naming a slot key or a plane runtime type.
             plane_slots,
-            // The MCP plane runtime bundle, built above through the plane BUILDER seam
-            // ([`build_mcp_runtime`]) — constructed directly (rather than via `crate::mcp::build_runtime`)
-            // so a fixture can still inject its own `mcp_sightings`.
-            mcp_runtime: mcp_runtime_slot,
-            mcp_verify: Default::default(),
             a2a_verify: Default::default(),
             a2a_cards: Default::default(),
             spent_token_ledger: Default::default(),

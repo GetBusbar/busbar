@@ -34,6 +34,13 @@ pub mod validate;
 // `reverify::{Ledger, Policy}` through the re-export below.
 pub(crate) mod verify;
 
+/// The verify-on-call gate type, re-exported so an EXTRACTED plane crate (busbar-mcp) can NAME it —
+/// each plane now OWNS its coalescer on its own per-generation runtime object (the MCP plane folds it
+/// into `crate::mcp::McpRuntime`, reached via `ctx.slot`) rather than reading it off a flat `App`
+/// field. The module itself stays `pub(crate)` (its `Flight`/coalescing internals are not surface);
+/// only the gate type and its already-`pub` `ensure_fresh` are reachable, and `Default` builds one.
+pub use verify::VerifyGate;
+
 /// THE RE-VERIFICATION CADENCE — relocated to substrate in Phase-B B1. A thin core module (`trust/
 /// reverify.rs`, rather than a bare `use`) so `crate::trust::reverify::*` resolves unchanged AND the
 /// core-only re-verification tests, which name `crate::a2a::pin`, keep their home in core. An

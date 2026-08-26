@@ -1109,7 +1109,7 @@ async fn verify_on_call(ctx: &Ctx<'_>, name: &str) {
     let cache = super::runtime(ctx.app).sightings.clone();
     let cache_fetch = cache.clone();
     let pool = super::runtime(ctx.app).pool.clone();
-    let gate = ctx.app.mcp_verify.clone();
+    let gate = super::runtime(ctx.app).verify.clone();
     // The durable demotion settle now runs through the host `drift_quarantine` slot, which pulls the
     // demotion store host-side, so the fetch closure carries the live `App` rather than a bare
     // `&DemotionRecord` an extracted plane could not hold.
@@ -1123,8 +1123,8 @@ async fn verify_on_call(ctx: &Ctx<'_>, name: &str) {
     {
         crate::mcp::connect::invalidate(&cache, &subject);
     }
-    ctx.app
-        .mcp_verify
+    super::runtime(ctx.app)
+        .verify
         .ensure_fresh(
             &subject,
             &policy,

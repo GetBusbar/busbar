@@ -284,6 +284,18 @@ impl Drop for QueueDepthGuard {
     }
 }
 
+/// The [`App::plane_slots`] key under which the MCP plane's ALWAYS-PRESENT per-generation runtime
+/// object (`crate::mcp::McpRuntime`) is carried. It is deliberately DISTINCT from the MCP plane's own
+/// decl key (`"mcp"`), under which the CONFIG-CONDITIONAL dispatch resource (`crate::mcp::McpResource`)
+/// lives: the runtime bundle exists on every generation (an empty catalogue and a live pool exist even
+/// with no `tools:`/`mcp:` block), whereas the dispatch slot is absent when `mcp:` is not configured —
+/// so folding them onto one key would change `plane_slot("mcp")`'s presence semantics (and with it the
+/// dispatch table `build_dispatch` derives from that slot). Carrying the runtime under this companion
+/// key keeps both presences byte-identical to when they were two separate `App` fields. Composed into
+/// `plane_slots` by `appbuild` through the plane's neutral `build_runtime` seam, and read back by the
+/// plane through `crate::mcp::runtime`, so this crate names no `crate::mcp` runtime type.
+pub const MCP_RUNTIME_SLOT: &str = "mcp:runtime";
+
 /// `Clone` is the config-apply enabler: cloning an `App` shares the live-state `Arc`s (store, auth,
 /// governance, client — the things that must SURVIVE a config change) and deep-copies the
 /// config-derived collections (lanes, pools, hooks, …). So `apply` builds the next snapshot as
@@ -521,7 +533,7 @@ pub struct App {
     /// boot refusal), and an agent added by a later apply is verified on the boot-time transport —
     /// which is the same reach the removed sweep had, since it too held its transports from boot.
     // TYPE-ERASED inside the `OnceLock` so `App` names no `crate::a2a` transport type — the same
-    // opaque-handle shape `mcp_runtime` above rides. The A2A start hook sets the concrete
+    // opaque-handle shape the MCP runtime slot rides in `plane_slots`. The A2A start hook sets the concrete
     // `Arc<LiveCardFetch>` (unsized to `Arc<dyn Any>`) and the verify-on-call path downcasts it back,
     // both inside the plane's own module. Kept `plane-a2a`-gated because with the plane off nothing
     // publishes or reads it and the field would sit permanently `None`.
@@ -571,32 +583,11 @@ pub struct App {
     /// allocated, no signing key exists, no sweeper runs and no route is mounted. See
     /// `crate::oauth_as`.
     pub(crate) oauth_as: Option<Arc<crate::oauth_as::plane::AsPlane>>,
-    /// THE MCP PLANE'S PER-GENERATION CLIENT-DIRECTION RUNTIME — the catalogue snapshot, the `tools:`
-    /// registry, the upstream connection pool, the live tool-list sightings, the per-principal roots
-    /// epochs and the per-upstream sampling spend, bundled into ONE mcp-owned object
-    /// (`crate::mcp::McpRuntime`) and held here TYPE-ERASED so this `App` names no `crate::mcp` type
-    /// for any of them. The mcp plane reads it through `crate::mcp::runtime`, which downcasts inside
-    /// the plane; nothing outside the mcp module reaches these objects.
-    ///
-    /// Always present (an empty catalogue and a live pool exist even with no `tools:`/`mcp:` block),
-    /// which is why it is a plain field and not a `plane_slots` entry — a `plane_slots` slot is
-    /// config-conditional, and the server-side dispatch object (`crate::mcp::McpResource`) lives
-    /// there instead. Each bundled object's cross-apply lifecycle (fresh catalogue/servers/pool, but
-    /// carried sightings/roots-epochs/sampling-spend) is unchanged — see `McpRuntime::build`.
-    // MCP-only: read only by the MCP plane through `crate::mcp::runtime`; with `plane-mcp` off (and
-    // A2A on) it is held type-erased but never downcast, so it reads dead there.
-    #[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
-    pub mcp_runtime: Arc<dyn std::any::Any + Send + Sync>,
-    /// THE MCP VERIFY-ON-CALL GATE — the per-server single-flight coalescer that re-verifies an
-    /// upstream's advertised tool surface on the `tools/call` path when its recorded observation is
-    /// older than `verify_ttl` (see [`crate::trust::verify`]).
-    ///
-    /// Arc-shared ACROSS config applies, like the sightings cache it freshens, and for the same
-    /// reason: the coalescing epochs are ACCUMULATED coordination state, not intent, and rebuilding
-    /// them on every apply would let a burst of callers each fetch during the window an unrelated
-    /// config edit reset. It replaces the background sweep daemon: there is no timer, and a server
-    /// nobody calls is never fetched.
-    pub mcp_verify: Arc<crate::trust::verify::VerifyGate>,
+    // THE MCP PLANE'S PER-GENERATION CLIENT-DIRECTION RUNTIME (`crate::mcp::McpRuntime`, which now also
+    // carries the verify-on-call coalescer that was the former flat `mcp_verify` field) is no longer a
+    // flat `App` field: it lives in `plane_slots` under [`MCP_RUNTIME_SLOT`], reached by the plane
+    // through `crate::mcp::runtime` (which downcasts the slot inside the plane), so this `App` names no
+    // `crate::mcp` runtime type and holds no plane-specific runtime field for it.
     /// APPROVALS ALREADY SPENT — the record that makes an operator-configured confirmation
     /// single-use.
     ///

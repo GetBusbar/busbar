@@ -221,21 +221,24 @@ pub(crate) fn resource_arc(app: &busbar_core::state::App) -> Option<std::sync::A
     })
 }
 
-/// THE MCP PLANE'S PER-GENERATION CLIENT-DIRECTION RUNTIME — the six objects the plane carries on the
-/// `App` snapshot for one config generation, bundled into ONE mcp-owned struct so core's `App` names
-/// no `crate::mcp` type for any of them. `App::mcp_runtime` holds this behind `Arc<dyn Any>` and
-/// [`runtime`] downcasts it back HERE, inside the plane.
+/// THE MCP PLANE'S PER-GENERATION CLIENT-DIRECTION RUNTIME — the objects the plane carries for one
+/// config generation, bundled into ONE mcp-owned struct so core's `App` names no `crate::mcp` type for
+/// any of them. It is carried in [`busbar_core::state::App::plane_slots`] behind `Arc<dyn Any>` under
+/// the always-present companion key [`busbar_core::state::MCP_RUNTIME_SLOT`], and [`runtime`] downcasts
+/// it back HERE, inside the plane.
 ///
-/// It is held in a plain `App` field rather than the `plane_slots` map (where the server-side
-/// dispatch object, [`McpResource`], lives) because these objects are ALWAYS present — even a
-/// deployment with no `tools:`/`mcp:` block carries an empty catalogue and a live pool — whereas a
-/// `plane_slots` entry is config-conditional (`None` when the plane is not configured). Folding an
-/// always-present bundle into the config-conditional slot would change `plane_slot("mcp")`'s presence
-/// semantics; keeping them separate preserves byte-identical behaviour.
+/// It rides its OWN `plane_slots` key rather than the plane's decl key (`"mcp"`, where the server-side
+/// dispatch object [`McpResource`] lives) because these objects are ALWAYS present — even a deployment
+/// with no `tools:`/`mcp:` block carries an empty catalogue and a live pool — whereas the `"mcp"` slot
+/// is config-conditional (absent when the plane is not configured) and is what `build_dispatch` reads
+/// to decide the plane's door. Folding an always-present bundle onto the config-conditional slot would
+/// change `plane_slot("mcp")`'s presence semantics; a separate companion key preserves byte-identical
+/// behaviour.
 ///
-/// Each field's cross-apply lifecycle is UNCHANGED from when these were six flat `App` fields — the
-/// carry-over rules (fresh `catalogue`/`servers`/`pool` per apply, carried `sightings`/`roots_epochs`/
-/// `sampling_spend`) live in [`McpRuntime::build`].
+/// Each field's cross-apply lifecycle is UNCHANGED — the carry-over rules (fresh
+/// `catalogue`/`servers`/`pool` per apply, carried `sightings`/`roots_epochs`/`sampling_spend` and the
+/// `verify` coalescer folded in here from the former flat `App::mcp_verify` field) live in
+/// [`McpRuntime::build`].
 pub(crate) struct McpRuntime {
     pub(crate) catalogue: std::sync::Arc<catalogue::Catalogue>,
     pub(crate) servers: std::sync::Arc<config::ToolsCfg>,
@@ -243,6 +246,14 @@ pub(crate) struct McpRuntime {
     pub(crate) sightings: std::sync::Arc<client::catalogue::CatalogueCache>,
     pub(crate) roots_epochs: std::sync::Arc<roots::RootsEpochs>,
     pub(crate) sampling_spend: std::sync::Arc<sampling::SamplingSpend>,
+    /// THE MCP VERIFY-ON-CALL GATE — the per-server single-flight coalescer that re-verifies an
+    /// upstream's advertised tool surface on the `tools/call` path when its recorded observation is
+    /// older than `verify_ttl` (see [`busbar_core::trust::verify`]). It is the plane's OWN coalescing
+    /// state, so it lives ON the plane's runtime object (reached via `ctx.slot`) rather than as a flat
+    /// `App` field. Arc-shared ACROSS config applies, like the `sightings` cache it freshens, and for
+    /// the same reason: the coalescing epochs are ACCUMULATED coordination state, not intent, so
+    /// [`McpRuntime::build`] carries it from `prior` rather than rebuilding it.
+    pub(crate) verify: std::sync::Arc<busbar_core::trust::VerifyGate>,
 }
 
 impl McpRuntime {
@@ -268,21 +279,37 @@ impl McpRuntime {
                 || std::sync::Arc::new(sampling::SamplingSpend::new()),
                 |p| p.sampling_spend.clone(),
             ),
+            // CARRIED ACROSS THE APPLY beside the sightings it freshens: the verify-on-call
+            // coalescing epochs are accumulated coordination state, not intent, and rebuilding them
+            // on every apply would let a burst of callers each fetch during the window an unrelated
+            // edit reset. Pruned to the live server set by [`mcp_retain_verify_gates`] after the
+            // build, exactly as it was when this was the flat `App::mcp_verify` field.
+            verify: prior.map_or_else(
+                std::sync::Arc::<busbar_core::trust::VerifyGate>::default,
+                |p| p.verify.clone(),
+            ),
         }
     }
 }
 
-/// THE MCP PLANE'S RUNTIME for this generation, read through the neutral `App::mcp_runtime` slot and
-/// downcast back to [`McpRuntime`] HERE — so core outside this module names no `crate::mcp` runtime
-/// type. The downcast never fails: `App::mcp_runtime` is always an `McpRuntime` (`appbuild`).
+/// THE MCP PLANE'S RUNTIME for this generation, read through the TYPE-ERASED `plane_slots` seam
+/// ([`busbar_core::state::App::plane_slot`]) under the ALWAYS-PRESENT companion key
+/// [`busbar_core::state::MCP_RUNTIME_SLOT`], and downcast back to [`McpRuntime`] HERE, inside the
+/// plane — so core outside this module reaches the runtime only as an opaque `Arc<dyn Any>` slot and
+/// names no `crate::mcp` runtime type. Unlike [`resource`] (whose `"mcp"` slot is config-conditional),
+/// this slot is present on EVERY generation the MCP plane is compiled into, so the lookup and the
+/// downcast both `.expect`: `appbuild` composes it through the plane's `build_runtime` seam and the
+/// slot is always an `McpRuntime`.
 pub(crate) fn runtime(app: &busbar_core::state::App) -> &McpRuntime {
-    app.mcp_runtime
+    app.plane_slot(busbar_core::state::MCP_RUNTIME_SLOT)
+        .expect("the mcp runtime slot is present on every generation the plane is compiled into")
         .downcast_ref::<McpRuntime>()
-        .expect("App::mcp_runtime is an McpRuntime")
+        .expect("the mcp runtime slot is an McpRuntime")
 }
 
-/// BUILD THE GENERATION'S MCP RUNTIME, TYPE-ERASED for the neutral `App::mcp_runtime` slot — the one
-/// entry point `appbuild` calls so the composition of the `App` names no `crate::mcp` runtime type.
+/// BUILD THE GENERATION'S MCP RUNTIME, TYPE-ERASED for the neutral `plane_slots` runtime slot
+/// ([`busbar_core::state::MCP_RUNTIME_SLOT`]) — the one entry point `appbuild` calls so the
+/// composition of the `App` names no `crate::mcp` runtime type.
 /// `prior` is the prior generation's `App` (for the carry-over rules in [`McpRuntime::build`]); it is
 /// read through [`runtime`] so this function, not `appbuild`, owns the downcast.
 pub(crate) fn build_runtime(
@@ -339,9 +366,10 @@ fn mcp_lower_endpoint(
 }
 
 /// BUILD THE MCP RUNTIME from the type-erased `tool_defs` slot — the
-/// [`busbar_core::plane::registry::PlaneDecl::build_runtime`] hook, so `appbuild` composes `App::mcp_runtime`
-/// through the plane without naming [`config::ToolsCfg`]. Downcasts back to `ToolsCfg` HERE (inside the
-/// plane) and delegates to [`build_runtime`].
+/// [`busbar_core::plane::registry::PlaneDecl::build_runtime`] hook, so `appbuild` composes the MCP
+/// runtime slot (`plane_slots[MCP_RUNTIME_SLOT]`) through the plane without naming
+/// [`config::ToolsCfg`]. Downcasts back to `ToolsCfg` HERE (inside the plane) and delegates to
+/// [`build_runtime`].
 fn mcp_build_runtime(
     tool_defs: &dyn std::any::Any,
     prior: Option<&busbar_core::state::App>,
@@ -361,7 +389,7 @@ fn mcp_retain_verify_gates(app: &busbar_core::state::App) {
         .servers()
         .map(|s| s.id.clone())
         .collect();
-    app.mcp_verify.retain(&live);
+    runtime(app).verify.retain(&live);
 }
 
 /// The `mcp:` ENDPOINT block, as the neutral [`busbar_core::plane::config::PlaneEndpointCfg`] seam — a

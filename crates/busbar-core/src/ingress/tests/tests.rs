@@ -21,15 +21,6 @@ fn test_query_has_alt_sse() {
 /// Minimal governance-off App for exercising `finish` in isolation.
 fn minimal_app() -> Arc<App> {
     Arc::new(App {
-        mcp_runtime: Arc::new(crate::mcp::McpRuntime {
-            catalogue: Arc::new(crate::mcp::catalogue::Catalogue::default()),
-            servers: Default::default(),
-            pool: Default::default(),
-            sightings: Default::default(),
-            roots_epochs: Default::default(),
-            sampling_spend: Default::default(),
-        }),
-        mcp_verify: Default::default(),
         a2a_verify: Default::default(),
         a2a_cards: Default::default(),
         spent_token_ledger: Default::default(),
@@ -43,10 +34,29 @@ fn minimal_app() -> Arc<App> {
         // dispatch table empty, which is what every path in this fixture is asserted against.
         oauth_as: None,
         planes: Arc::new(crate::plane::PlaneDispatch::default()),
-        // No `mcp:`/`agents:` configured — no slot for either (an empty map); both planes read their
-        // absence straight off this map now (`crate::mcp::resource` / `crate::a2a::runtime`), neither
-        // through a typed `App` field.
-        plane_slots: Default::default(),
+        // No `mcp:`/`agents:` configured — no dispatch slot for either (`crate::mcp::resource` /
+        // `crate::a2a::runtime` read their absence straight off this map). The MCP plane's
+        // always-present runtime bundle still rides here under its companion key
+        // (`crate::state::MCP_RUNTIME_SLOT`), which `crate::mcp::runtime` reads on the `finish` path.
+        plane_slots: {
+            let mut m: std::collections::BTreeMap<
+                &'static str,
+                Arc<dyn std::any::Any + Send + Sync>,
+            > = Default::default();
+            m.insert(
+                crate::state::MCP_RUNTIME_SLOT,
+                Arc::new(crate::mcp::McpRuntime {
+                    catalogue: Arc::new(crate::mcp::catalogue::Catalogue::default()),
+                    servers: Default::default(),
+                    pool: Default::default(),
+                    sightings: Default::default(),
+                    roots_epochs: Default::default(),
+                    sampling_spend: Default::default(),
+                    verify: Default::default(),
+                }),
+            );
+            m
+        },
         agent_defs: std::sync::Arc::new(crate::a2a::config::AgentsCfg::default()),
         upstream_credentials: crate::auth::UpstreamCreds::Own,
         any_pool_upstream_creds_override: false,

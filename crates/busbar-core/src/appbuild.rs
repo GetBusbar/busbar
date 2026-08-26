@@ -1388,7 +1388,7 @@ pub fn build_app_from_config(
     // `A2aPlane::from_config` used to be called directly — it is still lowered ONCE, now through the
     // decl instead of by name, and read from `plane_slots` everywhere below (the dispatch table's
     // admission facts, the registry the re-verification job sweeps, and `App::a2a`).
-    let plane_slots: std::collections::BTreeMap<
+    let mut plane_slots: std::collections::BTreeMap<
         &'static str,
         Arc<dyn std::any::Any + Send + Sync>,
     > = {
@@ -1413,6 +1413,26 @@ pub fn build_app_from_config(
             .filter_map(|decl| (decl.build)(&ctx).map(|obj| (decl.key, obj)))
             .collect()
     };
+
+    // THE MCP PLANE'S PER-GENERATION RUNTIME, carried in `plane_slots` under its ALWAYS-PRESENT
+    // companion key (`crate::state::MCP_RUNTIME_SLOT`), distinct from the plane's decl key (`"mcp"`,
+    // whose slot is config-conditional and drives the dispatch door). Built ONCE through the plane's
+    // own type-erasing `build_runtime` seam (from the neutral `tool_defs` section, erased via
+    // `PlaneCfg::as_any`) so this composition names no `crate::mcp` runtime type. It bundles the
+    // catalogue snapshot (which takes the next PIN GENERATION on construction, so every config apply —
+    // even one that changes nothing about `tools:` — moves the generation and a call admitted under the
+    // previous one is refused at dispatch), the `tools:` registry, the fresh connection pool, the
+    // CARRIED-ACROSS-APPLY sightings / roots-epochs / sampling-spend and the verify-on-call coalescer
+    // (all accumulated evidence, not intent — see `McpRuntime::build`). Composing it beside the `App`
+    // keeps the swap atomic: the whole `Arc<App>` is replaced under one lock, so the catalogue and the
+    // config that produced it never disagree. With `plane-mcp` off there is no built-in decl, so no
+    // slot is inserted and nothing downcasts it (no MCP accessor exists then).
+    if let Some(runtime_slot) = crate::plane::registry::plane_decl_for("mcp")
+        .and_then(|d| d.build_runtime)
+        .map(|f| f(cfg.tool_defs.as_any(), prior))
+    {
+        plane_slots.insert(crate::state::MCP_RUNTIME_SLOT, runtime_slot);
+    }
 
     // THE AUTHORIZATION SERVER, built ONCE, and only when the operator asked for one. Everything
     // this plane costs hangs off this `Option`: absent, nothing below runs, `App::oauth_as` is
@@ -1628,32 +1648,13 @@ pub fn build_app_from_config(
         // reads a plane's object does so by cloning out of this map first, so `plane_slots` and
         // (e.g.) `mcp`/`a2a` are guaranteed to agree — there is no second `build` call anywhere that
         // could disagree with what is stored here.
+        // THE MCP PLANE'S PER-GENERATION RUNTIME (and the verify-on-call coalescer folded into it) is
+        // no longer a flat `App` field: it was inserted into `plane_slots` above under
+        // `crate::state::MCP_RUNTIME_SLOT`, through the plane's own `build_runtime` seam. `plane_slots`
+        // is moved into `App` on the line just above; the MCP plane reads its runtime back through
+        // `crate::mcp::runtime`, which downcasts that slot inside the plane.
         plane_slots,
         oauth_as: oauth_as_plane.clone(),
-        // THE MCP PLANE'S PER-GENERATION RUNTIME, built ONCE through the plane's own type-erasing
-        // constructor so this composition names no `crate::mcp` runtime type. It bundles the catalogue
-        // snapshot (which takes the next PIN GENERATION on construction, so every config apply — even
-        // one that changes nothing about `tools:` — moves the generation and a call admitted under the
-        // previous one is refused at dispatch), the `tools:` registry, the fresh connection pool, and
-        // the CARRIED-ACROSS-APPLY sightings / roots-epochs / sampling-spend (accumulated evidence,
-        // not intent — see `McpRuntime::build`). Building it beside the `App` keeps the swap atomic:
-        // the whole `Arc<App>` is replaced under one lock, so the catalogue and the config that
-        // produced it never disagree.
-        // Built through the plane's own type-erasing `build_runtime` seam (from the neutral
-        // `tool_defs` section, erased via `PlaneCfg::as_any`) so this composition names no
-        // `crate::mcp` runtime type. With `plane-mcp` off there is no built-in decl, so the field
-        // carries a neutral empty placeholder (nothing downcasts it — no MCP accessor exists then).
-        mcp_runtime: crate::plane::registry::plane_decl_for("mcp")
-            .and_then(|d| d.build_runtime)
-            .map(|f| f(cfg.tool_defs.as_any(), prior))
-            .unwrap_or_else(|| Arc::new(()) as Arc<dyn std::any::Any + Send + Sync>),
-        // CARRIED ACROSS THE APPLY beside the sightings it freshens: the verify-on-call coalescing
-        // epochs are accumulated coordination state, not intent, and rebuilding them on every apply
-        // would let a burst of callers each fetch during the window an unrelated edit reset.
-        mcp_verify: prior.map_or_else(
-            || Arc::new(crate::trust::verify::VerifyGate::new()),
-            |p| p.mcp_verify.clone(),
-        ),
         // CARRIED ACROSS THE APPLY for the same reason, and it is the same class of mistake: an
         // approval already spent is evidence, not intent, and a config apply that forgot it would
         // hand every outstanding confirmation back to whoever still holds it.
