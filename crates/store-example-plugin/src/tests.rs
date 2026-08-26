@@ -366,6 +366,10 @@ fn purge_plane_records_before_call_drops_all_older() {
 /// interleaved (both `load()` the same state, both write, the second clobbering the first) and rows
 /// went missing — this asserts none do. Deterministically red without the lock under the contention
 /// below; green with it.
+// Unix-only: the cross-handle serialization this asserts comes from the `flock` in `FileLock`, which
+// is a no-op fallback on non-unix (documented on `FileLock`), so this test is deterministically red
+// on windows. It never ran there before (a compile error masked it); gate it to its real platform.
+#[cfg(unix)]
 #[test]
 fn two_handles_do_not_lose_updates_under_contention() {
     use std::sync::Arc;
