@@ -128,26 +128,31 @@ pub(crate) fn openapi_schemas(
 /// Is `name` a live registered MCP server on this snapshot — the membership check the admin write
 /// path consults through the plane's `registry_contains` seam, so core names no `crate::mcp` runtime
 /// type.
-pub(crate) fn contains(app: &busbar_core::state::App, name: &str) -> bool {
-    super::runtime(app).servers.servers.contains_key(name)
+pub(crate) fn contains(
+    slots: &dyn busbar_substrate::plane_host::PlaneSlots,
+    name: &str,
+) -> bool {
+    super::runtime_slots(slots).servers.servers.contains_key(name)
 }
 
 /// RE-RESOLVE THE MCP PLANE'S PER-SERVER HOOK GATES against the next snapshot — the MCP half of the
 /// config-swap gate rebuild, moved HERE so `admin::v1::service::reresolve_plane_gates` names no
 /// `crate::mcp` runtime type. Reads this plane's own registry off the snapshot and writes its own
 /// gate field back.
-pub(crate) fn reresolve_gates(next: &mut busbar_core::state::App) {
-    let servers = std::sync::Arc::clone(&super::runtime(next).servers);
-    // Resolve host-side (`App::resolve_container_gates`), so this plane hands its neutral
-    // `(server, own-hooks)` inputs + the section attach list across without naming the core hooks
-    // container-gate resolver.
-    next.mcp_server_gates = next.resolve_container_gates(
-        servers
-            .servers
-            .iter()
-            .map(|(n, d)| (n.as_str(), d.hooks.as_slice())),
-        &servers.all_server_hooks,
-    );
+pub(crate) fn reresolve_gates(
+    next: &mut dyn busbar_substrate::plane_host::ContainerGateSink,
+) {
+    // Read this plane's own registry off the neutral slot seam (owned `Arc` clone, so the immutable
+    // borrow ends before the `&mut` store), then resolve-and-store host-side through the neutral sink
+    // under the MCP gate key (`0`) — so this plane names neither `&mut App` nor the core container-gate
+    // resolver. Byte-identical to the old inline `next.mcp_server_gates = next.resolve_container_gates(...)`.
+    let servers = std::sync::Arc::clone(&super::runtime_slots(next).servers);
+    let containers: Vec<(&str, &[String])> = servers
+        .servers
+        .iter()
+        .map(|(n, d)| (n.as_str(), d.hooks.as_slice()))
+        .collect();
+    next.reresolve_container_gates(0, &containers, &servers.all_server_hooks);
 }
 
 // ── THE TRUST SURFACE: `connect`, `changes`, `health` ───────────────────────────────────────────
@@ -319,17 +324,20 @@ impl PlaneTrust for McpServers {
     type Subject = McpSubject;
     type View = McpTrustView;
 
-    fn resolve(app: &Arc<busbar_core::state::App>, name: &str) -> Result<McpSubject, AdminError> {
+    fn resolve(
+        host: &Arc<dyn busbar_substrate::plane_host::EngineHost>,
+        name: &str,
+    ) -> Result<McpSubject, AdminError> {
+        // The bound-snapshot runtime, read once off the neutral host seam (K1) — byte-identical to the
+        // four `super::runtime(app)` reads it replaced, all off the one admitted snapshot.
+        let rt = super::runtime_of(host);
         planeverbs::registered("mcp", name, || {
-            match (
-                super::runtime(app).catalogue.server(name),
-                super::runtime(app).servers.servers.get(name),
-            ) {
+            match (rt.catalogue.server(name), rt.servers.servers.get(name)) {
                 (Some(entry), Some(cfg)) => Some(McpSubject {
                     entry: entry.clone(),
                     cfg: cfg.clone(),
-                    pool: super::runtime(app).pool.clone(),
-                    sightings: super::runtime(app).sightings.clone(),
+                    pool: rt.pool.clone(),
+                    sightings: rt.sightings.clone(),
                 }),
                 _ => None,
             }
@@ -379,8 +387,8 @@ pub(crate) async fn changes(
     State(handle): State<Arc<AppHandle>>,
     Path(name): Path<String>,
 ) -> Response {
-    let app = handle.load();
-    let subject = match McpServers::resolve(&app, &name) {
+    let host = busbar_core::plane_host::engine_host_from_handle(&handle);
+    let subject = match McpServers::resolve(&host, &name) {
         Ok(v) => v,
         Err(e) => return busbar_core::admin::v1::json::err_json(&e),
     };
@@ -396,8 +404,8 @@ pub(crate) async fn health(
     State(handle): State<Arc<AppHandle>>,
     Path(name): Path<String>,
 ) -> Response {
-    let app = handle.load();
-    let subject = match McpServers::resolve(&app, &name) {
+    let host = busbar_core::plane_host::engine_host_from_handle(&handle);
+    let subject = match McpServers::resolve(&host, &name) {
         Ok(v) => v,
         Err(e) => return busbar_core::admin::v1::json::err_json(&e),
     };

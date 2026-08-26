@@ -79,7 +79,12 @@ pub trait PlaneTrust: Send + Sync + 'static {
 
     /// Resolve one registration on the live snapshot, or refuse. Implementations state only WHERE
     /// to look; the refusal itself is [`registered`]'s, so it reads identically on every plane.
-    fn resolve(app: &Arc<crate::state::App>, name: &str) -> Result<Self::Subject, AdminError>;
+    /// `host` is the NEUTRAL host seam minted over this same snapshot by the driver — a plane reads its
+    /// runtime object off `host.plane_slot(...)` WITHOUT naming `&Arc<crate::state::App>`.
+    fn resolve(
+        host: &Arc<dyn busbar_substrate::plane_host::EngineHost>,
+        name: &str,
+    ) -> Result<Self::Subject, AdminError>;
 
     /// GO AND LOOK: contact the upstream, verify what came back, and project it onto the view.
     ///
@@ -158,16 +163,16 @@ pub async fn connect<P: PlaneTrust>(
     Path(name): Path<String>,
 ) -> Response {
     let app = handle.load();
+    // The neutral host seam over this request's live snapshot, handed to the plane's `resolve` (to read
+    // its runtime object) and its `look` (to reach a host capability — a durable settle, the clock)
+    // through typed methods without naming `crate::plane_host`/`crate::state::App` itself.
+    let host = crate::plane_host::engine_host(&app);
     // THE 404 BEFORE ANYTHING ELSE. An unknown registration must answer the same way whatever else
     // is wrong with the request, or the shape of the error becomes an existence oracle.
-    let subject = match P::resolve(&app, &name) {
+    let subject = match P::resolve(&host, &name) {
         Ok(v) => v,
         Err(e) => return crate::admin::v1::json::err_json(&e),
     };
-    // The neutral host seam over this request's live snapshot, handed to the plane's `look` so it can
-    // reach a host capability (a durable settle, the clock) through a typed method without naming
-    // `crate::plane_host` itself.
-    let host = crate::plane_host::engine_host(&app);
     match P::look(subject, host, name.clone()).await {
         Ok(view) => {
             audit(

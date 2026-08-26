@@ -836,6 +836,38 @@ impl App {
     }
 }
 
+/// THE NEUTRAL SLOT-READ SEAM the plane `PlaneDecl` callbacks name instead of `&App`. A thin delegate
+/// to the inherent [`App::plane_slot`]; [`as_any`](busbar_substrate::plane_host::PlaneSlots::as_any)
+/// hands the concrete snapshot back to the in-core A2A twin for the fields (`agent_defs`,
+/// `a2a_verify`) that are not `plane_slots` entries.
+impl busbar_substrate::plane_host::PlaneSlots for App {
+    fn plane_slot(&self, key: &str) -> Option<&Arc<dyn std::any::Any + Send + Sync>> {
+        App::plane_slot(self, key)
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+/// THE NEUTRAL `&mut` GATE-REBUILD SINK the plane `PlaneDecl::reresolve_gates` callback names instead
+/// of `&mut App`. Resolves the plane's per-container gates host-side (through the inherent
+/// [`App::resolve_container_gates`]) and stores them under the plane's own gate field, keyed by
+/// `plane_key` — byte-identical to the old inline `next.<field> = next.resolve_container_gates(...)`.
+impl busbar_substrate::plane_host::ContainerGateSink for App {
+    fn reresolve_container_gates(
+        &mut self,
+        plane_key: u8,
+        containers: &[(&str, &[String])],
+        section_hooks: &[String],
+    ) {
+        let gates = self.resolve_container_gates(containers.iter().copied(), section_hooks);
+        match plane_key {
+            0 => self.mcp_server_gates = gates,
+            _ => self.a2a_agent_gates = gates,
+        }
+    }
+}
+
 /// Boot-time seed for [`App::request_id_counter`]: one draw of OS randomness so per-request ids
 /// differ across process restarts (a real join key in logs/cost records, not just unique within one
 /// run — two `fetch_add`-from-zero runs would otherwise both hand out `0, 1, 2, …`). Falls back to
@@ -907,7 +939,10 @@ impl AppHandle {
         let prior = self.load();
         for decl in crate::plane::registry::plane_decls() {
             if let Some(on_swap) = decl.on_swap {
-                on_swap(&*prior as &dyn std::any::Any, &*next as &dyn std::any::Any);
+                on_swap(
+                    &*prior as &dyn busbar_substrate::plane_host::PlaneSlots,
+                    &*next as &dyn busbar_substrate::plane_host::PlaneSlots,
+                );
             }
         }
         *self.current.write().unwrap_or_else(|e| e.into_inner()) = next.clone();

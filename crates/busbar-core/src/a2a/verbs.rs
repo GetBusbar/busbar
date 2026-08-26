@@ -453,9 +453,12 @@ impl PlaneTrust for A2aAgents {
     type Subject = A2aSubject;
     type View = A2aTrustView;
 
-    fn resolve(app: &Arc<crate::state::App>, name: &str) -> Result<A2aSubject, AdminError> {
+    fn resolve(
+        host: &Arc<dyn busbar_substrate::plane_host::EngineHost>,
+        name: &str,
+    ) -> Result<A2aSubject, AdminError> {
         planeverbs::registered("a2a", name, || {
-            let plane = crate::a2a::runtime_arc(app)?;
+            let plane = crate::a2a::runtime_arc_of(host)?;
             let registration = plane
                 .with_registrations(|regs| regs.iter().find(|r| r.agent_id == name).cloned())?;
             let pin_cfg = plane.pin_for(name).cloned()?;
@@ -534,9 +537,10 @@ pub(crate) async fn approve(
 ) -> Response {
     const VERB: &str = "approve";
     let app = handle.load();
+    let host = crate::plane_host::engine_host(&app);
     // THE 404 BEFORE THE BODY. An unknown agent must answer the same way whether or not the caller
     // sent something parseable, or the shape of the error becomes an existence oracle.
-    let subject = match A2aAgents::resolve(&app, &name) {
+    let subject = match A2aAgents::resolve(&host, &name) {
         Ok(v) => v,
         Err(e) => return crate::admin::v1::json::err_json(&e),
     };

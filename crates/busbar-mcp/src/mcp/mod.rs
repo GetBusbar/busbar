@@ -306,6 +306,21 @@ pub(crate) fn runtime(app: &busbar_core::state::App) -> &McpRuntime {
         .expect("the mcp runtime slot is an McpRuntime")
 }
 
+/// THE NEUTRAL-SLOT twin of [`runtime`] — the plane's runtime object read through the
+/// [`busbar_substrate::plane_host::PlaneSlots`] seam rather than off `&App`, so the core-owned
+/// `PlaneDecl` callbacks the MCP plane fills (`on_swap`, `registry_contains`, `retain_verify_gates`)
+/// name no `busbar_core::state::App`. Same borrowed `&McpRuntime` and never-failing `.expect`s as
+/// [`runtime`]; the slot key is the always-present runtime companion in the neutral substrate.
+pub(crate) fn runtime_slots(
+    slots: &dyn busbar_substrate::plane_host::PlaneSlots,
+) -> &McpRuntime {
+    slots
+        .plane_slot(busbar_substrate::plane_host::MCP_RUNTIME_SLOT)
+        .expect("the mcp runtime slot is present on every generation the plane is compiled into")
+        .downcast_ref::<McpRuntime>()
+        .expect("the mcp runtime slot is an McpRuntime")
+}
+
 /// THE BOUND-SNAPSHOT host twin of [`runtime`] — the plane's runtime object off the snapshot the host
 /// was minted on, read through the neutral
 /// [`busbar_substrate::plane_host::EngineHost::plane_slot`] seam under the always-present runtime slot
@@ -413,13 +428,11 @@ fn mcp_build_runtime(
 /// PRUNE THE MCP VERIFY-ON-CALL GATES to the servers THIS generation fronts — the
 /// [`busbar_core::plane::registry::PlaneDecl::retain_verify_gates`] hook, so `appbuild` prunes the carried
 /// coalescing state without naming the MCP runtime. Byte-identical to the old inline `appbuild` arm.
-fn mcp_retain_verify_gates(app: &busbar_core::state::App) {
-    let live: std::collections::HashSet<String> = runtime(app)
-        .catalogue
-        .servers()
-        .map(|s| s.id.clone())
-        .collect();
-    runtime(app).verify.retain(&live);
+fn mcp_retain_verify_gates(slots: &dyn busbar_substrate::plane_host::PlaneSlots) {
+    let rt = runtime_slots(slots);
+    let live: std::collections::HashSet<String> =
+        rt.catalogue.servers().map(|s| s.id.clone()).collect();
+    rt.verify.retain(&live);
 }
 
 /// The `mcp:` ENDPOINT block, as the neutral [`busbar_substrate::plane::config::PlaneEndpointCfg`] seam — a
@@ -450,13 +463,13 @@ impl busbar_substrate::plane::config::PlaneEndpointCfg for McpCfg {
 /// argument is present for a plane whose swap must DIFF the two generations. When the MCP plane's
 /// pool and catalogue move out of the flat `App` fields into the plane's own slot object, this
 /// downcasts that slot instead of the `App`.
-pub(crate) fn mcp_on_swap(_prior: &dyn std::any::Any, next: &dyn std::any::Any) {
-    let next = next
-        .downcast_ref::<busbar_core::state::App>()
-        .expect("the mcp on_swap hook is handed the next App snapshot");
-    runtime(next).pool.children.retain(
-        &runtime(next)
-            .catalogue
+pub(crate) fn mcp_on_swap(
+    _prior: &dyn busbar_substrate::plane_host::PlaneSlots,
+    next: &dyn busbar_substrate::plane_host::PlaneSlots,
+) {
+    let rt = runtime_slots(next);
+    rt.pool.children.retain(
+        &rt.catalogue
             .servers()
             .map(|s| s.id.clone())
             .collect::<std::collections::BTreeSet<_>>(),
@@ -536,9 +549,14 @@ pub(crate) fn mcp_hydrate(ctx: &busbar_core::plane::registry::BootCtx) -> Result
     // AND across a fleet (two nodes share the signing key, so they share the seal, and without a shared
     // ledger one approval was redeemable once per node — on a money-moving tool that is the defect the
     // gate exists to stop). Both take the plane-narrowed store off the one wrapper.
-    app.spent_token_ledger.set_sink(plane_store.clone());
-    app.demotion_record.set_sink(plane_store);
-    match crate::mcp::demotion::hydrate(app) {
+    // Attach both write-through sinks through the core-side BootCtx convenience, so this hook names no
+    // `App` sink field: the ledger/record and the store are all core-owned and stay core-side.
+    ctx.attach_mcp_durable_sinks();
+    // The demotion boot-replay reads the durable rows and the bound-snapshot runtime off a host minted
+    // over the freshly-built app — a snapshot-only mint (no live handle at hydrate), which is correct:
+    // hydration reads exactly the generation it is restoring into.
+    let host = busbar_core::plane_host::engine_host(app);
+    match crate::mcp::demotion::hydrate(&host) {
         0 => {}
         n => busbar_substrate::diag_warn!(
             busbar_substrate::diagnostics::MCP_DEMOTIONS_RESTORED,

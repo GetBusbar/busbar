@@ -84,7 +84,16 @@ pub(crate) fn openapi_schemas(
 
 /// Is `name` a live registered agent on this snapshot — the membership check the admin write path
 /// consults through the plane's `registry_contains` seam, so core names no `crate::a2a` registry type.
-pub(crate) fn contains(app: &crate::state::App, name: &str) -> bool {
+pub(crate) fn contains(
+    slots: &dyn busbar_substrate::plane_host::PlaneSlots,
+    name: &str,
+) -> bool {
+    // A2A stays in core: recover the concrete snapshot through the neutral seam's `as_any` hatch to
+    // read `agent_defs` (not a `plane_slots` entry) — byte-identical to the old `&App` arm.
+    let app = slots
+        .as_any()
+        .downcast_ref::<crate::state::App>()
+        .expect("the a2a registry_contains hook is handed an App snapshot");
     crate::a2a::agent_cfg(app).agents.contains_key(name)
 }
 
@@ -92,16 +101,23 @@ pub(crate) fn contains(app: &crate::state::App, name: &str) -> bool {
 /// config-swap gate rebuild, moved HERE so `admin::v1::service::reresolve_plane_gates` names no
 /// `crate::a2a` registry type. Reads this plane's own registry off the snapshot and writes its own
 /// gate field back.
-pub(crate) fn reresolve_gates(next: &mut crate::state::App) {
-    let agents = crate::a2a::agent_cfg(next).clone();
-    next.a2a_agent_gates = crate::hooks::resolve_container_gates(
-        agents
-            .agents
-            .iter()
-            .map(|(n, d)| (n.as_str(), d.hooks.as_slice())),
-        &agents.all_agent_hooks,
-        &next.hook_registry,
-        &next.hook_env,
-        next.config_version,
-    );
+pub(crate) fn reresolve_gates(
+    next: &mut dyn busbar_substrate::plane_host::ContainerGateSink,
+) {
+    // Recover the concrete snapshot to read `agent_defs` (owned clone, so the immutable borrow ends
+    // before the `&mut` store), then resolve-and-store through the neutral sink under the A2A gate
+    // key (`1`). Byte-identical to the old inline `next.a2a_agent_gates = resolve_container_gates(...)`.
+    let agents = {
+        let app = next
+            .as_any()
+            .downcast_ref::<crate::state::App>()
+            .expect("the a2a reresolve_gates hook is handed an App snapshot");
+        crate::a2a::agent_cfg(app).clone()
+    };
+    let containers: Vec<(&str, &[String])> = agents
+        .agents
+        .iter()
+        .map(|(n, d)| (n.as_str(), d.hooks.as_slice()))
+        .collect();
+    next.reresolve_container_gates(1, &containers, &agents.all_agent_hooks);
 }

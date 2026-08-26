@@ -305,3 +305,43 @@ pub trait EngineHost: Send + Sync {
     /// attached. Identical to `App::mcp_server_gates.contains_key(container)` for the MCP plane.
     fn gate_attached(&self, plane_key: u8, container: &str) -> bool;
 }
+
+/// THE NEUTRAL TYPE-ERASED SLOT-READ SEAM the core-owned `PlaneDecl` callbacks that today force a
+/// `&busbar_core::state::App` are neutralised over — so a plane's `on_swap` / `registry_contains` /
+/// `retain_verify_gates` hook reads its own per-generation runtime object off the snapshot WITHOUT
+/// the callback fn-pointer signature naming a core type. Core `impl`s it for `App` as a thin delegate
+/// to the inherent `App::plane_slot`; an EXTRACTED plane (MCP) reaches only [`Self::plane_slot`] and
+/// stays neutral. [`Self::as_any`] is the recovery hatch an IN-CORE plane twin (A2A, still in core)
+/// uses to downcast back to its concrete snapshot for the fields that do not live in `plane_slots`
+/// (`agent_defs`, `a2a_verify`); an extracted plane never calls it.
+pub trait PlaneSlots {
+    /// The plane's type-erased runtime object for THIS generation, keyed by the plane's decl key —
+    /// a pure `plane_slots` map read, borrowed (mirrors the inherent `App::plane_slot`).
+    fn plane_slot(&self, key: &str) -> Option<&Arc<dyn std::any::Any + Send + Sync>>;
+
+    /// Recover the concrete engine snapshot as `&dyn Any` — the hatch an in-core plane twin downcasts
+    /// through to reach the snapshot fields that are not `plane_slots` entries. An extracted plane
+    /// never names a concrete type through this, so it never calls it.
+    fn as_any(&self) -> &dyn std::any::Any;
+}
+
+/// THE NEUTRAL `&mut` GATE-REBUILD SINK the core-owned `PlaneDecl::reresolve_gates` callback is
+/// neutralised over — the config-swap re-resolution of a plane's per-registration hook gates, moved
+/// behind a trait so the fn-pointer signature names no `&mut busbar_core::state::App`. A `PlaneSlots`
+/// (its supertrait) so the plane can read its own registry object off the same `&mut` receiver before
+/// it writes the resolved gates back. The resolve-and-store is ONE method (rather than the spec's
+/// `resolve` + `set` pair) because the resolved gate map value type is core-owned
+/// (`Vec<(u16, busbar_core::hooks::ResolvedPolicy)>`) and cannot be named in this crate — so the map
+/// never crosses the seam; it is built and stored entirely core-side, keyed by `plane_key`.
+pub trait ContainerGateSink: PlaneSlots {
+    /// Resolve `containers` (each `(name, its-own-hooks)`) unioned with `section_hooks` against this
+    /// snapshot's hook registry, and store the resolved per-container gates under `plane_key`
+    /// (`0` = MCP `mcp_server_gates`, else A2A `a2a_agent_gates`). Byte-identical to the old inline
+    /// `next.<field> = next.resolve_container_gates(...)`.
+    fn reresolve_container_gates(
+        &mut self,
+        plane_key: u8,
+        containers: &[(&str, &[String])],
+        section_hooks: &[String],
+    );
+}

@@ -22,14 +22,18 @@
 /// freshness window on the way to being re-observed.
 ///
 /// Returns how many were replayed, for the boot line.
-pub(crate) fn hydrate(app: &busbar_core::state::App) -> usize {
-    let rows = app.demotion_record.list();
+pub(crate) fn hydrate(
+    host: &std::sync::Arc<dyn busbar_substrate::plane_host::EngineHost>,
+) -> usize {
+    let rows = host.demotion_rows();
     if rows.is_empty() {
         return 0;
     }
+    // The bound-snapshot runtime — this replay seeds exactly the generation the host was minted over.
+    let rt = super::runtime_of(host);
     let mut replayed = 0usize;
     for row in rows {
-        let Some(entry) = super::runtime(app).catalogue.server(&row.server) else {
+        let Some(entry) = rt.catalogue.server(&row.server) else {
             tracing::info!(
                 server = %row.server,
                 "a durable MCP demotion record names a server this deployment no longer registers; \
@@ -42,7 +46,7 @@ pub(crate) fn hydrate(app: &busbar_core::state::App) -> usize {
         };
         let approval = entry.approval.clone();
         let reason = row.reason.clone();
-        super::runtime(app).sightings.apply(|servers| {
+        rt.sightings.apply(|servers| {
             let sc = servers.entry(id.as_str().to_string()).or_insert_with(|| {
                 crate::mcp::client::catalogue::ServerCatalogue::seeded(id.clone(), approval)
             });

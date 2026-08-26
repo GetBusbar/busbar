@@ -949,8 +949,9 @@ impl TestApp {
 
     /// Replay the MCP plane's durable demotion records into the built app's sightings, exactly as
     /// boot's durable-MCP-trust block does. Names `crate::mcp` here so `build()` need not.
-    fn hydrate_mcp_demotion(app: &crate::state::App) {
-        crate::mcp::demotion::hydrate(app);
+    fn hydrate_mcp_demotion(app: &std::sync::Arc<crate::state::App>) {
+        // Mint a snapshot-only host over the built app, exactly as boot's replay reads it through one.
+        crate::mcp::demotion::hydrate(&crate::plane_host::engine_host(app));
     }
 
     /// Build an App that BOOTED WITH NO PLUGIN ROUTES: empty live table, empty `boot_route_paths`.

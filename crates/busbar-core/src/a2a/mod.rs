@@ -198,7 +198,14 @@ fn a2a_default_section() -> Box<dyn crate::plane::config::PlaneCfg> {
 /// [`crate::plane::registry::PlaneDecl::retain_verify_gates`] hook. UNCONDITIONAL: when the operator
 /// removes the `agents:` block the live set is EMPTY, so retain drops every carried flight/latch
 /// instead of leaking one per removed agent. Byte-identical to the old inline `appbuild` arm.
-fn a2a_retain_verify_gates(app: &crate::state::App) {
+fn a2a_retain_verify_gates(slots: &dyn busbar_substrate::plane_host::PlaneSlots) {
+    // A2A is still IN CORE, so its twin recovers the concrete snapshot for `a2a_verify` (not a
+    // `plane_slots` entry) through the neutral seam's `as_any` hatch — byte-identical to the old
+    // `&App` arm once recovered.
+    let app = slots
+        .as_any()
+        .downcast_ref::<crate::state::App>()
+        .expect("the a2a retain_verify_gates hook is handed an App snapshot");
     let live: std::collections::HashSet<String> = crate::a2a::runtime(app)
         .map_or_else(std::collections::HashSet::new, |plane| {
             plane.with_registrations(|regs| regs.iter().map(|r| r.agent_id.clone()).collect())
@@ -244,6 +251,20 @@ pub(crate) fn runtime_arc(
     app.plane_slot(PLANE_DECL.key).map(|slot| {
         slot.clone()
             .downcast::<crate::a2a::plane::A2aPlane>()
+            .expect("the a2a plane's dispatch slot is an A2aPlane")
+    })
+}
+
+/// THE HOST TWIN of [`runtime_arc`] — the A2A plane's runtime object off the host's BOUND snapshot,
+/// read through the neutral [`busbar_substrate::plane_host::EngineHost::plane_slot`] seam so the
+/// trust-verb `resolve` reaches it without `&Arc<App>`. Owned `Arc` (the host returns an owned clone);
+/// `None` exactly when `agents:` is not configured this generation, the same absence `runtime_arc`
+/// encodes off `&App`.
+pub(crate) fn runtime_arc_of(
+    host: &std::sync::Arc<dyn busbar_substrate::plane_host::EngineHost>,
+) -> Option<std::sync::Arc<crate::a2a::plane::A2aPlane>> {
+    host.plane_slot(PLANE_DECL.key).map(|slot| {
+        slot.downcast::<crate::a2a::plane::A2aPlane>()
             .expect("the a2a plane's dispatch slot is an A2aPlane")
     })
 }

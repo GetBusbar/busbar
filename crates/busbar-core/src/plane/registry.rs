@@ -158,6 +158,20 @@ impl<'a> BootCtx<'a> {
         }
     }
 
+    /// ATTACH THE MCP PLANE'S DURABLE WRITE-THROUGH SINKS — the spent-approval ledger and the
+    /// upstream-demotion record — to the plane-narrowed store, in the hydrate phase. Named HERE, core
+    /// side, so `crate::mcp::mcp_hydrate` attaches them without its own code naming an `App` field:
+    /// the sink fields (`spent_token_ledger`, `demotion_record`) are core-owned and the store is the
+    /// core `PlaneStore`, so neither crosses the plane seam. A no-op unless BOTH the freshly-built app
+    /// (hydrate phase) and a configured store are present — byte-identical to the old inline
+    /// `app.spent_token_ledger.set_sink(store.clone()); app.demotion_record.set_sink(store)`.
+    pub fn attach_mcp_durable_sinks(&self) {
+        if let (Some(app), Some(store)) = (self.app, &self.store) {
+            app.spent_token_ledger.set_sink(store.clone());
+            app.demotion_record.set_sink(store.clone());
+        }
+    }
+
     /// A ctx carrying no phase context, for the boot-hook FOLD tests (R2-boot): a hook that only
     /// returns `Err` — or a `None`-hook plane — reads nothing off it.
     #[cfg(test)]
@@ -387,7 +401,8 @@ pub struct PlaneDecl {
         allow(dead_code)
     )]
     #[allow(clippy::type_complexity)]
-    pub registry_contains: Option<fn(&crate::state::App, &str) -> bool>,
+    pub registry_contains:
+        Option<fn(&dyn busbar_substrate::plane_host::PlaneSlots, &str) -> bool>,
 
     /// RE-RESOLVE THIS PLANE'S PER-REGISTRATION HOOK GATES against the next snapshot — the plane half
     /// of the config-swap gate rebuild. Reads the plane's own registry off the `&mut App` and writes
@@ -397,7 +412,8 @@ pub struct PlaneDecl {
         not(any(feature = "plane-mcp", feature = "plane-a2a")),
         allow(dead_code)
     )]
-    pub reresolve_gates: Option<fn(&mut crate::state::App)>,
+    pub reresolve_gates:
+        Option<fn(&mut dyn busbar_substrate::plane_host::ContainerGateSink)>,
 
     /// ATTACH THIS PLANE'S ADMIN TRUST-VERB SCHEMAS to the OpenAPI document — the plane half of the
     /// schema pass in [`crate::admin::v1::json::handlers::openapi_doc`]. Handed the SHARED response
@@ -430,7 +446,12 @@ pub struct PlaneDecl {
     /// The erased pair is the plane's own runtime state to read and reconcile — never a `Store`, a
     /// `GovCtx`, or an `audit::Chain`. A plane whose swap-time work needs one of those is not cleanly
     /// separable through this seam.
-    pub on_swap: Option<fn(prior: &dyn std::any::Any, next: &dyn std::any::Any)>,
+    pub on_swap: Option<
+        fn(
+            prior: &dyn busbar_substrate::plane_host::PlaneSlots,
+            next: &dyn busbar_substrate::plane_host::PlaneSlots,
+        ),
+    >,
 
     /// PARSE THIS PLANE'S TOP-LEVEL REGISTRY SECTION from a positionless `serde_yaml::Value` into its
     /// own typed config, boxed as the neutral [`crate::plane::config::PlaneCfg`] — the seam
@@ -485,7 +506,7 @@ pub struct PlaneDecl {
     /// still fronts — the seam `appbuild` runs after building the `App`, so the carried per-subject
     /// flights/latches do not leak one dead entry per removed registration. `None` for a plane with no
     /// verify-on-call gate (the LLM / `proto` planes).
-    pub retain_verify_gates: Option<fn(&crate::state::App)>,
+    pub retain_verify_gates: Option<fn(&dyn busbar_substrate::plane_host::PlaneSlots)>,
 
     /// THIS PLANE'S EMPTY REGISTRY SECTION, boxed as the neutral [`crate::plane::config::PlaneCfg`] —
     /// the value `DeployCfg`'s `#[serde(default)]` `tools:`/`agents:` field takes when the section is
