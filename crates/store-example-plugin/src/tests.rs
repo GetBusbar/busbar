@@ -417,6 +417,9 @@ fn two_handles_do_not_lose_updates_under_contention() {
     assert_eq!(seqs, (0..2 * PER_THREAD).collect::<Vec<_>>());
 
     let _ = std::fs::remove_file(&path);
+    // The lock file exists only on unix (where `FileLock` is a real `flock`); `lock_path_for` is
+    // `#[cfg(unix)]` for the same reason, so this cleanup is unix-only too.
+    #[cfg(unix)]
     let _ = std::fs::remove_file(super::lock_path_for(&path));
 }
 
