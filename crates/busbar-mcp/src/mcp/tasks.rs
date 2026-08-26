@@ -515,6 +515,11 @@ impl Registry {
 /// outlives the request that started it, so it cannot hold a reference into that request's frame.
 pub(crate) struct Runner {
     pub(crate) pool: Arc<super::client::pool::McpConnectionPool>,
+    /// THE LIVE HANDLE — retained on this batch ONLY for the DEFERRED sampling→ingress leg, whose
+    /// [`super::sampling::satisfy_upstream_ask`] still takes `&Arc<busbar_core::state::App>` (the
+    /// separate ingress batch). The runner's OTHER live re-read — the per-round grant re-read — now
+    /// goes through `runtime_live` off [`engine`](Self::engine) (a `from_handle` host, so it re-reads
+    /// genuinely). When the ingress batch lands this field goes with it.
     pub(crate) handle: Arc<busbar_core::state::AppHandle>,
     /// THE DETACHED RUNNER'S DURABLE ARENA, holding the single-flight probe `create_task` won.
     /// [`DurableScope`](busbar_substrate::plane_host::DurableScope): `create_task` ran the task admit
@@ -693,10 +698,13 @@ async fn run(task: Arc<McpTask>, runner: Runner) {
             }
         },
         {
-            let handle = Arc::clone(&handle);
+            // THE GRANT, RE-READ LIVE ON EVERY ROUND through the host funnel (K2): `engine` is a
+            // `from_handle` host, so `runtime_live` re-loads the CURRENT snapshot and a revocation
+            // between rounds bites on the next one.
+            let engine = host.clone();
             let server_id = server_id.clone();
             move || {
-                super::runtime(&handle.load())
+                super::runtime_live(&engine)
                     .catalogue
                     .server(&server_id)
                     .map(|s| s.grants)

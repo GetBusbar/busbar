@@ -302,10 +302,11 @@ enum Phase {
 }
 
 struct Listen {
-    handle: std::sync::Arc<busbar_core::state::AppHandle>,
-    /// THE NEUTRAL HOST SEAM, held for the stream's life. Cloned from `ctx.host` at open: the only host
-    /// reaches a poll makes (`principal_standing`, `clock_now_secs`) are engine-snapshot independent, so
-    /// the request snapshot it pins does not change what a later poll resolves.
+    /// THE NEUTRAL HOST SEAM, held for the stream's life and now the SOLE engine seam — the `AppHandle`
+    /// field is gone. Cloned from `ctx.host` (a `from_handle` host) at open: the host reaches a poll
+    /// makes (`principal_standing`, `clock_now_secs`) are engine-snapshot independent, and the per-poll
+    /// catalogue/pool reads go through `runtime_live` off this host, which re-loads the CURRENT
+    /// snapshot so a revoked key stops being served on the next poll.
     host: std::sync::Arc<dyn busbar_substrate::plane_host::EngineHost>,
     /// THE PRINCIPAL'S ID AND THE BOUND, never the principal. See the module header: a resolved key
     /// carried into a `'static` stream is an identity believed for five minutes.
@@ -410,14 +411,17 @@ impl Listen {
         if matches!(self.phase, Phase::Ended) {
             return None;
         }
-        let app = self.handle.load();
+        // The LIVE runtime, re-read ONCE per poll off the host's retained handle (K2), then reused for
+        // both the catalogue reads and the resource-update pool read below so all observe the SAME
+        // re-loaded snapshot — byte-identical to the former single `self.handle.load()`. This is what
+        // makes `a_revoked_key_stops_being_served_on_the_next_poll` bite on the next poll.
+        let rt = super::runtime_live(&self.host);
         // D1: the neutral host seam the stream holds — the clock reads (the permission re-ask and the
-        // per-frame catalogue `Caller`) ride it. Threaded in at open (cloned from `ctx.host`) rather
-        // than minted per poll from the core factory: the `principal_standing` re-ask resolves against
-        // the process-shared LIVE governance registry (the `Arc` survives config swaps) and the clock is
-        // engine-snapshot independent, so a single held host is byte-identical to a per-poll re-mint.
+        // per-frame catalogue `Caller`) ride it. Threaded in at open (cloned from `ctx.host`): the
+        // `principal_standing` re-ask resolves against the process-shared LIVE governance registry (the
+        // `Arc` survives config swaps) and the clock is engine-snapshot independent.
         let host = self.host.clone();
-        let catalogue = &super::runtime(&app).catalogue;
+        let catalogue = &rt.catalogue;
         // THE STANDING PERMISSION, RE-ASKED. A principal that has stopped resolving live ends the
         // stream on THIS frame rather than at the bound, which is the whole of the fix.
         let key = match host.principal_standing(
@@ -481,7 +485,7 @@ impl Listen {
                 // not anything matched: an event judged and refused is an event handled, not one
                 // to re-judge for ever.
                 if let Some(uris) = &self.accepted.resource_subscriptions {
-                    let (events, latest) = super::runtime(&app).pool.updates.since(self.cursor);
+                    let (events, latest) = rt.pool.updates.since(self.cursor);
                     self.cursor = latest;
                     for (server, uri) in events {
                         if !uris.iter().any(|u| u == &uri) {
@@ -553,7 +557,8 @@ pub(crate) fn listen(
     // `resources/read` asks, under this caller's grant against the live snapshot. Re-asked per
     // poll at delivery — this read only decides what the acknowledgement may NAME.
     let accepted = {
-        let catalogue = &super::runtime(ctx.app).catalogue;
+        let rt = super::runtime_of(&ctx.host);
+        let catalogue = &rt.catalogue;
         let caller = caller_of(&ctx.host, ctx.gov.key.as_ref(), catalogue.generation());
         accept(&requested, |uri| {
             matches!(
@@ -586,7 +591,6 @@ pub(crate) fn listen(
     let id = id.unwrap_or(serde_json::Value::Null);
     let now = Instant::now();
     let mut state = Listen {
-        handle: ctx.handle.clone(),
         host: ctx.host.clone(),
         // THE ID AND THE BOUND. `MAX_LIFETIME` is handed to the standing permission as well as used
         // for the deadline below so the cap on what a poll cannot re-check and the cap on the stream
@@ -605,7 +609,7 @@ pub(crate) fn listen(
         phase: Phase::Acknowledge,
         last_write: now,
         // From NOW: announcements recorded before this subscription existed are not replayed.
-        cursor: super::runtime(ctx.app).pool.updates.latest(),
+        cursor: super::runtime_of(&ctx.host).pool.updates.latest(),
     };
     // THE FIRST CHUNK IS PRODUCED BEFORE THE RESPONSE IS BUILT, so the acknowledgement is on the
     // wire the instant the headers are. A stream whose first frame is computed lazily is a stream

@@ -206,15 +206,16 @@ pub(crate) fn resource(app: &busbar_core::state::App) -> Option<&McpResource> {
     })
 }
 
-/// The OWNED-`Arc` twin of [`resource`], for the one caller that needs the resource to OUTLIVE the
-/// `App` snapshot borrow it was read from — the HTTP envelope, where the snapshot guard is moved into
-/// the dispatch closure while the resource is still read for the request-line facts. Clones the SAME
-/// `Arc` `plane_slots` holds (a refcount bump, not a second construction). `None` and the never-fail
-/// downcast have the same meaning as [`resource`].
-pub(crate) fn resource_arc(app: &busbar_core::state::App) -> Option<std::sync::Arc<McpResource>> {
-    app.plane_slot(PLANE_DECL.key).map(|slot| {
-        slot.clone()
-            .downcast::<McpResource>()
+/// THE HOST-BASED TWIN of [`resource`] — the plane's dispatch object off the BOUND snapshot, read
+/// through the neutral [`busbar_substrate::plane_host::EngineHost::plane_slot`] seam and downcast HERE.
+/// Returns an OWNED `Arc<McpResource>` (a refcount bump of the same `Arc` `plane_slots` holds) so it
+/// outlives the call, since the borrow now comes from an owned host, not an `&App`. `None` exactly
+/// when `mcp:` is not configured this generation; the downcast never fails ([`PLANE_DECL::build`]).
+pub(crate) fn resource_of(
+    host: &std::sync::Arc<dyn busbar_substrate::plane_host::EngineHost>,
+) -> Option<std::sync::Arc<McpResource>> {
+    host.plane_slot(PLANE_DECL.key).map(|slot| {
+        slot.downcast::<McpResource>()
             .expect("the mcp plane's dispatch slot is an McpResource")
     })
 }
@@ -302,6 +303,37 @@ pub(crate) fn runtime(app: &busbar_core::state::App) -> &McpRuntime {
     app.plane_slot(busbar_core::state::MCP_RUNTIME_SLOT)
         .expect("the mcp runtime slot is present on every generation the plane is compiled into")
         .downcast_ref::<McpRuntime>()
+        .expect("the mcp runtime slot is an McpRuntime")
+}
+
+/// THE BOUND-SNAPSHOT host twin of [`runtime`] — the plane's runtime object off the snapshot the host
+/// was minted on, read through the neutral
+/// [`busbar_substrate::plane_host::EngineHost::plane_slot`] seam under the always-present runtime slot
+/// [`busbar_substrate::plane_host::MCP_RUNTIME_SLOT`] and downcast HERE. Returns an OWNED
+/// `Arc<McpRuntime>` so the caller binds it to a local and reaches its fields through the owned `Arc`
+/// (the borrow no longer comes from `&App`). Both the lookup and the downcast `.expect`: the slot is
+/// present on every generation the plane is compiled into and is always an `McpRuntime`.
+pub(crate) fn runtime_of(
+    host: &std::sync::Arc<dyn busbar_substrate::plane_host::EngineHost>,
+) -> std::sync::Arc<McpRuntime> {
+    host.plane_slot(busbar_substrate::plane_host::MCP_RUNTIME_SLOT)
+        .expect("the mcp runtime slot is present on every generation the plane is compiled into")
+        .downcast::<McpRuntime>()
+        .expect("the mcp runtime slot is an McpRuntime")
+}
+
+/// THE LIVE-SNAPSHOT twin of [`runtime_of`] — the plane's runtime object off the CURRENT snapshot,
+/// re-loading the live handle through [`busbar_substrate::plane_host::EngineHost::plane_slot_live`] so
+/// a config swap or revocation AFTER admission is seen. Used only where the re-read is semantically
+/// required (dispatch-time re-validation, per-round grant/roots re-reads, background/poll
+/// generation-watch loops); the bound [`runtime_of`] is used everywhere the request's own snapshot is
+/// the intended one. Same owned-`Arc` return and never-failing `.expect`s as [`runtime_of`].
+pub(crate) fn runtime_live(
+    host: &std::sync::Arc<dyn busbar_substrate::plane_host::EngineHost>,
+) -> std::sync::Arc<McpRuntime> {
+    host.plane_slot_live(busbar_substrate::plane_host::MCP_RUNTIME_SLOT)
+        .expect("the mcp runtime slot is present on every generation the plane is compiled into")
+        .downcast::<McpRuntime>()
         .expect("the mcp runtime slot is an McpRuntime")
 }
 

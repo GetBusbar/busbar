@@ -142,16 +142,19 @@ const CACHE_TTL_MS: i64 = 0;
 
 /// Everything a method needs, gathered once so no handler reaches for a global.
 pub(crate) struct Ctx<'a> {
-    /// The snapshot this REQUEST arrived on. Selection reads it.
-    pub(crate) app: &'a std::sync::Arc<busbar_core::state::App>,
-    /// THE NEUTRAL HOST SEAM — the `EngineHost` this request runs against, so host reaches (the
-    /// clock, and later gate/govern/…) call typed methods here instead of naming
-    /// `busbar_substrate::plane_host` reaches against `self.app`. Carried ALONGSIDE `app` during the transition:
-    /// `app` still serves the pervasive field reaches (`super::runtime`, `next_request_id`, …) the
-    /// App-sever removes later; `host` is the durable seam for the host CALLS.
+    /// THE NEUTRAL HOST SEAM — the `EngineHost` this request runs against, and now the SOLE engine
+    /// seam for the request data path. Every catalogue/runtime read routes through the plane's
+    /// `runtime_of`/`runtime_live`/`resource_of` funnel over this host: BOUND reads
+    /// ([`super::runtime_of`]) off the snapshot the host was minted on, LIVE re-reads
+    /// ([`super::runtime_live`]) off the host's retained handle. Minted `from_handle` by the core
+    /// route adapter, so the live re-read genuinely re-reads.
     pub(crate) host: std::sync::Arc<dyn busbar_substrate::plane_host::EngineHost>,
-    /// The LIVE handle. Dispatch re-reads it, which is what makes the generation check a real
-    /// re-read rather than a comparison of a value against itself.
+    /// THE LIVE HANDLE — retained on this batch ONLY for the DEFERRED sampling→ingress leg, whose
+    /// [`super::sampling::satisfy_upstream_ask`] still takes `&Arc<busbar_core::state::App>` and feeds
+    /// it to `busbar_core::ingress::operation_resolved` (the separate ingress batch). Every other live
+    /// re-read (dispatch-time re-validation, per-round grant re-read) now goes through `runtime_live`
+    /// off `host`; when the ingress batch lands, this field goes with it. The live snapshot the
+    /// sampling leg reads is `handle.load()`, the SAME handle `host` was minted from.
     pub(crate) handle: &'a std::sync::Arc<busbar_core::state::AppHandle>,
     /// The caller's resolved governance key. `None` when governance is disabled.
     pub(crate) gov: &'a busbar_api::PlaneRequestCtx,
@@ -203,7 +206,7 @@ impl Ctx<'_> {
             key: self.gov.key(),
             now: self.host.clock_now_secs(),
             generation: busbar_substrate::trust::validate::Generations::at_admission(
-                super::runtime(self.app).catalogue.generation(),
+                super::runtime_of(&self.host).catalogue.generation(),
             ),
         }
     }
@@ -459,7 +462,8 @@ fn cache_hints(value: serde_json::Value) -> serde_json::Value {
 /// The counts are of what THIS caller can reach, and the `servers` list names only servers this
 /// caller holds at least one capability on.
 fn discover(ctx: &Ctx<'_>, id: Option<serde_json::Value>) -> Response {
-    let cat = &super::runtime(ctx.app).catalogue;
+    let rt = super::runtime_of(&ctx.host);
+    let cat = &rt.catalogue;
     let caller = ctx.caller();
     let tools = cat.tools_for(&caller);
     let prompts = cat.prompts_for(&caller);
@@ -570,17 +574,17 @@ fn discover(ctx: &Ctx<'_>, id: Option<serde_json::Value>) -> Response {
 /// would empty the catalogue of all of them. Both halves are pinned by test beside each other.
 fn tools_list(ctx: &Ctx<'_>, id: Option<serde_json::Value>) -> Response {
     let caller = ctx.caller();
-    let sightings = super::runtime(ctx.app).sightings.load();
+    let sightings = super::runtime_of(&ctx.host).sightings.load();
     let live = LiveSightings::of(&sightings);
     // ENTITLEMENT FIRST (core's walk, through the ordered gate), then trust, then render. The
     // quarantine filter sits between the two because it is not an entitlement question — see
     // `Catalogue::is_quarantined`, which takes no caller — so it cannot be folded into
     // `required_grants` without making trust a second place a grant is interpreted.
-    let tools: Vec<serde_json::Value> = super::runtime(ctx.app)
+    let tools: Vec<serde_json::Value> = super::runtime_of(&ctx.host)
         .catalogue
         .tools_for(&caller)
         .into_iter()
-        .filter(|t| !super::runtime(ctx.app).catalogue.is_quarantined(live, t))
+        .filter(|t| !super::runtime_of(&ctx.host).catalogue.is_quarantined(live, t))
         .map(CatalogueItem::render)
         .collect();
     result(id, cache_hints(serde_json::json!({ "tools": tools })))
@@ -590,7 +594,7 @@ fn tools_list(ctx: &Ctx<'_>, id: Option<serde_json::Value>) -> Response {
 fn prompts_list(ctx: &Ctx<'_>, id: Option<serde_json::Value>) -> Response {
     let caller = ctx.caller();
     let prompts: Vec<serde_json::Value> =
-        super::runtime(ctx.app).catalogue.prompts_rendered(&caller);
+        super::runtime_of(&ctx.host).catalogue.prompts_rendered(&caller);
     result(id, cache_hints(serde_json::json!({ "prompts": prompts })))
 }
 
@@ -644,7 +648,8 @@ fn prompts_get(
         return invalid_params(id, "`params.name` is required and must be a string.");
     };
     let caller = ctx.caller();
-    let Some(prompt) = super::runtime(ctx.app).catalogue.prompt_for(&caller, name) else {
+    let rt = super::runtime_of(&ctx.host);
+    let Some(prompt) = rt.catalogue.prompt_for(&caller, name) else {
         // Not-found and not-granted answer the same, deliberately: a catalogue that distinguishes
         // them tells an unauthorised caller what exists behind the grant it does not hold.
         return not_found(
@@ -666,7 +671,7 @@ fn prompts_get(
         .and_then(|p| p.get("arguments"))
         .cloned()
         .unwrap_or_else(|| serde_json::json!({}));
-    let cap = super::runtime(ctx.app)
+    let cap = rt
         .catalogue
         .server(&prompt.server)
         .map_or(0, |s| s.max_caller_ask_rounds);
@@ -677,7 +682,7 @@ fn prompts_get(
             capability: &prompt.namespaced,
             rounds: &prompt.ask_caller,
             cap,
-            generation: super::runtime(ctx.app).catalogue.generation(),
+            generation: rt.catalogue.generation(),
             arguments: &prompt_args,
         },
         params,
@@ -814,7 +819,7 @@ fn render_prompt_messages(
 /// `resources/list`, with every free-text field markup-normalised on the way out.
 fn resources_list(ctx: &Ctx<'_>, id: Option<serde_json::Value>) -> Response {
     let caller = ctx.caller();
-    let resources: Vec<serde_json::Value> = super::runtime(ctx.app)
+    let resources: Vec<serde_json::Value> = super::runtime_of(&ctx.host)
         .catalogue
         .resources_rendered(&caller);
     result(
@@ -838,7 +843,7 @@ fn resources_list(ctx: &Ctx<'_>, id: Option<serde_json::Value>) -> Response {
 /// is where the old answer was right all along.
 fn resources_templates_list(ctx: &Ctx<'_>, id: Option<serde_json::Value>) -> Response {
     let caller = ctx.caller();
-    let templates: Vec<serde_json::Value> = super::runtime(ctx.app)
+    let templates: Vec<serde_json::Value> = super::runtime_of(&ctx.host)
         .catalogue
         .resource_templates_rendered(&caller);
     result(
@@ -862,7 +867,7 @@ fn resources_read(
     // NAME must not be answered by a template that happens to match it: the two are different
     // approvals, and letting the broader one win would let adding a template silently change what an
     // already-approved URI returns.
-    let content = match super::runtime(ctx.app)
+    let content = match super::runtime_of(&ctx.host)
         .catalogue
         .resource_by_uri(&caller, uri)
     {
@@ -875,7 +880,7 @@ fn resources_read(
             return ambiguous_resource(id, uri, &candidates)
         }
         super::catalogue::ResourceLookup::NotFound => {
-            match super::runtime(ctx.app)
+            match super::runtime_of(&ctx.host)
                 .catalogue
                 .resource_template_for(&caller, uri)
             {
@@ -1096,7 +1101,8 @@ impl<'a> CallLog<'a> {
 /// plane's ledger reader. A tool name no registration exposes is a no-op, and so is a fresh snapshot:
 /// nothing is fetched between calls, and a server nobody calls is never fetched.
 async fn verify_on_call(ctx: &Ctx<'_>, name: &str) {
-    let Some((server_id, server)) = super::runtime(ctx.app).catalogue.verify_target(name) else {
+    let rt = super::runtime_of(&ctx.host);
+    let Some((server_id, server)) = rt.catalogue.verify_target(name) else {
         return;
     };
     let now_ms = ctx.host.clock_now_ms();
@@ -1106,10 +1112,10 @@ async fn verify_on_call(ctx: &Ctx<'_>, name: &str) {
     // Two handles to the one shared cache: the ledger reader BORROWS it (an `Fn`, called on each
     // freshness check), the fetch MOVES its own (an `async move`), so the two closures do not contend
     // over one binding.
-    let cache = super::runtime(ctx.app).sightings.clone();
+    let cache = rt.sightings.clone();
     let cache_fetch = cache.clone();
-    let pool = super::runtime(ctx.app).pool.clone();
-    let gate = super::runtime(ctx.app).verify.clone();
+    let pool = rt.pool.clone();
+    let gate = rt.verify.clone();
     // The durable demotion settle now runs through the host `drift_quarantine` slot, which pulls the
     // demotion store host-side, so the fetch closure carries the neutral `EngineHost` seam rather than a
     // bare `&DemotionRecord` an extracted plane could not hold. Cloned from `ctx.host`: the settle reaches
@@ -1117,15 +1123,10 @@ async fn verify_on_call(ctx: &Ctx<'_>, name: &str) {
     let host = ctx.host.clone();
     // A peer's `list_changed` may only mark the snapshot STALE (never read its body): if this server
     // was signalled, clear its freshness clock so this call re-verifies even inside `verify_ttl`.
-    if super::runtime(ctx.app)
-        .pool
-        .triggers
-        .take_if_pending(&subject)
-    {
+    if rt.pool.triggers.take_if_pending(&subject) {
         crate::mcp::connect::invalidate(&cache, &subject);
     }
-    super::runtime(ctx.app)
-        .verify
+    rt.verify
         .ensure_fresh(
             &subject,
             &policy,
@@ -1180,7 +1181,7 @@ async fn tools_call(
     params: Option<&serde_json::Value>,
     id: Option<serde_json::Value>,
 ) -> Response {
-    let selected_gen = super::runtime(ctx.app).catalogue.generation();
+    let selected_gen = super::runtime_of(&ctx.host).catalogue.generation();
     let Some(name) = string_param(params, "name") else {
         // THE CALLER IS ALREADY AUTHENTICATED HERE, so a malformed request is still one this
         // principal made and still belongs in their chain. `tool` and `server` stay empty, which is
@@ -1213,9 +1214,9 @@ async fn tools_call(
     // upstream is CURRENTLY serving, so a schema changed under a live cache refuses the call.
     // Without one — no refresh has ever run — it compares against the configured hash, exactly as
     // before.
-    let admitted_sightings = super::runtime(ctx.app).sightings.load();
+    let admitted_sightings = super::runtime_of(&ctx.host).sightings.load();
     // (1) ADMISSION on the snapshot this request arrived on.
-    let selected = match super::runtime(ctx.app).catalogue.resolve(
+    let selected = match super::runtime_of(&ctx.host).catalogue.resolve(
         ctx.gov.key(),
         LiveSightings::of(&admitted_sightings),
         name,
@@ -1235,12 +1236,15 @@ async fn tools_call(
     // (2) DISPATCH-TIME RE-VALIDATION against the LIVE snapshot. Re-read, not
     // re-use: `ctx.app` is the snapshot the request arrived on, and comparing it against itself
     // would be a check that cannot fail.
-    let live = ctx.handle.load();
+    // The LIVE runtime, re-read ONCE off the host's retained handle (a config swap or revocation
+    // after admission is seen), then reused for every read below so all of them observe the SAME
+    // re-loaded snapshot — byte-identical to the former single `ctx.handle.load()`.
+    let live_rt = super::runtime_live(&ctx.host);
     // RE-READ the sightings too, not just the catalogue: a refresh that landed a drifted tool list
     // between admission and dispatch has to bite on THIS request. Re-reading only one of the two
     // would leave a window exactly as wide as the check it replaced.
-    let live_sightings = super::runtime(&live).sightings.load();
-    if let Err(refusal) = super::runtime(&live).catalogue.revalidate(
+    let live_sightings = live_rt.sightings.load();
+    if let Err(refusal) = live_rt.catalogue.revalidate(
         ctx.gov.key(),
         LiveSightings::of(&live_sightings),
         &selected,
@@ -1252,7 +1256,7 @@ async fn tools_call(
             refuse_catalogue(ctx, name, &refusal, id),
         );
     }
-    let Some(server) = super::runtime(&live)
+    let Some(server) = live_rt
         .catalogue
         .server(&selected.server)
         .cloned()
@@ -1308,7 +1312,7 @@ async fn tools_call(
             capability: &selected.namespaced,
             rounds: &selected.ask_caller,
             cap: server.max_caller_ask_rounds,
-            generation: super::runtime(&live).catalogue.generation(),
+            generation: live_rt.catalogue.generation(),
             arguments: &arguments,
         },
         params,
@@ -1448,7 +1452,7 @@ async fn tools_call(
     // decided by its grants and by nothing else; a hook decides what a caller may DO.
     //
     // ZERO COST when nothing is attached: one hash lookup that misses.
-    if ctx.app.mcp_server_gates.contains_key(&selected.server) {
+    if ctx.host.gate_attached(0, &selected.server) {
         // FIRE THE GATE THROUGH THE HOST SEAM (`plane_host::gate_decide_over`), so this plane body no
         // longer names the core hooks gate decision (`gate::decide`) or holds the resolved `ResolvedPolicy` set (the
         // Seam-B inversion) — the host re-selects the gate set by `(plane_key, container)` and runs the
@@ -1572,7 +1576,6 @@ async fn tools_call(
     // outcome of each leg is recorded inside `upstream::call`, against the dispatched member's own
     // cell; the probe hold lives in the route and is released owner-checked when it drops.
     let route = super::reroute::PoolRoute::build(
-        &live,
         &ctx.host,
         ctx.gov.key(),
         &selected,
@@ -1600,7 +1603,11 @@ async fn tools_call(
     // lifetime the caller-held `Vec<AdmitGrant>` had, and never inside the loop while the round it
     // guards is still running.
     let server_id = selected.server.clone();
-    let pool = super::runtime(ctx.app).pool.as_ref();
+    // BOUND runtime, held for the whole dispatch loop so `pool` (a borrow into it) outlives the
+    // `inputreq::drive` future below. This is the request's OWN snapshot pool (K1); the live re-read
+    // for the dispatch loop already happened at the re-validation site above.
+    let bound_rt = super::runtime_of(&ctx.host);
+    let pool = bound_rt.pool.as_ref();
     let route_ref = &route;
     let outcome = inputreq::drive(
         &server_id,
@@ -1624,7 +1631,7 @@ async fn tools_call(
         // Read for the member the route ACTUALLY dispatched to: a reroute moved the conversation
         // to the twin, and the twin's asks are judged against the twin's own operator grants.
         || {
-            super::runtime(&ctx.handle.load())
+            super::runtime_live(&ctx.host)
                 .catalogue
                 .server(&route_ref.active_member())
                 .map(|s| s.grants)
@@ -1912,9 +1919,7 @@ async fn create_task(
     // admitted member is FIXED for the task's whole life (`into_task_dispatch`): a task is one
     // conversation with one deployment, and its probe is BORN in the runner's `DurableScope`, which
     // releases it after the detached loop settles (a recorded outcome makes that a no-op).
-    let live_app = ctx.handle.load();
     let route = super::reroute::PoolRoute::build(
-        &live_app,
         &ctx.host,
         ctx.gov.key(),
         selected,
@@ -1979,7 +1984,10 @@ async fn create_task(
     super::tasks::spawn(
         std::sync::Arc::clone(&task),
         super::tasks::Runner {
-            pool: std::sync::Arc::clone(&super::runtime(ctx.app).pool),
+            pool: std::sync::Arc::clone(&super::runtime_of(&ctx.host).pool),
+            // Retained SOLELY for the deferred sampling→ingress leg in `tasks::run` (still
+            // `&Arc<App>`-typed); the runner's grant re-read now goes through `runtime_live` off
+            // `engine`. Goes with the ingress batch.
             handle: std::sync::Arc::clone(ctx.handle),
             // The detached runner's durable arena OWNS the breaker probe-hold + its id: the durable
             // `settle` over `durable` reaches the durable admission, and the probe releases owner-checked
@@ -2665,7 +2673,7 @@ fn caller_ask_decision(
                 // The live roots epoch for THIS principal — the value a received
                 // `notifications/roots/list_changed` moves, read under the same name the seal
                 // binds. See `crate::mcp::roots`.
-                roots_epoch: super::runtime(ctx.app).roots_epochs.current(principal),
+                roots_epoch: super::runtime_of(&ctx.host).roots_epochs.current(principal),
             }
         },
         &busbar_core::plane::approvals::digest_arguments(arguments),

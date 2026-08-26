@@ -169,8 +169,7 @@ async fn call(
     busbar_core::test_support::prefresh_mcp_sightings(app);
     let handle = Arc::new(AppHandle::new(app.clone()));
     let ctx = crate::mcp::method::Ctx {
-        app,
-        host: busbar_core::plane_host::engine_host(app),
+        host: busbar_core::plane_host::engine_host_from_handle(&handle),
         handle: &handle,
         gov,
         actor: "test-principal",
@@ -406,8 +405,7 @@ async fn server_discover_advertises_the_merged_grant_scoped_catalogue() {
     let handle = Arc::new(AppHandle::new(app.clone()));
     for m in &advertised {
         let ctx = crate::mcp::method::Ctx {
-            app: &app,
-            host: busbar_core::plane_host::engine_host(&app),
+            host: busbar_core::plane_host::engine_host_from_handle(&handle),
             handle: &handle,
             gov: &none,
             actor: "t",
@@ -725,8 +723,7 @@ async fn a_minted_ask_the_caller_cannot_answer_is_32021_and_400() {
     let handle = Arc::new(AppHandle::new(app.clone()));
     let none: serde_json::Value = serde_json::json!({});
     let ctx = crate::mcp::method::Ctx {
-        app: &app,
-        host: busbar_core::plane_host::engine_host(&app),
+        host: busbar_core::plane_host::engine_host_from_handle(&handle),
         handle: &handle,
         gov: &g,
         actor: "test-principal",

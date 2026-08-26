@@ -246,7 +246,6 @@ pub async fn serve_stdio(handle: Arc<AppHandle>, host_factory: EngineHostFactory
     );
     serve_io(
         handle,
-        host_factory,
         identity,
         tokio::io::stdin(),
         tokio::io::stdout(),
@@ -260,7 +259,6 @@ pub async fn serve_stdio(handle: Arc<AppHandle>, host_factory: EngineHostFactory
 /// watched on an instrument without a network.
 pub(crate) async fn serve_io<R, W>(
     handle: Arc<AppHandle>,
-    host_factory: EngineHostFactory,
     identity: SessionIdentity,
     reader: R,
     writer: W,
@@ -268,7 +266,7 @@ pub(crate) async fn serve_io<R, W>(
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin + Send + 'static,
 {
-    let session = new_session(handle, host_factory, identity, writer);
+    let session = new_session(handle, identity, writer);
     run_session(session, reader).await;
 }
 
@@ -277,7 +275,6 @@ pub(crate) async fn serve_io<R, W>(
 /// [`serve_io`] call either.
 fn new_session<W>(
     handle: Arc<AppHandle>,
-    host_factory: EngineHostFactory,
     identity: SessionIdentity,
     writer: W,
 ) -> Arc<Session<W>>
@@ -286,7 +283,6 @@ where
 {
     let session = Arc::new(Session {
         handle,
-        host_factory,
         principal: identity.principal,
         gov: identity.gov,
         out: tokio::sync::Mutex::new(writer),
@@ -406,10 +402,11 @@ fn id_key(id: &Value) -> String {
 }
 
 struct Session<W> {
+    /// THE LIVE HANDLE. Each frame and each watch tick mints a `from_handle` (live-capable)
+    /// `EngineHost` off it (`engine_host_from_handle`), whose BOUND snapshot is that frame/tick's
+    /// `handle.load()` and whose `plane_slot_live` re-reads the CURRENT snapshot — replacing the
+    /// former per-frame snapshot-only host from the retired `host_factory` field.
     handle: Arc<AppHandle>,
-    /// The neutral host factory, held for the session's life and applied to each frame's LIVE `App`
-    /// snapshot to mint the host `rpc_dispatch` reaches drive.
-    host_factory: EngineHostFactory,
     principal: busbar_api::AuthPrincipal,
     gov: busbar_api::PlaneRequestCtx,
     /// ONE writer, one lock: two concurrent responses interleaving inside a line would be a frame
@@ -538,9 +535,14 @@ impl<W: AsyncWrite + Unpin + Send + 'static> Session<W> {
 
     /// One pass of the CORE SEQUENCE over one frame.
     async fn dispatch_frame(self: &Arc<Self>, body: &[u8]) -> Response {
-        let app = self.handle.load();
+        // MINT THE NEUTRAL HOST over THIS frame's live snapshot, `from_handle` so the host is
+        // live-capable (its `plane_slot_live` re-reads the CURRENT snapshot for the dispatch-time
+        // re-validation and per-round grant re-reads deep in `method`), while its BOUND snapshot is
+        // this frame's `handle.load()` — byte-identical to the former per-frame `app` load, and used
+        // for every BOUND read below through the `runtime_of`/`resource_of` funnel.
+        let host = busbar_core::plane_host::engine_host_from_handle(&self.handle);
         let session = self.clone();
-        let epochs = super::runtime(&app).roots_epochs.clone();
+        let epochs = super::runtime_of(&host).roots_epochs.clone();
         // The SAME principal name the HTTP observer binds roots epochs under — the authenticated
         // key id, or the one honest constant on an ungoverned deployment.
         let notify_principal = session
@@ -551,7 +553,7 @@ impl<W: AsyncWrite + Unpin + Send + 'static> Session<W> {
         busbar_substrate::ingress::protocol::serve(
             &McpWords,
             busbar_substrate::ingress::protocol::Request {
-                present: super::resource(&app).is_some(),
+                present: super::resource_of(&host).is_some(),
                 // A pipe has no Origin: there is no browser and no rebinding surface. `None` takes
                 // the same arm an agent's headerless HTTP request takes.
                 origin: None,
@@ -572,9 +574,9 @@ impl<W: AsyncWrite + Unpin + Send + 'static> Session<W> {
             },
             {
                 let session = self.clone();
-                let app = app.clone();
+                let host = host.clone();
                 move |value, id, method| async move {
-                    session.stdio_dispatch(&app, value, id, method).await
+                    session.stdio_dispatch(&host, value, id, method).await
                 }
             },
         )
@@ -585,7 +587,7 @@ impl<W: AsyncWrite + Unpin + Send + 'static> Session<W> {
     /// [`envelope::rpc_dispatch`] the HTTP handler runs, under headers synthesised from the body.
     async fn stdio_dispatch(
         self: &Arc<Self>,
-        app: &Arc<busbar_core::state::App>,
+        host: &Arc<dyn busbar_substrate::plane_host::EngineHost>,
         value: Value,
         id: Value,
         method: String,
@@ -639,7 +641,7 @@ impl<W: AsyncWrite + Unpin + Send + 'static> Session<W> {
                     // a baseline first taken by the watcher's next tick would swallow any change
                     // that lands in between — precisely the change a client subscribes right
                     // before making.
-                    let fingerprint = self.visible_resource_fingerprint(app, uri);
+                    let fingerprint = self.visible_resource_fingerprint(host, uri);
                     self.resource_subs
                         .lock()
                         .unwrap()
@@ -657,14 +659,13 @@ impl<W: AsyncWrite + Unpin + Send + 'static> Session<W> {
         }
         // ── THE ONE DISPATCH ──────────────────────────────────────────────────────────────────
         let headers = synthesized_headers(&value);
-        // D1: mint the neutral host seam over this session's live per-frame snapshot (through the
-        // held factory) and thread it into the SAME `rpc_dispatch` the HTTP handler runs, so the two
-        // transports reach the host seams identically without this plane naming the core factory.
-        let host = (self.host_factory)(app);
+        // The neutral host seam (minted `from_handle` in `dispatch_frame`, live-capable) threaded into
+        // the SAME `rpc_dispatch` the HTTP handler runs, so the two transports reach the host seams
+        // identically. `handle` rides alongside SOLELY for the deferred sampling→ingress leg (still
+        // `&Arc<App>`-typed); every other reach goes through `host`.
         envelope::rpc_dispatch(
-            app,
             &self.handle,
-            &host,
+            host,
             &self.gov,
             &self.principal,
             &headers,
@@ -1029,13 +1030,20 @@ impl<W: AsyncWrite + Unpin + Send + 'static> Session<W> {
     fn spawn_resource_watch(self: &Arc<Self>) {
         let session = self.clone();
         let handle = tokio::spawn(async move {
-            let mut generation = super::runtime(&session.handle.load())
+            let mut generation =
+                super::runtime_of(&busbar_core::plane_host::engine_host_from_handle(
+                    &session.handle,
+                ))
                 .catalogue
                 .generation();
             loop {
                 tokio::time::sleep(WATCH_INTERVAL).await;
-                let app = session.handle.load();
-                let live = super::runtime(&app).catalogue.generation();
+                // MINT A LIVE-CAPABLE HOST for THIS tick (one `handle.load()`, K2), and read both the
+                // generation gate and every fingerprint below off its BOUND snapshot — so all observe
+                // the SAME tick snapshot, byte-identical to the former single `handle.load()` per tick.
+                let tick_host =
+                    busbar_core::plane_host::engine_host_from_handle(&session.handle);
+                let live = super::runtime_of(&tick_host).catalogue.generation();
                 // The generation compare is the cheap gate on the WALK, exactly as it is for
                 // `subscriptions/listen`; the baselines were written at subscribe time, so an
                 // unmoved generation has nothing to compare against.
@@ -1051,7 +1059,7 @@ impl<W: AsyncWrite + Unpin + Send + 'static> Session<W> {
                     continue;
                 }
                 for uri in subs {
-                    let fingerprint = session.visible_resource_fingerprint(&app, &uri);
+                    let fingerprint = session.visible_resource_fingerprint(&tick_host, &uri);
                     let previous = {
                         let mut s = session.resource_subs.lock().unwrap();
                         match s.get_mut(&uri) {
@@ -1084,19 +1092,21 @@ impl<W: AsyncWrite + Unpin + Send + 'static> Session<W> {
     /// when the caller's catalogue does not carry it.
     fn visible_resource_fingerprint(
         &self,
-        app: &Arc<busbar_core::state::App>,
+        host: &Arc<dyn busbar_substrate::plane_host::EngineHost>,
         uri: &str,
     ) -> Option<u64> {
+        // BOUND reads (K1) off the caller's host — for the frame path the frame snapshot, for the
+        // watch tick the tick snapshot; either way the SAME snapshot its caller already loaded.
+        let rt = super::runtime_of(host);
         let caller = busbar_substrate::catalogue::Caller {
             key: self.gov.key(),
-            // D1: the fingerprint's snapshot instant through the neutral host seam (held factory).
-            now: (self.host_factory)(app).clock_now_secs(),
+            // The fingerprint's snapshot instant through the neutral host seam (engine-independent).
+            now: host.clock_now_secs(),
             generation: busbar_substrate::trust::validate::Generations::at_admission(
-                super::runtime(app).catalogue.generation(),
+                rt.catalogue.generation(),
             ),
         };
-        super::runtime(app)
-            .catalogue
+        rt.catalogue
             .resources_for(&caller)
             .iter()
             .find(|r| r.namespaced == uri || r.uri == uri)

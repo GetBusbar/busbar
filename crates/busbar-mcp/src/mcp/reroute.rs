@@ -115,18 +115,14 @@ impl PoolRoute {
     /// and a twin that refuses is skipped (pre-`tried`), never rendered: the caller asked for a
     /// tool, not for a twin inventory.
     pub(crate) fn build(
-        app: &busbar_core::state::App,
         host: &std::sync::Arc<dyn busbar_substrate::plane_host::EngineHost>,
         principal: Option<&busbar_api::VirtualKey>,
         selected: &super::catalogue::ToolEntry,
         selected_auth: Authorised,
         arguments: &serde_json::Value,
     ) -> PoolRoute {
-        let pool = app
-            .tool_pools
-            .iter()
-            .find(|(_, cfg)| cfg.members.iter().any(|m| m == &selected.server));
-        let Some((pool_name, cfg)) = pool else {
+        let pool = host.tool_pool_members(&selected.server);
+        let Some((pool_name, members, repeatable)) = pool else {
             // THE DEGENERATE SINGLE-MEMBER SET — the breaker unit's cell, unchanged: same key,
             // lane 0, fast-fail and no reroute, exactly what an un-pooled registration had.
             return PoolRoute {
@@ -150,16 +146,20 @@ impl PoolRoute {
             };
         };
 
-        let sightings = super::runtime(app).sightings.load();
+        // BOUND runtime (K1): this route is built under one admitted request's snapshot; the live
+        // re-read for the dispatch loop already happened at the `method.rs` re-validation site. Bound
+        // once and reused for every read below.
+        let rt = super::runtime_of(host);
+        let sightings = rt.sightings.load();
         let live = super::client::catalogue::LiveSightings::of(&sightings);
         let generation = busbar_substrate::trust::validate::Generations::at_admission(
-            super::runtime(app).catalogue.generation(),
+            rt.catalogue.generation(),
         );
         let now = host.clock_now_secs();
         let mut selected_auth = Some(selected_auth);
         let mut tried = Vec::new();
         let members: Vec<RouteMember> =
-            cfg.members
+            members
                 .iter()
                 .enumerate()
                 .map(|(lane, member)| {
@@ -175,18 +175,17 @@ impl PoolRoute {
                     // name, the twin's live trust state, the twin's credential plan and the argument
                     // guard against the twin's approved schema. A twin this caller may not reach is
                     // skipped — busbar never widens a grant because an operator declared a pool.
-                    let entry = super::runtime(app)
+                    let entry = rt
                         .catalogue
                         .tool_on(member, &selected.tool)
                         .and_then(|e| {
-                            super::runtime(app)
-                                .catalogue
+                            rt.catalogue
                                 .resolve(principal, live, &e.namespaced, generation, now)
                                 .ok()
                         });
                     let pin = entry.and_then(|e| e.schema_hash.clone());
                     let auth = entry.and_then(|e| {
-                        super::runtime(app).catalogue.server(member).and_then(|s| {
+                        rt.catalogue.server(member).and_then(|s| {
                             super::upstream::authorise(s, e, arguments, principal).ok()
                         })
                     });
@@ -203,11 +202,17 @@ impl PoolRoute {
                 .collect();
 
         PoolRoute {
-            pool_key: busbar_substrate::store::tool_key(pool_name),
+            pool_key: busbar_substrate::store::tool_key(&pool_name),
             display: pool_name.clone(),
             pooled: true,
             members,
-            repeatable: cfg.repeatability(&selected.tool),
+            // The pool's `repeatable:` verdict for this operation — the same check
+            // `CandidatePoolCfg::repeatability` runs, over the `repeatable` list the host handed back.
+            repeatable: if repeatable.iter().any(|o| o == &selected.tool) {
+                Repeatable::Yes
+            } else {
+                Repeatable::No
+            },
             operation: selected.tool.clone(),
             state: Mutex::new(RouteState {
                 active: None,

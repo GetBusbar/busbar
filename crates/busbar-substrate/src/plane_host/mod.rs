@@ -294,9 +294,11 @@ pub trait EngineHost: Send + Sync {
     /// `App::demotion_record.list()`; the row type is the neutral `busbar_api::McpDemotionRow`.
     fn demotion_rows(&self) -> Vec<busbar_api::McpDemotionRow>;
 
-    /// The `(pool_name, members)` of the `tool_pools:` failover pool `server` belongs to, off the
-    /// BOUND snapshot; `None` when `server` is un-pooled. Identical to scanning `App::tool_pools`.
-    fn tool_pool_members(&self, server: &str) -> Option<(String, Vec<String>)>;
+    /// The `(pool_name, members, repeatable)` of the `tool_pools:` failover pool `server` belongs to,
+    /// off the BOUND snapshot; `None` when `server` is un-pooled. `repeatable` is the pool's
+    /// `repeatable:` operation list (what `CandidatePoolCfg::repeatability` consults). Identical to
+    /// scanning `App::tool_pools`.
+    fn tool_pool_members(&self, server: &str) -> Option<(String, Vec<String>, Vec<String>)>;
 
     /// Cheap presence pre-filter: is any request-admission hook gate attached to `container` on this
     /// plane (`plane_key` `0` = MCP)? Lets a plane skip the blocking `gate_decide` hop when nothing is

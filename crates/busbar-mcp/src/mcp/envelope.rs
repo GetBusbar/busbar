@@ -45,7 +45,6 @@
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use base64::Engine as _;
-use std::sync::Arc;
 
 use super::sse;
 use busbar_substrate::ingress::protocol::CoreRefusal;
@@ -241,19 +240,22 @@ impl busbar_core::ingress::protocol::ResourceMetadata for McpWords {
 /// auth middleware bypasses the chain and hands this handler no resolved identity — matching the old
 /// open handler, which took only `CurrentApp`.
 pub(crate) async fn metadata_route(ctx: busbar_substrate::plane_routes::PlaneReqCtx) -> Response {
-    use busbar_core::ingress::protocol::ResourceMetadata as _;
-    let handle: std::sync::Arc<busbar_core::state::AppHandle> = ctx
-        .engine
-        .downcast::<busbar_core::state::AppHandle>()
-        .expect("the mcp route engine handle is an AppHandle");
-    let app = handle.load();
-    match McpWords::document(&app) {
-        Some(doc) => busbar_substrate::ingress::protocol::metadata(&doc),
-        None => busbar_substrate::ingress::protocol::Words::refuse(
+    // The RFC 9728 facts, read off the neutral host seam (K1, BOUND) rather than a `handle.load()`.
+    // Inlined here rather than through `McpWords::document(&App)` because that method is the
+    // core-owned `ResourceMetadata` trait's, still `&App`-typed (a documented carry-over pending the
+    // ingress batch); this two-line body is exactly what it renders.
+    let Some(resource) = super::resource_of(&ctx.host) else {
+        return busbar_substrate::ingress::protocol::Words::refuse(
             &McpWords,
             CoreRefusal::MetadataUnavailable,
-        ),
-    }
+        );
+    };
+    let doc = busbar_substrate::ingress::protocol::Metadata {
+        resource: std::borrow::Cow::Borrowed(resource.canonical_uri()),
+        authorization_servers: resource.authorization_servers(),
+        scopes_supported: resource.scopes_supported(),
+    };
+    busbar_substrate::ingress::protocol::metadata(&doc)
 }
 
 /// `GET` and `DELETE` on the MCP endpoint.
@@ -295,13 +297,17 @@ pub(crate) async fn rpc(ctx: busbar_substrate::plane_routes::PlaneReqCtx) -> Res
     // that removes this downcast is a later step); `gov`/`principal` are the SAME values the auth
     // middleware resolved and attached BEFORE this `RouteAuth::Key` handler ran — surfaced here, so
     // nothing below re-runs the identity chain (which would double-run it).
+    // The engine handle rides the seam type-erased. It is downcast ONLY to feed `method::Ctx.handle`,
+    // which this batch retains SOLELY for the deferred sampling→ingress leg (still `&Arc<App>`-typed);
+    // every other reach now goes through the neutral `host` seam below. When the ingress batch lands
+    // this downcast and the handle thread go with it.
     let handle: std::sync::Arc<busbar_core::state::AppHandle> = ctx
         .engine
         .downcast::<busbar_core::state::AppHandle>()
         .expect("the mcp route engine handle is an AppHandle");
-    // D1: the neutral host seam the core adapter minted over this request's engine snapshot. Threaded
-    // into `rpc_dispatch` (and onto `method::Ctx`) so the clock (and later host) reaches call typed
-    // methods on it rather than naming a `busbar_substrate::plane_host` reach against the app.
+    // The neutral host seam the core adapter minted (`from_handle`) over this request's engine
+    // snapshot. Now the SOLE engine seam for the data path: the plane's `runtime_of`/`resource_of`
+    // funnel reads through it, BOUND to this request's snapshot, and `runtime_live` re-reads live.
     let host = ctx.host;
     let gov = ctx.gov.expect(
         "the mcp rpc route is RouteAuth::Key, so the middleware attached a PlaneRequestCtx",
@@ -311,14 +317,11 @@ pub(crate) async fn rpc(ctx: busbar_substrate::plane_routes::PlaneReqCtx) -> Res
         .expect("the mcp rpc route is RouteAuth::Key, so the middleware attached an AuthPrincipal");
     let headers = ctx.headers;
     let body = ctx.body;
-    // The snapshot this request runs on, taken ONCE. `method::Ctx` also carries the handle, because
-    // dispatch re-reads the LIVE snapshot to compare pin generations — a comparison against this
-    // same value could never fail.
-    let app = handle.load();
-    // The resource is present whenever this route is mounted — the mount is what creates it. The
-    // `Option` survives only so a future refactor that mounts the route without the config produces
-    // a clean refusal instead of a panic on a request path; `serve` answers it as `PlaneAbsent`.
-    let resource = super::resource_arc(&app);
+    // The resource is present whenever this route is mounted — the mount is what creates it. Read off
+    // the neutral host seam (K1, BOUND), owned so it outlives the `serve` borrow. The `Option`
+    // survives only so a future refactor that mounts the route without the config produces a clean
+    // refusal instead of a panic on a request path; `serve` answers it as `PlaneAbsent`.
+    let resource = super::resource_of(&host);
     // Borrowed rather than moved into the closure so the `Origin` read below and the mirrored
     // header reads inside it are two immutable borrows of one map rather than a clone of it.
     let headers = &headers;
@@ -346,7 +349,7 @@ pub(crate) async fn rpc(ctx: busbar_substrate::plane_routes::PlaneReqCtx) -> Res
         // honest constant on an ungoverned deployment — because an epoch compared under a different
         // name than it was sealed under is an epoch that never matches or always does.
         {
-            let epochs = super::runtime(&app).roots_epochs.clone();
+            let epochs = super::runtime_of(&host).roots_epochs.clone();
             let notify_principal = gov
                 .key
                 .as_ref()
@@ -359,7 +362,7 @@ pub(crate) async fn rpc(ctx: busbar_substrate::plane_routes::PlaneReqCtx) -> Res
         },
         |value, id, method| async move {
             rpc_dispatch(
-                &app, &handle, &host, &gov, &principal, headers, value, id, method,
+                &handle, &host, &gov, &principal, headers, value, id, method,
             )
             .await
         },
@@ -376,7 +379,6 @@ pub(crate) async fn rpc(ctx: busbar_substrate::plane_routes::PlaneReqCtx) -> Res
 /// the equality doctrine's teeth: a second transport binds the same dispatch, never a parallel one.
 #[allow(clippy::too_many_arguments)]
 pub(in crate::mcp) async fn rpc_dispatch(
-    app: &Arc<busbar_core::state::App>,
     handle: &std::sync::Arc<busbar_core::state::AppHandle>,
     engine_host: &std::sync::Arc<dyn busbar_substrate::plane_host::EngineHost>,
     gov: &busbar_api::PlaneRequestCtx,
@@ -530,7 +532,6 @@ pub(in crate::mcp) async fn rpc_dispatch(
     // through to `404` + `-32601`, which was always the correct answer for an unimplemented method
     // and did not have to change when the table gained entries.
     let ctx = crate::mcp::method::Ctx {
-        app,
         host: engine_host.clone(),
         handle,
         gov,

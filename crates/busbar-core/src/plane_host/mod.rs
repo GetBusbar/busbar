@@ -486,12 +486,12 @@ impl busbar_substrate::plane_host::EngineHost for EngineHostImpl {
         self.app.demotion_record.list()
     }
 
-    fn tool_pool_members(&self, server: &str) -> Option<(String, Vec<String>)> {
+    fn tool_pool_members(&self, server: &str) -> Option<(String, Vec<String>, Vec<String>)> {
         self.app
             .tool_pools
             .iter()
             .find(|(_, cfg)| cfg.members.iter().any(|m| m == server))
-            .map(|(name, cfg)| (name.clone(), cfg.members.clone()))
+            .map(|(name, cfg)| (name.clone(), cfg.members.clone(), cfg.repeatable.clone()))
     }
 
     fn gate_attached(&self, plane_key: u8, container: &str) -> bool {
