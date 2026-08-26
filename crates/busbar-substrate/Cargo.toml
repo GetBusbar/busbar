@@ -37,6 +37,16 @@ httpdate = { workspace = true }
 # default-OFF and zero-dependency in that configuration (the macro expands to `()`), so this edge
 # adds nothing to the shipped build.
 busbar-timing = { path = "../busbar-timing" }
+# D3: the one ASYNC `EngineHost` method (`identity_admit`) makes the neutral host seam an
+# `#[async_trait]` trait; the other methods stay plain sync fns within it.
+async-trait = { workspace = true }
+# D3 Phase-C: the relocated ask-state `Sealer` (mint/open) is pure HMAC-SHA256 over a base64url
+# payload, and `AskState` derives serde — the crypto the plane holds, with the key DERIVATION staying
+# core behind the `ask_state_sealer` seam. `serde`/`serde_json` are already reached transitively.
+base64 = { workspace = true }
+hmac = { workspace = true }
+sha2 = { workspace = true }
+serde = { workspace = true }
 
 # The relocated leaves carry `#[cfg_attr(not(feature = "plane-mcp"/"plane-a2a"), allow(dead_code))]`
 # verbatim from core — the items are `pub` here so the allowance is now inert, but the cfg names

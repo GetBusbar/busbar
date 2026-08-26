@@ -51,9 +51,7 @@ use super::jsonrpc::{parse_response, RpcOutcome};
 use super::verb::UpstreamVerb;
 use super::wire::WireLeg;
 use crate::mcp::upstream::Authorised;
-use busbar_core::plane::calllog::{
-    CallInput, OUTCOME_DISPATCHED, OUTCOME_REFUSED, REASON_UPSTREAM_FAILED,
-};
+use busbar_core::plane::calllog::{OUTCOME_DISPATCHED, OUTCOME_REFUSED, REASON_UPSTREAM_FAILED};
 
 /// WHAT ONE ISSUED VERB PRODUCED.
 ///
@@ -89,6 +87,7 @@ pub(crate) async fn issue(
     auth: &Authorised,
     verb: &UpstreamVerb,
     request_id: u64,
+    host: &std::sync::Arc<dyn busbar_substrate::plane_host::EngineHost>,
 ) -> Result<Issued, String> {
     // THE REGISTRATION, off the leg itself rather than off a tool key. A verb names no tool, and
     // reading the server out of one was what made an `mcp_tool` grant a prerequisite for issuing a
@@ -97,16 +96,15 @@ pub(crate) async fn issue(
     let server: &ServerId = &auth.server;
     let method = verb.method();
     let principal = auth.caller.id.clone();
-    // DEFERRED (busbar 1.6.0 R2): the per-call chain lives HOST-SIDE now and is reached over a
-    // `HostCtx`, which this `async` client-leg path cannot hold across its `.await`s and has no `&App`
-    // to mint (issue() is `#[allow(dead_code)]` with no inbound caller — see the module header). So it
-    // emits through the HOSTLESS in-core path (`emit_hostless`), the durable-cleave twin the seam keeps
-    // for exactly this site until the SERVER-plane proxy method that would drive this verb supplies a
-    // host; wiring the host emit in is then a one-line swap here.
+    // The per-call chain lives HOST-SIDE now. This `async` client-leg path cannot hold a `HostCtx`
+    // across its `.await`s, but the `EngineHost` seam is `Send + Sync` and safe to carry: it emits
+    // through the HOSTLESS `call_log_emit_hostless` method (the durable-cleave twin the seam keeps for
+    // exactly this site, which mints no `HostCtx`), so the leg reaches the chain without naming
+    // `busbar_core::plane::calllog`.
     let record = |outcome: &'static str, reason: String| {
-        busbar_core::plane::calllog::emit_hostless(
+        host.call_log_emit_hostless(
             &principal,
-            CallInput {
+            busbar_substrate::plane::calllog::CallInput {
                 ts: busbar_substrate::store::now(),
                 server: server.as_str().to_string(),
                 // See the module header for why this is `verb:`-prefixed and why that prefix cannot

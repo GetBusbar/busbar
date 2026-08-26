@@ -644,14 +644,19 @@ dependencies = [
 name = "busbar-substrate"
 version = "1.6.0"
 dependencies = [
+ "async-trait",
  "axum",
+ "base64 0.23.1",
  "busbar-api",
  "busbar-plugin",
  "busbar-timing",
  "bytes",
+ "hmac",
  "httpdate",
  "reqwest 0.12.28",
+ "serde",
  "serde_json",
+ "sha2 0.11.0",
  "tokio",
  "tracing",
 ]

@@ -183,24 +183,6 @@ pub(crate) struct Ctx<'a> {
 }
 
 impl Ctx<'_> {
-    /// THE GRANT PREDICATE. One closure, built once, passed to every catalogue read, so the
-    /// catalogue a caller sees and the tools it may dispatch are decided by the same function.
-    ///
-    /// A `None` key means governance is DISABLED for this deployment, and the answer is then "all
-    /// scopes" — the same posture `pool_allowed` takes on the LLM plane for the same reason. That is
-    /// not a fail-open on the MCP plane specifically: with governance off there is no key to carry a
-    /// grant, and refusing everything would make an ungoverned deployment unable to serve at all.
-    /// The deployment's ask-state [`Sealer`], or `None`. Derived by core through the
-    /// [`busbar_core::plane::approvals::ask_state_sealer`] seam so the raw governance signing secret
-    /// never crosses into the plugin — the plane holds no key material of its own. Read through `Ctx`
-    /// so the two call sites reach it the same way and neither reaches for a global.
-    fn gov_ask_sealer(&self) -> Option<busbar_core::plane::approvals::Sealer> {
-        self.app
-            .governance
-            .as_ref()
-            .and_then(|g| busbar_core::plane::approvals::ask_state_sealer(g))
-    }
-
     /// WHO IS ASKING, for every catalogue read on this request.
     ///
     /// One value, built once, passed to every catalogue read, so the catalogue a caller sees and the
@@ -413,7 +395,7 @@ fn tasks_cancel(
         Err(refusal) => return *refusal,
     };
     super::tasks::TASKS.cancel(&task.id, task_principal(ctx), ctx.host.clock_now_ms());
-    busbar_core::plane::auditlog::emit_admin_hostless_now(
+    ctx.host.audit_emit(
         "mcp_task.cancel",
         &format!("mcp_task:{}", task.id),
         busbar_substrate::audit::vocab::OUTCOME_APPLIED,
@@ -741,7 +723,7 @@ fn prompts_get(
                     Some(serde_json::json!({ "reason": "budget_exhausted" })),
                 );
             }
-            busbar_core::plane::auditlog::emit_admin_hostless_now(
+            ctx.host.audit_emit(
                 "mcp.caller_ask",
                 &format!("mcp_prompt:{}", prompt.namespaced),
                 busbar_substrate::audit::vocab::OUTCOME_APPLIED,
@@ -1029,17 +1011,11 @@ struct CallLog<'a> {
     server: String,
     tool_digest: String,
     pin_generation: u64,
-    /// The live engine snapshot the call was admitted on, carried so [`CallLog::write`] can open a
-    /// host to reach the durable per-call chain seam.
-    app: &'a busbar_core::state::App,
-    /// The NEUTRAL host seam this call's clock read rides — cloned from the request `Ctx` so the
-    /// record's timestamp comes through the same `clock_now` seam every other reach on this request
-    /// does, rather than naming `busbar_core::plane_host::clock_now_secs_over`.
+    /// The NEUTRAL host seam this call rides — cloned from the request `Ctx`. The record's timestamp
+    /// comes through its `clock_now` seam, and the durable per-call chain append rides its
+    /// [`call_log_emit`](busbar_substrate::plane_host::EngineHost::call_log_emit) method (which mints
+    /// the transient host + arena INTERNALLY), so this holds no `&App` / `DispatchScope` of its own.
     host: std::sync::Arc<dyn busbar_substrate::plane_host::EngineHost>,
-    /// The request-wide dispatch arena, when this call rides one (the sync tools/call path threads it
-    /// on `Ctx::scope`). `None` on the task path and in tests, where `write` opens a fresh per-call
-    /// scope instead — a chain append registers no host handle, so the arena choice is immaterial.
-    scope: Option<&'a busbar_core::plane_host::DispatchScope>,
 }
 
 impl<'a> CallLog<'a> {
@@ -1051,9 +1027,7 @@ impl<'a> CallLog<'a> {
             server: String::new(),
             tool_digest: String::new(),
             pin_generation: generation,
-            app: ctx.app,
             host: ctx.host.clone(),
-            scope: ctx.scope,
         }
     }
 
@@ -1069,7 +1043,7 @@ impl<'a> CallLog<'a> {
     }
 
     fn write(&self, outcome: &'static str, reason: &str) {
-        let input = busbar_core::plane::calllog::CallInput {
+        let input = busbar_substrate::plane::calllog::CallInput {
             ts: self.host.clock_now_secs(),
             server: self.server.clone(),
             tool: self.tool.clone(),
@@ -1079,19 +1053,11 @@ impl<'a> CallLog<'a> {
             pin_generation: self.pin_generation,
             request_id: self.request_id.clone(),
         };
-        // The per-call chain lives host-side now; open a host to reach it. Reuse the request-wide
-        // arena when this call rides one (`Ctx::scope`), else open a fresh per-call scope — the append
-        // registers no host handle, so which arena reclaims is immaterial to the write.
-        match self.scope {
-            Some(scope) => {
-                busbar_core::plane_host::with_borrowed_host(self.app, scope, |host, _| {
-                    busbar_core::plane::calllog::emit(host, self.principal, input)
-                })
-            }
-            None => busbar_core::plane_host::with_dispatch_scope(self.app, |host, _| {
-                busbar_core::plane::calllog::emit(host, self.principal, input)
-            }),
-        }
+        // The per-call chain lives host-side now; reached through the `call_log_emit` host seam, which
+        // mints the transient host + arena INTERNALLY. The former reuse-request-arena / open-fresh-scope
+        // split collapsed into that method: a chain append registers no host handle, so which arena
+        // reclaims was always immaterial to this write.
+        self.host.call_log_emit(self.principal, input);
     }
 
     /// Record a refusal and hand the response back. Takes the response BY VALUE so the record and
@@ -1312,7 +1278,7 @@ async fn tools_call(
     if matches!(selected.task_support, super::config::TaskSupport::Required)
         && !super::tasks::client_declares_tasks(ctx.capabilities)
     {
-        busbar_core::plane::auditlog::emit_admin_hostless_now(
+        ctx.host.audit_emit(
             "mcp_tool.call",
             &format!("mcp_tool:{}", selected.namespaced),
             busbar_substrate::audit::vocab::OUTCOME_REJECTED,
@@ -1390,7 +1356,7 @@ async fn tools_call(
                     refuse_catalogue(ctx, name, &refusal, id),
                 );
             }
-            busbar_core::plane::auditlog::emit_admin_hostless_now(
+            ctx.host.audit_emit(
                 "mcp.caller_ask",
                 &format!("mcp_tool:{}", selected.namespaced),
                 busbar_substrate::audit::vocab::OUTCOME_APPLIED,
@@ -1536,7 +1502,7 @@ async fn tools_call(
             hook,
         } = outcome
         {
-            busbar_core::plane::auditlog::emit_admin_hostless_now(
+            ctx.host.audit_emit(
                 "mcp_tool.call",
                 &format!("mcp_tool:{}", selected.namespaced),
                 busbar_substrate::audit::vocab::OUTCOME_REJECTED,
@@ -1735,7 +1701,7 @@ async fn tools_call(
                     "an upstream's input-required result reached the terminal check: the ask \
                      recogniser did not catch it"
                 );
-                busbar_core::plane::auditlog::emit_admin_hostless_now(
+                ctx.host.audit_emit(
                     "mcp_tool.call",
                     &resource,
                     busbar_substrate::audit::vocab::OUTCOME_REJECTED,
@@ -1780,7 +1746,7 @@ async fn tools_call(
                             why = %why,
                             "mcp upstream returned structuredContent violating the published outputSchema"
                         );
-                        busbar_core::plane::auditlog::emit_admin_hostless_now(
+                        ctx.host.audit_emit(
                             "mcp_tool.call",
                             &resource,
                             busbar_substrate::audit::vocab::OUTCOME_REJECTED,
@@ -1805,7 +1771,7 @@ async fn tools_call(
                     }
                 }
             }
-            busbar_core::plane::auditlog::emit_admin_hostless_now(
+            ctx.host.audit_emit(
                 "mcp_tool.call",
                 &resource,
                 busbar_substrate::audit::vocab::OUTCOME_APPLIED,
@@ -1817,7 +1783,7 @@ async fn tools_call(
             log.dispatched(result(id, sanitize::normalise_json(&value)))
         }
         Outcome::Refused(refusal) => {
-            busbar_core::plane::auditlog::emit_admin_hostless_now(
+            ctx.host.audit_emit(
                 "mcp_tool.call",
                 &resource,
                 busbar_substrate::audit::vocab::OUTCOME_REJECTED,
@@ -1868,7 +1834,7 @@ async fn tools_call(
         // The AUDIT row is still `OUTCOME_REJECTED`: the admin audit records whether the ACTION
         // succeeded, and this one did not.
         Outcome::UpstreamFailed(reason) => {
-            busbar_core::plane::auditlog::emit_admin_hostless_now(
+            ctx.host.audit_emit(
                 "mcp_tool.call",
                 &resource,
                 busbar_substrate::audit::vocab::OUTCOME_REJECTED,
@@ -2031,7 +1997,7 @@ async fn create_task(
             task_asks: super::tasks::task_ask_rounds(selected, ctx.capabilities),
         },
     );
-    busbar_core::plane::auditlog::emit_admin_hostless_now(
+    ctx.host.audit_emit(
         "mcp_tool.call",
         &format!("mcp_tool:{}", selected.namespaced),
         busbar_substrate::audit::vocab::OUTCOME_APPLIED,
@@ -2246,7 +2212,7 @@ fn refuse_setup(
     denied: &super::upstream::SetupRefusal,
     id: Option<serde_json::Value>,
 ) -> Response {
-    busbar_core::plane::auditlog::emit_admin_hostless_now(
+    ctx.host.audit_emit(
         "mcp_tool.call",
         &format!("mcp_tool:{namespaced}"),
         busbar_substrate::audit::vocab::OUTCOME_REJECTED,
@@ -2282,7 +2248,7 @@ fn refuse_catalogue(
     id: Option<serde_json::Value>,
 ) -> Response {
     use busbar_substrate::ingress::protocol::Words as _;
-    busbar_core::plane::auditlog::emit_admin_hostless_now(
+    ctx.host.audit_emit(
         "mcp_tool.call",
         &format!("mcp_tool:{name}"),
         busbar_substrate::audit::vocab::OUTCOME_REJECTED,
@@ -2567,7 +2533,7 @@ fn refuse_ask(
     refusal: &callerask::Refusal,
     id: Option<serde_json::Value>,
 ) -> Response {
-    busbar_core::plane::auditlog::emit_admin_hostless_now(
+    ctx.host.audit_emit(
         "mcp.caller_ask",
         resource,
         busbar_substrate::audit::vocab::OUTCOME_REJECTED,
@@ -2659,7 +2625,11 @@ fn caller_ask_decision(
     } = site;
     // The SEALING KEY, derived per decision from the deployment's fleet-shared signing secret. No
     // key ⇒ no sealer ⇒ the decision refuses rather than asking with unprotected state.
-    let sealer = ctx.gov_ask_sealer();
+    // The deployment's ask-state sealer, derived core-side from governance's fleet-shared signing
+    // secret through the neutral `ask_state_sealer` host seam — the raw secret never crosses to the
+    // plane. `None` ⇒ governance disabled ⇒ the decision refuses rather than asking with unprotected
+    // state.
+    let sealer = ctx.host.ask_state_sealer();
     // The completion arm redeems the one-time approval through the neutral host seam's
     // `approval_redeem` method, which mints its own transient host + arena internally — so the
     // decision carries the `EngineHost` handle rather than a raw `HostCtx`, and this site opens no

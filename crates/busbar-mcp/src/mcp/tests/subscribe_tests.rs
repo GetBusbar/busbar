@@ -816,7 +816,7 @@ fn a_revoked_key_stops_being_served_on_the_next_poll() {
         Duration::ZERO,
     );
     assert_eq!(
-        expired.still_permitted(Some(&gov), 1, 0),
+        expired.still_permitted(Some(&*gov), 1, 0),
         Err(busbar_core::trust::validate::Lapsed::Expired),
         "the bound still ends a standing permission on its own"
     );

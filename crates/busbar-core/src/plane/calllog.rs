@@ -227,20 +227,11 @@ pub use crate::audit::vocab::{
 /// grant matrix for a decision the grant matrix did not take.
 pub const REASON_HOOK_REJECTED: &str = "hook_rejected";
 
-/// The fields a caller supplies for one call record. `seq`, `prev_hash` and `hash` are NOT here:
-/// they are the chain's own business and are supplied by [`crate::audit::Chain::append`], so no call
-/// site can supply a sequence number or a link of its own choosing.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CallInput {
-    pub ts: u64,
-    pub server: String,
-    pub tool: String,
-    pub outcome: &'static str,
-    pub reason: String,
-    pub tool_digest: String,
-    pub pin_generation: u64,
-    pub request_id: String,
-}
+// D3 Phase-C: the neutral per-call record INPUT is now a substrate POD so a plane builds it without
+// naming `busbar_core::plane::calllog`; re-exported here so `CALLS.record`/[`emit`] and every in-core
+// call site is unchanged. `seq`/`prev_hash`/`hash` are still NOT on it — they are the chain's own
+// business, supplied by [`crate::audit::Chain::append`].
+pub use busbar_substrate::plane::calllog::CallInput;
 
 // ── THE DURABLE JOURNAL SEAM — the MCP call chain's framing, held PLANE-SIDE ─────────────────────
 //

@@ -574,7 +574,7 @@ fn a_standing_permission_reresolves_a_live_principal() {
     let key = a_live_key(&gov);
     let standing = Standing::opened(Some(&key), Snapshot::Watching, Duration::from_secs(300));
     let resolved = standing
-        .still_permitted(Some(&gov), 1, 1_700_000_000)
+        .still_permitted(Some(&*gov), 1, 1_700_000_000)
         .expect("a live key still stands")
         .expect("a governed deployment resolves a principal");
     assert_eq!(resolved.id, key.id);
@@ -591,7 +591,7 @@ fn a_key_disabled_under_an_open_response_lapses_it_on_the_next_ask() {
     let key = a_live_key(&gov);
     let standing = Standing::opened(Some(&key), Snapshot::Watching, Duration::from_secs(300));
     assert!(standing
-        .still_permitted(Some(&gov), 1, 1_700_000_000)
+        .still_permitted(Some(&*gov), 1, 1_700_000_000)
         .is_ok());
 
     gov.update_key(&key.id, Some(false), None)
@@ -599,7 +599,7 @@ fn a_key_disabled_under_an_open_response_lapses_it_on_the_next_ask() {
         .expect("the key exists");
 
     assert_eq!(
-        standing.still_permitted(Some(&gov), 1, 1_700_000_000),
+        standing.still_permitted(Some(&*gov), 1, 1_700_000_000),
         Err(Lapsed::Identity(Refusal::IdentityNotLive {
             principal: key.id.clone()
         })),
@@ -620,13 +620,13 @@ fn a_key_deleted_under_an_open_response_lapses_it_on_the_next_ask() {
     let key = a_live_key(&gov);
     let standing = Standing::opened(Some(&key), Snapshot::Watching, Duration::from_secs(300));
     assert!(standing
-        .still_permitted(Some(&gov), 1, 1_700_000_000)
+        .still_permitted(Some(&*gov), 1, 1_700_000_000)
         .is_ok());
 
     gov.delete_key(&key.id).expect("the admin DELETE");
 
     assert_eq!(
-        standing.still_permitted(Some(&gov), 1, 1_700_000_000),
+        standing.still_permitted(Some(&*gov), 1, 1_700_000_000),
         Err(Lapsed::Identity(Refusal::IdentityNotLive {
             principal: key.id.clone()
         }))
@@ -662,7 +662,7 @@ fn a_rescoped_key_is_handed_back_narrowed_rather_than_as_it_was_at_open() {
     gov.refresh().expect("reconcile");
 
     let resolved = standing
-        .still_permitted(Some(&gov), 1, 1_700_000_000)
+        .still_permitted(Some(&*gov), 1, 1_700_000_000)
         .expect("a narrowed key is still a live key")
         .expect("a principal");
     assert!(resolved.scope_allowed("thing", "one"));
@@ -710,8 +710,9 @@ fn the_long_lived_response_holds_no_principal_it_resolved_at_open() {
         "the stream no longer opens a standing permission, so nothing re-resolves its principal"
     );
     assert!(
-        code.contains("still_permitted"),
-        "the stream opens a standing permission and never asks it anything"
+        code.contains("principal_standing"),
+        "the stream opens a standing permission and never asks it anything (re-asked through the \
+         `EngineHost::principal_standing` host seam, which drives `Standing::still_permitted` core-side)"
     );
 }
 

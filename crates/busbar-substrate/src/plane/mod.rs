@@ -8,6 +8,12 @@
 //! and because a literal spelled per site is how two answers that must agree start to differ. The
 //! plane spine (`busbar_core::plane`) re-exports them unchanged.
 
+// D3 Phase-C: the neutral per-call record INPUT and the ask-state seal PODs a plane names when it
+// reaches the call-log / approval host seams. Both name only `std` + crypto, so they live here; core
+// re-exports them so its own call sites are unchanged.
+pub mod approvals;
+pub mod calllog;
+
 /// THE WIRE FORMAT both mounted planes speak: JSON-RPC 2.0. Named once, here, because it is read
 /// twice as a `wire_format_names` entry and once more by the error-shaping boundary, which
 /// decides that a refusal on a mounted plane is a JSON-RPC error object rather than a vendor

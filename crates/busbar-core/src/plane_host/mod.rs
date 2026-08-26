@@ -324,6 +324,7 @@ impl EngineHostImpl {
     }
 }
 
+#[async_trait::async_trait]
 impl busbar_substrate::plane_host::EngineHost for EngineHostImpl {
     fn clock_now_secs(&self) -> u64 {
         // SAME dispatch as the veneer: a fresh per-call `DispatchScope`, the `clock_now` slot driven
@@ -432,6 +433,70 @@ impl busbar_substrate::plane_host::EngineHost for EngineHostImpl {
 
     fn governance_enabled(&self) -> bool {
         self.app.governance.is_some()
+    }
+
+    fn audit_emit(&self, action: &str, resource: &str, outcome: &str, principal: &str) {
+        // Hostless: the admin-audit engine reads `store::now` + the global ring and needs no `HostCtx`.
+        // A plain forward to the UNCHANGED core engine.
+        crate::plane::auditlog::emit_admin_hostless_now(action, resource, outcome, principal);
+    }
+
+    fn call_log_emit(&self, principal: &str, input: busbar_substrate::plane::calllog::CallInput) {
+        // Mint a fresh per-call arena over the live engine and drive the chain seam SYNCHRONOUSLY — the
+        // `HostCtx` never escapes the call. The plane's former `Some(scope)`/`None` selection (reuse the
+        // request arena vs open a fresh one) was a no-op distinction for THIS write: a chain append
+        // registers no host handle, so which arena reclaims is immaterial. Same dispatch as the plane's
+        // in-place `with_dispatch_scope` leg.
+        with_dispatch_scope(&self.app, |host, _| {
+            crate::plane::calllog::emit(host, principal, input)
+        });
+    }
+
+    fn call_log_emit_hostless(
+        &self,
+        principal: &str,
+        input: busbar_substrate::plane::calllog::CallInput,
+    ) {
+        crate::plane::calllog::emit_hostless(principal, input);
+    }
+
+    async fn identity_admit(
+        &self,
+        token: Option<String>,
+        audience: String,
+        resource: String,
+    ) -> Result<(busbar_api::AuthPrincipal, busbar_api::PlaneRequestCtx), busbar_api::IdentityRefusal>
+    {
+        // The veneer already spawns a blocking closure that mints + consumes the `HostCtx` on a
+        // blocking thread; this only awaits the join, so no `HostCtx` crosses the `.await` and the
+        // future stays `Send`.
+        identity_admit_over(Arc::clone(&self.app), token, audience, resource).await
+    }
+
+    fn principal_standing(
+        &self,
+        standing: &busbar_substrate::trust::validate::Standing,
+        live_gen: u64,
+        now: u64,
+    ) -> Result<Option<Arc<busbar_api::VirtualKey>>, busbar_substrate::trust::validate::Lapsed>
+    {
+        // Inject the host's live `GovState` through the `GovResolve` seam so the plane holds only the
+        // `Standing`. Byte-identical to the pre-relocation `Standing::still_permitted(app.governance, …)`.
+        standing.still_permitted(
+            self.app
+                .governance
+                .as_deref()
+                .map(|g| g as &dyn busbar_substrate::trust::validate::GovResolve),
+            live_gen,
+            now,
+        )
+    }
+
+    fn ask_state_sealer(&self) -> Option<busbar_substrate::plane::approvals::Sealer> {
+        self.app
+            .governance
+            .as_ref()
+            .and_then(|g| crate::plane::approvals::ask_state_sealer(g))
     }
 }
 

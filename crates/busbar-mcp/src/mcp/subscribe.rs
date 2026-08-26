@@ -414,8 +414,8 @@ impl Listen {
         let catalogue = &super::runtime(&app).catalogue;
         // THE STANDING PERMISSION, RE-ASKED. A principal that has stopped resolving live ends the
         // stream on THIS frame rather than at the bound, which is the whole of the fix.
-        let key = match self.standing.still_permitted(
-            app.governance.as_deref(),
+        let key = match host.principal_standing(
+            &self.standing,
             catalogue.generation(),
             host.clock_now_secs(),
         ) {

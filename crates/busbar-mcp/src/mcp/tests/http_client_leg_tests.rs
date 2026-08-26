@@ -223,9 +223,15 @@ async fn every_owed_method_reaches_the_upstream_with_the_mirrored_headers_this_r
     let verbs = verbs_here();
     for (n, verb) in verbs.iter().enumerate() {
         let request_id = 1_000 + n as u64;
-        let outcome = issue(&crate::mcp::runtime(&app).pool, &auth, verb, request_id)
-            .await
-            .unwrap_or_else(|e| panic!("`{}` must reach the upstream: {e}", verb.method()));
+        let outcome = issue(
+            &crate::mcp::runtime(&app).pool,
+            &auth,
+            verb,
+            request_id,
+            &busbar_core::plane_host::engine_host(&app),
+        )
+        .await
+        .unwrap_or_else(|e| panic!("`{}` must reach the upstream: {e}", verb.method()));
 
         assert_eq!(
             peer.mcp_hits(),
@@ -422,6 +428,7 @@ async fn a_link_local_uri_in_a_verbs_params_is_refused_before_the_exchange() {
             uri: "http://169.254.169.254/latest/meta-data/iam/security-credentials/".to_string(),
         },
         1,
+        &busbar_core::plane_host::engine_host(&app),
     )
     .await
     .expect_err("a cloud-metadata URI in a verb's params must be refused");
@@ -458,6 +465,7 @@ async fn an_upstreams_ask_terminates_at_a_verb_and_is_never_proxied() {
             arguments: serde_json::json!({}),
         },
         7,
+        &busbar_core::plane_host::engine_host(&app),
     )
     .await
     .expect_err("an input-required answer to a verb is a failure, not a result");
@@ -491,6 +499,7 @@ async fn a_verbs_exchange_asks_for_no_tool_scope_and_binds_to_this_upstream() {
         &auth,
         &UpstreamVerb::ResourcesList,
         12,
+        &busbar_core::plane_host::engine_host(&app),
     )
     .await
     .expect("the call goes out");
@@ -530,6 +539,7 @@ async fn an_upstream_error_is_recorded_as_dispatched_with_the_upstream_failed_re
         &auth,
         &UpstreamVerb::PromptsList,
         3,
+        &busbar_core::plane_host::engine_host(&app),
     )
     .await
     .expect_err("a JSON-RPC error from the upstream is a failed verb");

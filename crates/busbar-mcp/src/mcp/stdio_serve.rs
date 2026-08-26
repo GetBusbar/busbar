@@ -174,13 +174,9 @@ pub(crate) async fn session_identity(
     // refusal remains stdio's. Byte-identical: the principal and gov context are the exact objects the
     // resolution produced, and the refusal keeps its variant.
     let canonical = resource.canonical_uri().to_string();
-    let admitted = busbar_core::plane_host::identity_admit_over(
-        std::sync::Arc::clone(&app),
-        credential.map(str::to_string),
-        canonical.clone(),
-        canonical,
-    )
-    .await;
+    let admitted = busbar_core::plane_host::engine_host(&app)
+        .identity_admit(credential.map(str::to_string), canonical.clone(), canonical)
+        .await;
     match admitted {
         Ok((principal, gov)) => {
             if !gov.is_governed() {
