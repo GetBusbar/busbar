@@ -248,27 +248,46 @@ fn process_one(store: Arc<dyn busbar_api::Store>) -> TaskTestHarness {
     h.host(|host| {
         reg.submit(
             host,
-            &Task::submitted("t-work", "ctx-a", "key-1", Direction::Inbound, NOW).unwrap(),
+            &Task::submitted("t-work", "ctx-a", "key-1", Direction::Inbound, NOW)
+                .unwrap()
+                .to_row(),
             "req-1",
         )
         .expect("submit t-work");
-        reg.transition(host, "t-work", TaskState::Working, NOW + 1, "req-1")
-            .expect("t-work -> working");
+        reg.transition(
+            host,
+            "t-work",
+            "req-1",
+            crate::a2a::task::plan_transition(TaskState::Working, NOW + 1),
+        )
+        .expect("t-work -> working");
 
         reg.submit(
             host,
-            &Task::submitted("t-paused", "ctx-b", "key-2", Direction::Outbound, NOW).unwrap(),
+            &Task::submitted("t-paused", "ctx-b", "key-2", Direction::Outbound, NOW)
+                .unwrap()
+                .to_row(),
             "req-2",
         )
         .expect("submit t-paused");
         reg.record_dispatch(host, "t-paused", "planner", NOW + 1, "req-2")
             .expect("dispatch");
-        reg.transition(host, "t-paused", TaskState::Working, NOW + 2, "req-2")
-            .expect("t-paused -> working");
+        reg.transition(
+            host,
+            "t-paused",
+            "req-2",
+            crate::a2a::task::plan_transition(TaskState::Working, NOW + 2),
+        )
+        .expect("t-paused -> working");
         reg.advance_cursor(host, "t-paused", 7, NOW + 3, "req-2")
             .expect("cursor");
-        reg.transition(host, "t-paused", TaskState::AuthRequired, NOW + 4, "req-2")
-            .expect("t-paused -> auth-required");
+        reg.transition(
+            host,
+            "t-paused",
+            "req-2",
+            crate::a2a::task::plan_transition(TaskState::AuthRequired, NOW + 4),
+        )
+        .expect("t-paused -> auth-required");
     });
     h
 }
@@ -286,6 +305,7 @@ fn restart_and_restore(
             h.reg.restore_from_store(
                 host,
                 crate::plane::store::PlaneStoreView::narrow(store).as_ref(),
+                crate::a2a::task::readable_row,
             )
         })
         .expect("rehydrate must succeed");
@@ -324,12 +344,16 @@ fn in_flight_tasks_survive_a_restart_over_a_durable_backend() {
 
     // ASSERT ON THE OUTPUT, field by field. A task we believe we persisted is not a task we read
     // back, and a rehydrate that returned the right COUNT with the wrong contents resumes wrongly.
-    let work = reg2.get_scoped("key-1", "t-work").expect("scoped read");
+    // The engine hands back a neutral `TaskRow`; this test reads it through the codec, the way an
+    // A2A caller does, so the assertions stay on the canonical `Task` fields.
+    let work = Task::from_row(&reg2.get_scoped("key-1", "t-work").expect("scoped read"))
+        .expect("the restored row reads back");
     assert_eq!(work.state, TaskState::Working);
     assert_eq!(work.context_id, "ctx-a");
     assert_eq!(work.direction, Direction::Inbound);
 
-    let paused = reg2.get_scoped("key-2", "t-paused").expect("scoped read");
+    let paused = Task::from_row(&reg2.get_scoped("key-2", "t-paused").expect("scoped read"))
+        .expect("the restored row reads back");
     assert_eq!(
         paused.state,
         TaskState::AuthRequired,
@@ -389,13 +413,12 @@ fn an_interrupt_resumes_after_a_restart_and_its_chain_continues() {
             h2.reg.transition(
                 host,
                 "t-paused",
-                TaskState::Working,
-                NOW + 100,
                 "req-resume",
+                crate::a2a::task::plan_transition(TaskState::Working, NOW + 100),
             )
         })
         .expect("the caller supplied the required auth on the same contextId");
-    assert_eq!(resumed.state, TaskState::Working);
+    assert_eq!(resumed.state, "working");
 
     let events = handle.list_task_events("t-paused").unwrap();
     assert_eq!(
@@ -625,8 +648,13 @@ fn compaction_collects_terminal_tasks_and_never_an_interrupt() {
     let h = process_one(handle.clone());
     let reg = &h.reg;
     h.host(|host| {
-        reg.transition(host, "t-work", TaskState::Completed, NOW + 10, "req-1")
-            .expect("t-work completes");
+        reg.transition(
+            host,
+            "t-work",
+            "req-1",
+            crate::a2a::task::plan_transition(TaskState::Completed, NOW + 10),
+        )
+        .expect("t-work completes");
         assert!(
             reg.evict_terminal(host, "t-work"),
             "a terminal task may be evicted"
@@ -663,8 +691,12 @@ fn a_terminal_task_is_counted_on_restore_and_deliberately_not_loaded() {
     let kind_id = {
         let h1 = process_one(handle.clone());
         h1.host(|host| {
-            h1.reg
-                .transition(host, "t-work", TaskState::Completed, NOW + 10, "req-1")
+            h1.reg.transition(
+                host,
+                "t-work",
+                "req-1",
+                crate::a2a::task::plan_transition(TaskState::Completed, NOW + 10),
+            )
         })
         .unwrap();
         h1.kind_id()
@@ -759,7 +791,9 @@ fn a_failed_durable_write_leaves_the_working_set_agreeing_with_the_store() {
         Arc::new(RefusingStore(busbar_store_memory::MemoryStore::new()));
     let h = TaskTestHarness::over(store);
     let reg = &h.reg;
-    let task = Task::submitted("t-1", "ctx", "key-1", Direction::Inbound, NOW).unwrap();
+    let task = Task::submitted("t-1", "ctx", "key-1", Direction::Inbound, NOW)
+        .unwrap()
+        .to_row();
     let err = h
         .host(|host| reg.submit(host, &task, "req-1"))
         .expect_err("a submit that cannot be persisted must not report success");
@@ -815,11 +849,12 @@ fn a_push_callback_survives_the_restart_with_its_task() {
         h1.kind_id()
     };
     let (h2, _) = restart_and_restore(kind_id, handle.clone());
+    // Read the neutral row back through the codec, the way an A2A caller does — `Task.push_callback`
+    // is the `Option<String>` projection of the row's `String` field.
+    let restored = Task::from_row(&h2.reg.get_scoped("key-2", "t-paused").unwrap())
+        .expect("the restored row reads back");
     assert_eq!(
-        h2.reg
-            .get_scoped("key-2", "t-paused")
-            .unwrap()
-            .push_callback,
+        restored.push_callback,
         Some("https://caller.example/done".to_string())
     );
 }
@@ -831,8 +866,13 @@ fn a_mutation_against_an_unknown_task_is_refused() {
     let reg = &h.reg;
     h.host(|host| {
         for e in [
-            reg.transition(host, "nope", TaskState::Working, NOW, "r")
-                .map(|_| ()),
+            reg.transition(
+                host,
+                "nope",
+                "r",
+                crate::a2a::task::plan_transition(TaskState::Working, NOW),
+            )
+            .map(|_| ()),
             reg.record_dispatch(host, "nope", "a", NOW, "r").map(|_| ()),
             reg.advance_cursor(host, "nope", 1, NOW, "r").map(|_| ()),
             reg.set_push_callback("nope", None, NOW).map(|_| ()),
@@ -852,8 +892,12 @@ fn an_illegal_transition_writes_neither_a_row_nor_an_event() {
     let handle: Arc<dyn busbar_api::Store> = store.clone();
     let h = process_one(handle.clone());
     h.host(|host| {
-        h.reg
-            .transition(host, "t-work", TaskState::Completed, NOW + 10, "r")
+        h.reg.transition(
+            host,
+            "t-work",
+            "r",
+            crate::a2a::task::plan_transition(TaskState::Completed, NOW + 10),
+        )
     })
     .unwrap();
     let events_before = handle.list_task_events("t-work").unwrap();
@@ -861,8 +905,12 @@ fn an_illegal_transition_writes_neither_a_row_nor_an_event() {
 
     let err = h
         .host(|host| {
-            h.reg
-                .transition(host, "t-work", TaskState::Working, NOW + 11, "r")
+            h.reg.transition(
+                host,
+                "t-work",
+                "r",
+                crate::a2a::task::plan_transition(TaskState::Working, NOW + 11),
+            )
         })
         .expect_err("terminal is terminal");
     assert!(err.to_string().contains("illegal task transition"), "{err}");
@@ -870,29 +918,47 @@ fn an_illegal_transition_writes_neither_a_row_nor_an_event() {
     assert_eq!(handle.get_task("t-work").unwrap().unwrap(), row_before);
 }
 
-// TEMPORARY RED DEMONSTRATION — deleted in the same change that fixes it. It exists to make the
-// defect visible in a test run rather than in prose: today the store takes a bare `Option<String>`,
-// so a URL the SSRF guard refuses outright is accepted and read back off the task row.
+/// THE SSRF FLOOR moved OUT of the neutral engine (D4 codec inversion) and now runs at the A2A caller
+/// boundary (`crate::a2a::pushnotify::floor_callback`, invoked by the `EngineHost` seam BEFORE this
+/// store method). So the ENGINE now persists EXACTLY what it is handed — a caller that pre-cleared the
+/// URL through the floor hands the store `None` for a refusable one, which is what is read back. This
+/// asserts the SAME refusal semantics as the pre-cleave in-engine floor did, split across its two
+/// halves: the floor drops the hostile URL, and the engine faithfully stores the already-cleared
+/// value with no security decision of its own.
 #[test]
-fn red_demo_the_store_accepts_a_url_the_guard_refuses() {
+fn the_ssrf_floor_runs_a2a_side_and_the_engine_stores_what_it_is_handed() {
     use crate::a2a::pushnotify;
     let hostile = "https://169.254.169.254/hook";
-    let refusal = pushnotify::validate(hostile, &[]).expect_err("the guard refuses it");
+    pushnotify::validate(hostile, &[]).expect_err("the guard refuses it");
 
+    // The relocated floor DROPS the refusable URL to `None` before the store is asked.
+    assert_eq!(
+        pushnotify::floor_callback("t-paused", Some(hostile.to_string())),
+        None,
+        "the a2a-side floor drops a URL the SSRF structural guard refuses"
+    );
+    // A benign URL passes the floor untouched.
+    assert_eq!(
+        pushnotify::floor_callback("t-paused", Some("https://caller.example/cb".to_string())),
+        Some("https://caller.example/cb".to_string()),
+    );
+
+    // And the neutral engine persists whatever the floor already cleared — `None` for the hostile
+    // one — making no security decision inline.
     let store = durable();
     let handle: Arc<dyn busbar_api::Store> = store.clone();
     let h = process_one(handle);
     let reg = &h.reg;
-    let task = reg
-        .set_push_callback("t-paused", Some(hostile.to_string()), NOW + 6)
+    let cleared = pushnotify::floor_callback("t-paused", Some(hostile.to_string()));
+    let stored = reg
+        .set_push_callback("t-paused", cleared, NOW + 6)
         .expect("stored");
-
     assert_eq!(
-        task.push_callback,
-        None,
-        "THE STORE PERSISTED A CALLBACK THE SSRF GUARD REFUSES.\n  guard said: {refusal}\n  \
-         stored on the task row: {:?}\n  read back from the registry: {:?}",
-        task.push_callback,
-        reg.get_scoped("key-2", "t-paused").unwrap().push_callback
+        stored.push_callback, "",
+        "the store persisted the already-cleared (empty) callback"
+    );
+    assert_eq!(
+        reg.get_scoped("key-2", "t-paused").unwrap().push_callback,
+        "",
     );
 }

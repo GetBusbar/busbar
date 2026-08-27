@@ -642,28 +642,35 @@ impl busbar_substrate::plane_host::EngineHost for EngineHostImpl {
     ) -> Result<busbar_api::TaskRow, String> {
         use busbar_substrate::plane_host::TaskWrite;
         // Mint a fresh per-call arena over the live engine and drive the SAME `TASKS.*` op the relay
-        // drives in place, SYNCHRONOUSLY — the `HostCtx` never escapes the call. The `TaskWrite`↔`Task`
-        // /`TaskState` conversion is the whole boundary: `Submit` reconstructs the canonical `Task` from
-        // the row (a row that does not parse is refused), a `Transition` parses the state token back,
-        // and every effect is byte-identical to the in-place `with_dispatch_scope` leg. The engine's
-        // `TaskStoreError`/`TaskError` is rendered (`Display`) into the neutral `String` the seam carries.
+        // drives in place, SYNCHRONOUSLY — the `HostCtx` never escapes the call. The engine is now
+        // `TaskRow`-NEUTRAL, so this A2A caller owns the codec: `Submit` hands the row straight to the
+        // engine (the caller already built it from the canonical `Task`); a `Transition` parses the
+        // state token to a `TaskState` here and hands the engine an a2a-built PLAN
+        // (`plan_transition`) that validates the move and chooses the event kind under the engine's
+        // lock. Every effect is byte-identical to the in-place `with_dispatch_scope` leg, and the
+        // engine's neutral `TaskStoreError` renders (`Display`) into the `String` the seam carries.
         with_dispatch_scope(&self.app, |host, _| {
-            let written = match op {
-                TaskWrite::Submit { row } => {
-                    let task = crate::a2a::task::Task::from_row(row).map_err(|e| e.to_string())?;
-                    crate::plane::taskstore::TASKS.submit(host, &task, request_id)
-                }
-                TaskWrite::Transition { to_state } => {
-                    let to =
-                        crate::a2a::task::TaskState::parse(to_state).map_err(|e| e.to_string())?;
-                    crate::plane::taskstore::TASKS.transition(host, task_id, to, now, request_id)
-                }
-                TaskWrite::Dispatch { agent_id } => crate::plane::taskstore::TASKS
-                    .record_dispatch(host, task_id, agent_id, now, request_id),
-                TaskWrite::AdvanceCursor { cursor } => crate::plane::taskstore::TASKS
-                    .advance_cursor(host, task_id, cursor, now, request_id),
-            };
-            written.map(|t| t.to_row()).map_err(|e| e.to_string())
+            let written: Result<busbar_api::TaskRow, crate::plane::taskstore::TaskStoreError> =
+                match op {
+                    TaskWrite::Submit { row } => {
+                        crate::plane::taskstore::TASKS.submit(host, row, request_id)
+                    }
+                    TaskWrite::Transition { to_state } => {
+                        let to = crate::a2a::task::TaskState::parse(to_state)
+                            .map_err(|e| e.to_string())?;
+                        crate::plane::taskstore::TASKS.transition(
+                            host,
+                            task_id,
+                            request_id,
+                            crate::a2a::task::plan_transition(to, now),
+                        )
+                    }
+                    TaskWrite::Dispatch { agent_id } => crate::plane::taskstore::TASKS
+                        .record_dispatch(host, task_id, agent_id, now, request_id),
+                    TaskWrite::AdvanceCursor { cursor } => crate::plane::taskstore::TASKS
+                        .advance_cursor(host, task_id, cursor, now, request_id),
+                };
+            written.map_err(|e| e.to_string())
         })
     }
 
@@ -723,13 +730,12 @@ impl busbar_substrate::plane_host::EngineHost for EngineHostImpl {
 
     #[cfg(feature = "plane-a2a")]
     fn task_get_scoped(&self, principal: &str, task_id: &str) -> Option<busbar_api::TaskRow> {
-        // A pure working-set read — the underlying `get_scoped` takes no `HostCtx`, so this is a thin
-        // `TASKS.*` call plus the `Task → busbar_api::TaskRow` boundary conversion. `Denied::NotYours`
-        // (no such task OR not this principal's) collapses to `None`, preserving indistinguishability.
+        // A pure working-set read — the underlying `get_scoped` takes no `HostCtx`, and the engine is
+        // now `TaskRow`-neutral so it hands back the row directly. `Denied::NotYours` (no such task OR
+        // not this principal's) collapses to `None`, preserving indistinguishability.
         crate::plane::taskstore::TASKS
             .get_scoped(principal, task_id)
             .ok()
-            .map(|t| t.to_row())
     }
 
     /// The `plane-a2a`-OFF twin: no task store is compiled in, so the read answers `None`.
@@ -740,10 +746,9 @@ impl busbar_substrate::plane_host::EngineHost for EngineHostImpl {
 
     #[cfg(feature = "plane-a2a")]
     fn task_get_unscoped(&self, task_id: &str) -> Option<busbar_api::TaskRow> {
-        // Pure read (operator / inbound-pushback path); no `HostCtx`. `None` when absent.
-        crate::plane::taskstore::TASKS
-            .get_unscoped(task_id)
-            .map(|t| t.to_row())
+        // Pure read (operator / inbound-pushback path); no `HostCtx`. The engine is `TaskRow`-neutral,
+        // so it hands back the row directly. `None` when absent.
+        crate::plane::taskstore::TASKS.get_unscoped(task_id)
     }
 
     /// The `plane-a2a`-OFF twin: no task store is compiled in, so the read answers `None`.
@@ -759,13 +764,15 @@ impl busbar_substrate::plane_host::EngineHost for EngineHostImpl {
         callback: Option<String>,
         now: u64,
     ) -> Result<busbar_api::TaskRow, String> {
-        // `set_push_callback` runs the SSRF floor + write-through to the durable sink and takes no
-        // `HostCtx`, so this is a thin call plus the `Task → busbar_api::TaskRow` boundary conversion.
-        // The engine's `TaskStoreError` (unknown task / store miss) renders (`Display`) to the seam's
-        // neutral `String`.
+        // The SSRF FLOOR is A2A domain logic and now runs HERE, at the caller boundary, BEFORE the
+        // neutral engine is asked to persist: a refusable URL is DROPPED (`None` reaches the store)
+        // and logged loudly, exactly as the pre-cleave in-engine `floor_push_callback` did. The engine
+        // then stores the already-cleared callback and makes no security decision. `set_push_callback`
+        // takes no `HostCtx`; the engine hands back the row directly and its neutral `TaskStoreError`
+        // (unknown task / store miss) renders (`Display`) to the seam's `String`.
+        let callback = crate::a2a::pushnotify::floor_callback(task_id, callback);
         crate::plane::taskstore::TASKS
             .set_push_callback(task_id, callback, now)
-            .map(|t| t.to_row())
             .map_err(|e| e.to_string())
     }
 

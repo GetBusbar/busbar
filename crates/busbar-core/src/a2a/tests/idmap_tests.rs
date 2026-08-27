@@ -32,7 +32,9 @@ fn own(principal: &str, task_id: &str) {
     let task = Task::submitted(task_id, "ctx-idmap", principal, Direction::Inbound, 1_000)
         .expect("a task with these fields is constructible");
     crate::plane::taskstore::with_global_task_host(|host| {
-        TASKS.submit(host, &task, task_id).expect("the row records");
+        TASKS
+            .submit(host, &task.to_row(), task_id)
+            .expect("the row records");
     });
 }
 

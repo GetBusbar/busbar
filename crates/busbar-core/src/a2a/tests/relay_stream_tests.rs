@@ -354,9 +354,13 @@ async fn an_interrupt_from_the_backend_is_relayed_transparently_and_pauses_the_t
         "the contextId the resume depends on must be busbar's, and unchanged: {body}"
     );
 
-    let task = crate::plane::taskstore::TASKS
-        .get_unscoped(&id)
-        .expect("the task exists");
+    // The engine is `TaskRow`-neutral; read it back through the codec for the `TaskState` assertions.
+    let task = crate::a2a::task::Task::from_row(
+        &crate::plane::taskstore::TASKS
+            .get_unscoped(&id)
+            .expect("the task exists"),
+    )
+    .expect("the row reads back");
     assert_eq!(
         task.state,
         TaskState::InputRequired,
@@ -396,7 +400,7 @@ async fn a_follow_up_on_the_same_context_resumes_the_paused_task_rather_than_ope
         crate::plane::taskstore::TASKS
             .get_unscoped(&first)
             .map(|t| t.state),
-        Some(TaskState::AuthRequired)
+        Some("auth-required".to_string())
     );
 
     // THE FOLLOW-UP: the caller supplies what was asked for, on the SAME contextId.
@@ -580,8 +584,7 @@ async fn a_legitimate_push_callback_is_accepted_and_recorded_on_the_task() {
         .get_unscoped(&id)
         .expect("the task exists");
     assert_eq!(
-        task.push_callback.as_deref(),
-        Some("https://hooks.example.test/cb"),
+        task.push_callback, "https://hooks.example.test/cb",
         "an accepted callback must be persisted on the task, or the interrupt has nowhere to go"
     );
 }
@@ -696,6 +699,7 @@ async fn an_interrupt_the_relay_produced_rehydrates_only_where_the_store_is_dura
         fresh.restore_from_store(
             host,
             busbar_substrate::plane::store::PlaneStoreView::narrow(store.clone()).as_ref(),
+            crate::a2a::task::readable_row,
         )
     })
     .expect("the rehydrate completes");
@@ -710,9 +714,12 @@ async fn an_interrupt_the_relay_produced_rehydrates_only_where_the_store_is_dura
         );
         return;
     }
-    let back = fresh
-        .get_unscoped(&id)
-        .expect("a durable backend restores the paused task");
+    let back = crate::a2a::task::Task::from_row(
+        &fresh
+            .get_unscoped(&id)
+            .expect("a durable backend restores the paused task"),
+    )
+    .expect("the row reads back");
     assert_eq!(
         back.state,
         TaskState::InputRequired,
@@ -762,8 +769,7 @@ async fn a_streamed_artifact_advances_the_durable_resume_cursor() {
         task.artifact_cursor
     );
     assert_eq!(
-        task.state,
-        TaskState::Completed,
+        task.state, "completed",
         "the stream's terminal event must land on the task"
     );
 }

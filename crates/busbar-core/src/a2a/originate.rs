@@ -317,7 +317,11 @@ pub(super) async fn refresh_listed_tasks(
     // move.
     let ours: HashMap<String, String> = crate::plane::taskstore::TASKS
         .list_scoped(principal)
-        .into_iter()
+        .iter()
+        // The engine is `TaskRow`-neutral; convert back to the canonical `Task` at this A2A boundary
+        // so the `is_terminal` / field reads below stay codec-side. Working-set rows are always
+        // readable.
+        .filter_map(|r| super::task::Task::from_row(r).ok())
         .filter(|t| t.agent_id == admitted.dispatch.agent_id && !t.state.is_terminal())
         .filter_map(|t| {
             let backend = super::idmap::backend_id_for(&t.principal, &t.task_id)?;

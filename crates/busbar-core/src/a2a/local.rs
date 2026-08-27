@@ -263,7 +263,11 @@ pub(crate) fn list_tasks(
     // below narrows that set rather than widening it.
     let mut rows: Vec<Task> = crate::plane::taskstore::TASKS
         .list_scoped(principal)
-        .into_iter()
+        .iter()
+        // The engine is `TaskRow`-neutral; this A2A caller converts back to the canonical `Task` at
+        // its boundary with the codec. Working-set rows were validated on the way in, so `from_row`
+        // never fails here — `filter_map` is belt-and-braces, not a silent drop of a real task.
+        .filter_map(|r| Task::from_row(r).ok())
         .filter(|t| context_id.is_empty() || t.context_id == context_id)
         .filter(|t| match wanted_state.as_deref() {
             None => true,

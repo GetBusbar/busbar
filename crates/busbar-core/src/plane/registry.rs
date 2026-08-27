@@ -269,7 +269,15 @@ impl PlaneBootCtx for BootCtx {
             "restore_task_log runs past the hydrate hook's store guard, so a store is present",
         );
         let restored = crate::plane_host::with_dispatch_scope(app, |host, _vt| {
-            crate::plane::taskstore::TASKS.restore_from_store(host, store.as_ref())
+            // The neutral engine rehydrate consults an A2A-codec predicate for whether each stored row
+            // is READABLE (a known state/direction token, a present identity); the terminal/active
+            // split is core's own neutral token check. Passing the codec predicate keeps the a2a
+            // classification a2a-side while this boot seam still names only `TaskRow`/`Rehydrated`.
+            crate::plane::taskstore::TASKS.restore_from_store(
+                host,
+                store.as_ref(),
+                crate::a2a::task::readable_row,
+            )
         });
         restored
             .map(|r| RestoredTasks {

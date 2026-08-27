@@ -207,7 +207,10 @@ fn a2a_task_chain_boot_verifies_from_frozen_bytes() {
         busbar_store_memory::MemoryStore::new(),
     ));
     let rehydrated = h
-        .host(|host| h.reg.restore_from_store(host, &store))
+        .host(|host| {
+            h.reg
+                .restore_from_store(host, &store, crate::a2a::task::readable_row)
+        })
         .expect("store read");
     assert!(
         rehydrated.chain_breaks.is_empty(),

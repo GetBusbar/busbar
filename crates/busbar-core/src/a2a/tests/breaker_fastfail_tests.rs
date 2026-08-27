@@ -331,8 +331,7 @@ async fn battery(binding: &str, submission: serde_json::Value) {
         .get_unscoped(&task_id)
         .unwrap_or_else(|| panic!("[{binding}] the named task must resolve in busbar's store"));
     assert_eq!(
-        task.state,
-        crate::a2a::task::TaskState::Rejected,
+        task.state, "rejected",
         "[{binding}] a breaker refusal is `rejected` — we did not accept this work — never `failed`"
     );
 }

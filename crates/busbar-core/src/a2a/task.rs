@@ -344,6 +344,58 @@ impl Task {
     }
 }
 
+/// MAP AN A2A STATE TRANSITION TO ITS PROVENANCE EVENT KIND. A2A DOMAIN LOGIC that moved to the a2a
+/// side at the D4 codec inversion: the neutral core engine only hash-chains and persists whatever
+/// `kind` it is handed, so the classification — which needs the [`TaskState`] enum — lives here and
+/// the resulting `&'static str` is passed INTO the engine's record path. The kind CONSTANTS are still
+/// core's (`crate::plane::provenance::EV_*`), so the emitted strings are unchanged; only the mapping
+/// moved.
+///
+/// `from` is the state BEFORE the move and it is load-bearing: an `interrupted → working` move is a
+/// RESUME, a distinct event from a fresh `working`, and the two are only separable by looking at the
+/// prior state. The fallthrough is `working`, matching the pre-cleave inline mapping byte-for-byte.
+pub(crate) fn event_kind_for_transition(from: TaskState, to: TaskState) -> &'static str {
+    use crate::plane::provenance::{EV_INTERRUPTED, EV_RESUMED, EV_TERMINAL, EV_WORKING};
+    match to {
+        TaskState::Working if from.is_interrupted() => EV_RESUMED,
+        TaskState::Working => EV_WORKING,
+        s if s.is_interrupted() => EV_INTERRUPTED,
+        s if s.is_terminal() => EV_TERMINAL,
+        _ => EV_WORKING,
+    }
+}
+
+/// THE TRANSITION PLAN the neutral engine applies under its working-set lock. Given the CURRENT
+/// persisted [`TaskRow`], reconstruct the canonical [`Task`], VALIDATE the move against the state
+/// machine, choose the provenance event `kind`, and project the new row back — all A2A domain logic
+/// the engine must not name. Returns the new row + kind on success, or the codec's rendered message
+/// on refusal (an illegal move, an unreadable current row), which the engine wraps into its neutral
+/// `Domain` error byte-identically to the pre-cleave `TaskStoreError::Task(TaskError)`. The new row's
+/// `updated_at` is `now` (the move's timestamp), which the engine also uses as the event `ts` — the
+/// same value the pre-cleave `transition(.., now, ..)` argument carried.
+pub(crate) fn plan_transition(
+    to: TaskState,
+    now: u64,
+) -> impl FnOnce(&busbar_api::TaskRow) -> Result<(busbar_api::TaskRow, &'static str), String> {
+    move |row| {
+        let mut task = Task::from_row(row).map_err(|e| e.to_string())?;
+        // Kind is chosen off the FROM-state (before the move), exactly as the pre-cleave engine did.
+        let kind = event_kind_for_transition(task.state, to);
+        task.transition_to(to, now).map_err(|e| e.to_string())?;
+        Ok((task.to_row(), kind))
+    }
+}
+
+/// THE RESTORE-ROW READABILITY PREDICATE the neutral engine's rehydrate consults. Answers `Ok(())`
+/// when the row parses as a canonical [`Task`] (a known state + direction token and a present
+/// identity) and `Err(rendered message)` otherwise — the exact classification the pre-cleave
+/// `restore_from_store` made inline with `Task::from_row`, moved to the a2a side so core names no
+/// codec. The terminal/active split is core's ([`crate::plane::taskstore`]'s neutral token check),
+/// applied only after this predicate confirms the token is one this binary knows.
+pub(crate) fn readable_row(row: &busbar_api::TaskRow) -> Result<(), String> {
+    Task::from_row(row).map(|_| ()).map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 #[path = "tests/task_tests.rs"]
 mod task_tests;

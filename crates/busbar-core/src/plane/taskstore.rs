@@ -47,7 +47,6 @@ use crate::audit::journal::NeutralBody;
 use crate::audit::{verify_chain, ChainBreak, Framing};
 
 use super::provenance::{self, EventInput};
-use crate::a2a::task::{Task, TaskError, TaskState};
 use crate::plane::store::{decode, task_record, PlaneStore, KIND_TASK, KIND_TASK_EVENT};
 use crate::plane_host::journal::PlaneJournalRecord;
 use busbar_api::{PlaneSelector, StoreError, StoreResult, TaskEventRow, TaskRow};
@@ -242,7 +241,16 @@ pub(crate) fn verify_task_event_rows(
 /// owns them, and holding every event of every long-running task would defeat a durable store.
 #[derive(Debug, Clone)]
 struct Entry {
-    task: Task,
+    row: TaskRow,
+}
+
+/// Is this canonical A2A task-state token TERMINAL? The engine needs the terminal/active split for
+/// the rehydrate skip, eviction and compaction, but it must not name the a2a `TaskState` — the four
+/// terminal tokens are part of [`TaskRow::state`]'s canonical closed domain, matched here as strings.
+/// Kept byte-identical with `crate::a2a::task::TaskState::is_terminal`, which owns the same set on the
+/// codec side; the tokens are fixed by the wire protocol, so the two agree by construction.
+fn is_terminal_state(state: &str) -> bool {
+    matches!(state, "completed" | "failed" | "canceled" | "rejected")
 }
 
 /// Why a scoped read was refused.
@@ -442,8 +450,12 @@ pub(crate) fn aim_global_task_sink(store: Option<Arc<dyn PlaneStore>>) {
 pub(crate) enum TaskStoreError {
     /// The task id is not in the working set.
     NoSuchTask(String),
-    /// The canonical type refused the move (see [`TaskError`]).
-    Task(TaskError),
+    /// The A2A CODEC refused the row or the move — carried as its already-rendered message so the
+    /// neutral engine never names the a2a `TaskError`. The caller (which owns the codec) produced the
+    /// string via the same `Display` the old `TaskStoreError::Task(TaskError)` printed, so the surface
+    /// a caller sees (`illegal task transition ...`, `unknown task state ...`, `task is missing ...`)
+    /// is byte-identical.
+    Domain(String),
     /// The durable write failed. Surfaced rather than swallowed: a transition that is not durable is
     /// a transition that a restart will lose, and the caller has to be able to decide.
     Store(StoreError),
@@ -453,15 +465,9 @@ impl std::fmt::Display for TaskStoreError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             TaskStoreError::NoSuchTask(id) => write!(f, "no such task `{id}`"),
-            TaskStoreError::Task(e) => write!(f, "{e}"),
+            TaskStoreError::Domain(e) => write!(f, "{e}"),
             TaskStoreError::Store(e) => write!(f, "{e}"),
         }
-    }
-}
-
-impl From<TaskError> for TaskStoreError {
-    fn from(e: TaskError) -> Self {
-        TaskStoreError::Task(e)
     }
 }
 
@@ -525,6 +531,7 @@ impl TaskRegistry {
         &self,
         host: HostCtx,
         store: &dyn PlaneStore,
+        readable: impl Fn(&TaskRow) -> Result<(), String>,
     ) -> StoreResult<Rehydrated> {
         let rows: Vec<TaskRow> = store
             .list_plane_records(KIND_TASK, &PlaneSelector::All)?
@@ -534,21 +541,25 @@ impl TaskRegistry {
         let mut out = Rehydrated::default();
         let mut tasks = self.tasks();
         for row in &rows {
-            let task = match Task::from_row(row) {
-                Ok(t) => t,
-                Err(e) => {
-                    crate::diagnostics::diag_error!(
-                        crate::diagnostics::PLANE_TASK_ROW_UNREADABLE,
-                        task_id = %row.task_id,
-                        error = %e,
-                        "a persisted A2A task row could not be read back; it is NOT resumable and \
-                         is being reported rather than skipped silently"
-                    );
-                    out.unreadable += 1;
-                    continue;
-                }
-            };
-            if task.state.is_terminal() {
+            // Whether the row PARSES is an A2A-codec judgement, so the caller hands the engine a
+            // neutral predicate (`Task::from_row` on the a2a side) that answers `Err(msg)` for an
+            // unknown state/direction or a missing identity — the exact set the pre-cleave
+            // `Task::from_row` refused. The engine never names the codec; it only classifies rows.
+            if let Err(e) = readable(row) {
+                crate::diagnostics::diag_error!(
+                    crate::diagnostics::PLANE_TASK_ROW_UNREADABLE,
+                    task_id = %row.task_id,
+                    error = %e,
+                    "a persisted A2A task row could not be read back; it is NOT resumable and \
+                     is being reported rather than skipped silently"
+                );
+                out.unreadable += 1;
+                continue;
+            }
+            // The row parsed, so its `state` token is one this binary knows; the terminal/active
+            // split is on the canonical token (see [`is_terminal_state`]), byte-identical to the old
+            // `task.state.is_terminal()`.
+            if is_terminal_state(&row.state) {
                 out.terminal += 1;
                 continue;
             }
@@ -558,21 +569,19 @@ impl TaskRegistry {
             // cached). A break is reported and the chain continues from the broken tail: refusing to
             // continue would mean anybody who can corrupt one event can silently stop all further
             // provenance for that task.
-            let bodies = store.list_plane_records(
-                KIND_TASK_EVENT,
-                &PlaneSelector::Parent(task.task_id.clone()),
-            )?;
-            if let Some(brk) = self.seed_chain(host, &task.task_id, &bodies)? {
+            let bodies = store
+                .list_plane_records(KIND_TASK_EVENT, &PlaneSelector::Parent(row.task_id.clone()))?;
+            if let Some(brk) = self.seed_chain(host, &row.task_id, &bodies)? {
                 crate::diagnostics::diag_error!(
                     crate::diagnostics::PLANE_TASK_CHAIN_VERIFY_FAILED,
-                    task_id = %task.task_id,
+                    task_id = %row.task_id,
                     break_detail = %brk,
                     "A2A per-task provenance CHAIN VERIFICATION FAILED on restore — the \
                      persisted events do not verify against their own hash chain"
                 );
                 out.chain_breaks.push(brk);
             }
-            tasks.insert(task.task_id.clone(), Entry { task });
+            tasks.insert(row.task_id.clone(), Entry { row: row.clone() });
             out.active += 1;
         }
         Ok(out)
@@ -614,33 +623,35 @@ impl TaskRegistry {
     pub(crate) fn submit(
         &self,
         host: HostCtx,
-        task: &Task,
+        row: &TaskRow,
         request_id: &str,
-    ) -> Result<Task, TaskStoreError> {
+    ) -> Result<TaskRow, TaskStoreError> {
         // The task ROW is upserted first, then the genesis event is minted+appended+committed by the
         // host-side journal (the write-ordering invariant is the journal's) — the same order as
-        // before: row durable before the event, working set updated only after both succeed.
+        // before: row durable before the event, working set updated only after both succeed. The
+        // caller handed a `TaskRow` it built from the canonical `Task` via the a2a-side codec, so the
+        // engine stores it as-is and names no a2a type.
         if let Some(store) = self.sink() {
             store
-                .upsert_plane_record(&task_record(&task.to_row()).map_err(TaskStoreError::Store)?)
+                .upsert_plane_record(&task_record(row).map_err(TaskStoreError::Store)?)
                 .map_err(TaskStoreError::Store)?;
         }
         self.append_event(
             host,
-            &task.task_id,
+            &row.task_id,
             EventInput {
                 kind: provenance::EV_SUBMITTED,
-                context_id: task.context_id.clone(),
-                principal: task.principal.clone(),
-                agent_id: task.agent_id.clone(),
-                state: task.state.as_str().to_string(),
+                context_id: row.context_id.clone(),
+                principal: row.principal.clone(),
+                agent_id: row.agent_id.clone(),
+                state: row.state.clone(),
                 request_id: request_id.to_string(),
-                ts: task.created_at,
+                ts: row.created_at,
             },
         )?;
         self.tasks()
-            .insert(task.task_id.clone(), Entry { task: task.clone() });
-        Ok(task.clone())
+            .insert(row.task_id.clone(), Entry { row: row.clone() });
+        Ok(row.clone())
     }
 
     /// TRANSITION a task, emitting the matching chained provenance event and writing both through.
@@ -649,24 +660,31 @@ impl TaskRegistry {
     /// leaves the working set agreeing with the store rather than ahead of it. Being ahead is the
     /// worse of the two: it makes the process believe a transition happened that a restart will
     /// then un-happen.
-    pub(crate) fn transition(
+    pub(crate) fn transition<F>(
         &self,
         host: HostCtx,
         task_id: &str,
-        to: TaskState,
-        now: u64,
         request_id: &str,
-    ) -> Result<Task, TaskStoreError> {
+        plan: F,
+    ) -> Result<TaskRow, TaskStoreError>
+    where
+        F: FnOnce(&TaskRow) -> Result<(TaskRow, &'static str), String>,
+    {
         let mut tasks = self.tasks();
         let entry = tasks
             .get_mut(task_id)
             .ok_or_else(|| TaskStoreError::NoSuchTask(task_id.to_string()))?;
 
-        let mut candidate = entry.task.clone();
-        // The event kind is chosen by A2A domain logic (record-shape side, `provenance`) BEFORE the
-        // write path, off the from-state and the to-state — never fused into the store append.
-        let kind = provenance::event_kind_for_transition(entry.task.state, to);
-        candidate.transition_to(to, now)?;
+        // THE STATE-MACHINE DECISION IS THE CALLER'S, made HERE under the working-set lock so it is
+        // still ATOMIC with the write. `plan` is handed the CURRENT persisted row and returns the new
+        // row plus the provenance event `kind` it chose from the transition — both A2A domain logic
+        // (validate the move, classify resumed/working/interrupted/terminal) that must not live in
+        // core. A rejected move (`Err`) writes NOTHING: nothing below runs until `plan` returns `Ok`,
+        // and the rendered message rides the neutral `Domain` variant byte-identically to the old
+        // `TaskStoreError::Task(TaskError::IllegalTransition{..})`. The new row's `updated_at` is the
+        // move's timestamp (the caller set it), which is also the event `ts` — the same value the old
+        // `now` argument carried, so no separate clock reaches the engine.
+        let (candidate, kind) = plan(&entry.row).map_err(TaskStoreError::Domain)?;
 
         self.write_through(
             host,
@@ -676,12 +694,12 @@ impl TaskRegistry {
                 context_id: candidate.context_id.clone(),
                 principal: candidate.principal.clone(),
                 agent_id: candidate.agent_id.clone(),
-                state: candidate.state.as_str().to_string(),
+                state: candidate.state.clone(),
                 request_id: request_id.to_string(),
-                ts: now,
+                ts: candidate.updated_at,
             },
         )?;
-        entry.task = candidate.clone();
+        entry.row = candidate.clone();
         Ok(candidate)
     }
 
@@ -693,15 +711,15 @@ impl TaskRegistry {
     fn write_through(
         &self,
         host: HostCtx,
-        task: &Task,
+        row: &TaskRow,
         event: EventInput,
     ) -> Result<(), TaskStoreError> {
         if let Some(store) = self.sink() {
             store
-                .upsert_plane_record(&task_record(&task.to_row()).map_err(TaskStoreError::Store)?)
+                .upsert_plane_record(&task_record(row).map_err(TaskStoreError::Store)?)
                 .map_err(TaskStoreError::Store)?;
         }
-        self.append_event(host, &task.task_id, event)?;
+        self.append_event(host, &row.task_id, event)?;
         Ok(())
     }
 
@@ -758,12 +776,12 @@ impl TaskRegistry {
         agent_id: &str,
         now: u64,
         request_id: &str,
-    ) -> Result<Task, TaskStoreError> {
+    ) -> Result<TaskRow, TaskStoreError> {
         let mut tasks = self.tasks();
         let entry = tasks
             .get_mut(task_id)
             .ok_or_else(|| TaskStoreError::NoSuchTask(task_id.to_string()))?;
-        let mut candidate = entry.task.clone();
+        let mut candidate = entry.row.clone();
         candidate.agent_id = agent_id.to_string();
         candidate.updated_at = now;
         self.write_through(
@@ -774,12 +792,12 @@ impl TaskRegistry {
                 context_id: candidate.context_id.clone(),
                 principal: candidate.principal.clone(),
                 agent_id: candidate.agent_id.clone(),
-                state: candidate.state.as_str().to_string(),
+                state: candidate.state.clone(),
                 request_id: request_id.to_string(),
                 ts: now,
             },
         )?;
-        entry.task = candidate.clone();
+        entry.row = candidate.clone();
         Ok(candidate)
     }
 
@@ -811,13 +829,13 @@ impl TaskRegistry {
         // touches nothing else on the row — straight to the journal, no task-row upsert.
         let event = EventInput {
             kind,
-            context_id: entry.task.context_id.clone(),
-            principal: entry.task.principal.clone(),
-            agent_id: entry.task.agent_id.clone(),
+            context_id: entry.row.context_id.clone(),
+            principal: entry.row.principal.clone(),
+            agent_id: entry.row.agent_id.clone(),
             // The state the task was in when the notification carrying it was attempted — the
             // notification body is built from exactly this, so the record says what the receiver
             // was told, not merely that it was told something.
-            state: entry.task.state.as_str().to_string(),
+            state: entry.row.state.clone(),
             request_id: request_id.to_string(),
             ts: now,
         };
@@ -837,15 +855,15 @@ impl TaskRegistry {
         cursor: u64,
         now: u64,
         request_id: &str,
-    ) -> Result<Task, TaskStoreError> {
+    ) -> Result<TaskRow, TaskStoreError> {
         let mut tasks = self.tasks();
         let entry = tasks
             .get_mut(task_id)
             .ok_or_else(|| TaskStoreError::NoSuchTask(task_id.to_string()))?;
-        if cursor <= entry.task.artifact_cursor {
-            return Ok(entry.task.clone());
+        if cursor <= entry.row.artifact_cursor {
+            return Ok(entry.row.clone());
         }
-        let mut candidate = entry.task.clone();
+        let mut candidate = entry.row.clone();
         candidate.artifact_cursor = cursor;
         candidate.updated_at = now;
         self.write_through(
@@ -856,12 +874,12 @@ impl TaskRegistry {
                 context_id: candidate.context_id.clone(),
                 principal: candidate.principal.clone(),
                 agent_id: candidate.agent_id.clone(),
-                state: candidate.state.as_str().to_string(),
+                state: candidate.state.clone(),
                 request_id: request_id.to_string(),
                 ts: now,
             },
         )?;
-        entry.task = candidate.clone();
+        entry.row = candidate.clone();
         Ok(candidate)
     }
 
@@ -873,76 +891,64 @@ impl TaskRegistry {
     /// fresh resolution before every single delivery, because a durable row outlives the DNS answer
     /// that was checked when it was written.
     ///
-    /// What this method adds is the part neither of those can provide: a floor. It used to take a
-    /// bare `Option<String>` and persist whatever it was handed, with a doc comment asserting the
-    /// caller had validated. That made the tree safe by COINCIDENCE OF CALL ORDER — true of the one
-    /// caller that existed, and silently untrue for the next one, or for a row somebody wrote into
-    /// the governance store directly. So the resolver-free half of the guard runs here too, and a
-    /// URL it refuses is DROPPED rather than stored.
-    ///
-    /// Dropped rather than returned as an error, deliberately. This is a floor under a check that
-    /// has already happened at the surface where the caller is present to be told; by the time a
-    /// refusable URL reaches this method something upstream has already failed to do its job, and
-    /// the useful response is to make the callback not exist and say so loudly in the log, not to
-    /// fail a task the caller is owed. The registration path still answers `400` at the ingress.
+    /// What the SSRF FLOOR adds — a defence-in-depth structural refusal for a URL that reaches the
+    /// store without having been validated — is A2A domain logic and now runs at the A2A CALLER
+    /// (`crate::a2a::pushnotify::floor_callback`, invoked by the `EngineHost` seam BEFORE this
+    /// method), so the neutral engine persists an already-cleared callback and makes no security
+    /// decision of its own. The refusal semantics are byte-identical: a refused URL is DROPPED
+    /// (`None` reaches here) and logged loudly a2a-side, never surfaced as an error that would fail a
+    /// task the caller is owed. The registration path still answers `400` at the ingress.
     pub(crate) fn set_push_callback(
         &self,
         task_id: &str,
         callback: Option<String>,
         now: u64,
-    ) -> Result<Task, TaskStoreError> {
-        // The SSRF floor is A2A domain logic and runs HERE, as a distinct pre-step, so the store-write
-        // path below carries no security decision of its own — it persists whatever the floor already
-        // cleared. The floor stays AT the store boundary on purpose (defence-in-depth under the
-        // ingress/delivery checks); it is factored to a named helper, not moved upstream, because
-        // moving it would remove exactly the floor its own doc says the tree must not depend on
-        // call-order for.
-        let callback = floor_push_callback(task_id, callback);
+    ) -> Result<TaskRow, TaskStoreError> {
         let mut tasks = self.tasks();
         let entry = tasks
             .get_mut(task_id)
             .ok_or_else(|| TaskStoreError::NoSuchTask(task_id.to_string()))?;
-        let mut candidate = entry.task.clone();
-        candidate.push_callback = callback;
+        let mut candidate = entry.row.clone();
+        // `TaskRow.push_callback` is a `String`; `None` is the empty string, matching the old
+        // `Task.push_callback: Option<String>` projection through `Task::to_row`.
+        candidate.push_callback = callback.unwrap_or_default();
         candidate.updated_at = now;
         if let Some(store) = self.sink() {
             store
-                .upsert_plane_record(
-                    &task_record(&candidate.to_row()).map_err(TaskStoreError::Store)?,
-                )
+                .upsert_plane_record(&task_record(&candidate).map_err(TaskStoreError::Store)?)
                 .map_err(TaskStoreError::Store)?;
         }
-        entry.task = candidate.clone();
+        entry.row = candidate.clone();
         Ok(candidate)
     }
 
     /// SCOPED READ. The authorization gate for `GetTask`: a caller sees its own tasks and nothing
     /// else, and cannot tell a foreign id from a nonexistent one.
-    pub(crate) fn get_scoped(&self, principal: &str, task_id: &str) -> Result<Task, Denied> {
-        // An EMPTY principal never matches, even against a row that somehow carried one. `Task`
-        // refuses to construct with an empty principal, so this is belt-and-braces against a future
-        // caller that reaches here with an unauthenticated identity: an empty-equals-empty match
-        // would turn "not authenticated" into "owns every unattributed task".
+    pub(crate) fn get_scoped(&self, principal: &str, task_id: &str) -> Result<TaskRow, Denied> {
+        // An EMPTY principal never matches, even against a row that somehow carried one. The a2a codec
+        // refuses to construct a `Task` with an empty principal, so this is belt-and-braces against a
+        // future caller that reaches here with an unauthenticated identity: an empty-equals-empty
+        // match would turn "not authenticated" into "owns every unattributed task".
         if principal.is_empty() {
             return Err(Denied::NotYours);
         }
         match self.tasks().get(task_id) {
-            Some(e) if e.task.principal == principal => Ok(e.task.clone()),
+            Some(e) if e.row.principal == principal => Ok(e.row.clone()),
             _ => Err(Denied::NotYours),
         }
     }
 
     /// SCOPED LIST. The authorization gate for `ListTasks`, sorted by task id so the result is
     /// deterministic (a listing whose order varies makes a diff between two calls unreadable).
-    pub(crate) fn list_scoped(&self, principal: &str) -> Vec<Task> {
+    pub(crate) fn list_scoped(&self, principal: &str) -> Vec<TaskRow> {
         if principal.is_empty() {
             return Vec::new();
         }
-        let mut out: Vec<Task> = self
+        let mut out: Vec<TaskRow> = self
             .tasks()
             .values()
-            .filter(|e| e.task.principal == principal)
-            .map(|e| e.task.clone())
+            .filter(|e| e.row.principal == principal)
+            .map(|e| e.row.clone())
             .collect();
         out.sort_by(|a, b| a.task_id.cmp(&b.task_id));
         out
@@ -950,8 +956,8 @@ impl TaskRegistry {
 
     /// UNSCOPED read — for the retention sweep and the operator surface, never for a caller.
     /// Named so that a call site using it for a caller read is visible in review.
-    pub(crate) fn get_unscoped(&self, task_id: &str) -> Option<Task> {
-        self.tasks().get(task_id).map(|e| e.task.clone())
+    pub(crate) fn get_unscoped(&self, task_id: &str) -> Option<TaskRow> {
+        self.tasks().get(task_id).map(|e| e.row.clone())
     }
 
     /// How many tasks are in the working set. Active + interrupted only — terminal tasks are not
@@ -969,7 +975,7 @@ impl TaskRegistry {
     pub(crate) fn evict_terminal(&self, host: HostCtx, task_id: &str) -> bool {
         let mut tasks = self.tasks();
         match tasks.get(task_id) {
-            Some(e) if e.task.state.is_terminal() => {
+            Some(e) if is_terminal_state(&e.row.state) => {
                 tasks.remove(task_id);
                 // Release the host-side chain position too, in lockstep with the working set — the
                 // durable events stay in the store, but a terminal task takes no more appends, so its
@@ -999,7 +1005,7 @@ impl TaskRegistry {
         let mut tasks = self.tasks();
         let dropped: Vec<String> = tasks
             .iter()
-            .filter(|(_, e)| e.task.state.is_terminal() && e.task.updated_at < before)
+            .filter(|(_, e)| is_terminal_state(&e.row.state) && e.row.updated_at < before)
             .map(|(id, _)| id.clone())
             .collect();
         for id in &dropped {
@@ -1032,34 +1038,6 @@ impl TaskRegistry {
             Ok(()) => Ok(Ok(events.len())),
             Err(brk) => Ok(Err(brk)),
         }
-    }
-}
-
-/// THE PUSH-CALLBACK SSRF FLOOR — the resolver-free half of the guard, applied at the store boundary.
-///
-/// A2A domain logic, factored OUT of [`TaskRegistry::set_push_callback`]'s store-write path so that
-/// method persists what this already cleared and makes no security decision inline. A URL the
-/// structural guard refuses is DROPPED (returned `None`) rather than stored, and the drop is logged
-/// loudly: by the time a refusable URL reaches the store something upstream already failed to
-/// validate, and the useful response is to make the callback not exist, not to fail a task the caller
-/// is owed. The full resolving SSRF decision still runs TWICE elsewhere (`ingress::invoke` before the
-/// registration is accepted, `a2a::pushdeliver` before every delivery); this is the floor under both.
-fn floor_push_callback(task_id: &str, callback: Option<String>) -> Option<String> {
-    match callback {
-        Some(url) => match crate::a2a::pushnotify::structural_refusal(&url) {
-            Some(refusal) => {
-                crate::diagnostics::diag_error!(
-                    crate::diagnostics::PLANE_SSRF_CALLBACK_AT_STORE,
-                    task = %task_id,
-                    error = %refusal,
-                    "a2a: a push callback the SSRF guard refuses reached the task store and was \
-                     DROPPED; the caller that stored it did not validate first"
-                );
-                None
-            }
-            None => Some(url),
-        },
-        None => None,
     }
 }
 

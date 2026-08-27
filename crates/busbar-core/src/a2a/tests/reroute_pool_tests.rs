@@ -250,8 +250,9 @@ async fn an_accepted_task_stays_pinned_to_its_member_and_a_tripped_pin_refuses_t
     let task = crate::plane::taskstore::TASKS
         .get_unscoped(&task_id)
         .expect("the task row survives a refused verb");
-    assert_ne!(task.state, crate::a2a::task::TaskState::Rejected);
-    assert_ne!(task.state, crate::a2a::task::TaskState::Failed);
+    // The engine is `TaskRow`-neutral; `state` is the canonical token string.
+    assert_ne!(task.state, "rejected");
+    assert_ne!(task.state, "failed");
 }
 
 /// THE PIN RULE: `planner-b` approved under a DIFFERENT card fingerprint is not interchangeable —

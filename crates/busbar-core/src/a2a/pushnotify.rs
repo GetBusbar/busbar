@@ -250,6 +250,35 @@ pub(crate) fn structural_refusal(url: &str) -> Option<PushNotifyError> {
     structural_check(url).err()
 }
 
+/// THE PUSH-CALLBACK SSRF FLOOR — the resolver-free half of the guard, applied at the A2A CALLER
+/// boundary (`crate::plane_host::EngineHostImpl::task_set_push_callback`) BEFORE the neutral task
+/// store is asked to persist the callback. A2A domain logic that moved OUT of the core engine at the
+/// D4 codec inversion so `taskstore::set_push_callback` makes no security decision and stores an
+/// already-cleared callback. A URL the structural guard refuses is DROPPED (returned `None`) rather
+/// than stored, and the drop is logged loudly: by the time a refusable URL reaches the store
+/// something upstream already failed to validate, and the useful response is to make the callback not
+/// exist, not to fail a task the caller is owed. The full resolving SSRF decision still runs TWICE
+/// elsewhere (`ingress::invoke` before the registration is accepted, `a2a::pushdeliver` before every
+/// delivery); this is the floor under both, byte-identical to the pre-cleave `floor_push_callback`.
+pub(crate) fn floor_callback(task_id: &str, callback: Option<String>) -> Option<String> {
+    match callback {
+        Some(url) => match structural_refusal(&url) {
+            Some(refusal) => {
+                crate::diagnostics::diag_error!(
+                    crate::diagnostics::PLANE_SSRF_CALLBACK_AT_STORE,
+                    task = %task_id,
+                    error = %refusal,
+                    "a2a: a push callback the SSRF guard refuses reached the task store and was \
+                     DROPPED; the caller that stored it did not validate first"
+                );
+                None
+            }
+            None => Some(url),
+        },
+        None => None,
+    }
+}
+
 /// VALIDATE a caller-supplied (or busbar-registered) callback URL against the addresses it resolves
 /// to RIGHT NOW, and pin those addresses.
 ///

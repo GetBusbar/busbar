@@ -283,7 +283,8 @@ async fn the_backends_reply_comes_back_under_busbars_own_task_identity() {
     let task = crate::plane::taskstore::TASKS
         .get_unscoped(&id)
         .expect("the task busbar opened is in the working set");
-    assert_eq!(task.state, crate::a2a::task::TaskState::Completed);
+    // The engine is `TaskRow`-neutral; `state` is the canonical token string.
+    assert_eq!(task.state, "completed");
 }
 
 /// A FAILED HOP ENDS THE TASK AS `failed`, rather than leaving it `submitted` forever.
@@ -305,8 +306,7 @@ async fn a_failed_hop_ends_the_task_as_failed_rather_than_leaving_it_submitted()
         .get_unscoped(&id)
         .expect("the task busbar opened is in the working set");
     assert_eq!(
-        task.state,
-        crate::a2a::task::TaskState::Failed,
+        task.state, "failed",
         "a task whose hop can never complete must be terminal, not left `submitted`"
     );
 }
@@ -634,8 +634,7 @@ async fn a_registration_demoted_between_admission_and_the_socket_is_not_reached(
         .get_unscoped(&id)
         .expect("the task exists");
     assert_ne!(
-        task.state,
-        crate::a2a::task::TaskState::Failed,
+        task.state, "failed",
         "a demotion must not terminate the caller's task"
     );
 }
@@ -961,7 +960,7 @@ async fn a_json_rpc_error_from_the_backend_is_a_failed_hop_carrying_its_code_and
             .get_unscoped(&id)
             .expect("the task exists")
             .state,
-        crate::a2a::task::TaskState::Failed,
+        "failed",
     );
 }
 

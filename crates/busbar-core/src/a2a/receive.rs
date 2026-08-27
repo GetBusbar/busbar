@@ -2787,7 +2787,10 @@ fn addressed_task(
 fn resumable_task(principal: &str, context_id: &str, agent_id: &str) -> Option<super::task::Task> {
     let mut candidates: Vec<super::task::Task> = taskstore::TASKS
         .list_scoped(principal)
-        .into_iter()
+        .iter()
+        // The engine is `TaskRow`-neutral; convert back to the canonical `Task` at this A2A boundary
+        // so the `is_interrupted` / field reads stay codec-side. Working-set rows are always readable.
+        .filter_map(|r| super::task::Task::from_row(r).ok())
         .filter(|t| {
             t.context_id == context_id && t.agent_id == agent_id && t.state.is_interrupted()
         })

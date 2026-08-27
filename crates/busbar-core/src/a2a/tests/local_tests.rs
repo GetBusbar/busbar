@@ -31,10 +31,17 @@ fn open(principal: &str, task_id: &str, context_id: &str, state: TaskState, now:
     let task = Task::submitted(task_id, context_id, principal, Direction::Inbound, now)
         .expect("a task with these fields is constructible");
     crate::plane::taskstore::with_global_task_host(|host| {
-        TASKS.submit(host, &task, task_id).expect("the row records");
+        TASKS
+            .submit(host, &task.to_row(), task_id)
+            .expect("the row records");
         if state != TaskState::Submitted {
             TASKS
-                .transition(host, task_id, state, now, task_id)
+                .transition(
+                    host,
+                    task_id,
+                    task_id,
+                    crate::a2a::task::plan_transition(state, now),
+                )
                 .expect("the transition is legal");
         }
     });
@@ -411,9 +418,8 @@ async fn a_push_config_is_created_read_listed_and_deleted_at_busbar() {
         TASKS
             .get_scoped(me, "push-crud")
             .expect("the row is this caller's")
-            .push_callback
-            .as_deref(),
-        Some(HOOK)
+            .push_callback,
+        HOOK
     );
 
     let read = result(local::get_push_config(
@@ -464,7 +470,7 @@ async fn a_push_config_is_created_read_listed_and_deleted_at_busbar() {
             .get_scoped(me, "push-crud")
             .expect("row")
             .push_callback,
-        None
+        ""
     );
 
     let gone = local::get_push_config(
@@ -529,7 +535,7 @@ async fn a_private_callback_is_refused_by_the_same_guard_as_the_inline_path() {
             .get_scoped(me, "push-ssrf")
             .expect("row")
             .push_callback,
-        None,
+        "",
         "a refused callback must not reach the durable row"
     );
 }
@@ -719,7 +725,7 @@ async fn a_push_config_cannot_be_attached_to_another_tenants_task() {
             .get_scoped(owner, "push-owned")
             .expect("row")
             .push_callback,
-        None
+        ""
     );
 }
 
@@ -947,9 +953,8 @@ async fn delete_push_config_cannot_disarm_another_principals_callback() {
         TASKS
             .get_scoped(owner, "cfgdel-owned")
             .expect("the owner's row")
-            .push_callback
-            .as_deref(),
-        Some(HOOK)
+            .push_callback,
+        HOOK
     );
 
     // AND THE OWNER CAN STILL DELETE IT — a boundary that also refused the owner would pass the
@@ -970,7 +975,7 @@ async fn delete_push_config_cannot_disarm_another_principals_callback() {
             .get_scoped(owner, "cfgdel-owned")
             .expect("the owner's row")
             .push_callback,
-        None
+        ""
     );
 }
 

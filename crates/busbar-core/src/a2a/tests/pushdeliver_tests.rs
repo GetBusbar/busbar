@@ -663,7 +663,7 @@ async fn a_task_in_the_registry(
     let task = task_with_callback(task_id, state);
     crate::plane::taskstore::with_global_task_host(|host| {
         crate::plane::taskstore::TASKS
-            .submit(host, &task, "req-1")
+            .submit(host, &task.to_row(), "req-1")
             .expect("the task is admitted");
     });
     (task, ledger, guard)
