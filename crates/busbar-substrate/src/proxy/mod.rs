@@ -79,6 +79,13 @@ pub async fn read_capped(r: reqwest::Response, cap: usize) -> (Bytes, ReadEnd) {
     (Bytes::from(buf), end)
 }
 
+/// The `application/json` media type — the default `Content-Type`/`Accept` for the JSON REST
+/// surfaces. Hoisted to one const so the literal isn't repeated across egress/health/observability.
+/// Lives here (not `pub(crate)` in core) so a plane crate and the relocated `OperationHandler`
+/// codec surface name it without reaching into `busbar-core`; core's `proxy` re-exports it for its
+/// own `crate::proxy::APPLICATION_JSON` call sites.
+pub const APPLICATION_JSON: &str = "application/json";
+
 /// Streaming MIME type for SSE (Server-Sent Events) responses — the `Content-Type` value that
 /// signals an open event-stream to the client. Neutral protocol-boundary content-type named by
 /// core's proxy engine and by the plane crates; lives here so a plane names it without reaching

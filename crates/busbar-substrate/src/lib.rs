@@ -37,6 +37,11 @@ pub mod ingress {
 pub mod billing;
 pub mod breaker;
 pub mod duration;
+// The neutral protocol handler matrix — `OperationHandler`/`RequestHandler` and their codec-cell
+// value families (`Cell`/`cell_of`/`IngressReject`/`CodecError`/`TranslateCodec`). Relocated from
+// `busbar-core` so the dialect crates implement them here; core re-exports each from
+// `busbar_core::handlers`. The engine dispatch handle and registry-resolved chat/op_for stay in core.
+pub mod handlers;
 // The neutral cross-plane IR leaves (`Invoke`/`Subscribe` request/response data) and the wire/egress
 // value types (`WireBody`/`EgressCtx`). Pure value families a plane crate names directly; core keeps
 // the `IrFacts` projection + the `IrHandle` wrappers and re-exports these types from their old paths.

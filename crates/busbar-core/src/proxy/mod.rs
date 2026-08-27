@@ -57,17 +57,13 @@ pub(crate) fn route_policy_headers_enabled() -> bool {
     ROUTE_POLICY_HEADERS_ENABLED.get().copied().unwrap_or(false)
 }
 
-/// The `application/json` media type — the default `Content-Type`/`Accept` for the JSON REST
-/// surfaces. Hoisted to one const so the literal isn't repeated across egress/health/observability.
-pub const APPLICATION_JSON: &str = "application/json";
-
-// TEXT_EVENT_STREAM, DISPOSITION_TRANSIENT, POOL_LABEL_UNRESOLVED and
+// APPLICATION_JSON, TEXT_EVENT_STREAM, DISPOSITION_TRANSIENT, POOL_LABEL_UNRESOLVED and
 // PROVIDER_CODE_CONTEXT_LENGTH now live in the neutral substrate (busbar_substrate::proxy) so the
 // plane crates name them without reaching into busbar-core; re-exported below for core's own
 // `crate::proxy::*` call sites.
 pub use busbar_substrate::proxy::{
-    DISPOSITION_TRANSIENT, EGRESS_UA_DEFAULT, POOL_LABEL_UNRESOLVED, PROVIDER_CODE_CONTEXT_LENGTH,
-    TEXT_EVENT_STREAM,
+    APPLICATION_JSON, DISPOSITION_TRANSIENT, EGRESS_UA_DEFAULT, POOL_LABEL_UNRESOLVED,
+    PROVIDER_CODE_CONTEXT_LENGTH, TEXT_EVENT_STREAM,
 };
 
 /// Canonical error-KIND tokens: produced by `cross_protocol_error_kind` / passed to

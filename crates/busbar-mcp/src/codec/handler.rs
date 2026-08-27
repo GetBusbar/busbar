@@ -44,7 +44,7 @@
 //! cells already read — not so that the surface can be claimed before it exists.
 
 use busbar_api::operation::Operation;
-use busbar_core::handlers::{Cell, OperationHandler, RequestHandler};
+use busbar_substrate::handlers::{Cell, OperationHandler, RequestHandler};
 
 use super::invoke::InvokeOperation;
 use super::subscribe::SubscribeOperation;
@@ -91,7 +91,7 @@ impl RequestHandler for McpRequestHandler {
     }
 
     fn operation_handler(&self, op: Operation) -> Option<&dyn OperationHandler> {
-        busbar_core::handlers::cell_of(CELLS, op)
+        busbar_substrate::handlers::cell_of(CELLS, op)
     }
 
     fn upstream_path(&self, _ctx: &busbar_substrate::wire::EgressCtx) -> String {

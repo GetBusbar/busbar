@@ -11,7 +11,7 @@ use bytes::Bytes;
 
 use rmcp::model::{SubscribeRequestParams, UnsubscribeRequestParams};
 
-use busbar_core::handlers::{CodecError, IngressReject, OperationHandler};
+use busbar_substrate::handlers::{CodecError, IngressReject, OperationHandler};
 use busbar_substrate::ir::handle::IrHandle;
 use busbar_substrate::ir::neutral_handles::{SubscribeReqHandle, SubscribeRespHandle};
 use busbar_substrate::ir::subscribe::{SubscribeIntent, SubscribeReq, SubscribeResp};
