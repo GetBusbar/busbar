@@ -676,9 +676,10 @@ pub(crate) type RoleBindings =
 ///   introspection floor, which standard OIDC cannot provide).
 /// - `both` — strongest: time-bound AND carries the IdP subject.
 ///
-/// Config grammar only in 1.6.0's first auth increment: the block is PARSED, VALIDATED and CARRIED,
-/// but the mint path does not yet consult it (enforcement is a later, Store-touching increment), so
-/// existing behavior is byte-identical. `rename_all = "kebab-case"` fixes the wire spelling
+/// 1.6.0 auth grammar: the mode is PARSED, VALIDATED, CARRIED and CONSULTED — a mint whose requested
+/// mode falls outside the policy's allowed set is refused at `MintPolicy::check_mint` (`admin/mod.rs`).
+/// An omitted `auth.policy.binding_modes` allows every mode, so a deployment that configures none
+/// keeps byte-identical existing behavior. `rename_all = "kebab-case"` fixes the wire spelling
 /// (`time-bound` / `user-bound` / `both`); an enum (not a bare string) means an unknown mode fails
 /// boot rather than sitting inert, and adding a mode later is an additive enum-variant append.
 #[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq)]
@@ -707,8 +708,8 @@ impl BindingMode {
 
 /// One per-role MINT CEILING (`auth.policy.mint_ceilings.<role>:`), 1.6.0. The upper bound on what a
 /// DELEGATED minter holding that role may ever mint — the config-side DEFINITION of the ceiling whose
-/// CORE-SIDE enforcement (a later increment) mitigates the compromised-app-admin threat (review
-/// H2/H3). All fields optional; an omitted ceiling for a role imposes no additional cap here.
+/// CORE-SIDE enforcement (`MintPolicy::check_mint`, `admin/mod.rs`) mitigates the compromised-app-admin
+/// threat (review H2/H3). All fields optional; an omitted ceiling for a role imposes no additional cap here.
 /// `deny_unknown_fields`: a typo'd cap key must fail boot, never silently widen the ceiling.
 #[derive(Debug, Deserialize, Clone, Default, PartialEq)]
 #[serde(deny_unknown_fields, default)]
@@ -727,19 +728,21 @@ pub(crate) struct MintCeilingCfg {
 /// The `auth.policy:` block (1.6.0, ADDITIVE) — operator-authored token-mint POLICY, the config half
 /// of the config-vs-store split (policy DECLARES how minting is bounded; the minted tokens themselves
 /// are DATA → store). Every field optional: an omitted `auth.policy:` block is `Default` and changes
-/// nothing (byte-identical existing behavior — this increment parses/validates/carries the block but
-/// does not yet enforce it; enforcement is the multi-mint / mint-ceiling increments).
+/// nothing (byte-identical existing behavior). A configured block IS enforced: `self_mint` gates the
+/// self-serve path (`auth/self_keys.rs`) and the binding-mode / TTL / pool ceilings are applied at
+/// `MintPolicy::check_mint` (`admin/mod.rs`).
 /// `deny_unknown_fields`: a typo'd policy key must fail boot, not silently disable a control.
 #[derive(Debug, Deserialize, Clone, Default, PartialEq)]
 #[serde(deny_unknown_fields, default)]
 pub(crate) struct AuthPolicyCfg {
     /// May users SELF-SERVE mint (`POST /auth/token`)? `None` ⇒ today's behavior (self-mint available
-    /// whenever an IdP is configured), unchanged. `Some(false)` will (a later increment) disable the
-    /// self-serve path; `Some(true)` makes the intent explicit. Not yet consulted by the mint path.
+    /// whenever an IdP is configured), unchanged. `Some(false)` DISABLES the self-serve path — an
+    /// authenticated, otherwise-eligible identity is refused 403 (`auth/self_keys.rs`); `Some(true)`
+    /// makes the intent explicit. Consulted by the mint path after identity is established.
     pub(crate) self_mint: Option<bool>,
     /// The binding modes the deployment permits at mint. `None` ⇒ all modes allowed. An explicit list
-    /// narrows what a minter may request; a mint of a mode outside it will (a later increment) be
-    /// refused.
+    /// narrows what a minter may request; a mint of a mode outside it IS refused at
+    /// `MintPolicy::check_mint` (`admin/mod.rs`).
     pub(crate) binding_modes: Option<Vec<BindingMode>>,
     /// The DEFAULT TTL applied to a minted token when the request names none, a duration string.
     /// Absent ⇒ the built-in `DEFAULT_KEY_TTL_SECS` path (via `auth.key_ttl`) is unchanged.

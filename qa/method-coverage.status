@@ -251,7 +251,7 @@ a2a|http+json|server|client|SubscribeToTask = implemented
 # reading it that way is what left four notification names in the tree as a codec with nothing to
 # carry them. The revision MOVED the channel from a transport verb onto a method:
 # `subscriptions/listen` is an ordinary POST whose response is a long-lived stream of notifications.
-# That method is now built (`crates/busbar-core/src/mcp/subscribe.rs`), and it is what makes the
+# That method is now built (`crates/busbar-mcp/src/mcp/subscribe.rs`), and it is what makes the
 # list-changed notifications below claimable rather than merely spellable.
 #
 # AND THE OTHER HALF OF THE SERVER-ORIGINATED SURFACE travels a second way that is also not a
@@ -259,7 +259,7 @@ a2a|http+json|server|client|SubscribeToTask = implemented
 # `InputRequiredResult` whose `inputRequests` name them, which the caller answers by re-issuing the
 # request with `inputResponses`. busbar composes those from OPERATOR configuration alone
 # (`ask_caller:`), filters them by the capabilities the caller declared, and seals them with a
-# `requestState` busbar mints — see `crates/busbar-core/src/mcp/callerask.rs` for why an upstream's ask
+# `requestState` busbar mints — see `crates/busbar-mcp/src/mcp/callerask.rs` for why an upstream's ask
 # can never become one of these.
 
 # ── THE CATALOGUE AND DISPATCH READS ───────────────────────────────────────────────────────────
@@ -312,7 +312,7 @@ mcp|streamable-http|server|client|tasks/cancel = implemented
 #     reach must not wake this caller's stream, because that leaks the existence of another tenant's
 #     inventory through timing.
 #
-# INSTRUMENT: `crates/busbar-core/src/mcp/tests/subscribe_tests.rs`, every case driven over a real socket
+# INSTRUMENT: `crates/busbar-mcp/src/mcp/tests/subscribe_tests.rs`, every case driven over a real socket
 # against a real router — the acknowledgement arriving first and carrying the subscription id, the
 # narrowing, the refusal of a subscription that could deliver nothing, a REAL catalogue change made
 # through `AppHandle::swap` (the same seam an admin apply and a config reload go through) waking an
@@ -366,7 +366,7 @@ mcp|streamable-http|server|server|notifications/resources/updated = implemented
 # push over, so both became per-request. The level is named in the request's own `_meta` and the
 # records ride the response stream of the request they describe.
 #
-# INSTRUMENT: `crates/busbar-core/src/mcp/tests/sse_tests.rs` over a real socket, and the official
+# INSTRUMENT: `crates/busbar-mcp/src/mcp/tests/sse_tests.rs` over a real socket, and the official
 # suite's `server-stateless` (`ServerNoLogWithoutLogLevel` asserts busbar emits NO
 # `notifications/message` for a request that named no level — the filter observed working rather
 # than asserted) and `tools-call-with-progress` (REQUIRED), which drives an upstream that reports
@@ -394,7 +394,7 @@ mcp|streamable-http|server|server|notifications/progress = implemented
 # INSTRUMENT: the official suite's `input-required-result-basic-elicitation`,
 # `-basic-sampling`, `-basic-list-roots` and the nine other `input-required-result-*` scenarios, all
 # REQUIRED at this revision and all driven against the `ask_caller:` registrations in
-# `scripts/mcp-subject/boot.sh`; plus `crates/busbar-core/src/mcp/tests/callerask_tests.rs`.
+# `scripts/mcp-subject/boot.sh`; plus `crates/busbar-mcp/src/mcp/tests/callerask_tests.rs`.
 mcp|streamable-http|server|server|elicitation/create = implemented
 mcp|streamable-http|server|server|roots/list = implemented
 mcp|streamable-http|server|server|sampling/createMessage = implemented
@@ -410,7 +410,7 @@ mcp|streamable-http|server|server|sampling/createMessage = implemented
 # nothing) and to ROOTS-BEARING state (a chatty client cannot void its own unrelated
 # confirmations).
 #
-# INSTRUMENT: `crates/busbar-core/src/mcp/tests/roots_changed_tests.rs` --
+# INSTRUMENT: `crates/busbar-mcp/src/mcp/tests/roots_changed_tests.rs` --
 #   roots_state_minted_before_a_roots_change_is_refused_after_it (with recovery: the restarted
 #   exchange dispatches on the caller's CURRENT roots),
 #   one_principals_roots_change_does_not_invalidate_anothers_state,
@@ -427,7 +427,7 @@ mcp|streamable-http|server|client|notifications/roots/list_changed = implemented
 # server, so `tools/call` and `tools/list` are the two verbs it issues, and progress is the one
 # message it accepts back and relays.
 #
-# INSTRUMENT: `crates/busbar-core/src/mcp/tests/upstream_join_tests.rs` and `deputy_pair_tests.rs` drive
+# INSTRUMENT: `crates/busbar-mcp/src/mcp/tests/upstream_join_tests.rs` and `deputy_pair_tests.rs` drive
 # a REAL fake MCP peer and a REAL fake RFC 8693 token endpoint and read every byte that reached
 # them — including that the outbound credential was selected under the INBOUND caller's grant, which
 # is the confused-deputy defence for this direction and is only provable with both directions
@@ -449,7 +449,7 @@ mcp|streamable-http|client|client|tools/list = implemented
 # grant refuses naming the grant, a grant with no declaration refuses naming the key
 # (`Unsatisfiable` vs `Ungranted`, two remedies), and the ask terminates at busbar in every arm.
 #
-# INSTRUMENT: `crates/busbar-core/src/mcp/tests/roots_satisfy_tests.rs`, judged at the RECEIVING end of
+# INSTRUMENT: `crates/busbar-mcp/src/mcp/tests/roots_satisfy_tests.rs`, judged at the RECEIVING end of
 # a real loopback peer --
 #   a_granted_roots_ask_is_answered_with_the_operators_declared_roots,
 #   an_ungranted_roots_ask_is_still_refused_and_names_the_grant,

@@ -12,7 +12,7 @@ Cross-references: [Circuit breaker](/docs/circuit-breaker/) (the one FSM, on all
 
 Busbar sits on both sides of MCP at once, and the two directions are configured by two different sections.
 
-**Busbar as the MCP server** is the `mcp:` block. Its presence mounts an MCP endpoint, an RFC 9728 protected-resource metadata document, and nothing else. Busbar answers `server/discover`, `tools/list`, `tools/call`, `prompts/list`, `prompts/get`, `resources/list`, `resources/templates/list`, `resources/read`, `completion/complete`, the SEP-2663 task methods (`tasks/get`, `tasks/update`, `tasks/cancel`) and `subscriptions/listen` (`crates/busbar-core/src/mcp/method.rs:67-89`). Anything else answers `404` with JSON-RPC `-32601`.
+**Busbar as the MCP server** is the `mcp:` block. Its presence mounts an MCP endpoint, an RFC 9728 protected-resource metadata document, and nothing else. Busbar answers `server/discover`, `tools/list`, `tools/call`, `prompts/list`, `prompts/get`, `resources/list`, `resources/templates/list`, `resources/read`, `completion/complete`, the SEP-2663 task methods (`tasks/get`, `tasks/update`, `tasks/cancel`) and `subscriptions/listen` (`crates/busbar-mcp/src/mcp/method.rs:67-89`). Anything else answers `404` with JSON-RPC `-32601`.
 
 **Busbar as an MCP client** is the `tools:` section. Each entry registers one upstream tool server: where it is, what authenticity root it is pinned to, which of its tools you have approved, and what credential Busbar spends to reach it.
 
@@ -36,16 +36,16 @@ A plane exists because it is configured, not because its name appears in a path 
 
 ### The `mcp:` block
 
-`deny_unknown_fields`: a typo'd key fails boot (`crates/busbar-core/src/mcp/mod.rs:221`).
+`deny_unknown_fields`: a typo'd key fails boot (`crates/busbar-mcp/src/mcp/mod.rs:221`).
 
 | Key | Type | Required | Default | What it is |
 |---|---|---|---|---|
 | `canonical_uri` | string | **yes** | — | The RFC 8707 resource indicator: the absolute URI naming this deployment's MCP endpoint. It is the exact `aud` every inbound token must carry, **and** the path the endpoint mounts at. |
 | `authorization_servers` | list of strings | **yes**, non-empty | `[]` (refused) | RFC 9728 `authorization_servers`: the issuer identifiers permitted to mint tokens for this resource. This list is the entire content of the answer a credential-less client came for. |
-| `scopes_supported` | list of strings | no | `[]` | RFC 9728 `scopes_supported`. **Advisory metadata only** — authorization is decided by the caller's grant, never by this list (`crates/busbar-core/src/mcp/mod.rs:240-243`). |
+| `scopes_supported` | list of strings | no | `[]` | RFC 9728 `scopes_supported`. **Advisory metadata only** — authorization is decided by the caller's grant, never by this list (`crates/busbar-mcp/src/mcp/mod.rs:240-243`). |
 | `allowed_origins` | list of strings | no | `[]` | Browser origins accepted on the ingress, for the `2026-07-28` `Origin` MUST. Empty means no browser origin is accepted; a request carrying no `Origin` (every non-browser client) is unaffected. |
 
-The **mount path is derived** from `canonical_uri`, never configured separately, so the path a client posts to and the identifier its token is bound to cannot drift apart (`crates/busbar-core/src/mcp/mod.rs:230-232`). `https://gateway.example.com/mcp` mounts at `/mcp`.
+The **mount path is derived** from `canonical_uri`, never configured separately, so the path a client posts to and the identifier its token is bound to cannot drift apart (`crates/busbar-mcp/src/mcp/mod.rs:230-232`). `https://gateway.example.com/mcp` mounts at `/mcp`.
 
 ```yaml
 mcp:
@@ -64,7 +64,7 @@ That mounts four route entries over two paths (`crates/busbar-core/src/router.rs
 | `POST /mcp` | key | The endpoint. JSON-RPC 2.0. |
 | `GET /mcp`, `DELETE /mcp` | key | `405`. This revision has no GET stream and no sessions. Behind the key so an anonymous caller gets the `401` challenge instead of a description of the surface. |
 
-The metadata path is the well-known prefix with the resource's path appended **after** it, per RFC 9728's path-insertion rule (`crates/busbar-core/src/mcp/mod.rs:266-272`). Getting that backwards 404s every compliant client's discovery. The document Busbar renders carries `resource` always, `authorization_servers` and `scopes_supported` when non-empty, and `bearer_methods_supported: ["header"]`, with `Cache-Control: public, max-age=3600` (`crates/busbar-core/src/ingress/protocol.rs:344-372`). `bearer_methods_supported` is not configurable: Busbar accepts a bearer in the `Authorization` header and nowhere else, on every plane.
+The metadata path is the well-known prefix with the resource's path appended **after** it, per RFC 9728's path-insertion rule (`crates/busbar-mcp/src/mcp/mod.rs:266-272`). Getting that backwards 404s every compliant client's discovery. The document Busbar renders carries `resource` always, `authorization_servers` and `scopes_supported` when non-empty, and `bearer_methods_supported: ["header"]`, with `Cache-Control: public, max-age=3600` (`crates/busbar-core/src/ingress/protocol.rs:344-372`). `bearer_methods_supported` is not configurable: Busbar accepts a bearer in the `Authorization` header and nowhere else, on every plane.
 
 ### Boot refusals: the `mcp:` block
 
@@ -90,14 +90,14 @@ This refusal is MCP-only. There is no equivalent check for `agents:` — see [A2
 
 | Reserved section key | Type | Combine rule |
 |---|---|---|
-| `tools.hooks` | list of bare hook names | **ADDITIVE** — union with each server's own `hooks:`, deduped in declaration order (`crates/busbar-core/src/mcp/config.rs:962-972`) |
-| `tools.upstream_credentials` | `own` \| `passthrough` | **OVERRIDE** — an entry's own value replaces it (`crates/busbar-core/src/mcp/config.rs:974-983`) |
+| `tools.hooks` | list of bare hook names | **ADDITIVE** — union with each server's own `hooks:`, deduped in declaration order (`crates/busbar-mcp/src/mcp/config.rs:962-972`) |
+| `tools.upstream_credentials` | `own` \| `passthrough` | **OVERRIDE** — an entry's own value replaces it (`crates/busbar-mcp/src/mcp/config.rs:974-983`) |
 
 Naming a server `hooks` or `upstream_credentials` is refused at parse with a message naming the reservation, and the refusal for a reserved key holding a *mapping* fires **before** the typed lifts so you read "that name is reserved" rather than "expected a sequence" (`crates/busbar-core/src/plane/config.rs:278-287`, `:335-341`).
 
 #### `tools.<server>` — one registered upstream
 
-`deny_unknown_fields`: a typo'd key fails boot rather than silently un-pinning a server (`crates/busbar-core/src/mcp/config.rs:654`).
+`deny_unknown_fields`: a typo'd key fails boot rather than silently un-pinning a server (`crates/busbar-mcp/src/mcp/config.rs:654`).
 
 | Key | Type | Required | Default | Notes |
 |---|---|---|---|---|
@@ -127,7 +127,7 @@ Naming a server `hooks` or `upstream_credentials` is refused at parse with a mes
 | `upstream_credentials` | `own` \| `passthrough` | no; **refused** on `stdio` | section value, else engine default | |
 | `hooks` | list of bare names | no | `[]` | Adds to `tools.hooks:`. |
 
-**`tools_allow.<tool>`** (`crates/busbar-core/src/mcp/config.rs:182-269`):
+**`tools_allow.<tool>`** (`crates/busbar-mcp/src/mcp/config.rs:182-269`):
 
 | Key | Type | Default | Notes |
 |---|---|---|---|
@@ -140,7 +140,7 @@ Naming a server `hooks` or `upstream_credentials` is refused at parse with a mes
 | `task_support` | `none` \| `optional` \| `required` | `none` | SEP-2663. `required` refuses a client that did not declare the tasks extension with `-32021` before the handler runs. |
 | `task_ask_caller` | list of rounds | `[]` | The same ask, from INSIDE a task. Requires `task_support` other than `none`. |
 
-One round of `ask_caller` is a map from a server-assigned key to `{method, params?}`. `method` is one of `elicitation/create`, `sampling/createMessage`, `roots/list`. **`params` is cloned verbatim onto the wire — there is no templating and no substitution**, structurally, so an upstream's value can never flow into a demand Busbar makes in its own name (`crates/busbar-core/src/mcp/config.rs:362-397`).
+One round of `ask_caller` is a map from a server-assigned key to `{method, params?}`. `method` is one of `elicitation/create`, `sampling/createMessage`, `roots/list`. **`params` is cloned verbatim onto the wire — there is no templating and no substitution**, structurally, so an upstream's value can never flow into a demand Busbar makes in its own name (`crates/busbar-mcp/src/mcp/config.rs:362-397`).
 
 **`prompts_allow.<name>`**: `description`, `template` (text form), `messages` (typed form: `role` ∈ `user`\|`assistant`, default `user`; content `text` / `image` / `audio` / `resource`), `ask_caller`. `template:` and `messages:` are alternatives — declaring both is refused.
 
@@ -150,7 +150,7 @@ One round of `ask_caller` is a map from a server-assigned key to `{method, param
 
 **`sampling`** (all three REQUIRED, all three refused at zero): `model` (a pool or model on Busbar's own catalogue, dispatched under the inbound caller's grant — never the upstream's `modelPreferences`), `max_tokens` (a ceiling; an ask above it is clamped, not refused), `max_requests_per_minute` (per-upstream, deployment-wide, spent before any model leg is entered).
 
-**`token_exchange`**: `token_url` (must be `https`, or `http` only on a registration that also sets `allow_private: true`), `subject_token` (a `SecretRef` — Busbar's OWN token, never the caller's), `subject_token_type` (default `urn:ietf:params:oauth:token-type:access_token`). There is deliberately **no `scope:`** — the requested scope is derived from the inbound caller's own grant at dispatch time, because a configured scope list would be a second statement of what a caller may reach and the wider one would win (`crates/busbar-core/src/mcp/config.rs:812-822`; the derivation is `mcp/client/egress.rs:361-375`).
+**`token_exchange`**: `token_url` (must be `https`, or `http` only on a registration that also sets `allow_private: true`), `subject_token` (a `SecretRef` — Busbar's OWN token, never the caller's), `subject_token_type` (default `urn:ietf:params:oauth:token-type:access_token`). There is deliberately **no `scope:`** — the requested scope is derived from the inbound caller's own grant at dispatch time, because a configured scope list would be a second statement of what a caller may reach and the wider one would win (`crates/busbar-mcp/src/mcp/config.rs:812-822`; the derivation is `mcp/client/egress.rs:361-375`).
 
 ```yaml
 tools:
@@ -175,7 +175,7 @@ tools:
 
 ### Boot refusals: the `tools:` section
 
-All of these are checked by `validate_server` / `validate_endpoint`, which is called from **both** the config file's `Deserialize` and the admin write path, so the API refuses exactly what the file refuses (`crates/busbar-core/src/mcp/config.rs:1010-1016`).
+All of these are checked by `validate_server` / `validate_endpoint`, which is called from **both** the config file's `Deserialize` and the admin write path, so the API refuses exactly what the file refuses (`crates/busbar-mcp/src/mcp/config.rs:1010-1016`).
 
 | Refusal | Condition | `mcp/config.rs` |
 |---|---|---|
@@ -217,12 +217,12 @@ All of these are checked by `validate_server` / `validate_endpoint`, which is ca
 
 Two more refusals run over the **whole** effective registry (file base + admin overlay), in `config::resolve`:
 
-- **Published-name uniqueness.** Two tools that would both be published as one wire name refuse boot, naming both claimants. The check compares every published name against every other, *including* an override against another server's default — the collision a naive overrides-only check misses (`crates/busbar-core/src/mcp/config.rs:1486-1546`, called from `config/mod.rs:4498`). A collision is refused rather than resolved, because the published name is what an `mcp_tool:` grant names, so resolving it would silently move an authorization decision.
+- **Published-name uniqueness.** Two tools that would both be published as one wire name refuse boot, naming both claimants. The check compares every published name against every other, *including* an override against another server's default — the collision a naive overrides-only check misses (`crates/busbar-mcp/src/mcp/config.rs:1486-1546`, called from `config/mod.rs:4498`). A collision is refused rather than resolved, because the published name is what an `mcp_tool:` grant names, so resolving it would silently move an authorization decision.
 - **Dangling hook references.** A hook a `tools:` entry names must exist in the one top-level `hooks:` map (`crates/busbar-core/src/config/mod.rs:4477-4486`). A dropped reference is an operator believing a control is attached that is not.
 
 ### Failover pools: `pools:`
 
-An MCP registration is one destination. A pool in the one neutral top-level `pools:` map — its kind **inferred from its members**, so a pool whose members are `tools:` registrations *is* an MCP failover pool — is how you tell Busbar that two registrations are **the same server deployed twice**: one image in two regions, a hosted instance beside a self-hosted twin. That declaration is what the selection walk needs in order to send a request the breaker would otherwise refuse to the other member instead, and the walk runs on every `tools/call` (`crates/busbar-core/src/mcp/reroute.rs:259`).
+An MCP registration is one destination. A pool in the one neutral top-level `pools:` map — its kind **inferred from its members**, so a pool whose members are `tools:` registrations *is* an MCP failover pool — is how you tell Busbar that two registrations are **the same server deployed twice**: one image in two regions, a hosted instance beside a self-hosted twin. That declaration is what the selection walk needs in order to send a request the breaker would otherwise refuse to the other member instead, and the walk runs on every `tools/call` (`crates/busbar-mcp/src/mcp/reroute.rs:259`).
 
 It is **opt-in and declaring no MCP pool is exactly today's behaviour**: one registration, one destination, nothing to reason about (`crates/busbar-core/src/failover/mod.rs:119-127`).
 
@@ -266,7 +266,7 @@ Reroute never means Busbar found somewhere else to send a call on its own. It me
 
 ### The discovery loop
 
-An MCP client arrives with no credential. It gets `401` with an RFC 6750 `WWW-Authenticate: Bearer` challenge carrying a `resource_metadata` parameter — the **absolute** URL of this deployment's protected-resource document, because a client with no credential also has no reason to trust its own reconstruction of your origin (`crates/busbar-core/src/mcp/mod.rs:271-273`, `crates/busbar-core/src/auth/challenge.rs:73-91`). It reads that document, finds `authorization_servers`, does ordinary OAuth against your IdP, and comes back with a token.
+An MCP client arrives with no credential. It gets `401` with an RFC 6750 `WWW-Authenticate: Bearer` challenge carrying a `resource_metadata` parameter — the **absolute** URL of this deployment's protected-resource document, because a client with no credential also has no reason to trust its own reconstruction of your origin (`crates/busbar-mcp/src/mcp/mod.rs:271-273`, `crates/busbar-core/src/auth/challenge.rs:73-91`). It reads that document, finds `authorization_servers`, does ordinary OAuth against your IdP, and comes back with a token.
 
 The challenge distinguishes two cases and clients branch on the difference. No credential presented at all earns a **bare** challenge with no `error` parameter — RFC 6750 §3.1 is explicit that this case omits it, because the bare challenge means *authenticate* — while a credential that was presented and failed earns `error="invalid_token"`. They are not collapsed (`crates/busbar-core/src/auth/challenge.rs:38-61`, `crates/busbar-core/src/auth/mod.rs:1650-1668`). A principal that authenticates but carries no grant on this resource gets `insufficient_scope`.
 
@@ -293,20 +293,20 @@ The check lives beside the **mount**, not in a handler, so every path behind tha
 
 ### `Origin` and DNS rebinding
 
-`2026-07-28` makes `Origin` validation a MUST. Busbar refuses a request carrying an `Origin` that is not in `mcp.allowed_origins` with `403`; a request carrying no `Origin` — which is every non-browser client — is unaffected, and loopback is admitted unconditionally by the shared rule (`crates/busbar-core/src/mcp/mod.rs:244-252`, `crates/busbar-core/src/mcp/mod.rs:416-429`). The threat is a page on an attacker's origin resolving a name to Busbar's loopback address and driving the tool plane with the user's ambient credentials.
+`2026-07-28` makes `Origin` validation a MUST. Busbar refuses a request carrying an `Origin` that is not in `mcp.allowed_origins` with `403`; a request carrying no `Origin` — which is every non-browser client — is unaffected, and loopback is admitted unconditionally by the shared rule (`crates/busbar-mcp/src/mcp/mod.rs:244-252`, `crates/busbar-mcp/src/mcp/mod.rs:416-429`). The threat is a page on an attacker's origin resolving a name to Busbar's loopback address and driving the tool plane with the user's ambient credentials.
 
 ---
 
 ## What a caller can see and call
 
-**Which tools a caller can see is decided by the caller's key scopes and by nothing else.** There is no hook on the catalogue path, no filter verb, no tag convention (`crates/busbar-core/src/mcp/catalogue.rs:25-30`). Two scope kinds gate this plane (`crates/busbar-core/src/plane/mod.rs:156-162`):
+**Which tools a caller can see is decided by the caller's key scopes and by nothing else.** There is no hook on the catalogue path, no filter verb, no tag convention (`crates/busbar-mcp/src/mcp/catalogue.rs:25-30`). Two scope kinds gate this plane (`crates/busbar-core/src/plane/mod.rs:156-162`):
 
 | Scope kind | Grants | Named as |
 |---|---|---|
 | `mcp_server` | may this caller reach this upstream at all | the `tools:` registration id |
 | `mcp_tool` | may it reach this capability | the **published wire name** — `<server>_<tool>` by default, or the `publish_as:` override |
 
-**Both must pass, for every capability** — a tool, a prompt, a resource and a template alike. A key scoped to one tool on a server must not acquire the rest by having been let through the door (`crates/busbar-core/src/mcp/catalogue.rs:1141-1167`).
+**Both must pass, for every capability** — a tool, a prompt, a resource and a template alike. A key scoped to one tool on a server must not acquire the rest by having been let through the door (`crates/busbar-mcp/src/mcp/catalogue.rs:1141-1167`).
 
 ```yaml
 # on the virtual key
@@ -317,9 +317,9 @@ allowed_scopes:
 
 ### Listed and served are two different answers
 
-The **listing** (`tools/list`, `prompts/list`, `resources/list`, `resources/templates/list`) asks identity and grant, and deliberately not the artifact step: a tool with no approved hash and a server with no locked pin both *appear*, so the approval queue is visible (`crates/busbar-core/src/mcp/catalogue.rs:1169-1180`, `:467-471`). What they do not get is a dispatch.
+The **listing** (`tools/list`, `prompts/list`, `resources/list`, `resources/templates/list`) asks identity and grant, and deliberately not the artifact step: a tool with no approved hash and a server with no locked pin both *appear*, so the approval queue is visible (`crates/busbar-mcp/src/mcp/catalogue.rs:1169-1180`, `:467-471`). What they do not get is a dispatch.
 
-The **dispatch** (`tools/call`) asks the full ordered gate — identity, grants, the trust artifact comparison, and the catalogue generation — in `Catalogue::resolve` (`crates/busbar-core/src/mcp/catalogue.rs:749-810`). It refuses a call with:
+The **dispatch** (`tools/call`) asks the full ordered gate — identity, grants, the trust artifact comparison, and the catalogue generation — in `Catalogue::resolve` (`crates/busbar-mcp/src/mcp/catalogue.rs:749-810`). It refuses a call with:
 
 | Refusal | Meaning | Status | Audit reason |
 |---|---|---|---|
@@ -330,15 +330,15 @@ The **dispatch** (`tools/call`) asks the full ordered gate — identity, grants,
 | `Quarantined` | the upstream's current tool list no longer matches what was approved | `403` | `quarantined` |
 | `GenerationMoved` | the registry changed between admission and dispatch | `409` | `generation_moved` |
 
-Statuses: `crates/busbar-core/src/mcp/method.rs:2034-2047`; wording: `mcp/catalogue.rs:404-435`; audit words: `mcp/catalogue.rs:449-462`. A quarantine is `403` and not `404` on purpose: the tool exists and this caller may see it — what changed is the upstream.
+Statuses: `crates/busbar-mcp/src/mcp/method.rs:2034-2047`; wording: `mcp/catalogue.rs:404-435`; audit words: `mcp/catalogue.rs:449-462`. A quarantine is `403` and not `404` on purpose: the tool exists and this caller may see it — what changed is the upstream.
 
-`GenerationMoved` is the swap guard. The catalogue is an immutable snapshot carrying a monotonic generation, taken fresh on every config apply *including one that changes nothing about `tools:`*; a call admitted under generation N is refused under N+1 (`crates/busbar-core/src/mcp/catalogue.rs:8-23`). An in-flight call cannot outlive the approval it was admitted under. Retry.
+`GenerationMoved` is the swap guard. The catalogue is an immutable snapshot carrying a monotonic generation, taken fresh on every config apply *including one that changes nothing about `tools:`*; a call admitted under generation N is refused under N+1 (`crates/busbar-mcp/src/mcp/catalogue.rs:8-23`). An in-flight call cannot outlive the approval it was admitted under. Retry.
 
 ### Routing binds identity, never description
 
-A catalogue entry is keyed on `(server-id, published name, schema-hash)`. The description is the **operator's**, carried for display, markup-normalised on the way out, and read by no decision anywhere in the module (`crates/busbar-core/src/mcp/catalogue.rs:74-80`). Publishing the operator's text rather than the upstream's is what keeps an upstream from rewriting the instructions a model reads. `outputSchema` follows the same rule and goes one step further: publishing a schema makes conforming structured results a MUST for the server that published it, and on this wire that server is Busbar — so Busbar validates what the upstream returned against the approved schema and reports a violation as a tool failure (`crates/busbar-core/src/mcp/config.rs:200-222`).
+A catalogue entry is keyed on `(server-id, published name, schema-hash)`. The description is the **operator's**, carried for display, markup-normalised on the way out, and read by no decision anywhere in the module (`crates/busbar-mcp/src/mcp/catalogue.rs:74-80`). Publishing the operator's text rather than the upstream's is what keeps an upstream from rewriting the instructions a model reads. `outputSchema` follows the same rule and goes one step further: publishing a schema makes conforming structured results a MUST for the server that published it, and on this wire that server is Busbar — so Busbar validates what the upstream returned against the approved schema and reports a violation as a tool failure (`crates/busbar-mcp/src/mcp/config.rs:200-222`).
 
-Descriptions, prompt templates, resource contents and tool outputs are all markup-normalised: `<IMPORTANT>`, `<system>` and HTML-like tags are stripped before the text re-enters model context (`crates/busbar-core/src/mcp/sanitize.rs:1-16`). **This is a floor, not a claim that injection is handled.** "now call `transfer_funds`" carries no markup and survives unchanged, by design — there is nothing to strip. Semantic injection is a hook residual and a model-alignment problem; Busbar reduces the markup-shaped attack surface (`mcp/sanitize.rs:17-25`).
+Descriptions, prompt templates, resource contents and tool outputs are all markup-normalised: `<IMPORTANT>`, `<system>` and HTML-like tags are stripped before the text re-enters model context (`crates/busbar-mcp/src/mcp/sanitize.rs:1-16`). **This is a floor, not a claim that injection is handled.** "now call `transfer_funds`" carries no markup and survives unchanged, by design — there is nothing to strip. Semantic injection is a hook residual and a model-alignment problem; Busbar reduces the markup-shaped attack surface (`mcp/sanitize.rs:17-25`).
 
 ---
 
@@ -348,22 +348,22 @@ A transport is not a wire format. Every MCP transport carries the same JSON-RPC 
 
 ### Inbound: streamable HTTP
 
-`POST` to the mount path. This is the `2026-07-28` stateless shape (SEP-2243/SEP-2575), and it is a breaking redesign rather than an increment (`crates/busbar-core/src/mcp/mod.rs:44-65`):
+`POST` to the mount path. This is the `2026-07-28` stateless shape (SEP-2243/SEP-2575), and it is a breaking redesign rather than an increment (`crates/busbar-mcp/src/mcp/mod.rs:44-65`):
 
 - **No `initialize` handshake and no protocol sessions.** Every request is self-describing, carrying its protocol version and the client's capabilities in `params._meta`. There is no `Mcp-Session-Id` to mint, honour or invalidate.
-- **The GET stream is gone**, and with it resumability. `GET` and `DELETE` answer `405`. The server-to-client channel moved onto a method: `subscriptions/listen` is an ordinary POST whose response is a long-lived stream of notifications (`crates/busbar-core/src/mcp/subscribe.rs:1-21`).
+- **The GET stream is gone**, and with it resumability. `GET` and `DELETE` answer `405`. The server-to-client channel moved onto a method: `subscriptions/listen` is an ordinary POST whose response is a long-lived stream of notifications (`crates/busbar-mcp/src/mcp/subscribe.rs:1-21`).
 - **`Mcp-Method` mirrors the body's `method` on every request**, and `Mcp-Name` mirrors the target name on `tools/call`, `resources/read` and `prompts/get`. Both are required. A header that disagrees with the body is `400` with `-32020`, because a proxy routing on the header while the server executes the body is a request-smuggling primitive.
 - **`MCP-Protocol-Version` must equal the body `_meta` protocol version** — same `-32020` on mismatch. A `_meta` that is absent or incomplete is a *different* failure and answers `-32602` with `400`: that is a defect in the request's own params, not two readings of one request disagreeing.
 
-The revision Busbar implements is `2026-07-28`, and it is the only one (`crates/busbar-core/src/mcp/envelope.rs:61-67`). An unsupported protocol version answers `-32022`.
+The revision Busbar implements is `2026-07-28`, and it is the only one (`crates/busbar-mcp/src/mcp/envelope.rs:61-67`). An unsupported protocol version answers `-32022`.
 
 ### Inbound: `busbar --mcp-stdio`
 
 For an MCP host that runs Busbar as a child process (Claude Desktop-class), `busbar --mcp-stdio` serves the MCP plane on Busbar's own stdin and stdout, newline-delimited JSON-RPC, and **binds no listener at all** — a child that opened ports would be a network server its supervisor never asked for (`crates/busbar/src/main.rs:934-951`).
 
-The **same boot** runs: config load, plugin preflight, governance and the flusher. Every line read from stdin is fed to the same serve sequence the HTTP endpoint runs, with the same envelope rules and the same dispatch, so a request the HTTP plane would refuse is refused here with the same code and the same sentence (`crates/busbar-core/src/mcp/stdio_serve.rs:7-15`). The mirrored routing headers are synthesised from the body — a pipe has no header block and no intermediary — so a body defect stays a body defect rather than being converted into a header defect.
+The **same boot** runs: config load, plugin preflight, governance and the flusher. Every line read from stdin is fed to the same serve sequence the HTTP endpoint runs, with the same envelope rules and the same dispatch, so a request the HTTP plane would refuse is refused here with the same code and the same sentence (`crates/busbar-mcp/src/mcp/stdio_serve.rs:7-15`). The mirrored routing headers are synthesised from the body — a pipe has no header block and no intermediary — so a body defect stays a body defect rather than being converted into a header defect.
 
-**Governance is bound once, at boot, for the whole session.** A stdio caller presents no per-request bearer, so `BUSBAR_MCP_STDIO_CREDENTIAL` carries the same credential the HTTP plane accepts, judged by the same sequence: the RFC 8707 audience pre-filter against `mcp.canonical_uri`, then the configured auth chain, then the one identity resolution the HTTP middleware itself calls (`crates/busbar-core/src/mcp/stdio_serve.rs:29-47`, `:108-111`). A credential the HTTP door would refuse is refused here; one it would admit binds the session to the same principal, the same budgets, the same audit attribution and the same hooks. **A configured chain with no credential, or a refused one, is a refusal to serve** — nonzero exit, a sentence on stderr — exactly as the HTTP door answers `401`.
+**Governance is bound once, at boot, for the whole session.** A stdio caller presents no per-request bearer, so `BUSBAR_MCP_STDIO_CREDENTIAL` carries the same credential the HTTP plane accepts, judged by the same sequence: the RFC 8707 audience pre-filter against `mcp.canonical_uri`, then the configured auth chain, then the one identity resolution the HTTP middleware itself calls (`crates/busbar-mcp/src/mcp/stdio_serve.rs:29-47`, `:108-111`). A credential the HTTP door would refuse is refused here; one it would admit binds the session to the same principal, the same budgets, the same audit attribution and the same hooks. **A configured chain with no credential, or a refused one, is a refusal to serve** — nonzero exit, a sentence on stderr — exactly as the HTTP door answers `401`.
 
 The credential rides an environment variable and not a flag, because argv is world-readable on most platforms and an MCP host's `env` block already has exactly this shape.
 
@@ -371,7 +371,7 @@ The identity is **frozen for the life of the session**: a key revoked mid-sessio
 
 Because stdout is the MCP channel, logging moves to stderr in this mode (`crates/busbar/src/main.rs:723-727`).
 
-`--mcp-stdio` requires the `mcp:` block. Two live asks and one round cap are transport-local belts: a 30-second timeout on one live ask, and a cap of 8 live MRTR rounds per request on top of the operator's own `max_caller_ask_rounds` (`crates/busbar-core/src/mcp/stdio_serve.rs:109-118`).
+`--mcp-stdio` requires the `mcp:` block. Two live asks and one round cap are transport-local belts: a 30-second timeout on one live ask, and a cap of 8 live MRTR rounds per request on top of the operator's own `max_caller_ask_rounds` (`crates/busbar-mcp/src/mcp/stdio_serve.rs:109-118`).
 
 ### Outbound: `transport: streamable_http`
 
@@ -379,18 +379,18 @@ The default, and the only network transport. The leg is SSRF-checked, address-pi
 
 ### Outbound: `transport: stdio`
 
-Busbar spawns a local MCP server that has no URL — a filesystem, database or git server. The SSRF guard is the defence on the HTTP wire and has nothing to say about a child process, so `validate_endpoint` stands in its place, at boot, where the operator who wrote it is standing (`crates/busbar-core/src/mcp/config.rs:1046-1057`). Four decisions, each fail-closed (`crates/busbar-core/src/mcp/client/stdio.rs:15-49`):
+Busbar spawns a local MCP server that has no URL — a filesystem, database or git server. The SSRF guard is the defence on the HTTP wire and has nothing to say about a child process, so `validate_endpoint` stands in its place, at boot, where the operator who wrote it is standing (`crates/busbar-mcp/src/mcp/config.rs:1046-1057`). Four decisions, each fail-closed (`crates/busbar-mcp/src/mcp/client/stdio.rs:15-49`):
 
 1. **No shell, ever.** The program goes to `Command::new` and the arguments through `.args()`. There is no `sh -c`, no string split on spaces, and therefore no metacharacter with meaning. An operator who wants a shell writes `/bin/sh` as the program.
 2. **The program is an absolute path**, refused at boot otherwise. A bare name is resolved through `PATH`, which would make the binary that actually runs a property of the environment Busbar was started in rather than of the file you wrote.
-3. **The environment is not inherited.** `env_clear()` runs first and only the named `env:` entries are put back. Busbar's own process environment holds provider API keys, store credentials and admin tokens; handing that set to an operator-configured child would make every stdio registration a credential-exfiltration primitive, silently. A value that is itself a secret is written as a secret reference and is **resolved at spawn, never earlier**, so the snapshot never holds plaintext and rotating the secret needs no restart (`crates/busbar-core/src/mcp/config.rs:896-926`).
+3. **The environment is not inherited.** `env_clear()` runs first and only the named `env:` entries are put back. Busbar's own process environment holds provider API keys, store credentials and admin tokens; handing that set to an operator-configured child would make every stdio registration a credential-exfiltration primitive, silently. A value that is itself a secret is written as a secret reference and is **resolved at spawn, never earlier**, so the snapshot never holds plaintext and rotating the secret needs no restart (`crates/busbar-mcp/src/mcp/config.rs:896-926`).
 4. **The arguments come from config only.** Nothing on the dispatch path can add to, reorder or substitute into them — a tool call's `arguments` reach the child as JSON on its stdin, which is data, and never as argv.
 
 > **Windows operators must name more variables than unix ones, and the reason is the OS.** On unix an empty environment is a working environment. On Windows the process environment is load-bearing for the platform itself (`SystemRoot`, `windir` during DLL resolution and Winsock init) and interpreter-based children want `PATH`, `TEMP`/`TMP` and often `APPDATA`. An `env_clear()`ed child on Windows can fail to start, or start and fail on its first socket. The posture is not relaxed — it is the same secret on both platforms — so a Windows `env:` block is explicit about the platform variables the child needs. This is reasoned rather than observed; see the note in [operations.md](/docs/operations/).
 
-**The child has a lifecycle, not a fire-and-forget spawn.** `Spawning → Ready → Draining → Dead`, with a crash from any state landing in `Dead` (`crates/busbar-core/src/mcp/client/stdio.rs:55-71`). A dispatch is sent only in `Ready`: a write to a pipe whose reader has not started is a write that succeeds and is lost.
+**The child has a lifecycle, not a fire-and-forget spawn.** `Spawning → Ready → Draining → Dead`, with a crash from any state landing in `Dead` (`crates/busbar-mcp/src/mcp/client/stdio.rs:55-71`). A dispatch is sent only in `Ready`: a write to a pipe whose reader has not started is a write that succeeds and is lost.
 
-**The restart policy is a circuit breaker, not a retry loop.** A child that crashes on startup will crash on every startup, so an unbounded restart loop against a broken binary is a fork bomb with a config file behind it. Exponential backoff from the crash count, capped, and a quarantine that stops restarting entirely past a threshold inside a window (`crates/busbar-core/src/mcp/client/stdio.rs:150-158`):
+**The restart policy is a circuit breaker, not a retry loop.** A child that crashes on startup will crash on every startup, so an unbounded restart loop against a broken binary is a fork bomb with a config file behind it. Exponential backoff from the crash count, capped, and a quarantine that stops restarting entirely past a threshold inside a window (`crates/busbar-mcp/src/mcp/client/stdio.rs:150-158`):
 
 | Knob | Value | Configurable |
 |---|---|---|
@@ -399,7 +399,7 @@ Busbar spawns a local MCP server that has no URL — a filesystem, database or g
 | crashes that quarantine the child | 5 | no |
 | the window they are counted over | 60 s | no |
 
-A successful start **does not clear the crash history** — a child that crashes, restarts, serves one call and crashes again is crash-looping, and clearing the window on every successful start is how a breaker is written that never trips. The history ages out by time (`crates/busbar-core/src/mcp/client/stdio.rs:220-230`). The supervisor outlives the child, deliberately: a quarantine that lived on the child would be forgotten the moment the child was dropped, which is the moment it is always reached.
+A successful start **does not clear the crash history** — a child that crashes, restarts, serves one call and crashes again is crash-looping, and clearing the window on every successful start is how a breaker is written that never trips. The history ages out by time (`crates/busbar-mcp/src/mcp/client/stdio.rs:220-230`). The supervisor outlives the child, deliberately: a quarantine that lived on the child would be forgotten the moment the child was dropped, which is the moment it is always reached.
 
 Defaults are chosen to make a crash-looping child visible within seconds rather than to maximise availability: an MCP server that will not start is a configuration error, and hiding it behind retries delays the fix.
 
@@ -409,17 +409,17 @@ Defaults are chosen to make a crash-looping child visible within seconds rather 
 
 Tool identity on this plane is `(server, tool, schema-hash)`. Two things have to be approved before a tool serves: the server's **pin** (its authenticity root) and the tool's **schema hash**.
 
-A registration with no authenticity root (`pin.mechanism: unpinned`) is registrable and **never approvable** — it is enforced by what is constructible rather than by a check a later edit could relax (`crates/busbar-core/src/mcp/catalogue.rs:70-74`). A tool with an empty `tools_allow` value object is `pending` and does not dispatch.
+A registration with no authenticity root (`pin.mechanism: unpinned`) is registrable and **never approvable** — it is enforced by what is constructible rather than by a check a later edit could relax (`crates/busbar-mcp/src/mcp/catalogue.rs:70-74`). A tool with an empty `tools_allow` value object is `pending` and does not dispatch.
 
-**The rug-pull defence needs a live observation, and verify-on-call supplies it on the call path.** Comparing an approved digest against the digest the operator wrote in config is comparing intent with itself and is structurally incapable of noticing an upstream changing its schema underneath (`crates/busbar-core/src/mcp/connect.rs`). So on each `tools/call`, before the digest comparison, Busbar re-fetches the server's live tool list if its last observation is older than `verify_ttl` and re-hashes it **from the bytes the upstream sent** — never adopting a digest the upstream supplied, which would be the rug-pull with an extra step. A fetch that fails is recorded as a failure, not dropped, and the call is refused **fail-closed**: a server Busbar could not re-verify must never present as trusted. The full model — the fingerprint, the `verify_ttl` bound, single-flight coalescing, fail-closed — is in [Tool and agent trust](/docs/tool-and-agent-trust/).
+**The rug-pull defence needs a live observation, and verify-on-call supplies it on the call path.** Comparing an approved digest against the digest the operator wrote in config is comparing intent with itself and is structurally incapable of noticing an upstream changing its schema underneath (`crates/busbar-mcp/src/mcp/connect.rs`). So on each `tools/call`, before the digest comparison, Busbar re-fetches the server's live tool list if its last observation is older than `verify_ttl` and re-hashes it **from the bytes the upstream sent** — never adopting a digest the upstream supplied, which would be the rug-pull with an extra step. A fetch that fails is recorded as a failure, not dropped, and the call is refused **fail-closed**: a server Busbar could not re-verify must never present as trusted. The full model — the fingerprint, the `verify_ttl` bound, single-flight coalescing, fail-closed — is in [Tool and agent trust](/docs/tool-and-agent-trust/).
 
 There is **no background sweep and no timer**. Re-verification is lazy and single-flight: within `verify_ttl` the snapshot is reused (0 fetches); past it, N concurrent callers coalesce into exactly one fetch. `verify_ttl` (default `5s`) is the only knob — there is deliberately no key that slows detection below it, none that delays a quarantine, and no per-server "skip if it failed last time", every one of which would be a window an upstream could open for itself by misbehaving.
 
-An upstream's own `notifications/tools/list_changed` can only ever mark the snapshot **stale** so the next call re-verifies, and its contents are never read: an attacker-controlled trigger may not choose the moment freely and may not choose the content at all (`crates/busbar-core/src/mcp/connect.rs`).
+An upstream's own `notifications/tools/list_changed` can only ever mark the snapshot **stale** so the next call re-verifies, and its contents are never read: an attacker-controlled trigger may not choose the moment freely and may not choose the content at all (`crates/busbar-mcp/src/mcp/connect.rs`).
 
-**A quarantine survives a restart.** What is written to the store is not "this server is quarantined" but "a live observation of this server disagreed with the approval, at this time" — an observation replayed at boot, with the derivation running unchanged on top of it (`crates/busbar-core/src/mcp/demotion.rs`). A server with no record replays as nothing at all and falls back to the declarative approval, exactly as before: the absence of a row is not a demotion. The record is cleared by the first observation that agrees with the approval again — the record is written on the call path, so the first call after a fix clears it. A restart does not silently re-open it: `tools/list` does not itself re-verify, so the persisted demotion keeps a drifted tool un-advertised until an operator works it.
+**A quarantine survives a restart.** What is written to the store is not "this server is quarantined" but "a live observation of this server disagreed with the approval, at this time" — an observation replayed at boot, with the derivation running unchanged on top of it (`crates/busbar-mcp/src/mcp/demotion.rs`). A server with no record replays as nothing at all and falls back to the declarative approval, exactly as before: the absence of a row is not a demotion. The record is cleared by the first observation that agrees with the approval again — the record is written on the call path, so the first call after a fix clears it. A restart does not silently re-open it: `tools/list` does not itself re-verify, so the persisted demotion keeps a drifted tool un-advertised until an operator works it.
 
-> **Stated gap.** Drift has two axes and the fetch path observes one of them. The **capability** axis (digests over name, description and input schema) is fully observed. The **identity** axis is not: the shared HTTP client does not surface the peer's certificate SPKI to that layer, so a certificate rotation is invisible to it. It is invisible; it is not silently reported as verified (`crates/busbar-core/src/mcp/connect.rs`).
+> **Stated gap.** Drift has two axes and the fetch path observes one of them. The **capability** axis (digests over name, description and input schema) is fully observed. The **identity** axis is not: the shared HTTP client does not surface the peer's certificate SPKI to that layer, so a certificate rotation is invisible to it. It is invisible; it is not silently reported as verified (`crates/busbar-mcp/src/mcp/connect.rs`).
 
 ### Operator surfaces
 
@@ -439,7 +439,7 @@ Mounted at `crates/busbar-core/src/admin/v1/json/mod.rs:82-90`; the shared seque
 
 The circuit breaker runs on all three planes. There is one FSM and no second state machine: an MCP tool server is a cell on the same breaker a model lane sits on, keyed `tool:<server-id>` with lane index 0 (`crates/busbar-core/src/store/planes.rs:22-30`, `:107-109`). Closed → Open → HalfOpen, the same two-stage disposition pipeline, the same exponential cooldown, the same single-flight half-open recovery probe. See [circuit-breaker.md](/docs/circuit-breaker/) for the state machine itself.
 
-**The breaker is consulted before any socket**, immediately after the authorization gate and before the dispatch loop — the same position the LLM walk consults it before a lane (`crates/busbar-core/src/mcp/method.rs:1410-1431`). The task-creating path consults it at the same position and **before the task row is minted**, because a tripped server must be a refusal the caller sees now, not a task id for work Busbar already knows it will not dispatch (`crates/busbar-core/src/mcp/method.rs:1735-1754`).
+**The breaker is consulted before any socket**, immediately after the authorization gate and before the dispatch loop — the same position the LLM walk consults it before a lane (`crates/busbar-mcp/src/mcp/method.rs:1410-1431`). The task-creating path consults it at the same position and **before the task row is minted**, because a tripped server must be a refusal the caller sees now, not a task id for work Busbar already knows it will not dispatch (`crates/busbar-mcp/src/mcp/method.rs:1735-1754`).
 
 A tripped server answers:
 
@@ -459,15 +459,15 @@ A tripped server answers:
 }
 ```
 
-(`crates/busbar-core/src/mcp/method.rs:2071-2109`.)
+(`crates/busbar-mcp/src/mcp/method.rs:2071-2109`.)
 
-**It is an error, never a tool result with `isError: true`.** MCP's `isError` means *the tool ran and it failed*. A tripped breaker means *the call never happened*. Returning the second as the first tells the calling model that a tool executed and reported a failure, and the model then reasons from a lie and may report that false result onward as fact. `-32030` sits in JSON-RPC 2.0 §5.1's implementation-defined `-32000..-32099` band because each reserved code is wrong for a specific reason: `-32603` says Busbar broke (it did not), `-32601` says the tool does not exist (it does), `-32602` blames the caller (`crates/busbar-core/src/mcp/method.rs:2065-2075`).
+**It is an error, never a tool result with `isError: true`.** MCP's `isError` means *the tool ran and it failed*. A tripped breaker means *the call never happened*. Returning the second as the first tells the calling model that a tool executed and reported a failure, and the model then reasons from a lie and may report that false result onward as fact. `-32030` sits in JSON-RPC 2.0 §5.1's implementation-defined `-32000..-32099` band because each reserved code is wrong for a specific reason: `-32603` says Busbar broke (it did not), `-32601` says the tool does not exist (it does), `-32602` blames the caller (`crates/busbar-mcp/src/mcp/method.rs:2065-2075`).
 
 **These cells refuse on a trip and nothing less.** The MCP cell is built with `bench_below_trip_threshold: false` — the one field it does not take from the LLM defaults (`crates/busbar-core/src/store/planes.rs:81-98`). On an LLM pool, a sub-threshold failure arms a short cooldown meaning "prefer a sibling for a while", and failover is what keeps the caller served while it lasts. On a single MCP registration with no pool there is no sibling, so the same cooldown would mean "refuse *every* caller of this server for the next 15–120 seconds" after one transient blip, on a cell whose own trip predicate had just declined to trip. So the predicate is the published one and nothing weaker: **error rate ≥ 0.5 over at least 5 outcomes in a 30-second window**, cooldown 15 s escalating to 120 s (`crates/busbar-core/src/store/in_memory/mod.rs:563-574`, `:629-639`). An upstream's own `Retry-After` is still honoured, for as long as the upstream asked for — that is the upstream's backpressure, not Busbar inventing an outage.
 
-**A tripped server that is a member of a `pools:` failover pool is not what produces the `503` above.** The walk runs before any refusal is composed and tries the next member whose approved digest matches the primary's (`crates/busbar-core/src/mcp/reroute.rs:235-379`); the caller gets that member's answer. The `503` is what remains when the pool is *exhausted* — every interchangeable member tripped — and then it names the **pool**, not one server, with a `Retry-After` set from the soonest member cooldown to expire (`crates/busbar-core/src/mcp/method.rs:2142-2167`). An unpooled registration has no twin to select, so for it the `503` is the whole story.
+**A tripped server that is a member of a `pools:` failover pool is not what produces the `503` above.** The walk runs before any refusal is composed and tries the next member whose approved digest matches the primary's (`crates/busbar-mcp/src/mcp/reroute.rs:235-379`); the caller gets that member's answer. The `503` is what remains when the pool is *exhausted* — every interchangeable member tripped — and then it names the **pool**, not one server, with a `Retry-After` set from the soonest member cooldown to expire (`crates/busbar-mcp/src/mcp/method.rs:2142-2167`). An unpooled registration has no twin to select, so for it the `503` is the whole story.
 
-**Timeouts are a bound the upstream cannot lengthen by choosing to be slow.** `timeout:` is per server, default 30 s, and there is deliberately no spelling for "unlimited": a leg that cannot time out holds a concurrency slot for as long as the upstream chooses (`crates/busbar-core/src/mcp/config.rs:706-727`).
+**Timeouts are a bound the upstream cannot lengthen by choosing to be slow.** `timeout:` is per server, default 30 s, and there is deliberately no spelling for "unlimited": a leg that cannot time out holds a concurrency slot for as long as the upstream chooses (`crates/busbar-mcp/src/mcp/config.rs:706-727`).
 
 ### Other refusals on this plane
 
@@ -510,27 +510,27 @@ Metrics are opt-in: with no `module: prometheus` instance under `export:`, Busba
 
 Everything a model-plane request already got applies to a tool call unchanged.
 
-**Budgets and metering.** Every dispatch round is charged against the caller's key through the same admission the LLM path uses, on the same clock, so a tool call and a model call land in the same budget window rather than in two windows that happen to be close (`crates/busbar-core/src/mcp/method.rs:1940-1976`). One metered, attributed event per round: `model` carries the published tool name and `provider` carries `mcp`, so an existing cost dashboard groups MCP traffic without knowing what MCP is. Governance disabled ⇒ no key, no budget, nothing charged — the same posture the LLM path takes.
+**Budgets and metering.** Every dispatch round is charged against the caller's key through the same admission the LLM path uses, on the same clock, so a tool call and a model call land in the same budget window rather than in two windows that happen to be close (`crates/busbar-mcp/src/mcp/method.rs:1940-1976`). One metered, attributed event per round: `model` carries the published tool name and `provider` carries `mcp`, so an existing cost dashboard groups MCP traffic without knowing what MCP is. Governance disabled ⇒ no key, no budget, nothing charged — the same posture the LLM path takes.
 
-The per-upstream sampling budget is separate and additional: `sampling.max_requests_per_minute` caps how often *this upstream* may induce a completion, across every caller, spent before any model leg is entered (`crates/busbar-core/src/mcp/config.rs:598-615`).
+The per-upstream sampling budget is separate and additional: `sampling.max_requests_per_minute` caps how often *this upstream* may induce a completion, across every caller, spent before any model leg is entered (`crates/busbar-mcp/src/mcp/config.rs:598-615`).
 
-**Hooks.** `tools.hooks:` ∪ `tools.<server>.hooks:` is resolved once per config generation into a per-server gate list and fired on the **dispatch** path — never the catalogue (`crates/busbar-core/src/state.rs:303-313`, `crates/busbar-core/src/mcp/method.rs:1324-1340`). What a caller may *see* is decided by grants and nothing else; a hook decides what a caller may *do*. The gate fires **before** the task path, the egress gate and the dispatch loop, so a refusal costs no durable task row, no token exchange and no socket. A `kind: gate` hook sees the `invoke` IR — the published tool name and the call's arguments — and can reject the call. A server with no attached hook has no entry in the map, so the firing site costs one hash lookup that misses.
+**Hooks.** `tools.hooks:` ∪ `tools.<server>.hooks:` is resolved once per config generation into a per-server gate list and fired on the **dispatch** path — never the catalogue (`crates/busbar-core/src/state.rs:303-313`, `crates/busbar-mcp/src/mcp/method.rs:1324-1340`). What a caller may *see* is decided by grants and nothing else; a hook decides what a caller may *do*. The gate fires **before** the task path, the egress gate and the dispatch loop, so a refusal costs no durable task row, no token exchange and no socket. A `kind: gate` hook sees the `invoke` IR — the published tool name and the call's arguments — and can reject the call. A server with no attached hook has no entry in the map, so the firing site costs one hash lookup that misses.
 
 **Audit.** Refusals and outcomes are audited through the one core chain; the plane's audit resource kind is `mcp_server` and its action words are prefixed with it (`crates/busbar-core/src/plane/mod.rs:186-192`).
 
-**The per-call log.** Every inbound `tools/call` that reaches dispatch is written as one hash-chained record to the configured governance store, per caller, and read back at boot (`crates/busbar-core/src/mcp/calllog.rs:1-18`). It is deliberately **not** the admin audit ring: an admin mutation is operator-rate and a tool call is request-rate, and sharing one bounded ring means a busy afternoon of tool calls evicts every admin row from it — silently, because a ring that pruned looks identical to a ring that was never written to.
+**The per-call log.** Every inbound `tools/call` that reaches dispatch is written as one hash-chained record to the configured governance store, per caller, and read back at boot (`crates/busbar-mcp/src/mcp/calllog.rs:1-18`). It is deliberately **not** the admin audit ring: an admin mutation is operator-rate and a tool call is request-rate, and sharing one bounded ring means a busy afternoon of tool calls evicts every admin row from it — silently, because a ring that pruned looks identical to a ring that was never written to.
 
-What is written: every `tools/call` terminal — the dispatched result, every refusal (admission, dispatch-time re-validation, header mismatch, the tasks gate, the caller-ask gate, the budget, the egress gate, the upstream's own refusal), and the creation of an asynchronous task. What is **not** written: `prompts/get` and `resources/read` (the record's `tool` field is the tool routing key, and inventing a value for a prompt would put a name there no `mcp_tool:` grant can name); the round structure of a multi-round exchange (one inbound request, one record); and the task's own later upstream leg (`crates/busbar-core/src/mcp/calllog.rs:65-90`).
+What is written: every `tools/call` terminal — the dispatched result, every refusal (admission, dispatch-time re-validation, header mismatch, the tasks gate, the caller-ask gate, the budget, the egress gate, the upstream's own refusal), and the creation of an asynchronous task. What is **not** written: `prompts/get` and `resources/read` (the record's `tool` field is the tool routing key, and inventing a value for a prompt would put a name there no `mcp_tool:` grant can name); the round structure of a multi-round exchange (one inbound request, one record); and the task's own later upstream leg (`crates/busbar-mcp/src/mcp/calllog.rs:65-90`).
 
 The claim is **tamper-evidence, not tamper-prevention.** A chain detects an altered, reordered, inserted or removed record after the fact; it does not stop one, and a host compromised at the moment of writing can rewrite a whole chain consistently and it will verify. Prevention means shipping the records off-box. A chain break found at boot is *reported* while the row is still *restored* — refusing to restore a record whose chain does not verify would turn a detection control into a deletion primitive.
 
 `store: memory` implements none of these methods, so nothing persists and the restore reports zero. That zero is the truth being reported, not a bug.
 
-**Upstream credentials are bound to the inbound caller.** `upstream::authorise` selects the credential Busbar spends under the *inbound* caller's grant — that binding is the confused-deputy defence for the client direction, and it is what the whole plane's authorization model rests on (`crates/busbar-core/src/mcp/mod.rs:80-88`). The RFC 8693 exchange asks for a scope **derived from the caller's own `mcp_tool` grants on that server**, intersected with the server, sorted and deduped (`crates/busbar-core/src/mcp/client/egress.rs:361-375`) — never a configured static list, which would be a second place the authority is written down.
+**Upstream credentials are bound to the inbound caller.** `upstream::authorise` selects the credential Busbar spends under the *inbound* caller's grant — that binding is the confused-deputy defence for the client direction, and it is what the whole plane's authorization model rests on (`crates/busbar-mcp/src/mcp/mod.rs:80-88`). The RFC 8693 exchange asks for a scope **derived from the caller's own `mcp_tool` grants on that server**, intersected with the server, sorted and deduped (`crates/busbar-mcp/src/mcp/client/egress.rs:361-375`) — never a configured static list, which would be a second place the authority is written down.
 
-**What an upstream may ask for, it must be granted AND satisfied.** A server-initiated ask arrives as an `input_required` result of a call Busbar made; `grants.{sampling,elicitation,roots}` admits it and the matching `sampling:` / `roots:` block answers it. Neither implies the other: a grant with no satisfier is refused as unsatisfiable naming the missing key, and a satisfier behind a closed grant refuses boot as unreachable. Grants are consulted on **every** retry, because there is no handshake to consult them once and a revocation has to bite on the next retry (`crates/busbar-core/src/mcp/config.rs:521-528`).
+**What an upstream may ask for, it must be granted AND satisfied.** A server-initiated ask arrives as an `input_required` result of a call Busbar made; `grants.{sampling,elicitation,roots}` admits it and the matching `sampling:` / `roots:` block answers it. Neither implies the other: a grant with no satisfier is refused as unsatisfiable naming the missing key, and a satisfier behind a closed grant refuses boot as unreachable. Grants are consulted on **every** retry, because there is no handshake to consult them once and a revocation has to bite on the next retry (`crates/busbar-mcp/src/mcp/config.rs:521-528`).
 
-**An upstream's ask never reaches Busbar's caller.** It terminates at Busbar: either satisfied under the grant the operator gave that server, or the call fails. Proxying one would ask the caller to grant, on the upstream's behalf, authority Busbar has just declined to spend. The asks Busbar *does* make of its own caller are the operator-authored `ask_caller:` rounds and nothing else — there is no `From` between the two types, none constructible, and the module that composes a caller-facing ask is scanned at test time for so much as the *name* of the modules an upstream's values live in (`crates/busbar-core/src/mcp/mod.rs:90-115`).
+**An upstream's ask never reaches Busbar's caller.** It terminates at Busbar: either satisfied under the grant the operator gave that server, or the call fails. Proxying one would ask the caller to grant, on the upstream's behalf, authority Busbar has just declined to spend. The asks Busbar *does* make of its own caller are the operator-authored `ask_caller:` rounds and nothing else — there is no `From` between the two types, none constructible, and the module that composes a caller-facing ask is scanned at test time for so much as the *name* of the modules an upstream's values live in (`crates/busbar-mcp/src/mcp/mod.rs:90-115`).
 
 ---
 

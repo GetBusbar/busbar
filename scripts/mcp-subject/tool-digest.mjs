@@ -14,7 +14,7 @@
 // the way busbar will, and approve THAT.
 //
 // THE DIGEST IS A RE-IMPLEMENTATION AND SAYS SO. The layout lives in
-// `crates/busbar-core/src/mcp/client/catalogue.rs::tool_digest`: sha256 over, for each of
+// `crates/busbar-mcp/src/mcp/client/catalogue.rs::tool_digest`: sha256 over, for each of
 // [name, description, canonical(inputSchema)], an 8-byte big-endian length prefix followed by the
 // UTF-8 bytes; the canonical form renders objects with keys sorted, recursively. Two
 // implementations of one byte layout drift silently, so `--selftest` pins this one to the SAME

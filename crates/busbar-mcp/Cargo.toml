@@ -3,8 +3,8 @@
 # Step 3.A.1 of the plane split folded the MCP protocol codec in here: the `codec` module
 # (`src/codec/`) is the `ProtocolDecl`, the JSON-RPC dialect and the `tools/call` + subscription
 # operation cells — everything the former `busbar-proto-mcp` crate carried. The MCP PLANE (today's
-# `crates/busbar-core/src/mcp`, ~18k lines: the catalogue, the call log, the client pool and its
-# transports, the config sections, boot hydration, the router mount and the admin API) folds in
+# former `crates/busbar-core/src/mcp`, ~18k lines: the catalogue, the call log, the client pool and its
+# transports, the config sections, boot hydration, the router mount and the admin API) folded in
 # BESIDE the codec in a later plane-split step — ONE PLUGIN PER PROTOCOL, and MCP the protocol and
 # MCP the plane are the same protocol, so they end up behind the same on/off switch rather than two.
 #

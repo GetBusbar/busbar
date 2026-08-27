@@ -251,7 +251,7 @@ For a single registration with no pool, unchanged: **failing fast instead of fai
 
 ### What a tripped target returns: MCP
 
-This shape is **live**: `crates/busbar-core/src/mcp/tests/breaker_fastfail_tests.rs` asserts every token of it against a real dying peer.
+This shape is **live**: `crates/busbar-mcp/src/mcp/tests/breaker_fastfail_tests.rs` asserts every token of it against a real dying peer.
 
 A tripped tool server answers HTTP **`503`** with a **`Retry-After`** header populated from the cell's own remaining cooldown: an exact number rather than a guess, the same shape budget rejection already uses with `429`. The body is a **JSON-RPC error** with code **`-32030`**, in Busbar's implementation-defined band (JSON-RPC 2.0 §5.1 reserves `-32000`..`-32099` for exactly this), carrying structured `data`:
 
@@ -259,15 +259,15 @@ A tripped tool server answers HTTP **`503`** with a **`Retry-After`** header pop
 { "reason": "upstream_unavailable", "server": "acme", "retry_after_ms": 12000 }
 ```
 
-The breaker is consulted before any socket, immediately after the authorization gate and before the dispatch loop, and the task-creating path consults it at the same position and *before* the task row is minted (`crates/busbar-core/src/mcp/method.rs:1410-1431`, `:1735-1754`; the refusal itself is `:2070-2109`). [MCP](/docs/mcp/#what-a-tripped-upstream-returns) carries the full response.
+The breaker is consulted before any socket, immediately after the authorization gate and before the dispatch loop, and the task-creating path consults it at the same position and *before* the task row is minted (`crates/busbar-mcp/src/mcp/method.rs:1410-1431`, `:1735-1754`; the refusal itself is `:2070-2109`). [MCP](/docs/mcp/#what-a-tripped-upstream-returns) carries the full response.
 
 **It is an error, never a tool result with `isError: true`.** MCP's `isError` means *the tool ran and it failed*. A tripped breaker means *the call never happened*. Returning the second as the first tells the calling model that a tool executed and reported a failure. The model then reasons from a lie, and may report that false result onward as fact. The reserved JSON-RPC codes are each wrong for a specific reason: `-32603` internal error blames Busbar, `-32601` method-not-found says the tool does not exist when it does, and `-32602` invalid-params blames the caller.
 
 ### What a tripped target returns: A2A
 
-Also **live**, on all three bindings (`crates/busbar-core/src/a2a/tests/breaker_fastfail_tests.rs`).
+Also **live**, on all three bindings (`crates/busbar-a2a/src/a2a/tests/breaker_fastfail_tests.rs`).
 
-A2A has what MCP lacks: task state is first class. A fresh submission to a tripped agent yields the task state **`rejected`**, not `failed`, returned **with a task id**, alongside `503` and the same exact `Retry-After` (`crates/busbar-core/src/a2a/relay.rs:1462-1481`, `crates/busbar-core/src/a2a/receive.rs:1991-2016`). A verb naming an *existing* task is different: the task lives at exactly one backend and a tripped backend must not end it, so the verb gets the refusal and the row keeps its last-known state. [A2A](/docs/a2a/#what-a-tripped-agent-returns) carries the full response.
+A2A has what MCP lacks: task state is first class. A fresh submission to a tripped agent yields the task state **`rejected`**, not `failed`, returned **with a task id**, alongside `503` and the same exact `Retry-After` (`crates/busbar-a2a/src/a2a/relay.rs:1462-1481`, `crates/busbar-a2a/src/a2a/receive.rs:1991-2016`). A verb naming an *existing* task is different: the task lives at exactly one backend and a tripped backend must not end it, so the verb gets the refusal and the row keeps its last-known state. [A2A](/docs/a2a/#what-a-tripped-agent-returns) carries the full response.
 
 The two states are different claims and the spec gives us both. `failed` means we tried and it broke. `rejected` means **we did not accept this work**, which is literally what a breaker refusing to start a call has done. The caller still gets a task id to poll and correlate, so it loses nothing, and **the calling agent decides whether and when to retry.** Busbar does not invent a retry schedule on another agent's behalf.
 

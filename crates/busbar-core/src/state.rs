@@ -599,11 +599,11 @@ pub struct App {
     /// object's type. `PlaneDecl::claims`/`admission` already read a plane's object through exactly
     /// this kind of erasure (`&dyn Any`), and this map generalises it to an owned, `App`-carried slot.
     ///
-    /// The MCP plane already reads its runtime object ONLY through this map: `App::mcp` was deleted
-    /// and `crate::mcp::resource(app)` downcasts this slot inside the plane, so nothing OUTSIDE the
-    /// mcp module names `McpResource`. The A2A plane still holds a parallel typed field (`App::a2a`)
-    /// carrying the SAME `Arc` this map holds under `"a2a"` (one construction, two readers); its
-    /// migration to slot-only access is the D4 step that mirrors this one.
+    /// The MCP plane reads its runtime object ONLY through this map: `App::mcp` was deleted and
+    /// `crate::mcp::resource(app)` downcasts this slot inside the plane, so nothing OUTSIDE the mcp
+    /// module names `McpResource`. The A2A plane reads its own object the SAME way — `App::a2a` was
+    /// deleted too, and `crate::a2a::runtime(app)` downcasts this map's `"a2a"` slot inside the a2a
+    /// module (the D4 step, now complete, mirrored the MCP one).
     ///
     /// Absent from this map is the same fact as an unconfigured plane: a plane the operator did not
     /// configure contributes no slot (see [`crate::plane::registry::PlaneDecl::build`]).
@@ -782,11 +782,12 @@ impl App {
     /// configure it (see `App::plane_slots`) — the same absence a typed field's `None`/no-entry
     /// already means, reached through the key instead of the field name.
     ///
-    /// THE SEAM READERS HAVE STARTED MOVING HERE: the MCP plane reads its runtime object through this
-    /// accessor (`crate::mcp::resource`), having deleted its typed `App::mcp` field. A2A still reads
-    /// its typed field until the D4 step migrates it the same way.
-    // MCP-only today: the MCP plane reads its runtime slot through this accessor; with `plane-mcp`
-    // off (and A2A on) it has no caller (A2A still reads its typed field).
+    /// THE SEAM BOTH PLANES READ THROUGH: the MCP plane reads its runtime object through this accessor
+    /// (`crate::mcp::resource`) and the A2A plane through it too (`crate::a2a::runtime`), each having
+    /// deleted its typed `App::mcp` / `App::a2a` field in the D4 step.
+    // Reached unconditionally through the `PlaneSlots` trait impl below (`App::plane_slot`), so the
+    // inherent fn is never truly dead; the `allow(dead_code)` gate is legacy from when MCP was its
+    // only direct reader.
     #[cfg_attr(not(feature = "plane-mcp"), allow(dead_code))]
     pub fn plane_slot(&self, key: &str) -> Option<&Arc<dyn std::any::Any + Send + Sync>> {
         self.plane_slots.get(key)

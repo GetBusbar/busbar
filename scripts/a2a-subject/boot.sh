@@ -22,7 +22,7 @@
 #
 # THE CREDENTIAL, SOLVED THE SAME HONEST WAY MCP SOLVED IT.
 #
-# busbar's A2A mount is an OAuth resource server. `crates/busbar-core/src/a2a/serve.rs` derives the
+# busbar's A2A mount is an OAuth resource server. `crates/busbar-a2a/src/a2a/serve.rs` derives the
 # plane's RFC 8707 canonical URI from `public_url` (`<public_url>/a2a`), and `auth/mod.rs` refuses
 # any credential whose readable audience is not exactly that — an OPAQUE key is refused outright,
 # so there is no "just use an API key" path. The independent battery can be handed a header

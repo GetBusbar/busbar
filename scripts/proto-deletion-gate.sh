@@ -34,7 +34,7 @@
 #                 droppable only as a set.
 #
 # WHAT THE MCP LEG NOW CLAIMS: dropping `plane-mcp` compiles out BOTH halves of MCP — the
-#   protocol codec crate (busbar-mcp) AND the MCP PLANE in `busbar-core/src/mcp` (gated by the
+#   protocol codec crate (busbar-mcp) AND the MCP PLANE in `busbar-mcp/src/mcp` (gated by the
 #   `busbar-core/plane-mcp` feature the binary's `plane-mcp` forwards). Core names no `crate::mcp`
 #   type in that build, so:
 #     * mcp-b: the binary BUILDS, BOOTS and SERVES its operator surface (/healthz, /stats), and the
@@ -397,7 +397,7 @@ OUT=$(run_busbar "$MCP_DELETED_BIN" --validate 2>&1) \
 note "mcp-b kept dialect: anthropic config validates clean with plane-mcp off"
 
 # ── mcp-c: THE MCP PLANE'S CONFIG SURFACE LEFT WITH IT ──────────────────────────────────────────
-# `plane-mcp` off compiles `busbar-core/src/mcp` out, so `tools:`/`mcp:` name a plane this
+# `plane-mcp` off compiles `busbar-mcp/src/mcp` out, so `tools:`/`mcp:` name a plane this
 # build does not carry. `resolve` REFUSES such a config, naming the compiled-out plane — the config
 # analogue of the protocol registry refusing a deleted dialect. This is the leg that went RED before
 # D3: the plane was an unconditional core built-in, so a `tools:` config validated clean with
@@ -492,7 +492,7 @@ kill "$SRV_PID" 2>/dev/null; wait "$SRV_PID" 2>/dev/null; SRV_PID=""
 note "mcp-b-mounted: plane-mcp ON mounts the door — metadata route 200 (present), unconfigured path $MCP_META_UNCONF; vs 404 with plane-mcp off (DISCRIMINATES present-mounted from compiled-out)"
 
 # ── a2a-b: THE A2A PLANE IS INDEPENDENTLY DROPPABLE, and the binary still SERVES LLM + MCP ────────
-# The exact analogue of the mcp-b/mcp-c legs: `plane-a2a` off compiles `busbar-core/src/a2a`
+# The exact analogue of the mcp-b/mcp-c legs: `plane-a2a` off compiles `busbar-a2a/src/a2a`
 # (and its plane-side helper `plane::taskstore`) out, so core names no `crate::a2a` type. This is a
 # SEPARATE feature axis from `plane-mcp` — dropping it keeps MCP, proving the two planes are
 # independently droppable rather than droppable only as a set.
@@ -522,7 +522,7 @@ run_busbar "$A2A_DELETED_BIN" --validate >"$FIX/a2a-tools-validate.out" 2>&1 \
 note "a2a-b MCP-survives: a tools: config validates clean with plane-a2a off"
 
 # ── a2a-c: THE A2A PLANE'S CONFIG SURFACE LEFT WITH IT ───────────────────────────────────────────
-# `plane-a2a` off compiles `busbar-core/src/a2a` out, so `agents:` names a plane this build
+# `plane-a2a` off compiles `busbar-a2a/src/a2a` out, so `agents:` names a plane this build
 # does not carry. `resolve` REFUSES such a config, naming the compiled-out plane — the config
 # analogue of the protocol registry refusing a deleted dialect, and the symmetric twin of mcp-c.
 printf 'listen: "127.0.0.1:0"\nadmin_listen: "127.0.0.1:0"\nproviders: {}\nmodels: {}\nagents:\n  a:\n    url: "https://example.com/a2a"\n' > "$FIX/config.yaml"

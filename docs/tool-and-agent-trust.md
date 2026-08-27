@@ -25,9 +25,9 @@ in one fingerprint:
 
 - **MCP** hashes name + description + input schema into one per-tool digest over a canonical
   rendering, so re-ordering a schema's keys is not drift but changing one character of a description
-  is (`crates/busbar-core/src/mcp/client/catalogue.rs`, `tool_digest`).
+  is (`crates/busbar-mcp/src/mcp/client/catalogue.rs`, `tool_digest`).
 - **A2A** pins the signed card: the operator's out-of-band issuer key (or transport-layer SPKI) plus
-  a fingerprint of the card document (`crates/busbar-core/src/a2a/verify.rs`).
+  a fingerprint of the card document (`crates/busbar-a2a/src/a2a/verify.rs`).
 
 You approve that fingerprint once. Verify-on-call re-compares it on every call.
 

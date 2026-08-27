@@ -48,14 +48,14 @@ from pathlib import Path
 #   * `UpstreamCreds` (crates/busbar-core/src/auth/mod.rs) is the `upstream_credentials:` key's value
 #     grammar. It is deserialized straight out of the config document; it lives beside the
 #     middleware that consumes it.
-#   * `crates/busbar-core/src/a2a/` holds the ENTIRE `agents:` section grammar — the per-entry shape, the
+#   * `crates/busbar-a2a/src/a2a/` holds the ENTIRE `agents:` section grammar — the per-entry shape, the
 #     four pin mechanisms, and the leased outbound credential. It was outside the set for the same
 #     reason the two above were: it lives with the plane that consumes it rather than under the
 #     config module. The snapshot recorded `agents: crate::a2a::config::AgentsCfg` and stopped
 #     there, so every key an operator writes under an agent had NO fingerprint at all and a
 #     BREAKING change to that grammar passed the additive-only check silently. Only the two files
 #     that declare config types are tracked; the rest of the plane is runtime.
-#   * `crates/busbar-core/src/mcp/config.rs` is the ENTIRE `tools:` section grammar — every registered
+#   * `crates/busbar-mcp/src/mcp/config.rs` is the ENTIRE `tools:` section grammar — every registered
 #     MCP server's endpoint, its pin, its allowed tools/prompts/resources/templates, its token
 #     exchange, its request grants — and it was outside the set for the same reason `a2a/` was
 #     (#60). The snapshot recorded `tools: crate::mcp::config::ToolsCfg` and stopped, so retyping
@@ -622,8 +622,8 @@ def extract(paths) -> dict:
 
         This used to be an unenforced comment — "config has no duplicate type names across the
         module" — which was true only while the tracked set was one directory. It stopped being true
-        the moment a SECOND plane's grammar was tracked: `crates/busbar-core/src/a2a/config.rs` and
-        `crates/busbar-core/src/mcp/config.rs` each declare a `PinMechanism`, with DIFFERENT variants
+        the moment a SECOND plane's grammar was tracked: `crates/busbar-a2a/src/a2a/config.rs` and
+        `crates/busbar-mcp/src/mcp/config.rs` each declare a `PinMechanism`, with DIFFERENT variants
         (`jws_issuer_key` vs `pinned_pubkey`). Sorted by path, MCP's is read second, so it replaced
         A2A's under the shared key and the classifier reported
         `PinMechanism::jws_issuer_key: enum variant REMOVED` — a break in a grammar nobody touched,

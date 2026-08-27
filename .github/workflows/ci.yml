@@ -786,7 +786,7 @@ jobs:
   # WHAT THIS JOB DOES NOT PROVE, stated so a green check is not over-read. The most
   # platform-sensitive subsystem in the tree is the stdio MCP transport (process spawn, pipes, child
   # teardown), and its tests are `#[cfg(unix)]` because the fixture children are `/bin/sh` scripts
-  # (see crates/busbar-core/src/mcp/client/tests/stdio_tests.rs). They therefore compile to NOTHING here:
+  # (see crates/busbar-mcp/src/mcp/client/tests/stdio_tests.rs). They therefore compile to NOTHING here:
   # this job is green while the spawn half is unexecuted on Windows. `cargo test` cannot notice that
   # — a test that does not exist cannot fail — so the gap is written down rather than inferred.
   # Closing it needs cmd.exe fixture children, which is real work and not a CI edit.

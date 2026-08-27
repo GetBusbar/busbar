@@ -9,13 +9,13 @@
 //! This is the whole of what `busbar-core/src/handlers/mcp.rs` was and what the standalone
 //! `busbar-proto-mcp` crate carried before it folded in here.
 //!
-//! WHAT THIS CRATE WILL ALSO HOLD. The MCP plane — today's `crates/busbar-core/src/mcp` (~18k
+//! WHAT THIS CRATE ALSO HOLDS. The MCP plane (today's former `crates/busbar-core/src/mcp`, ~18k
 //! lines: the catalogue, the call log, the client pool and its transports, the config sections,
 //! boot hydration, the router mount and the admin API). MCP the protocol and MCP the plane are the
-//! same protocol, so they end up behind ONE on/off switch, not two — an operator's choice is "can
+//! same protocol, so they sit behind ONE on/off switch, not two — an operator's choice is "can
 //! this busbar speak MCP", never "can it speak the wire format but not run the plane behind it".
-//! The plane has NOT moved here yet; that is a later step of the plane split, and it lands beside
-//! the codec below.
+//! The plane folded in beside the codec as a later step of the plane split; it lives in the
+//! [`mcp`] module below.
 //!
 //! ONE PLUGIN PER PROTOCOL, the same rule `busbar-llm` states for its six LLM dialects: nothing
 //! about the seam changes because this plugin happens to also carry a plane's worth of state.

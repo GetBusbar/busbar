@@ -3819,12 +3819,14 @@ fn nothing_is_repeatable_unless_the_operator_names_it() {
     );
 }
 
-// ── 1.6.0 auth.policy: block (additive, parse/resolve only in this increment) ────────────────────
+// ── 1.6.0 auth.policy: block (additive; parse/resolve coverage) ──────────────────────────────────
 
 /// A fully-populated `auth.policy:` block parses and RESOLVES onto `AuthCfg.policy` verbatim —
 /// self-mint toggle, allowed binding modes, default/max TTLs, and a per-role mint ceiling with a
-/// 3-state `allowed_pools`. This increment PARSES and CARRIES the block; it is not yet consulted by
-/// the mint path (behavior byte-identical when the block is present but unenforced).
+/// 3-state `allowed_pools`. This test covers PARSE and RESOLVE only — that the block lands on
+/// `AuthCfg.policy` verbatim. (These knobs ARE enforced at mint: `self_mint` at `auth/self_keys.rs`
+/// and the binding-mode / TTL / pool ceilings at `MintPolicy::check_mint`; that enforcement is
+/// exercised elsewhere.)
 #[test]
 fn test_auth_policy_block_parses_and_resolves() {
     use crate::config::BindingMode;
