@@ -142,7 +142,12 @@ pub mod calllog;
 /// THE PER-TASK PROVENANCE RECORD — the A2A plane's contribution to core's one audit chain. A
 /// plane-specific RECORD SHAPE, named honestly at the crate root rather than under the neutral
 /// `plane::` namespace. See the module header.
+// Widened to `pub` ONLY under the test-support surface so the extracted A2A plane's own test binary
+// can name the provenance types its front-door tests assert against; production keeps it `pub(crate)`.
+#[cfg(not(any(test, feature = "test-support")))]
 pub(crate) mod provenance;
+#[cfg(any(test, feature = "test-support"))]
+pub mod provenance;
 pub use busbar_substrate::breaker;
 pub mod catalogue;
 pub mod config;
@@ -247,4 +252,29 @@ pub use router::{
 // Referenced as `crate::...` only from the test trees (`#[cfg(test)]`), so the production lib
 // build sees them as unused — allowed, with the reason written down rather than widened away.
 #[allow(unused_imports)]
-pub(crate) use router::{base_data_router, build_router_with_limits};
+pub(crate) use router::build_router_with_limits;
+// Production names `base_data_router` crate-internally; under test-support the crate-root name is
+// the `pub` wrapper below instead, so the plain re-export is compiled only off the test-support path.
+#[cfg(not(any(test, feature = "test-support")))]
+#[allow(unused_imports)]
+pub(crate) use router::base_data_router;
+
+/// TEST-SUPPORT re-export of the base data router. `router::base_data_router` is `pub(crate)`; this
+/// thin wrapper widens it to `pub` ONLY under the test-support surface so the extracted A2A plane's
+/// own ingress tests can drive the base router directly (off the App's neutral slots, exactly as
+/// production does) without the `pub(crate)` fn escaping the crate in a production build.
+#[cfg(any(test, feature = "test-support"))]
+#[allow(clippy::type_complexity)]
+pub fn base_data_router(
+    plugin_routes: &plugin_routes::PluginRouteTable,
+    plane_slots: &std::collections::BTreeMap<
+        &'static str,
+        std::sync::Arc<dyn std::any::Any + Send + Sync>,
+    >,
+    oauth_as: Option<&std::sync::Arc<oauth_as::plane::AsPlane>>,
+) -> (
+    axum::Router<std::sync::Arc<state::AppHandle>>,
+    core_routes::CoreRouteTable,
+) {
+    router::base_data_router(plugin_routes, plane_slots, oauth_as)
+}

@@ -97,12 +97,25 @@ pub mod cost;
 pub(crate) mod observe;
 pub(crate) mod quarantine;
 pub mod registry;
+// `store` is a core-internal plane primitive. Its module is widened to `pub` ONLY under the
+// test-support surface so the extracted A2A plane's own test binary can name the durable-body
+// helpers it exercises (`StoreNamedTestExt`, `KIND_TASK_EVENT`, `task_event_row_from_body`); the
+// tamper-critical `encode` stays `pub(crate)` regardless (see `store::encode`), so widening the
+// module does NOT hand any out-of-crate caller the row-forging primitive.
+#[cfg(not(any(test, feature = "test-support")))]
 pub(crate) mod store;
+#[cfg(any(test, feature = "test-support"))]
+pub mod store;
 // `plane::taskstore` stores A2A task rows and depends on `crate::a2a::task`/`crate::a2a::pushnotify`
 // types; every caller lives in `crate::a2a`. It is therefore an A2A-plane helper that happens to sit
 // under `plane/`, and it is compiled out with the plane (`plane-a2a` off) alongside `src/a2a`.
-#[cfg(feature = "plane-a2a")]
+// Widened to `pub` under the test-support surface (like `store`) so the extracted A2A plane's own
+// test binary can name the durable task set it exercises (`TASKS`, `TaskRegistry`, the sink/host
+// test seams). Production keeps it `pub(crate)`.
+#[cfg(all(feature = "plane-a2a", not(any(test, feature = "test-support"))))]
 pub(crate) mod taskstore;
+#[cfg(all(feature = "plane-a2a", any(test, feature = "test-support")))]
+pub mod taskstore;
 /// PUBLIC re-export of the core-backed task reader so the composition root (`main`) can bind it to the
 /// neutral `busbar_substrate::plane_host::TaskReader` seam via `install_task_reader` — the one public
 /// symbol the binary names for this seam, mirroring `busbar_core::egress::seam::CoreHostlessEgress`.

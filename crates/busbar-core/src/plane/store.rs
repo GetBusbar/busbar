@@ -93,7 +93,13 @@ const TERMINAL_TASK_STATES: [&str; 4] = ["completed", "failed", "canceled", "rej
 
 /// Serialize a typed plane row into an opaque [`PlaneRecord::body`]. `serde_json`, matching the
 /// store plugins' decode, so the bytes round-trip identically across the plugin ABI.
-pub fn encode<T: serde::Serialize>(row: &T) -> StoreResult<Vec<u8>> {
+///
+/// Deliberately `pub(crate)`, NOT `pub`: this is the row-FORGING primitive the in-core tamper tests
+/// use to stage a mutated persisted body. When the `store` module is widened to `pub` under the
+/// test-support surface (so the extracted planes can name the read-side helpers), `encode` stays
+/// crate-private so no out-of-crate caller can mint a forged row through this crate's own encoder —
+/// tamper discipline is a property of the module, not of any one build's feature set.
+pub(crate) fn encode<T: serde::Serialize>(row: &T) -> StoreResult<Vec<u8>> {
     serde_json::to_vec(row).map_err(|e| StoreError(format!("plane body encode: {e}")))
 }
 
