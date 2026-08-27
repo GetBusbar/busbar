@@ -612,6 +612,95 @@ impl busbar_substrate::plane_host::EngineHost for EngineHostImpl {
         crate::plane::auditlog::emit_admin_hostless_now(action, resource, outcome, principal);
     }
 
+    #[cfg(feature = "plane-a2a")]
+    fn task_journal_write(
+        &self,
+        task_id: &str,
+        op: busbar_substrate::plane_host::TaskWrite<'_>,
+        now: u64,
+        request_id: &str,
+    ) -> Result<busbar_api::TaskRow, String> {
+        use busbar_substrate::plane_host::TaskWrite;
+        // Mint a fresh per-call arena over the live engine and drive the SAME `TASKS.*` op the relay
+        // drives in place, SYNCHRONOUSLY — the `HostCtx` never escapes the call. The `TaskWrite`↔`Task`
+        // /`TaskState` conversion is the whole boundary: `Submit` reconstructs the canonical `Task` from
+        // the row (a row that does not parse is refused), a `Transition` parses the state token back,
+        // and every effect is byte-identical to the in-place `with_dispatch_scope` leg. The engine's
+        // `TaskStoreError`/`TaskError` is rendered (`Display`) into the neutral `String` the seam carries.
+        with_dispatch_scope(&self.app, |host, _| {
+            let written = match op {
+                TaskWrite::Submit { row } => {
+                    let task = crate::a2a::task::Task::from_row(row).map_err(|e| e.to_string())?;
+                    crate::plane::taskstore::TASKS.submit(host, &task, request_id)
+                }
+                TaskWrite::Transition { to_state } => {
+                    let to =
+                        crate::a2a::task::TaskState::parse(to_state).map_err(|e| e.to_string())?;
+                    crate::plane::taskstore::TASKS.transition(host, task_id, to, now, request_id)
+                }
+                TaskWrite::Dispatch { agent_id } => crate::plane::taskstore::TASKS
+                    .record_dispatch(host, task_id, agent_id, now, request_id),
+                TaskWrite::AdvanceCursor { cursor } => crate::plane::taskstore::TASKS
+                    .advance_cursor(host, task_id, cursor, now, request_id),
+            };
+            written.map(|t| t.to_row()).map_err(|e| e.to_string())
+        })
+    }
+
+    /// The `plane-a2a`-OFF twin: the durable task journal is compiled out with the A2A domain, so there
+    /// is no engine to drive. The trait stays unconditional (its types are neutral), so the method must
+    /// exist in every build; it answers `Err` rather than being absent.
+    #[cfg(not(feature = "plane-a2a"))]
+    fn task_journal_write(
+        &self,
+        _task_id: &str,
+        _op: busbar_substrate::plane_host::TaskWrite<'_>,
+        _now: u64,
+        _request_id: &str,
+    ) -> Result<busbar_api::TaskRow, String> {
+        Err("A2A task journal is not compiled in this build (plane-a2a off)".to_string())
+    }
+
+    #[cfg(feature = "plane-a2a")]
+    fn task_record_push_delivery(
+        &self,
+        task_id: &str,
+        kind: &str,
+        now: u64,
+        request_id: &str,
+    ) -> Result<(), String> {
+        // The engine's `record_push_delivery` takes a `&'static str` kind (it rides the provenance
+        // digest as a static token). Map the neutral wire token back onto the exact core constant it
+        // names; an unrecognised token is refused rather than chained, so the seam cannot mint an event
+        // with an arbitrary kind. Then mint a fresh arena and append synchronously, exactly as the
+        // in-place delivery path did.
+        let kind: &'static str = match kind {
+            crate::plane::provenance::EV_PUSH_DELIVERED => {
+                crate::plane::provenance::EV_PUSH_DELIVERED
+            }
+            crate::plane::provenance::EV_PUSH_REFUSED => crate::plane::provenance::EV_PUSH_REFUSED,
+            crate::plane::provenance::EV_PUSH_FAILED => crate::plane::provenance::EV_PUSH_FAILED,
+            other => return Err(format!("unknown push-delivery kind `{other}`")),
+        };
+        with_dispatch_scope(&self.app, |host, _| {
+            crate::plane::taskstore::TASKS
+                .record_push_delivery(host, task_id, kind, now, request_id)
+                .map_err(|e| e.to_string())
+        })
+    }
+
+    /// The `plane-a2a`-OFF twin of [`task_record_push_delivery`](Self::task_record_push_delivery).
+    #[cfg(not(feature = "plane-a2a"))]
+    fn task_record_push_delivery(
+        &self,
+        _task_id: &str,
+        _kind: &str,
+        _now: u64,
+        _request_id: &str,
+    ) -> Result<(), String> {
+        Err("A2A task journal is not compiled in this build (plane-a2a off)".to_string())
+    }
+
     fn call_log_emit(&self, principal: &str, input: busbar_substrate::plane::calllog::CallInput) {
         // Mint a fresh per-call arena over the live engine and drive the chain seam SYNCHRONOUSLY — the
         // `HostCtx` never escapes the call. The plane's former `Some(scope)`/`None` selection (reuse the

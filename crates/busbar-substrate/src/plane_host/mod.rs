@@ -107,6 +107,43 @@ pub struct HostCompletion {
     pub body: bytes::Bytes,
 }
 
+/// A neutral, borrow-free description of ONE task-journal write, handed to
+/// [`EngineHost::task_journal_write`]. The plane converts its own `Task` domain to
+/// `busbar_api::TaskRow`/`&str` at THIS boundary; the core engine re-derives its own canonical
+/// `Task`/`TaskState` inside the host, so neither the wire task type nor the state enum crosses the
+/// seam. `Submit` carries the full row (a new task is described in one shot); the mutators name ONLY
+/// what they change, exactly as the engine's `TASKS.{transition, record_dispatch, advance_cursor}`
+/// take just the changed field. The whole enum is neutral (it names only `busbar_api::TaskRow`, `str`
+/// and `u64`), so it compiles in every feature combo even though the write it drives is A2A-only.
+///
+/// `dead_code`-allowed for now: the enum and its variants are constructed only by the A2A plane's
+/// journal call sites, which a later batch repoints onto this seam. Until then nothing mints one.
+#[allow(dead_code)]
+pub enum TaskWrite<'a> {
+    /// Record a brand-new task from its full projected row (the engine reconstructs its canonical
+    /// `Task` via `Task::from_row`, so a row that does not parse is refused rather than stored).
+    Submit {
+        /// The complete task row to persist as `submitted`.
+        row: &'a busbar_api::TaskRow,
+    },
+    /// Move an existing task to `to_state` (the engine parses it back to its canonical `TaskState`
+    /// and enforces the legal-transition table; an unknown or illegal move is refused).
+    Transition {
+        /// The target state's stable wire/store token (`working`, `completed`, …).
+        to_state: &'a str,
+    },
+    /// Record which agent an existing task was routed to (not a state change).
+    Dispatch {
+        /// The chosen/fronted agent's busbar-local id.
+        agent_id: &'a str,
+    },
+    /// Advance an existing task's artifact cursor (monotonic; a rewind is a no-op).
+    AdvanceCursor {
+        /// The new cursor — how many artifact chunks have been durably relayed.
+        cursor: u64,
+    },
+}
+
 /// The neutral HOST seam a plane calls to reach the engine's host-owned capabilities.
 ///
 /// A plane holds an `Arc<dyn EngineHost>` (minted core-side over the live engine) and calls these
@@ -356,6 +393,41 @@ pub trait EngineHost: Send + Sync {
     /// is NOT a `plane_slots` entry. Owned (an `Arc` clone) so it outlives the call; a pure snapshot
     /// read, no `HostCtx` (mirrors [`a2a_secret_resolver`](Self::a2a_secret_resolver)).
     fn a2a_agent_defs(&self) -> Arc<dyn std::any::Any + Send + Sync>;
+
+    /// Drive ONE durable task-journal write — submit a new task or mutate an existing one — over the
+    /// same core `TASKS.{submit, transition, record_dispatch, advance_cursor}` engine ops the A2A
+    /// relay drives in place, returning the resulting task's projected row. The transient `HostCtx`
+    /// the journal seam needs is minted INTERNALLY (a fresh per-call `DispatchScope` over the live
+    /// engine, driven synchronously; the pointer never escapes the call), so the plane holds no host.
+    /// Identical to opening a `crate::plane_host::with_dispatch_scope` and calling the matching
+    /// `crate::plane::taskstore::TASKS.*` — the `TaskWrite`↔`Task`/`TaskState` conversion is the whole
+    /// boundary; the effect is byte-identical. `now` is the mutation timestamp (ignored by `Submit`,
+    /// whose timestamps ride the row); `request_id` is the provenance join key. An `Err` renders the
+    /// engine's own `TaskStoreError`/`TaskError` (`Display`) as a string — a refused parse, an illegal
+    /// transition, an unknown task, or a durable-store miss. In a build without the A2A domain
+    /// compiled (`plane-a2a` off) the journal engine does not exist, so this answers `Err`.
+    fn task_journal_write(
+        &self,
+        task_id: &str,
+        op: TaskWrite<'_>,
+        now: u64,
+        request_id: &str,
+    ) -> Result<busbar_api::TaskRow, String>;
+
+    /// Record ONE push-notification DELIVERY OUTCOME on a task's own provenance chain — the
+    /// journal-only twin of [`task_journal_write`](EngineHost::task_journal_write) that appends an
+    /// event and touches no row (a delivery attempt changes neither state nor agent). `kind` is the
+    /// event token (`task.push_delivered` / `task.push_refused` / `task.push_failed`); an unrecognised
+    /// token is refused. The transient `HostCtx` is minted INTERNALLY and consumed synchronously.
+    /// Identical to `crate::plane::taskstore::TASKS.record_push_delivery` under a fresh
+    /// `with_dispatch_scope`; `Err` on an unknown task, a store miss, or (`plane-a2a` off) no engine.
+    fn task_record_push_delivery(
+        &self,
+        task_id: &str,
+        kind: &str,
+        now: u64,
+        request_id: &str,
+    ) -> Result<(), String>;
 
     /// Drive ONE non-streaming `openai`-dialect completion through the ENTIRE resolved ingress
     /// pipeline (governance → pools → breaker/failover → metering → request log) under `gov`, on the
