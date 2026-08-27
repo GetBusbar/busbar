@@ -536,8 +536,9 @@ pub(crate) fn stamp(cache: &CatalogueCache, id: &str, now_ms: u64, drifted: bool
 
 // Shared fixtures for the connect batteries: a REAL fake MCP peer whose tool list can CHANGE under
 // a live cache, which is the one thing a rug-pull proof cannot do without.
-#[cfg(all(test, feature = "test-support"))]
+#[cfg(feature = "test-support")]
 #[path = "tests/connect_support.rs"]
+#[allow(dead_code)]
 pub(super) mod connect_support;
 
 #[cfg(all(test, feature = "test-support"))]

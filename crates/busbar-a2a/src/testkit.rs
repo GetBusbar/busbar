@@ -102,6 +102,29 @@ fn finalize(app: &mut TestApp) {
     }
 }
 
+/// An UNPINNED receiving `agents:` entry at `url`, for busbar-core integration tests that register a
+/// custom agent. Built here because `AgentDefCfg`/`AgentPinCfg` fields are crate-private.
+pub fn unpinned_agent(url: &str) -> AgentDefCfg {
+    use crate::a2a::config::{AgentPinCfg, PinMechanism};
+    AgentDefCfg {
+        url: url.to_string(),
+        pin: AgentPinCfg {
+            mechanism: PinMechanism::Unpinned,
+            key: None,
+            fingerprint: None,
+        },
+        reverify_ttl: None,
+        recovery_backoff: None,
+        protocol_version: None,
+        allow_private: false,
+        upstream_credentials: None,
+        upstream_credential: None,
+        egress_scopes: Vec::new(),
+        client_identity: None,
+        hooks: Vec::new(),
+    }
+}
+
 /// An `agents:` config with ONE receiving agent (`planner`), for busbar-core's cross-plane
 /// integration tests (they set it on `RootCfg::agent_defs` and boot through `build_app_from_config`).
 /// Lives here because the `AgentsCfg`/`AgentDefCfg` fields are crate-private; core names only the

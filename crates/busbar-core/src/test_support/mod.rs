@@ -835,6 +835,12 @@ pub struct TestApp {
     plane_finalizers: Vec<Box<dyn FnOnce(&mut TestApp)>>,
 }
 
+impl Default for TestApp {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[allow(dead_code)]
 impl TestApp {
     pub fn new() -> Self {
@@ -1009,6 +1015,7 @@ impl TestApp {
     /// NEUTRAL POST-BUILD SEAM — register a closure to run against the finished `App`. A plane's
     /// test-kit uses this for steps that name plane types (e.g. the MCP plane's durable-demotion
     /// replay), keeping them out of core's `build()`.
+    #[allow(clippy::type_complexity)]
     pub fn on_built(
         &mut self,
         f: Box<dyn FnOnce(&std::sync::Arc<crate::state::App>)>,
@@ -1379,7 +1386,20 @@ impl TestApp {
         // `MCP_RUNTIME_SLOT`) and installed them through [`TestApp::install_plane_runtime`], so
         // `build()` MOVES the accumulated type-erased map into the App slot without naming a plane
         // runtime type or a slot key of its own.
-        let plane_slots = std::mem::take(&mut self.installed_plane_runtimes);
+        #[cfg_attr(not(test), allow(unused_mut))]
+        let mut plane_slots = std::mem::take(&mut self.installed_plane_runtimes);
+        // THE MCP PLANE'S ALWAYS-PRESENT per-generation runtime slot. In THIS crate's own test binary
+        // (`#[cfg(test)]`) the MCP plane is a built-in of the process list (see `registry`), so — like
+        // production `appbuild` — every generation must carry its runtime under `MCP_RUNTIME_SLOT`, or
+        // the plane's `reresolve_gates`/`on_swap` seams (run on every admin mutation) fault. A fixture
+        // that opted the plane in through its test-kit already installed one; this fills the DEFAULT for
+        // every other `TestApp`, sourced from the plane's own test-kit so `build()` names no MCP type.
+        // Absent under an external `test-support` build (no `cfg(test)`), where the process list has no
+        // MCP plane unless a test registers it — and such a test installs its own runtime.
+        #[cfg(test)]
+        plane_slots
+            .entry(crate::state::MCP_RUNTIME_SLOT)
+            .or_insert_with(busbar_mcp::testkit::default_mcp_runtime);
         // THE NEUTRAL DISPATCH TABLE, described by each plane's test-kit through the `mount_plane` /
         // `admit_plane` seams (neutral `&str` paths + substrate `PlaneAdmission`), so a router-walking
         // test sees the surface a deployment would have without `build()` naming a plane type.
@@ -1913,4 +1933,133 @@ impl Drop for EnvVarGuard {
 /// tests — `SecretResolver::builtins_only` itself stays crate-private; this is the one doorway.
 pub fn builtins_only_secret_resolver() -> crate::config::secret::SecretResolver {
     crate::config::secret::SecretResolver::builtins_only()
+}
+
+// ── SHARED CONFIG-BUILD FIXTURES (relocated from src/tests/tests.rs) ─────────────────────────────
+// `pub` so BOTH the in-crate unit tests and busbar-core's OWN integration-test target
+// (`tests/plane_integration.rs`, where the plane crates link as ONE busbar_core) can build a RootCfg
+// and drive it through the real `build_app_from_config`.
+/// A minimal `RootCfg` whose SOLE provider's `api_key` is the given secret reference — the smallest
+/// config that exercises `config_validate::secret_refs` (and thus `validate_secret_refs`).
+pub fn cfg_with_provider_api_key(api_key: crate::config::SecretRef) -> crate::config::RootCfg {
+    let mut error_map = std::collections::HashMap::new();
+    error_map.insert("400".to_string(), "client_error".to_string());
+    let provider = crate::config::ProviderCfg {
+        protocol: "openai".into(),
+        base_url: "https://api.example.com".into(),
+        api_key,
+        health: None,
+        error_map,
+        path: None,
+        path_base: None,
+        token_url: None,
+        scope: None,
+        subject: None,
+        auth: None,
+        allow_metadata_hosts: Vec::new(),
+    };
+    let mut providers = std::collections::HashMap::new();
+    providers.insert("acme".to_string(), provider);
+    crate::config::RootCfg {
+        tool_defs: crate::plane::config::ToolsSection::default().0,
+        // Not an MCP server.
+        mcp: None,
+        oauth_as: None,
+        agent_defs: crate::plane::config::AgentsSection::default().0,
+        tool_pools: Default::default(),
+        agent_pools: Default::default(),
+        upstream_credentials: crate::auth::UpstreamCreds::Own,
+        listen: crate::config::DEFAULT_LISTEN_ADDR.into(),
+        public_url: None,
+        tls: None,
+        admin_listen: crate::config::DEFAULT_ADMIN_LISTEN_ADDR.to_string(),
+        admin_tls: None,
+        auth: None,
+        providers,
+        models: std::collections::HashMap::new(),
+        pools: std::collections::HashMap::new(),
+        hooks: std::collections::HashMap::new(),
+        admin_auth: vec!["admin-tokens".to_string()],
+        groups: std::collections::BTreeMap::new(),
+        rate_card: None,
+        per_request_fee: 0,
+        store: None,
+        secrets: std::collections::BTreeMap::new(),
+        global_hooks: Vec::new(),
+        blocked_metadata_hosts: Vec::new(),
+        allow_metadata_hosts: Vec::new(),
+        allow_all_metadata: false,
+        limits: crate::config::LimitsResolved::default(),
+        export: Default::default(),
+        identity_providers: Default::default(),
+        export_defs: Default::default(),
+    }
+}
+
+pub fn build_once(
+    cfg: crate::config::RootCfg,
+    prior: Option<&crate::state::App>,
+) -> Result<crate::state::App, String> {
+    // Test-only direct call: there is no outer admin transaction / persist step here, so firing any
+    // resolved governance-credential rotation immediately is correct
+    // and keeps this helper's callers (which assert on rotation taking effect) unchanged.
+    let (app, gov_rotate) = crate::build_app_from_config(
+        cfg,
+        crate::config::PluginsCfg::default(),
+        None,
+        std::collections::HashSet::new(),
+        std::collections::HashSet::new(),
+        (None, None),
+        prior,
+    )?;
+    if let Some(rotate) = gov_rotate {
+        rotate();
+    }
+    Ok(app)
+}
+
+/// A CLOSED single-module auth chain (the given module), for integration tests that must build an
+/// mcp-server App (`mcp:` refuses an open data-plane chain). Built in-crate so the caller names no
+/// `AuthChainEntry` field.
+pub fn closed_auth_chain(module: &str) -> crate::config::AuthCfg {
+    let mut auth = crate::config::AuthCfg::default_none();
+    auth.chain = vec![crate::config::AuthChainEntry {
+        name: module.to_string(),
+        module: module.to_string(),
+        max_admin_scope: None,
+        token: None,
+        settings: serde_json::Map::new(),
+    }];
+    auth
+}
+
+/// Drive a REAL oversized POST to `path` through the REAL layer stack and return the 413 body.
+/// Asserts only the status and JSON-ness; the SHAPE is each caller's assertion.
+pub async fn oversized_413_body(
+    app: std::sync::Arc<crate::state::App>,
+    path: &str,
+) -> serde_json::Value {
+    // A tiny body cap so an ordinary request trips `DefaultBodyLimit`.
+    let (router, _handle) = crate::build_router_with_limits(app, 64, 1024, false);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+
+    let oversized = "x".repeat(4096);
+    let r = reqwest::Client::new()
+        .post(format!("http://{addr}{path}"))
+        .header("content-type", "application/json")
+        .body(serde_json::json!({ "pad": oversized }).to_string())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        r.status().as_u16(),
+        413,
+        "the body cap must reject the oversized POST to {path}"
+    );
+    let body = r.text().await.unwrap();
+    server.abort();
+    serde_json::from_str(&body)
+        .unwrap_or_else(|e| panic!("the 413 body must be JSON ({e}): {body}"))
 }

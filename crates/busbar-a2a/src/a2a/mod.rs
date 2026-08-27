@@ -291,7 +291,8 @@ pub fn runtime(app: &busbar_core::state::App) -> Option<&crate::a2a::plane::A2aP
 /// Test-only since the boot seam was neutralized: production reads the A2A runtime off the neutral
 /// host through [`runtime_arc_of`] (the `&App` boot-start caller was the last production user); the
 /// `&App` form survives for the test harnesses that build an `App` directly.
-#[cfg(all(test, feature = "test-support"))]
+#[cfg(feature = "test-support")]
+#[allow(dead_code)]
 pub(crate) fn runtime_arc(
     app: &busbar_core::state::App,
 ) -> Option<std::sync::Arc<crate::a2a::plane::A2aPlane>> {

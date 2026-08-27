@@ -19,6 +19,10 @@ use busbar_core::proto::*;
 #[allow(unused_imports)]
 // used standalone; redundant with busbar_core::proto::* when netted into core
 use super::proto_codec::*;
+// See the anthropic dialect for the rationale: an explicit import of the codec surface so it binds to
+// THIS crate's own `proto_codec` rather than the ambiguous `busbar_core::proto::*` re-export.
+#[allow(unused_imports)]
+use super::proto_codec::{Protocol, ProtocolReader, ProtocolWriter, StreamFraming};
 
 pub mod handler;
 mod reader;

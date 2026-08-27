@@ -151,14 +151,14 @@ pub(crate) fn retaining_from(
 /// webhook field that mirrors `pool`. The `lane`, `reason`, `disposition`, `outcome`,
 /// `ingress_protocol`, `from`, and `to` labels are likewise drawn from fixed enumerations, never
 /// from free-form client input.
-pub(crate) const REQUESTS_TOTAL: &str = "busbar_requests_total"; // labels: ingress_protocol, pool (bounded), outcome
-                                                                 // UPSTREAM_ATTEMPTS_TOTAL / UPSTREAM_FAILURES_TOTAL metric NAMES moved DOWN to the neutral substrate
-                                                                 // alongside their hostless emit fns (`busbar_substrate::telemetry`); re-exported here so this file's
-                                                                 // `describe_counter!` registrations and every `crate::metrics::UPSTREAM_*` call site resolve unchanged.
+pub const REQUESTS_TOTAL: &str = "busbar_requests_total"; // labels: ingress_protocol, pool (bounded), outcome
+                                                          // UPSTREAM_ATTEMPTS_TOTAL / UPSTREAM_FAILURES_TOTAL metric NAMES moved DOWN to the neutral substrate
+                                                          // alongside their hostless emit fns (`busbar_substrate::telemetry`); re-exported here so this file's
+                                                          // `describe_counter!` registrations and every `crate::metrics::UPSTREAM_*` call site resolve unchanged.
 pub use busbar_substrate::telemetry::{UPSTREAM_ATTEMPTS_TOTAL, UPSTREAM_FAILURES_TOTAL}; // labels: pool (bounded), lane[, disposition]
 pub(crate) const BREAKER_TRIPS_TOTAL: &str = "busbar_breaker_trips_total"; // labels: pool (bounded), lane
 pub(crate) const FAILOVERS_TOTAL: &str = "busbar_failovers_total"; // labels: pool (bounded), reason
-pub(crate) const REQUEST_DURATION_SECONDS: &str = "busbar_request_duration_seconds"; // histogram; labels: ingress_protocol, pool (bounded)
+pub const REQUEST_DURATION_SECONDS: &str = "busbar_request_duration_seconds"; // histogram; labels: ingress_protocol, pool (bounded)
 pub(crate) const TRANSLATIONS_TOTAL: &str = "busbar_translations_total"; // labels: from, to
 
 // Per-plane request families for the MOUNTED (non-model) planes — MCP and A2A. Kept SEPARATE from
@@ -168,7 +168,7 @@ pub(crate) const TRANSLATIONS_TOTAL: &str = "busbar_translations_total"; // labe
 // `/metrics` exposition is unchanged; a deployment that mounts MCP/A2A gets per-plane counts here
 // via `sum by (plane)` without ever touching the pre-existing model series' label set.
 pub const PLANE_REQUESTS_TOTAL: &str = "busbar_plane_requests_total"; // labels: plane, ingress_protocol, pool (bounded), outcome
-pub(crate) const PLANE_REQUEST_DURATION_SECONDS: &str = "busbar_plane_request_duration_seconds"; // histogram; labels: plane, ingress_protocol, pool (bounded)
+pub const PLANE_REQUEST_DURATION_SECONDS: &str = "busbar_plane_request_duration_seconds"; // histogram; labels: plane, ingress_protocol, pool (bounded)
 
 // Routing-policy selections: incremented once per request whose pool resolved a non-default routing
 // policy that produced a ranked order (Prefer / on_error: first). `policy` is the native/transport

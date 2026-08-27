@@ -391,11 +391,11 @@ pub struct AskEntryCfg {
     /// `elicitation/create`, `sampling/createMessage` or `roots/list` — the closed set
     /// `mrtr.mdx:184-192` names. Anything else is never sent: it names no capability a caller could
     /// have declared, and `mrtr.mdx:246` forbids sending an ask the caller has not declared.
-    pub(crate) method: String,
+    pub method: String,
     /// The request `params`, EXACTLY as the operator wrote them. Opaque to busbar and never
     /// inspected; what validates them is the caller's own schema check on receipt.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) params: Option<serde_json::Value>,
+    pub params: Option<serde_json::Value>,
 }
 
 /// `tools.<server>.prompts_allow.<name>.messages[]` — ONE typed message.

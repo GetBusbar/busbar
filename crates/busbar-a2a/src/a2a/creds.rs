@@ -245,7 +245,7 @@ impl CredentialPlacement {
 /// overlay state — and the reason `config_validate::secret_refs` now walks the `agents:` arm.
 #[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct OutboundCredential {
+pub struct OutboundCredential {
     /// The reference resolved at delegation time. NOT the secret.
     pub(crate) secret: SecretRef,
     /// Where the resolved value is placed on the outbound request.

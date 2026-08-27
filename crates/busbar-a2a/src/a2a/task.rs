@@ -431,9 +431,9 @@ impl busbar_substrate::plane_host::TaskCodec for A2aTaskCodec {
 #[path = "tests/task_tests.rs"]
 mod task_tests;
 
-// THE DURABLE TASK SET's tests — relocated from busbar-core's `plane::taskstore` tests when the
-// dual-compile was removed: they exercise core's `taskstore` (through `busbar_core::plane::taskstore`)
-// with THIS plane's `crate::a2a::task` row types, so they live on the plane that owns the row.
+// THE DURABLE TASK SET's tests — relocated from busbar-core's `plane::taskstore` when the dual-compile
+// was removed: they exercise core's `taskstore` (through `busbar_core::plane::taskstore`) with THIS
+// plane's task row types, so they live on the plane that owns the row.
 #[cfg(all(test, feature = "test-support"))]
 #[path = "tests/taskstore_tests.rs"]
 mod taskstore_tests;

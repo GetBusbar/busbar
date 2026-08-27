@@ -359,13 +359,21 @@ jobs:
           VALKEY_URL: redis://localhost:6379
           # Same two-number floor as the windows job. This is the PRIMARY unix suite; with the
           # service containers wired it runs a SUPERSET of the windows workspace (it adds the
-          # cfg(unix) tests and the postgres/valkey roundtrip tests windows can't run), so it must
-          # never fall BELOW the windows high-water of 4755. MIN carries slack; EXPECTED warns.
-          UNIX_MIN_TESTS: "4700"
-          # +3 for the perf/build-parity gates: the 2 allocation-count tests (busbar-core
-          # alloc_gate.rs — the surgical FIX-9 write-path test + the whole-forward-path passthrough
-          # test) and the build-provenance stamp format-lock test (busbar bin).
-          UNIX_EXPECTED_TESTS: "4786"
+          # cfg(unix) tests and the postgres/valkey roundtrip tests windows can't run). MIN carries
+          # slack; EXPECTED warns.
+          #
+          # RECOMPUTED for the post-plane-extraction topology. Before: the A2A/MCP plane sources were
+          # dual-compiled into busbar-core's own test binary (`#[path]`), so the plane suites ran
+          # THERE and `cargo test --workspace` counted ~4786. The dual-compile is gone; the plane
+          # crates are now honest test targets, so `cargo test --workspace` runs each plane's (and the
+          # LLM dialects') `test-support` suite in its OWN binary — the SAME tests, relocated, plus the
+          # +3 perf/build-parity gates (2 busbar-core alloc_gate.rs allocation-count tests + the
+          # busbar-bin build-provenance stamp format-lock test). Net observed change on the linux
+          # runner: +1483 over the old total. Measured locally at 6364 on the pinned 1.98.0 toolchain
+          # (macOS); the linux runner ran ~95 fewer on the identical pre-refactor tree (target_os
+          # gates), so the recorded EXPECTED is the old linux 4786 + the measured +1483 delta = 6269.
+          UNIX_MIN_TESTS: "5800"
+          UNIX_EXPECTED_TESTS: "6269"
         run: |
           set -uo pipefail
           # PIPESTATUS[0] is cargo's own exit; `tee` must not launder a red test run into green.
@@ -812,14 +820,18 @@ jobs:
       # whole suite disappear. So: the hard floor has slack, and the high-water mark carries the
       # sensitivity, as a warning that costs nothing to be wrong about.
       #
-      # BOTH ARE MEASURED, NOT GUESSED. windows-latest observed `4755 tests passed across the
-      # workspace`. Independently: `cargo test --workspace -- --list` lists 4793 on unix, of which
-      # 10 are `#[ignore]`d and 24 are erased by cfg(unix) gates -> 4759 predicted, 4755 observed.
-      # The two agree to within 4 tests.
+      # RECOMPUTED for the post-plane-extraction topology (see the unix `check` job for the full
+      # rationale): the A2A/MCP/LLM `test-support` suites, formerly dual-compiled into busbar-core's
+      # test binary, now run in their own crate test binaries under `cargo test --workspace`. The
+      # relationship to unix holds — windows runs the same superset MINUS the cfg(unix)-only tests the
+      # old numbers put at ~31 (old unix 4786 - old windows 4755) — so the recomputed windows
+      # high-water is the recomputed unix EXPECTED (6269) minus that ~31 = ~6238. ESTIMATED, not
+      # locally measured (no windows runner here); confirm against the first post-merge windows CI run
+      # and tighten. MIN keeps generous slack so an estimate that is a little high cannot false-fail.
       #
       # RAISE THESE AS THE SUITE GROWS. Lowering either is only correct when a diff explains why.
-      WINDOWS_MIN_TESTS: "4700"
-      WINDOWS_EXPECTED_TESTS: "4755"
+      WINDOWS_MIN_TESTS: "5700"
+      WINDOWS_EXPECTED_TESTS: "6238"
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@1.98.0

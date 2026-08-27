@@ -228,7 +228,11 @@ impl Grants {
 /// hooks, group_map, cache — needs `full`. Unknown methods fail closed to `full`. Body-derived
 /// refinements (a non-`full` caller must not register a hook wired into a security-critical path)
 /// remain at the service layer as defense-in-depth.
-pub(crate) fn required_scope(method: &axum::http::Method, path: &str) -> Scope {
+// `pub` (not `pub(crate)`): the extracted plane crates' admin-verb conformance tests assert their
+// declared route scope equals the bar this one function ENFORCES (`busbar_substrate::admin_verbs`
+// documents the invariant), so they name it across the honest crate boundary. A pure `(method, path)
+// → Scope` function with no state to leak.
+pub fn required_scope(method: &axum::http::Method, path: &str) -> Scope {
     use axum::http::Method;
     if method == Method::GET || method == Method::HEAD {
         return Scope::ReadOnly;

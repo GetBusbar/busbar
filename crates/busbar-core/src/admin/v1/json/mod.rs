@@ -158,11 +158,15 @@ impl AdminTransport for JsonV1 {
             // vendor-native shaping.
             .fallback(|| async { err_json(&AdminError::not_found("resource")) })
             .method_not_allowed_fallback(|| async { err_json(&AdminError::MethodNotAllowed) });
-        // TEST-ONLY: the taxonomy recording layer. `Router::layer` runs AFTER routing, so it sees
+        // TEST-SUPPORT: the taxonomy recording layer. `Router::layer` runs AFTER routing, so it sees
         // the `MatchedPath` (the operation) alongside the tag `err_json` stamped on the response —
         // the join `err_json` alone cannot make. Every test in the suite is therefore a driver for
-        // the class-level drift check (see `contract::taxonomy::observed`).
-        #[cfg(test)]
+        // the class-level drift check (see `contract::taxonomy::observed`). Present under the whole
+        // `any(test, feature = "test-support")` surface — not `cfg(test)` alone — so when an extracted
+        // plane crate builds ITS router through this same `build_router` (a `test-support` build of
+        // busbar-core as its dependency), the plane trust verbs' emissions are recorded into the
+        // process-wide substrate witness ledger the cross-plane drift audit reads.
+        #[cfg(any(test, feature = "test-support"))]
         let router = router.layer(axum::middleware::from_fn(record_declared_error));
         router
     }
@@ -182,7 +186,7 @@ impl AdminTransport for JsonV1 {
 /// `PATCH /keys/{id}` (declared nowhere, but Conflict was declared for `GovernanceOff`) and the
 /// delegated-mint 400 on `POST /keys` (which additionally reused the wrong `Cond`, so its
 /// openapi.json prose described the rebind target instead). Both now fail the build at emission.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 async fn record_declared_error(
     req: axum::extract::Request,
     next: axum::middleware::Next,
@@ -405,17 +409,17 @@ pub(crate) fn err_json_cond(e: &AdminError, cond: Cond) -> Response {
 /// the taxonomy [`observed::Tag`] so the router's recording layer — which knows the matched route,
 /// which this function does not — can attribute the emission to an operation and check it against
 /// `declared_errors`. In a release build the tag does not exist and this is the plain projection.
-#[cfg_attr(not(test), allow(unused_variables))]
+#[cfg_attr(not(any(test, feature = "test-support")), allow(unused_variables))]
 fn err_json_tagged(e: &AdminError, cond: Option<Cond>) -> Response {
     let status = StatusCode::from_u16(e.http_status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-    #[cfg_attr(not(test), allow(unused_mut))]
+    #[cfg_attr(not(any(test, feature = "test-support")), allow(unused_mut))]
     let mut resp = (
         status,
         [(CONTENT_TYPE, crate::proxy::APPLICATION_JSON)],
         json!({"error": {"code": e.code(), "message": e.message()}}).to_string(),
     )
         .into_response();
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     if let Some(kind) = crate::admin::v1::contract::taxonomy::err_kind_of(e) {
         resp.extensions_mut()
             .insert(crate::admin::v1::contract::taxonomy::observed::Tag { kind, cond });

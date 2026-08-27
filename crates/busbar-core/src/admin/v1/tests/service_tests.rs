@@ -6,7 +6,6 @@
 use super::*;
 use crate::config::{HookCfg, HookKind, PromptAccess, UserAccess};
 use crate::test_support::TestApp;
-use busbar_mcp::testkit::TestAppMcpExt as _;
 
 fn hook(kind: HookKind, global: bool) -> HookCfg {
     HookCfg {
@@ -108,40 +107,38 @@ fn build_with_hook_makes_an_mcp_attach_live() {
         eprintln!("skip: hook cdylib not built (run under --workspace)");
         return;
     };
-    let server = busbar_mcp::mcp::config::McpServerDefCfg {
-        url: "https://mcp.internal/fs".to_string(),
-        pin: busbar_mcp::mcp::config::ServerPinCfg {
-            mechanism: busbar_mcp::mcp::config::McpPinMechanism::CertSpki,
-            key: Some("sha256/PIN==".to_string()),
-        },
-        verify_ttl: None,
-        timeout: None,
-        // The stdio child-process grammar, absent: this fixture is an HTTP-transport server
-        // (`url:` above, `transport: None`), and these four are `transport: stdio` only.
-        command: None,
-        args: Default::default(),
-        env: Default::default(),
-        cwd: None,
-        tools_allow: Default::default(),
-        prompts_allow: Default::default(),
-        resources_allow: Default::default(),
-        resource_templates_allow: Default::default(),
-        transport: None,
-        aud: None,
-        grants: Default::default(),
-        roots: Vec::new(),
-        sampling: None,
-        max_input_required_rounds: None,
-        max_caller_ask_rounds: None,
-        allow_private: false,
-        token_exchange: None,
-        upstream_credentials: None,
-        hooks: vec!["screen".to_string()],
-    };
-    let app = TestApp::new()
-        .hook_env(env)
-        .mcp_server("fs", server)
-        .build();
+    // The ONLY thing this test reads of the `tools.fs` registration is its hook ATTACH
+    // (`hooks: [screen]`), whose resolution lands in `App::mcp_server_gates`. Drive that through
+    // core's NEUTRAL container-hook seam rather than the `busbar_mcp` `.mcp_server(McpServerDefCfg)`
+    // builder, so this in-crate unit test names no plane config type across the crate boundary (the
+    // full end-to-end `.mcp_server(...)` path is covered by `tests/plane_integration.rs`).
+    let mut builder = TestApp::new().hook_env(env);
+    builder.set_mcp_container_hooks(
+        vec![("fs".to_string(), vec!["screen".to_string()])],
+        Vec::new(),
+    );
+    // The `reresolve_gates` seam re-reads the SERVER REGISTRY off the plane's runtime slot, so the
+    // runtime this generation carries must actually hold the `fs` server (with its `hooks: [screen]`
+    // attach) for the re-resolution under test to have anything to resolve. Install it through the MCP
+    // test-kit's neutral runtime builder — an in-crate `#[cfg(test)]` reach across the dev-dep edge, the
+    // same one `admin::tests` uses — so `build()`'s default empty runtime is not what gets read back.
+    {
+        let mut tools = busbar_mcp::mcp::config::ToolsCfg::default();
+        tools.servers.insert(
+            "fs".to_string(),
+            serde_json::from_value(serde_json::json!({
+                "url": "https://mcp.internal/fs",
+                "pin": {"mechanism": "cert_spki", "key": "sha256/BASE="},
+                "hooks": ["screen"]
+            }))
+            .unwrap(),
+        );
+        builder.install_plane_runtime(
+            crate::state::MCP_RUNTIME_SLOT,
+            busbar_mcp::testkit::mcp_runtime_with_servers(tools),
+        );
+    }
+    let app = builder.build();
     assert!(
         !app.mcp_server_gates.contains_key("fs"),
         "the attach names a hook no registry entry defines yet, so it resolves to nothing"

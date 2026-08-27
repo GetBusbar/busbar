@@ -57,7 +57,7 @@
 //! the records off-box to something the compromised host cannot rewrite. Anything stronger said
 //! about it is oversold.
 
-pub(crate) mod journal;
+pub mod journal;
 pub mod vocab {
     pub use busbar_substrate::audit::vocab::*;
 }
@@ -377,7 +377,7 @@ impl<R: ChainedRecord> Chain<R> {
 /// each is different — a verifier that returns `bool` tells an operator that something is wrong and
 /// nothing else, which in practice means it is run once and then ignored.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ChainBreakKind {
+pub enum ChainBreakKind {
     /// This record's stored `hash` is not the digest of its own fields: a field was edited in place.
     DigestMismatch { stored: String, recomputed: String },
     /// This record's `prev_hash` is not the previous record's `hash`: something was inserted,
@@ -399,13 +399,13 @@ pub struct ChainBreak {
     /// value as if it were a position.
     pub(crate) at_index: usize,
     /// The record's claimed sequence number.
-    pub(crate) seq: u64,
+    pub seq: u64,
     /// The scope the chain is scoped to (the principal id, the task id, …).
     pub scope: String,
     /// The stream's own words, carried so the message names WHICH log an operator has to go and
     /// look at without this type being generic over the record.
     pub(crate) labels: &'static ChainLabels,
-    pub(crate) kind: ChainBreakKind,
+    pub kind: ChainBreakKind,
 }
 
 impl std::fmt::Display for ChainBreak {

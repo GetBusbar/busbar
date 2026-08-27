@@ -422,6 +422,7 @@ pub(crate) async fn health(ctx: AdminReqCtx) -> AdminReply {
 // module cannot admit an admin request by design, so there is no authenticated caller to test
 // with. Covering it would mean standing up an external admin auth module in the fixture, which is
 // a different test than this one and belongs with the plugin suite.
-#[cfg(all(test, feature = "auth-admin-tokens"))]
+#[cfg(all(any(test, feature = "test-support"), feature = "auth-admin-tokens"))]
 #[path = "tests/adminverbs_tests.rs"]
-pub(crate) mod adminverbs_tests;
+#[allow(dead_code)]
+pub mod adminverbs_tests;

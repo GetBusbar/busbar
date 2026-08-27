@@ -732,8 +732,8 @@ impl Protocol {
     /// it. The pre-extraction fixture surface calls this constructor by name in hundreds of tests,
     /// so it survives for the builds that compile the dialect back in (see the `mod anthropic`
     /// decl) rather than rewriting every fixture to a registry lookup in the extraction commit.
-    #[cfg(test)]
-    pub(crate) fn anthropic() -> Self {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn anthropic() -> Self {
         Self::new(
             PROTO_ANTHROPIC,
             super::anthropic::AnthropicReader,

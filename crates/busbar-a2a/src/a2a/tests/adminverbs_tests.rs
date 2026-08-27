@@ -404,7 +404,7 @@ async fn the_trust_verbs_need_full_scope() {
 /// set-comparison so the assertion does not depend on which tests happened to run first.
 // No cfg of its own: this whole module is gated on `auth-admin-tokens` at its include site in
 // `adminverbs.rs`, exactly as the MCP plane's sibling is.
-pub(crate) async fn drive_a2a_verb_errors() {
+pub async fn drive_a2a_verb_errors() {
     busbar_core::metrics::init();
     let k = key();
     let (agent, agent_task) = agent_endpoint(signed_by(&k, a_card("echo"))).await;

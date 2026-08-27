@@ -1253,7 +1253,7 @@ CHOKE_POINTS=(
   #         is a bound the next edit raises.
   'J-standing-permission|OPEN-AND-TRUSTED|'"$CORE"'/trust/validate.rs (Standing::opened / still_permitted)|'"$CORE"'/trust/tests/validate_tests.rs::the_long_lived_response_holds_no_principal_it_resolved_at_open|hold a trust::validate::Standing and re-resolve the principal per frame; if you must freeze it, disclose the freeze beside the bound it trades on|-|a principal resolved at open and carried into a long-lived response is an identity a revocation cannot reach, and the failure is silent because everything else about the response is re-derived correctly'
 
-  'E-core-route-auth|ROUTE-AUTH-BYPASS|'"$CORE"'/core_routes.rs (CoreRouter::route / CoreRouteTable::declared_auth)|'"$CORE"'/auth/tests/tests.rs::test_mcp_token_is_confined_to_the_mcp_plane|mount core routes through core_routes::CoreRouter::route, which takes the RouteAuth with the handler|-|a route whose admission bar lives in the middleware rather than at the mount is a bar that drifts, and a per-process bypass leaks onto planes that never mount the route'
+  'E-core-route-auth|ROUTE-AUTH-BYPASS|'"$CORE"'/core_routes.rs (CoreRouter::route / CoreRouteTable::declared_auth)|crates/busbar-core/tests/plane_integration.rs::test_mcp_token_is_confined_to_the_mcp_plane|mount core routes through core_routes::CoreRouter::route, which takes the RouteAuth with the handler|-|a route whose admission bar lives in the middleware rather than at the mount is a bar that drifts, and a per-process bypass leaks onto planes that never mount the route'
 )
 
 hdr "choke-point registry (every hazard class has ONE owner; no hand-rolled bypass)"

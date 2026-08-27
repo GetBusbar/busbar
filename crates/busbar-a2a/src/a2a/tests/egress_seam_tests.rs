@@ -20,10 +20,12 @@ use std::io::{Read, Write};
 use std::net::{IpAddr, TcpListener};
 use std::sync::Arc;
 
-use super::{HopSpec, StreamOutcome};
 use crate::a2a::fetch::{FetchPolicy, Transport};
 use crate::a2a::relay::{ChunkFlow, RelayTransport};
 use crate::a2a::transport::ReqwestTransport;
+use busbar_core::egress::seam::{
+    buffered, pump, stream_head, with_hostless, HopSpec, StreamOutcome,
+};
 use busbar_core::egress::{build_pinned_client, RefuseSecondLookup};
 use busbar_core::proxy::{read_capped, ReadEnd};
 
@@ -151,9 +153,7 @@ fn buffered_adapter_matches_the_a2a_transport_get_byte_for_byte() {
 
     // The neutral adapter over the host egress seam.
     let cap = policy.max_body_bytes.saturating_add(1);
-    let seamed = super::with_hostless(|scope| {
-        super::buffered(scope, &hop(&url), cap).expect("seam buffered")
-    });
+    let seamed = with_hostless(|scope| buffered(scope, &hop(&url), cap).expect("seam buffered"));
 
     assert_eq!(seamed.status, direct.status, "status matches");
     assert_eq!(seamed.location, direct.location, "location matches");
@@ -192,7 +192,7 @@ fn buffered_adapter_surfaces_a_redirect_location_like_the_transport() {
         .expect("direct get");
 
     let cap = policy.max_body_bytes.saturating_add(1);
-    let seamed = super::with_hostless(|scope| super::buffered(scope, &hop(&url), cap).unwrap());
+    let seamed = with_hostless(|scope| buffered(scope, &hop(&url), cap).unwrap());
 
     assert_eq!(seamed.status, 302);
     assert_eq!(seamed.status, direct.status);
@@ -222,8 +222,7 @@ fn capped_read_reproduces_all_three_readend_states() {
         // A second, independent hop for the seam (the mock answers each connection freshly).
         let port2 = spawn_mock("200 OK", &[], body.clone());
         let url2 = format!("http://127.0.0.1:{port2}/");
-        let seamed =
-            super::with_hostless(|scope| super::buffered(scope, &hop(&url2), cap).unwrap());
+        let seamed = with_hostless(|scope| buffered(scope, &hop(&url2), cap).unwrap());
         assert_eq!(dend, ReadEnd::Complete);
         assert_eq!(seamed.end, ReadEnd::Complete, "under-cap body is Complete");
         assert_eq!(seamed.body, dbytes, "Complete body byte-identical");
@@ -239,8 +238,7 @@ fn capped_read_reproduces_all_three_readend_states() {
         let (_s, _l, dbytes, dend) = direct_read(&url, addr, port, cap);
         let port2 = spawn_mock("200 OK", &[], body.clone());
         let url2 = format!("http://127.0.0.1:{port2}/");
-        let seamed =
-            super::with_hostless(|scope| super::buffered(scope, &hop(&url2), cap).unwrap());
+        let seamed = with_hostless(|scope| buffered(scope, &hop(&url2), cap).unwrap());
         assert_eq!(dend, ReadEnd::Truncated);
         assert_eq!(seamed.end, ReadEnd::Truncated, "over-cap body is Truncated");
         assert_eq!(
@@ -259,8 +257,7 @@ fn capped_read_reproduces_all_three_readend_states() {
         let (_s, _l, _db, dend) = direct_read(&url, addr, port, cap);
         let port2 = spawn_truncating_mock(b"partial", 1000);
         let url2 = format!("http://127.0.0.1:{port2}/");
-        let seamed =
-            super::with_hostless(|scope| super::buffered(scope, &hop(&url2), cap).unwrap());
+        let seamed = with_hostless(|scope| buffered(scope, &hop(&url2), cap).unwrap());
         assert_eq!(dend, ReadEnd::TransportError);
         assert_eq!(
             seamed.end,
@@ -310,7 +307,7 @@ fn stream_adapter_concatenation_matches_post_stream() {
         sse.clone(),
     );
     let url2 = format!("http://127.0.0.1:{port2}/rpc");
-    let (seam_head, seam_body) = super::with_hostless(|scope| {
+    let (seam_head, seam_body) = with_hostless(|scope| {
         let spec = HopSpec {
             verb: "POST",
             url: &url2,
@@ -323,7 +320,7 @@ fn stream_adapter_concatenation_matches_post_stream() {
             timeout: std::time::Duration::ZERO,
             resolved_addr: None,
         };
-        match super::stream_head(scope, &spec, cap).expect("seam stream_head") {
+        match stream_head(scope, &spec, cap).expect("seam stream_head") {
             StreamOutcome::Buffered(h) => (h, Vec::new()),
             StreamOutcome::Streaming { head, id } => {
                 let mut body = Vec::new();
@@ -331,7 +328,7 @@ fn stream_adapter_concatenation_matches_post_stream() {
                     body.extend_from_slice(chunk);
                     ChunkFlow::Continue
                 };
-                super::pump(scope, id, &mut on);
+                pump(scope, id, &mut on);
                 (head, body)
             }
         }

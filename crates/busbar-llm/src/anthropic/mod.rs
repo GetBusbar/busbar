@@ -39,6 +39,13 @@ use busbar_core::proto::*;
 #[allow(unused_imports)]
 // used standalone; redundant with busbar_core::proto::* when netted into core
 use super::proto_codec::*;
+// The wire-codec surface, named EXPLICITLY so it resolves to THIS crate's own `proto_codec` and not to
+// the `busbar_core::proto::*` glob above — which, in a `test-support` build of busbar-core (this
+// crate's dev-dependency), re-exports a SECOND copy of these same source items through core's `#[path]`
+// dual-compile, and a bare use of either name would then be ambiguous. An explicit import outranks both
+// globs; when this file is netted INTO core the two paths are one item, so the explicit is harmless.
+#[allow(unused_imports)]
+use super::proto_codec::{Protocol, ProtocolReader, ProtocolWriter, StreamFraming};
 
 /// Build this dialect's wire codec — the [`ProtocolDecl::codec`] constructor. A fresh instance per
 /// resolution, exactly as the registry's field doc requires.

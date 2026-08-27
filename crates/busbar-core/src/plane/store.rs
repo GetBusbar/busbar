@@ -99,7 +99,7 @@ const TERMINAL_TASK_STATES: [&str; 4] = ["completed", "failed", "canceled", "rej
 /// test-support surface (so the extracted planes can name the read-side helpers), `encode` stays
 /// crate-private so no out-of-crate caller can mint a forged row through this crate's own encoder —
 /// tamper discipline is a property of the module, not of any one build's feature set.
-pub(crate) fn encode<T: serde::Serialize>(row: &T) -> StoreResult<Vec<u8>> {
+pub fn encode<T: serde::Serialize>(row: &T) -> StoreResult<Vec<u8>> {
     serde_json::to_vec(row).map_err(|e| StoreError(format!("plane body encode: {e}")))
 }
 

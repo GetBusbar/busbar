@@ -160,6 +160,22 @@ impl TestAppMcpExt for TestApp {
     }
 }
 
+/// An MCP per-generation runtime carrying the given `tools:` registrations, type-erased — for
+/// busbar-core integration tests that seed a LIVE tools section on a hand-built `App` (so the admin
+/// named-map CRUD sees it) WITHOUT naming `McpRuntime`. Signature names only `ToolsCfg` + `Arc<dyn
+/// Any>`, no `busbar_core` type, so it type-checks across the crate boundary.
+pub fn mcp_runtime_with_servers(tools: ToolsCfg) -> Arc<dyn std::any::Any + Send + Sync> {
+    Arc::new(McpRuntime {
+        catalogue: Arc::new(crate::mcp::catalogue::Catalogue::build(&tools)),
+        servers: Arc::new(tools),
+        pool: Default::default(),
+        sightings: Default::default(),
+        roots_epochs: Default::default(),
+        sampling_spend: Default::default(),
+        verify: Default::default(),
+    })
+}
+
 /// The DEFAULT per-generation MCP runtime, type-erased — for busbar-core's ingress tests that
 /// hand-assemble an `App` and need to seat the always-present `MCP_RUNTIME_SLOT` object without naming
 /// `McpRuntime` (its fields are crate-private).

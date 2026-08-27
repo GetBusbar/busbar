@@ -273,28 +273,28 @@ impl std::fmt::Display for Refusal {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Retry<'a> {
     /// `params.inputResponses`, if present.
-    pub(crate) responses: Option<&'a serde_json::Value>,
+    pub responses: Option<&'a serde_json::Value>,
     /// `params.requestState`, if present.
-    pub(crate) state: Option<&'a str>,
+    pub state: Option<&'a str>,
 }
 
 /// Everything about the request that the seal binds to.
 #[derive(Clone, Copy, Debug)]
 pub struct Bind<'a> {
     /// The authenticated principal — the inbound key id. `mrtr.mdx:235`.
-    pub(crate) principal: &'a str,
+    pub principal: &'a str,
     /// `tools/call` or `prompts/get`.
-    pub(crate) method: &'a str,
+    pub method: &'a str,
     /// The namespaced capability.
-    pub(crate) capability: &'a str,
+    pub capability: &'a str,
     /// The live catalogue generation.
-    pub(crate) generation: u64,
+    pub generation: u64,
     /// Unix seconds.
-    pub(crate) now: u64,
+    pub now: u64,
     /// The principal's LIVE roots epoch — what a received `notifications/roots/list_changed` moves.
     /// Sealed into state exactly when the exchange includes a `roots/list` ask, and compared on
     /// redemption; see [`crate::mcp::roots`].
-    pub(crate) roots_epoch: u64,
+    pub roots_epoch: u64,
 }
 
 /// THE APPROVAL MACHINERY: what mints continuation state, and what redeems it once.
@@ -310,11 +310,11 @@ pub struct Bind<'a> {
 pub struct Approvals<'a> {
     /// Mints and opens the sealed `requestState`. `None` is a deployment with no signing key, which
     /// refuses to ask at all rather than issue state it could not verify.
-    pub(crate) sealer: Option<&'a Sealer>,
+    pub sealer: Option<&'a Sealer>,
     /// The neutral host seam the completion arm redeems the one-time approval through — its
     /// `approval_redeem` method spends against the shared spent-approval ledger it pulls host-side,
     /// minting the transient `HostCtx` internally, so this carries no raw `HostCtx` across the plane.
-    pub(crate) host: &'a dyn busbar_substrate::plane_host::EngineHost,
+    pub host: &'a dyn busbar_substrate::plane_host::EngineHost,
 }
 
 /// THE DECISION. Config, caller input, a clock — and the ledger of approvals already spent. It is

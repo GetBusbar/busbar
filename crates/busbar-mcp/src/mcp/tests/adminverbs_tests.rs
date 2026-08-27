@@ -292,7 +292,7 @@ async fn connect_refuses_a_passthrough_registration() {
 // `adminverbs.rs`, for the same reason its only caller in `admin/tests` is. Adding a second gate
 // here would imply the two conditions could differ, and they cannot — if this module compiles,
 // the caller does too.
-pub(crate) async fn drive_mcp_verb_errors() {
+pub async fn drive_mcp_verb_errors() {
     busbar_core::metrics::init();
     let peer = Peer::start(vec![wire_tool("read", DESCRIPTION, schema())]).await;
 

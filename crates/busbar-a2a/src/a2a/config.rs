@@ -164,7 +164,7 @@ impl PinMechanism {
 /// keys in Vault keeps this one there too without busbar learning a second way to fetch a key.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct ClientIdentityCfg {
+pub struct ClientIdentityCfg {
     /// PEM certificate chain busbar presents, leaf first. Public material, still a reference:
     /// operators keep a chain and its key in the same place, and splitting the spelling would be an
     /// invitation to inline the other one.
@@ -179,15 +179,15 @@ pub(crate) struct ClientIdentityCfg {
 pub struct AgentPinCfg {
     /// Which root this is. Required: a pin whose mechanism is inferred is a pin whose meaning
     /// changes when the code that infers it changes.
-    pub(crate) mechanism: PinMechanism,
+    pub mechanism: PinMechanism,
     /// The operator-supplied material: a JWS verification key, or a certificate SPKI hash. Absent
     /// only for `unpinned`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) key: Option<String>,
+    pub key: Option<String>,
     /// The approved canonical card fingerprint, where the operator already has one. Absent means
     /// "capture it at `connect` and let me approve it", which is the normal first registration.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) fingerprint: Option<String>,
+    pub fingerprint: Option<String>,
 }
 
 /// One entry in the top-level `agents:` NAMED-DEFINITION map — one registered external A2A agent.
@@ -201,21 +201,21 @@ pub struct AgentPinCfg {
 #[serde(deny_unknown_fields)] // a typo'd key must fail boot, not silently un-pin an agent.
 pub struct AgentDefCfg {
     /// The real remote A2A endpoint. Never client-visible: callers reach it through busbar.
-    pub(crate) url: String,
+    pub url: String,
     /// The out-of-band trust root. REQUIRED, and required to be spelled even when it is
     /// `unpinned` — see the module note on why absence is not an acceptable spelling for "none".
-    pub(crate) pin: AgentPinCfg,
+    pub pin: AgentPinCfg,
     /// THE CLIENT CERTIFICATE BUSBAR PRESENTS ON THE HOP TO THIS AGENT. Required when
     /// `pin.mechanism: mtls` — that mechanism means "this endpoint is served behind mutual TLS", and
     /// a registration that says so with nothing to present cannot complete a handshake. Legal, and
     /// optional, under the other mechanisms: a vendor may demand a client certificate whatever it
     /// does about signing its card.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) client_identity: Option<ClientIdentityCfg>,
+    pub client_identity: Option<ClientIdentityCfg>,
     /// `<n><s|m|h|d>` — the LONGEST a verification may be reused on the delegation path before the
     /// card is re-fetched and re-verified. Absent ⇒ [`DEFAULT_REVERIFY_TTL`] (`5s`); `0` is strict-live.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) reverify_ttl: Option<String>,
+    pub reverify_ttl: Option<String>,
     /// How long after a DRIFT a clean answer is disbelieved. Absent ⇒ the deployment default.
     ///
     /// This is the recovery backoff, and it is the only half of the cadence that is ever held.
@@ -223,12 +223,12 @@ pub struct AgentDefCfg {
     /// window an upstream could open for itself by flapping, and choosing when to flap is entirely
     /// within its gift.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) recovery_backoff: Option<String>,
+    pub recovery_backoff: Option<String>,
     /// The A2A protocol version this registration is PINNED to. Absent ⇒ the release default.
     /// Pinned per registration because the well-known card path moved between versions and a
     /// registration that follows whatever the upstream now claims has no pin at all.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) protocol_version: Option<String>,
+    pub protocol_version: Option<String>,
     /// MAY THIS AGENT LIVE ON A PRIVATE OR LOOPBACK ADDRESS, AND BE REACHED OVER PLAINTEXT.
     ///
     /// The SAME spelling, the same semantics and the same fail-closed default as
@@ -249,22 +249,22 @@ pub struct AgentDefCfg {
     /// them is also what an SSRF looks like from inside the process — so it is the operator saying
     /// it out loud, per registration, or it does not happen.
     #[serde(default)]
-    pub(crate) allow_private: bool,
+    pub allow_private: bool,
     /// Outbound credential mode at delegation time. Same vocabulary as the pool plane's — and
     /// `passthrough` is REFUSED here, loudly, by [`validate_agent`]. The word is reserved on every
     /// plane so the vocabulary is learned once; a plane that cannot honor a VALUE says so rather
     /// than accepting it and doing something else.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) upstream_credentials: Option<busbar_api::UpstreamCreds>,
+    pub upstream_credentials: Option<busbar_api::UpstreamCreds>,
     /// The LEASED outbound credential busbar presents to this agent: a secret-store handle
     /// plus its lease policy. Never the secret, never the caller's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) upstream_credential: Option<super::creds::OutboundCredential>,
+    pub upstream_credential: Option<super::creds::OutboundCredential>,
     /// WHICH FRONTED AGENTS MAY DELEGATE HERE. Egress policy, over the same `ScopeRef` kind as
     /// inbound authZ. Absent or empty ⇒ NONE may: the fail-closed floor, because reading an empty
     /// list as "everyone" is a registration granting egress nobody wrote down.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub(crate) egress_scopes: Vec<String>,
+    pub egress_scopes: Vec<String>,
     /// Hooks attached to THIS agent, by bare name from the top-level `hooks:` map. ADDS to the
     /// section-level `agents.hooks:` list.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

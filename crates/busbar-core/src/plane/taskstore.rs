@@ -340,8 +340,8 @@ pub static TASKS_SINK_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_n
 /// TEST ONLY: a fresh, process-unique `task_event` stream id, well above the production ids (1/2) and
 /// the `plane_host::journal` test range (base 10_000) and the MCP `call` test range (base 200_000), so
 /// a test's local chain never shares the process-global host stream registry with another test's.
-#[cfg(test)]
-pub(crate) fn fresh_test_kind_id() -> u32 {
+#[cfg(any(test, feature = "test-support"))]
+pub fn fresh_test_kind_id() -> u32 {
     static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(100_000);
     NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
 }
@@ -349,18 +349,18 @@ pub(crate) fn fresh_test_kind_id() -> u32 {
 /// TEST ONLY: a registry + an app whose governance store is `store`, with the `task_event` stream
 /// registered against it under a FRESH host-side id so parallel tests are isolated. The registry's
 /// row-upsert sink is attached too. Every chain write is driven inside [`TaskTestHarness::host`].
-#[cfg(test)]
-pub(crate) struct TaskTestHarness {
-    pub(crate) reg: TaskRegistry,
+#[cfg(any(test, feature = "test-support"))]
+pub struct TaskTestHarness {
+    pub reg: TaskRegistry,
     pub(crate) app: Arc<crate::state::App>,
     kind_id: u32,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl TaskTestHarness {
     /// Fresh isolated harness over `store` (used as BOTH the chain sink, via registration against an
     /// app whose governance wraps it, AND the row-upsert sink).
-    pub(crate) fn over(store: Arc<dyn busbar_api::Store>) -> Self {
+    pub fn over(store: Arc<dyn busbar_api::Store>) -> Self {
         let kind_id = fresh_test_kind_id();
         Self::install(kind_id, store)
     }
@@ -368,7 +368,7 @@ impl TaskTestHarness {
     /// Re-open a harness over `store` under the SAME `kind_id` — a RESTART: the host-side stream is
     /// re-registered (fresh positions), the durable store is unchanged, and a new registry (empty
     /// working set) is returned for the rehydrate to fill.
-    pub(crate) fn restart(kind_id: u32, store: Arc<dyn busbar_api::Store>) -> Self {
+    pub fn restart(kind_id: u32, store: Arc<dyn busbar_api::Store>) -> Self {
         Self::install(kind_id, store)
     }
 
@@ -381,20 +381,20 @@ impl TaskTestHarness {
     }
 
     /// This harness's stream id, so a paired [`TaskTestHarness::restart`] addresses the same store.
-    pub(crate) fn kind_id(&self) -> u32 {
+    pub fn kind_id(&self) -> u32 {
         self.kind_id
     }
 
     /// Drive one synchronous chain op with a live `HostCtx` over this harness's app.
-    pub(crate) fn host<R>(&self, f: impl FnOnce(busbar_plugin::hot::host::HostCtx) -> R) -> R {
+    pub fn host<R>(&self, f: impl FnOnce(busbar_plugin::hot::host::HostCtx) -> R) -> R {
         crate::plane_host::with_dispatch_scope(&self.app, |h, _| f(h))
     }
 }
 
 /// TEST ONLY: a TestApp whose governance store is `store` — the seam a chain test registers its
 /// `task_event` stream against so the chain persists to `store`.
-#[cfg(test)]
-pub(crate) fn test_app_over(store: Arc<dyn busbar_api::Store>) -> Arc<crate::state::App> {
+#[cfg(any(test, feature = "test-support"))]
+pub fn test_app_over(store: Arc<dyn busbar_api::Store>) -> Arc<crate::state::App> {
     let gov =
         Arc::new(crate::governance::GovState::new(store, None).expect("gov store constructs"));
     crate::test_support::TestApp::new().governance(gov).build()
@@ -474,8 +474,8 @@ impl TaskRegistry {
     /// TEST ONLY: a registry whose `task_event` chain is addressed by a specific host-side stream id,
     /// so parallel tests never share one process-global chain. Production always uses the default
     /// [`KIND_ID_TASK_EVENT`] via [`TaskRegistry::new`].
-    #[cfg(test)]
-    pub(crate) fn with_kind_id(kind_id: u32) -> Self {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn with_kind_id(kind_id: u32) -> Self {
         Self {
             tasks: Mutex::new(HashMap::new()),
             sink: Mutex::new(None),
@@ -764,7 +764,7 @@ impl TaskRegistry {
     /// Separate from [`TaskRegistry::transition`] because choosing a target is not a state change —
     /// the task is `working` before and after — but it IS the single most important fact the
     /// delegating side's provenance has to carry: who delegated, to which registered agent.
-    pub(crate) fn record_dispatch(
+    pub fn record_dispatch(
         &self,
         host: HostCtx,
         task_id: &str,
@@ -843,7 +843,7 @@ impl TaskRegistry {
     /// MONOTONIC, and a request to move it backwards is refused rather than applied. The cursor is
     /// the resubscribe resume point; rewinding it re-delivers artifact chunks the caller already
     /// has, and on a chunked assembly that is corruption rather than duplication.
-    pub(crate) fn advance_cursor(
+    pub fn advance_cursor(
         &self,
         host: HostCtx,
         task_id: &str,
@@ -893,7 +893,7 @@ impl TaskRegistry {
     /// decision of its own. The refusal semantics are byte-identical: a refused URL is DROPPED
     /// (`None` reaches here) and logged loudly a2a-side, never surfaced as an error that would fail a
     /// task the caller is owed. The registration path still answers `400` at the ingress.
-    pub(crate) fn set_push_callback(
+    pub fn set_push_callback(
         &self,
         task_id: &str,
         callback: Option<String>,
@@ -935,7 +935,7 @@ impl TaskRegistry {
 
     /// SCOPED LIST. The authorization gate for `ListTasks`, sorted by task id so the result is
     /// deterministic (a listing whose order varies makes a diff between two calls unreadable).
-    pub(crate) fn list_scoped(&self, principal: &str) -> Vec<TaskRow> {
+    pub fn list_scoped(&self, principal: &str) -> Vec<TaskRow> {
         if principal.is_empty() {
             return Vec::new();
         }
@@ -957,8 +957,13 @@ impl TaskRegistry {
 
     /// How many tasks are in the working set. Active + interrupted only — terminal tasks are not
     /// loaded (see [`TaskRegistry::restore_from_store`]).
-    pub(crate) fn len(&self) -> usize {
+    pub fn len(&self) -> usize {
         self.tasks().len()
+    }
+
+    /// Whether the working set holds no tasks — the `is_empty` twin of [`TaskRegistry::len`].
+    pub fn is_empty(&self) -> bool {
+        self.tasks().is_empty()
     }
 
     /// Drop a task from the WORKING SET once it is terminal, leaving its durable rows and its
@@ -967,7 +972,7 @@ impl TaskRegistry {
     /// Refusing to evict an ACTIVE task is the guard that matters: evicting one loses its chain
     /// position, and the next event for it would open a SECOND chain at seq 1 under the same task
     /// id — two chains that each verify and together describe nothing.
-    pub(crate) fn evict_terminal(&self, host: HostCtx, task_id: &str) -> bool {
+    pub fn evict_terminal(&self, host: HostCtx, task_id: &str) -> bool {
         let mut tasks = self.tasks();
         match tasks.get(task_id) {
             Some(e) if is_terminal_state(&e.row.state) => {
@@ -992,7 +997,7 @@ impl TaskRegistry {
     ///
     /// The policy lives at the call site, not here: retention is a setting on the store, not a
     /// subsystem of its own, so this file owns the mechanism and nothing about the window.
-    pub(crate) fn compact(&self, host: HostCtx, before: u64) -> StoreResult<u64> {
+    pub fn compact(&self, host: HostCtx, before: u64) -> StoreResult<u64> {
         let removed = match self.sink() {
             Some(store) => store.purge_plane_records_before(KIND_TASK, before)?,
             None => 0,
@@ -1016,7 +1021,7 @@ impl TaskRegistry {
     /// This is the operator-facing half of the hash chain, and its existence is the difference
     /// between provenance and decoration: a chain nothing ever recomputes proves nothing, because
     /// nobody ever finds out that it does not.
-    pub(crate) fn verify_task_chain(
+    pub fn verify_task_chain(
         &self,
         store: &dyn PlaneStore,
         task_id: &str,

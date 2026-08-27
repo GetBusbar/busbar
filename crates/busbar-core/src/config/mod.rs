@@ -394,13 +394,13 @@ pub struct RootCfg {
     /// build `/auth/token` links AND shown to devs as the `base_url` they point BYOK clients at (no
     /// `/v1` suffix — clients append their own). Absent ⇒ no hosted-login/token links can be built.
     /// Validated (absolute https; loopback http allowed; no path/query, no cloud-metadata host).
-    pub(crate) public_url: Option<String>,
+    pub public_url: Option<String>,
     /// The VALIDATED MCP resource (`mcp:`), type-erased as `Arc<dyn Any>`, or `None` when this
     /// deployment is not an MCP server. Lowered and refused at boot by the plane's `lower_endpoint`
     /// seam hook (the MCP plane's `McpResource::from_cfg`), so core names no plane resource type and
     /// nothing downstream re-parses the canonical URI or re-derives the mount path. The plane's own
     /// module downcasts it back to its concrete resource.
-    pub(crate) mcp: Option<std::sync::Arc<dyn std::any::Any + Send + Sync>>,
+    pub mcp: Option<std::sync::Arc<dyn std::any::Any + Send + Sync>>,
     /// The VALIDATED authorization server (`oauth_as:`), or `None` when this deployment is not one.
     /// Derived and refused at boot by `crate::oauth_as::config::AsIdentity::from_cfg`, so nothing
     /// downstream re-parses the issuer or re-derives an endpoint path.
@@ -420,7 +420,7 @@ pub struct RootCfg {
     pub admin_listen: String,
     /// TLS/mTLS for the admin listener (only meaningful with `admin_listen`).
     pub admin_tls: Option<TlsCfg>,
-    pub(crate) auth: Option<AuthCfg>,
+    pub auth: Option<AuthCfg>,
     pub providers: HashMap<String, ProviderCfg>,
     pub models: HashMap<String, ModelCfg>,
     pub pools: HashMap<String, PoolCfg>,
@@ -495,7 +495,7 @@ pub struct RootCfg {
     // Neutral capture when the A2A plane is compiled out: the resolved registry type does not exist
     // then, and a non-empty `agents:` section is refused at `resolve` (the raw capture is carried
     // through unchanged, as `RootCfg` for `mcp:`/`tools:` is when `plane-mcp` is off).
-    pub(crate) agent_defs: Box<dyn crate::plane::config::PlaneCfg>,
+    pub agent_defs: Box<dyn crate::plane::config::PlaneCfg>,
     /// The `tool_pools:` MCP failover pools, carried through `resolve` VERBATIM — operator intent,
     /// like `tool_defs` beside it, projected onto `state::App::tool_pools` at build. Empty ⇒ no
     /// MCP failover.
@@ -2921,7 +2921,7 @@ pub struct DeployCfg {
     /// busbar's PUBLIC base URL (top-level `public_url:`) — see [`RootCfg::public_url`]. Absent by
     /// default; required once a `browser_login` method or `/auth/token` link generation is in play.
     #[serde(default)]
-    pub(crate) public_url: Option<String>,
+    pub public_url: Option<String>,
     /// Optional native inbound TLS / mTLS. Absent ⇒ plain HTTP (unchanged default).
     #[serde(default)]
     pub(crate) tls: Option<TlsCfg>,

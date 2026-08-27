@@ -342,11 +342,19 @@ impl BootCtx {
 /// Order is the operator-visible LAYERING order, unchanged from `Plane::ALL`.
 static BUILTIN_PLANE_DECLS: &[&PlaneDecl] = &[
     &crate::proto::PLANE_DECL,
-    // The MCP and A2A plane rows are NO LONGER hard-coded here under `cfg(test)`: their sources live
-    // in `busbar-mcp` / `busbar-a2a` and core no longer dual-compiles them, so core cannot name their
-    // `PLANE_DECL`. Under the test-support surface each plane crate REGISTERS its own decl through
-    // [`register_test_plane`] (from its `testkit`), folded into [`plane_decls`] below — the same
-    // "installed ahead of built-ins" shape production's `install_planes` gives the composition root.
+    // The MCP and A2A plane rows, present in THIS crate's own test binary (`#[cfg(test)]`), where the
+    // two plane crates are dev-dependencies and core can name their PUBLIC `PLANE_DECL` across the
+    // HONEST crate boundary — NOT the old `#[path]` dual-compile of their source. This gives the test
+    // binary the same process plane list `[llm, mcp, a2a]` the shipped `busbar` binary boots with (its
+    // composition root `install_planes`es the two), so the registry/plane/sections tests drive the real
+    // vocabulary and every `TestApp` carries the MCP plane's always-present runtime slot (build() fills
+    // it through the plane test-kit). Production core has neither crate in its closure, so these rows
+    // compile out; an EXTERNAL `test-support` consumer (the plane suites, core's integration target)
+    // has `cfg(test)` false and registers through [`register_test_plane`] from each plane's `testkit`.
+    #[cfg(test)]
+    &busbar_mcp::PLANE_DECL,
+    #[cfg(test)]
+    &busbar_a2a::PLANE_DECL,
 ];
 
 /// The built-in declarations. Read by [`plane_decls`] to build the process list, and by the
@@ -380,12 +388,21 @@ pub fn install_planes(decls: &'static [&'static PlaneDecl]) {
         INSTALLED.set(decls).is_ok(),
         "install_planes called twice: there is one composition root, and it registers once"
     );
-    // The "install before first read" invariant is enforced by the production memo. Under the
-    // test-support surface `plane_decls` re-folds on every read (no frozen `PLANES` memo), so late
-    // installs are simply picked up — the invariant is vacuous there.
+    // The "install before first read" invariant is enforced by the production memo.
     #[cfg(not(any(test, feature = "test-support")))]
     assert!(
         PLANES.get().is_none(),
+        "install_planes called after the plane list was first read; register in main before any \
+         config load or validation touches a plane"
+    );
+    // Under the test-support surface `plane_decls` re-folds on every read (no frozen `PLANES` memo),
+    // so the FIRST-READ witness is `TEST_MEMO` being populated instead: it is set the first time the
+    // process plane list is folded, so a non-empty memo means a layer has already resolved against the
+    // built-ins-only set — the same invariant the production `PLANES` memo enforces, spelled on the
+    // structure that stands in for it here.
+    #[cfg(any(test, feature = "test-support"))]
+    assert!(
+        TEST_MEMO.lock().unwrap().is_none(),
         "install_planes called after the plane list was first read; register in main before any \
          config load or validation touches a plane"
     );

@@ -156,8 +156,8 @@ timing = ["busbar-timing/timing"]
 # It ALSO enables `test-support` on both planes in a `cargo test --workspace` build, so each plane
 # crate's own `--lib` App-tests run there too (v2 resolver feature unification) — the mechanism that
 # keeps the full plane suite in the exact command CI runs, with the dual-compile gone.
-busbar-a2a = { path = "../busbar-a2a", features = ["test-support"] }
-busbar-mcp = { path = "../busbar-mcp", features = ["test-support"] }
+busbar-a2a = { path = "../busbar-a2a", features = ["test-support", "auth-admin-tokens"] }
+busbar-mcp = { path = "../busbar-mcp", features = ["test-support", "auth-admin-tokens"] }
 # The plain `cargo test -p busbar-core` build does not turn on core's own `test-support` feature, so
 # name substrate's here to reveal the relocated test-only `TokenSigner::mint_for_audience` (used by
 # the auth/governance/a2a tests and the mcp plane tests dual-compiled into this crate's test binary).

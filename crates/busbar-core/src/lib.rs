@@ -261,3 +261,27 @@ pub fn base_data_route_table_view(
         .map(|r| (r.path.clone(), r.auth))
         .collect()
 }
+
+/// TEST-SUPPORT ROUTER-SURFACE VIEW, with the declared METHOD. The sibling of
+/// [`base_data_route_table_view`] for the plane-boundary ratchet, which walks each mounted route with
+/// a real request and so needs the method too. Over PUBLIC types only (`String`, `String`,
+/// [`busbar_plugin_loader::RouteAuth`]) — the `pub(crate)` `CoreRoute`/`CoreRouteTable` stay sealed.
+#[cfg(any(test, feature = "test-support"))]
+pub fn base_data_route_method_view(
+    app: &state::App,
+) -> Vec<(String, String, busbar_plugin_loader::RouteAuth)> {
+    router::base_data_router(&app.plugin_routes, &app.plane_slots, app.oauth_as.as_ref())
+        .1
+        .routes()
+        .iter()
+        .map(|r| (r.path.clone(), r.method.as_str().to_string(), r.auth))
+        .collect()
+}
+
+/// TEST-SUPPORT VIEW of [`state::App::boot_route_paths`]: the plugin-route paths this process can
+/// serve, as they stood at boot. A curated `pub` seam over `String`s so a router-walking test can
+/// enumerate the plugin surface without core widening the private field.
+#[cfg(any(test, feature = "test-support"))]
+pub fn boot_route_paths_of(app: &state::App) -> Vec<String> {
+    app.boot_route_paths.iter().cloned().collect()
+}

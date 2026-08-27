@@ -71,7 +71,7 @@ pub fn plugins_preflight(
             a.chain
                 .iter()
                 .map(|e| e.module.as_str())
-                .filter(|m| is_real_auth_plugin_ref(m, cfg!(test)))
+                .filter(|m| is_real_auth_plugin_ref(m, cfg!(any(test, feature = "test-support"))))
                 .collect()
         })
         .unwrap_or_default();

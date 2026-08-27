@@ -98,7 +98,10 @@ impl ResourceMetadata for ZetaWords {
         // A third plane resolves its own facts off the snapshot exactly as the two real ones do.
         // This one keys off `mcp` only so the test can turn the plane off and on; what is being
         // measured is that the HANDLER is not written here, not where the facts come from.
-        busbar_mcp::mcp::resource(app)?;
+        // "is this an mcp deployment?" — read the neutral plane slot directly (the type-erased
+        // presence the `busbar_mcp::mcp::resource` accessor also keys off), so this in-crate unit test
+        // names no plane type across the crate boundary.
+        app.plane_slot("mcp")?;
         Some(Metadata {
             resource: std::borrow::Cow::Borrowed("https://zeta.example/rpc"),
             authorization_servers: &[],

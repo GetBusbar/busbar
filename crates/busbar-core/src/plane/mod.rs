@@ -742,7 +742,3 @@ mod plane_tests;
 #[cfg(test)]
 #[path = "tests/sections_tests.rs"]
 mod sections_tests;
-
-#[cfg(test)]
-#[path = "tests/metrics_tests.rs"]
-mod metrics_tests;

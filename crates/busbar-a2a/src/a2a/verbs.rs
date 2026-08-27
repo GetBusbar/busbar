@@ -775,6 +775,7 @@ mod verbs_tests;
 // GATED ON `auth-admin-tokens` for the reason the MCP plane's sibling gives: every test in there
 // authenticates with `x-admin-token`, and under `--no-default-features` there is no admin auth
 // module, so the chain fails closed and every request is a 401 before it reaches a verb.
-#[cfg(all(test, feature = "auth-admin-tokens"))]
+#[cfg(all(any(test, feature = "test-support"), feature = "auth-admin-tokens"))]
 #[path = "tests/adminverbs_tests.rs"]
-pub(crate) mod adminverbs_tests;
+#[allow(dead_code)]
+pub mod adminverbs_tests;

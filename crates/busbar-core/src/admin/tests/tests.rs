@@ -1,7 +1,6 @@
 use crate::governance::{GovState, MemoryStore, NewKeySpec};
 use crate::test_support::warn_capture::WarnCapture;
 use crate::test_support::TestApp;
-use busbar_mcp::testkit::TestAppMcpExt as _;
 use std::sync::Arc;
 
 /// Build a `GovState` that CAN mint 1.5.0 signed-token keys: it carries a deterministic
@@ -12421,7 +12420,7 @@ const COND_WITNESS_DEBT: &[(
 /// machine set-comparison over every operation at once. There is no endpoint left to be next.
 #[tokio::test]
 async fn declared_error_set_is_exactly_what_the_handlers_emit() {
-    use crate::admin::v1::contract::taxonomy::{declared_errors, MethodTag};
+    use crate::admin::v1::contract::taxonomy::declared_errors;
     // Drive every error path the declaration claims. (Other tests contribute to the same registry;
     // calling the drivers here makes the assertion independent of whether they ran.)
     drive_admin_error_surface().await;
@@ -12440,14 +12439,20 @@ async fn declared_error_set_is_exactly_what_the_handlers_emit() {
 
     let witnessed = crate::admin::v1::contract::taxonomy::observed::snapshot();
     // Every (operation, ErrKind) the suite has actually produced, and every (operation, ErrKind,
-    // Cond) TRIPLE for the emissions that named their condition.
-    let seen: std::collections::BTreeSet<(String, MethodTag, _)> = witnessed
+    // Cond) TRIPLE for the emissions that named their condition. Keyed on the NEUTRAL string form the
+    // process-wide substrate ledger stores (so a witness produced through EITHER copy of busbar-core —
+    // the crate-under-test or the plane crates' dependency copy — counts), and looked up below via the
+    // same `{:?}`/`as_str()` spellings `taxonomy::observed` records with.
+    let seen: std::collections::BTreeSet<(String, String, String)> = witnessed
         .iter()
-        .map(|(rel, method, kind, _cond)| (rel.clone(), *method, *kind))
+        .map(|(rel, method, kind, _cond)| (rel.clone(), method.clone(), kind.clone()))
         .collect();
-    let seen_triple: std::collections::BTreeSet<_> = witnessed
+    let seen_triple: std::collections::BTreeSet<(String, String, String, String)> = witnessed
         .iter()
-        .filter_map(|(rel, method, kind, cond)| cond.map(|c| (rel.clone(), *method, *kind, c)))
+        .filter_map(|(rel, method, kind, cond)| {
+            cond.clone()
+                .map(|c| (rel.clone(), method.clone(), kind.clone(), c))
+        })
         .collect();
 
     // Walk the DOCUMENTED operations and require a witness for each declared entry AT CONDITION
@@ -12469,9 +12474,18 @@ async fn declared_error_set_is_exactly_what_the_handlers_emit() {
         for de in declared {
             let ambiguous = declared.iter().filter(|o| o.kind == de.kind).count() > 1;
             let proven = if ambiguous {
-                seen_triple.contains(&(rel.clone(), method, de.kind, de.cond))
+                seen_triple.contains(&(
+                    rel.clone(),
+                    method.as_str().to_string(),
+                    format!("{:?}", de.kind),
+                    format!("{:?}", de.cond),
+                ))
             } else {
-                seen.contains(&(rel.clone(), method, de.kind))
+                seen.contains(&(
+                    rel.clone(),
+                    method.as_str().to_string(),
+                    format!("{:?}", de.kind),
+                ))
             };
             if !proven {
                 if COND_WITNESS_DEBT.contains(&(method, rel.as_str(), de.kind, de.cond)) {
@@ -13044,6 +13058,8 @@ async fn named_map_app_opts(
     tokio::task::JoinHandle<()>,
 ) {
     crate::metrics::init();
+    busbar_mcp::testkit::install_test_seams();
+    busbar_a2a::testkit::install_test_seams();
     let (dir, config_path, providers_path) =
         write_named_map_fixture(tag, reference_corp_ad, base_export);
     // The DEFAULT overlay filename next to config.yaml — the same path `load_config_from_disk`
@@ -13068,27 +13084,48 @@ async fn named_map_app_opts(
                 "token": {"file": dir.join("admin.token").to_string_lossy()}
             }))
             .unwrap(),
-        )
-        // The MCP plane's base entry, seeded to match the file exactly — same reason the
-        // identity-provider and export base entries are: a `TestApp` does not parse config.yaml, so
-        // without this the read surface and disk truth would disagree and the base-protection guard
-        // would be measuring the disagreement rather than the guard.
-        .mcp_server(
-            "base-mcp",
+        );
+    // The MCP plane's base entry, seeded to match config.yaml exactly (a `TestApp` does not parse
+    // config.yaml, so without this the read surface and disk truth would disagree and the
+    // base-protection guard would be measuring the disagreement rather than the guard). Seeded
+    // through the NEUTRAL runtime-slot seam (the plane crate builds the `McpRuntime` and hands it back
+    // type-erased) rather than the `busbar_mcp` `.mcp_server(...)` builder, so this in-crate helper
+    // names no plane type across the crate boundary.
+    {
+        let mut tools = busbar_mcp::mcp::config::ToolsCfg::default();
+        tools.servers.insert(
+            "base-mcp".to_string(),
             serde_json::from_value(serde_json::json!({
                 "url": "https://mcp.internal/fs",
                 "pin": {"mechanism": "cert_spki", "key": "sha256/BASE="}
             }))
             .unwrap(),
         );
-    // The A2A plane's base entry, mirroring the fixture config above. It is `unpinned` on purpose:
-    // the point of these fixtures is the generic CRUD surface, and an entry with a real root would
-    // need key material that says nothing about the routes under test.
-    builder = builder.agent_def(
-        "base-agent",
-        serde_yaml::from_str("url: https://a2a.example/planner\npin:\n  mechanism: unpinned\n")
-            .unwrap(),
-    );
+        builder.install_plane_runtime(
+            crate::state::MCP_RUNTIME_SLOT,
+            busbar_mcp::testkit::mcp_runtime_with_servers(tools),
+        );
+    }
+    // The A2A plane's base entry, mirroring the fixture config above — set as the App's type-erased
+    // `agents:` handle through the neutral seam (the admin agents named-map reads it), again naming no
+    // plane type on this side of the boundary.
+    {
+        let mut agents = busbar_a2a::a2a::config::AgentsCfg::default();
+        agents.agents.insert(
+            "base-agent".to_string(),
+            serde_yaml::from_str("url: https://a2a.example/planner\npin:\n  mechanism: unpinned\n")
+                .unwrap(),
+        );
+        builder.set_agent_defs_any(std::sync::Arc::new(agents.clone()));
+        // The A2A admin verbs re-read the agent registry off the plane's OWN runtime slot (the same
+        // shape as MCP above), so the runtime this generation carries must hold `base-agent` or a patch
+        // of it 404s. Build the plane from the same `AgentsCfg` and install it under the A2A slot.
+        if let Some(plane) =
+            busbar_a2a::a2a::plane::A2aPlane::from_config(&agents, Some("https://busbar.example"))
+        {
+            builder.install_plane_runtime(busbar_a2a::PLANE_DECL.key, plane);
+        }
+    }
     builder = if base_export {
         builder.export_def(
             "base-metrics",

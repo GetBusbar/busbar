@@ -232,7 +232,7 @@ pub fn buffered(
 /// The outcome of opening a stream relay hop: a non-stream reply buffered whole, or a live event-stream
 /// to [`pump`]. `feature = "plane-a2a"` — its only consumer is the A2A relay.
 #[cfg(feature = "plane-a2a")]
-pub(crate) enum StreamOutcome {
+pub enum StreamOutcome {
     /// A non-2xx or non-event-stream reply, read whole to the cap. The [`StreamHead`](super::StreamHead)
     /// carries the body; there is nothing to pump.
     Buffered(super::StreamHead),
@@ -249,7 +249,7 @@ pub(crate) enum StreamOutcome {
 /// with the egress left open for [`pump`]. `content_type` is lower-cased into the head exactly as the
 /// A2A relay does. On an open refusal/fault, `Err` carries the neutral fault.
 #[cfg(feature = "plane-a2a")]
-pub(crate) fn stream_head(
+pub fn stream_head(
     scope: &DispatchScope,
     spec: &HopSpec<'_>,
     cap: usize,
@@ -296,7 +296,7 @@ pub(crate) fn stream_head(
 
 /// The outcome of pumping a live stream to a sink.
 #[cfg(feature = "plane-a2a")]
-pub(crate) enum PumpEnd {
+pub enum PumpEnd {
     /// The stream ended cleanly (EOF) or the sink asked to stop.
     Done,
     /// The stream failed mid-body; carries the neutral fault (the FLATTENED cause the host stashed on
@@ -314,7 +314,7 @@ pub(crate) enum PumpEnd {
 /// at the byte level (the relay re-parses frames), so this is faithful — the pump offers a large buffer
 /// so a whole upstream chunk usually arrives at once.
 #[cfg(feature = "plane-a2a")]
-pub(crate) fn pump(
+pub fn pump(
     scope: &DispatchScope,
     id: busbar_plugin::hot::EgressId,
     on_chunk: &mut (dyn FnMut(&[u8]) -> super::ChunkFlow + Send),

@@ -156,7 +156,3 @@ pub(crate) async fn observe(
     );
     resp
 }
-
-#[cfg(test)]
-#[path = "tests/observe_tests.rs"]
-mod observe_tests;

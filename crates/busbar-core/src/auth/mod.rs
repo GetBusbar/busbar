@@ -233,7 +233,7 @@ impl AdminAuthChain {
                 crate::config::ADMIN_TOKENS_MODULE => {}
                 // TEST-ONLY inline admin stand-ins (dispatched by name in `run_admin_chain`); never
                 // resolved as plugins. Compiled out of release binaries.
-                #[cfg(test)]
+                #[cfg(any(test, feature = "test-support"))]
                 "test-scope-module" | "test-groups-module" => {}
                 other => {
                     let name = entry.name.as_str();
@@ -303,7 +303,7 @@ impl AuthMiddleware {
                 // TEST-ONLY external-module stand-in for the DATA-PLANE chain (the admin chain has
                 // its own): `grp:<role>` identifies as a principal carrying that role, so the
                 // governance re-key is e2e-testable. Compiled out of release binaries entirely.
-                #[cfg(test)]
+                #[cfg(any(test, feature = "test-support"))]
                 "test-groups-module" => {
                     chain.push((entry.name.clone(), Box::new(TestGroupsModule)))
                 }
@@ -866,10 +866,10 @@ pub use busbar_api::AuthPrincipal;
 
 /// TEST-ONLY data-plane module (see the `test-groups-module` chain arm): credential `grp:<g>`
 /// identifies as `test:<g>` carrying exactly that group; anything else defers (`Pass`).
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 struct TestGroupsModule;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl AuthModule for TestGroupsModule {
     fn name(&self) -> &'static str {
         "test-groups-module"

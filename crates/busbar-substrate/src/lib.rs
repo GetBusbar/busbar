@@ -75,6 +75,7 @@ pub mod plane_routes;
 // trust verbs and resolves one registration without naming `AdminError`/`Scope`/`Arc<AppHandle>`/the
 // core JSON envelope. Core re-exports the resolve/look half from `busbar_core::admin::planeverbs`.
 pub mod admin_verbs;
+pub mod admin_witness;
 pub mod proto;
 pub mod proxy;
 
