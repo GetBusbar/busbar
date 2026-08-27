@@ -286,3 +286,13 @@ mod stop_sequence_cap_degrade_tests;
 #[cfg(test)]
 #[path = "tests/egress_dropped_controls_audit_tests.rs"]
 mod egress_dropped_controls_audit_tests;
+
+/// THE ALLOCATION-COUNT PERF GATE (deterministic CI perf-regression gate). Drives one openai>openai
+/// passthrough request through the real forward path and asserts the per-request heap-allocation
+/// count has not regressed past a committed bound — so a stray per-request allocation (the "FIX-9"
+/// class: a redundant `Box::new` on the hot path, e.g. re-resolving `decl_for(..).dialect()` a
+/// second time) turns CI red. Machine-independent + fast, unlike a wall-clock RPS gate. jemalloc-
+/// only (`not(target_env = "msvc")`), the same target guard the telemetry-counter tests carry.
+#[cfg(all(test, not(target_env = "msvc")))]
+#[path = "tests/alloc_gate.rs"]
+mod alloc_gate;

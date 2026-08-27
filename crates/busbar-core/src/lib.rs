@@ -29,13 +29,87 @@
 // This alias is what makes those `busbar_core::` spellings resolve here too.
 extern crate self as busbar_core;
 
-// The telemetry recovery tests (src/tests/telemetry_tests.rs) measure per-thread jemalloc
-// counters, and the SHIPPED binary runs on jemalloc — so the lib's TEST binary declares the same
-// allocator, keeping those measurements real rather than vacuously zero. Test-only: the library
-// itself declares no allocator (that is the BINARY's property, and only one crate in a link may).
+// The lib's TEST binary runs on jemalloc for two reasons: (1) the telemetry recovery tests
+// (src/tests/telemetry_tests.rs) measure per-thread jemalloc counters via `tikv_jemalloc_ctl`
+// (the mallctl C API), which is only real when jemalloc actually services allocations; and (2) the
+// SHIPPED binary runs on jemalloc, so measurements match production. Test-only: the library itself
+// declares no allocator (that is the BINARY's property, and only one crate in a link may).
+//
+// The allocator is WRAPPED in `CountingJemalloc`, a zero-overhead-in-production (test-only) shim
+// that DELEGATES every operation to `tikv_jemallocator::Jemalloc` — so jemalloc's own mallctl
+// counters the telemetry tests read stay byte-accurate — while incrementing a PER-THREAD counter on
+// each allocation. That counter is the instrument behind the ALLOCATION-COUNT PERF GATE
+// (`src/proxy/tests/alloc_gate.rs`): it drives one openai>openai passthrough request through the
+// real forward path and asserts the heap-allocation count has not regressed past a committed bound,
+// so a stray per-request allocation (the "FIX-9" class — a redundant `Box::new` on the hot path)
+// turns CI red. Per-thread (a `const`-init `Cell`, no heap, no destructor) so concurrent
+// `cargo test` threads never inflate the measured thread's count, and so `.with()` is safe to call
+// from inside `GlobalAlloc` (jemalloc never re-enters this shim). See the alloc gate for the design.
+#[cfg(all(test, not(target_env = "msvc")))]
+pub(crate) use alloc_gate_instrument::CountingJemalloc;
+
 #[cfg(all(test, not(target_env = "msvc")))]
 #[global_allocator]
-static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+static GLOBAL: CountingJemalloc = CountingJemalloc;
+
+// The counting `GlobalAlloc` impl is the ONLY test-only `unsafe` in core; every method delegates to
+// jemalloc verbatim (see the SAFETY note on the impl). Narrowly allowed here, exactly as the
+// `plane_host` FFI seam is, so the crate-wide `deny(unsafe_code)` still guards everything else.
+#[cfg(all(test, not(target_env = "msvc")))]
+#[allow(unsafe_code)]
+mod alloc_gate_instrument {
+    use std::alloc::{GlobalAlloc, Layout};
+    use tikv_jemallocator::Jemalloc;
+
+    thread_local! {
+        static ALLOC_COUNT: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    }
+
+    /// A jemalloc wrapper that counts allocations per-thread. See the module header at the
+    /// `#[global_allocator]` site.
+    pub(crate) struct CountingJemalloc;
+
+    impl CountingJemalloc {
+        /// Allocations observed on THIS thread since process start (or last `reset`).
+        pub(crate) fn count() -> u64 {
+            ALLOC_COUNT.with(|c| c.get())
+        }
+        /// Reset this thread's counter to zero, returning the previous value.
+        pub(crate) fn reset() -> u64 {
+            ALLOC_COUNT.with(|c| c.replace(0))
+        }
+        #[inline]
+        fn bump() {
+            ALLOC_COUNT.with(|c| c.set(c.get() + 1));
+        }
+    }
+
+    // SAFETY: every method delegates verbatim to `Jemalloc` (a sound `GlobalAlloc`); the only added
+    // work is a per-thread `Cell` increment, which allocates nothing and cannot re-enter the
+    // allocator. `dealloc` is NOT counted — the gate measures allocation COUNT, and jemalloc's own
+    // deallocation accounting (which the telemetry tests read) is untouched.
+    unsafe impl GlobalAlloc for CountingJemalloc {
+        #[inline]
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            Self::bump();
+            Jemalloc.alloc(layout)
+        }
+        #[inline]
+        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+            Jemalloc.dealloc(ptr, layout)
+        }
+        #[inline]
+        unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+            Self::bump();
+            Jemalloc.alloc_zeroed(layout)
+        }
+        #[inline]
+        unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+            Self::bump();
+            Jemalloc.realloc(ptr, layout, new_size)
+        }
+    }
+}
 
 /// THE EXTRACTED A2A PLANE, compiled back in for TEST BUILDS ONLY. The sources live in
 /// `crates/busbar-a2a/src/a2a` (the ONE A2A plugin crate; the `busbar` binary registers its
