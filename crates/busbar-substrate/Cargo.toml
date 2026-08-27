@@ -48,6 +48,8 @@ async-trait = { workspace = true }
 base64 = { workspace = true }
 hmac = { workspace = true }
 sha2 = { workspace = true }
+# `digest_arguments` hex-encodes the salient-parameter SHA-256 digest beside the seal.
+hex = { workspace = true }
 serde = { workspace = true }
 # The relocated busbar-signed token crypto (`governance::signing`): Ed25519 mint/verify over a
 # base64url payload (`ed25519-dalek`), with first-boot key generation drawing 32 bytes straight from

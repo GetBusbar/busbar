@@ -15,9 +15,26 @@ use base64::Engine as _;
 use hmac::digest::KeyInit as _;
 use hmac::{Hmac, Mac as _};
 use serde::{Deserialize, Serialize};
-use sha2::Sha256;
+use sha2::{Digest as _, Sha256};
 
 type HmacSha256 = Hmac<Sha256>;
+
+/// The DEFAULT life of a sealed state. Short, per `mrtr.mdx:236`: a caller answering an elicitation
+/// is a human at a prompt, not a batch job, and every second of validity is a second of replay
+/// window.
+pub const DEFAULT_TTL_SECS: u64 = 300;
+
+/// The digest of a request's salient parameters, per `mrtr.mdx:237`.
+///
+/// Over the SERIALISED value rather than a field walk: the point is that the retry asks for the same
+/// thing the ask was issued about, and any field of `arguments` can change what is being asked for.
+/// `serde_json::Value`'s object representation is a `BTreeMap`, so the serialisation is key-ordered
+/// and two equal values digest equally regardless of the order the caller sent them in.
+pub fn digest_arguments(arguments: &serde_json::Value) -> String {
+    let mut h = Sha256::new();
+    h.update(serde_json::to_vec(arguments).unwrap_or_default());
+    hex::encode(h.finalize())
+}
 
 /// Domain separation for the derived key. Changing this string invalidates every outstanding state,
 /// which is the correct behaviour for a payload-format change.

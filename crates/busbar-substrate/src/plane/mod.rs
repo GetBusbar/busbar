@@ -14,6 +14,11 @@
 pub mod approvals;
 pub mod calllog;
 
+// The plane store seam's narrowing adapter: the `PlaneStore` trait a plane persists through and the
+// `PlaneStoreView` that narrows a real `busbar_api::Store` to it. Both name only `busbar_api` leaf
+// types, so they live here; core re-exports them from `busbar_core::plane::store`.
+pub mod store;
+
 // Phase-C config-seam: the NEUTRAL config-seam CONTRACTS a plane's config section is read through
 // (`PlaneCfg`/`PlaneEndpointCfg`/`ContainerGateInputs`) and the parse-time bare-hook-reference rule
 // (`refuse_cross_plane_reference`). They name only `busbar_api::SecretRef` + `serde_json`/`std`, so

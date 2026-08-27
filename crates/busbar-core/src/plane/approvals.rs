@@ -59,19 +59,19 @@
 //! busbar cannot seal is an ask busbar cannot verify the answer to, and emitting one would be
 //! inviting a retry it would have to trust.
 
-use sha2::{Digest as _, Sha256};
-
 // D3 Phase-C: the ask-state seal PODs + crypto (`AskState`, `Rejected`, `Sealer`, mint/open, and the
 // `DERIVE_DOMAIN`/`MAC_DOMAIN`/`HmacSha256` they need) now live in the neutral substrate so a plane
 // holds the seal without naming core. Re-exported here so every in-core call site (`ask_state_sealer`
 // below, `crate::mcp::callerask`, the tests) is unchanged. The key DERIVATION stays core:
 // `ask_state_sealer` reaches `GovState`'s crate-private signing seed and calls `Sealer::derive`.
-pub use busbar_substrate::plane::approvals::{AskState, Rejected, Sealer};
-
-/// The DEFAULT life of a sealed state. Short, per `mrtr.mdx:236`: a caller answering an elicitation
-/// is a human at a prompt, not a batch job, and every second of validity is a second of replay
-/// window.
-pub const DEFAULT_TTL_SECS: u64 = 300;
+//
+// The neutral ask-state helpers `DEFAULT_TTL_SECS` (the short replay window) and `digest_arguments`
+// (the salient-parameter digest) relocated to the substrate seal beside the PODs — pure `mrtr` data +
+// `sha2`/`hex`, no core reach — and are re-exported here so `crate::plane::approvals::{DEFAULT_TTL_SECS,
+// digest_arguments}` still resolves for the tests and `crate::mcp::callerask`.
+pub use busbar_substrate::plane::approvals::{
+    digest_arguments, AskState, Rejected, Sealer, DEFAULT_TTL_SECS,
+};
 
 /// SEAM: derive this deployment's ask-state [`Sealer`] from governance's fleet-shared signing
 /// secret, WITHOUT the raw secret ever leaving core. The MCP plane holds no governance key material
@@ -81,18 +81,6 @@ pub const DEFAULT_TTL_SECS: u64 = 300;
 /// sealer itself and refused rather than asking with unprotected state.
 pub fn ask_state_sealer(gov: &crate::governance::GovState) -> Option<Sealer> {
     gov.signing_secret().map(|s| Sealer::derive(&s))
-}
-
-/// The digest of a request's salient parameters, per `mrtr.mdx:237`.
-///
-/// Over the SERIALISED value rather than a field walk: the point is that the retry asks for the same
-/// thing the ask was issued about, and any field of `arguments` can change what is being asked for.
-/// `serde_json::Value`'s object representation is a `BTreeMap`, so the serialisation is key-ordered
-/// and two equal values digest equally regardless of the order the caller sent them in.
-pub fn digest_arguments(arguments: &serde_json::Value) -> String {
-    let mut h = Sha256::new();
-    h.update(serde_json::to_vec(arguments).unwrap_or_default());
-    hex::encode(h.finalize())
 }
 
 /// THE SPENT-APPROVAL LEDGER — what makes an approval SINGLE-USE.

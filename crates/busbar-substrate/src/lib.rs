@@ -22,10 +22,22 @@
 // without reaching into core. Pure serde data + `serde_json` manipulation, no `App`/`Store`/audit/
 // `Scope`. Core re-exports each from its old `admin::v1` path so its own call sites are unchanged.
 pub mod api;
+// The RFC 6750 `WWW-Authenticate` challenge render for OAuth 2.1 resource-server ingresses — pure
+// `axum::http` + `serde_json`, no `App`/`Store`/auth-chain reach — so a plane crate names it without
+// reaching into core. Core re-exports it from its old `auth::challenge` path.
+pub mod auth {
+    pub mod challenge;
+}
 pub mod diagnostics;
 pub mod net_guard;
 pub mod audit {
     pub mod vocab;
+
+    /// How many entries the in-memory ring retains. Bounds RAM, not history — a durable sink keeps the
+    /// full log. `pub` (was `pub(crate)` in core) so the admin audit ring and the plane audit-log ring
+    /// both name one cap across the core/substrate seam; core re-exports it at
+    /// `crate::admin::audit::MAX_AUDIT_ENTRIES` so its own call sites are unchanged.
+    pub const MAX_AUDIT_ENTRIES: usize = 1000;
 }
 pub mod ingress {
     pub mod jsonrpc;

@@ -2057,7 +2057,10 @@ impl AuthMiddleware {
 pub mod audience;
 
 /// The RFC 6750 `WWW-Authenticate` challenge, for ingresses that are OAuth 2.1 resource servers.
-pub(crate) mod challenge;
+/// Relocated to the neutral substrate (`busbar_substrate::auth::challenge`) — pure `axum::http` +
+/// `serde_json`, no core reach — so a plane crate names it without depending on core; re-exported
+/// here so `crate::auth::challenge::{refuse, ChallengeError}` still resolves for its in-core callers.
+pub(crate) use busbar_substrate::auth::challenge;
 
 /// The self-serve key SEAM (1.5.2 token-exchange): `SelfServeKeys` trait + the deterministic
 /// GovState-backed impl, and the verdict→mint decision the `POST /auth/token` handler drives.

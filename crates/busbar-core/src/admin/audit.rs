@@ -165,9 +165,11 @@ impl ChainedRecord for AuditEntry {
 pub(crate) use crate::audit::vocab::{OUTCOME_APPLIED, OUTCOME_DEGRADED, OUTCOME_REJECTED};
 
 /// How many entries the in-memory ring retains. Bounds RAM, not history — a durable sink keeps the
-/// full log. `pub(crate)` so a test asking for "every matching row that can exist" names this rather
-/// than a hand-picked page size that silently truncates once a filter matches more rows.
-pub(crate) const MAX_AUDIT_ENTRIES: usize = 1000;
+/// full log. Relocated to the neutral substrate (`busbar_substrate::audit::MAX_AUDIT_ENTRIES`) so the
+/// admin ring and the plane audit-log ring name ONE cap; re-exported here so
+/// `crate::admin::audit::MAX_AUDIT_ENTRIES` (and the test asking for "every matching row that can
+/// exist") still resolves.
+pub(crate) use busbar_substrate::audit::MAX_AUDIT_ENTRIES;
 
 /// The pressure valve threshold in `record_by`: once the un-persisted tail (`seq - durable_high`)
 /// reaches this many entries, the recorder stops trusting the periodic write-behind flusher and
