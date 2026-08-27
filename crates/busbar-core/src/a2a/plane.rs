@@ -412,7 +412,6 @@ impl A2aPlane {
     /// re-reads [`Self::generation`] AFTER this for the hop's admitted generation.
     pub(crate) fn reverify_agent(
         &self,
-        host: busbar_plugin::hot::host::HostCtx,
         agent_id: &str,
         resolver: &dyn super::fetch::Resolver,
         transports: &dyn super::verify::CardTransports,
@@ -434,7 +433,6 @@ impl A2aPlane {
         // at a time, so nothing else is mutating this registration's accumulation concurrently.
         let mut working = original.clone();
         let pass = super::verify::reverify_once(
-            host,
             &mut working,
             &pin_cfg,
             resolver,

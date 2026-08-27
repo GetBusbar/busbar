@@ -41,8 +41,7 @@ use super::fetch::{self, FetchPolicy, FetchRefusal, Resolver, Transport};
 use super::jws::JwsError;
 use super::pin::CardPin;
 use super::registry::AgentRegistration;
-use super::reverify::{self, Due, Settled};
-use busbar_plugin::hot::host::HostCtx;
+use super::reverify::{self, Due, Ledger, Policy, Settled};
 
 /// Why a re-verification did not produce a usable observation. Every arm is a REFUSAL; there is no
 /// arm meaning "could not check, carry on".
@@ -314,12 +313,7 @@ impl Pass {
 /// with out-of-band reason to suspect an agent, or one driving a scheduled vendor key rotation,
 /// does not wait for it. It can only cause an EXTRA check; there is deliberately no argument, here
 /// or anywhere, that can suppress one.
-// The `host` param (added when the freshness decision was inverted onto the `verify_decide_q` slot)
-// pushes this one past the 7-arg lint. Each argument is a distinct verify input the pass genuinely
-// needs; bundling them into a struct only to satisfy the count would obscure, not clarify.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn reverify_once(
-    host: HostCtx,
     registration: &mut AgentRegistration,
     pin_cfg: &AgentPinCfg,
     resolver: &dyn Resolver,
@@ -328,16 +322,20 @@ pub(crate) fn reverify_once(
     now_ms: u64,
     operator_sync: bool,
 ) -> Pass {
-    // Route the freshness decision through the WIRED `verify_decide_q` host SLOT (over the `host`
-    // handle), rather than the compiled-in `verify_decide_due` veneer or `busbar_substrate::trust::reverify::due`
-    // directly. The slot marshals the full `Due` REASON onto its neutral `VerifyDecision` mirror and
-    // `verify_decide_due_via` reconstructs it — BYTE-IDENTICAL to the veneer for every input, so the
-    // audit `Pass{due}` bytes are unchanged. `operator_sync` OUTRANKS the timer and is decided in the
-    // wrapper (the slot keeps its false default): a forced sync is unconditionally due there.
-    let due = crate::plane_host::trust::verify_decide_due_via(
-        host,
-        registration.ledger.last_checked_ms,
-        registration.reverify.ttl_ms,
+    // Decide freshness by calling the NEUTRAL `reverify::due` primitive DIRECTLY over a minimal
+    // ledger/policy (it reads only `last_checked_ms` + `ttl_ms`; `recovery_backoff_ms` and the drift
+    // counters never enter the freshness decision) — BYTE-IDENTICAL to the retired `verify_decide_due`
+    // host veneer for every input, so the audit `Pass{due}` bytes are unchanged. `operator_sync`
+    // OUTRANKS the timer: with it set, `due` is unconditionally `Due::OperatorSync`.
+    let due = reverify::due(
+        &Ledger {
+            last_checked_ms: registration.ledger.last_checked_ms,
+            ..Default::default()
+        },
+        &Policy {
+            ttl_ms: registration.reverify.ttl_ms,
+            recovery_backoff_ms: 0,
+        },
         now_ms,
         operator_sync,
     );

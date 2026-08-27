@@ -1887,11 +1887,6 @@ async fn verify_agent_on_call(app: &Arc<App>, plane: &Arc<super::plane::A2aPlane
     let ledger_id = agent_id.to_string();
     let fetch_plane = Arc::clone(plane);
     let fetch_id = agent_id.to_string();
-    // The `Send + 'static` app route for the blocking re-verify: `reverify_once` drives the
-    // `verify_decide_q` host slot (Batch C — the neutral `reverify::due` primitive stays reached
-    // through the wired slot so the host veneer keeps its sole caller). Minted INSIDE the
-    // `spawn_blocking` closure so the `!Send` `HostCtx` never crosses the task boundary.
-    let fetch_app = Arc::clone(app);
     let report_id = agent_id.to_string();
     let gate = plane.verify_arc();
     plane
@@ -1909,17 +1904,7 @@ async fn verify_agent_on_call(app: &Arc<App>, plane: &Arc<super::plane::A2aPlane
             || async move {
                 // OFF THE REACTOR: a card fetch is a blocking socket read behind the SSRF guard.
                 let joined = tokio::task::spawn_blocking(move || {
-                    // The host handle is materialized INSIDE the blocking closure (the `!Send` `HostCtx`
-                    // never crosses the task boundary); its arena reclaims when the closure ends.
-                    crate::plane_host::SendHostDispatch::new(fetch_app).with_host(|host, _vt| {
-                        fetch_plane.reverify_agent(
-                            host,
-                            &fetch_id,
-                            cards.resolver(),
-                            &*cards,
-                            now_ms,
-                        )
-                    })
+                    fetch_plane.reverify_agent(&fetch_id, cards.resolver(), &*cards, now_ms)
                 })
                 .await;
                 let pass = fold_reverify_join(joined, &gate, &report_id);

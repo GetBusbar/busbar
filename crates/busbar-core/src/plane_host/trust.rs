@@ -325,48 +325,6 @@ pub(crate) extern "C-unwind" fn verify_decide_q(
     .unwrap_or(VerifyDecision::Stale) // caught panic → fail-closed.
 }
 
-/// Drive the WIRED [`verify_decide_q`] slot over a [`HostCtx`] the caller ALREADY holds, returning the
-/// reconstructed [`crate::trust::reverify::Due`] — the a2a re-verify job's inversion of the compiled-in
-/// [`verify_decide_due`] veneer onto the host seam (the [`super::clock_now_secs_via`] pattern applied to
-/// verify-freshness). It marshals the freshness inputs into a [`VerifyQuery`], calls the slot against
-/// the caller's live host, and maps the returned [`VerifyDecision`] back to the rich reason via
-/// [`Due::from_verify_decision`](crate::trust::reverify::Due::from_verify_decision) — BYTE-IDENTICAL to
-/// the veneer for every genuine input.
-///
-/// `operator_sync` is NOT marshalled (the slot keeps its false default): a forced sync OUTRANKS
-/// the timer and is decided HERE (unconditionally [`crate::trust::reverify::Due::OperatorSync`], exactly
-/// as `reverify::due` promises) rather than crossing the seam. A SAFE wrapper — building the vtable and
-/// driving the slot's safe fn-pointer needs no `unsafe` (busbar-core denies it elsewhere).
-#[cfg(feature = "plane-a2a")]
-pub(crate) fn verify_decide_due_via(
-    host: HostCtx,
-    last_checked_ms: Option<u64>,
-    ttl_ms: u64,
-    now_ms: u64,
-    operator_sync: bool,
-) -> crate::trust::reverify::Due {
-    // A forced sync is unconditionally due, and the slot does not carry `operator_sync`; decide it here.
-    if operator_sync {
-        return crate::trust::reverify::Due::OperatorSync;
-    }
-    let vtable = super::build_plane_host_vtable();
-    let q = VerifyQuery {
-        size: core::mem::size_of::<VerifyQuery>() as u32,
-        version: POD_VERSION,
-        _reserved: 0,
-        last_checked_present: u32::from(last_checked_ms.is_some()),
-        _reserved2: 0,
-        ttl_ms,
-        now_ms,
-        last_checked_ms: last_checked_ms.unwrap_or(0),
-    };
-    let decision = (vtable.verify_decide.expect("verify_decide is a wired slot"))(
-        host,
-        &q as *const VerifyQuery,
-    );
-    crate::trust::reverify::Due::from_verify_decision(decision)
-}
-
 /// WIRED `approval_redeem_q` → [`crate::plane::approvals::SpentTokenLedger::spend`], over a richer
 /// [`ApprovalQuery`]. Identical to [`approval_redeem`] except it spends against the seal's OWN
 /// `expires_at` and the caller's `now` (marshalled in the query) rather than recomputing a default

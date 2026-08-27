@@ -385,19 +385,15 @@ fn an_mtls_registration_that_presents_its_client_certificate_verifies() {
         .presenting(identity);
 
     let mut registration = an_mtls_registration(addr.port());
-    let host_app = crate::test_support::TestApp::new().build();
-    let pass = crate::plane_host::with_dispatch_scope(&host_app, |host, _vt| {
-        crate::a2a::verify::reverify_once(
-            host,
-            &mut registration,
-            &transport_pin_cfg(PinMechanism::Mtls, &endpoint.expected_pin),
-            &HostOnLoopback,
-            &transport,
-            &policy,
-            1_000,
-            true,
-        )
-    });
+    let pass = crate::a2a::verify::reverify_once(
+        &mut registration,
+        &transport_pin_cfg(PinMechanism::Mtls, &endpoint.expected_pin),
+        &HostOnLoopback,
+        &transport,
+        &policy,
+        1_000,
+        true,
+    );
 
     assert_eq!(
         pass.refusal, None,
@@ -448,19 +444,15 @@ fn an_mtls_registration_whose_hop_presented_no_client_certificate_is_still_refus
     let transport = ReqwestTransport::new(&policy).trusting_root(endpoint.ca_pem.as_bytes());
 
     let mut registration = an_mtls_registration(addr.port());
-    let host_app = crate::test_support::TestApp::new().build();
-    let pass = crate::plane_host::with_dispatch_scope(&host_app, |host, _vt| {
-        crate::a2a::verify::reverify_once(
-            host,
-            &mut registration,
-            &transport_pin_cfg(PinMechanism::Mtls, &endpoint.expected_pin),
-            &HostOnLoopback,
-            &transport,
-            &policy,
-            1_000,
-            true,
-        )
-    });
+    let pass = crate::a2a::verify::reverify_once(
+        &mut registration,
+        &transport_pin_cfg(PinMechanism::Mtls, &endpoint.expected_pin),
+        &HostOnLoopback,
+        &transport,
+        &policy,
+        1_000,
+        true,
+    );
 
     assert_eq!(
         pass.refusal,
