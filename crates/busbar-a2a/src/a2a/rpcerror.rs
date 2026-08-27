@@ -72,13 +72,13 @@ pub(crate) enum A2aError {
     /// The task exists and is in a state from which cancellation is not defined.
     TaskNotCancelable,
     /// A2A section 5.4 `PushNotificationNotSupportedError`: the caller asked to configure push
-    /// notifications for a task on a backend that does not offer them. §5.4 binds it to gRPC
+    /// notifications for a task on a backend that does not offer them. section 5.4 binds it to gRPC
     /// `UNIMPLEMENTED` / HTTP 400 — a capability the server does not implement. A variant so a
     /// relayed backend `-32003` carries through with its own semantics rather than collapsing to a
     /// gateway fault.
     PushNotificationNotSupported,
     /// A2A section 5.4 `ExtensionSupportRequiredError`: the request needs a protocol extension the
-    /// served endpoint does not support. §5.4 binds it to gRPC `FAILED_PRECONDITION` / HTTP 400 —
+    /// served endpoint does not support. section 5.4 binds it to gRPC `FAILED_PRECONDITION` / HTTP 400 —
     /// a well-formed request the served configuration cannot satisfy.
     ExtensionSupportRequired,
     /// The caller asked for something this deployment does not do, or may not do for them. The
@@ -152,18 +152,18 @@ impl A2aError {
             A2aError::TaskNotFound => tonic::Code::NotFound,
             // FAILED_PRECONDITION for exactly the three rows section 5.4 binds to it: the request is
             // well formed and the deployment's configuration is what cannot satisfy it. See the
-            // spec's own §5.4 table (`specification.md`): `TaskNotCancelableError`,
+            // spec's own section 5.4 table (`specification.md`): `TaskNotCancelableError`,
             // `ExtendedAgentCardNotConfiguredError` and `ExtensionSupportRequiredError` are
             // FAILED_PRECONDITION; the three "…NotSupported"/version rows below are NOT.
             A2aError::TaskNotCancelable
             | A2aError::ExtendedAgentCardNotConfigured
             | A2aError::ExtensionSupportRequired => tonic::Code::FailedPrecondition,
-            // UNIMPLEMENTED, and it is the SPECIFICATION'S own binding, not a guess. A2A §5.4 maps
+            // UNIMPLEMENTED, and it is the SPECIFICATION'S own binding, not a guess. A2A section 5.4 maps
             // `PushNotificationNotSupportedError` (-32003), `UnsupportedOperationError` (-32004) and
             // `VersionNotSupportedError` (-32009) to gRPC `UNIMPLEMENTED` — a capability the server
             // does not implement, which is what each of these three refusals is. These once mapped
             // to FAILED_PRECONDITION here, transcribed from the busbar harness's own (wrong)
-            // `a2aht/spec.py::ERROR_MAP`; that disagreed with the publisher's §5.4 table and the
+            // `a2aht/spec.py::ERROR_MAP`; that disagreed with the publisher's section 5.4 table and the
             // official TCK's `GRPC-ERR-002`, which is what it cost. The HTTP status stays 400 — a
             // different column of the same row, and already correct.
             A2aError::PushNotificationNotSupported
@@ -220,7 +220,7 @@ impl A2aError {
             A2aError::TaskNotCancelable
             | A2aError::ExtendedAgentCardNotConfigured
             | A2aError::ExtensionSupportRequired => "FAILED_PRECONDITION",
-            // UNIMPLEMENTED, the §5.4 canonical name for a capability the server does not implement.
+            // UNIMPLEMENTED, the section 5.4 canonical name for a capability the server does not implement.
             // The three "…NotSupported"/version rows share it with `MethodNotFound`, and it is the
             // same binding `grpc_status` answers `Code::Unimplemented` with — one row, one name.
             A2aError::PushNotificationNotSupported

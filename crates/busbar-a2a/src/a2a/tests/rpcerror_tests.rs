@@ -116,8 +116,8 @@ fn unsupported_operation_and_version_not_supported_are_unimplemented() {
     // which gates `GRPC-ERR-002`) binds BOTH `-32004 UnsupportedOperationError` and
     // `-32009 VersionNotSupportedError` to gRPC `UNIMPLEMENTED` / HTTP 400 — a capability the
     // server does not implement. These briefly mapped to FAILED_PRECONDITION here, transcribed
-    // from the busbar harness's own (wrong) `a2aht/spec.py::ERROR_MAP`; that disagreed with the
-    // publisher's §5.4 table and failed `GRPC-ERR-002`'s version sub-test. The HTTP status is
+    // from the busbar harness's own (wrong) error table; that disagreed with the
+    // publisher's section 5.4 table and failed `GRPC-ERR-002`'s version sub-test. The HTTP status is
     // 400 for both — a different column of the same row.
     for (code, err) in [
         (-32004, A2aError::UnsupportedOperation),
@@ -153,7 +153,7 @@ fn unsupported_operation_and_version_not_supported_are_unimplemented() {
 fn push_notification_not_supported_and_extension_support_required_round_trip() {
     // Regression: A2A section 5.4 defines `-32003 PushNotificationNotSupportedError` and
     // `-32008 ExtensionSupportRequiredError`, both HTTP 400. Their gRPC/canonical status DIFFERS:
-    // §5.4 binds `-32003` to UNIMPLEMENTED (a capability the server does not implement) and `-32008`
+    // section 5.4 binds `-32003` to UNIMPLEMENTED (a capability the server does not implement) and `-32008`
     // to FAILED_PRECONDITION (a well-formed request the config cannot satisfy). The code table used
     // to jump -32002 -> -32004, so a relayed backend answering -32003/-32008 got `from_code == None`
     // and was collapsed to a generic gateway fault (-32006 InvalidAgentResponse, 500) on the relay
