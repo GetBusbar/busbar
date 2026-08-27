@@ -80,8 +80,8 @@ pub(crate) fn mcp_server_view(
 
 /// Every registered MCP server, as the shared named-definition view. The read half of
 /// `GET /api/v1/admin/tools`.
-pub(crate) fn list(app: &busbar_core::state::App) -> Vec<NamedDefView> {
-    super::runtime(app)
+pub(crate) fn list(slots: &dyn busbar_substrate::plane_host::PlaneSlots) -> Vec<NamedDefView> {
+    super::runtime_slots(slots)
         .servers
         .servers
         .iter()
@@ -90,8 +90,11 @@ pub(crate) fn list(app: &busbar_core::state::App) -> Vec<NamedDefView> {
 }
 
 /// One registered MCP server, or `None`. The read half of `GET /api/v1/admin/tools/{name}`.
-pub(crate) fn get(app: &busbar_core::state::App, name: &str) -> Option<NamedDefView> {
-    super::runtime(app)
+pub(crate) fn get(
+    slots: &dyn busbar_substrate::plane_host::PlaneSlots,
+    name: &str,
+) -> Option<NamedDefView> {
+    super::runtime_slots(slots)
         .servers
         .servers
         .get(name)
@@ -99,7 +102,7 @@ pub(crate) fn get(app: &busbar_core::state::App, name: &str) -> Option<NamedDefV
 }
 
 /// Attach the MCP trust verbs' typed success-body schemas — the MCP half of
-/// [`busbar_core::plane::registry::PlaneDecl::openapi_schemas`]. Registers `McpTrustView`/`McpHealthView`
+/// [`busbar_substrate::plane::registry::PlaneDecl::openapi_schemas`]. Registers `McpTrustView`/`McpHealthView`
 /// into the SHARED response generator and attaches their `$ref`s onto the paths this plane's
 /// `openapi()` fragment inserted, byte-identically to the inline `typed!` calls it replaced (same
 /// types, same order, same generator).

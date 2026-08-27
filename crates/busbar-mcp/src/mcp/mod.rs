@@ -119,8 +119,8 @@
 ///
 /// `wire_format_names` is the single JSON-RPC 2.0 dialect, carried over any of three transports — a
 /// transport is not a wire format, so this list has one entry and the plane earns no superset IR.
-pub const PLANE_DECL: busbar_core::plane::registry::PlaneDecl =
-    busbar_core::plane::registry::PlaneDecl {
+pub const PLANE_DECL: busbar_substrate::plane::registry::PlaneDecl =
+    busbar_substrate::plane::registry::PlaneDecl {
         key: "mcp",
         config_section: "tools",
         scope_kinds: &["mcp_server", "mcp_tool"],
@@ -182,7 +182,7 @@ pub const PLANE_DECL: busbar_core::plane::registry::PlaneDecl =
     };
 
 /// VALIDATE ONE `tools:` NAMED-DEFINITION DOCUMENT — the MCP plane's half of
-/// [`busbar_core::plane::registry::PlaneDecl::config_validate`]. Parses the raw document into
+/// [`busbar_substrate::plane::registry::PlaneDecl::config_validate`]. Parses the raw document into
 /// [`config::McpServerDefCfg`] (`deny_unknown_fields`, so a typo'd key is refused HERE exactly as the
 /// file refuses it) and applies the same value rules boot applies through the identical
 /// [`config::validate_server`]. Naming `crate::mcp` types HERE is correct: this is the MCP plane's
@@ -199,6 +199,7 @@ fn mcp_config_validate(name: &str, def: &serde_json::Value) -> Result<(), String
 /// names no `crate::mcp` type. `None` exactly when `mcp:` is not configured this generation (the
 /// plane contributed no slot — the same absence the deleted `App::mcp: None` used to encode). The
 /// downcast never fails: the mcp slot is always an `McpResource` (`PLANE_DECL::build`).
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn resource(app: &busbar_core::state::App) -> Option<&McpResource> {
     app.plane_slot(PLANE_DECL.key).map(|slot| {
         slot.downcast_ref::<McpResource>()
@@ -299,6 +300,11 @@ impl McpRuntime {
 /// this slot is present on EVERY generation the MCP plane is compiled into, so the lookup and the
 /// downcast both `.expect`: `appbuild` composes it through the plane's `build_runtime` seam and the
 /// slot is always an `McpRuntime`.
+// After H2 the admin read path reads through the neutral `runtime_slots(&dyn PlaneSlots)` twin, so
+// this `&App`-typed helper's remaining callers are the plane's own test fixtures (and, pending the
+// H3/H5 data-path repoint, will be gone from production entirely). It stays for those tests; the
+// allowance keeps a `--no-default-features` lib build (which links no tests) warning-clean.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn runtime(app: &busbar_core::state::App) -> &McpRuntime {
     app.plane_slot(busbar_substrate::plane_host::MCP_RUNTIME_SLOT)
         .expect("the mcp runtime slot is present on every generation the plane is compiled into")
@@ -353,17 +359,19 @@ pub(crate) fn runtime_live(
 /// BUILD THE GENERATION'S MCP RUNTIME, TYPE-ERASED for the neutral `plane_slots` runtime slot
 /// ([`busbar_substrate::plane_host::MCP_RUNTIME_SLOT`]) — the one entry point `appbuild` calls so the
 /// composition of the `App` names no `crate::mcp` runtime type.
-/// `prior` is the prior generation's `App` (for the carry-over rules in [`McpRuntime::build`]); it is
-/// read through [`runtime`] so this function, not `appbuild`, owns the downcast.
+/// `prior` is the prior generation's snapshot, read through the neutral
+/// [`busbar_substrate::plane_host::PlaneSlots`] seam (for the carry-over rules in
+/// [`McpRuntime::build`]) so this function, not `appbuild`, owns the downcast and the signature names
+/// no `busbar_core::state::App`.
 pub(crate) fn build_runtime(
     tool_defs: &config::ToolsCfg,
-    prior: Option<&busbar_core::state::App>,
+    prior: Option<&dyn busbar_substrate::plane_host::PlaneSlots>,
 ) -> std::sync::Arc<dyn std::any::Any + Send + Sync> {
-    std::sync::Arc::new(McpRuntime::build(tool_defs, prior.map(runtime)))
+    std::sync::Arc::new(McpRuntime::build(tool_defs, prior.map(runtime_slots)))
 }
 
 /// PARSE THE `tools:` SECTION through the MCP plane's own `Deserialize` — the
-/// [`busbar_core::plane::registry::PlaneDecl::parse_section`] hook, so `DeployCfg` deserializes its `tools:`
+/// [`busbar_substrate::plane::registry::PlaneDecl::parse_section`] hook, so `DeployCfg` deserializes its `tools:`
 /// field without naming [`config::ToolsCfg`]. The `serde_yaml::Value` intermediate carries no source
 /// position, so the plane's own `split_section` refusals reach the operator by their SENTENCE (the
 /// content core pins), the `at line`/`column` suffix aside.
@@ -375,14 +383,14 @@ fn mcp_parse_section(
         .map_err(|e| e.to_string())
 }
 
-/// [`busbar_core::plane::registry::PlaneDecl::default_section`] hook — the empty `tools:` registry, so an
+/// [`busbar_substrate::plane::registry::PlaneDecl::default_section`] hook — the empty `tools:` registry, so an
 /// ABSENT section defaults to `ToolsCfg::default()` byte-identically to the pre-seam typed field.
 fn mcp_default_section() -> Box<dyn busbar_substrate::plane::config::PlaneCfg> {
     Box::<config::ToolsCfg>::default()
 }
 
 /// PARSE THE `mcp:` ENDPOINT block through the MCP plane's own `Deserialize` — the
-/// [`busbar_core::plane::registry::PlaneDecl::parse_endpoint`] hook, so `DeployCfg` deserializes its `mcp:`
+/// [`busbar_substrate::plane::registry::PlaneDecl::parse_endpoint`] hook, so `DeployCfg` deserializes its `mcp:`
 /// field without naming [`McpCfg`].
 fn mcp_parse_endpoint(
     v: &serde_yaml::Value,
@@ -393,7 +401,7 @@ fn mcp_parse_endpoint(
 }
 
 /// LOWER THE `mcp:` ENDPOINT into the validated [`McpResource`], type-erased — the
-/// [`busbar_core::plane::registry::PlaneDecl::lower_endpoint`] hook, so `config::resolve` derives
+/// [`busbar_substrate::plane::registry::PlaneDecl::lower_endpoint`] hook, so `config::resolve` derives
 /// `RootCfg::mcp` (`Option<Arc<dyn Any>>`) without naming [`McpResource`] or its constructor. The
 /// error string is `McpCfgError`'s `Display`, verbatim, so the boot refusal is byte-identical.
 fn mcp_lower_endpoint(
@@ -409,13 +417,13 @@ fn mcp_lower_endpoint(
 }
 
 /// BUILD THE MCP RUNTIME from the type-erased `tool_defs` slot — the
-/// [`busbar_core::plane::registry::PlaneDecl::build_runtime`] hook, so `appbuild` composes the MCP
+/// [`busbar_substrate::plane::registry::PlaneDecl::build_runtime`] hook, so `appbuild` composes the MCP
 /// runtime slot (`plane_slots[MCP_RUNTIME_SLOT]`) through the plane without naming
 /// [`config::ToolsCfg`]. Downcasts back to `ToolsCfg` HERE (inside the plane) and delegates to
 /// [`build_runtime`].
 fn mcp_build_runtime(
     tool_defs: &dyn std::any::Any,
-    prior: Option<&busbar_core::state::App>,
+    prior: Option<&dyn busbar_substrate::plane_host::PlaneSlots>,
 ) -> std::sync::Arc<dyn std::any::Any + Send + Sync> {
     let tool_defs = tool_defs
         .downcast_ref::<config::ToolsCfg>()
@@ -424,7 +432,7 @@ fn mcp_build_runtime(
 }
 
 /// PRUNE THE MCP VERIFY-ON-CALL GATES to the servers THIS generation fronts — the
-/// [`busbar_core::plane::registry::PlaneDecl::retain_verify_gates`] hook, so `appbuild` prunes the carried
+/// [`busbar_substrate::plane::registry::PlaneDecl::retain_verify_gates`] hook, so `appbuild` prunes the carried
 /// coalescing state without naming the MCP runtime. Byte-identical to the old inline `appbuild` arm.
 fn mcp_retain_verify_gates(slots: &dyn busbar_substrate::plane_host::PlaneSlots) {
     let rt = runtime_slots(slots);
@@ -481,8 +489,10 @@ pub(crate) fn mcp_on_swap(
 /// hydrate can neither read nor forge the audit chain (invariant (a)). With `store: memory` (no
 /// governance store) `ctx.store` is `None` and every block below is skipped — the call log, the
 /// demotion record and the spent ledger are ephemeral BY DESIGN there, exactly as the audit ring is.
-pub(crate) fn mcp_hydrate(ctx: &busbar_core::plane::registry::BootCtx) -> Result<(), String> {
-    if ctx.store.is_none() {
+pub(crate) fn mcp_hydrate(
+    ctx: &dyn busbar_substrate::plane::registry::PlaneBootCtx,
+) -> Result<(), String> {
+    if !ctx.has_store() {
         return Ok(());
     }
 
@@ -502,7 +512,7 @@ pub(crate) fn mcp_hydrate(ctx: &busbar_core::plane::registry::BootCtx) -> Result
     ctx.register_call_stream();
     let restored = ctx.restore_call_log();
     match restored {
-        Ok(r) if r == busbar_core::plane::registry::RestoredSummary::default() => {}
+        Ok(r) if r == busbar_substrate::plane::registry::RestoredSummary::default() => {}
         Ok(r) => {
             tracing::info!(
                 principals = r.principals,

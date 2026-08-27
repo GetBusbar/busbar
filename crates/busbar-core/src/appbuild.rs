@@ -1429,7 +1429,12 @@ pub fn build_app_from_config(
     // slot is inserted and nothing downcasts it (no MCP accessor exists then).
     if let Some(runtime_slot) = crate::plane::registry::plane_decl_for("mcp")
         .and_then(|d| d.build_runtime)
-        .map(|f| f(cfg.tool_defs.as_any(), prior))
+        .map(|f| {
+            f(
+                cfg.tool_defs.as_any(),
+                prior.map(|p| p as &dyn busbar_substrate::plane_host::PlaneSlots),
+            )
+        })
     {
         plane_slots.insert(crate::state::MCP_RUNTIME_SLOT, runtime_slot);
     }

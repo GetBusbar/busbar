@@ -2458,7 +2458,9 @@ fn reresolve_plane_gates(next: &mut crate::state::App) {
 fn plane_named_def_list(section: NamedMapSection, app: &crate::state::App) -> Vec<NamedDefView> {
     crate::plane::registry::plane_decl_for_config_section(section.key())
         .and_then(|d| d.named_def_list)
-        .map_or_else(Vec::new, |f| f(app))
+        .map_or_else(Vec::new, |f| {
+            f(app as &dyn busbar_substrate::plane_host::PlaneSlots)
+        })
 }
 
 /// One registration from a plane section, through the plane's `named_def_get` seam. `None` when the
@@ -2470,7 +2472,7 @@ fn plane_named_def_get(
 ) -> Option<NamedDefView> {
     crate::plane::registry::plane_decl_for_config_section(section.key())
         .and_then(|d| d.named_def_get)
-        .and_then(|f| f(app, name))
+        .and_then(|f| f(app as &dyn busbar_substrate::plane_host::PlaneSlots, name))
 }
 
 #[cfg(test)]

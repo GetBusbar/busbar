@@ -42,7 +42,13 @@ fn agent_def_view(name: &str, cfg: &crate::a2a::config::AgentDefCfg) -> NamedDef
 
 /// Every registered agent, as the shared named-definition view. The read half of
 /// `GET /api/v1/admin/agents`.
-pub(crate) fn list(app: &crate::state::App) -> Vec<NamedDefView> {
+pub(crate) fn list(slots: &dyn busbar_substrate::plane_host::PlaneSlots) -> Vec<NamedDefView> {
+    // A2A stays in core: recover the concrete snapshot through the neutral seam's `as_any` hatch to
+    // read `agent_defs` (not a `plane_slots` entry) — byte-identical to the old `&App` arm.
+    let app = slots
+        .as_any()
+        .downcast_ref::<crate::state::App>()
+        .expect("the a2a named_def_list hook is handed an App snapshot");
     crate::a2a::agent_cfg(app)
         .agents
         .iter()
@@ -51,7 +57,14 @@ pub(crate) fn list(app: &crate::state::App) -> Vec<NamedDefView> {
 }
 
 /// One registered agent, or `None`. The read half of `GET /api/v1/admin/agents/{name}`.
-pub(crate) fn get(app: &crate::state::App, name: &str) -> Option<NamedDefView> {
+pub(crate) fn get(
+    slots: &dyn busbar_substrate::plane_host::PlaneSlots,
+    name: &str,
+) -> Option<NamedDefView> {
+    let app = slots
+        .as_any()
+        .downcast_ref::<crate::state::App>()
+        .expect("the a2a named_def_get hook is handed an App snapshot");
     crate::a2a::agent_cfg(app)
         .agents
         .get(name)

@@ -281,12 +281,20 @@ use crate::diagnostics::{
     A2A_TASK_STATE_UNREAD,
 };
 
-pub(crate) fn a2a_hydrate(ctx: &crate::plane::registry::BootCtx) -> Result<(), String> {
+pub(crate) fn a2a_hydrate(ctx: &dyn crate::plane::registry::PlaneBootCtx) -> Result<(), String> {
+    // A2A stays in core: recover the concrete `BootCtx` through the neutral seam's `as_any` hatch to
+    // reach the phase fields (`store`, `app`) that name core-live types — byte-identical to the old
+    // `&BootCtx` arm.
+    let ctx = ctx
+        .as_any()
+        .downcast_ref::<crate::plane::registry::BootCtx>()
+        .expect("the a2a hydrate hook is handed a core BootCtx");
     let Some(plane_store) = ctx.store.clone() else {
         return Ok(());
     };
     let app = ctx
         .app
+        .as_ref()
         .expect("a2a hydrate runs in the HYDRATE phase, which supplies the freshly-built app");
     // REGISTER the durable `task_event` stream FIRST — the host attaches its own sink from
     // `app.governance` (the same plane-narrowed store) at register time, so the host-side chain and the
@@ -346,9 +354,16 @@ pub(crate) fn a2a_hydrate(ctx: &crate::plane::registry::BootCtx) -> Result<(), S
 /// transport to BOTH the delegation hop (the plane's relay seam) and verify-on-call (the app's
 /// `a2a_cards`). There is no sweep loop to spawn: a fronted agent nobody delegates to is never
 /// re-fetched, and one that is delegated to is re-verified on the call path within its `verify_ttl`.
-pub(crate) fn a2a_start(ctx: &crate::plane::registry::BootCtx) -> Result<(), String> {
+pub(crate) fn a2a_start(ctx: &dyn crate::plane::registry::PlaneBootCtx) -> Result<(), String> {
+    // A2A stays in core: recover the concrete `BootCtx` through the neutral seam's `as_any` hatch to
+    // reach the phase fields (`handle`, `card_issuer`) that name core-live types.
+    let ctx = ctx
+        .as_any()
+        .downcast_ref::<crate::plane::registry::BootCtx>()
+        .expect("the a2a start hook is handed a core BootCtx");
     let handle = ctx
         .handle
+        .as_ref()
         .expect("a2a start runs in the START phase, which supplies the live app handle");
     let app = handle.load();
     if let Some(plane) = crate::a2a::runtime_arc(&app) {

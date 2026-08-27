@@ -26,6 +26,14 @@ pub mod store;
 // `config_sections`, the reserved-key literal) stays core.
 pub mod config;
 
+// S4b: the NEUTRAL PLANE-REGISTRY SURFACE — the plane VOCABULARY/SEAM declaration `PlaneDecl`, the
+// `BuildCtx` its `build` reads, the neutral `PlaneBootCtx` boot-context trait + its `RestoredSummary`
+// return, and the `BootHook` alias. Relocated here so an extracted plane crate constructs its own
+// `PlaneDecl` and every seam type its fields name without a path back to core. Core re-exports each
+// from `busbar_core::plane::registry`, and keeps the population glue + the concrete `BootCtx` (which
+// borrows the core-live `App`) that implements `PlaneBootCtx`.
+pub mod registry;
+
 /// A PLANE'S OAUTH RESOURCE-SERVER ADMISSION FACTS — the audience a token must carry to be spent on
 /// this plane's mount, and the RFC 9728 metadata URL a refused caller is pointed at. A neutral POD so
 /// a plane crate contributes its admission across the mount seam without naming a core type; core
