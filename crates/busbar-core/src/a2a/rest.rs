@@ -172,7 +172,6 @@ fn json_scalar(raw: &str) -> Value {
 /// THE ONE PATH EVERY REST HANDLER TAKES: compose the envelope, run the shared sequence, re-frame
 /// the answer.
 async fn compose_and_invoke(
-    app: std::sync::Arc<crate::state::App>,
     engine_host: std::sync::Arc<dyn busbar_substrate::plane_host::EngineHost>,
     gov: busbar_api::PlaneRequestCtx,
     principal: busbar_api::AuthPrincipal,
@@ -192,7 +191,6 @@ async fn compose_and_invoke(
     // the same question the JSON-RPC leg's plane endpoint already gives.
     let body = axum::body::Bytes::from(serde_json::to_vec(&envelope).unwrap_or_default());
     let answered = invoke(
-        app,
         engine_host,
         gov,
         principal,
@@ -330,21 +328,18 @@ fn rest_key_ctx(
     gov: Option<busbar_api::PlaneRequestCtx>,
     principal: Option<busbar_api::AuthPrincipal>,
     headers: &axum::http::HeaderMap,
-) -> (
-    std::sync::Arc<crate::state::App>,
-    busbar_api::PlaneRequestCtx,
-    busbar_api::AuthPrincipal,
-    Wire,
-) {
-    let handle: std::sync::Arc<crate::state::AppHandle> = engine
+) -> (busbar_api::PlaneRequestCtx, busbar_api::AuthPrincipal, Wire) {
+    // The downcast is retained as the route-wiring assertion it always was — the live app it would
+    // load is no longer threaded now that the shared sequence closes its own request out through the
+    // host, so the loaded snapshot is dropped rather than returned.
+    let _handle: std::sync::Arc<crate::state::AppHandle> = engine
         .downcast::<crate::state::AppHandle>()
         .expect("the a2a route engine handle is an AppHandle");
-    let app = handle.load();
     let gov =
         gov.expect("the a2a REST routes are RouteAuth::Key, so the middleware attached a gov ctx");
     let principal = principal
         .expect("the a2a REST routes are RouteAuth::Key, so the middleware attached a principal");
-    (app, gov, principal, Wire::from_headers(headers))
+    (gov, principal, Wire::from_headers(headers))
 }
 
 /// THE QUERY STRING AS A `name → value` MAP, replacing the `axum::extract::Query<HashMap<..>>` the
@@ -404,28 +399,16 @@ fn form_decode(s: &str) -> String {
 
 /// `POST /message:send` — the body IS the `params`.
 async fn message_send(ctx: PlaneReqCtx) -> Response {
-    let (app, gov, principal, wire) =
-        rest_key_ctx(ctx.engine, ctx.gov, ctx.principal, &ctx.headers);
+    let (gov, principal, wire) = rest_key_ctx(ctx.engine, ctx.gov, ctx.principal, &ctx.headers);
     let params = json_body(&ctx.body);
-    compose_and_invoke(
-        app,
-        ctx.host,
-        gov,
-        principal,
-        wire,
-        method::SEND_MESSAGE,
-        params,
-    )
-    .await
+    compose_and_invoke(ctx.host, gov, principal, wire, method::SEND_MESSAGE, params).await
 }
 
 /// `POST /message:stream` — the same body, the streaming method, an SSE answer.
 async fn message_stream(ctx: PlaneReqCtx) -> Response {
-    let (app, gov, principal, wire) =
-        rest_key_ctx(ctx.engine, ctx.gov, ctx.principal, &ctx.headers);
+    let (gov, principal, wire) = rest_key_ctx(ctx.engine, ctx.gov, ctx.principal, &ctx.headers);
     let params = json_body(&ctx.body);
     compose_and_invoke(
-        app,
         ctx.host,
         gov,
         principal,
@@ -438,31 +421,20 @@ async fn message_stream(ctx: PlaneReqCtx) -> Response {
 
 /// `GET /tasks/{id}` — the task id from the path, `historyLength` from the query.
 async fn task_get(ctx: PlaneReqCtx) -> Response {
-    let (app, gov, principal, wire) =
-        rest_key_ctx(ctx.engine, ctx.gov, ctx.principal, &ctx.headers);
+    let (gov, principal, wire) = rest_key_ctx(ctx.engine, ctx.gov, ctx.principal, &ctx.headers);
     let id = super::receive::path_param(&ctx.path_params, "id");
     let query = query_map(&ctx.uri);
     let params = Params::new()
         .set("id", id)
         .maybe("historyLength", query.get("historyLength"))
         .into_value();
-    compose_and_invoke(
-        app,
-        ctx.host,
-        gov,
-        principal,
-        wire,
-        method::GET_TASK,
-        params,
-    )
-    .await
+    compose_and_invoke(ctx.host, gov, principal, wire, method::GET_TASK, params).await
 }
 
 /// `POST /tasks/{id}:cancel` and `POST /tasks/{id}:subscribe` — one route, because the verb is a
 /// suffix INSIDE the captured segment. See [`VERB_CANCEL`].
 async fn task_verb(ctx: PlaneReqCtx) -> Response {
-    let (app, gov, principal, wire) =
-        rest_key_ctx(ctx.engine, ctx.gov, ctx.principal, &ctx.headers);
+    let (gov, principal, wire) = rest_key_ctx(ctx.engine, ctx.gov, ctx.principal, &ctx.headers);
     let addressed = super::receive::path_param(&ctx.path_params, "id");
     let Some((id, verb)) = addressed.rsplit_once(':') else {
         return not_a_verb(&addressed);
@@ -473,7 +445,7 @@ async fn task_verb(ctx: PlaneReqCtx) -> Response {
         _ => return not_a_verb(&addressed),
     };
     let params = Params::new().set("id", id).into_value();
-    compose_and_invoke(app, ctx.host, gov, principal, wire, method, params).await
+    compose_and_invoke(ctx.host, gov, principal, wire, method, params).await
 }
 
 /// The refusal for a `POST /tasks/…` that names no verb this binding defines. `MethodNotFound`
@@ -498,8 +470,7 @@ fn not_a_verb(addressed: &str) -> Response {
 
 /// `GET /tasks` — the filters ride the query string.
 async fn tasks_list(ctx: PlaneReqCtx) -> Response {
-    let (app, gov, principal, wire) =
-        rest_key_ctx(ctx.engine, ctx.gov, ctx.principal, &ctx.headers);
+    let (gov, principal, wire) = rest_key_ctx(ctx.engine, ctx.gov, ctx.principal, &ctx.headers);
     let query = query_map(&ctx.uri);
     let params = Params::new()
         .maybe("contextId", query.get("contextId"))
@@ -510,22 +481,12 @@ async fn tasks_list(ctx: PlaneReqCtx) -> Response {
         .maybe("statusTimestampAfter", query.get("statusTimestampAfter"))
         .maybe("includeArtifacts", query.get("includeArtifacts"))
         .into_value();
-    compose_and_invoke(
-        app,
-        ctx.host,
-        gov,
-        principal,
-        wire,
-        method::LIST_TASKS,
-        params,
-    )
-    .await
+    compose_and_invoke(ctx.host, gov, principal, wire, method::LIST_TASKS, params).await
 }
 
 /// `POST /tasks/{id}/pushNotificationConfigs` — the body IS the config, the task id is the path's.
 async fn push_config_create(ctx: PlaneReqCtx) -> Response {
-    let (app, gov, principal, wire) =
-        rest_key_ctx(ctx.engine, ctx.gov, ctx.principal, &ctx.headers);
+    let (gov, principal, wire) = rest_key_ctx(ctx.engine, ctx.gov, ctx.principal, &ctx.headers);
     let id = super::receive::path_param(&ctx.path_params, "id");
     // THE PATH WINS. `merge` first, `set` after: the task this config is for is the one the caller
     // ADDRESSED, and a `taskId` member in the posted document must not silently re-point it at
@@ -536,7 +497,6 @@ async fn push_config_create(ctx: PlaneReqCtx) -> Response {
         .set("taskId", id)
         .into_value();
     compose_and_invoke(
-        app,
         ctx.host,
         gov,
         principal,
@@ -549,8 +509,7 @@ async fn push_config_create(ctx: PlaneReqCtx) -> Response {
 
 /// `GET /tasks/{id}/pushNotificationConfigs`.
 async fn push_config_list(ctx: PlaneReqCtx) -> Response {
-    let (app, gov, principal, wire) =
-        rest_key_ctx(ctx.engine, ctx.gov, ctx.principal, &ctx.headers);
+    let (gov, principal, wire) = rest_key_ctx(ctx.engine, ctx.gov, ctx.principal, &ctx.headers);
     let id = super::receive::path_param(&ctx.path_params, "id");
     let query = query_map(&ctx.uri);
     let params = Params::new()
@@ -559,7 +518,6 @@ async fn push_config_list(ctx: PlaneReqCtx) -> Response {
         .maybe("pageToken", query.get("pageToken"))
         .into_value();
     compose_and_invoke(
-        app,
         ctx.host,
         gov,
         principal,
@@ -572,8 +530,7 @@ async fn push_config_list(ctx: PlaneReqCtx) -> Response {
 
 /// `GET /tasks/{id}/pushNotificationConfigs/{configId}`.
 async fn push_config_get(ctx: PlaneReqCtx) -> Response {
-    let (app, gov, principal, wire) =
-        rest_key_ctx(ctx.engine, ctx.gov, ctx.principal, &ctx.headers);
+    let (gov, principal, wire) = rest_key_ctx(ctx.engine, ctx.gov, ctx.principal, &ctx.headers);
     let id = super::receive::path_param(&ctx.path_params, "id");
     let config_id = super::receive::path_param(&ctx.path_params, "config_id");
     let params = Params::new()
@@ -581,7 +538,6 @@ async fn push_config_get(ctx: PlaneReqCtx) -> Response {
         .set("id", config_id)
         .into_value();
     compose_and_invoke(
-        app,
         ctx.host,
         gov,
         principal,
@@ -594,8 +550,7 @@ async fn push_config_get(ctx: PlaneReqCtx) -> Response {
 
 /// `DELETE /tasks/{id}/pushNotificationConfigs/{configId}`.
 async fn push_config_delete(ctx: PlaneReqCtx) -> Response {
-    let (app, gov, principal, wire) =
-        rest_key_ctx(ctx.engine, ctx.gov, ctx.principal, &ctx.headers);
+    let (gov, principal, wire) = rest_key_ctx(ctx.engine, ctx.gov, ctx.principal, &ctx.headers);
     let id = super::receive::path_param(&ctx.path_params, "id");
     let config_id = super::receive::path_param(&ctx.path_params, "config_id");
     let params = Params::new()
@@ -603,7 +558,6 @@ async fn push_config_delete(ctx: PlaneReqCtx) -> Response {
         .set("id", config_id)
         .into_value();
     compose_and_invoke(
-        app,
         ctx.host,
         gov,
         principal,
@@ -623,10 +577,8 @@ async fn push_config_delete(ctx: PlaneReqCtx) -> Response {
 /// divergence "re-framing, not translation" exists to prevent. When the verb lands it lands once, on
 /// the shared sequence, and both bindings gain it together.
 async fn extended_agent_card(ctx: PlaneReqCtx) -> Response {
-    let (app, gov, principal, wire) =
-        rest_key_ctx(ctx.engine, ctx.gov, ctx.principal, &ctx.headers);
+    let (gov, principal, wire) = rest_key_ctx(ctx.engine, ctx.gov, ctx.principal, &ctx.headers);
     compose_and_invoke(
-        app,
         ctx.host,
         gov,
         principal,

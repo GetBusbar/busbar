@@ -527,6 +527,26 @@ impl busbar_substrate::plane_host::EngineHost for EngineHostImpl {
         self.app.next_request_id()
     }
 
+    fn request_finished(
+        &self,
+        plane: &str,
+        ingress_protocol: &str,
+        pool: &str,
+        outcome: &'static str,
+        seconds: f64,
+    ) {
+        // Same frozen-snapshot semantics as every sibling: the completion is stamped against the BOUND
+        // snapshot this host was minted over, byte-identically to the plane's own in-place call.
+        crate::telemetry::request_finished(
+            &self.app,
+            plane,
+            ingress_protocol,
+            pool,
+            outcome,
+            seconds,
+        );
+    }
+
     fn governance_enabled(&self) -> bool {
         self.app.governance.is_some()
     }

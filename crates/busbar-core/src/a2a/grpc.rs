@@ -128,11 +128,10 @@ pub(crate) async fn serve(ctx: busbar_substrate::plane_routes::PlaneReqCtx) -> R
     // reassembling it costs nothing. The method is POST — the only method this route is mounted for.
     // The rebuilt request is stamped HTTP/2: the real request arrived over h2(c) (gRPC needs it) and
     // an `http::Request::builder` otherwise defaults to HTTP/1.1, which tonic rejects.
-    let handle: Arc<crate::state::AppHandle> = ctx
+    let _handle: Arc<crate::state::AppHandle> = ctx
         .engine
         .downcast::<crate::state::AppHandle>()
         .expect("the a2a route engine handle is an AppHandle");
-    let app = handle.load();
     let gov = ctx
         .gov
         .expect("the a2a grpc route is RouteAuth::Key, so the middleware attached a gov ctx");
@@ -159,7 +158,6 @@ pub(crate) async fn serve(ctx: busbar_substrate::plane_routes::PlaneReqCtx) -> R
         "a2a: a request arrived on the gRPC binding"
     );
     let mut service = A2aServiceServer::new(Busbar {
-        app,
         engine_host: ctx.host,
         gov,
         principal,
@@ -182,7 +180,6 @@ pub(crate) async fn serve(ctx: busbar_substrate::plane_routes::PlaneReqCtx) -> R
 /// an `Arc` clone and two small owned values, and holding the principal IN the service is what makes
 /// "this call was admitted" a fact the type carries rather than one a handler has to re-derive.
 struct Busbar {
-    app: Arc<crate::state::App>,
     engine_host: Arc<dyn busbar_substrate::plane_host::EngineHost>,
     gov: busbar_api::PlaneRequestCtx,
     principal: busbar_api::AuthPrincipal,
@@ -205,7 +202,6 @@ impl Busbar {
         });
         let wire = super::receive::Wire::for_grpc(version);
         let response = super::receive::invoke(
-            Arc::clone(&self.app),
             Arc::clone(&self.engine_host),
             self.gov.clone(),
             self.principal.clone(),
@@ -609,7 +605,6 @@ impl Busbar {
         });
         let wire = super::receive::Wire::for_grpc(version);
         let response = super::receive::invoke(
-            Arc::clone(&self.app),
             Arc::clone(&self.engine_host),
             self.gov.clone(),
             self.principal.clone(),

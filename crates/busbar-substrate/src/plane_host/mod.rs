@@ -271,6 +271,19 @@ pub trait EngineHost: Send + Sync {
     /// across config swaps, so the value is engine-snapshot independent).
     fn next_request_id(&self) -> u64;
 
+    /// Stamp the plane-labelled request-completion metric family for a MOUNTED plane through the host.
+    /// A neutral trait seam: the plane hands its own `(plane, ingress_protocol, pool, outcome, seconds)`
+    /// and the host records the completion, so the plane never names core's engine snapshot to close a
+    /// request out. Identical to `busbar_core::telemetry::request_finished` over the bound snapshot.
+    fn request_finished(
+        &self,
+        plane: &str,
+        ingress_protocol: &str,
+        pool: &str,
+        outcome: &'static str,
+        seconds: f64,
+    );
+
     /// Whether governance is configured for this deployment. Identical to
     /// `busbar_core::state::App::governance.is_some()`.
     fn governance_enabled(&self) -> bool;

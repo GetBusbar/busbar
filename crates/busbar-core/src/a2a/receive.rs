@@ -41,7 +41,6 @@ use super::inbound::{Dispatch, CREDENTIAL_KIND_A2A_INBOUND};
 use super::words::{plane_absent, refuse_admission, A2aWords};
 use crate::diagnostics::{diag_debug, diag_error, diag_warn};
 use crate::plane::taskstore;
-use crate::state::App;
 use busbar_substrate::diagnostics::{
     A2A_AGENT_BINDING_UNSPEAKABLE, A2A_BREAKER_REFUSAL_UNRECORDED, A2A_FAILURE_UNRECORDED,
     A2A_INBOUND_TASK_UNOPENED, A2A_INBOUND_TASK_UNRECORDED, A2A_INTERRUPTED_TASK_UNRESUMED,
@@ -339,11 +338,10 @@ pub(crate) async fn plane_rpc(ctx: busbar_substrate::plane_routes::PlaneReqCtx) 
     // S7 neutral seam: `RouteAuth::Key`, so the auth middleware resolved and attached `gov`/
     // `principal` BEFORE this handler ran — surfaced on `ctx`, never re-derived here. `Wire` is the
     // same three headers the extractor read, off `ctx.headers`.
-    let handle: Arc<crate::state::AppHandle> = ctx
+    let _handle: Arc<crate::state::AppHandle> = ctx
         .engine
         .downcast::<crate::state::AppHandle>()
         .expect("the a2a route engine handle is an AppHandle");
-    let app = handle.load();
     let gov = ctx
         .gov
         .expect("the a2a plane_rpc route is RouteAuth::Key, so the middleware attached a gov ctx");
@@ -352,7 +350,6 @@ pub(crate) async fn plane_rpc(ctx: busbar_substrate::plane_routes::PlaneReqCtx) 
     );
     let wire = Wire::from_headers(&ctx.headers);
     invoke(
-        app,
         ctx.host,
         gov,
         principal,
@@ -715,11 +712,10 @@ pub(super) fn no_receiving_side() -> Response {
 pub(crate) async fn agent_rpc(ctx: busbar_substrate::plane_routes::PlaneReqCtx) -> Response {
     // S7 neutral seam: `RouteAuth::Key`. Same shape as `plane_rpc` plus the `{agent_id}` capture,
     // read by name off `ctx.path_params`.
-    let handle: Arc<crate::state::AppHandle> = ctx
+    let _handle: Arc<crate::state::AppHandle> = ctx
         .engine
         .downcast::<crate::state::AppHandle>()
         .expect("the a2a route engine handle is an AppHandle");
-    let app = handle.load();
     let gov = ctx
         .gov
         .expect("the a2a agent_rpc route is RouteAuth::Key, so the middleware attached a gov ctx");
@@ -729,7 +725,6 @@ pub(crate) async fn agent_rpc(ctx: busbar_substrate::plane_routes::PlaneReqCtx) 
     let agent_id = path_param(&ctx.path_params, "agent_id");
     let wire = Wire::from_headers(&ctx.headers);
     invoke(
-        app,
         ctx.host,
         gov,
         principal,
@@ -770,7 +765,6 @@ use Target::{FromCatalogue, Named};
 /// only from a conformance suite's stdout.
 #[allow(clippy::too_many_arguments)] // plumbing: each arg is an independent request input
 pub(super) async fn invoke(
-    app: Arc<App>,
     engine_host: Arc<dyn busbar_substrate::plane_host::EngineHost>,
     gov: busbar_api::PlaneRequestCtx,
     principal: busbar_api::AuthPrincipal,
@@ -780,10 +774,9 @@ pub(super) async fn invoke(
     body: axum::body::Bytes,
 ) -> Response {
     let started = std::time::Instant::now();
-    let observed = Arc::clone(&app);
+    let observed = Arc::clone(&engine_host);
     let mut answered = invoke_inner(engine_host, gov, principal, target, wire, body).await;
-    crate::telemetry::request_finished(
-        &observed,
+    observed.request_finished(
         "a2a",
         transport.name(),
         // The same sentinel `plane::observe` stamps, and for the same reason it states there: the
