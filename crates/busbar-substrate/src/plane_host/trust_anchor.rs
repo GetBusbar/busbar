@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The host-side TRUST-ANCHOR registry — the extra-root counterpart of [`super::identity`].
+//! The host-side TRUST-ANCHOR registry — the extra-root counterpart of [`identity`](super::identity).
 //!
 //! A plane opening a governed hop against an upstream whose certificate chains to a private CA (a
 //! test's throw-away root, a vendor's internal CA) never holds the certificate bytes. It holds an
 //! OPAQUE `trust_anchor_ref` (a bare `u64`), and the host owns the parsed roots end to end: the host
 //! registers each boot-time trust anchor HERE ([`register`]) and hands back a ref; when the plane
 //! opens an egress carrying that ref, the host RESOLVES it ([`resolve`]) and adds those roots to the
-//! pinned client (see [`super::egress`]). The certificate bytes cross the seam in NEITHER direction.
+//! pinned client at the host egress chokepoint. The certificate bytes cross the seam in NEITHER direction.
 //!
 //! PER-REGISTRATION, not host-wide: trust anchors are a property of ONE registration exactly as a
 //! client identity is a property of one agent. The a2a `transport_pin` / `transport_tests` fixtures
@@ -24,7 +24,7 @@
 
 // PARTLY UNMOUNTED. `resolve` is live at the egress chokepoint today; `register` is the boot-time
 // entry the plane calls when its egress call sites are flipped onto the seam (the a2a `trusting_root`
-// path), and is reached only by tests until then. The same posture `super::identity` records.
+// path), and is reached only by tests until then. The same posture `identity` records.
 #![cfg_attr(not(test), allow(dead_code))]
 
 use std::collections::HashMap;
@@ -48,7 +48,7 @@ fn registry() -> std::sync::MutexGuard<'static, HashMap<u64, Vec<reqwest::Certif
 /// crosses the seam is this `u64`; the parsed certificates stay host-side in the registry. Registering
 /// an EMPTY set still mints a live (nonzero) ref — it simply resolves to no extra roots.
 #[must_use]
-pub(crate) fn register(roots: Vec<reqwest::Certificate>) -> u64 {
+pub fn register(roots: Vec<reqwest::Certificate>) -> u64 {
     let trust_anchor_ref = NEXT_REF.fetch_add(1, Ordering::Relaxed);
     registry().insert(trust_anchor_ref, roots);
     trust_anchor_ref
@@ -59,7 +59,7 @@ pub(crate) fn register(roots: Vec<reqwest::Certificate>) -> u64 {
 /// unknown ref: the hop is made trusting only the platform roots, exactly as a hop that named no
 /// anchor at all — fail-closed (a stale ref widens trust NOWHERE).
 #[must_use]
-pub(crate) fn resolve(trust_anchor_ref: u64) -> Vec<reqwest::Certificate> {
+pub fn resolve(trust_anchor_ref: u64) -> Vec<reqwest::Certificate> {
     if trust_anchor_ref == 0 {
         return Vec::new();
     }

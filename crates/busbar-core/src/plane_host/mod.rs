@@ -32,14 +32,17 @@ pub mod dispatch;
 pub mod egress;
 mod govern;
 pub mod guard;
-pub(crate) mod identity;
+// The mTLS client-identity registry, the extra-root trust-anchor registry and the peer-SPKI DER walk
+// are PURE (process-atomic registries + an RFC 5280 length-skip; no `App`, no engine, no FFI), so they
+// now live NEUTRALLY in `busbar_substrate::plane_host` and are re-exported here. Core's egress
+// chokepoint (`egress::resolve`/`egress::spki::pin`) names the same `crate::plane_host::{identity,
+// trust_anchor,spki}` paths as before, and the A2A plane names the neutral home directly.
+pub(crate) use busbar_substrate::plane_host::{identity, spki, trust_anchor};
 pub(crate) mod identity_admit;
 pub mod journal;
 pub mod pipe;
 pub mod scope;
-pub(crate) mod spki;
 pub mod trust;
-pub(crate) mod trust_anchor;
 pub mod vtable;
 
 pub use guard::{guard_url_over, GuardOutcome};

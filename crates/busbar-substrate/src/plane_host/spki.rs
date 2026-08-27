@@ -9,12 +9,12 @@
 //! owns the certificate the handshake produced, and the host must be able to hand the plane the SAME
 //! pin string the plane would have computed itself, byte for byte. A second copy of the walk would be
 //! a second answer to "what is this key's pin", which is exactly the divergence a pin exists to
-//! prevent. So there is ONE walk, here, and the plane's [`crate::a2a::spki`] re-exports it.
+//! prevent. So there is ONE walk, here, and the a2a plane's `spki` module re-exports it.
 //!
 //! ## WHERE THE CERTIFICATE COMES FROM, and why this does not weaken anything
 //!
 //! The DER handed to [`pin`] is the leaf certificate of a handshake that ALREADY COMPLETED under the
-//! ordinary chain-and-name check (the pinned client in [`super::egress`], or the a2a transport). This
+//! ordinary chain-and-name check (the host egress chokepoint's pinned client, or the a2a transport). This
 //! module is therefore an OBSERVATION of a connection somebody else already verified, never a
 //! substitute for verifying one: a handshake that was not verified produces no response to read a
 //! certificate off.
@@ -54,7 +54,7 @@ const TAG_VERSION: u8 = 0xA0;
 /// Why a peer certificate produced no pin. Every arm is a refusal; there is no arm meaning "could not
 /// read it, assume it matches".
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum SpkiError {
+pub enum SpkiError {
     /// The bytes ran out mid-element.
     Truncated,
     /// A tag that is not what RFC 5280 puts at this position.
@@ -161,7 +161,7 @@ fn expect_sequence(buf: &[u8]) -> Result<Element<'_>, SpkiError> {
 /// The walk is RFC 5280 section 4.1 read literally: `Certificate ::= SEQUENCE { tbsCertificate,
 /// signatureAlgorithm, signature }` and `TBSCertificate ::= SEQUENCE { [0] version DEFAULT v1,
 /// serialNumber, signature, issuer, validity, subject, subjectPublicKeyInfo, … }`.
-pub(crate) fn subject_public_key_info(cert_der: &[u8]) -> Result<&[u8], SpkiError> {
+pub fn subject_public_key_info(cert_der: &[u8]) -> Result<&[u8], SpkiError> {
     let certificate = expect_sequence(cert_der)?;
     let tbs = expect_sequence(certificate.contents)?;
 
@@ -186,7 +186,7 @@ pub(crate) fn subject_public_key_info(cert_der: &[u8]) -> Result<&[u8], SpkiErro
 /// and the spelling `openssl x509 -pubkey | openssl pkey -pubin -outform der | openssl dgst -sha256
 /// -binary | base64` produces — so a host-computed pin and a plane-computed pin over the same
 /// certificate are the SAME string, which is the whole reason the walk lives in one place.
-pub(crate) fn pin(cert_der: &[u8]) -> Result<String, SpkiError> {
+pub fn pin(cert_der: &[u8]) -> Result<String, SpkiError> {
     let spki = subject_public_key_info(cert_der)?;
     Ok(format!("sha256/{}", B64.encode(Sha256::digest(spki))))
 }

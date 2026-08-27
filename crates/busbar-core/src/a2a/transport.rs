@@ -160,7 +160,7 @@ impl Resolver for TokioResolver {
 //
 // The hop no longer runs behind a `reqwest::Response` this plane holds — the host owns the socket and
 // the verified handshake, and hands back the `sha256/…` pin on the seam's `seam::Buffered`, decoded
-// from the SAME bytes `crate::plane_host::spki::pin` produces (which `super::spki::spki_pin`
+// from the SAME bytes `busbar_substrate::plane_host::spki::pin` produces (which `super::spki::spki_pin`
 // re-exports), so the pin string is byte-identical to the one this file used to compute. `None` on a
 // plaintext hop and `None` where the certificate cannot be read, unchanged: `super::verify` refuses
 // a transport-pinned registration whose fetch produced no observed pin, because "we could not look"
@@ -177,7 +177,7 @@ pub(crate) type ClientIdentities = BTreeMap<String, reqwest::Identity>;
 
 /// RESOLVE EVERY `agents.<name>.client_identity` INTO A USABLE CLIENT CERTIFICATE. FAIL-CLOSED.
 ///
-/// The PEM bytes come through [`crate::tls::read_pem`] — the same function busbar's own inbound
+/// The PEM bytes come through [`busbar_substrate::tls::read_pem`] — the same function busbar's own inbound
 /// listener loads its cert and key with — so there is exactly one place in the tree that turns a
 /// [`busbar_api::SecretRef`] into TLS PEM, and it is the one that already knows not to log what it
 /// read. The cert and the key are concatenated because that is the single buffer
@@ -196,7 +196,7 @@ pub(crate) fn resolve_client_identities(
         let Some(identity) = def.client_identity.as_ref() else {
             continue;
         };
-        let mut pem = crate::tls::read_pem(resolver, &identity.cert, "client cert")
+        let mut pem = busbar_substrate::tls::read_pem(resolver, &identity.cert, "client cert")
             .map_err(|e| format!("`agents.{name}.client_identity.cert`: {e}"))?;
         // A PEM section must start at the beginning of a line. A chain that ends without a trailing
         // newline would otherwise glue its `-----END-----` to the key's `-----BEGIN-----`, and the
@@ -205,7 +205,7 @@ pub(crate) fn resolve_client_identities(
             pem.push(b'\n');
         }
         pem.extend_from_slice(
-            &crate::tls::read_pem(resolver, &identity.key, "client key")
+            &busbar_substrate::tls::read_pem(resolver, &identity.key, "client key")
                 .map_err(|e| format!("`agents.{name}.client_identity.key`: {e}"))?,
         );
         // NEVER echoes the buffer: the error is the TLS stack's own, and the buffer holds a private
@@ -239,7 +239,7 @@ pub(crate) struct ReqwestTransport {
     max_body_bytes: usize,
     timeout: Duration,
     /// Additional trust anchors, accumulated by [`Self::trusting_root`] (test-only) so the full set can
-    /// be re-registered as one host-side [`crate::plane_host::trust_anchor`] ref. EMPTY in production —
+    /// be re-registered as one host-side [`busbar_substrate::plane_host::trust_anchor`] ref. EMPTY in production —
     /// the platform's roots are the roots.
     extra_roots: Vec<reqwest::Certificate>,
     /// THE OPAQUE host-side trust-anchor ref (`0` = platform roots only). Registered ONCE, when the
@@ -285,7 +285,7 @@ impl ReqwestTransport {
     /// a different agent is being fetched with. The parsed key is handed to the host registry ONCE
     /// here (at boot), not per hop — this transport keeps only the opaque ref.
     pub(crate) fn presenting(mut self, identity: reqwest::Identity) -> Self {
-        self.client_identity_ref = crate::plane_host::identity::register(identity);
+        self.client_identity_ref = busbar_substrate::plane_host::identity::register(identity);
         self
     }
 
@@ -295,7 +295,8 @@ impl ReqwestTransport {
             .push(reqwest::Certificate::from_pem(pem).expect("a PEM certificate"));
         // Re-register the FULL accumulated set (a fresh ref each time), so the desc's one ref resolves
         // to every root this transport was told to trust — the host owns the parsed certificates.
-        self.trust_anchor_ref = crate::plane_host::trust_anchor::register(self.extra_roots.clone());
+        self.trust_anchor_ref =
+            busbar_substrate::plane_host::trust_anchor::register(self.extra_roots.clone());
         self
     }
 }

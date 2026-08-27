@@ -81,6 +81,10 @@ schemars = { workspace = true, optional = true }
 # and the redaction they assert; `hex` is used only by those tests, so it is a dev edge here.
 [dev-dependencies]
 hex = { workspace = true }
+# The relocated `plane_host::identity`/`plane_host::trust_anchor` registry tests build throw-away
+# self-signed client identities and roots (the way the a2a boot resolver builds one) with `rcgen`;
+# it is used only by those moved tests, so it is a dev edge here.
+rcgen = { workspace = true }
 
 # The relocated leaves carry `#[cfg_attr(not(feature = "plane-mcp"/"plane-a2a"), allow(dead_code))]`
 # verbatim from core — the items are `pub` here so the allowance is now inert, but the cfg names

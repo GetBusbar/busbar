@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The host-side mTLS CLIENT-IDENTITY registry — the mutual-handshake counterpart of [`super::creds`].
+//! The host-side mTLS CLIENT-IDENTITY registry — the mutual-handshake counterpart of the host-side credential registry.
 //!
 //! A plane presenting a client certificate on a governed hop never holds the private key. It holds an
 //! OPAQUE `client_identity_ref` (a bare `u64`), and the host owns the parsed key end to end: the host
 //! registers each boot-time client identity HERE ([`register`]) and hands back a ref; when the plane
 //! opens an egress carrying that ref, the host RESOLVES it ([`resolve`]) and offers the identity to the
-//! TLS stack (see [`super::egress`]). The key crosses the seam in NEITHER direction.
+//! TLS stack at the host egress chokepoint. The key crosses the seam in NEITHER direction.
 //!
 //! Registered ONCE, at boot (a config generation), not per hop — a private key re-read on every tick is
 //! a key crossing the resolver seam on every tick. The map is process-wide because the ref the plane
@@ -41,7 +41,7 @@ fn registry() -> std::sync::MutexGuard<'static, HashMap<u64, reqwest::Identity>>
 /// into `egress_open`. The ONLY thing about the identity that crosses the seam is this `u64`; the
 /// parsed key stays host-side in the registry.
 #[must_use]
-pub(crate) fn register(identity: reqwest::Identity) -> u64 {
+pub fn register(identity: reqwest::Identity) -> u64 {
     let client_identity_ref = NEXT_REF.fetch_add(1, Ordering::Relaxed);
     registry().insert(client_identity_ref, identity);
     client_identity_ref
@@ -52,7 +52,7 @@ pub(crate) fn register(identity: reqwest::Identity) -> u64 {
 /// presenting no certificate, and an mTLS peer closes the handshake itself rather than the host
 /// forging one — exactly the posture the a2a transport takes when a registration names no identity.
 #[must_use]
-pub(crate) fn resolve(client_identity_ref: u64) -> Option<reqwest::Identity> {
+pub fn resolve(client_identity_ref: u64) -> Option<reqwest::Identity> {
     if client_identity_ref == 0 {
         return None;
     }

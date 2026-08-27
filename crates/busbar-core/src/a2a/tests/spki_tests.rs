@@ -182,7 +182,7 @@ fn a_version_one_certificate_with_no_version_member_is_walked_correctly() {
     );
 }
 
-/// FAITHFULNESS: the HOST spelling of the pin (the neutral [`crate::plane_host::spki::pin`] the egress
+/// FAITHFULNESS: the HOST spelling of the pin (the neutral [`busbar_substrate::plane_host::spki::pin`] the egress
 /// seam hands back in the observed head) is the SAME string as the a2a plane's own [`spki_pin`], byte
 /// for byte, over the same certificate DER. This is the whole reason the walk was lifted to one place:
 /// a governed hop must be able to return the pin the plane would have computed itself, so the plane's
@@ -191,7 +191,7 @@ fn a_version_one_certificate_with_no_version_member_is_walked_correctly() {
 fn the_host_pin_equals_the_plane_pin_byte_for_byte() {
     let (cert_der, _) = cert_and_its_spki();
     let plane = spki_pin(&cert_der).expect("the plane pin");
-    let host = crate::plane_host::spki::pin(&cert_der).expect("the host pin");
+    let host = busbar_substrate::plane_host::spki::pin(&cert_der).expect("the host pin");
     assert_eq!(
         host.as_bytes(),
         plane.as_bytes(),

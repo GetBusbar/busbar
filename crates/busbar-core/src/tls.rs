@@ -129,19 +129,13 @@ pub fn install_crypto_provider() {
 /// Resolve a TLS secret reference to its PEM bytes, mapping any resolve error into a clear,
 /// source-named message. Never logs contents.
 ///
-/// `pub(crate)` because the A2A plane's OUTBOUND client identity
-/// (`crate::a2a::transport::resolve_client_identities`) loads its cert and key through this one
-/// function too. One place in the tree turns a `SecretRef` into TLS PEM; a second would be a second
-/// place for the "never echo what you read" rule to be forgotten.
-pub(crate) fn read_pem(
-    resolver: &dyn busbar_api::SecretResolve,
-    secret: &crate::config::SecretRef,
-    what: &str,
-) -> Result<Vec<u8>, String> {
-    resolver
-        .resolve(secret)
-        .map_err(|e| format!("cannot resolve TLS {what} ({}): {e}", secret.describe()))
-}
+/// The ONE turn-a-`SecretRef`-into-TLS-PEM function now lives NEUTRALLY in
+/// [`busbar_substrate::tls::read_pem`] and is re-exported here so this crate's inbound-listener call
+/// sites (`load_cert_chain`/`load_private_key`/`load_client_roots`) are unchanged — and so the A2A
+/// plane's OUTBOUND client identity resolver names the neutral home rather than reaching into core.
+/// One place in the tree turns a `SecretRef` into TLS PEM; a second would be a second place for the
+/// "never echo what you read" rule to be forgotten.
+pub(crate) use busbar_substrate::tls::read_pem;
 
 /// Parse the PEM certificate chain (leaf first). Errors name the secret source; cert bytes are
 /// public, but we still avoid echoing them.

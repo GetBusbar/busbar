@@ -22,7 +22,15 @@
 //! (gate-decide, govern-admit, breaker-admit, identity-admit, approval-redeem, …).
 
 pub mod breaker;
+// The mTLS client-identity registry, the extra-root trust-anchor registry and the peer-certificate
+// SPKI DER walk — PURE host-side TLS helpers (process-atomic registries + an RFC 5280 length-skip; no
+// `App`, no engine, no FFI). They live here so the host egress chokepoint and the A2A plane both name
+// one neutral home; core re-exports them under their historical `crate::plane_host::{identity,
+// trust_anchor,spki}` paths.
+pub mod identity;
 pub mod scope;
+pub mod spki;
+pub mod trust_anchor;
 
 use crate::breaker::CanonicalSignal;
 use crate::plane::approvals::Sealer;
