@@ -582,6 +582,14 @@ impl busbar_substrate::plane_host::EngineHost for EngineHostImpl {
             .is_some()
     }
 
+    fn a2a_secret_resolver(&self) -> Arc<dyn busbar_api::SecretResolve> {
+        // Pure snapshot read: hand the plane the live `Arc<SecretResolver>` behind the neutral
+        // `busbar_api::SecretResolve` seam. The concrete resolver impls the trait (same crate), so the
+        // clone coerces to the trait object — no wrapping, the SAME resolver (built-ins + any wired
+        // `kind: secret` plugin), fail-closed exactly as core resolution.
+        self.app.secret_resolver.clone()
+    }
+
     fn audit_emit(&self, action: &str, resource: &str, outcome: &str, principal: &str) {
         // Hostless: the admin-audit engine reads `store::now` + the global ring and needs no `HostCtx`.
         // A plain forward to the UNCHANGED core engine.

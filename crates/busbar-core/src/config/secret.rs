@@ -246,6 +246,20 @@ pub(crate) fn resolve_settings(
     Ok(out)
 }
 
+/// The NEUTRAL secret-resolver SEAM: `SecretResolver` implements `busbar_api::SecretResolve` by
+/// delegating to its own `pub(crate)` resolution (allowed — same crate), so `&SecretResolver` is
+/// usable as `&dyn busbar_api::SecretResolve`. An extracted plane names the trait, never this
+/// engine-specific struct. The methods forward verbatim; the error is already a neutral `String`.
+impl busbar_api::SecretResolve for SecretResolver {
+    fn resolve(&self, secret: &SecretRef) -> Result<Vec<u8>, String> {
+        SecretResolver::resolve(self, secret)
+    }
+
+    fn resolve_string(&self, secret: &SecretRef) -> Result<String, String> {
+        SecretResolver::resolve_string(self, secret)
+    }
+}
+
 /// BUILT-IN resolution of a secret reference to its raw bytes (`env` / `file`) and its UTF-8-string
 /// twin now live in the dependency-light `busbar-api` contract crate — they are pure
 /// `std::env`/`std::fs` + `busbar_secret_ref::SecretRef`, with no engine coupling, so a plane crate

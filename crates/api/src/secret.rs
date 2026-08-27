@@ -169,6 +169,25 @@ fn self_file_path_checked(secret: &SecretRef) -> Result<Option<String>, String> 
     }
 }
 
+/// The NEUTRAL secret-resolver SEAM an extracted plane names instead of the engine's concrete
+/// `SecretResolver`. A plane (a2a delegation-credential minting, TLS PEM loading) only needs to turn
+/// a [`SecretRef`] into bytes or a UTF-8 string; naming this trait — not the core struct — keeps the
+/// plane free of an engine dependency. The engine's `SecretResolver` implements it (delegating to
+/// its own resolution), and `EngineHost` hands the plane an `Arc<dyn SecretResolve>` snapshot.
+///
+/// FAIL-CLOSED, exactly as the underlying resolver: an unknown module, an unset source, or an empty
+/// value is an `Err(String)`, never an empty secret. The error is a neutral `String` — a plane never
+/// sees an engine-only error type across this seam.
+pub trait SecretResolve: Send + Sync {
+    /// Resolve a reference to raw bytes (fail-closed). The TLS plane's PEM loader needs the raw
+    /// bytes, not a trimmed string.
+    fn resolve(&self, secret: &SecretRef) -> Result<Vec<u8>, String>;
+
+    /// Resolve a reference to a UTF-8 STRING (trailing newline trimmed; fail-closed on non-UTF-8 or
+    /// empty). The a2a credential-minting path needs the string form.
+    fn resolve_string(&self, secret: &SecretRef) -> Result<String, String>;
+}
+
 /// Resolve a secret reference to a UTF-8 STRING (trailing newline trimmed - the universal
 /// file-delivered-secret convention). Fail-closed on non-UTF-8.
 pub fn resolve_builtin_string(secret: &SecretRef) -> Result<String, String> {

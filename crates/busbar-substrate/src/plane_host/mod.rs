@@ -337,6 +337,13 @@ pub trait EngineHost: Send + Sync {
     /// snapshot read, no `HostCtx`.
     fn a2a_audience_bound(&self) -> bool;
 
+    /// The deployment's NEUTRAL secret resolver, behind the `busbar_api::SecretResolve` seam, so the
+    /// A2A plane mints a delegation credential (and loads its outbound TLS PEM) WITHOUT naming the
+    /// engine's concrete `SecretResolver`. A pure snapshot read of `App::secret_resolver`, no
+    /// `HostCtx`; the returned `Arc<dyn SecretResolve>` shares the live resolver (built-ins plus any
+    /// wired `kind: secret` plugin), fail-closed exactly as core resolution.
+    fn a2a_secret_resolver(&self) -> Arc<dyn busbar_api::SecretResolve>;
+
     /// Drive ONE non-streaming `openai`-dialect completion through the ENTIRE resolved ingress
     /// pipeline (governance → pools → breaker/failover → metering → request log) under `gov`, on the
     /// operator's declared `model`, and return the raw wire outcome. Identical to calling
