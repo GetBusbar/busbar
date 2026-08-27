@@ -145,7 +145,7 @@ pub enum TaskWrite<'a> {
 }
 
 /// The neutral seam by which the A2A plane supplies the task-CODEC operations the core TASKS engine
-/// needs but MUST NOT name. The engine is `busbar_api::TaskRow`-neutral (D4), but three fragments of
+/// needs but MUST NOT name. The engine works in neutral `busbar_api::TaskRow`s, but three fragments of
 /// its write/restore path are A2A domain logic — parsing a state token, planning a validated
 /// transition, flooring a push-callback URL, and judging a persisted row READABLE. The plane installs
 /// its implementation at boot ([`install_task_codec`], from the composition root); the engine reads it
