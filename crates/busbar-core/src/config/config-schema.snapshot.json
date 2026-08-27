@@ -101,7 +101,7 @@
         },
         "upstream_credentials": {
           "optional": true,
-          "type": "crate::auth::UpstreamCreds"
+          "type": "busbar_api::UpstreamCreds"
         },
         "url": {
           "optional": false,
@@ -328,11 +328,11 @@
       "fields": {
         "cert": {
           "optional": false,
-          "type": "crate::config::SecretRef"
+          "type": "busbar_api::SecretRef"
         },
         "key": {
           "optional": false,
-          "type": "crate::config::SecretRef"
+          "type": "busbar_api::SecretRef"
         }
       },
       "kind": "struct",
