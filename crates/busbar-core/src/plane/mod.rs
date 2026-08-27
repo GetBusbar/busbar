@@ -95,7 +95,6 @@ pub mod auditlog;
 pub mod calllog;
 pub mod config;
 pub mod cost;
-pub mod host;
 pub(crate) mod observe;
 pub(crate) mod provenance;
 pub(crate) mod quarantine;
