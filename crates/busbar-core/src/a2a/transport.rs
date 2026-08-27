@@ -73,7 +73,7 @@ use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::egress::seam;
+use busbar_substrate::egress::seam;
 use busbar_substrate::egress::seam::HopSpec;
 
 use super::fetch::{FetchPolicy, HttpResponse, Resolver, Transport};
@@ -328,6 +328,16 @@ impl ReqwestTransport {
         body: &'a [u8],
         timeout: Duration,
     ) -> HopSpec<'a> {
+        // THE BOOT INSTALL, on the dual-compile TEST path only. The busbar-core test binary that
+        // dual-compiles this plane has no composition root to install the hostless-egress driver (the
+        // `busbar` binary's `main` does that), so a plane transport test would otherwise drive an
+        // uninstalled `hostless()` seam. Install the core-backed driver here, idempotently
+        // (`OnceLock`) — reached by both hop methods (`execute`/`post_stream`) since both build their
+        // spec through this. Compiled out of every non-test build; production installs it at boot.
+        #[cfg(test)]
+        busbar_substrate::egress::seam::install_hostless_egress(
+            &busbar_core::egress::seam::CoreHostlessEgress,
+        );
         HopSpec {
             verb: "",
             url,
@@ -367,8 +377,10 @@ impl ReqwestTransport {
         // `Location`, the peer SPKI pin (decoded from the same bytes `super::spki::spki_pin` produces)
         // and whether busbar's own client identity was carried into the handshake. The deadline rides
         // the desc (`timeout_ms`), the identity/trust anchors ride their opaque refs.
-        let buffered =
-            seam::with_hostless(|scope| seam::buffered(scope, &spec, cap)).map_err(|f| f.cause)?;
+        let buffered = seam::hostless()
+            .ok_or_else(|| "no governed egress backend is installed for this build".to_string())?
+            .buffered(&spec, cap)
+            .map_err(|f| f.cause)?;
 
         match buffered.end {
             // A mid-body transport failure is reported with the SAME fixed line the plane's own read
@@ -465,22 +477,15 @@ impl RelayTransport for ReqwestTransport {
         // `stream_head` and `pump` (the arena closer fires only when the closure returns). The head's
         // buffer-or-stream decision, the SSE content-type test and the non-stream cap read are all the
         // seam's — the same rules this file used to own, now on the one host code path.
-        seam::with_hostless(|scope| {
-            match seam::stream_head(scope, &spec, cap).map_err(|f| f.cause)? {
-                // A non-2xx or non-`text/event-stream` reply is not a stream: its head carries the body
-                // read whole to the cap, handed back for the driver to report with the backend's words.
-                seam::StreamOutcome::Buffered(head) => Ok(head),
-                // A live event-stream: pump the body to the sink, then return the head. A mid-body
-                // failure carries the FLATTENED cause the host stashed (`with_cause(&e)`), so the relay
-                // reports the SAME operator line its own path did.
-                seam::StreamOutcome::Streaming { head, id } => {
-                    match seam::pump(scope, id, on_chunk) {
-                        seam::PumpEnd::Done => Ok(head),
-                        seam::PumpEnd::Failed(f) => Err(f.cause),
-                    }
-                }
-            }
-        })
+        // The head's buffer-or-stream decision, the SSE content-type test, the non-stream cap read and
+        // the pump are ALL the seam's: `HostlessEgress::stream` runs the exact `stream_head`+`pump`
+        // body over ONE hostless scope (see `CoreHostlessEgress::stream`), so a mid-body failure still
+        // carries the flattened cause and the relay reports the same operator line — byte-identical to
+        // the manual orchestration this replaced, now naming no `busbar_core` egress driver.
+        seam::hostless()
+            .ok_or_else(|| "no governed egress backend is installed for this build".to_string())?
+            .stream(&spec, cap, on_chunk)
+            .map_err(|f| f.cause)
     }
 }
 
