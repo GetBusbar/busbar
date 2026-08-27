@@ -33,11 +33,12 @@ fn the_error_table_carries_the_specifications_grpc_column() {
         A2aError::TaskNotCancelable.grpc_status(),
         tonic::Code::FailedPrecondition
     );
-    // -32004/-32009 bind to FAILED_PRECONDITION (HTTP 400) per section 5.4's table — consistent
-    // with their http_status; a bare UNIMPLEMENTED would contradict the 400 they answer with.
+    // -32004/-32009 bind to gRPC UNIMPLEMENTED per section 5.4's own table (and the official TCK's
+    // `ERROR_BINDINGS`, which gates `GRPC-ERR-002`) — a capability the server does not implement.
+    // The HTTP status is 400, a different column of the same row; the two do not have to agree.
     assert_eq!(
         A2aError::UnsupportedOperation.grpc_status(),
-        tonic::Code::FailedPrecondition
+        tonic::Code::Unimplemented
     );
     assert_eq!(
         A2aError::ContentTypeNotSupported.grpc_status(),
@@ -49,6 +50,16 @@ fn the_error_table_carries_the_specifications_grpc_column() {
     );
     assert_eq!(
         A2aError::VersionNotSupported.grpc_status(),
+        tonic::Code::Unimplemented
+    );
+    // PushNotificationNotSupported is the third UNIMPLEMENTED row; ExtensionSupportRequired is the
+    // neighbouring FAILED_PRECONDITION one. Pinned together so the split is not re-merged.
+    assert_eq!(
+        A2aError::PushNotificationNotSupported.grpc_status(),
+        tonic::Code::Unimplemented
+    );
+    assert_eq!(
+        A2aError::ExtensionSupportRequired.grpc_status(),
         tonic::Code::FailedPrecondition
     );
 }

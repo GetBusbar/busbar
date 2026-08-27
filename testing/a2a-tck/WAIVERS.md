@@ -424,3 +424,46 @@ higher.
 neither is restated here as though it were: what each records is the requirement it was written
 about and the evidence for that requirement, which the merge does not change. The merged row is
 whatever the next full `--tck` run prints.
+
+---
+
+## `GRPC-ERR-002` — regressed, then FIXED 2026-08-27 (never waived)
+
+**NOT A WAIVER, and it never was one.** `GRPC-ERR-002` (A2A §5.4, MUST: "A2A error types mapped to
+correct gRPC status codes") is recorded here only because it silently REGRESSED and this ledger's
+whole purpose is that a red nobody wrote down is indistinguishable from one nobody noticed. It is
+green again and is not in `subject-waivers.json`.
+
+**WHAT §5.4 REQUIRES.** The specification's own §5.4 table (`specification.md`, transcribed by the
+pinned TCK's `tck/requirements/base.py::ERROR_BINDINGS`, which is what `GRPC-ERR-002` validates
+against) binds three A2A errors to gRPC **`UNIMPLEMENTED`**, HTTP 400:
+
+```
+PushNotificationNotSupportedError  -32003  UNIMPLEMENTED  400
+UnsupportedOperationError          -32004  UNIMPLEMENTED  400
+VersionNotSupportedError           -32009  UNIMPLEMENTED  400
+```
+
+The TCK's `TestGrpcStatusCodes` exercises these against a live subject. Two of the three
+(`PushNotificationNotSupported`, `UnsupportedOperation`) SKIP against busbar — busbar's served card
+declares `pushNotifications` and `streaming`, so their preconditions never hold, the same mechanism
+"The 5 SKIPPED MUSTs" above describes. The third, `test_version_not_supported_returns_unimplemented`,
+DOES run: it injects `a2a-version: 99.0` over gRPC metadata, busbar refuses with `VersionNotSupported`,
+and the test asserts the gRPC status is `UNIMPLEMENTED`.
+
+**THE REGRESSION.** `A2aError::grpc_status` (and its lockstep `status`) in
+`crates/busbar-a2a/src/a2a/rpcerror.rs` mapped all three to `FAILED_PRECONDITION`. That value was
+transcribed from busbar's OWN harness table, `testing/a2a-harness/a2aht/spec.py::ERROR_MAP`, which
+had itself mis-transcribed §5.4 — the busbar table disagreed with the publisher's, and the version
+sub-test flipped `GRPC-ERR-002` from PASS to FAIL. The HTTP status was already 400 for all three
+(a different §5.4 column, correct throughout), so the only disagreement was gRPC status vs. the wire.
+
+**THE FIX (2026-08-27).** `PushNotificationNotSupported`, `UnsupportedOperation` and
+`VersionNotSupported` now map to `tonic::Code::Unimplemented` / canonical `"UNIMPLEMENTED"`, matching
+§5.4. `TaskNotCancelable`, `ExtendedAgentCardNotConfigured` and `ExtensionSupportRequired` stay
+`FAILED_PRECONDITION` — the three rows §5.4 genuinely binds there. The mis-transcribed
+`a2aht/spec.py::ERROR_MAP` is corrected to match. Pinned by
+`the_error_table_carries_the_specifications_grpc_column` (grpc_tests) and
+`unsupported_operation_and_version_not_supported_are_unimplemented` (rpcerror_tests), each of which
+was RED (`left: FailedPrecondition, right: Unimplemented`) against the pre-fix source and is GREEN
+after. `GRPC-ERR-001`/`GRPC-ERR-003` are untouched and still pass.

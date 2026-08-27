@@ -127,13 +127,13 @@ REST_ROUTES = {
 ERROR_MAP = {
     "TaskNotFoundError": (-32001, "NOT_FOUND", 404),
     "TaskNotCancelableError": (-32002, "FAILED_PRECONDITION", 400),
-    "PushNotificationNotSupportedError": (-32003, "FAILED_PRECONDITION", 400),
-    "UnsupportedOperationError": (-32004, "FAILED_PRECONDITION", 400),
+    "PushNotificationNotSupportedError": (-32003, "UNIMPLEMENTED", 400),
+    "UnsupportedOperationError": (-32004, "UNIMPLEMENTED", 400),
     "ContentTypeNotSupportedError": (-32005, "INVALID_ARGUMENT", 400),
     "InvalidAgentResponseError": (-32006, "INTERNAL", 500),
     "ExtendedAgentCardNotConfiguredError": (-32007, "FAILED_PRECONDITION", 400),
     "ExtensionSupportRequiredError": (-32008, "FAILED_PRECONDITION", 400),
-    "VersionNotSupportedError": (-32009, "FAILED_PRECONDITION", 400),
+    "VersionNotSupportedError": (-32009, "UNIMPLEMENTED", 400),
 }
 
 JSONRPC_CODE_TO_ERROR = {v[0]: k for k, v in ERROR_MAP.items()}

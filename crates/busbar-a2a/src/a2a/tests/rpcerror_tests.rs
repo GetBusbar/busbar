@@ -111,13 +111,14 @@ fn an_id_that_was_never_sent_is_null_rather_than_absent() {
 }
 
 #[test]
-fn unsupported_operation_and_version_not_supported_are_failed_precondition() {
-    // Regression: A2A section 5.4 (transcribed in the harness's `a2aht/spec.py::ERROR_MAP`) binds
-    // BOTH `-32004 UnsupportedOperationError` and `-32009 VersionNotSupportedError` to
-    // FAILED_PRECONDITION / HTTP 400 — the request is well formed and the served endpoint is what
-    // cannot satisfy it. They used to map to UNIMPLEMENTED / gRPC Unimplemented, which is the
-    // binding for an unknown METHOD, not a well-formed request the endpoint declines. The HTTP
-    // status was already 400, so the disagreement was between the canonical status and the wire.
+fn unsupported_operation_and_version_not_supported_are_unimplemented() {
+    // A2A section 5.4's own table (`specification.md`, and the official TCK's `ERROR_BINDINGS`,
+    // which gates `GRPC-ERR-002`) binds BOTH `-32004 UnsupportedOperationError` and
+    // `-32009 VersionNotSupportedError` to gRPC `UNIMPLEMENTED` / HTTP 400 — a capability the
+    // server does not implement. These briefly mapped to FAILED_PRECONDITION here, transcribed
+    // from the busbar harness's own (wrong) `a2aht/spec.py::ERROR_MAP`; that disagreed with the
+    // publisher's §5.4 table and failed `GRPC-ERR-002`'s version sub-test. The HTTP status is
+    // 400 for both — a different column of the same row.
     for (code, err) in [
         (-32004, A2aError::UnsupportedOperation),
         (-32009, A2aError::VersionNotSupported),
@@ -125,45 +126,56 @@ fn unsupported_operation_and_version_not_supported_are_failed_precondition() {
         assert_eq!(A2aError::from_code(code), Some(err), "from_code({code})");
         assert_eq!(err.code(), code as i32, "{err:?} code round-trips");
         assert_eq!(err.http_status(), 400, "{err:?} is HTTP 400");
-        assert_eq!(err.status(), "FAILED_PRECONDITION", "{err:?} status");
+        assert_eq!(err.status(), "UNIMPLEMENTED", "{err:?} status");
         assert_eq!(
             err.grpc_status(),
-            tonic::Code::FailedPrecondition,
+            tonic::Code::Unimplemented,
             "{err:?} gRPC status"
         );
     }
-    // MethodNotFound is the one that stays UNIMPLEMENTED — it is a genuinely unknown method.
+    // MethodNotFound shares UNIMPLEMENTED — it is a genuinely unknown method.
     assert_eq!(A2aError::MethodNotFound.status(), "UNIMPLEMENTED");
     assert_eq!(
         A2aError::MethodNotFound.grpc_status(),
         tonic::Code::Unimplemented
+    );
+    // TaskNotCancelable is the neighbour that STAYS FAILED_PRECONDITION — a well-formed request
+    // the task's own state declines, not a capability the server lacks. Pinned so the two rows
+    // cannot be confused again.
+    assert_eq!(A2aError::TaskNotCancelable.status(), "FAILED_PRECONDITION");
+    assert_eq!(
+        A2aError::TaskNotCancelable.grpc_status(),
+        tonic::Code::FailedPrecondition
     );
 }
 
 #[test]
 fn push_notification_not_supported_and_extension_support_required_round_trip() {
     // Regression: A2A section 5.4 defines `-32003 PushNotificationNotSupportedError` and
-    // `-32008 ExtensionSupportRequiredError`, both bound to FAILED_PRECONDITION / HTTP 400 (see the
-    // harness's `a2aht/spec.py::ERROR_MAP`). The code table used to jump -32002 -> -32004, so a
-    // relayed backend answering -32003/-32008 got `from_code == None` and was collapsed to a generic
-    // gateway fault (-32006 InvalidAgentResponse, 500) on the relay path — the caller could no longer
-    // tell a client-actionable refusal from an outage.
-    for (code, err, reason) in [
+    // `-32008 ExtensionSupportRequiredError`, both HTTP 400. Their gRPC/canonical status DIFFERS:
+    // §5.4 binds `-32003` to UNIMPLEMENTED (a capability the server does not implement) and `-32008`
+    // to FAILED_PRECONDITION (a well-formed request the config cannot satisfy). The code table used
+    // to jump -32002 -> -32004, so a relayed backend answering -32003/-32008 got `from_code == None`
+    // and was collapsed to a generic gateway fault (-32006 InvalidAgentResponse, 500) on the relay
+    // path — the caller could no longer tell a client-actionable refusal from an outage.
+    for (code, err, reason, status) in [
         (
             -32003,
             A2aError::PushNotificationNotSupported,
             "PUSH_NOTIFICATION_NOT_SUPPORTED",
+            "UNIMPLEMENTED",
         ),
         (
             -32008,
             A2aError::ExtensionSupportRequired,
             "EXTENSION_SUPPORT_REQUIRED",
+            "FAILED_PRECONDITION",
         ),
     ] {
         assert_eq!(A2aError::from_code(code), Some(err), "from_code({code})");
         assert_eq!(err.code(), code as i32, "{err:?} code round-trips");
         assert_eq!(err.http_status(), 400, "{err:?} is HTTP 400");
-        assert_eq!(err.status(), "FAILED_PRECONDITION", "{err:?} status");
+        assert_eq!(err.status(), status, "{err:?} status");
         assert_eq!(err.reason(), Some(reason), "{err:?} reason");
         // The relay path (receive.rs) looks the backend code up here and re-emits err.code(), so a
         // backend -32003 now reaches the caller as -32003 rather than -32006.

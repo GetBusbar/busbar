@@ -72,14 +72,14 @@ pub(crate) enum A2aError {
     /// The task exists and is in a state from which cancellation is not defined.
     TaskNotCancelable,
     /// A2A section 5.4 `PushNotificationNotSupportedError`: the caller asked to configure push
-    /// notifications for a task on a backend that does not offer them. Client-actionable
-    /// (`FAILED_PRECONDITION` / HTTP 400) — the request is well formed and the served
-    /// configuration is what cannot satisfy it. A variant so a relayed backend `-32003` carries
-    /// through with its own semantics rather than collapsing to a gateway fault.
+    /// notifications for a task on a backend that does not offer them. §5.4 binds it to gRPC
+    /// `UNIMPLEMENTED` / HTTP 400 — a capability the server does not implement. A variant so a
+    /// relayed backend `-32003` carries through with its own semantics rather than collapsing to a
+    /// gateway fault.
     PushNotificationNotSupported,
     /// A2A section 5.4 `ExtensionSupportRequiredError`: the request needs a protocol extension the
-    /// served endpoint does not support. Same client-actionable binding as the row above
-    /// (`FAILED_PRECONDITION` / HTTP 400 per the harness's `a2aht/spec.py::ERROR_MAP`).
+    /// served endpoint does not support. §5.4 binds it to gRPC `FAILED_PRECONDITION` / HTTP 400 —
+    /// a well-formed request the served configuration cannot satisfy.
     ExtensionSupportRequired,
     /// The caller asked for something this deployment does not do, or may not do for them. The
     /// nearest binding for busbar's own admission refusals; the message names the real reason.
@@ -150,17 +150,25 @@ impl A2aError {
     pub(crate) fn grpc_status(self) -> tonic::Code {
         match self {
             A2aError::TaskNotFound => tonic::Code::NotFound,
-            // THE ROW THE MERGE HAD TO DECIDE. This variant arrived on the branch that built the
-            // extended agent card and this table arrived on the branch that armed the gRPC binding,
-            // so no single branch's compiler ever asked the question. It is the same row
-            // [`Self::status`] answers `FAILED_PRECONDITION` and `http_status` answers 400 with:
-            // the request is well formed and the deployment's configuration cannot satisfy it.
+            // FAILED_PRECONDITION for exactly the three rows section 5.4 binds to it: the request is
+            // well formed and the deployment's configuration is what cannot satisfy it. See the
+            // spec's own §5.4 table (`specification.md`): `TaskNotCancelableError`,
+            // `ExtendedAgentCardNotConfiguredError` and `ExtensionSupportRequiredError` are
+            // FAILED_PRECONDITION; the three "…NotSupported"/version rows below are NOT.
             A2aError::TaskNotCancelable
             | A2aError::ExtendedAgentCardNotConfigured
-            | A2aError::PushNotificationNotSupported
-            | A2aError::ExtensionSupportRequired
+            | A2aError::ExtensionSupportRequired => tonic::Code::FailedPrecondition,
+            // UNIMPLEMENTED, and it is the SPECIFICATION'S own binding, not a guess. A2A §5.4 maps
+            // `PushNotificationNotSupportedError` (-32003), `UnsupportedOperationError` (-32004) and
+            // `VersionNotSupportedError` (-32009) to gRPC `UNIMPLEMENTED` — a capability the server
+            // does not implement, which is what each of these three refusals is. These once mapped
+            // to FAILED_PRECONDITION here, transcribed from the busbar harness's own (wrong)
+            // `a2aht/spec.py::ERROR_MAP`; that disagreed with the publisher's §5.4 table and the
+            // official TCK's `GRPC-ERR-002`, which is what it cost. The HTTP status stays 400 — a
+            // different column of the same row, and already correct.
+            A2aError::PushNotificationNotSupported
             | A2aError::UnsupportedOperation
-            | A2aError::VersionNotSupported => tonic::Code::FailedPrecondition,
+            | A2aError::VersionNotSupported => tonic::Code::Unimplemented,
             A2aError::ContentTypeNotSupported => tonic::Code::InvalidArgument,
             A2aError::InvalidAgentResponse | A2aError::Internal => tonic::Code::Internal,
             A2aError::MethodNotFound => tonic::Code::Unimplemented,
@@ -206,17 +214,19 @@ impl A2aError {
     pub(crate) fn status(self) -> &'static str {
         match self {
             A2aError::TaskNotFound => "NOT_FOUND",
-            // The same row `http_status` reads 400 out of, and the same one
-            // `a2aht/spec.py::ERROR_MAP` transcribes: the request is well formed and the
-            // deployment's configuration is what cannot satisfy it, which is a precondition and not
-            // an argument.
+            // FAILED_PRECONDITION for exactly the three rows section 5.4 binds to it: a well-formed
+            // request the served configuration cannot satisfy. This is the SAME row `grpc_status`
+            // reads `Code::FailedPrecondition` out of, kept in lockstep with it by construction.
             A2aError::TaskNotCancelable
             | A2aError::ExtendedAgentCardNotConfigured
-            | A2aError::PushNotificationNotSupported
-            | A2aError::ExtensionSupportRequired
+            | A2aError::ExtensionSupportRequired => "FAILED_PRECONDITION",
+            // UNIMPLEMENTED, the §5.4 canonical name for a capability the server does not implement.
+            // The three "…NotSupported"/version rows share it with `MethodNotFound`, and it is the
+            // same binding `grpc_status` answers `Code::Unimplemented` with — one row, one name.
+            A2aError::PushNotificationNotSupported
             | A2aError::UnsupportedOperation
-            | A2aError::VersionNotSupported => "FAILED_PRECONDITION",
-            A2aError::MethodNotFound => "UNIMPLEMENTED",
+            | A2aError::VersionNotSupported
+            | A2aError::MethodNotFound => "UNIMPLEMENTED",
             A2aError::ContentTypeNotSupported
             | A2aError::Parse
             | A2aError::InvalidRequest
@@ -267,9 +277,9 @@ impl A2aError {
             // section 5.4's own row for this one is also 400: the request is well formed and the
             // agent's configuration is what cannot satisfy it.
             | A2aError::ExtendedAgentCardNotConfigured
-            // section 5.4 (and the harness's `a2aht/spec.py::ERROR_MAP`) bind both of these to
-            // FAILED_PRECONDITION / 400: the request is well formed and the served endpoint's
-            // capabilities are what cannot satisfy it.
+            // section 5.4 binds both of these to HTTP 400. Their gRPC columns differ —
+            // `PushNotificationNotSupported` is UNIMPLEMENTED, `ExtensionSupportRequired` is
+            // FAILED_PRECONDITION — but the HTTP status is the same for both.
             | A2aError::PushNotificationNotSupported
             | A2aError::ExtensionSupportRequired
             // A2A section 5.4's own row: a version this server does not speak is a CLIENT fault and
