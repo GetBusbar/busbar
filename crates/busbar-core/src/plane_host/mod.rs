@@ -672,6 +672,21 @@ pub fn engine_host_from_handle(
     Arc::new(EngineHostImpl::from_handle(Arc::clone(handle)))
 }
 
+/// Mint a NEUTRAL [`LiveHostFactory`](busbar_substrate::plane_host::LiveHostFactory) closing over a live
+/// [`AppHandle`](crate::state::AppHandle): each call returns a fresh `from_handle` host whose BOUND
+/// snapshot is the handle's CURRENT load and whose `plane_slot_live` re-reads the live handle — so a
+/// transport that re-mints per frame sees a config swap that lands between calls. Byte-identical to
+/// calling [`engine_host_from_handle`] on each frame, handed to a plane that must not name the handle.
+#[must_use]
+pub fn live_host_factory(
+    handle: std::sync::Arc<crate::state::AppHandle>,
+) -> busbar_substrate::plane_host::LiveHostFactory {
+    std::sync::Arc::new(move || {
+        std::sync::Arc::new(EngineHostImpl::from_handle(std::sync::Arc::clone(&handle)))
+            as Arc<dyn busbar_substrate::plane_host::EngineHost>
+    })
+}
+
 /// A neutral, reusable HOST FACTORY: an owned closure that mints an `Arc<dyn EngineHost>` over any live
 /// `Arc<App>` handed to it. Threaded from a non-route transport's core BOOT boundary (e.g. the `busbar`
 /// binary's stdio start) into a plane that must re-mint the host over its per-frame LIVE snapshot, so the

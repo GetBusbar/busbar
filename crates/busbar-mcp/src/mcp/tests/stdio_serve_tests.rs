@@ -91,7 +91,8 @@ impl Client {
             principal: busbar_api::AuthPrincipal(None),
             gov,
         };
-        let session = super::new_session(handle, identity, stdout_server);
+        let factory = busbar_core::plane_host::live_host_factory(handle);
+        let session = super::new_session(factory, identity, stdout_server);
         let serve = tokio::spawn(super::run_session(session.clone(), stdin_server));
         Client {
             stdin: stdin_client,

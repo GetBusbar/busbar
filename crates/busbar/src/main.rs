@@ -1030,9 +1030,8 @@ async fn run() {
     if mcp_stdio_requested(std::env::args()) {
         // The neutral host factory, minted core-side and threaded into the stdio transport so the plane
         // re-mints the host over each frame's live snapshot without naming the core factory itself.
-        let host_factory = busbar_core::plane_host::engine_host_factory();
-        let code =
-            busbar_mcp::mcp::stdio_serve::serve_stdio(app_handle.clone(), host_factory).await;
+        let factory = busbar_core::plane_host::live_host_factory(app_handle.clone());
+        let code = busbar_mcp::mcp::stdio_serve::serve_stdio(factory).await;
         if let Some(gov) = app_handle.load().governance.clone() {
             let n = gov.flush_budgets();
             tracing::info!(flushed = n, "budget counters flushed on shutdown");

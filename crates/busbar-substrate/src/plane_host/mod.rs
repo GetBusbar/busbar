@@ -128,6 +128,10 @@ pub struct HostCompletion {
 /// re-exports it as `busbar_core::state::MCP_RUNTIME_SLOT` so in-core names are unchanged.
 pub const MCP_RUNTIME_SLOT: &str = "mcp:runtime";
 
+/// A source of freshly live-bound hosts: each call returns a host reading the current snapshot,
+/// so a config swap between calls is seen. Handed to transports that re-mint per frame.
+pub type LiveHostFactory = std::sync::Arc<dyn Fn() -> std::sync::Arc<dyn EngineHost> + Send + Sync>;
+
 #[async_trait::async_trait]
 pub trait EngineHost: Send + Sync {
     /// Read the host wall clock in whole SECONDS through the `clock_now` seam — the host-driven form

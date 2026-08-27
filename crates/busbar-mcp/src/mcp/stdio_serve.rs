@@ -103,19 +103,6 @@ use super::envelope::{
     self, McpWords, H_MCP_METHOD, H_MCP_NAME, H_PROTOCOL_VERSION, META_PROTOCOL_VERSION,
     PROTOCOL_VERSION,
 };
-use busbar_core::state::AppHandle;
-
-/// A NEUTRAL HOST FACTORY the stdio transport holds: given the session's per-frame LIVE `App`
-/// snapshot it mints an `Arc<dyn EngineHost>` over it. Threaded in from the transport's core BOOT
-/// boundary (the `busbar` binary's stdio start, or a test) rather than named here, so this plane
-/// re-mints the host over each frame's live snapshot — required because the govern/meter/identity
-/// reaches `rpc_dispatch` drives read config-derived state that differs per snapshot — WITHOUT ever
-/// naming the core host factory itself.
-pub(crate) type EngineHostFactory = Arc<
-    dyn Fn(&Arc<busbar_core::state::App>) -> Arc<dyn busbar_substrate::plane_host::EngineHost>
-        + Send
-        + Sync,
->;
 
 /// The environment variable carrying the session credential. See the module header for why it is
 /// an env var and not a flag, and why absence on a governed deployment refuses to serve.
@@ -146,12 +133,10 @@ pub(crate) struct SessionIdentity {
 /// Resolve the session identity from the boot credential — the SAME admission the HTTP door runs,
 /// stated step by step in the module header. `Err` is a sentence for stderr and a refusal to serve.
 pub(crate) async fn session_identity(
-    handle: &Arc<AppHandle>,
-    host_factory: &EngineHostFactory,
+    factory: &busbar_substrate::plane_host::LiveHostFactory,
     credential: Option<&str>,
 ) -> Result<SessionIdentity, String> {
-    let app = handle.load();
-    let Some(resource) = super::resource(&app) else {
+    let Some(resource) = super::resource_of(&factory()) else {
         return Err(
             "this deployment carries no `mcp:` block, so there is no MCP plane to serve. \
              Presence of the block is what makes busbar an MCP server, on every transport."
@@ -166,7 +151,7 @@ pub(crate) async fn session_identity(
         // The binding JUDGEMENT is routed host-side through `identity_audience_binding` (Seam-B), so
         // this transport runs the SAME RFC 8707 pre-filter as the HTTP door without naming the core
         // auth module — only the WORDING of a refusal remains stdio's.
-        match host_factory(&app).identity_audience_binding(token, resource.canonical_uri()) {
+        match factory().identity_audience_binding(token, resource.canonical_uri()) {
             Binding::Deferred | Binding::Bound => {}
             Binding::Mismatch => {
                 return Err(format!(
@@ -192,7 +177,7 @@ pub(crate) async fn session_identity(
     // refusal remains stdio's. Byte-identical: the principal and gov context are the exact objects the
     // resolution produced, and the refusal keeps its variant.
     let canonical = resource.canonical_uri().to_string();
-    let admitted = host_factory(&app)
+    let admitted = factory()
         .identity_admit(credential.map(str::to_string), canonical.clone(), canonical)
         .await;
     match admitted {
@@ -230,9 +215,9 @@ pub(crate) async fn session_identity(
 /// transport rather than `serve` alone: the plane-coherence lint rightly refuses a second
 /// plane-local `serve` beside `a2a::grpc::serve`.) `pub`: called from the thin `busbar` binary's
 /// `main.rs`, a different crate after the core split.
-pub async fn serve_stdio(handle: Arc<AppHandle>, host_factory: EngineHostFactory) -> i32 {
+pub async fn serve_stdio(factory: busbar_substrate::plane_host::LiveHostFactory) -> i32 {
     let credential = std::env::var(ENV_CREDENTIAL).ok().filter(|c| !c.is_empty());
-    let identity = match session_identity(&handle, &host_factory, credential.as_deref()).await {
+    let identity = match session_identity(&factory, credential.as_deref()).await {
         Ok(identity) => identity,
         Err(sentence) => {
             eprintln!("busbar: mcp stdio serve refused to start: {sentence}");
@@ -244,7 +229,7 @@ pub async fn serve_stdio(handle: Arc<AppHandle>, host_factory: EngineHostFactory
         governed = identity.gov.is_governed(),
         "mcp stdio serve: session bound; serving on stdin/stdout"
     );
-    serve_io(handle, identity, tokio::io::stdin(), tokio::io::stdout()).await;
+    serve_io(factory, identity, tokio::io::stdin(), tokio::io::stdout()).await;
     0
 }
 
@@ -252,7 +237,7 @@ pub async fn serve_stdio(handle: Arc<AppHandle>, host_factory: EngineHostFactory
 /// in-memory duplex with a REAL governed `App`, which is the only way the budget refusal can be
 /// watched on an instrument without a network.
 pub(crate) async fn serve_io<R, W>(
-    handle: Arc<AppHandle>,
+    factory: busbar_substrate::plane_host::LiveHostFactory,
     identity: SessionIdentity,
     reader: R,
     writer: W,
@@ -260,19 +245,23 @@ pub(crate) async fn serve_io<R, W>(
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin + Send + 'static,
 {
-    let session = new_session(handle, identity, writer);
+    let session = new_session(factory, identity, writer);
     run_session(session, reader).await;
 }
 
 /// Construct one live session (and start its watchers). Split from [`run_session`] so the
 /// in-process battery can hold the session while driving the loop — nothing but tests and
 /// [`serve_io`] call either.
-fn new_session<W>(handle: Arc<AppHandle>, identity: SessionIdentity, writer: W) -> Arc<Session<W>>
+fn new_session<W>(
+    factory: busbar_substrate::plane_host::LiveHostFactory,
+    identity: SessionIdentity,
+    writer: W,
+) -> Arc<Session<W>>
 where
     W: AsyncWrite + Unpin + Send + 'static,
 {
     let session = Arc::new(Session {
-        handle,
+        factory,
         principal: identity.principal,
         gov: identity.gov,
         out: tokio::sync::Mutex::new(writer),
@@ -392,11 +381,11 @@ fn id_key(id: &Value) -> String {
 }
 
 struct Session<W> {
-    /// THE LIVE HANDLE. Each frame and each watch tick mints a `from_handle` (live-capable)
-    /// `EngineHost` off it (`engine_host_from_handle`), whose BOUND snapshot is that frame/tick's
-    /// `handle.load()` and whose `plane_slot_live` re-reads the CURRENT snapshot — replacing the
-    /// former per-frame snapshot-only host from the retired `host_factory` field.
-    handle: Arc<AppHandle>,
+    /// THE NEUTRAL LIVE-HOST FACTORY. Each frame and each watch tick calls it to mint a fresh
+    /// live-capable `EngineHost`, whose BOUND snapshot is that frame/tick's current load and whose
+    /// `plane_slot_live` re-reads the CURRENT snapshot — so a config swap between frames is seen. The
+    /// closure closes over the transport's live handle core-side, so this plane names no core handle.
+    factory: busbar_substrate::plane_host::LiveHostFactory,
     principal: busbar_api::AuthPrincipal,
     gov: busbar_api::PlaneRequestCtx,
     /// ONE writer, one lock: two concurrent responses interleaving inside a line would be a frame
@@ -525,12 +514,12 @@ impl<W: AsyncWrite + Unpin + Send + 'static> Session<W> {
 
     /// One pass of the CORE SEQUENCE over one frame.
     async fn dispatch_frame(self: &Arc<Self>, body: &[u8]) -> Response {
-        // MINT THE NEUTRAL HOST over THIS frame's live snapshot, `from_handle` so the host is
+        // MINT THE NEUTRAL HOST over THIS frame's live snapshot via the factory, so the host is
         // live-capable (its `plane_slot_live` re-reads the CURRENT snapshot for the dispatch-time
         // re-validation and per-round grant re-reads deep in `method`), while its BOUND snapshot is
-        // this frame's `handle.load()` — byte-identical to the former per-frame `app` load, and used
+        // this frame's current load — byte-identical to the former per-frame `app` load, and used
         // for every BOUND read below through the `runtime_of`/`resource_of` funnel.
-        let host = busbar_core::plane_host::engine_host_from_handle(&self.handle);
+        let host = (self.factory)();
         let session = self.clone();
         let epochs = super::runtime_of(&host).roots_epochs.clone();
         // The SAME principal name the HTTP observer binds roots epochs under — the authenticated
@@ -1018,17 +1007,15 @@ impl<W: AsyncWrite + Unpin + Send + 'static> Session<W> {
     fn spawn_resource_watch(self: &Arc<Self>) {
         let session = self.clone();
         let handle = tokio::spawn(async move {
-            let mut generation = super::runtime_of(
-                &busbar_core::plane_host::engine_host_from_handle(&session.handle),
-            )
-            .catalogue
-            .generation();
+            let mut generation = super::runtime_of(&(session.factory)())
+                .catalogue
+                .generation();
             loop {
                 tokio::time::sleep(WATCH_INTERVAL).await;
-                // MINT A LIVE-CAPABLE HOST for THIS tick (one `handle.load()`, a live re-read), and read both the
-                // generation gate and every fingerprint below off its BOUND snapshot — so all observe
-                // the SAME tick snapshot, byte-identical to the former single `handle.load()` per tick.
-                let tick_host = busbar_core::plane_host::engine_host_from_handle(&session.handle);
+                // MINT A LIVE-CAPABLE HOST for THIS tick (one live re-read via the factory), and read
+                // both the generation gate and every fingerprint below off its BOUND snapshot — so all
+                // observe the SAME tick snapshot, byte-identical to the former single load per tick.
+                let tick_host = (session.factory)();
                 let live = super::runtime_of(&tick_host).catalogue.generation();
                 // The generation compare is the cheap gate on the WALK, exactly as it is for
                 // `subscriptions/listen`; the baselines were written at subscribe time, so an
