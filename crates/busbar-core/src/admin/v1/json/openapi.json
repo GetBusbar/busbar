@@ -1852,14 +1852,14 @@
             ]
           },
           "max_admin_scope": {
-            "description": "`identity-providers` ONLY: the per-provider ADMIN CEILING (`read-only` | `full`). There is no\n`none` token: `Scope::parse_ceiling` rejects it (see `Scope::parse` above), because a ceiling\ncaps what a grant can reach and cannot express the absence of one.\n`None` ⇒ the definition names no ceiling, so the most restrictive default applies. Omitted\nentirely for a section that carries no ceiling.",
+            "description": "`identity-providers` ONLY: the per-provider ADMIN CEILING (`read-only` | `full`). There is no\n`none` token: `Scope::parse_ceiling` rejects it, because a ceiling\ncaps what a grant can reach and cannot express the absence of one.\n`None` ⇒ the definition names no ceiling, so the most restrictive default applies. Omitted\nentirely for a section that carries no ceiling.",
             "type": [
               "string",
               "null"
             ]
           },
           "module": {
-            "description": "The `module:` backing this instance (a built-in name or a signed-plugin name/alias).\n\nOMITTED, not empty-stringed, for a section whose entries are not plugin instances -- today\n`agents:`, whose entries describe endpoints somebody else runs\n([`NamedMapSection::requires_module`](crate::config::named_map::NamedMapSection::requires_module)).\nEvery section that HAS a module requires it to be non-empty, so this can never be omitted\nfor one that does.",
+            "description": "The `module:` backing this instance (a built-in name or a signed-plugin name/alias).\n\nOMITTED, not empty-stringed, for a section whose entries are not plugin instances -- today\n`agents:`, whose entries describe endpoints somebody else runs\n(`NamedMapSection::requires_module`).\nEvery section that HAS a module requires it to be non-empty, so this can never be omitted\nfor one that does.",
             "type": "string"
           },
           "name": {
