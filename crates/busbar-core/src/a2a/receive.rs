@@ -39,7 +39,6 @@ use std::sync::Arc;
 
 use super::inbound::{Dispatch, CREDENTIAL_KIND_A2A_INBOUND};
 use super::words::{plane_absent, refuse_admission, A2aWords};
-use crate::diagnostics::{diag_debug, diag_error, diag_warn};
 use crate::plane::taskstore;
 use busbar_substrate::diagnostics::{
     A2A_AGENT_BINDING_UNSPEAKABLE, A2A_BREAKER_REFUSAL_UNRECORDED, A2A_FAILURE_UNRECORDED,
@@ -49,6 +48,7 @@ use busbar_substrate::diagnostics::{
     A2A_RELAYED_SUBMISSION_FAILED, A2A_RELAY_THREAD_INCOMPLETE, A2A_STREAM_EMPTY,
     A2A_STREAM_RELAY_INCOMPLETE,
 };
+use busbar_substrate::{diag_debug, diag_error, diag_warn};
 
 /// The audit action every inbound call on this plane records under.
 pub(super) const AUDIT_ACTION: &str = "agent.call";

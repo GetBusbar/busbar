@@ -264,8 +264,8 @@ pub(crate) fn floor_callback(task_id: &str, callback: Option<String>) -> Option<
     match callback {
         Some(url) => match structural_refusal(&url) {
             Some(refusal) => {
-                crate::diagnostics::diag_error!(
-                    crate::diagnostics::PLANE_SSRF_CALLBACK_AT_STORE,
+                busbar_substrate::diag_error!(
+                    busbar_substrate::diagnostics::PLANE_SSRF_CALLBACK_AT_STORE,
                     task = %task_id,
                     error = %refusal,
                     "a2a: a push callback the SSRF guard refuses reached the task store and was \

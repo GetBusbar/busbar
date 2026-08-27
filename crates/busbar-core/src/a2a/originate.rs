@@ -24,7 +24,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::receive::{notify_push, Admitted};
-use crate::diagnostics::diag_warn;
+use busbar_substrate::diag_warn;
 use busbar_substrate::diagnostics::A2A_OUTBOUND_CRED_UNLEASED;
 
 /// EVERYTHING ONE BUSBAR-ORIGINATED HOP NEEDS that is neither the document nor the verb.

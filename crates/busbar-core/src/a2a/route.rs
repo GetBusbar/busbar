@@ -20,11 +20,11 @@
 //!   behaviour.
 
 use super::relay::RelayBreaker;
-use crate::diagnostics::{diag_debug, diag_error, diag_warn};
 use axum::response::{IntoResponse as _, Response};
 use busbar_substrate::diagnostics::{
     A2A_EXTENDED_CARD_BUILD_FAILED, A2A_PIN_REFUSAL_UNRECORDED, A2A_POOL_NOT_INTERCHANGEABLE,
 };
+use busbar_substrate::{diag_debug, diag_error, diag_warn};
 use std::sync::Arc;
 
 /// One `agent_pools:` member as the walk sees it — this plane's whole cost of inheriting the

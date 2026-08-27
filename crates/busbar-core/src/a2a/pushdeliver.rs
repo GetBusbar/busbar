@@ -70,8 +70,8 @@ use std::sync::{Mutex, OnceLock};
 use super::pushnotify::{self, PinnedCallback, PushNotifyError};
 use super::relay::RelaySeam;
 use super::task::Task;
-use crate::diagnostics::diag_debug;
 use crate::plane::provenance;
+use busbar_substrate::diag_debug;
 use busbar_substrate::diagnostics::A2A_PUSH_OUTCOME_UNCHAINED;
 
 /// THE HEADER EVERY DELIVERY CARRIES, whatever else it carries.
