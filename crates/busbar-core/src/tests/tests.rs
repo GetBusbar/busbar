@@ -9,8 +9,6 @@ use crate::appbuild::{
     stateful_plane_ephemeral_store_warn,
 };
 #[allow(unused_imports)]
-use crate::boot::is_audit_restore_read_hiccup;
-#[allow(unused_imports)]
 use crate::preflight::{
     build_secret_resolver, is_real_auth_plugin_ref, is_real_identity_provider_plugin_ref,
     parse_signing_secret, plugin_fetch_downloader, plugin_fetch_downloader_with_cap,
@@ -2314,25 +2312,6 @@ fn is_real_auth_plugin_ref_exempts_keys_always_and_test_groups_module_only_in_te
     );
     assert!(is_real_auth_plugin_ref("oidc", true));
     assert!(is_real_auth_plugin_ref("oidc", false));
-}
-
-/// `is_audit_restore_read_hiccup`: exactly the "audit restore read failed" prefix routes to the
-/// hiccup (warn) path; a chain-verification failure message (or anything else) does not, even if
-/// it shares a substring or near-miss prefix — the distinction is load-bearing (tamper evidence
-/// must never be logged at the same severity as a transient read hiccup).
-#[test]
-fn audit_restore_read_hiccup_matches_only_its_own_prefix() {
-    assert!(is_audit_restore_read_hiccup(
-        "audit restore read failed: disk error"
-    ));
-    assert!(is_audit_restore_read_hiccup("audit restore read failed"));
-    assert!(!is_audit_restore_read_hiccup(
-        "audit chain verification failed: hash mismatch at seq 42"
-    ));
-    assert!(!is_audit_restore_read_hiccup(""));
-    assert!(!is_audit_restore_read_hiccup(
-        "something else entirely audit restore read failed"
-    ));
 }
 
 /// `plugins.fetch` (resource/DoS finding): a mistyped or compromised fetch URL serving an

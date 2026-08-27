@@ -1151,15 +1151,15 @@ impl<T> IntoStoreResult<T> for Result<T, getrandom::Error> {
 pub(crate) use busbar_store_memory::MemoryStore;
 
 /// The write-behind flusher: on a fixed cadence (and once more on graceful shutdown) pushes the
-/// dirty in-memory budget cells, the accumulated `pending_metering` rows, AND the durable audit log's
-/// pending write-through (`admin::audit::AuditLog::flush_durable`) to the durable store off the
-/// request hot path. The canonical spawned-flusher shape in the crate — a spawned loop
+/// dirty in-memory budget cells and the accumulated `pending_metering` rows to the durable store off
+/// the request hot path. The canonical spawned-flusher shape in the crate — a spawned loop
 /// that ticks, does the durable write, and runs one FINAL flush on the shutdown signal so a graceful
 /// stop loses nothing. The in-memory budget cells stay AUTHORITATIVE for enforcement; metering cells
 /// are authoritative for nothing (the store is their only consumer). `flush_budgets` and
 /// `flush_metering` are best-effort and re-queue their unwritten data on a store error, so a
-/// transient write failure is retried on the next tick rather than lost; `flush_durable` is likewise
-/// best-effort — see `admin::audit::WRITE_THROUGH_HEADROOM` for what backstops it when a tick stalls.
+/// transient write failure is retried on the next tick rather than lost. The admin audit log needs no
+/// flush here: its ONE durable path is the neutral journal seam, which persists each record inline as
+/// it is recorded.
 pub fn spawn_budget_flusher(
     gov: std::sync::Arc<GovState>,
     mut shutdown: tokio::sync::broadcast::Receiver<()>,
@@ -1197,11 +1197,6 @@ pub fn spawn_budget_flusher(
                     tokio::task::spawn_blocking(move || {
                         gov.flush_budgets();
                         gov.flush_metering();
-                        // Reuses this same tick/gate/offload plumbing for the audit log's
-                        // write-behind drain: `durable_write_through`'s
-                        // unit of work is already a coalescing RANGE, so one call here persists
-                        // every seq `record_by`'s pressure valve left pending since the last tick.
-                        crate::admin::audit::AUDIT.flush_durable();
                         drop(guard);
                     });
                 }
@@ -1219,7 +1214,6 @@ pub fn spawn_budget_flusher(
                     let _ = tokio::task::spawn_blocking(move || {
                         gov.flush_budgets();
                         gov.flush_metering();
-                        crate::admin::audit::AUDIT.flush_durable();
                         drop(guard);
                     })
                     .await;

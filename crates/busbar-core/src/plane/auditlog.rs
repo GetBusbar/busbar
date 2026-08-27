@@ -341,60 +341,7 @@ impl PlaneAuditLog {
             .collect()
     }
 
-    /// BOOT MIGRATION BRIDGE. The admin audit rows live in a SEPARATE durable table
-    /// (`append_audit`/`list_audit`), not in the neutral `plane_records`. Read the durable tail
-    /// (`list_audit_tail`), reframe each [`busbar_api::AuditRecord`] into the neutral body the seam
-    /// persists, and SEED the host-side chain position from them so a later append continues the same
-    /// chain from the persisted tail rather than forking at seq 1. A break is REPORTED and the chain
-    /// still resumes from the broken tail. A read hiccup is surfaced as an error the caller logs.
-    #[allow(dead_code)] // superseded by the plane_records restore; retired with the legacy leg (A6)
-    pub(crate) fn restore_legacy_table(
-        &self,
-        host: HostCtx,
-        store: &dyn busbar_api::Store,
-    ) -> StoreResult<AuditRestored> {
-        let records = store.list_audit_tail(MAX_AUDIT_ENTRIES as u64)?;
-        let mut out = AuditRestored::default();
-        if records.is_empty() {
-            return Ok(out);
-        }
-        let bodies: Vec<Vec<u8>> = records
-            .iter()
-            .map(|r| {
-                let content = audit_suffix(r.ts, &r.action, &r.resource, &r.outcome, &r.principal);
-                encode(&NeutralBody {
-                    seq: r.seq,
-                    prev_hash: r.prev_hash.clone(),
-                    hash: r.hash.clone(),
-                    content,
-                })
-            })
-            .collect::<StoreResult<_>>()?;
-        out.records = bodies.len();
-        // SEED THE READ-MODEL RING beside the chain position: reconstruct each record from its body
-        // and push the (already ≤ MAX_AUDIT_ENTRIES) durable tail so a post-restart GET /audit — once
-        // cut over to the seam — shows history immediately, reproducing the legacy ring's restore. On
-        // the production boot path `self` is the process-global `AUDIT_LOG`.
-        for body in &bodies {
-            if let Ok(entry) = audit_entry_from_body(ADMIN_LOG, body) {
-                self.push_entry(entry);
-            }
-        }
-        if let Some(brk) = self.seed_chain(host, ADMIN_LOG, &bodies)? {
-            crate::diagnostics::diag_error!(
-                crate::diagnostics::PLANE_AUDITLOG_CHAIN_VERIFY_FAILED,
-                break_detail = %brk,
-                "admin audit CHAIN VERIFICATION FAILED on restore — the persisted records do not \
-                 verify against their own hash chain. They are still restored and the chain resumes \
-                 from the broken tail; refusing to restore them would let anyone able to write to the \
-                 store DELETE audit history by corrupting one record."
-            );
-            out.chain_breaks.push(brk);
-        }
-        Ok(out)
-    }
-
-    /// BOOT RESTORE from the neutral `plane_records` (the shape the seam writes once dual-write is on):
+    /// BOOT RESTORE from the neutral `plane_records` (the shape the seam writes):
     /// enumerate the scopes the store holds `audit` records for (the admin log's single `admin` scope),
     /// resume the chain from its persisted tail, and REPORT what was found. A break is reported and the
     /// chain still resumes from the broken tail.

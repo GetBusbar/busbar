@@ -12,19 +12,6 @@
 
 use std::sync::Arc;
 
-use crate::diagnostics::{
-    diag_error, diag_warn, AUDIT_CHAIN_VERIFY_FAILED, BOOT_AUDIT_RESTORE_READ_FAILED,
-};
-
-/// A store READ failure and a chain-VERIFICATION failure on audit restore are different events: the
-/// first is a hiccup, the second is tamper evidence. Reporting both as "chain verification" trains
-/// an operator to ignore the one that matters, so `hydrate_all`'s restore-error match keys on this
-/// to pick `tracing::warn!` vs `tracing::error!`. Module-level (not inlined in the match guard) so
-/// it's unit-testable; see the boot tests.
-pub(crate) fn is_audit_restore_read_hiccup(e: &str) -> bool {
-    e.starts_with("audit restore read failed")
-}
-
 /// DURABLE-STATE HYDRATION, whole and in order: the audit ring FIRST (core, the append-only chain),
 /// then every registered plane's own durable state through its [`PlaneDecl::hydrate`] hook — the A2A
 /// task table, the MCP per-call log, and the MCP demotion + spent-approval records. Called ONCE from
@@ -39,48 +26,20 @@ pub(crate) fn is_audit_restore_read_hiccup(e: &str) -> bool {
 /// seam: [`BootCtx`]'s store is `PlaneStore`, never the `append_audit`-carrying `Store` (invariant
 /// (a)), so only the audit block below — which IS the chain — holds the full `Store`.
 pub fn hydrate_all(app: &Arc<crate::state::App>) -> Result<(), String> {
-    // DURABLE AUDIT (#17): the audit log is STATEFUL, so its single durable home is the configured
-    // governance store — never a side-car file (store-or-RAM rule). When a durable store is configured
-    // (sqlite/postgres/valkey), attach it as the write-through SINK (every future admin mutation
-    // persists as it is appended) and RESTORE the ring from it: the store is the source of truth, so
-    // its history (which can exceed the RAM ring bound) survives restart with the hash chain intact.
-    // The RAM default (`store: memory`) has no durable audit — the sink no-ops and the restore reads
-    // nothing — so the log is ephemeral BY DESIGN, started fresh on every boot. A chain-verification
-    // failure on restore is logged as a tamper signal; there is no file fallback to fall back to.
+    // DURABLE AUDIT (#17): the admin audit log's ONE durable path is the neutral journal seam
+    // ([`crate::plane::auditlog`]). Register the `audit` stream, run the ONE-TIME legacy-table →
+    // `plane_records` migration (idempotent; a no-op on a migrated / fresh / memory store), and RESTORE
+    // the audit log FROM `plane_records` — seeding both the seam chain position (so a later append
+    // continues the same chain) and the `AUDIT_LOG` read-model ring `GET /audit` serves. The RAM
+    // default (`store: memory`) keeps nothing durable, so the log is ephemeral BY DESIGN, started fresh
+    // on every boot. A chain-verification failure on restore is logged as a tamper signal inside the
+    // seam restore; there is no file fallback to fall back to.
     //
-    // This is NOT a plane and is deliberately NOT a `hydrate` hook: the audit ring IS the chain, so
-    // its sink is correctly the full `Store` — the one durable-state block that must hold what every
-    // plane hook is narrowed away from.
+    // This is NOT a plane and is deliberately NOT a `hydrate` hook: the audit chain's migration reads
+    // the FULL `Store` (the legacy `list_audit` table it copies from), the one durable-state block that
+    // must hold what every plane hook is narrowed away from.
     if let Some(gov) = app.governance.as_ref() {
-        let store = gov.store();
-        crate::admin::audit::AUDIT.set_sink(store.clone());
-        match crate::admin::audit::AUDIT.restore_from_store(store.as_ref()) {
-            Ok(0) => {} // no durable audit (memory default / empty) — start with an empty ring
-            Ok(n) => tracing::info!(
-                entries = n,
-                "audit log restored from the durable governance store"
-            ),
-            // A store READ failure and a chain-VERIFICATION failure are different events: the first
-            // is a hiccup, the second is tamper evidence. Reporting both as "chain verification"
-            // trains an operator to ignore the one that matters.
-            Err(e) if is_audit_restore_read_hiccup(&e) => diag_warn!(
-                BOOT_AUDIT_RESTORE_READ_FAILED,
-                error = %e,
-                "could not read the durable audit log; starting with an empty audit ring"
-            ),
-            Err(e) => diag_error!(
-                AUDIT_CHAIN_VERIFY_FAILED,
-                error = %e,
-                "durable audit CHAIN VERIFICATION failed — the persisted log does not verify \
-                 against its own hash chain; starting with an empty audit ring"
-            ),
-        }
-        // AUDIT SEAM BOOT SOURCE: register the admin `audit` durable stream on the neutral journal
-        // seam, run the ONE-TIME legacy-table → `plane_records` migration, and RESTORE the audit log
-        // FROM `plane_records` — seeding both the seam chain position and the `AUDIT_LOG` read-model
-        // ring `GET /audit` serves. This is the durable audit boot source now; the legacy-ring restore
-        // above is the retiring dual-write leg (A6).
-        crate::plane::auditlog::register_and_migrate(app, &store);
+        crate::plane::auditlog::register_and_migrate(app, &gov.store());
     }
 
     // THE PLANE HYDRATION FOLD. Each plane restores its OWN durable state through the `hydrate` hook
