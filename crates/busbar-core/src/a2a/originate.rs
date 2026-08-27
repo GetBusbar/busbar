@@ -23,9 +23,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use super::receive::{notify_push, plane_of, Admitted};
+use super::receive::{notify_push, Admitted};
 use crate::diagnostics::diag_warn;
-use crate::state::App;
 use busbar_substrate::diagnostics::A2A_OUTBOUND_CRED_UNLEASED;
 
 /// EVERYTHING ONE BUSBAR-ORIGINATED HOP NEEDS that is neither the document nor the verb.
@@ -187,8 +186,7 @@ const ORIGINATED_RPC_ID: &str = "busbar-originated";
 /// busbar's own record, which is correct whatever the backend says.
 #[allow(clippy::too_many_arguments)] // plumbing: each arg is an independent request input
 pub(super) async fn mirror_push_config(
-    app: &Arc<App>,
-    engine_host: &dyn busbar_substrate::plane_host::EngineHost,
+    engine_host: &Arc<dyn busbar_substrate::plane_host::EngineHost>,
     admitted: &Admitted,
     key: &busbar_api::VirtualKey,
     method: &'static str,
@@ -196,7 +194,9 @@ pub(super) async fn mirror_push_config(
     a2a_version: &'static str,
     now: u64,
 ) {
-    let Some(plane) = plane_of(app) else { return };
+    let Some(plane) = crate::a2a::runtime_arc_of(engine_host) else {
+        return;
+    };
     // THE ADDRESS BUSBAR OFFERS, or nothing at all. `callback_url` refuses a deployment with no
     // receiving side and refuses a PLAINTEXT one — see its own note for why there is no knob.
     let Some(our_url) = plane.public_url().and_then(super::pushback::callback_url) else {
@@ -228,7 +228,14 @@ pub(super) async fn mirror_push_config(
     let Some(token) = super::pushback::mint(&task.task_id) else {
         return;
     };
-    let Some(at) = originate(engine_host, &plane, admitted, key, a2a_version, now) else {
+    let Some(at) = originate(
+        engine_host.as_ref(),
+        &plane,
+        admitted,
+        key,
+        a2a_version,
+        now,
+    ) else {
         return;
     };
     let busbar_task = task.task_id.clone();
@@ -295,7 +302,6 @@ pub(super) async fn mirror_push_config(
 /// ever opened on it, across every tenant, moves nothing and shows nobody anything. `list_tasks`
 /// then renders busbar's own scoped rows exactly as it always did.
 pub(super) async fn refresh_listed_tasks(
-    app: &Arc<App>,
     engine_host: &Arc<dyn busbar_substrate::plane_host::EngineHost>,
     admitted: &Admitted,
     key: &busbar_api::VirtualKey,
@@ -303,7 +309,9 @@ pub(super) async fn refresh_listed_tasks(
     a2a_version: &'static str,
     now: u64,
 ) {
-    let Some(plane) = plane_of(app) else { return };
+    let Some(plane) = crate::a2a::runtime_arc_of(engine_host) else {
+        return;
+    };
     // THE ROWS THIS CALLER OWNS ON THIS AGENT, and the backend's name for each. Built BEFORE the
     // hop, because it is also the whitelist: an id that is not in here is an id the answer cannot
     // move.

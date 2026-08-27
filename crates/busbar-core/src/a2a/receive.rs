@@ -781,7 +781,7 @@ pub(super) async fn invoke(
 ) -> Response {
     let started = std::time::Instant::now();
     let observed = Arc::clone(&app);
-    let mut answered = invoke_inner(app, engine_host, gov, principal, target, wire, body).await;
+    let mut answered = invoke_inner(engine_host, gov, principal, target, wire, body).await;
     crate::telemetry::request_finished(
         &observed,
         "a2a",
@@ -807,7 +807,6 @@ pub(super) async fn invoke(
 /// there are a dozen early returns below, and a metric emitted at each of them is a metric that
 /// will one day be missing from the thirteenth.
 async fn invoke_inner(
-    app: Arc<App>,
     engine_host: Arc<dyn busbar_substrate::plane_host::EngineHost>,
     gov: busbar_api::PlaneRequestCtx,
     principal: busbar_api::AuthPrincipal,
@@ -855,7 +854,7 @@ async fn invoke_inner(
     busbar_substrate::ingress::protocol::serve(
         &A2aWords,
         busbar_substrate::ingress::protocol::Request {
-            present: crate::a2a::runtime(&app).is_some(),
+            present: crate::a2a::runtime_arc_of(&engine_host).is_some(),
             origin: origin.as_deref(),
             // NO OPERATOR ALLOWLIST ON THIS PLANE, so loopback and nothing else. A2A is an
             // agent-to-agent protocol: its clients are servers and agents, which send no `Origin`
@@ -872,7 +871,6 @@ async fn invoke_inner(
         |envelope, rpc_id, _method| async move {
             Some(
                 admitted(
-                    app,
                     engine_host,
                     gov,
                     principal,
@@ -896,14 +894,13 @@ async fn invoke_inner(
 /// number by construction, never `null` and never a notification's absence. A second reading of
 /// either here would be a second answer to a question that is already answered.
 // EIGHT ARGUMENTS, and each is a fact the shared sequence established that this one needs: the
-// snapshot, the caller, the target, the negotiated version, the envelope, its id and the bytes as
+// host, the caller, the target, the negotiated version, the envelope, its id and the bytes as
 // they arrived. Grouping them into a struct would be a type that exists to satisfy a lint and has
 // exactly one construction site; the ABI's `Wire` is where they converge when the protocols leave
 // core (`design/protocol-plugin-abi.md` section 1), and inventing a different one first is churn
 // that convergence deletes.
 #[allow(clippy::too_many_arguments)]
 async fn admitted(
-    app: Arc<App>,
     engine_host: Arc<dyn busbar_substrate::plane_host::EngineHost>,
     gov: busbar_api::PlaneRequestCtx,
     principal: busbar_api::AuthPrincipal,
@@ -946,7 +943,7 @@ async fn admitted(
         super::local::method_of(&envelope),
         "GetExtendedAgentCard" | "agent/getAuthenticatedExtendedCard"
     ) {
-        return super::route::extended_agent_card(&engine_host, &app, key, &rpc_id);
+        return super::route::extended_agent_card(&engine_host, key, &rpc_id);
     }
 
     let shape = shape_of(&envelope);
@@ -1137,7 +1134,6 @@ async fn admitted(
                 //    the backend's answer is rendered — see `refresh_listed_tasks` for the scoping
                 //    rule that makes a shared backend's list unable to move another tenant's row.
                 super::originate::refresh_listed_tasks(
-                    &app,
                     &engine_host,
                     &admitted,
                     key,
@@ -1149,7 +1145,8 @@ async fn admitted(
                 Some(super::local::list_tasks(&envelope, &rpc_id, &principal))
             }
             super::local::LocalVerb::CreatePushConfig(dialect) => {
-                let Some(seam) = plane_of(&app).map(|p| p.relay_seam()) else {
+                let Some(seam) = crate::a2a::runtime_arc_of(&engine_host).map(|p| p.relay_seam())
+                else {
                     return plane_absent();
                 };
                 Some(
@@ -1197,8 +1194,7 @@ async fn admitted(
                 if let Some(mirrored) = super::pushback::mirrored_verb(verb) {
                     if let Some(task) = addressed_task(&envelope, &principal) {
                         super::originate::mirror_push_config(
-                            &app,
-                            engine_host.as_ref(),
+                            &engine_host,
                             &admitted,
                             key,
                             mirrored,
@@ -1283,7 +1279,8 @@ async fn admitted(
     let callback = match callback_of(&envelope) {
         None => None,
         Some(url) => {
-            let Some(seam) = plane_of(&app).map(|p| p.relay_seam()) else {
+            let Some(seam) = crate::a2a::runtime_arc_of(&engine_host).map(|p| p.relay_seam())
+            else {
                 return plane_absent();
             };
             match validate_callback(url, seam).await {
@@ -1374,7 +1371,7 @@ async fn admitted(
 
     // The plane, fetched ONCE for the member selection below and every later reader (the lease,
     // the binding, the seam). The refusal is identical wherever it fires.
-    let Some(plane) = plane_of(&app) else {
+    let Some(plane) = crate::a2a::runtime_arc_of(&engine_host) else {
         return plane_absent();
     };
 
@@ -1422,7 +1419,7 @@ async fn admitted(
     //    single-flight, fail-closed — BEFORE the relay preamble's live `still_delegable` gate compares
     //    it. A moved fingerprint or an unreachable card demotes the registration here, and the gate
     //    then refuses; there is no background sweep. See `verify_agent_on_call`.
-    verify_agent_on_call(&app, &plane, &target_agent).await;
+    verify_agent_on_call(&engine_host, &plane, &target_agent).await;
     // The re-verification mutates the registry and so bumps its generation; the hop's admitted
     // generation is re-read AFTER it so the pre-socket gate does not refuse the call for busbar's OWN
     // re-verification — while still catching a config apply that lands between here and the socket, and
@@ -1844,11 +1841,6 @@ struct HopContext {
     rpc_id: serde_json::Value,
 }
 
-/// The plane, if this deployment has one.
-pub(super) fn plane_of(app: &App) -> Option<Arc<super::plane::A2aPlane>> {
-    crate::a2a::runtime_arc(app)
-}
-
 /// VERIFY-ON-CALL for one A2A delegation: re-verify `agent_id`'s card within `verify_ttl`,
 /// single-flight, fail-closed, BEFORE the relay's live trust gate compares it.
 ///
@@ -1883,7 +1875,11 @@ fn fold_reverify_join(
     }
 }
 
-async fn verify_agent_on_call(app: &Arc<App>, plane: &Arc<super::plane::A2aPlane>, agent_id: &str) {
+async fn verify_agent_on_call(
+    host: &Arc<dyn busbar_substrate::plane_host::EngineHost>,
+    plane: &Arc<super::plane::A2aPlane>,
+    agent_id: &str,
+) {
     // Read this plane's boot-resolved transport bundle off the plane's OWN runtime object (held here
     // like MCP holds its own, not on `App`) — a concrete type, so no downcast.
     let Some(cards) = plane.cards().get().cloned() else {
@@ -1892,7 +1888,7 @@ async fn verify_agent_on_call(app: &Arc<App>, plane: &Arc<super::plane::A2aPlane
     let Some((_, policy)) = plane.verify_state_of(agent_id) else {
         return;
     };
-    let now_ms = crate::plane_host::clock_now_ms_over(app);
+    let now_ms = host.clock_now_ms();
     let ledger_plane = Arc::clone(plane);
     let ledger_id = agent_id.to_string();
     let fetch_plane = Arc::clone(plane);

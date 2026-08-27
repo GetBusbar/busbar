@@ -21,7 +21,6 @@
 
 use super::relay::RelayBreaker;
 use crate::diagnostics::{diag_debug, diag_error, diag_warn};
-use crate::state::App;
 use axum::response::{IntoResponse as _, Response};
 use busbar_substrate::diagnostics::{
     A2A_EXTENDED_CARD_BUILD_FAILED, A2A_PIN_REFUSAL_UNRECORDED, A2A_POOL_NOT_INTERCHANGEABLE,
@@ -390,11 +389,10 @@ pub(super) fn render_pin_mismatch(
 /// whatever shape was invented.
 pub(super) fn extended_agent_card(
     engine_host: &Arc<dyn busbar_substrate::plane_host::EngineHost>,
-    app: &App,
     key: &busbar_api::VirtualKey,
     rpc_id: &serde_json::Value,
 ) -> Response {
-    let Some(plane) = crate::a2a::runtime(app) else {
+    let Some(plane) = crate::a2a::runtime_arc_of(engine_host) else {
         return super::words::plane_absent();
     };
     let Some(public_url) = plane.public_url() else {

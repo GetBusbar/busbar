@@ -264,16 +264,12 @@ pub(crate) async fn push_notification(
 ) -> Response {
     // S7 neutral seam: this `RouteAuth::None` handler took only `CurrentApp`, the headers and the
     // body — the caller is a fronted AGENT holding no busbar key, so the middleware attached no
-    // identity and this handler authenticates the per-task push token itself, below. App off the
-    // type-erased engine handle; `headers`/`body` off `ctx`.
-    let handle: std::sync::Arc<crate::state::AppHandle> = ctx
-        .engine
-        .downcast::<crate::state::AppHandle>()
-        .expect("the a2a route engine handle is an AppHandle");
-    let app = handle.load();
+    // identity and this handler authenticates the per-task push token itself, below. The plane is read
+    // off the neutral `ctx.host` seam (`runtime_arc_of`), so this handler holds no `App`;
+    // `headers`/`body` off `ctx`.
     let headers = ctx.headers;
     let body = ctx.body;
-    let Some(plane) = crate::a2a::runtime_arc(&app) else {
+    let Some(plane) = crate::a2a::runtime_arc_of(&ctx.host) else {
         return refused(
             axum::http::StatusCode::NOT_FOUND,
             "no A2A plane is configured",
