@@ -247,7 +247,7 @@ pub(crate) fn runtime_off_slots(
 pub(crate) fn carried_a2a_gates(
     prior: Option<&dyn busbar_substrate::plane_host::PlaneSlots>,
 ) -> (
-    std::sync::Arc<crate::trust::verify::VerifyGate>,
+    std::sync::Arc<busbar_substrate::trust::VerifyGate>,
     std::sync::Arc<std::sync::OnceLock<std::sync::Arc<crate::a2a::transport::LiveCardFetch>>>,
 ) {
     match prior
@@ -256,7 +256,7 @@ pub(crate) fn carried_a2a_gates(
     {
         Some(plane) => (plane.verify_arc(), plane.cards_arc()),
         None => (
-            std::sync::Arc::new(crate::trust::verify::VerifyGate::new()),
+            std::sync::Arc::new(busbar_substrate::trust::VerifyGate::new()),
             std::sync::Arc::new(std::sync::OnceLock::new()),
         ),
     }

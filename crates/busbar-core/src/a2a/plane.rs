@@ -102,7 +102,7 @@ pub(crate) struct A2aPlane {
     /// accumulated coordination state, not intent. When the `agents:` block is REMOVED there is no
     /// plane this generation, so the gate is dropped whole — the unobservable analogue of the old
     /// `retain(&empty)`, since a deployment fronting no agents runs no delegation to read it.
-    verify: Arc<crate::trust::verify::VerifyGate>,
+    verify: Arc<busbar_substrate::trust::VerifyGate>,
     /// THE A2A CARD-FETCH TRANSPORTS, resolved ONCE at boot (per-agent client identities, the same
     /// object the delegation hop relays through). Verify-on-call reads it on the request path to
     /// re-fetch and re-verify a stale card. Empty until the A2A `start` hook publishes it through
@@ -217,7 +217,7 @@ impl A2aPlane {
         Self::from_config_carrying(
             cfg,
             public_url,
-            Arc::new(crate::trust::verify::VerifyGate::new()),
+            Arc::new(busbar_substrate::trust::VerifyGate::new()),
             Arc::new(OnceLock::new()),
         )
     }
@@ -230,7 +230,7 @@ impl A2aPlane {
     pub(crate) fn from_config_carrying(
         cfg: &AgentsCfg,
         public_url: Option<&str>,
-        verify: Arc<crate::trust::verify::VerifyGate>,
+        verify: Arc<busbar_substrate::trust::VerifyGate>,
         cards: Arc<OnceLock<Arc<super::transport::LiveCardFetch>>>,
     ) -> Option<Arc<Self>> {
         if cfg.agents.is_empty() {
@@ -281,14 +281,14 @@ impl A2aPlane {
     /// THE VERIFY-ON-CALL GATE this plane re-verifies fronted agents through, as the delegation path
     /// and the `retain_verify_gates` prune read it. Held on the plane, not on `App`, mirroring MCP's
     /// `McpRuntime::verify`.
-    pub(crate) fn verify(&self) -> &Arc<crate::trust::verify::VerifyGate> {
+    pub(crate) fn verify(&self) -> &Arc<busbar_substrate::trust::VerifyGate> {
         &self.verify
     }
 
     /// The OWNED-`Arc` twin of [`Self::verify`], for the carry across a config apply
     /// ([`Self::from_config_carrying`]) — a refcount bump of the same gate, so the coalescing epochs
     /// persist.
-    pub(crate) fn verify_arc(&self) -> Arc<crate::trust::verify::VerifyGate> {
+    pub(crate) fn verify_arc(&self) -> Arc<busbar_substrate::trust::VerifyGate> {
         Arc::clone(&self.verify)
     }
 
