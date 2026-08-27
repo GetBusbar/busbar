@@ -550,7 +550,7 @@ pub(crate) fn validate_agent(name: &str, def: &AgentDefCfg) -> Result<(), String
     // wording for the site. The section list it judges against is DERIVED from the config grammar,
     // so a section added to `Plane::ALL` or `NamedMapSection::ALL` is refused here with nothing
     // written in this file.
-    let sections = crate::plane::config::config_sections();
+    let sections = busbar_substrate::plane::config::plane_sections();
     for hook in &def.hooks {
         busbar_substrate::plane::config::refuse_cross_plane_reference(&at, hook, &sections)?;
     }

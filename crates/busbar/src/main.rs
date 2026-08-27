@@ -631,6 +631,14 @@ fn main() {
     // `plane-a2a`.
     #[cfg(feature = "plane-a2a")]
     busbar_substrate::plane_host::install_task_reader(&busbar_core::plane::CoreTaskReader);
+    // The parse-time section list: the A2A plane refuses a cross-plane hook reference against the WHOLE
+    // section fold (`busbar_core::plane::config::config_sections`, which reads the process plane
+    // registry), so it names no core registry. Bound here — after `register_planes`, before the CLI
+    // flags read `--validate` — so config validation sees the populated list. Gated to `plane-a2a`.
+    #[cfg(feature = "plane-a2a")]
+    busbar_substrate::plane::config::install_plane_sections(
+        busbar_core::plane::config::config_sections,
+    );
     // CLI flags next — BEFORE building any runtime. They must work without a configured deployment,
     // and `--version` / `--validate` should never spin up a thread pool.
     if let Some(code) = handle_cli_flags() {

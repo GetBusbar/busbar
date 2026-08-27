@@ -218,6 +218,12 @@ impl A2aPlane {
         // backing here too, idempotently, so the plane's `HostCtx`-free task reads resolve.
         #[cfg(any(test, feature = "test-support"))]
         busbar_substrate::plane_host::install_task_reader(&busbar_core::plane::CoreTaskReader);
+        // And the parse-time section-list provider, so a plane built here validates its `hooks:`
+        // cross-plane references against the real fold rather than the empty pre-bind list.
+        #[cfg(any(test, feature = "test-support"))]
+        busbar_substrate::plane::config::install_plane_sections(
+            busbar_core::plane::config::config_sections,
+        );
         Self::from_config_carrying(
             cfg,
             public_url,
