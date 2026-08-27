@@ -79,3 +79,7 @@ pub mod catalogue;
 pub mod failover;
 pub mod store;
 pub mod telemetry;
+// The neutral GOVERNANCE value families — the busbar-signed token crypto, the mint-parameter struct
+// and the metering-bucket time base. Pure data + crypto with no `App`/`Store` reach; core re-exports
+// each from its old `busbar_core::governance::…` path.
+pub mod governance;

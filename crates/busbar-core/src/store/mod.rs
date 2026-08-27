@@ -124,20 +124,16 @@ fn now_for_test() -> u64 {
     }
 }
 
-/// Breaker state for a lane per ADR-0002.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum BreakerState {
-    Closed,
-    Open { until: u64 },
-    HalfOpen,
-}
-
+// The neutral breaker-state taxonomy (`BreakerState`) moved to `busbar-substrate` so a plane crate
+// names it without reaching into busbar-core; re-exported here so every `crate::store::BreakerState`
+// caller is unchanged.
+//
 // ── Lane availability taxonomy ── relocated to `busbar-substrate` in Phase-B B1 (it travels with
 // `failover::walk_with`, the neutral walk that carries it). Core re-exports the taxonomy and the two
 // consumer-facing recovery floors so every `crate::store::…` name resolves unchanged;
 // `PROBE_RETRY_FLOOR_MS` moved with its only reader (`recovery_hint_ms`) and stays substrate-private.
 pub(crate) use busbar_substrate::store::{
-    Unavailable, AT_CAPACITY_RECOVERY_FLOOR_MS, SHED_RETRY_FLOOR_MS,
+    BreakerState, Unavailable, AT_CAPACITY_RECOVERY_FLOOR_MS, SHED_RETRY_FLOOR_MS,
 };
 
 /// The held resources a successful [`LaneRuntime::try_admit`] transfers to the caller: the concurrency

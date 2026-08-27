@@ -136,8 +136,10 @@ openapi-schema = ["dep:schemars", "busbar-substrate/openapi-schema"]
 loom-model = ["dep:loom"]
 txn-fence-red = []
 # Exposes `test_support` to a DEPENDENT crate's tests (the bin's). Never on in a normal build;
-# the bin enables it from its [dev-dependencies] edge only.
-test-support = []
+# the bin enables it from its [dev-dependencies] edge only. Forwards to substrate's matching feature
+# so the relocated test-only `governance::signing::TokenSigner::mint_for_audience` is likewise
+# revealed to a dependent test binary.
+test-support = ["busbar-substrate/test-support"]
 # Passthrough to `busbar-timing`'s debug-only per-method micro-timing. DEFAULT OFF: with this off,
 # `busbar_timing::timeit!` expands to `()` and the RAII guards it produces are zero-sized no-ops, so
 # the `drop(_guard)` calls that end a timed span are compiled in ONLY under this feature (dropping a
@@ -155,6 +157,11 @@ timing = ["busbar-timing/timing"]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(busbar_mcp_native)'] }
 
 [dev-dependencies]
+# The plain `cargo test -p busbar-core` build does not turn on core's own `test-support` feature, so
+# name substrate's here to reveal the relocated test-only `TokenSigner::mint_for_audience` (used by
+# the auth/governance/a2a tests and the mcp plane tests dual-compiled into this crate's test binary).
+# Feature unification means the one substrate instance carries it for the whole test build.
+busbar-substrate = { path = "../busbar-substrate", features = ["test-support"] }
 busbar-store-example-plugin = { path = "../store-example-plugin" }
 tokio = { workspace = true, features = ["test-util"] }
 reqwest = { workspace = true, features = ["json"] }

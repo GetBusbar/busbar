@@ -49,6 +49,12 @@ base64 = { workspace = true }
 hmac = { workspace = true }
 sha2 = { workspace = true }
 serde = { workspace = true }
+# The relocated busbar-signed token crypto (`governance::signing`): Ed25519 mint/verify over a
+# base64url payload (`ed25519-dalek`), with first-boot key generation drawing 32 bytes straight from
+# the OS CSPRNG (`getrandom`) — the same fail-closed entropy source key secrets use. Pure crypto with
+# no `App`/`Store` reach, so it names only these two new leaf edges.
+ed25519-dalek = { workspace = true }
+getrandom = { workspace = true }
 # The hostless upstream-count emits (`telemetry::upstream_attempt_on`/`upstream_failure_on`) are pure
 # `metrics::counter!` writes over bounded, operator-configured labels — no `App`, no engine reach — so
 # they relocate here for the plane crates to name directly. This is the family's only `metrics` edge.
@@ -57,6 +63,11 @@ metrics = { workspace = true }
 # under `openapi-schema`, and the relocated response-schema attach helper (`api::set_response_schema`)
 # is compiled only under it — the same CI-only OpenAPI derive core and the plane crates gate on.
 schemars = { workspace = true, optional = true }
+
+# The relocated `governance::signing` known-answer tests hex-encode the derived subkey seeds they pin
+# and the redaction they assert; `hex` is used only by those tests, so it is a dev edge here.
+[dev-dependencies]
+hex = { workspace = true }
 
 # The relocated leaves carry `#[cfg_attr(not(feature = "plane-mcp"/"plane-a2a"), allow(dead_code))]`
 # verbatim from core — the items are `pub` here so the allowance is now inert, but the cfg names
@@ -69,3 +80,8 @@ plane-a2a = []
 # `schemars::JsonSchema` derive and `api::set_response_schema` are gated on it. Core's own
 # `openapi-schema` FORWARDS to this so the re-exported view carries its schema impl in lock-step.
 openapi-schema = ["dep:schemars"]
+# Exposes the test-only `governance::signing::TokenSigner::mint_for_audience` to a DEPENDENT crate's
+# test binary (core's, which also dual-compiles the mcp/a2a plane tests). Never on in a normal build;
+# core enables it from its own `test-support` feature and its dev-dependency edge. Mirrors core's own
+# `test-support`, which likewise reveals a test-only surface to the crate that links its tests.
+test-support = []

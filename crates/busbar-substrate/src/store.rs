@@ -104,6 +104,14 @@ impl Unavailable {
     }
 }
 
+/// Breaker state for a lane per ADR-0002.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BreakerState {
+    Closed,
+    Open { until: u64 },
+    HalfOpen,
+}
+
 /// The MCP plane's breaker-cell key for one registered tool server: the `tool:` prefix is the
 /// plane-qualified keyspace rule (LLM pools keep bare names, so a `tool_pools:` can never collide
 /// with an LLM pool, and `tool:`/`agent:` cannot collide with each other), the id is the operator's
