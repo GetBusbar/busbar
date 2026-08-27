@@ -149,15 +149,6 @@ pub(crate) struct Ctx<'a> {
     /// ([`super::runtime_live`]) off the host's retained handle. Minted `from_handle` by the core
     /// route adapter, so the live re-read genuinely re-reads.
     pub(crate) host: std::sync::Arc<dyn busbar_substrate::plane_host::EngineHost>,
-    /// THE LIVE HANDLE — retained on this batch for the CATALOGUE runtime read the deferred
-    /// sampling/roots leg needs (`super::runtime(&handle.load())`, resolving the dispatched member's
-    /// `roots`/`sampling` declarations), the ONE live re-read still typed on `&App`. The sampling
-    /// completion itself no longer names core: it rides the neutral host seam
-    /// [`super::sampling::satisfy_upstream_ask`] →
-    /// [`EngineHost::drive_openai_completion`](busbar_substrate::plane_host::EngineHost::drive_openai_completion).
-    /// Every other live re-read (dispatch-time re-validation, per-round grant re-read) goes through
-    /// `runtime_live` off `host`; when the runtime read is neutralised, this field goes with it.
-    pub(crate) handle: &'a std::sync::Arc<busbar_core::state::AppHandle>,
     /// The caller's resolved governance key. `None` when governance is disabled.
     pub(crate) gov: &'a busbar_api::PlaneRequestCtx,
     /// The attributed principal, for the audit row.
@@ -1655,8 +1646,10 @@ async fn tools_call(
             // nominal server: a reroute moved the conversation to the twin, and the twin's own
             // `roots`/`sampling` declarations are the ones its asks must be answered from.
             let member = route_ref.active_member();
-            let live = ctx.handle.load();
-            let entry = super::runtime(&live).catalogue.server(&member);
+            // LIVE re-read (byte-identical to the former `ctx.handle.load()` then `runtime`): a
+            // reroute or config swap after admission is reflected in the member's `roots`/`sampling`.
+            let live_rt = super::runtime_live(&ctx.host);
+            let entry = live_rt.catalogue.server(&member);
             let roots = entry.map(|s| s.roots.clone()).unwrap_or_default();
             let sampling = entry.and_then(|s| s.sampling.clone());
             let gov = ctx.gov.clone();
@@ -1987,10 +1980,6 @@ async fn create_task(
         std::sync::Arc::clone(&task),
         super::tasks::Runner {
             pool: std::sync::Arc::clone(&super::runtime_of(&ctx.host).pool),
-            // Retained SOLELY for the deferred sampling→ingress leg in `tasks::run` (still
-            // `&Arc<App>`-typed); the runner's grant re-read now goes through `runtime_live` off
-            // `engine`. Goes with the ingress batch.
-            handle: std::sync::Arc::clone(ctx.handle),
             // The detached runner's durable arena OWNS the breaker probe-hold + its id: the durable
             // `settle` over `durable` reaches the durable admission, and the probe releases owner-checked
             // when the runner (and this arena) drop at task end. The neutral host seam for the runner's

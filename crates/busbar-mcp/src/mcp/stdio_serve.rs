@@ -651,10 +651,8 @@ impl<W: AsyncWrite + Unpin + Send + 'static> Session<W> {
         let headers = synthesized_headers(&value);
         // The neutral host seam (minted `from_handle` in `dispatch_frame`, live-capable) threaded into
         // the SAME `rpc_dispatch` the HTTP handler runs, so the two transports reach the host seams
-        // identically. `handle` rides alongside SOLELY for the deferred sampling→ingress leg (still
-        // `&Arc<App>`-typed); every other reach goes through `host`.
+        // identically — the SOLE engine seam for the data path, live re-reads included.
         envelope::rpc_dispatch(
-            &self.handle,
             host,
             &self.gov,
             &self.principal,

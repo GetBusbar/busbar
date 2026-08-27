@@ -515,15 +515,6 @@ impl Registry {
 /// outlives the request that started it, so it cannot hold a reference into that request's frame.
 pub(crate) struct Runner {
     pub(crate) pool: Arc<super::client::pool::McpConnectionPool>,
-    /// THE LIVE HANDLE — retained on this batch for the CATALOGUE runtime read the deferred
-    /// sampling/roots leg needs (`super::runtime(&handle.load())`, resolving the server's
-    /// `roots`/`sampling` declarations), the ONE live re-read still typed on `&App`. The sampling
-    /// completion itself no longer names core: it rides the neutral host seam
-    /// [`super::sampling::satisfy_upstream_ask`] → `EngineHost::drive_openai_completion`. The runner's
-    /// OTHER live re-read — the per-round grant re-read — goes through `runtime_live` off
-    /// [`engine`](Self::engine) (a `from_handle` host, so it re-reads genuinely). When the runtime
-    /// read is neutralised this field goes with it.
-    pub(crate) handle: Arc<busbar_core::state::AppHandle>,
     /// THE DETACHED RUNNER'S DURABLE ARENA, holding the single-flight probe `create_task` won.
     /// [`DurableScope`](busbar_substrate::plane_host::DurableScope): `create_task` ran the task admit
     /// through the host `breaker_admit` seam OVER this arena, so the probe was BORN durable (no
@@ -661,7 +652,6 @@ async fn run(task: Arc<McpTask>, runner: Runner) {
     // this path exactly as it does on that one, and the only way to be sure of that is to run the
     // same loop.
     let server_id = runner.server_id.clone();
-    let handle = Arc::clone(&runner.handle);
     let outcome = super::inputreq::drive(
         &runner.server_id,
         runner.max_rounds,
@@ -722,8 +712,10 @@ async fn run(task: Arc<McpTask>, runner: Runner) {
         // admitted and charged under (bounded by `TASK_TTL_MS`, like everything else the runner
         // carries). See `super::roots::satisfy_upstream_ask` / `super::sampling`.
         |ask| {
-            let live = handle.load();
-            let entry = super::runtime(&live).catalogue.server(&server_id);
+            // LIVE re-read (byte-identical to the former `handle.load()` then `runtime`) off the
+            // runner's `from_handle` host, so a config swap after admission is reflected here.
+            let live_rt = super::runtime_live(&host);
+            let entry = live_rt.catalogue.server(&server_id);
             let roots = entry.map(|s| s.roots.clone()).unwrap_or_default();
             let sampling = entry.and_then(|s| s.sampling.clone());
             let gov = busbar_api::PlaneRequestCtx {

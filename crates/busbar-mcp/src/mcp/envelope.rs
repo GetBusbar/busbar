@@ -273,20 +273,13 @@ pub(crate) async fn rpc(ctx: busbar_substrate::plane_routes::PlaneReqCtx) -> Res
     // S4a Option A: this handler no longer extracts `axum::State<Arc<AppHandle>>` /
     // `Extension<..>`. The core route adapter (`busbar_core::router::mount_plane_route`) took them
     // off the request and handed them across the NEUTRAL `PlaneReqCtx` seam, so this plane names no
-    // router state type. The engine handle rides the seam type-erased (the per-subsystem App-sever
-    // that removes this downcast is a later step); `gov`/`principal` are the SAME values the auth
-    // middleware resolved and attached BEFORE this `RouteAuth::Key` handler ran — surfaced here, so
-    // nothing below re-runs the identity chain (which would double-run it).
-    // The engine handle rides the seam type-erased. It is downcast ONLY to feed `method::Ctx.handle`,
-    // which this batch retains SOLELY for the deferred sampling→ingress leg (still `&Arc<App>`-typed);
-    // every other reach now goes through the neutral `host` seam below. When the ingress batch lands
-    // this downcast and the handle thread go with it.
-    let handle: std::sync::Arc<busbar_core::state::AppHandle> = ctx
-        .engine
-        .downcast::<busbar_core::state::AppHandle>()
-        .expect("the mcp route engine handle is an AppHandle");
+    // router state type. `gov`/`principal` are the SAME values the auth middleware resolved and
+    // attached BEFORE this `RouteAuth::Key` handler ran — surfaced here, so nothing below re-runs the
+    // identity chain (which would double-run it). The engine handle rides the seam type-erased and is
+    // no longer downcast: the request data path reaches the engine SOLELY through the neutral `host`
+    // seam below, live re-reads included (`runtime_live`).
     // The neutral host seam the core adapter minted (`from_handle`) over this request's engine
-    // snapshot. Now the SOLE engine seam for the data path: the plane's `runtime_of`/`resource_of`
+    // snapshot. THE SOLE engine seam for the data path: the plane's `runtime_of`/`resource_of`
     // funnel reads through it, BOUND to this request's snapshot, and `runtime_live` re-reads live.
     let host = ctx.host;
     let gov = ctx.gov.expect(
@@ -341,7 +334,7 @@ pub(crate) async fn rpc(ctx: busbar_substrate::plane_routes::PlaneReqCtx) -> Res
             }
         },
         |value, id, method| async move {
-            rpc_dispatch(&handle, &host, &gov, &principal, headers, value, id, method).await
+            rpc_dispatch(&host, &gov, &principal, headers, value, id, method).await
         },
     )
     .await
@@ -356,7 +349,6 @@ pub(crate) async fn rpc(ctx: busbar_substrate::plane_routes::PlaneReqCtx) -> Res
 /// the equality doctrine's teeth: a second transport binds the same dispatch, never a parallel one.
 #[allow(clippy::too_many_arguments)]
 pub(in crate::mcp) async fn rpc_dispatch(
-    handle: &std::sync::Arc<busbar_core::state::AppHandle>,
     engine_host: &std::sync::Arc<dyn busbar_substrate::plane_host::EngineHost>,
     gov: &busbar_api::PlaneRequestCtx,
     principal: &busbar_api::AuthPrincipal,
@@ -510,7 +502,6 @@ pub(in crate::mcp) async fn rpc_dispatch(
     // and did not have to change when the table gained entries.
     let ctx = crate::mcp::method::Ctx {
         host: engine_host.clone(),
-        handle,
         gov,
         actor: principal.actor_id(),
         capabilities: &capabilities,
