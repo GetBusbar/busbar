@@ -344,6 +344,19 @@ pub trait EngineHost: Send + Sync {
     /// wired `kind: secret` plugin), fail-closed exactly as core resolution.
     fn a2a_secret_resolver(&self) -> Arc<dyn busbar_api::SecretResolve>;
 
+    /// Sign a plane-framed agent-card signing input, returning the 64-byte Ed25519 signature (None
+    /// when this deployment holds no card-signing key). The card subkey is derived and held HOST-side;
+    /// only the bytes to sign cross in and only the signature crosses out — no key material reaches the
+    /// plane. Mints its transient HostCtx internally over a fresh per-call DispatchScope, drives the
+    /// slot synchronously, returns owned bytes — no HostCtx crosses an `.await`.
+    fn card_sign(&self, signing_input: &[u8]) -> Option<[u8; 64]>;
+
+    /// The deployment's type-erased agent definitions (`Arc<dyn Any + Send + Sync>` holding the
+    /// `AgentsCfg` the A2A plane downcasts), off the BOUND snapshot — the `App::agent_defs` field that
+    /// is NOT a `plane_slots` entry. Owned (an `Arc` clone) so it outlives the call; a pure snapshot
+    /// read, no `HostCtx` (mirrors [`a2a_secret_resolver`](Self::a2a_secret_resolver)).
+    fn a2a_agent_defs(&self) -> Arc<dyn std::any::Any + Send + Sync>;
+
     /// Drive ONE non-streaming `openai`-dialect completion through the ENTIRE resolved ingress
     /// pipeline (governance → pools → breaker/failover → metering → request log) under `gov`, on the
     /// operator's declared `model`, and return the raw wire outcome. Identical to calling

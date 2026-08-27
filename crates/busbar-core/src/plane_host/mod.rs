@@ -130,13 +130,16 @@ pub fn with_borrowed_host<R>(
 /// to sign and receives only the signature — no signing material crosses to the plane. A SAFE wrapper
 /// that keeps the raw fn-pointer + out-buffer read inside this audited module (busbar-core denies
 /// `unsafe` elsewhere). `None` when this deployment holds no card-signing key (the `Refused` status).
-#[cfg(feature = "plane-a2a")]
 #[must_use]
 pub fn card_sign_over(app: &App, signing_input: &[u8]) -> Option<[u8; 64]> {
     let scope = DispatchScope::new();
     with_borrowed_host(app, &scope, |host, vt| {
+        // The slot is wired whenever a plane declares a card-signing domain (`plane-a2a`) and `None`
+        // otherwise (see the vtable's `card_sign`): an unwired slot signs nothing, so degrade to `None`
+        // rather than panic — the trait method must exist unconditionally across every feature combo.
+        let sign = vt.card_sign?;
         let mut out = [0u8; 64];
-        let status = (vt.card_sign.expect("card_sign is a wired slot"))(
+        let status = sign(
             host,
             signing_input.as_ptr(),
             signing_input.len(),
@@ -588,6 +591,19 @@ impl busbar_substrate::plane_host::EngineHost for EngineHostImpl {
         // clone coerces to the trait object — no wrapping, the SAME resolver (built-ins + any wired
         // `kind: secret` plugin), fail-closed exactly as core resolution.
         self.app.secret_resolver.clone()
+    }
+
+    fn card_sign(&self, signing_input: &[u8]) -> Option<[u8; 64]> {
+        // SAME dispatch as the veneer: a fresh per-call `DispatchScope`, the `card_sign` slot driven
+        // synchronously over a stack-pinned `HostState`, the `HostCtx` never escaping the call. `None`
+        // when no card-signing key is held (or, in a build without `plane-a2a`, the slot is unwired).
+        card_sign_over(&self.app, signing_input)
+    }
+
+    fn a2a_agent_defs(&self) -> Arc<dyn std::any::Any + Send + Sync> {
+        // Pure snapshot read: the type-erased `AgentsCfg` the A2A plane downcasts, cloned so it outlives
+        // the call. Already an `Arc<dyn Any + Send + Sync>` on `App`, so the clone is the whole seam.
+        self.app.agent_defs.clone()
     }
 
     fn audit_emit(&self, action: &str, resource: &str, outcome: &str, principal: &str) {
