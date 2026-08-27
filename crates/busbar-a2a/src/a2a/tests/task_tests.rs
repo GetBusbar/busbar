@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/busbar-core/src/a2a/task.rs`.
+//! Tests for `crates/busbar-a2a/src/a2a/task.rs`.
 
 use super::*;
 

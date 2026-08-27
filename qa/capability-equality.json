@@ -74,7 +74,7 @@
       "capability": "breaker-trip",
       "plane": "a2a-client",
       "state": "proven",
-      "test": "crates/busbar-core/src/a2a/tests/breaker_fastfail_tests.rs::a_backend_hard_down_opens_the_core_cell_and_the_second_hop_never_reaches_the_wire"
+      "test": "crates/busbar-a2a/src/a2a/tests/breaker_fastfail_tests.rs::a_backend_hard_down_opens_the_core_cell_and_the_second_hop_never_reaches_the_wire"
     },
     {
       "capability": "breaker-trip",
@@ -104,7 +104,7 @@
       "capability": "breaker-fastfail",
       "plane": "a2a-client",
       "state": "proven",
-      "test": "crates/busbar-core/src/a2a/tests/breaker_fastfail_tests.rs::a_tripped_agent_rejects_fresh_submissions_on_the_jsonrpc_binding"
+      "test": "crates/busbar-a2a/src/a2a/tests/breaker_fastfail_tests.rs::a_tripped_agent_rejects_fresh_submissions_on_the_jsonrpc_binding"
     },
     {
       "capability": "breaker-fastfail",
@@ -134,7 +134,7 @@
       "capability": "failover-reroute",
       "plane": "a2a-client",
       "state": "proven",
-      "test": "crates/busbar-core/src/a2a/tests/reroute_pool_tests.rs::a_tripped_pool_primary_reroutes_a_fresh_submission_to_the_twin_and_stays_untouched"
+      "test": "crates/busbar-a2a/src/a2a/tests/reroute_pool_tests.rs::a_tripped_pool_primary_reroutes_a_fresh_submission_to_the_twin_and_stays_untouched"
     },
     {
       "capability": "failover-reroute",
@@ -201,7 +201,7 @@
       "capability": "hooks-gate",
       "plane": "a2a-server",
       "state": "proven",
-      "test": "crates/busbar-core/src/a2a/tests/hook_gate_tests.rs::agents_hooks_reject_all_rejects_a_message_send"
+      "test": "crates/busbar-a2a/src/a2a/tests/hook_gate_tests.rs::agents_hooks_reject_all_rejects_a_message_send"
     },
     {
       "capability": "audit-chain",
@@ -227,14 +227,14 @@
       "capability": "audit-chain",
       "plane": "a2a-client",
       "state": "proven",
-      "test": "crates/busbar-core/src/a2a/tests/client_leg_tests.rs::the_delegation_hop_lands_in_the_per_task_chain_naming_the_agent_it_was_issued_to",
+      "test": "crates/busbar-a2a/src/a2a/tests/client_leg_tests.rs::the_delegation_hop_lands_in_the_per_task_chain_naming_the_agent_it_was_issued_to",
       "note": "the hop busbar ISSUES is chained: `task.delegated` naming who delegated and to which registered agent, appended BEFORE the socket, in the same per-task chain as the submission and verified by crate::audit::verify_chain. A failed hop is chained too and ends terminally (a_failed_hop_is_chained_too_and_the_chain_carries_its_terminal_outcome). Watched red: removing the record_dispatch call in a2a/receive.rs fails both. STILL OPEN on this plane's sibling: push-notification DELIVERY (a2a/pushdeliver.rs) chains nothing -- that is the a2a-server role's own outbound leg, tracked in the gap report, not claimed here."
     },
     {
       "capability": "audit-chain",
       "plane": "a2a-server",
       "state": "proven",
-      "test": "crates/busbar-core/src/a2a/tests/front_door_chain_tests.rs::an_inbound_task_leaves_a_verifying_chain_in_the_store_the_front_door_wrote_it_to",
+      "test": "crates/busbar-a2a/src/a2a/tests/front_door_chain_tests.rs::an_inbound_task_leaves_a_verifying_chain_in_the_store_the_front_door_wrote_it_to",
       "note": "RE-POINTED. The previous pin (provenance_tests::an_untouched_chain_verifies_and_its_links_are_actual_links) builds a synthetic TaskChain in-process and would have passed unchanged if the front door chained nothing at all -- a cell green on evidence that never touches the plane. The new pin POSTs message/send at a real listener through build_router and reads the events back out of an attached store, so an empty read-back is a failure rather than a pass. This plane's own outbound webhook delivery is covered by the three task.push_* tests in pushdeliver_tests.rs, added with it: before them a delivery refused by the delivery-time SSRF guard left no record anywhere."
     },
     {
@@ -260,13 +260,13 @@
       "capability": "governance-budget",
       "plane": "a2a-client",
       "state": "proven",
-      "test": "crates/busbar-core/src/a2a/tests/meter_tests.rs::a_delegation_bills_the_initiating_key_for_the_hop_and_claims_nothing_beyond_it"
+      "test": "crates/busbar-a2a/src/a2a/tests/meter_tests.rs::a_delegation_bills_the_initiating_key_for_the_hop_and_claims_nothing_beyond_it"
     },
     {
       "capability": "governance-budget",
       "plane": "a2a-server",
       "state": "proven",
-      "test": "crates/busbar-core/src/a2a/tests/meter_tests.rs::reaching_the_limit_is_over_it_and_the_refusal_carries_a_retry_after"
+      "test": "crates/busbar-a2a/src/a2a/tests/meter_tests.rs::reaching_the_limit_is_over_it_and_the_refusal_carries_a_retry_after"
     },
     {
       "capability": "disposition",
@@ -290,7 +290,7 @@
       "capability": "disposition",
       "plane": "a2a-client",
       "state": "proven",
-      "test": "crates/busbar-core/src/a2a/tests/reroute_pool_tests.rs::a_client_fault_answer_never_penalizes_the_agent"
+      "test": "crates/busbar-a2a/src/a2a/tests/reroute_pool_tests.rs::a_client_fault_answer_never_penalizes_the_agent"
     },
     {
       "capability": "disposition",
@@ -322,7 +322,7 @@
       "capability": "metrics",
       "plane": "a2a-client",
       "state": "proven",
-      "test": "crates/busbar-core/src/a2a/tests/relay_leg_metrics_tests.rs::a_relayed_task_counts_an_upstream_attempt_naming_the_agent_it_was_issued_to",
+      "test": "crates/busbar-a2a/src/a2a/tests/relay_leg_metrics_tests.rs::a_relayed_task_counts_an_upstream_attempt_naming_the_agent_it_was_issued_to",
       "note": "the same two client-leg families, emitted from a2a::relay::prepare and count_leg_failure, labelled with the operator's agent_def id and the binding word off the closed transport axis. Its twin a_backend_that_cannot_be_reached_is_counted_as_a_transient_upstream_failure covers the failure half."
     },
     {
@@ -353,13 +353,13 @@
       "capability": "trust-pinning",
       "plane": "a2a-client",
       "state": "proven",
-      "test": "crates/busbar-core/src/a2a/tests/transport_pin_tests.rs::the_pin_read_off_a_real_handshake_is_the_leaf_keys_own_spki_hash"
+      "test": "crates/busbar-a2a/src/a2a/tests/transport_pin_tests.rs::the_pin_read_off_a_real_handshake_is_the_leaf_keys_own_spki_hash"
     },
     {
       "capability": "trust-pinning",
       "plane": "a2a-server",
       "state": "proven",
-      "test": "crates/busbar-core/src/a2a/tests/pin_tests.rs::an_unpinned_registration_is_capturable_and_never_approvable"
+      "test": "crates/busbar-a2a/src/a2a/tests/pin_tests.rs::an_unpinned_registration_is_capturable_and_never_approvable"
     },
     {
       "capability": "net-guard",
@@ -383,13 +383,13 @@
       "capability": "net-guard",
       "plane": "a2a-client",
       "state": "proven",
-      "test": "crates/busbar-core/src/a2a/tests/fetch_tests.rs::a_rebinding_host_is_refused_outright_once_it_answers_the_metadata_address"
+      "test": "crates/busbar-a2a/src/a2a/tests/fetch_tests.rs::a_rebinding_host_is_refused_outright_once_it_answers_the_metadata_address"
     },
     {
       "capability": "net-guard",
       "plane": "a2a-server",
       "state": "proven",
-      "test": "crates/busbar-core/src/a2a/tests/pushdeliver_tests.rs::a_callback_that_became_internal_after_registration_is_refused_at_delivery",
+      "test": "crates/busbar-a2a/src/a2a/tests/pushdeliver_tests.rs::a_callback_that_became_internal_after_registration_is_refused_at_delivery",
       "note": "this role's own outbound is webhook push delivery, and it is guarded -- the PUSH-DELIVER TCK waivers exist because this guard correctly wins over the conformance score."
     },
     {
@@ -414,13 +414,13 @@
       "capability": "egress-auth",
       "plane": "a2a-client",
       "state": "proven",
-      "test": "crates/busbar-core/src/a2a/tests/creds_tests.rs::a_minted_lease_carries_the_secret_only_through_the_header_it_was_placed_at"
+      "test": "crates/busbar-a2a/src/a2a/tests/creds_tests.rs::a_minted_lease_carries_the_secret_only_through_the_header_it_was_placed_at"
     },
     {
       "capability": "egress-auth",
       "plane": "a2a-server",
       "state": "proven",
-      "test": "crates/busbar-core/src/a2a/tests/pushdeliver_tests.rs::the_callers_own_webhook_credential_is_presented_on_the_delivery"
+      "test": "crates/busbar-a2a/src/a2a/tests/pushdeliver_tests.rs::the_callers_own_webhook_credential_is_presented_on_the_delivery"
     },
     {
       "capability": "catalogue",
@@ -444,13 +444,13 @@
       "capability": "catalogue",
       "plane": "a2a-client",
       "state": "proven",
-      "test": "crates/busbar-core/src/a2a/tests/registry_tests.rs::a_fresh_registration_is_pending_and_delegable_to_nobody"
+      "test": "crates/busbar-a2a/src/a2a/tests/registry_tests.rs::a_fresh_registration_is_pending_and_delegable_to_nobody"
     },
     {
       "capability": "catalogue",
       "plane": "a2a-server",
       "state": "proven",
-      "test": "crates/busbar-core/src/a2a/tests/catalogue_tests.rs::scope_decides_visibility_and_a_pool_only_key_sees_nothing"
+      "test": "crates/busbar-a2a/src/a2a/tests/catalogue_tests.rs::scope_decides_visibility_and_a_pool_only_key_sees_nothing"
     }
   ]
 }

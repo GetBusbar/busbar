@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/busbar-core/src/a2a/pushnotify.rs`.
+//! Tests for `crates/busbar-a2a/src/a2a/pushnotify.rs`.
 //!
 //! Every hostile case here is a case a real network makes hard to stage on demand — a nameserver
 //! that answers differently on the second lookup, a host that resolves to four addresses of which
