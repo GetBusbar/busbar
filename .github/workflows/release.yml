@@ -1387,6 +1387,65 @@ jobs:
           done < .github/release-notify-targets.txt
           [ "$fail" = 0 ] || { echo "::error::one or more downstream dispatches failed (see warnings)"; exit 1; }
 
+  # ── DISCORD: announce a genuinely-published release to the community webhook. ────────────────────
+  #
+  # This is the human-facing counterpart to notify-downstream's machine fan-out, and it hangs off the
+  # SAME anchor — `promote-release` — for the same reason: there is nothing to announce until the tag
+  # exists, the draft is published, and `latest` has moved. Because the whole pipeline above keeps a
+  # release invisible until it is proven, this @everyone CANNOT fire on a red build, and it cannot
+  # fire on an ordinary push to main that cut no new version: when plan.outputs.release == '0' the
+  # gate/build/promote chain is skipped, promote-release never runs, and this job is skipped with it.
+  # The `if:` below is belt-and-braces over that structural guarantee. release.yml only triggers on
+  # push to main (or manual dispatch), so branch == main is implicit and needs no ref check.
+  #
+  # No `!cancelled()` here on purpose: unlike consumer-verification, this MUST skip when the promote
+  # failed — we announce only successes. The webhook is a repo secret (DISCORD_WEBHOOK_URL); an unset
+  # secret skips cleanly (exit 0) so a fork cutting its own release does not go red. The release notes
+  # reach the shell only via `env:` (inert data), never `${{ }}` inside the script; jq builds the JSON
+  # so quotes/newlines in the notes are escaped rather than spliced; the webhook is passed by env and
+  # never appears on the curl command line where it could be logged.
+  discord-notify:
+    name: announce the release in Discord
+    needs: [plan, promote-release]
+    if: ${{ needs['promote-release'].result == 'success' && needs.plan.outputs.release == '1' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Post the release to Discord
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.plan.outputs.tag }}
+          RELEASE_URL: ${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ needs.plan.outputs.tag }}
+          CHANGELOG_URL: ${{ github.server_url }}/${{ github.repository }}/blob/main/CHANGELOG.md
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${DISCORD_WEBHOOK_URL:-}" ]; then
+            echo "::notice::DISCORD_WEBHOOK_URL secret is not set — skipping the Discord announcement."
+            exit 0
+          fi
+          # The release notes ARE the changelog (KISS). Read from the just-published release rather
+          # than github.event.release.* because this run is a push event, not a release event.
+          BODY="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json body --jq '.body' || true)"
+          # Discord's hard content limit is 2000 chars; budget ~1500 for the notes so the header,
+          # links, and the @everyone always fit. Hard-truncate with an ellipsis if longer.
+          if [ "${#BODY}" -gt 1500 ]; then
+            BODY="$(printf '%s' "${BODY:0:1500}")…"
+          fi
+          # printf (not an indented multi-line "..." assignment, which would capture the YAML leading
+          # whitespace on every line) so each part sits at column 0.
+          MSG="$(printf '@everyone %s was just released.\n%s\n%s\n%s' \
+            "$TAG" "$BODY" "$RELEASE_URL" "$CHANGELOG_URL")"
+          payload="$(jq -n --arg content "$MSG" \
+            '{content:$content, allowed_mentions:{parse:["everyone"]}}')"
+          curl -fsS -X POST \
+            -H "Content-Type: application/json" \
+            -d "$payload" \
+            "$DISCORD_WEBHOOK_URL"
+          echo "::notice::Announced ${TAG} in Discord."
+
   # -- THE LAST STEP: DOES THE PUBLISHED THING WORK FOR A USER? ------------------------------------
   #
   # `verify-staged` above already proved the ARTIFACTS work, before they had names. This proves the
