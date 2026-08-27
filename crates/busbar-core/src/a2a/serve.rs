@@ -191,7 +191,7 @@ impl std::fmt::Display for ServeError {
 /// `JSONRPC`, `http+json` → `HTTP+JSON`, `grpc` → `GRPC`), so the servability checks compare
 /// case-insensitively and exactly, never by prefix.
 pub(crate) fn servable_bindings() -> Vec<String> {
-    crate::plane::wire_format_names("a2a")
+    (super::PLANE_DECL.wire_format_names)()
         .iter()
         .map(|f| f.to_uppercase())
         .collect()

@@ -612,7 +612,7 @@ pub(crate) async fn approve(ctx: AdminReqCtx) -> AdminReply {
         let Some(reg) = regs.iter_mut().find(|r| r.agent_id == name) else {
             return Err(AdminError::not_found(format!(
                 "{} `{name}`",
-                crate::plane::plane_decl("a2a").subject_noun
+                super::PLANE_DECL.subject_noun
             )));
         };
         super::pin::approve_registration(&mut reg.approval, &preview.sighting, None)

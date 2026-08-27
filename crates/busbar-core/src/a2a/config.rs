@@ -295,9 +295,10 @@ impl<'de> Deserialize<'de> for AgentsCfg {
         // stays here is what is genuinely this plane's: `validate_agent`, run through the same
         // function the admin write path calls so the API rejects exactly what the file rejects, and
         // the passthrough refusal below.
-        let section = crate::plane::config::split_section::<D, AgentDefCfg>(
+        let section = busbar_substrate::plane::config::split_section::<D, AgentDefCfg>(
             deserializer,
-            "a2a",
+            super::PLANE_DECL.config_section,
+            super::PLANE_DECL.subject_noun,
             validate_agent,
         )?;
 
