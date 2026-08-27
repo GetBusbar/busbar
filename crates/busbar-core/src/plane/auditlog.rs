@@ -40,9 +40,9 @@ use std::sync::{Arc, Mutex};
 use crate::admin::audit::{AuditEntry, MAX_AUDIT_ENTRIES};
 use crate::audit::journal::NeutralBody;
 use crate::audit::{verify_chain, ChainBreak, Framing};
-use crate::plane::store::{decode, encode, PlaneStore, KIND_AUDIT};
+use crate::plane::store::{decode, encode, PlaneStore, PlaneStoreView, KIND_AUDIT};
 use crate::plane_host::journal::PlaneJournalRecord;
-use busbar_api::{PlaneSelector, StoreError, StoreResult};
+use busbar_api::{PlaneDisposition, PlaneRecord, PlaneSelector, StoreError, StoreResult};
 use busbar_plugin::hot::host::HostCtx;
 use busbar_plugin::hot::{
     Framing as AbiFraming, JournalStreamDesc, ReframeOut, Seq, StatusClass, POD_VERSION,
@@ -347,6 +347,7 @@ impl PlaneAuditLog {
     /// persists, and SEED the host-side chain position from them so a later append continues the same
     /// chain from the persisted tail rather than forking at seq 1. A break is REPORTED and the chain
     /// still resumes from the broken tail. A read hiccup is surfaced as an error the caller logs.
+    #[allow(dead_code)] // superseded by the plane_records restore; retired with the legacy leg (A6)
     pub(crate) fn restore_legacy_table(
         &self,
         host: HostCtx,
@@ -397,7 +398,6 @@ impl PlaneAuditLog {
     /// enumerate the scopes the store holds `audit` records for (the admin log's single `admin` scope),
     /// resume the chain from its persisted tail, and REPORT what was found. A break is reported and the
     /// chain still resumes from the broken tail.
-    #[allow(dead_code)] // no production caller until the audit read path is cut over to the seam
     pub(crate) fn restore_from_store(
         &self,
         host: HostCtx,
@@ -497,23 +497,112 @@ pub(crate) fn emit(host: HostCtx, scope: &str, suffix: Vec<u8>) {
     }
 }
 
-/// BOOT: register the admin `audit` stream, then MIGRATE the legacy durable audit table into the
-/// host-side chain position (so the seam continues the same chain). Driven with a live `HostCtx` over
-/// `app`. A restore read hiccup / chain-verify break is logged inside [`PlaneAuditLog`]; a store read
-/// error is surfaced here as the boot diagnostic.
-pub(crate) fn register_and_migrate(app: &Arc<crate::state::App>, store: &dyn busbar_api::Store) {
+/// ONE-TIME DATA MIGRATION: copy the legacy durable audit TABLE (`list_audit`/`append_audit`) into the
+/// neutral `plane_records` the durable seam now reads at boot, preserving each record's
+/// seq/prev_hash/hash and digest EXACTLY. The copied [`busbar_api::AuditRecord`] fields reproduce the
+/// seam's neutral body byte-for-byte (the write-side witness proves the seam digest byte-equals the
+/// legacy [`AuditEntry`] digest), so the migrated chain [`crate::audit::verify_chain`]-passes
+/// identically — the migration copies bytes, it never re-seals.
+///
+/// IDEMPOTENT and SELF-LIMITING:
+/// - a store already holding `audit` records in `plane_records` (a migrated store, OR one the seam has
+///   written to since) is left UNTOUCHED — returns `Ok(0)`;
+/// - a store with NO legacy audit rows (a fresh deployment, or `store: memory`) is left untouched;
+/// - only an OLD store whose audit lives SOLELY in `list_audit` is copied over, ONCE.
+///
+/// The FULL legacy history is read (`list_audit`, oldest-first FROM GENESIS), never the bounded tail:
+/// the durable `plane_records` are never pruned and [`PlaneAuditLog::restore_from_store`] verifies from
+/// the GENESIS anchor, so the migrated chain must start at seq 1. A read/write error is surfaced to the
+/// caller (logged at boot) and the migration retries on the next boot, because the idempotency check
+/// still finds `plane_records` empty.
+pub(crate) fn migrate_legacy_table_to_plane_records(
+    store: &dyn busbar_api::Store,
+) -> StoreResult<usize> {
+    // IDEMPOTENCY GATE: the seam already holds this scope's history (migrated, or written since) — do
+    // nothing. Checking the admin scope's RECORDS (not merely the enumerated parents) means a prior
+    // boot that seeded only an empty scope cannot block a real migration.
+    let existing =
+        store.list_plane_records(KIND_AUDIT, &PlaneSelector::Parent(ADMIN_LOG.to_string()))?;
+    if !existing.is_empty() {
+        return Ok(0);
+    }
+    // The FULL legacy chain, oldest-first from genesis (seq 1). A fresh / memory store returns empty.
+    let records = store.list_audit()?;
+    if records.is_empty() {
+        return Ok(0);
+    }
+    for r in &records {
+        let content = audit_suffix(r.ts, &r.action, &r.resource, &r.outcome, &r.principal);
+        let body = encode(&NeutralBody {
+            seq: r.seq,
+            prev_hash: r.prev_hash.clone(),
+            hash: r.hash.clone(),
+            content,
+        })?;
+        // The neutral envelope the seam persists: kind `audit`, id/parent the constant `admin` scope,
+        // ordered by the record's own seq. seq/prev_hash/hash cross VERBATIM from the legacy record so
+        // the migrated chain is byte-identical to what the seam would have written.
+        store.append_plane_record(&PlaneRecord {
+            kind: KIND_AUDIT.to_string(),
+            id: ADMIN_LOG.to_string(),
+            parent: Some(ADMIN_LOG.to_string()),
+            seq: r.seq,
+            ts: r.ts,
+            disposition: PlaneDisposition::Active,
+            body,
+        })?;
+    }
+    Ok(records.len())
+}
+
+/// BOOT: register the admin `audit` stream, run the ONE-TIME legacy-table → `plane_records` migration,
+/// then RESTORE the audit log FROM `plane_records` — the ONE durable audit source now. The restore
+/// seeds BOTH the host-side chain position (so a later append continues the same chain) AND the
+/// process-global [`AUDIT_LOG`] read-model ring `GET /audit` serves, from the persisted SEAM records —
+/// replacing the legacy-table restore. Driven with a live `HostCtx` over `app`. A restore chain-verify
+/// break is logged inside [`PlaneAuditLog`]; a migration or store read error is surfaced here as the
+/// boot diagnostic.
+pub(crate) fn register_and_migrate(
+    app: &Arc<crate::state::App>,
+    store: &Arc<dyn busbar_api::Store>,
+) {
     register_audit_stream(app);
-    // Restore into the process-global read model `AUDIT_LOG` (not a throwaway local): the restore
-    // seeds BOTH the host-side chain position AND `AUDIT_LOG`'s ring, so the seam read source is
-    // populated from the durable tail at boot exactly as the legacy ring was.
+    // ONE-TIME DATA MIGRATION: copy any pre-existing legacy audit table into the neutral `plane_records`
+    // the seam restore reads. Idempotent — a no-op on a migrated / fresh / memory store. A failure is
+    // LOUD but non-fatal: the restore below then finds only what is already in `plane_records`, and the
+    // migration retries on the next boot.
+    match migrate_legacy_table_to_plane_records(store.as_ref()) {
+        Ok(0) => {}
+        Ok(n) => tracing::info!(
+            records = n,
+            "migrated the legacy durable audit table into the neutral plane_records seam"
+        ),
+        Err(e) => crate::diagnostics::diag_error!(
+            crate::diagnostics::BOOT_AUDIT_MIGRATE_FAILED,
+            error = %e.0,
+            "could not migrate the legacy durable audit table into plane_records; the durable audit \
+             seam will restore only what plane_records already holds and the migration retries on the \
+             next boot"
+        ),
+    }
+    // BOOT RESTORE from the neutral `plane_records`: seed the host-side chain position AND `AUDIT_LOG`'s
+    // ring from the persisted seam records, so the seam read source is populated from the durable tail
+    // at boot exactly as the legacy ring was — but FROM `plane_records`, not the legacy table.
+    let plane_store = PlaneStoreView::narrow(store.clone());
     crate::plane_host::with_dispatch_scope(app, |host, _vt| {
-        if let Err(e) = AUDIT_LOG.restore_legacy_table(host, store) {
-            crate::diagnostics::diag_warn!(
+        match AUDIT_LOG.restore_from_store(host, plane_store.as_ref()) {
+            Ok(restored) if restored.records > 0 => tracing::info!(
+                records = restored.records,
+                chain_breaks = restored.chain_breaks.len(),
+                "admin audit restored from the durable plane_records seam"
+            ),
+            Ok(_) => {}
+            Err(e) => crate::diagnostics::diag_warn!(
                 crate::diagnostics::BOOT_AUDIT_RESTORE_READ_FAILED,
                 error = %e.0,
-                "could not read the durable audit log to seed the journal seam; the seam chain \
-                 starts fresh and will continue from the legacy tail on the next successful read"
-            );
+                "could not read the durable audit plane_records to seed the journal seam; the seam \
+                 read model starts empty and resumes from the persisted tail on the next successful read"
+            ),
         }
     });
 }

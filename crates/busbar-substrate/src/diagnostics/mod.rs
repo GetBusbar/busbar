@@ -2605,6 +2605,28 @@ pub const BOOT_AUDIT_RESTORE_READ_FAILED: Diagnostic = Diagnostic {
     retired: false,
 };
 
+/// The ONE-TIME legacy-audit-table → `plane_records` migration could not be completed at boot (a
+/// store write hiccup); the durable seam has not yet taken over the pre-existing audit history.
+pub const BOOT_AUDIT_MIGRATE_FAILED: Diagnostic = Diagnostic {
+    code: 9012,
+    class: Class::Boot,
+    slug: "boot-audit-migrate-failed",
+    title: "Legacy audit table could not be migrated into the durable journal seam at boot",
+    severity: Severity::Actionable,
+    summary: "busbar found audit history in the legacy durable table but could not copy it into the \
+              neutral `plane_records` the durable audit seam now reads at boot — a store read/write \
+              hiccup, not a chain-verification failure. The migration is IDEMPOTENT and is retried on \
+              the next boot, so the pre-existing history reappears once the store is healthy; until \
+              then the seam-backed audit read (`GET /audit`) reflects only records written since this \
+              boot.",
+    action: "Investigate the governance store's write path at boot (the same store the audit log \
+             persists to). Once it accepts writes, restart so the one-time migration completes and \
+             the durable history is restored into the seam; a transient hiccup needs no action \
+             beyond confirming the store is healthy.",
+    since: "1.6.0",
+    retired: false,
+};
+
 /// The TLS accept loop is failing persistently (fd exhaustion?); busbar backs off. Backoff-latched.
 pub const TLS_ACCEPT_PERSISTENT_FAILURE: Diagnostic = Diagnostic {
     code: 9002,
@@ -4157,6 +4179,7 @@ pub static REGISTRY: &[&Diagnostic] = &[
     &GOVERNANCE_STORE_EPHEMERAL,
     &DURABLE_KEYS_INERT,
     &BOOT_AUDIT_RESTORE_READ_FAILED,
+    &BOOT_AUDIT_MIGRATE_FAILED,
     &TLS_ACCEPT_PERSISTENT_FAILURE,
     &TELEMETRY_SLOT_TABLE_FULL,
     &EVENTSTREAM_EVENTTYPE_HEADER_OVERSIZE,

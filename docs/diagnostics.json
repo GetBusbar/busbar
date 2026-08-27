@@ -2614,5 +2614,17 @@
     "action": "Retry on a host with a working RNG (`/dev/urandom` / `getrandom`). A persistent failure points at a broken or blocked entropy source in the environment.",
     "since": "1.6.0",
     "retired": false
+  },
+  {
+    "code": "BUSBAR-9012",
+    "number": 9012,
+    "class": "boot",
+    "slug": "boot-audit-migrate-failed",
+    "title": "Legacy audit table could not be migrated into the durable journal seam at boot",
+    "severity": "actionable",
+    "summary": "busbar found audit history in the legacy durable table but could not copy it into the neutral `plane_records` the durable audit seam now reads at boot — a store read/write hiccup, not a chain-verification failure. The migration is IDEMPOTENT and is retried on the next boot, so the pre-existing history reappears once the store is healthy; until then the seam-backed audit read (`GET /audit`) reflects only records written since this boot.",
+    "action": "Investigate the governance store's write path at boot (the same store the audit log persists to). Once it accepts writes, restart so the one-time migration completes and the durable history is restored into the seam; a transient hiccup needs no action beyond confirming the store is healthy.",
+    "since": "1.6.0",
+    "retired": false
   }
 ]
