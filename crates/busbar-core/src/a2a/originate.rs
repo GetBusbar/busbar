@@ -56,7 +56,7 @@ struct Originated {
 /// CALLER's answer is already decided and already correct; a backend busbar may not reach leaves the
 /// customer exactly where they were before this existed, never with a failed request.
 fn originate(
-    app: &Arc<App>,
+    engine_host: &dyn busbar_substrate::plane_host::EngineHost,
     plane: &Arc<super::plane::A2aPlane>,
     admitted: &Admitted,
     key: &busbar_api::VirtualKey,
@@ -77,8 +77,9 @@ fn originate(
         }
     };
     let now_ms = now.saturating_mul(1_000);
+    let resolver = engine_host.a2a_secret_resolver();
     let lease = match admitted.outbound_cred.as_ref() {
-        Some(cred) => match super::creds::mint_from(&grant, cred, &app.secret_resolver, now_ms) {
+        Some(cred) => match super::creds::mint_from(&grant, cred, resolver.as_ref(), now_ms) {
             Ok(lease) => Some(lease),
             Err(e) => {
                 diag_warn!(A2A_OUTBOUND_CRED_UNLEASED, agent = %admitted.dispatch.agent_id, error = %e, "a2a: the outbound credential could not be leased");
@@ -186,6 +187,7 @@ const ORIGINATED_RPC_ID: &str = "busbar-originated";
 /// busbar's own record, which is correct whatever the backend says.
 pub(super) async fn mirror_push_config(
     app: &Arc<App>,
+    engine_host: &dyn busbar_substrate::plane_host::EngineHost,
     admitted: &Admitted,
     key: &busbar_api::VirtualKey,
     method: &'static str,
@@ -225,7 +227,7 @@ pub(super) async fn mirror_push_config(
     let Some(token) = super::pushback::mint(&task.task_id) else {
         return;
     };
-    let Some(at) = originate(app, &plane, admitted, key, a2a_version, now) else {
+    let Some(at) = originate(engine_host, &plane, admitted, key, a2a_version, now) else {
         return;
     };
     let busbar_task = task.task_id.clone();
@@ -293,6 +295,7 @@ pub(super) async fn mirror_push_config(
 /// then renders busbar's own scoped rows exactly as it always did.
 pub(super) async fn refresh_listed_tasks(
     app: &Arc<App>,
+    engine_host: &dyn busbar_substrate::plane_host::EngineHost,
     admitted: &Admitted,
     key: &busbar_api::VirtualKey,
     principal: &str,
@@ -317,7 +320,7 @@ pub(super) async fn refresh_listed_tasks(
         // ask a backend to enumerate its work for a caller with nothing outstanding on it.
         return;
     }
-    let Some(at) = originate(app, &plane, admitted, key, a2a_version, now) else {
+    let Some(at) = originate(engine_host, &plane, admitted, key, a2a_version, now) else {
         return;
     };
 

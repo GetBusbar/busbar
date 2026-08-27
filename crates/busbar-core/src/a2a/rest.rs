@@ -173,6 +173,7 @@ fn json_scalar(raw: &str) -> Value {
 /// the answer.
 async fn compose_and_invoke(
     app: std::sync::Arc<crate::state::App>,
+    engine_host: std::sync::Arc<dyn busbar_substrate::plane_host::EngineHost>,
     gov: busbar_api::PlaneRequestCtx,
     principal: busbar_api::AuthPrincipal,
     wire: Wire,
@@ -192,6 +193,7 @@ async fn compose_and_invoke(
     let body = axum::body::Bytes::from(serde_json::to_vec(&envelope).unwrap_or_default());
     let answered = invoke(
         app,
+        engine_host,
         gov,
         principal,
         Target::FromCatalogue,
@@ -405,7 +407,16 @@ async fn message_send(ctx: PlaneReqCtx) -> Response {
     let (app, gov, principal, wire) =
         rest_key_ctx(ctx.engine, ctx.gov, ctx.principal, &ctx.headers);
     let params = json_body(&ctx.body);
-    compose_and_invoke(app, gov, principal, wire, method::SEND_MESSAGE, params).await
+    compose_and_invoke(
+        app,
+        ctx.host,
+        gov,
+        principal,
+        wire,
+        method::SEND_MESSAGE,
+        params,
+    )
+    .await
 }
 
 /// `POST /message:stream` — the same body, the streaming method, an SSE answer.
@@ -415,6 +426,7 @@ async fn message_stream(ctx: PlaneReqCtx) -> Response {
     let params = json_body(&ctx.body);
     compose_and_invoke(
         app,
+        ctx.host,
         gov,
         principal,
         wire,
@@ -434,7 +446,16 @@ async fn task_get(ctx: PlaneReqCtx) -> Response {
         .set("id", id)
         .maybe("historyLength", query.get("historyLength"))
         .into_value();
-    compose_and_invoke(app, gov, principal, wire, method::GET_TASK, params).await
+    compose_and_invoke(
+        app,
+        ctx.host,
+        gov,
+        principal,
+        wire,
+        method::GET_TASK,
+        params,
+    )
+    .await
 }
 
 /// `POST /tasks/{id}:cancel` and `POST /tasks/{id}:subscribe` — one route, because the verb is a
@@ -452,7 +473,7 @@ async fn task_verb(ctx: PlaneReqCtx) -> Response {
         _ => return not_a_verb(&addressed),
     };
     let params = Params::new().set("id", id).into_value();
-    compose_and_invoke(app, gov, principal, wire, method, params).await
+    compose_and_invoke(app, ctx.host, gov, principal, wire, method, params).await
 }
 
 /// The refusal for a `POST /tasks/…` that names no verb this binding defines. `MethodNotFound`
@@ -489,7 +510,16 @@ async fn tasks_list(ctx: PlaneReqCtx) -> Response {
         .maybe("statusTimestampAfter", query.get("statusTimestampAfter"))
         .maybe("includeArtifacts", query.get("includeArtifacts"))
         .into_value();
-    compose_and_invoke(app, gov, principal, wire, method::LIST_TASKS, params).await
+    compose_and_invoke(
+        app,
+        ctx.host,
+        gov,
+        principal,
+        wire,
+        method::LIST_TASKS,
+        params,
+    )
+    .await
 }
 
 /// `POST /tasks/{id}/pushNotificationConfigs` — the body IS the config, the task id is the path's.
@@ -507,6 +537,7 @@ async fn push_config_create(ctx: PlaneReqCtx) -> Response {
         .into_value();
     compose_and_invoke(
         app,
+        ctx.host,
         gov,
         principal,
         wire,
@@ -527,7 +558,16 @@ async fn push_config_list(ctx: PlaneReqCtx) -> Response {
         .maybe("pageSize", query.get("pageSize"))
         .maybe("pageToken", query.get("pageToken"))
         .into_value();
-    compose_and_invoke(app, gov, principal, wire, method::LIST_PUSH_CONFIGS, params).await
+    compose_and_invoke(
+        app,
+        ctx.host,
+        gov,
+        principal,
+        wire,
+        method::LIST_PUSH_CONFIGS,
+        params,
+    )
+    .await
 }
 
 /// `GET /tasks/{id}/pushNotificationConfigs/{configId}`.
@@ -540,7 +580,16 @@ async fn push_config_get(ctx: PlaneReqCtx) -> Response {
         .set("taskId", id)
         .set("id", config_id)
         .into_value();
-    compose_and_invoke(app, gov, principal, wire, method::GET_PUSH_CONFIG, params).await
+    compose_and_invoke(
+        app,
+        ctx.host,
+        gov,
+        principal,
+        wire,
+        method::GET_PUSH_CONFIG,
+        params,
+    )
+    .await
 }
 
 /// `DELETE /tasks/{id}/pushNotificationConfigs/{configId}`.
@@ -555,6 +604,7 @@ async fn push_config_delete(ctx: PlaneReqCtx) -> Response {
         .into_value();
     compose_and_invoke(
         app,
+        ctx.host,
         gov,
         principal,
         wire,
@@ -577,6 +627,7 @@ async fn extended_agent_card(ctx: PlaneReqCtx) -> Response {
         rest_key_ctx(ctx.engine, ctx.gov, ctx.principal, &ctx.headers);
     compose_and_invoke(
         app,
+        ctx.host,
         gov,
         principal,
         wire,

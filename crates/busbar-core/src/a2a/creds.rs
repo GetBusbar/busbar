@@ -420,7 +420,7 @@ pub(crate) fn mint(
 pub(crate) fn mint_from(
     grant: &EgressGrant<'_>,
     cred: &OutboundCredential,
-    resolver: &SecretResolver,
+    resolver: &dyn busbar_api::SecretResolve,
     now_ms: u64,
 ) -> Result<Lease, LeaseError> {
     let agent_id = grant.agent_id();

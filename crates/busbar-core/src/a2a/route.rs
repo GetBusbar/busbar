@@ -55,13 +55,14 @@ impl busbar_substrate::failover::Candidate for AgentCandidate {
 
 /// The pool the caller-named agent belongs to, if any — resolved ONCE per call and read by the
 /// resume lookup, the walk and the pinning.
-pub(super) fn pool_of<'a>(
-    app: &'a App,
+pub(super) fn pool_of(
+    engine_host: &dyn busbar_substrate::plane_host::EngineHost,
     agent_id: &str,
-) -> Option<(&'a String, &'a crate::failover::CandidatePoolCfg)> {
-    app.agent_pools
-        .iter()
-        .find(|(_, cfg)| cfg.members.iter().any(|m| m == agent_id))
+) -> Option<(String, Vec<String>)> {
+    // The neutral host seam (`a2a_agent_pool_members`) runs the SAME `.find` over `agent_pools` and
+    // returns the pool's name and its members in declaration order, which is the lane order the walk
+    // reads — byte-identical to the old borrow of `app.agent_pools`.
+    engine_host.a2a_agent_pool_members(agent_id)
 }
 
 /// What [`select_member`] decided for this call.
@@ -89,6 +90,7 @@ pub(super) struct SelectedMember {
 #[allow(clippy::too_many_arguments)] // the admission's own facts, gathered where they were made.
 pub(super) fn select_member(
     app: &App,
+    engine_host: &dyn busbar_substrate::plane_host::EngineHost,
     scope: &busbar_substrate::plane_host::DispatchScope,
     plane: &super::plane::A2aPlane,
     key: &busbar_api::VirtualKey,
@@ -100,7 +102,7 @@ pub(super) fn select_member(
     now: u64,
 ) -> SelectedMember {
     let breakers = Arc::clone(&app.plane_breakers);
-    let pool = pool_of(app, admitted_agent);
+    let pool = pool_of(engine_host, admitted_agent);
     let mut selected = SelectedMember {
         agent_id: admitted_agent.to_string(),
         breaker: RelayBreaker::degenerate(admitted_agent, Arc::clone(&breakers)),
@@ -114,12 +116,12 @@ pub(super) fn select_member(
         (None, _) => {}
         // Task-scoped verbs and resumes: PINNED. The member's own pool cell; `prepare` admits it
         // (not pre-admitted), so a tripped member refuses the verb without ending the task.
-        (Some((pool_name, cfg)), Some(pinned)) => {
+        (Some((pool_name, members)), Some(pinned)) => {
             selected.agent_id = pinned.to_string();
-            selected.breaker = match cfg.members.iter().position(|m| m == pinned) {
+            selected.breaker = match members.iter().position(|m| m == pinned) {
                 Some(lane) => RelayBreaker {
                     breakers: Arc::clone(&breakers),
-                    key: crate::store::PlaneBreakers::agent_key(pool_name),
+                    key: crate::store::PlaneBreakers::agent_key(&pool_name),
                     lane,
                     pre_admitted: false,
                 },
@@ -129,9 +131,9 @@ pub(super) fn select_member(
             };
         }
         // Fresh submission to a pooled agent: THE WALK.
-        (Some((pool_name, cfg)), None) => {
+        (Some((pool_name, members)), None) => {
             let candidates: Vec<AgentCandidate> = plane.with_registrations(|regs| {
-                cfg.members
+                members
                     .iter()
                     .enumerate()
                     .map(|(lane, member)| {
@@ -161,7 +163,7 @@ pub(super) fn select_member(
                     })
                     .collect()
             });
-            let pool_key = crate::store::PlaneBreakers::agent_key(pool_name);
+            let pool_key = crate::store::PlaneBreakers::agent_key(&pool_name);
             let tried: Vec<usize> = candidates
                 .iter()
                 .filter(|c| !c.eligible)

@@ -160,6 +160,7 @@ pub(crate) async fn serve(ctx: busbar_substrate::plane_routes::PlaneReqCtx) -> R
     );
     let mut service = A2aServiceServer::new(Busbar {
         app,
+        engine_host: ctx.host,
         gov,
         principal,
     });
@@ -182,6 +183,7 @@ pub(crate) async fn serve(ctx: busbar_substrate::plane_routes::PlaneReqCtx) -> R
 /// "this call was admitted" a fact the type carries rather than one a handler has to re-derive.
 struct Busbar {
     app: Arc<crate::state::App>,
+    engine_host: Arc<dyn busbar_substrate::plane_host::EngineHost>,
     gov: busbar_api::PlaneRequestCtx,
     principal: busbar_api::AuthPrincipal,
 }
@@ -204,6 +206,7 @@ impl Busbar {
         let wire = super::receive::Wire::for_grpc(version);
         let response = super::receive::invoke(
             Arc::clone(&self.app),
+            Arc::clone(&self.engine_host),
             self.gov.clone(),
             self.principal.clone(),
             super::receive::Target::FromCatalogue,
@@ -607,6 +610,7 @@ impl Busbar {
         let wire = super::receive::Wire::for_grpc(version);
         let response = super::receive::invoke(
             Arc::clone(&self.app),
+            Arc::clone(&self.engine_host),
             self.gov.clone(),
             self.principal.clone(),
             super::receive::Target::FromCatalogue,

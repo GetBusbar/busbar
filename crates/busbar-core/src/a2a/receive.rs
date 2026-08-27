@@ -60,12 +60,8 @@ pub(super) const AUDIT_ACTION: &str = "agent.call";
 /// See the module doc for why this is derived rather than asserted. In one line: an audience-bound
 /// mount is the only place a token can have been checked against this plane's resource indicator,
 /// so it is the only place the presented credential is an A2A inbound credential.
-fn credential_kind_of(app: &App) -> &'static str {
-    let bound = app
-        .planes
-        .mount_of("a2a")
-        .and_then(|mount| app.planes.admission_for(mount))
-        .is_some();
+fn credential_kind_of(engine_host: &dyn busbar_substrate::plane_host::EngineHost) -> &'static str {
+    let bound = engine_host.a2a_audience_bound();
     if bound {
         CREDENTIAL_KIND_A2A_INBOUND
     } else {
@@ -188,6 +184,7 @@ pub(super) struct Admitted {
 /// allocation on a request that is being turned away is cheaper than widening every `Result` on the
 /// admitted path by the size of a response nobody on it will ever carry.
 fn admit(
+    engine_host: &dyn busbar_substrate::plane_host::EngineHost,
     app: &App,
     key: &busbar_api::VirtualKey,
     agent_id: &str,
@@ -197,7 +194,7 @@ fn admit(
     let Some(plane) = crate::a2a::runtime(app) else {
         return Err(Box::new(plane_absent()));
     };
-    let kind = credential_kind_of(app);
+    let kind = credential_kind_of(engine_host);
     // READ ONCE, under the same acquisition as the registry itself, so the value carried forward is
     // the generation the decision below was actually taken on.
     let generation = plane.generation();
@@ -365,6 +362,7 @@ pub(crate) async fn plane_rpc(ctx: busbar_substrate::plane_routes::PlaneReqCtx) 
     let wire = Wire::from_headers(&ctx.headers);
     invoke(
         app,
+        ctx.host,
         gov,
         principal,
         FromCatalogue,
@@ -635,6 +633,7 @@ pub(crate) async fn card(ctx: busbar_substrate::plane_routes::PlaneReqCtx) -> Re
     // depends on the requested capability is vacuous and only trust, scope and a cached card decide.
     let shape = super::registry::TaskShape::default();
     let admitted = match admit(
+        ctx.host.as_ref(),
         &app,
         key,
         &agent_id,
@@ -749,6 +748,7 @@ pub(crate) async fn agent_rpc(ctx: busbar_substrate::plane_routes::PlaneReqCtx) 
     let wire = Wire::from_headers(&ctx.headers);
     invoke(
         app,
+        ctx.host,
         gov,
         principal,
         Named(agent_id),
@@ -788,6 +788,7 @@ use Target::{FromCatalogue, Named};
 /// only from a conformance suite's stdout.
 pub(super) async fn invoke(
     app: Arc<App>,
+    engine_host: Arc<dyn busbar_substrate::plane_host::EngineHost>,
     gov: busbar_api::PlaneRequestCtx,
     principal: busbar_api::AuthPrincipal,
     target: Target,
@@ -797,7 +798,7 @@ pub(super) async fn invoke(
 ) -> Response {
     let started = std::time::Instant::now();
     let observed = Arc::clone(&app);
-    let mut answered = invoke_inner(app, gov, principal, target, wire, body).await;
+    let mut answered = invoke_inner(app, engine_host, gov, principal, target, wire, body).await;
     crate::telemetry::request_finished(
         &observed,
         "a2a",
@@ -824,6 +825,7 @@ pub(super) async fn invoke(
 /// will one day be missing from the thirteenth.
 async fn invoke_inner(
     app: Arc<App>,
+    engine_host: Arc<dyn busbar_substrate::plane_host::EngineHost>,
     gov: busbar_api::PlaneRequestCtx,
     principal: busbar_api::AuthPrincipal,
     target: Target,
@@ -888,6 +890,7 @@ async fn invoke_inner(
             Some(
                 admitted(
                     app,
+                    engine_host,
                     gov,
                     principal,
                     target,
@@ -918,6 +921,7 @@ async fn invoke_inner(
 #[allow(clippy::too_many_arguments)]
 async fn admitted(
     app: Arc<App>,
+    engine_host: Arc<dyn busbar_substrate::plane_host::EngineHost>,
     gov: busbar_api::PlaneRequestCtx,
     principal: busbar_api::AuthPrincipal,
     target: Target,
@@ -978,7 +982,7 @@ async fn admitted(
         .and_then(serde_json::Value::as_str)
         .unwrap_or_default();
 
-    let admitted = match admit(&app, key, &agent_id, &shape, now) {
+    let admitted = match admit(engine_host.as_ref(), &app, key, &agent_id, &shape, now) {
         Ok(a) => a,
         Err(resp) => return *resp,
     };
@@ -1001,10 +1005,7 @@ async fn admitted(
     // EVERY VERB, not only `message/send`. A gate an operator attached to an agent is a statement
     // about that agent, and a plane that fired it for submissions but not for the task verbs would
     // be a plane where the control's scope depends on which method a caller happened to use.
-    if app
-        .a2a_agent_gates
-        .contains_key(&admitted.dispatch.agent_id)
-    {
+    if engine_host.gate_attached(1, &admitted.dispatch.agent_id) {
         // FIRE THE GATE THROUGH THE HOST SEAM (`plane_host::gate_decide_over`) — the twin of the MCP
         // dispatch gate, now inverted so this plane body no longer names `crate::hooks::gate::decide` or
         // holds the resolved `ResolvedPolicy` set (the Seam-B inversion); the host re-selects the gate
@@ -1023,7 +1024,7 @@ async fn admitted(
         let args_json = serde_json::to_vec(&params).unwrap_or_default();
         let tool = super::local::method_of(&envelope).to_string();
         // The request id is minted AT THE SITE (not in the host fn), as before.
-        let request_id = app.next_request_id();
+        let request_id = engine_host.next_request_id();
         let agent = admitted.dispatch.agent_id.clone();
         // The caller's resolved key identity — the gate reads only `id`/`name`.
         let key_pair = (key.id.clone(), key.name.clone());
@@ -1095,9 +1096,9 @@ async fn admitted(
     //    this plane to admit/meter at all — the admission and the meter both ride the host seam below,
     //    but this plane still refuses outright when governance is absent (the LLM path admits an empty
     //    chain; a2a does not), so the guard stays even though the binding is now consumed host-side.
-    let Some(_gov_state) = app.governance.as_ref() else {
+    if !engine_host.governance_enabled() {
         return governance_required();
-    };
+    }
     // ADMIT through the host govern seam (CLUSTER-4). The grant `try_admit` yields is registered in
     // `host`'s dispatch arena and released when this future ends — return, client-cancel, or panic —
     // the EXACT lifetime the named `_hold` grant had (the guard drops at the end of `admitted`). The
@@ -1160,6 +1161,7 @@ async fn admitted(
                 //    rule that makes a shared backend's list unable to move another tenant's row.
                 super::originate::refresh_listed_tasks(
                     &app,
+                    engine_host.as_ref(),
                     &admitted,
                     key,
                     &principal,
@@ -1219,6 +1221,7 @@ async fn admitted(
                     if let Some(task) = addressed_task(&envelope, &principal) {
                         super::originate::mirror_push_config(
                             &app,
+                            engine_host.as_ref(),
                             &admitted,
                             key,
                             mirrored,
@@ -1348,16 +1351,15 @@ async fn admitted(
     //    by everything below: the resume lookup (a task the walk routed to the twin must still be
     //    resumable through the name the caller knows), the fresh-submission walk, and the pinning
     //    of task-scoped verbs to the member that accepted the task.
-    let pool = super::route::pool_of(&app, &admitted.dispatch.agent_id);
+    let pool = super::route::pool_of(engine_host.as_ref(), &admitted.dispatch.agent_id);
 
     let resumed = if addressed.is_some() || context_id.is_empty() {
         None
-    } else if let Some((_, cfg)) = pool {
+    } else if let Some((_, members)) = &pool {
         // ANY member's interrupted task on this context resumes — and resumes AT that member (the
         // pinning reads the task's own `agent_id`). Most recent across members, like the
         // single-agent lookup.
-        let mut c: Vec<super::task::Task> = cfg
-            .members
+        let mut c: Vec<super::task::Task> = members
             .iter()
             .filter_map(|m| resumable_task(&admitted.dispatch.billed_key_id, context_id, m))
             .collect();
@@ -1416,10 +1418,11 @@ async fn admitted(
     let hop_host = crate::plane_host::SendHostDispatch::new(std::sync::Arc::clone(&app));
     let selected_member = super::route::select_member(
         &app,
+        engine_host.as_ref(),
         hop_host.scope(),
         &plane,
         key,
-        credential_kind_of(&app),
+        credential_kind_of(engine_host.as_ref()),
         &admitted.dispatch.agent_id,
         admitted.generation,
         pinned_member.as_deref(),
@@ -1646,8 +1649,9 @@ async fn admitted(
     // BUSBAR'S OWN CREDENTIAL FOR THIS BACKEND, or none — and it can only be minted against the
     // grant obtained above. A configured credential that will not resolve is a REFUSAL and not a
     // quiet unauthenticated hop: an operator who configured one meant the backend to see one.
+    let resolver = engine_host.a2a_secret_resolver();
     let lease = match target_cred.as_ref() {
-        Some(cred) => match super::creds::mint_from(&grant, cred, &app.secret_resolver, now_ms) {
+        Some(cred) => match super::creds::mint_from(&grant, cred, resolver.as_ref(), now_ms) {
             Ok(lease) => Some(lease),
             Err(e) => {
                 diag_warn!(A2A_OUTBOUND_CRED_UNLEASED, agent = %target_agent, error = %e, "a2a: the outbound credential could not be leased");
