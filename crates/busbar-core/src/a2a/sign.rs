@@ -117,7 +117,7 @@ pub(crate) struct CardSigner<'a> {
     /// no `&App`, no signing material, only the bytes-to-sign in and the 64 signature bytes out.
     host: &'a dyn busbar_substrate::plane_host::EngineHost,
     /// The PUBLIC card-issuer key (`kid` + SPKI base64), computed host-side.
-    issuer: crate::plane::registry::CardIssuer,
+    issuer: busbar_substrate::plane::registry::CardIssuer,
 }
 
 impl std::fmt::Debug for CardSigner<'_> {
@@ -147,7 +147,7 @@ pub(crate) fn card_signer(
 
 impl CardSigner<'_> {
     /// The `kid` this signer stamps, and the one a caller reads off the served card. The published
-    /// value lives on the [`CardIssuer`](crate::plane::registry::CardIssuer) this wraps; this is the
+    /// value lives on the [`CardIssuer`](busbar_substrate::plane::registry::CardIssuer) this wraps; this is the
     /// plane-side accessor the card-signing test suite reads it back through.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn kid(&self) -> &str {

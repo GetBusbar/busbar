@@ -27,7 +27,7 @@
 // list of nine unmounted modules in its prose is gone from this file, because the thing it was
 // describing is gone: [`ingress`] mounts `GET`/`POST /a2a/agents/{agent_id}` and this plane's RFC
 // 9728 metadata document, and a request arriving there is authenticated by the shared middleware
-// against [`crate::plane::PlaneAdmission`], authorised by [`inbound::authorize`], filtered by
+// against [`busbar_substrate::plane::PlaneAdmission`], authorised by [`inbound::authorize`], filtered by
 // [`registry::inbound_catalogue`], attributed by [`meter::Attribution`], recorded through
 // [`task`]/[`taskstore`]/[`provenance`], and served through [`serve::rewrite_card`].
 //
@@ -78,9 +78,9 @@ pub(crate) const PLANE_DECL: busbar_substrate::plane::registry::PlaneDecl =
         audit_kind: "a2a_agent",
         wire_format_names: || {
             &[
-                crate::plane::WIRE_JSONRPC,
-                crate::plane::WIRE_HTTP_JSON,
-                crate::plane::WIRE_GRPC,
+                busbar_substrate::plane::WIRE_JSONRPC,
+                busbar_substrate::plane::WIRE_HTTP_JSON,
+                busbar_substrate::plane::WIRE_GRPC,
             ]
         },
         // THE A2A DOOR — TWO claims, and only when the plane has a RECEIVING side. `/a2a` (canonical,
@@ -97,11 +97,11 @@ pub(crate) const PLANE_DECL: busbar_substrate::plane::registry::PlaneDecl =
                 vec![
                     (
                         crate::a2a::serve::MOUNT_PATH.to_string(),
-                        crate::plane::WIRE_JSONRPC,
+                        busbar_substrate::plane::WIRE_JSONRPC,
                     ),
                     (
                         crate::a2a::serve::GRPC_MOUNT_PATH.to_string(),
-                        crate::plane::WIRE_GRPC,
+                        busbar_substrate::plane::WIRE_GRPC,
                     ),
                 ]
             } else {

@@ -7,7 +7,7 @@
 //! the caller. The order is fixed and each step is the previous one's precondition:
 //!
 //! 1. AUTHENTICATE — done before a handler here runs, by the shared auth middleware. What makes it
-//!    an A2A authentication rather than a data-plane one is [`crate::plane::PlaneAdmission`]: the
+//!    an A2A authentication rather than a data-plane one is [`busbar_substrate::plane::PlaneAdmission`]: the
 //!    middleware reads this mount's admission facts and threads its audience into the token
 //!    verifier, which refuses a token whose `aud` is absent or different.
 //! 2. AUTHORISE — [`super::inbound::authorize`], whose decision is `scope_allowed("agent", id)`.

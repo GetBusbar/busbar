@@ -90,7 +90,7 @@ pub(crate) struct A2aPlane {
     /// here so [`super::sign::card_signer`] reads the issuer off the plane's OWN slot rather than off
     /// `app.governance`, which is what lets the extracted plane name no `GovState`. `None` until the
     /// start hook runs, or when the deployment holds no card-signing key (the governance-off path).
-    card_issuer: OnceLock<crate::plane::registry::CardIssuer>,
+    card_issuer: OnceLock<busbar_substrate::plane::registry::CardIssuer>,
     /// THE A2A VERIFY-ON-CALL GATE — the per-agent single-flight coalescer that re-verifies a fronted
     /// agent's signed card on the DELEGATION path when its recorded observation is older than
     /// `verify_ttl` (see [`crate::trust::verify`]). Held HERE on the plane's own runtime object, like
@@ -314,13 +314,13 @@ impl A2aPlane {
     /// STASH BUSBAR'S PUBLIC CARD-ISSUER KEY, once, from the plane's `start` hook. Idempotent: a second
     /// call (a config re-apply reaching the same plane object) is a no-op, matching the `OnceLock`
     /// contract. Public material only.
-    pub(crate) fn set_card_issuer(&self, issuer: crate::plane::registry::CardIssuer) {
+    pub(crate) fn set_card_issuer(&self, issuer: busbar_substrate::plane::registry::CardIssuer) {
         let _ = self.card_issuer.set(issuer);
     }
 
     /// BUSBAR'S PUBLIC CARD-ISSUER KEY for this deployment, as the card-signing path reads it. `None`
     /// before the start hook has run or when no card-signing key is configured.
-    pub(crate) fn card_issuer(&self) -> Option<&crate::plane::registry::CardIssuer> {
+    pub(crate) fn card_issuer(&self) -> Option<&busbar_substrate::plane::registry::CardIssuer> {
         self.card_issuer.get()
     }
 
@@ -519,9 +519,9 @@ impl A2aPlane {
     /// card advertises. A caller reads the audience to ask for off the card busbar served it, so the
     /// two must be one derivation — an independently configured audience is a confused-deputy gap
     /// that opens the first time somebody edits one of the two.
-    pub(crate) fn admission(&self) -> Option<crate::plane::PlaneAdmission> {
+    pub(crate) fn admission(&self) -> Option<busbar_substrate::plane::PlaneAdmission> {
         let public = self.public_url.as_deref()?;
-        Some(crate::plane::PlaneAdmission {
+        Some(busbar_substrate::plane::PlaneAdmission {
             audience: super::serve::canonical_uri(public).ok()?,
             resource_metadata: super::serve::metadata_url(public).ok()?,
         })

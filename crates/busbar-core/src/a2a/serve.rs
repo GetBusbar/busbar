@@ -278,7 +278,7 @@ pub(crate) const GRPC_MOUNT_PATH: &str = "/lf.a2a.v1.A2AService";
 pub(crate) const METADATA_PATH: &str = "/.well-known/oauth-protected-resource/a2a";
 
 /// THE PLANE'S CANONICAL URI — the RFC 8707 resource indicator a token must be minted FOR to be
-/// spendable here, and the audience [`crate::plane::PlaneAdmission`] carries.
+/// spendable here, and the audience [`busbar_substrate::plane::PlaneAdmission`] carries.
 ///
 /// Derived from `public_url` rather than configured separately, and that is the point: the card
 /// this plane serves points callers at [`agent_endpoint`], which is derived from the same value.
@@ -326,7 +326,7 @@ pub(crate) fn grpc_endpoint(public_url: &str) -> Result<String, ServeError> {
 /// defect that filter was written to prevent: `{"url": "https://busbar/a2a/agents/x",
 /// "protocolBinding": "GRPC"}`, a gRPC interface at an address no gRPC client can dial.
 fn binding_url(binding: &str, public_url: &str, http_endpoint: &str) -> Result<String, ServeError> {
-    if binding.eq_ignore_ascii_case(crate::plane::WIRE_GRPC) {
+    if binding.eq_ignore_ascii_case(busbar_substrate::plane::WIRE_GRPC) {
         return grpc_endpoint(public_url);
     }
     Ok(http_endpoint.to_string())
