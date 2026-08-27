@@ -315,8 +315,9 @@ pub(super) async fn refresh_listed_tasks(
     // THE ROWS THIS CALLER OWNS ON THIS AGENT, and the backend's name for each. Built BEFORE the
     // hop, because it is also the whitelist: an id that is not in here is an id the answer cannot
     // move.
-    let ours: HashMap<String, String> = crate::plane::taskstore::TASKS
-        .list_scoped(principal)
+    let ours: HashMap<String, String> = busbar_substrate::plane_host::task_reader()
+        .map(|reader| reader.list_scoped(principal))
+        .unwrap_or_default()
         .iter()
         // The engine is `TaskRow`-neutral; convert back to the canonical `Task` at this A2A boundary
         // so the `is_terminal` / field reads below stay codec-side. Working-set rows are always

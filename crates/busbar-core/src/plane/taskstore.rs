@@ -1041,6 +1041,27 @@ impl TaskRegistry {
     }
 }
 
+/// THE CORE-BACKED task reader — the one production implementation of the neutral
+/// [`busbar_substrate::plane_host::TaskReader`] seam, installed at boot by the composition root. Each
+/// method funnels straight into the SAME `TASKS.{get_scoped, get_unscoped, list_scoped}` a plane used
+/// to name directly, so a plane that reads through `task_reader()` runs byte-identical to the in-core
+/// callers. A ZST unit struct, so `&CoreTaskReader` promotes to `'static`.
+pub struct CoreTaskReader;
+
+impl busbar_substrate::plane_host::TaskReader for CoreTaskReader {
+    fn get_scoped(&self, principal: &str, task_id: &str) -> Option<TaskRow> {
+        TASKS.get_scoped(principal, task_id).ok()
+    }
+
+    fn get_unscoped(&self, task_id: &str) -> Option<TaskRow> {
+        TASKS.get_unscoped(task_id)
+    }
+
+    fn list_scoped(&self, principal: &str) -> Vec<TaskRow> {
+        TASKS.list_scoped(principal)
+    }
+}
+
 #[cfg(test)]
 #[path = "tests/taskstore_tests.rs"]
 mod taskstore_tests;

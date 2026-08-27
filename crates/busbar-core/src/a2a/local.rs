@@ -261,8 +261,9 @@ pub(crate) fn list_tasks(
     // SCOPED FIRST, filtered second. `list_scoped` is the authorization boundary of
     // THE SCOPING RULE: a caller can only ever be shown its own rows, and every filter
     // below narrows that set rather than widening it.
-    let mut rows: Vec<Task> = crate::plane::taskstore::TASKS
-        .list_scoped(principal)
+    let mut rows: Vec<Task> = busbar_substrate::plane_host::task_reader()
+        .map(|reader| reader.list_scoped(principal))
+        .unwrap_or_default()
         .iter()
         // The engine is `TaskRow`-neutral; this A2A caller converts back to the canonical `Task` at
         // its boundary with the codec. Working-set rows were validated on the way in, so `from_row`
@@ -345,8 +346,8 @@ fn configs() -> &'static Mutex<HashMap<String, PushConfig>> {
 fn prune() {
     if let Ok(mut map) = configs().lock() {
         map.retain(|task_id, _| {
-            crate::plane::taskstore::TASKS
-                .get_unscoped(task_id)
+            busbar_substrate::plane_host::task_reader()
+                .and_then(|reader| reader.get_unscoped(task_id))
                 .is_some()
         });
     }

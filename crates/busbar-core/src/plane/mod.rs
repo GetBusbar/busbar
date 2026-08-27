@@ -106,6 +106,10 @@ pub(crate) mod store;
 // under `plane/`, and it is compiled out with the plane (`plane-a2a` off) alongside `src/a2a`.
 #[cfg(feature = "plane-a2a")]
 pub(crate) mod taskstore;
+/// PUBLIC re-export of the core-backed task reader so the composition root (`main`) can bind it to the
+/// neutral `busbar_substrate::plane_host::TaskReader` seam via `install_task_reader` — the one public
+/// symbol the binary names for this seam, mirroring `busbar_core::egress::seam::CoreHostlessEgress`.
+pub use taskstore::CoreTaskReader;
 
 // THE WIRE FORMAT NAMES the mounted planes speak moved DOWN into the neutral `busbar-substrate`
 // crate in Phase-B B0-b, so a plane crate can name them without reaching into core. They are the

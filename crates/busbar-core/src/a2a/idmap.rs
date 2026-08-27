@@ -120,9 +120,8 @@ pub(crate) fn remember(busbar_id: &str, backend_id: &str) {
 /// The boundary is [`crate::plane::taskstore::TaskRegistry::get_scoped`] and not a re-implementation of it.
 /// One predicate, one owner; see the module header.
 pub(crate) fn backend_id_for(principal: &str, busbar_id: &str) -> Option<String> {
-    crate::plane::taskstore::TASKS
-        .get_scoped(principal, busbar_id)
-        .ok()?;
+    busbar_substrate::plane_host::task_reader()
+        .and_then(|reader| reader.get_scoped(principal, busbar_id))?;
     table().by_busbar_id.get(busbar_id).cloned()
 }
 

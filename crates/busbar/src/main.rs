@@ -624,6 +624,13 @@ fn main() {
     // `plane-a2a`; a build without the A2A plane never drives the engine and installs nothing.
     #[cfg(feature = "plane-a2a")]
     busbar_substrate::plane_host::install_task_codec(&busbar_core::a2a::A2aTaskCodec);
+    // The task reader: the A2A plane reads a caller's rows off the core TASKS working set through
+    // `TaskReader` on the few paths where it holds no `EngineHost`, so it names no
+    // `busbar_core::plane::taskstore`. Backed by core's `CoreTaskReader` (straight to `TASKS.*`), bound
+    // here before any read drives it. `&CoreTaskReader` is a ZST, promoting to `'static`. Gated to
+    // `plane-a2a`.
+    #[cfg(feature = "plane-a2a")]
+    busbar_substrate::plane_host::install_task_reader(&busbar_core::plane::CoreTaskReader);
     // CLI flags next — BEFORE building any runtime. They must work without a configured deployment,
     // and `--version` / `--validate` should never spin up a thread pool.
     if let Some(code) = handle_cli_flags() {

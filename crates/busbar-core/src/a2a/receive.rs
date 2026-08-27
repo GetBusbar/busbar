@@ -39,7 +39,6 @@ use std::sync::Arc;
 
 use super::inbound::{Dispatch, CREDENTIAL_KIND_A2A_INBOUND};
 use super::words::{plane_absent, refuse_admission, A2aWords};
-use crate::plane::taskstore;
 use busbar_substrate::diagnostics::{
     A2A_AGENT_BINDING_UNSPEAKABLE, A2A_BREAKER_REFUSAL_UNRECORDED, A2A_FAILURE_UNRECORDED,
     A2A_INBOUND_TASK_UNOPENED, A2A_INBOUND_TASK_UNRECORDED, A2A_INTERRUPTED_TASK_UNRESUMED,
@@ -2104,8 +2103,8 @@ async fn stream_hop(
     // at zero would spend the first N advances re-asserting a position the store already holds —
     // harmless, because the store refuses to rewind, but it would make the cursor stop counting
     // this stream's chunks and start counting from scratch, which is the number a resubscribe reads.
-    let mut cursor: u64 = taskstore::TASKS
-        .get_unscoped(&ctx.task_id)
+    let mut cursor: u64 = busbar_substrate::plane_host::task_reader()
+        .and_then(|reader| reader.get_unscoped(&ctx.task_id))
         .map_or(0, |t| t.artifact_cursor);
     let handle = tokio::task::spawn_blocking(move || {
         // The ONE bare shared scope rides onto the blocking thread; its arena reclaims when this
@@ -2785,8 +2784,9 @@ fn addressed_task(
 /// guessing a `contextId`. The most recently updated one wins where a context somehow has two, which
 /// is the only ordering that cannot resume a task that has since been superseded.
 fn resumable_task(principal: &str, context_id: &str, agent_id: &str) -> Option<super::task::Task> {
-    let mut candidates: Vec<super::task::Task> = taskstore::TASKS
-        .list_scoped(principal)
+    let mut candidates: Vec<super::task::Task> = busbar_substrate::plane_host::task_reader()
+        .map(|reader| reader.list_scoped(principal))
+        .unwrap_or_default()
         .iter()
         // The engine is `TaskRow`-neutral; convert back to the canonical `Task` at this A2A boundary
         // so the `is_interrupted` / field reads stay codec-side. Working-set rows are always readable.

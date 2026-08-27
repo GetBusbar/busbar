@@ -214,6 +214,10 @@ impl A2aPlane {
         // mirroring how the MCP plane installs the hostless-egress seam in its own test path.
         #[cfg(any(test, feature = "test-support"))]
         busbar_substrate::plane_host::install_task_codec(&super::task::A2aTaskCodec);
+        // Same reason: the test/fixture build has no composition root, so bind core's `TaskReader`
+        // backing here too, idempotently, so the plane's `HostCtx`-free task reads resolve.
+        #[cfg(any(test, feature = "test-support"))]
+        busbar_substrate::plane_host::install_task_reader(&busbar_core::plane::CoreTaskReader);
         Self::from_config_carrying(
             cfg,
             public_url,

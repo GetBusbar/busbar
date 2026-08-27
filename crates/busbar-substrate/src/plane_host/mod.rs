@@ -194,6 +194,40 @@ pub fn task_codec() -> Option<&'static dyn TaskCodec> {
     TASK_CODEC.get().copied()
 }
 
+/// The neutral seam by which a plane READS the core TASKS working set without naming
+/// `busbar_core::plane::taskstore`. The core engine owns the durable task store; a plane needs a few
+/// pure, `HostCtx`-free reads off it (a caller's rows, a single scoped/unscoped row) on paths where it
+/// holds no `EngineHost`. Core installs its backing impl at boot ([`install_task_reader`]); the plane
+/// reads it back through [`task_reader`]. Mirrors `HostlessEgress` — core provides, the plane consumes,
+/// the binary binds the two. All three reads are byte-identical to the engine's own
+/// `TASKS.{get_scoped, get_unscoped, list_scoped}` and take no `HostCtx`.
+pub trait TaskReader: Send + Sync {
+    /// A single row the caller owns, or `None` (no such task OR not this principal's — the two are
+    /// indistinguishable, deliberately). Byte-identical to `TASKS.get_scoped(..).ok()`.
+    fn get_scoped(&self, principal: &str, task_id: &str) -> Option<busbar_api::TaskRow>;
+    /// A single row by id, unscoped (operator / inbound-pushback path). `None` when absent.
+    fn get_unscoped(&self, task_id: &str) -> Option<busbar_api::TaskRow>;
+    /// Every row the caller owns, as the neutral rows (the plane converts each back to its canonical
+    /// task at its own boundary). Byte-identical to `TASKS.list_scoped(principal)`.
+    fn list_scoped(&self, principal: &str) -> Vec<busbar_api::TaskRow>;
+}
+
+/// The installed task-reader, bound once by the composition root. `OnceLock`, so a second install is a
+/// no-op (the first wins), mirroring `install_hostless_egress`.
+static TASK_READER: std::sync::OnceLock<&'static dyn TaskReader> = std::sync::OnceLock::new();
+
+/// Bind the core task reader. Called from `main` under `plane-a2a` (and by the plane's own test path,
+/// which has no composition root), BEFORE any read drives it. Idempotent by `OnceLock`.
+pub fn install_task_reader(reader: &'static dyn TaskReader) {
+    let _ = TASK_READER.set(reader);
+}
+
+/// The installed task reader, or `None` when none was installed (only reachable in a mis-wired build).
+#[cfg(feature = "plane-a2a")]
+pub fn task_reader() -> Option<&'static dyn TaskReader> {
+    TASK_READER.get().copied()
+}
+
 /// The neutral HOST seam a plane calls to reach the engine's host-owned capabilities.
 ///
 /// A plane holds an `Arc<dyn EngineHost>` (minted core-side over the live engine) and calls these
