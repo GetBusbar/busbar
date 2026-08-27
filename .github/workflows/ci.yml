@@ -362,7 +362,10 @@ jobs:
           # cfg(unix) tests and the postgres/valkey roundtrip tests windows can't run), so it must
           # never fall BELOW the windows high-water of 4755. MIN carries slack; EXPECTED warns.
           UNIX_MIN_TESTS: "4700"
-          UNIX_EXPECTED_TESTS: "4783"
+          # +3 for the perf/build-parity gates: the 2 allocation-count tests (busbar-core
+          # alloc_gate.rs — the surgical FIX-9 write-path test + the whole-forward-path passthrough
+          # test) and the build-provenance stamp format-lock test (busbar bin).
+          UNIX_EXPECTED_TESTS: "4786"
         run: |
           set -uo pipefail
           # PIPESTATUS[0] is cargo's own exit; `tee` must not launder a red test run into green.
@@ -982,6 +985,64 @@ jobs:
           slug: GetBusbar/busbar
           fail_ci_if_error: false
 
+  # ── PERF + BUILD-PARITY GATE ─────────────────────────────────────────────────────────────────
+  #
+  # The deterministic defence against the class of incident that motivated it: a ~20% throughput gap
+  # between two releases that was mostly a BUILD-CONFIG mismatch (a non-optimized binary masquerading
+  # as a code regression) plus one real per-request allocation regression that no test flagged. This
+  # job makes both structurally impossible to ship:
+  #
+  #   1. BUILD PARITY (structural). `scripts/profile-lock.sh` locks `[profile.release]` to the
+  #      optimized posture (opt-level 3 / lto fat / codegen-units 1 / strip / debug-assertions off);
+  #      the build-provenance STAMP (`busbar --build-info`, from crates/busbar/build.rs) makes every
+  #      binary self-report its posture, and `scripts/build-provenance-gate.sh` asserts a real
+  #      release build reports `profile=release opt-level=3 debug-assertions=false`. Weakening the
+  #      profile, or a binary built the wrong way, turns this RED. (The PGO=true assertion lives on
+  #      the release/docker workflow, where a PGO binary is actually built — dev CI is not PGO.)
+  #   2. PERF REGRESSION (deterministic). The allocation-count gate
+  #      (`busbar-core/src/proxy/tests/alloc_gate.rs`) drives one openai>openai passthrough request
+  #      through the real forward path and asserts the per-request heap-allocation count has not
+  #      regressed past a committed bound — machine-independent, non-flaky, unlike a wall-clock RPS
+  #      gate. It also runs inside the `check` job's `cargo test --workspace`; running it here by name
+  #      makes it a VISIBLE required gate with its own red/green, per the self-test discipline the
+  #      other gate jobs follow.
+  #
+  # FULL TIER: runs on every PR, on dev/qa/main, and on dispatch — same guard as the other gate jobs.
+  perf-build-gate:
+    name: perf + build-parity gate
+    runs-on: ubuntu-latest
+    if: github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.98.0
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+
+      # SELF-TESTS FIRST: never trust a gate's GREEN before proving it still goes RED on a bad input
+      # (same discipline as structure-lint.sh et al).
+      - name: profile-lock self-test
+        run: scripts/profile-lock.sh --selftest
+      - name: build-provenance gate self-test
+        run: scripts/build-provenance-gate.sh --selftest
+
+      # STRUCTURAL: the release profile must be the locked optimized posture (source-level; lto and the
+      # profile debug-assertions bit are not exposed to a build script, so they are locked here).
+      - name: profile-lock ([profile.release] is the optimized posture)
+        run: scripts/profile-lock.sh
+
+      # THE STAMP, PROVEN ON A REAL RELEASE BINARY. A plain release build (no BUSBAR_PGO) must report
+      # profile=release, opt-level=3, debug-assertions=false, pgo=false. A debug/non-optimized binary
+      # would report otherwise and fail — the exact misdiagnosis the stamp exists to prevent.
+      - name: Build busbar (release) + assert build-provenance stamp
+        run: |
+          cargo build -p busbar --release --locked
+          scripts/build-provenance-gate.sh target/release/busbar release false
+
+      # THE DETERMINISTIC ALLOCATION-COUNT PERF GATE, by name (also covered by the workspace test run).
+      - name: Allocation-count perf gate (openai>openai forward path)
+        run: cargo test -p busbar-core --lib alloc_gate -- --nocapture
+
   # ── ci umbrella: the SINGLE required status for branch protection on `qa` and `main`.
   #
   # Branch protection should require ONE context per stage, not a growing list that silently drifts
@@ -1021,6 +1082,7 @@ jobs:
       - txn-guards
       - timing
       - windows
+      - perf-build-gate
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
@@ -1044,6 +1106,7 @@ jobs:
         txn-guards|full|${{ needs.txn-guards.result }}
         timing|full|${{ needs.timing.result }}
         windows|full|${{ needs.windows.result }}
+        perf-build-gate|full|${{ needs.perf-build-gate.result }}
     steps:
       - name: Assert every required job reported green (skip-allowlist only on a fast-tier run)
         run: |

@@ -327,6 +327,24 @@ jobs:
           fi
           echo "PGO verified: ${bytes} bytes of merged profile from ${raw} .profraw file(s)."
 
+      # BUILD-PROVENANCE STAMP, on the shipped binary (defense-in-depth beside the marker gate above).
+      # crates/busbar/build.rs bakes the optimization posture into the binary; `busbar --build-info`
+      # prints it. A PGO release binary MUST self-report `profile=release pgo=true opt-level=3
+      # debug-assertions=false` — so even if the marker file were ever bypassed, the binary itself
+      # would testify it was built non-PGO and this fails RED. Skipped ONLY when the binary is not
+      # host-executable (a cross-arch target on this runner), where the marker gate is the authority.
+      - name: Assert build-provenance stamp (pgo=true release)
+        run: |
+          set -euo pipefail
+          bin="target/pgo/${{ matrix.target }}/release/busbar"
+          if "$bin" --build-info >/tmp/build-info.txt 2>/dev/null; then
+            echo "--- build-provenance stamp ---"; cat /tmp/build-info.txt
+            scripts/build-provenance-gate.sh --line "$(cat /tmp/build-info.txt)" release true
+          else
+            echo "::notice::busbar --build-info not host-executable for ${{ matrix.target }} on this runner;"
+            echo "::notice::the PGO marker gate above is the authoritative PGO proof for this cross target."
+          fi
+
       - uses: actions/upload-artifact@v7
         with:
           name: busbar-${{ matrix.arch }}
