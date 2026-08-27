@@ -6,7 +6,7 @@
 //!
 //! Everything above this module DECIDED. [`super::inbound::authorize`] said who may reach which
 //! agent, [`super::registry`]'s catalogue said for what shape of work, [`super::meter`] said whose budget, and
-//! [`crate::plane::taskstore`] recorded that a dispatch happened. None of that reached the backend. This
+//! [`busbar_core::plane::taskstore`] recorded that a dispatch happened. None of that reached the backend. This
 //! is the module that does, and being the one that opens a socket is what makes the properties
 //! below its own rather than somebody else's.
 //!
@@ -143,7 +143,7 @@ pub(crate) use busbar_substrate::egress::ChunkFlow;
 pub(crate) use busbar_substrate::egress::StreamHead;
 /// The head of a streaming reply: what the backend answered before any body arrived — the neutral
 /// host-owned [`busbar_substrate::egress::StreamHead`], re-exported under this plane's historical name so the
-/// relay call sites read unchanged. It lives in [`crate::egress`] because the streaming round trip
+/// relay call sites read unchanged. It lives in [`busbar_core::egress`] because the streaming round trip
 /// is the same one whatever framing sits on top of it.
 pub(crate) use busbar_substrate::proxy::sse::{sse_data, SseReader};
 
@@ -548,7 +548,7 @@ pub(crate) const SSE_CONTENT_TYPE: &str = "text/event-stream";
 //   * how the payload is WRAPPED — a JSON-RPC envelope, a bare document, or a length-prefixed
 //     protobuf frame.
 //
-// That is FRAMING, and it is exactly the split `crate::transport`'s header states: `framing =
+// That is FRAMING, and it is exactly the split `busbar_core::transport`'s header states: `framing =
 // transport.frame(codec)`, with the codec never learning which channel spoke. So [`relay`] and
 // [`relay_stream`] below are ONE implementation — one guard, one live trust gate, one lease, one
 // correlation, one identity substitution — and the only thing that varies across the three legs is
@@ -626,7 +626,7 @@ pub(crate) trait OutboundFraming: Send + Sync {
     fn word(&self) -> &'static str;
 
     /// The axis label for this leg, for telemetry. A STATEMENT OF FACT at a known arrival, which is
-    /// what `crate::transport`'s own note says naming a variant is for; nothing compares it.
+    /// what `busbar_core::transport`'s own note says naming a variant is for; nothing compares it.
     fn leg(&self) -> busbar_substrate::transport::Transport;
 
     /// Compose the wire request. `base` is the operator's guarded, pinned endpoint.
@@ -1428,7 +1428,7 @@ fn outbound_of(body: &[u8]) -> (String, serde_json::Value) {
 /// owns this hop's probe, the classified outcome is settled through it over `settle` — the same arena
 /// the walk-admit registered into. Without a shared scope (originate / unit tests that admit directly)
 /// the classified outcome records IN PLACE against the local probe. The disposition is byte-identical
-/// either way: [`crate::plane_host::breaker::failure_signal`] is the inverse of the host's `classify`,
+/// either way: [`busbar_core::plane_host::breaker::failure_signal`] is the inverse of the host's `classify`,
 /// so a settle folds through the SAME `record_signal` the in-place call runs.
 ///
 /// CLASSIFICATION stays here — where the refusal's transport/status structure still exists (Stage 1) —
@@ -1553,7 +1553,7 @@ fn prepare<'a>(
     admit_id: &mut busbar_plugin::hot::AdmissionId,
 ) -> Result<(reqwest::Url, PinnedTarget, OutboundRelayRequest), RelayRefusal> {
     // ── THE GUARD. One resolution, every answered address judged, one pinned address out. It is
-    //    `crate::net_guard`'s, reached through the card fetch's hop door, so a relayed submission
+    //    `busbar_core::net_guard`'s, reached through the card fetch's hop door, so a relayed submission
     //    and a card fetch cannot be guarded to two different standards.
     // `call.policy`, NOT `seam.policy()`. The seam answers with the plane's fail-closed default and
     // knows nothing about any registration; the call carries the one the operator's `allow_private:`
@@ -1622,7 +1622,7 @@ fn prepare<'a>(
             method: method.clone(),
             reason,
         })?;
-    // THE LEG, NAMED. A statement of fact at a known point, which is what `crate::transport`'s own
+    // THE LEG, NAMED. A statement of fact at a known point, which is what `busbar_core::transport`'s own
     // note says naming a variant is for; nothing on this path compares it.
     tracing::debug!(
         agent = call.agent_id,
@@ -2267,7 +2267,7 @@ fn relay_stream_once(
 
 // ONE HARNESS, shared by both test modules below. A second harness is a second thing that can stop
 // matching what the production router does, and the defect this area exists to catch is invisible
-// to any test that does not go through `crate::build_router`.
+// to any test that does not go through `busbar_core::build_router`.
 #[cfg(all(test, not(busbar_a2a_native)))]
 #[path = "tests/relay_harness.rs"]
 mod relay_harness;
@@ -2352,7 +2352,7 @@ mod client_leg_tests;
 
 // THE FRONT DOOR'S AUDIT CHAIN, DRIVEN. Mounted here for the reason every block above is: it needs
 // `relay_harness`, because the claim is that A REAL INBOUND TASK leaves chained evidence, and only a
-// test that goes through `crate::build_router` can make it. The cell this closes was previously
+// test that goes through `busbar_core::build_router` can make it. The cell this closes was previously
 // green on a chain a test built in-process — evidence that would have survived the front door
 // chaining nothing at all.
 #[cfg(all(test, not(busbar_a2a_native)))]

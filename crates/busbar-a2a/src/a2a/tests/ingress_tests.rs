@@ -3,13 +3,13 @@
 
 //! THE RECEIVING HOT PATH, driven through the REAL router.
 //!
-//! Every assertion here goes through `crate::build_router`, not through the handlers directly. A
+//! Every assertion here goes through `busbar_core::build_router`, not through the handlers directly. A
 //! handler that behaves correctly when called by a test and is mounted nowhere is the exact defect
 //! this plane had before this module existed, so a test that called the handler would have passed
 //! against it.
 
 use crate::a2a::config::{AgentDefCfg, AgentPinCfg, PinMechanism};
-use crate::core_routes::CoreRouteTable;
+use busbar_core::core_routes::CoreRouteTable;
 
 fn unpinned_agent(url: &str) -> AgentDefCfg {
     AgentDefCfg {
@@ -33,8 +33,8 @@ fn unpinned_agent(url: &str) -> AgentDefCfg {
 
 /// The core route table the DATA router was actually built from — the same function production
 /// calls, with the same inputs, so the enumeration cannot describe a different surface.
-fn mounted(app: &std::sync::Arc<crate::state::App>) -> CoreRouteTable {
-    crate::base_data_router(&app.plugin_routes, &app.plane_slots, app.oauth_as.as_ref()).1
+fn mounted(app: &std::sync::Arc<busbar_core::state::App>) -> CoreRouteTable {
+    busbar_core::base_data_router(&app.plugin_routes, &app.plane_slots, app.oauth_as.as_ref()).1
 }
 
 fn paths(table: &CoreRouteTable) -> Vec<String> {
@@ -47,8 +47,8 @@ fn no_agents_configured_means_no_route_in_the_table_at_all() {
     // agents must not carry an A2A path the auth middleware could be asked about — "is this an A2A
     // server?" is answered by what is mounted, and a route that exists only to refuse is still a
     // route somebody has to reason about.
-    crate::metrics::init();
-    let app = crate::test_support::TestApp::new().build();
+    busbar_core::metrics::init();
+    let app = busbar_core::test_support::TestApp::new().build();
     assert!(crate::a2a::runtime(&app).is_none());
     let table = mounted(&app);
     // EVERY path this plane can claim, listed here rather than a prefix test: the plane serves two
@@ -73,8 +73,8 @@ fn agents_configured_mounts_the_plane_and_binds_its_audience() {
     // The reciprocal, and BOTH halves matter: mounting routes without binding an audience would
     // leave the ingress admitting any data-plane token, which is the confused-deputy hole the
     // plane's admission facts exist to close.
-    crate::metrics::init();
-    let app = crate::test_support::TestApp::new()
+    busbar_core::metrics::init();
+    let app = busbar_core::test_support::TestApp::new()
         .public_url("https://busbar.example")
         .agent_def("planner", unpinned_agent("https://a2a.vendor/planner"))
         .build();
@@ -116,8 +116,8 @@ fn a_delegation_only_deployment_mounts_no_receiving_surface() {
     // `agents:` WITHOUT `public_url` is a real configuration: an operator may front agents for the
     // DELEGATING direction alone. There is then no resource for a token to be bound to and no
     // endpoint to advertise, so mounting an ingress would mount one that could only ever refuse.
-    crate::metrics::init();
-    let app = crate::test_support::TestApp::new()
+    busbar_core::metrics::init();
+    let app = busbar_core::test_support::TestApp::new()
         .agent_def("planner", unpinned_agent("https://a2a.vendor/planner"))
         .build();
     assert!(
@@ -136,8 +136,8 @@ fn the_metadata_document_is_the_one_open_route_and_the_endpoint_is_not() {
     // The discovery document must be readable without a token — every caller who needs it is by
     // definition one that has none. The endpoint beside it must NOT be: which agents this
     // deployment fronts is exactly what a caller with no grant must not learn.
-    crate::metrics::init();
-    let app = crate::test_support::TestApp::new()
+    busbar_core::metrics::init();
+    let app = busbar_core::test_support::TestApp::new()
         .public_url("https://busbar.example")
         .agent_def("planner", unpinned_agent("https://a2a.vendor/planner"))
         .build();
@@ -165,11 +165,11 @@ fn the_metadata_document_is_the_one_open_route_and_the_endpoint_is_not() {
 async fn an_anonymous_caller_is_refused_and_told_where_to_get_a_token() {
     // The refusal owes a machine-readable challenge naming this plane's metadata document. Without
     // it a conforming client has no entrance: it knows it was refused and not where to go.
-    crate::metrics::init();
-    let store: std::sync::Arc<dyn crate::governance::Store> =
+    busbar_core::metrics::init();
+    let store: std::sync::Arc<dyn busbar_core::governance::Store> =
         std::sync::Arc::new(busbar_store_memory::MemoryStore::new());
     let gov = std::sync::Arc::new(
-        crate::governance::GovState::new_with_signer(
+        busbar_core::governance::GovState::new_with_signer(
             store,
             None,
             Some(
@@ -181,7 +181,7 @@ async fn an_anonymous_caller_is_refused_and_told_where_to_get_a_token() {
         )
         .expect("gov"),
     );
-    let app = crate::test_support::TestApp::new()
+    let app = busbar_core::test_support::TestApp::new()
         .public_url("https://busbar.example")
         .agent_def("planner", unpinned_agent("https://a2a.vendor/planner"))
         // THE CHAIN MUST ACTUALLY DENY for this to be a test about the challenge. With the default
@@ -191,7 +191,7 @@ async fn an_anonymous_caller_is_refused_and_told_where_to_get_a_token() {
         .keys_chain()
         .governance(gov)
         .build();
-    let router = crate::build_router(app);
+    let router = busbar_core::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -219,8 +219,8 @@ async fn an_anonymous_caller_is_refused_and_told_where_to_get_a_token() {
 
 #[tokio::test]
 async fn the_metadata_document_advertises_the_audience_the_verifier_demands() {
-    crate::metrics::init();
-    let app = crate::test_support::TestApp::new()
+    busbar_core::metrics::init();
+    let app = busbar_core::test_support::TestApp::new()
         .public_url("https://busbar.example")
         .agent_def("planner", unpinned_agent("https://a2a.vendor/planner"))
         .build();
@@ -230,7 +230,7 @@ async fn the_metadata_document_advertises_the_audience_the_verifier_demands() {
         .unwrap()
         .audience
         .clone();
-    let router = crate::build_router(app);
+    let router = busbar_core::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -261,8 +261,8 @@ fn the_credential_kind_is_conferred_by_an_audience_bound_mount() {
     // arrived on is AUDIENCE-BOUND, which the verifier has already checked. So the kind must be
     // derived from the mount — never passed as a constant — or the check is a tautology at its only
     // production call site.
-    crate::metrics::init();
-    let bound = crate::test_support::TestApp::new()
+    busbar_core::metrics::init();
+    let bound = busbar_core::test_support::TestApp::new()
         .public_url("https://busbar.example")
         .agent_def("planner", unpinned_agent("https://a2a.vendor/planner"))
         .build();
@@ -277,7 +277,7 @@ fn the_credential_kind_is_conferred_by_an_audience_bound_mount() {
 
     // The unbound case is the delegation-only deployment: a plane exists, nothing is audience-bound,
     // and therefore nothing arriving anywhere is an A2A inbound credential.
-    let unbound = crate::test_support::TestApp::new()
+    let unbound = busbar_core::test_support::TestApp::new()
         .agent_def("planner", unpinned_agent("https://a2a.vendor/planner"))
         .build();
     assert!(
@@ -298,8 +298,8 @@ fn the_served_endpoint_and_the_mounted_path_are_one_derivation() {
     let endpoint = crate::a2a::serve::agent_endpoint("https://busbar.example", "planner").unwrap();
     assert_eq!(endpoint, "https://busbar.example/a2a/agents/planner");
 
-    crate::metrics::init();
-    let app = crate::test_support::TestApp::new()
+    busbar_core::metrics::init();
+    let app = busbar_core::test_support::TestApp::new()
         .public_url("https://busbar.example")
         .agent_def("planner", unpinned_agent("https://a2a.vendor/planner"))
         .build();
@@ -322,12 +322,12 @@ async fn the_well_known_card_is_served_without_a_credential() {
     // every conformant client: a stock client asks this path FIRST and has nowhere else to look.
     // No credential is presented, and that is the whole point — this document is what tells a
     // caller which scheme to present, so demanding one to read it is circular.
-    crate::metrics::init();
-    let app = crate::test_support::TestApp::new()
+    busbar_core::metrics::init();
+    let app = busbar_core::test_support::TestApp::new()
         .public_url("https://busbar.example")
         .agent_def("planner", unpinned_agent("https://a2a.vendor/planner"))
         .build();
-    let router = crate::build_router(app);
+    let router = busbar_core::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -407,15 +407,15 @@ async fn the_well_known_card_does_not_name_the_agents_busbar_fronts() {
     // Asserted over the SERIALISED DOCUMENT rather than over named members, because the hazard is a
     // field nobody thought to check. A future member that happens to carry the agent id would pass
     // a `doc["skills"]` assertion and fail this one.
-    crate::metrics::init();
-    let app = crate::test_support::TestApp::new()
+    busbar_core::metrics::init();
+    let app = busbar_core::test_support::TestApp::new()
         .public_url("https://busbar.example")
         .agent_def(
             "secret-internal-planner",
             unpinned_agent("https://a2a.internal-vendor.corp/planner"),
         )
         .build();
-    let router = crate::build_router(app);
+    let router = busbar_core::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -526,12 +526,12 @@ fn a_request_with_no_callback_has_none() {
 /// credential this is defending. The 403 therefore precedes the 401, deliberately.
 #[tokio::test]
 async fn a_foreign_origin_cannot_drive_this_plane() {
-    crate::metrics::init();
-    let app = crate::test_support::TestApp::new()
+    busbar_core::metrics::init();
+    let app = busbar_core::test_support::TestApp::new()
         .public_url("https://busbar.example")
         .agent_def("planner", unpinned_agent("https://a2a.vendor/planner"))
         .build();
-    let router = crate::build_router(app);
+    let router = busbar_core::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });

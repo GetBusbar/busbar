@@ -6,7 +6,7 @@
 //! The relay mounts the breaker beneath the transport axis (one admission in `prepare`, one
 //! recording on every hop exit), so JsonRpc, HttpJson and Grpc are covered by ONE mechanism — and
 //! this file proves that claim rather than asserting it, by running the same battery under each
-//! binding's card through the REAL router (`relay_harness`, `crate::build_router`).
+//! binding's card through the REAL router (`relay_harness`, `busbar_core::build_router`).
 //!
 //! The claims are the owner-decided breaker-across-planes renderings and the audit's test rows:
 //!
@@ -30,7 +30,7 @@ use crate::a2a::relay::{
     ChunkFlow, RelayCall, RelayRefusal, RelaySeam, RelayTransport, StreamHead, BINDING_GRPC,
     BINDING_HTTP_JSON, BINDING_JSONRPC,
 };
-use crate::store::PlaneBreakers;
+use busbar_core::store::PlaneBreakers;
 
 // ══ THE UNIT HALF: the relay records into the ONE core cell, and it opens ════════════════════════
 
@@ -139,8 +139,8 @@ fn a_backend_hard_down_opens_the_core_cell_and_the_second_hop_never_reaches_the_
     use busbar_substrate::plane_host::DispatchScope;
     // A real `EngineHost` double over a bare app: the breaker cell store IS `app.plane_breakers`, the
     // same seam the ingress admits/settles the relay through, so this exercises the production path.
-    let app = crate::test_support::TestApp::new().build();
-    let host = crate::plane_host::engine_host(&app);
+    let app = busbar_core::test_support::TestApp::new().build();
+    let host = busbar_core::plane_host::engine_host(&app);
     let breakers = &app.plane_breakers;
     let transport = CountingDenier {
         status: 401,
@@ -207,10 +207,10 @@ fn a_backend_hard_down_opens_the_core_cell_and_the_second_hop_never_reaches_the_
 #[test]
 fn a_shared_host_scope_settles_the_prepare_admit() {
     use busbar_substrate::plane_host::DispatchScope;
-    let app = crate::test_support::TestApp::new().build();
-    let host = crate::plane_host::engine_host(&app);
+    let app = busbar_core::test_support::TestApp::new().build();
+    let host = busbar_core::plane_host::engine_host(&app);
     let breakers = &app.plane_breakers;
-    let key = crate::store::PlaneBreakers::agent_key("planner");
+    let key = busbar_core::store::PlaneBreakers::agent_key("planner");
     let transport = CountingDenier {
         status: 401,
         hits: AtomicUsize::new(0),
@@ -327,7 +327,7 @@ async fn battery(binding: &str, submission: serde_json::Value) {
     // `rejected`, with an id to poll: the row predates the hop, the refusal names it, and busbar's
     // own store holds the terminal state the spec reserves for work that was never accepted.
     let task_id = task_id_of(&b2);
-    let task = crate::plane::taskstore::TASKS
+    let task = busbar_core::plane::taskstore::TASKS
         .get_unscoped(&task_id)
         .unwrap_or_else(|| panic!("[{binding}] the named task must resolve in busbar's store"));
     assert_eq!(

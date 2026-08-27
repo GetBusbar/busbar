@@ -5,7 +5,7 @@
 //!
 //! ## Why every test names its own principal
 //!
-//! `crate::plane::taskstore::TASKS` is a process-global and these tests run in parallel with every
+//! `busbar_core::plane::taskstore::TASKS` is a process-global and these tests run in parallel with every
 //! other test in the crate. The tenancy boundary is the principal, so a test that invents its own
 //! principal is isolated by exactly the mechanism under test rather than by a lock somebody has to
 //! remember to take. Two of these tests then use that same mechanism as the ASSERTION — a second
@@ -22,7 +22,7 @@
 
 use super::super::local::{self, Dialect, LocalVerb};
 use super::super::task::{Direction, Task, TaskState};
-use crate::plane::taskstore::TASKS;
+use busbar_core::plane::taskstore::TASKS;
 
 // ══ HELPERS ══════════════════════════════════════════════════════════════════════════════════════
 
@@ -30,7 +30,7 @@ use crate::plane::taskstore::TASKS;
 fn open(principal: &str, task_id: &str, context_id: &str, state: TaskState, now: u64) {
     let task = Task::submitted(task_id, context_id, principal, Direction::Inbound, now)
         .expect("a task with these fields is constructible");
-    crate::plane::taskstore::with_global_task_host(|host| {
+    busbar_core::plane::taskstore::with_global_task_host(|host| {
         TASKS
             .submit(host, &task.to_row(), task_id)
             .expect("the row records");
@@ -51,7 +51,7 @@ fn open(principal: &str, task_id: &str, context_id: &str, state: TaskState, now:
 /// (`task_get_scoped` / `task_set_push_callback`) are pure `TASKS.*` calls that ignore the app, so
 /// any host serves — the tenancy the tests assert is the process-global store's, keyed by principal.
 fn host() -> std::sync::Arc<dyn busbar_substrate::plane_host::EngineHost> {
-    crate::plane_host::engine_host(&crate::test_support::TestApp::new().build())
+    busbar_core::plane_host::engine_host(&busbar_core::test_support::TestApp::new().build())
 }
 
 fn envelope(method: &str, params: serde_json::Value) -> serde_json::Value {

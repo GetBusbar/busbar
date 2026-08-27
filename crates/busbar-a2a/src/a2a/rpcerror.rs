@@ -57,7 +57,7 @@ const ERROR_INFO_DOMAIN: &str = "a2a-protocol.org";
 /// "no such method" — the backend says them, and busbar carries its answer back. The consequence
 /// is real and is not hidden: a `GetTask` for a task busbar DID open but the backend never heard of
 /// answers with the backend's opinion, not busbar's. Answering the task verbs locally out of
-/// [`crate::plane::taskstore`] is the change that would give these two a caller; it is not made here.
+/// [`busbar_core::plane::taskstore`] is the change that would give these two a caller; it is not made here.
 /// The rows are kept because they are the specification's, and a table that omitted the codes we
 /// do not yet emit would be a table somebody re-derives wrongly later.
 ///

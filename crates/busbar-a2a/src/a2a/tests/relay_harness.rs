@@ -9,7 +9,7 @@
 //! second harness is a second thing that can stop matching what the router actually does, and the
 //! defect this whole area exists to catch — a relay that behaves when a test calls it and forwards
 //! the caller's credential when axum calls it — is invisible to any test that does not go through
-//! `crate::build_router`.
+//! `busbar_core::build_router`.
 //!
 //! ## Why the recording seam stands in for the socket
 //!
@@ -484,10 +484,10 @@ pub(super) struct Harness {
     pub(super) bearer: String,
     pub(super) log: Arc<Mutex<Vec<Recorded>>>,
     pub(super) lookups: Arc<AtomicUsize>,
-    pub(super) gov: Arc<crate::governance::GovState>,
+    pub(super) gov: Arc<busbar_core::governance::GovState>,
     pub(super) plane: Arc<crate::a2a::plane::A2aPlane>,
     /// The built App, kept so the pool batteries can read the plane breaker cells directly.
-    pub(super) app: Arc<crate::state::App>,
+    pub(super) app: Arc<busbar_core::state::App>,
     server: tokio::task::JoinHandle<()>,
 }
 
@@ -542,8 +542,8 @@ pub(super) async fn harness_on(outcome: Outcome, binding: &str) -> Harness {
 /// deployment it always did — a fixture that quietly gains a gate is a fixture whose other tests
 /// start proving something else.
 pub(super) struct Gates {
-    pub(super) env: crate::hooks::HookEnv,
-    pub(super) hooks: Vec<(String, crate::config::HookCfg)>,
+    pub(super) env: busbar_core::hooks::HookEnv,
+    pub(super) hooks: Vec<(String, busbar_core::config::HookCfg)>,
     pub(super) attach: Vec<String>,
 }
 
@@ -587,11 +587,11 @@ pub(super) async fn harness_full(
     defs: &[(&str, &str)],
     pools: &[(&str, &[&str])],
 ) -> Harness {
-    use crate::governance::{GovState, NewKeySpec};
+    use busbar_core::governance::{GovState, NewKeySpec};
     use busbar_substrate::governance::signing::{TokenSigner, TokenVerifier, DEFAULT_KID};
-    crate::metrics::init();
+    busbar_core::metrics::init();
 
-    let store: Arc<dyn crate::governance::Store> =
+    let store: Arc<dyn busbar_core::governance::Store> =
         Arc::new(busbar_store_memory::MemoryStore::new());
     // Two handles on the SAME key material: one inside `GovState` (which consumes it) and one for
     // the test to mint the caller's audience-bound token with, so the verifier busbar runs is
@@ -645,7 +645,7 @@ pub(super) async fn harness_full(
         Some("external-agent-1"),
     );
 
-    let mut builder = crate::test_support::TestApp::new()
+    let mut builder = busbar_core::test_support::TestApp::new()
         .public_url(PUBLIC_URL)
         .keys_chain()
         .governance(Arc::clone(&gov));
@@ -667,7 +667,7 @@ pub(super) async fn harness_full(
     // The front door writes the A2A task chain through the process-wide `task_event` stream; this
     // harness does not boot through `a2a_hydrate`, so register that stream once (no-sink; this
     // harness's store is the RAM default and keeps nothing) so `submit`/`transition` mint sequences.
-    crate::plane::taskstore::ensure_global_task_stream_registered();
+    busbar_core::plane::taskstore::ensure_global_task_stream_registered();
 
     let plane = crate::a2a::runtime_arc(&app).expect("the plane exists");
     plane.with_registrations_mut(|regs| {
@@ -688,7 +688,7 @@ pub(super) async fn harness_full(
         },
     }));
 
-    let router = crate::build_router(Arc::clone(&app));
+    let router = busbar_core::build_router(Arc::clone(&app));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });

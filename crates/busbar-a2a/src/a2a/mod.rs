@@ -17,7 +17,7 @@
 //!
 //! ## What this plane does NOT rebuild
 //!
-//! The trust lifecycle. [`crate::trust`] is the plane-neutral machine, written with the pinned
+//! The trust lifecycle. [`busbar_core::trust`] is the plane-neutral machine, written with the pinned
 //! artifact as a type parameter; this plane supplies an artifact ([`pin::CardPin`]) and nothing else.
 //! `tests/reuse_tests.rs` drives one transition table over this plane's REAL artifact and a
 //! single-value transport pin of the shape the sibling plane offers, so the claim that the machine
@@ -33,7 +33,7 @@
 //
 // AND THE ROUTER NOW RELAYS. [`relay`] is the hop `ingress::invoke` makes to the registered backend
 // agent: it guards and pins the target through the SAME `fetch::guard_hop` — and therefore the
-// same `crate::net_guard` resolve-then-pin — the card fetch
+// same `busbar_core::net_guard` resolve-then-pin — the card fetch
 // uses, RE-ASKS the trust question against the live registry immediately before the socket so a
 // mid-flight demotion is not something an in-flight request escapes, presents BUSBAR'S OWN leased
 // credential or none, and turns every way the hop can fail into a busbar-attributed error rather
@@ -240,7 +240,7 @@ pub(crate) fn runtime_off_slots(
 
 /// CARRY the A2A verify-on-call gate and the boot-resolved card transports off the PRIOR generation's
 /// plane, read through the neutral [`busbar_substrate::plane_host::PlaneSlots`] seam
-/// ([`crate::plane::registry::BuildCtx::prior`]) and downcast HERE, inside the plane. Returns fresh
+/// ([`busbar_core::plane::registry::BuildCtx::prior`]) and downcast HERE, inside the plane. Returns fresh
 /// defaults when there was no prior generation or it fronted no agents (no a2a slot) — so the
 /// coalescing epochs and the boot-set transports survive a config apply exactly as the MCP runtime's
 /// `verify` does, and start empty on a fresh boot.
@@ -263,7 +263,7 @@ pub(crate) fn carried_a2a_gates(
 }
 
 /// THE A2A RUNTIME OBJECT for this config generation, read through the TYPE-ERASED `plane_slots`
-/// seam ([`crate::state::App::plane_slot`]) and downcast back to [`crate::a2a::plane::A2aPlane`]
+/// seam ([`busbar_core::state::App::plane_slot`]) and downcast back to [`crate::a2a::plane::A2aPlane`]
 /// HERE, inside the plane — so core OUTSIDE this module reaches the plane only as an opaque
 /// `Arc<dyn Any>` slot and names no `crate::a2a` type. `None` exactly when `agents:` is not
 /// configured this generation (the plane contributed no slot — the same absence the deleted
@@ -275,7 +275,7 @@ pub(crate) fn carried_a2a_gates(
 /// (`runtime_arc`/`runtime_arc_of` over an `EngineHost`); this `&App` form now survives solely for
 /// the in-crate tests that assert plane presence/absence off a built `App`.
 #[cfg(all(test, not(busbar_a2a_native)))]
-pub(crate) fn runtime(app: &crate::state::App) -> Option<&crate::a2a::plane::A2aPlane> {
+pub(crate) fn runtime(app: &busbar_core::state::App) -> Option<&crate::a2a::plane::A2aPlane> {
     app.plane_slot(PLANE_DECL.key).map(|slot| {
         slot.downcast_ref::<crate::a2a::plane::A2aPlane>()
             .expect("the a2a plane's dispatch slot is an A2aPlane")
@@ -293,7 +293,7 @@ pub(crate) fn runtime(app: &crate::state::App) -> Option<&crate::a2a::plane::A2a
 /// `&App` form survives for the test harnesses that build an `App` directly.
 #[cfg(all(test, not(busbar_a2a_native)))]
 pub(crate) fn runtime_arc(
-    app: &crate::state::App,
+    app: &busbar_core::state::App,
 ) -> Option<std::sync::Arc<crate::a2a::plane::A2aPlane>> {
     app.plane_slot(PLANE_DECL.key).map(|slot| {
         slot.clone()
@@ -557,7 +557,7 @@ pub(crate) mod pushback;
 pub(crate) mod pushdeliver;
 pub(crate) mod pushnotify;
 /// THE RECEIVING HOT PATH. Not `ingress` any more, and the rename is the statement: the ingress
-/// SEQUENCE is `crate::ingress::protocol`, once, for every JSON-RPC plane. What is in here is what
+/// SEQUENCE is `busbar_core::ingress::protocol`, once, for every JSON-RPC plane. What is in here is what
 /// was left when it moved out — this plane's method vocabulary, its verb dispatch and its refusal
 /// wording.
 pub(crate) mod receive;
@@ -568,7 +568,7 @@ pub(crate) mod rest;
 pub(crate) mod route;
 pub(crate) mod rpcerror;
 /// THIS PLANE'S REFUSAL VOCABULARY: `A2aWords`, the total match that gives every refusal
-/// `crate::ingress::protocol` decides a sentence in A2A's own error envelope, plus the three facts
+/// `busbar_core::ingress::protocol` decides a sentence in A2A's own error envelope, plus the three facts
 /// of its RFC 9728 document.
 pub(crate) mod words;
 // THE CADENCE MOVED, and the plane keeps its spelling. `super::reverify::…` still resolves, so no

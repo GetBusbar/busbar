@@ -178,14 +178,14 @@ fn a_booted_app_carries_the_plane_only_when_agents_are_configured() {
     // THE LOWERING IS WIRED, not merely writable. This drives the real `App` build — the same
     // function boot and every config apply call — rather than `from_config` alone, because a plane
     // that lowers correctly and is never asked for at boot is a plane no deployment has.
-    crate::metrics::init();
-    let none = crate::test_support::TestApp::new().build();
+    busbar_core::metrics::init();
+    let none = busbar_core::test_support::TestApp::new().build();
     assert!(
         crate::a2a::runtime(&none).is_none(),
         "a deployment with no `agents:` holds no registry, so there is no job to spawn"
     );
 
-    let one = crate::test_support::TestApp::new()
+    let one = busbar_core::test_support::TestApp::new()
         .public_url("https://busbar.example")
         .agent_def("planner", unpinned_agent("https://a2a.vendor/planner"))
         .build();

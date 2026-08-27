@@ -12,14 +12,14 @@ use crate::a2a::config::{
 /// `plane::config`, called with THIS plane's wording and the DERIVED section list. The wrapper
 /// exists only so these tests read as the boot path does.
 fn validate_section_hooks(hooks: &[String]) -> Result<(), String> {
-    crate::plane::config::validate_section_hooks(
+    busbar_core::plane::config::validate_section_hooks(
         "`agents.hooks`",
         hooks,
-        &crate::plane::config::config_sections(),
+        &busbar_core::plane::config::config_sections(),
     )
 }
 use crate::a2a::pin::CardPin;
-use crate::config::named_map::NamedMapSection;
+use busbar_core::config::named_map::NamedMapSection;
 
 /// This plane's declared pin, read by the ONE reader every plane uses. The wrapper exists only so
 /// these tests read as the boot path does: the projection is this plane's grammar's
@@ -258,7 +258,7 @@ fn a_cross_plane_hook_reference_is_refused() {
     // This test drives `validate_agent` directly (no plane build), so bind the section-list provider
     // the composition root binds in production; without it `plane_sections()` is empty and a dotted
     // reference reads as merely malformed rather than cross-plane. Idempotent.
-    busbar_substrate::plane::config::install_plane_sections(crate::plane::config::config_sections);
+    busbar_substrate::plane::config::install_plane_sections(busbar_core::plane::config::config_sections);
     for bad in [
         "pools.fast",
         "agents.planner",
@@ -607,11 +607,11 @@ planner:
         .expect("the client identity is carried through");
     assert_eq!(
         identity.cert.module,
-        crate::config::secret::SECRET_MODULE_FILE
+        busbar_core::config::secret::SECRET_MODULE_FILE
     );
     assert_eq!(
         identity.key.module,
-        crate::config::secret::SECRET_MODULE_FILE
+        busbar_core::config::secret::SECRET_MODULE_FILE
     );
     // The REFERENCE is what the config holds. Nothing here is key material, which is why the type
     // is safe to `Debug` and safe to serve back from the admin API.

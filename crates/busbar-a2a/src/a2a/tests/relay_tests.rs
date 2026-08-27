@@ -3,7 +3,7 @@
 
 //! THE RELAY, DRIVEN THROUGH THE REAL ROUTER.
 //!
-//! Every assertion here goes through `crate::build_router` and a real socket, with a REAL
+//! Every assertion here goes through `busbar_core::build_router` and a real socket, with a REAL
 //! audience-bound busbar token minted by the same signer the verifier runs. A relay that behaves
 //! correctly when a test calls it and forwards the caller's credential when axum calls it is the
 //! exact defect these tests exist to catch, and a test that called `relay::relay` directly would
@@ -28,7 +28,7 @@
 //! is the confused-deputy section at the bottom, and it would be satisfied by a relay that violates
 //! rule one and vice versa. Both hold; neither implies the other.
 
-use crate::plane::store::StoreNamedTestExt;
+use busbar_core::plane::store::StoreNamedTestExt;
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::atomic::Ordering;
 
@@ -280,7 +280,7 @@ async fn the_backends_reply_comes_back_under_busbars_own_task_identity() {
     );
 
     // And the task busbar recorded ended where the backend said it ended.
-    let task = crate::plane::taskstore::TASKS
+    let task = busbar_core::plane::taskstore::TASKS
         .get_unscoped(&id)
         .expect("the task busbar opened is in the working set");
     // The engine is `TaskRow`-neutral; `state` is the canonical token string.
@@ -302,7 +302,7 @@ async fn a_failed_hop_ends_the_task_as_failed_rather_than_leaving_it_submitted()
         id.starts_with("a2a-planner-"),
         "the refusal must name the task busbar opened so the caller can correlate it: {body}"
     );
-    let task = crate::plane::taskstore::TASKS
+    let task = busbar_core::plane::taskstore::TASKS
         .get_unscoped(&id)
         .expect("the task busbar opened is in the working set");
     assert_eq!(
@@ -336,7 +336,7 @@ async fn every_relayed_task_leaves_a_verifying_hash_chained_delegation_event() {
     if events.is_empty() {
         return;
     }
-    crate::plane::taskstore::verify_task_event_rows(&events).expect("the per-task chain verifies");
+    busbar_core::plane::taskstore::verify_task_event_rows(&events).expect("the per-task chain verifies");
     assert!(
         events
             .iter()
@@ -376,7 +376,7 @@ async fn the_hop_is_metered_and_the_callees_own_reported_spend_is_not() {
     let rows = h
         .gov
         .store()
-        .list_metering(crate::governance::metering_bucket(
+        .list_metering(busbar_core::governance::metering_bucket(
             busbar_substrate::store::now(),
         ))
         .expect("metering reads back");
@@ -540,7 +540,7 @@ fn a_grant_for_one_agent_cannot_mint_against_a_registration_for_another() {
     let out = crate::a2a::creds::mint(
         &grant,
         &reg,
-        &crate::config::secret::SecretResolver::builtins_only(),
+        &busbar_core::config::secret::SecretResolver::builtins_only(),
         1_000,
     );
     assert!(
@@ -630,7 +630,7 @@ async fn a_registration_demoted_between_admission_and_the_socket_is_not_reached(
     // restored.
     let id = task_named_by(&body);
     assert!(!id.is_empty(), "the refusal must name the task: {body}");
-    let task = crate::plane::taskstore::TASKS
+    let task = busbar_core::plane::taskstore::TASKS
         .get_unscoped(&id)
         .expect("the task exists");
     assert_ne!(
@@ -661,7 +661,7 @@ async fn an_already_demoted_registration_is_refused_at_admission_with_the_same_s
 /// there is no other way to reach the mint.
 fn a_lease(agent_id: &'static str, now_ms: u64) -> crate::a2a::creds::Lease {
     let path = secret_file();
-    let resolver = crate::config::secret::SecretResolver::builtins_only();
+    let resolver = busbar_core::config::secret::SecretResolver::builtins_only();
     let key = a_key("k-lease", Some(&[agent_id]));
     let grant = crate::a2a::creds::authorise_egress(&key, agent_id, 1).expect("the grant");
     crate::a2a::creds::mint_from(
@@ -956,7 +956,7 @@ async fn a_json_rpc_error_from_the_backend_is_a_failed_hop_carrying_its_code_and
         "the refusal must still name the task: {body}"
     );
     assert_eq!(
-        crate::plane::taskstore::TASKS
+        busbar_core::plane::taskstore::TASKS
             .get_unscoped(&id)
             .expect("the task exists")
             .state,
@@ -1428,19 +1428,19 @@ async fn an_admitted_agent_task_lands_in_the_plane_request_series() {
         ("ingress_protocol", "jsonrpc"),
         ("outcome", "ok"),
     ];
-    let before = crate::test_support::metric_sum(crate::metrics::PLANE_REQUESTS_TOTAL, &labels);
+    let before = busbar_core::test_support::metric_sum(busbar_core::metrics::PLANE_REQUESTS_TOTAL, &labels);
     let (status, body) = call(&h).await;
     assert_eq!(status, 200, "the admitted call must be served: {body}");
-    let after = crate::test_support::metric_sum(crate::metrics::PLANE_REQUESTS_TOTAL, &labels);
+    let after = busbar_core::test_support::metric_sum(busbar_core::metrics::PLANE_REQUESTS_TOTAL, &labels);
 
     assert!(
         after > before,
         "a relayed agent task produced no `{}` sample on the a2a plane (before {before}, after \
          {after}) — the plane is invisible to an operator again",
-        crate::metrics::PLANE_REQUESTS_TOTAL,
+        busbar_core::metrics::PLANE_REQUESTS_TOTAL,
     );
     assert!(
-        crate::test_support::metric_sum(
+        busbar_core::test_support::metric_sum(
             "busbar_plane_request_duration_seconds_count",
             &[("plane", "a2a"), ("ingress_protocol", "jsonrpc")],
         ) > 0.0,

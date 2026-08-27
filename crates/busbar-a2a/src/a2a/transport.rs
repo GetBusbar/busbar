@@ -224,7 +224,7 @@ pub(crate) fn resolve_client_identities(
 }
 
 /// THE REAL TRANSPORT: a pinned `reqwest` hop to the PINNED ADDRESS, over the unified core egress
-/// backend ([`crate::egress`]) — pooled by the pinned address, so a repeated hop to an
+/// backend ([`busbar_core::egress`]) — pooled by the pinned address, so a repeated hop to an
 /// already-judged target reuses the connection, and the client still refuses a second lookup.
 pub(crate) struct ReqwestTransport {
     /// The resolver a plane-supplied client would have been given. VESTIGIAL under the seam (Design A):

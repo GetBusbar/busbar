@@ -348,7 +348,7 @@ impl Task {
 /// side at the D4 codec inversion: the neutral core engine only hash-chains and persists whatever
 /// `kind` it is handed, so the classification — which needs the [`TaskState`] enum — lives here and
 /// the resulting `&'static str` is passed INTO the engine's record path. The kind CONSTANTS are still
-/// core's (`crate::provenance::EV_*`), so the emitted strings are unchanged; only the mapping
+/// core's (`busbar_core::provenance::EV_*`), so the emitted strings are unchanged; only the mapping
 /// moved.
 ///
 /// `from` is the state BEFORE the move and it is load-bearing: an `interrupted → working` move is a
@@ -390,7 +390,7 @@ pub(crate) fn plan_transition(
 /// when the row parses as a canonical [`Task`] (a known state + direction token and a present
 /// identity) and `Err(rendered message)` otherwise — the exact classification the pre-cleave
 /// `restore_from_store` made inline with `Task::from_row`, moved to the a2a side so core names no
-/// codec. The terminal/active split is core's ([`crate::plane::taskstore`]'s neutral token check),
+/// codec. The terminal/active split is core's ([`busbar_core::plane::taskstore`]'s neutral token check),
 /// applied only after this predicate confirms the token is one this binary knows.
 pub(crate) fn readable_row(row: &busbar_api::TaskRow) -> Result<(), String> {
     Task::from_row(row).map(|_| ()).map_err(|e| e.to_string())

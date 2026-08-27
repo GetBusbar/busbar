@@ -28,7 +28,7 @@
 //! `'id' in msg`. An instrument can be blind to exactly the defect it is pointed at. So every
 //! assertion below is on bytes that crossed a boundary: what busbar sent the backend (`h.sent()`),
 //! and what busbar wrote to the caller (the HTTP status and body of a real request through
-//! `crate::build_router`).
+//! `busbar_core::build_router`).
 
 use super::relay_harness::*;
 

@@ -85,17 +85,17 @@ pub(crate) struct A2aPlane {
     /// ingress against a recording seam without the ingress growing a test-shaped argument.
     relay: RwLock<Arc<dyn super::relay::RelaySeam>>,
     /// BUSBAR'S PUBLIC AGENT-CARD ISSUER KEY (`kid` + SPKI), stashed by the plane's `start` hook from
-    /// the host-computed [`crate::plane::registry::BootCtx::card_issuer`]. PUBLIC material only — the
-    /// signing seed stays host-side and is reached through [`crate::plane_host::card_sign_over`]. Held
+    /// the host-computed [`busbar_core::plane::registry::BootCtx::card_issuer`]. PUBLIC material only — the
+    /// signing seed stays host-side and is reached through [`busbar_core::plane_host::card_sign_over`]. Held
     /// here so [`super::sign::card_signer`] reads the issuer off the plane's OWN slot rather than off
     /// `app.governance`, which is what lets the extracted plane name no `GovState`. `None` until the
     /// start hook runs, or when the deployment holds no card-signing key (the governance-off path).
     card_issuer: OnceLock<busbar_substrate::plane::registry::CardIssuer>,
     /// THE A2A VERIFY-ON-CALL GATE — the per-agent single-flight coalescer that re-verifies a fronted
     /// agent's signed card on the DELEGATION path when its recorded observation is older than
-    /// `verify_ttl` (see [`crate::trust::verify`]). Held HERE on the plane's own runtime object, like
+    /// `verify_ttl` (see [`busbar_core::trust::verify`]). Held HERE on the plane's own runtime object, like
     /// its MCP sibling holds `verify` on `McpRuntime`, rather than on the shared `App`: verify-on-call
-    /// reads it off the plane slot, not off `crate::state::App`.
+    /// reads it off the plane slot, not off `busbar_core::state::App`.
     ///
     /// Arc-shared ACROSS config applies (carried by [`Self::from_config_carrying`] from the prior
     /// generation's plane), like its MCP sibling and for the same reason: the coalescing epochs are

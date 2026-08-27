@@ -44,7 +44,7 @@
 //! therefore a COMPILE error at the call site rather than a review comment — which matters because
 //! the caller that will forget is the one that does not exist yet.
 //!
-//! THE GATE ITSELF IS CORE'S ([`crate::egress_auth::gate`]). It was written twice — here and at
+//! THE GATE ITSELF IS CORE'S ([`busbar_core::egress_auth::gate`]). It was written twice — here and at
 //! `mcp/client/egress.rs` — and one copy checked key liveness while the other did not. What is left
 //! here is what is genuinely this plane's: the GRANT KIND ([`AgentGrant`]) and the refusal WORDING
 //! ([`AgentEgressDenied`]).

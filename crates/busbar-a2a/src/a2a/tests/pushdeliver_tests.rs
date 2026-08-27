@@ -31,7 +31,7 @@ use super::super::pushdeliver::{self, PushRefusal};
 use super::super::pushnotify::{self, PushNotifyError};
 use super::super::relay::{ChunkFlow, RelaySeam, RelayTransport, StreamHead};
 use super::super::task::{Direction, Task, TaskState};
-use crate::provenance;
+use busbar_core::provenance;
 
 const CALLBACK: &str = "https://hook.caller.test/notify";
 /// The address the callback resolved to when it was REGISTERED. Public, so it passed.
@@ -153,8 +153,8 @@ fn task_with_callback(task_id: &str, state: TaskState) -> Task {
 /// set, so the chain append is a swallowed `NoSuchTask` — exactly the best-effort posture the delivery
 /// path takes).
 fn deliver_hosted(seam: &dyn RelaySeam, task: &Task) -> Result<(), PushRefusal> {
-    let app = crate::test_support::TestApp::new().build();
-    let engine_host = crate::plane_host::engine_host(&app);
+    let app = busbar_core::test_support::TestApp::new().build();
+    let engine_host = busbar_core::plane_host::engine_host(&app);
     pushdeliver::deliver(engine_host.as_ref(), seam, task)
 }
 
@@ -575,7 +575,7 @@ fn the_terminal_delivery_drops_its_pin() {
 /// A REGRESSION LOCK ON AN ABSENCE AND ON A PRESENCE, and both halves have been wrong here.
 ///
 /// **The absence.** Every other place busbar puts JSON on this plane's wire is a JSON-RPC message
-/// read or written through `crate::ingress::jsonrpc`. A reviewer who has just been through the
+/// read or written through `busbar_core::ingress::jsonrpc`. A reviewer who has just been through the
 /// three response sites that really did lack a `jsonrpc` member and an `id` will read the same
 /// absence HERE as a fourth instance and add them — and that would be a protocol violation, because
 /// a push notification is POSTed to a webhook: it is not a request (busbar invokes no method on the
@@ -646,23 +646,23 @@ async fn a_task_in_the_registry(
     state: TaskState,
 ) -> (
     Task,
-    Arc<crate::plane::taskstore::event_ledger::EventLedger>,
+    Arc<busbar_core::plane::taskstore::event_ledger::EventLedger>,
     tokio::sync::MutexGuard<'static, ()>,
 ) {
-    let guard = crate::plane::taskstore::TASKS_SINK_LOCK.lock().await;
-    let ledger = Arc::new(crate::plane::taskstore::event_ledger::EventLedger::new());
+    let guard = busbar_core::plane::taskstore::TASKS_SINK_LOCK.lock().await;
+    let ledger = Arc::new(busbar_core::plane::taskstore::event_ledger::EventLedger::new());
     // Aim the process-wide `task_event` stream at THIS ledger for the duration of the lock — a sink
     // swap, not a re-register, so the working-set tests' shared registration (and every position) is
     // left intact — and attach the row-upsert sink.
-    crate::plane::taskstore::aim_global_task_sink(Some(
+    busbar_core::plane::taskstore::aim_global_task_sink(Some(
         busbar_substrate::plane::store::PlaneStoreView::narrow(ledger.clone()),
     ));
-    crate::plane::taskstore::TASKS.set_sink(
+    busbar_core::plane::taskstore::TASKS.set_sink(
         busbar_substrate::plane::store::PlaneStoreView::narrow(ledger.clone()),
     );
     let task = task_with_callback(task_id, state);
-    crate::plane::taskstore::with_global_task_host(|host| {
-        crate::plane::taskstore::TASKS
+    busbar_core::plane::taskstore::with_global_task_host(|host| {
+        busbar_core::plane::taskstore::TASKS
             .submit(host, &task.to_row(), "req-1")
             .expect("the task is admitted");
     });
@@ -671,11 +671,11 @@ async fn a_task_in_the_registry(
 
 /// The kinds on a task's chain, oldest first, read back out of the store.
 fn kinds_of(
-    ledger: &crate::plane::taskstore::event_ledger::EventLedger,
+    ledger: &busbar_core::plane::taskstore::event_ledger::EventLedger,
     task_id: &str,
 ) -> Vec<String> {
     let events = ledger.events_for(task_id);
-    crate::plane::taskstore::verify_task_event_rows(&events)
+    busbar_core::plane::taskstore::verify_task_event_rows(&events)
         .expect("the per-task chain verifies after a delivery");
     events.into_iter().map(|e| e.kind).collect()
 }
@@ -704,8 +704,8 @@ async fn a_delivery_the_ssrf_guard_refuses_lands_a_refusal_on_the_tasks_own_chai
     );
 
     let kinds = kinds_of(&ledger, id);
-    crate::plane::taskstore::TASKS.clear_sink_for_test();
-    crate::plane::taskstore::aim_global_task_sink(None);
+    busbar_core::plane::taskstore::TASKS.clear_sink_for_test();
+    busbar_core::plane::taskstore::aim_global_task_sink(None);
     pushdeliver::forget(id);
     assert!(
         kinds.contains(&provenance::EV_PUSH_REFUSED.to_string()),
@@ -734,8 +734,8 @@ async fn a_delivered_notification_lands_a_delivered_record_on_the_tasks_own_chai
     assert_eq!(log.lock().unwrap().len(), 1, "the notification went out");
 
     let kinds = kinds_of(&ledger, id);
-    crate::plane::taskstore::TASKS.clear_sink_for_test();
-    crate::plane::taskstore::aim_global_task_sink(None);
+    busbar_core::plane::taskstore::TASKS.clear_sink_for_test();
+    busbar_core::plane::taskstore::aim_global_task_sink(None);
     pushdeliver::forget(id);
     assert_eq!(
         kinds,
@@ -762,8 +762,8 @@ async fn a_receiver_that_answers_non_2xx_is_recorded_as_failed_and_not_as_refuse
     assert!(matches!(refusal, PushRefusal::Status(500)), "{refusal}");
 
     let kinds = kinds_of(&ledger, id);
-    crate::plane::taskstore::TASKS.clear_sink_for_test();
-    crate::plane::taskstore::aim_global_task_sink(None);
+    busbar_core::plane::taskstore::TASKS.clear_sink_for_test();
+    busbar_core::plane::taskstore::aim_global_task_sink(None);
     pushdeliver::forget(id);
     assert!(
         kinds.contains(&provenance::EV_PUSH_FAILED.to_string())

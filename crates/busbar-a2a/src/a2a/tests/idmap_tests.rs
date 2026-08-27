@@ -24,14 +24,14 @@
 
 use super::*;
 use crate::a2a::task::{Direction, Task};
-use crate::plane::taskstore::TASKS;
+use busbar_core::plane::taskstore::TASKS;
 use serde_json::json;
 
 /// Open a real task row owned by `principal`, so the scoped lookup has an ownership fact to read.
 fn own(principal: &str, task_id: &str) {
     let task = Task::submitted(task_id, "ctx-idmap", principal, Direction::Inbound, 1_000)
         .expect("a task with these fields is constructible");
-    crate::plane::taskstore::with_global_task_host(|host| {
+    busbar_core::plane::taskstore::with_global_task_host(|host| {
         TASKS
             .submit(host, &task.to_row(), task_id)
             .expect("the row records");

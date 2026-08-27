@@ -9,7 +9,7 @@
 //! complete a connection is a claim, not a control.
 //!
 //! Every test here runs a REAL rustls handshake against a server built with a
-//! [`rustls::server::WebPkiClientVerifier`] — the same verifier `crate::tls` installs on busbar's own
+//! [`rustls::server::WebPkiClientVerifier`] — the same verifier `busbar_core::tls` installs on busbar's own
 //! inbound listener when an operator sets `tls.client_ca`. That is deliberate: the peer in these
 //! tests demands exactly what busbar demands, so "busbar can talk to an mTLS peer" is proven against
 //! the same rule busbar enforces rather than against a lenient fixture.
@@ -44,7 +44,7 @@ type ClientCerts = Arc<Mutex<Vec<Result<usize, String>>>>;
 
 /// A real rustls server that REQUIRES a client certificate chaining to `client_ca_pem`.
 ///
-/// Built with `WebPkiClientVerifier`, which is the same construction `crate::tls::build_server_config`
+/// Built with `WebPkiClientVerifier`, which is the same construction `busbar_core::tls::build_server_config`
 /// uses for busbar's own inbound mTLS. A client that presents nothing is refused during the
 /// handshake and never reaches the HTTP layer at all.
 pub(super) fn spawn_mtls(
@@ -53,7 +53,7 @@ pub(super) fn spawn_mtls(
     client_ca_pem: &str,
     body: String,
 ) -> (SocketAddr, ClientCerts) {
-    crate::tls::install_crypto_provider();
+    busbar_core::tls::install_crypto_provider();
     use rustls_pki_types::pem::PemObject;
     let certs: Vec<rustls_pki_types::CertificateDer<'static>> =
         rustls_pki_types::CertificateDer::pem_slice_iter(server_cert_pem.as_bytes())
@@ -167,7 +167,7 @@ pub(super) fn identity_from_config(cert_pem: &str, key_pem: &str) -> reqwest::Id
 
     let identities = crate::a2a::transport::resolve_client_identities(
         &cfg,
-        &crate::config::secret::SecretResolver::builtins_only(),
+        &busbar_core::config::secret::SecretResolver::builtins_only(),
     )
     .expect("the operator's cert and key resolve into a client identity");
     identities

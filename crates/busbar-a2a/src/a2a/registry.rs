@@ -5,7 +5,7 @@
 //!
 //! ## This is a RECORD, not a second state machine
 //!
-//! The trust state, the changes queue and the dispatch gate are [`crate::trust`], reached through
+//! The trust state, the changes queue and the dispatch gate are [`busbar_core::trust`], reached through
 //! the [`busbar_substrate::trust::Approval`] this record CARRIES. Nothing here re-derives any of them.
 //! `tests/reuse_tests.rs::the_a2a_plane_declares_no_trust_state_of_its_own` reads this file, among
 //! the plane's others, and fails on a re-declaration — so the discipline is machine-checked rather
@@ -207,7 +207,7 @@ impl AgentRegistration {
 //
 // ## THE WALK IS CORE'S AND THE GATE IS CORE'S. THIS PLANE SUPPLIES AN ITEM TYPE.
 //
-// [`crate::catalogue`] owns the mechanism — walk the inventory, collect what each item requires,
+// [`busbar_core::catalogue`] owns the mechanism — walk the inventory, collect what each item requires,
 // hand it to the ordered gate, keep the entitled subset, render it — and [`busbar_substrate::trust::validate`]
 // owns the entitlement decision. This file supplies the four things a plane owes them: the item
 // (`AgentRegistration`, the record this module already was), the grants it requires, its structural

@@ -3,7 +3,7 @@
 
 //! BUSBAR AS AN A2A **CLIENT**, over all three of A2A's bindings.
 //!
-//! Every test here drives busbar's REAL router — the same `crate::build_router`, the same admission,
+//! Every test here drives busbar's REAL router — the same `busbar_core::build_router`, the same admission,
 //! the same egress gate, the same SSRF guard, the same audit chain, the same task store — and then
 //! reads what busbar ASKED TO HAVE SENT off the recording seam. That is what makes these tests
 //! evidence for a coverage cell rather than evidence that a function exists: the claim
@@ -1019,7 +1019,7 @@ async fn a_list_with_no_open_task_of_this_callers_makes_no_hop() {
 // outcomes are chained"), and it is what the two tests below close for the DELEGATION HOP: the leg
 // busbar itself issues to a registered backend agent.
 
-/// A task-event sink for the process-global [`crate::plane::taskstore::TASKS`].
+/// A task-event sink for the process-global [`busbar_core::plane::taskstore::TASKS`].
 ///
 /// The shipped `busbar-store-memory` implements NONE of the task methods — it is documented as
 /// genuinely ephemeral and the boot-restore path relies on that — so a sink is the only way to read
@@ -1034,7 +1034,7 @@ struct ChainSink {
     inner: busbar_store_memory::MemoryStore,
     /// `(task_id, body)` — the OPAQUE stored task-event bodies a durable backend holds (the neutral
     /// `{seq,prev_hash,hash,content}` the P5-C9 seam persists), kept verbatim and reconstructed to a
-    /// typed view on read via [`crate::plane::store::task_event_row_from_body`].
+    /// typed view on read via [`busbar_core::plane::store::task_event_row_from_body`].
     events: std::sync::Mutex<Vec<(String, Vec<u8>)>>,
 }
 
@@ -1084,7 +1084,7 @@ impl busbar_api::Store for ChainSink {
     // ── The neutral kind-tagged verbs, delegating to the named task-event methods above ──────────
     fn append_plane_record(&self, record: &busbar_api::PlaneRecord) -> busbar_api::StoreResult<()> {
         match record.kind.as_str() {
-            crate::plane::store::KIND_TASK_EVENT => {
+            busbar_core::plane::store::KIND_TASK_EVENT => {
                 let task_id = record.parent.clone().unwrap_or_else(|| record.id.clone());
                 self.events
                     .lock()
@@ -1101,7 +1101,7 @@ impl busbar_api::Store for ChainSink {
         selector: &busbar_api::PlaneSelector,
     ) -> busbar_api::StoreResult<Vec<Vec<u8>>> {
         match (kind, selector) {
-            (crate::plane::store::KIND_TASK_EVENT, busbar_api::PlaneSelector::Parent(p)) => {
+            (busbar_core::plane::store::KIND_TASK_EVENT, busbar_api::PlaneSelector::Parent(p)) => {
                 Ok(self
                     .events
                     .lock()
@@ -1126,7 +1126,7 @@ impl ChainSink {
             .unwrap_or_else(|e| e.into_inner())
             .iter()
             .filter(|(id, _)| id == task_id)
-            .map(|(id, body)| crate::plane::store::task_event_row_from_body(id, body))
+            .map(|(id, body)| busbar_core::plane::store::task_event_row_from_body(id, body))
             .collect()
     }
 }
@@ -1155,14 +1155,14 @@ async fn the_delegation_hop_lands_in_the_per_task_chain_naming_the_agent_it_was_
     // reads back what IT wrote, and the registry is process state, so a concurrent test swapping
     // (or clearing) the sink mid-flight makes this one read an empty chain and fail for a reason
     // that has nothing to do with the client leg. See `taskstore::TASKS_SINK_LOCK`.
-    let _sink_guard = crate::plane::taskstore::TASKS_SINK_LOCK.lock().await;
+    let _sink_guard = busbar_core::plane::taskstore::TASKS_SINK_LOCK.lock().await;
     let sink = std::sync::Arc::new(ChainSink::new());
     // Aim the process-wide `task_event` stream the front door writes through at THIS sink (a swap, not
     // a re-register) and attach the row-upsert sink.
-    crate::plane::taskstore::aim_global_task_sink(Some(
+    busbar_core::plane::taskstore::aim_global_task_sink(Some(
         busbar_substrate::plane::store::PlaneStoreView::narrow(sink.clone()),
     ));
-    crate::plane::taskstore::TASKS.set_sink(
+    busbar_core::plane::taskstore::TASKS.set_sink(
         busbar_substrate::plane::store::PlaneStoreView::narrow(sink.clone()),
     );
 
@@ -1213,7 +1213,7 @@ async fn the_delegation_hop_lands_in_the_per_task_chain_naming_the_agent_it_was_
     );
 
     // ── AND IT IS A CHAIN. The core verifier, over the rows the sink actually kept. ─────────────
-    crate::plane::taskstore::verify_task_event_rows(&events)
+    busbar_core::plane::taskstore::verify_task_event_rows(&events)
         .expect("the a2a-client leg's persisted chain must verify against its own hashes");
     assert!(
         events
@@ -1224,8 +1224,8 @@ async fn the_delegation_hop_lands_in_the_per_task_chain_naming_the_agent_it_was_
         events.iter().map(|e| &e.kind).collect::<Vec<_>>()
     );
 
-    crate::plane::taskstore::aim_global_task_sink(None);
-    crate::plane::taskstore::TASKS.set_sink(
+    busbar_core::plane::taskstore::aim_global_task_sink(None);
+    busbar_core::plane::taskstore::TASKS.set_sink(
         busbar_substrate::plane::store::PlaneStoreView::narrow(std::sync::Arc::new(
             busbar_store_memory::MemoryStore::new(),
         )),
@@ -1244,14 +1244,14 @@ async fn a_failed_hop_is_chained_too_and_the_chain_carries_its_terminal_outcome(
     // reads back what IT wrote, and the registry is process state, so a concurrent test swapping
     // (or clearing) the sink mid-flight makes this one read an empty chain and fail for a reason
     // that has nothing to do with the client leg. See `taskstore::TASKS_SINK_LOCK`.
-    let _sink_guard = crate::plane::taskstore::TASKS_SINK_LOCK.lock().await;
+    let _sink_guard = busbar_core::plane::taskstore::TASKS_SINK_LOCK.lock().await;
     let sink = std::sync::Arc::new(ChainSink::new());
     // Aim the process-wide `task_event` stream the front door writes through at THIS sink (a swap, not
     // a re-register) and attach the row-upsert sink.
-    crate::plane::taskstore::aim_global_task_sink(Some(
+    busbar_core::plane::taskstore::aim_global_task_sink(Some(
         busbar_substrate::plane::store::PlaneStoreView::narrow(sink.clone()),
     ));
-    crate::plane::taskstore::TASKS.set_sink(
+    busbar_core::plane::taskstore::TASKS.set_sink(
         busbar_substrate::plane::store::PlaneStoreView::narrow(sink.clone()),
     );
 
@@ -1307,11 +1307,11 @@ async fn a_failed_hop_is_chained_too_and_the_chain_carries_its_terminal_outcome(
             .map(|e| (&e.kind, &e.state))
             .collect::<Vec<_>>()
     );
-    crate::plane::taskstore::verify_task_event_rows(&events)
+    busbar_core::plane::taskstore::verify_task_event_rows(&events)
         .expect("the failed leg's persisted chain must verify against its own hashes");
 
-    crate::plane::taskstore::aim_global_task_sink(None);
-    crate::plane::taskstore::TASKS.set_sink(
+    busbar_core::plane::taskstore::aim_global_task_sink(None);
+    busbar_core::plane::taskstore::TASKS.set_sink(
         busbar_substrate::plane::store::PlaneStoreView::narrow(std::sync::Arc::new(
             busbar_store_memory::MemoryStore::new(),
         )),

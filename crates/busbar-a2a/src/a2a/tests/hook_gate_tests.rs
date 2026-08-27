@@ -17,7 +17,7 @@
 //! prose — reach the hook.
 
 use super::relay_harness::{call, call_agent, envelope, harness_gated, Gates, Outcome};
-use crate::config::{HookCfg, HookKind, PromptAccess, UserAccess};
+use busbar_core::config::{HookCfg, HookKind, PromptAccess, UserAccess};
 
 /// The `hooks:` DEFINITION a test attaches: a `kind: gate` on the hermetic test cdylib, holding the
 /// `prompt: ro` grant so the content projection is sent.
@@ -55,7 +55,7 @@ fn gate(settings: serde_json::Value) -> HookCfg {
 /// skipped acceptance test reports green, and with the firing site reverted and the cdylib missing
 /// every assertion in this file passed. The panic names the command that fixes it.
 fn gates(name: &str, settings: serde_json::Value) -> Gates {
-    let env = crate::test_support::test_hook_env(
+    let env = busbar_core::test_support::test_hook_env(
         &["test-hook"],
         busbar_plugin_sign::HookNeeds {
             prompt: busbar_plugin_sign::NeedLevel::Rw,

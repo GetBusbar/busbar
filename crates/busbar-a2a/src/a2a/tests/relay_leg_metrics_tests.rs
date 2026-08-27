@@ -26,7 +26,7 @@
 //! `relay_harness`'s own header states the rule: the SSRF guard refuses loopback with no override,
 //! so a recording seam stands in for the socket and the socket half is discharged in
 //! `transport_tests`. What matters for THIS claim is unchanged by that — the traffic goes through
-//! `crate::build_router` and the production `a2a::receive` ingress into the production
+//! `busbar_core::build_router` and the production `a2a::receive` ingress into the production
 //! `a2a::relay::relay`, and the numbers are read out of the REAL `GET /metrics` route on the same
 //! router (see `scrape` for the one substitution and its argument). A test that called the emit
 //! helper directly would pass against a site no task reaches.
@@ -66,7 +66,7 @@ fn keys_of(line: &str) -> Vec<String> {
 
 /// THE BYTES AN OPERATOR'S SCRAPE RECEIVES, from the production `GET /metrics` dispatcher itself.
 ///
-/// [`crate::export::prometheus::PrometheusExport::handle_http`] is what the mounted route runs; this
+/// [`busbar_core::export::prometheus::PrometheusExport::handle_http`] is what the mounted route runs; this
 /// calls it rather than issuing an HTTP GET at the harness's router because that route's declared
 /// auth is `key` (`export::prometheus::route_decl`) and the only credential this harness mints is
 /// AUDIENCE-BOUND to `/a2a` — presenting it at `/metrics` is correctly a `401`, which is a fact
@@ -75,9 +75,9 @@ fn keys_of(line: &str) -> Vec<String> {
 /// `crate::mcp::upstream::client_leg_metrics_tests` and by `export::tests::prometheus_tests`; what
 /// is proven HERE is that a relayed hop puts a series into the exposition those two serve.
 fn scrape(_h: &Harness) -> String {
-    use crate::plugin_routes::PluginHttpDispatch;
+    use busbar_core::plugin_routes::PluginHttpDispatch;
     use busbar_plugin_loader::HttpEndpointRequest;
-    let resp = crate::export::prometheus::PrometheusExport.handle_http(&HttpEndpointRequest {
+    let resp = busbar_core::export::prometheus::PrometheusExport.handle_http(&HttpEndpointRequest {
         method: "GET".into(),
         path: "/metrics".into(),
         query: String::new(),
@@ -110,14 +110,14 @@ async fn a_relayed_task_counts_an_upstream_attempt_naming_the_agent_it_was_issue
     let exposition = scrape(&h);
     let attempts = series_for(
         &exposition,
-        crate::metrics::UPSTREAM_ATTEMPTS_TOTAL,
+        busbar_core::metrics::UPSTREAM_ATTEMPTS_TOTAL,
         "planner",
     );
     assert!(
         !attempts.is_empty(),
         "the A2A relay leg reached a backend agent and left no `{}` series for pool=\"planner\". \
          An operator cannot see the hops busbar originates. Exposition:\n{exposition}",
-        crate::metrics::UPSTREAM_ATTEMPTS_TOTAL,
+        busbar_core::metrics::UPSTREAM_ATTEMPTS_TOTAL,
     );
 
     // THE BINDING IS NAMED, off the transport axis's own word and not a spelling invented here, so
@@ -126,7 +126,7 @@ async fn a_relayed_task_counts_an_upstream_attempt_naming_the_agent_it_was_issue
     assert!(
         attempts
             .iter()
-            .any(|l| l.contains(&format!("lane=\"{}\"", crate::plane::WIRE_JSONRPC))),
+            .any(|l| l.contains(&format!("lane=\"{}\"", busbar_core::plane::WIRE_JSONRPC))),
         "the hop's binding must be on the series: {attempts:?}"
     );
 
@@ -160,19 +160,19 @@ async fn a_backend_that_cannot_be_reached_is_counted_as_a_transient_upstream_fai
     let exposition = scrape(&h);
     let failures = series_for(
         &exposition,
-        crate::metrics::UPSTREAM_FAILURES_TOTAL,
+        busbar_core::metrics::UPSTREAM_FAILURES_TOTAL,
         "planner",
     );
     assert!(
         !failures.is_empty(),
         "the backend was unreachable and left no `{}` series for pool=\"planner\". \
          Exposition:\n{exposition}",
-        crate::metrics::UPSTREAM_FAILURES_TOTAL,
+        busbar_core::metrics::UPSTREAM_FAILURES_TOTAL,
     );
     assert!(
         failures.iter().any(|l| l.contains(&format!(
             "disposition=\"{}\"",
-            crate::proxy::DISPOSITION_TRANSIENT
+            busbar_core::proxy::DISPOSITION_TRANSIENT
         ))),
         "the failure must carry the MODEL PLANE'S disposition word, not one of this plane's own: \
          {failures:?}"

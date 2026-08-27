@@ -255,7 +255,7 @@ fn the_planes_own_card_advertises_every_binding_the_plane_mounts() {
     // handler — one order, read in two places.
     assert_eq!(
         bindings.len(),
-        crate::plane::wire_format_names("a2a").len(),
+        busbar_core::plane::wire_format_names("a2a").len(),
         "every wire format the plane declares is published, and nothing else"
     );
     // AND EVERY ENTRY IS ADDRESSED THE WAY ITS OWN BINDING IS DIALED. gRPC publishes the AUTHORITY
@@ -276,7 +276,7 @@ fn every_published_binding_is_one_the_a2a_plane_declares_a_wire_format_for() {
     // so when the HTTP+JSON and gRPC bindings land on the plane this starts publishing them without
     // anyone editing `rewrite_card` — and until they do, it cannot publish them by accident.
     let served = rewrite_card(&backend_card(), BACKEND, PUBLIC, "planner", None).expect("rewrite");
-    let declared = crate::plane::wire_format_names("a2a");
+    let declared = busbar_core::plane::wire_format_names("a2a");
     for iface in served["supportedInterfaces"]
         .as_array()
         .expect("interfaces")

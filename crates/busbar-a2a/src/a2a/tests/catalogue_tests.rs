@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! Tests for A2A catalogue construction, both directions — this plane's half of
-//! [`crate::catalogue`]'s seam: which grants an `AgentRegistration` requires, which question its
+//! [`busbar_core::catalogue`]'s seam: which grants an `AgentRegistration` requires, which question its
 //! catalogue asks of the ordered gate, its structural fitness and its refusal words.
 //!
 //! The four filters are checked one at a time AND together, because a conjunction is exactly the
