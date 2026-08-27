@@ -54,9 +54,10 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     // field doc describes, and the auth layer wraps whatever the declaration hands it. AWS SigV4 is
     // not a shared scheme the way bearer/api-key are — Bedrock is the only protocol that signs.
     egress_auth_headers: Some(writer::sigv4_sign_headers),
-    // THE MODEL IS IN THE URL: `/model/{model_id}/converse`, `/converse-stream` and `/invoke`, plus
-    // the native 404 for anything else beneath it. All four were a name-matched arm in core.
-    path_ingress: Some(busbar_core::ingress::bedrock_arrival),
+    // THE MODEL IS IN THE URL (`/model/{model_id}/converse`, `/converse-stream`, `/invoke`): this
+    // dialect registers its arrival (`busbar_core::ingress::bedrock_arrival`) through
+    // `busbar_llm::PATH_INGRESS`, folded into the core side-table by the composition root.
+    // `has_model_in_url: true` below is what the boot parity assert pairs with that registration.
     stream_usage_requires_opt_in: false,
     // ── Promoted writer facts (G6 step A1): the same constants the `BedrockWriter` methods returned.
     requires_max_tokens: false,

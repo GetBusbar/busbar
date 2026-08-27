@@ -87,7 +87,7 @@ pub(crate) const METHOD_NOTIFY_RESOURCES_UPDATED: &str = ResourceUpdatedNotifica
 /// Handed to `install_protocols` by the composition root (the `busbar` binary); in `busbar-core`'s
 /// test/`test-support` builds it is instead the cfg-gated built-in row, so the fixture registry the
 /// tests see matches the registry a shipped binary has.
-pub const DECL: busbar_core::proto::ProtocolDecl = busbar_core::proto::ProtocolDecl {
+pub const DECL: busbar_substrate::proto::ProtocolDecl = busbar_substrate::proto::ProtocolDecl {
     name: "mcp",
     codec: None,
     handler: Some(&handler::McpRequestHandler),
@@ -104,9 +104,9 @@ pub const DECL: busbar_core::proto::ProtocolDecl = busbar_core::proto::ProtocolD
     // dialect-specific egress credential shaping of its own, so it declares no builder — unlike
     // Anthropic, whose api-key/Bearer disambiguation retired its arm in core.
     egress_auth_headers: None,
-    // NO PATH INGRESS: this dialect keeps its model in the BODY, so the catch-all resolves the
-    // operation through the `RequestHandler` and serves it on the universal ingress.
-    path_ingress: None,
+    // NO PATH INGRESS (model in the BODY): `has_model_in_url` is false below, so this dialect
+    // registers no arrival and the catch-all resolves its operation through the `RequestHandler`
+    // on the universal ingress. The arrival is no longer a decl field (Batch C-6).
     stream_usage_requires_opt_in: false,
     // ── Promoted writer facts (G6 step A1): MCP declares NO codec and has no writer, so every
     //    promoted fact is the `ProtocolWriter` trait DEFAULT — the same value core read for a

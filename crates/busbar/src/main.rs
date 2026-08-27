@@ -558,11 +558,21 @@ fn register_protocols() {
     // (`--no-default-features`) nothing pushes, so the binding is legitimately unmutated there.
     #[allow(unused_mut)]
     let mut installed: Vec<&'static busbar_core::proto::ProtocolDecl> = Vec::new();
+    // THE SECOND SEAM, FOLDED IN (Batch C-6): a path-model dialect's arrival split off `ProtocolDecl`
+    // when the decl relocated to `busbar-substrate`, so each protocol crate contributes its
+    // `(name, arrival)` pairs BESIDE its declarations here — the ONE composition-root write into both
+    // seams. `install_protocols_with_path_ingress` asserts at boot that every `has_model_in_url` decl
+    // has an arrival, so the two registrations cannot drift into a silent 404-shaped fall-through.
+    #[allow(unused_mut)]
+    let mut path_ingress: Vec<(&'static str, busbar_core::ingress::PathIngress)> = Vec::new();
     #[cfg(feature = "proto-llm")]
-    installed.extend_from_slice(busbar_llm::DECLS);
+    {
+        installed.extend_from_slice(busbar_llm::DECLS);
+        path_ingress.extend_from_slice(busbar_llm::PATH_INGRESS);
+    }
     #[cfg(feature = "plane-mcp")]
     installed.push(&busbar_mcp::PROTO_DECL);
-    busbar_core::proto::registry::install_protocols(installed);
+    busbar_core::proto::registry::install_protocols_with_path_ingress(installed, path_ingress);
 }
 
 /// REGISTER THE LINKED PLANE CRATES — the composition root's one write into the plane axis

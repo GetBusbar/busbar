@@ -240,27 +240,13 @@ pub(crate) fn vendor_auth_failure_message(proto: &str) -> &'static str {
         .unwrap_or("authentication failed")
 }
 
-/// Per-request signing context. Most protocols' `auth_headers` ignore this; protocols that
-/// sign the whole request (AWS SigV4 for Bedrock) need the method/host/path/body/time.
-pub struct SigningContext<'a> {
-    /// Upstream host (no scheme), e.g. `bedrock-runtime.us-east-1.amazonaws.com`. Borrowed from the
-    /// lane's precomputed `signing_host` on the forward path (no per-request allocation); only the
-    /// Bedrock SigV4 writer reads it.
-    pub host: &'a str,
-    /// URI-encoded request path (no query), e.g. `/model/anthropic.claude%3A0/converse`.
-    pub canonical_uri: String,
-    /// The exact request body bytes that will be sent.
-    pub body: &'a [u8],
-    /// Unix epoch seconds at signing time.
-    pub timestamp_epoch: u64,
-    /// The UPSTREAM-credential mode for this request. Lets a writer resolve a credential whose scheme
-    /// is otherwise ambiguous (e.g. Anthropic's API-key-vs-Bearer choice) to the single native header
-    /// the mode implies — `Passthrough` forwards the caller's Bearer token; `Own` presents the
-    /// configured-key shape. Without it, an ambiguous credential must emit BOTH headers, which is an
-    /// upstream-distinguishability tell no native client produces. (The upstream-credential concern,
-    /// split out of the front-door auth mode in slice 2d.)
-    pub upstream_creds: crate::auth::UpstreamCreds,
-}
+// Per-request signing context. RELOCATED DOWN to the neutral `busbar_substrate::proto` leaf so the
+// substrate `ProtocolDecl`'s `egress_auth_headers` builder names it without depending on
+// `busbar-core`; re-exported here at its historical `busbar_core::proto::SigningContext` path so
+// every in-core / plugin caller (`egress_auth`, `proxy::egress`, `health`, the walk/engine forward
+// paths, the netted dialect writers) is unchanged. Its only non-primitive field is
+// `busbar_api::UpstreamCreds`, so the move carries no core-only machinery.
+pub use busbar_substrate::proto::SigningContext;
 
 /// ProtocolWriter rewrites intents for the upstream wire format.
 /// Extract `(role, text)` pairs from a hook's rewrite reply for a dialect that must RE-FRAME the

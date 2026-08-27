@@ -70,10 +70,11 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     // The shared bearer/api-key/SigV4 schemes stay in `egress_auth::resolve` until this
     // dialect is extracted; see the field doc.
     egress_auth_headers: None,
-    // THE MODEL IS IN THE URL: `/v1beta/models/{model}:generateContent`. This declaration is what
-    // core reads instead of comparing this protocol's NAME, and the tail parse it performs is this
-    // dialect's own statement about its own URL space.
-    path_ingress: Some(busbar_core::ingress::gemini_arrival),
+    // THE MODEL IS IN THE URL (`/v1beta/models/{model}:generateContent`): this dialect registers its
+    // arrival (`busbar_core::ingress::gemini_arrival`) through `busbar_llm::PATH_INGRESS`, which the
+    // composition root hands to the core side-table. `has_model_in_url: true` below is what the boot
+    // parity assert pairs with that registration; the arrival is no longer a field on this decl (it
+    // named the core-only `Arrival`, which `ProtocolDecl`'s substrate home cannot).
     stream_usage_requires_opt_in: false,
     // ── Promoted writer facts (G6 step A1): the same constants the `GeminiWriter` methods returned.
     requires_max_tokens: false,

@@ -73,9 +73,6 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     // OpenAI's native credential scheme (plain Bearer) is this dialect's own — declared here,
     // the field that retired the `_` catch-all arm in core's `egress_auth::resolve`.
     egress_auth_headers: Some(egress_auth_headers),
-    // NO PATH INGRESS: this dialect keeps its model in the BODY, so the catch-all resolves the
-    // operation through the `RequestHandler` and serves it on the universal ingress.
-    path_ingress: None,
     stream_usage_requires_opt_in: true,
     // ── Promoted writer facts (G6 step A1): the same constants the `OpenAiWriter` methods returned.
     requires_max_tokens: false,

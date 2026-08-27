@@ -104,9 +104,6 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     // disambiguation is THIS dialect's scheme, so the builder is declared here — the field that
     // retired the `"anthropic"` arm in core's `egress_auth::resolve`.
     egress_auth_headers: Some(egress_auth_headers),
-    // NO PATH INGRESS: this dialect keeps its model in the BODY, so the catch-all resolves the
-    // operation through the `RequestHandler` and serves it on the universal ingress.
-    path_ingress: None,
     stream_usage_requires_opt_in: false,
     // ── Promoted writer facts (G6 step A1): the same constants the `AnthropicWriter` methods returned.
     requires_max_tokens: true,

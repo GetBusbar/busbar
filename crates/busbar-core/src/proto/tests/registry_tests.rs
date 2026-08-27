@@ -241,9 +241,6 @@ const TELEX_DECL: ProtocolDecl = ProtocolDecl {
     native_tool_id_prefix: None,
     ingress_auth: IngressAuth::SigV4,
     egress_auth_headers: None,
-    // NO PATH INGRESS: this dialect keeps its model in the BODY, so the catch-all resolves the
-    // operation through the `RequestHandler` and serves it on the universal ingress.
-    path_ingress: None,
     stream_usage_requires_opt_in: false,
     // Promoted writer facts (G6 step A1): a codec-less fixture, so every fact is the trait default.
     requires_max_tokens: false,
@@ -451,7 +448,6 @@ const fn named_decl(name: &'static str) -> ProtocolDecl {
         native_tool_id_prefix: None,
         ingress_auth: IngressAuth::Bearer,
         egress_auth_headers: None,
-        path_ingress: None,
         stream_usage_requires_opt_in: false,
         // Promoted writer facts (G6 step A1): a name-only fixture, so every fact is the trait default.
         requires_max_tokens: false,
@@ -628,5 +624,43 @@ fn a_registry_with_no_declarations_reports_no_protocols_at_all() {
     assert!(
         empty.decl("anthropic").is_none(),
         "an empty registry resolves NO name — including one the built-ins declare today"
+    );
+}
+
+/// THE BOOT PARITY RULE THE COMPOSITION ROOT ASSERTS (Batch C-6). A declaration whose model is in the
+/// URL (`has_model_in_url`) MUST register a `path_ingress` arrival, or a request naming its URL model
+/// silently falls through to the body-model branch — a wrong-behavior 404-shaped bug, not a compile
+/// error. `install_protocols_with_path_ingress` panics on it at boot; here we drive the pure guard
+/// (`first_path_model_without_arrival`) red-then-green so the invariant is proven without touching the
+/// process singletons the installer writes.
+#[test]
+fn a_url_model_protocol_without_a_registered_arrival_is_caught() {
+    // A path-model fixture: same shape as gemini/bedrock in the one fact that matters here.
+    const URL_MODEL_DECL: ProtocolDecl = ProtocolDecl {
+        has_model_in_url: true,
+        ..TELEX_DECL
+    };
+    let decls: &[&'static ProtocolDecl] = &[&URL_MODEL_DECL];
+
+    // RED: the URL-model protocol declared, but no arrival registered → the guard names it.
+    assert_eq!(
+        crate::proto::registry::first_path_model_without_arrival(decls, &[]),
+        Some("telex"),
+        "a has_model_in_url decl with no arrival must be reported by name"
+    );
+
+    // GREEN: register the arrival by the SAME name → the guard is satisfied.
+    assert_eq!(
+        crate::proto::registry::first_path_model_without_arrival(decls, &["telex"]),
+        None,
+        "once its arrival is registered under the same name, the parity rule holds"
+    );
+
+    // A body-model protocol (has_model_in_url == false) needs no arrival and is never reported.
+    let body_model: &[&'static ProtocolDecl] = &[&TELEX_DECL];
+    assert_eq!(
+        crate::proto::registry::first_path_model_without_arrival(body_model, &[]),
+        None,
+        "a body-model protocol declares no URL model, so it needs no arrival"
     );
 }

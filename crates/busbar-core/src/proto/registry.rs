@@ -47,260 +47,22 @@
 //! constructor. [`ProtocolDecl::verbs`] now carries the `Verb { op, name }` PAIR — see its field
 //! doc for what still anchors the seven LLM consts in `operation.rs`.
 
-use super::DialectCodec;
-use crate::handlers::RequestHandler;
-
-/// A protocol's declared egress credential-header builder: the resolved per-request credential
-/// plus the signing context in, the header pairs to attach out. See
-/// [`ProtocolDecl::egress_auth_headers`].
-pub type EgressAuthHeaders =
-    fn(&str, &super::SigningContext) -> Vec<(axum::http::HeaderName, axum::http::HeaderValue)>;
-
-/// A path-model protocol's own ingress: one arrival in, one response out. See
-/// [`ProtocolDecl::path_ingress`].
-pub(crate) type PathIngress = fn(
-    crate::ingress::dispatch::Arrival,
-) -> std::pin::Pin<
-    Box<dyn std::future::Future<Output = axum::response::Response> + Send>,
->;
-
 // WHICH INBOUND AUTH SCHEME a protocol's clients present. DECLARED metadata, never a branch: the
 // verification itself stays in the auth layer. Relocated to the neutral `busbar_substrate::proto`
 // leaf (Batch A) so `busbar-mcp` names it without depending on `busbar-core`; re-exported here so
 // `registry::IngressAuth`, the `ProtocolDecl` field, and every plugin caller are unchanged.
 pub use busbar_substrate::proto::IngressAuth;
 
-/// EVERYTHING CORE KNOWS ABOUT A PROTOCOL, declared once by the protocol itself.
-///
-/// Core routes, mounts, labels and bounds from this and from nothing else. Each field replaces
-/// either a `match` on a protocol name or a vtable sweep that allocated to read a constant; the
-/// doc on each says which.
-pub struct ProtocolDecl {
-    /// The registry key, and the metrics label. **OPERATOR-VISIBLE:** a protocol name appears in
-    /// dashboards and in `providers.*.protocol` config, so renaming one re-bases a metric series
-    /// and invalidates a config file. Replaces the `match name` arm.
-    pub name: &'static str,
-
-    /// How to build this protocol's NEUTRAL computed-codec facade ([`super::DialectCodec`]), or
-    /// `None` for a protocol that serves operations without a cross-dialect codec (MCP, whose IR is
-    /// its own). Post-G6-A4b the concrete `Protocol` (reader + writer) lives in the `busbar-llm`
-    /// plugin, so core no longer names it here — the dialect's DECL supplies a constructor for the
-    /// neutral `DialectCodec` seam (a fresh instance per resolution, since the underlying writers
-    /// carry per-STREAM mutable state). Presence alone is the "declares a codec" fact the fields below
-    /// let a caller read without building anything.
-    pub codec: Option<fn() -> Box<dyn DialectCodec>>,
-
-    /// The cell that serves one exchange on this protocol. Replaces `handlers::request_handler`'s
-    /// match. `None` would be a protocol that declares itself and serves nothing; every declaration
-    /// in the tree today has one.
-    pub handler: Option<&'static dyn RequestHandler>,
-
-    /// THE VERBS this protocol serves — one [`crate::operation::Operation`] (`Verb { op, name }`
-    /// pair) per operation its handler answers. Bounded at load and enumerable at boot (never
-    /// request-derived), which is what makes their names safe as metric labels.
-    /// `the_declared_verbs_are_the_verbs_the_handler_serves` pins both directions, so a decl
-    /// cannot claim a verb it does not serve or hide one it does.
-    ///
-    /// **THIS FIELD IS `Verb { op, name }`'s DESTINATION, and the pair has landed**
-    /// (`design/protocol-plugin-abi.md` §4.4): the field carries the operation VALUES, not name
-    /// strings, and [`declared_verbs`] folds them into the process vocabulary — so the LLM verb
-    /// words reach the label surface from the declarations, not from a hardcoded core table
-    /// (`Operation::ALL` now lists only the six shape verbs the core itself owns). The seven LLM
-    /// `Operation` consts still live in `operation.rs` because `ir::variant`'s `IrReq`/`IrResp`
-    /// arms — core code until the LLM IR itself is extracted — construct them; what no longer
-    /// lives in core is the CLAIM that those verbs are served: that is now this field's, per
-    /// protocol, and it leaves with the protocol.
-    pub verbs: &'static [crate::operation::Operation],
-
-    /// TOP-LEVEL body keys the pre-materialized path may point-read, DOM-free. Replaces the
-    /// hardcoded four in `proxy::lazy_body::captured_head_keys()` — the sweep that reached back into
-    /// the protocol registry for the rest. The registry unions these with
-    /// [`Self::array_stream_shim_key`] once, at boot.
-    pub head_keys: &'static [&'static str],
-
-    /// The `Content-Type` this protocol's writer emits on a STREAMING response, or `None` for a
-    /// protocol that does not stream. Replaces `ProtocolWriter::streaming_content_type()` and the
-    /// `OnceLock` sweep that read it off every protocol's freshly allocated writer.
-    pub streaming_content_type: Option<&'static str>,
-
-    /// The router's array-stream shim key for this protocol (only Gemini has one: a marker injected
-    /// into a non-`alt=sse` request body and stripped before egress). Replaces
-    /// `ProtocolWriter::array_stream_shim_key()` and its `OnceLock` sweep.
-    pub array_stream_shim_key: Option<&'static str>,
-
-    /// This protocol's NATIVE tool-call id prefix, or `None` when it carries no tool id on the wire
-    /// (Gemini correlates by name) or uses free-form ids with no canonical prefix (Cohere). Replaces
-    /// `proto::native_tool_id_prefix`'s match on the protocol name — the last one in `proto/mod.rs`.
-    pub native_tool_id_prefix: Option<&'static str>,
-
-    /// Which inbound auth scheme this protocol's clients present. Replaces
-    /// `ProtocolReader::uses_sigv4_ingress_auth()`.
-    pub ingress_auth: IngressAuth,
-
-    /// This protocol's NATIVE egress credential-header builder, or `None` for a protocol whose
-    /// scheme is one of the shared ones the auth layer keeps (`egress_auth::resolve`'s bearer /
-    /// api-key-header / SigV4 arms). Replaces the protocol-name match arm in `egress_auth::resolve`
-    /// for the dialects that own a bespoke scheme: Anthropic's api-key-vs-Bearer disambiguation
-    /// moved into its crate with this field, and the remaining name arms follow as their dialects
-    /// are extracted. The builder receives the resolved per-request credential and the
-    /// [`super::SigningContext`] (`Own | Passthrough` mode plus what a signer needs) and returns
-    /// the header pairs to attach — the exact `CredentialProvider::headers_for` shape, as declared
-    /// data instead of a core `match`.
-    pub egress_auth_headers: Option<EgressAuthHeaders>,
-
-    /// THE ARRIVAL THIS PROTOCOL SERVES ITSELF, or `None` for a protocol whose operation the
-    /// catch-all resolves from the body and serves through the universal ingress.
-    ///
-    /// Replaces the LAST TWO protocol-name comparisons in core: `ingress/dispatch.rs` matched
-    /// `PROTO_GEMINI` and `PROTO_BEDROCK` by name to reach bespoke path-model futures. They
-    /// survived the registry unit — which noted that removing them "needs an ingress fn-pointer on
-    /// the declaration, i.e. designing the mount table" — and this is that pointer. Only a protocol
-    /// that keeps its MODEL IN THE URL needs one; the four body-model dialects declare `None` and
-    /// core reaches the same universal ingress for every one of them.
-    ///
-    /// It returns a BOXED future deliberately. The arms it replaced were `Box::pin`ed because in a
-    /// `match` every arm's future is inlined into the dispatch coroutine's union, so a ~5.7 KB arm
-    /// inflated the future every request carried regardless of dialect. A function pointer to a
-    /// boxed future keeps that cost on the requests that take it.
-    pub path_ingress: Option<PathIngress>,
-
-    /// Whether a STREAMING response on this protocol reports token usage only when the request
-    /// explicitly opted in (OpenAI Chat Completions' `stream_options.include_usage`). `false` — the
-    /// default answer for every other dialect — means the stream reports usage unconditionally, so
-    /// the engine has nothing to inject. Replaces `egress_name == "openai"` in the forward engine:
-    /// the injection is a fact about what THIS dialect does with a streaming request, and the engine
-    /// only needed to know whether to do it.
-    pub stream_usage_requires_opt_in: bool,
-
-    // ── PROMOTED WRITER FACTS (G6 step A1) ─────────────────────────────────────────────────────────
-    // Constant, no-argument, IR-free facts that used to be answered off the `ProtocolWriter` vtable
-    // (`protocol_for(name).writer().<method>()`, two `Box` allocations to read a `&'static` constant).
-    // Each field carries THIS dialect's value; core now reads it via `decl_for(name).<field>`. The
-    // value is the SAME constant the method returned — a relocation, not a behavior change. The
-    // per-request / stateful writer methods (`new_stream_framing`, `reshape_for_path_base`,
-    // `write_*`, `wants_array_stream`, …) stay on the vtable.
-    /// Replaces `ProtocolWriter::requires_max_tokens()`. Whether this dialect hard-rejects a request
-    /// with no `max_tokens` (Anthropic Messages 400s; the forward path injects the lane default).
-    pub requires_max_tokens: bool,
-
-    /// Replaces `ProtocolWriter::stop_sequence_cap()`. The published cap on stop sequences and the
-    /// display name to cite in a rejection, or `None` when the dialect enforces none.
-    pub stop_sequence_cap: Option<(usize, &'static str)>,
-
-    /// Replaces `ProtocolWriter::cache_markers_model_gated()`. Whether this dialect's native cache
-    /// marker is model-gated (Bedrock `cachePoint`), so the cross-protocol seam clears the cache ask
-    /// unless the lane declares `prompt_caching`.
-    pub cache_markers_model_gated: bool,
-
-    /// Replaces `ProtocolWriter::fills_thought_signature()`. Whether egress fills the Gemini 3
-    /// `thoughtSignature` sentinel on a translated request.
-    pub fills_thought_signature: bool,
-
-    /// Replaces `ProtocolWriter::frame_after_message_start()`. A framed wire frame this dialect emits
-    /// immediately after `message_start` on a translated stream (Anthropic's `event: ping`), or `None`.
-    pub frame_after_message_start: Option<&'static [u8]>,
-
-    /// Replaces `ProtocolWriter::reshapes_body_at_path_base()` (the PREDICATE only — its paired
-    /// mutator `reshape_for_path_base(&mut Value)` stays a vtable method). Whether this dialect's body
-    /// must be reshaped when the lane carries a `path_base` (Claude-on-Vertex).
-    pub reshapes_body_at_path_base: bool,
-
-    /// Replaces `ProtocolWriter::max_cache_control_breakpoints()`. The maximum `cache_control`
-    /// breakpoints this dialect accepts on one request, or `None` when the vendor publishes no cap.
-    pub max_cache_control_breakpoints: Option<usize>,
-
-    /// Replaces `ProtocolWriter::quota_exceeded_status()`. The native HTTP status a quota/budget
-    /// exhaustion maps to (429 for most; Bedrock's `ServiceQuotaExceededException` is 400).
-    pub quota_exceeded_status: axum::http::StatusCode,
-
-    /// Replaces `ProtocolWriter::ingress_is_eventstream()`. True when this protocol's ingress client
-    /// decodes a binary `application/vnd.amazon.eventstream` body (native AWS SDK Bedrock).
-    pub ingress_is_eventstream: bool,
-
-    /// Replaces `ProtocolWriter::emits_sse_done_terminator()`. True when this protocol's streamed
-    /// response ends with the literal `data: [DONE]` terminator (OpenAI Chat Completions).
-    pub emits_sse_done_terminator: bool,
-
-    /// Replaces `ProtocolWriter::max_citations_per_delta()`. The maximum citations one streamed
-    /// `citations_delta`-equivalent event may carry (Anthropic frames exactly one), or `None`.
-    pub max_citations_per_delta: Option<usize>,
-
-    /// Replaces `ProtocolWriter::egress_user_agent()`. The plausible native-SDK `User-Agent` for THIS
-    /// egress protocol (a backend-facing fingerprint guard).
-    pub egress_user_agent: &'static str,
-
-    /// Replaces `ProtocolWriter::has_model_in_url()`. True when this protocol carries the model in the
-    /// URL path rather than the body (Gemini, Bedrock), so a same-protocol passthrough strips body
-    /// `model`.
-    pub has_model_in_url: bool,
-
-    /// Replaces `ProtocolWriter::auth_failure_status_and_kind()`. The HTTP status and error `kind` a
-    /// bad/missing credential yields, matched to what the genuine vendor returns.
-    pub auth_failure_status_and_kind: (axum::http::StatusCode, &'static str),
-
-    /// Replaces `ProtocolWriter::ingress_relays_amzn_headers()`. True when this protocol's ingress
-    /// client expects `x-amzn-RequestId` (and `x-amzn-errortype` on errors) on every response.
-    pub ingress_relays_amzn_headers: bool,
-
-    /// Replaces `ProtocolWriter::ingress_relayed_response_header_names()`. The upstream response
-    /// header names a same-protocol passthrough forwards verbatim.
-    pub ingress_relayed_response_header_names: &'static [&'static str],
-
-    /// Replaces `ProtocolWriter::auth_failure_message()`. The vendor-plausible auth-failure wire
-    /// message this dialect lands verbatim in the native error body.
-    pub auth_failure_message: &'static str,
-
-    /// Replaces `ProtocolWriter::uses_array_stream_shim()`. True when this protocol's ingress client
-    /// expects a JSON-array (non-SSE) streamed body (Gemini without `?alt=sse`).
-    pub uses_array_stream_shim: bool,
-
-    /// Replaces `ProtocolWriter::has_native_path_not_found()`. True when this protocol has a native
-    /// path-not-found envelope with a protocol-specific message format (Gemini).
-    pub has_native_path_not_found: bool,
-
-    /// Replaces `ProtocolWriter::egress_accept()` (the STREAMING half of it). The native-SDK `Accept`
-    /// header value THIS egress protocol sends on a STREAMING request — `text/event-stream` for every
-    /// SSE-framed dialect, `application/vnd.amazon.eventstream` for Bedrock (botocore sends the binary
-    /// eventstream Accept on a `ConverseStream` call). The NON-streaming value is universally
-    /// `application/json` across every dialect, so it is not a field: the caller reads
-    /// `if wants_stream { decl.egress_stream_accept } else { APPLICATION_JSON }`. A pure per-protocol
-    /// constant relocated off the writer vtable — same value, no allocated codec to read it.
-    pub egress_stream_accept: &'static str,
-
-    /// This protocol's `GET /v1(beta)/models` (list-models) response ENVELOPE builder, or `None`
-    /// for a protocol that serves no model-discovery surface. Given the visible model/pool names
-    /// (already governance-filtered and ordered by core), it returns the dialect-shaped JSON body —
-    /// OpenAI's `{ "object": "list", "data": [...] }`, Anthropic's `{ "data": [...], "has_more":
-    /// false, "first_id": ..., "last_id": ... }`, Gemini's `{ "models": [...] }`.
-    ///
-    /// The ENVELOPE is LLM-specific, so it lives with the dialect (`busbar-llm`), not in core.
-    /// Core selects WHICH dialect answers from the request fingerprint and hands over the neutral
-    /// name list; the JSON shaping is the caller's, read here through `decl_for(name)`. This retires
-    /// the three inline `json!` envelope blocks that used to sit in `endpoints::list_models_dialect`.
-    pub models_list_envelope: Option<fn(&[&str]) -> serde_json::Value>,
-}
-
-impl ProtocolDecl {
-    /// True when this protocol authenticates INBOUND requests with AWS SigV4 rather than a bearer
-    /// token. The auth layer's one consumer of [`ProtocolDecl::ingress_auth`], kept as a predicate
-    /// so the front door reads a QUESTION rather than comparing an enum it would then have to
-    /// exhaust.
-    pub(crate) fn uses_sigv4_ingress_auth(&self) -> bool {
-        matches!(self.ingress_auth, IngressAuth::SigV4)
-    }
-
-    /// This protocol's neutral computed-codec facade ([`super::DialectCodec`]) — the 4th seam the
-    /// operation-blind driver reads instead of `protocol_for(name).writer()/.reader()` (G6 A4b). `None`
-    /// for a protocol that declares no codec (MCP/A2A), exactly as `protocol_for` is. Keyed off the
-    /// existing [`Self::codec`] presence, so no new DECL field is required (the mcp/a2a decls are
-    /// untouched).
-    pub fn dialect(&self) -> Option<Box<dyn super::DialectCodec>> {
-        // The DECL's `codec` constructor now BUILDS the neutral facade directly (its `DialectRef`
-        // implementor relocated to busbar-llm with the concrete `Protocol`), so core calls it without
-        // naming any concrete codec type.
-        self.codec.map(|make| make())
-    }
-}
+// `ProtocolDecl` and its `EgressAuthHeaders` builder type RELOCATED DOWN to the neutral
+// `busbar_substrate::proto` leaf (Batch C-6) so an extracted protocol crate (`busbar-mcp`, the
+// `busbar-llm` dialects) names the declaration WITHOUT reaching into `busbar-core`. Every field type
+// is now substrate/`busbar-api`/`axum`/`std`. Re-exported here at their historical
+// `busbar_core::proto::registry::{ProtocolDecl, EgressAuthHeaders}` paths so the registry singleton
+// below (which HOLDS `&'static ProtocolDecl`), the built-in table, and every core / plugin caller are
+// unchanged. The one core-typed field the decl used to carry — `path_ingress` (which named the
+// core-only `Arrival`) — is SPLIT OFF into a core-owned, protocol-name-keyed side-registration
+// (`crate::ingress::path_ingress`); see there and [`install_protocols_with_path_ingress`].
+pub use busbar_substrate::proto::{EgressAuthHeaders, ProtocolDecl};
 
 /// THE BUILT-INS — one line per protocol, and every line is DATA.
 ///
@@ -553,6 +315,57 @@ pub fn install_protocols(decls: Vec<&'static ProtocolDecl>) {
         "install_protocols called after the protocol registry was first read; register in main \
          before any config load or validation touches a protocol"
     );
+}
+
+/// THE COMPOSITION ROOT'S ONE WRITE INTO BOTH PROTOCOL SEAMS — the declarations AND their path-model
+/// arrivals, registered together so the second seam [`install_protocols`] gained when `path_ingress`
+/// split off `ProtocolDecl` (Batch C-6, relocation to `busbar-substrate`) cannot drift from the
+/// first. Folds the two installs into one call and, before either lands, asserts the PARITY that
+/// keeps the split honest:
+///
+/// **Every declaration whose model is in the URL path (`has_model_in_url`) MUST register a
+/// `path_ingress` arrival.** A path-model protocol installed WITHOUT its arrival would resolve no
+/// arrival in [`crate::ingress::dispatch::protocol_dispatch`] and SILENTLY fall through to the
+/// body-model branch — a wrong-behavior 404-shaped bug, not a compile error, and exactly the class of
+/// "two statements of one fact disagree" the registry design exists to prevent. Asserting it here
+/// makes that drift a LOUD PANIC at boot.
+///
+/// # Panics
+/// - if a `has_model_in_url` decl has no registered arrival (the parity failure above).
+/// - if either underlying install was already called (two composition roots).
+#[allow(dead_code)] // pub-widened and called by the busbar binary's `register_protocols`
+pub fn install_protocols_with_path_ingress(
+    decls: Vec<&'static ProtocolDecl>,
+    path_ingress: Vec<(&'static str, crate::ingress::path_ingress::PathIngress)>,
+) {
+    if let Some(name) = first_path_model_without_arrival(
+        &decls,
+        &path_ingress.iter().map(|(n, _)| *n).collect::<Vec<_>>(),
+    ) {
+        panic!(
+            "protocol '{name}' declares has_model_in_url == true but registered no path_ingress \
+             arrival: a request naming its URL model would silently fall through to the body-model \
+             branch. Register its arrival alongside its declaration."
+        );
+    }
+    install_protocols(decls);
+    crate::ingress::path_ingress::install_path_ingress(path_ingress);
+}
+
+/// THE BOOT PARITY RULE, as a pure function so a test can drive it without touching the process
+/// singletons: the NAME of the first declaration whose model is in the URL (`has_model_in_url`) that
+/// has NO arrival among `path_ingress_names`, or `None` when every URL-model protocol has one. This is
+/// the invariant [`install_protocols_with_path_ingress`] asserts at boot — the guard that a
+/// path-model protocol installed without its arrival cannot silently 404 (see the module header and
+/// `crate::ingress::path_ingress`).
+pub(crate) fn first_path_model_without_arrival(
+    decls: &[&'static ProtocolDecl],
+    path_ingress_names: &[&str],
+) -> Option<&'static str> {
+    decls
+        .iter()
+        .find(|d| d.has_model_in_url && !path_ingress_names.contains(&d.name))
+        .map(|d| d.name)
 }
 
 /// THE BOOT FOLD: installed declarations ahead of built-ins, one entry per NAME, later same-name

@@ -371,8 +371,11 @@ pub(crate) async fn protocol_dispatch(
     // inflated the future EVERY request carried even when the traffic was another dialect. A
     // function pointer returning a boxed future keeps that allocation on the requests that take it
     // and nowhere else — and it is now the DECLARATION's boxing rather than this function's.
-    if let Some(path_ingress) = crate::proto::registry::decl_for(proto).and_then(|d| d.path_ingress)
-    {
+    // The arrival is resolved from the core-owned, protocol-name-keyed side-table rather than off the
+    // declaration: `path_ingress` split off `ProtocolDecl` when the decl relocated to
+    // `busbar-substrate` (it named the core-only `Arrival`, which the neutral leaf cannot). Same fn
+    // pointer, same boxing, same by-name resolution — see `crate::ingress::path_ingress`.
+    if let Some(path_ingress) = crate::ingress::path_ingress::path_ingress_for(proto) {
         return path_ingress(Arrival {
             app,
             path,

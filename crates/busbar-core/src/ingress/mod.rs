@@ -867,6 +867,13 @@ pub mod dispatch;
 // crate-private — keeping the confidential `CallerToken` it takes off the public seam.
 pub use dispatch::operation_resolved;
 pub(crate) use dispatch::protocol_dispatch;
+/// THE PATH-MODEL ARRIVAL SIDE-REGISTRATION — the protocol-name-keyed table that carries the arrival
+/// a path-model protocol serves itself, split off `ProtocolDecl` when the decl relocated to
+/// `busbar-substrate` (Batch C-6). `pub` so the composition root installs through it.
+pub mod path_ingress;
+// The registration-pair fn-pointer type, re-exported at `busbar_core::ingress::PathIngress` so the
+// composition root and the extracted protocol crate name it without the `path_ingress::` qualifier.
+pub use path_ingress::PathIngress;
 // The universal ingress entry — live callers sit inside `dispatch` itself; tests drive it directly.
 #[cfg(test)]
 pub(crate) use dispatch::operation_ingress;

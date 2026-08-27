@@ -48,9 +48,6 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     // The shared bearer/api-key/SigV4 schemes stay in `egress_auth::resolve` until this
     // dialect is extracted; see the field doc.
     egress_auth_headers: None,
-    // NO PATH INGRESS: this dialect keeps its model in the BODY, so the catch-all resolves the
-    // operation through the `RequestHandler` and serves it on the universal ingress.
-    path_ingress: None,
     stream_usage_requires_opt_in: false,
     // ── Promoted writer facts (G6 step A1): the same constants the `CohereWriter` methods returned.
     requires_max_tokens: false,

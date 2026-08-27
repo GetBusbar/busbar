@@ -106,6 +106,29 @@ pub static DECLS: &[&busbar_core::proto::ProtocolDecl] = &[
     &cohere::DECL,
 ];
 
+/// THE PATH-MODEL ARRIVALS THIS PLUGIN REGISTERS, protocol-name-keyed.
+///
+/// When `ProtocolDecl` relocated to `busbar-substrate` (Batch C-6) its `path_ingress` field could not
+/// travel — it named the core-only `Arrival` — so a path-model dialect now registers its arrival
+/// through this SIDE-TABLE instead of on its declaration. The composition root
+/// (`crates/busbar/src/main.rs::register_protocols`) hands this slice to
+/// `busbar_core::proto::registry::install_protocols_with_path_ingress` ALONGSIDE [`DECLS`], which
+/// asserts at boot that every `has_model_in_url` declaration here (gemini, bedrock) has an arrival —
+/// so a dialect that grows a URL model but forgets its arrival is a loud boot panic, not a silent
+/// fall-through. Only the two URL-model dialects appear; the four body-model dialects resolve their
+/// operation off the body and register nothing. The arrival fns themselves live in `busbar-core`
+/// (`busbar_core::ingress::{gemini_arrival, bedrock_arrival}`); this only states the NAME→fn pairing.
+pub static PATH_INGRESS: &[(&str, busbar_core::ingress::PathIngress)] = &[
+    (
+        busbar_core::proto::PROTO_GEMINI,
+        busbar_core::ingress::gemini_arrival,
+    ),
+    (
+        busbar_core::proto::PROTO_BEDROCK,
+        busbar_core::ingress::bedrock_arrival,
+    ),
+];
+
 #[cfg(test)]
 #[path = "tests/write_error_frame_tests.rs"]
 mod write_error_frame_tests;
