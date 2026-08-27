@@ -1533,8 +1533,6 @@ impl TestApp {
             // readers" property `build_app_from_config` gives production. `build()` MOVES the seam map
             // in without naming a slot key or a plane runtime type.
             plane_slots,
-            a2a_verify: Default::default(),
-            a2a_cards: Default::default(),
             spent_token_ledger: Default::default(),
             demotion_record: Default::default(),
             credential_cache: std::sync::Arc::new(crate::auth_cache::CredentialCache::new()),

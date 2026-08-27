@@ -21,8 +21,6 @@ fn test_query_has_alt_sse() {
 /// Minimal governance-off App for exercising `finish` in isolation.
 fn minimal_app() -> Arc<App> {
     Arc::new(App {
-        a2a_verify: Default::default(),
-        a2a_cards: Default::default(),
         spent_token_ledger: Default::default(),
         demotion_record: Default::default(),
         plane_breakers: Arc::new(crate::store::PlaneBreakers::new()),

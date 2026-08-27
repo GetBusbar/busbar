@@ -368,8 +368,8 @@ pub trait EngineHost: Send + Sync {
 /// the callback fn-pointer signature naming a core type. Core `impl`s it for `App` as a thin delegate
 /// to the inherent `App::plane_slot`; an EXTRACTED plane (MCP) reaches only [`Self::plane_slot`] and
 /// stays neutral. [`Self::as_any`] is the recovery hatch an IN-CORE plane twin (A2A, still in core)
-/// uses to downcast back to its concrete snapshot for the fields that do not live in `plane_slots`
-/// (`agent_defs`, `a2a_verify`); an extracted plane never calls it.
+/// uses to downcast back to its concrete snapshot for the field that does not live in `plane_slots`
+/// (`agent_defs`); an extracted plane never calls it.
 pub trait PlaneSlots {
     /// The plane's type-erased runtime object for THIS generation, keyed by the plane's decl key —
     /// a pure `plane_slots` map read, borrowed (mirrors the inherent `App::plane_slot`).

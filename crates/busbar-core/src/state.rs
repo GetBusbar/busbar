@@ -515,30 +515,13 @@ pub struct App {
     // `A2aPlane` inside the a2a module. So `App` names no `crate::a2a` type for the runtime object, and
     // its absence — no `agents:` this generation, the gate for "is this an A2A plane?" — is read
     // straight off the slot the same way MCP reads its own, not off a typed field or a flag.
-    /// THE A2A VERIFY-ON-CALL GATE — the per-agent single-flight coalescer that re-verifies a fronted
-    /// agent's signed card on the DELEGATION path when its recorded observation is older than
-    /// `verify_ttl` (see [`crate::trust::verify`]). It replaces the background re-verification sweep:
-    /// no timer, and an agent nobody delegates to is never re-fetched.
-    ///
-    /// Arc-shared ACROSS config applies, like its MCP sibling and for the same reason: the coalescing
-    /// epochs are accumulated coordination state, not intent.
-    pub(crate) a2a_verify: Arc<crate::trust::verify::VerifyGate>,
-    /// THE A2A CARD-FETCH TRANSPORTS, resolved ONCE at boot (per-agent client identities, the same
-    /// object the delegation hop relays through). Verify-on-call reads it on the request path to
-    /// re-fetch and re-verify a stale card. `None` until the A2A start hook publishes it — and a
-    /// delegation-only-or-absent deployment leaves it `None`.
-    ///
-    /// A boot-resolved `OnceLock`, carried across applies by the SAME `Arc` so the value set at boot
-    /// persists: the client certificates are resolved from secrets at boot (a resolution failure is a
-    /// boot refusal), and an agent added by a later apply is verified on the boot-time transport —
-    /// which is the same reach the removed sweep had, since it too held its transports from boot.
-    // TYPE-ERASED inside the `OnceLock` so `App` names no `crate::a2a` transport type — the same
-    // opaque-handle shape the MCP runtime slot rides in `plane_slots`. The A2A start hook sets the concrete
-    // `Arc<LiveCardFetch>` (unsized to `Arc<dyn Any>`) and the verify-on-call path downcasts it back,
-    // both inside the plane's own module. Kept `plane-a2a`-gated because with the plane off nothing
-    // publishes or reads it and the field would sit permanently `None`.
-    #[cfg(feature = "plane-a2a")]
-    pub a2a_cards: Arc<std::sync::OnceLock<Arc<dyn std::any::Any + Send + Sync>>>,
+    //
+    // THE A2A VERIFY-ON-CALL GATE and the boot-resolved CARD-FETCH TRANSPORTS likewise have NO `App`
+    // field any more: they moved ONTO the `A2aPlane` runtime object (`A2aPlane::verify` / `::cards`),
+    // exactly as MCP holds `verify` on `McpRuntime`. Verify-on-call reads them off the plane slot, and
+    // `carried_a2a_gates` carries both `Arc`s across a config apply off the prior generation's plane —
+    // so the coalescing epochs and the boot-set transports survive an apply without a shared-`App`
+    // field, and are dropped whole when the `agents:` block is removed (no plane, no delegation).
     /// Per-principal ADMIN MUTATION rate limiter. Arc-shared across apply snapshots so the
     /// windows survive every swap.
     pub(crate) mutation_limiter: Arc<crate::admin::rate::MutationLimiter>,
@@ -838,8 +821,8 @@ impl App {
 
 /// THE NEUTRAL SLOT-READ SEAM the plane `PlaneDecl` callbacks name instead of `&App`. A thin delegate
 /// to the inherent [`App::plane_slot`]; [`as_any`](busbar_substrate::plane_host::PlaneSlots::as_any)
-/// hands the concrete snapshot back to the in-core A2A twin for the fields (`agent_defs`,
-/// `a2a_verify`) that are not `plane_slots` entries.
+/// hands the concrete snapshot back to the in-core A2A twin for the field (`agent_defs`) that is not
+/// a `plane_slots` entry.
 impl busbar_substrate::plane_host::PlaneSlots for App {
     fn plane_slot(&self, key: &str) -> Option<&Arc<dyn std::any::Any + Send + Sync>> {
         App::plane_slot(self, key)

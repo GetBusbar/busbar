@@ -91,6 +91,29 @@ pub(crate) struct A2aPlane {
     /// `app.governance`, which is what lets the extracted plane name no `GovState`. `None` until the
     /// start hook runs, or when the deployment holds no card-signing key (the governance-off path).
     card_issuer: OnceLock<crate::plane::registry::CardIssuer>,
+    /// THE A2A VERIFY-ON-CALL GATE — the per-agent single-flight coalescer that re-verifies a fronted
+    /// agent's signed card on the DELEGATION path when its recorded observation is older than
+    /// `verify_ttl` (see [`crate::trust::verify`]). Held HERE on the plane's own runtime object, like
+    /// its MCP sibling holds `verify` on `McpRuntime`, rather than on the shared `App`: verify-on-call
+    /// reads it off the plane slot, not off `crate::state::App`.
+    ///
+    /// Arc-shared ACROSS config applies (carried by [`Self::from_config_carrying`] from the prior
+    /// generation's plane), like its MCP sibling and for the same reason: the coalescing epochs are
+    /// accumulated coordination state, not intent. When the `agents:` block is REMOVED there is no
+    /// plane this generation, so the gate is dropped whole — the unobservable analogue of the old
+    /// `retain(&empty)`, since a deployment fronting no agents runs no delegation to read it.
+    verify: Arc<crate::trust::verify::VerifyGate>,
+    /// THE A2A CARD-FETCH TRANSPORTS, resolved ONCE at boot (per-agent client identities, the same
+    /// object the delegation hop relays through). Verify-on-call reads it on the request path to
+    /// re-fetch and re-verify a stale card. Empty until the A2A `start` hook publishes it through
+    /// [`Self::set_cards`] — and a delegation-only-or-absent deployment leaves it empty.
+    ///
+    /// A boot-resolved `OnceLock`, carried across applies by the SAME `Arc` (via
+    /// [`Self::from_config_carrying`]) so the value set at boot persists: the client certificates are
+    /// resolved from secrets at boot (a resolution failure is a boot refusal), and an agent added by a
+    /// later apply is verified on the boot-time transport. Concrete type (no erasure) because this
+    /// object lives inside the a2a module, which is compiled only under `plane-a2a`.
+    cards: Arc<OnceLock<Arc<super::transport::LiveCardFetch>>>,
 }
 
 /// THE LIVE TRUST DECISION, read off THE PLANE'S OWN REGISTRY at the moment it is asked.
@@ -170,7 +193,30 @@ impl A2aPlane {
     /// a state config validation has already excluded. It is still handled rather than unwrapped —
     /// the registration keeps the constructor's default cadence and says so — because a panic in a
     /// config lowering is a panic on the operator's next apply.
+    // Production builds the plane through `from_config_carrying` (it CARRIES the verify gate and card
+    // transports across an apply); the fresh-gate `from_config` shorthand has callers only under
+    // `test`/`test-support` (every A2A test, and the `TestApp` fixture), so it reads dead without them.
+    #[cfg_attr(not(any(test, feature = "test-support")), allow(dead_code))]
     pub(crate) fn from_config(cfg: &AgentsCfg, public_url: Option<&str>) -> Option<Arc<Self>> {
+        Self::from_config_carrying(
+            cfg,
+            public_url,
+            Arc::new(crate::trust::verify::VerifyGate::new()),
+            Arc::new(OnceLock::new()),
+        )
+    }
+
+    /// LOWER `agents:` INTO A RUNNING REGISTRY, CARRYING the verify-on-call gate and the boot-resolved
+    /// card transports across from the prior generation's plane — the composition-root entry point
+    /// ([`super::PLANE_DECL`]'s `build`) uses this so the coalescing epochs and the boot-set transports
+    /// survive every config apply (fresh defaults on the first build). [`Self::from_config`] is the
+    /// fresh-gate shorthand every test uses.
+    pub(crate) fn from_config_carrying(
+        cfg: &AgentsCfg,
+        public_url: Option<&str>,
+        verify: Arc<crate::trust::verify::VerifyGate>,
+        cards: Arc<OnceLock<Arc<super::transport::LiveCardFetch>>>,
+    ) -> Option<Arc<Self>> {
         if cfg.agents.is_empty() {
             return None;
         }
@@ -210,7 +256,42 @@ impl A2aPlane {
             registrations: RwLock::new(registrations),
             generation: AtomicU64::new(busbar_substrate::trust::validate::next_generation()),
             card_issuer: OnceLock::new(),
+            verify,
+            cards,
         }))
+    }
+
+    /// THE VERIFY-ON-CALL GATE this plane re-verifies fronted agents through, as the delegation path
+    /// and the `retain_verify_gates` prune read it. Held on the plane, not on `App`, mirroring MCP's
+    /// `McpRuntime::verify`.
+    pub(crate) fn verify(&self) -> &Arc<crate::trust::verify::VerifyGate> {
+        &self.verify
+    }
+
+    /// The OWNED-`Arc` twin of [`Self::verify`], for the carry across a config apply
+    /// ([`Self::from_config_carrying`]) — a refcount bump of the same gate, so the coalescing epochs
+    /// persist.
+    pub(crate) fn verify_arc(&self) -> Arc<crate::trust::verify::VerifyGate> {
+        Arc::clone(&self.verify)
+    }
+
+    /// THE BOOT-RESOLVED CARD-FETCH TRANSPORTS, as verify-on-call reads them on the request path.
+    /// Empty until [`Self::set_cards`] publishes them from the `start` hook.
+    pub(crate) fn cards(&self) -> &OnceLock<Arc<super::transport::LiveCardFetch>> {
+        &self.cards
+    }
+
+    /// The OWNED-`Arc` twin of [`Self::cards`], carried across a config apply so the boot-set
+    /// transports survive every generation.
+    pub(crate) fn cards_arc(&self) -> Arc<OnceLock<Arc<super::transport::LiveCardFetch>>> {
+        Arc::clone(&self.cards)
+    }
+
+    /// PUBLISH THE BOOT-RESOLVED CARD TRANSPORTS, once, from the plane's `start` hook. Idempotent
+    /// (`OnceLock` semantics): a later config apply carries the same `Arc` forward, so the boot value
+    /// stands.
+    pub(crate) fn set_cards(&self, live: Arc<super::transport::LiveCardFetch>) {
+        let _ = self.cards.set(live);
     }
 
     /// STASH BUSBAR'S PUBLIC CARD-ISSUER KEY, once, from the plane's `start` hook. Idempotent: a second

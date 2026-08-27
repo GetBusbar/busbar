@@ -1861,13 +1861,9 @@ fn fold_reverify_join(
 }
 
 async fn verify_agent_on_call(app: &Arc<App>, plane: &Arc<super::plane::A2aPlane>, agent_id: &str) {
-    // Downcast the opaque handle back to this plane's transport bundle — `App` carries it type-erased.
-    let Some(cards) = app
-        .a2a_cards
-        .get()
-        .cloned()
-        .and_then(|c| c.downcast::<super::transport::LiveCardFetch>().ok())
-    else {
+    // Read this plane's boot-resolved transport bundle off the plane's OWN runtime object (held here
+    // like MCP holds its own, not on `App`) — a concrete type, so no downcast.
+    let Some(cards) = plane.cards().get().cloned() else {
         return;
     };
     let Some((_, policy)) = plane.verify_state_of(agent_id) else {
@@ -1883,8 +1879,9 @@ async fn verify_agent_on_call(app: &Arc<App>, plane: &Arc<super::plane::A2aPlane
     // `spawn_blocking` closure (below) so the `!Send` `HostCtx` never crosses the task boundary.
     let fetch_app = Arc::clone(app);
     let report_id = agent_id.to_string();
-    let gate = Arc::clone(&app.a2a_verify);
-    app.a2a_verify
+    let gate = plane.verify_arc();
+    plane
+        .verify()
         .ensure_fresh(
             agent_id,
             &policy,

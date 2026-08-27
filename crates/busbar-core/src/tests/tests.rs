@@ -1540,36 +1540,62 @@ fn a_changed_upstream_timeout_rebuilds_the_client_an_unrelated_apply_reuses_it()
     );
 }
 
-/// Removing the `agents:` block (so `crate::a2a::runtime(&app)` becomes None) must STILL prune the
-/// carried A2A VerifyGate — matching the self-cleaning MCP arm, which always retains against its live
-/// server set. The old code gated the a2a prune on the plane's presence, so tearing the whole plane down skipped
-/// the prune entirely and every removed agent's carried flight/drift-latch leaked forever. Here the
-/// carried gate holds a subject from an agent the deployment once fronted; an apply with no agents
-/// must drop it (retain against an EMPTY live set).
+/// The A2A verify-on-call gate now lives ON THE `A2aPlane` runtime object (like MCP's
+/// `McpRuntime::verify`), carried across a config apply off the prior generation's plane by
+/// `carried_a2a_gates`. This exercises the two ways a carried entry stops leaking:
+///
+/// 1. A SURVIVING plane whose live set no longer names a subject must PRUNE that subject's carried
+///    flight/drift-latch — the `a2a_retain_verify_gates` hook, now reading the gate off the plane slot
+///    (`runtime_slots`) rather than off a shared `App` field.
+/// 2. REMOVING the `agents:` block drops the whole plane, and with it the gate — the unobservable
+///    analogue of the old `retain(&empty)`, since a deployment fronting no agents runs no delegation
+///    that could read a leaked entry.
 #[cfg(feature = "plane-a2a")]
 #[test]
-fn removing_the_agents_block_still_prunes_carried_a2a_verify_entries() {
+fn the_carried_a2a_verify_gate_prunes_dead_subjects_and_drops_with_the_plane() {
     crate::metrics::init();
-    let cfg = || {
-        cfg_with_provider_api_key(crate::config::SecretRef::env(
+    let cfg_with_agents = || {
+        let mut c = cfg_with_provider_api_key(crate::config::SecretRef::env(
             "BUSBAR_TEST_NO_SUCH_KEY_A2A_PRUNE",
-        ))
+        ));
+        c.agent_defs = Box::new(agents_cfg_with_one_receiving_agent());
+        c
     };
-    let prior = build_once(cfg(), None).expect("boot");
-    // The carried gate accumulated per-subject coordination for an agent this deployment fronted
-    // (a latched drift diagnostic tracks the subject just as an in-flight verify would).
-    prior.a2a_verify.report("a2a", "retired-agent", true, false);
+    let prior = build_once(cfg_with_agents(), None).expect("boot with an agents: block");
+    // The plane's OWN verify gate accumulated per-subject coordination for an agent this deployment
+    // once fronted (a latched drift diagnostic tracks the subject just as an in-flight verify would).
+    // "retired-agent" is NOT the live "planner", so a retain against the live set must drop it.
+    let prior_plane = crate::a2a::runtime(&prior).expect("agents: configured => a2a plane present");
+    prior_plane
+        .verify()
+        .report("a2a", "retired-agent", true, false);
     assert!(
-        prior.a2a_verify.tracks_subject("retired-agent"),
-        "seed: the carried a2a VerifyGate must track the subject before the apply"
+        prior_plane.verify().tracks_subject("retired-agent"),
+        "seed: the plane's a2a VerifyGate must track the subject before the apply"
     );
 
-    // Apply with NO `agents:` block (`crate::a2a::runtime` is None). The prune must STILL run against an empty
-    // live set and drop the carried subject.
-    let next = build_once(cfg(), Some(&prior)).expect("apply with agents removed");
+    // (1) Re-apply KEEPING the `agents:` block: the new plane carries the same gate forward, and the
+    // retain hook prunes the dead subject against the live set (`{planner}`).
+    let kept =
+        build_once(cfg_with_agents(), Some(&prior)).expect("re-apply keeping the agents: block");
+    let kept_plane =
+        crate::a2a::runtime(&kept).expect("agents: still configured => a2a plane present");
     assert!(
-        !next.a2a_verify.tracks_subject("retired-agent"),
-        "removing the agents: block must still prune the carried a2a VerifyGate entry, not leak it"
+        !kept_plane.verify().tracks_subject("retired-agent"),
+        "a surviving plane must prune the carried gate entry no live agent names, not leak it"
+    );
+
+    // (2) Re-apply REMOVING the `agents:` block: the plane — and the gate it holds — is dropped whole.
+    let removed = build_once(
+        cfg_with_provider_api_key(crate::config::SecretRef::env(
+            "BUSBAR_TEST_NO_SUCH_KEY_A2A_PRUNE",
+        )),
+        Some(&prior),
+    )
+    .expect("apply with agents removed");
+    assert!(
+        crate::a2a::runtime(&removed).is_none(),
+        "removing the agents: block leaves no a2a plane and no carried verify gate to leak"
     );
 }
 

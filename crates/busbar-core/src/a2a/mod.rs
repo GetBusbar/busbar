@@ -128,8 +128,19 @@ pub(crate) const PLANE_DECL: busbar_substrate::plane::registry::PlaneDecl =
                 .expect(
                     "BuildCtx::agent_defs carries an AgentsCfg when the A2A plane is compiled in",
                 );
-            crate::a2a::plane::A2aPlane::from_config(agent_defs, ctx.public_url)
-                .map(|p| p as std::sync::Arc<dyn std::any::Any + Send + Sync>)
+            // CARRY the verify-on-call gate and the boot-resolved card transports off the PRIOR
+            // generation's plane (the same accumulated coordination the MCP runtime carries via
+            // `build_runtime`), so a config apply preserves the coalescing epochs and the boot-set
+            // transports. Fresh defaults on the first build (`ctx.prior` is `None`, or fronted no
+            // agents last generation).
+            let (verify, cards) = crate::a2a::carried_a2a_gates(ctx.prior);
+            crate::a2a::plane::A2aPlane::from_config_carrying(
+                agent_defs,
+                ctx.public_url,
+                verify,
+                cards,
+            )
+            .map(|p| p as std::sync::Arc<dyn std::any::Any + Send + Sync>)
         },
         // S7: A2A contributes its data routes through the NEUTRAL `routes` seam (like MCP). Its
         // handlers ({well_known_card, card, agent_rpc, plane_rpc, push_notification, grpc::serve,
@@ -199,18 +210,56 @@ fn a2a_default_section() -> Box<dyn busbar_substrate::plane::config::PlaneCfg> {
 /// removes the `agents:` block the live set is EMPTY, so retain drops every carried flight/latch
 /// instead of leaking one per removed agent. Byte-identical to the old inline `appbuild` arm.
 fn a2a_retain_verify_gates(slots: &dyn busbar_substrate::plane_host::PlaneSlots) {
-    // A2A is still IN CORE, so its twin recovers the concrete snapshot for `a2a_verify` (not a
-    // `plane_slots` entry) through the neutral seam's `as_any` hatch — byte-identical to the old
-    // `&App` arm once recovered.
-    let app = slots
-        .as_any()
-        .downcast_ref::<crate::state::App>()
-        .expect("the a2a retain_verify_gates hook is handed an App snapshot");
-    let live: std::collections::HashSet<String> = crate::a2a::runtime(app)
-        .map_or_else(std::collections::HashSet::new, |plane| {
-            plane.with_registrations(|regs| regs.iter().map(|r| r.agent_id.clone()).collect())
-        });
-    app.a2a_verify.retain(&live);
+    // Read the plane's OWN runtime object off the neutral `plane_slots` seam and prune ITS verify
+    // gate — the byte-analog of `mcp_retain_verify_gates` reading `runtime_slots(slots).verify`, with
+    // no `slots.as_any().downcast::<App>()` recovery. When `agents:` is REMOVED this generation there
+    // is no a2a slot, so there is no gate to prune (the plane and its gate were dropped whole) — the
+    // unobservable analogue of the old `retain(&empty)`, since a deployment fronting no agents runs no
+    // delegation that could read a leaked entry.
+    if let Some(plane) = runtime_off_slots(slots) {
+        let live: std::collections::HashSet<String> =
+            plane.with_registrations(|regs| regs.iter().map(|r| r.agent_id.clone()).collect());
+        plane.verify().retain(&live);
+    }
+}
+
+/// THE A2A RUNTIME OBJECT off the NEUTRAL [`busbar_substrate::plane_host::PlaneSlots`] seam rather than
+/// off `&App` — the twin of [`runtime`] the core-owned `PlaneDecl` callbacks (`retain_verify_gates`)
+/// name, so they read the plane through the same slot key without `slots.as_any().downcast::<App>()`.
+/// The a2a analog of MCP's own `PlaneSlots`-seam runtime read (named distinctly so the plane-coherence
+/// lint sees two per-plane accessors, not one shared concern). `None` exactly when `agents:` is not
+/// configured this generation (no slot); the downcast never fails (the a2a slot is always an `A2aPlane`).
+pub(crate) fn runtime_off_slots(
+    slots: &dyn busbar_substrate::plane_host::PlaneSlots,
+) -> Option<&crate::a2a::plane::A2aPlane> {
+    slots.plane_slot(PLANE_DECL.key).map(|slot| {
+        slot.downcast_ref::<crate::a2a::plane::A2aPlane>()
+            .expect("the a2a plane's dispatch slot is an A2aPlane")
+    })
+}
+
+/// CARRY the A2A verify-on-call gate and the boot-resolved card transports off the PRIOR generation's
+/// plane, read through the neutral [`busbar_substrate::plane_host::PlaneSlots`] seam
+/// ([`crate::plane::registry::BuildCtx::prior`]) and downcast HERE, inside the plane. Returns fresh
+/// defaults when there was no prior generation or it fronted no agents (no a2a slot) — so the
+/// coalescing epochs and the boot-set transports survive a config apply exactly as the MCP runtime's
+/// `verify` does, and start empty on a fresh boot.
+pub(crate) fn carried_a2a_gates(
+    prior: Option<&dyn busbar_substrate::plane_host::PlaneSlots>,
+) -> (
+    std::sync::Arc<crate::trust::verify::VerifyGate>,
+    std::sync::Arc<std::sync::OnceLock<std::sync::Arc<crate::a2a::transport::LiveCardFetch>>>,
+) {
+    match prior
+        .and_then(|s| s.plane_slot(PLANE_DECL.key))
+        .and_then(|slot| slot.clone().downcast::<crate::a2a::plane::A2aPlane>().ok())
+    {
+        Some(plane) => (plane.verify_arc(), plane.cards_arc()),
+        None => (
+            std::sync::Arc::new(crate::trust::verify::VerifyGate::new()),
+            std::sync::Arc::new(std::sync::OnceLock::new()),
+        ),
+    }
 }
 
 /// THE RESOLVED `agents:` REGISTRY for this generation, downcast back HERE from the opaque
@@ -353,8 +402,8 @@ pub(crate) fn a2a_hydrate(
 /// boot, only when `agents:` defines a plane: it resolves the outbound client identities ONCE — an
 /// identity that does not resolve is a boot REFUSAL (the returned `Err`), never a warning — publishes
 /// busbar's PUBLIC card-issuer key, builds the per-agent card transports once, and hands that one
-/// transport to BOTH the delegation hop (the plane's relay seam) and verify-on-call (the app's
-/// `a2a_cards`). There is no sweep loop to spawn: a fronted agent nobody delegates to is never
+/// transport to BOTH the delegation hop (the plane's relay seam) and verify-on-call (the plane's own
+/// `cards` `OnceLock`). There is no sweep loop to spawn: a fronted agent nobody delegates to is never
 /// re-fetched, and one that is delegated to is re-verified on the call path within its `verify_ttl`.
 pub(crate) fn a2a_start(
     ctx: &dyn busbar_substrate::plane::registry::PlaneBootCtx,
@@ -418,11 +467,13 @@ pub(crate) fn a2a_start(
         // IDENTITIES the card verification (`pin.mechanism: mtls`) needs, which the plane's own relay
         // seam — built at `from_config` before secrets resolve — deliberately does not: the delegation
         // HOP authenticates with a leased bearer and needs no client certificate, so the two transports
-        // are separate exactly as they were when the sweep held its own. Set into the app's
-        // boot-resolved `OnceLock` (carried across every config apply), so the request path always has
-        // a transport to re-verify with. There is no sweep to spawn: verify-on-call is lazy and runs on
-        // the delegation path, so a fronted agent nobody delegates to is never re-fetched.
-        let _ = app.a2a_cards.set(live);
+        // are separate exactly as they were when the sweep held its own. Set into the plane's OWN
+        // boot-resolved `OnceLock` (carried across every config apply by `from_config_carrying`), so
+        // the request path always has a transport to re-verify with — held on the plane's runtime
+        // object like MCP holds its own, not on the shared `App`. There is no sweep to spawn:
+        // verify-on-call is lazy and runs on the delegation path, so a fronted agent nobody delegates
+        // to is never re-fetched.
+        plane.set_cards(live);
     }
     Ok(())
 }

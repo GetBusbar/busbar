@@ -1407,6 +1407,11 @@ pub fn build_app_from_config(
             // names no `crate::a2a` type; the A2A `build` closure downcasts it back to `AgentsCfg`.
             agent_defs: cfg.agent_defs.as_any(),
             public_url: cfg.public_url.as_deref(),
+            // THE PRIOR GENERATION'S SLOTS, so a plane's `build` can CARRY accumulated coordination
+            // off its own prior runtime object across this apply (the A2A plane carries its
+            // verify-on-call gate and boot-resolved card transports off the prior `A2aPlane`) — the
+            // same neutral `&dyn PlaneSlots` the MCP runtime's `build_runtime` receives below.
+            prior: prior.map(|p| p as &dyn busbar_substrate::plane_host::PlaneSlots),
         };
         crate::plane::registry::plane_decls()
             .iter()
@@ -1583,22 +1588,11 @@ pub fn build_app_from_config(
         // field any more: it lives solely in `plane_slots["a2a"]` (built once by `PlaneDecl::build`),
         // and every reader reaches it through `crate::a2a::runtime(app)`/`runtime_arc(app)`, which
         // downcast that slot inside the a2a module. So there is no `a2a:` initializer here and `App`
-        // names no `crate::a2a` type for the runtime object — the `a2a_cards` field below is the only
-        // remaining plane-gated `crate::a2a` handle on `App`.
-        // CARRIED ACROSS THE APPLY, like the MCP verify gate: the A2A verify-on-call coalescing epochs
-        // are accumulated coordination, not intent. (`VerifyGate` is a `trust` type, present in every
-        // build, so this field survives even with the A2A plane compiled out.)
-        a2a_verify: prior.map_or_else(
-            || Arc::new(crate::trust::verify::VerifyGate::new()),
-            |p| p.a2a_verify.clone(),
-        ),
-        // CARRIED ACROSS THE APPLY by the SAME `Arc<OnceLock>`, so the boot-resolved per-agent card
-        // transports (client identities) published by the A2A start hook survive every config apply.
-        #[cfg(feature = "plane-a2a")]
-        a2a_cards: prior.map_or_else(
-            || Arc::new(std::sync::OnceLock::new()),
-            |p| p.a2a_cards.clone(),
-        ),
+        // names no `crate::a2a` type for the runtime object. The A2A verify-on-call GATE and the
+        // boot-resolved CARD transports moved ONTO that same `A2aPlane` runtime object too (like MCP's
+        // `McpRuntime::verify`): they are carried across this apply INSIDE the plane's `build` (through
+        // `carried_a2a_gates`, off `BuildCtx::prior`), so `App` carries no `a2a_verify`/`a2a_cards`
+        // field for them either.
         // History + rate windows are Arc-shared across applies (process-lifetime state).
         versions: prior.map_or_else(
             || Arc::new(admin::versions::VersionLog::new()),
@@ -1744,7 +1738,7 @@ pub fn build_app_from_config(
     // composition names no `crate::mcp`/`crate::a2a` runtime type. UNCONDITIONAL per the hooks' own
     // contract: when the operator REMOVES a plane's block the live subject set is EMPTY, so retain
     // drops every carried flight/latch instead of leaking one per removed subject. The two hooks touch
-    // disjoint fields (`mcp_verify` / `a2a_verify`), so the registry iteration order is not observable.
+    // disjoint gates (each plane's own runtime `verify`), so the registry iteration order is not observable.
     for decl in crate::plane::registry::plane_decls() {
         if let Some(retain) = decl.retain_verify_gates {
             retain(&app);

@@ -51,6 +51,15 @@ pub struct BuildCtx<'a> {
     // here, so the erased `&dyn Any` needs no `Send + Sync` bound.
     pub agent_defs: &'a dyn std::any::Any,
     pub public_url: Option<&'a str>,
+    /// THE PRIOR GENERATION'S SLOT MAP, or `None` on a fresh boot — the same neutral
+    /// [`crate::plane_host::PlaneSlots`] seam `build_runtime` receives, so a plane's `build` can CARRY
+    /// accumulated coordination state (verify-on-call coalescing epochs, a boot-resolved transport
+    /// `OnceLock`) off its own prior runtime object across a config apply without the composition root
+    /// naming the plane's runtime type. Reached by key through [`crate::plane_host::PlaneSlots::plane_slot`]
+    /// and downcast inside the plane's own `build`, exactly as the runtime accessors downcast the live
+    /// slot. The A2A plane reads it to carry its `VerifyGate` and card-fetch `OnceLock`; a plane with no
+    /// carry-over ignores it.
+    pub prior: Option<&'a dyn crate::plane_host::PlaneSlots>,
 }
 
 /// A PLANE BOOT HOOK — [`PlaneDecl::hydrate`] or [`PlaneDecl::start`]. Handed the [`PlaneBootCtx`] for
