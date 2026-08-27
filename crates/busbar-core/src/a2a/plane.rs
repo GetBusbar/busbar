@@ -114,6 +114,14 @@ pub(crate) struct A2aPlane {
     /// later apply is verified on the boot-time transport. Concrete type (no erasure) because this
     /// object lives inside the a2a module, which is compiled only under `plane-a2a`.
     cards: Arc<OnceLock<Arc<super::transport::LiveCardFetch>>>,
+    /// THE RESOLVED `agents:` REGISTRY this generation was lowered from — the raw operator INTENT,
+    /// carried on the plane's own runtime object so the admin read/config surface reads it off the
+    /// neutral plane slot rather than off the type-erased `App::agent_defs` handle. The exact
+    /// byte-analog of `McpRuntime::servers` (`Arc<config::ToolsCfg>`): the plane already keeps only
+    /// the DERIVED state (registrations/pins/fetch_policy), so the raw `AgentsCfg` is genuinely new
+    /// here. A cheap `Arc` clone of the same resolved config the composition root erased; `list`/
+    /// `get`/`contains`/`reresolve_gates` read [`Self::agent_defs`] off it, so they name no `App`.
+    defs: Arc<AgentsCfg>,
 }
 
 /// THE LIVE TRUST DECISION, read off THE PLANE'S OWN REGISTRY at the moment it is asked.
@@ -258,6 +266,7 @@ impl A2aPlane {
             card_issuer: OnceLock::new(),
             verify,
             cards,
+            defs: Arc::new(cfg.clone()),
         }))
     }
 
@@ -328,6 +337,14 @@ impl A2aPlane {
     /// The one card-fetch policy this plane guards with.
     pub(crate) fn fetch_policy(&self) -> &FetchPolicy {
         &self.fetch_policy
+    }
+
+    /// THE RESOLVED `agents:` REGISTRY this generation was lowered from — the admin read/config
+    /// surface reads the operator's definitions HERE, off the plane's own runtime object, rather
+    /// than off the type-erased `App::agent_defs` handle. The byte-analog of reading
+    /// `McpRuntime::servers` (an `Arc<config::ToolsCfg>`) on the MCP plane.
+    pub(crate) fn agent_defs(&self) -> &AgentsCfg {
+        &self.defs
     }
 
     /// THE PLANE'S POLICY, NARROWED TO ONE REGISTRATION by that registration's `allow_private:`.

@@ -262,18 +262,6 @@ pub(crate) fn carried_a2a_gates(
     }
 }
 
-/// THE RESOLVED `agents:` REGISTRY for this generation, downcast back HERE from the opaque
-/// [`crate::state::App::agent_defs`] handle — so core outside this module names no
-/// `crate::a2a::config` type and the A2A plane reads the SAME resolved `AgentsCfg` the composition
-/// root erased (a clone, never a reparse). The downcast never fails under `plane-a2a`: `App::agent_defs`
-/// always carries an `AgentsCfg` in that build (`appbuild` erases exactly `RootCfg::agent_defs`, which
-/// is `AgentsCfg` with the plane compiled in).
-pub(crate) fn agent_cfg(app: &crate::state::App) -> &crate::a2a::config::AgentsCfg {
-    app.agent_defs
-        .downcast_ref::<crate::a2a::config::AgentsCfg>()
-        .expect("App::agent_defs carries an AgentsCfg when the A2A plane is compiled in")
-}
-
 /// THE A2A RUNTIME OBJECT for this config generation, read through the TYPE-ERASED `plane_slots`
 /// seam ([`crate::state::App::plane_slot`]) and downcast back to [`crate::a2a::plane::A2aPlane`]
 /// HERE, inside the plane — so core OUTSIDE this module reaches the plane only as an opaque
@@ -452,7 +440,7 @@ pub(crate) fn a2a_start(
         // booting past it would produce a deployment that re-verifies nothing for that agent while
         // reading, in config and in the admin API, as though mutual TLS were configured.
         let a2a_identities = crate::a2a::transport::resolve_client_identities(
-            crate::a2a::agent_cfg(&handle.load()),
+            plane.agent_defs(),
             &handle.load().secret_resolver,
         )
         .map_err(|e| format!("a2a: outbound client identity: {e}"))?;

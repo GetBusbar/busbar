@@ -43,17 +43,21 @@ fn agent_def_view(name: &str, cfg: &crate::a2a::config::AgentDefCfg) -> NamedDef
 /// Every registered agent, as the shared named-definition view. The read half of
 /// `GET /api/v1/admin/agents`.
 pub(crate) fn list(slots: &dyn busbar_substrate::plane_host::PlaneSlots) -> Vec<NamedDefView> {
-    // A2A stays in core: recover the concrete snapshot through the neutral seam's `as_any` hatch to
-    // read `agent_defs` (not a `plane_slots` entry) — byte-identical to the old `&App` arm.
-    let app = slots
-        .as_any()
-        .downcast_ref::<crate::state::App>()
-        .expect("the a2a named_def_list hook is handed an App snapshot");
-    crate::a2a::agent_cfg(app)
-        .agents
-        .iter()
-        .map(|(name, cfg)| agent_def_view(name, cfg))
-        .collect()
+    // Read the operator's `agents:` definitions off the plane's OWN runtime object through the
+    // neutral `plane_slots` seam (`runtime_off_slots` → `agent_defs()`), the byte-analog of MCP's
+    // `runtime_slots(slots).servers.servers` — no `slots.as_any().downcast::<App>()`. The a2a slot
+    // is ABSENT when `agents:` is unconfigured, so `None` yields the empty list the old
+    // `agent_cfg(app)` on the default (empty) `AgentsCfg` did — byte-identical.
+    crate::a2a::runtime_off_slots(slots)
+        .map(|plane| {
+            plane
+                .agent_defs()
+                .agents
+                .iter()
+                .map(|(name, cfg)| agent_def_view(name, cfg))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// One registered agent, or `None`. The read half of `GET /api/v1/admin/agents/{name}`.
@@ -61,13 +65,10 @@ pub(crate) fn get(
     slots: &dyn busbar_substrate::plane_host::PlaneSlots,
     name: &str,
 ) -> Option<NamedDefView> {
-    let app = slots
-        .as_any()
-        .downcast_ref::<crate::state::App>()
-        .expect("the a2a named_def_get hook is handed an App snapshot");
-    crate::a2a::agent_cfg(app)
-        .agents
-        .get(name)
+    // Off the plane's own slot through the neutral seam — `None` (plane absent) and a missing name
+    // both answer `None`, byte-identical to the old empty-map lookup.
+    crate::a2a::runtime_off_slots(slots)
+        .and_then(|plane| plane.agent_defs().agents.get(name))
         .map(|cfg| agent_def_view(name, cfg))
 }
 
@@ -98,13 +99,10 @@ pub(crate) fn openapi_schemas(
 /// Is `name` a live registered agent on this snapshot — the membership check the admin write path
 /// consults through the plane's `registry_contains` seam, so core names no `crate::a2a` registry type.
 pub(crate) fn contains(slots: &dyn busbar_substrate::plane_host::PlaneSlots, name: &str) -> bool {
-    // A2A stays in core: recover the concrete snapshot through the neutral seam's `as_any` hatch to
-    // read `agent_defs` (not a `plane_slots` entry) — byte-identical to the old `&App` arm.
-    let app = slots
-        .as_any()
-        .downcast_ref::<crate::state::App>()
-        .expect("the a2a registry_contains hook is handed an App snapshot");
-    crate::a2a::agent_cfg(app).agents.contains_key(name)
+    // Membership read off the plane's own slot through the neutral seam — `None` (plane absent) is
+    // `false`, byte-identical to the old empty-map `contains_key`.
+    crate::a2a::runtime_off_slots(slots)
+        .is_some_and(|plane| plane.agent_defs().agents.contains_key(name))
 }
 
 /// RE-RESOLVE THE A2A PLANE'S PER-AGENT HOOK GATES against the next snapshot — the A2A half of the
@@ -112,16 +110,17 @@ pub(crate) fn contains(slots: &dyn busbar_substrate::plane_host::PlaneSlots, nam
 /// `crate::a2a` registry type. Reads this plane's own registry off the snapshot and writes its own
 /// gate field back.
 pub(crate) fn reresolve_gates(next: &mut dyn busbar_substrate::plane_host::ContainerGateSink) {
-    // Recover the concrete snapshot to read `agent_defs` (owned clone, so the immutable borrow ends
-    // before the `&mut` store), then resolve-and-store through the neutral sink under the A2A gate
-    // key (`1`). Byte-identical to the old inline `next.a2a_agent_gates = resolve_container_gates(...)`.
-    let agents = {
-        let app = next
-            .as_any()
-            .downcast_ref::<crate::state::App>()
-            .expect("the a2a reresolve_gates hook is handed an App snapshot");
-        crate::a2a::agent_cfg(app).clone()
-    };
+    // Read the operator's `agents:` definitions off the plane's OWN slot through the neutral
+    // `PlaneSlots` seam `ContainerGateSink` extends (owned clone, so the immutable borrow of `next`
+    // ends before the `&mut` store below), then resolve-and-store through the neutral sink under the
+    // A2A gate key (`1`). `None` (plane absent when `agents:` is unconfigured) yields the empty
+    // `AgentsCfg`, byte-identical to the old `agent_cfg(app).clone()` on the default registry.
+    // Byte-identical to the old inline `next.a2a_agent_gates = resolve_container_gates(...)`.
+    let agents = next
+        .plane_slot(crate::a2a::PLANE_DECL.key)
+        .and_then(|slot| slot.clone().downcast::<crate::a2a::plane::A2aPlane>().ok())
+        .map(|plane| plane.agent_defs().clone())
+        .unwrap_or_default();
     let containers: Vec<(&str, &[String])> = agents
         .agents
         .iter()
