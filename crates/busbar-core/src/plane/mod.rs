@@ -92,11 +92,9 @@
 
 pub mod approvals;
 pub mod auditlog;
-pub mod calllog;
 pub mod config;
 pub mod cost;
 pub(crate) mod observe;
-pub(crate) mod provenance;
 pub(crate) mod quarantine;
 pub mod registry;
 pub(crate) mod store;

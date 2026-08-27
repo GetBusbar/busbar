@@ -263,7 +263,7 @@ fn read_scope(ptr: *const u8, len: usize) -> Option<String> {
     Some(String::from_utf8_lossy(bytes).into_owned())
 }
 
-/// THE IN-CORE REFRAME BRIDGE. A within-core plane seam user (`plane::taskstore`, `plane::calllog`)
+/// THE IN-CORE REFRAME BRIDGE. A within-core plane seam user (`plane::taskstore`, `calllog`)
 /// still owns its own native `Fn(&str, &[u8]) -> StoreResult<PlaneJournalRecord>` decode bridge, but
 /// the durable seam addresses reframe over the [`JournalReframeFn`] FFI shape. This is the adapter:
 /// the plane's `extern "C-unwind"` reframe slot forwards the raw buffers here, and this reads the body,

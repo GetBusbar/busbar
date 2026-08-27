@@ -195,7 +195,7 @@ pub const REASON_GENERATION_MOVED: &str = "generation_moved";
 // the kind's VALUE, so events already on disk keep verifying against the same formula only if there
 // is ONE spelling of each kind. The core TASKS engine hash-chains and persists them and the A2A plane
 // (and its a2a-side event-kind mapping) supplies them; both name these constants, so core re-exports
-// them at `crate::plane::provenance::EV_*` and its own call sites are unchanged.
+// them at `busbar_core::provenance::EV_*` and its own call sites are unchanged.
 
 /// Accepted, not yet started.
 pub const EV_SUBMITTED: &str = "task.submitted";

@@ -31,7 +31,7 @@ use super::super::pushdeliver::{self, PushRefusal};
 use super::super::pushnotify::{self, PushNotifyError};
 use super::super::relay::{ChunkFlow, RelaySeam, RelayTransport, StreamHead};
 use super::super::task::{Direction, Task, TaskState};
-use crate::plane::provenance;
+use crate::provenance;
 
 const CALLBACK: &str = "https://hook.caller.test/notify";
 /// The address the callback resolved to when it was REGISTERED. Public, so it passed.

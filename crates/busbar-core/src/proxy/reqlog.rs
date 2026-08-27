@@ -8,8 +8,8 @@
 //!
 //! `grep crate::audit` over `proxy/` and `handlers/` returned ZERO production hits. Model traffic
 //! landed in billing (`governance`), in telemetry (`/metrics`) and in the request-log export, and in
-//! NO tamper-evident chain — while the MCP plane chained every `tools/call` (`plane::calllog`) and the
-//! A2A plane chained every task event (`plane::provenance`). The owner's ruling is that auditing is
+//! NO tamper-evident chain — while the MCP plane chained every `tools/call` (`calllog`) and the
+//! A2A plane chained every task event (`provenance`). The owner's ruling is that auditing is
 //! core functionality and *"LLM == MCP == A2A — just different protocols, not a different pathway
 //! through the engine at all"*, so the flagship plane being the unaudited one is the doctrine
 //! inverted. Billing is not auditing: a usage counter answers "how much", it is a mutable aggregate,
@@ -36,7 +36,7 @@
 //! ## Scoped to the PRINCIPAL, like the call log and unlike the task chain
 //!
 //! A model request has no durable object of its own to be scoped to — there is no task — so the
-//! bounded unit is the presenting key, exactly as `plane::calllog` is. That is also the unit an
+//! bounded unit is the presenting key, exactly as `calllog` is. That is also the unit an
 //! auditor asks about ("what did this key do"), and it means one caller's chain is verifiable
 //! without possessing any other caller's records.
 //!
@@ -55,13 +55,13 @@
 //! NOT WRITTEN — durability. `busbar_api::Store` carries no model-request method, and adding one is
 //! a plugin-ABI change fanned out to four external store repositories; it is deliberately not made
 //! here. So this chain is a bounded IN-MEMORY window and A RESTART LOSES IT. That is the same floor
-//! `a2a::pushdeliver`'s pin map and `plane::calllog` under `store: memory` are documented with, it is
+//! `a2a::pushdeliver`'s pin map and `calllog` under `store: memory` are documented with, it is
 //! stated here rather than discovered, and NOTHING may describe this stream as durable until a
 //! store method exists. What IS true of it today: within one process lifetime the window is
 //! append-only, hash-linked and verifiable, so an in-process edit of a retained record is detected.
 //!
 //! NOT MOUNTED — the operator-facing read surface. [`LlmRequestLog::verify_principal_chain`] and
-//! [`LlmRequestLog::records_for`] have no admin verb, exactly as `plane::calllog`'s equivalents do
+//! [`LlmRequestLog::records_for`] have no admin verb, exactly as `calllog`'s equivalents do
 //! not; each carries its own `#[allow(dead_code)]` and its own note rather than a module-wide
 //! blanket, so the next thing to lose its caller BREAKS THE BUILD instead of joining a silent
 //! amnesty. It is a REAL GAP and it is named here.
@@ -263,7 +263,7 @@ pub(crate) fn outcome_of(terminal: Terminal, status: u16) -> (&'static str, &'st
 #[derive(Default)]
 pub(crate) struct LlmRequestLog {
     /// Chain POSITIONS, keyed by principal — a tail hash and a next sequence. Unbounded in the same
-    /// way `plane::calllog`'s is, and bounded in practice by the same thing: the principals are minted
+    /// way `calllog`'s is, and bounded in practice by the same thing: the principals are minted
     /// key ids plus one fixed sentinel, not caller-chosen strings.
     chains: Mutex<HashMap<String, RequestChain>>,
     /// The retained records, oldest first, across every principal. See [`MAX_RETAINED_REQUESTS`].
@@ -272,7 +272,7 @@ pub(crate) struct LlmRequestLog {
 
 /// THE PROCESS-WIDE MODEL REQUEST LOG. Process state, not config-derived state, so it lives as a
 /// global rather than on the swappable `App` snapshot — exactly like [`crate::admin::audit::AUDIT`]
-/// and [`crate::plane::calllog::CALLS`], and for the same reason: a config apply must not reset the
+/// and [`crate::calllog::CALLS`], and for the same reason: a config apply must not reset the
 /// chain positions, because doing so would open a SECOND chain at seq 1 under a principal that
 /// already has one, and two chains that each verify and together describe nothing is strictly worse
 /// than no chain at all.
@@ -284,7 +284,7 @@ impl LlmRequestLog {
         Self::default()
     }
 
-    /// Poison-recovering locks, for the reason `plane::calllog` gives: the critical sections only
+    /// Poison-recovering locks, for the reason `calllog` gives: the critical sections only
     /// mutate chain positions and a record ring, so the data stays consistent after a panic, and
     /// cascading a poison would wedge the whole data plane because one request panicked.
     fn chains(&self) -> MutexGuard<'_, HashMap<String, RequestChain>> {
@@ -309,7 +309,7 @@ impl LlmRequestLog {
             // hand-writes its `Default` to be its `new`, and pins the two against each other
             // (`the_default_chain_is_the_new_chain_because_a_derived_default_starts_at_zero`). The
             // hazard is closed once, in core, for every stream — which is the whole argument for
-            // one mechanism. `plane::calllog` reads identically.
+            // one mechanism. `calllog` reads identically.
             let chain = chains.entry(principal.to_string()).or_default();
             chain.append(principal, input)
         };
@@ -339,7 +339,7 @@ impl LlmRequestLog {
 
     /// RECOMPUTE one principal's retained window and report the first break.
     ///
-    /// NO PRODUCTION CALLER — the same real gap `plane::calllog::verify_principal_chain` names, and it
+    /// NO PRODUCTION CALLER — the same real gap `calllog::verify_principal_chain` names, and it
     /// matters for the same reason: a chain nothing ever recomputes proves nothing, because nobody
     /// ever finds out that it does not verify. Nothing anywhere may describe this stream as
     /// continuously verified.

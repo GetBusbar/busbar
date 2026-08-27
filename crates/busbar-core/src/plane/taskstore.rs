@@ -46,9 +46,9 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use crate::audit::journal::NeutralBody;
 use crate::audit::{verify_chain, ChainBreak, Framing};
 
-use super::provenance::{self, EventInput};
 use crate::plane::store::{decode, task_record, PlaneStore, KIND_TASK, KIND_TASK_EVENT};
 use crate::plane_host::journal::PlaneJournalRecord;
+use crate::provenance::{self, EventInput};
 use busbar_api::{PlaneSelector, StoreError, StoreResult, TaskEventRow, TaskRow};
 use busbar_plugin::hot::host::HostCtx;
 use busbar_plugin::hot::{

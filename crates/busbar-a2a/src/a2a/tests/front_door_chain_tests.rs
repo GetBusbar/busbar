@@ -29,8 +29,8 @@
 //! nothing having happened.
 
 use super::relay_harness::*;
-use crate::plane::provenance;
 use crate::plane::taskstore::{event_ledger::EventLedger, TASKS, TASKS_SINK_LOCK};
+use crate::provenance;
 use std::sync::Arc;
 
 /// Attach a fresh ledger to the process-wide registry, hand it back, and hold the lock that keeps

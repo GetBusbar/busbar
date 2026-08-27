@@ -241,7 +241,7 @@ pub(crate) trait StoreNamedTestExt: Store {
     fn list_mcp_calls(&self, principal: &str) -> StoreResult<Vec<McpCallRecord>> {
         self.list_plane_records(KIND_CALL, &PlaneSelector::Parent(principal.to_string()))?
             .iter()
-            .map(|b| crate::plane::calllog::mcp_call_record_from_body(principal, b))
+            .map(|b| crate::calllog::mcp_call_record_from_body(principal, b))
             .collect()
     }
     fn list_mcp_call_principals(&self) -> StoreResult<Vec<String>> {

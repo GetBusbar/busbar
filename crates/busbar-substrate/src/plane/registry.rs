@@ -73,7 +73,7 @@ pub type BootHook = fn(&dyn PlaneBootCtx) -> Result<(), String>;
 
 /// A NEUTRAL, PLAIN-DATA SUMMARY of what a boot rehydrate of a plane's durable per-call log found —
 /// the value [`PlaneBootCtx::restore_call_log`] returns so a plane's hydrate hook can log the outcome
-/// WITHOUT naming the core-live `busbar_core::plane::calllog::Restored` type (which carries the rich
+/// WITHOUT naming the core-live `busbar_core::calllog::Restored` type (which carries the rich
 /// `audit::ChainBreak`). Every field is the same value the old `Restored` comparison and logging
 /// relied on: the three counts verbatim, and each chain break as its already-Display-formatted
 /// string (the exact text the hook logged via `%brk`), so an all-default summary means an all-default

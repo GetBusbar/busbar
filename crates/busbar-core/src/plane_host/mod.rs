@@ -706,11 +706,9 @@ impl busbar_substrate::plane_host::EngineHost for EngineHostImpl {
         // with an arbitrary kind. Then mint a fresh arena and append synchronously, exactly as the
         // in-place delivery path did.
         let kind: &'static str = match kind {
-            crate::plane::provenance::EV_PUSH_DELIVERED => {
-                crate::plane::provenance::EV_PUSH_DELIVERED
-            }
-            crate::plane::provenance::EV_PUSH_REFUSED => crate::plane::provenance::EV_PUSH_REFUSED,
-            crate::plane::provenance::EV_PUSH_FAILED => crate::plane::provenance::EV_PUSH_FAILED,
+            crate::provenance::EV_PUSH_DELIVERED => crate::provenance::EV_PUSH_DELIVERED,
+            crate::provenance::EV_PUSH_REFUSED => crate::provenance::EV_PUSH_REFUSED,
+            crate::provenance::EV_PUSH_FAILED => crate::provenance::EV_PUSH_FAILED,
             other => return Err(format!("unknown push-delivery kind `{other}`")),
         };
         with_dispatch_scope(&self.app, |host, _| {
@@ -800,7 +798,7 @@ impl busbar_substrate::plane_host::EngineHost for EngineHostImpl {
         // registers no host handle, so which arena reclaims is immaterial. Same dispatch as the plane's
         // in-place `with_dispatch_scope` leg.
         with_dispatch_scope(&self.app, |host, _| {
-            crate::plane::calllog::emit(host, principal, input)
+            crate::calllog::emit(host, principal, input)
         });
     }
 
@@ -809,7 +807,7 @@ impl busbar_substrate::plane_host::EngineHost for EngineHostImpl {
         principal: &str,
         input: busbar_substrate::plane::calllog::CallInput,
     ) {
-        crate::plane::calllog::emit_hostless(principal, input);
+        crate::calllog::emit_hostless(principal, input);
     }
 
     fn identity_audience_binding(

@@ -40,7 +40,7 @@
 //! REPORTED and still resumed from its tail (via [`Chain::from_persisted_unverified`]): refusing to
 //! restore a tamper-detected chain would convert a detection control into a deletion primitive.
 
-// The MCP call log (`plane::calllog`, `plane-mcp`) and the A2A task store (`plane::taskstore`,
+// The MCP call log (`calllog`, `plane-mcp`) and the A2A task store (`plane::taskstore`,
 // `plane-a2a`) both wire this in production. But with BOTH planes compiled out
 // (`--no-default-features`) nothing instantiates a `Journal`, so every method here is dead on that
 // configuration — exactly as the plane modules themselves are, which carry the same blanket. Hence
@@ -61,7 +61,7 @@ use busbar_api::{PlaneDisposition, PlaneRecord, PlaneSelector, StoreError, Store
 /// the generic journal cannot know: which neutral store `kind` its rows are tagged with, and how one
 /// sealed record becomes the neutral [`PlaneRecord`] envelope it crosses the store seam in.
 ///
-/// Implemented PLANE-SIDE (`impl JournalRecord for McpCallRecord` in `plane::calllog`, and likewise
+/// Implemented PLANE-SIDE (`impl JournalRecord for McpCallRecord` in `calllog`, and likewise
 /// for the A2A event row), so the plane→core coupling points at core and the journal names no plane.
 pub(crate) trait JournalRecord: ChainedRecord + Clone + serde::de::DeserializeOwned {
     /// The neutral store kind these rows are tagged with (`call`, `task_event`, …) — the tag

@@ -66,7 +66,7 @@ const MIGRATED_FILES: &[&str] = &[
     "src/plane/taskstore.rs",
     "src/plane/approvals.rs",
     "src/plane/quarantine.rs",
-    "src/plane/calllog.rs",
+    "src/calllog.rs",
     "src/admin/mod.rs",
     "src/admin/v1/service.rs",
     "src/admin/v1/json/handlers.rs",

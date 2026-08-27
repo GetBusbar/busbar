@@ -157,14 +157,14 @@ impl PlaneBootCtx for BootCtx {
     /// REGISTER THE MCP PLANE'S DURABLE `call` STREAM with the host, in the hydrate phase — the first
     /// boot step of the per-call log, before the rehydrate. Named HERE, core side, so
     /// `crate::mcp::mcp_hydrate` registers the stream without its own code naming
-    /// `crate::plane::calllog` or an `App` field: the `with_dispatch_scope`/`HostCtx` mint the register
+    /// `crate::calllog` or an `App` field: the `with_dispatch_scope`/`HostCtx` mint the register
     /// does stays wholly inside `calllog::register_call_stream` (minted synchronously, never across an
     /// `.await`), and the app it reads is the core-owned hydrate-phase `App`. A no-op unless the
     /// freshly-built app (hydrate phase) is present — byte-identical to the old inline
-    /// `busbar_core::plane::calllog::register_call_stream(app)`.
+    /// `busbar_core::calllog::register_call_stream(app)`.
     fn register_call_stream(&self) {
         if let Some(app) = self.app.as_ref() {
-            crate::plane::calllog::register_call_stream(app);
+            crate::calllog::register_call_stream(app);
         }
     }
 
@@ -177,7 +177,7 @@ impl PlaneBootCtx for BootCtx {
     /// Display string so the hook's `MCP_CALLLOG_UNREAD` warning reads byte-identically. A no-op-shaped
     /// panic guards the impossible None-app/None-store hydrate call (the hook reaches here only past its
     /// store guard, in the phase that supplies the app) — byte-identical to the old inline
-    /// `busbar_core::plane::calllog::restore_from_store_over(app, store)`.
+    /// `busbar_core::calllog::restore_from_store_over(app, store)`.
     fn restore_call_log(&self) -> Result<RestoredSummary, String> {
         let app = self.app.as_ref().expect(
             "restore_call_log runs in the HYDRATE phase, which supplies the freshly-built app",
@@ -185,7 +185,7 @@ impl PlaneBootCtx for BootCtx {
         let store = self.store.as_ref().expect(
             "restore_call_log runs past the hydrate hook's store guard, so a store is present",
         );
-        crate::plane::calllog::restore_from_store_over(app, store.as_ref())
+        crate::calllog::restore_from_store_over(app, store.as_ref())
             .map(|r| RestoredSummary {
                 principals: r.principals,
                 records: r.records,

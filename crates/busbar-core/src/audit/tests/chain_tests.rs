@@ -458,7 +458,7 @@ fn the_a2a_task_event_digest_is_unchanged_by_the_unification() {
     let (prev_hash, task_id, seq) = (String::new(), "task-1", 1u64);
     let (ts, kind, context_id, principal, agent_id, state) = (
         1_700_000_000u64,
-        crate::plane::provenance::EV_SUBMITTED,
+        crate::provenance::EV_SUBMITTED,
         "ctx-1",
         "vk_alice",
         "planner",

@@ -4,7 +4,7 @@
 //! THE RULE: where the binary needs N internals to perform ONE boot action,
 //! expose one function here and leave the N internals crate-private. The alternative — widening
 //! `admin::audit::AUDIT`, its `set_sink`/`restore_from_store`, the `plane::taskstore::TASKS` and
-//! `plane::calllog::CALLS` statics, `governance::signing::TokenSigner`, and the trust sweeper's
+//! `calllog::CALLS` statics, `governance::signing::TokenSigner`, and the trust sweeper's
 //! machinery to `pub` — would put the one append-only hash chain's storage handle, the token
 //! master-key mint and the quarantine loop on the public surface of this crate, where a protocol
 //! crate could reach them. A split that forces twenty new `pub`s on security-relevant internals

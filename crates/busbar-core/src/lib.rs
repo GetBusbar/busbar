@@ -61,6 +61,14 @@ pub mod billing;
 /// THE BOOT SEAM: one entry point per boot action, so the internals each action composes stay
 /// crate-private. See the module header.
 pub mod boot;
+/// THE DURABLE PER-CALL LOG: one hash-chained record per MCP tool call. A plane-specific RECORD
+/// SHAPE for core's one audit chain — named honestly at the crate root rather than under the
+/// neutral `plane::` namespace. See the module header.
+pub mod calllog;
+/// THE PER-TASK PROVENANCE RECORD — the A2A plane's contribution to core's one audit chain. A
+/// plane-specific RECORD SHAPE, named honestly at the crate root rather than under the neutral
+/// `plane::` namespace. See the module header.
+pub(crate) mod provenance;
 pub use busbar_substrate::breaker;
 pub mod catalogue;
 pub mod config;

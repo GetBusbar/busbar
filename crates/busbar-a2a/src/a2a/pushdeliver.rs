@@ -60,7 +60,7 @@
 //! guard left no record**. A security control that fires silently is one nobody can audit after the
 //! fact — and this control fires precisely when a callback that was legitimate at registration has
 //! been re-pointed at something that is not, which is the event an incident review goes looking for.
-//! Every attempt now appends to the TASK's own provenance chain (`crate::plane::provenance`'s three
+//! Every attempt now appends to the TASK's own provenance chain (`crate::provenance`'s three
 //! `task.push_*` kinds), through the one mechanism in [`crate::audit`]. A log line is still emitted;
 //! it is no longer the only thing that happens.
 

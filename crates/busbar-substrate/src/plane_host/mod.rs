@@ -389,12 +389,12 @@ pub trait EngineHost: Send + Sync {
     /// Emit ONE per-call record through the durable MCP call-log engine. The transient `HostCtx` the
     /// chain seam needs is minted INTERNALLY (a fresh per-call arena over the live engine — the append
     /// registers no host handle, so the arena choice is immaterial). Identical to
-    /// `busbar_core::plane::calllog::emit`.
+    /// `busbar_core::calllog::emit`.
     fn call_log_emit(&self, principal: &str, input: CallInput);
 
     /// The DEFERRED-SITE twin of [`call_log_emit`](EngineHost::call_log_emit): emit through the
     /// HOSTLESS call-log path, for a client-leg site that has no `HostCtx` to open. Identical to
-    /// `busbar_core::plane::calllog::emit_hostless`.
+    /// `busbar_core::calllog::emit_hostless`.
     fn call_log_emit_hostless(&self, principal: &str, input: CallInput);
 
     /// Establish what can be established about a presented bearer's RFC 8707 audience binding against

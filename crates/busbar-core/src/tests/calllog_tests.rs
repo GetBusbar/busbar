@@ -46,7 +46,7 @@ struct DurableCallStore {
     /// `{seq,prev_hash,hash,content}` the P5 seam persists — keyed by `(principal, seq)` so a read-back
     /// comes out in chain order and a re-write at the same position overwrites (a real backend's
     /// primary key). A typed view is reconstructed on read via
-    /// [`crate::plane::calllog::mcp_call_record_from_body`] (which also reads legacy serde bodies), so
+    /// [`crate::calllog::mcp_call_record_from_body`] (which also reads legacy serde bodies), so
     /// "durable" here is byte-for-byte what a real store keeps.
     calls: std::sync::Mutex<std::collections::BTreeMap<(String, u64), Vec<u8>>>,
     /// When set, an append fails with this message instead of persisting. The write-failure axis: an
@@ -83,7 +83,7 @@ impl DurableCallStore {
         let body = calls
             .get_mut(&(principal.to_string(), seq))
             .expect("tampering with a row the store actually holds");
-        let mut row = crate::plane::calllog::mcp_call_record_from_body(principal, body)
+        let mut row = crate::calllog::mcp_call_record_from_body(principal, body)
             .expect("the row to tamper with decodes");
         edit(&mut row);
         *body = crate::plane::store::encode(&row).expect("the tampered row re-encodes");
@@ -186,7 +186,7 @@ impl Store for DurableCallStore {
                 // The stored body is opaque, so the retention axis (`ts`) is read by reconstructing
                 // the typed row — the neutral append leaves the envelope's `ts` sidecar at 0.
                 calls.retain(|(principal, _), body| {
-                    let ts = crate::plane::calllog::mcp_call_record_from_body(principal, body)
+                    let ts = crate::calllog::mcp_call_record_from_body(principal, body)
                         .map(|r| r.ts)
                         .unwrap_or(0);
                     ts >= before
@@ -214,12 +214,12 @@ impl DurableCallStore {
         }
         let principal = record.parent.clone().unwrap_or_else(|| record.id.clone());
         let slot = (principal.clone(), record.seq);
-        let incoming = crate::plane::calllog::mcp_call_record_from_body(&principal, &record.body)?;
+        let incoming = crate::calllog::mcp_call_record_from_body(&principal, &record.body)?;
         let mut calls = self.calls.lock().unwrap();
         match calls.get(&slot) {
             Some(existing_body) => {
                 let existing =
-                    crate::plane::calllog::mcp_call_record_from_body(&principal, existing_body)?;
+                    crate::calllog::mcp_call_record_from_body(&principal, existing_body)?;
                 if same_call_ignoring_request_id(&existing, &incoming) {
                     // The retry: the same call re-presented, so nothing is lost by succeeding.
                     Ok(())
@@ -728,8 +728,7 @@ fn a_foreign_principals_record_in_a_chain_is_its_own_break_kind() {
 
     let chain = store.list_mcp_calls(P).expect("read");
     assert_eq!(chain.len(), 3, "all three rows are still returned for {P}");
-    let brk =
-        crate::plane::calllog::verify_call_rows(&chain).expect_err("the foreign row is detected");
+    let brk = crate::calllog::verify_call_rows(&chain).expect_err("the foreign row is detected");
     assert_eq!(
         brk.kind,
         ChainBreakKind::ForeignScope {
@@ -1114,7 +1113,7 @@ fn retention_purges_rows_without_rewinding_the_chain() {
 /// closed by `list_mcp_call_principals` naming the principal, which is why the restore counts it.
 #[test]
 fn an_empty_chain_verifies_because_the_records_alone_cannot_say_otherwise() {
-    assert!(crate::plane::calllog::verify_call_rows(&[]).is_ok());
+    assert!(crate::calllog::verify_call_rows(&[]).is_ok());
 }
 
 /// THE PROCESS-GLOBAL is the seam a call site actually uses, so it is exercised here rather than
@@ -1131,9 +1130,9 @@ fn the_process_global_call_log_is_the_seam_a_call_site_records_through() {
     const GLOBAL_P: &str = "key_process_global_probe";
     // The per-principal chain lives host-side; ensure the process-wide stream is registered (once,
     // no-sink) and drive the global's record over a host.
-    crate::plane::calllog::ensure_global_call_stream_registered();
+    crate::calllog::ensure_global_call_stream_registered();
     let before = CALLS.next_seq(GLOBAL_P);
-    let rec = crate::plane::calllog::with_global_call_host(|host| {
+    let rec = crate::calllog::with_global_call_host(|host| {
         CALLS.record(
             host,
             GLOBAL_P,

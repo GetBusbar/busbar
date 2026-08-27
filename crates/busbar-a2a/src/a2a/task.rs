@@ -348,7 +348,7 @@ impl Task {
 /// side at the D4 codec inversion: the neutral core engine only hash-chains and persists whatever
 /// `kind` it is handed, so the classification — which needs the [`TaskState`] enum — lives here and
 /// the resulting `&'static str` is passed INTO the engine's record path. The kind CONSTANTS are still
-/// core's (`crate::plane::provenance::EV_*`), so the emitted strings are unchanged; only the mapping
+/// core's (`crate::provenance::EV_*`), so the emitted strings are unchanged; only the mapping
 /// moved.
 ///
 /// `from` is the state BEFORE the move and it is load-bearing: an `interrupted → working` move is a

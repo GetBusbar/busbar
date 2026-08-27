@@ -34,7 +34,7 @@
 //!
 //! ## The `CALLS` global is serialised here, deliberately
 //!
-//! [`busbar_core::plane::calllog::CALLS`] is process state (see its own header for why it must not ride the
+//! [`busbar_core::calllog::CALLS`] is process state (see its own header for why it must not ride the
 //! swappable `App`). Two tests in this binary attaching different sinks to it concurrently would
 //! interleave, so they take one lock — and each also uses its own principal, so a leaked chain
 //! position from a sibling cannot make a green.
@@ -43,8 +43,8 @@ use super::upstream_support::{
     call_as, exchanging_server, gov_with_scopes, mcp_cfg, Behaviour, Peer,
 };
 use busbar_api::{McpCallRecord, Store};
-use busbar_core::plane::calllog::verify_call_rows;
-use busbar_core::plane::calllog::{OUTCOME_DISPATCHED, OUTCOME_REFUSED, REASON_UPSTREAM_FAILED};
+use busbar_core::calllog::verify_call_rows;
+use busbar_core::calllog::{OUTCOME_DISPATCHED, OUTCOME_REFUSED, REASON_UPSTREAM_FAILED};
 use busbar_core::plane::store::StoreNamedTestExt;
 use busbar_core::test_support::TestApp;
 use std::path::PathBuf;
@@ -275,7 +275,7 @@ async fn a_dispatched_tools_call_lands_a_durable_record_through_a_real_dlopened_
     // store only through the dispatcher.
     {
         let store = open_plugin(&cfg);
-        busbar_core::plane::calllog::aim_global_call_sink(Some(
+        busbar_core::calllog::aim_global_call_sink(Some(
             busbar_core::plane::store::PlaneStoreView::narrow(store),
         ));
     }
@@ -297,7 +297,7 @@ async fn a_dispatched_tools_call_lands_a_durable_record_through_a_real_dlopened_
     // ledger file. The plugin's persist is atomic (see `FileStore::mutate`), so those writes can't
     // tear the reopen below; detaching anyway keeps this test's ledger holding exactly what this
     // test wrote, so the `records.len()` assertion is about dispatch, not about scheduling.
-    busbar_core::plane::calllog::aim_global_call_sink(None);
+    busbar_core::calllog::aim_global_call_sink(None);
 
     // THE RESTART. A fresh `dlopen` + `busbar_open` over the same on-disk ledger — the only way a
     // durability claim can be made honestly, because a write's `Ok(())` is worth nothing.
@@ -364,7 +364,7 @@ async fn a_refused_tools_call_lands_a_durable_record_carrying_the_refusal_reason
 
     {
         let store = open_plugin(&cfg);
-        busbar_core::plane::calllog::aim_global_call_sink(Some(
+        busbar_core::calllog::aim_global_call_sink(Some(
             busbar_core::plane::store::PlaneStoreView::narrow(store),
         ));
     }
@@ -383,7 +383,7 @@ async fn a_refused_tools_call_lands_a_durable_record_carrying_the_refusal_reason
     // DETACH before the read-back — same isolation as the dispatched-call test above: siblings
     // record through the process-global `CALLS` without the lock, and this test's ledger must hold
     // exactly what this test wrote when the reopened handle reads it.
-    busbar_core::plane::calllog::aim_global_call_sink(None);
+    busbar_core::calllog::aim_global_call_sink(None);
 
     let reopened = open_plugin(&cfg);
     let records = reopened
@@ -424,7 +424,7 @@ async fn with_no_durable_sink_the_call_still_serves_and_nothing_is_kept() {
     // The RAM default: `busbar-store-memory` implements none of the call-log methods, so attaching
     // it is indistinguishable from attaching nothing — which is the documented `store: memory`
     // contract, asserted rather than assumed.
-    busbar_core::plane::calllog::aim_global_call_sink(None);
+    busbar_core::calllog::aim_global_call_sink(None);
 
     let (status, body) = call_as(
         &app,
@@ -485,7 +485,7 @@ async fn the_client_legs_own_outcome_is_what_the_chain_records_success_and_failu
 
     {
         let store = open_plugin(&cfg);
-        busbar_core::plane::calllog::aim_global_call_sink(Some(
+        busbar_core::calllog::aim_global_call_sink(Some(
             busbar_core::plane::store::PlaneStoreView::narrow(store),
         ));
     }
@@ -537,7 +537,7 @@ async fn the_client_legs_own_outcome_is_what_the_chain_records_success_and_failu
 
     // Detach before the read-back, for the reason the headline test states: siblings in this binary
     // dispatch through the process-global `CALLS` without taking the serialising lock.
-    busbar_core::plane::calllog::aim_global_call_sink(None);
+    busbar_core::calllog::aim_global_call_sink(None);
 
     let reopened = open_plugin(&cfg);
     let records = reopened

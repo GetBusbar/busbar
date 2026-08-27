@@ -226,8 +226,8 @@ fn pack_bodies(bodies: &[Vec<u8>]) -> Vec<u8> {
 // subset, so with `plane-mcp` off (and A2A on) this path re-exports them with no local user.
 // MCP-only re-export of the hook-gate refusal reason (definition relocated to
 // `busbar_substrate::audit::vocab` alongside the rest of the audit vocabulary, so a plane names it
-// without reaching into `busbar_core::plane::calllog`); re-exported here so in-core call sites and
-// the legacy `busbar_core::plane::calllog::REASON_HOOK_REJECTED` path are unchanged.
+// without reaching into `busbar_core::calllog`); re-exported here so in-core call sites and
+// the legacy `busbar_core::calllog::REASON_HOOK_REJECTED` path are unchanged.
 #[cfg_attr(not(feature = "plane-mcp"), allow(unused_imports))]
 pub use crate::audit::vocab::{
     OUTCOME_DISPATCHED, OUTCOME_REFUSED, REASON_CALLER_ASK_PENDING, REASON_HOOK_REJECTED,
@@ -235,7 +235,7 @@ pub use crate::audit::vocab::{
 };
 
 // D3 Phase-C: the neutral per-call record INPUT is now a substrate POD so a plane builds it without
-// naming `busbar_core::plane::calllog`; re-exported here so `CALLS.record`/[`emit`] and every in-core
+// naming `busbar_core::calllog`; re-exported here so `CALLS.record`/[`emit`] and every in-core
 // call site is unchanged. `seq`/`prev_hash`/`hash` are still NOT on it — they are the chain's own
 // business, supplied by [`crate::audit::Chain::append`].
 pub use busbar_substrate::plane::calllog::CallInput;
