@@ -32,8 +32,9 @@ use axum::http::StatusCode;
 use axum::response::Response;
 
 use busbar_core::admin::planeverbs::{self, PlaneTrust};
-use busbar_core::admin::v1::contract::{AdminError, NamedDefView};
+use busbar_core::admin::v1::contract::AdminError;
 use busbar_core::state::AppHandle;
+use busbar_substrate::api::NamedDefView;
 
 /// Project one `tools:` entry — one registered MCP server — onto the shared named-definition view.
 ///
@@ -112,8 +113,8 @@ pub(crate) fn openapi_schemas(
     _req_gen: &mut schemars::SchemaGenerator,
     paths: &mut serde_json::Map<String, serde_json::Value>,
 ) {
-    use busbar_core::admin::v1::json::ap;
-    use busbar_core::admin::v1::json::set_response_schema;
+    use busbar_substrate::api::ap;
+    use busbar_substrate::api::set_response_schema;
     let connect = serde_json::to_value(schema_gen.subschema_for::<McpTrustView>())
         .unwrap_or_else(|_| serde_json::json!({}));
     set_response_schema(paths, &ap("/tools/{name}/connect"), "post", "200", connect);

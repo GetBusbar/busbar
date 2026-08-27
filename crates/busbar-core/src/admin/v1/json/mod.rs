@@ -248,17 +248,11 @@ fn service(handle: &Arc<AppHandle>) -> AdminService {
     AdminService::new(handle.load())
 }
 
-/// Absolute admin path from a RELATIVE one — `contract::ADMIN_PREFIX` + `rel`. The OpenAPI doc keys
-/// (which document the WIRE, so they must be absolute) are all built through this, so no absolute
-/// path is ever hand-written here and none can drift from the mount grammar.
-// Only `openapi_doc()` (feature `openapi-schema`) and the plane `openapi_schemas` contributors it
-// folds call this; all are compiled solely under that feature, so `ap` is dead in every build
-// without it — allow it there. `pub(crate)` so a plane can compute the absolute path of its own verb
-// when attaching that verb's typed schema through the `openapi_schemas` seam.
-#[cfg_attr(not(feature = "openapi-schema"), allow(dead_code))]
-pub fn ap(rel: &str) -> String {
-    format!("{}{rel}", crate::admin::v1::contract::ADMIN_PREFIX)
-}
+/// Absolute admin path from a RELATIVE one — relocated to the neutral substrate
+/// (`busbar_substrate::api::ap`) alongside `ADMIN_PREFIX`, re-exported here so `openapi_doc()` and
+/// every in-core caller are unchanged.
+#[cfg_attr(not(feature = "openapi-schema"), allow(unused_imports))]
+pub use busbar_substrate::api::ap;
 
 /// The config-plane mutation choke point. Every mutation — from any transport, in any module — runs
 /// inside `txn::config_transaction`, which owns the (file-private) mutation lock, hands the body a
@@ -426,11 +420,11 @@ fn with_config_etag(mut resp: Response, version: u64) -> Response {
 mod handlers;
 pub(crate) use handlers::*;
 // The extracted MCP plane (`busbar-mcp`) contributes its trust verbs' typed response schemas through
-// this exact helper (`admin_view::openapi_schemas`), so it must be reachable CROSS-CRATE — the
-// `pub(crate)` glob above caps it at crate-private, which was enough only while the plane lived in
-// this crate. `pub` (not `pub(crate)`) for that one name, gated the same as the helper itself.
+// this exact helper (`admin_view::openapi_schemas`). It is relocated to the neutral substrate
+// (`busbar_substrate::api::set_response_schema`) so the plane names it directly; re-exported here at
+// its old path, gated the same as the helper itself, so in-core callers are unchanged.
 #[cfg(feature = "openapi-schema")]
-pub use handlers::set_response_schema;
+pub use busbar_substrate::api::set_response_schema;
 
 #[cfg(test)]
 #[path = "tests/tests.rs"]

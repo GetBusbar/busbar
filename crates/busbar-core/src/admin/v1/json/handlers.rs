@@ -3657,45 +3657,6 @@ pub(crate) const V1_GET_PATHS: &[(&str, &str)] = &[
     ("/openapi.json", "This OpenAPI 3.1 document"),
 ];
 
-/// Build the OpenAPI 3.1 document describing the v1 JSON-REST surface. Paths + methods + the stable
-/// error envelope are the machine-readable contract (tooling generates clients + branches on the error
-/// `code`). EVERY operation's success response (200/201) carries a typed body schema — a
-/// `$ref` into `components.schemas`, derived by schemars from the real Rust response VIEW types (see
-/// `contract` + `contract::schema`) so the schema always matches what serde actually serializes.
-///
-/// CI-ONLY (`#[cfg(feature = "openapi-schema")]`): schemars is not compiled into the shipped binary.
-/// The generated doc is committed as `json/openapi.json` and served verbatim by the live handler
-/// (`openapi()` via `include_str!`); the golden/drift test keeps the committed file byte-equal to
-/// this function's output, so the static file can never drift from the code.
-/// Attach a `$ref` schema onto `<abs_path>.<method>.responses.<status>.content` — the module-level
-/// twin of `openapi_doc`'s nested `set_content`, exposed so a plane's `openapi_schemas` contributor
-/// attaches its verb's typed success body through the SAME logic (byte-identical output). Creates the
-/// status response entry if the op did not already document it.
-#[cfg(feature = "openapi-schema")]
-pub fn set_response_schema(
-    paths: &mut serde_json::Map<String, serde_json::Value>,
-    abs_path: &str,
-    method: &str,
-    status: &str,
-    schema: serde_json::Value,
-) {
-    let Some(op) = paths.get_mut(abs_path).and_then(|p| p.get_mut(method)) else {
-        return;
-    };
-    let Some(responses) = op.get_mut("responses").and_then(|r| r.as_object_mut()) else {
-        return;
-    };
-    let entry = responses
-        .entry(status.to_string())
-        .or_insert_with(|| json!({"description": "OK"}));
-    if let Some(obj) = entry.as_object_mut() {
-        obj.insert(
-            "content".to_string(),
-            json!({"application/json": {"schema": schema}}),
-        );
-    }
-}
-
 /// Attach a REQUIRED request-body `$ref` schema onto `<abs_path>.<method>` — the module-level twin of
 /// `openapi_doc`'s nested `body_raw!`, exposed for a plane's `openapi_schemas` contributor.
 #[cfg(feature = "openapi-schema")]

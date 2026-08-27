@@ -17,6 +17,11 @@
 //! re-exports each relocated item during the transition so the in-core call sites do not change in
 //! the same commit.
 
+// The neutral Admin API v1 DATA helpers (the path prefix + its absolute-path helper, the shared
+// named-definition read view, and the OpenAPI response-schema attach helper) a plane crate names
+// without reaching into core. Pure serde data + `serde_json` manipulation, no `App`/`Store`/audit/
+// `Scope`. Core re-exports each from its old `admin::v1` path so its own call sites are unchanged.
+pub mod api;
 pub mod diagnostics;
 pub mod net_guard;
 pub mod audit {

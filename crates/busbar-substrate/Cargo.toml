@@ -53,6 +53,10 @@ serde = { workspace = true }
 # `metrics::counter!` writes over bounded, operator-configured labels — no `App`, no engine reach — so
 # they relocate here for the plane crates to name directly. This is the family's only `metrics` edge.
 metrics = { workspace = true }
+# The relocated admin named-definition read view (`api::NamedDefView`) derives `schemars::JsonSchema`
+# under `openapi-schema`, and the relocated response-schema attach helper (`api::set_response_schema`)
+# is compiled only under it — the same CI-only OpenAPI derive core and the plane crates gate on.
+schemars = { workspace = true, optional = true }
 
 # The relocated leaves carry `#[cfg_attr(not(feature = "plane-mcp"/"plane-a2a"), allow(dead_code))]`
 # verbatim from core — the items are `pub` here so the allowance is now inert, but the cfg names
@@ -61,3 +65,7 @@ metrics = { workspace = true }
 [features]
 plane-mcp = []
 plane-a2a = []
+# The CI-only OpenAPI schema derive, mirroring core and the plane crates: `api::NamedDefView`'s
+# `schemars::JsonSchema` derive and `api::set_response_schema` are gated on it. Core's own
+# `openapi-schema` FORWARDS to this so the re-exported view carries its schema impl in lock-step.
+openapi-schema = ["dep:schemars"]
