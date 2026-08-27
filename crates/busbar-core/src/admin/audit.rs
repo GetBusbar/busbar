@@ -18,9 +18,10 @@
 //! durable seam, which persists the hash-chained record into `plane_records`, seeds the read-model ring
 //! `GET /audit` serves, and is restored + verified at boot. This ring keeps NO durable state: it is a
 //! bounded in-process VecDeque, ephemeral by construction (started fresh on every boot), retained for
-//! the in-process tamper-evidence checks the audit unit tests assert on. The legacy dual-write to a
-//! separate durable audit table (its sink, write-through, restore and rebase) was RETIRED once the seam
-//! became the sole durable+read+boot+verify path (A6).
+//! the in-process tamper-evidence checks the audit unit tests assert on. There is ONE durable audit
+//! path: the store-backed journal seam, which is the sole write, read, boot-restore and verify path.
+//! (A separate durable audit table with its own sink, write-through, restore and rebase no longer
+//! exists — the seam is authoritative.)
 //!
 //! **Sharing the mechanism is not sharing the buffer, and the difference is load-bearing.** This log
 //! is admin-MUTATION-ONLY and its working set is a bounded ring of [`MAX_AUDIT_ENTRIES`]. An admin

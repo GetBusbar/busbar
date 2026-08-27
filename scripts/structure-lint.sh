@@ -1039,7 +1039,7 @@ ${CORE}/config/mod.rs
 ${CORE}/config/migrate.rs
 ${CORE}/proxy/engine/mod.rs
 ${SUBSTRATE}/diagnostics/mod.rs
-${CORE}/a2a/receive.rs
+crates/busbar-a2a/src/a2a/receive.rs
 crates/busbar-mcp/src/mcp/method.rs
 "
 # The two entries above the a2a line FOLLOWED THEIR FILE across the 1.6.0 crate split, exactly as the
