@@ -91,25 +91,6 @@ const KEY_SEP: char = '\u{1f}';
 /// is the ONLY thing that produces one of these — see there for why it is a function.
 pub(crate) const OUTCOMES: [&str; 4] = ["ok", "exhausted", "client_error", "error"];
 
-/// CLASSIFY one finished request's HTTP status into the `outcome` label.
-///
-/// One function, called from every plane's finish, because `outcome` is the label an operator
-/// alerts on and two planes classifying a 503 differently would make `sum by (outcome)` mean
-/// nothing. It used to be an inline `match` inside `ingress::finish_inner`, which was fine while
-/// exactly one plane emitted; it stopped being fine the moment a second one did.
-///
-/// `503` is pulled out AHEAD of the `400..=499` and catch-all arms deliberately: exhaustion is the
-/// router saying "no lane could take this", which is an operator's capacity signal and not a
-/// generic upstream error.
-pub(crate) fn outcome_of(status: u16) -> &'static str {
-    match status {
-        200..=299 => "ok",
-        503 => "exhausted",
-        400..=499 => "client_error",
-        _ => "error",
-    }
-}
-
 /// `disposition` values on `busbar_upstream_failures_total` (see `proxy::DISPOSITION_*`).
 pub(crate) const DISPOSITIONS: [&str; 4] = [
     crate::proxy::DISPOSITION_TRANSIENT,
@@ -803,7 +784,7 @@ pub(crate) fn request_finished(
 // that is exactly what let them relocate. Re-exported here so core's own `App`-holding wrappers
 // ([`upstream_attempt`]/[`upstream_failure`], which resolve the lane label out of `app.lanes`) and
 // `crate::telemetry::*` call sites resolve unchanged.
-pub use busbar_substrate::telemetry::{upstream_attempt_on, upstream_failure_on};
+pub use busbar_substrate::telemetry::{outcome_of, upstream_attempt_on, upstream_failure_on};
 
 /// `busbar_upstream_attempts_total` for one dispatch attempt on `(pool label, lane)`.
 pub(crate) fn upstream_attempt(app: &App, pool_label: &str, lane_idx: usize) {

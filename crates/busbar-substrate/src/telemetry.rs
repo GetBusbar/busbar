@@ -45,3 +45,18 @@ pub fn upstream_failure_on(pool_label: &str, lane_label: &str, disposition: &'st
     )
     .increment(1);
 }
+
+/// THE HTTP STATUS → OUTCOME LABEL, in the neutral substrate. A pure `u16 → &'static str` fold over a
+/// CLOSED set of outcome words (`ok`, `exhausted`, `client_error`, `error`) — no `App`, no state — so
+/// every plane names it (`busbar_substrate::telemetry::outcome_of`) for its own request-completion
+/// label without reaching into `busbar-core`, and core's `crate::telemetry` re-exports it so its own
+/// call sites are unchanged. `503` is called out as `exhausted` (a pool ran dry) distinctly from the
+/// rest of the `5xx`/other band, exactly as before.
+pub fn outcome_of(status: u16) -> &'static str {
+    match status {
+        200..=299 => "ok",
+        503 => "exhausted",
+        400..=499 => "client_error",
+        _ => "error",
+    }
+}

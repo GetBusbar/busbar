@@ -782,7 +782,7 @@ pub(super) async fn invoke(
         // routing target is client-supplied and an unbounded label value is a memory-exhaustion DoS
         // one valid credential can drive.
         busbar_substrate::proxy::POOL_LABEL_UNRESOLVED,
-        crate::telemetry::outcome_of(answered.status().as_u16()),
+        busbar_substrate::telemetry::outcome_of(answered.status().as_u16()),
         started.elapsed().as_secs_f64(),
     );
     // AND THE BOUNDARY IS TOLD, so it does not count this request a second time under the binding
