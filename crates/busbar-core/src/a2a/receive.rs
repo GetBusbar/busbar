@@ -1029,7 +1029,7 @@ async fn admitted(
             hook,
         } = outcome
         {
-            crate::plane::auditlog::emit_admin_hostless_now(
+            engine_host.audit_emit(
                 AUDIT_ACTION,
                 &resource,
                 busbar_substrate::audit::vocab::OUTCOME_REJECTED,
@@ -1086,7 +1086,7 @@ async fn admitted(
         admitted_budget,
         busbar_substrate::plane_host::GovAdmit::Blocked { .. }
     ) {
-        crate::plane::auditlog::emit_admin_hostless_now(
+        engine_host.audit_emit(
             AUDIT_ACTION,
             &resource,
             busbar_substrate::audit::vocab::OUTCOME_REJECTED,
@@ -1224,7 +1224,7 @@ async fn admitted(
             }
             // AUDITED LIKE ANY OTHER ADMITTED CALL, under the same action and resource spelling, so
             // a locally-answered verb is not invisible in the record just because no socket opened.
-            crate::plane::auditlog::emit_admin_hostless_now(
+            engine_host.audit_emit(
                 AUDIT_ACTION,
                 &resource,
                 busbar_substrate::audit::vocab::OUTCOME_APPLIED,
@@ -1249,7 +1249,7 @@ async fn admitted(
     let grant = match super::creds::authorise_egress(key, &admitted.dispatch.agent_id, now) {
         Ok(g) => g,
         Err(e) => {
-            crate::plane::auditlog::emit_admin_hostless_now(
+            engine_host.audit_emit(
                 AUDIT_ACTION,
                 &resource,
                 busbar_substrate::audit::vocab::OUTCOME_REJECTED,
@@ -1601,7 +1601,7 @@ async fn admitted(
     }
 
     // 6. AUDIT. One record per admitted call, under this plane's own action and resource spelling.
-    crate::plane::auditlog::emit_admin_hostless_now(
+    engine_host.audit_emit(
         AUDIT_ACTION,
         &resource,
         busbar_substrate::audit::vocab::OUTCOME_APPLIED,
