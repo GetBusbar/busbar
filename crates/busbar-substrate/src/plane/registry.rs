@@ -90,6 +90,57 @@ pub struct RestoredSummary {
     pub chain_breaks: Vec<String>,
 }
 
+/// A NEUTRAL, PLAIN-DATA SUMMARY of what a boot rehydrate of the A2A plane's durable in-flight task
+/// working set found — the value [`PlaneBootCtx::restore_task_log`] returns so the A2A hydrate hook can
+/// log the outcome WITHOUT naming the core-live `taskstore::Rehydrated` type (which carries the rich
+/// `audit::ChainBreak`). Every field is the same value the old `Rehydrated` comparison and logging
+/// relied on: the three counts verbatim, [`Self::empty`] the `r == Rehydrated::default()` guard the
+/// hook opens its logging with, and each chain break its already-Display-formatted diagnostic text
+/// PAIRED with the `scope` (task id) the hook logs as a distinct structured field — so the per-break
+/// event reads byte-identically.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct RestoredTasks {
+    /// Active or interrupted tasks brought back and resumable.
+    pub active: usize,
+    /// Terminal tasks seen and deliberately not loaded into the working set.
+    pub terminal: usize,
+    /// Rows that would not parse — an in-flight task that ceased to exist across a deploy, counted
+    /// rather than silently dropped.
+    pub unreadable: usize,
+    /// The `restore found NOTHING` guard: `true` exactly when the underlying `Rehydrated` equalled its
+    /// `Default` (no active/terminal/unreadable rows and no chain breaks), the condition under which the
+    /// hook logs nothing at all — byte-identical to the old `Ok(r) if r == Rehydrated::default()` arm.
+    pub empty: bool,
+    /// Tasks whose persisted provenance chain FAILED to verify — tamper evidence, each carried as the
+    /// exact per-task diagnostic the hook logs.
+    pub chain_breaks: Vec<TaskChainBreak>,
+}
+
+/// ONE A2A per-task provenance CHAIN BREAK, reduced to the two already-formatted strings the hook logs
+/// — the `scope` (task id) it stamps as the `task_id` structured field and the `Display` text it stamps
+/// as `break_detail` — so the neutral summary carries both values the old `%brk.scope` / `%brk` logging
+/// used without naming the core-live `audit::ChainBreak`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskChainBreak {
+    /// The task id the break was found on (the chain's `scope`) — logged as `task_id`.
+    pub task_id: String,
+    /// The chain break's full Display text — logged as `break_detail`.
+    pub detail: String,
+}
+
+/// BUSBAR'S PUBLISHED CARD-ISSUER KEY, computed core-side and handed to the A2A [`PlaneDecl::start`]
+/// hook as PUBLIC values ONLY — the `kid` and the base64 Ed25519 SPKI an operator hands a counterparty
+/// out of band to pin busbar by. Deliberately NOT the signer and NOT its seed: a boot hook publishes
+/// the public half, it never signs, so no signing material crosses this seam (invariant (a)). Lives in
+/// the neutral substrate so the A2A boot hook reads it off [`PlaneBootCtx::card_issuer`] without naming
+/// a `busbar_core` type; core re-exports it at `busbar_core::plane::registry::CardIssuer` so every
+/// in-core caller (`governance::state`, the A2A plane's own card slot) resolves unchanged.
+#[derive(Clone)]
+pub struct CardIssuer {
+    pub kid: String,
+    pub issuer_spki_base64: String,
+}
+
 /// THE NEUTRAL BOOT-CONTEXT SEAM a plane's [`PlaneDecl::hydrate`] / [`PlaneDecl::start`] hook reads,
 /// implemented core-side by `busbar_core::plane::registry::BootCtx` — so an extracted plane crate
 /// (MCP) drives its boot restore through typed, neutral methods without the hook signature naming
@@ -122,6 +173,32 @@ pub trait PlaneBootCtx {
     /// upstream-demotion record — to the plane-narrowed store, in the hydrate phase. A no-op unless
     /// BOTH the freshly-built app and a configured store are present.
     fn attach_mcp_durable_sinks(&self);
+
+    /// REGISTER THE A2A PLANE'S DURABLE `task_event` STREAM with the host, in the hydrate phase — the
+    /// first boot step of the durable task set, run BEFORE the row-upsert sink and the rehydrate so the
+    /// host attaches its own chain sink at register time. A no-op unless the freshly-built app (hydrate
+    /// phase) is present. The A2A twin of [`Self::register_call_stream`].
+    fn register_task_event_stream(&self);
+
+    /// ATTACH THE A2A PLANE'S TASK-ROW UPSERT SINK to the plane-narrowed store, in the hydrate phase —
+    /// run AFTER [`Self::register_task_event_stream`] and BEFORE [`Self::restore_task_log`], so the
+    /// row upserts and the host-side chain reach one backend. A no-op unless a configured store is
+    /// present. The A2A twin of [`Self::attach_mcp_durable_sinks`].
+    fn attach_a2a_durable_sinks(&self);
+
+    /// REHYDRATE THE A2A PLANE'S IN-FLIGHT TASK WORKING SET from the plane-narrowed store, in the
+    /// hydrate phase — the boot rehydrate, run AFTER [`Self::register_task_event_stream`] and
+    /// [`Self::attach_a2a_durable_sinks`], opening a dispatch scope internally so the seed reaches the
+    /// host over a live `HostCtx`. Returns the NEUTRAL [`RestoredTasks`] rather than the core-live
+    /// `taskstore::Rehydrated`, so the hook logs the outcome without naming a core-live type. The `Err`
+    /// is the store error's Display string. The A2A twin of [`Self::restore_call_log`].
+    fn restore_task_log(&self) -> Result<RestoredTasks, String>;
+
+    /// THE DEPLOYMENT'S PUBLIC CARD-ISSUER KEY, in the start phase — the `kid` and base64 SPKI the A2A
+    /// start hook stashes on the plane's own card slot and publishes for an operator to pin busbar by.
+    /// `Some` only when this deployment mints one and only in the start phase; `None` otherwise. PUBLIC
+    /// material only — the signing seed never crosses this seam (invariant (a)).
+    fn card_issuer(&self) -> Option<CardIssuer>;
 
     /// MINT THE NEUTRAL ENGINE HOST over the freshly-built app, in the hydrate phase — the
     /// snapshot-only mint a hydrate hook drives its durable boot-replay off (no live handle yet at

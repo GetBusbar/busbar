@@ -63,20 +63,9 @@
 // core-live) and `BootCtx` (its phase fields hold the core-live `App`/`AppHandle`) — `BootCtx` stays
 // here and IMPLEMENTS the neutral `PlaneBootCtx` so a plane hook reads it without naming `App`.
 pub use busbar_substrate::plane::registry::{
-    BootHook, BuildCtx, PlaneBootCtx, PlaneDecl, RestoredSummary,
+    BootHook, BuildCtx, CardIssuer, PlaneBootCtx, PlaneDecl, RestoredSummary, RestoredTasks,
+    TaskChainBreak,
 };
-
-/// BUSBAR'S PUBLISHED CARD-ISSUER KEY, computed core-side and handed to the A2A [`PlaneDecl::start`]
-/// hook as PUBLIC values ONLY — the `kid` and the base64 Ed25519 SPKI an operator hands a counterparty
-/// out of band to pin busbar by. Deliberately NOT the signer and NOT its seed: a boot hook publishes
-/// the public half, it never signs, so no signing material crosses this seam (invariant (a)). This is
-/// the plan's "sign-only" preference taken to its limit — there is nothing to sign at boot, so the
-/// seam carries strictly the public key rather than even a closure over the secret.
-#[derive(Clone)]
-pub struct CardIssuer {
-    pub kid: String,
-    pub issuer_spki_base64: String,
-}
 
 /// EVERYTHING A PLANE'S BOOT HOOKS ([`PlaneDecl::hydrate`], [`PlaneDecl::start`]) MAY READ, and
 /// DELIBERATELY nothing that carries the audit chain, the governance context or the signing seed
@@ -213,11 +202,101 @@ impl PlaneBootCtx for BootCtx {
     /// or an `App`: the returned `Arc<dyn EngineHost>` is the neutral substrate seam and the app it
     /// wraps is the core-owned hydrate-phase `App`.
     fn engine_host(&self) -> std::sync::Arc<dyn busbar_substrate::plane_host::EngineHost> {
-        let app = self
-            .app
-            .as_ref()
-            .expect("engine_host runs in the HYDRATE phase, which supplies the freshly-built app");
-        crate::plane_host::engine_host(app)
+        // PHASE-AWARE: the hydrate phase supplies the freshly-built `app` and mints a SNAPSHOT-ONLY host
+        // over it (no live handle yet, which is correct — hydration reads exactly the generation it
+        // restores into); the start phase supplies the live `handle` and mints a LIVE host from it
+        // (`from_handle`, so `plane_slot_live` sees the current generation), byte-identical to the old
+        // start hook's `handle.load()`-driven reads. Exactly one of the two is present per phase.
+        if let Some(handle) = self.handle.as_ref() {
+            crate::plane_host::engine_host_from_handle(handle)
+        } else {
+            let app = self.app.as_ref().expect(
+                "engine_host runs in the HYDRATE phase (app) or the START phase (handle); one is present",
+            );
+            crate::plane_host::engine_host(app)
+        }
+    }
+
+    fn card_issuer(&self) -> Option<CardIssuer> {
+        self.card_issuer.clone()
+    }
+
+    /// REGISTER THE A2A PLANE'S DURABLE `task_event` STREAM with the host, in the hydrate phase — named
+    /// HERE, core side, so `crate::a2a::a2a_hydrate` registers the stream without naming
+    /// `crate::plane::taskstore` or an `App` field. A no-op unless the freshly-built app is present —
+    /// byte-identical to the old inline `crate::plane::taskstore::register_task_event_stream(app)`.
+    #[cfg(feature = "plane-a2a")]
+    fn register_task_event_stream(&self) {
+        if let Some(app) = self.app.as_ref() {
+            crate::plane::taskstore::register_task_event_stream(app);
+        }
+    }
+
+    /// The `plane-a2a`-OFF twin: the durable task set is compiled out with the A2A plane, and the A2A
+    /// hydrate hook that would call this does not exist, so this is an unreachable no-op that only keeps
+    /// the trait impl total across feature combos.
+    #[cfg(not(feature = "plane-a2a"))]
+    fn register_task_event_stream(&self) {}
+
+    /// ATTACH THE A2A PLANE'S TASK-ROW UPSERT SINK to the plane-narrowed store, in the hydrate phase —
+    /// named HERE so `crate::a2a::a2a_hydrate` attaches it without naming `TASKS` or the store field. A
+    /// no-op unless a configured store is present — byte-identical to the old inline
+    /// `crate::plane::taskstore::TASKS.set_sink(plane_store.clone())`.
+    #[cfg(feature = "plane-a2a")]
+    fn attach_a2a_durable_sinks(&self) {
+        if let Some(store) = self.store.as_ref() {
+            crate::plane::taskstore::TASKS.set_sink(store.clone());
+        }
+    }
+
+    /// The `plane-a2a`-OFF twin — see [`Self::register_task_event_stream`]'s.
+    #[cfg(not(feature = "plane-a2a"))]
+    fn attach_a2a_durable_sinks(&self) {}
+
+    /// REHYDRATE THE A2A PLANE'S IN-FLIGHT TASK WORKING SET from the plane-narrowed store, in the
+    /// hydrate phase — named HERE so `crate::a2a::a2a_hydrate` restores it without naming
+    /// `with_dispatch_scope`, `TASKS` or the core-live `Rehydrated`/`ChainBreak`. Opens a dispatch scope
+    /// internally (minted synchronously, never across an `.await`) and maps `Rehydrated` to the neutral
+    /// [`RestoredTasks`]: the three counts verbatim, `empty` the old `r == Rehydrated::default()` guard,
+    /// and each `ChainBreak` reduced to its `scope` (task id) and Display text — byte-identical to the
+    /// old inline restore and logging.
+    #[cfg(feature = "plane-a2a")]
+    fn restore_task_log(&self) -> Result<RestoredTasks, String> {
+        let app = self.app.as_ref().expect(
+            "restore_task_log runs in the HYDRATE phase, which supplies the freshly-built app",
+        );
+        let store = self.store.as_ref().expect(
+            "restore_task_log runs past the hydrate hook's store guard, so a store is present",
+        );
+        let restored = crate::plane_host::with_dispatch_scope(app, |host, _vt| {
+            crate::plane::taskstore::TASKS.restore_from_store(host, store.as_ref())
+        });
+        restored
+            .map(|r| RestoredTasks {
+                empty: r == crate::plane::taskstore::Rehydrated::default(),
+                active: r.active,
+                terminal: r.terminal,
+                unreadable: r.unreadable,
+                chain_breaks: r
+                    .chain_breaks
+                    .iter()
+                    .map(|b| TaskChainBreak {
+                        task_id: b.scope.clone(),
+                        detail: b.to_string(),
+                    })
+                    .collect(),
+            })
+            .map_err(|e| e.to_string())
+    }
+
+    /// The `plane-a2a`-OFF twin: the durable task set is compiled out, and the A2A hydrate hook that
+    /// would call this does not exist. Returns an all-default (empty) summary to keep the trait total.
+    #[cfg(not(feature = "plane-a2a"))]
+    fn restore_task_log(&self) -> Result<RestoredTasks, String> {
+        Ok(RestoredTasks {
+            empty: true,
+            ..RestoredTasks::default()
+        })
     }
 
     /// THE RECOVERY HATCH for an in-core plane twin (A2A). `BootCtx` is `'static` (its `app`/`handle`

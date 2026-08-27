@@ -134,7 +134,7 @@ pub fn install_crypto_provider() {
 /// function too. One place in the tree turns a `SecretRef` into TLS PEM; a second would be a second
 /// place for the "never echo what you read" rule to be forgotten.
 pub(crate) fn read_pem(
-    resolver: &crate::config::secret::SecretResolver,
+    resolver: &dyn busbar_api::SecretResolve,
     secret: &crate::config::SecretRef,
     what: &str,
 ) -> Result<Vec<u8>, String> {

@@ -189,7 +189,7 @@ pub(crate) type ClientIdentities = BTreeMap<String, reqwest::Identity>;
 /// state reads to an operator as working.
 pub(crate) fn resolve_client_identities(
     cfg: &super::config::AgentsCfg,
-    resolver: &crate::config::secret::SecretResolver,
+    resolver: &dyn busbar_api::SecretResolve,
 ) -> Result<ClientIdentities, String> {
     let mut out = ClientIdentities::new();
     for (name, def) in &cfg.agents {

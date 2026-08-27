@@ -282,6 +282,11 @@ pub(crate) fn runtime(app: &crate::state::App) -> Option<&crate::a2a::plane::A2a
 /// Clones the SAME `Arc` `plane_slots` holds (a refcount bump, not a second construction). `None`
 /// and the never-fail downcast have the same meaning as [`runtime`]. The byte-analog of
 /// `crate::mcp::resource_arc`.
+///
+/// Test-only since the boot seam was neutralized: production reads the A2A runtime off the neutral
+/// host through [`runtime_arc_of`] (the `&App` boot-start caller was the last production user); the
+/// `&App` form survives for the test harnesses that build an `App` directly.
+#[cfg(test)]
 pub(crate) fn runtime_arc(
     app: &crate::state::App,
 ) -> Option<std::sync::Arc<crate::a2a::plane::A2aPlane>> {
@@ -321,56 +326,45 @@ use busbar_substrate::diagnostics::{
 pub(crate) fn a2a_hydrate(
     ctx: &dyn busbar_substrate::plane::registry::PlaneBootCtx,
 ) -> Result<(), String> {
-    // A2A stays in core: recover the concrete `BootCtx` through the neutral seam's `as_any` hatch to
-    // reach the phase fields (`store`, `app`) that name core-live types — byte-identical to the old
-    // `&BootCtx` arm.
-    let ctx = ctx
-        .as_any()
-        .downcast_ref::<crate::plane::registry::BootCtx>()
-        .expect("the a2a hydrate hook is handed a core BootCtx");
-    let Some(plane_store) = ctx.store.clone() else {
+    // With `store: memory` `ctx` carries no store and in-flight tasks are ephemeral BY DESIGN — the
+    // same skip the old `let Some(store) = ctx.store` guard opened with.
+    if !ctx.has_store() {
         return Ok(());
-    };
-    let app = ctx
-        .app
-        .as_ref()
-        .expect("a2a hydrate runs in the HYDRATE phase, which supplies the freshly-built app");
-    // REGISTER the durable `task_event` stream FIRST — the host attaches its own sink from
-    // `app.governance` (the same plane-narrowed store) at register time, so the host-side chain and the
-    // task-row upserts reach one backend. THEN attach the row-upsert sink and rehydrate through the
-    // seam, opening a dispatch scope so the caller-driven `seed` reaches the host over a live `HostCtx`.
-    crate::plane::taskstore::register_task_event_stream(app);
-    crate::plane::taskstore::TASKS.set_sink(plane_store.clone());
-    let restored = crate::plane_host::with_dispatch_scope(app, |host, _vt| {
-        crate::plane::taskstore::TASKS.restore_from_store(host, plane_store.as_ref())
-    });
-    match restored {
-        Ok(r) if r == crate::plane::taskstore::Rehydrated::default() => {}
-        Ok(r) => {
+    }
+    // REGISTER the durable `task_event` stream FIRST — the host attaches its own sink from the same
+    // plane-narrowed store at register time, so the host-side chain and the task-row upserts reach one
+    // backend. THEN attach the row-upsert sink and rehydrate, each through a NEUTRAL `PlaneBootCtx`
+    // method so this hook names no `App`/`BootCtx`/`TASKS`: the register, the sink attach and the
+    // dispatch-scoped restore stay wholly core-side (see `impl PlaneBootCtx for BootCtx`).
+    ctx.register_task_event_stream();
+    ctx.attach_a2a_durable_sinks();
+    match ctx.restore_task_log() {
+        Ok(s) if s.empty => {}
+        Ok(s) => {
             tracing::info!(
-                active = r.active,
-                terminal = r.terminal,
-                unreadable = r.unreadable,
+                active = s.active,
+                terminal = s.terminal,
+                unreadable = s.unreadable,
                 "A2A in-flight tasks rehydrated from the durable governance store"
             );
             // An UNREADABLE row is an in-flight task that this binary cannot resume. Reported
             // separately and at WARN, because summing it into the restored count is how a task that
             // silently ceased to exist across a deploy stays invisible.
-            if r.unreadable > 0 {
+            if s.unreadable > 0 {
                 diag_warn!(
                     A2A_TASK_ROWS_UNREADABLE,
-                    rows = r.unreadable,
+                    rows = s.unreadable,
                     "persisted A2A task rows could not be read back and are NOT resumable; \
                      they were most likely written by a different engine version"
                 );
             }
             // A chain break is TAMPER EVIDENCE and is a different event from a read hiccup, so it is
             // logged at ERROR and names the task rather than being folded into a count.
-            for brk in &r.chain_breaks {
+            for brk in &s.chain_breaks {
                 diag_error!(
                     A2A_TASK_CHAIN_VERIFY_FAILED,
-                    task_id = %brk.scope,
-                    break_detail = %brk,
+                    task_id = %brk.task_id,
+                    break_detail = %brk.detail,
                     "A2A per-task provenance CHAIN VERIFICATION FAILED on restore"
                 );
             }
@@ -396,18 +390,11 @@ pub(crate) fn a2a_hydrate(
 pub(crate) fn a2a_start(
     ctx: &dyn busbar_substrate::plane::registry::PlaneBootCtx,
 ) -> Result<(), String> {
-    // A2A stays in core: recover the concrete `BootCtx` through the neutral seam's `as_any` hatch to
-    // reach the phase fields (`handle`, `card_issuer`) that name core-live types.
-    let ctx = ctx
-        .as_any()
-        .downcast_ref::<crate::plane::registry::BootCtx>()
-        .expect("the a2a start hook is handed a core BootCtx");
-    let handle = ctx
-        .handle
-        .as_ref()
-        .expect("a2a start runs in the START phase, which supplies the live app handle");
-    let app = handle.load();
-    if let Some(plane) = crate::a2a::runtime_arc(&app) {
+    // MINT THE LIVE HOST off the neutral seam (`engine_host` returns a `from_handle` host in the start
+    // phase, byte-identical to the old `handle.load()` reads) and read the plane's runtime object off
+    // it through `runtime_arc_of` — so this hook names no `AppHandle`/`BootCtx`.
+    let host = ctx.engine_host();
+    if let Some(plane) = crate::a2a::runtime_arc_of(&host) {
         tracing::info!(
             agents = plane.len(),
             "a2a: verify-on-call is armed — fronted agents are re-verified on the delegation path \
@@ -420,11 +407,12 @@ pub(crate) fn a2a_start(
         // the secret it is derived from never appears here (the seam handed only the public half — see
         // `BootCtx::card_issuer`). Logged beside the plane's start rather than at key resolution,
         // because this value only means anything where an A2A plane is actually serving cards.
-        if let Some(issuer) = ctx.card_issuer.as_ref() {
+        if let Some(issuer) = ctx.card_issuer() {
             // STASH the public issuer key on the plane's OWN slot, so `sign::card_signer` reads it
             // here rather than off `app.governance` — the route-through that lets the extracted plane
             // name no `GovState`. Public material only; the signing seed stays host-side and is reached
-            // through `plane_host::card_sign_over`.
+            // through `plane_host::card_sign_over`. Read off the neutral `PlaneBootCtx::card_issuer`
+            // accessor rather than a `BootCtx` field.
             plane.set_card_issuer(issuer.clone());
             tracing::info!(
                 kid = %issuer.kid,
@@ -441,7 +429,7 @@ pub(crate) fn a2a_start(
         // reading, in config and in the admin API, as though mutual TLS were configured.
         let a2a_identities = crate::a2a::transport::resolve_client_identities(
             plane.agent_defs(),
-            &handle.load().secret_resolver,
+            host.a2a_secret_resolver().as_ref(),
         )
         .map_err(|e| format!("a2a: outbound client identity: {e}"))?;
         // THE PER-AGENT TRANSPORTS, BUILT ONCE at boot. The identities were resolved just above (a
