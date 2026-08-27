@@ -318,9 +318,24 @@ pub trait EngineHost: Send + Sync {
     fn tool_pool_members(&self, server: &str) -> Option<(String, Vec<String>, Vec<String>)>;
 
     /// Cheap presence pre-filter: is any request-admission hook gate attached to `container` on this
-    /// plane (`plane_key` `0` = MCP)? Lets a plane skip the blocking `gate_decide` hop when nothing is
-    /// attached. Identical to `App::mcp_server_gates.contains_key(container)` for the MCP plane.
+    /// plane (`plane_key` `0` = MCP, `1` = A2A)? Lets a plane skip the blocking `gate_decide` hop when
+    /// nothing is attached. Identical to `App::mcp_server_gates.contains_key(container)` for MCP and
+    /// `App::a2a_agent_gates.contains_key(container)` for A2A.
     fn gate_attached(&self, plane_key: u8, container: &str) -> bool;
+
+    /// The `(pool_name, members)` of the `agent_pools:` failover pool `agent` belongs to, off the
+    /// BOUND snapshot; `None` when `agent` is un-pooled. The A2A twin of
+    /// [`tool_pool_members`](Self::tool_pool_members) — the member-selection walk derives each
+    /// candidate's lane from the member's position in the returned list, so name + members is the
+    /// whole seam (the A2A walk fixes `Repeatable::No`, so the pool's `repeatable:` list is not
+    /// consulted on this plane). Identical to scanning `App::agent_pools`.
+    fn a2a_agent_pool_members(&self, agent: &str) -> Option<(String, Vec<String>)>;
+
+    /// Whether the A2A plane is mounted under an AUDIENCE-BOUND door — the deployment gate the A2A
+    /// request path reads before it trusts an inbound audience claim. Identical to
+    /// `App::planes.mount_of("a2a").and_then(|m| App::planes.admission_for(m)).is_some()`. A pure
+    /// snapshot read, no `HostCtx`.
+    fn a2a_audience_bound(&self) -> bool;
 
     /// Drive ONE non-streaming `openai`-dialect completion through the ENTIRE resolved ingress
     /// pipeline (governance → pools → breaker/failover → metering → request log) under `gov`, on the

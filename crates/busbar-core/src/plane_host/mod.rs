@@ -557,9 +557,29 @@ impl busbar_substrate::plane_host::EngineHost for EngineHostImpl {
     fn gate_attached(&self, plane_key: u8, container: &str) -> bool {
         match plane_key {
             0 => self.app.mcp_server_gates.contains_key(container),
-            // The A2A twin (`a2a_server_gates`) is wired when plane-a2a lands.
+            // The A2A twin: same shape as the MCP arm, over the `a2a_agent_gates` map.
+            1 => self.app.a2a_agent_gates.contains_key(container),
             _ => false,
         }
+    }
+
+    fn a2a_agent_pool_members(&self, agent: &str) -> Option<(String, Vec<String>)> {
+        // The A2A twin of `tool_pool_members`: scan `agent_pools` for the pool `agent` belongs to and
+        // return its name + members (the walk derives lanes from member position). A pure snapshot read.
+        self.app
+            .agent_pools
+            .iter()
+            .find(|(_, cfg)| cfg.members.iter().any(|m| m == agent))
+            .map(|(name, cfg)| (name.clone(), cfg.members.clone()))
+    }
+
+    fn a2a_audience_bound(&self) -> bool {
+        // Pure snapshot read: is the A2A plane mounted under an audience-bound door?
+        self.app
+            .planes
+            .mount_of("a2a")
+            .and_then(|m| self.app.planes.admission_for(m))
+            .is_some()
     }
 
     fn audit_emit(&self, action: &str, resource: &str, outcome: &str, principal: &str) {
