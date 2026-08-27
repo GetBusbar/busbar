@@ -20,6 +20,11 @@ path = "src/main.rs"
 # The engine. `default-features = false` so the binary's OWN feature list is the single decision
 # point: each busbar feature forwards to the core feature of the same name below.
 busbar-core = { path = "../busbar-core", default-features = false }
+# The neutral substrate, named directly so the composition root can install the plane-facing seams
+# that live there — the hostless-egress driver (`egress::seam::install_hostless_egress`), which the
+# binary backs with core's `CoreHostlessEgress`. Core already depends on substrate; naming it here is
+# the one composition-root edge, not a new leaf.
+busbar-substrate = { path = "../busbar-substrate" }
 # THE PROTOCOL CRATES — the composition root's knowledge, per the manifest header above. ONE CRATE
 # PER PROTOCOL: `busbar-llm` carries the LLM protocol's six dialects together (an operator picks LLM
 # coverage or none, never a subset), and `busbar-mcp` is a different protocol and therefore a

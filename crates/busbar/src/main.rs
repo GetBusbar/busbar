@@ -606,6 +606,17 @@ fn main() {
     // list through `plane::config::config_sections()`, so the plane axis must be installed before
     // any reader — including the CLI flags — can run.
     register_planes();
+    // THE HOSTLESS-EGRESS DRIVER, installed once here beside the plane axis: the neutral
+    // `busbar_substrate::egress::seam::HostlessEgress` a plane drives its governed outbound hop
+    // through, backed by core's `CoreHostlessEgress` (the `plane_host` FFI egress vtable). An
+    // extracted plane holds only `&dyn HostlessEgress` off `hostless()` and never names the core
+    // driver; this write is the composition root's one binding of the two. Gated to the plane
+    // features, so a no-planes build (`--no-default-features`) drops it — nothing drives egress then.
+    // `&CoreHostlessEgress` is a ZST unit struct, so it promotes to `'static`.
+    #[cfg(any(feature = "plane-mcp", feature = "plane-a2a"))]
+    busbar_substrate::egress::seam::install_hostless_egress(
+        &busbar_core::egress::seam::CoreHostlessEgress,
+    );
     // CLI flags next — BEFORE building any runtime. They must work without a configured deployment,
     // and `--version` / `--validate` should never spin up a thread pool.
     if let Some(code) = handle_cli_flags() {

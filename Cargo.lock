@@ -327,6 +327,7 @@ dependencies = [
  "busbar-plugin-loader",
  "busbar-plugin-sign",
  "busbar-store-example-plugin",
+ "busbar-substrate",
  "bytes",
  "criterion",
  "futures",

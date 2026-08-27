@@ -1255,20 +1255,13 @@ pub(crate) struct OpenedHead {
     pub client_identity_offered: bool,
 }
 
-/// A fully-decoded egress fault the seam composes its own operator string over — the class, the status,
-/// and the flattened CAUSE and TARGET-url kept SEPARATE (one plane keeps the url, another strips it),
-/// exactly as [`egress_fault`] hands them across the ABI.
-// Read by the plane fetch converters (sub-commits 3/4) that compose an operator string over the
-// neutral fault; unread until then, so allow it unconditionally on this scaffold.
+// The fully-decoded egress fault the seam composes its own operator string over relocated to
+// `busbar_substrate::egress::seam::EgressFaultInfo` (field-neutral: the plugin `EgressFailClass`, a
+// status, and the flattened CAUSE and TARGET-url kept SEPARATE), so a plane crate reads it without
+// naming core. Re-exported here so every in-core construction/return below — `drive_open`,
+// `drive_fault`, `OpenOutcome::Fault` — is unchanged, and so is `busbar_core::egress::seam`'s use.
 #[cfg(any(feature = "plane-mcp", feature = "plane-a2a"))]
-#[allow(dead_code)]
-#[derive(Debug)]
-pub struct EgressFaultInfo {
-    pub class: EgressFailClass,
-    pub status: u16,
-    pub cause: String,
-    pub url: String,
-}
+pub use busbar_substrate::egress::seam::EgressFaultInfo;
 
 /// The outcome of driving [`egress_open`] over a host: the adopted head, or the neutral fault detail.
 #[cfg(any(feature = "plane-mcp", feature = "plane-a2a"))]

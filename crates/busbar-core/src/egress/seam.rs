@@ -37,10 +37,17 @@
 use busbar_plugin::hot::{EgressDesc, EgressKind, StatusClass, POD_VERSION};
 
 use crate::plane_host::egress::{
-    drive_close, drive_open, drive_poll, scope_bits, EgressFaultInfo, OpenOutcome, OpenedHead,
+    drive_close, drive_open, drive_poll, scope_bits, OpenOutcome, OpenedHead,
 };
 use crate::plane_host::scope::DispatchScope;
 use crate::proxy::ReadEnd;
+
+// The neutral buffered/fault RETURN shapes and the [`HostlessEgress`] driver trait relocated to
+// `busbar_substrate::egress::seam` (field-neutral `std` data + the plugin `EgressFailClass`), so a
+// plane crate reads them without naming core. Re-exported here so every in-core `Buffered` /
+// `EgressFaultInfo` reach — `buffered`/`stream_head` below and the `crate::egress::seam::*` call
+// sites — is unchanged, and so `CoreHostlessEgress` below can implement the trait.
+pub use busbar_substrate::egress::seam::{Buffered, EgressFaultInfo, HostlessEgress};
 
 /// Mint a throw-away dispatch scope and run `f` over it — the HOSTLESS entry the extracted in-core
 /// planes drive this seam through (they hold no `HostCtx`). The scope lives for the whole closure, so a
@@ -59,23 +66,6 @@ pub fn with_hostless<R>(f: impl FnOnce(&DispatchScope) -> R) -> R {
 // Re-exported here so every in-core `HopSpec` reach — `build_desc`/`buffered`/`stream_head` below,
 // and `crate::egress::seam::HopSpec` from the plane transports — is unchanged.
 pub use busbar_substrate::egress::seam::HopSpec;
-
-/// One buffered outbound round trip, reduced to what a caller reads back — the NEUTRAL projection both
-/// planes map from (the A2A [`Response`](super::Response) carries a subset; the MCP dispatch reads
-/// status/body/content-type for its own `is_sse` / redirect refusal). `content_type` is surfaced
-/// VERBATIM (the host lower-cases nothing); a caller applies its own casing.
-pub struct Buffered {
-    pub status: u16,
-    pub location: Option<String>,
-    /// Read by the MCP dispatch converter (sub-commit 4) for its `is_sse` decision; unread until then.
-    #[allow(dead_code)]
-    pub content_type: Option<String>,
-    pub peer_spki: Option<String>,
-    pub client_identity_offered: bool,
-    pub body: Vec<u8>,
-    /// How the capped read ended — the poll-seam re-expression of [`crate::proxy::ReadEnd`].
-    pub end: ReadEnd,
-}
 
 /// Pack `(name, value)` header pairs into the ABI's length-prefixed record form (`u32 name_len` LE,
 /// name, `u32 value_len` LE, value) — the form [`EgressDesc::headers_ptr`] carries.
@@ -346,6 +336,38 @@ pub(crate) fn pump(
     };
     drive_close(id);
     end
+}
+
+/// THE CORE-BACKED hostless-egress driver — the one production implementation of the neutral
+/// [`HostlessEgress`] trait, installed at boot by the composition root. It funnels each hop into the
+/// EXACT `with_hostless` + `buffered` / `stream_head` + `pump` bodies above (the `plane_host` FFI
+/// egress vtable), so a plane that drives `hostless()` runs byte-identical to the in-core callers that
+/// name these functions directly. A ZST unit struct, so `&CoreHostlessEgress` promotes to `'static`.
+pub struct CoreHostlessEgress;
+
+impl HostlessEgress for CoreHostlessEgress {
+    fn buffered(&self, spec: &HopSpec<'_>, cap: usize) -> Result<Buffered, EgressFaultInfo> {
+        with_hostless(|scope| buffered(scope, spec, cap))
+    }
+
+    #[cfg(feature = "plane-a2a")]
+    fn stream(
+        &self,
+        spec: &HopSpec<'_>,
+        cap: usize,
+        on_chunk: &mut (dyn FnMut(&[u8]) -> super::ChunkFlow + Send),
+    ) -> Result<super::StreamHead, EgressFaultInfo> {
+        // ONE hostless scope spans the head AND the pump, so the streaming egress stays open between
+        // `stream_head` and `pump` — byte-identical to how `a2a::transport::post_stream` drives it,
+        // save that the neutral fault is surfaced whole (the caller maps it to its own message).
+        with_hostless(|scope| match stream_head(scope, spec, cap)? {
+            StreamOutcome::Buffered(head) => Ok(head),
+            StreamOutcome::Streaming { head, id } => match pump(scope, id, on_chunk) {
+                PumpEnd::Done => Ok(head),
+                PumpEnd::Failed(f) => Err(f),
+            },
+        })
+    }
 }
 
 #[cfg(all(test, feature = "plane-a2a"))]
