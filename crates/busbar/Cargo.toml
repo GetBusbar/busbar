@@ -72,12 +72,12 @@ proto-llm = ["dep:busbar-llm"]
 # it folds in — never two — so it keeps the plane-kind name `plane-mcp` rather than a `proto-mcp`
 # that would imply the plane rode a different knob. Default-on: the shipped binary speaks MCP.
 plane-mcp = ["dep:busbar-mcp", "busbar-core/plane-mcp"]
-# THE A2A PLANE, in-core today (`busbar-core/src/a2a`), behind this switch which also carries the
-# `busbar-a2a` crate edge. ONE switch for A2A the plane and the A2A crate — never two — the exact
-# analogue of `plane-mcp` above. Default-on: the shipped binary speaks A2A. Forwards to
-# `busbar-core/plane-a2a`, which gates `src/a2a` and captures/refuses the `agents:` config section
-# when off, so `--no-default-features` compiles the whole A2A plane out and core still routes LLM +
-# MCP (the plane-split deletion test).
+# THE A2A PLANE, now the `busbar-a2a` crate, behind this switch which carries that crate edge. ONE
+# switch for A2A the plane and the A2A crate — never two — the exact analogue of `plane-mcp` above.
+# Default-on: the shipped binary speaks A2A. Forwards to `busbar-core/plane-a2a` (= `busbar-substrate/
+# plane-a2a`), which gates the plane's substrate items and captures/refuses the `agents:` config
+# section when off, so `--no-default-features` drops the `busbar-a2a` edge and compiles the whole A2A
+# plane out while core still routes LLM + MCP (the plane-split deletion test).
 plane-a2a = ["dep:busbar-a2a", "busbar-core/plane-a2a"]
 auth-admin-tokens = ["busbar-core/auth-admin-tokens"]
 hooks-ranking = ["busbar-core/hooks-ranking"]

@@ -21,15 +21,16 @@
 //! operation cells (`tools/call` and the subscription pair) that core resolves through the support
 //! matrix. That is the whole of what `handlers/mcp.rs` was, and it moved here intact.
 //!
-//! It is **not** the `mcp/` PLANE (`crates/busbar-core/src/mcp`, ~18k lines): the catalogue, the
-//! call log, the client pool and its transports, the config sections, the ask/approval state, the
-//! admin projections. That surface is wired into core through `AppState` fields, the `tools:`
-//! config section, boot hydration, the router mount and the admin API — 62 production call edges,
-//! none of which a `&'static ProtocolDecl` can carry, because a `ProtocolDecl` deliberately takes a
-//! handle to nothing (`design/protocol-plugin-abi.md` §"Not one method takes a handle to
-//! anything"). There is no plane-kind seam in core to leave through yet, so the plane stays in core
-//! for now — it folds into `busbar-mcp` beside this codec in a later plane-split step, and this
-//! module does not pretend it has already arrived.
+//! It is distinct from the `mcp` PLANE — the sibling [`crate::mcp`] module in THIS crate (~18k lines:
+//! the catalogue, the call log, the client pool and its transports, the config sections, the
+//! ask/approval state, the admin projections). That surface once wired into core through `AppState`
+//! fields, the `tools:` config section, boot hydration, the router mount and the admin API — call
+//! edges none of which a `&'static ProtocolDecl` could carry, because a `ProtocolDecl` deliberately
+//! takes a handle to nothing (`design/protocol-plugin-abi.md` §"Not one method takes a handle to
+//! anything"). The plane extraction neutralized every one of those edges onto the neutral
+//! `busbar-substrate` seams (the plane-host trait, the config-section split, the hostless-egress and
+//! task seams), and the plane folded into `busbar-mcp` beside this codec — ONE plugin per protocol.
+//! MCP the protocol and MCP the plane are the same protocol, behind the one `plane-mcp` switch.
 //!
 //! **The consequence for the deletion gate, stated rather than discovered:** compiling this crate
 //! out removes MCP as a *protocol* — `protocol: mcp` stops resolving and its two cells stop
