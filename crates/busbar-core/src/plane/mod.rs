@@ -109,6 +109,9 @@ pub(crate) mod taskstore;
 /// PUBLIC re-export of the core-backed task reader so the composition root (`main`) can bind it to the
 /// neutral `busbar_substrate::plane_host::TaskReader` seam via `install_task_reader` — the one public
 /// symbol the binary names for this seam, mirroring `busbar_core::egress::seam::CoreHostlessEgress`.
+/// Gated with `taskstore` itself: `plane-a2a` off compiles out the durable task set, so there is no
+/// reader to bind (and `main` only binds it under the same feature).
+#[cfg(feature = "plane-a2a")]
 pub use taskstore::CoreTaskReader;
 
 // THE WIRE FORMAT NAMES the mounted planes speak moved DOWN into the neutral `busbar-substrate`
