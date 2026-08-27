@@ -314,7 +314,7 @@ impl RelayBreaker {
     /// `(key, lane)` identity.
     pub(crate) fn degenerate(agent_id: &str) -> Self {
         RelayBreaker {
-            key: crate::store::PlaneBreakers::agent_key(agent_id),
+            key: busbar_substrate::store::agent_key(agent_id),
             lane: 0,
             pre_admitted: false,
         }

@@ -117,7 +117,7 @@ pub(super) fn select_member(
             selected.agent_id = pinned.to_string();
             selected.breaker = match members.iter().position(|m| m == pinned) {
                 Some(lane) => RelayBreaker {
-                    key: crate::store::PlaneBreakers::agent_key(&pool_name),
+                    key: busbar_substrate::store::agent_key(&pool_name),
                     lane,
                     pre_admitted: false,
                 },
@@ -159,7 +159,7 @@ pub(super) fn select_member(
                     })
                     .collect()
             });
-            let pool_key = crate::store::PlaneBreakers::agent_key(&pool_name);
+            let pool_key = busbar_substrate::store::agent_key(&pool_name);
             let tried: Vec<usize> = candidates
                 .iter()
                 .filter(|c| !c.eligible)
@@ -263,6 +263,7 @@ fn member_facts(
 /// audited `rejected` here so a second caller cannot forget to.
 #[allow(clippy::too_many_arguments)] // the hop's own facts, no more.
 pub(super) fn hop_facts<'a>(
+    engine_host: &dyn busbar_substrate::plane_host::EngineHost,
     plane: &super::plane::A2aPlane,
     key: &busbar_api::VirtualKey,
     admitted: &'a super::receive::Admitted,
@@ -293,7 +294,7 @@ pub(super) fn hop_facts<'a>(
     match super::creds::authorise_egress(key, target, now) {
         Ok(g) => Ok((url, cred, g)),
         Err(e) => {
-            crate::plane::auditlog::emit_admin_hostless_now(
+            engine_host.audit_emit(
                 super::receive::AUDIT_ACTION,
                 resource,
                 busbar_substrate::audit::vocab::OUTCOME_REJECTED,

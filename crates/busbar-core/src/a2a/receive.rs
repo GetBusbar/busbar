@@ -1620,6 +1620,7 @@ async fn admitted(
     // grant re-derived FOR THAT MEMBER when the hop was re-targeted; see `route::hop_facts` for
     // why busbar's credential is never leased for a backend the caller's grant does not cover.
     let (target_backend_url, target_cred, grant) = match super::route::hop_facts(
+        engine_host.as_ref(),
         &plane,
         key,
         &admitted,

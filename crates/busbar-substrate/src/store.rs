@@ -123,6 +123,17 @@ pub fn tool_key(server: &str) -> String {
     format!("tool:{server}")
 }
 
+/// The A2A plane's breaker-cell key for one registered agent: the `agent:` prefix is the
+/// plane-qualified keyspace rule (LLM pools keep bare names, so an `agent_pools:` can never collide
+/// with an LLM pool, and `tool:`/`agent:` cannot collide with each other), the id is the operator's
+/// registration id which is what every refusal names. Lives here (not only on core's `PlaneBreakers`)
+/// so the A2A plane builds the key without reaching into `busbar-core`; core's `PlaneBreakers::agent_key`
+/// delegates to it so the ONE spelling of the prefix stays single-sourced.
+#[cfg_attr(not(feature = "plane-a2a"), allow(dead_code))]
+pub fn agent_key(agent: &str) -> String {
+    format!("agent:{agent}")
+}
+
 /// Get current time in seconds since epoch. The shared wall clock both core and the plane crates
 /// read (the plane via the `clock_now` host seam long-term; this is the single implementation).
 pub fn now() -> u64 {

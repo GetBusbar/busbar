@@ -147,8 +147,10 @@ impl PlaneBreakers {
     /// The A2A plane's key for one registered agent.
     // A2A-only: keyed by the A2A plane alone, so with `plane-a2a` off (and MCP on) it has no caller.
     #[cfg_attr(not(feature = "plane-a2a"), allow(dead_code))]
-    pub(crate) fn agent_key(agent: &str) -> String {
-        format!("agent:{agent}")
+    pub fn agent_key(agent: &str) -> String {
+        // The prefix spelling MOVED DOWN to the neutral substrate so the A2A plane builds this key
+        // without reaching into core; delegate so the one `agent:` spelling stays single-sourced.
+        busbar_substrate::store::agent_key(agent)
     }
 
     /// ADMIT ONE DISPATCH against the target's cell — [`LaneRuntime::try_admit_breaker`], the same
