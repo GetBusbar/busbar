@@ -97,6 +97,25 @@ pub struct CardIssuer {
     pub issuer_spki_base64: String,
 }
 
+/// A NEUTRAL, PLAIN-DATA SUMMARY of what a boot rehydrate of a plane's durable per-call log found —
+/// the value [`BootCtx::restore_call_log`] returns so a plane's hydrate hook can log the outcome
+/// WITHOUT naming the core-live `crate::plane::calllog::Restored` type (which carries the rich
+/// `audit::ChainBreak`). Every field is the same value the old `Restored` comparison and logging
+/// relied on: the three counts verbatim, and each chain break as its already-Display-formatted
+/// string (the exact text the hook logged via `%brk`), so an all-default summary means an all-default
+/// restore and the per-break diagnostic reads byte-identically.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct RestoredSummary {
+    /// Principals whose chain position was resumed.
+    pub principals: usize,
+    /// Records read back across every principal — the durability signal.
+    pub records: usize,
+    /// Principals the store enumerated but returned no records for.
+    pub empty_chains: usize,
+    /// Chains that FAILED to verify, each rendered as the exact break-detail text the hook logs.
+    pub chain_breaks: Vec<String>,
+}
+
 /// EVERYTHING A PLANE'S BOOT HOOKS ([`PlaneDecl::hydrate`], [`PlaneDecl::start`]) MAY READ, and
 /// DELIBERATELY nothing that carries the audit chain, the governance context or the signing seed
 /// (invariant (a)). Its surface names [`PlaneStore`](crate::plane::store::PlaneStore) — never
@@ -170,6 +189,60 @@ impl<'a> BootCtx<'a> {
             app.spent_token_ledger.set_sink(store.clone());
             app.demotion_record.set_sink(store.clone());
         }
+    }
+
+    /// REGISTER THE MCP PLANE'S DURABLE `call` STREAM with the host, in the hydrate phase — the first
+    /// boot step of the per-call log, before the rehydrate. Named HERE, core side, so
+    /// `crate::mcp::mcp_hydrate` registers the stream without its own code naming
+    /// `crate::plane::calllog` or an `App` field: the `with_dispatch_scope`/`HostCtx` mint the register
+    /// does stays wholly inside `calllog::register_call_stream` (minted synchronously, never across an
+    /// `.await`), and the app it reads is the core-owned hydrate-phase `App`. A no-op unless the
+    /// freshly-built app (hydrate phase) is present — byte-identical to the old inline
+    /// `busbar_core::plane::calllog::register_call_stream(app)`.
+    pub fn register_call_stream(&self) {
+        if let Some(app) = self.app {
+            crate::plane::calllog::register_call_stream(app);
+        }
+    }
+
+    /// REHYDRATE THE MCP PLANE'S DURABLE `call` CHAIN from the plane-narrowed store, in the hydrate
+    /// phase — the boot rehydrate, run AFTER [`Self::register_call_stream`]. Returns the NEUTRAL
+    /// [`RestoredSummary`] rather than the core-live `calllog::Restored` (which carries
+    /// `audit::ChainBreak`), so the hook logs the outcome without naming a core-live type. The
+    /// `with_dispatch_scope`/`HostCtx` mint stays wholly inside `calllog::restore_from_store_over`
+    /// (minted synchronously, never across an `.await`). The `Err` is mapped to the store error's
+    /// Display string so the hook's `MCP_CALLLOG_UNREAD` warning reads byte-identically. A no-op-shaped
+    /// panic guards the impossible None-app/None-store hydrate call (the hook reaches here only past its
+    /// store guard, in the phase that supplies the app) — byte-identical to the old inline
+    /// `busbar_core::plane::calllog::restore_from_store_over(app, store)`.
+    pub fn restore_call_log(&self) -> Result<RestoredSummary, String> {
+        let app = self.app.expect(
+            "restore_call_log runs in the HYDRATE phase, which supplies the freshly-built app",
+        );
+        let store = self.store.as_ref().expect(
+            "restore_call_log runs past the hydrate hook's store guard, so a store is present",
+        );
+        crate::plane::calllog::restore_from_store_over(app, store.as_ref())
+            .map(|r| RestoredSummary {
+                principals: r.principals,
+                records: r.records,
+                empty_chains: r.empty_chains,
+                chain_breaks: r.chain_breaks.iter().map(|b| b.to_string()).collect(),
+            })
+            .map_err(|e| e.to_string())
+    }
+
+    /// MINT THE NEUTRAL ENGINE HOST over the freshly-built app, in the hydrate phase — the
+    /// snapshot-only mint a hydrate hook drives its durable boot-replay off (no live handle yet at
+    /// hydration, which is correct: hydration reads exactly the generation it is restoring into). Named
+    /// HERE so `crate::mcp::mcp_hydrate` mints its host without naming `crate::plane_host::engine_host`
+    /// or an `App`: the returned `Arc<dyn EngineHost>` is the neutral substrate seam and the app it
+    /// wraps is the core-owned hydrate-phase `App`.
+    pub fn engine_host(&self) -> std::sync::Arc<dyn busbar_substrate::plane_host::EngineHost> {
+        let app = self
+            .app
+            .expect("engine_host runs in the HYDRATE phase, which supplies the freshly-built app");
+        crate::plane_host::engine_host(app)
     }
 
     /// A ctx carrying no phase context, for the boot-hook FOLD tests (R2-boot): a hook that only

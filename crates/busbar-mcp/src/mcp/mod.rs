@@ -482,12 +482,9 @@ pub(crate) fn mcp_on_swap(
 /// governance store) `ctx.store` is `None` and every block below is skipped — the call log, the
 /// demotion record and the spent ledger are ephemeral BY DESIGN there, exactly as the audit ring is.
 pub(crate) fn mcp_hydrate(ctx: &busbar_core::plane::registry::BootCtx) -> Result<(), String> {
-    let Some(plane_store) = ctx.store.clone() else {
+    if ctx.store.is_none() {
         return Ok(());
-    };
-    let app = ctx
-        .app
-        .expect("mcp hydrate runs in the HYDRATE phase, which supplies the freshly-built app");
+    }
 
     // DURABLE MCP PER-CALL LOG. The tamper-evident record of who called which tool, under which
     // approved digest, and whether it went out — the Art 26(6) record-keeping pillar. Attached as a
@@ -502,10 +499,10 @@ pub(crate) fn mcp_hydrate(ctx: &busbar_core::plane::registry::BootCtx) -> Result
     // same plane-narrowed store) at register time, bounded at the MCP call log's LRU cap — then rehydrate
     // through the seam, opening a dispatch scope so the caller-driven seed reaches the host over a live
     // `HostCtx`.
-    busbar_core::plane::calllog::register_call_stream(app);
-    let restored = busbar_core::plane::calllog::restore_from_store_over(app, plane_store.as_ref());
+    ctx.register_call_stream();
+    let restored = ctx.restore_call_log();
     match restored {
-        Ok(r) if r == busbar_core::plane::calllog::Restored::default() => {}
+        Ok(r) if r == busbar_core::plane::registry::RestoredSummary::default() => {}
         Ok(r) => {
             tracing::info!(
                 principals = r.principals,
@@ -553,7 +550,7 @@ pub(crate) fn mcp_hydrate(ctx: &busbar_core::plane::registry::BootCtx) -> Result
     // The demotion boot-replay reads the durable rows and the bound-snapshot runtime off a host minted
     // over the freshly-built app — a snapshot-only mint (no live handle at hydrate), which is correct:
     // hydration reads exactly the generation it is restoring into.
-    let host = busbar_core::plane_host::engine_host(app);
+    let host = ctx.engine_host();
     match crate::mcp::demotion::hydrate(&host) {
         0 => {}
         n => busbar_substrate::diag_warn!(
