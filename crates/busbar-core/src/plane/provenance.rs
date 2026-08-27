@@ -50,56 +50,19 @@
 // which name no a2a type; the a2a-side mapping references these constants, so the emitted strings are
 // still defined in core and remain byte-identical.
 
-/// Event kinds. Small, stable, greppable — tooling branches on these strings, so they are constants
-/// rather than formatted at each call site.
-pub(crate) const EV_SUBMITTED: &str = "task.submitted";
-pub(crate) const EV_WORKING: &str = "task.working";
-pub(crate) const EV_INTERRUPTED: &str = "task.interrupted";
-pub(crate) const EV_RESUMED: &str = "task.resumed";
-pub(crate) const EV_DELEGATED: &str = "task.delegated";
-pub(crate) const EV_ARTIFACT: &str = "task.artifact";
-pub(crate) const EV_TERMINAL: &str = "task.terminal";
-// A DECLARED-BUT-UNMOUNTED kind: the boot rehydrate does not yet append its own event, but the kind
-// is declared because the digest covers the kind's value — adding one later is a chained-record field
-// change no deployment with existing chains can absorb. The `not(test)` blanket above allows the other
-// unmounted kinds; this one carries its own allow because it has no reference in a test build either.
-#[allow(dead_code)]
-pub(crate) const EV_REHYDRATED: &str = "task.rehydrated";
-
-// ── THE PUSH-NOTIFICATION DELIVERY EVENTS ───────────────────────────────────────────────────────
-//
-// WHAT WAS MISSING: `crate::a2a::pushdeliver` connected to a caller's webhook, ran the full SSRF guard
-// against a FRESH resolution before every delivery, and then disposed of the outcome with a
-// `tracing::warn!` at each of its three call sites. So **a delivery refused by the SSRF guard left
-// no record at all** — a security control that fires silently is one nobody can audit after the
-// fact, and "the guard refused a delivery to 169.254.169.254 for this task" is precisely the line an
-// incident review needs. The task chain is where it belongs: the delivery is an event in that task's
-// life, it is scoped to that task, and the owner's ruling is that no plane supplies a second chain.
-//
-// THREE KINDS, NOT ONE, and the split is the `outcome`/`reason` split this vocabulary is built on:
-// `refused` means the request did not go out and `delivered`/`failed` mean it did. An operator
-// reading `push_refused` looks at busbar's guard and the callback's DNS; one reading `push_failed`
-// looks at the caller's own receiver. Collapsing them would send half of each population to the
-// wrong place. A NEW KIND IS SAFE TO ADD (unlike a new FIELD): the digest covers the kind's VALUE,
-// so events already on disk keep verifying against the same formula.
-
-/// The receiver ANSWERED 2xx. The notification is delivered and the caller has it.
-pub(crate) const EV_PUSH_DELIVERED: &str = "task.push_delivered";
-
-/// BUSBAR DECLINED TO CONNECT: the delivery-time SSRF guard refused the fresh resolution (a callback
-/// whose name now answers a private or metadata address, a wholesale move away from the pinned set),
-/// the host would not resolve at all, or the stored URL is not one. Nothing left the process.
-///
-/// This is the one the absence of a record was worst for. An attacker's nameserver waits out the gap
-/// between registration and delivery precisely because the row is durable and the DNS answer is not;
-/// the refusal firing is the control WORKING, and it left no evidence that it had.
-pub(crate) const EV_PUSH_REFUSED: &str = "task.push_refused";
-
-/// THE DELIVERY WENT OUT AND THE RECEIVER FAILED IT: the socket errored, or the webhook answered
-/// non-2xx. A statement about the CALLER's infrastructure, not about busbar's guard — which is why
-/// it is not [`EV_PUSH_REFUSED`], for the same reason `audit::vocab::REASON_UPSTREAM_FAILED` rides
-/// `dispatched` rather than `refused`.
-pub(crate) const EV_PUSH_FAILED: &str = "task.push_failed";
+// Event kinds. The `kind` token each per-task provenance event carries. Now OWNED by the neutral
+// audit vocabulary ([`busbar_substrate::audit::vocab`]) so the A2A plane that appends these events and
+// this engine that hash-chains them name ONE spelling of each across the core/substrate seam — the
+// digest covers the kind's VALUE, so a single spelling is what keeps existing chains verifying.
+// Re-exported here for core's own call sites. `EV_WORKING`/`EV_INTERRUPTED`/`EV_RESUMED`/`EV_TERMINAL`
+// are named by the a2a-side event-kind mapping directly off the vocabulary and are not re-exported
+// here; `EV_REHYDRATED` is declared in the vocabulary to reserve its digest value and has no live
+// appender yet. Gated with its users (the TASKS engine + host journal, all `plane-a2a`): with the
+// plane off they are compiled out and this re-export would otherwise read unused.
+#[cfg(feature = "plane-a2a")]
+pub(crate) use busbar_substrate::audit::vocab::{
+    EV_ARTIFACT, EV_DELEGATED, EV_PUSH_DELIVERED, EV_PUSH_FAILED, EV_PUSH_REFUSED, EV_SUBMITTED,
+};
 
 /// The fields a caller supplies for one event. `seq`, `prev_hash` and `hash` are NOT here: they are
 /// the chain's own business and are supplied by [`crate::audit::Chain::append`], so no call site can

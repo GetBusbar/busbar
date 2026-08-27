@@ -340,7 +340,7 @@ async fn every_relayed_task_leaves_a_verifying_hash_chained_delegation_event() {
     assert!(
         events
             .iter()
-            .any(|e| e.kind == crate::plane::provenance::EV_DELEGATED),
+            .any(|e| e.kind == busbar_substrate::audit::vocab::EV_DELEGATED),
         "the hop must leave a `task.delegated` event on the task's own chain: {events:?}"
     );
 }

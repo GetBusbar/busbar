@@ -355,7 +355,7 @@ impl Task {
 /// RESUME, a distinct event from a fresh `working`, and the two are only separable by looking at the
 /// prior state. The fallthrough is `working`, matching the pre-cleave inline mapping byte-for-byte.
 pub(crate) fn event_kind_for_transition(from: TaskState, to: TaskState) -> &'static str {
-    use crate::plane::provenance::{EV_INTERRUPTED, EV_RESUMED, EV_TERMINAL, EV_WORKING};
+    use busbar_substrate::audit::vocab::{EV_INTERRUPTED, EV_RESUMED, EV_TERMINAL, EV_WORKING};
     match to {
         TaskState::Working if from.is_interrupted() => EV_RESUMED,
         TaskState::Working => EV_WORKING,

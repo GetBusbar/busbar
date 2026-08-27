@@ -187,3 +187,39 @@ pub const REASON_ARTIFACT_DRIFTED: &str = "artifact_drifted";
 /// for an apply they may not have made. Nothing is admitted by asking it last: a request that would
 /// fail an earlier step fails that step instead.
 pub const REASON_GENERATION_MOVED: &str = "generation_moved";
+
+// ── TASK PROVENANCE EVENT KINDS ─────────────────────────────────────────────────────────────────
+//
+// The `kind` token every per-task provenance event carries. Owned here in the neutral vocabulary,
+// not by the A2A plane that appends them, for the reason the whole module states: the digest covers
+// the kind's VALUE, so events already on disk keep verifying against the same formula only if there
+// is ONE spelling of each kind. The core TASKS engine hash-chains and persists them and the A2A plane
+// (and its a2a-side event-kind mapping) supplies them; both name these constants, so core re-exports
+// them at `crate::plane::provenance::EV_*` and its own call sites are unchanged.
+
+/// Accepted, not yet started.
+pub const EV_SUBMITTED: &str = "task.submitted";
+/// Running (a fresh start, not a resume).
+pub const EV_WORKING: &str = "task.working";
+/// Paused awaiting the caller (input- or auth-required).
+pub const EV_INTERRUPTED: &str = "task.interrupted";
+/// An interrupted task resumed to working — distinct from a fresh `working`.
+pub const EV_RESUMED: &str = "task.resumed";
+/// Dispatched to the chosen/fronted agent.
+pub const EV_DELEGATED: &str = "task.delegated";
+/// An artifact chunk was durably relayed (the resume cursor advanced).
+pub const EV_ARTIFACT: &str = "task.artifact";
+/// Reached a terminal state (completed/failed/canceled/rejected).
+pub const EV_TERMINAL: &str = "task.terminal";
+/// A declared-but-unmounted kind: boot rehydrate does not append its own event yet, but the kind is
+/// declared because the digest covers its value — adding one later is a chained-record field change
+/// no deployment with existing chains can absorb.
+pub const EV_REHYDRATED: &str = "task.rehydrated";
+/// The push receiver answered 2xx: the notification is delivered.
+pub const EV_PUSH_DELIVERED: &str = "task.push_delivered";
+/// busbar declined to connect: the delivery-time SSRF guard refused the fresh resolution. Nothing
+/// left the process — a security control firing, recorded so it leaves evidence.
+pub const EV_PUSH_REFUSED: &str = "task.push_refused";
+/// The delivery went out and the receiver failed it (socket error or non-2xx) — a statement about
+/// the caller's infrastructure, not busbar's guard.
+pub const EV_PUSH_FAILED: &str = "task.push_failed";

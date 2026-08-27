@@ -430,7 +430,7 @@ async fn a_follow_up_on_the_same_context_resumes_the_paused_task_rather_than_ope
         assert!(
             events
                 .iter()
-                .any(|e| e.kind == crate::plane::provenance::EV_RESUMED),
+                .any(|e| e.kind == busbar_substrate::audit::vocab::EV_RESUMED),
             "a resume must be a chained event, not a silent state change: {events:?}"
         );
     }
