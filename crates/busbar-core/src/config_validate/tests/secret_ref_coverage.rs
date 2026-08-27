@@ -258,7 +258,7 @@ fn secret_refs_source() -> String {
     );
     let a2a = extract_impl_block(
         &src.join("a2a").join("config.rs"),
-        "impl crate::plane::config::PlaneCfg for AgentsCfg",
+        "impl busbar_substrate::plane::config::PlaneCfg for AgentsCfg",
     );
     let body = format!("{core}\n{mcp}\n{a2a}");
     assert!(
