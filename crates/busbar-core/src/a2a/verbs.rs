@@ -595,7 +595,7 @@ pub(crate) async fn approve(ctx: AdminReqCtx) -> AdminReply {
             "a2a",
             VERB,
             &name,
-            crate::admin::audit::OUTCOME_REJECTED,
+            busbar_substrate::audit::vocab::OUTCOME_REJECTED,
             &principal,
         );
         return AdminReply::Prebuilt(crate::admin::v1::json::err_json_cond(
@@ -642,7 +642,7 @@ pub(crate) async fn approve(ctx: AdminReqCtx) -> AdminReply {
                 "a2a",
                 VERB,
                 &name,
-                crate::admin::audit::OUTCOME_REJECTED,
+                busbar_substrate::audit::vocab::OUTCOME_REJECTED,
                 &principal,
             );
             return AdminReply::Prebuilt(crate::admin::v1::json::err_json(&e));
@@ -652,7 +652,7 @@ pub(crate) async fn approve(ctx: AdminReqCtx) -> AdminReply {
         "a2a",
         VERB,
         &name,
-        crate::admin::audit::OUTCOME_APPLIED,
+        busbar_substrate::audit::vocab::OUTCOME_APPLIED,
         &principal,
     );
     AdminReply::Prebuilt(crate::admin::v1::json::ok_json(
