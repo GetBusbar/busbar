@@ -294,10 +294,18 @@ pub(crate) async fn push_notification(
             "a push notification is one task document",
         );
     }
-    let Some(task) = crate::plane::taskstore::TASKS.get_unscoped(&task_id) else {
+    let Some(row) = ctx.host.task_get_unscoped(&task_id) else {
         // The token verified and the row is gone — a task compacted out from under a backend that
         // is still reporting on it. `401` and not `404`, for the reason `task_of` gives one answer:
         // whether a task exists is not something this endpoint tells its caller.
+        return refused(
+            axum::http::StatusCode::UNAUTHORIZED,
+            "this endpoint is addressed by the push token busbar registered with the agent",
+        );
+    };
+    let Ok(task) = super::task::Task::from_row(&row) else {
+        // A row busbar itself wrote must read back; one that does not parse is not a task this
+        // endpoint can act on, and its existence is disclosed no more than an absent row's is.
         return refused(
             axum::http::StatusCode::UNAUTHORIZED,
             "this endpoint is addressed by the push token busbar registered with the agent",

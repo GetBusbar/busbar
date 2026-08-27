@@ -458,11 +458,21 @@ pub(crate) fn delivery_auth(
 
 /// THE TASK A PUSH-CONFIG REQUEST NAMES, resolved through the SAME scoped lookup every other read on
 /// this plane uses, so an id belonging to another principal is `TaskNotFound` and not a config.
-fn addressed(params: &serde_json::Value, principal: &str) -> Option<Task> {
+fn addressed(
+    engine_host: &dyn busbar_substrate::plane_host::EngineHost,
+    params: &serde_json::Value,
+    principal: &str,
+) -> Option<Task> {
     for name in ["taskId", "task_id", "id"] {
         if let Some(id) = params.get(name).and_then(serde_json::Value::as_str) {
-            if let Ok(task) = crate::plane::taskstore::TASKS.get_scoped(principal, id) {
-                return Some(task);
+            // Through the neutral seam: `task_get_scoped` collapses "not this caller's" and "no such
+            // task" to `None` exactly as the old `get_scoped` `Err(Denied)` did, so the existence
+            // oracle is unchanged. A row that does not parse back is treated as absent for the same
+            // reason — a task this verb cannot reconstruct is one it cannot address.
+            if let Some(row) = engine_host.task_get_scoped(principal, id) {
+                if let Ok(task) = Task::from_row(&row) {
+                    return Some(task);
+                }
             }
         }
     }
@@ -474,6 +484,7 @@ fn addressed(params: &serde_json::Value, principal: &str) -> Option<Task> {
 /// Async, because the SSRF guard resolves a name and that resolution must be the same one every
 /// other outbound decision on this plane reads.
 pub(crate) async fn create_push_config(
+    engine_host: &dyn busbar_substrate::plane_host::EngineHost,
     dialect: Dialect,
     envelope: &serde_json::Value,
     rpc_id: &serde_json::Value,
@@ -485,7 +496,7 @@ pub(crate) async fn create_push_config(
         .get("params")
         .cloned()
         .unwrap_or(serde_json::Value::Null);
-    let Some(task) = addressed(&params, principal) else {
+    let Some(task) = addressed(engine_host, &params, principal) else {
         return err(rpc_id, A2aError::TaskNotFound, NO_SUCH_TASK);
     };
     let cfg = config_params(&params);
@@ -553,11 +564,8 @@ pub(crate) async fn create_push_config(
         Err(message) => return err(rpc_id, A2aError::InvalidParams, message),
     };
 
-    if let Err(e) = crate::plane::taskstore::TASKS.set_push_callback(
-        &task.task_id,
-        Some(pinned.url.clone()),
-        now,
-    ) {
+    if let Err(e) = engine_host.task_set_push_callback(&task.task_id, Some(pinned.url.clone()), now)
+    {
         // Error-once latch: a store that cannot record a push config is a STABLE condition (a store
         // outage persists across every registration) and this path runs per request. Error on the
         // transition into the failing state; hold subsequent failures at debug so it cannot spam.
@@ -593,6 +601,7 @@ pub(crate) async fn create_push_config(
 
 /// `GetTaskPushNotificationConfig` / `tasks/pushNotificationConfig/get`.
 pub(crate) fn get_push_config(
+    engine_host: &dyn busbar_substrate::plane_host::EngineHost,
     dialect: Dialect,
     envelope: &serde_json::Value,
     rpc_id: &serde_json::Value,
@@ -602,7 +611,7 @@ pub(crate) fn get_push_config(
         .get("params")
         .cloned()
         .unwrap_or(serde_json::Value::Null);
-    let Some(task) = addressed(&params, principal) else {
+    let Some(task) = addressed(engine_host, &params, principal) else {
         return err(rpc_id, A2aError::TaskNotFound, NO_SUCH_TASK);
     };
     // THE CONFIG ID IS `id`, AND THE TASK ID IS `taskId`. On this verb the two are distinct
@@ -629,6 +638,7 @@ pub(crate) fn get_push_config(
 
 /// `ListTaskPushNotificationConfigs` / `tasks/pushNotificationConfig/list`.
 pub(crate) fn list_push_configs(
+    engine_host: &dyn busbar_substrate::plane_host::EngineHost,
     dialect: Dialect,
     envelope: &serde_json::Value,
     rpc_id: &serde_json::Value,
@@ -638,7 +648,7 @@ pub(crate) fn list_push_configs(
         .get("params")
         .cloned()
         .unwrap_or(serde_json::Value::Null);
-    let Some(task) = addressed(&params, principal) else {
+    let Some(task) = addressed(engine_host, &params, principal) else {
         return err(rpc_id, A2aError::TaskNotFound, NO_SUCH_TASK);
     };
     let held: Vec<serde_json::Value> = configs()
@@ -663,6 +673,7 @@ pub(crate) fn list_push_configs(
 /// make a statement false answers the same way whether or not it had to do anything, and a client
 /// retrying a delete after a timeout must not be told its retry failed.
 pub(crate) fn delete_push_config(
+    engine_host: &dyn busbar_substrate::plane_host::EngineHost,
     envelope: &serde_json::Value,
     rpc_id: &serde_json::Value,
     principal: &str,
@@ -672,7 +683,7 @@ pub(crate) fn delete_push_config(
         .get("params")
         .cloned()
         .unwrap_or(serde_json::Value::Null);
-    let Some(task) = addressed(&params, principal) else {
+    let Some(task) = addressed(engine_host, &params, principal) else {
         return err(rpc_id, A2aError::TaskNotFound, NO_SUCH_TASK);
     };
     let wanted = config_params(&params)
@@ -694,7 +705,7 @@ pub(crate) fn delete_push_config(
         // THE DURABLE ROW GOES WITH IT. Leaving the callback on the row would mean a config the
         // caller deleted still receiving the task's completion, which is the one outcome a delete
         // exists to prevent.
-        let _ = crate::plane::taskstore::TASKS.set_push_callback(&task.task_id, None, now);
+        let _ = engine_host.task_set_push_callback(&task.task_id, None, now);
         super::pushdeliver::forget(&task.task_id);
     }
     ok(rpc_id, serde_json::Value::Null)
@@ -709,6 +720,7 @@ pub(crate) fn delete_push_config(
 /// what it alone knows — that it issued no such task to this caller, or that it recorded the ending
 /// of this one — and is deciding nothing about a task that is still running.
 pub(crate) fn subscribe_refusal(
+    engine_host: &dyn busbar_substrate::plane_host::EngineHost,
     envelope: &serde_json::Value,
     rpc_id: &serde_json::Value,
     principal: &str,
@@ -718,21 +730,26 @@ pub(crate) fn subscribe_refusal(
     let named = ["id", "taskId", "task_id"]
         .iter()
         .find_map(|m| params.get(*m).and_then(serde_json::Value::as_str))?;
-    match crate::plane::taskstore::TASKS.get_scoped(principal, named) {
+    match engine_host.task_get_scoped(principal, named) {
         // NOT BUSBAR'S, OR NOT THIS CALLER'S — one answer for both, because "there is no such task"
-        // and "there is such a task and it is not yours" must not be distinguishable.
-        Err(_) => Some(err(
+        // and "there is such a task and it is not yours" must not be distinguishable. The neutral
+        // seam collapses both to `None` exactly as the old `get_scoped` `Err(Denied)` did.
+        None => Some(err(
             rpc_id,
             A2aError::TaskNotFound,
             "no task with that id is open for this caller",
         )),
-        Ok(task) if task.state.is_terminal() => Some(err(
-            rpc_id,
-            A2aError::UnsupportedOperation,
-            "this task has reached a terminal state, so there are no further events to subscribe \
-             to",
-        )),
-        Ok(_) => None,
+        Some(row) => match Task::from_row(&row) {
+            Ok(task) if task.state.is_terminal() => Some(err(
+                rpc_id,
+                A2aError::UnsupportedOperation,
+                "this task has reached a terminal state, so there are no further events to \
+                 subscribe to",
+            )),
+            // A live task is the backend's to answer; so is a row this verb cannot reconstruct,
+            // which is not busbar's to refuse on the caller's behalf.
+            _ => None,
+        },
     }
 }
 

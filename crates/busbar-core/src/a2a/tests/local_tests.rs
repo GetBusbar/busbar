@@ -40,6 +40,13 @@ fn open(principal: &str, task_id: &str, context_id: &str, state: TaskState, now:
     });
 }
 
+/// A neutral `EngineHost` over a bare app. The three task-store reads/writes these verbs go through
+/// (`task_get_scoped` / `task_set_push_callback`) are pure `TASKS.*` calls that ignore the app, so
+/// any host serves — the tenancy the tests assert is the process-global store's, keyed by principal.
+fn host() -> std::sync::Arc<dyn busbar_substrate::plane_host::EngineHost> {
+    crate::plane_host::engine_host(&crate::test_support::TestApp::new().build())
+}
+
 fn envelope(method: &str, params: serde_json::Value) -> serde_json::Value {
     serde_json::json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params })
 }
@@ -273,7 +280,7 @@ fn subscribing_to_a_live_task_is_relayed() {
     open(me, "sub-live", "ctx-sub", TaskState::Working, 1_000);
     let env = envelope("SubscribeToTask", serde_json::json!({ "id": "sub-live" }));
     assert!(
-        local::subscribe_refusal(&env, &rpc_id(), me).is_none(),
+        local::subscribe_refusal(host().as_ref(), &env, &rpc_id(), me).is_none(),
         "a live task's events are the backend's"
     );
 }
@@ -285,8 +292,8 @@ async fn subscribing_to_a_terminal_task_is_refused() {
     let me = "key-sub-done";
     open(me, "sub-done", "ctx-sub", TaskState::Completed, 1_000);
     let env = envelope("SubscribeToTask", serde_json::json!({ "id": "sub-done" }));
-    let refusal =
-        local::subscribe_refusal(&env, &rpc_id(), me).expect("a terminal task is refused");
+    let refusal = local::subscribe_refusal(host().as_ref(), &env, &rpc_id(), me)
+        .expect("a terminal task is refused");
     assert_eq!(error_code(refusal).await, -32004);
 }
 
@@ -303,14 +310,16 @@ async fn subscribing_to_an_unknown_or_foreign_task_is_task_not_found() {
         "SubscribeToTask",
         serde_json::json!({ "id": "no-such-task-at-all" }),
     );
-    let refusal = local::subscribe_refusal(&unknown, &rpc_id(), me).expect("refused");
+    let refusal =
+        local::subscribe_refusal(host().as_ref(), &unknown, &rpc_id(), me).expect("refused");
     assert_eq!(error_code(refusal).await, -32001);
 
     let foreign = envelope(
         "SubscribeToTask",
         serde_json::json!({ "id": "sub-foreign" }),
     );
-    let refusal = local::subscribe_refusal(&foreign, &rpc_id(), me).expect("refused");
+    let refusal =
+        local::subscribe_refusal(host().as_ref(), &foreign, &rpc_id(), me).expect("refused");
     assert_eq!(
         error_code(refusal).await,
         -32001,
@@ -378,6 +387,7 @@ async fn a_push_config_is_created_read_listed_and_deleted_at_busbar() {
 
     let created = result(
         local::create_push_config(
+            host().as_ref(),
             Dialect::V10,
             &envelope(
                 "CreateTaskPushNotificationConfig",
@@ -407,6 +417,7 @@ async fn a_push_config_is_created_read_listed_and_deleted_at_busbar() {
     );
 
     let read = result(local::get_push_config(
+        host().as_ref(),
         Dialect::V10,
         &envelope(
             "GetTaskPushNotificationConfig",
@@ -419,6 +430,7 @@ async fn a_push_config_is_created_read_listed_and_deleted_at_busbar() {
     assert_eq!(read["url"], HOOK);
 
     let listed = result(local::list_push_configs(
+        host().as_ref(),
         Dialect::V10,
         &envelope(
             "ListTaskPushNotificationConfigs",
@@ -431,6 +443,7 @@ async fn a_push_config_is_created_read_listed_and_deleted_at_busbar() {
     assert_eq!(listed["configs"].as_array().expect("array").len(), 1);
 
     let deleted = local::delete_push_config(
+        host().as_ref(),
         &envelope(
             "DeleteTaskPushNotificationConfig",
             serde_json::json!({ "task_id": "push-crud", "id": "cfg-1" }),
@@ -455,6 +468,7 @@ async fn a_push_config_is_created_read_listed_and_deleted_at_busbar() {
     );
 
     let gone = local::get_push_config(
+        host().as_ref(),
         Dialect::V10,
         &envelope(
             "GetTaskPushNotificationConfig",
@@ -473,6 +487,7 @@ async fn deleting_an_absent_config_is_idempotent() {
     let me = "key-push-idem";
     open(me, "push-idem", "ctx-push", TaskState::Completed, 1_000);
     let response = local::delete_push_config(
+        host().as_ref(),
         &envelope(
             "DeleteTaskPushNotificationConfig",
             serde_json::json!({ "task_id": "push-idem", "id": "never-registered" }),
@@ -492,6 +507,7 @@ async fn a_private_callback_is_refused_by_the_same_guard_as_the_inline_path() {
     let me = "key-push-ssrf";
     open(me, "push-ssrf", "ctx-push", TaskState::Completed, 1_000);
     let refused = local::create_push_config(
+        host().as_ref(),
         Dialect::V10,
         &envelope(
             "CreateTaskPushNotificationConfig",
@@ -530,6 +546,7 @@ async fn a_config_naming_credentials_is_stored_and_presented_but_never_echoed_ba
     let me = "key-push-auth";
     open(me, "push-auth", "ctx-push", TaskState::Completed, 1_000);
     let created = local::create_push_config(
+        host().as_ref(),
         Dialect::V10,
         &envelope(
             "CreateTaskPushNotificationConfig",
@@ -556,6 +573,7 @@ async fn a_config_naming_credentials_is_stored_and_presented_but_never_echoed_ba
     // AND THE READ VERB DOES NOT RETURN IT. A `get` needs only a task id and a config id, so a
     // response carrying the secret would turn every read grant into a way to exfiltrate it.
     let read = local::get_push_config(
+        host().as_ref(),
         Dialect::V10,
         &envelope(
             "GetTaskPushNotificationConfig",
@@ -580,6 +598,7 @@ async fn an_authentication_block_with_no_scheme_is_refused_without_echoing_the_s
     let me = "key-push-noscheme";
     open(me, "push-noscheme", "ctx-push", TaskState::Completed, 1_000);
     let refused = local::create_push_config(
+        host().as_ref(),
         Dialect::V10,
         &envelope(
             "CreateTaskPushNotificationConfig",
@@ -617,6 +636,7 @@ async fn a_config_naming_a_v03_token_is_still_refused_because_nothing_carries_it
     let me = "key-push-token";
     open(me, "push-token", "ctx-push", TaskState::Completed, 1_000);
     let refused = local::create_push_config(
+        host().as_ref(),
         Dialect::V03,
         &envelope(
             "tasks/pushNotificationConfig/set",
@@ -642,6 +662,7 @@ async fn a_second_config_on_one_task_is_refused_rather_than_silently_dropped() {
     let me = "key-push-second";
     open(me, "push-second", "ctx-push", TaskState::Completed, 1_000);
     let first = local::create_push_config(
+        host().as_ref(),
         Dialect::V10,
         &envelope(
             "CreateTaskPushNotificationConfig",
@@ -656,6 +677,7 @@ async fn a_second_config_on_one_task_is_refused_rather_than_silently_dropped() {
     assert!(body(first).await.get("error").is_none());
 
     let second = local::create_push_config(
+        host().as_ref(),
         Dialect::V10,
         &envelope(
             "CreateTaskPushNotificationConfig",
@@ -679,6 +701,7 @@ async fn a_push_config_cannot_be_attached_to_another_tenants_task() {
     let intruder = "key-push-intruder";
     open(owner, "push-owned", "ctx-push", TaskState::Completed, 1_000);
     let refused = local::create_push_config(
+        host().as_ref(),
         Dialect::V10,
         &envelope(
             "CreateTaskPushNotificationConfig",
@@ -736,6 +759,7 @@ async fn get_push_config_is_answered_for_the_owner_and_is_an_absent_task_for_eve
         1_000,
     );
     local::create_push_config(
+        host().as_ref(),
         Dialect::V10,
         &envelope(
             "CreateTaskPushNotificationConfig",
@@ -750,6 +774,7 @@ async fn get_push_config_is_answered_for_the_owner_and_is_an_absent_task_for_eve
 
     // THE OWNER CAN.
     let mine = result(local::get_push_config(
+        host().as_ref(),
         Dialect::V10,
         &envelope(
             "GetTaskPushNotificationConfig",
@@ -763,6 +788,7 @@ async fn get_push_config_is_answered_for_the_owner_and_is_an_absent_task_for_eve
 
     // THE NON-OWNER CANNOT, and gets the answer an id that never existed gets.
     let foreign = observable(local::get_push_config(
+        host().as_ref(),
         Dialect::V10,
         &envelope(
             "GetTaskPushNotificationConfig",
@@ -773,6 +799,7 @@ async fn get_push_config_is_answered_for_the_owner_and_is_an_absent_task_for_eve
     ))
     .await;
     let absent = observable(local::get_push_config(
+        host().as_ref(),
         Dialect::V10,
         &envelope(
             "GetTaskPushNotificationConfig",
@@ -808,6 +835,7 @@ async fn list_push_configs_is_answered_for_the_owner_and_is_an_absent_task_for_e
         1_000,
     );
     local::create_push_config(
+        host().as_ref(),
         Dialect::V10,
         &envelope(
             "CreateTaskPushNotificationConfig",
@@ -821,6 +849,7 @@ async fn list_push_configs_is_answered_for_the_owner_and_is_an_absent_task_for_e
     .await;
 
     let mine = result(local::list_push_configs(
+        host().as_ref(),
         Dialect::V10,
         &envelope(
             "ListTaskPushNotificationConfigs",
@@ -833,6 +862,7 @@ async fn list_push_configs_is_answered_for_the_owner_and_is_an_absent_task_for_e
     assert_eq!(mine["configs"].as_array().map(Vec::len), Some(1));
 
     let foreign = observable(local::list_push_configs(
+        host().as_ref(),
         Dialect::V10,
         &envelope(
             "ListTaskPushNotificationConfigs",
@@ -843,6 +873,7 @@ async fn list_push_configs_is_answered_for_the_owner_and_is_an_absent_task_for_e
     ))
     .await;
     let absent = observable(local::list_push_configs(
+        host().as_ref(),
         Dialect::V10,
         &envelope(
             "ListTaskPushNotificationConfigs",
@@ -874,6 +905,7 @@ async fn delete_push_config_cannot_disarm_another_principals_callback() {
         1_000,
     );
     local::create_push_config(
+        host().as_ref(),
         Dialect::V10,
         &envelope(
             "CreateTaskPushNotificationConfig",
@@ -887,6 +919,7 @@ async fn delete_push_config_cannot_disarm_another_principals_callback() {
     .await;
 
     let foreign = observable(local::delete_push_config(
+        host().as_ref(),
         &envelope(
             "DeleteTaskPushNotificationConfig",
             serde_json::json!({ "taskId": "cfgdel-owned", "id": "cfg-d" }),
@@ -897,6 +930,7 @@ async fn delete_push_config_cannot_disarm_another_principals_callback() {
     ))
     .await;
     let absent = observable(local::delete_push_config(
+        host().as_ref(),
         &envelope(
             "DeleteTaskPushNotificationConfig",
             serde_json::json!({ "taskId": "cfgdel-never-existed", "id": "cfg-d" }),
@@ -921,6 +955,7 @@ async fn delete_push_config_cannot_disarm_another_principals_callback() {
     // AND THE OWNER CAN STILL DELETE IT — a boundary that also refused the owner would pass the
     // test above while breaking the verb.
     let mine = local::delete_push_config(
+        host().as_ref(),
         &envelope(
             "DeleteTaskPushNotificationConfig",
             serde_json::json!({ "taskId": "cfgdel-owned", "id": "cfg-d" }),
@@ -951,6 +986,7 @@ async fn subscribe_is_relayed_for_the_owner_and_is_an_absent_task_for_everybody_
     // THE OWNER CAN: no local refusal at all, so the subscribe relays and the backend's events are
     // the answer.
     assert!(local::subscribe_refusal(
+        host().as_ref(),
         &envelope("SubscribeToTask", serde_json::json!({ "id": "sub-both" })),
         &rpc_id(),
         owner
@@ -959,6 +995,7 @@ async fn subscribe_is_relayed_for_the_owner_and_is_an_absent_task_for_everybody_
 
     let foreign = observable(
         local::subscribe_refusal(
+            host().as_ref(),
             &envelope("SubscribeToTask", serde_json::json!({ "id": "sub-both" })),
             &rpc_id(),
             intruder,
@@ -968,6 +1005,7 @@ async fn subscribe_is_relayed_for_the_owner_and_is_an_absent_task_for_everybody_
     .await;
     let absent = observable(
         local::subscribe_refusal(
+            host().as_ref(),
             &envelope(
                 "SubscribeToTask",
                 serde_json::json!({ "id": "sub-never-existed" }),
@@ -989,6 +1027,7 @@ async fn the_v0_3_spelling_is_answered_in_the_v0_3_shape() {
     open(me, "push-v03", "ctx-push", TaskState::Completed, 1_000);
     let created = result(
         local::create_push_config(
+            host().as_ref(),
             Dialect::V03,
             &envelope(
                 "tasks/pushNotificationConfig/set",

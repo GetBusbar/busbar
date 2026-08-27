@@ -1151,25 +1151,48 @@ async fn admitted(
                 };
                 Some(
                     super::local::create_push_config(
-                        dialect, &envelope, &rpc_id, &principal, seam, now,
+                        engine_host.as_ref(),
+                        dialect,
+                        &envelope,
+                        &rpc_id,
+                        &principal,
+                        seam,
+                        now,
                     )
                     .await,
                 )
             }
             super::local::LocalVerb::GetPushConfig(dialect) => Some(super::local::get_push_config(
-                dialect, &envelope, &rpc_id, &principal,
+                engine_host.as_ref(),
+                dialect,
+                &envelope,
+                &rpc_id,
+                &principal,
             )),
-            super::local::LocalVerb::ListPushConfigs(dialect) => Some(
-                super::local::list_push_configs(dialect, &envelope, &rpc_id, &principal),
-            ),
+            super::local::LocalVerb::ListPushConfigs(dialect) => {
+                Some(super::local::list_push_configs(
+                    engine_host.as_ref(),
+                    dialect,
+                    &envelope,
+                    &rpc_id,
+                    &principal,
+                ))
+            }
             super::local::LocalVerb::DeletePushConfig(_) => Some(super::local::delete_push_config(
-                &envelope, &rpc_id, &principal, now,
+                engine_host.as_ref(),
+                &envelope,
+                &rpc_id,
+                &principal,
+                now,
             )),
             // THE ONLY PARTIAL ONE. `None` means the task is live and this caller's, so the events
             // are the backend's and the call relays unchanged.
-            super::local::LocalVerb::Subscribe => {
-                super::local::subscribe_refusal(&envelope, &rpc_id, &principal)
-            }
+            super::local::LocalVerb::Subscribe => super::local::subscribe_refusal(
+                engine_host.as_ref(),
+                &envelope,
+                &rpc_id,
+                &principal,
+            ),
         };
         if let Some(response) = local {
             // ── BUSBAR'S OWN CALLBACK, MIRRORED ONTO THE BACKEND. ───────────────────────────────
@@ -1192,7 +1215,8 @@ async fn admitted(
             // would be busbar acting on a caller's behalf after telling it no.
             if response.status() == axum::http::StatusCode::OK {
                 if let Some(mirrored) = super::pushback::mirrored_verb(verb) {
-                    if let Some(task) = addressed_task(&envelope, &principal) {
+                    if let Some(task) = addressed_task(engine_host.as_ref(), &envelope, &principal)
+                    {
                         super::originate::mirror_push_config(
                             &engine_host,
                             &admitted,
@@ -1319,7 +1343,11 @@ async fn admitted(
     // ONLY WHEN THE CALLER OWNS IT. `addressed_task` resolves through `taskstore::get_scoped`, so
     // naming somebody else's task id is not a way to read or cancel their work: it resolves to
     // nothing, the ordinary path runs, and the backend answers about an id it does not hold.
-    let addressed = addressed_task(&envelope, &admitted.dispatch.billed_key_id);
+    let addressed = addressed_task(
+        engine_host.as_ref(),
+        &envelope,
+        &admitted.dispatch.billed_key_id,
+    );
 
     // ── THE POOL, if the caller-named agent is an `agent_pools:` member — resolved ONCE and read
     //    by everything below: the resume lookup (a task the walk routed to the twin must still be
@@ -1546,7 +1574,7 @@ async fn admitted(
     }
 
     if let Some(pinned) = callback.as_ref() {
-        let _ = taskstore::TASKS.set_push_callback(&task_id, Some(pinned.url.clone()), now);
+        let _ = engine_host.task_set_push_callback(&task_id, Some(pinned.url.clone()), now);
         // THE ADDRESSES THE GUARD JUST JUDGED, kept so the FIRST delivery is a `revalidate` — the
         // fresh answer must pass the guard AND still overlap this set — rather than a bare
         // `validate`. Process-local: see `pushdeliver::pins` for why it is not, and must not be
@@ -2736,14 +2764,23 @@ pub(crate) async fn validate_callback(
 ///
 /// The member names are [`super::idmap`]'s, because they are the same fact: the ids this reads are
 /// exactly the ids that translation rewrites.
-fn addressed_task(envelope: &serde_json::Value, principal: &str) -> Option<super::task::Task> {
+fn addressed_task(
+    engine_host: &dyn busbar_substrate::plane_host::EngineHost,
+    envelope: &serde_json::Value,
+    principal: &str,
+) -> Option<super::task::Task> {
     let params = envelope.get("params")?.as_object()?;
     for member in super::idmap::TASK_ID_MEMBERS {
         let Some(named) = params.get(member).and_then(serde_json::Value::as_str) else {
             continue;
         };
-        if let Ok(task) = taskstore::TASKS.get_scoped(principal, named) {
-            return Some(task);
+        // Through the neutral seam: `task_get_scoped` collapses "not this caller's" and "no such
+        // task" to `None` exactly as the old `get_scoped` `Err(Denied)` did, so the scoped oracle is
+        // unchanged; a row that does not parse back is treated as unaddressed for the same reason.
+        if let Some(row) = engine_host.task_get_scoped(principal, named) {
+            if let Ok(task) = super::task::Task::from_row(&row) {
+                return Some(task);
+            }
         }
     }
     None
