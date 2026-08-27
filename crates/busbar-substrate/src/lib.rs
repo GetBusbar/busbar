@@ -58,6 +58,11 @@ pub mod plane_host;
 // declare its data routes without naming `CoreRouter` / `Arc<AppHandle>`, so `PlaneDecl`'s route
 // field can be typed `fn(&dyn Any) -> Vec<PlaneRouteSpec>` and eventually travel to this crate.
 pub mod plane_routes;
+// ADMIN-2/3: the NEUTRAL PLANE TRUST-VERB SEAM — `PlaneTrust`/`PlaneVerbError`/`registered` (resolve +
+// look) and `AdminRouteSpec`/`AdminReqCtx`/`AdminReply` (route mount), so a plane declares its admin
+// trust verbs and resolves one registration without naming `AdminError`/`Scope`/`Arc<AppHandle>`/the
+// core JSON envelope. Core re-exports the resolve/look half from `busbar_core::admin::planeverbs`.
+pub mod admin_verbs;
 pub mod proto;
 pub mod proxy;
 

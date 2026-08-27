@@ -43,7 +43,7 @@
 // NORMAL path rather than an edge case. Every outcome lands on the per-task provenance chain.
 //
 // AND THE TRUST VERBS ARE REACHABLE. `POST /agents/{name}/connect` is the shared
-// [`crate::admin::planeverbs::connect`] mounted over this plane's [`verbs::A2aAgents`], and
+// [`busbar_substrate::admin_verbs::connect_reply`] mounted over this plane's [`verbs::A2aAgents`], and
 // `POST /agents/{name}/approve` is [`verbs::approve`]; together they are what takes a registration
 // out of the fail-closed `Pending` its only constructor puts it in. Before that, [`verbs::connect`]
 // was written, unit-tested and callable from nothing: `A2aPlane::from_config` rightly refuses to
@@ -413,15 +413,37 @@ pub(crate) fn a2a_start(ctx: &crate::plane::registry::BootCtx) -> Result<(), Str
 /// every registration stays `Pending`, and no sequence of operator actions can make a fronted agent
 /// serve. `connect` is the shared plane verb; `approve` locks a registration to a seen fingerprint.
 pub(crate) fn admin_routes(
-    router: axum::Router<std::sync::Arc<crate::state::AppHandle>>,
-) -> axum::Router<std::sync::Arc<crate::state::AppHandle>> {
-    use axum::routing::post;
-    router
-        .route(
-            "/agents/{name}/connect",
-            post(crate::admin::planeverbs::connect::<crate::a2a::verbs::A2aAgents>),
-        )
-        .route("/agents/{name}/approve", post(crate::a2a::verbs::approve))
+    _slot: &dyn std::any::Any,
+) -> Vec<busbar_substrate::admin_verbs::AdminRouteSpec> {
+    use busbar_plugin::cold::http_endpoint::RouteMethod;
+    use busbar_substrate::admin_verbs::{
+        connect_reply, AdminReplyFuture, AdminReqCtx, AdminRouteSpec, AdminScope, AdminVerbKind,
+    };
+    vec![
+        // `connect` is the SHARED audited verb (resolve, look; the core adapter records the row).
+        AdminRouteSpec {
+            method: RouteMethod::Post,
+            path: "/agents/{name}/connect".to_string(),
+            scope: AdminScope::Full,
+            kind: AdminVerbKind::Audited { verb: "connect" },
+            handler: std::sync::Arc::new(|ctx: AdminReqCtx| -> AdminReplyFuture {
+                Box::pin(connect_reply::<crate::a2a::verbs::A2aAgents>(ctx))
+            }),
+        },
+        // `approve` is an AUDITED WRITE that carries a body and its own condition-tagged envelope: it
+        // builds the response and records its own audit row, so it returns `AdminReply::Prebuilt` and
+        // the core adapter passes it through verbatim. `Full` scope (a POST that moves a registration
+        // into service).
+        AdminRouteSpec {
+            method: RouteMethod::Post,
+            path: "/agents/{name}/approve".to_string(),
+            scope: AdminScope::Full,
+            kind: AdminVerbKind::Audited { verb: "approve" },
+            handler: std::sync::Arc::new(|ctx: AdminReqCtx| -> AdminReplyFuture {
+                Box::pin(crate::a2a::verbs::approve(ctx))
+            }),
+        },
+    ]
 }
 
 /// THE A2A TRUST VERBS' OpenAPI FRAGMENT — the two admin paths keyed absolute, merged into the admin

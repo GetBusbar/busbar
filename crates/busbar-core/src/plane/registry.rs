@@ -290,12 +290,17 @@ pub struct PlaneDecl {
     ///
     /// As with [`Self::routes`], the signature grants a plane's admin contribution ONLY the router —
     /// never a `Store`, a `GovCtx`, or an `audit::Chain`.
+    /// Described NEUTRALLY (ADMIN-3), mirroring [`Self::routes`]: from the plane's own runtime slot
+    /// (type-erased `&dyn Any`) the plane returns a flat list of
+    /// [`busbar_substrate::admin_verbs::AdminRouteSpec`] — each a `(method, path, scope, kind, handler)`
+    /// where the handler is a neutral async fn over an
+    /// [`busbar_substrate::admin_verbs::AdminReqCtx`], never an `axum` extractor or `Arc<AppHandle>`. The
+    /// CORE adapter (`crate::admin::v1::json::mount_plane_admin_routes`) registers each spec at its
+    /// VERBATIM `(method, path)`, so the auth middleware's `required_scope(method, path)` is
+    /// byte-identical — the security invariant this seam preserves.
     #[allow(clippy::type_complexity)]
-    pub admin_routes: Option<
-        fn(
-            axum::Router<std::sync::Arc<crate::state::AppHandle>>,
-        ) -> axum::Router<std::sync::Arc<crate::state::AppHandle>>,
-    >,
+    pub admin_routes:
+        Option<fn(&dyn std::any::Any) -> Vec<busbar_substrate::admin_verbs::AdminRouteSpec>>,
 
     /// CONTRIBUTE THE PLANE'S OpenAPI PATH FRAGMENT — a JSON object whose keys are the ABSOLUTE admin
     /// paths this plane's verbs answer on and whose values are the OpenAPI path items. Merged into the

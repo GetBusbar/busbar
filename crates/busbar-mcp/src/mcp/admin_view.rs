@@ -11,7 +11,7 @@
 //!
 //! ## THE TRUST VERBS live here too, and this is where the plane's half of them stops
 //!
-//! `connect` is NOT here. It is [`busbar_core::admin::planeverbs::connect`], written once and
+//! `connect` is NOT here. It is [`busbar_substrate::admin_verbs::connect_reply`], written once and
 //! parameterised by plane, because "resolve the registration, go and look, audit whatever you
 //! found" is one sequence and it was written down twice. What this file supplies is the plane's
 //! half of that contract — [`McpServers`], which says where an MCP registration is resolved from
@@ -27,13 +27,9 @@
 
 use std::sync::Arc;
 
-use axum::extract::{Path, State};
-use axum::http::StatusCode;
-use axum::response::Response;
-
-use busbar_core::admin::planeverbs::{self, PlaneTrust};
-use busbar_core::admin::v1::contract::AdminError;
-use busbar_core::state::AppHandle;
+use busbar_substrate::admin_verbs::{
+    registered, AdminReply, AdminReqCtx, PlaneTrust, PlaneVerbError,
+};
 use busbar_substrate::api::NamedDefView;
 
 /// Project one `tools:` entry — one registered MCP server — onto the shared named-definition view.
@@ -326,12 +322,12 @@ impl PlaneTrust for McpServers {
     fn resolve(
         host: &Arc<dyn busbar_substrate::plane_host::EngineHost>,
         name: &str,
-    ) -> Result<McpSubject, AdminError> {
+    ) -> Result<McpSubject, PlaneVerbError> {
         // The bound-snapshot runtime, read once off the neutral host seam — byte-identical to the
         // four `super::runtime(app)` reads it replaced, all off the one admitted snapshot.
         let rt = super::runtime_of(host);
-        planeverbs::registered("mcp", name, || {
-            match (rt.catalogue.server(name), rt.servers.servers.get(name)) {
+        registered(
+            || match (rt.catalogue.server(name), rt.servers.servers.get(name)) {
                 (Some(entry), Some(cfg)) => Some(McpSubject {
                     entry: entry.clone(),
                     cfg: cfg.clone(),
@@ -339,15 +335,15 @@ impl PlaneTrust for McpServers {
                     sightings: rt.sightings.clone(),
                 }),
                 _ => None,
-            }
-        })
+            },
+        )
     }
 
     async fn look(
         subject: McpSubject,
         host: Arc<dyn busbar_substrate::plane_host::EngineHost>,
         _name: String,
-    ) -> Result<McpTrustView, AdminError> {
+    ) -> Result<McpTrustView, PlaneVerbError> {
         let report =
             crate::mcp::connect::refresh(&subject.pool, &subject.sightings, &subject.entry)
                 .await
@@ -355,7 +351,7 @@ impl PlaneTrust for McpServers {
                 // cannot name, or a credential posture an operator-driven refresh cannot honour.
                 // Both are the operator's own configuration, so both are `invalid_request` rather
                 // than a 404 or a 5xx.
-                .map_err(|refusal| AdminError::Validation(refusal.to_string()))?;
+                .map_err(|refusal| PlaneVerbError::Validation(refusal.to_string()))?;
         // THE SAME RULE THE SWEEP SETTLES BY, and reached through the same function. An operator
         // pressing this button is taking exactly the observation the sweep takes; if only one of
         // the two wrote the durable record, an operator's own remedy would be the one act that
@@ -381,35 +377,33 @@ impl PlaneTrust for McpServers {
     }
 }
 
-/// `GET /api/v1/admin/tools/{name}/changes` — the changes queue, derived, contacting nothing.
-pub(crate) async fn changes(
-    State(handle): State<Arc<AppHandle>>,
-    Path(name): Path<String>,
-) -> Response {
-    let host = busbar_core::plane_host::engine_host_from_handle(&handle);
-    let subject = match McpServers::resolve(&host, &name) {
+/// `GET /api/v1/admin/tools/{name}/changes` — the changes queue, derived, contacting nothing. A
+/// neutral [`AdminReqCtx`] handler: the core adapter mints the host and frames the reply, so this
+/// names no `AppHandle`, no `ok_json`/`err_json`. Serializes the view HERE (declaration order) so the
+/// adapter emits it without a key-resorting `serde_json::Value` round-trip.
+pub(crate) async fn changes(ctx: AdminReqCtx) -> AdminReply {
+    let subject = match McpServers::resolve(&ctx.host, &ctx.name) {
         Ok(v) => v,
-        Err(e) => return busbar_core::admin::v1::json::err_json(&e),
+        Err(e) => return AdminReply::Refused(e),
     };
     let report = crate::mcp::connect::changes(&subject.sightings, &subject.entry);
-    busbar_core::admin::v1::json::ok_json(
-        StatusCode::OK,
-        &trust_view(&report, &subject.entry, &subject.cfg),
+    AdminReply::Applied(
+        serde_json::to_string(&trust_view(&report, &subject.entry, &subject.cfg))
+            .unwrap_or_else(|_| "{}".to_string()),
     )
 }
 
-/// `GET /api/v1/admin/tools/{name}/health` — can busbar use this server right now.
-pub(crate) async fn health(
-    State(handle): State<Arc<AppHandle>>,
-    Path(name): Path<String>,
-) -> Response {
-    let host = busbar_core::plane_host::engine_host_from_handle(&handle);
-    let subject = match McpServers::resolve(&host, &name) {
+/// `GET /api/v1/admin/tools/{name}/health` — can busbar use this server right now. Same neutral shape
+/// as [`changes`].
+pub(crate) async fn health(ctx: AdminReqCtx) -> AdminReply {
+    let subject = match McpServers::resolve(&ctx.host, &ctx.name) {
         Ok(v) => v,
-        Err(e) => return busbar_core::admin::v1::json::err_json(&e),
+        Err(e) => return AdminReply::Refused(e),
     };
     let report = crate::mcp::connect::changes(&subject.sightings, &subject.entry);
-    busbar_core::admin::v1::json::ok_json(StatusCode::OK, &health_view(&report))
+    AdminReply::Applied(
+        serde_json::to_string(&health_view(&report)).unwrap_or_else(|_| "{}".to_string()),
+    )
 }
 
 // Driven over the REAL router, because "mounted and reachable at the right scope" is the claim.

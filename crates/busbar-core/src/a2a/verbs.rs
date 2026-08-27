@@ -45,7 +45,7 @@
 //! served a different card the second time".
 
 // `connect` IS MOUNTED, and the mount is not here. `POST /api/v1/admin/agents/{name}/connect` is
-// [`crate::admin::planeverbs::connect`], written once and parameterised by plane; what this plane
+// [`busbar_substrate::admin_verbs::connect_reply`], written once and parameterised by plane; what this plane
 // supplies is [`A2aAgents`] at the foot of this file — where a registration is resolved from, and
 // what looking at one means. The approval half, `POST .../approve`, IS here, because echoing a
 // fingerprint back is a verb only this plane has. Until both landed, this file was tested and
@@ -60,9 +60,7 @@
 
 use std::sync::Arc;
 
-use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use axum::response::Response;
 
 use super::config::AgentPinCfg;
 use super::pin::CardPin;
@@ -73,7 +71,7 @@ use crate::admin::planeverbs::{self, PlaneTrust};
 use crate::admin::v1::contract::taxonomy::Cond;
 use crate::admin::v1::contract::AdminError;
 use crate::diagnostics::{diag_error, A2A_CARD_FETCH_PANICKED};
-use crate::state::AppHandle;
+use busbar_substrate::admin_verbs::{AdminReply, AdminReqCtx, PlaneVerbError};
 use busbar_substrate::trust::{Approval, Drift, Observation, Sighting, TrustState};
 
 /// A CARD, PLUS WHAT THE CONNECTION IT ARRIVED ON PROVED.
@@ -456,8 +454,8 @@ impl PlaneTrust for A2aAgents {
     fn resolve(
         host: &Arc<dyn busbar_substrate::plane_host::EngineHost>,
         name: &str,
-    ) -> Result<A2aSubject, AdminError> {
-        planeverbs::registered("a2a", name, || {
+    ) -> Result<A2aSubject, PlaneVerbError> {
+        planeverbs::registered(|| {
             let plane = crate::a2a::runtime_arc_of(host)?;
             let registration = plane
                 .with_registrations(|regs| regs.iter().find(|r| r.agent_id == name).cloned())?;
@@ -474,7 +472,7 @@ impl PlaneTrust for A2aAgents {
         subject: A2aSubject,
         _host: Arc<dyn busbar_substrate::plane_host::EngineHost>,
         name: String,
-    ) -> Result<A2aTrustView, AdminError> {
+    ) -> Result<A2aTrustView, PlaneVerbError> {
         let preview = look(&subject).await?;
         debug_assert!(
             preview.grants_nothing(),
@@ -489,7 +487,7 @@ impl PlaneTrust for A2aAgents {
 /// One function for both verbs so an `approve` cannot be judging a different observation from the
 /// one an operator previewed. Returns this layer's own preview type — it decides nothing about
 /// trust, it only carries the answer.
-async fn look(subject: &A2aSubject) -> Result<ConnectPreview, AdminError> {
+async fn look(subject: &A2aSubject) -> Result<ConnectPreview, PlaneVerbError> {
     let policy = subject
         .plane
         .fetch_policy_for(&subject.registration.agent_id);
@@ -510,7 +508,7 @@ async fn look(subject: &A2aSubject) -> Result<ConnectPreview, AdminError> {
         // folded into the preview, because a preview that reads `error` is a statement about the
         // upstream and this is a statement about busbar.
         diag_error!(A2A_CARD_FETCH_PANICKED, error = %e, "a2a: the card fetch panicked during an operator-driven verb");
-        AdminError::Internal
+        PlaneVerbError::Internal(e.to_string())
     })
 }
 
@@ -529,40 +527,61 @@ async fn look(subject: &A2aSubject) -> Result<ConnectPreview, AdminError> {
 /// What it does NOT do: lift an `unpinned` registration. That cap is
 /// [`super::pin::approve_registration`]'s and is not re-decided here — a second opinion about what
 /// may be approved is a second opinion that can disagree.
-pub(crate) async fn approve(
-    State(handle): State<Arc<AppHandle>>,
-    axum::Extension(principal): axum::Extension<crate::auth::AuthPrincipal>,
-    Path(name): Path<String>,
-    body: Result<axum::Json<ApproveReq>, axum::extract::rejection::JsonRejection>,
-) -> Response {
+pub(crate) async fn approve(ctx: AdminReqCtx) -> AdminReply {
     const VERB: &str = "approve";
-    let app = handle.load();
-    let host = crate::plane_host::engine_host(&app);
+    // The middleware always attaches the principal on an admin route; `anonymous` is the impossible
+    // open path, kept only so the audit actor is always nameable.
+    let principal = ctx
+        .principal
+        .clone()
+        .unwrap_or(crate::auth::AuthPrincipal(None));
+    let name = ctx.name.clone();
     // THE 404 BEFORE THE BODY. An unknown agent must answer the same way whether or not the caller
-    // sent something parseable, or the shape of the error becomes an existence oracle.
-    let subject = match A2aAgents::resolve(&host, &name) {
+    // sent something parseable, or the shape of the error becomes an existence oracle. This verb builds
+    // its OWN envelope + audits itself, so the core adapter returns the [`AdminReply::Prebuilt`]
+    // response verbatim and audits nothing.
+    let subject = match A2aAgents::resolve(&ctx.host, &name) {
         Ok(v) => v,
-        Err(e) => return crate::admin::v1::json::err_json(&e),
-    };
-    let req = match body {
-        Ok(axum::Json(req)) => req,
         Err(e) => {
-            // TAGGED with its condition. This operation declares two `Validation` conditions, and
-            // an untagged emission proves only that one of them is reachable — see the over-claim
-            // half of `declared_error_set_is_exactly_what_the_handlers_emit`.
-            return crate::admin::v1::json::err_json_cond(
-                &AdminError::Validation(format!(
-                    "the approve body must be `{{\"fingerprint\": \"…\"}}` naming the \
-                     fingerprint `connect` reported: {e}"
-                )),
-                Cond::MalformedBody,
-            );
+            return AdminReply::Prebuilt(crate::admin::v1::json::err_json(
+                &planeverbs::to_admin_error("a2a", &name, e),
+            ))
+        }
+    };
+    // The buffered body, parsed through the REAL `axum::Json` extractor over a request rebuilt from the
+    // ctx's own headers + bytes — the SAME content-type gate AND deserialize path (and the SAME
+    // `JsonRejection`, `MissingJsonContentType` included) the old `Json<ApproveReq>` extractor ran once
+    // the auth middleware's request reached it. `from_bytes` would SKIP the content-type gate and accept
+    // a valid-JSON body sent under a non-JSON content-type — input the old extractor refused on a verb
+    // that mutates an approval.
+    let req = {
+        use axum::extract::FromRequest as _;
+        let mut r = axum::extract::Request::new(axum::body::Body::from(ctx.body.clone()));
+        *r.headers_mut() = ctx.headers.clone();
+        match axum::Json::<ApproveReq>::from_request(r, &()).await {
+            Ok(axum::Json(req)) => req,
+            Err(e) => {
+                // TAGGED with its condition. This operation declares two `Validation` conditions, and
+                // an untagged emission proves only that one of them is reachable — see the over-claim
+                // half of `declared_error_set_is_exactly_what_the_handlers_emit`.
+                return AdminReply::Prebuilt(crate::admin::v1::json::err_json_cond(
+                    &AdminError::Validation(format!(
+                        "the approve body must be `{{\"fingerprint\": \"…\"}}` naming the \
+                         fingerprint `connect` reported: {e}"
+                    )),
+                    Cond::MalformedBody,
+                ));
+            }
         }
     };
 
     let preview = match look(&subject).await {
         Ok(p) => p,
-        Err(e) => return crate::admin::v1::json::err_json(&e),
+        Err(e) => {
+            return AdminReply::Prebuilt(crate::admin::v1::json::err_json(
+                &planeverbs::to_admin_error("a2a", &name, e),
+            ))
+        }
     };
     if let Err(refusal) = agrees(&preview, req.fingerprint.trim()) {
         planeverbs::audit(
@@ -572,10 +591,10 @@ pub(crate) async fn approve(
             crate::admin::audit::OUTCOME_REJECTED,
             &principal,
         );
-        return crate::admin::v1::json::err_json_cond(
+        return AdminReply::Prebuilt(crate::admin::v1::json::err_json_cond(
             &AdminError::Validation(refusal),
             Cond::InvalidConfig,
-        );
+        ));
     }
 
     // ── THE WRITE, under the registry's own lock, against the sighting just observed. ────────────
@@ -619,7 +638,7 @@ pub(crate) async fn approve(
                 crate::admin::audit::OUTCOME_REJECTED,
                 &principal,
             );
-            return crate::admin::v1::json::err_json(&e);
+            return AdminReply::Prebuilt(crate::admin::v1::json::err_json(&e));
         }
     };
     planeverbs::audit(
@@ -629,7 +648,10 @@ pub(crate) async fn approve(
         crate::admin::audit::OUTCOME_APPLIED,
         &principal,
     );
-    crate::admin::v1::json::ok_json(StatusCode::OK, &registration_view(&name, &reg))
+    AdminReply::Prebuilt(crate::admin::v1::json::ok_json(
+        StatusCode::OK,
+        &registration_view(&name, &reg),
+    ))
 }
 
 /// Does what the endpoint is serving RIGHT NOW agree with what the operator says they approved?

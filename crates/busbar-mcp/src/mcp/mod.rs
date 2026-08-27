@@ -630,19 +630,45 @@ pub(crate) fn mcp_routes(
 /// `connect` is the shared plane verb; `changes` and `health` are the two derived reads that contact
 /// nothing.
 pub(crate) fn mcp_admin_routes(
-    router: axum::Router<std::sync::Arc<busbar_core::state::AppHandle>>,
-) -> axum::Router<std::sync::Arc<busbar_core::state::AppHandle>> {
-    use axum::routing::{get, post};
-    router
-        .route(
-            "/tools/{name}/connect",
-            post(busbar_core::admin::planeverbs::connect::<crate::mcp::admin_view::McpServers>),
-        )
-        .route(
-            "/tools/{name}/changes",
-            get(crate::mcp::admin_view::changes),
-        )
-        .route("/tools/{name}/health", get(crate::mcp::admin_view::health))
+    _slot: &dyn std::any::Any,
+) -> Vec<busbar_substrate::admin_verbs::AdminRouteSpec> {
+    use crate::mcp::admin_view::McpServers;
+    use busbar_plugin::cold::http_endpoint::RouteMethod;
+    use busbar_substrate::admin_verbs::{
+        connect_reply, AdminReplyFuture, AdminReqCtx, AdminRouteSpec, AdminScope, AdminVerbKind,
+    };
+    vec![
+        // `connect` is the SHARED audited verb: resolve, look, and the core adapter records the
+        // applied/rejected row. `Full` scope (a POST that reaches the network and can quarantine).
+        AdminRouteSpec {
+            method: RouteMethod::Post,
+            path: "/tools/{name}/connect".to_string(),
+            scope: AdminScope::Full,
+            kind: AdminVerbKind::Audited { verb: "connect" },
+            handler: std::sync::Arc::new(|ctx: AdminReqCtx| -> AdminReplyFuture {
+                Box::pin(connect_reply::<McpServers>(ctx))
+            }),
+        },
+        // The two derived reads contact nothing and audit nothing: `ReadOnly` scope (a GET).
+        AdminRouteSpec {
+            method: RouteMethod::Get,
+            path: "/tools/{name}/changes".to_string(),
+            scope: AdminScope::ReadOnly,
+            kind: AdminVerbKind::Read,
+            handler: std::sync::Arc::new(|ctx: AdminReqCtx| -> AdminReplyFuture {
+                Box::pin(crate::mcp::admin_view::changes(ctx))
+            }),
+        },
+        AdminRouteSpec {
+            method: RouteMethod::Get,
+            path: "/tools/{name}/health".to_string(),
+            scope: AdminScope::ReadOnly,
+            kind: AdminVerbKind::Read,
+            handler: std::sync::Arc::new(|ctx: AdminReqCtx| -> AdminReplyFuture {
+                Box::pin(crate::mcp::admin_view::health(ctx))
+            }),
+        },
+    ]
 }
 
 /// THE MCP TRUST VERBS' OpenAPI FRAGMENT — the three admin paths keyed absolute, merged into the
@@ -650,7 +676,7 @@ pub(crate) fn mcp_admin_routes(
 // Read only by the OpenAPI generator (feature `openapi-schema`) and the non-vacuity floor test.
 #[cfg_attr(not(any(test, feature = "openapi-schema")), allow(dead_code))]
 pub(crate) fn mcp_openapi_fragment() -> serde_json::Value {
-    let ap = |rel: &str| format!("{}{rel}", busbar_core::admin::v1::contract::ADMIN_PREFIX);
+    let ap = |rel: &str| format!("{}{rel}", busbar_substrate::api::ADMIN_PREFIX);
     serde_json::json!({
         ap("/tools/{name}/connect"): {
             "post": {
@@ -697,7 +723,7 @@ pub(crate) fn mcp_openapi_fragment() -> serde_json::Value {
 /// THE MCP PLANE'S ADMIN PROJECTION, and the plane's half of the shared trust verb surface —
 /// where an MCP registration is resolved from, what looking at one means, and the two derived reads
 /// (`changes`, `health`) that contact nothing. `connect` itself is
-/// [`busbar_core::admin::planeverbs::connect`], written once for every plane.
+/// [`busbar_substrate::admin_verbs::connect_reply`], written once for every plane.
 pub(crate) mod admin_view;
 /// THE SEALED `requestState` busbar mints for its OWN asks: HMAC over a payload binding the
 /// authenticated principal, the request, the catalogue generation, a round index and a TTL.

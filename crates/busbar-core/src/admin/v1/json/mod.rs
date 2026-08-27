@@ -85,12 +85,7 @@ impl AdminTransport for JsonV1 {
         // Without these the `agents:`/`tools:` surfaces are CRUD only and no sequence of operator
         // actions can make a fronted agent or MCP server serve. The `admin_routes` fns are granted
         // only the router — never a `Store`/`GovCtx`/audit handle.
-        let mut router = router;
-        for decl in crate::plane::registry::plane_decls() {
-            if let Some(admin_routes) = decl.admin_routes {
-                router = admin_routes(router);
-            }
-        }
+        let router = mount_plane_admin_routes(router);
         let router = router
             // Groups — the `groups:` limit-tree CRUD: runtime-mutable groups
             // → per-user budgets. Reads are read-only scope; mutations are full scope.
@@ -265,6 +260,117 @@ pub(crate) use txn::{config_transaction, Outcome};
 /// additively in 1.6.0). One handler set for every section of the 1.5.3 universal config
 /// pattern — see the module header.
 pub(crate) mod named_map;
+
+// ── The plane admin-verb route-mount adapter (ADMIN-3) ───────────────────────────────────────────
+
+/// MOUNT EVERY PLANE'S ADMIN TRUST VERBS onto the admin router — the ADMIN-3 mirror of the data
+/// plane's `router::mount_plane_routes`. Iterates the plane decls in DECLARATION ORDER (MCP before
+/// A2A, preserving the operator-visible route order), asks each for its neutral
+/// [`busbar_substrate::admin_verbs::AdminRouteSpec`] list, and registers each spec at its VERBATIM
+/// `(method, path)` so the auth middleware's `required_scope(method, path)` is byte-identical.
+///
+/// The `&dyn Any` a plane's `admin_routes` fn takes is the seam's shared shape (it mirrors
+/// `PlaneDecl::routes`); the admin verbs' paths are static and their handlers read the request's own
+/// snapshot through the host the shim mints per request, so no build-time slot value is needed — a
+/// unit placeholder satisfies the signature.
+fn mount_plane_admin_routes(mut router: Router<Arc<AppHandle>>) -> Router<Arc<AppHandle>> {
+    for decl in crate::plane::registry::plane_decls() {
+        if let Some(admin_routes) = decl.admin_routes {
+            for spec in admin_routes(&() as &dyn std::any::Any) {
+                router = mount_one_admin_spec(router, decl.key, spec);
+            }
+        }
+    }
+    router
+}
+
+/// Mount ONE neutral [`busbar_substrate::admin_verbs::AdminRouteSpec`] onto the admin router. This is
+/// the single place a plane's admin verb touches `Arc<AppHandle>` / `ok_json` / `err_json` / the audit
+/// chain: the shim loads the handle, mints the neutral host, builds an
+/// [`busbar_substrate::admin_verbs::AdminReqCtx`], awaits the plane's own handler, and frames the
+/// [`busbar_substrate::admin_verbs::AdminReply`] — mapping the neutral `PlaneVerbError` back onto
+/// `AdminError` and, for an `Audited` verb, recording the audit row EXACTLY where the pre-seam
+/// `connect` did (applied on a view, rejected on a look refusal, NOTHING on the resolve-time `404`).
+fn mount_one_admin_spec(
+    router: Router<Arc<AppHandle>>,
+    plane: &'static str,
+    spec: busbar_substrate::admin_verbs::AdminRouteSpec,
+) -> Router<Arc<AppHandle>> {
+    use busbar_substrate::admin_verbs::{AdminReqCtx, AdminRouteSpec};
+    let AdminRouteSpec {
+        method,
+        path,
+        scope: _,
+        kind,
+        handler,
+    } = spec;
+    let method_filter = crate::plugin_routes::method_filter_of(method);
+    let shim = move |State(handle): State<Arc<AppHandle>>,
+                     Path(name): Path<String>,
+                     principal: Option<axum::Extension<crate::auth::AuthPrincipal>>,
+                     headers: axum::http::HeaderMap,
+                     body: axum::body::Bytes| {
+        let handler = handler.clone();
+        async move {
+            let principal = principal.map(|axum::Extension(p)| p);
+            // LOAD + MINT stays 100% core-side (the plane names neither `AppHandle` nor the host
+            // factory). `from_handle` mirrors the data-plane adapter; the verbs here read only the BOUND
+            // slot, so it is byte-identical to the pre-seam `engine_host(&handle.load())` mint.
+            let host = crate::plane_host::engine_host_from_handle(&handle);
+            let ctx = AdminReqCtx {
+                host,
+                name: name.clone(),
+                body,
+                headers,
+                principal: principal.clone(),
+            };
+            finish_admin_reply(plane, &name, kind, principal, handler(ctx).await)
+        }
+    };
+    router.route(&path, axum::routing::on(method_filter, shim))
+}
+
+/// Frame a plane handler's [`busbar_substrate::admin_verbs::AdminReply`] onto the wire, and record the
+/// audit row for an `Audited` verb. The variants encode the pre-seam behaviour exactly: `Refused` is
+/// the un-audited resolve-time refusal, `Applied`/`Rejected` are the audited look-time outcomes, and
+/// `Prebuilt` is a verb that built its own envelope and audited itself (returned verbatim).
+fn finish_admin_reply(
+    plane: &'static str,
+    name: &str,
+    kind: busbar_substrate::admin_verbs::AdminVerbKind,
+    principal: Option<crate::auth::AuthPrincipal>,
+    reply: busbar_substrate::admin_verbs::AdminReply,
+) -> Response {
+    use busbar_substrate::admin_verbs::{AdminReply, AdminVerbKind};
+    let record_audit = |outcome: &'static str| {
+        if let AdminVerbKind::Audited { verb } = kind {
+            let anon = crate::auth::AuthPrincipal(None);
+            let p = principal.as_ref().unwrap_or(&anon);
+            crate::admin::planeverbs::audit(plane, verb, name, outcome, p);
+        }
+    };
+    match reply {
+        AdminReply::Prebuilt(resp) => resp,
+        AdminReply::Refused(e) => {
+            err_json(&crate::admin::planeverbs::to_admin_error(plane, name, e))
+        }
+        AdminReply::Applied(body) => {
+            record_audit(audit::OUTCOME_APPLIED);
+            // Byte-identical to `ok_json(StatusCode::OK, &view)`: same status, same content type, and the
+            // body was serialized handler-side by the SAME `serde_json::to_string(&view)` call.
+            (
+                StatusCode::OK,
+                [(CONTENT_TYPE, crate::proxy::APPLICATION_JSON)],
+                body,
+            )
+                .into_response()
+        }
+        AdminReply::Rejected(e) => {
+            record_audit(audit::OUTCOME_REJECTED);
+            err_json(&crate::admin::planeverbs::to_admin_error(plane, name, e))
+        }
+    }
+}
 
 // ── JSON wire helpers (v1) ───────────────────────────────────────────────────────────────────────
 
