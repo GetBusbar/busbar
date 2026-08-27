@@ -175,6 +175,22 @@ impl crate::ingress::protocol::ResourceMetadata for A2aWords {
     }
 }
 
+/// THE HOST TWIN of [`A2aWords::document`](crate::ingress::protocol::ResourceMetadata::document) — the
+/// SAME RFC 9728 document, read off the host's BOUND snapshot through the neutral
+/// [`crate::a2a::runtime_arc_of`] seam so the `RouteAuth::None` metadata handler reaches it without an
+/// `AppHandle` downcast. The audience is OWNED (a `Cow::Owned`), so the returned `Metadata` is
+/// `'static`; byte-identical to the `&App` form for every input.
+pub(super) fn document_of(
+    host: &std::sync::Arc<dyn busbar_substrate::plane_host::EngineHost>,
+) -> Option<busbar_substrate::ingress::protocol::Metadata<'static>> {
+    let admission = crate::a2a::runtime_arc_of(host).and_then(|p| p.admission())?;
+    Some(busbar_substrate::ingress::protocol::Metadata {
+        resource: std::borrow::Cow::Owned(admission.audience),
+        authorization_servers: &[],
+        scopes_supported: &[],
+    })
+}
+
 /// THE SAME 404 THE SHARED SEQUENCE ANSWERS, at the four handlers on this plane that are not the
 /// JSON-RPC endpoint and therefore do not run that sequence.
 ///

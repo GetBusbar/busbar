@@ -99,7 +99,8 @@ fn busbars_issuer_key(signer: &crate::a2a::sign::CardSigner<'_>) -> IssuerKey {
 #[test]
 fn a_served_card_carries_a_signature_that_verifies_against_busbars_published_key() {
     let app = app_signed_by(7);
-    let signer = card_signer(&app).expect("a deployment with a signing key has a card signer");
+    let host = crate::plane_host::engine_host(&app);
+    let signer = card_signer(&host).expect("a deployment with a signing key has a card signer");
     let served = served_by(&signer);
 
     let verified = jws::verify_card(&served, &busbars_issuer_key(&signer))
@@ -121,7 +122,8 @@ fn a_served_card_carries_a_signature_that_verifies_against_busbars_published_key
 #[test]
 fn the_served_card_carries_busbars_signature_and_only_busbars() {
     let app = app_signed_by(7);
-    let signer = card_signer(&app).expect("a signing key means a card signer");
+    let host = crate::plane_host::engine_host(&app);
+    let signer = card_signer(&host).expect("a signing key means a card signer");
     let served = served_by(&signer);
     let signatures = served
         .get("signatures")
@@ -146,7 +148,8 @@ fn the_served_card_carries_busbars_signature_and_only_busbars() {
 #[test]
 fn tampering_with_one_byte_of_the_served_document_breaks_verification() {
     let app = app_signed_by(7);
-    let signer = card_signer(&app).expect("a signing key means a card signer");
+    let host = crate::plane_host::engine_host(&app);
+    let signer = card_signer(&host).expect("a signing key means a card signer");
     let key = busbars_issuer_key(&signer);
     let served = served_by(&signer);
     jws::verify_card(&served, &key).expect("the untampered card verifies — the control");
@@ -200,8 +203,10 @@ fn a_card_signed_by_a_different_busbar_deployment_does_not_verify_here() {
     // accept the other, or the pin identifies "some busbar" rather than "this busbar".
     let ours_app = app_signed_by(7);
     let theirs_app = app_signed_by(9);
-    let ours = card_signer(&ours_app).expect("a signing key means a card signer");
-    let theirs = card_signer(&theirs_app).expect("a signing key means a card signer");
+    let ours_host = crate::plane_host::engine_host(&ours_app);
+    let theirs_host = crate::plane_host::engine_host(&theirs_app);
+    let ours = card_signer(&ours_host).expect("a signing key means a card signer");
+    let theirs = card_signer(&theirs_host).expect("a signing key means a card signer");
     assert_eq!(
         jws::verify_card(&served_by(&theirs), &busbars_issuer_key(&ours)),
         Err(JwsError::NoSignatureVerified)
@@ -218,7 +223,8 @@ fn the_signature_covers_exactly_the_inbound_paths_signing_payload() {
     // this fails while `verify_card` might not, because `verify_card` would be using the signer's
     // idea of canonical too.
     let app = app_signed_by(7);
-    let signer = card_signer(&app).expect("a signing key means a card signer");
+    let host = crate::plane_host::engine_host(&app);
+    let signer = card_signer(&host).expect("a signing key means a card signer");
     let served = served_by(&signer);
 
     let protected_b64 = served["signatures"][0]["protected"]
@@ -315,7 +321,8 @@ fn there_is_exactly_one_canonicalizer_and_one_signing_payload_on_this_plane() {
 fn the_card_key_is_not_the_token_key_and_cannot_be_walked_back_to_it() {
     let token = token_signer(7);
     let app = app_signed_by(7);
-    let card = card_signer(&app).expect("a signing key means a card signer");
+    let host = crate::plane_host::engine_host(&app);
+    let card = card_signer(&host).expect("a signing key means a card signer");
 
     let card_spki = base64::engine::general_purpose::STANDARD
         .decode(card.issuer_spki_base64())
@@ -339,8 +346,12 @@ fn the_derivation_is_deterministic_and_domain_separated() {
     let token = token_signer(7);
     let app = app_signed_by(7);
     assert_eq!(
-        card_signer(&app).unwrap().issuer_spki_base64(),
-        card_signer(&app).unwrap().issuer_spki_base64(),
+        card_signer(&crate::plane_host::engine_host(&app))
+            .unwrap()
+            .issuer_spki_base64(),
+        card_signer(&crate::plane_host::engine_host(&app))
+            .unwrap()
+            .issuer_spki_base64(),
         "a restart must serve cards under the same key, or every caller's pin breaks on a bounce"
     );
     assert_ne!(
@@ -363,8 +374,10 @@ fn rotating_the_token_key_rotates_the_card_key_with_it() {
     // no longer verifies — which is the signal `approve-pin` exists to absorb.
     let before_app = app_signed_by(7);
     let after_app = app_signed_by(8);
-    let before = card_signer(&before_app).expect("a signing key means a card signer");
-    let after = card_signer(&after_app).expect("a signing key means a card signer");
+    let before_host = crate::plane_host::engine_host(&before_app);
+    let after_host = crate::plane_host::engine_host(&after_app);
+    let before = card_signer(&before_host).expect("a signing key means a card signer");
+    let after = card_signer(&after_host).expect("a signing key means a card signer");
     assert_ne!(before.issuer_spki_base64(), after.issuer_spki_base64());
     assert_eq!(
         jws::verify_card(&served_by(&after), &busbars_issuer_key(&before)),
@@ -396,7 +409,8 @@ fn the_signature_is_taken_over_the_document_that_is_actually_served() {
     // bytes — busbar's endpoints, busbar's security scheme, the backend nowhere in them — are the
     // ones under the signature.
     let app = app_signed_by(7);
-    let signer = card_signer(&app).expect("a signing key means a card signer");
+    let host = crate::plane_host::engine_host(&app);
+    let signer = card_signer(&host).expect("a signing key means a card signer");
     let served = served_by(&signer);
     let flattened = serde_json::to_string(&served).expect("serialize");
     assert!(

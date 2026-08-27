@@ -287,12 +287,18 @@ pub(crate) fn sync(
     probe: &CardProbe<'_>,
 ) -> SyncOutcome {
     // The operator `sync` verb ALWAYS re-checks: `reverify::due(.., operator_sync = true)` is
-    // unconditionally `Due::OperatorSync`. Route it through the same host seam the background job uses
-    // (`plane_host::trust::verify_decide_due`, `operator_sync = true`) rather than reaching
-    // `busbar_substrate::trust::reverify::due` directly, so the a2a plane no longer touches the reverify primitive.
-    let due = crate::plane_host::trust::verify_decide_due(
-        ledger.last_checked_ms,
-        policy.ttl_ms,
+    // unconditionally `Due::OperatorSync`. Call the NEUTRAL `reverify::due` primitive directly over a
+    // minimal ledger/policy (it reads only `last_checked_ms` + `ttl_ms`), byte-identical to the retired
+    // `verify_decide_due` host veneer.
+    let due = reverify::due(
+        &Ledger {
+            last_checked_ms: ledger.last_checked_ms,
+            ..Default::default()
+        },
+        &Policy {
+            ttl_ms: policy.ttl_ms,
+            recovery_backoff_ms: 0,
+        },
         now_ms,
         true,
     );

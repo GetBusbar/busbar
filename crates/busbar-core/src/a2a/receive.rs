@@ -97,28 +97,20 @@ pub(super) fn path_param(params: &[(String, String)], name: &str) -> String {
 /// rather than a `CurrentApp` extractor. Declared `RouteAuth::None`, so the auth middleware bypasses
 /// the chain and hands this handler no resolved identity — matching the old open handler.
 pub(crate) async fn metadata_route(ctx: busbar_substrate::plane_routes::PlaneReqCtx) -> Response {
-    use crate::ingress::protocol::ResourceMetadata as _;
     use busbar_substrate::ingress::protocol::{CoreRefusal, Words as _};
-    let handle: Arc<crate::state::AppHandle> = ctx
-        .engine
-        .downcast::<crate::state::AppHandle>()
-        .expect("the a2a route engine handle is an AppHandle");
-    let app = handle.load();
-    match A2aWords::document(&app) {
+    // The document is read off the NEUTRAL host seam (`super::words::document_of` over `ctx.host`), so
+    // this pure metadata read needs no `AppHandle` downcast.
+    match super::words::document_of(&ctx.host) {
         Some(doc) => busbar_substrate::ingress::protocol::metadata(&doc),
         None => A2aWords.refuse(CoreRefusal::MetadataUnavailable),
     }
 }
 
 pub(crate) async fn well_known_card(ctx: busbar_substrate::plane_routes::PlaneReqCtx) -> Response {
-    // S7 neutral seam: this `RouteAuth::None` handler took only `CurrentApp`; the app now rides the
-    // seam type-erased. Downcast in-body (the App-sever is later) and load the live snapshot.
-    let handle: Arc<crate::state::AppHandle> = ctx
-        .engine
-        .downcast::<crate::state::AppHandle>()
-        .expect("the a2a route engine handle is an AppHandle");
-    let app = handle.load();
-    let Some(plane) = crate::a2a::runtime(&app) else {
+    // S7 neutral seam: this `RouteAuth::None` handler took only `CurrentApp`. Both the plane runtime
+    // and the card signer are now reached through the neutral `ctx.host` seam, so this pure card read
+    // needs no `AppHandle` downcast.
+    let Some(plane) = crate::a2a::runtime_arc_of(&ctx.host) else {
         return plane_absent();
     };
     // NO PUBLIC URL, NO CARD. A deployment with no receiving side is not an A2A server, and a card
@@ -128,7 +120,7 @@ pub(crate) async fn well_known_card(ctx: busbar_substrate::plane_routes::PlaneRe
     };
     // Signed by the same key that signs the fronted cards, read from the same place, so what an
     // external caller pins busbar by is one key rather than one per path.
-    let signer = crate::a2a::sign::card_signer(&app);
+    let signer = crate::a2a::sign::card_signer(&ctx.host);
     match super::serve::self_card(public_url, signer.as_ref()) {
         Ok(doc) => (
             [
@@ -184,17 +176,16 @@ pub(super) struct Admitted {
 /// allocation on a request that is being turned away is cheaper than widening every `Result` on the
 /// admitted path by the size of a response nobody on it will ever carry.
 fn admit(
-    engine_host: &dyn busbar_substrate::plane_host::EngineHost,
-    app: &App,
+    host: &Arc<dyn busbar_substrate::plane_host::EngineHost>,
     key: &busbar_api::VirtualKey,
     agent_id: &str,
     shape: &super::registry::TaskShape,
     now_secs: u64,
 ) -> Result<Admitted, Box<Response>> {
-    let Some(plane) = crate::a2a::runtime(app) else {
+    let Some(plane) = crate::a2a::runtime_arc_of(host) else {
         return Err(Box::new(plane_absent()));
     };
-    let kind = credential_kind_of(engine_host);
+    let kind = credential_kind_of(host.as_ref());
     // READ ONCE, under the same acquisition as the registry itself, so the value carried forward is
     // the generation the decision below was actually taken on.
     let generation = plane.generation();
@@ -294,16 +285,16 @@ fn admit(
 /// several agents that can all serve one shape has a caller who must say which — and that caller
 /// has an unambiguous address for it, `POST /a2a/agents/{id}`, which the refusal names.
 fn select(
-    app: &App,
+    host: &Arc<dyn busbar_substrate::plane_host::EngineHost>,
     key: &busbar_api::VirtualKey,
     shape: &super::registry::TaskShape,
 ) -> Result<String, Box<Response>> {
-    let Some(plane) = crate::a2a::runtime(app) else {
+    let Some(plane) = crate::a2a::runtime_arc_of(host) else {
         return Err(Box::new(plane_absent()));
     };
     let caller = busbar_substrate::catalogue::Caller {
         key: Some(key),
-        now: crate::plane_host::clock_now_secs_over(app),
+        now: host.clock_now_secs(),
         generation: busbar_substrate::trust::validate::Generations::at_admission(
             plane.generation(),
         ),
@@ -610,16 +601,14 @@ pub(crate) async fn card(ctx: busbar_substrate::plane_routes::PlaneReqCtx) -> Re
     // S7 neutral seam: `RouteAuth::Key`. `gov` is the middleware-resolved ctx off the seam; the
     // `{agent_id}` capture, which an `axum::extract::Path` used to hand us, is read by name off
     // `ctx.path_params` (the core adapter collected the raw path captures in match order).
-    let handle: Arc<crate::state::AppHandle> = ctx
-        .engine
-        .downcast::<crate::state::AppHandle>()
-        .expect("the a2a route engine handle is an AppHandle");
-    let app = handle.load();
+    // S7 neutral seam: `RouteAuth::Key`. The plane runtime, the clock, the admission and the card
+    // signer are all reached through the neutral `ctx.host` seam, so this card read needs no
+    // `AppHandle` downcast.
     let gov = ctx
         .gov
         .expect("the a2a card route is RouteAuth::Key, so the middleware attached a gov ctx");
     let agent_id = path_param(&ctx.path_params, "agent_id");
-    let Some(plane) = crate::a2a::runtime(&app) else {
+    let Some(plane) = crate::a2a::runtime_arc_of(&ctx.host) else {
         return plane_absent();
     };
     let Some(key) = gov.key.as_ref() else {
@@ -632,14 +621,7 @@ pub(crate) async fn card(ctx: busbar_substrate::plane_routes::PlaneReqCtx) -> Re
     // A card read asks for no particular work, so the shape is the empty one: every filter that
     // depends on the requested capability is vacuous and only trust, scope and a cached card decide.
     let shape = super::registry::TaskShape::default();
-    let admitted = match admit(
-        ctx.host.as_ref(),
-        &app,
-        key,
-        &agent_id,
-        &shape,
-        crate::plane_host::clock_now_secs_over(&app),
-    ) {
+    let admitted = match admit(&ctx.host, key, &agent_id, &shape, ctx.host.clock_now_secs()) {
         Ok(a) => a,
         Err(resp) => return *resp,
     };
@@ -667,7 +649,7 @@ pub(crate) async fn card(ctx: busbar_substrate::plane_routes::PlaneReqCtx) -> Re
     // BUSBAR SIGNS WHAT BUSBAR SERVES. The vendor's signature cannot survive the rewrite, so the
     // served card carries busbar's own — which is what gives an external caller something to pin
     // busbar by.
-    let signer = crate::a2a::sign::card_signer(&app);
+    let signer = crate::a2a::sign::card_signer(&ctx.host);
     match super::serve::rewrite_card(
         &cached,
         &admitted.dispatch.backend_url,
@@ -943,13 +925,19 @@ async fn admitted(
     // hops need a `Send + 'static` route instead — that is the `SendHostDispatch` threaded into
     // `unary_hop`/`stream_hop` below. CLUSTER-4 admits this call's budget through `host`'s arena.
     let host = crate::plane_host::HostDispatch::new(&app);
+    // THE BARE NEUTRAL SCOPE for this request's SCOPED host capability calls (govern_admit + meter).
+    // Held for the whole `admitted` future so the govern grant registered in its arena is released on
+    // any exit (return/cancel/panic) — the exact RAII lifetime the `HostDispatch` arena gave it — and
+    // so the meter's fire-and-forget charge folds through the same arena. `DispatchScope::new()` is
+    // NEUTRAL and `Send`; `EngineHostImpl` materializes the transient `HostCtx` over it internally.
+    let cap_scope = busbar_substrate::plane_host::DispatchScope::new();
     // Re-read rather than threaded: `wire_refusal` above already refused every request that has no
     // key, so this branch is unreachable and is a clean refusal rather than an unwrap because it
     // is on a request path.
     let Some(key) = gov.key.as_ref() else {
         return governance_required();
     };
-    let now = crate::plane_host::clock_now_secs_over(&app);
+    let now = engine_host.clock_now_secs();
 
     // ── THE ONE VERB THAT NAMES NO AGENT. ───────────────────────────────────────────────────────
     //
@@ -965,13 +953,13 @@ async fn admitted(
         super::local::method_of(&envelope),
         "GetExtendedAgentCard" | "agent/getAuthenticatedExtendedCard"
     ) {
-        return super::route::extended_agent_card(&app, key, &rpc_id);
+        return super::route::extended_agent_card(&engine_host, &app, key, &rpc_id);
     }
 
     let shape = shape_of(&envelope);
     let agent_id = match &target {
         Named(id) => id.clone(),
-        FromCatalogue => match select(&app, key, &shape) {
+        FromCatalogue => match select(&engine_host, key, &shape) {
             Ok(id) => id,
             Err(resp) => return *resp,
         },
@@ -983,7 +971,7 @@ async fn admitted(
         .and_then(serde_json::Value::as_str)
         .unwrap_or_default();
 
-    let admitted = match admit(engine_host.as_ref(), &app, key, &agent_id, &shape, now) {
+    let admitted = match admit(&engine_host, key, &agent_id, &shape, now) {
         Ok(a) => a,
         Err(resp) => return *resp,
     };
@@ -1033,12 +1021,11 @@ async fn admitted(
         // `Some` only when non-empty — an empty one stays a full re-scan, never a cleared-set shared
         // across contexts.
         let sid = context_id.to_string();
-        let app2 = Arc::clone(&app);
+        let host2 = Arc::clone(&engine_host);
         // The host seam drives the ASYNC gate on a fresh runtime, so it MUST run on a BLOCKING thread
         // (`block_on` on a runtime worker panics). One hop per request that has an attached gate.
         let outcome = tokio::task::spawn_blocking(move || {
-            crate::plane_host::gate_decide_over(
-                &app2,
+            host2.gate_decide(
                 1,
                 &agent,
                 request_id,
@@ -1107,20 +1094,16 @@ async fn admitted(
     // enforcement chain `try_admit(&app.cost, key, &resource)` walks; `resource` is the pool. This
     // refusal already discards `LimitBlocked`'s detail (a fixed "budget is spent" reply), so a bare
     // `Deny` is behavior-identical.
-    let admitted_budget = host.with_host(|hctx, vt| {
-        let facts = busbar_plugin::hot::Facts::with_attribution(
-            0, // no tokens reserved: `try_admit` charges the flat per-request fee, not tokens.
-            0, // budget_remaining ≥ tokens (0 ≥ 0), so the POD gate is a no-op; the chain decides.
-            0,
-            0,
-            0,
-            resource.as_bytes(),
-            key.id.as_bytes(),
-            key.group.as_deref().map(str::as_bytes),
-        );
-        (vt.govern_admit.unwrap())(hctx, &*facts as *const busbar_plugin::hot::Facts)
-    });
-    if admitted_budget == busbar_plugin::hot::Decision::Deny {
+    let admitted_budget = engine_host.govern_admit_reason(
+        &cap_scope,
+        resource.as_bytes(),
+        key.id.as_bytes(),
+        key.group.as_deref().map(str::as_bytes),
+    );
+    if matches!(
+        admitted_budget,
+        busbar_substrate::plane_host::GovAdmit::Blocked { .. }
+    ) {
         crate::plane::auditlog::emit_admin_hostless_now(
             AUDIT_ACTION,
             &resource,
@@ -1410,17 +1393,19 @@ async fn admitted(
         .as_ref()
         .or(resumed.as_ref())
         .map(|t| t.agent_id.clone());
-    // THE ONE HOST SCOPE THIS HOP'S ADMIT AND SETTLE SHARE (§4 a2a scope unification). Created BEFORE
-    // `select_member` so the pooled WALK admit below joins the SAME `Send + 'static` arena the blocking
-    // relay's settle later runs under — no longer two scopes (the async-frame `_host` for the walk and
-    // a `spawn_blocking` `hop_host` for the settle) with nothing spanning both. It is moved onto the
-    // blocking thread with the hop and reclaims at hop end; on an early return before the hop it drops
-    // here, releasing any registered walk probe owner-checked — exactly as the bare hold used to.
+    // THE ONE BARE NEUTRAL SCOPE THIS HOP'S ADMIT AND SETTLE SHARE (§4 a2a scope unification). Created
+    // BEFORE `select_member` so the pooled WALK admit below joins the SAME `Send + 'static` arena the
+    // blocking relay's settle later runs under. It is moved onto the blocking thread with the hop and
+    // reclaims at hop end; on an early return before the hop it drops here, releasing any registered
+    // walk probe owner-checked — exactly as the bare hold used to. `EngineHostImpl` materializes the
+    // transient `HostCtx` over this scope internally, so no `App`/`SendHostDispatch` is threaded for it.
+    let hop_scope = busbar_substrate::plane_host::DispatchScope::new();
+    // The durable-journal route (`hop_host.with_host` in `stream_hop`) still needs a `Send + 'static`
+    // host handle — that is Batch C, so `SendHostDispatch` REMAINS for it (never for the breaker).
     let hop_host = crate::plane_host::SendHostDispatch::new(std::sync::Arc::clone(&app));
     let selected_member = super::route::select_member(
-        &app,
         engine_host.as_ref(),
-        hop_host.scope(),
+        &hop_scope,
         &plane,
         key,
         credential_kind_of(engine_host.as_ref()),
@@ -1588,7 +1573,9 @@ async fn admitted(
     // to the in-place `record_metering(&hop.billed_key_id, &resource, Plane::A2a.key(), None, ..)`:
     // the attribution tail carries those exact three words, and the amount-0 charge validates an empty
     // breakdown and always accrues one request. Fire-and-forget, exactly as the direct call was.
-    let _ = host.with_host(|hctx, vt| {
+    {
+        // The `UsageGuard` holds borrowed attribution pointers (`!Send`), so it is built AND consumed
+        // in this block — it never crosses the hop `.await` below and the request future stays `Send`.
         let usage = busbar_plugin::hot::Usage::with_attribution(
             busbar_plugin::hot::UsageComponent::Queries,
             0,
@@ -1598,8 +1585,8 @@ async fn admitted(
             resource.as_bytes(),
             "a2a".as_bytes(),
         );
-        (vt.meter_charge.unwrap())(hctx, &*usage as *const busbar_plugin::hot::Usage)
-    });
+        engine_host.meter_charge(&cap_scope, &usage);
+    }
 
     // 6. AUDIT. One record per admitted call, under this plane's own action and resource spelling.
     crate::plane::auditlog::emit_admin_hostless_now(
@@ -1760,14 +1747,35 @@ async fn admitted(
     let relayed_body = super::idmap::translate_request(&envelope, &admitted.dispatch.billed_key_id)
         .unwrap_or_else(|| body.to_vec());
 
-    // `hop_host` (the ONE shared host scope, created before `select_member` and now holding the walk's
+    // `hop_scope` (the ONE bare shared scope, created before `select_member` and now holding the walk's
     // probe) is MOVED onto the blocking relay thread with the hop: its arena reclaims when the hop's
     // closure ends — AFTER the outcome was recorded, so the walk probe's release is a no-op — and the
-    // un-pooled `prepare` admit re-homes its own probe into the SAME scope. One scope spans both.
+    // un-pooled `prepare` admit re-homes its own probe into the SAME scope. One scope spans both. The
+    // hop's neutral `EngineHost` (cloned) rides with it so `prepare`/`record_hop_outcome` reach the
+    // breaker seam; `hop_host` (the durable-journal route) rides only with the streaming hop.
     if shape.requires_streaming {
-        stream_hop(hop_ctx, seam, gate, lease, relayed_body, hop_host).await
+        stream_hop(
+            hop_ctx,
+            seam,
+            gate,
+            lease,
+            relayed_body,
+            hop_host,
+            Arc::clone(&engine_host),
+            hop_scope,
+        )
+        .await
     } else {
-        unary_hop(hop_ctx, seam, gate, lease, relayed_body, hop_host).await
+        unary_hop(
+            hop_ctx,
+            seam,
+            gate,
+            lease,
+            relayed_body,
+            Arc::clone(&engine_host),
+            hop_scope,
+        )
+        .await
     }
 }
 
@@ -1879,9 +1887,10 @@ async fn verify_agent_on_call(app: &Arc<App>, plane: &Arc<super::plane::A2aPlane
     let ledger_id = agent_id.to_string();
     let fetch_plane = Arc::clone(plane);
     let fetch_id = agent_id.to_string();
-    // The `Send + 'static` app route for the blocking re-verify: `reverify_once` now drives the
-    // `verify_decide_q` host slot, so the fetch needs a live host handle. Minted INSIDE the
-    // `spawn_blocking` closure (below) so the `!Send` `HostCtx` never crosses the task boundary.
+    // The `Send + 'static` app route for the blocking re-verify: `reverify_once` drives the
+    // `verify_decide_q` host slot (Batch C — the neutral `reverify::due` primitive stays reached
+    // through the wired slot so the host veneer keeps its sole caller). Minted INSIDE the
+    // `spawn_blocking` closure so the `!Send` `HostCtx` never crosses the task boundary.
     let fetch_app = Arc::clone(app);
     let report_id = agent_id.to_string();
     let gate = plane.verify_arc();
@@ -1936,11 +1945,11 @@ async fn unary_hop(
     gate: Arc<dyn super::relay::DelegationGate>,
     lease: Option<super::creds::Lease>,
     body: Vec<u8>,
-    // The `Send + 'static` host route for the blocking relay call (an ADDITIVE, currently-unused route). Moved
-    // into the `spawn_blocking` closure below so the breaker admit/settle inside `relay` can reach a
-    // host handle without carrying the `!Send` `HostCtx` across the task boundary. CLUSTER-1 flips
-    // `relay`'s in-place breaker calls onto it; until then it is held-in-the-closure-but-unused.
-    host: crate::plane_host::SendHostDispatch,
+    // The hop's neutral `EngineHost` and the ONE bare shared scope, moved into the `spawn_blocking`
+    // closure below so `relay`'s breaker admit/settle/record reach the host seam over the same arena
+    // the walk registered its probe into — no `!Send` `HostCtx` crosses the task boundary.
+    engine_host: Arc<dyn busbar_substrate::plane_host::EngineHost>,
+    hop_scope: busbar_substrate::plane_host::DispatchScope,
 ) -> Response {
     let agent_id = ctx.agent_id.clone();
     let backend_url = ctx.backend_url.clone();
@@ -1954,13 +1963,13 @@ async fn unary_hop(
     let a2a_version = ctx.a2a_version;
     let breaker = ctx.breaker.clone();
     // The pre-admitted WALK id (if this is a pooled fresh submission); its probe already rides in
-    // `host`'s shared scope. NONE for an un-pooled/pinned hop, whose probe `prepare` re-homes itself.
+    // the shared scope. NONE for an un-pooled/pinned hop, whose probe `prepare` re-homes itself.
     let walk_admission_id = ctx.walk_admission_id;
     let relayed = tokio::task::spawn_blocking(move || {
-        // The ONE shared host scope rides onto the blocking thread; its arena reclaims when this
+        // The ONE bare shared scope rides onto the blocking thread; its arena reclaims when this
         // closure ends (reclaim at HOP end, after the outcome was recorded). Both the walk admit
         // (already registered) and `prepare`'s un-pooled admit settle by a host AdmissionId here.
-        let hop_host = host;
+        let hop_scope = hop_scope;
         super::relay::relay(
             &super::relay::RelayCall {
                 agent_id: &agent_id,
@@ -1974,8 +1983,8 @@ async fn unary_hop(
                 a2a_version,
                 framing,
                 breakers: Some(breaker),
-                host_app: Some(hop_host.app()),
-                host_scope: Some(hop_host.scope()),
+                host: Some(engine_host.as_ref()),
+                host_scope: Some(&hop_scope),
                 admission: walk_admission_id,
             },
             seam.as_ref(),
@@ -2037,16 +2046,20 @@ async fn unary_hop(
 /// — and every failure that can happen before that first event (the guard, the gate, the lease, a
 /// non-2xx, a backend that answered a document rather than a stream) is still a status this handler
 /// gets to choose.
+#[allow(clippy::too_many_arguments)] // plumbing: each arg is an independent request input
 async fn stream_hop(
     ctx: HopContext,
     seam: Arc<dyn super::relay::RelaySeam>,
     gate: Arc<dyn super::relay::DelegationGate>,
     lease: Option<super::creds::Lease>,
     body: Vec<u8>,
-    // The `Send + 'static` host route for the blocking relay call (an ADDITIVE, currently-unused route). See
-    // `unary_hop`; the streaming hop's `relay` runs on the same `spawn_blocking` thread and takes the
-    // same route so its breaker admit/settle can reach a host handle. Held-in-the-closure-but-unused.
+    // The `Send + 'static` DURABLE-JOURNAL route (`hop_host.with_host` below → `taskstore` /
+    // `pushdeliver::deliver`). Batch C, so `SendHostDispatch` REMAINS here — never for the breaker.
     host: crate::plane_host::SendHostDispatch,
+    // The hop's neutral `EngineHost` and the ONE bare shared scope for the breaker seam — see
+    // `unary_hop`; the streaming hop's `relay_stream` runs on the same `spawn_blocking` thread.
+    engine_host: Arc<dyn busbar_substrate::plane_host::EngineHost>,
+    hop_scope: busbar_substrate::plane_host::DispatchScope,
 ) -> Response {
     let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(16);
 
@@ -2083,10 +2096,12 @@ async fn stream_hop(
         .get_unscoped(&ctx.task_id)
         .map_or(0, |t| t.artifact_cursor);
     let handle = tokio::task::spawn_blocking(move || {
-        // The ONE shared host scope rides onto the blocking thread; its arena reclaims when this
+        // The ONE bare shared scope rides onto the blocking thread; its arena reclaims when this
         // closure ends (reclaim at HOP end, after the outcome was recorded). Both the walk admit and
-        // `prepare`'s un-pooled admit settle by a host AdmissionId here.
+        // `prepare`'s un-pooled admit settle by a host AdmissionId here. `hop_host` (the durable
+        // journal route) rides alongside for the `with_host` task-event writes.
         let hop_host = host;
+        let hop_scope = hop_scope;
         let mut sink = |ev: super::relay::RelayEvent| -> super::relay::ChunkFlow {
             // THE PAIRING, off the stream too. A streaming submission is the one case where the
             // caller is MOST likely to follow up by id - a resubscribe, a cancel - and a mapping
@@ -2157,8 +2172,8 @@ async fn stream_hop(
                 a2a_version,
                 framing,
                 breakers: Some(breaker),
-                host_app: Some(hop_host.app()),
-                host_scope: Some(hop_host.scope()),
+                host: Some(engine_host.as_ref()),
+                host_scope: Some(&hop_scope),
                 admission: walk_admission_id,
             },
             seam.as_ref(),

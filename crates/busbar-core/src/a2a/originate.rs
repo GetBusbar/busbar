@@ -160,10 +160,10 @@ fn issue_originated(
             a2a_version: at.a2a_version,
             framing: at.framing,
             // The originate direction is scoped OUT of the breaker unit (the audit's own table row);
-            // `None` admits everything and records nothing until unification mounts it.
+            // `None` admits everything and records nothing (the breaker seam is never reached).
             breakers: None,
-            // No breaker cell here, so no admit to re-home and no shared host to thread.
-            host_app: None,
+            // No breaker cell here, so no admit to re-home and no host seam to thread.
+            host: None,
             host_scope: None,
             admission: busbar_plugin::hot::AdmissionId::NONE,
         },

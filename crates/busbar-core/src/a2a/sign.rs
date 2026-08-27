@@ -107,13 +107,15 @@ impl From<CardError> for SignError {
 /// `card_sign` capability.
 ///
 /// The plane holds NO card-signing key. The subkey is derived and held host-side
-/// ([`crate::governance::state::GovState::card_sign`], reached through
-/// [`crate::plane_host::card_sign_over`]); this type carries only PUBLIC material and a `&App`, and
+/// ([`crate::governance::state::GovState::card_sign`], reached through the neutral
+/// [`busbar_substrate::plane_host::EngineHost::card_sign`] seam); this type carries only PUBLIC
+/// material and a `&dyn EngineHost`, and
 /// `sign_card` hands the framed signing input to the host and receives the 64 signature bytes back.
 /// That is the shape the R7 relocation needs: the extracted A2A crate names no signing-secret type.
 pub(crate) struct CardSigner<'a> {
-    /// The live app snapshot — the seam through which [`Self::sign_card`] reaches the host card signer.
-    app: &'a crate::state::App,
+    /// The NEUTRAL host seam through which [`Self::sign_card`] reaches the host `card_sign` capability —
+    /// no `&App`, no signing material, only the bytes-to-sign in and the 64 signature bytes out.
+    host: &'a dyn busbar_substrate::plane_host::EngineHost,
     /// The PUBLIC card-issuer key (`kid` + SPKI base64), computed host-side.
     issuer: crate::plane::registry::CardIssuer,
 }
@@ -133,9 +135,14 @@ impl std::fmt::Debug for CardSigner<'_> {
 /// plane names no `GovState`. `None` when no signing key is configured (the governance-off path) or
 /// before the start hook has run, matching the old typed accessor's own absence — the caller then
 /// serves an unsigned card.
-pub(crate) fn card_signer(app: &crate::state::App) -> Option<CardSigner<'_>> {
-    let issuer = super::runtime(app)?.card_issuer()?.clone();
-    Some(CardSigner { app, issuer })
+pub(crate) fn card_signer(
+    host: &std::sync::Arc<dyn busbar_substrate::plane_host::EngineHost>,
+) -> Option<CardSigner<'_>> {
+    let issuer = crate::a2a::runtime_arc_of(host)?.card_issuer()?.clone();
+    Some(CardSigner {
+        host: host.as_ref(),
+        issuer,
+    })
 }
 
 impl CardSigner<'_> {
@@ -182,7 +189,9 @@ impl CardSigner<'_> {
         // host-side (`GovState::card_sign`) and only the 64 signature bytes come back — so no signing
         // material is ever held on this plane. `None` only if the deployment holds no card-signing
         // key, which `card_signer` already screened out before constructing a `CardSigner`.
-        let signature = crate::plane_host::card_sign_over(self.app, signing_input.as_bytes())
+        let signature = self
+            .host
+            .card_sign(signing_input.as_bytes())
             .ok_or(SignError::HostUnavailable)?;
 
         let mut out: Map<String, Value> = card

@@ -268,21 +268,21 @@ pub(crate) struct RelayCall<'a> {
     /// same cell on the way out. `None` (the originate direction, which the audit scopes out of
     /// this unit) admits everything and records nothing.
     pub(crate) breakers: Option<RelayBreaker>,
-    /// THE LIVE ENGINE SNAPSHOT this hop was admitted on — the `&App` [`prepare`]'s un-pooled admit
-    /// materializes a host over (with [`host_scope`](Self::host_scope)) to WIN its probe through the
-    /// `breaker_admit` seam (CLUSTER-1: the plane holds only the POD id, never a `PlaneAdmission`).
-    /// Threaded from the `SendHostDispatch` that owns the hop's arena. `None` in the originate
-    /// direction and in unit tests that admit directly, where [`prepare`] wins the probe in place and
-    /// holds it in a local for the record-then-drop lifetime.
-    pub(crate) host_app: Option<&'a crate::state::App>,
+    /// THE NEUTRAL HOST SEAM this hop admits, settles and records its breaker through — the
+    /// [`EngineHost`](busbar_substrate::plane_host::EngineHost) minted over the hop's admitted engine
+    /// snapshot. [`prepare`]'s un-pooled admit WINS its probe through `host.breaker_admit` over
+    /// [`host_scope`](Self::host_scope) (CLUSTER-1: the plane holds only the POD id, never a
+    /// `PlaneAdmission`), [`record_hop_outcome`] settles/records through the same seam, and a refusal
+    /// reads its `Retry-After` from `host.breaker_retry_after_secs`. Threaded (with `host_scope`) from
+    /// the request path; `None` only where no scoped seam is wired.
+    pub(crate) host: Option<&'a dyn busbar_substrate::plane_host::EngineHost>,
     /// THE ONE HOST SCOPE THIS HOP'S ADMIT AND SETTLE SHARE (§4 a2a scope unification). Created
     /// BEFORE `select_member` and moved onto the blocking relay thread, it is the single arena both
     /// the pooled WALK admit (pre-admitted upstream, its id in [`admission`](Self::admission)) and the
-    /// un-pooled [`prepare`] admit (through [`host_app`](Self::host_app)) register their settle-capable
+    /// un-pooled [`prepare`] admit (through [`host`](Self::host)) register their settle-capable
     /// probe hold into — so [`record_hop_outcome`] settles through it by a host
     /// [`AdmissionId`](busbar_plugin::hot::AdmissionId) in the same scope (the CLUSTER-1 inversion).
-    /// `None` in the originate direction and in unit tests that admit directly, where the probe hold
-    /// keeps its legacy local lifetime (dropped after the in-place record).
+    /// `None` only where no scoped seam is wired.
     pub(crate) host_scope: Option<&'a busbar_substrate::plane_host::DispatchScope>,
     /// THE HOST ADMISSION ID FOR A PRE-ADMITTED (pooled WALK) HOP — the id the walk's probe hold was
     /// registered under in [`host_scope`](Self::host_scope) before this call was built.
@@ -296,7 +296,6 @@ pub(crate) struct RelayCall<'a> {
 /// `agent_pools:`) and the relay's recording cannot address two different cells.
 #[derive(Clone)]
 pub(crate) struct RelayBreaker {
-    pub(crate) breakers: std::sync::Arc<crate::store::PlaneBreakers>,
     /// `"agent:<agent-id>"` for an un-pooled registration (the degenerate cell), `"agent:<pool>"`
     /// for a pool member.
     pub(crate) key: String,
@@ -311,15 +310,12 @@ pub(crate) struct RelayBreaker {
 
 impl RelayBreaker {
     /// The degenerate single-member cell for an un-pooled agent — the breaker unit's shape,
-    /// unchanged.
-    pub(crate) fn degenerate(
-        agent_id: &str,
-        breakers: std::sync::Arc<crate::store::PlaneBreakers>,
-    ) -> Self {
+    /// unchanged. The cell store is reached through the hop's `host` seam, so this carries only the
+    /// `(key, lane)` identity.
+    pub(crate) fn degenerate(agent_id: &str) -> Self {
         RelayBreaker {
             key: crate::store::PlaneBreakers::agent_key(agent_id),
             lane: 0,
-            breakers,
             pre_admitted: false,
         }
     }
@@ -1456,18 +1452,21 @@ fn record_hop_outcome(
     };
     // STAGE 1 — classify the fine canonical outcome where the refusal's structure still exists.
     let outcome = classify_hop(refusal);
-    // STAGE 2 — settle where the scope is. With a shared host scope owning this hop's probe, fold the
-    // outcome through it over `settle` (the CLUSTER-1 inversion); otherwise the legacy in-place record.
-    match call.host_scope {
-        Some(scope) if !settle.is_none() => match outcome {
+    // STAGE 2 — settle where the scope is. With the shared host scope owning this hop's probe, fold the
+    // outcome through the host `breaker_settle` seam over `settle` (the CLUSTER-1 inversion); otherwise
+    // record in place against the `(key, lane)` cell through the host `breaker_record_*` seam.
+    match (call.host, call.host_scope) {
+        (Some(host), Some(scope)) if !settle.is_none() => match outcome {
             HopOutcome::Success => {
-                scope.settle_admission(
+                host.breaker_settle(
+                    scope,
                     settle,
                     &busbar_substrate::plane_host::breaker::success_signal(),
                 );
             }
             HopOutcome::Failure(cs) => {
-                scope.settle_admission(
+                host.breaker_settle(
+                    scope,
                     settle,
                     &busbar_substrate::plane_host::breaker::failure_signal(&cs),
                 );
@@ -1476,13 +1475,17 @@ fn record_hop_outcome(
             // releases it — the "record nothing" disposition, held to the scope's lifetime.
             HopOutcome::Nothing => {}
         },
-        _ => match outcome {
-            HopOutcome::Success => target.breakers.record_success(&target.key, target.lane),
+        // No live admission in the scope to settle (never won, or already consumed): record in place
+        // against the cell through the host seam.
+        (Some(host), _) => match outcome {
+            HopOutcome::Success => host.breaker_record_success(&target.key, target.lane),
             HopOutcome::Failure(cs) => {
-                target.breakers.record_signal(&target.key, target.lane, &cs);
+                host.breaker_record_signal(&target.key, target.lane, &cs);
             }
             HopOutcome::Nothing => {}
         },
+        // No host seam wired at all: nothing to record against.
+        (None, _) => {}
     }
 }
 
@@ -1547,7 +1550,6 @@ fn prepare<'a>(
     seam: &dyn RelaySeam,
     streaming: bool,
     now_ms: u64,
-    admission: &mut Option<crate::store::PlaneAdmission>,
     admit_id: &mut busbar_plugin::hot::AdmissionId,
 ) -> Result<(reqwest::Url, PinnedTarget, OutboundRelayRequest), RelayRefusal> {
     // ── THE GUARD. One resolution, every answered address judged, one pinned address out. It is
@@ -1574,44 +1576,28 @@ fn prepare<'a>(
     //    HalfOpen cell would lose the single-flight race to our own token.
     if let Some(target) = call.breakers.as_ref() {
         if !target.pre_admitted {
-            match (call.host_app, call.host_scope) {
-                // Receive direction (CLUSTER-1 inversion): WIN the probe THROUGH the host
-                // `breaker_admit` seam, which registers the settle-capable hold in the shared scope
-                // and mints the POD id — so the plane holds ONLY the id, never a `PlaneAdmission`.
-                // `record_hop_outcome` settles this hop over `*admit_id` through the same scope; an
-                // abandoned hop releases the probe when the scope drops.
-                (Some(app), Some(scope)) => {
-                    match crate::plane_host::breaker::breaker_admit_over(
-                        app,
-                        scope,
-                        target.key.as_bytes(),
-                        target.lane as u32,
-                    ) {
-                        Ok(id) => *admit_id = id,
-                        Err(_) => {
-                            return Err(RelayRefusal::BreakerOpen {
-                                agent_id: call.agent_id.to_string(),
-                                retry_after_secs: target
-                                    .breakers
-                                    .retry_after_secs(&target.key, target.lane),
-                            })
-                        }
-                    }
+            // CLUSTER-1 inversion, unified onto the host seam: WIN the probe THROUGH the host
+            // `breaker_admit` seam over the hop's shared scope, which registers the settle-capable
+            // hold in that scope and mints the POD id — so the plane holds ONLY the id, never a
+            // `PlaneAdmission`. `record_hop_outcome` settles this hop over `*admit_id` through the same
+            // scope; an abandoned hop releases the probe when the scope drops. On refusal the request
+            // NEVER LEFT busbar and the `Retry-After` is read from the same host seam.
+            let (Some(host), Some(scope)) = (call.host, call.host_scope) else {
+                // A breaker cell with no scoped host seam is a wiring bug on this path (every hop that
+                // carries a `RelayBreaker` also carries the seam it admits through); fail closed.
+                return Err(RelayRefusal::BreakerOpen {
+                    agent_id: call.agent_id.to_string(),
+                    retry_after_secs: 1,
+                });
+            };
+            match host.breaker_admit(scope, target.key.as_bytes(), target.lane as u32) {
+                Ok(id) => *admit_id = id,
+                Err(_) => {
+                    return Err(RelayRefusal::BreakerOpen {
+                        agent_id: call.agent_id.to_string(),
+                        retry_after_secs: host.breaker_retry_after_secs(&target.key, target.lane),
+                    })
                 }
-                // Originate direction / unit tests that admit directly (no shared host scope): win the
-                // probe IN PLACE and hold it in the caller's local, released after the in-place record
-                // — its legacy drop-after-record lifetime, byte-identical to before.
-                _ => match target.breakers.admit(&target.key, target.lane) {
-                    Ok(token) => *admission = Some(token),
-                    Err(_) => {
-                        return Err(RelayRefusal::BreakerOpen {
-                            agent_id: call.agent_id.to_string(),
-                            retry_after_secs: target
-                                .breakers
-                                .retry_after_secs(&target.key, target.lane),
-                        })
-                    }
-                },
             }
         }
     }
@@ -1706,16 +1692,11 @@ pub(crate) fn relay(
     seam: &dyn RelaySeam,
     now_ms: u64,
 ) -> Result<RelayReply, RelayRefusal> {
-    // The LEGACY-PATH local, declared BEFORE `outcome` so it drops AFTER the record below (locals
-    // drop in reverse order): only the originate/unit-test path (no shared host scope) fills it, and
-    // there a recorded outcome consumes the probe and makes the drop a no-op while a refusal between
-    // admission and the wire abandons it and the drop hands it back.
-    let mut admission: Option<crate::store::PlaneAdmission> = None;
     // THE HOST ID THIS HOP SETTLES OVER (CLUSTER-1): the pre-admitted WALK id when this is a pooled
     // fresh submission, or the un-pooled admit `prepare` mints through the host `breaker_admit` seam.
-    // Stays `NONE` on the originate/legacy path, where the probe is held in `admission` above instead.
+    // Stays `NONE` when the hop carries no breaker cell (the originate direction).
     let mut settle = call.admission;
-    let outcome = relay_once(call, seam, now_ms, &mut admission, &mut settle);
+    let outcome = relay_once(call, seam, now_ms, &mut settle);
     record_hop_outcome(call, settle, outcome.as_ref().err());
     outcome
 }
@@ -1726,10 +1707,9 @@ fn relay_once(
     call: &RelayCall<'_>,
     seam: &dyn RelaySeam,
     now_ms: u64,
-    admission: &mut Option<crate::store::PlaneAdmission>,
     admit_id: &mut busbar_plugin::hot::AdmissionId,
 ) -> Result<RelayReply, RelayRefusal> {
-    let (url, pin, request) = prepare(call, seam, false, now_ms, admission, admit_id)?;
+    let (url, pin, request) = prepare(call, seam, false, now_ms, admit_id)?;
 
     // The PINNED ADDRESS goes to the transport beside the URL. The transport connects to the
     // address and sends the URL's host as `Host` and as TLS SNI; see `transport.rs`.
@@ -2160,9 +2140,7 @@ pub(crate) fn relay_stream(
     now_ms: u64,
     sink: &mut (dyn FnMut(RelayEvent) -> ChunkFlow + Send),
 ) -> Result<RelayStream, RelayRefusal> {
-    // Same shape as [`relay`]: the legacy-path probe local outlives the record, the host id carries
-    // the shared-scope handle, and every exit path records.
-    let mut admission: Option<crate::store::PlaneAdmission> = None;
+    // Same shape as [`relay`]: the host id carries the shared-scope handle, and every exit path records.
     let mut settle = call.admission;
     let outcome = relay_stream_once(
         call,
@@ -2172,7 +2150,6 @@ pub(crate) fn relay_stream(
         matched_skill,
         now_ms,
         sink,
-        &mut admission,
         &mut settle,
     );
     record_hop_outcome(call, settle, outcome.as_ref().err());
@@ -2180,7 +2157,7 @@ pub(crate) fn relay_stream(
 }
 
 /// [`relay_stream`]'s body; see [`relay_once`] for why the wrapper split exists.
-#[allow(clippy::too_many_arguments)] // the public fn's list plus the admission out-param.
+#[allow(clippy::too_many_arguments)] // the public fn's list plus the admit-id out-param.
 fn relay_stream_once(
     call: &RelayCall<'_>,
     seam: &dyn RelaySeam,
@@ -2189,10 +2166,9 @@ fn relay_stream_once(
     matched_skill: Option<&str>,
     now_ms: u64,
     sink: &mut (dyn FnMut(RelayEvent) -> ChunkFlow + Send),
-    admission: &mut Option<crate::store::PlaneAdmission>,
     admit_id: &mut busbar_plugin::hot::AdmissionId,
 ) -> Result<RelayStream, RelayRefusal> {
-    let (url, pin, request) = prepare(call, seam, true, now_ms, admission, admit_id)?;
+    let (url, pin, request) = prepare(call, seam, true, now_ms, admit_id)?;
     let cap = call.policy.max_body_bytes;
 
     // THE BINDING'S OWN FRAME READER. Whatever it reads — SSE with an envelope payload, SSE with a

@@ -89,7 +89,6 @@ pub(super) struct SelectedMember {
 /// Decide the target member for one admitted call. See the module header for the three rules.
 #[allow(clippy::too_many_arguments)] // the admission's own facts, gathered where they were made.
 pub(super) fn select_member(
-    app: &App,
     engine_host: &dyn busbar_substrate::plane_host::EngineHost,
     scope: &busbar_substrate::plane_host::DispatchScope,
     plane: &super::plane::A2aPlane,
@@ -101,11 +100,10 @@ pub(super) fn select_member(
     method: &str,
     now: u64,
 ) -> SelectedMember {
-    let breakers = Arc::clone(&app.plane_breakers);
     let pool = pool_of(engine_host, admitted_agent);
     let mut selected = SelectedMember {
         agent_id: admitted_agent.to_string(),
-        breaker: RelayBreaker::degenerate(admitted_agent, Arc::clone(&breakers)),
+        breaker: RelayBreaker::degenerate(admitted_agent),
         admission_id: busbar_plugin::hot::AdmissionId::NONE,
         walk_refusal: None,
         pin_mismatch: None,
@@ -120,14 +118,13 @@ pub(super) fn select_member(
             selected.agent_id = pinned.to_string();
             selected.breaker = match members.iter().position(|m| m == pinned) {
                 Some(lane) => RelayBreaker {
-                    breakers: Arc::clone(&breakers),
                     key: crate::store::PlaneBreakers::agent_key(&pool_name),
                     lane,
                     pre_admitted: false,
                 },
                 // Dispatched before the pool existed, or a member since removed from it: the
                 // task stays pinned and the cell is the member's own degenerate one.
-                None => RelayBreaker::degenerate(pinned, Arc::clone(&breakers)),
+                None => RelayBreaker::degenerate(pinned),
             };
         }
         // Fresh submission to a pooled agent: THE WALK.
@@ -191,12 +188,7 @@ pub(super) fn select_member(
                 &mut order,
                 &mut passed_over,
                 &mut |_position, member: &AgentCandidate| {
-                    crate::plane_host::breaker::breaker_admit_over(
-                        app,
-                        scope,
-                        pool_key.as_bytes(),
-                        member.lane as u32,
-                    )
+                    engine_host.breaker_admit(scope, pool_key.as_bytes(), member.lane as u32)
                 },
             ) {
                 Ok(adm) => {
@@ -214,7 +206,6 @@ pub(super) fn select_member(
                     }
                     selected.agent_id = chosen;
                     selected.breaker = RelayBreaker {
-                        breakers: Arc::clone(&breakers),
                         key: pool_key,
                         lane,
                         pre_admitted: true,
@@ -232,7 +223,7 @@ pub(super) fn select_member(
                         _ => {
                             let retry_after_secs = candidates
                                 .iter()
-                                .map(|c| breakers.retry_after_secs(&pool_key, c.lane))
+                                .map(|c| engine_host.breaker_retry_after_secs(&pool_key, c.lane))
                                 .min()
                                 .unwrap_or(1);
                             selected.walk_refusal = Some(super::relay::RelayRefusal::BreakerOpen {
@@ -398,6 +389,7 @@ pub(super) fn render_pin_mismatch(
 /// caller may reach at all. Passing a shape here would silently drop every agent that cannot serve
 /// whatever shape was invented.
 pub(super) fn extended_agent_card(
+    engine_host: &Arc<dyn busbar_substrate::plane_host::EngineHost>,
     app: &App,
     key: &busbar_api::VirtualKey,
     rpc_id: &serde_json::Value,
@@ -408,7 +400,7 @@ pub(super) fn extended_agent_card(
     let Some(public_url) = plane.public_url() else {
         return super::receive::no_receiving_side();
     };
-    let signer = crate::a2a::sign::card_signer(app);
+    let signer = crate::a2a::sign::card_signer(engine_host);
 
     // NOTHING FRONTED AT ALL is the one shape A2A has a specific error for: the card declares the
     // capability (it is a property of the binary, and busbar always has this verb) and the
@@ -422,7 +414,7 @@ pub(super) fn extended_agent_card(
     // what the caller is entitled to be told.
     let caller = busbar_substrate::catalogue::Caller {
         key: Some(key),
-        now: crate::plane_host::clock_now_secs_over(app),
+        now: engine_host.clock_now_secs(),
         generation: busbar_substrate::trust::validate::Generations::at_admission(
             plane.generation(),
         ),

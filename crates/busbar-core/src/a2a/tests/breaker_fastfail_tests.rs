@@ -22,7 +22,6 @@
 
 use std::net::IpAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use super::relay_harness::{envelope, harness_on, Harness, BACKEND, BACKEND_ADDR};
@@ -107,7 +106,8 @@ impl RelaySeam for Seam<'_> {
 }
 
 fn a_call<'a>(
-    breakers: &'a Arc<PlaneBreakers>,
+    host: &'a dyn busbar_substrate::plane_host::EngineHost,
+    scope: &'a busbar_substrate::plane_host::DispatchScope,
     rpc_id: &'a serde_json::Value,
     policy: &'a FetchPolicy,
 ) -> RelayCall<'a> {
@@ -122,12 +122,11 @@ fn a_call<'a>(
         policy,
         a2a_version: "0.3",
         framing: crate::a2a::relay::default_framing(),
-        breakers: Some(crate::a2a::relay::RelayBreaker::degenerate(
-            "planner",
-            Arc::clone(breakers),
-        )),
-        host_app: None,
-        host_scope: None,
+        // The breaker cell store is reached through the `host` seam over the shared `scope` — the same
+        // scoped admit/settle the ingress drives, exercised here through a real `EngineHost` double.
+        breakers: Some(crate::a2a::relay::RelayBreaker::degenerate("planner")),
+        host: Some(host),
+        host_scope: Some(scope),
         admission: busbar_plugin::hot::AdmissionId::NONE,
     }
 }
@@ -137,7 +136,12 @@ fn a_call<'a>(
 /// `BreakerOpen` in milliseconds with the dead backend's counter unmoved.
 #[test]
 fn a_backend_hard_down_opens_the_core_cell_and_the_second_hop_never_reaches_the_wire() {
-    let breakers = Arc::new(PlaneBreakers::new());
+    use busbar_substrate::plane_host::DispatchScope;
+    // A real `EngineHost` double over a bare app: the breaker cell store IS `app.plane_breakers`, the
+    // same seam the ingress admits/settles the relay through, so this exercises the production path.
+    let app = crate::test_support::TestApp::new().build();
+    let host = crate::plane_host::engine_host(&app);
+    let breakers = &app.plane_breakers;
     let transport = CountingDenier {
         status: 401,
         hits: AtomicUsize::new(0),
@@ -148,7 +152,12 @@ fn a_backend_hard_down_opens_the_core_cell_and_the_second_hop_never_reaches_the_
     let rpc_id = serde_json::json!(1);
     let policy = FetchPolicy::default();
 
-    let first = crate::a2a::relay::relay(&a_call(&breakers, &rpc_id, &policy), &seam, 1_000);
+    let scope1 = DispatchScope::new();
+    let first = crate::a2a::relay::relay(
+        &a_call(host.as_ref(), &scope1, &rpc_id, &policy),
+        &seam,
+        1_000,
+    );
     assert!(
         matches!(first, Err(RelayRefusal::Status { status: 401, .. })),
         "{first:?}"
@@ -162,8 +171,13 @@ fn a_backend_hard_down_opens_the_core_cell_and_the_second_hop_never_reaches_the_
         "the agent's cell must be Open after a definitive backend failure"
     );
 
+    let scope2 = DispatchScope::new();
     let t0 = Instant::now();
-    let second = crate::a2a::relay::relay(&a_call(&breakers, &rpc_id, &policy), &seam, 1_000);
+    let second = crate::a2a::relay::relay(
+        &a_call(host.as_ref(), &scope2, &rpc_id, &policy),
+        &seam,
+        1_000,
+    );
     let elapsed = t0.elapsed();
     match second {
         Err(RelayRefusal::BreakerOpen {
@@ -193,7 +207,9 @@ fn a_backend_hard_down_opens_the_core_cell_and_the_second_hop_never_reaches_the_
 #[test]
 fn a_shared_host_scope_settles_the_prepare_admit() {
     use busbar_substrate::plane_host::DispatchScope;
-    let breakers = Arc::new(PlaneBreakers::new());
+    let app = crate::test_support::TestApp::new().build();
+    let host = crate::plane_host::engine_host(&app);
+    let breakers = &app.plane_breakers;
     let key = crate::store::PlaneBreakers::agent_key("planner");
     let transport = CountingDenier {
         status: 401,
@@ -205,11 +221,12 @@ fn a_shared_host_scope_settles_the_prepare_admit() {
     let rpc_id = serde_json::json!(1);
     let policy = FetchPolicy::default();
 
-    // WITH a shared scope: the admit is re-homed into it, then the 401 is SETTLED through the scope —
-    // consuming the probe (the arena is empty again) and opening the cell.
+    // The un-pooled admit is won through the host `breaker_admit` seam and RE-HOMED into the shared
+    // scope; the 401 is then SETTLED through the host `breaker_settle` seam over that same scope —
+    // consuming the probe (the arena is empty again) and opening the cell, byte-identically to the
+    // legacy in-place record.
     let scope = DispatchScope::new();
-    let mut call = a_call(&breakers, &rpc_id, &policy);
-    call.host_scope = Some(&scope);
+    let call = a_call(host.as_ref(), &scope, &rpc_id, &policy);
     let out = crate::a2a::relay::relay(&call, &seam, 1_000);
     assert!(matches!(out, Err(RelayRefusal::Status { status: 401, .. })));
     assert_eq!(
@@ -226,25 +243,6 @@ fn a_shared_host_scope_settles_the_prepare_admit() {
     );
     // The shared scope's own drop finds nothing left — the settle already released the probe.
     drop(scope);
-
-    // WITHOUT a shared scope (legacy / originate / unit tests): nothing is registered anywhere, and
-    // the probe keeps its local drop-after-record lifetime — behaviour byte-for-byte as before.
-    let scope2 = DispatchScope::new();
-    let fresh = Arc::new(PlaneBreakers::new());
-    let call2 = a_call(&fresh, &rpc_id, &policy); // host_scope: None
-    let _ = crate::a2a::relay::relay(&call2, &seam, 1_000);
-    assert_eq!(
-        scope2.registered(),
-        0,
-        "no shared scope → the local holds the probe, nothing registered"
-    );
-    assert!(
-        matches!(
-            fresh.state(&key),
-            busbar_substrate::store::BreakerState::Open { .. }
-        ),
-        "the legacy path still records and opens the cell"
-    );
 }
 
 // ══ THE INGRESS HALF: `rejected` + a task id + 503/Retry-After, per BINDING ══════════════════════
