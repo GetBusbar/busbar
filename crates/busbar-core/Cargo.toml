@@ -147,14 +147,15 @@ test-support = ["busbar-substrate/test-support"]
 # `busbar-timing/timing`, making those guards real `Timer`s whose `Drop` records the elapsed span.
 timing = ["busbar-timing/timing"]
 
-# `busbar_mcp_native` is a cfg that `busbar-mcp`'s build script sets for that crate's OWN builds and
-# NOT for the `#[path]` dual-compile of `busbar-mcp/src/mcp` into this crate's test binary (a build
-# script runs for a compiled crate, not for path-included source). The dual-compiled plane sources
-# gate their tests `not(busbar_mcp_native)` so they run HERE and skip in `busbar-mcp`. This crate
-# never sets the cfg, but the sources reference it, so declare it KNOWN — otherwise `unexpected_cfgs`
-# fires under `-D warnings`. (This replaced a dummy `extracted` feature that served the same role.)
+# `busbar_mcp_native` / `busbar_a2a_native` are cfgs that `busbar-mcp` / `busbar-a2a`'s build scripts
+# set for those crates' OWN builds and NOT for the `#[path]` dual-compile of their `src/mcp` / `src/a2a`
+# into this crate's test binary (a build script runs for a compiled crate, not for path-included
+# source). The dual-compiled plane sources gate their tests `not(busbar_*_native)` so they run HERE and
+# skip in the plugin crate. This crate never sets either cfg, but the sources reference them, so declare
+# them KNOWN — otherwise `unexpected_cfgs` fires under `-D warnings`. (This replaced a dummy `extracted`
+# feature that served the same role.)
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(busbar_mcp_native)'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(busbar_mcp_native)', 'cfg(busbar_a2a_native)'] }
 
 [dev-dependencies]
 # The plain `cargo test -p busbar-core` build does not turn on core's own `test-support` feature, so

@@ -348,7 +348,11 @@ static BUILTIN_PLANE_DECLS: &[&PlaneDecl] = &[
     // carries no MCP row; `merged_boot_plane_decls` folds the installed copy into its canonical slot.
     #[cfg(any(test, feature = "test-support"))]
     &crate::mcp::PLANE_DECL,
-    #[cfg(feature = "plane-a2a")]
+    // The A2A plane's sources live in `busbar-a2a`; core dual-compiles them (see `crate::a2a`) for
+    // test/`test-support` builds ONLY, so the fixture registry the tests see matches a shipped
+    // binary's — where the composition root installs `busbar_a2a::PLANE_DECL` instead. Production core
+    // carries no A2A row; `merged_boot_plane_decls` folds the installed copy into its canonical slot.
+    #[cfg(any(test, feature = "test-support"))]
     &crate::a2a::PLANE_DECL,
 ];
 

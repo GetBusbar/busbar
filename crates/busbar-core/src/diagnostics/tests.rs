@@ -43,17 +43,20 @@ const MIGRATED_FILES: &[&str] = &[
     "src/config/overlay.rs",
     "src/config/mod.rs",
     "src/config_validate/mod.rs",
-    "src/a2a/mod.rs",
-    "src/a2a/serve.rs",
-    "src/a2a/route.rs",
-    "src/a2a/transport.rs",
-    "src/a2a/pushback.rs",
-    "src/a2a/receive.rs",
-    "src/a2a/local.rs",
-    "src/a2a/verbs.rs",
-    "src/a2a/pushdeliver.rs",
-    "src/a2a/originate.rs",
-    "src/a2a/plane.rs",
+    // The A2A plane's sources moved to the `busbar-a2a` crate (the plane extraction). Unlike the MCP
+    // entries below (dropped), these are REPOINTED to the sibling crate so core keeps enforcing their
+    // uncoded-diagnostic floor — the same files, at their new home, read relative to this manifest.
+    "../busbar-a2a/src/a2a/mod.rs",
+    "../busbar-a2a/src/a2a/serve.rs",
+    "../busbar-a2a/src/a2a/route.rs",
+    "../busbar-a2a/src/a2a/transport.rs",
+    "../busbar-a2a/src/a2a/pushback.rs",
+    "../busbar-a2a/src/a2a/receive.rs",
+    "../busbar-a2a/src/a2a/local.rs",
+    "../busbar-a2a/src/a2a/verbs.rs",
+    "../busbar-a2a/src/a2a/pushdeliver.rs",
+    "../busbar-a2a/src/a2a/originate.rs",
+    "../busbar-a2a/src/a2a/plane.rs",
     // The MCP plane's sources moved to the `busbar-mcp` crate (Phase-B B2); their uncoded-diagnostic
     // floor is enforced by that crate's own suite now, so core no longer scans them here.
     "src/export/webhook.rs",

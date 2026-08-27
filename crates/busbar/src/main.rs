@@ -592,6 +592,11 @@ fn register_planes() {
     let mut installed: Vec<&'static busbar_core::plane::registry::PlaneDecl> = Vec::new();
     #[cfg(feature = "plane-mcp")]
     installed.push(&busbar_mcp::PLANE_DECL);
+    // The A2A plane, now its own crate (`busbar-a2a`, PLANE-ONLY — no PROTO_DECL). Same slot and
+    // reason as the MCP row: `--validate` reads the plane list, so the axis is installed before any
+    // reader. Present only under `plane-a2a`; a build with A2A compiled out pushes nothing.
+    #[cfg(feature = "plane-a2a")]
+    installed.push(&busbar_a2a::PLANE_DECL);
     busbar_core::plane::registry::install_planes(installed.leak());
 }
 
@@ -623,7 +628,7 @@ fn main() {
     // boot hydrate drives the engine. `&A2aTaskCodec` is a ZST, so it promotes to `'static`. Gated to
     // `plane-a2a`; a build without the A2A plane never drives the engine and installs nothing.
     #[cfg(feature = "plane-a2a")]
-    busbar_substrate::plane_host::install_task_codec(&busbar_core::a2a::A2aTaskCodec);
+    busbar_substrate::plane_host::install_task_codec(&busbar_a2a::a2a::A2aTaskCodec);
     // The task reader: the A2A plane reads a caller's rows off the core TASKS working set through
     // `TaskReader` on the few paths where it holds no `EngineHost`, so it names no
     // `busbar_core::plane::taskstore`. Backed by core's `CoreTaskReader` (straight to `TASKS.*`), bound

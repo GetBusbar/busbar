@@ -1,16 +1,18 @@
-# busbar-a2a — THE A2A (Agent2Agent) PLUGIN CRATE SHELL.
+# busbar-a2a — THE A2A (Agent2Agent) PLUGIN CRATE.
 #
-# Step 3.B.0 of the plane split creates ONLY this shell: the manifest and a doc-only `src/lib.rs`.
-# No plane or codec code has moved here yet — that is later steps. When it does, this crate becomes
-# the A2A protocol codec FOLDED TOGETHER with the A2A plane (today's `crates/busbar-core/src/a2a`:
-# the agent card, the task store, the JSON-RPC/gRPC/REST transports, the config sections, boot
-# hydration, the router mount and the admin API) — ONE PLUGIN PER PROTOCOL, and A2A the protocol and
-# A2A the plane are the same protocol, so they end up behind the same on/off switch rather than two.
+# The A2A plane and codec, folded together (the former `crates/busbar-core/src/a2a`, ~19k lines: the
+# agent card, the task store, the delegating and inbound JSON-RPC/gRPC/REST transports, the `agents:`
+# config sections, boot hydration, the router mount and the admin API). A2A the protocol and A2A the
+# plane are the same protocol, so they sit behind ONE on/off switch rather than two — ONE PLUGIN PER
+# PROTOCOL. Unlike busbar-mcp, A2A is PLANE-ONLY: it contributes a `PlaneDecl` (`PLANE_DECL`) and no
+# separate protocol-codec `PROTO_DECL`.
 #
-# `busbar-core = { default-features = false }` mirrors `busbar-llm`/`busbar-mcp`: the feature
-# decisions belong to the composition root, not to a plugin. `busbar-api` is named ahead of the code
-# that needs it, per 1.6.0's owner ruling R-E, which plans this crate to depend on `busbar-api` the
-# way `busbar-auth-admin-tokens` and `busbar-hooks-ranking` do today.
+# `busbar-core = { default-features = false, optional = true }` mirrors busbar-mcp's SEALED shape: the
+# feature decisions belong to the composition root, and busbar-core is no longer a PRODUCTION
+# dependency — the default build compiles with NO busbar-core in its closure, every former
+# `busbar_core::` reach served by the neutral substrate (the config-section split, the task-reader /
+# hostless-egress / admin-envelope seams). busbar-core stays an OPTIONAL dep pulled ONLY by
+# `test-support`, because the plane's `&App`-typed test helpers name `busbar_core::state::App`.
 [package]
 name = "busbar-a2a"
 version = "1.6.0"
@@ -18,7 +20,7 @@ publish = false            # internal workspace crate; never goes to crates.io
 edition = "2021"
 # `rust-version` rationale: see busbar-core/Cargo.toml — one pinned number, set to what CI verifies.
 rust-version = "1.97"
-description = "The Agent2Agent protocol for busbar: the A2A codec and the A2A plane, as one removable plugin. Shell only — code has not moved here yet."
+description = "The Agent2Agent protocol for busbar: the A2A codec and the A2A plane, as one removable plugin."
 license = "Apache-2.0"
 
 [lib]
@@ -26,23 +28,87 @@ name = "busbar_a2a"
 path = "src/lib.rs"
 
 [dependencies]
-# The engine's public surface — the ONLY busbar crate this plugin may name today. `default-features
-# = false` for the same reason the binary does it: the feature decisions are the composition root's.
-busbar-core = { path = "../busbar-core", default-features = false }
+# THE SEAL (1.6.0): busbar-core is no longer a PRODUCTION dependency of this plugin. Optional, pulled
+# ONLY by `test-support` (the plane's `&App`-typed test helpers name `busbar_core::state::App`, which
+# compiles only where busbar-core is in the closure — the dual-compile into core's own test binary, or
+# a `test-support` build). Optional rather than a dev-dependency because a feature cannot reference a
+# dev-dep-only crate.
+busbar-core = { path = "../busbar-core", default-features = false, features = ["plane-a2a"], optional = true }
+# The substrate crate: the neutral shared surface the plugin names instead of busbar-core — the
+# diagnostics macros, the config-section split, the task-reader / hostless-egress / admin-envelope
+# seams. Carries `plane-a2a` so the plane-gated items are present in this crate's own default build.
+busbar-substrate = { path = "../busbar-substrate", features = ["plane-a2a"] }
 # The plugin contracts crate, named ahead of use per owner ruling R-E (see header).
 busbar-api = { path = "../api" }
+# The plane's own runtime surface — the same workspace pins core takes, for the plane code that moved
+# here whole: the transports (tokio, reqwest, futures, tonic/tonic-types/prost + a2a-pb for the gRPC
+# binding, tower), the config codecs (serde, serde_yaml, indexmap), the trust crypto (sha2, hex,
+# base64, ed25519-dalek, hmac) and the plugin ABI (busbar-plugin, async-trait) the plane's host reaches.
+busbar-plugin = { path = "../busbar-plugin" }
+busbar-plugin-loader = { path = "../plugin-loader" }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "io-util", "io-std", "process"] }
+reqwest = { workspace = true, features = ["http2"] }
+tonic = { workspace = true }
+tonic-types = { workspace = true }
+prost = { workspace = true }
+http-body-util = { workspace = true }
+# The a2aproject's own generated types: `a2a-pb` carries the prost `Message` impls (gRPC wire), and
+# `a2a-lf` (lib name `a2a`) carries the ProtoJSON/native type vocabulary the transports name as `a2a::`.
+a2a-pb = { workspace = true }
+a2a-lf = { workspace = true }
+tower = { workspace = true }
+ed25519-dalek = { workspace = true }
+hmac = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+base64 = { workspace = true }
+serde = { workspace = true }
+serde_yaml = { workspace = true }
+indexmap = { workspace = true }
+futures = { workspace = true }
+async-trait = { workspace = true }
 axum = { workspace = true }
 bytes = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
 getrandom = { workspace = true }
+# THE OPENAPI SCHEMA DERIVE, optional and mirroring busbar-core/busbar-mcp exactly. The plane's
+# admin-view types derive `schemars::JsonSchema` under `openapi-schema`; when these sources
+# dual-compile into busbar-core they take core's `schemars`, and when they compile HERE they need
+# their own. Same optional dep, same feature edge, so the derive resolves whichever crate is compiling.
+schemars = { workspace = true, optional = true }
 
 [features]
-# Pass-through so a dependent can ask for this crate's test fixtures without naming busbar-core
-# directly, the same shape `busbar-core` itself exposes to its own dependents.
-test-support = ["busbar-core/test-support"]
+# THE PLANE TESTS SKIP IN THIS CRATE'S OWN BINARY and run only when busbar-core dual-compiles `src/a2a`
+# back into ITS test binary. They build a `TestApp` and read the plane's runtime back out by DOWNCAST;
+# that runtime's type is `<compiling-crate>::a2a::plane::A2aPlane`, so the fixtures (in busbar-core,
+# `pub(crate)`) only produce a value the tests can reach and downcast when BOTH are the same crate —
+# inside busbar-core's binary. This crate's own `cargo test` still builds and runs the unit/codec tests
+# that need no `App`. The skip is keyed on the `busbar_a2a_native` cfg `build.rs` sets unconditionally
+# for THIS crate and never for core's `#[path]` dual-compile (see `build.rs`), NOT on a feature.
+#
+# The plane's sources carry `#[cfg(feature = "…")]` gates (the `PlaneDecl` OpenAPI-schema field, one
+# admin-tokens test path). Declared here as FORWARDS so the same `#[cfg]` resolves identically whether
+# these sources compile here or dual-compile into busbar-core. The openapi-schema forward points at
+# SUBSTRATE (where `PlaneDecl` lives) since busbar-core is no longer a prod dep; the admin-tokens
+# forward is weak (off by default, exactly as in core).
+openapi-schema = ["busbar-substrate/openapi-schema", "dep:schemars"]
+# The one `auth-admin-tokens` site is a test module. Forwarded WEAKLY (`?`) so enabling it never
+# force-pulls the optional busbar-core into a non-test-support build; it only cascades where
+# busbar-core is already in the closure.
+auth-admin-tokens = ["busbar-core?/auth-admin-tokens"]
+# Pulls busbar-core (the optional dep) and its test fixtures: the plane's `&App`-typed test helpers and
+# the dual-compile plane tests name `busbar_core::…`, so this feature is the one edge that puts
+# busbar-core in the closure — the default/prod build has none. Core's `TestApp` fixture names BOTH
+# planes' config types unconditionally, so this forwards `plane-mcp`/`plane-a2a` too — the same
+# both-planes shape core's own dual-compile test binary builds with.
+test-support = [
+    "dep:busbar-core",
+    "busbar-core/test-support",
+    "busbar-core/plane-mcp",
+    "busbar-core/plane-a2a",
+]
 
 [dev-dependencies]
-busbar-core = { path = "../busbar-core", features = ["test-support"] }
 serde_json = { workspace = true }
 tracing-subscriber = { workspace = true }

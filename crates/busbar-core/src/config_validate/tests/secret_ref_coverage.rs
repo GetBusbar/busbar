@@ -256,8 +256,15 @@ fn secret_refs_source() -> String {
             .join("config.rs"),
         "impl busbar_substrate::plane::config::PlaneCfg for ToolsCfg",
     );
+    // The A2A plane's `agents:` config moved to the `busbar-a2a` crate (the plane extraction), the
+    // same as MCP above; its `secret_refs` impl is read from the sibling crate.
     let a2a = extract_impl_block(
-        &src.join("a2a").join("config.rs"),
+        &Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("busbar-a2a")
+            .join("src")
+            .join("a2a")
+            .join("config.rs"),
         "impl busbar_substrate::plane::config::PlaneCfg for AgentsCfg",
     );
     let body = format!("{core}\n{mcp}\n{a2a}");
